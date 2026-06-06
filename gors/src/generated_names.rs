@@ -1,10 +1,12 @@
 pub const AS_ANY_METHOD: &str = "__gors_as_any";
 pub const CLONE_BOX_METHOD: &str = "__gors_clone_box";
+pub const INTERFACE_KEY_METHOD: &str = "__gors_interface_key";
 pub const ERROR_EXT_TRAIT: &str = "__GorsErrorExt";
 pub const FMT_FLUSH_HOOK: &str = "__gors_flush_fmt";
 pub const FMT_FLUSH_METHOD_DOC_PREFIX: &str = "gors:fmt-flush-method=";
 pub const FMT_FLUSH_SOURCE_DOC_PREFIX: &str = "gors:fmt-flush-source=";
 pub const NOOP_INTERFACE: &str = "__GorsNoopInterface";
+pub const EXTERNAL_LOCAL_INTERFACE_IMPL_DOC: &str = "gors:external-local-interface-impl";
 pub const PRESERVE_IMPORTED_INTERFACE_IMPL_DOC: &str = "gors:preserve-imported-interface-impl";
 
 fn ident(name: &str) -> syn::Ident {
@@ -17,6 +19,10 @@ pub fn as_any_method_ident() -> syn::Ident {
 
 pub fn clone_box_method_ident() -> syn::Ident {
     ident(CLONE_BOX_METHOD)
+}
+
+pub fn interface_key_method_ident() -> syn::Ident {
+    ident(INTERFACE_KEY_METHOD)
 }
 
 pub fn error_ext_trait_ident() -> syn::Ident {

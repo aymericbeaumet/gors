@@ -23,10 +23,12 @@ pub(super) fn expr_for_type(expr: &ast::Expr) -> syn::Expr {
 
 pub(super) fn expr_for_optional_type(type_expr: Option<&ast::Expr>) -> syn::Expr {
     match type_expr {
+        Some(expr) if super::interface_name_from_type_expr(expr).is_some() => expr_for_type(expr),
         Some(ast::Expr::Ident(ident)) => expr_for_type_name(Some(ident.name)),
         Some(ast::Expr::InterfaceType(_)) => {
             syn::parse_quote! { Box::new(()) as Box<dyn std::any::Any> }
         }
+        Some(ast::Expr::FuncType(func_type)) => expr_for_func_type(func_type),
         Some(ast::Expr::ArrayType(array_type)) => expr_for_array_type(array_type),
         Some(ast::Expr::MapType(_) | ast::Expr::StarExpr(_)) => {
             syn::parse_quote! { Default::default() }
@@ -58,6 +60,7 @@ pub(super) fn expr_for_go_type(go_type: &typeinfer::GoType) -> Option<syn::Expr>
         typeinfer::GoType::Any => Some(expr_for_type_name(Some("any"))),
         typeinfer::GoType::Bool => Some(expr_for_type_name(Some("bool"))),
         typeinfer::GoType::String => Some(expr_for_type_name(Some("string"))),
+        typeinfer::GoType::Unit => Some(syn::parse_quote! { () }),
         typeinfer::GoType::Interface(_) => None,
         _ => Some(syn::parse_quote! { Default::default() }),
     }

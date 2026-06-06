@@ -849,7 +849,40 @@ pub(super) fn self_type_reachability_names(ty: &syn::Type) -> Vec<String> {
     {
         names.push(name);
     }
+    for name in qualified_self_type_names(ty) {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
     names
+}
+
+fn qualified_self_type_names(ty: &syn::Type) -> Vec<String> {
+    match ty {
+        syn::Type::Path(path) => qualified_self_type_names_from_path(&path.path),
+        syn::Type::Reference(reference) => qualified_self_type_names(&reference.elem),
+        _ => Vec::new(),
+    }
+}
+
+fn qualified_self_type_names_from_path(path: &syn::Path) -> Vec<String> {
+    if let Some(inner) = first_type_arg_for_path_last_ident_any(path, &["Arc", "Mutex", "GorsPtr"])
+    {
+        return qualified_self_type_names(inner);
+    }
+    let segments = path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect::<Vec<_>>();
+    match segments.as_slice() {
+        [crate_segment, module, symbol] if crate_segment == "crate" => vec![
+            format!("{module}::{symbol}"),
+            format!("crate::{module}::{symbol}"),
+        ],
+        [module, symbol] => vec![format!("{module}::{symbol}")],
+        _ => Vec::new(),
+    }
 }
 
 pub(super) fn item_name(item: &syn::Item) -> Option<String> {

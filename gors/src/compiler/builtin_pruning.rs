@@ -19,6 +19,7 @@ pub(super) fn prune_channel_helpers(items: &mut Vec<syn::Item>, roots: &HashSet<
                 | "Chan::recv_with_ok"
                 | "Chan::len"
                 | "Chan::cap"
+                | "Chan::is_nil"
         )
     }) {
         return;

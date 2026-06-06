@@ -2,6 +2,11 @@ use syn::Token;
 
 use super::synthetic_names;
 
+pub(super) struct IterationTail {
+    pub(super) body: syn::Block,
+    pub(super) loop_label: Option<syn::Lifetime>,
+}
+
 pub(super) fn range_for_loop(
     pat: syn::Pat,
     iter_expr: syn::Expr,
@@ -34,11 +39,15 @@ pub(super) fn range_for_loop(
 pub(super) fn with_iteration_tail(
     mut body: syn::Block,
     loop_label_name: Option<&str>,
+    loop_label: Option<&syn::Lifetime>,
     per_iteration_stmts: Vec<syn::Stmt>,
     post_stmts: Vec<syn::Stmt>,
-) -> syn::Block {
+) -> IterationTail {
     if per_iteration_stmts.is_empty() && post_stmts.is_empty() {
-        return body;
+        return IterationTail {
+            body,
+            loop_label: None,
+        };
     }
 
     if has_continue_for_post(&body.stmts, loop_label_name, true) {
@@ -48,6 +57,10 @@ pub(super) fn with_iteration_tail(
         // block and emit the tail statements after that block.
         let body_label = synthetic_names::next_loop_body_label();
         rewrite_continue_for_post(&mut body.stmts, loop_label_name, true, &body_label);
+        let break_label = loop_label
+            .cloned()
+            .unwrap_or_else(synthetic_names::next_loop_label);
+        rewrite_unlabeled_break_to_label(&mut body.stmts, &break_label);
 
         let labeled_body = syn::Stmt::Expr(
             syn::Expr::Block(syn::ExprBlock {
@@ -65,15 +78,21 @@ pub(super) fn with_iteration_tail(
         loop_stmts.extend(per_iteration_stmts);
         loop_stmts.extend(post_stmts);
 
-        return syn::Block {
-            brace_token: syn::token::Brace::default(),
-            stmts: loop_stmts,
+        return IterationTail {
+            body: syn::Block {
+                brace_token: syn::token::Brace::default(),
+                stmts: loop_stmts,
+            },
+            loop_label: loop_label.is_none().then_some(break_label),
         };
     }
 
     body.stmts.extend(per_iteration_stmts);
     body.stmts.extend(post_stmts);
-    body
+    IterationTail {
+        body,
+        loop_label: None,
+    }
 }
 
 fn has_continue_for_post(
@@ -257,6 +276,36 @@ fn rewrite_unlabeled_continue_to_label(stmts: &mut [syn::Stmt], loop_label: &syn
     }
 }
 
+fn rewrite_unlabeled_break_to_label(stmts: &mut [syn::Stmt], loop_label: &syn::Lifetime) {
+    for stmt in stmts.iter_mut() {
+        match stmt {
+            syn::Stmt::Expr(syn::Expr::Break(break_expr), _) if break_expr.label.is_none() => {
+                break_expr.label = Some(loop_label.clone());
+            }
+            syn::Stmt::Expr(expr, _) => {
+                rewrite_unlabeled_break_to_label_in_expr(expr, loop_label);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rewrite_unlabeled_break_to_label_in_expr(expr: &mut syn::Expr, loop_label: &syn::Lifetime) {
+    match expr {
+        syn::Expr::If(if_expr) => {
+            rewrite_unlabeled_break_to_label(&mut if_expr.then_branch.stmts, loop_label);
+            if let Some((_, else_expr)) = &mut if_expr.else_branch {
+                rewrite_unlabeled_break_to_label_in_expr(else_expr, loop_label);
+            }
+        }
+        syn::Expr::Block(block) => {
+            rewrite_unlabeled_break_to_label(&mut block.block.stmts, loop_label);
+        }
+        syn::Expr::While(_) | syn::Expr::Loop(_) | syn::Expr::ForLoop(_) => {}
+        _ => {}
+    }
+}
+
 fn rewrite_unlabeled_continue_to_label_in_expr(expr: &mut syn::Expr, loop_label: &syn::Lifetime) {
     match expr {
         syn::Expr::If(if_expr) => {
@@ -301,13 +350,38 @@ mod tests {
         let per_iteration: syn::Stmt = syn::parse_quote! { capture = capture.clone(); };
         let post: syn::Stmt = syn::parse_quote! { i += 1; };
 
-        let rewritten = with_iteration_tail(body, None, vec![per_iteration], vec![post]);
-        let tokens = rewritten.to_token_stream().to_string();
+        let rewritten = with_iteration_tail(body, None, None, vec![per_iteration], vec![post]);
+        let tokens = rewritten.body.to_token_stream().to_string();
 
         assert!(tokens.contains("'__gors_loop_body_0"), "{tokens}");
         assert!(tokens.contains("break '__gors_loop_body_0"), "{tokens}");
         assert!(tokens.contains("capture = capture . clone ()"), "{tokens}");
         assert!(tokens.contains("i += 1"), "{tokens}");
+    }
+
+    #[test]
+    fn iteration_tail_labels_unlabeled_break_to_outer_loop() {
+        synthetic_names::reset_lowering_counters();
+        let body: syn::Block = syn::parse_quote!({
+            if done {
+                break;
+            }
+            continue;
+        });
+        let post: syn::Stmt = syn::parse_quote! { i += 1; };
+
+        let rewritten = with_iteration_tail(body, None, None, Vec::new(), vec![post]);
+        let tokens = rewritten.body.to_token_stream().to_string();
+
+        assert_eq!(
+            rewritten
+                .loop_label
+                .as_ref()
+                .map(|label| label.ident.to_string()),
+            Some("__gors_loop_0".to_string())
+        );
+        assert!(tokens.contains("break '__gors_loop_0"), "{tokens}");
+        assert!(tokens.contains("break '__gors_loop_body_0"), "{tokens}");
     }
 
     #[test]

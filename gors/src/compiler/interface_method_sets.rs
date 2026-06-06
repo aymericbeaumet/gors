@@ -38,6 +38,22 @@ pub(super) fn pointer_satisfies(
         .all(|method| struct_method_list.contains(method))
 }
 
+pub(super) fn pointer_type_satisfies(
+    struct_name: &str,
+    trait_name: &str,
+    struct_method_list: &[String],
+    required_methods: &[String],
+) -> bool {
+    super::TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        if env.is_interface(trait_name) {
+            env.named_type_implements_interface(struct_name, trait_name, true)
+        } else {
+            pointer_satisfies(struct_method_list, required_methods)
+        }
+    })
+}
+
 pub(super) fn value_type_satisfies(
     struct_name: &str,
     trait_name: &str,

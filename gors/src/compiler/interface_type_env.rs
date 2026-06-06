@@ -1,5 +1,7 @@
 use super::{import_context, noop_interfaces, synthetic_names, typeinfer};
-use crate::generated_names::{as_any_method_ident, clone_box_method_ident};
+use crate::generated_names::{
+    as_any_method_ident, clone_box_method_ident, interface_key_method_ident,
+};
 use syn::Token;
 
 pub(super) fn rust_path_name_candidates(name: &str) -> Vec<String> {
@@ -30,10 +32,14 @@ pub(super) fn noop_impl_items_for_interface_name(interface_name: &str) -> Vec<sy
         };
         let trait_path = super::interface_trait_path_from_name(interface_name);
         let as_any = as_any_method_ident();
+        let interface_key = interface_key_method_ident();
         let clone_box = clone_box_method_ident();
         let mut items = vec![
             noop_interfaces::impl_item_for_signature(syn::parse_quote! {
                 fn #as_any(&self) -> Option<&dyn std::any::Any>
+            }),
+            noop_interfaces::impl_item_for_signature(syn::parse_quote! {
+                fn #interface_key(&self) -> crate::builtin::GorsInterfaceKey
             }),
             noop_interfaces::impl_item_for_signature(syn::parse_quote! {
                 fn #clone_box(&self) -> Box<dyn #trait_path>
@@ -73,7 +79,7 @@ fn return_type_from_go_results(results: &[typeinfer::GoType]) -> syn::ReturnType
     }
 }
 
-fn interface_method_signature_from_type_env(
+pub(super) fn interface_method_signature_from_type_env(
     interface_name: &str,
     method_name: &str,
     env: &typeinfer::TypeEnv,

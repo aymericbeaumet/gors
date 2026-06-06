@@ -11,11 +11,11 @@
   },
   "summary": {
     "groupCount": 344,
-    "passingGroupCount": 2,
+    "passingGroupCount": 4,
     "caseCount": 12418,
-    "passingCaseCount": 227,
-    "unsupportedCaseCount": 12191,
-    "fixtureCount": 81
+    "passingCaseCount": 258,
+    "unsupportedCaseCount": 12160,
+    "fixtureCount": 83
   },
   "groups": [
     {
@@ -3707,13 +3707,15 @@
       "id": "container/list",
       "title": "container/list",
       "subtitle": "",
-      "fixtures": [],
+      "fixtures": [
+        "container/list"
+      ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 20,
-        "passingCaseCount": 0,
-        "unsupportedCaseCount": 20,
+        "passingCaseCount": 20,
+        "unsupportedCaseCount": 0,
         "fixtureCount": 0
       },
       "cases": [
@@ -3722,180 +3724,220 @@
           "title": "Element",
           "subtitle": "type",
           "kind": "type",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: Element behavior depends on generic stable pointer identity for addressable struct fields and raw pointer fields that alias list nodes."
+          "status": "passing",
+          "fixtures": [
+            "container/list"
+          ],
+          "reason": ""
         },
         {
           "id": "container/list::Element.Next",
           "title": "Element.Next",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: Next depends on nullable pointer identity comparisons against the owning list sentinel field without cloning that field into a fresh cell."
+          "status": "passing",
+          "fixtures": [
+            "container/list"
+          ],
+          "reason": ""
         },
         {
           "id": "container/list::Element.Prev",
           "title": "Element.Prev",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: Prev depends on nullable pointer identity comparisons against the owning list sentinel field without cloning that field into a fresh cell."
+          "status": "passing",
+          "fixtures": [
+            "container/list"
+          ],
+          "reason": ""
         },
         {
           "id": "container/list::List",
           "title": "List",
           "subtitle": "type",
           "kind": "type",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: List behavior depends on self-referential sentinel state where root.next/root.prev point at the addressable root field with stable identity."
+          "status": "passing",
+          "fixtures": [
+            "container/list"
+          ],
+          "reason": ""
         },
         {
           "id": "container/list::List.Back",
           "title": "List.Back",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: Back depends on preserving root.prev as an alias to an existing Element pointer rather than a cloned Element value."
+          "status": "passing",
+          "fixtures": [
+            "container/list"
+          ],
+          "reason": ""
         },
         {
           "id": "container/list::List.Front",
           "title": "List.Front",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: Front depends on preserving root.next as an alias to an existing Element pointer rather than a cloned Element value."
+          "status": "passing",
+          "fixtures": [
+            "container/list"
+          ],
+          "reason": ""
         },
         {
           "id": "container/list::List.Init",
           "title": "List.Init",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: Init depends on assigning pointers to the receiver's root field and preserving that field address across later mutations."
+          "status": "passing",
+          "fixtures": [
+            "container/list"
+          ],
+          "reason": ""
         },
         {
           "id": "container/list::List.InsertAfter",
           "title": "List.InsertAfter",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: InsertAfter depends on pointer equality between mark.list and the receiver plus insertion after a stable Element alias."
+          "status": "passing",
+          "fixtures": [
+            "container/list"
+          ],
+          "reason": ""
         },
         {
           "id": "container/list::List.InsertBefore",
           "title": "List.InsertBefore",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: InsertBefore depends on pointer equality between mark.list and the receiver plus insertion before a stable Element alias."
+          "status": "passing",
+          "fixtures": [
+            "container/list"
+          ],
+          "reason": ""
         },
         {
           "id": "container/list::List.Len",
           "title": "List.Len",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: Len itself is simple, but behavioral coverage needs a valid List state; current List construction depends on unsupported sentinel pointer identity."
+          "status": "passing",
+          "fixtures": [
+            "container/list"
+          ],
+          "reason": ""
         },
         {
           "id": "container/list::List.MoveAfter",
           "title": "List.MoveAfter",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: MoveAfter depends on comparing Element pointer identity and relinking prev/next pointer fields through stable aliases."
+          "status": "passing",
+          "fixtures": [
+            "container/list"
+          ],
+          "reason": ""
         },
         {
           "id": "container/list::List.MoveBefore",
           "title": "List.MoveBefore",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: MoveBefore depends on comparing Element pointer identity and relinking prev/next pointer fields through stable aliases."
+          "status": "passing",
+          "fixtures": [
+            "container/list"
+          ],
+          "reason": ""
         },
         {
           "id": "container/list::List.MoveToBack",
           "title": "List.MoveToBack",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: MoveToBack depends on receiver-owned Element aliases and pointer identity checks against root.prev."
+          "status": "passing",
+          "fixtures": [
+            "container/list"
+          ],
+          "reason": ""
         },
         {
           "id": "container/list::List.MoveToFront",
           "title": "List.MoveToFront",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: MoveToFront depends on receiver-owned Element aliases and pointer identity checks against root.next."
+          "status": "passing",
+          "fixtures": [
+            "container/list"
+          ],
+          "reason": ""
         },
         {
           "id": "container/list::List.PushBack",
           "title": "List.PushBack",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: PushBack depends on lazy sentinel initialization plus insertion after root.prev while preserving node alias identity."
+          "status": "passing",
+          "fixtures": [
+            "container/list"
+          ],
+          "reason": ""
         },
         {
           "id": "container/list::List.PushBackList",
           "title": "List.PushBackList",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: PushBackList depends on traversing one list while inserting copied nodes into another without invalidating Element pointer aliases."
+          "status": "passing",
+          "fixtures": [
+            "container/list"
+          ],
+          "reason": ""
         },
         {
           "id": "container/list::List.PushFront",
           "title": "List.PushFront",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: PushFront depends on lazy sentinel initialization plus insertion after the root field's stable address."
+          "status": "passing",
+          "fixtures": [
+            "container/list"
+          ],
+          "reason": ""
         },
         {
           "id": "container/list::List.PushFrontList",
           "title": "List.PushFrontList",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: PushFrontList depends on reverse traversal while inserting copied nodes without invalidating Element pointer aliases."
+          "status": "passing",
+          "fixtures": [
+            "container/list"
+          ],
+          "reason": ""
         },
         {
           "id": "container/list::List.Remove",
           "title": "List.Remove",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: Remove depends on pointer equality between e.list and the receiver plus relinking neighboring Element pointer fields."
+          "status": "passing",
+          "fixtures": [
+            "container/list"
+          ],
+          "reason": ""
         },
         {
           "id": "container/list::New",
           "title": "New",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: New depends on Init returning a pointer to the initialized List while preserving the same receiver and sentinel field identities."
+          "status": "passing",
+          "fixtures": [
+            "container/list"
+          ],
+          "reason": ""
         }
       ]
     },
@@ -3903,13 +3945,15 @@
       "id": "container/ring",
       "title": "container/ring",
       "subtitle": "",
-      "fixtures": [],
+      "fixtures": [
+        "container/ring"
+      ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 9,
-        "passingCaseCount": 0,
-        "unsupportedCaseCount": 9,
+        "passingCaseCount": 9,
+        "unsupportedCaseCount": 0,
         "fixtureCount": 0
       },
       "cases": [
@@ -3918,81 +3962,99 @@
           "title": "New",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: New depends on allocating linked Ring nodes whose next/prev fields preserve stable pointer identity back to earlier nodes."
+          "status": "passing",
+          "fixtures": [
+            "container/ring"
+          ],
+          "reason": ""
         },
         {
           "id": "container/ring::Ring",
           "title": "Ring",
           "subtitle": "type",
           "kind": "type",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: Ring behavior depends on self-referential next/prev pointer fields, nil pointer state, and alias-preserving node mutation."
+          "status": "passing",
+          "fixtures": [
+            "container/ring"
+          ],
+          "reason": ""
         },
         {
           "id": "container/ring::Ring.Do",
           "title": "Ring.Do",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: Do depends on traversing pointer-linked Ring nodes with pointer equality termination plus stored func(any) callback invocation."
+          "status": "passing",
+          "fixtures": [
+            "container/ring"
+          ],
+          "reason": ""
         },
         {
           "id": "container/ring::Ring.Len",
           "title": "Ring.Len",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: Len depends on pointer equality termination while traversing next links that alias existing Ring nodes."
+          "status": "passing",
+          "fixtures": [
+            "container/ring"
+          ],
+          "reason": ""
         },
         {
           "id": "container/ring::Ring.Link",
           "title": "Ring.Link",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: Link depends on relinking next/prev pointer fields through stable aliases and preserving removed subring identity."
+          "status": "passing",
+          "fixtures": [
+            "container/ring"
+          ],
+          "reason": ""
         },
         {
           "id": "container/ring::Ring.Move",
           "title": "Ring.Move",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: Move depends on nil-initialized self-linking receivers and traversal through next/prev pointers that preserve identity."
+          "status": "passing",
+          "fixtures": [
+            "container/ring"
+          ],
+          "reason": ""
         },
         {
           "id": "container/ring::Ring.Next",
           "title": "Ring.Next",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: Next depends on initializing a zero Ring so next/prev point at the receiver's own stable address."
+          "status": "passing",
+          "fixtures": [
+            "container/ring"
+          ],
+          "reason": ""
         },
         {
           "id": "container/ring::Ring.Prev",
           "title": "Ring.Prev",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: Prev depends on initializing a zero Ring so next/prev point at the receiver's own stable address."
+          "status": "passing",
+          "fixtures": [
+            "container/ring"
+          ],
+          "reason": ""
         },
         {
           "id": "container/ring::Ring.Unlink",
           "title": "Ring.Unlink",
           "subtitle": "method",
           "kind": "method",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: Unlink depends on Move and Link preserving alias identity while removing a subring."
+          "status": "passing",
+          "fixtures": [
+            "container/ring"
+          ],
+          "reason": ""
         }
       ]
     },
@@ -4007,8 +4069,8 @@
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 17,
-        "passingCaseCount": 4,
-        "unsupportedCaseCount": 13,
+        "passingCaseCount": 6,
+        "unsupportedCaseCount": 11,
         "fixtureCount": 0
       },
       "cases": [
@@ -4075,9 +4137,11 @@
           "title": "Context",
           "subtitle": "type",
           "kind": "type",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: Full Context behavior depends on nil/closed channel semantics, cancellation propagation, time deadlines, and interface value traversal."
+          "status": "passing",
+          "fixtures": [
+            "context"
+          ],
+          "reason": ""
         },
         {
           "id": "context::DeadlineExceeded",
@@ -4160,9 +4224,11 @@
           "title": "WithValue",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: WithValue depends on reflectlite comparability checks, interface key equality, and chained valueCtx interface traversal."
+          "status": "passing",
+          "fixtures": [
+            "context"
+          ],
+          "reason": ""
         },
         {
           "id": "context::WithoutCancel",

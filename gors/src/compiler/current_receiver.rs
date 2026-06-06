@@ -49,6 +49,23 @@ pub(super) fn pointer_receiver_type_name() -> Option<String> {
     })
 }
 
+pub(super) fn rust_name() -> Option<String> {
+    CURRENT_RECEIVER.with(|receiver| {
+        receiver
+            .borrow()
+            .as_ref()
+            .map(|receiver| receiver.rust_name.clone())
+    })
+}
+
+pub(super) fn is_pointer_receiver() -> bool {
+    CURRENT_RECEIVER.with(|receiver| {
+        receiver.borrow().as_ref().is_some_and(|receiver| {
+            matches!(receiver.go_type, super::typeinfer::GoType::Pointer(_))
+        })
+    })
+}
+
 pub(super) fn is_current_receiver_rust_name(name: &str) -> bool {
     CURRENT_RECEIVER.with(|receiver| {
         receiver

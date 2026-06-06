@@ -10,8 +10,10 @@ thread_local! {
     static GOTO_STATE_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static RANGE_FUNCTION_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static NAMED_RETURN_COUNTER: RefCell<usize> = const { RefCell::new(0) };
+    static LOOP_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static LOOP_BODY_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static UNNAMED_ARG_COUNTER: RefCell<usize> = const { RefCell::new(0) };
+    static ANONYMOUS_STRUCT_COUNTER: RefCell<usize> = const { RefCell::new(0) };
 }
 
 pub(super) fn reset_lowering_counters() {
@@ -21,7 +23,9 @@ pub(super) fn reset_lowering_counters() {
     GOTO_STATE_COUNTER.with(|counter| *counter.borrow_mut() = 0);
     RANGE_FUNCTION_COUNTER.with(|counter| *counter.borrow_mut() = 0);
     NAMED_RETURN_COUNTER.with(|counter| *counter.borrow_mut() = 0);
+    LOOP_COUNTER.with(|counter| *counter.borrow_mut() = 0);
     LOOP_BODY_COUNTER.with(|counter| *counter.borrow_mut() = 0);
+    ANONYMOUS_STRUCT_COUNTER.with(|counter| *counter.borrow_mut() = 0);
 }
 
 pub(super) fn reset_unnamed_arg_counter() {
@@ -31,6 +35,11 @@ pub(super) fn reset_unnamed_arg_counter() {
 pub(super) fn next_unnamed_arg_ident() -> syn::Ident {
     let n = next_unnamed_arg_id();
     unnamed_arg_ident(n)
+}
+
+pub(super) fn next_anonymous_struct_ident() -> syn::Ident {
+    let n = next_id(&ANONYMOUS_STRUCT_COUNTER);
+    syn::Ident::new(&format!("__gors_anon_struct_{n}"), Span::mixed_site())
 }
 
 pub(super) fn unnamed_arg_ident(index: usize) -> syn::Ident {
@@ -201,6 +210,14 @@ pub(super) fn method_receiver_ident() -> syn::Ident {
     syn::Ident::new("__gors_method_receiver", Span::mixed_site())
 }
 
+pub(super) fn method_receiver_value_ident() -> syn::Ident {
+    syn::Ident::new("__gors_method_receiver_value", Span::mixed_site())
+}
+
+pub(super) fn method_result_ident() -> syn::Ident {
+    syn::Ident::new("__gors_method_result", Span::mixed_site())
+}
+
 pub(super) fn method_arg_idents(count: usize) -> Vec<syn::Ident> {
     (0..count)
         .map(|index| syn::Ident::new(&format!("__gors_method_arg_{index}"), Span::mixed_site()))
@@ -231,6 +248,11 @@ fn next_named_return_id() -> usize {
 pub(super) fn next_loop_body_label() -> syn::Lifetime {
     let n = next_id(&LOOP_BODY_COUNTER);
     syn::Lifetime::new(&format!("'__gors_loop_body_{n}"), Span::mixed_site())
+}
+
+pub(super) fn next_loop_label() -> syn::Lifetime {
+    let n = next_id(&LOOP_COUNTER);
+    syn::Lifetime::new(&format!("'__gors_loop_{n}"), Span::mixed_site())
 }
 
 fn next_unnamed_arg_id() -> usize {
@@ -335,6 +357,11 @@ mod tests {
             method_receiver_ident().to_string(),
             "__gors_method_receiver"
         );
+        assert_eq!(
+            method_receiver_value_ident().to_string(),
+            "__gors_method_receiver_value"
+        );
+        assert_eq!(method_result_ident().to_string(), "__gors_method_result");
         let mut method_args = method_arg_idents(2).into_iter();
         assert_eq!(
             method_args.next().map(|ident| ident.to_string()),
@@ -353,6 +380,7 @@ mod tests {
             next_loop_body_label().ident.to_string(),
             "__gors_loop_body_0"
         );
+        assert_eq!(next_loop_label().ident.to_string(), "__gors_loop_0");
         assert_eq!(next_goto_state_names().0.to_string(), "__gors_goto_state_0");
 
         reset_lowering_counters();
@@ -374,6 +402,7 @@ mod tests {
             next_loop_body_label().ident.to_string(),
             "__gors_loop_body_0"
         );
+        assert_eq!(next_loop_label().ident.to_string(), "__gors_loop_0");
     }
 
     #[test]

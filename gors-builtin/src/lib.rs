@@ -35,8 +35,124 @@ pub trait comparable {}
 
 impl<T: Eq> comparable for T {}
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+pub struct GorsInterfaceKey {
+    type_name: &'static str,
+    data: usize,
+    field_key: usize,
+}
+
+impl GorsInterfaceKey {
+    pub fn nil() -> Self {
+        Self::default()
+    }
+
+    pub fn for_ptr<T>(ptr: *const ()) -> Self {
+        Self {
+            type_name: std::any::type_name::<T>(),
+            data: ptr as usize,
+            field_key: 0,
+        }
+    }
+
+    pub fn for_projected_ptr<T>(owner: *const (), field_key: usize) -> Self {
+        Self {
+            type_name: std::any::type_name::<T>(),
+            data: owner as usize,
+            field_key,
+        }
+    }
+
+    pub fn non_comparable() -> Self {
+        panic_value("hash of unhashable type")
+    }
+}
+
+pub trait GorsAnyComparable: Send + Sync {
+    fn as_any(&self) -> &dyn Any;
+    fn clone_comparable_any(&self) -> Box<dyn Any>;
+    fn clone_comparable_any_send(&self) -> Box<dyn Any + Send>;
+    fn clone_comparable_any_send_sync(&self) -> Box<dyn Any + Send + Sync>;
+    fn clone_raw_any(&self) -> Box<dyn Any>;
+    fn clone_raw_any_send(&self) -> Box<dyn Any + Send>;
+    fn clone_raw_any_send_sync(&self) -> Box<dyn Any + Send + Sync>;
+    fn eq_any(&self, other: &dyn Any) -> bool;
+}
+
+#[derive(Clone)]
+pub struct GorsComparableAny<T: Any + Clone + PartialEq + Send + Sync>(pub T);
+
+impl<T> GorsAnyComparable for GorsComparableAny<T>
+where
+    T: Any + Clone + PartialEq + Send + Sync,
+{
+    fn as_any(&self) -> &dyn Any {
+        &self.0
+    }
+
+    fn clone_comparable_any(&self) -> Box<dyn Any> {
+        Box::new(Box::new(Self(self.0.clone())) as Box<dyn GorsAnyComparable>) as Box<dyn Any>
+    }
+
+    fn clone_comparable_any_send(&self) -> Box<dyn Any + Send> {
+        Box::new(Box::new(Self(self.0.clone())) as Box<dyn GorsAnyComparable>)
+            as Box<dyn Any + Send>
+    }
+
+    fn clone_comparable_any_send_sync(&self) -> Box<dyn Any + Send + Sync> {
+        Box::new(Box::new(Self(self.0.clone())) as Box<dyn GorsAnyComparable>)
+            as Box<dyn Any + Send + Sync>
+    }
+
+    fn clone_raw_any(&self) -> Box<dyn Any> {
+        Box::new(self.0.clone())
+    }
+
+    fn clone_raw_any_send(&self) -> Box<dyn Any + Send> {
+        Box::new(self.0.clone())
+    }
+
+    fn clone_raw_any_send_sync(&self) -> Box<dyn Any + Send + Sync> {
+        Box::new(self.0.clone())
+    }
+
+    fn eq_any(&self, other: &dyn Any) -> bool {
+        comparable_any_payload(other)
+            .and_then(|other| other.downcast_ref::<T>())
+            .is_some_and(|other| self.0 == *other)
+    }
+}
+
+pub fn box_any_comparable<T>(value: T) -> Box<dyn Any>
+where
+    T: Any + Clone + PartialEq + Send + Sync,
+{
+    Box::new(Box::new(GorsComparableAny(value)) as Box<dyn GorsAnyComparable>) as Box<dyn Any>
+}
+
+fn comparable_any(value: &dyn Any) -> Option<&dyn GorsAnyComparable> {
+    value
+        .downcast_ref::<Box<dyn GorsAnyComparable>>()
+        .map(|value| &**value)
+}
+
+fn comparable_any_payload(value: &dyn Any) -> Option<&dyn Any> {
+    comparable_any(value)
+        .map(GorsAnyComparable::as_any)
+        .or(Some(value))
+}
+
+pub fn any_is<T: Any>(value: &dyn Any) -> bool {
+    comparable_any_payload(value).is_some_and(|value| value.is::<T>())
+}
+
+pub fn any_downcast_ref<T: Any>(value: &dyn Any) -> Option<&T> {
+    comparable_any_payload(value).and_then(|value| value.downcast_ref::<T>())
+}
+
 pub trait error: Send + Sync {
     fn __gors_as_any(&self) -> Option<&dyn Any>;
+    fn __gors_interface_key(&self) -> GorsInterfaceKey;
     fn Error(&self) -> std::string::String;
 }
 
@@ -46,6 +162,10 @@ pub struct __GorsNooperror;
 impl error for __GorsNooperror {
     fn __gors_as_any(&self) -> Option<&dyn Any> {
         None
+    }
+
+    fn __gors_interface_key(&self) -> GorsInterfaceKey {
+        GorsInterfaceKey::nil()
     }
 
     fn Error(&self) -> std::string::String {
@@ -59,6 +179,10 @@ pub struct __GorsStringError(pub std::string::String);
 impl error for __GorsStringError {
     fn __gors_as_any(&self) -> Option<&dyn Any> {
         Some(self)
+    }
+
+    fn __gors_interface_key(&self) -> GorsInterfaceKey {
+        GorsInterfaceKey::non_comparable()
     }
 
     fn Error(&self) -> std::string::String {
@@ -100,6 +224,10 @@ impl error for Box<dyn error> {
         (**self).__gors_as_any()
     }
 
+    fn __gors_interface_key(&self) -> GorsInterfaceKey {
+        (**self).__gors_interface_key()
+    }
+
     fn Error(&self) -> std::string::String {
         (**self).Error()
     }
@@ -113,15 +241,116 @@ pub fn error_string(value: &mut Box<dyn error>) -> std::string::String {
     }
 }
 
-pub fn clone_any(value: &Box<dyn Any>) -> Box<dyn Any> {
-    clone_any_ref(value.as_ref())
+pub fn clone_any(value: &dyn Any) -> Box<dyn Any> {
+    clone_any_ref(value)
 }
 
 pub fn clone_any_ref(value: &dyn Any) -> Box<dyn Any> {
+    if let Some(value) = comparable_any(value) {
+        return value.clone_raw_any();
+    }
+    if let Some(v) = value.downcast_ref::<Box<dyn Any>>() {
+        return clone_any_ref(v.as_ref());
+    }
+    if let Some(v) = value.downcast_ref::<Box<dyn Any + Send>>() {
+        return clone_any_ref(v.as_ref());
+    }
+    if let Some(v) = value.downcast_ref::<Box<dyn Any + Send + Sync>>() {
+        return clone_any_ref(v.as_ref());
+    }
+
     macro_rules! clone_if {
         ($ty:ty) => {
             if let Some(v) = value.downcast_ref::<$ty>() {
                 return Box::new(v.clone()) as Box<dyn Any>;
+            }
+        };
+    }
+
+    clone_if!(GorsReflectValue);
+    clone_if!(std::string::String);
+    clone_if!(&'static str);
+    clone_if!(bool);
+    clone_if!(isize);
+    clone_if!(i8);
+    clone_if!(i16);
+    clone_if!(i32);
+    clone_if!(i64);
+    clone_if!(usize);
+    clone_if!(u8);
+    clone_if!(u16);
+    clone_if!(u32);
+    clone_if!(u64);
+    clone_if!(f32);
+    clone_if!(f64);
+    clone_if!(Vec<u8>);
+    clone_if!(Vec<std::string::String>);
+
+    Box::new(())
+}
+
+pub fn clone_any_send_ref(value: &dyn Any) -> Box<dyn Any + Send> {
+    if let Some(value) = comparable_any(value) {
+        return value.clone_comparable_any_send();
+    }
+    if let Some(v) = value.downcast_ref::<Box<dyn Any>>() {
+        return clone_any_send_ref(v.as_ref());
+    }
+    if let Some(v) = value.downcast_ref::<Box<dyn Any + Send>>() {
+        return clone_any_send_ref(v.as_ref());
+    }
+    if let Some(v) = value.downcast_ref::<Box<dyn Any + Send + Sync>>() {
+        return clone_any_send_ref(v.as_ref());
+    }
+
+    macro_rules! clone_if {
+        ($ty:ty) => {
+            if let Some(v) = value.downcast_ref::<$ty>() {
+                return Box::new(v.clone()) as Box<dyn Any + Send>;
+            }
+        };
+    }
+
+    clone_if!(GorsReflectValue);
+    clone_if!(std::string::String);
+    clone_if!(&'static str);
+    clone_if!(bool);
+    clone_if!(isize);
+    clone_if!(i8);
+    clone_if!(i16);
+    clone_if!(i32);
+    clone_if!(i64);
+    clone_if!(usize);
+    clone_if!(u8);
+    clone_if!(u16);
+    clone_if!(u32);
+    clone_if!(u64);
+    clone_if!(f32);
+    clone_if!(f64);
+    clone_if!(Vec<u8>);
+    clone_if!(Vec<std::string::String>);
+
+    Box::new(())
+}
+
+pub fn clone_any_send_sync(value: &dyn Any) -> Box<dyn Any + Send + Sync> {
+    if let Some(value) = comparable_any(value) {
+        return value.clone_comparable_any_send_sync();
+    }
+    if let Some(v) = value.downcast_ref::<Box<dyn Any>>() {
+        return clone_any_send_sync(v.as_ref());
+    }
+    if let Some(v) = value.downcast_ref::<Box<dyn Any + Send>>() {
+        return clone_any_send_sync(v.as_ref());
+    }
+    if let Some(v) = value.downcast_ref::<Box<dyn Any + Send + Sync>>() {
+        return clone_any_send_sync(v.as_ref());
+    }
+
+    macro_rules! clone_if {
+        ($ty:ty) => {
+            if let Some(v) = value.downcast_ref::<$ty>() {
+                return Box::new(v.clone()) as Box<dyn Any + Send + Sync>;
             }
         };
     }
@@ -272,6 +501,68 @@ pub fn reflect_value_swapper(value: &dyn Any) -> GorsReflectSwapper {
     }))))
 }
 
+pub fn reflect_type_comparable(value: &dyn Any) -> bool {
+    if let Some(value) = value.downcast_ref::<Box<dyn Any>>() {
+        return reflect_type_comparable(value.as_ref());
+    }
+    if let Some(value) = value.downcast_ref::<Box<dyn Any + Send>>() {
+        return reflect_type_comparable(value.as_ref());
+    }
+    if let Some(value) = value.downcast_ref::<Box<dyn Any + Send + Sync>>() {
+        return reflect_type_comparable(value.as_ref());
+    }
+    if interface_is_nil(value) {
+        return false;
+    }
+    if value.is::<GorsReflectValue>()
+        || value.is::<Vec<u8>>()
+        || value.is::<Vec<std::string::String>>()
+        || value.is::<Vec<Box<dyn Any>>>()
+    {
+        return false;
+    }
+    true
+}
+
+pub fn any_eq(left: &dyn Any, right: &dyn Any) -> bool {
+    if interface_is_nil(left) || interface_is_nil(right) {
+        return interface_is_nil(left) && interface_is_nil(right);
+    }
+    if let Some(left) = comparable_any(left) {
+        return left.eq_any(right);
+    }
+    if let Some(right) = comparable_any(right) {
+        return right.eq_any(left);
+    }
+
+    macro_rules! eq_if {
+        ($ty:ty) => {
+            if let (Some(left), Some(right)) =
+                (left.downcast_ref::<$ty>(), right.downcast_ref::<$ty>())
+            {
+                return left == right;
+            }
+        };
+    }
+
+    eq_if!(std::string::String);
+    eq_if!(&'static str);
+    eq_if!(bool);
+    eq_if!(isize);
+    eq_if!(i8);
+    eq_if!(i16);
+    eq_if!(i32);
+    eq_if!(i64);
+    eq_if!(usize);
+    eq_if!(u8);
+    eq_if!(u16);
+    eq_if!(u32);
+    eq_if!(u64);
+    eq_if!(f32);
+    eq_if!(f64);
+    false
+}
+
 pub const r#true: r#bool = true;
 pub const r#false: r#bool = false;
 pub const iota: int = 0;
@@ -355,6 +646,36 @@ where
     }
 }
 
+struct IdentityProjectedFieldCell<Owner, T> {
+    owner: GorsPtr<Owner>,
+    field_key: usize,
+    _field_ty: std::marker::PhantomData<fn() -> T>,
+}
+
+impl<Owner, T> ProjectedCell<T> for IdentityProjectedFieldCell<Owner, T>
+where
+    Owner: Send + 'static,
+    T: 'static,
+{
+    fn lock_projected(&self) -> Box<dyn ProjectedGuard<T> + '_> {
+        Box::new(UnsupportedProjectedGuard {
+            _field_ty: std::marker::PhantomData,
+        })
+    }
+
+    fn owner_ptr(&self) -> *const () {
+        self.owner.ptr_id()
+    }
+
+    fn cell_ptr(&self) -> *const () {
+        (self as *const Self).cast()
+    }
+
+    fn field_key(&self) -> usize {
+        self.field_key
+    }
+}
+
 struct ProjectedFieldGuard<'a, Owner, T: Clone, F>
 where
     F: for<'b> Fn(&'b mut Owner) -> &'b mut T,
@@ -394,6 +715,24 @@ where
     fn drop(&mut self) {
         let mut owner = lock_projected_owner(&self.owner);
         *(self.field)(&mut *owner) = self.value.clone();
+    }
+}
+
+struct UnsupportedProjectedGuard<T> {
+    _field_ty: std::marker::PhantomData<fn() -> T>,
+}
+
+impl<T> std::ops::Deref for UnsupportedProjectedGuard<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        panic_value("projected non-clone field cannot be locked")
+    }
+}
+
+impl<T> std::ops::DerefMut for UnsupportedProjectedGuard<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        panic_value("projected non-clone field cannot be locked")
     }
 }
 
@@ -485,6 +824,27 @@ impl<T> GorsPtr<T> {
         }
     }
 
+    pub fn from_ptr_field_identity<Owner, F>(
+        owner: GorsPtr<Owner>,
+        field_key: usize,
+        _field: F,
+    ) -> Self
+    where
+        Owner: Send + 'static,
+        T: 'static,
+        F: for<'a> Fn(&'a mut Owner) -> &'a mut T + 'static,
+    {
+        Self {
+            inner: Some(GorsPtrInner::Projected(Arc::new(
+                IdentityProjectedFieldCell {
+                    owner,
+                    field_key,
+                    _field_ty: std::marker::PhantomData,
+                },
+            ))),
+        }
+    }
+
     pub fn is_nil(&self) -> bool {
         self.inner.is_none()
     }
@@ -511,6 +871,18 @@ impl<T> GorsPtr<T> {
                 left.owner_ptr() == right.owner_ptr() && left.field_key() == right.field_key()
             }
             _ => false,
+        }
+    }
+
+    pub fn interface_key(&self) -> GorsInterfaceKey {
+        match &self.inner {
+            None => GorsInterfaceKey::nil(),
+            Some(GorsPtrInner::Direct(inner)) => {
+                GorsInterfaceKey::for_ptr::<T>(Arc::as_ptr(inner).cast::<()>())
+            }
+            Some(GorsPtrInner::Projected(cell)) => {
+                GorsInterfaceKey::for_projected_ptr::<T>(cell.owner_ptr(), cell.field_key())
+            }
         }
     }
 
@@ -1426,7 +1798,7 @@ struct ChanInner<T> {
 }
 
 pub struct Chan<T> {
-    inner: Arc<(Mutex<ChanInner<T>>, Condvar, Condvar)>,
+    inner: Option<Arc<(Mutex<ChanInner<T>>, Condvar, Condvar)>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1437,14 +1809,18 @@ pub enum TryRecvError {
 impl<T> Clone for Chan<T> {
     fn clone(&self) -> Self {
         Self {
-            inner: Arc::clone(&self.inner),
+            inner: self.inner.clone(),
         }
     }
 }
 
 impl<T> PartialEq for Chan<T> {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.inner, &other.inner)
+        match (&self.inner, &other.inner) {
+            (None, None) => true,
+            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+            _ => false,
+        }
     }
 }
 
@@ -1452,14 +1828,14 @@ impl<T> Eq for Chan<T> {}
 
 impl<T> Default for Chan<T> {
     fn default() -> Self {
-        Self::new(0)
+        Self { inner: None }
     }
 }
 
 impl<T> Chan<T> {
     pub fn new(capacity: usize) -> Self {
         Self {
-            inner: Arc::new((
+            inner: Some(Arc::new((
                 Mutex::new(ChanInner {
                     buf: VecDeque::with_capacity(capacity),
                     capacity,
@@ -1467,13 +1843,19 @@ impl<T> Chan<T> {
                 }),
                 Condvar::new(),
                 Condvar::new(),
-            )),
+            ))),
         }
     }
 
     #[allow(clippy::significant_drop_tightening)]
     pub fn send(&self, val: T) {
-        let (lock, rx_cv, tx_cv) = &*self.inner;
+        let Some(inner) = self.inner.as_ref() else {
+            let _ = val;
+            loop {
+                std::thread::park();
+            }
+        };
+        let (lock, rx_cv, tx_cv) = &**inner;
         let mut inner = lock_chan(lock);
         if inner.closed {
             return;
@@ -1497,7 +1879,12 @@ impl<T> Chan<T> {
     }
 
     pub fn recv(&self) -> Option<T> {
-        let (lock, rx_cv, tx_cv) = &*self.inner;
+        let Some(inner) = self.inner.as_ref() else {
+            loop {
+                std::thread::park();
+            }
+        };
+        let (lock, rx_cv, tx_cv) = &**inner;
         let mut inner = lock_chan(lock);
         loop {
             if let Some(val) = inner.buf.pop_front() {
@@ -1512,7 +1899,10 @@ impl<T> Chan<T> {
     }
 
     pub fn try_send(&self, val: T) -> Result<(), T> {
-        let (lock, rx_cv, _) = &*self.inner;
+        let Some(inner) = self.inner.as_ref() else {
+            return Err(val);
+        };
+        let (lock, rx_cv, _) = &**inner;
         let mut inner = lock_chan(lock);
         if inner.closed || inner.capacity == 0 || inner.buf.len() >= inner.capacity {
             return Err(val);
@@ -1527,7 +1917,10 @@ impl<T> Chan<T> {
     where
         T: Default,
     {
-        let (lock, _, tx_cv) = &*self.inner;
+        let Some(inner) = self.inner.as_ref() else {
+            return Err(TryRecvError::Empty);
+        };
+        let (lock, _, tx_cv) = &**inner;
         let mut inner = lock_chan(lock);
         if let Some(val) = inner.buf.pop_front() {
             drop(inner);
@@ -1544,7 +1937,10 @@ impl<T> Chan<T> {
     where
         T: Default,
     {
-        let (lock, _, tx_cv) = &*self.inner;
+        let Some(inner) = self.inner.as_ref() else {
+            return None;
+        };
+        let (lock, _, tx_cv) = &**inner;
         let mut inner = lock_chan(lock);
         if let Some(val) = inner.buf.pop_front() {
             drop(inner);
@@ -1569,7 +1965,10 @@ impl<T> Chan<T> {
 
     #[allow(clippy::significant_drop_tightening)]
     pub fn close(&self) {
-        let (lock, rx_cv, tx_cv) = &*self.inner;
+        let Some(inner) = self.inner.as_ref() else {
+            panic_value("close of nil channel");
+        };
+        let (lock, rx_cv, tx_cv) = &**inner;
         let mut inner = lock_chan(lock);
         if inner.closed {
             return;
@@ -1580,18 +1979,31 @@ impl<T> Chan<T> {
     }
 
     pub fn len(&self) -> usize {
-        let (lock, _, _) = &*self.inner;
+        let Some(inner) = self.inner.as_ref() else {
+            return 0;
+        };
+        let (lock, _, _) = &**inner;
         lock_chan(lock).buf.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        let (lock, _, _) = &*self.inner;
+        let Some(inner) = self.inner.as_ref() else {
+            return true;
+        };
+        let (lock, _, _) = &**inner;
         lock_chan(lock).buf.is_empty()
     }
 
     pub fn cap(&self) -> usize {
-        let (lock, _, _) = &*self.inner;
+        let Some(inner) = self.inner.as_ref() else {
+            return 0;
+        };
+        let (lock, _, _) = &**inner;
         lock_chan(lock).capacity
+    }
+
+    pub fn is_nil(&self) -> bool {
+        self.inner.is_none()
     }
 }
 
@@ -1663,9 +2075,54 @@ pub fn panic_value<T: Any + Send + 'static>(value: T) -> ! {
     r#panic(value)
 }
 
+fn any_box_to_send(value: Box<dyn Any>) -> Box<dyn Any + Send> {
+    macro_rules! move_if {
+        ($value:ident, $ty:ty) => {
+            if $value.is::<$ty>() {
+                match $value.downcast::<$ty>() {
+                    Ok(v) => return v as Box<dyn Any + Send>,
+                    Err(v) => $value = v,
+                }
+            }
+        };
+    }
+
+    let mut value = value;
+    move_if!(value, GorsReflectValue);
+    move_if!(value, std::string::String);
+    move_if!(value, &'static str);
+    move_if!(value, bool);
+    move_if!(value, isize);
+    move_if!(value, i8);
+    move_if!(value, i16);
+    move_if!(value, i32);
+    move_if!(value, i64);
+    move_if!(value, usize);
+    move_if!(value, u8);
+    move_if!(value, u16);
+    move_if!(value, u32);
+    move_if!(value, u64);
+    move_if!(value, f32);
+    move_if!(value, f64);
+    move_if!(value, Vec<u8>);
+    move_if!(value, Vec<std::string::String>);
+
+    clone_any_send_ref(value.as_ref())
+}
+
+#[inline]
+pub fn panic_any_payload(value: Box<dyn Any>) -> ! {
+    std::panic::resume_unwind(any_box_to_send(value))
+}
+
 #[inline]
 pub fn set_recover_payload<T: Any + Send + 'static>(value: T) {
     *recover_payload_lock() = Some(Box::new(value));
+}
+
+#[inline]
+pub fn set_recover_payload_any(value: Box<dyn Any>) {
+    *recover_payload_lock() = Some(any_box_to_send(value));
 }
 
 #[inline]
@@ -1871,6 +2328,41 @@ mod tests {
     }
 
     #[test]
+    fn projected_pointer_field_pointers_support_nonclone_fields() {
+        struct NonClone {
+            value: isize,
+        }
+        struct Holder {
+            field: NonClone,
+        }
+
+        let owner = GorsPtr::new(Holder {
+            field: NonClone { value: 1 },
+        });
+        let field_ptr = GorsPtr::from_ptr_field_identity(
+            owner.clone(),
+            std::mem::offset_of!(Holder, field),
+            |holder: &mut Holder| &mut holder.field,
+        );
+        let same_field_ptr = GorsPtr::from_ptr_field_identity(
+            owner.clone(),
+            std::mem::offset_of!(Holder, field),
+            |holder: &mut Holder| &mut holder.field,
+        );
+
+        assert!(GorsPtr::ptr_eq(&field_ptr, &same_field_ptr));
+        assert_eq!(owner.lock().unwrap().field.value, 1);
+    }
+
+    #[test]
+    fn comparable_any_payloads_support_type_assertion_helpers() {
+        let value = box_any_comparable(GorsPtr::new(7isize));
+
+        assert!(any_is::<GorsPtr<isize>>(value.as_ref()));
+        assert!(any_downcast_ref::<GorsPtr<isize>>(value.as_ref()).is_some());
+    }
+
+    #[test]
     fn len_and_cap_cover_sequences_maps_and_channels() {
         let values = vec![1, 2, 3];
         let array = [1, 2, 3, 4];
@@ -2030,18 +2522,111 @@ mod tests {
     }
 
     #[test]
+    fn nil_channels_are_distinct_from_made_channels() {
+        let nil_ch: Chan<i32> = Chan::default();
+        assert!(nil_ch.is_nil());
+        assert_eq!(len(&nil_ch), 0);
+        assert_eq!(cap(&nil_ch), 0);
+        assert_eq!(nil_ch.try_recv(), Err(TryRecvError::Empty));
+        assert_eq!(nil_ch.try_recv_with_ok(), None);
+        assert_eq!(nil_ch.try_send(1), Err(1));
+
+        let made = make_chan::<i32>(0);
+        assert!(!made.is_nil());
+        assert!(!PartialEq::eq(&nil_ch, &made));
+        assert!(PartialEq::eq(
+            &Chan::<i32>::default(),
+            &Chan::<i32>::default()
+        ));
+    }
+
+    #[test]
+    fn reflect_type_comparable_tracks_known_non_comparable_values() {
+        assert!(reflect_type_comparable(
+            (Box::new("key".to_string()) as Box<dyn Any>).as_ref()
+        ));
+        assert!(reflect_type_comparable(
+            (Box::new(42_isize) as Box<dyn Any>).as_ref()
+        ));
+        assert!(!reflect_type_comparable(
+            (Box::new(vec![1_u8, 2]) as Box<dyn Any>).as_ref()
+        ));
+        assert!(!reflect_type_comparable(
+            (Box::new(()) as Box<dyn Any>).as_ref()
+        ));
+    }
+
+    #[derive(Clone, PartialEq)]
+    struct NamedString(String);
+
+    #[test]
+    fn comparable_any_preserves_named_value_equality() {
+        let left = box_any_comparable(NamedString("name".to_string()));
+        let same = box_any_comparable(NamedString("name".to_string()));
+        let other = box_any_comparable(NamedString("other".to_string()));
+
+        assert!(any_eq(left.as_ref(), same.as_ref()));
+        assert!(!any_eq(left.as_ref(), other.as_ref()));
+
+        let cloned = clone_any(left.as_ref());
+        assert!(cloned.downcast_ref::<NamedString>().is_some());
+        assert!(any_eq(cloned.as_ref(), same.as_ref()));
+    }
+
+    #[test]
+    fn send_sync_comparable_any_clones_stay_recloneable() {
+        let original = box_any_comparable(NamedString("name".to_string()));
+        let lookup = box_any_comparable(NamedString("name".to_string()));
+
+        let stored = clone_any_send_sync(original.as_ref());
+        let first_read = clone_any(stored.as_ref());
+        assert!(any_eq(first_read.as_ref(), lookup.as_ref()));
+        assert_eq!(
+            any_downcast_ref::<NamedString>(first_read.as_ref()).map(|value| value.0.as_str()),
+            Some("name")
+        );
+
+        let stored_again = clone_any_send_sync(stored.as_ref());
+        let second_read = clone_any(stored_again.as_ref());
+        assert!(any_eq(second_read.as_ref(), lookup.as_ref()));
+    }
+
+    #[test]
     fn panic_and_recover_helpers_have_defined_behavior() {
         assert!(interface_is_nil(recover().as_ref()));
         set_recover_payload("boom".to_string());
         let recovered = recover();
         assert!(!interface_is_nil(recovered.as_ref()));
         assert!(interface_is_nil(recover().as_ref()));
+        set_recover_payload_any(Box::new("stored".to_string()) as Box<dyn Any>);
+        let recovered_any = recover();
+        assert_eq!(
+            recovered_any.downcast_ref::<std::string::String>(),
+            Some(&"stored".to_string())
+        );
         assert_eq!(recover_func(|| {}).as_deref(), None);
         let previous_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_| {}));
         assert_eq!(
             recover_func(|| panic_value("boom")).as_deref(),
             Some("boom")
+        );
+        std::panic::set_hook(previous_hook);
+        let send_any = Box::new("clone".to_string()) as Box<dyn Any + Send>;
+        let cloned = clone_any(&*send_any);
+        assert_eq!(
+            cloned.downcast_ref::<std::string::String>(),
+            Some(&"clone".to_string())
+        );
+        let previous_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            panic_any_payload(Box::new("payload".to_string()) as Box<dyn Any>);
+        }));
+        let payload = panic_result.unwrap_err();
+        assert_eq!(
+            payload.downcast_ref::<std::string::String>(),
+            Some(&"payload".to_string())
         );
         std::panic::set_hook(previous_hook);
     }

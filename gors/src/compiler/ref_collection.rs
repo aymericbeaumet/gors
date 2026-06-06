@@ -1,5 +1,5 @@
 use super::{
-    item_reachability::impl_method_reachability_name,
+    item_reachability::{impl_method_reachability_name, trait_impl_reachability_name},
     receiver_type_facts::{
         ReceiverFieldTypeMap, ReceiverTupleReturnMap, ReceiverTupleTypes, ReceiverTypeMap,
         ReceiverTypeRef, external_receiver_method_return_type,
@@ -8,7 +8,8 @@ use super::{
     },
     syn_inspect::{
         is_path_call_expr, is_receiver_type_wrapper_method, item_macro_name,
-        macro_token_item_names, named_self_type, pat_ident_name, self_type_reachability_names,
+        macro_token_item_names, named_self_type, pat_ident_name, pat_ident_names, path_is,
+        self_type_reachability_names,
     },
 };
 
@@ -124,6 +125,41 @@ pub(super) fn collect_refs_from_item(
             let tail = tail_expr_from_expr(&closure.body)?;
             self.bound_receiver_type_from_expr(tail)
         }
+
+        fn bound_receiver_tuple_types_from_expr(
+            &self,
+            expr: &syn::Expr,
+        ) -> Option<ReceiverTupleTypes> {
+            match expr {
+                syn::Expr::Call(call) => {
+                    if let syn::Expr::Path(path) = &*call.func
+                        && let Some(first) = path.path.segments.first()
+                        && let Some(types) = self
+                            .top_level_tuple_return_types
+                            .get(&first.ident.to_string())
+                    {
+                        return Some(types.clone());
+                    }
+                    self.bound_receiver_tuple_types_from_expr(&call.func)
+                }
+                syn::Expr::Cast(cast) => self.bound_receiver_tuple_types_from_expr(&cast.expr),
+                syn::Expr::Group(group) => self.bound_receiver_tuple_types_from_expr(&group.expr),
+                syn::Expr::MethodCall(method) => {
+                    let receiver_type = self.bound_receiver_type_from_expr(&method.receiver)?;
+                    let method_key = impl_method_reachability_name(
+                        &receiver_type.name,
+                        &method.method.to_string(),
+                    );
+                    self.top_level_tuple_return_types.get(&method_key).cloned()
+                }
+                syn::Expr::Paren(paren) => self.bound_receiver_tuple_types_from_expr(&paren.expr),
+                syn::Expr::Reference(reference) => {
+                    self.bound_receiver_tuple_types_from_expr(&reference.expr)
+                }
+                syn::Expr::Unary(unary) => self.bound_receiver_tuple_types_from_expr(&unary.expr),
+                _ => None,
+            }
+        }
     }
 
     fn closure_expr_from_call_func(expr: &syn::Expr) -> Option<&syn::ExprClosure> {
@@ -182,10 +218,7 @@ pub(super) fn collect_refs_from_item(
         fn visit_local_mut(&mut self, local: &mut syn::Local) {
             if let Some(init) = &local.init
                 && let syn::Pat::Tuple(tuple_pat) = &local.pat
-                && let Some(tuple_types) = receiver_tuple_types_from_init_expr(
-                    &init.expr,
-                    self.top_level_tuple_return_types,
-                )
+                && let Some(tuple_types) = self.bound_receiver_tuple_types_from_expr(&init.expr)
             {
                 for (pat, receiver_type) in tuple_pat.elems.iter().zip(tuple_types) {
                     if let Some(name) = pat_ident_name(pat)
@@ -223,39 +256,6 @@ pub(super) fn collect_refs_from_item(
                 named_self_type(&item_impl.self_ty).map(|name| ReceiverTypeRef::new(None, name));
             syn::visit_mut::visit_item_impl_mut(self, item_impl);
             self.current_self_type = previous_self_type;
-        }
-    }
-
-    fn receiver_tuple_types_from_init_expr(
-        expr: &syn::Expr,
-        top_level_tuple_return_types: &std::collections::HashMap<String, ReceiverTupleTypes>,
-    ) -> Option<ReceiverTupleTypes> {
-        match expr {
-            syn::Expr::Call(call) => {
-                if let syn::Expr::Path(path) = &*call.func
-                    && let Some(first) = path.path.segments.first()
-                    && let Some(types) = top_level_tuple_return_types.get(&first.ident.to_string())
-                {
-                    return Some(types.clone());
-                }
-                receiver_tuple_types_from_init_expr(&call.func, top_level_tuple_return_types)
-            }
-            syn::Expr::Cast(cast) => {
-                receiver_tuple_types_from_init_expr(&cast.expr, top_level_tuple_return_types)
-            }
-            syn::Expr::Group(group) => {
-                receiver_tuple_types_from_init_expr(&group.expr, top_level_tuple_return_types)
-            }
-            syn::Expr::Paren(paren) => {
-                receiver_tuple_types_from_init_expr(&paren.expr, top_level_tuple_return_types)
-            }
-            syn::Expr::Reference(reference) => {
-                receiver_tuple_types_from_init_expr(&reference.expr, top_level_tuple_return_types)
-            }
-            syn::Expr::Unary(unary) => {
-                receiver_tuple_types_from_init_expr(&unary.expr, top_level_tuple_return_types)
-            }
-            _ => None,
         }
     }
 
@@ -325,23 +325,26 @@ pub(super) fn collect_refs_from_item(
                 external_module_from_expr(&field.base, module_names)
                     .map(|module| (module, member.to_string()))
             }
-            syn::Expr::Path(path) => {
-                let mut segments = path.path.segments.iter().map(|seg| seg.ident.to_string());
-                match (
-                    segments.next().as_deref(),
-                    segments.next().as_deref(),
-                    segments.next().as_deref(),
-                ) {
-                    (Some("crate"), Some(module), Some(symbol))
-                        if module_names.contains(module) =>
-                    {
-                        Some((module.to_string(), symbol.to_string()))
-                    }
-                    (Some(module), Some(symbol), _) if module_names.contains(module) => {
-                        Some((module.to_string(), symbol.to_string()))
-                    }
-                    _ => None,
-                }
+            syn::Expr::Path(path) => external_path_symbol_from_path(&path.path, module_names),
+            _ => None,
+        }
+    }
+
+    fn external_path_symbol_from_path(
+        path: &syn::Path,
+        module_names: &std::collections::HashSet<String>,
+    ) -> Option<(String, String)> {
+        let mut segments = path.segments.iter().map(|seg| seg.ident.to_string());
+        match (
+            segments.next().as_deref(),
+            segments.next().as_deref(),
+            segments.next().as_deref(),
+        ) {
+            (Some("crate"), Some(module), Some(symbol)) if module_names.contains(module) => {
+                Some((module.to_string(), symbol.to_string()))
+            }
+            (Some(module), Some(symbol), _) if module_names.contains(module) => {
+                Some((module.to_string(), symbol.to_string()))
             }
             _ => None,
         }
@@ -467,6 +470,30 @@ pub(super) fn collect_refs_from_item(
             }
         }
 
+        fn insert_trait_impl_ref(&mut self, trait_name: &str, receiver_type: ReceiverTypeRef) {
+            if receiver_type.module.is_some() || !is_reachability_name(&receiver_type.name) {
+                return;
+            }
+            self.local_names.insert(receiver_type.name.clone());
+            self.local_names.insert(trait_impl_reachability_name(
+                trait_name,
+                &receiver_type.name,
+            ));
+        }
+
+        fn receiver_type_from_trait_impl_source(
+            &self,
+            expr: &syn::Expr,
+        ) -> Option<ReceiverTypeRef> {
+            receiver_type_from_init_expr(
+                expr,
+                self.module_names,
+                self.item_names,
+                self.top_level_return_types,
+            )
+            .or_else(|| self.receiver_type_from_expr(expr))
+        }
+
         fn fallback_field_receiver_types(&self, expr: &syn::Expr) -> Vec<ReceiverTypeRef> {
             match expr {
                 syn::Expr::Group(group) => self.fallback_field_receiver_types(&group.expr),
@@ -569,6 +596,12 @@ pub(super) fn collect_refs_from_item(
             if self.top_level_names.contains(&name) {
                 self.local_names.insert(name);
             }
+            if let Some((module, symbol)) =
+                external_path_symbol_from_path(&type_path.path, self.module_names)
+            {
+                self.local_names.insert(format!("{module}::{symbol}"));
+                self.external_refs.entry(module).or_default().insert(symbol);
+            }
         }
 
         fn visit_expr_struct_mut(&mut self, expr_struct: &mut syn::ExprStruct) {
@@ -589,7 +622,24 @@ pub(super) fn collect_refs_from_item(
             {
                 let name = last.ident.to_string();
                 if self.item_names.contains(&name) {
-                    self.local_names.insert(name);
+                    self.local_names.insert(name.clone());
+                }
+                if path_is(path, &["std", "error", "Error"]) {
+                    for self_name in self_type_reachability_names(&item_impl.self_ty) {
+                        self.local_names
+                            .insert(trait_impl_reachability_name("Display", &self_name));
+                    }
+                }
+                for impl_item in &item_impl.items {
+                    if let Some(member_name) = impl_item_member_name(impl_item) {
+                        self.local_names
+                            .insert(impl_method_reachability_name(&name, &member_name));
+                    }
+                }
+                if let Some((module, symbol)) =
+                    external_path_symbol_from_path(path, self.module_names)
+                {
+                    self.external_refs.entry(module).or_default().insert(symbol);
                 }
             }
             let previous_self_type = self.current_self_type.clone();
@@ -611,8 +661,23 @@ pub(super) fn collect_refs_from_item(
                 if self.item_names.contains(&name) {
                     self.local_names.insert(name);
                 }
+                if let Some((module, symbol)) =
+                    external_path_symbol_from_path(&trait_bound.path, self.module_names)
+                {
+                    self.external_refs.entry(module).or_default().insert(symbol);
+                }
             }
             syn::visit_mut::visit_type_param_bound_mut(self, bound);
+        }
+
+        fn visit_expr_cast_mut(&mut self, cast: &mut syn::ExprCast) {
+            if let Some(trait_name) = boxed_trait_object_name(&cast.ty)
+                && self.top_level_names.contains(&trait_name)
+                && let Some(receiver_type) = self.receiver_type_from_trait_impl_source(&cast.expr)
+            {
+                self.insert_trait_impl_ref(&trait_name, receiver_type);
+            }
+            syn::visit_mut::visit_expr_cast_mut(self, cast);
         }
 
         fn visit_item_macro_mut(&mut self, item_macro: &mut syn::ItemMacro) {
@@ -668,6 +733,22 @@ pub(super) fn collect_refs_from_item(
 
         fn visit_expr_call_mut(&mut self, call: &mut syn::ExprCall) {
             if let syn::Expr::Path(path) = &*call.func {
+                if path.path.leading_colon.is_none()
+                    && path.path.segments.len() >= 2
+                    && path.qself.is_none()
+                    && let Some(trait_segment) = path.path.segments.first()
+                    && let Some(receiver_expr) = call.args.first()
+                {
+                    let trait_name = trait_segment.ident.to_string();
+                    if self.top_level_names.contains(&trait_name)
+                        && let Some(receiver_type) =
+                            self.receiver_type_from_trait_impl_source(receiver_expr)
+                        && receiver_type.name != trait_name
+                    {
+                        self.insert_trait_impl_ref(&trait_name, receiver_type);
+                    }
+                }
+
                 if let Some(qself) = &path.qself
                     && let Some(receiver_type) =
                         receiver_type_from_type(&qself.ty, self.module_names)
@@ -684,6 +765,20 @@ pub(super) fn collect_refs_from_item(
                 }
             }
             syn::visit_mut::visit_expr_call_mut(self, call);
+        }
+
+        fn visit_local_mut(&mut self, local: &mut syn::Local) {
+            if let Some(init) = &mut local.init {
+                let removed = pat_ident_names(&local.pat)
+                    .into_iter()
+                    .filter(|name| self.bound_names.remove(name.as_str()))
+                    .collect::<Vec<_>>();
+                self.visit_expr_mut(&mut init.expr);
+                for name in removed {
+                    self.bound_names.insert(name);
+                }
+            }
+            syn::visit_mut::visit_local_mut(self, local);
         }
     }
 
@@ -718,6 +813,51 @@ pub(super) fn collect_refs_from_item(
     };
     collector.visit_item_mut(item);
     (collector.local_names, collector.external_refs)
+}
+
+fn impl_item_member_name(item: &syn::ImplItem) -> Option<String> {
+    match item {
+        syn::ImplItem::Fn(func) => Some(func.sig.ident.to_string()),
+        syn::ImplItem::Const(konst) => Some(konst.ident.to_string()),
+        syn::ImplItem::Type(ty) => Some(ty.ident.to_string()),
+        syn::ImplItem::Macro(item_macro) => item_macro
+            .mac
+            .path
+            .segments
+            .last()
+            .map(|seg| seg.ident.to_string()),
+        _ => None,
+    }
+}
+
+fn boxed_trait_object_name(ty: &syn::Type) -> Option<String> {
+    match ty {
+        syn::Type::Group(group) => boxed_trait_object_name(&group.elem),
+        syn::Type::Paren(paren) => boxed_trait_object_name(&paren.elem),
+        syn::Type::Path(type_path) => {
+            let segment = type_path.path.segments.last()?;
+            let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+                return None;
+            };
+            args.args.iter().find_map(|arg| match arg {
+                syn::GenericArgument::Type(ty) => boxed_trait_object_name(ty),
+                _ => None,
+            })
+        }
+        syn::Type::Reference(reference) => boxed_trait_object_name(&reference.elem),
+        syn::Type::TraitObject(trait_object) => trait_object.bounds.iter().find_map(|bound| {
+            let syn::TypeParamBound::Trait(trait_bound) = bound else {
+                return None;
+            };
+            trait_bound
+                .path
+                .segments
+                .last()
+                .map(|segment| segment.ident.to_string())
+                .filter(|name| name != "Any")
+        }),
+        _ => None,
+    }
 }
 
 fn is_reachability_name(name: &str) -> bool {
@@ -812,5 +952,257 @@ mod tests {
             names.contains(&impl_method_reachability_name("bucket", "fill")),
             "{names:?}"
         );
+    }
+
+    #[test]
+    fn collect_refs_follows_external_trait_impl_and_object_bounds() {
+        let module_names = ReachabilityNameSet::from(["runtime".to_string()]);
+        let item_names = ReachabilityNameSet::from(["Kind".to_string()]);
+        let top_level_names = item_names.clone();
+        let top_level_types = ReceiverTypeMap::new();
+        let top_level_field_types = ReceiverFieldTypeMap::new();
+        let top_level_element_types = ReceiverTypeMap::new();
+        let top_level_return_types = ReceiverTypeMap::new();
+        let top_level_tuple_return_types = ReceiverTupleReturnMap::new();
+        let context = RefCollectionContext {
+            module_names: &module_names,
+            item_names: &item_names,
+            top_level_names: &top_level_names,
+            top_level_types: &top_level_types,
+            top_level_field_types: &top_level_field_types,
+            top_level_element_types: &top_level_element_types,
+            top_level_return_types: &top_level_return_types,
+            top_level_tuple_return_types: &top_level_tuple_return_types,
+        };
+        let mut item: syn::Item = syn::parse_quote! {
+            impl crate::runtime::stringer for Kind {
+                fn String(&mut self) -> String {
+                    String::new()
+                }
+
+                fn __gors_clone_box(&self) -> Box<dyn crate::runtime::stringer> {
+                    todo!()
+                }
+            }
+        };
+
+        let (_, external_refs) = collect_refs_from_item(&mut item, &context);
+
+        assert_eq!(
+            external_refs
+                .get("runtime")
+                .and_then(|refs| refs.get("stringer")),
+            Some(&"stringer".to_string()),
+            "{external_refs:?}"
+        );
+    }
+
+    #[test]
+    fn collect_refs_roots_local_trait_impl_pairs_from_boxed_trait_object_casts() {
+        let module_names = ReachabilityNameSet::new();
+        let item_names = ReachabilityNameSet::from([
+            "Interface".to_string(),
+            "Values".to_string(),
+            "root".to_string(),
+        ]);
+        let top_level_names = item_names.clone();
+        let top_level_types = ReceiverTypeMap::new();
+        let top_level_field_types = ReceiverFieldTypeMap::new();
+        let top_level_element_types = ReceiverTypeMap::new();
+        let top_level_return_types = ReceiverTypeMap::new();
+        let top_level_tuple_return_types = ReceiverTupleReturnMap::new();
+        let context = RefCollectionContext {
+            module_names: &module_names,
+            item_names: &item_names,
+            top_level_names: &top_level_names,
+            top_level_types: &top_level_types,
+            top_level_field_types: &top_level_field_types,
+            top_level_element_types: &top_level_element_types,
+            top_level_return_types: &top_level_return_types,
+            top_level_tuple_return_types: &top_level_tuple_return_types,
+        };
+        let mut item: syn::Item = syn::parse_quote! {
+            fn root() -> Box<dyn Interface> {
+                Box::new(Values::default()) as Box<dyn Interface>
+            }
+        };
+
+        let (names, external_refs) = collect_refs_from_item(&mut item, &context);
+
+        assert!(external_refs.is_empty(), "{external_refs:?}");
+        assert!(names.contains("Values"), "{names:?}");
+        assert!(
+            names.contains(&trait_impl_reachability_name("Interface", "Values")),
+            "{names:?}"
+        );
+    }
+
+    #[test]
+    fn collect_refs_roots_local_trait_impl_pairs_from_trait_ufcs_calls() {
+        let module_names = ReachabilityNameSet::new();
+        let item_names = ReachabilityNameSet::from([
+            "Interface".to_string(),
+            "Values".to_string(),
+            "root".to_string(),
+        ]);
+        let top_level_names = item_names.clone();
+        let top_level_types = ReceiverTypeMap::new();
+        let top_level_field_types = ReceiverFieldTypeMap::new();
+        let top_level_element_types = ReceiverTypeMap::new();
+        let top_level_return_types = ReceiverTypeMap::new();
+        let top_level_tuple_return_types = ReceiverTupleReturnMap::new();
+        let context = RefCollectionContext {
+            module_names: &module_names,
+            item_names: &item_names,
+            top_level_names: &top_level_names,
+            top_level_types: &top_level_types,
+            top_level_field_types: &top_level_field_types,
+            top_level_element_types: &top_level_element_types,
+            top_level_return_types: &top_level_return_types,
+            top_level_tuple_return_types: &top_level_tuple_return_types,
+        };
+        let mut item: syn::Item = syn::parse_quote! {
+            fn root(mut value: Values) {
+                Interface::Len(&mut value);
+            }
+        };
+
+        let (names, external_refs) = collect_refs_from_item(&mut item, &context);
+
+        assert!(external_refs.is_empty(), "{external_refs:?}");
+        assert!(
+            names.contains(&trait_impl_reachability_name("Interface", "Values")),
+            "{names:?}"
+        );
+    }
+
+    #[test]
+    fn collect_refs_follows_tuple_return_types_from_impl_methods() {
+        let module_names = ReachabilityNameSet::new();
+        let file: syn::File = syn::parse_quote! {
+            pub struct Time;
+            pub struct absSeconds;
+            pub struct absDays;
+
+            impl Time {
+                fn locabs(&self) -> (String, isize, absSeconds) {
+                    todo!()
+                }
+
+                fn append(&self) {
+                    let (_, _, abs) = self.locabs();
+                    let days = abs.days();
+                    days.date();
+                }
+            }
+
+            impl absSeconds {
+                fn days(&self) -> absDays {
+                    todo!()
+                }
+            }
+
+            impl absDays {
+                fn date(&self) {}
+            }
+        };
+        let item_names = ReachabilityNameSet::from([
+            "Time".to_string(),
+            "Time::locabs".to_string(),
+            "Time::append".to_string(),
+            "absSeconds".to_string(),
+            "absSeconds::days".to_string(),
+            "absDays".to_string(),
+            "absDays::date".to_string(),
+        ]);
+        let top_level_names = item_names.clone();
+        let top_level_types =
+            super::super::receiver_type_facts::top_level_item_types(&file.items, &module_names);
+        let top_level_field_types = super::super::receiver_type_facts::top_level_item_field_types(
+            &file.items,
+            &module_names,
+        );
+        let top_level_element_types =
+            super::super::receiver_type_facts::top_level_collection_element_types(
+                &file.items,
+                &module_names,
+            );
+        let top_level_return_types = super::super::receiver_type_facts::top_level_item_return_types(
+            &file.items,
+            &module_names,
+        );
+        let top_level_tuple_return_types =
+            super::super::receiver_type_facts::top_level_item_tuple_return_types(
+                &file.items,
+                &module_names,
+            );
+        let context = RefCollectionContext {
+            module_names: &module_names,
+            item_names: &item_names,
+            top_level_names: &top_level_names,
+            top_level_types: &top_level_types,
+            top_level_field_types: &top_level_field_types,
+            top_level_element_types: &top_level_element_types,
+            top_level_return_types: &top_level_return_types,
+            top_level_tuple_return_types: &top_level_tuple_return_types,
+        };
+        let mut item = file
+            .items
+            .iter()
+            .find(|item| {
+                matches!(item, syn::Item::Impl(item_impl)
+                if matches!(super::named_self_type(&item_impl.self_ty).as_deref(), Some("Time")))
+            })
+            .cloned()
+            .expect("Time impl");
+
+        let (names, external_refs) = collect_refs_from_item(&mut item, &context);
+
+        assert!(external_refs.is_empty(), "{external_refs:?}");
+        assert!(
+            names.contains(&impl_method_reachability_name("Time", "locabs")),
+            "{names:?}"
+        );
+        assert!(
+            names.contains(&impl_method_reachability_name("absSeconds", "days")),
+            "{names:?}"
+        );
+        assert!(
+            names.contains(&impl_method_reachability_name("absDays", "date")),
+            "{names:?}"
+        );
+    }
+
+    #[test]
+    fn collect_refs_counts_initializer_item_before_same_name_local_binding() {
+        let module_names = ReachabilityNameSet::new();
+        let item_names = ReachabilityNameSet::from(["helper".to_string(), "entry".to_string()]);
+        let top_level_names = item_names.clone();
+        let top_level_types = ReceiverTypeMap::new();
+        let top_level_field_types = ReceiverFieldTypeMap::new();
+        let top_level_element_types = ReceiverTypeMap::new();
+        let top_level_return_types = ReceiverTypeMap::new();
+        let top_level_tuple_return_types = ReceiverTupleReturnMap::new();
+        let context = RefCollectionContext {
+            module_names: &module_names,
+            item_names: &item_names,
+            top_level_names: &top_level_names,
+            top_level_types: &top_level_types,
+            top_level_field_types: &top_level_field_types,
+            top_level_element_types: &top_level_element_types,
+            top_level_return_types: &top_level_return_types,
+            top_level_tuple_return_types: &top_level_tuple_return_types,
+        };
+        let mut item: syn::Item = syn::parse_quote! {
+            fn entry() {
+                let mut helper = helper();
+                helper.use_value();
+            }
+        };
+
+        let (names, external_refs) = collect_refs_from_item(&mut item, &context);
+
+        assert!(external_refs.is_empty(), "{external_refs:?}");
+        assert!(names.contains("helper"), "{names:?}");
     }
 }

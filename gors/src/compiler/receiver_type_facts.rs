@@ -216,25 +216,57 @@ pub(super) fn top_level_item_tuple_return_types(
 ) -> std::collections::HashMap<String, ReceiverTupleTypes> {
     let mut types = std::collections::HashMap::new();
     for item in items {
-        let syn::Item::Fn(item_fn) = item else {
-            continue;
-        };
-        let syn::ReturnType::Type(_, ty) = &item_fn.sig.output else {
-            continue;
-        };
-        let syn::Type::Tuple(tuple) = ty.as_ref() else {
-            continue;
-        };
-        let tuple_types = tuple
-            .elems
-            .iter()
-            .map(|ty| receiver_type_from_type(ty, module_names))
-            .collect::<Vec<_>>();
-        if tuple_types.iter().any(Option::is_some) {
-            types.insert(item_fn.sig.ident.to_string(), tuple_types);
+        match item {
+            syn::Item::Fn(item_fn) => {
+                if let Some(tuple_types) =
+                    receiver_tuple_types_from_return_type(&item_fn.sig.output, module_names)
+                {
+                    types.insert(item_fn.sig.ident.to_string(), tuple_types);
+                }
+            }
+            syn::Item::Impl(item_impl) => {
+                let Some(self_name) = named_self_type(&item_impl.self_ty) else {
+                    continue;
+                };
+                for impl_item in &item_impl.items {
+                    let syn::ImplItem::Fn(func) = impl_item else {
+                        continue;
+                    };
+                    if let Some(tuple_types) =
+                        receiver_tuple_types_from_return_type(&func.sig.output, module_names)
+                    {
+                        types.insert(
+                            impl_method_reachability_name(&self_name, &func.sig.ident.to_string()),
+                            tuple_types,
+                        );
+                    }
+                }
+            }
+            _ => {}
         }
     }
     types
+}
+
+fn receiver_tuple_types_from_return_type(
+    output: &syn::ReturnType,
+    module_names: &std::collections::HashSet<String>,
+) -> Option<ReceiverTupleTypes> {
+    let syn::ReturnType::Type(_, ty) = output else {
+        return None;
+    };
+    let syn::Type::Tuple(tuple) = ty.as_ref() else {
+        return None;
+    };
+    let tuple_types = tuple
+        .elems
+        .iter()
+        .map(|ty| receiver_type_from_type(ty, module_names))
+        .collect::<Vec<_>>();
+    tuple_types
+        .iter()
+        .any(Option::is_some)
+        .then_some(tuple_types)
 }
 
 pub(super) fn method_receiver_type_from_expr(

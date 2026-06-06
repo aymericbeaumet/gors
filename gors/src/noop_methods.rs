@@ -1,4 +1,4 @@
-use crate::generated_names::{AS_ANY_METHOD, CLONE_BOX_METHOD};
+use crate::generated_names::{AS_ANY_METHOD, CLONE_BOX_METHOD, INTERFACE_KEY_METHOD};
 
 pub enum CloneBoxPolicy<'a> {
     BoxDefault {
@@ -43,6 +43,9 @@ fn impl_fn_for_signature(sig: syn::Signature, policy: &MethodPolicy<'_>) -> syn:
 fn method_body(sig: &syn::Signature, policy: &MethodPolicy<'_>) -> syn::Block {
     if sig.ident == AS_ANY_METHOD {
         return syn::parse_quote!({ None });
+    }
+    if sig.ident == INTERFACE_KEY_METHOD {
+        return syn::parse_quote!({ crate::builtin::GorsInterfaceKey::nil() });
     }
     if sig.ident == CLONE_BOX_METHOD
         && let CloneBoxPolicy::BoxDefault {

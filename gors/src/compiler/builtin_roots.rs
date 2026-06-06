@@ -14,6 +14,7 @@ pub(super) fn expand(
             "Chan::try_send",
             "Chan::try_recv",
             "Chan::try_recv_with_ok",
+            "Chan::is_nil",
             "new",
             "send",
             "recv",
@@ -35,12 +36,16 @@ pub(super) fn expand(
             "ProjectedFieldCell",
             "ProjectedFieldGuard",
             "ProjectedGuard",
+            "IdentityProjectedFieldCell",
+            "UnsupportedProjectedGuard",
             "GorsPtr::nil",
             "GorsPtr::new",
             "GorsPtr::from_arc",
             "GorsPtr::from_arc_field",
             "GorsPtr::from_ptr_field",
+            "GorsPtr::from_ptr_field_identity",
             "GorsPtr::is_nil",
+            "GorsPtr::interface_key",
             "GorsPtr::lock",
             "GorsPtr::ptr_eq",
             "GorsPtr::ptr_id",
@@ -59,6 +64,7 @@ pub(super) fn expand(
             "GorsReflectValue::slice",
             "GorsReflectValue::swap",
             "lock_reflect_ops",
+            "reflect_type_comparable",
         ] {
             expanded.insert(root.to_string());
         }
@@ -89,6 +95,7 @@ fn needs_channel_methods(roots: &std::collections::HashSet<String>) -> bool {
                 | "Chan::try_recv_with_ok"
                 | "Chan::len"
                 | "Chan::cap"
+                | "Chan::is_nil"
         )
     })
 }
@@ -112,6 +119,7 @@ fn needs_reflect_value_methods(roots: &std::collections::HashSet<String>) -> boo
                 | "GorsReflectValue"
                 | "reflect_kind_of_any"
                 | "reflect_slice_any"
+                | "reflect_type_comparable"
                 | "reflect_value_kind"
                 | "reflect_value_len"
                 | "reflect_value_swapper"

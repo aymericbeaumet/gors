@@ -7,7 +7,7 @@ pub(super) fn func_decl_is_package_init(func_decl: &ast::FuncDecl<'_>) -> bool {
 pub(super) fn selector_unsafe_member<'src>(
     selector: &ast::SelectorExpr<'src>,
 ) -> Option<&'src str> {
-    matches!(&*selector.x, ast::Expr::Ident(pkg) if pkg.name == "unsafe")
+    matches!(&*selector.x, ast::Expr::Ident(pkg) if matches!(pkg.name, "unsafe" | "unsafe_"))
         .then_some(selector.sel.name)
 }
 
@@ -28,6 +28,10 @@ pub(super) fn expr_is_unsafe_pointer_selector(expr: &ast::Expr<'_>) -> bool {
 
 pub(super) fn call_is_unsafe_pointer_conversion(call: &ast::CallExpr<'_>) -> bool {
     expr_is_unsafe_pointer_selector(&call.fun)
+}
+
+pub(super) fn call_is_unsafe_add(call: &ast::CallExpr<'_>) -> bool {
+    call_unsafe_member(call) == Some("Add")
 }
 
 pub(super) fn call_unsafe_member<'src>(call: &ast::CallExpr<'src>) -> Option<&'src str> {
@@ -104,6 +108,7 @@ mod tests {
             Some("Pointer")
         );
         assert!(selector_is_unsafe_pointer(&selector("unsafe", "Pointer")));
+        assert!(selector_is_unsafe_pointer(&selector("unsafe_", "Pointer")));
         assert!(!selector_is_unsafe_pointer(&selector("unsafe", "Sizeof")));
         assert!(!selector_is_unsafe_pointer(&selector("safe", "Pointer")));
         assert!(selector_is_unsafe_constant(&selector("unsafe", "Sizeof")));
@@ -131,5 +136,18 @@ mod tests {
         assert!(!call_is_unsafe_pointer_conversion(&other));
         assert_eq!(call_unsafe_member(&call), Some("Pointer"));
         assert_eq!(call_unsafe_constant_member(&call), None);
+    }
+
+    #[test]
+    fn unsafe_add_call_matches_selector_function() {
+        let call = ast::CallExpr {
+            fun: Box::new(ast::Expr::SelectorExpr(selector("unsafe", "Add"))),
+            lparen: Position::default(),
+            args: Some(vec![ast::Expr::Ident(ident("ptr"))]),
+            ellipsis: None,
+            rparen: Position::default(),
+        };
+
+        assert!(call_is_unsafe_add(&call));
     }
 }

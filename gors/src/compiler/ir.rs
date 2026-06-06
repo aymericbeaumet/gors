@@ -350,6 +350,7 @@ pub struct Call {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CallAbi {
     pub callee: CalleeKind,
+    pub signature_target: Option<String>,
     pub signature_params: Vec<GoType>,
     pub args: Vec<ParamAbi>,
     pub results: Vec<GoType>,
@@ -536,6 +537,7 @@ pub fn variadic_call_start(call_expr: &ast::CallExpr<'_>, env: &TypeEnv) -> Opti
 pub fn call_abi(call: &ast::CallExpr<'_>, env: &TypeEnv) -> CallAbi {
     let callee = classify_call_callee(call, env);
     let signature = call_signature(call, env);
+    let signature_target = signature.as_ref().map(|signature| signature.target.clone());
     let signature_params = signature
         .as_ref()
         .map(|signature| signature.params.clone())
@@ -575,6 +577,7 @@ pub fn call_abi(call: &ast::CallExpr<'_>, env: &TypeEnv) -> CallAbi {
 
     CallAbi {
         callee,
+        signature_target,
         signature_params,
         args,
         results,
@@ -7284,21 +7287,25 @@ fn call_result_count_for_fun(fun: &ast::Expr<'_>, env: &TypeEnv) -> Option<usize
             }
         }
         ast::Expr::SelectorExpr(sel) => {
-            if let Some(returns) = type_method_expression_result_types(sel, env) {
-                return Some(returns.len());
-            }
             if let ast::Expr::Ident(pkg_or_recv) = &*sel.x {
+                if let Some(method_key) = selector_receiver_method_key(sel, env)
+                    && env.has_func(&method_key)
+                {
+                    return Some(env.get_func_returns(&method_key).len());
+                }
+                if selector_base_value_type(sel, env).is_some() {
+                    return match GoType::infer_expr(fun, env) {
+                        GoType::Func { results, .. } => Some(results.len()),
+                        _ => None,
+                    };
+                }
                 let package_key = format!("{}.{}", pkg_or_recv.name, sel.sel.name);
                 if env.has_func(&package_key) {
                     return Some(env.get_func_returns(&package_key).len());
                 }
-
-                if let Some(GoType::Named(name)) = env.get_var(pkg_or_recv.name) {
-                    let method_key = format!("{}.{}", name, sel.sel.name);
-                    if env.has_func(&method_key) {
-                        return Some(env.get_func_returns(&method_key).len());
-                    }
-                }
+            }
+            if let Some(returns) = type_method_expression_result_types(sel, env) {
+                return Some(returns.len());
             }
 
             match GoType::infer_expr(fun, env) {
@@ -7342,21 +7349,25 @@ fn call_result_types_for_fun(fun: &ast::Expr<'_>, env: &TypeEnv) -> Option<Vec<G
             }
         }
         ast::Expr::SelectorExpr(sel) => {
-            if let Some(returns) = type_method_expression_result_types(sel, env) {
-                return Some(returns);
-            }
             if let ast::Expr::Ident(pkg_or_recv) = &*sel.x {
+                if let Some(method_key) = selector_receiver_method_key(sel, env)
+                    && env.has_func(&method_key)
+                {
+                    return Some(env.get_func_returns(&method_key));
+                }
+                if selector_base_value_type(sel, env).is_some() {
+                    return match GoType::infer_expr(fun, env) {
+                        GoType::Func { results, .. } => Some(results),
+                        _ => None,
+                    };
+                }
                 let package_key = format!("{}.{}", pkg_or_recv.name, sel.sel.name);
                 if env.has_func(&package_key) {
                     return Some(env.get_func_returns(&package_key));
                 }
-
-                if let Some(GoType::Named(name)) = env.get_var(pkg_or_recv.name) {
-                    let method_key = format!("{}.{}", name, sel.sel.name);
-                    if env.has_func(&method_key) {
-                        return Some(env.get_func_returns(&method_key));
-                    }
-                }
+            }
+            if let Some(returns) = type_method_expression_result_types(sel, env) {
+                return Some(returns);
             }
 
             match GoType::infer_expr(fun, env) {
@@ -8226,8 +8237,191 @@ fn interface_operand_name(ty: &GoType, env: &TypeEnv) -> InterfaceOperand {
 }
 
 fn type_switch_case_key(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<String> {
-    let ty = env.resolve_alias(&GoType::from_expr(expr));
-    (!matches!(ty, GoType::Unknown)).then(|| go_type_display_name(&ty))
+    type_expr_identity_key(expr, env)
+}
+
+fn type_expr_identity_key(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<String> {
+    match unparen_expr(expr) {
+        ast::Expr::ArrayType(array) => {
+            let len = array.len.as_deref().map_or_else(
+                || "slice".to_string(),
+                |len| format!("array:{}", expr_identity_key(len, env)),
+            );
+            let elem = type_expr_identity_key(&array.elt, env)?;
+            Some(format!("[{len}]{elem}"))
+        }
+        ast::Expr::InterfaceType(interface) => Some(interface_type_identity_key(interface, env)),
+        ast::Expr::StructType(struct_type) => Some(struct_type_identity_key(struct_type, env)),
+        expr => {
+            let ty = env.resolve_alias(&GoType::from_expr(expr));
+            (!matches!(ty, GoType::Unknown)).then(|| go_type_identity_key(&ty))
+        }
+    }
+}
+
+fn go_type_identity_key(ty: &GoType) -> String {
+    match ty {
+        GoType::Bool => "bool".to_string(),
+        GoType::Int => "int".to_string(),
+        GoType::Int8 => "int8".to_string(),
+        GoType::Int16 => "int16".to_string(),
+        GoType::Int32 => "int32".to_string(),
+        GoType::Int64 => "int64".to_string(),
+        GoType::Uint => "uint".to_string(),
+        GoType::Uint8 => "uint8".to_string(),
+        GoType::Uint16 => "uint16".to_string(),
+        GoType::Uint32 => "uint32".to_string(),
+        GoType::Uint64 => "uint64".to_string(),
+        GoType::Uintptr => "uintptr".to_string(),
+        GoType::Float32 => "float32".to_string(),
+        GoType::Float64 => "float64".to_string(),
+        GoType::Complex64 => "complex64".to_string(),
+        GoType::Complex128 => "complex128".to_string(),
+        GoType::String => "string".to_string(),
+        GoType::Unit => "struct{}".to_string(),
+        GoType::Slice(elem) => format!("[]{}", go_type_identity_key(elem)),
+        GoType::Map(key, value) => {
+            format!(
+                "map[{}]{}",
+                go_type_identity_key(key),
+                go_type_identity_key(value)
+            )
+        }
+        GoType::Pointer(inner) => format!("*{}", go_type_identity_key(inner)),
+        GoType::Array(elem) => format!("[array]{}", go_type_identity_key(elem)),
+        GoType::Chan { elem, direction } => {
+            let prefix = match direction {
+                GoChannelDirection::Bidirectional => "chan",
+                GoChannelDirection::Send => "chan<-",
+                GoChannelDirection::Receive => "<-chan",
+            };
+            format!("{prefix} {}", go_type_identity_key(elem))
+        }
+        GoType::Func {
+            params,
+            results,
+            variadic_start,
+        } => {
+            let params = params
+                .iter()
+                .enumerate()
+                .map(|(index, param)| {
+                    let prefix = if Some(index) == *variadic_start {
+                        "..."
+                    } else {
+                        ""
+                    };
+                    format!("{prefix}{}", go_type_identity_key(param))
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            let results = results
+                .iter()
+                .map(go_type_identity_key)
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("func({params})({results})")
+        }
+        GoType::Named(name) => format!("named:{name}"),
+        GoType::Interface(name) => format!("interface:{name}"),
+        GoType::Any => "interface{}".to_string(),
+        GoType::Error => "error".to_string(),
+        GoType::Unknown => "unknown".to_string(),
+    }
+}
+
+fn interface_type_identity_key(interface: &ast::InterfaceType<'_>, env: &TypeEnv) -> String {
+    let mut entries = interface
+        .methods
+        .as_ref()
+        .map(|methods| {
+            methods
+                .list
+                .iter()
+                .flat_map(|field| interface_field_identity_keys(field, env))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    entries.sort();
+    format!("interface{{{}}}", entries.join(";"))
+}
+
+fn interface_field_identity_keys(field: &ast::Field<'_>, env: &TypeEnv) -> Vec<String> {
+    if let Some(names) = &field.names {
+        let ty = field
+            .type_
+            .as_ref()
+            .and_then(|ty| type_expr_identity_key(ty, env))
+            .unwrap_or_else(|| "unknown".to_string());
+        return names
+            .iter()
+            .map(|name| format!("method:{}:{ty}", name.name))
+            .collect();
+    }
+
+    field
+        .type_
+        .as_ref()
+        .and_then(|ty| type_expr_identity_key(ty, env))
+        .map(|ty| vec![format!("embedded:{ty}")])
+        .unwrap_or_default()
+}
+
+fn struct_type_identity_key(struct_type: &ast::StructType<'_>, env: &TypeEnv) -> String {
+    let fields = struct_type
+        .fields
+        .as_ref()
+        .map(|fields| {
+            fields
+                .list
+                .iter()
+                .flat_map(|field| struct_field_identity_keys(field, env))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    format!("struct{{{}}}", fields.join(";"))
+}
+
+fn struct_field_identity_keys(field: &ast::Field<'_>, env: &TypeEnv) -> Vec<String> {
+    let ty = field
+        .type_
+        .as_ref()
+        .and_then(|ty| type_expr_identity_key(ty, env))
+        .unwrap_or_else(|| "unknown".to_string());
+    let tag = field.tag.as_ref().map_or("", |tag| tag.value);
+    match &field.names {
+        Some(names) => names
+            .iter()
+            .map(|name| format!("field:{}:{ty}:{tag}", name.name))
+            .collect(),
+        None => vec![format!("embedded:{ty}:{tag}")],
+    }
+}
+
+fn expr_identity_key(expr: &ast::Expr<'_>, env: &TypeEnv) -> String {
+    match unparen_expr(expr) {
+        ast::Expr::BasicLit(lit) => lit.value.to_string(),
+        ast::Expr::Ident(ident) => ident.name.to_string(),
+        ast::Expr::SelectorExpr(selector) => match unparen_expr(&selector.x) {
+            ast::Expr::Ident(package) => format!("{}.{}", package.name, selector.sel.name),
+            _ => selector.sel.name.to_string(),
+        },
+        ast::Expr::UnaryExpr(unary) => {
+            let op: &'static str = (&unary.op).into();
+            format!("{op}{}", expr_identity_key(&unary.x, env))
+        }
+        ast::Expr::BinaryExpr(binary) => {
+            let op: &'static str = (&binary.op).into();
+            format!(
+                "({}{}{})",
+                expr_identity_key(&binary.x, env),
+                op,
+                expr_identity_key(&binary.y, env)
+            )
+        }
+        other => type_expr_identity_key(other, env)
+            .unwrap_or_else(|| go_type_display_name(&env.resolve_alias(&GoType::from_expr(other)))),
+    }
 }
 
 fn invalid_type_switch_case_implementation(
@@ -8241,8 +8435,13 @@ fn invalid_type_switch_case_implementation(
     {
         return None;
     }
-    let case_type_name = type_expr_named_type_for_validation(expr)?;
-    if named_type_implements_interface_for_validation(&case_type_name, interface_name, env) {
+    let (case_type_name, include_pointer_receiver_methods) =
+        type_expr_named_type_for_validation(expr)?;
+    if env.named_type_implements_interface(
+        &case_type_name,
+        interface_name,
+        include_pointer_receiver_methods,
+    ) {
         return None;
     }
     Some(InvalidTypeSwitchReason::CaseDoesNotImplement {
@@ -8404,6 +8603,9 @@ fn selector_is_known_runtime_value(selector: &ast::SelectorExpr<'_>, env: &TypeE
     let key = format!("{}.{}", base.name, selector.sel.name);
     if env.is_const(&key) {
         return false;
+    }
+    if known_ident_is_runtime_value(base, env) {
+        return true;
     }
     env.get_var(&key).is_some() || env.has_func(&key)
 }
@@ -11150,6 +11352,7 @@ fn type_is_comparable_for_validation_inner(
         | GoType::Complex64
         | GoType::Complex128
         | GoType::String
+        | GoType::Unit
         | GoType::Pointer(_)
         | GoType::Chan { .. }
         | GoType::Interface(_)
@@ -11196,28 +11399,32 @@ fn type_expr_implements_interface_for_validation(
     interface_name: &str,
     env: &TypeEnv,
 ) -> bool {
-    let Some(type_name) = type_expr_named_type_for_validation(expr) else {
+    let Some((type_name, include_pointer_receiver_methods)) =
+        type_expr_named_type_for_validation(expr)
+    else {
         return false;
     };
-    named_type_implements_interface_for_validation(&type_name, interface_name, env)
+    env.named_type_implements_interface(
+        &type_name,
+        interface_name,
+        include_pointer_receiver_methods,
+    )
 }
 
-fn named_type_implements_interface_for_validation(
-    type_name: &str,
-    interface_name: &str,
-    env: &TypeEnv,
-) -> bool {
-    env.named_type_implements_interface(type_name, interface_name, false)
-}
-
-fn type_expr_named_type_for_validation(expr: &ast::Expr<'_>) -> Option<String> {
+fn type_expr_named_type_for_validation(expr: &ast::Expr<'_>) -> Option<(String, bool)> {
     match unparen_expr(expr) {
-        ast::Expr::Ident(ident) => Some(ident.name.to_string()),
-        ast::Expr::SelectorExpr(selector) => Some(match unparen_expr(&selector.x) {
-            ast::Expr::Ident(package) => format!("{}.{}", package.name, selector.sel.name),
-            _ => selector.sel.name.to_string(),
-        }),
-        ast::Expr::StarExpr(star) => type_expr_named_type_for_validation(&star.x),
+        ast::Expr::Ident(ident) => Some((ident.name.to_string(), false)),
+        ast::Expr::SelectorExpr(selector) => Some((
+            match unparen_expr(&selector.x) {
+                ast::Expr::Ident(package) => format!("{}.{}", package.name, selector.sel.name),
+                _ => selector.sel.name.to_string(),
+            },
+            false,
+        )),
+        ast::Expr::StarExpr(star) => {
+            let (name, _) = type_expr_named_type_for_validation(&star.x)?;
+            Some((name, true))
+        }
         _ => None,
     }
 }
@@ -12047,9 +12254,10 @@ fn invalid_type_conversion_value(
     target_name: &str,
     env: &TypeEnv,
 ) -> Option<InvalidStatementReason> {
+    let raw_actual = GoType::infer_expr(value, env);
     let target = env.resolve_alias(&GoType::from_expr(target_expr));
-    let actual = env.resolve_alias(&GoType::infer_expr(value, env));
-    if conversion_is_valid_for_validation(value, &actual, &target, env) {
+    let actual = env.resolve_alias(&raw_actual);
+    if conversion_is_valid_for_validation(target_expr, value, &raw_actual, &actual, &target, env) {
         return None;
     }
     Some(invalid_type_conversion_reason(
@@ -12063,7 +12271,9 @@ fn invalid_type_conversion_value(
 }
 
 fn conversion_is_valid_for_validation(
+    target_expr: &ast::Expr<'_>,
     value: &ast::Expr<'_>,
+    raw_actual: &GoType,
     actual: &GoType,
     target: &GoType,
     env: &TypeEnv,
@@ -12074,6 +12284,9 @@ fn conversion_is_valid_for_validation(
         return true;
     }
     if string_slice_conversion_is_valid(actual, target) {
+        return true;
+    }
+    if unsafe_pointer_uintptr_conversion_is_valid(target_expr, value, raw_actual, actual, target) {
         return true;
     }
     if expr_is_untyped_constant_for_comparison(value, env) {
@@ -12091,6 +12304,38 @@ fn conversion_is_valid_for_validation(
     match (target, actual) {
         (target, actual) if go_type_is_numeric(target) && go_type_is_numeric(actual) => true,
         (GoType::String, actual) if actual.is_integer() => true,
+        _ => false,
+    }
+}
+
+fn unsafe_pointer_uintptr_conversion_is_valid(
+    target_expr: &ast::Expr<'_>,
+    value: &ast::Expr<'_>,
+    raw_actual: &GoType,
+    actual: &GoType,
+    target: &GoType,
+) -> bool {
+    match (target, actual) {
+        (GoType::Uintptr, _) => {
+            go_type_is_unsafe_pointer(raw_actual) || expr_is_unsafe_pointer_producer(value)
+        }
+        (_, actual) if actual.is_integer() => {
+            super::ast_inspect::expr_is_unsafe_pointer_selector(unparen_expr(target_expr))
+        }
+        _ => false,
+    }
+}
+
+fn go_type_is_unsafe_pointer(ty: &GoType) -> bool {
+    matches!(ty, GoType::Named(name) if matches!(name.as_str(), "unsafe.Pointer" | "unsafe_.Pointer"))
+}
+
+fn expr_is_unsafe_pointer_producer(expr: &ast::Expr<'_>) -> bool {
+    match unparen_expr(expr) {
+        ast::Expr::CallExpr(call) => {
+            super::ast_inspect::call_is_unsafe_pointer_conversion(call)
+                || super::ast_inspect::call_is_unsafe_add(call)
+        }
         _ => false,
     }
 }
@@ -12278,12 +12523,21 @@ fn call_signature_for_selector(
     selector: &ast::SelectorExpr<'_>,
     env: &TypeEnv,
 ) -> Option<CallSignature> {
-    if let Some(signature) = call_signature_for_type_method_expression(selector, env) {
-        return Some(signature);
-    }
     let ast::Expr::Ident(base) = selector.x.as_ref() else {
-        return None;
+        return call_signature_for_type_method_expression(selector, env);
     };
+    if let Some(method_key) = selector_receiver_method_key(selector, env)
+        && env.has_func(&method_key)
+    {
+        return Some(CallSignature {
+            target: method_key.clone(),
+            params: env.get_func_params(&method_key),
+            variadic_start: env.get_func_variadic_start(&method_key),
+        });
+    }
+    if selector_base_value_type(selector, env).is_some() {
+        return None;
+    }
     let package_key = format!("{}.{}", base.name, selector.sel.name);
     if env.has_func(&package_key) {
         return Some(CallSignature {
@@ -12292,15 +12546,21 @@ fn call_signature_for_selector(
             variadic_start: env.get_func_variadic_start(&package_key),
         });
     }
-    let receiver_name = env
-        .get_var(base.name)
+    call_signature_for_type_method_expression(selector, env)
+}
+
+fn selector_receiver_method_key(selector: &ast::SelectorExpr<'_>, env: &TypeEnv) -> Option<String> {
+    let receiver_name = selector_base_value_type(selector, env)
         .and_then(|ty| method_receiver_type_name(ty, env))?;
-    let method_key = format!("{}.{}", receiver_name, selector.sel.name);
-    env.has_func(&method_key).then(|| CallSignature {
-        target: method_key.clone(),
-        params: env.get_func_params(&method_key),
-        variadic_start: env.get_func_variadic_start(&method_key),
-    })
+    Some(format!("{}.{}", receiver_name, selector.sel.name))
+}
+
+fn selector_base_value_type(selector: &ast::SelectorExpr<'_>, env: &TypeEnv) -> Option<GoType> {
+    let ast::Expr::Ident(base) = selector.x.as_ref() else {
+        return None;
+    };
+    env.get_var(base.name)
+        .or_else(|| env.get_top_level_var(base.name))
 }
 
 fn call_signature_for_type_method_expression(
@@ -12640,6 +12900,9 @@ fn invalid_call_arg_expr(
         return Some(reason);
     }
     let actual = env.resolve_alias(&GoType::infer_expr(arg, env));
+    if unsafe_add_arg_is_valid(target, position, &actual, arg, env) {
+        return None;
+    }
     if expr_is_assignable_for_validation(&expected, arg, env) {
         return None;
     }
@@ -12651,6 +12914,21 @@ fn invalid_call_arg_expr(
             go_type_display_name(&actual)
         ),
     ))
+}
+
+fn unsafe_add_arg_is_valid(
+    target: &str,
+    position: usize,
+    actual: &GoType,
+    arg: &ast::Expr<'_>,
+    env: &TypeEnv,
+) -> bool {
+    if !matches!(target, "unsafe.Add" | "unsafe_.Add") || position != 2 {
+        return false;
+    }
+    actual.is_integer()
+        || (expr_is_untyped_constant_for_comparison(arg, env)
+            && constant_conversion_is_representable_by_type(arg, &GoType::Int, env))
 }
 
 fn invalid_type_parameter_constraint_call_arg(
@@ -13802,6 +14080,9 @@ fn call_is_type_conversion(call: &ast::CallExpr<'_>, env: &TypeEnv) -> bool {
         ast::Expr::Ident(ident) => ident_denotes_conversion_type(ident.name, env),
         ast::Expr::SelectorExpr(selector) => {
             if let ast::Expr::Ident(pkg) = selector.x.as_ref() {
+                if super::ast_inspect::selector_is_unsafe_pointer(selector) {
+                    return true;
+                }
                 let name = format!("{}.{}", pkg.name, selector.sel.name);
                 return declared_type_name_is_unshadowed(&name, env);
             }
@@ -15164,7 +15445,8 @@ pub fn ownership_mode_for_go_type(ty: &GoType, env: &TypeEnv) -> OwnershipMode {
         | GoType::Float32
         | GoType::Float64
         | GoType::Complex64
-        | GoType::Complex128 => OwnershipMode::Copy,
+        | GoType::Complex128
+        | GoType::Unit => OwnershipMode::Copy,
         GoType::String | GoType::Array(_) | GoType::Named(_) => OwnershipMode::Clone,
         GoType::Slice(_) | GoType::Map(_, _) | GoType::Pointer(_) | GoType::Chan { .. } => {
             OwnershipMode::SharedHandle
@@ -15586,10 +15868,26 @@ fn collect_free_name_uses_in_assignment_lhs(
     uses: &mut ScopedNameUses,
     env: &TypeEnv,
 ) {
-    if let Some(name) = ident_name(expr) {
-        scoped_record_mutation(scopes, uses, &name);
-    } else {
-        collect_free_name_uses_in_expr(expr, scopes, uses, env);
+    match expr {
+        ast::Expr::Ident(ident) => {
+            scoped_record_mutation(scopes, uses, ident.name);
+        }
+        ast::Expr::ParenExpr(paren) => {
+            collect_free_name_uses_in_assignment_lhs(&paren.x, scopes, uses, env);
+        }
+        ast::Expr::SelectorExpr(selector) => {
+            if let ast::Expr::Ident(base) = selector.x.as_ref() {
+                let base_ty = env.resolve_alias(&GoType::infer_expr(&selector.x, env));
+                if !matches!(base_ty, GoType::Pointer(_)) {
+                    scoped_record_mutation(scopes, uses, base.name);
+                    return;
+                }
+            }
+            collect_free_name_uses_in_expr(&selector.x, scopes, uses, env);
+        }
+        _ => {
+            collect_free_name_uses_in_expr(expr, scopes, uses, env);
+        }
     }
 }
 
@@ -16282,6 +16580,14 @@ fn collect_address_taken_names_in_expr(
             collect_address_taken_names_in_expr(&binary.y, env, names);
         }
         ast::Expr::CallExpr(call) => {
+            if let ast::Expr::SelectorExpr(selector) = call.fun.as_ref() {
+                collect_pointer_method_receiver_address_taken(
+                    &selector.x,
+                    selector.sel.name,
+                    env,
+                    names,
+                );
+            }
             collect_address_taken_names_in_expr(&call.fun, env, names);
             if let Some(args) = &call.args {
                 for arg in args {
@@ -16328,6 +16634,12 @@ fn collect_address_taken_names_in_expr(
         }
         ast::Expr::ParenExpr(paren) => collect_address_taken_names_in_expr(&paren.x, env, names),
         ast::Expr::SelectorExpr(selector) => {
+            collect_pointer_method_receiver_address_taken(
+                &selector.x,
+                selector.sel.name,
+                env,
+                names,
+            );
             collect_address_taken_names_in_expr(&selector.x, env, names)
         }
         ast::Expr::SliceExpr(slice) => {
@@ -16376,6 +16688,22 @@ fn collect_address_taken_target_names(
         }
         _ => {}
     }
+}
+
+fn collect_pointer_method_receiver_address_taken(
+    receiver: &ast::Expr<'_>,
+    method: &str,
+    env: &TypeEnv,
+    names: &mut BTreeSet<String>,
+) {
+    let receiver_ty = GoType::infer_expr(receiver, env);
+    if matches!(env.resolve_alias(&receiver_ty), GoType::Pointer(_))
+        || expr_addressability(receiver, env) != Addressability::Addressable
+        || !go_type_has_pointer_method(&receiver_ty, method, env)
+    {
+        return;
+    }
+    collect_address_taken_target_names(receiver, env, names);
 }
 
 fn collect_mutable_func_lit_capture_names_in_block(
@@ -17166,7 +17494,7 @@ mod tests {
         Addressability, Call, CalleeKind, CaptureMode, Completion, ExprKind, Item, MutationMode,
         OwnershipMode, Stmt, ValueRole, lower_file,
     };
-    use crate::compiler::typeinfer::{GoType, TypeEnv};
+    use crate::compiler::typeinfer::{GoType, TypeEnv, TypeKind};
     use crate::parser::parse_file;
     use std::collections::BTreeMap;
 
@@ -19932,6 +20260,51 @@ mod tests {
     }
 
     #[test]
+    fn lower_func_lit_records_struct_field_assignment_captures_as_mutable() {
+        let ir = lower(
+            r#"
+                package main
+
+                type state struct {
+                    value int
+                }
+
+                func main() {
+                    s := state{}
+                    cb := func() {
+                        s.value = 7
+                    }
+                    _ = cb
+                }
+            "#,
+        );
+        let Some(Item::Func(func)) = ir.items.iter().find(|item| match item {
+            Item::Func(func) => func.name.as_deref() == Some("main"),
+            Item::GenDecl(_) => false,
+        }) else {
+            panic!("expected main function item");
+        };
+        let Some(body) = &func.body else {
+            panic!("expected function body");
+        };
+        let Some(Stmt::Assign(assign)) = body.stmts.get(1) else {
+            panic!("expected closure assignment");
+        };
+        let Some(expr) = assign.rhs.first() else {
+            panic!("expected closure rhs");
+        };
+        let ExprKind::FuncLit(func_lit) = &expr.kind else {
+            panic!("expected function literal");
+        };
+        let Some(capture) = func_lit.captures.first() else {
+            panic!("expected capture");
+        };
+        assert_eq!(capture.name, "s");
+        assert_eq!(capture.mode, CaptureMode::BorrowMut);
+        assert_eq!(capture.ty, GoType::Named("state".to_string()));
+    }
+
+    #[test]
     fn lower_func_lit_records_pointer_method_value_captures_as_mutable() {
         let ir = lower(
             r#"
@@ -22340,6 +22713,9 @@ mod tests {
                     _ = byte(max(1, 255.0, 3))
                     _ = float64(0i)
                     _ = float64(-1e-1000)
+                    var f float64
+                    _ = int64(f)
+                    _ = uint64(f)
                     _ = string(i)
                     _ = string(65)
                     _ = []byte("go")
@@ -22360,6 +22736,134 @@ mod tests {
         }) else {
             panic!("expected function");
         };
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            None
+        );
+    }
+
+    #[test]
+    fn accepts_numeric_conversions_in_nested_return_calls() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Value struct{}
+
+                func (Value) Float() float64 { return 0 }
+                func makeInt(uint64) int { return 0 }
+
+                func cvtFloatInt(v Value) int {
+                    return makeInt(uint64(int64(v.Float())))
+                }
+
+                func cvtFloatUint(v Value) int {
+                    return makeInt(uint64(v.Float()))
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        for name in ["cvtFloatInt", "cvtFloatUint"] {
+            let Some(func) = file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) if func.name.name == name => Some(func),
+                crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+            }) else {
+                panic!("expected {name} function");
+            };
+            assert_eq!(
+                super::invalid_return_in_func(&func.type_, func.body.as_ref().expect("body"), &env),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_unsafe_pointer_uintptr_conversions_and_add_offsets() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                import "unsafe"
+
+                func main() {
+                    var p unsafe.Pointer
+                    var offset uintptr
+                    _ = uintptr(p)
+                    _ = unsafe.Pointer(offset)
+                    _ = unsafe.Add(p, offset)
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.set_type_kind("unsafe.ArbitraryType", TypeKind::Alias(GoType::Int));
+        env.set_type_kind("unsafe.IntegerType", TypeKind::Alias(GoType::Int));
+        env.set_type_kind(
+            "unsafe.Pointer",
+            TypeKind::Alias(GoType::Pointer(Box::new(GoType::Named(
+                "unsafe.ArbitraryType".to_string(),
+            )))),
+        );
+        env.set_func_params(
+            "unsafe.Add",
+            vec![
+                GoType::Named("unsafe.Pointer".to_string()),
+                GoType::Named("unsafe.IntegerType".to_string()),
+            ],
+        );
+        env.set_func(
+            "unsafe.Add",
+            vec![GoType::Named("unsafe.Pointer".to_string())],
+        );
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            None
+        );
+    }
+
+    #[test]
+    fn selector_call_validation_prefers_local_receiver_over_type_method_expression() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Method struct{}
+                type Type interface {
+                    Method(int) Method
+                }
+                type rtype struct{}
+
+                func (t *rtype) Method(i int) Method { return Method{} }
+
+                func use(v Type) {
+                    rtype := v
+                    _ = rtype.Method(0)
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "use" => Some(func),
+            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+
         assert_eq!(
             super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
             None
@@ -25093,6 +25597,42 @@ mod tests {
     }
 
     #[test]
+    fn accepts_distinct_structural_type_switch_cases() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type A struct {}
+                type B struct {}
+
+                func main(x any) {
+                    switch x.(type) {
+                    case *A:
+                    case *B:
+                    case interface { Unwrap() error }:
+                    case interface { Unwrap() []error }:
+                    default:
+                    }
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            None
+        );
+    }
+
+    #[test]
     fn rejects_invalid_type_switch_cases() {
         let cases = vec![
             (
@@ -25309,10 +25849,13 @@ mod tests {
                 type I interface { M() }
                 type T struct {}
                 func (T) M() {}
+                type P struct {}
+                func (*P) M() {}
 
                 func main(x any, y I) {
                     _ = x.(int)
                     _ = y.(T)
+                    _ = y.(*P)
                     _ = y.(interface { M() })
                     _, _ = y.(T)
                 }

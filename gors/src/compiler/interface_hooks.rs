@@ -1,9 +1,15 @@
 use super::syn_inspect::named_self_type;
 
-pub(super) use crate::generated_names::{AS_ANY_METHOD, CLONE_BOX_METHOD, clone_box_method_ident};
+pub(super) use crate::generated_names::{
+    AS_ANY_METHOD, CLONE_BOX_METHOD, INTERFACE_KEY_METHOD, clone_box_method_ident,
+    interface_key_method_ident,
+};
 
 pub(super) fn is_runtime_hook(name: &str) -> bool {
-    matches!(name, AS_ANY_METHOD | CLONE_BOX_METHOD)
+    matches!(
+        name,
+        AS_ANY_METHOD | CLONE_BOX_METHOD | INTERFACE_KEY_METHOD
+    )
 }
 
 pub(super) fn is_noop_type_name(name: &str) -> bool {
@@ -45,6 +51,36 @@ pub(super) fn clone_box_impl_item(trait_path: &syn::Path, can_clone_self: bool) 
     }
 }
 
+pub(super) fn pointer_interface_key_item() -> syn::ImplItem {
+    let interface_key = interface_key_method_ident();
+    syn::parse_quote! {
+        fn #interface_key(&self) -> crate::builtin::GorsInterfaceKey {
+            self.interface_key()
+        }
+    }
+}
+
+pub(super) fn borrowed_pointer_interface_key_item(struct_name: &str) -> syn::ImplItem {
+    let interface_key = interface_key_method_ident();
+    let struct_ident = syn::Ident::new(struct_name, proc_macro2::Span::mixed_site());
+    syn::parse_quote! {
+        fn #interface_key(&self) -> crate::builtin::GorsInterfaceKey {
+            crate::builtin::GorsInterfaceKey::for_ptr::<#struct_ident>(
+                std::ptr::from_ref::<#struct_ident>(&**self).cast::<()>(),
+            )
+        }
+    }
+}
+
+pub(super) fn concrete_interface_key_item() -> syn::ImplItem {
+    let interface_key = interface_key_method_ident();
+    syn::parse_quote! {
+        fn #interface_key(&self) -> crate::builtin::GorsInterfaceKey {
+            crate::builtin::GorsInterfaceKey::non_comparable()
+        }
+    }
+}
+
 pub(super) fn add_missing_clone_hooks(items: &mut [syn::Item]) {
     let clone_box_traits = items
         .iter()
@@ -58,7 +94,22 @@ pub(super) fn add_missing_clone_hooks(items: &mut [syn::Item]) {
             has_clone_box.then(|| item_trait.ident.to_string())
         })
         .collect::<std::collections::BTreeSet<_>>();
-    if clone_box_traits.is_empty() {
+    let interface_key_traits = items
+        .iter()
+        .filter_map(|item| {
+            let syn::Item::Trait(item_trait) = item else {
+                return None;
+            };
+            let has_interface_key = item_trait.items.iter().any(|trait_item| {
+                matches!(
+                    trait_item,
+                    syn::TraitItem::Fn(func) if func.sig.ident == INTERFACE_KEY_METHOD
+                )
+            });
+            has_interface_key.then(|| item_trait.ident.to_string())
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    if clone_box_traits.is_empty() && interface_key_traits.is_empty() {
         return;
     }
 
@@ -76,32 +127,56 @@ pub(super) fn add_missing_clone_hooks(items: &mut [syn::Item]) {
         else {
             continue;
         };
-        if !clone_box_traits.contains(&trait_name) {
-            continue;
-        }
-        if item_impl.items.iter().any(|impl_item| {
+        if clone_box_traits.contains(&trait_name)
+            && !item_impl.items.iter().any(|impl_item| {
             matches!(impl_item, syn::ImplItem::Fn(func) if func.sig.ident == CLONE_BOX_METHOD)
         }) {
-            continue;
+            let clone_box = clone_box_method_ident();
+            let item = if named_self_type(&item_impl.self_ty)
+                .as_deref()
+                .is_some_and(is_noop_type_name)
+            {
+                syn::parse_quote! {
+                    fn #clone_box(&self) -> Box<dyn #trait_path> {
+                        Box::new(Self::default()) as Box<dyn #trait_path>
+                    }
+                }
+            } else {
+                syn::parse_quote! {
+                    fn #clone_box(&self) -> Box<dyn #trait_path> {
+                        crate::builtin::panic_value("cloned non-clone interface value")
+                    }
+                }
+            };
+            item_impl.items.push(item);
         }
 
-        let clone_box = clone_box_method_ident();
-        let item = if named_self_type(&item_impl.self_ty)
-            .as_deref()
-            .is_some_and(is_noop_type_name)
+        if interface_key_traits.contains(&trait_name)
+            && !item_impl.items.iter().any(|impl_item| {
+                matches!(
+                    impl_item,
+                    syn::ImplItem::Fn(func) if func.sig.ident == INTERFACE_KEY_METHOD
+                )
+            })
         {
-            syn::parse_quote! {
-                fn #clone_box(&self) -> Box<dyn #trait_path> {
-                    Box::new(Self::default()) as Box<dyn #trait_path>
+            let interface_key = interface_key_method_ident();
+            let item = if named_self_type(&item_impl.self_ty)
+                .as_deref()
+                .is_some_and(is_noop_type_name)
+            {
+                syn::parse_quote! {
+                    fn #interface_key(&self) -> crate::builtin::GorsInterfaceKey {
+                        crate::builtin::GorsInterfaceKey::nil()
+                    }
                 }
-            }
-        } else {
-            syn::parse_quote! {
-                fn #clone_box(&self) -> Box<dyn #trait_path> {
-                    crate::builtin::panic_value("cloned non-clone interface value")
+            } else {
+                syn::parse_quote! {
+                    fn #interface_key(&self) -> crate::builtin::GorsInterfaceKey {
+                        crate::builtin::GorsInterfaceKey::non_comparable()
+                    }
                 }
-            }
-        };
-        item_impl.items.push(item);
+            };
+            item_impl.items.push(item);
+        }
     }
 }

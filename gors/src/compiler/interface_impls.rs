@@ -2,13 +2,13 @@ use super::{interface_hooks, signature_arg_idents, typeinfer};
 use crate::generated_names::as_any_method_ident;
 use proc_macro2::Span;
 use std::collections::{BTreeMap, BTreeSet};
-use syn::Token;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum PointerCallReceiver {
     ImmutableRef,
     MutableRef,
     Owned,
+    PointerCell,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -40,9 +40,22 @@ pub(super) fn call_receiver(
             }
         }
         Some(syn::FnArg::Receiver(_)) => PointerCallReceiver::Owned,
+        Some(syn::FnArg::Typed(arg)) if method_is_pointer_receiver && type_is_gors_ptr(&arg.ty) => {
+            PointerCallReceiver::PointerCell
+        }
         _ if method_is_pointer_receiver => PointerCallReceiver::MutableRef,
         _ => PointerCallReceiver::Owned,
     }
+}
+
+fn type_is_gors_ptr(ty: &syn::Type) -> bool {
+    let syn::Type::Path(path) = ty else {
+        return false;
+    };
+    path.path
+        .segments
+        .last()
+        .is_some_and(|segment| segment.ident == "GorsPtr")
 }
 
 pub(super) fn pointer_items(
@@ -55,6 +68,29 @@ pub(super) fn pointer_items(
 ) -> Vec<syn::ImplItem> {
     items_for_target(
         PointerImplTarget::GorsPtr,
+        true,
+        true,
+        trait_name,
+        struct_name,
+        trait_path,
+        method_names,
+        methods,
+        pointer_methods,
+    )
+}
+
+pub(super) fn non_static_pointer_items(
+    trait_name: &str,
+    struct_name: &str,
+    trait_path: &syn::Path,
+    method_names: &[String],
+    methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
+    pointer_methods: Option<&BTreeSet<String>>,
+) -> Vec<syn::ImplItem> {
+    items_for_target(
+        PointerImplTarget::GorsPtr,
+        false,
+        false,
         trait_name,
         struct_name,
         trait_path,
@@ -74,6 +110,8 @@ pub(super) fn borrowed_pointer_items(
 ) -> Vec<syn::ImplItem> {
     items_for_target(
         PointerImplTarget::BorrowedMut,
+        false,
+        false,
         trait_name,
         struct_name,
         trait_path,
@@ -112,7 +150,10 @@ pub(super) fn concrete_items(
     methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
     exposes_any: bool,
 ) -> Vec<syn::ImplItem> {
-    let mut impl_items: Vec<syn::ImplItem> = vec![concrete_as_any_item(exposes_any)];
+    let mut impl_items: Vec<syn::ImplItem> = vec![
+        concrete_as_any_item(exposes_any),
+        interface_hooks::concrete_interface_key_item(),
+    ];
     if trait_name != "error" {
         let can_clone_self = super::type_decl_facts::struct_can_clone(struct_name);
         impl_items.push(interface_hooks::clone_box_impl_item(
@@ -147,6 +188,8 @@ pub(super) fn concrete_items(
 
 fn items_for_target(
     target: PointerImplTarget,
+    exposes_any: bool,
+    can_clone_self: bool,
     trait_name: &str,
     struct_name: &str,
     trait_path: &syn::Path,
@@ -154,19 +197,42 @@ fn items_for_target(
     methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
     pointer_methods: Option<&BTreeSet<String>>,
 ) -> Vec<syn::ImplItem> {
-    let mut impl_items = vec![target.as_any_item()];
+    let interface_key_item = match target {
+        PointerImplTarget::GorsPtr => interface_hooks::pointer_interface_key_item(),
+        PointerImplTarget::BorrowedMut => {
+            interface_hooks::borrowed_pointer_interface_key_item(struct_name)
+        }
+    };
+    let mut impl_items = vec![pointer_as_any_item(exposes_any), interface_key_item];
     if trait_name != "error" {
         impl_items.push(interface_hooks::clone_box_impl_item(
             trait_path,
-            target.can_clone_self(),
+            can_clone_self,
         ));
     }
-    let Some(method_list) = methods.get(struct_name) else {
-        return impl_items;
-    };
-    for method in method_list {
-        if method_names.contains(&method.sig.ident.to_string()) {
-            impl_items.push(target.method_item(trait_name, struct_name, method, pointer_methods));
+    let mut emitted_method_names = BTreeSet::new();
+    if let Some(method_list) = methods.get(struct_name) {
+        for method in method_list {
+            let method_name = method.sig.ident.to_string();
+            if method_names.contains(&method_name) {
+                impl_items.push(target.method_item(
+                    trait_name,
+                    struct_name,
+                    method,
+                    pointer_methods,
+                ));
+                emitted_method_names.insert(method_name);
+            }
+        }
+    }
+    for method_name in method_names {
+        if emitted_method_names.contains(method_name) {
+            continue;
+        }
+        if let Some(item) =
+            target.promoted_method_item(trait_name, struct_name, method_name, methods)
+        {
+            impl_items.push(item);
         }
     }
     impl_items
@@ -174,6 +240,7 @@ fn items_for_target(
 
 #[derive(Clone)]
 struct PromotedMethodStep {
+    owner_type: String,
     field_name: String,
     field_is_pointer: bool,
 }
@@ -243,6 +310,7 @@ fn promoted_method_info_inner(
             return Some(PromotedMethodInfo {
                 owner_type,
                 steps: vec![PromotedMethodStep {
+                    owner_type: struct_name.to_string(),
                     field_name,
                     field_is_pointer,
                 }],
@@ -257,6 +325,7 @@ fn promoted_method_info_inner(
             visiting,
         ) {
             let mut steps = vec![PromotedMethodStep {
+                owner_type: struct_name.to_string(),
                 field_name,
                 field_is_pointer,
             }];
@@ -274,23 +343,62 @@ fn promoted_method_receiver_expr(
     steps: &[PromotedMethodStep],
     call_receiver_kind: PointerCallReceiver,
 ) -> syn::Expr {
-    let mut expr: syn::Expr = syn::parse_quote! { self };
+    promoted_method_receiver_expr_from_base(steps, call_receiver_kind, syn::parse_quote! { self })
+}
+
+fn promoted_method_receiver_expr_from_base(
+    steps: &[PromotedMethodStep],
+    call_receiver_kind: PointerCallReceiver,
+    mut expr: syn::Expr,
+) -> syn::Expr {
     for step in steps {
         let field_ident = syn::Ident::new(
             &super::rust_safe_ident_name(&step.field_name),
             Span::mixed_site(),
         );
         expr = if step.field_is_pointer {
-            syn::parse_quote! { (*#expr.#field_ident.lock().unwrap()) }
+            syn::parse_quote! { (*(#expr).#field_ident.lock().unwrap()) }
         } else {
-            syn::parse_quote! { #expr.#field_ident }
+            syn::parse_quote! { (#expr).#field_ident }
         };
     }
     match call_receiver_kind {
         PointerCallReceiver::ImmutableRef => syn::parse_quote! { &#expr },
         PointerCallReceiver::MutableRef => syn::parse_quote! { &mut #expr },
         PointerCallReceiver::Owned => syn::parse_quote! { (#expr).clone() },
+        PointerCallReceiver::PointerCell => {
+            syn::parse_quote! { crate::builtin::GorsPtr::new((#expr).clone()) }
+        }
     }
+}
+
+fn promoted_pointer_cell_receiver_expr(steps: &[PromotedMethodStep]) -> syn::Expr {
+    let mut expr: syn::Expr = syn::parse_quote! { self.clone() };
+    for step in steps {
+        let field_ident = syn::Ident::new(
+            &super::rust_safe_ident_name(&step.field_name),
+            Span::mixed_site(),
+        );
+        expr = if step.field_is_pointer {
+            syn::parse_quote! {{
+                let __gors_owner = (#expr).lock().unwrap();
+                (__gors_owner.#field_ident).clone()
+            }}
+        } else {
+            let owner_ident = syn::Ident::new(
+                &super::rust_safe_ident_name(&step.owner_type),
+                Span::mixed_site(),
+            );
+            syn::parse_quote! {
+                crate::builtin::GorsPtr::from_ptr_field(
+                    (#expr).clone(),
+                    std::mem::offset_of!(#owner_ident, #field_ident),
+                    |__gors_owner: &mut #owner_ident| &mut __gors_owner.#field_ident,
+                )
+            }
+        };
+    }
+    expr
 }
 
 fn promoted_concrete_item(
@@ -347,7 +455,33 @@ fn concrete_can_emit_method(
     })
 }
 
+pub(super) fn pointer_can_emit_methods(
+    struct_name: &str,
+    method_names: &[String],
+    methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
+) -> bool {
+    method_names.iter().all(|method_name| {
+        methods.get(struct_name).is_some_and(|method_list| {
+            method_list
+                .iter()
+                .any(|method| method.sig.ident == method_name)
+        }) || promoted_method_info(struct_name, method_name, true).is_some_and(|promoted| {
+            methods
+                .get(&promoted.owner_type)
+                .is_some_and(|method_list| {
+                    method_list
+                        .iter()
+                        .any(|method| method.sig.ident == method_name)
+                })
+        })
+    })
+}
+
 fn concrete_as_any_item(exposes_any: bool) -> syn::ImplItem {
+    pointer_as_any_item(exposes_any)
+}
+
+fn pointer_as_any_item(exposes_any: bool) -> syn::ImplItem {
     let as_any = as_any_method_ident();
     if exposes_any {
         syn::parse_quote! {
@@ -438,26 +572,6 @@ fn concrete_error_method_block(
 }
 
 impl PointerImplTarget {
-    fn as_any_item(self) -> syn::ImplItem {
-        let as_any = as_any_method_ident();
-        match self {
-            Self::GorsPtr => syn::parse_quote! {
-                fn #as_any(&self) -> Option<&dyn std::any::Any> {
-                    Some(self)
-                }
-            },
-            Self::BorrowedMut => syn::parse_quote! {
-                fn #as_any(&self) -> Option<&dyn std::any::Any> {
-                    None
-                }
-            },
-        }
-    }
-
-    fn can_clone_self(self) -> bool {
-        matches!(self, Self::GorsPtr)
-    }
-
     fn method_item(
         self,
         trait_name: &str,
@@ -488,6 +602,103 @@ impl PointerImplTarget {
         impl_item_fn(sig, block)
     }
 
+    fn promoted_method_item(
+        self,
+        trait_name: &str,
+        struct_name: &str,
+        method_name: &str,
+        methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
+    ) -> Option<syn::ImplItem> {
+        let promoted = promoted_method_info(struct_name, method_name, true)?;
+        let method = methods
+            .get(&promoted.owner_type)?
+            .iter()
+            .find(|method| method.sig.ident == method_name)?
+            .clone();
+        let method_ident = method.sig.ident.clone();
+        let method_is_pointer_receiver = promoted.method_is_pointer_receiver;
+        let call_receiver_kind = call_receiver(&method, method_is_pointer_receiver);
+        let owner_ident = syn::Ident::new(
+            &super::rust_safe_ident_name(&promoted.owner_type),
+            Span::mixed_site(),
+        );
+        let arg_idents = signature_arg_idents(&method.sig);
+        let mut sig = method.sig.clone();
+        let immutable_error_method = trait_name == "error" && method_ident == "Error";
+        set_interface_receiver(&mut sig, immutable_error_method);
+        let call_receiver = self.promoted_call_receiver_expr(&promoted.steps, call_receiver_kind);
+        let block = self.promoted_method_block(
+            &sig,
+            &owner_ident,
+            &method_ident,
+            &call_receiver,
+            &arg_idents,
+            call_receiver_kind,
+        );
+        Some(impl_item_fn(sig, block))
+    }
+
+    fn promoted_call_receiver_expr(
+        self,
+        steps: &[PromotedMethodStep],
+        kind: PointerCallReceiver,
+    ) -> syn::Expr {
+        if self == Self::GorsPtr && matches!(kind, PointerCallReceiver::PointerCell) {
+            return promoted_pointer_cell_receiver_expr(steps);
+        }
+        let base = match self {
+            Self::GorsPtr => syn::parse_quote! { __gors_guard },
+            Self::BorrowedMut => syn::parse_quote! { (**self) },
+        };
+        promoted_method_receiver_expr_from_base(steps, kind, base)
+    }
+
+    fn promoted_method_block(
+        self,
+        sig: &syn::Signature,
+        owner_ident: &syn::Ident,
+        method_ident: &syn::Ident,
+        call_receiver: &syn::Expr,
+        arg_idents: &[syn::Ident],
+        receiver_kind: PointerCallReceiver,
+    ) -> syn::Block {
+        if self == Self::GorsPtr && matches!(receiver_kind, PointerCallReceiver::PointerCell) {
+            return if matches!(sig.output, syn::ReturnType::Default) {
+                syn::parse_quote!({
+                    #owner_ident::#method_ident(#call_receiver, #(#arg_idents),*);
+                })
+            } else {
+                syn::parse_quote!({
+                    #owner_ident::#method_ident(#call_receiver, #(#arg_idents),*)
+                })
+            };
+        }
+        match self {
+            Self::GorsPtr if matches!(sig.output, syn::ReturnType::Default) => {
+                syn::parse_quote!({
+                    let mut __gors_guard = self.lock().unwrap();
+                    #owner_ident::#method_ident(#call_receiver, #(#arg_idents),*);
+                })
+            }
+            Self::GorsPtr => {
+                syn::parse_quote!({
+                    let mut __gors_guard = self.lock().unwrap();
+                    #owner_ident::#method_ident(#call_receiver, #(#arg_idents),*)
+                })
+            }
+            Self::BorrowedMut if matches!(sig.output, syn::ReturnType::Default) => {
+                syn::parse_quote!({
+                    #owner_ident::#method_ident(#call_receiver, #(#arg_idents),*);
+                })
+            }
+            Self::BorrowedMut => {
+                syn::parse_quote!({
+                    #owner_ident::#method_ident(#call_receiver, #(#arg_idents),*)
+                })
+            }
+        }
+    }
+
     fn call_receiver_expr(self, kind: PointerCallReceiver) -> syn::Expr {
         match (self, kind) {
             (Self::GorsPtr, PointerCallReceiver::ImmutableRef) => {
@@ -499,6 +710,9 @@ impl PointerImplTarget {
             (Self::GorsPtr, PointerCallReceiver::Owned) => {
                 syn::parse_quote! { (*__gors_guard).clone() }
             }
+            (Self::GorsPtr, PointerCallReceiver::PointerCell) => {
+                syn::parse_quote! { self.clone() }
+            }
             (Self::BorrowedMut, PointerCallReceiver::ImmutableRef) => {
                 syn::parse_quote! { &**self }
             }
@@ -508,10 +722,51 @@ impl PointerImplTarget {
             (Self::BorrowedMut, PointerCallReceiver::Owned) => {
                 syn::parse_quote! { (**self).clone() }
             }
+            (Self::BorrowedMut, PointerCallReceiver::PointerCell) => {
+                syn::parse_quote! { __gors_receiver.clone() }
+            }
         }
     }
 
     fn method_block(self, call: PointerMethodCall<'_>) -> syn::Block {
+        if self == Self::GorsPtr && matches!(call.receiver_kind, PointerCallReceiver::PointerCell) {
+            let struct_ident = call.struct_ident;
+            let method_ident = call.method_ident;
+            let call_receiver = call.call_receiver;
+            let arg_idents = call.arg_idents;
+            return if matches!(call.sig.output, syn::ReturnType::Default) {
+                syn::parse_quote!({
+                    #struct_ident::#method_ident(#call_receiver, #(#arg_idents),*);
+                })
+            } else {
+                syn::parse_quote!({
+                    #struct_ident::#method_ident(#call_receiver, #(#arg_idents),*)
+                })
+            };
+        }
+
+        if self == Self::BorrowedMut
+            && matches!(call.receiver_kind, PointerCallReceiver::PointerCell)
+        {
+            let struct_ident = call.struct_ident;
+            let method_ident = call.method_ident;
+            let arg_idents = call.arg_idents;
+            return if matches!(call.sig.output, syn::ReturnType::Default) {
+                syn::parse_quote!({
+                    let __gors_receiver = crate::builtin::GorsPtr::new((**self).clone());
+                    #struct_ident::#method_ident(__gors_receiver.clone(), #(#arg_idents),*);
+                    **self = __gors_receiver.lock().unwrap().clone();
+                })
+            } else {
+                syn::parse_quote!({
+                    let __gors_receiver = crate::builtin::GorsPtr::new((**self).clone());
+                    let __gors_result = #struct_ident::#method_ident(__gors_receiver.clone(), #(#arg_idents),*);
+                    **self = __gors_receiver.lock().unwrap().clone();
+                    __gors_result
+                })
+            };
+        }
+
         if self == Self::BorrowedMut
             && call.immutable_error_method
             && matches!(call.receiver_kind, PointerCallReceiver::MutableRef)
@@ -564,21 +819,18 @@ impl PointerImplTarget {
 }
 
 fn set_interface_receiver(sig: &mut syn::Signature, immutable_error_method: bool) {
-    if let Some(syn::FnArg::Receiver(receiver)) = sig.inputs.first_mut() {
-        if immutable_error_method {
-            receiver.mutability = None;
-            *receiver.ty = syn::parse_quote! { &Self };
+    if let Some(first) = sig.inputs.first_mut() {
+        *first = if immutable_error_method {
+            syn::parse_quote! { &self }
         } else {
-            receiver.mutability = Some(<Token![mut]>::default());
-            *receiver.ty = syn::parse_quote! { &mut Self };
-        }
+            syn::parse_quote! { &mut self }
+        };
     }
 }
 
 fn set_mut_self_receiver(sig: &mut syn::Signature) {
-    if let Some(syn::FnArg::Receiver(receiver)) = sig.inputs.first_mut() {
-        receiver.mutability = Some(<Token![mut]>::default());
-        *receiver.ty = syn::parse_quote! { &mut Self };
+    if let Some(first) = sig.inputs.first_mut() {
+        *first = syn::parse_quote! { &mut self };
     }
 }
 

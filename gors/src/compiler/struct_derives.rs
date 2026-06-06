@@ -27,13 +27,19 @@ impl State {
 
     pub(super) fn record_field(&mut self, facts: FieldFacts) {
         self.needs_manual_default |= facts.needs_manual_default;
-        self.needs_manual_clone |= facts.cannot_derive_clone && facts.contains_any;
-        self.cannot_manual_clone |= facts.cannot_derive_clone && !facts.contains_any;
+        self.needs_manual_clone |= facts.cannot_derive_clone && facts.can_manual_clone;
+        self.cannot_manual_clone |= facts.cannot_derive_clone && !facts.can_manual_clone;
         self.cannot_derive_clone |= facts.cannot_derive_clone;
         self.cannot_derive_partial_eq |= facts.cannot_derive_partial_eq;
         self.cannot_default |= facts.cannot_default;
         self.can_derive_copy &= facts.can_derive_copy;
         self.needs_manual_send_sync |= facts.contains_any;
+    }
+
+    pub(super) fn record_borrowed_lifetime_field(&mut self) {
+        self.needs_manual_default = true;
+        self.cannot_derive_partial_eq = true;
+        self.can_derive_copy = false;
     }
 }
 
@@ -45,6 +51,7 @@ pub(super) struct FieldFacts {
     cannot_default: bool,
     can_derive_copy: bool,
     contains_any: bool,
+    can_manual_clone: bool,
 }
 
 impl FieldFacts {
@@ -62,16 +69,18 @@ impl FieldFacts {
             || contains_func
             || field_is_error
             || has_borrowed_interface_trait_path;
+        let contains_direct_interface =
+            !field_is_error && super::interface_trait_path_from_expr(field_type).is_some();
+        let contains_nonclone_named = go_type_contains_nonclone_named(field_go_type);
         let cannot_derive_clone = contains_any
             || (!field_is_error && super::contains_interface_type(field_type))
-            || (!field_is_error && has_interface_trait_path);
+            || (!field_is_error && has_interface_trait_path)
+            || contains_nonclone_named;
         let cannot_derive_partial_eq =
             field_is_error || !super::expr_supports_derived_partial_eq(field_type, struct_ident);
-        let cannot_default = has_borrowed_interface_trait_path;
-        let can_derive_copy = !contains_func
-            && !has_interface_trait_path
-            && (super::self_referential_pointer_type(field_type, struct_ident).is_some()
-                || super::go_type_is_copy(field_go_type));
+        let cannot_default = false;
+        let can_derive_copy =
+            !contains_func && !has_interface_trait_path && super::go_type_is_copy(field_go_type);
 
         Self {
             needs_manual_default,
@@ -80,7 +89,26 @@ impl FieldFacts {
             cannot_default,
             can_derive_copy,
             contains_any,
+            can_manual_clone: contains_any
+                || contains_direct_interface
+                || has_borrowed_interface_trait_path,
         }
+    }
+}
+
+fn go_type_contains_nonclone_named(go_type: &typeinfer::GoType) -> bool {
+    match super::resolved_go_type(go_type) {
+        typeinfer::GoType::Named(name) => {
+            let local_name = name.rsplit('.').next().unwrap_or(&name);
+            !super::type_decl_facts::struct_can_clone(&super::rust_safe_ident_name(local_name))
+        }
+        typeinfer::GoType::Array(inner) | typeinfer::GoType::Slice(inner) => {
+            go_type_contains_nonclone_named(&inner)
+        }
+        typeinfer::GoType::Map(key, value) => {
+            go_type_contains_nonclone_named(&key) || go_type_contains_nonclone_named(&value)
+        }
+        _ => false,
     }
 }
 
@@ -142,11 +170,59 @@ mod tests {
             cannot_default: false,
             can_derive_copy: false,
             contains_any: true,
+            can_manual_clone: true,
         });
 
         assert!(state.needs_manual_clone);
         assert!(state.needs_manual_send_sync);
         assert!(!state.cannot_manual_clone);
         assert!(!state.can_derive_copy);
+    }
+
+    #[test]
+    fn borrowed_interface_fields_are_manual_cloneable() {
+        let field_type = ast::Expr::Ident(ast::Ident {
+            name_pos: crate::token::Position::default(),
+            name: "Context",
+            obj: None,
+        });
+        let struct_ident = syn::Ident::new("cancelCtx", proc_macro2::Span::mixed_site());
+
+        let facts = FieldFacts::collect(
+            &field_type,
+            &struct_ident,
+            &typeinfer::GoType::Named("Context".to_string()),
+            false,
+            true,
+            true,
+        );
+
+        assert!(facts.cannot_derive_clone);
+        assert!(facts.can_manual_clone);
+    }
+
+    #[test]
+    fn nonclone_named_fields_prevent_derived_clone() {
+        super::super::type_decl_facts::clear_struct_clone_derivability();
+        super::super::type_decl_facts::record_struct_clone_derivability("cancelCtx", false);
+        let field_type = ast::Expr::Ident(ast::Ident {
+            name_pos: crate::token::Position::default(),
+            name: "cancelCtx",
+            obj: None,
+        });
+        let struct_ident = syn::Ident::new("timerCtx", proc_macro2::Span::mixed_site());
+
+        let facts = FieldFacts::collect(
+            &field_type,
+            &struct_ident,
+            &typeinfer::GoType::Named("cancelCtx".to_string()),
+            false,
+            false,
+            false,
+        );
+
+        assert!(facts.cannot_derive_clone);
+        assert!(!facts.can_manual_clone);
+        super::super::type_decl_facts::clear_struct_clone_derivability();
     }
 }

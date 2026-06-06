@@ -2,12 +2,32 @@ use std::collections::HashSet;
 
 mod reflectlite;
 mod runtime;
+mod syscall;
 
 pub(super) fn module(import_path: &str, roots: Option<&HashSet<String>>) -> Option<syn::ItemMod> {
     match import_path {
         reflectlite::IMPORT_PATH => reflectlite::module(import_path, roots),
         runtime::IMPORT_PATH => runtime::module(import_path, roots),
         _ => None,
+    }
+}
+
+pub(super) fn supplement_items(
+    import_path: &str,
+    roots: Option<&HashSet<String>>,
+    items: &mut Vec<syn::Item>,
+) {
+    if import_path == syscall::IMPORT_PATH {
+        syscall::supplement_items(roots, items);
+    }
+}
+
+pub(super) fn supplement_type_env(
+    import_path: &str,
+    env: &mut crate::compiler::typeinfer::TypeEnv,
+) {
+    if import_path == syscall::IMPORT_PATH {
+        syscall::supplement_type_env(env);
     }
 }
 
@@ -32,10 +52,12 @@ mod tests {
 
     #[test]
     fn runtime_module_emits_only_requested_roots() {
-        let tokens = required_tokens_for("runtime", &["GOMAXPROCS", "GOOS"]);
+        let tokens = required_tokens_for("runtime", &["GOMAXPROCS", "GOOS", "GOROOT", "stringer"]);
 
         assert!(tokens.contains("pub fn GOMAXPROCS"), "{tokens}");
         assert!(tokens.contains("pub fn GOOS"), "{tokens}");
+        assert!(tokens.contains("pub fn GOROOT"), "{tokens}");
+        assert!(tokens.contains("pub trait stringer"), "{tokens}");
         assert!(!tokens.contains("pub fn GOARCH"), "{tokens}");
     }
 
@@ -59,6 +81,23 @@ mod tests {
         assert!(tokens.contains("pub const Slice"), "{tokens}");
         assert!(!tokens.contains("pub struct Value"), "{tokens}");
         assert!(!tokens.contains("pub fn ValueOf"), "{tokens}");
+        assert!(!tokens.contains("pub fn Swapper"), "{tokens}");
+    }
+
+    #[test]
+    fn reflectlite_type_roots_emit_typeof_comparable_contract() {
+        let tokens = required_tokens_for(
+            "internal/reflectlite",
+            &["TypeOf", "Type::Comparable", "rtype"],
+        );
+
+        assert!(tokens.contains("pub struct Type"), "{tokens}");
+        assert!(tokens.contains("pub type rtype"), "{tokens}");
+        assert!(tokens.contains("pub fn TypeOf"), "{tokens}");
+        assert!(tokens.contains("pub fn Comparable"), "{tokens}");
+        assert!(tokens.contains("pub fn String"), "{tokens}");
+        assert!(tokens.contains("reflect_type_comparable"), "{tokens}");
+        assert!(!tokens.contains("pub struct Value"), "{tokens}");
         assert!(!tokens.contains("pub fn Swapper"), "{tokens}");
     }
 

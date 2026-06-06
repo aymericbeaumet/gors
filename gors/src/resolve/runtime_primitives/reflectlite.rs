@@ -1,7 +1,8 @@
 use std::collections::HashSet;
 
 use crate::reflect_names::{
-    INVALID_CONST, KIND_TYPE, REFLECTLITE_IMPORT_PATH, SLICE_CONST, SWAPPER_FUNC, VALUE_KIND_ROOT,
+    INVALID_CONST, KIND_TYPE, REFLECTLITE_IMPORT_PATH, RTYPE_TYPE, SLICE_CONST, SWAPPER_FUNC,
+    TYPE_COMPARABLE_ROOT, TYPE_OF_FUNC, TYPE_STRING_ROOT, TYPE_TYPE, VALUE_KIND_ROOT,
     VALUE_LEN_ROOT, VALUE_OF_FUNC, VALUE_TYPE,
 };
 
@@ -17,6 +18,12 @@ pub(super) fn module(import_path: &str, roots: Option<&HashSet<String>>) -> Opti
         matches!(
             root.as_str(),
             VALUE_TYPE | VALUE_OF_FUNC | SWAPPER_FUNC | VALUE_LEN_ROOT | VALUE_KIND_ROOT
+        )
+    });
+    let needs_type = roots.iter().any(|root| {
+        matches!(
+            root.as_str(),
+            TYPE_TYPE | TYPE_OF_FUNC | TYPE_COMPARABLE_ROOT | TYPE_STRING_ROOT | RTYPE_TYPE
         )
     });
     let needs_kind = roots
@@ -77,6 +84,55 @@ pub(super) fn module(import_path: &str, roots: Option<&HashSet<String>>) -> Opti
             syn::parse_quote! {
                 pub fn ValueOf(i: Box<dyn std::any::Any>) -> Value {
                     Value { value: i }
+                }
+            },
+        ]);
+    }
+    if needs_type {
+        items.extend([
+            syn::parse_quote! {
+                pub struct Type {
+                    value: Box<dyn std::any::Any + Send + Sync>,
+                }
+            },
+            syn::parse_quote! {
+                #[allow(non_camel_case_types)]
+                pub type rtype = Type;
+            },
+            syn::parse_quote! {
+                impl Clone for Type {
+                    fn clone(&self) -> Self {
+                        Self {
+                            value: crate::builtin::clone_any_send_sync(self.value.as_ref()),
+                        }
+                    }
+                }
+            },
+            syn::parse_quote! {
+                impl Default for Type {
+                    fn default() -> Self {
+                        Self {
+                            value: Box::new(()) as Box<dyn std::any::Any + Send + Sync>,
+                        }
+                    }
+                }
+            },
+            syn::parse_quote! {
+                impl Type {
+                    pub fn Comparable(&self) -> bool {
+                        crate::builtin::reflect_type_comparable(self.value.as_ref())
+                    }
+
+                    pub fn String(&self) -> String {
+                        String::new()
+                    }
+                }
+            },
+            syn::parse_quote! {
+                pub fn TypeOf(i: Box<dyn std::any::Any>) -> Type {
+                    Type {
+                        value: crate::builtin::clone_any_send_sync(i.as_ref()),
+                    }
                 }
             },
         ]);

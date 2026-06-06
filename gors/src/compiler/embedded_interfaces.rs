@@ -1,11 +1,12 @@
 use super::{EmbeddedInterfaceField, interface_hooks, syn_inspect, synthetic_names};
 use proc_macro2::Span;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use syn::Token;
 
 pub(super) fn impls(
     items: &[syn::Item],
     methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
+    pointer_methods: &BTreeMap<String, BTreeSet<String>>,
     embedded_structs: BTreeMap<String, Vec<EmbeddedInterfaceField>>,
 ) -> Vec<syn::Item> {
     let trait_methods = syn_inspect::trait_method_fns(items);
@@ -24,10 +25,13 @@ pub(super) fn impls(
                 .get(&struct_name)
                 .map(Vec::as_slice)
                 .unwrap_or_default();
+            let struct_pointer_methods = pointer_methods.get(&struct_name);
             let mut impl_items = vec![];
             for trait_fn in required_methods {
                 let method_name = trait_fn.sig.ident.to_string();
-                if let Some(method) = inherited_method_impl_item(struct_methods, &method_name) {
+                if let Some(method) =
+                    inherited_method_impl_item(struct_methods, struct_pointer_methods, &method_name)
+                {
                     impl_items.push(method);
                 } else {
                     impl_items.push(field_forwarding_impl_item(trait_fn, &field.field_ident));
@@ -58,6 +62,7 @@ pub(super) fn impls(
                     &struct_ident,
                     &field.field_ident,
                     struct_methods,
+                    struct_pointer_methods,
                 ));
             }
             if !pointer_impl_items.is_empty() {
@@ -85,8 +90,12 @@ fn trait_ident_for_field(field: &EmbeddedInterfaceField) -> Option<&syn::Ident> 
 
 fn inherited_method_impl_item(
     methods: &[syn::ImplItemFn],
+    pointer_methods: Option<&BTreeSet<String>>,
     method_name: &str,
 ) -> Option<syn::ImplItem> {
+    if pointer_methods.is_some_and(|methods| methods.contains(method_name)) {
+        return None;
+    }
     let mut method = methods
         .iter()
         .find(|method| method.sig.ident == method_name)?
@@ -117,6 +126,7 @@ fn pointer_forwarding_impl_item(
     struct_ident: &syn::Ident,
     field_ident: &syn::Ident,
     methods: &[syn::ImplItemFn],
+    pointer_methods: Option<&BTreeSet<String>>,
 ) -> syn::ImplItem {
     let mut sig = trait_fn.sig.clone();
     set_receiver_for_trait_forwarding(&mut sig);
@@ -126,10 +136,22 @@ fn pointer_forwarding_impl_item(
     let has_inherent_method = methods
         .iter()
         .any(|method| method.sig.ident == method_ident);
+    let has_pointer_inherent_method =
+        pointer_methods.is_some_and(|methods| methods.contains(&method_name));
     let block = match method_name.as_str() {
         interface_hooks::AS_ANY_METHOD => syn::parse_quote!({ None }),
         interface_hooks::CLONE_BOX_METHOD => {
             syn::parse_quote!({ crate::builtin::panic_value("cloned non-clone interface value") })
+        }
+        _ if has_pointer_inherent_method && matches!(sig.output, syn::ReturnType::Default) => {
+            syn::parse_quote!({
+                #struct_ident::#method_ident(self.clone(), #(#arg_idents),*);
+            })
+        }
+        _ if has_pointer_inherent_method => {
+            syn::parse_quote!({
+                #struct_ident::#method_ident(self.clone(), #(#arg_idents),*)
+            })
         }
         _ if has_inherent_method && matches!(sig.output, syn::ReturnType::Default) => {
             syn::parse_quote!({

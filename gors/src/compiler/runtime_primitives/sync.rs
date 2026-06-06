@@ -47,8 +47,10 @@ pub(super) fn replace_pool_module(module: &mut CompiledModule) -> bool {
         },
         syn::parse_quote! {
             impl Pool {
-                pub fn Get(&self) -> Box<dyn std::any::Any> {
-                    let new_func = self
+                pub fn Get(mut p: crate::builtin::GorsPtr<Self>) -> Box<dyn std::any::Any> {
+                    let new_func = p
+                        .lock()
+                        .unwrap()
                         .New
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -59,7 +61,9 @@ pub(super) fn replace_pool_module(module: &mut CompiledModule) -> bool {
                     }
                 }
 
-                pub fn Put(&self, _x: Box<dyn std::any::Any>) {}
+                pub fn Put(mut p: crate::builtin::GorsPtr<Self>, _x: Box<dyn std::any::Any>) {
+                    let _ = p;
+                }
             }
         },
     ]);

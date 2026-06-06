@@ -39,6 +39,7 @@ pub enum GoType {
     Interface(std::string::String),
     Any,
     Error,
+    Unit,
     Unknown,
 }
 
@@ -148,6 +149,14 @@ impl GoType {
                 direction: GoChannelDirection::from_ast_dir(chan.dir),
             },
             ast::Expr::InterfaceType(_) => GoType::Any,
+            ast::Expr::StructType(struct_type)
+                if struct_type
+                    .fields
+                    .as_ref()
+                    .is_none_or(|fields| fields.list.is_empty()) =>
+            {
+                GoType::Unit
+            }
             ast::Expr::Ellipsis(e) => {
                 if let Some(elt) = &e.elt {
                     GoType::Slice(Box::new(GoType::from_expr(elt)))
@@ -448,8 +457,27 @@ impl GoType {
                 }
             }
             ast::Expr::SelectorExpr(sel) => {
-                if let Some(func) = type_method_expression_func(sel, env) {
-                    return func;
+                let base_type = GoType::infer_expr(&sel.x, env);
+                if !matches!(base_type, GoType::Unknown) {
+                    let field_type =
+                        field_type_from_receiver_type(base_type.clone(), sel.sel.name, env);
+                    if !matches!(field_type, GoType::Unknown) {
+                        return field_type;
+                    }
+                    let method_type =
+                        method_func_from_receiver_type(base_type.clone(), sel.sel.name, env);
+                    if !matches!(method_type, GoType::Unknown) {
+                        return method_type;
+                    }
+                }
+                let base_is_value = matches!(
+                    sel.x.as_ref(),
+                    ast::Expr::Ident(id)
+                        if env.get_var(id.name).is_some()
+                            || env.get_top_level_var(id.name).is_some()
+                );
+                if base_is_value {
+                    return GoType::Unknown;
                 }
                 if let ast::Expr::Ident(id) = &*sel.x {
                     let package_key = format!("{}.{}", id.name, sel.sel.name);
@@ -467,13 +495,10 @@ impl GoType {
                         };
                     }
                 }
-                let base_type = GoType::infer_expr(&sel.x, env);
-                let field_type =
-                    field_type_from_receiver_type(base_type.clone(), sel.sel.name, env);
-                if !matches!(field_type, GoType::Unknown) {
-                    return field_type;
+                if let Some(func) = type_method_expression_func(sel, env) {
+                    return func;
                 }
-                method_func_from_receiver_type(base_type, sel.sel.name, env)
+                GoType::Unknown
             }
             ast::Expr::TypeAssertExpr(ta) => {
                 if let Some(type_expr) = &ta.type_ {
@@ -704,10 +729,52 @@ fn unparen_expr<'a>(expr: &'a ast::Expr<'a>) -> &'a ast::Expr<'a> {
 
 fn field_type_from_receiver_type(receiver_type: GoType, field: &str, env: &TypeEnv) -> GoType {
     match env.resolve_alias(&receiver_type) {
-        GoType::Named(name) => env.get_field_type(&name, field),
+        GoType::Named(name) => {
+            let direct = env.get_field_type(&name, field);
+            if !matches!(direct, GoType::Unknown) {
+                return direct;
+            }
+            promoted_field_type_from_struct(&name, field, env, &mut HashSet::new())
+        }
         GoType::Pointer(inner) => field_type_from_receiver_type(*inner, field, env),
         _ => GoType::Unknown,
     }
+}
+
+fn promoted_field_type_from_struct(
+    struct_name: &str,
+    field: &str,
+    env: &TypeEnv,
+    visiting: &mut HashSet<std::string::String>,
+) -> GoType {
+    if !visiting.insert(struct_name.to_string()) {
+        return GoType::Unknown;
+    }
+    for (embedded_field, embedded_ty) in env.get_struct_fields(struct_name) {
+        if !env.is_struct_embedded_field(struct_name, &embedded_field) {
+            continue;
+        }
+        let target_name = match env.resolve_alias(&embedded_ty) {
+            GoType::Named(name) => Some(name),
+            GoType::Pointer(inner) => match env.resolve_alias(&inner) {
+                GoType::Named(name) => Some(name),
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some(target_name) = target_name else {
+            continue;
+        };
+        let direct = env.get_field_type(&target_name, field);
+        if !matches!(direct, GoType::Unknown) {
+            return direct;
+        }
+        let promoted = promoted_field_type_from_struct(&target_name, field, env, visiting);
+        if !matches!(promoted, GoType::Unknown) {
+            return promoted;
+        }
+    }
+    GoType::Unknown
 }
 
 fn method_return_from_receiver_type(receiver_type: GoType, method: &str, env: &TypeEnv) -> GoType {
@@ -841,6 +908,8 @@ pub struct TypeEnv {
     funcs: HashMap<std::string::String, Vec<GoType>>,
     /// Function/method name → parameter types
     func_params: HashMap<std::string::String, Vec<GoType>>,
+    /// Function/method name → interface parameter indices that need owned values.
+    owned_interface_params: HashMap<std::string::String, HashSet<usize>>,
     /// Method names declared with pointer receivers.
     pointer_receiver_methods: HashSet<std::string::String>,
     /// Function/method name → type parameter name → accepted constraint terms.
@@ -1248,6 +1317,315 @@ fn named_assertion_type(expr: &ast::Expr<'_>) -> Option<std::string::String> {
     }
 }
 
+fn owned_interface_param_indices(
+    param_types: &[GoType],
+    fields: &ast::FieldList<'_>,
+    body: &ast::BlockStmt<'_>,
+    mut is_named_interface: impl FnMut(&str) -> bool,
+) -> HashSet<usize> {
+    let assigned = assigned_ident_names_in_block(body);
+    if assigned.is_empty() {
+        return HashSet::new();
+    }
+
+    let mut owned = HashSet::new();
+    let mut index = 0usize;
+    for field in &fields.list {
+        if let Some(names) = &field.names {
+            for name in names {
+                let needs_owned = assigned.contains(name.name)
+                    && param_types.get(index).is_some_and(|ty| match ty {
+                        GoType::Interface(_) => true,
+                        GoType::Named(name) => is_named_interface(name),
+                        _ => false,
+                    });
+                if needs_owned {
+                    owned.insert(index);
+                }
+                index += 1;
+            }
+        } else {
+            index += 1;
+        }
+    }
+    owned
+}
+
+fn assigned_ident_names_in_block(block: &ast::BlockStmt<'_>) -> HashSet<std::string::String> {
+    let mut names = HashSet::new();
+    for stmt in &block.list {
+        collect_assigned_ident_names_from_stmt(stmt, &mut names);
+    }
+    names
+}
+
+fn collect_assigned_ident_names_from_stmt(
+    stmt: &ast::Stmt<'_>,
+    out: &mut HashSet<std::string::String>,
+) {
+    match stmt {
+        ast::Stmt::AssignStmt(assign) => {
+            for lhs in &assign.lhs {
+                collect_assigned_ident_names_from_lhs(lhs, out);
+            }
+            for rhs in &assign.rhs {
+                collect_assigned_ident_names_from_expr(rhs, out);
+            }
+        }
+        ast::Stmt::BlockStmt(block) => {
+            for stmt in &block.list {
+                collect_assigned_ident_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Stmt::BranchStmt(_) | ast::Stmt::EmptyStmt(_) => {}
+        ast::Stmt::CaseClause(case) => {
+            for stmt in &case.body {
+                collect_assigned_ident_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Stmt::CommClause(comm) => {
+            if let Some(stmt) = &comm.comm {
+                collect_assigned_ident_names_from_stmt(stmt, out);
+            }
+            for stmt in &comm.body {
+                collect_assigned_ident_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Stmt::DeclStmt(decl) => {
+            for spec in &decl.decl.specs {
+                if let ast::Spec::ValueSpec(value) = spec
+                    && let Some(values) = &value.values
+                {
+                    for expr in values {
+                        collect_assigned_ident_names_from_expr(expr, out);
+                    }
+                }
+            }
+        }
+        ast::Stmt::DeferStmt(defer) => collect_assigned_ident_names_from_call(&defer.call, out),
+        ast::Stmt::ExprStmt(expr) => collect_assigned_ident_names_from_expr(&expr.x, out),
+        ast::Stmt::ForStmt(for_stmt) => {
+            if let Some(init) = &for_stmt.init {
+                collect_assigned_ident_names_from_stmt(init, out);
+            }
+            if let Some(cond) = &for_stmt.cond {
+                collect_assigned_ident_names_from_expr(cond, out);
+            }
+            if let Some(post) = &for_stmt.post {
+                collect_assigned_ident_names_from_stmt(post, out);
+            }
+            for stmt in &for_stmt.body.list {
+                collect_assigned_ident_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Stmt::GoStmt(go) => collect_assigned_ident_names_from_call(&go.call, out),
+        ast::Stmt::IfStmt(if_stmt) => {
+            if let Some(init) = &*if_stmt.init {
+                collect_assigned_ident_names_from_stmt(init, out);
+            }
+            collect_assigned_ident_names_from_expr(&if_stmt.cond, out);
+            for stmt in &if_stmt.body.list {
+                collect_assigned_ident_names_from_stmt(stmt, out);
+            }
+            if let Some(else_stmt) = &*if_stmt.else_ {
+                collect_assigned_ident_names_from_stmt(else_stmt, out);
+            }
+        }
+        ast::Stmt::IncDecStmt(inc_dec) => collect_assigned_ident_names_from_lhs(&inc_dec.x, out),
+        ast::Stmt::LabeledStmt(labeled) => {
+            collect_assigned_ident_names_from_stmt(&labeled.stmt, out)
+        }
+        ast::Stmt::RangeStmt(range) => {
+            if matches!(range.tok, Some(token::Token::ASSIGN | token::Token::DEFINE)) {
+                if let Some(key) = &range.key {
+                    collect_assigned_ident_names_from_lhs(key, out);
+                }
+                if let Some(value) = &range.value {
+                    collect_assigned_ident_names_from_lhs(value, out);
+                }
+            }
+            collect_assigned_ident_names_from_expr(&range.x, out);
+            for stmt in &range.body.list {
+                collect_assigned_ident_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Stmt::ReturnStmt(ret) => {
+            for expr in &ret.results {
+                collect_assigned_ident_names_from_expr(expr, out);
+            }
+        }
+        ast::Stmt::SelectStmt(select) => {
+            for stmt in &select.body.list {
+                collect_assigned_ident_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Stmt::SendStmt(send) => {
+            collect_assigned_ident_names_from_expr(&send.chan, out);
+            collect_assigned_ident_names_from_expr(&send.value, out);
+        }
+        ast::Stmt::SwitchStmt(switch) => {
+            if let Some(init) = &switch.init {
+                collect_assigned_ident_names_from_stmt(init, out);
+            }
+            if let Some(tag) = &switch.tag {
+                collect_assigned_ident_names_from_expr(tag, out);
+            }
+            for stmt in &switch.body.list {
+                collect_assigned_ident_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Stmt::TypeSwitchStmt(type_switch) => {
+            if let Some(init) = &type_switch.init {
+                collect_assigned_ident_names_from_stmt(init, out);
+            }
+            collect_assigned_ident_names_from_stmt(&type_switch.assign, out);
+            for stmt in &type_switch.body.list {
+                collect_assigned_ident_names_from_stmt(stmt, out);
+            }
+        }
+    }
+}
+
+fn collect_assigned_ident_names_from_lhs(
+    expr: &ast::Expr<'_>,
+    out: &mut HashSet<std::string::String>,
+) {
+    match expr {
+        ast::Expr::Ident(ident) if ident.name != "_" => {
+            out.insert(ident.name.to_string());
+        }
+        ast::Expr::ParenExpr(paren) => collect_assigned_ident_names_from_lhs(&paren.x, out),
+        _ => {}
+    }
+}
+
+fn collect_assigned_ident_names_from_expr(
+    expr: &ast::Expr<'_>,
+    out: &mut HashSet<std::string::String>,
+) {
+    match expr {
+        ast::Expr::ArrayType(array) => {
+            if let Some(len) = &array.len {
+                collect_assigned_ident_names_from_expr(len, out);
+            }
+            collect_assigned_ident_names_from_expr(&array.elt, out);
+        }
+        ast::Expr::BasicLit(_) | ast::Expr::Ident(_) => {}
+        ast::Expr::BinaryExpr(binary) => {
+            collect_assigned_ident_names_from_expr(&binary.x, out);
+            collect_assigned_ident_names_from_expr(&binary.y, out);
+        }
+        ast::Expr::CallExpr(call) => collect_assigned_ident_names_from_call(call, out),
+        ast::Expr::ChanType(chan) => collect_assigned_ident_names_from_expr(&chan.value, out),
+        ast::Expr::CompositeLit(lit) => {
+            if let Some(type_) = &lit.type_ {
+                collect_assigned_ident_names_from_expr(type_, out);
+            }
+            if let Some(elts) = &lit.elts {
+                for elt in elts {
+                    collect_assigned_ident_names_from_expr(elt, out);
+                }
+            }
+        }
+        ast::Expr::Ellipsis(ellipsis) => {
+            if let Some(elt) = &ellipsis.elt {
+                collect_assigned_ident_names_from_expr(elt, out);
+            }
+        }
+        ast::Expr::FuncLit(func) => {
+            for stmt in &func.body.list {
+                collect_assigned_ident_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Expr::FuncType(func) => {
+            for field in &func.params.list {
+                if let Some(type_) = &field.type_ {
+                    collect_assigned_ident_names_from_expr(type_, out);
+                }
+            }
+            if let Some(results) = &func.results {
+                for field in &results.list {
+                    if let Some(type_) = &field.type_ {
+                        collect_assigned_ident_names_from_expr(type_, out);
+                    }
+                }
+            }
+        }
+        ast::Expr::IndexExpr(index) => {
+            collect_assigned_ident_names_from_expr(&index.x, out);
+            collect_assigned_ident_names_from_expr(&index.index, out);
+        }
+        ast::Expr::IndexListExpr(index) => {
+            collect_assigned_ident_names_from_expr(&index.x, out);
+            for expr in &index.indices {
+                collect_assigned_ident_names_from_expr(expr, out);
+            }
+        }
+        ast::Expr::InterfaceType(interface) => {
+            if let Some(methods) = &interface.methods {
+                for field in &methods.list {
+                    if let Some(type_) = &field.type_ {
+                        collect_assigned_ident_names_from_expr(type_, out);
+                    }
+                }
+            }
+        }
+        ast::Expr::KeyValueExpr(kv) => {
+            collect_assigned_ident_names_from_expr(&kv.key, out);
+            collect_assigned_ident_names_from_expr(&kv.value, out);
+        }
+        ast::Expr::MapType(map) => {
+            collect_assigned_ident_names_from_expr(&map.key, out);
+            collect_assigned_ident_names_from_expr(&map.value, out);
+        }
+        ast::Expr::ParenExpr(paren) => collect_assigned_ident_names_from_expr(&paren.x, out),
+        ast::Expr::SelectorExpr(selector) => {
+            collect_assigned_ident_names_from_expr(&selector.x, out);
+        }
+        ast::Expr::SliceExpr(slice) => {
+            collect_assigned_ident_names_from_expr(&slice.x, out);
+            if let Some(low) = &slice.low {
+                collect_assigned_ident_names_from_expr(low, out);
+            }
+            if let Some(high) = &slice.high {
+                collect_assigned_ident_names_from_expr(high, out);
+            }
+            if let Some(max) = &slice.max {
+                collect_assigned_ident_names_from_expr(max, out);
+            }
+        }
+        ast::Expr::StarExpr(star) => collect_assigned_ident_names_from_expr(&star.x, out),
+        ast::Expr::StructType(struct_type) => {
+            if let Some(fields) = &struct_type.fields {
+                for field in &fields.list {
+                    if let Some(type_) = &field.type_ {
+                        collect_assigned_ident_names_from_expr(type_, out);
+                    }
+                }
+            }
+        }
+        ast::Expr::TypeAssertExpr(assert) => {
+            collect_assigned_ident_names_from_expr(&assert.x, out);
+            if let Some(type_) = &assert.type_ {
+                collect_assigned_ident_names_from_expr(type_, out);
+            }
+        }
+        ast::Expr::UnaryExpr(unary) => collect_assigned_ident_names_from_expr(&unary.x, out),
+    }
+}
+
+fn collect_assigned_ident_names_from_call(
+    call: &ast::CallExpr<'_>,
+    out: &mut HashSet<std::string::String>,
+) {
+    collect_assigned_ident_names_from_expr(&call.fun, out);
+    if let Some(args) = &call.args {
+        for arg in args {
+            collect_assigned_ident_names_from_expr(arg, out);
+        }
+    }
+}
+
 fn embedded_interface_name(expr: &ast::Expr) -> Option<std::string::String> {
     match expr {
         ast::Expr::Ident(id) => Some(id.name.to_string()),
@@ -1633,6 +2011,20 @@ impl TypeEnv {
 
     pub fn set_func_params(&mut self, name: &str, params: Vec<GoType>) {
         self.func_params.insert(name.to_string(), params);
+    }
+
+    pub fn set_owned_interface_params(&mut self, name: &str, params: HashSet<usize>) {
+        if params.is_empty() {
+            self.owned_interface_params.remove(name);
+        } else {
+            self.owned_interface_params.insert(name.to_string(), params);
+        }
+    }
+
+    pub fn func_param_needs_owned_interface(&self, name: &str, index: usize) -> bool {
+        self.owned_interface_params
+            .get(name)
+            .is_some_and(|indices| indices.contains(&index))
     }
 
     pub fn set_func_variadic_start(&mut self, name: &str, start: usize) {
@@ -2355,6 +2747,12 @@ impl TypeEnv {
                 qualify_package_types(package_name, params, package_env),
             );
         }
+        for (name, indices) in &package_env.owned_interface_params {
+            self.set_owned_interface_params(
+                &qualify_package_member_name(package_name, name, package_env),
+                indices.clone(),
+            );
+        }
         for name in &package_env.pointer_receiver_methods {
             self.set_pointer_receiver_method(&qualify_package_member_name(
                 package_name,
@@ -2572,6 +2970,21 @@ impl TypeEnv {
         }
     }
 
+    /// Pre-scan a package split across multiple files.
+    ///
+    /// Some generated stdlib files initialize constants with conversions to
+    /// types declared in a different file, such as `const ENOENT = Errno(2)`.
+    /// Scanning every file twice lets the first pass collect cross-file type
+    /// and function declarations before the second pass refreshes value facts.
+    pub fn scan_files(&mut self, files: &[&ast::File<'_>]) {
+        for file in files {
+            self.scan_file(file);
+        }
+        for file in files {
+            self.scan_file(file);
+        }
+    }
+
     fn scan_type_spec(&mut self, ts: &ast::TypeSpec) {
         let Some(ref name) = ts.name else { return };
         let type_param_names = type_parameter_names(ts.type_params.as_ref());
@@ -2756,12 +3169,19 @@ impl TypeEnv {
                             &method_key,
                             interface_assertion_names_in_block(body),
                         );
+                        let owned = owned_interface_param_indices(
+                            &params,
+                            &fd.type_.params,
+                            body,
+                            |name| self.is_interface(name),
+                        );
+                        self.set_owned_interface_params(&method_key, owned);
                     }
                 }
             }
         }
         if !is_method {
-            self.set_func_params(name, params);
+            self.set_func_params(name, params.clone());
             self.set_func(name, returns);
             self.set_func_type_param_constraints(name, type_param_constraints);
             if let Some(start) = variadic_start {
@@ -2769,6 +3189,11 @@ impl TypeEnv {
             }
             if let Some(body) = &fd.body {
                 self.set_func_interface_assertions(name, interface_assertion_names_in_block(body));
+                let owned =
+                    owned_interface_param_indices(&params, &fd.type_.params, body, |name| {
+                        self.is_interface(name)
+                    });
+                self.set_owned_interface_params(name, owned);
             }
         }
 
@@ -3094,6 +3519,36 @@ mod tests {
         assert_eq!(
             env.get_var("Second"),
             Some(GoType::Named("Duration".to_string()))
+        );
+    }
+
+    #[test]
+    fn scan_files_preserves_const_conversion_type_declared_in_later_file() {
+        let const_file = parse_file(
+            "zerrors.go",
+            r#"
+                package p
+
+                const ENOENT = Errno(2)
+            "#,
+        )
+        .unwrap();
+        let type_file = parse_file(
+            "syscall.go",
+            r#"
+                package p
+
+                type Errno uintptr
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+
+        env.scan_files(&[&const_file, &type_file]);
+
+        assert_eq!(
+            env.get_var("ENOENT"),
+            Some(GoType::Named("Errno".to_string()))
         );
     }
 

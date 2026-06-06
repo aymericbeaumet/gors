@@ -90,9 +90,15 @@ pub(super) fn impls_for_local_structs(
                 {
                     continue;
                 }
-                let pointer_satisfies = interface_method_sets::pointer_satisfies(
+                let pointer_satisfies = interface_method_sets::pointer_type_satisfies(
+                    struct_name,
+                    &interface_name,
                     struct_method_list,
                     &method_set.required_methods,
+                ) && interface_impls::pointer_can_emit_methods(
+                    struct_name,
+                    &method_set.direct_methods,
+                    methods,
                 );
                 if !pointer_satisfies {
                     continue;
@@ -255,10 +261,16 @@ fn push_embedded_pointer_impls(
     state: &mut ImportedImplEmitState<'_>,
 ) {
     let embedded_method_set = interface_method_sets::for_impl(embedded.name, &[]);
-    if !interface_method_sets::pointer_satisfies(
+    if !(interface_method_sets::pointer_type_satisfies(
+        embedded.struct_name,
+        embedded.name,
         embedded.struct_method_list,
         &embedded_method_set.required_methods,
-    ) {
+    ) && interface_impls::pointer_can_emit_methods(
+        embedded.struct_name,
+        &embedded_method_set.direct_methods,
+        state.methods,
+    )) {
         return;
     }
     if !state.emitted_interface_impls.insert((

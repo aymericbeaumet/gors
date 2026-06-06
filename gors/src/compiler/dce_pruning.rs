@@ -16,19 +16,18 @@ pub(super) fn retain_reachable_items(
         .iter()
         .enumerate()
         .filter_map(|(idx, item)| {
-            reachable
-                .keep
-                .contains(&idx)
-                .then(|| {
-                    reachable_item_for_names(
-                        item,
-                        &reachable.names,
-                        &item_names,
-                        &top_level_names,
-                        roots,
-                    )
-                })
-                .flatten()
+            if generated_attrs::item_preserves_for_dce(item) {
+                return Some(item.clone());
+            }
+            reachable.keep.contains(&idx).then(|| {
+                reachable_item_for_names(
+                    item,
+                    &reachable.names,
+                    &item_names,
+                    &top_level_names,
+                    roots,
+                )
+            })?
         })
         .collect();
 }
@@ -84,15 +83,16 @@ pub(super) fn prune_unused_struct_fields(
             generated_attrs::allow_dead_code(&mut item_struct.attrs);
             continue;
         }
+        let public_struct = matches!(item_struct.vis, syn::Visibility::Public(_));
         fields.named = fields
             .named
             .clone()
             .into_iter()
             .filter_map(|field| {
-                let keep = field
-                    .ident
-                    .as_ref()
-                    .is_none_or(|ident| collector.used.contains(&ident.to_string()));
+                let public_field = matches!(field.vis, syn::Visibility::Public(_));
+                let keep = field.ident.as_ref().is_none_or(|ident| {
+                    collector.used.contains(&ident.to_string()) || (public_struct && public_field)
+                });
                 if !keep && let Some(ident) = &field.ident {
                     removed.insert(ident.to_string());
                 }

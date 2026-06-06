@@ -80,3 +80,44 @@ pub(super) fn reachable_stdlib_items(
     reachability_cache::store_items(cache_key, &entry);
     entry
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn reachable_reflect_mapiter_key_retains_copyval() -> Result<(), Box<dyn std::error::Error>> {
+        let roots = HashSet::from(["MapIter".to_string(), "MapIter::Key".to_string()]);
+        let module = crate::resolve::resolve_with_roots("reflect", &roots)
+            .ok_or_else(|| std::io::Error::other("resolve reflect"))?;
+        let Some((_, items)) = module.content else {
+            return Err(std::io::Error::other("reflect items").into());
+        };
+        let module_names = HashSet::from(["reflect".to_string()]);
+        let reachable = reachable_stdlib_items(&items, &roots, &module_names);
+
+        assert!(reachable.names.contains("copyVal"), "{:?}", reachable.names);
+        assert!(
+            reachable
+                .keep
+                .iter()
+                .any(|index| item_named(&items[*index], "copyVal")),
+            "reachable names: {:?}",
+            reachable.names
+        );
+        Ok(())
+    }
+
+    fn item_named(item: &syn::Item, expected: &str) -> bool {
+        match item {
+            syn::Item::Fn(func) => func.sig.ident == expected,
+            syn::Item::Const(konst) => konst.ident == expected,
+            syn::Item::Static(static_item) => static_item.ident == expected,
+            syn::Item::Struct(strukt) => strukt.ident == expected,
+            syn::Item::Trait(trait_item) => trait_item.ident == expected,
+            syn::Item::Type(type_item) => type_item.ident == expected,
+            _ => false,
+        }
+    }
+}

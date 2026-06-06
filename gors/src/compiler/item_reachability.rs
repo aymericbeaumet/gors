@@ -70,100 +70,81 @@ pub(super) fn reachable_item_for_names(
         return Some(item.clone());
     }
 
-    let trait_reachable = item_impl.trait_.as_ref().is_some_and(|(_, path, _)| {
-        path.segments.last().is_some_and(|seg| {
-            let name = seg.ident.to_string();
-            names.contains(&name) && !is_ambient_trait_name(&name)
-        }) || path_mentions_name(path, names)
-    });
     let self_name = named_self_type(&item_impl.self_ty);
     let self_names = self_type_reachability_names(&item_impl.self_ty);
     let self_reachable = type_mentions_name(&item_impl.self_ty, names)
         || self_names.iter().any(|name| {
-            names
-                .iter()
-                .any(|root| root.starts_with(&format!("{name}::")))
+            names.contains(name)
+                || names
+                    .iter()
+                    .any(|root| root.starts_with(&format!("{name}::")))
         });
 
-    if trait_reachable {
+    if let Some((_, path, _)) = &item_impl.trait_ {
         let trait_name = item_impl
             .trait_
             .as_ref()
             .and_then(|(_, path, _)| path.segments.last())
             .map(|seg| seg.ident.to_string());
-        if let Some(self_name) = named_self_type(&item_impl.self_ty)
-            && trait_name
-                .as_ref()
-                .is_none_or(|trait_name| !roots.contains(trait_name))
-            && item_names.contains(&self_name)
-            && !names.contains(&self_name)
-        {
-            return None;
-        }
-        if let Some(trait_name) = trait_name {
-            if is_ambient_trait_name(&trait_name) {
-                return Some(item.clone());
-            }
-            if item_impl.trait_.as_ref().is_some_and(|(_, path, _)| {
-                qualified_external_trait_path(path, &trait_name, top_level_names)
-            }) {
-                let mut preserved = item_impl.clone();
-                super::generated_attrs::allow_dead_code(&mut preserved.attrs);
-                return Some(syn::Item::Impl(preserved));
-            }
-            if roots.contains(&trait_name) {
-                let mut preserved = item_impl.clone();
-                super::generated_attrs::allow_dead_code(&mut preserved.attrs);
-                return Some(syn::Item::Impl(preserved));
-            }
-            let mut filtered = item_impl.clone();
-            filtered.items.retain(|impl_item| match impl_item {
-                syn::ImplItem::Fn(func) => {
-                    let name = func.sig.ident.to_string();
-                    super::interface_hooks::is_runtime_hook(&name)
-                        || trait_item_name_reachable(&trait_name, &name, names)
-                }
-                syn::ImplItem::Const(konst) => {
-                    trait_item_name_reachable(&trait_name, &konst.ident.to_string(), names)
-                }
-                syn::ImplItem::Type(ty) => {
-                    trait_item_name_reachable(&trait_name, &ty.ident.to_string(), names)
-                }
-                syn::ImplItem::Macro(item_macro) => item_macro
-                    .mac
-                    .path
-                    .segments
-                    .last()
-                    .is_some_and(|seg| names.contains(&seg.ident.to_string())),
-                _ => false,
-            });
-            return Some(syn::Item::Impl(filtered));
-        }
-        return Some(syn::Item::Impl(item_impl.clone()));
-    }
-    if !self_reachable {
-        return None;
-    }
-    if item_impl.trait_.is_some() {
+        let Some(trait_name) = trait_name else {
+            return self_reachable.then(|| syn::Item::Impl(item_impl.clone()));
+        };
+        let trait_reachable = (names.contains(&trait_name) && !is_ambient_trait_name(&trait_name))
+            || path_mentions_name(path, names);
+        let explicit_impl_reachable = self_names
+            .iter()
+            .any(|self_name| names.contains(&trait_impl_reachability_name(&trait_name, self_name)));
+        let impl_member_reachable = item_impl.items.iter().any(|impl_item| {
+            impl_item_member_name(impl_item).is_some_and(|member_name| {
+                impl_item_name_reachable(&self_names, &member_name, names)
+            })
+        });
+        let self_only_names = self_names
+            .iter()
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
+        let follows_self_reachability = self_reachable
+            && trait_impl_can_follow_self_reachability(
+                path,
+                &trait_name,
+                &item_impl.self_ty,
+                &self_only_names,
+                top_level_names,
+            );
+        let external_local_impl_reachable =
+            super::generated_attrs::attrs_mark_external_local_interface_impl(&item_impl.attrs)
+                && trait_reachable
+                && self_reachable;
+        let keep_impl = explicit_impl_reachable
+            || impl_member_reachable
+            || follows_self_reachability
+            || external_local_impl_reachable
+            || (trait_reachable && is_ambient_trait_name(&trait_name))
+            || (trait_reachable && item_impl.items.is_empty())
+            || (self_reachable && is_runtime_support_trait_name(&trait_name))
+            || (trait_reachable && is_generated_box_trait_impl(&item_impl.self_ty))
+            || (trait_reachable
+                && qualified_external_trait_path(path, &trait_name, top_level_names));
+
         if self_name
             .as_deref()
             .is_some_and(super::interface_hooks::is_noop_type_name)
         {
             return Some(item.clone());
         }
-        if let Some((_, path, _)) = &item_impl.trait_
-            && let Some(trait_name) = path.segments.last().map(|seg| seg.ident.to_string())
-            && !trait_impl_can_follow_self_reachability(
-                path,
-                &trait_name,
-                &item_impl.self_ty,
-                names,
-                top_level_names,
-            )
-        {
-            return None;
+        if keep_impl {
+            if qualified_external_trait_path(path, &trait_name, top_level_names) {
+                let mut preserved = item_impl.clone();
+                super::generated_attrs::allow_dead_code(&mut preserved.attrs);
+                return Some(syn::Item::Impl(preserved));
+            }
+            return Some(item.clone());
         }
-        return Some(item.clone());
+        return None;
+    }
+
+    if !self_reachable {
+        return None;
     }
 
     let mut filtered = item_impl.clone();
@@ -187,6 +168,21 @@ pub(super) fn reachable_item_for_names(
     });
 
     (!filtered.items.is_empty()).then(|| syn::Item::Impl(filtered))
+}
+
+fn impl_item_member_name(item: &syn::ImplItem) -> Option<String> {
+    match item {
+        syn::ImplItem::Fn(func) => Some(func.sig.ident.to_string()),
+        syn::ImplItem::Const(konst) => Some(konst.ident.to_string()),
+        syn::ImplItem::Type(ty) => Some(ty.ident.to_string()),
+        syn::ImplItem::Macro(item_macro) => item_macro
+            .mac
+            .path
+            .segments
+            .last()
+            .map(|seg| seg.ident.to_string()),
+        _ => None,
+    }
 }
 
 fn impl_item_name_reachable(
@@ -231,8 +227,7 @@ pub(super) fn trait_impl_can_follow_self_reachability(
     {
         return true;
     }
-    if is_rust_display_trait_path(path, trait_name)
-        || is_rust_operator_trait_path(path)
+    if is_rust_operator_trait_path(path)
         || is_builtin_runtime_trait_path(path)
         || is_host_resource_trait_impl(path, self_ty)
         || is_generated_pointer_cell_impl(self_ty)
@@ -257,14 +252,22 @@ fn is_generated_pointer_cell_impl(self_ty: &syn::Type) -> bool {
     }
 }
 
+fn is_generated_box_trait_impl(self_ty: &syn::Type) -> bool {
+    match self_ty {
+        syn::Type::Path(path) => path
+            .path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "Box"),
+        syn::Type::Reference(reference) => is_generated_box_trait_impl(&reference.elem),
+        _ => false,
+    }
+}
+
 fn is_runtime_error_trait_path(path: &syn::Path, trait_name: &str) -> bool {
     matches!(trait_name, "error" | "Error")
         && (path_is(path, &["crate", "builtin", "error"])
             || path_is(path, &["std", "error", "Error"]))
-}
-
-fn is_rust_display_trait_path(path: &syn::Path, trait_name: &str) -> bool {
-    trait_name == "Display" && path_is(path, &["std", "fmt", "Display"])
 }
 
 fn is_rust_operator_trait_path(path: &syn::Path) -> bool {
@@ -283,6 +286,10 @@ fn is_host_resource_trait_impl(path: &syn::Path, self_ty: &syn::Type) -> bool {
 
 pub(super) fn impl_method_reachability_name(self_name: &str, method_name: &str) -> String {
     format!("{self_name}::{method_name}")
+}
+
+pub(super) fn trait_impl_reachability_name(trait_name: &str, self_name: &str) -> String {
+    format!("impl {trait_name} for {self_name}")
 }
 
 fn is_ambient_trait_name(name: &str) -> bool {
@@ -313,5 +320,12 @@ fn is_ambient_trait_name(name: &str) -> bool {
             | "comparable"
             | "Into"
             | "ToString"
+    )
+}
+
+fn is_runtime_support_trait_name(name: &str) -> bool {
+    matches!(
+        name,
+        "error" | "GorsReflectOps" | "ProjectedCell" | "ProjectedGuard"
     )
 }

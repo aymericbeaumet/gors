@@ -1,5 +1,7 @@
 use super::{CompiledModule, module_has_static, prune_replaced_items};
-use crate::generated_names::{as_any_method_ident, clone_box_method_ident};
+use crate::generated_names::{
+    as_any_method_ident, clone_box_method_ident, interface_key_method_ident,
+};
 use std::collections::HashSet;
 
 pub(super) const MODULE: &str = "os";
@@ -17,6 +19,7 @@ pub(super) fn inject_stdout(module: &mut CompiledModule) -> bool {
         &HashSet::from([FILE_TYPE.to_string()]),
     );
     let as_any = as_any_method_ident();
+    let interface_key = interface_key_method_ident();
     let clone_box = clone_box_method_ident();
     module.file.items.extend([
         syn::parse_quote! {
@@ -57,6 +60,10 @@ pub(super) fn inject_stdout(module: &mut CompiledModule) -> bool {
                     Some(self)
                 }
 
+                fn #interface_key(&self) -> crate::builtin::GorsInterfaceKey {
+                    crate::builtin::GorsInterfaceKey::non_comparable()
+                }
+
                 fn #clone_box(&self) -> Box<dyn crate::io::Writer> {
                     Box::new(*self) as Box<dyn crate::io::Writer>
                 }
@@ -70,6 +77,10 @@ pub(super) fn inject_stdout(module: &mut CompiledModule) -> bool {
             impl crate::io::Writer for crate::builtin::GorsPtr<File> {
                 fn #as_any(&self) -> Option<&dyn std::any::Any> {
                     Some(self)
+                }
+
+                fn #interface_key(&self) -> crate::builtin::GorsInterfaceKey {
+                    self.interface_key()
                 }
 
                 fn #clone_box(&self) -> Box<dyn crate::io::Writer> {

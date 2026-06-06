@@ -73,6 +73,7 @@ pub(super) fn local_const_go_type_for_expr(expr: &ast::Expr) -> Option<typeinfer
         ConstValue::Complex(_, _) => Some(typeinfer::GoType::Complex128),
         ConstValue::Float(_) => Some(typeinfer::GoType::Float64),
         ConstValue::Int(_) => Some(typeinfer::GoType::Int),
+        ConstValue::Rational(_) => Some(typeinfer::GoType::Float64),
         ConstValue::Str(_) => Some(typeinfer::GoType::String),
         ConstValue::Uint(_, _) => Some(typeinfer::GoType::Uint),
     }

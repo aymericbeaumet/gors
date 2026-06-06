@@ -3,7 +3,7 @@
 //! This module resolves import paths to Go source packages, currently backed by
 //! build-time generated metadata from the embedded Go SDK.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, OnceLock, RwLock};
 
 mod runtime_primitives;
@@ -317,10 +317,14 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
         return None;
     }
 
+    let package_mutable_top_level_vars = crate::compiler::mutable_top_level_var_names_for_files(
+        parsed_files.iter().map(|(_, ast)| ast),
+        false,
+    );
     let mut package_type_env = TypeEnv::new();
-    for (_, ast) in &parsed_files {
-        package_type_env.scan_file(ast);
-    }
+    let parsed_file_refs = parsed_files.iter().map(|(_, ast)| ast).collect::<Vec<_>>();
+    package_type_env.scan_files(&parsed_file_refs);
+    runtime_primitives::supplement_type_env(import_path, &mut package_type_env);
     let mut imported_type_envs: BTreeMap<String, crate::compiler::PackageFacts> = BTreeMap::new();
     for (_, ast) in &parsed_files {
         for import in ast.imports() {
@@ -355,6 +359,7 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
         package_type_env: &package_type_env,
         imported_type_envs: &imported_type_envs,
         import_renames: &import_renames,
+        package_mutable_top_level_vars: &package_mutable_top_level_vars,
         roots,
     };
 
@@ -364,6 +369,7 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
             &package_type_env,
             &imported_type_envs,
             &import_renames,
+            &package_mutable_top_level_vars,
             roots,
         ) {
             Ok(compiled) => compiled,
@@ -387,6 +393,7 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
         };
         all_items.extend(compiled.items);
     }
+    runtime_primitives::supplement_items(import_path, roots, &mut all_items);
 
     if all_items.is_empty() {
         cache_resolved_imports(import_path, roots, Vec::new());
@@ -424,6 +431,7 @@ fn compile_resolved_file(
     package_type_env: &TypeEnv,
     imported_type_envs: &BTreeMap<String, crate::compiler::PackageFacts>,
     import_renames: &BTreeMap<String, String>,
+    package_mutable_top_level_vars: &HashSet<String>,
     roots: Option<&HashSet<String>>,
 ) -> Result<syn::File, crate::compiler::CompilerError> {
     let mut type_env = package_type_env.clone();
@@ -434,10 +442,11 @@ fn compile_resolved_file(
         imported_type_envs,
     );
     crate::compiler::with_active_reachability_roots(roots, || {
-        crate::compiler::compile_with_type_env_and_import_renames(
+        crate::compiler::compile_with_type_env_import_renames_and_mutable_vars(
             ast,
             type_env,
             import_renames.clone(),
+            Some(package_mutable_top_level_vars.clone()),
         )
     })
 }
@@ -448,11 +457,18 @@ struct DeclRecoveryPlan {
     split_specs: usize,
 }
 
+#[derive(Default)]
+struct RecoverySelection {
+    whole_decl_indices: BTreeSet<usize>,
+    spec_indices: BTreeMap<usize, BTreeSet<usize>>,
+}
+
 struct ResolvedRecoveryContext<'a> {
     import_path: &'a str,
     package_type_env: &'a TypeEnv,
     imported_type_envs: &'a BTreeMap<String, crate::compiler::PackageFacts>,
     import_renames: &'a BTreeMap<String, String>,
+    package_mutable_top_level_vars: &'a HashSet<String>,
     roots: Option<&'a HashSet<String>>,
 }
 
@@ -463,7 +479,8 @@ fn recover_resolved_file_items<'a>(
     context: &ResolvedRecoveryContext<'_>,
 ) -> Vec<syn::Item> {
     let plans = recovery_plans_for_file(filename, content, reachable_names);
-    let mut items = Vec::new();
+    let mut fallback_items = Vec::new();
+    let mut selection = RecoverySelection::default();
     for plan in plans {
         let Some(shard) = parse_recovery_shard(
             filename,
@@ -479,10 +496,12 @@ fn recover_resolved_file_items<'a>(
             context.package_type_env,
             context.imported_type_envs,
             context.import_renames,
+            context.package_mutable_top_level_vars,
             context.roots,
         ) {
             Ok(compiled) => {
-                items.extend(compiled.items);
+                selection.whole_decl_indices.insert(plan.non_import_index);
+                fallback_items.extend(compiled.items);
                 continue;
             }
             Err(error) => {
@@ -510,9 +529,17 @@ fn recover_resolved_file_items<'a>(
                 context.package_type_env,
                 context.imported_type_envs,
                 context.import_renames,
+                context.package_mutable_top_level_vars,
                 context.roots,
             ) {
-                Ok(compiled) => items.extend(compiled.items),
+                Ok(compiled) => {
+                    selection
+                        .spec_indices
+                        .entry(plan.non_import_index)
+                        .or_default()
+                        .insert(spec_index);
+                    fallback_items.extend(compiled.items);
+                }
                 Err(error) => {
                     log_skip(format_args!(
                         "[gors] skip {}/{filename} {label}: compile error: {error}",
@@ -522,7 +549,27 @@ fn recover_resolved_file_items<'a>(
             }
         }
     }
-    items
+    let Some(combined) = parse_recovery_selection(filename, content, reachable_names, &selection)
+    else {
+        return fallback_items;
+    };
+    match compile_resolved_file(
+        combined,
+        context.package_type_env,
+        context.imported_type_envs,
+        context.import_renames,
+        context.package_mutable_top_level_vars,
+        context.roots,
+    ) {
+        Ok(compiled) => compiled.items,
+        Err(error) => {
+            log_skip(format_args!(
+                "[gors] skip {}/{filename} combined recovered declarations: compile error: {error}",
+                context.import_path
+            ));
+            fallback_items
+        }
+    }
 }
 
 fn recovery_plans_for_file<'a>(
@@ -555,6 +602,19 @@ fn parse_recovery_shard<'a>(
 ) -> Option<crate::ast::File<'a>> {
     let file = parse_filtered_file(filename, content, reachable_names)?;
     file_with_recovery_shard(file, target_non_import_index, target_spec_index)
+}
+
+fn parse_recovery_selection<'a>(
+    filename: &'a str,
+    content: &'a str,
+    reachable_names: Option<&HashSet<String>>,
+    selection: &RecoverySelection,
+) -> Option<crate::ast::File<'a>> {
+    if selection.whole_decl_indices.is_empty() && selection.spec_indices.is_empty() {
+        return None;
+    }
+    let file = parse_filtered_file(filename, content, reachable_names)?;
+    file_with_recovery_selection(file, selection)
 }
 
 fn parse_filtered_file<'a>(
@@ -601,6 +661,49 @@ fn file_with_recovery_shard<'a>(
     decls.push(selected?);
     file.decls = decls;
     Some(file)
+}
+
+fn file_with_recovery_selection<'a>(
+    mut file: crate::ast::File<'a>,
+    selection: &RecoverySelection,
+) -> Option<crate::ast::File<'a>> {
+    let mut decls = Vec::new();
+    let mut non_import_index = 0;
+    for decl in std::mem::take(&mut file.decls) {
+        if is_import_decl(&decl) {
+            decls.push(decl);
+            continue;
+        }
+        if selection.whole_decl_indices.contains(&non_import_index) {
+            decls.push(decl);
+        } else if let Some(spec_indices) = selection.spec_indices.get(&non_import_index)
+            && let Some(decl) = decl_with_recovery_specs(decl, spec_indices)
+        {
+            decls.push(decl);
+        }
+        non_import_index += 1;
+    }
+
+    file.decls = decls;
+    file_has_compilable_decl(&file).then_some(file)
+}
+
+fn decl_with_recovery_specs<'a>(
+    decl: crate::ast::Decl<'a>,
+    spec_indices: &BTreeSet<usize>,
+) -> Option<crate::ast::Decl<'a>> {
+    let crate::ast::Decl::GenDecl(mut gen_decl) = decl else {
+        return None;
+    };
+    if gen_decl.tok == crate::token::Token::IMPORT {
+        return None;
+    }
+    gen_decl.specs = std::mem::take(&mut gen_decl.specs)
+        .into_iter()
+        .enumerate()
+        .filter_map(|(idx, spec)| spec_indices.contains(&idx).then_some(spec))
+        .collect();
+    (!gen_decl.specs.is_empty()).then_some(crate::ast::Decl::GenDecl(gen_decl))
 }
 
 fn single_spec_decl<'a>(
@@ -794,6 +897,7 @@ fn scan_type_env_uncached(import_path: &str) -> Option<(String, TypeEnv)> {
     let files = package_files(import_path)?;
     let mut env = TypeEnv::new();
     let mut package_name = None;
+    let mut parsed_files = Vec::new();
 
     for (filename, content) in files.iter() {
         let Ok(ast) = crate::parser::parse_file(filename, content) else {
@@ -802,8 +906,12 @@ fn scan_type_env_uncached(import_path: &str) -> Option<(String, TypeEnv)> {
         if package_name.is_none() {
             package_name = Some(ast.name.name.to_string());
         }
-        env.scan_file(&ast);
+        parsed_files.push(ast);
     }
+
+    let parsed_file_refs = parsed_files.iter().collect::<Vec<_>>();
+    env.scan_files(&parsed_file_refs);
+    runtime_primitives::supplement_type_env(import_path, &mut env);
 
     package_name.map(|name| (name, env))
 }
@@ -873,15 +981,35 @@ fn reachable_package_names(
     roots: &HashSet<String>,
 ) -> HashSet<String> {
     let top_names = package_top_level_names(parsed_files);
+    let mut env = TypeEnv::new();
+    let file_refs = parsed_files
+        .iter()
+        .map(|(_, file)| file)
+        .collect::<Vec<_>>();
+    env.scan_files(&file_refs);
+    let interface_method_roots = interface_method_roots(roots, &top_names, &env);
     let mut reachable: HashSet<String> = roots
         .iter()
         .filter(|name| top_names.contains(name.as_str()))
         .cloned()
         .collect();
+    let mut value_reachable = reachable
+        .iter()
+        .filter(|name| !name.contains("::"))
+        .cloned()
+        .collect::<HashSet<_>>();
 
     let mut changed = true;
     while changed {
         changed = false;
+        changed |= expand_value_receiver_methods(&mut reachable, &value_reachable, &top_names);
+        changed |= expand_reachable_interface_methods(
+            &mut reachable,
+            &value_reachable,
+            &top_names,
+            &interface_method_roots,
+            &env,
+        );
         for (_, file) in parsed_files {
             for decl in &file.decls {
                 if !decl_is_reachable(decl, &reachable) {
@@ -897,11 +1025,81 @@ fn reachable_package_names(
                         changed |= reachable.insert(reference);
                     }
                 }
+                let mut value_refs = HashSet::new();
+                value_refs_from_decl(decl, &mut value_refs);
+                value_field_refs_from_decl(decl, &value_reachable, &mut value_refs);
+                for reference in value_refs {
+                    if top_names.contains(reference.as_str()) {
+                        changed |= reachable.insert(reference.clone());
+                        changed |= value_reachable.insert(reference);
+                    }
+                }
             }
         }
     }
 
     reachable
+}
+
+fn expand_value_receiver_methods(
+    reachable: &mut HashSet<String>,
+    value_reachable: &HashSet<String>,
+    top_names: &HashSet<String>,
+) -> bool {
+    let mut changed = false;
+    for concrete in value_reachable {
+        let receiver_prefix = format!("{concrete}::");
+        for name in top_names {
+            if name.starts_with(&receiver_prefix) {
+                changed |= reachable.insert(name.clone());
+            }
+        }
+    }
+    changed
+}
+
+fn interface_method_roots(
+    roots: &HashSet<String>,
+    top_names: &HashSet<String>,
+    env: &TypeEnv,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut method_roots: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for root in roots {
+        let Some((receiver, method)) = root.split_once("::") else {
+            continue;
+        };
+        if top_names.contains(receiver) && env.is_interface(receiver) {
+            method_roots
+                .entry(receiver.to_string())
+                .or_default()
+                .insert(method.to_string());
+        }
+    }
+    method_roots
+}
+
+fn expand_reachable_interface_methods(
+    reachable: &mut HashSet<String>,
+    value_reachable: &HashSet<String>,
+    top_names: &HashSet<String>,
+    interface_method_roots: &BTreeMap<String, BTreeSet<String>>,
+    env: &TypeEnv,
+) -> bool {
+    let mut changed = false;
+    for concrete in value_reachable {
+        for (interface_name, methods) in interface_method_roots {
+            if !env.named_type_implements_interface(concrete, interface_name, true) {
+                continue;
+            }
+            for method in methods {
+                let method_root = format!("{concrete}::{method}");
+                if top_names.contains(&method_root) {
+                    changed |= reachable.insert(method_root);
+                }
+            }
+        }
+    }
+    changed
 }
 
 fn package_top_level_names(parsed_files: &[(&str, crate::ast::File<'_>)]) -> HashSet<String> {
@@ -917,7 +1115,7 @@ fn decl_names(decl: &crate::ast::Decl<'_>) -> Vec<String> {
         crate::ast::Decl::FuncDecl(func) if func.recv.is_none() => {
             vec![func.name.name.to_string()]
         }
-        crate::ast::Decl::FuncDecl(_) => Vec::new(),
+        crate::ast::Decl::FuncDecl(func) => receiver_method_name(func).into_iter().collect(),
         crate::ast::Decl::GenDecl(gen_decl) => gen_decl
             .specs
             .iter()
@@ -945,8 +1143,11 @@ fn spec_names(spec: &crate::ast::Spec<'_>) -> Vec<String> {
 fn decl_is_reachable(decl: &crate::ast::Decl<'_>, reachable: &HashSet<String>) -> bool {
     match decl {
         crate::ast::Decl::FuncDecl(func) => {
-            reachable.contains(func.name.name)
-                || receiver_type_name(func).is_some_and(|name| reachable.contains(&name))
+            if func.recv.is_none() {
+                reachable.contains(func.name.name)
+            } else {
+                receiver_method_name(func).is_some_and(|name| reachable.contains(&name))
+            }
         }
         crate::ast::Decl::GenDecl(gen_decl) => gen_decl
             .specs
@@ -961,6 +1162,10 @@ fn receiver_type_name(func: &crate::ast::FuncDecl<'_>) -> Option<String> {
         .and_then(|recv| recv.list.first())
         .and_then(|field| field.type_.as_ref())
         .and_then(named_type_from_expr)
+}
+
+fn receiver_method_name(func: &crate::ast::FuncDecl<'_>) -> Option<String> {
+    receiver_type_name(func).map(|receiver| format!("{receiver}::{}", func.name.name))
 }
 
 fn named_type_from_expr(expr: &crate::ast::Expr<'_>) -> Option<String> {
@@ -992,8 +1197,11 @@ fn filter_decl_to_reachable<'a>(
 ) -> Option<crate::ast::Decl<'a>> {
     match decl {
         crate::ast::Decl::FuncDecl(func) => {
-            let keep = reachable.contains(func.name.name)
-                || receiver_type_name(&func).is_some_and(|name| reachable.contains(&name));
+            let keep = if func.recv.is_none() {
+                reachable.contains(func.name.name)
+            } else {
+                receiver_method_name(&func).is_some_and(|name| reachable.contains(&name))
+            };
             keep.then_some(crate::ast::Decl::FuncDecl(func))
         }
         crate::ast::Decl::GenDecl(mut gen_decl) => {
@@ -1256,6 +1464,236 @@ fn refs_from_expr(expr: &crate::ast::Expr<'_>, refs: &mut HashSet<String>) {
     }
 }
 
+fn value_refs_from_decl(decl: &crate::ast::Decl<'_>, refs: &mut HashSet<String>) {
+    match decl {
+        crate::ast::Decl::FuncDecl(func) => {
+            if let Some(body) = &func.body {
+                value_refs_from_block(body, refs);
+            }
+        }
+        crate::ast::Decl::GenDecl(gen_decl) => {
+            for spec in &gen_decl.specs {
+                if let crate::ast::Spec::ValueSpec(value_spec) = spec {
+                    value_refs_from_exprs(value_spec.values.as_deref().unwrap_or(&[]), refs);
+                }
+            }
+        }
+    }
+}
+
+fn value_field_refs_from_decl(
+    decl: &crate::ast::Decl<'_>,
+    value_reachable: &HashSet<String>,
+    refs: &mut HashSet<String>,
+) {
+    let crate::ast::Decl::GenDecl(gen_decl) = decl else {
+        return;
+    };
+    for spec in &gen_decl.specs {
+        let crate::ast::Spec::TypeSpec(type_spec) = spec else {
+            continue;
+        };
+        let Some(type_name) = type_spec.name.as_ref().map(|name| name.name) else {
+            continue;
+        };
+        if !value_reachable.contains(type_name) {
+            continue;
+        }
+        let crate::ast::Expr::StructType(struct_type) = &type_spec.type_ else {
+            continue;
+        };
+        let Some(fields) = struct_type.fields.as_ref() else {
+            continue;
+        };
+        for field in &fields.list {
+            if let Some(type_expr) = &field.type_ {
+                refs_from_expr(type_expr, refs);
+            }
+        }
+    }
+}
+
+fn value_refs_from_block(block: &crate::ast::BlockStmt<'_>, refs: &mut HashSet<String>) {
+    for stmt in &block.list {
+        value_refs_from_stmt(stmt, refs);
+    }
+}
+
+fn value_refs_from_stmt(stmt: &crate::ast::Stmt<'_>, refs: &mut HashSet<String>) {
+    match stmt {
+        crate::ast::Stmt::AssignStmt(assign) => {
+            value_refs_from_exprs(&assign.lhs, refs);
+            value_refs_from_exprs(&assign.rhs, refs);
+        }
+        crate::ast::Stmt::BlockStmt(block) => value_refs_from_block(block, refs),
+        crate::ast::Stmt::BranchStmt(_) | crate::ast::Stmt::EmptyStmt(_) => {}
+        crate::ast::Stmt::CaseClause(case_clause) => {
+            value_refs_from_exprs(case_clause.list.as_deref().unwrap_or(&[]), refs);
+            for stmt in &case_clause.body {
+                value_refs_from_stmt(stmt, refs);
+            }
+        }
+        crate::ast::Stmt::CommClause(comm_clause) => {
+            if let Some(comm) = comm_clause.comm.as_deref() {
+                value_refs_from_stmt(comm, refs);
+            }
+            for stmt in &comm_clause.body {
+                value_refs_from_stmt(stmt, refs);
+            }
+        }
+        crate::ast::Stmt::DeclStmt(decl_stmt) => {
+            for spec in &decl_stmt.decl.specs {
+                if let crate::ast::Spec::ValueSpec(value_spec) = spec {
+                    value_refs_from_exprs(value_spec.values.as_deref().unwrap_or(&[]), refs);
+                }
+            }
+        }
+        crate::ast::Stmt::DeferStmt(defer_stmt) => value_refs_from_call(&defer_stmt.call, refs),
+        crate::ast::Stmt::ExprStmt(expr_stmt) => value_refs_from_expr(&expr_stmt.x, refs),
+        crate::ast::Stmt::ForStmt(for_stmt) => {
+            if let Some(init) = for_stmt.init.as_deref() {
+                value_refs_from_stmt(init, refs);
+            }
+            if let Some(cond) = &for_stmt.cond {
+                value_refs_from_expr(cond, refs);
+            }
+            if let Some(post) = for_stmt.post.as_deref() {
+                value_refs_from_stmt(post, refs);
+            }
+            value_refs_from_block(&for_stmt.body, refs);
+        }
+        crate::ast::Stmt::GoStmt(go_stmt) => value_refs_from_call(&go_stmt.call, refs),
+        crate::ast::Stmt::IfStmt(if_stmt) => {
+            if let Some(init) = if_stmt.init.as_ref().as_ref() {
+                value_refs_from_stmt(init, refs);
+            }
+            value_refs_from_expr(&if_stmt.cond, refs);
+            value_refs_from_block(&if_stmt.body, refs);
+            if let Some(else_stmt) = if_stmt.else_.as_ref().as_ref() {
+                value_refs_from_stmt(else_stmt, refs);
+            }
+        }
+        crate::ast::Stmt::IncDecStmt(inc_dec) => value_refs_from_expr(&inc_dec.x, refs),
+        crate::ast::Stmt::LabeledStmt(labeled) => value_refs_from_stmt(&labeled.stmt, refs),
+        crate::ast::Stmt::RangeStmt(range) => {
+            if let Some(key) = &range.key {
+                value_refs_from_expr(key, refs);
+            }
+            if let Some(value) = &range.value {
+                value_refs_from_expr(value, refs);
+            }
+            value_refs_from_expr(&range.x, refs);
+            value_refs_from_block(&range.body, refs);
+        }
+        crate::ast::Stmt::ReturnStmt(return_stmt) => {
+            value_refs_from_exprs(&return_stmt.results, refs)
+        }
+        crate::ast::Stmt::SelectStmt(select_stmt) => value_refs_from_block(&select_stmt.body, refs),
+        crate::ast::Stmt::SendStmt(send_stmt) => {
+            value_refs_from_expr(&send_stmt.chan, refs);
+            value_refs_from_expr(&send_stmt.value, refs);
+        }
+        crate::ast::Stmt::SwitchStmt(switch_stmt) => {
+            if let Some(init) = switch_stmt.init.as_deref() {
+                value_refs_from_stmt(init, refs);
+            }
+            if let Some(tag) = &switch_stmt.tag {
+                value_refs_from_expr(tag, refs);
+            }
+            value_refs_from_block(&switch_stmt.body, refs);
+        }
+        crate::ast::Stmt::TypeSwitchStmt(type_switch) => {
+            if let Some(init) = type_switch.init.as_deref() {
+                value_refs_from_stmt(init, refs);
+            }
+            value_refs_from_stmt(&type_switch.assign, refs);
+            for stmt in &type_switch.body.list {
+                if let crate::ast::Stmt::CaseClause(case_clause) = stmt {
+                    for stmt in &case_clause.body {
+                        value_refs_from_stmt(stmt, refs);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn value_refs_from_call(call: &crate::ast::CallExpr<'_>, refs: &mut HashSet<String>) {
+    value_refs_from_expr(&call.fun, refs);
+    value_refs_from_exprs(call.args.as_deref().unwrap_or(&[]), refs);
+}
+
+fn value_refs_from_exprs(exprs: &[crate::ast::Expr<'_>], refs: &mut HashSet<String>) {
+    for expr in exprs {
+        value_refs_from_expr(expr, refs);
+    }
+}
+
+fn value_refs_from_expr(expr: &crate::ast::Expr<'_>, refs: &mut HashSet<String>) {
+    match expr {
+        crate::ast::Expr::BasicLit(_) => {}
+        crate::ast::Expr::BinaryExpr(binary) => {
+            value_refs_from_expr(&binary.x, refs);
+            value_refs_from_expr(&binary.y, refs);
+        }
+        crate::ast::Expr::CallExpr(call) => value_refs_from_call(call, refs),
+        crate::ast::Expr::CompositeLit(composite) => {
+            if let Some(type_expr) = composite.type_.as_deref() {
+                refs_from_expr(type_expr, refs);
+            }
+            value_refs_from_exprs(composite.elts.as_deref().unwrap_or(&[]), refs);
+        }
+        crate::ast::Expr::Ellipsis(ellipsis) => {
+            if let Some(elt) = ellipsis.elt.as_deref() {
+                value_refs_from_expr(elt, refs);
+            }
+        }
+        crate::ast::Expr::FuncLit(func_lit) => value_refs_from_block(&func_lit.body, refs),
+        crate::ast::Expr::Ident(ident) => {
+            if ident.name != "_" {
+                refs.insert(ident.name.to_string());
+            }
+        }
+        crate::ast::Expr::IndexExpr(index) => {
+            value_refs_from_expr(&index.x, refs);
+            value_refs_from_expr(&index.index, refs);
+        }
+        crate::ast::Expr::IndexListExpr(index) => {
+            value_refs_from_expr(&index.x, refs);
+            value_refs_from_exprs(&index.indices, refs);
+        }
+        crate::ast::Expr::KeyValueExpr(key_value) => {
+            value_refs_from_expr(&key_value.key, refs);
+            value_refs_from_expr(&key_value.value, refs);
+        }
+        crate::ast::Expr::ParenExpr(paren) => value_refs_from_expr(&paren.x, refs),
+        crate::ast::Expr::SelectorExpr(selector) => value_refs_from_expr(&selector.x, refs),
+        crate::ast::Expr::SliceExpr(slice) => {
+            value_refs_from_expr(&slice.x, refs);
+            if let Some(low) = slice.low.as_deref() {
+                value_refs_from_expr(low, refs);
+            }
+            if let Some(high) = slice.high.as_deref() {
+                value_refs_from_expr(high, refs);
+            }
+            if let Some(max) = slice.max.as_deref() {
+                value_refs_from_expr(max, refs);
+            }
+        }
+        crate::ast::Expr::StarExpr(star) => value_refs_from_expr(&star.x, refs),
+        crate::ast::Expr::TypeAssertExpr(type_assert) => {
+            value_refs_from_expr(&type_assert.x, refs);
+        }
+        crate::ast::Expr::UnaryExpr(unary) => value_refs_from_expr(&unary.x, refs),
+        crate::ast::Expr::ArrayType(_)
+        | crate::ast::Expr::ChanType(_)
+        | crate::ast::Expr::FuncType(_)
+        | crate::ast::Expr::InterfaceType(_)
+        | crate::ast::Expr::MapType(_)
+        | crate::ast::Expr::StructType(_) => {}
+    }
+}
+
 fn package_import_renames(
     parsed_files: &[(&str, crate::ast::File<'_>)],
 ) -> BTreeMap<String, String> {
@@ -1471,6 +1909,19 @@ mod tests {
     }
 
     #[test]
+    fn scan_type_env_preserves_syscall_errno_constant_type() {
+        let (package_name, env) = scan_type_env("syscall").expect("syscall type env");
+
+        assert_eq!(package_name, "syscall");
+        assert_eq!(
+            env.get_var("ENOENT"),
+            Some(crate::compiler::typeinfer::GoType::Named(
+                "Errno".to_string()
+            ))
+        );
+    }
+
+    #[test]
     fn reachable_names_include_instantiated_field_type_arguments()
     -> Result<(), Box<dyn std::error::Error>> {
         let file = crate::parser::parse_file(
@@ -1559,6 +2010,81 @@ mod tests {
     }
 
     #[test]
+    fn reachable_names_include_reflect_mapiter_copyval() -> Result<(), Box<dyn std::error::Error>> {
+        let files = package_files("reflect").ok_or_else(|| std::io::Error::other("files"))?;
+        let mut parsed_files = Vec::new();
+        for (filename, content) in files.iter() {
+            parsed_files.push((*filename, crate::parser::parse_file(filename, content)?));
+        }
+        let roots = HashSet::from(["MapIter".to_string()]);
+        let reachable = reachable_package_names(&parsed_files, &roots);
+
+        assert!(reachable.contains("MapIter"), "{reachable:?}");
+        assert!(reachable.contains("copyVal"), "{reachable:?}");
+        let module = resolve_with_roots("reflect", &roots)
+            .ok_or_else(|| std::io::Error::other("resolve reflect"))?;
+        let tokens = module.to_token_stream().to_string();
+        assert!(tokens.contains("fn copyVal"), "{tokens}");
+        Ok(())
+    }
+
+    #[test]
+    fn reachable_names_include_context_interface_receiver_methods()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let files = package_files("context").ok_or_else(|| std::io::Error::other("files"))?;
+        let mut parsed_files = Vec::new();
+        for (filename, content) in files.iter() {
+            parsed_files.push((*filename, crate::parser::parse_file(filename, content)?));
+        }
+        let roots = HashSet::from([
+            "Background".to_string(),
+            "TODO".to_string(),
+            "Context".to_string(),
+            "Context::Deadline".to_string(),
+            "Context::Done".to_string(),
+            "Context::Err".to_string(),
+            "Context::Value".to_string(),
+            "WithValue".to_string(),
+        ]);
+        let reachable = reachable_package_names(&parsed_files, &roots);
+
+        for expected in [
+            "backgroundCtx",
+            "todoCtx",
+            "emptyCtx",
+            "valueCtx",
+            "cancelCtx",
+            "timerCtx",
+        ] {
+            assert!(
+                reachable.contains(expected),
+                "{expected} missing from {reachable:?}"
+            );
+        }
+        let module = resolve_with_roots("context", &roots)
+            .ok_or_else(|| std::io::Error::other("resolve context"))?;
+        let tokens = module.to_token_stream().to_string();
+        for expected in [
+            "impl emptyCtx",
+            "pub fn Deadline",
+            "pub fn Done",
+            "pub fn Err",
+            "pub fn Value",
+            "impl Context for backgroundCtx",
+            "impl Context for todoCtx",
+            "impl < '__gors > Context for crate :: builtin :: GorsPtr < valueCtx < '__gors > >",
+            "fn value",
+        ] {
+            assert!(
+                tokens.contains(expected),
+                "{expected} missing from {tokens}"
+            );
+        }
+        assert!(!tokens.contains("impl stringer for timerCtx"), "{tokens}");
+        Ok(())
+    }
+
+    #[test]
     fn runtime_gomaxprocs_resolves_as_runtime_primitive() -> Result<(), Box<dyn std::error::Error>>
     {
         let roots = HashSet::from(["GOMAXPROCS".to_string()]);
@@ -1583,6 +2109,32 @@ mod tests {
         assert!(tokens.contains("pub fn AppendFloat"), "{tokens}");
         assert!(tokens.contains("fn genericFtoa"), "{tokens}");
         assert!(tokens.contains("static optimize_"), "{tokens}");
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_roots_retain_private_syscall_helpers_reached_from_public_functions()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let roots = HashSet::from([
+            "Close".to_string(),
+            "ENOENT".to_string(),
+            "Open".to_string(),
+            "O_RDONLY".to_string(),
+            "Read".to_string(),
+            "Seek".to_string(),
+        ]);
+        let module = resolve_with_roots("syscall", &roots)
+            .ok_or_else(|| std::io::Error::other("resolve syscall"))?;
+        let tokens = module.to_token_stream().to_string();
+
+        assert!(tokens.contains("pub fn Close"), "{tokens}");
+        assert!(tokens.contains("pub fn Open"), "{tokens}");
+        assert!(tokens.contains("pub fn Read"), "{tokens}");
+        assert!(tokens.contains("fn read"), "{tokens}");
+        assert!(tokens.contains("pub fn Seek"), "{tokens}");
+        assert!(tokens.contains("pub const ENOENT"), "{tokens}");
+        assert!(tokens.contains("pub const O_RDONLY"), "{tokens}");
+        assert!(tokens.contains("static errors"), "{tokens}");
         Ok(())
     }
 }
