@@ -266,7 +266,36 @@ impl Drop for ProfileTimer {
 }
 
 fn is_type_interface(name: &str) -> bool {
-    TYPE_ENV.with(|env| env.borrow().is_interface(name))
+    TYPE_ENV.with(|env| env.borrow().is_interface(name)) || imported_type_is_interface(name)
+}
+
+fn imported_type_is_interface(name: &str) -> bool {
+    let Some((package_name, type_name)) = name.split_once('.') else {
+        return false;
+    };
+    crate::resolve::scan_type_env(package_name)
+        .is_some_and(|(_, env)| env.is_interface(type_name) || env.is_interface(name))
+}
+
+fn interface_has_embedded_interfaces(name: &str) -> bool {
+    TYPE_ENV.with(|env| {
+        !env.borrow()
+            .get_interface_embedded_interfaces(name)
+            .is_empty()
+    }) || imported_interface_has_embedded_interfaces(name)
+}
+
+fn imported_interface_has_embedded_interfaces(name: &str) -> bool {
+    let Some((package_name, type_name)) = name.split_once('.') else {
+        return false;
+    };
+    crate::resolve::scan_type_env(package_name).is_some_and(|(_, env)| {
+        !env.get_interface_direct_embedded_interfaces(type_name)
+            .is_empty()
+            || !env
+                .get_interface_direct_embedded_interfaces(name)
+                .is_empty()
+    })
 }
 
 fn go_type_interface_name(go_type: &typeinfer::GoType) -> Option<String> {
@@ -5356,7 +5385,7 @@ fn func_result_type_from_ast(func_type: &ast::FuncType<'_>) -> syn::Type {
             let ty = field
                 .type_
                 .as_ref()
-                .map(type_from_expr_ref)
+                .map(func_result_type_from_ast_expr)
                 .unwrap_or_else(|| syn::parse_quote! { () });
             let count = field.names.as_ref().map_or(1, Vec::len);
             std::iter::repeat_n(ty, count)
@@ -5367,6 +5396,10 @@ fn func_result_type_from_ast(func_type: &ast::FuncType<'_>) -> syn::Type {
         [ty] => ty.clone(),
         _ => syn::parse_quote! { (#(#result_types),*) },
     }
+}
+
+fn func_result_type_from_ast_expr(expr: &ast::Expr) -> syn::Type {
+    boxed_interface_value_type_from_expr(expr).unwrap_or_else(|| type_from_expr_ref(expr))
 }
 
 fn func_param_types_from_ast(func_type: &ast::FuncType<'_>) -> Vec<syn::Type> {
@@ -5976,7 +6009,16 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
     let is_alias_decl = ts.assign.is_some();
 
     if is_alias_decl && !matches!(ts.type_, ast::Expr::InterfaceType(_)) {
-        let target_ty = type_from_expr_ref(&ts.type_);
+        let target_ty = interface_alias_target_type_from_expr(&ts.type_)
+            .unwrap_or_else(|| type_from_expr_ref(&ts.type_));
+        return Ok(vec![syn::parse_quote! {
+            #vis type #ident #generics = #target_ty;
+        }]);
+    }
+
+    if !matches!(ts.type_, ast::Expr::InterfaceType(_))
+        && let Some(target_ty) = interface_alias_target_type_from_expr(&ts.type_)
+    {
         return Ok(vec![syn::parse_quote! {
             #vis type #ident #generics = #target_ty;
         }]);
@@ -7053,6 +7095,14 @@ fn top_level_var_expr_and_type_from_ref(
             Some((path, go_type, selector_type_env_name(selector)?))
         }
         _ => None,
+    }
+}
+
+fn interface_alias_target_type_from_expr(expr: &ast::Expr) -> Option<syn::Type> {
+    match typeinfer::GoType::from_expr(expr) {
+        typeinfer::GoType::Any => Some(syn::parse_quote! { Box<dyn std::any::Any> }),
+        typeinfer::GoType::Error => Some(syn::parse_quote! { Box<dyn crate::builtin::error> }),
+        _ => boxed_interface_value_type_from_expr(expr),
     }
 }
 
@@ -8376,6 +8426,9 @@ fn compile_general_type_conversion(call_expr: ast::CallExpr) -> syn::Expr {
             let arg: syn::Expr = raw_arg.into();
             return syn::parse_quote! { #target_ty::from(#arg) };
         }
+        if go_type_is_interface_like(&inner) {
+            return compile_expr_with_expected(raw_arg, Some(&inner));
+        }
         let source = compile_expr_with_expected(raw_arg, Some(&inner));
         return syn::parse_quote! { #target_ty(#source) };
     }
@@ -8891,7 +8944,7 @@ fn shared_func_box_type_from_go_parts(
     let params = params.iter().map(rust_func_param_type_from_go_type);
     let result_types: Vec<syn::Type> = results
         .iter()
-        .map(rust_type_from_inferred_go_type)
+        .map(rust_func_result_type_from_go_type)
         .collect();
     let result: syn::Type = match result_types.as_slice() {
         [] => syn::parse_quote! { () },
@@ -8899,6 +8952,14 @@ fn shared_func_box_type_from_go_parts(
         _ => syn::parse_quote! { (#(#result_types),*) },
     };
     syn::parse_quote! { std::sync::Arc<dyn Fn(#(#params),*) -> #result + Send + Sync> }
+}
+
+fn rust_func_result_type_from_go_type(go_type: &typeinfer::GoType) -> syn::Type {
+    if let Some(interface_name) = go_type_interface_name(go_type) {
+        let trait_path = interface_trait_path_from_name(&interface_name);
+        return syn::parse_quote! { Box<dyn #trait_path> };
+    }
+    rust_type_from_inferred_go_type(go_type)
 }
 
 fn rust_func_param_type_from_go_type(go_type: &typeinfer::GoType) -> syn::Type {
@@ -9231,17 +9292,20 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
             let Some(type_arg) = it.next() else {
                 return compile_error_expr("make requires a type argument");
             };
-            let remaining: Vec<syn::Expr> = it.map(syn::Expr::from).collect();
+            let remaining: Vec<MakeSizeArg> = it.map(MakeSizeArg::from_expr).collect();
             match type_arg {
                 ast::Expr::ArrayType(arr) => {
                     let elem_type: syn::Type = (*arr.elt).into();
                     match remaining.as_slice() {
                         [] => syn::parse_quote! { Vec::<#elem_type>::new() },
                         [size] => {
-                            syn::parse_quote! { crate::builtin::make_vec::<#elem_type>((#size) as usize) }
+                            let size = compile_usize_size_arg(size);
+                            syn::parse_quote! { crate::builtin::make_vec::<#elem_type>(#size) }
                         }
                         [size, cap_arg, ..] => {
-                            syn::parse_quote! { { let mut v = Vec::<#elem_type>::with_capacity((#cap_arg) as usize); v.resize_with((#size) as usize, Default::default); v } }
+                            let size = compile_usize_size_arg(size);
+                            let cap_arg = compile_usize_size_arg(cap_arg);
+                            syn::parse_quote! { { let mut v = Vec::<#elem_type>::with_capacity(#cap_arg); v.resize_with(#size, Default::default); v } }
                         }
                     }
                 }
@@ -9255,7 +9319,8 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
                             syn::parse_quote! { std::collections::HashMap::<#key_type, #val_type>::new() }
                         }
                         [cap_arg, ..] => {
-                            syn::parse_quote! { std::collections::HashMap::<#key_type, #val_type>::with_capacity((#cap_arg) as usize) }
+                            let cap_arg = compile_usize_size_arg(cap_arg);
+                            syn::parse_quote! { std::collections::HashMap::<#key_type, #val_type>::with_capacity(#cap_arg) }
                         }
                     }
                 }
@@ -9391,7 +9456,20 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
     }
 }
 
-fn compile_named_make_call(type_arg: &ast::Expr, args: &[syn::Expr]) -> Option<syn::Expr> {
+struct MakeSizeArg {
+    expr: syn::Expr,
+    go_type: typeinfer::GoType,
+}
+
+impl MakeSizeArg {
+    fn from_expr(expr: ast::Expr) -> Self {
+        let go_type = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&expr, &env.borrow()));
+        let expr = compile_expr_with_expected(expr, None);
+        Self { expr, go_type }
+    }
+}
+
+fn compile_named_make_call(type_arg: &ast::Expr, args: &[MakeSizeArg]) -> Option<syn::Expr> {
     let go_type = typeinfer::GoType::from_expr(type_arg);
     let typeinfer::GoType::Named(name) = go_type else {
         return None;
@@ -9409,10 +9487,13 @@ fn compile_named_make_call(type_arg: &ast::Expr, args: &[syn::Expr]) -> Option<s
             let inner: syn::Expr = match args {
                 [] => syn::parse_quote! { Vec::<#elem_type>::new() },
                 [size] => {
-                    syn::parse_quote! { crate::builtin::make_vec::<#elem_type>((#size) as usize) }
+                    let size = compile_usize_size_arg(size);
+                    syn::parse_quote! { crate::builtin::make_vec::<#elem_type>(#size) }
                 }
                 [size, cap_arg, ..] => {
-                    syn::parse_quote! { { let mut v = Vec::<#elem_type>::with_capacity((#cap_arg) as usize); v.resize_with((#size) as usize, Default::default); v } }
+                    let size = compile_usize_size_arg(size);
+                    let cap_arg = compile_usize_size_arg(cap_arg);
+                    syn::parse_quote! { { let mut v = Vec::<#elem_type>::with_capacity(#cap_arg); v.resize_with(#size, Default::default); v } }
                 }
             };
             Some(syn::parse_quote! { #named_type(#inner) })
@@ -9426,7 +9507,8 @@ fn compile_named_make_call(type_arg: &ast::Expr, args: &[syn::Expr]) -> Option<s
                     syn::parse_quote! { std::collections::HashMap::<#key_type, #value_type>::new() }
                 }
                 [cap_arg, ..] => {
-                    syn::parse_quote! { std::collections::HashMap::<#key_type, #value_type>::with_capacity((#cap_arg) as usize) }
+                    let cap_arg = compile_usize_size_arg(cap_arg);
+                    syn::parse_quote! { std::collections::HashMap::<#key_type, #value_type>::with_capacity(#cap_arg) }
                 }
             };
             Some(syn::parse_quote! { #named_type(#inner) })
@@ -9440,12 +9522,24 @@ fn compile_named_make_call(type_arg: &ast::Expr, args: &[syn::Expr]) -> Option<s
     }
 }
 
-fn make_chan_expr(elem_type: &syn::Type, args: &[syn::Expr]) -> syn::Expr {
+fn make_chan_expr(elem_type: &syn::Type, args: &[MakeSizeArg]) -> syn::Expr {
     match args {
         [] => syn::parse_quote! { crate::builtin::make_chan::<#elem_type>(0) },
         [cap_arg, ..] => {
-            syn::parse_quote! { crate::builtin::make_chan::<#elem_type>((#cap_arg) as usize) }
+            let cap_arg = compile_usize_size_arg(cap_arg);
+            syn::parse_quote! { crate::builtin::make_chan::<#elem_type>(#cap_arg) }
         }
+    }
+}
+
+fn compile_usize_size_arg(arg: &MakeSizeArg) -> syn::Expr {
+    let compiled = &arg.expr;
+    let uses_numeric_newtype =
+        TYPE_ENV.with(|env| named_numeric_newtype_inner(&arg.go_type, &env.borrow()).is_some());
+    if uses_numeric_newtype {
+        syn::parse_quote! { usize::from(#compiled) }
+    } else {
+        syn::parse_quote! { (#compiled) as usize }
     }
 }
 
@@ -11082,6 +11176,14 @@ fn compile_call_arg_with_expected_and_ownership(
     {
         return arg;
     }
+    if !needs_owned_interface
+        && let Some(expected) = expected
+        && !matches!(expected, typeinfer::GoType::Error)
+        && go_type_interface_name(expected).is_some()
+        && (go_type_is_interface_like(actual) || actual == expected)
+    {
+        return arg.into();
+    }
     let should_clone = any_call_arg_needs_clone(&arg, expected, actual);
     let arg = compile_expr_with_expected(arg, expected);
     if should_clone {
@@ -12410,6 +12512,18 @@ fn compile_expr_with_expected(
         return match expected {
             Some(ty) if go_type_is_unsafe_pointer_value(ty) => syn::parse_quote! { 0usize },
             Some(ty) if is_go_byte_slice_type(ty) => syn::parse_quote! { Default::default() },
+            Some(ty) if go_type_interface_name(ty).is_some() => {
+                let interface_name = go_type_interface_name(ty).unwrap_or_default();
+                if interface_name == "error" {
+                    syn::parse_quote! {
+                        Box::new(crate::builtin::__GorsNooperror::default()) as Box<dyn crate::builtin::error>
+                    }
+                } else {
+                    let trait_path = interface_trait_path_from_name(&interface_name);
+                    let noop_ty = noop_interface_type_from_name(&interface_name);
+                    syn::parse_quote! { Box::leak(Box::new(#noop_ty::default())) as &mut dyn #trait_path }
+                }
+            }
             Some(typeinfer::GoType::Any | typeinfer::GoType::Interface(_)) => {
                 syn::parse_quote! { Box::new(()) as Box<dyn std::any::Any> }
             }
@@ -18942,7 +19056,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
                             } else {
                                 syn::Generics::default()
                             },
-                            trait_: Some((None, trait_path, <Token![for]>::default())),
+                            trait_: Some((None, trait_path.clone(), <Token![for]>::default())),
                             self_ty: Box::new(if has_borrowed_interface_field {
                                 let lifetime = synthetic_names::borrowed_interface_lifetime();
                                 syn::parse_quote! { #struct_ident<#lifetime> }
@@ -19004,7 +19118,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
                             } else {
                                 syn::Generics::default()
                             },
-                            trait_: Some((None, trait_path, <Token![for]>::default())),
+                            trait_: Some((None, trait_path.clone(), <Token![for]>::default())),
                             self_ty: Box::new(if has_borrowed_interface_field {
                                 let lifetime = synthetic_names::borrowed_interface_lifetime();
                                 syn::parse_quote! { #struct_ident<#lifetime> }
@@ -19014,6 +19128,38 @@ impl TryFrom<ast::File<'_>> for syn::File {
                             brace_token: syn::token::Brace::default(),
                             items: impl_items,
                         }));
+                        if !has_borrowed_interface_field
+                            && method_generics
+                                .get(struct_name)
+                                .is_none_or(std::vec::Vec::is_empty)
+                            && interface_impls::pointer_can_emit_methods(
+                                struct_name,
+                                &embedded_method_set.direct_methods,
+                                &methods,
+                            )
+                            && interface_impls::borrowed_pointer_can_delegate(
+                                embedded_name,
+                                &embedded_method_set.direct_methods,
+                                pointer_methods,
+                            )
+                            && emitted_borrowed_pointer_interface_impls
+                                .insert((embedded_name.clone(), struct_name.clone()))
+                        {
+                            let impl_items = interface_impls::borrowed_pointer_items(
+                                embedded_name,
+                                struct_name,
+                                &trait_path,
+                                &embedded_method_set.direct_methods,
+                                &methods,
+                                pointer_methods,
+                            );
+                            let lifetime = synthetic_names::borrowed_interface_lifetime();
+                            items.push(syn::parse_quote! {
+                                impl<#lifetime> #trait_path for &#lifetime mut #struct_ident {
+                                    #(#impl_items)*
+                                }
+                            });
+                        }
                     }
                 }
                 if pointer_satisfies
@@ -19063,7 +19209,13 @@ impl TryFrom<ast::File<'_>> for syn::File {
                             });
                         }
                     }
-                    if !has_borrowed_interface_field
+                    let emitted_primary_borrowed_pointer = if !value_satisfies
+                        && !has_borrowed_interface_field
+                        && !interface_has_embedded_interfaces(trait_name)
+                        && method_set
+                            .required_methods
+                            .iter()
+                            .all(|method| method_set.direct_methods.contains(method))
                         && interface_impls::borrowed_pointer_can_delegate(
                             trait_name,
                             &method_set.direct_methods,
@@ -19086,6 +19238,61 @@ impl TryFrom<ast::File<'_>> for syn::File {
                                 #(#impl_items)*
                             }
                         });
+                        true
+                    } else {
+                        false
+                    };
+                    if emitted_primary_borrowed_pointer {
+                        for (candidate_name, candidate_required_methods) in &trait_methods {
+                            if candidate_name == trait_name
+                                || !candidate_required_methods
+                                    .iter()
+                                    .all(|method| method_set.required_methods.contains(method))
+                            {
+                                continue;
+                            }
+                            let candidate_method_set = interface_method_sets::for_impl(
+                                candidate_name,
+                                candidate_required_methods,
+                            );
+                            if !(interface_method_sets::pointer_type_satisfies(
+                                struct_name,
+                                candidate_name,
+                                struct_method_list,
+                                &candidate_method_set.required_methods,
+                            ) && interface_impls::pointer_can_emit_methods(
+                                struct_name,
+                                &candidate_method_set.direct_methods,
+                                &methods,
+                            ) && interface_impls::borrowed_pointer_can_delegate(
+                                candidate_name,
+                                &candidate_method_set.direct_methods,
+                                pointer_methods,
+                            )) {
+                                continue;
+                            }
+                            if !emitted_borrowed_pointer_interface_impls
+                                .insert((candidate_name.clone(), struct_name.clone()))
+                            {
+                                continue;
+                            }
+                            let candidate_trait_path =
+                                interface_trait_path_from_name(candidate_name);
+                            let impl_items = interface_impls::borrowed_pointer_items(
+                                candidate_name,
+                                struct_name,
+                                &candidate_trait_path,
+                                &candidate_method_set.direct_methods,
+                                &methods,
+                                pointer_methods,
+                            );
+                            let lifetime = synthetic_names::borrowed_interface_lifetime();
+                            items.push(syn::parse_quote! {
+                                impl<#lifetime> #candidate_trait_path for &#lifetime mut #struct_ident {
+                                    #(#impl_items)*
+                                }
+                            });
+                        }
                     }
 
                     for embedded_name in &method_set.embedded_interfaces {
@@ -21491,9 +21698,10 @@ fn external_interface_assertion_implementors(
     env: &typeinfer::TypeEnv,
 ) -> Vec<syn::Type> {
     let qualified_name = current_package_qualified_interface_name(interface_name);
+    let source_interface = source_interface.map(current_package_qualified_interface_name);
     external_interface_implementors::implementors_for_interface_filtered(
         &qualified_name,
-        source_interface,
+        source_interface.as_deref(),
         env,
     )
 }
@@ -28070,7 +28278,7 @@ func main() {
 
         assert!(output.contains("impl Describer for Counter"), "{output}");
         assert!(
-            output.contains("impl<'__gors> Describer for &'__gors mut Counter"),
+            !output.contains("impl<'__gors> Describer for &'__gors mut Counter"),
             "{output}"
         );
         assert!(output.contains("impl Namer for Counter"), "{output}");
@@ -28287,6 +28495,68 @@ func Use() {
 
         assert!(implementors.contains("ctxImpl"), "{implementors}");
         assert!(!implementors.contains("onlyStringer"), "{implementors}");
+    }
+
+    #[test]
+    fn external_interface_assertion_implementors_filter_by_external_source_record() {
+        let mut records = std::collections::BTreeMap::new();
+        records.insert(
+            "crypto.MessageSigner".to_string(),
+            vec![
+                super::external_interface_implementors::ExternalInterfaceImplementor {
+                    go_name: "fakeMessageSigner".to_string(),
+                    rust_ty: syn::parse_quote! { crate::fakeMessageSigner },
+                    include_pointer_receiver_methods: false,
+                },
+                super::external_interface_implementors::ExternalInterfaceImplementor {
+                    go_name: "onlyMessageSigner".to_string(),
+                    rust_ty: syn::parse_quote! { crate::onlyMessageSigner },
+                    include_pointer_receiver_methods: false,
+                },
+            ],
+        );
+        records.insert(
+            "crypto.Signer".to_string(),
+            vec![
+                super::external_interface_implementors::ExternalInterfaceImplementor {
+                    go_name: "fakeMessageSigner".to_string(),
+                    rust_ty: syn::parse_quote! { crate::fakeMessageSigner },
+                    include_pointer_receiver_methods: false,
+                },
+            ],
+        );
+        let _records =
+            super::external_interface_implementors::ExternalInterfaceImplementorsGuard::set(
+                records,
+            );
+        let _package = super::package_context::CurrentGoPackageNameGuard::set("crypto".to_string());
+
+        let mut env = super::typeinfer::TypeEnv::new();
+        env.set_type_kind("Signer", super::typeinfer::TypeKind::Interface);
+        env.set_interface_methods("Signer", vec!["Sign".to_string()]);
+        env.set_type_kind("MessageSigner", super::typeinfer::TypeKind::Interface);
+        env.set_interface_methods("MessageSigner", vec!["SignMessage".to_string()]);
+        env.set_interface_embedded("MessageSigner", vec!["Signer".to_string()]);
+
+        super::set_type_env(env);
+        let implementors = super::interface_assertion_implementors(
+            "MessageSigner",
+            Some(&super::typeinfer::GoType::Interface("Signer".to_string())),
+        )
+        .into_iter()
+        .map(|ty| quote! { #ty }.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+        super::set_type_env(super::typeinfer::TypeEnv::new());
+
+        assert!(
+            implementors.contains("crate :: fakeMessageSigner"),
+            "{implementors}"
+        );
+        assert!(
+            !implementors.contains("crate :: onlyMessageSigner"),
+            "{implementors}"
+        );
     }
 
     #[test]
@@ -30619,17 +30889,20 @@ func main() {
         let output = compile_temp_program(tmp.path());
         let main_rs = output.files.get("main.rs").unwrap();
         assert!(
-            main_rs.contains("impl<'__gors> crate::builtin::error for &'__gors mut listError"),
+            !main_rs.contains("impl<'__gors> crate::builtin::error for &'__gors mut listError"),
             "{main_rs}"
         );
         assert!(
-            main_rs.contains("let mut __gors_receiver = (**self).clone();")
-                && main_rs.contains("listError::Error(&mut __gors_receiver)"),
-            "expected borrowed error shim to call value-receiver method on a clone: {main_rs}"
+            main_rs.contains("err.lock().unwrap().clone()")
+                || main_rs.contains("err . lock () . unwrap () . clone ()"),
+            "expected value error argument to clone shared listError state: {main_rs}"
         );
         assert!(
-            !main_rs.contains("listError::Error(&mut **self)"),
-            "expected borrowed error shim not to mutably borrow through immutable self: {main_rs}"
+            main_rs.contains("Box::new(crate::builtin::GorsPtr::from_arc(err.clone()))")
+                || main_rs.contains(
+                    "Box :: new (crate :: builtin :: GorsPtr :: from_arc (err . clone ()))"
+                ),
+            "expected pointer error argument to pass through the pointer cell: {main_rs}"
         );
     }
 
@@ -36301,9 +36574,11 @@ func (value) M() {}
         let output = quote! { #compiled }.to_string();
 
         assert!(
-            output.contains("fn __gors_clone_box (& self) -> Box < dyn Interface > { crate :: builtin :: panic_value (\"cloned non-clone interface value\") }"),
+            output.contains("fn __gors_clone_box (& self) -> Box < dyn Interface > { Box :: new (self . clone ()) as Box < dyn Interface > }"),
             "{output}"
         );
+        assert!(output.contains("impl Clone for value"), "{output}");
+        assert!(output.contains("clone_any_send_sync"), "{output}");
         assert!(output.contains("unsafe impl Send for value"), "{output}");
         assert!(output.contains("unsafe impl Sync for value"), "{output}");
     }

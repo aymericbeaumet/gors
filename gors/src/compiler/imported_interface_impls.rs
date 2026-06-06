@@ -124,12 +124,14 @@ pub(super) fn impls_for_local_structs(
                         }
                     });
                 }
-                if interface_impls::borrowed_pointer_can_delegate(
-                    &interface_name,
-                    &method_set.direct_methods,
-                    pointer_methods,
-                ) && emitted_borrowed_pointer_interface_impls
-                    .insert((interface_name.clone(), struct_name.clone()))
+                if !value_satisfies
+                    && interface_impls::borrowed_pointer_can_delegate(
+                        &interface_name,
+                        &method_set.direct_methods,
+                        pointer_methods,
+                    )
+                    && emitted_borrowed_pointer_interface_impls
+                        .insert((interface_name.clone(), struct_name.clone()))
                 {
                     let trait_path = super::interface_trait_path_from_name(&interface_name);
                     let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());

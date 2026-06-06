@@ -60,26 +60,49 @@ pub(super) fn implementors_for_interface_filtered(
     env: &typeinfer::TypeEnv,
 ) -> Vec<syn::Type> {
     EXTERNAL_INTERFACE_IMPLEMENTORS.with(|implementors| {
+        let implementors = implementors.borrow();
+        let source_records = source_interface.and_then(|name| implementors.get(name));
         implementors
-            .borrow()
             .get(qualified_name)
             .map(|records| {
                 records
                     .iter()
                     .filter(|record| {
-                        source_interface.is_none_or(|interface_name| {
-                            env.named_type_implements_interface(
-                                &record.go_name,
-                                interface_name,
-                                record.include_pointer_receiver_methods,
-                            )
-                        })
+                        record_matches_source_interface(
+                            record,
+                            source_interface,
+                            source_records,
+                            env,
+                        )
                     })
                     .map(|record| record.rust_ty.clone())
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default()
     })
+}
+
+fn record_matches_source_interface(
+    record: &ExternalInterfaceImplementor,
+    source_interface: Option<&str>,
+    source_records: Option<&Vec<ExternalInterfaceImplementor>>,
+    env: &typeinfer::TypeEnv,
+) -> bool {
+    let Some(source_interface) = source_interface else {
+        return true;
+    };
+    if let Some(source_records) = source_records {
+        return source_records.iter().any(|source_record| {
+            source_record.go_name == record.go_name
+                && source_record.include_pointer_receiver_methods
+                    == record.include_pointer_receiver_methods
+        });
+    }
+    env.named_type_implements_interface(
+        &record.go_name,
+        source_interface,
+        record.include_pointer_receiver_methods,
+    )
 }
 
 pub(super) fn records_for_interface(qualified_name: &str) -> Vec<ExternalInterfaceImplementor> {
