@@ -3,6 +3,7 @@ package main
 import (
 	"archive/tar"
 	"fmt"
+	"io"
 	"io/fs"
 	"time"
 )
@@ -20,6 +21,8 @@ func main() {
 	caseHeaderFileInfo()
 	fmt.Println("== archive/tar/file-info-header ==")
 	caseFileInfoHeader()
+	fmt.Println("== archive/tar/roundtrip ==")
+	caseRoundTrip()
 }
 
 func caseErrors() {
@@ -150,4 +153,57 @@ func caseFileInfoHeader() {
 
 	link, linkErr := tar.FileInfoHeader(namedInfo{name: "shortcut", mode: fs.ModeSymlink | 0777}, "target.txt")
 	fmt.Println(linkErr == nil, link.Name, link.Size, link.Mode, link.Typeflag, link.Uname, link.Gname, link.Linkname)
+}
+
+type captureWriter struct {
+	data   []byte
+	writes int
+}
+
+func (w *captureWriter) Write(p []byte) (int, error) {
+	w.writes++
+	w.data = append(w.data, p...)
+	return len(p), nil
+}
+
+type sliceReader struct {
+	data []byte
+	pos  int
+}
+
+func (r *sliceReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, io.EOF
+	}
+	n := copy(p, r.data[r.pos:])
+	r.pos += n
+	return n, nil
+}
+
+func caseRoundTrip() {
+	// gors:stdlib-cover archive/tar::NewWriter archive/tar::Writer archive/tar::Writer.WriteHeader archive/tar::Writer.Write archive/tar::Writer.Flush archive/tar::Writer.Close
+	sink := captureWriter{}
+	writer := tar.NewWriter(&sink)
+	headerErr := writer.WriteHeader(&tar.Header{
+		Name:     "hello.txt",
+		Mode:     0644,
+		Size:     5,
+		Typeflag: tar.TypeReg,
+	})
+	n, writeErr := writer.Write([]byte("hello"))
+	flushErr := writer.Flush()
+	closeErr := writer.Close()
+	fmt.Println(headerErr == nil, n, writeErr == nil, flushErr == nil, closeErr == nil)
+	fmt.Println(len(sink.data), sink.writes > 0, sink.data[0], sink.data[257], sink.data[258], sink.data[259], sink.data[260], sink.data[261])
+
+	// gors:stdlib-cover archive/tar::NewReader archive/tar::Reader archive/tar::Reader.Next archive/tar::Reader.Read
+	source := sliceReader{data: sink.data}
+	reader := tar.NewReader(&source)
+	header, nextErr := reader.Next()
+	fmt.Println(nextErr == nil, header.Name, header.Size, header.Mode, header.Typeflag)
+	buf := make([]byte, 8)
+	readN, readErr := reader.Read(buf)
+	fmt.Println(readN, readErr == nil || readErr == io.EOF, string(buf[:readN]))
+	nextHeader, nextErr := reader.Next()
+	fmt.Println(nextHeader == nil, nextErr == io.EOF, source.pos == len(source.data))
 }

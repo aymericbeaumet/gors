@@ -20,7 +20,7 @@ pub(super) struct BorrowedPointerViewReturn {
 
 #[derive(Clone)]
 pub(super) struct MutableSliceViewReturn {
-    pub(super) elem_ty: syn::Type,
+    pub(super) borrowed_return_elem_ty: Option<syn::Type>,
 }
 
 #[derive(Clone)]
@@ -183,15 +183,24 @@ pub(super) fn insert_borrowed_pointer_view_name(name: String) {
     });
 }
 
-pub(super) fn set_view_methods(
+pub(super) fn clear_view_methods() {
+    BORROWED_POINTER_VIEW_METHODS.with(|methods| {
+        methods.borrow_mut().clear();
+    });
+    MUTABLE_SLICE_VIEW_METHODS.with(|methods| {
+        methods.borrow_mut().clear();
+    });
+}
+
+pub(super) fn extend_view_methods(
     borrowed_pointer_methods: HashSet<String>,
     mutable_slice_methods: HashSet<String>,
 ) {
     BORROWED_POINTER_VIEW_METHODS.with(|methods| {
-        *methods.borrow_mut() = borrowed_pointer_methods;
+        methods.borrow_mut().extend(borrowed_pointer_methods);
     });
     MUTABLE_SLICE_VIEW_METHODS.with(|methods| {
-        *methods.borrow_mut() = mutable_slice_methods;
+        methods.borrow_mut().extend(mutable_slice_methods);
     });
 }
 
@@ -207,8 +216,8 @@ pub(super) fn current_borrowed_pointer_view_return() -> Option<BorrowedPointerVi
     BORROWED_POINTER_VIEW_RETURN.with(|info| info.borrow().clone())
 }
 
-pub(super) fn has_mutable_slice_view_return() -> bool {
-    MUTABLE_SLICE_VIEW_RETURN.with(|info| info.borrow().is_some())
+pub(super) fn current_mutable_slice_view_return() -> Option<MutableSliceViewReturn> {
+    MUTABLE_SLICE_VIEW_RETURN.with(|info| info.borrow().clone())
 }
 
 pub(super) fn retain_slice_aliases_after_assignment(names: &[String]) {

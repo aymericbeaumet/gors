@@ -15605,6 +15605,15 @@ fn receiver_uses_pointer_method(receiver: &str, method: &str, env: &TypeEnv) -> 
 }
 
 fn go_type_has_pointer_method(ty: &GoType, method: &str, env: &TypeEnv) -> bool {
+    match ty {
+        GoType::Named(name) | GoType::Interface(name) => {
+            if env.method_has_pointer_receiver(&format!("{name}.{method}")) {
+                return true;
+            }
+        }
+        GoType::Pointer(inner) => return go_type_has_pointer_method(&inner, method, env),
+        _ => {}
+    }
     match env.resolve_alias(ty) {
         GoType::Named(name) | GoType::Interface(name) => {
             env.method_has_pointer_receiver(&format!("{name}.{method}"))

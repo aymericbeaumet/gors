@@ -14,6 +14,7 @@ thread_local! {
     static LOOP_BODY_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static UNNAMED_ARG_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static ANONYMOUS_STRUCT_COUNTER: RefCell<usize> = const { RefCell::new(0) };
+    static BORROWED_POINTER_VIEW_COUNTER: RefCell<usize> = const { RefCell::new(0) };
 }
 
 pub(super) fn reset_lowering_counters() {
@@ -26,6 +27,7 @@ pub(super) fn reset_lowering_counters() {
     LOOP_COUNTER.with(|counter| *counter.borrow_mut() = 0);
     LOOP_BODY_COUNTER.with(|counter| *counter.borrow_mut() = 0);
     ANONYMOUS_STRUCT_COUNTER.with(|counter| *counter.borrow_mut() = 0);
+    BORROWED_POINTER_VIEW_COUNTER.with(|counter| *counter.borrow_mut() = 0);
 }
 
 pub(super) fn reset_unnamed_arg_counter() {
@@ -40,6 +42,20 @@ pub(super) fn next_unnamed_arg_ident() -> syn::Ident {
 pub(super) fn next_anonymous_struct_ident() -> syn::Ident {
     let n = next_id(&ANONYMOUS_STRUCT_COUNTER);
     syn::Ident::new(&format!("__gors_anon_struct_{n}"), Span::mixed_site())
+}
+
+pub(super) fn next_borrowed_pointer_view_idents() -> (syn::Ident, syn::Ident) {
+    let n = next_id(&BORROWED_POINTER_VIEW_COUNTER);
+    (
+        syn::Ident::new(
+            &format!("__gors_borrowed_pointer_view_cell_{n}"),
+            Span::mixed_site(),
+        ),
+        syn::Ident::new(
+            &format!("__gors_borrowed_pointer_view_{n}"),
+            Span::mixed_site(),
+        ),
+    )
 }
 
 pub(super) fn unnamed_arg_ident(index: usize) -> syn::Ident {

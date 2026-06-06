@@ -3567,6 +3567,7 @@ fn reset_lowering_thread_state() {
     goto_context::clear_state_contexts();
     active_names::clear();
     import_context::clear();
+    borrowed_views::clear_view_methods();
 }
 
 pub fn compile(file: ast::File) -> Result<syn::File, CompilerError> {
@@ -3603,9 +3604,25 @@ pub fn compile_with_type_env_and_import_renames(
 
 pub(crate) fn compile_with_type_env_import_renames_and_mutable_vars(
     file: ast::File,
+    type_env: typeinfer::TypeEnv,
+    import_renames: BTreeMap<String, String>,
+    mutable_top_level_vars: Option<HashSet<String>>,
+) -> Result<syn::File, CompilerError> {
+    compile_with_type_env_import_renames_mutable_vars_and_view_seed(
+        file,
+        type_env,
+        import_renames,
+        mutable_top_level_vars,
+        None,
+    )
+}
+
+pub(crate) fn compile_with_type_env_import_renames_mutable_vars_and_view_seed(
+    file: ast::File,
     mut type_env: typeinfer::TypeEnv,
     import_renames: BTreeMap<String, String>,
     mutable_top_level_vars: Option<HashSet<String>>,
+    view_method_seed: Option<&FixedArrayViewMethodSeed>,
 ) -> Result<syn::File, CompilerError> {
     reset_lowering_thread_state();
     set_import_renames(import_renames);
@@ -3613,6 +3630,9 @@ pub(crate) fn compile_with_type_env_import_renames_and_mutable_vars(
     validate_file_with_type_env(&file, &type_env)?;
     let _ir = ir::lower_file(&file, &type_env);
     set_type_env(type_env);
+    if let Some(seed) = view_method_seed {
+        apply_fixed_array_view_method_seed(seed);
+    }
     let _package_mutable_top_level_vars =
         PackageMutableTopLevelVarsGuard::set(mutable_top_level_vars);
     let mut out = TryInto::<syn::File>::try_into(file)?;
@@ -7729,11 +7749,24 @@ fn single_return_expr<'a>(body: &'a ast::BlockStmt<'a>) -> Option<&'a ast::Expr<
     Some(expr)
 }
 
-fn mutable_slice_result_elem_type(func_type: &ast::FuncType) -> Option<syn::Type> {
-    let ast::Expr::ArrayType(array) = single_result_type_expr(func_type)? else {
-        return None;
-    };
-    array.len.is_none().then(|| type_from_expr_ref(&array.elt))
+fn mutable_slice_result_info(func_type: &ast::FuncType) -> Option<MutableSliceViewReturn> {
+    let result = single_result_type_expr(func_type)?;
+    if let ast::Expr::ArrayType(array) = result {
+        return array.len.is_none().then(|| MutableSliceViewReturn {
+            borrowed_return_elem_ty: Some(type_from_expr_ref(&array.elt)),
+        });
+    }
+    let name = type_env_name_from_type_expr(result)?;
+    TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        matches!(
+            env.resolve_alias(&typeinfer::GoType::Named(name)),
+            typeinfer::GoType::Slice(_)
+        )
+        .then_some(MutableSliceViewReturn {
+            borrowed_return_elem_ty: None,
+        })
+    })
 }
 
 fn slice_expr_rooted_in_name(expr: &ast::Expr, name: &str) -> bool {
@@ -7751,13 +7784,26 @@ fn mutable_slice_view_return_info(
     func_decl: &ast::FuncDecl,
     recv_name: &str,
 ) -> Option<MutableSliceViewReturn> {
-    let elem_ty = mutable_slice_result_elem_type(&func_decl.type_)?;
+    let info = mutable_slice_result_info(&func_decl.type_)?;
     let body = func_decl.body.as_ref()?;
     let return_expr = single_return_expr(body)?;
-    let ast::Expr::SliceExpr(_) = return_expr else {
+    if info.borrowed_return_elem_ty.is_some() {
+        let ast::Expr::SliceExpr(_) = return_expr else {
+            return None;
+        };
+        return slice_expr_rooted_in_name(return_expr, recv_name).then_some(info);
+    }
+    let ast::Expr::CallExpr(call) = return_expr else {
         return None;
     };
-    slice_expr_rooted_in_name(return_expr, recv_name).then_some(MutableSliceViewReturn { elem_ty })
+    let result_name = type_env_name_from_type_expr(single_result_type_expr(&func_decl.type_)?)?;
+    if type_env_name_from_type_expr(&call.fun).as_deref() != Some(&result_name) {
+        return None;
+    }
+    let [arg] = call.args.as_deref()? else {
+        return None;
+    };
+    slice_expr_rooted_in_name(arg, recv_name).then_some(info)
 }
 
 fn pointer_result_target_name(func_type: &ast::FuncType) -> Option<String> {
@@ -7920,9 +7966,20 @@ fn call_returns_mutable_slice_view_by_type(call: &ast::CallExpr) -> bool {
     })
 }
 
-fn preseed_fixed_array_view_methods(decls: &[ast::Decl]) {
-    let mut borrowed_pointer_methods = std::collections::HashSet::new();
-    let mut mutable_slice_methods = std::collections::HashSet::new();
+fn method_uses_borrowed_pointer_receiver(receiver_name: &str, method_name: &str) -> bool {
+    let key = method_key(receiver_name, method_name);
+    borrowed_views::has_borrowed_pointer_view_method(&key)
+        || borrowed_views::has_mutable_slice_view_method(&key)
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct FixedArrayViewMethodSeed {
+    borrowed_pointer_methods: std::collections::HashSet<String>,
+    mutable_slice_methods: std::collections::HashSet<String>,
+}
+
+fn fixed_array_view_method_seed_from_decls(decls: &[ast::Decl]) -> FixedArrayViewMethodSeed {
+    let mut seed = FixedArrayViewMethodSeed::default();
     for decl in decls {
         let ast::Decl::FuncDecl(func_decl) = decl else {
             continue;
@@ -7940,13 +7997,42 @@ fn preseed_fixed_array_view_methods(decls: &[ast::Decl]) {
         };
         let key = method_key(&receiver_type_name, func_decl.name.name);
         if borrowed_pointer_view_return_info(func_decl, &receiver_type_name, recv_name).is_some() {
-            borrowed_pointer_methods.insert(key.clone());
+            seed.borrowed_pointer_methods.insert(key.clone());
         }
         if mutable_slice_view_return_info(func_decl, recv_name).is_some() {
-            mutable_slice_methods.insert(key);
+            seed.mutable_slice_methods.insert(key);
         }
     }
-    borrowed_views::set_view_methods(borrowed_pointer_methods, mutable_slice_methods);
+    seed
+}
+
+pub(crate) fn fixed_array_view_method_seed_for_files(
+    files: &[&ast::File<'_>],
+    type_env: &typeinfer::TypeEnv,
+) -> FixedArrayViewMethodSeed {
+    let _type_env = LocalTypeEnvScopeGuard::push();
+    set_type_env(type_env.clone());
+    let mut seed = FixedArrayViewMethodSeed::default();
+    for file in files {
+        let file_seed = fixed_array_view_method_seed_from_decls(&file.decls);
+        seed.borrowed_pointer_methods
+            .extend(file_seed.borrowed_pointer_methods);
+        seed.mutable_slice_methods
+            .extend(file_seed.mutable_slice_methods);
+    }
+    seed
+}
+
+fn apply_fixed_array_view_method_seed(seed: &FixedArrayViewMethodSeed) {
+    borrowed_views::extend_view_methods(
+        seed.borrowed_pointer_methods.clone(),
+        seed.mutable_slice_methods.clone(),
+    );
+}
+
+fn preseed_fixed_array_view_methods(decls: &[ast::Decl]) {
+    let seed = fixed_array_view_method_seed_from_decls(decls);
+    apply_fixed_array_view_method_seed(&seed);
 }
 
 fn compile_method(
@@ -7999,6 +8085,8 @@ fn compile_method(
     let borrowed_pointer_view_return = (is_pointer && !recv_source_name.is_empty())
         .then(|| borrowed_pointer_view_return_info(&func_decl, &type_name, recv_source_name))
         .flatten();
+    let uses_borrowed_pointer_receiver = is_pointer
+        && (borrowed_pointer_view_return.is_some() || mutable_slice_view_return.is_some());
     let mut active_local_names = func_type_local_binding_names(&func_decl.type_);
     if !recv_name.is_empty() {
         active_local_names.insert(recv_name.clone());
@@ -8035,7 +8123,10 @@ fn compile_method(
             })
         });
 
-    let (self_arg, borrowed_value_receiver): (syn::FnArg, bool) = if is_pointer {
+    let (self_arg, borrowed_value_receiver): (syn::FnArg, bool) = if uses_borrowed_pointer_receiver
+    {
+        (syn::parse_quote! { &mut self }, false)
+    } else if is_pointer {
         let receiver_ident = if recv_name.is_empty() {
             synthetic_names::method_receiver_ident()
         } else {
@@ -8077,7 +8168,10 @@ fn compile_method(
     if let Some(body) = func_decl.body.as_ref() {
         validate_function_semantics(Some(recv), &func_decl.type_, body)?;
     }
-    let borrowed_pointer_names = std::collections::HashSet::new();
+    let mut borrowed_pointer_names = std::collections::HashSet::new();
+    if uses_borrowed_pointer_receiver && !recv_name.is_empty() {
+        borrowed_pointer_names.insert(recv_name.clone());
+    }
     let borrowed_pointer_param_names = BorrowedPointerParamNamesGuard::set(borrowed_pointer_names);
     let borrowed_slice_param_names = BorrowedSliceParamNamesGuard::set(
         borrowed_slice_alias_param_names(&func_decl.type_.params),
@@ -8193,7 +8287,9 @@ fn compile_method(
     drop(borrowed_slice_param_names);
 
     prepend_shared_parameter_cells(&mut block, &address_taken_param_names);
-    if value_receiver_needs_cell {
+    if uses_borrowed_pointer_receiver && !recv_name.is_empty() {
+        rewrite_receiver(&mut block, &recv_name, false);
+    } else if value_receiver_needs_cell {
         let receiver_ident = value_ident(recv_source_name);
         block.stmts.insert(
             0,
@@ -8218,8 +8314,9 @@ fn compile_method(
     }
     lower_final_return_to_tail_expr(&mut block);
 
-    let mut output = if let Some(info) = mutable_slice_view_return {
-        let elem = info.elem_ty;
+    let mut output = if let Some(info) = mutable_slice_view_return
+        && let Some(elem) = info.borrowed_return_elem_ty
+    {
         syn::ReturnType::Type(
             <Token![->]>::default(),
             Box::new(syn::parse_quote! { &mut [#elem] }),
@@ -11628,6 +11725,23 @@ fn pointer_receiver_arg_expr_from_owned(expr: ast::Expr) -> syn::Expr {
     compile_error_expr("pointer receiver is not addressable")
 }
 
+fn borrowed_pointer_receiver_arg_expr_from_owned(expr: ast::Expr) -> syn::Expr {
+    if is_borrowed_pointer_expr_ref(&expr) {
+        let receiver: syn::Expr = expr.into();
+        return syn::parse_quote! { &mut *#receiver };
+    }
+    if let Some(pointer) = pointer_cell_expr_from_ref(&expr) {
+        return syn::parse_quote! { &mut *#pointer.lock().unwrap() };
+    }
+    if let Some(pointer) = pointer_receiver_arg_expr_from_ref(&expr) {
+        return syn::parse_quote! { &mut *#pointer.lock().unwrap() };
+    }
+    if let Some(lvalue) = lvalue_expr_from_ref(&expr) {
+        return syn::parse_quote! { &mut #lvalue };
+    }
+    compile_error_expr("pointer receiver is not addressable")
+}
+
 fn pointer_receiver_method_call_expr(
     selector: ast::SelectorExpr,
     method: syn::Ident,
@@ -11639,7 +11753,12 @@ fn pointer_receiver_method_call_expr(
         return compile_error_expr("invalid pointer receiver method call");
     };
     let receiver_ty = named_go_type_path(&receiver_name);
-    let receiver = pointer_receiver_arg_expr_from_owned(*selector.x);
+    let receiver_expr = *selector.x;
+    if method_uses_borrowed_pointer_receiver(&receiver_name, &method.to_string()) {
+        let receiver = borrowed_pointer_receiver_arg_expr_from_owned(receiver_expr);
+        return syn::parse_quote! { <#receiver_ty>::#method(#receiver, #args) };
+    }
+    let receiver = pointer_receiver_arg_expr_from_owned(receiver_expr);
     syn::parse_quote! { <#receiver_ty>::#method(#receiver, #args) }
 }
 
@@ -12104,6 +12223,9 @@ fn cloneable_slice_value_type(ty: &typeinfer::GoType) -> bool {
 }
 
 fn binding_init_should_clone(expr: &ast::Expr) -> bool {
+    if expr_returns_borrowed_pointer_view(expr) {
+        return false;
+    }
     if !is_ir_addressable_expr(expr) {
         return false;
     }
@@ -12250,7 +12372,9 @@ fn compile_return_expr_with_expected(
     {
         return expr;
     }
-    if borrowed_views::has_mutable_slice_view_return()
+    if borrowed_views::current_mutable_slice_view_return()
+        .and_then(|info| info.borrowed_return_elem_ty)
+        .is_some()
         && let Some(expr) = compile_mutable_slice_view_return_expr(&expr)
     {
         return expr;
@@ -22991,6 +23115,105 @@ fn update_slice_alias_targets_for_assignment(assign_stmt: &ast::AssignStmt) {
     borrowed_views::insert_slice_alias_target(lhs_name.to_string(), target);
 }
 
+fn borrowed_pointer_view_define_guard_cell(rhs: &ast::Expr) -> Option<Option<syn::Expr>> {
+    let ast::Expr::CallExpr(call) = rhs else {
+        return None;
+    };
+    if !call_returns_borrowed_pointer_view(call) {
+        return None;
+    }
+    let ast::Expr::SelectorExpr(selector) = call.fun.as_ref() else {
+        return None;
+    };
+    let receiver_type =
+        TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&selector.x, &env.borrow()));
+    let receiver_name = named_method_receiver_type_name(receiver_type)?;
+    if !method_uses_borrowed_pointer_receiver(&receiver_name, selector.sel.name) {
+        return None;
+    }
+    if is_borrowed_pointer_expr_ref(&selector.x) {
+        return Some(None);
+    }
+    if let Some(pointer) = pointer_cell_expr_from_ref(&selector.x) {
+        return Some(Some(pointer));
+    }
+    if let Some(pointer) = pointer_receiver_arg_expr_from_ref(&selector.x) {
+        return Some(Some(pointer));
+    }
+    Some(None)
+}
+
+fn compile_borrowed_pointer_view_method_call(
+    call_expr: ast::CallExpr,
+    receiver_guard: Option<&syn::Ident>,
+) -> syn::Expr {
+    record_mapping(&call_expr.lparen, None);
+    let call_abi = call_abi_for_backend(&call_expr);
+    let param_types = if call_abi.signature_params.is_empty() {
+        call_param_types(&call_expr.fun)
+    } else {
+        call_abi.signature_params.clone()
+    };
+    let ast::Expr::SelectorExpr(selector) = *call_expr.fun else {
+        return compile_error_expr("invalid borrowed pointer view call");
+    };
+    let receiver_type =
+        TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&selector.x, &env.borrow()));
+    let Some(receiver_name) = named_method_receiver_type_name(receiver_type) else {
+        return compile_error_expr("invalid borrowed pointer view receiver");
+    };
+    let receiver_ty = named_go_type_path(&receiver_name);
+    let method = syn::Ident::new(&rust_safe_ident_name(selector.sel.name), Span::mixed_site());
+    let receiver = if let Some(guard) = receiver_guard {
+        syn::parse_quote! { &mut *#guard }
+    } else {
+        borrowed_pointer_receiver_arg_expr_from_owned(*selector.x)
+    };
+    let mut args: syn::punctuated::Punctuated<syn::Expr, Token![,]> =
+        syn::punctuated::Punctuated::new();
+    if let Some(cargs) = call_expr.args {
+        for (idx, arg) in cargs.into_iter().enumerate() {
+            let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
+            let arg = compile_call_arg_with_abi(arg, param_types.get(idx), &actual, &call_abi, idx);
+            args.push(arg);
+        }
+    }
+    syn::parse_quote! { <#receiver_ty>::#method(#receiver, #args) }
+}
+
+fn compile_borrowed_pointer_view_define(
+    lhs: ast::Expr,
+    rhs: ast::Expr,
+    guard_cell: Option<syn::Expr>,
+) -> Result<Vec<syn::Stmt>, CompilerError> {
+    let ast::Expr::Ident(ident) = lhs else {
+        return Err(CompilerError::InvalidAssignment(
+            "expected identifier on lhs of :=".to_string(),
+        ));
+    };
+    let ast::Expr::CallExpr(call) = rhs else {
+        return Err(CompilerError::InvalidAssignment(
+            "expected borrowed pointer view call rhs".to_string(),
+        ));
+    };
+    if ident.name == "_" {
+        let init = compile_borrowed_pointer_view_method_call(call, None);
+        return Ok(vec![syn::parse_quote! { let _ = #init; }]);
+    }
+    let ident = local_binding_ident_for_ast(&ident);
+    if let Some(guard_cell) = guard_cell {
+        let (cell, guard) = synthetic_names::next_borrowed_pointer_view_idents();
+        let init = compile_borrowed_pointer_view_method_call(call, Some(&guard));
+        return Ok(vec![
+            syn::parse_quote! { let #cell = (#guard_cell).clone(); },
+            syn::parse_quote! { let mut #guard = #cell.lock().unwrap(); },
+            syn::parse_quote! { let mut #ident = #init; },
+        ]);
+    }
+    let init = compile_borrowed_pointer_view_method_call(call, None);
+    Ok(vec![syn::parse_quote! { let mut #ident = #init; }])
+}
+
 fn slice_alias_index_lvalues(lhs: &ast::Expr) -> Option<(syn::Expr, syn::Expr)> {
     let ast::Expr::IndexExpr(index) = lhs else {
         return None;
@@ -23347,6 +23570,19 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                     _ => None,
                 })
                 .collect();
+
+            if assign_stmt.lhs.len() == 1
+                && assign_stmt.rhs.len() == 1
+                && matches!(assign_stmt.lhs.first(), Some(ast::Expr::Ident(_)))
+                && let Some(guard_cell) = assign_stmt
+                    .rhs
+                    .first()
+                    .and_then(borrowed_pointer_view_define_guard_cell)
+            {
+                let lhs = assign_stmt.lhs.remove(0);
+                let rhs = assign_stmt.rhs.remove(0);
+                return compile_borrowed_pointer_view_define(lhs, rhs, guard_cell);
+            }
 
             if assign_stmt.lhs.len() == 1
                 && assign_stmt.rhs.len() == 1
@@ -34029,7 +34265,7 @@ func main() {
         let output = quote::quote!(#compiled).to_string();
 
         assert!(
-            output.contains("* self = block :: default ()"),
+            output.contains("block :: default ()"),
             "expected empty named array literal to use Default: {output}"
         );
         assert!(
@@ -34119,7 +34355,20 @@ func main() {
             "expected slice view method: {output}"
         );
         assert!(
-            output.contains("(* h . name ()) [(0usize) as usize] ="),
+            output.contains("let __gors_borrowed_pointer_view_cell_0 = (b) . clone ()")
+                && output.contains(
+                    "let mut __gors_borrowed_pointer_view_0 = __gors_borrowed_pointer_view_cell_0 . lock () . unwrap ()"
+                ),
+            "expected borrowed pointer view binding to name the cell and keep the receiver guard alive: {output}"
+        );
+        assert!(
+            output.contains(
+                "let mut h = < block > :: header (& mut * __gors_borrowed_pointer_view_0"
+            ),
+            "expected borrowed pointer view binding to borrow through the guard: {output}"
+        );
+        assert!(
+            output.contains("(* < header > :: name (& mut * h ,)) [(0usize) as usize] ="),
             "expected index assignment through returned slice view: {output}"
         );
         assert!(
@@ -34132,8 +34381,107 @@ func main() {
             "expected returned slice views to be addressable: {output}"
         );
         assert!(
-            output.contains("(b . lock () . unwrap ()) . header ()"),
-            "expected pointer view method to lock the GorsPtr receiver: {output}"
+            !output.contains("(< block > :: header ((b) . clone ()")
+                && !output.contains("(< block > :: header ((b).clone()"),
+            "expected pointer view method not to clone the GorsPtr receiver: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_bind_fixed_array_pointer_field_views_with_live_guard() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                const blockSize = 8
+
+                type block [blockSize]byte
+                type header [blockSize]byte
+                type reader struct {
+                    blk block
+                }
+
+                func (b *block) header() *header {
+                    return (*header)(b)
+                }
+
+                func (h *header) name() []byte {
+                    return h[1:][:3]
+                }
+
+                func fill(r *reader) {
+                    h := r.blk.header()
+                    h.name()[0] = 'A'
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote::quote!(#compiled).to_string();
+
+        assert!(
+            !output.contains("pointer receiver is not addressable"),
+            "expected pointer-field view receiver to be addressable: {output}"
+        );
+        assert!(
+            output.contains("crate :: builtin :: GorsPtr :: from_ptr_field"),
+            "expected pointer-field view receiver to use projected pointer storage: {output}"
+        );
+        assert!(
+            output.contains("let mut __gors_borrowed_pointer_view_0")
+                && output.contains("let mut h = < block > :: header"),
+            "expected pointer-field view binding to keep a guard alive: {output}"
+        );
+        assert!(
+            output.contains("let __gors_borrowed_pointer_view_cell_0"),
+            "expected pointer-field view binding to name the projected pointer cell: {output}"
+        );
+        assert!(
+            output.contains("(* < header > :: name (& mut * h ,)) [(0usize) as usize] ="),
+            "expected later calls on the borrowed view to use the borrowed receiver: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_borrow_receiver_for_named_slice_views() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                const blockSize = 8
+
+                type block [blockSize]byte
+                type view []byte
+
+                func (b *block) view() view {
+                    return view(b[1:][:3])
+                }
+
+                func fill(b *block) {
+                    s := b.view()
+                    _ = len(s)
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote::quote!(#compiled).to_string();
+
+        assert!(
+            !output.contains("pointer receiver is not addressable"),
+            "expected named slice view receiver to be addressable: {output}"
+        );
+        assert!(
+            output.contains("fn view (& mut self) -> view"),
+            "expected named slice view method to borrow the receiver: {output}"
+        );
+        assert!(
+            output.contains("< block > :: view (& mut * b . lock () . unwrap ()"),
+            "expected named slice view call to borrow through the pointer cell: {output}"
         );
     }
 
@@ -34541,6 +34889,48 @@ func main() {
                 "Counter > :: Increment (crate :: builtin :: GorsPtr :: from_arc (c . clone ())"
             ),
             "expected pointer receiver call to use the shared storage pointer cell: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_promote_defined_scalar_pointer_method_receivers() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Format int
+
+                func (f *Format) Keep(mask Format) {
+                    *f &= mask
+                }
+
+                func main() {
+                    format := Format(7)
+                    format.Keep(Format(3))
+                    _ = format
+                }
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            !output.contains("pointer receiver is not addressable"),
+            "expected defined scalar pointer receiver to be addressable: {output}"
+        );
+        assert!(
+            output.contains(
+                "let mut format = std :: sync :: Arc :: new (std :: sync :: Mutex :: new"
+            ),
+            "expected defined scalar receiver to use shared storage: {output}"
+        );
+        assert!(
+            output.contains(
+                "Format > :: Keep (crate :: builtin :: GorsPtr :: from_arc (format . clone ())"
+            ),
+            "expected pointer receiver call to use the shared scalar storage: {output}"
         );
     }
 

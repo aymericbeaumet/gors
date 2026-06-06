@@ -341,6 +341,10 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
         );
         package_type_env.rescan_file_top_level_vars(ast, &inference_env);
     }
+    let view_method_seed = crate::compiler::fixed_array_view_method_seed_for_files(
+        &parsed_file_refs,
+        &package_type_env,
+    );
 
     let import_renames = package_import_renames(&parsed_files);
     let import_path_by_module = package_import_path_by_module(&parsed_files);
@@ -351,6 +355,7 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
         imported_type_envs: &imported_type_envs,
         import_renames: &import_renames,
         package_mutable_top_level_vars: &package_mutable_top_level_vars,
+        view_method_seed: &view_method_seed,
         roots,
     };
 
@@ -361,6 +366,7 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
             &imported_type_envs,
             &import_renames,
             &package_mutable_top_level_vars,
+            &view_method_seed,
             roots,
         ) {
             Ok(compiled) => compiled,
@@ -424,6 +430,7 @@ fn compile_resolved_file(
     imported_type_envs: &BTreeMap<String, crate::compiler::PackageFacts>,
     import_renames: &BTreeMap<String, String>,
     package_mutable_top_level_vars: &HashSet<String>,
+    view_method_seed: &crate::compiler::FixedArrayViewMethodSeed,
     roots: Option<&HashSet<String>>,
 ) -> Result<syn::File, crate::compiler::CompilerError> {
     let mut type_env = package_type_env.clone();
@@ -434,11 +441,12 @@ fn compile_resolved_file(
         imported_type_envs,
     );
     crate::compiler::with_active_reachability_roots(roots, || {
-        crate::compiler::compile_with_type_env_import_renames_and_mutable_vars(
+        crate::compiler::compile_with_type_env_import_renames_mutable_vars_and_view_seed(
             ast,
             type_env,
             import_renames.clone(),
             Some(package_mutable_top_level_vars.clone()),
+            Some(view_method_seed),
         )
     })
 }
@@ -507,6 +515,7 @@ struct ResolvedRecoveryContext<'a> {
     imported_type_envs: &'a BTreeMap<String, crate::compiler::PackageFacts>,
     import_renames: &'a BTreeMap<String, String>,
     package_mutable_top_level_vars: &'a HashSet<String>,
+    view_method_seed: &'a crate::compiler::FixedArrayViewMethodSeed,
     roots: Option<&'a HashSet<String>>,
 }
 
@@ -535,6 +544,7 @@ fn recover_resolved_file_items<'a>(
             context.imported_type_envs,
             context.import_renames,
             context.package_mutable_top_level_vars,
+            context.view_method_seed,
             context.roots,
         ) {
             Ok(compiled) => {
@@ -568,6 +578,7 @@ fn recover_resolved_file_items<'a>(
                 context.imported_type_envs,
                 context.import_renames,
                 context.package_mutable_top_level_vars,
+                context.view_method_seed,
                 context.roots,
             ) {
                 Ok(compiled) => {
@@ -597,6 +608,7 @@ fn recover_resolved_file_items<'a>(
         context.imported_type_envs,
         context.import_renames,
         context.package_mutable_top_level_vars,
+        context.view_method_seed,
         context.roots,
     ) {
         Ok(compiled) => compiled.items,
