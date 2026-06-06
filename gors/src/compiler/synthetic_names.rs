@@ -66,7 +66,11 @@ pub(super) fn borrowed_interface_lifetime() -> syn::Lifetime {
 }
 
 pub(super) fn borrowed_interface_lifetime_param() -> syn::GenericParam {
-    syn::GenericParam::Lifetime(syn::LifetimeParam::new(borrowed_interface_lifetime()))
+    let mut param = syn::LifetimeParam::new(borrowed_interface_lifetime());
+    param
+        .bounds
+        .push(syn::Lifetime::new("'static", Span::mixed_site()));
+    syn::GenericParam::Lifetime(param)
 }
 
 pub(super) fn borrowed_interface_generics() -> syn::Generics {

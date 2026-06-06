@@ -68,8 +68,9 @@ pub(super) fn impls(
             if !pointer_impl_items.is_empty() {
                 let trait_path = field.trait_path.clone();
                 let lifetime = synthetic_names::borrowed_interface_lifetime();
+                let generics = synthetic_names::borrowed_interface_generics();
                 out.push(syn::parse_quote! {
-                    impl<#lifetime> #trait_path for crate::builtin::GorsPtr<#struct_ident<#lifetime>> {
+                    impl #generics #trait_path for crate::builtin::GorsPtr<#struct_ident<#lifetime>> {
                         #(#pointer_impl_items)*
                     }
                 });

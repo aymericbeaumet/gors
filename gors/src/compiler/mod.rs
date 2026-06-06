@@ -4892,7 +4892,14 @@ fn type_with_generic_args(mut base: syn::Type, args: Vec<syn::Type>) -> syn::Typ
         return base;
     };
 
-    let mut generic_args = syn::punctuated::Punctuated::new();
+    let mut generic_args = match std::mem::replace(&mut segment.arguments, syn::PathArguments::None)
+    {
+        syn::PathArguments::AngleBracketed(args) => args.args,
+        other => {
+            segment.arguments = other;
+            syn::punctuated::Punctuated::new()
+        }
+    };
     for arg in args {
         generic_args.push(syn::GenericArgument::Type(arg));
     }
@@ -5001,8 +5008,13 @@ fn type_from_expr_ref(expr: &ast::Expr) -> syn::Type {
             syn::parse_quote! { Box<dyn crate::builtin::error> }
         }
         ast::Expr::Ident(ident) => {
-            let ident = syn::Ident::new(&rust_safe_ident_name(ident.name), Span::mixed_site());
-            syn::parse_quote! { #ident }
+            let name = rust_safe_ident_name(ident.name);
+            let ident = syn::Ident::new(&name, Span::mixed_site());
+            if type_decl_facts::has_borrowed_interface_struct(&name) {
+                syn::parse_quote! { #ident<'static> }
+            } else {
+                syn::parse_quote! { #ident }
+            }
         }
         ast::Expr::StarExpr(star) => {
             let inner = type_from_expr_ref(&star.x);
@@ -5466,6 +5478,82 @@ fn borrowed_lifetime_struct_type_from_expr(expr: &ast::Expr) -> Option<syn::Type
 
 fn expr_requires_borrowed_lifetime(expr: &ast::Expr) -> bool {
     borrowed_lifetime_struct_type_from_expr(expr).is_some()
+}
+
+fn borrowed_interface_struct_fields_for_type_spec(
+    type_spec: &ast::TypeSpec,
+) -> Option<Vec<EmbeddedInterfaceField>> {
+    let ast::Expr::StructType(struct_type) = &type_spec.type_ else {
+        return None;
+    };
+    let mut fields_out = Vec::new();
+    let mut has_borrowed_interface_field = false;
+    if let Some(fields) = struct_type.fields.as_ref() {
+        for field in &fields.list {
+            let Some(field_type) = field.type_.as_ref() else {
+                continue;
+            };
+            if expr_requires_borrowed_lifetime(field_type) {
+                has_borrowed_interface_field = true;
+            }
+            if field.names.as_ref().is_some_and(|names| !names.is_empty()) {
+                continue;
+            }
+            let field_go_type = typeinfer::GoType::from_expr(field_type);
+            if matches!(field_go_type, typeinfer::GoType::Error) {
+                continue;
+            }
+            let Some(trait_path) = interface_trait_path_from_expr(field_type) else {
+                continue;
+            };
+            let Some(name) = extract_type_name(field_type) else {
+                continue;
+            };
+            has_borrowed_interface_field = true;
+            fields_out.push(EmbeddedInterfaceField {
+                field_ident: syn::Ident::new(&rust_safe_ident_name(&name), Span::mixed_site()),
+                trait_path,
+            });
+        }
+    }
+    has_borrowed_interface_field.then_some(fields_out)
+}
+
+fn preseed_borrowed_interface_structs(decls: &[ast::Decl]) {
+    let type_specs = decls
+        .iter()
+        .filter_map(|decl| {
+            let ast::Decl::GenDecl(gen_decl) = decl else {
+                return None;
+            };
+            (gen_decl.tok == token::Token::TYPE).then_some(gen_decl)
+        })
+        .flat_map(|gen_decl| gen_decl.specs.iter())
+        .filter_map(|spec| {
+            let ast::Spec::TypeSpec(type_spec) = spec else {
+                return None;
+            };
+            type_spec.name.as_ref().map(|name| (name.name, type_spec))
+        })
+        .collect::<Vec<_>>();
+
+    for _ in 0..type_specs.len() {
+        let mut changed = false;
+        for (name, type_spec) in &type_specs {
+            let name = rust_safe_ident_name(*name);
+            if type_decl_facts::has_borrowed_interface_struct(&name) {
+                continue;
+            }
+            let Some(fields) = borrowed_interface_struct_fields_for_type_spec(type_spec) else {
+                continue;
+            };
+            type_decl_facts::record_borrowed_interface_struct(name, fields);
+            changed = true;
+        }
+        if !changed {
+            break;
+        }
+    }
 }
 
 fn container_value_type_from_expr(expr: &ast::Expr) -> syn::Type {
@@ -6506,7 +6594,7 @@ fn return_type_from_expr_with_type_params(
         return syn::parse_quote! { Vec<#elem> };
     }
     let is_interface = is_interface_expr(&expr);
-    let ty: syn::Type = expr.into();
+    let ty = type_from_expr_ref(&expr);
     if is_interface {
         syn::parse_quote! { Box<dyn #ty> }
     } else {
@@ -9189,6 +9277,17 @@ fn wrap_void_defer_body_in_unwind_catch(block: &mut syn::Block) {
     ];
 }
 
+fn compile_borrowed_interface_field_expr(
+    expr: ast::Expr,
+    expected: &typeinfer::GoType,
+) -> syn::Expr {
+    if go_type_interface_name(expected).is_none() || matches!(expected, typeinfer::GoType::Error) {
+        return compile_expr_with_expected(expr, Some(expected));
+    }
+    let owned = compile_owned_interface_expr(expr, expected);
+    syn::parse_quote! { Box::leak(#owned) }
+}
+
 fn compile_struct_field_expr(
     expr: ast::Expr,
     expected: &typeinfer::GoType,
@@ -9197,6 +9296,9 @@ fn compile_struct_field_expr(
     let is_function_field_selector =
         matches!(expr, ast::Expr::SelectorExpr(_)) && function_field_call_params(&expr).is_some();
     let should_clone = binding_init_should_clone(&expr);
+    if borrowed_interface_field {
+        return compile_borrowed_interface_field_expr(expr, expected);
+    }
     if !borrowed_interface_field
         && !matches!(expected, typeinfer::GoType::Error)
         && go_type_interface_name(expected).is_some()
@@ -9210,9 +9312,6 @@ fn compile_struct_field_expr(
     let compiled = compile_expr_with_expected(expr, Some(expected));
     if matches!(resolved_go_type(expected), typeinfer::GoType::Any) {
         return clone_any_send_sync_expr(compiled);
-    }
-    if borrowed_interface_field {
-        return compiled;
     }
     if is_function_field_selector {
         return compiled;
@@ -11437,11 +11536,11 @@ fn compile_return_expr_with_expected(
             return compiled;
         }
         return if is_box_new_call(&compiled) {
-            syn::parse_quote! { #compiled as Box<dyn #trait_path + '_> }
+            syn::parse_quote! { #compiled as Box<dyn #trait_path> }
         } else if let Some(inner) = arc_mutex_new_inner_expr(&compiled) {
-            syn::parse_quote! { Box::new(#inner) as Box<dyn #trait_path + '_> }
+            syn::parse_quote! { Box::new(#inner) as Box<dyn #trait_path> }
         } else {
-            syn::parse_quote! { Box::new(#compiled) as Box<dyn #trait_path + '_> }
+            syn::parse_quote! { Box::new(#compiled) as Box<dyn #trait_path> }
         };
     }
     compile_expr_with_expected(expr, expected)
@@ -17800,6 +17899,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
         set_current_file_imports(&file);
         type_decl_facts::clear_borrowed_interface_structs();
         type_decl_facts::clear_struct_clone_derivability();
+        preseed_borrowed_interface_structs(&file.decls);
 
         preseed_fixed_array_view_methods(&file.decls);
         let needed_imported_interface_methods = interface_method_sets::needed_imports(&file.decls);
@@ -18272,8 +18372,9 @@ impl TryFrom<ast::File<'_>> for syn::File {
                         };
                         if has_borrowed_interface_field {
                             let lifetime = synthetic_names::borrowed_interface_lifetime();
+                            let generics = synthetic_names::borrowed_interface_generics();
                             items.push(syn::parse_quote! {
-                                impl<#lifetime> #trait_path for crate::builtin::GorsPtr<#struct_ident<#lifetime>> {
+                                impl #generics #trait_path for crate::builtin::GorsPtr<#struct_ident<#lifetime>> {
                                     #(#impl_items)*
                                 }
                             });
@@ -18354,8 +18455,9 @@ impl TryFrom<ast::File<'_>> for syn::File {
                         };
                         if has_borrowed_interface_field {
                             let lifetime = synthetic_names::borrowed_interface_lifetime();
+                            let generics = synthetic_names::borrowed_interface_generics();
                             items.push(syn::parse_quote! {
-                                impl<#lifetime> #trait_path for crate::builtin::GorsPtr<#struct_ident<#lifetime>> {
+                                impl #generics #trait_path for crate::builtin::GorsPtr<#struct_ident<#lifetime>> {
                                     #(#impl_items)*
                                 }
                             });
@@ -27562,7 +27664,7 @@ func main() {
     }
 
     #[test]
-    fn embedded_interface_struct_literals_keep_borrowed_storage() {
+    fn embedded_interface_struct_literals_leak_owned_clone_storage() {
         let parsed = parse_file(
             "test.go",
             r#"
@@ -27591,16 +27693,13 @@ func Reverse(data Interface) Interface {
         let output = quote! { #compiled }.to_string();
 
         assert!(
-            output.contains("Interface : data") || output.contains("Interface: data"),
-            "{output}"
-        );
-        assert!(
-            !output.contains("Interface :: __gors_clone_box (& * (data))"),
+            output.contains("Interface : Box :: leak (Interface :: __gors_clone_box (& * (data)))")
+                || output.contains("Interface: Box::leak(Interface::__gors_clone_box(&*(data)))"),
             "{output}"
         );
         assert!(
             output.contains(
-                "impl < '__gors > Interface for crate :: builtin :: GorsPtr < reverse < '__gors > >"
+                "impl < '__gors : 'static > Interface for crate :: builtin :: GorsPtr < reverse < '__gors > >"
             ),
             "{output}"
         );
@@ -27632,10 +27731,40 @@ type timerCtx struct {
         let output = quote! { #compiled }.to_string();
 
         assert!(
-            output.contains("impl < '__gors > Clone for cancelCtx < '__gors >"),
+            output.contains("impl < '__gors : 'static > Clone for cancelCtx < '__gors >"),
             "{output}"
         );
         assert!(output.contains("Context :: __gors_clone_box"), "{output}");
+    }
+
+    #[test]
+    fn borrowed_interface_struct_facts_are_seeded_before_function_signatures() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+package main
+
+type Context interface {
+	Done() int
+}
+
+func find(parent Context) *cancelCtx {
+	return nil
+}
+
+type cancelCtx struct {
+	Context
+}
+"#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("GorsPtr < cancelCtx < 'static > >"),
+            "{output}"
+        );
     }
 
     #[test]
@@ -27704,7 +27833,7 @@ func wrap(parent Context) canceler {
 
         assert!(
             output.contains(
-                "impl < '__gors > canceler for crate :: builtin :: GorsPtr < cancelCtx < '__gors > >"
+                "impl < '__gors : 'static > canceler for crate :: builtin :: GorsPtr < cancelCtx < '__gors > >"
             ),
             "{output}"
         );
@@ -27790,11 +27919,8 @@ type wrapper struct {
         let output = quote! { #compiled }.to_string();
 
         assert!(
-            output.contains("Interface : data") || output.contains("Interface: data"),
-            "{output}"
-        );
-        assert!(
-            !output.contains("Interface :: __gors_clone_box (& * (data))"),
+            output.contains("Interface : Box :: leak (Interface :: __gors_clone_box (& * (data)))")
+                || output.contains("Interface: Box::leak(Interface::__gors_clone_box(&*(data)))"),
             "{output}"
         );
     }
@@ -27829,7 +27955,7 @@ func Wrap(data Interface) Interface {
         let output = quote! { #compiled }.to_string();
 
         assert!(
-            output.contains("impl < '__gors > Interface for wrapper < '__gors >"),
+            output.contains("impl < '__gors : 'static > Interface for wrapper < '__gors >"),
             "{output}"
         );
         assert!(
@@ -27838,7 +27964,7 @@ func Wrap(data Interface) Interface {
         );
         assert!(
             output.contains(
-                "impl < '__gors > Interface for crate :: builtin :: GorsPtr < wrapper < '__gors > >"
+                "impl < '__gors : 'static > Interface for crate :: builtin :: GorsPtr < wrapper < '__gors > >"
             ),
             "{output}"
         );
