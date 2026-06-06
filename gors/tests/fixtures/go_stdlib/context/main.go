@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 type contextKey string
@@ -110,5 +111,37 @@ func main() {
 		cancelChildFirst(causeError("child cause"))
 		cancelParentAfterChild(causeError("parent cause"))
 		fmt.Println("with-cancel-cause-child-first", context.Cause(parentAfterChild).Error(), context.Cause(childFirst).Error())
+	}
+
+	// gors:stdlib-cover context::WithDeadline
+	// gors:stdlib-cover context::WithDeadlineCause
+	// gors:stdlib-cover context::WithTimeout
+	// gors:stdlib-cover context::WithTimeoutCause
+	{
+		past := time.Now().Add(-time.Second)
+		deadlineCtx, deadlineCancel := context.WithDeadline(bg, past)
+		deadline, deadlineOK := deadlineCtx.Deadline()
+		fmt.Println("with-deadline-deadline", deadlineOK, deadline.Equal(past))
+		fmt.Println("with-deadline-expired", deadlineCtx.Err().Error(), context.Cause(deadlineCtx).Error())
+		select {
+		case <-deadlineCtx.Done():
+			fmt.Println("with-deadline-closed", true)
+		default:
+			fmt.Println("with-deadline-closed", false)
+		}
+		deadlineCancel()
+		fmt.Println("with-deadline-idempotent", deadlineCtx.Err().Error())
+
+		deadlineCauseCtx, deadlineCauseCancel := context.WithDeadlineCause(bg, past, causeError("deadline cause"))
+		fmt.Println("with-deadline-cause", deadlineCauseCtx.Err().Error(), context.Cause(deadlineCauseCtx).Error())
+		deadlineCauseCancel()
+
+		timeoutCtx, timeoutCancel := context.WithTimeout(bg, -time.Second)
+		fmt.Println("with-timeout", timeoutCtx.Err().Error(), context.Cause(timeoutCtx).Error())
+		timeoutCancel()
+
+		timeoutCauseCtx, timeoutCauseCancel := context.WithTimeoutCause(bg, -time.Second, causeError("timeout cause"))
+		fmt.Println("with-timeout-cause", timeoutCauseCtx.Err().Error(), context.Cause(timeoutCauseCtx).Error())
+		timeoutCauseCancel()
 	}
 }

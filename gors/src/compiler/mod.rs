@@ -2791,7 +2791,11 @@ fn goroutine_capture_clones(func_lit: &ast::FuncLit) -> Vec<syn::Stmt> {
             .into_iter()
             .filter_map(|capture| {
                 let ty = local_capture_go_type(&env, &capture.name)?;
-                Some(clone_capture_stmt(&capture.name, Some(&ty)))
+                Some(clone_capture_stmt(
+                    &capture.name,
+                    Some(&ty),
+                    CaptureCloneMode::Goroutine,
+                ))
             })
             .collect()
     })
@@ -2807,7 +2811,17 @@ fn local_capture_go_type(env: &typeinfer::TypeEnv, name: &str) -> Option<typeinf
     env.get_var(name)
 }
 
-fn clone_capture_stmt(name: &str, go_type: Option<&typeinfer::GoType>) -> syn::Stmt {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CaptureCloneMode {
+    Normal,
+    Goroutine,
+}
+
+fn clone_capture_stmt(
+    name: &str,
+    go_type: Option<&typeinfer::GoType>,
+    mode: CaptureCloneMode,
+) -> syn::Stmt {
     let ident = value_ident(name);
     if let Some(interface_name) = go_type.and_then(go_type_interface_name)
         && interface_name != "error"
@@ -2815,7 +2829,11 @@ fn clone_capture_stmt(name: &str, go_type: Option<&typeinfer::GoType>) -> syn::S
         let trait_path = interface_trait_path_from_name(&interface_name);
         syn::parse_quote! { let mut #ident = #trait_path::__gors_clone_box(&*(#ident)); }
     } else if go_type.is_some_and(|ty| matches!(resolved_go_type(ty), typeinfer::GoType::Any)) {
-        syn::parse_quote! { let #ident = crate::builtin::clone_any(&#ident); }
+        if mode == CaptureCloneMode::Goroutine {
+            syn::parse_quote! { let #ident = crate::builtin::clone_any_send_ref(&#ident); }
+        } else {
+            syn::parse_quote! { let #ident = crate::builtin::clone_any(&#ident); }
+        }
     } else {
         syn::parse_quote! { let #ident = #ident.clone(); }
     }
@@ -2842,7 +2860,9 @@ fn move_closure_value_capture_clones(func_lit: &ast::FuncLit) -> Vec<syn::Stmt> 
                     Some(interface_name) if interface_name != "error"
                 )
             })
-            .map(|capture| clone_capture_stmt(&capture.name, Some(&capture.ty)))
+            .map(|capture| {
+                clone_capture_stmt(&capture.name, Some(&capture.ty), CaptureCloneMode::Normal)
+            })
             .collect()
     })
 }
@@ -2860,7 +2880,7 @@ fn goroutine_call_capture_clones(call: &ast::CallExpr<'_>) -> Vec<syn::Stmt> {
         names
             .into_iter()
             .filter_map(|name| local_capture_go_type(&env, &name).map(|ty| (name, ty)))
-            .map(|(name, ty)| clone_capture_stmt(&name, Some(&ty)))
+            .map(|(name, ty)| clone_capture_stmt(&name, Some(&ty), CaptureCloneMode::Goroutine))
             .collect()
     })
 }
@@ -7157,12 +7177,60 @@ fn field_list_binding_names(fields: &ast::FieldList) -> std::collections::HashSe
         .collect()
 }
 
+fn field_list_source_binding_names(fields: &ast::FieldList) -> BTreeSet<String> {
+    fields
+        .list
+        .iter()
+        .filter_map(|field| field.names.as_ref())
+        .flat_map(|names| names.iter())
+        .filter(|name| !name.name.is_empty() && name.name != "_")
+        .map(|name| name.name.to_string())
+        .collect()
+}
+
 fn func_type_local_binding_names(func_type: &ast::FuncType) -> std::collections::HashSet<String> {
     let mut names = field_list_binding_names(&func_type.params);
     if let Some(results) = &func_type.results {
         names.extend(field_list_binding_names(results));
     }
     names
+}
+
+fn address_taken_param_names_in_body(
+    func_type: &ast::FuncType,
+    body: Option<&ast::BlockStmt<'_>>,
+) -> BTreeSet<String> {
+    let Some(body) = body else {
+        return BTreeSet::new();
+    };
+    let param_names = field_list_source_binding_names(&func_type.params);
+    if param_names.is_empty() {
+        return BTreeSet::new();
+    }
+    TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        ir::address_taken_names_in_block_with_declared_bindings(
+            body,
+            &env,
+            param_names.iter().cloned(),
+        )
+        .into_iter()
+        .filter(|name| param_names.contains(name))
+        .collect()
+    })
+}
+
+fn prepend_shared_parameter_cells(block: &mut syn::Block, names: &BTreeSet<String>) {
+    let stmts = names
+        .iter()
+        .map(|name| {
+            let ident = value_ident(name);
+            syn::parse_quote! {
+                let #ident = std::sync::Arc::new(std::sync::Mutex::new(#ident));
+            }
+        })
+        .collect::<Vec<_>>();
+    block.stmts.splice(0..0, stmts);
 }
 
 fn type_param_idents(type_params: Option<&ast::FieldList>) -> Vec<syn::Ident> {
@@ -7943,6 +8011,8 @@ fn compile_method(
             }
         }
     });
+    let address_taken_param_names =
+        address_taken_param_names_in_body(&func_decl.type_, func_decl.body.as_ref());
 
     if let Some(body) = func_decl.body.as_ref() {
         validate_function_semantics(Some(recv), &func_decl.type_, body)?;
@@ -8039,6 +8109,7 @@ fn compile_method(
                     if value_receiver_needs_cell {
                         names.insert(recv_source_name.to_string());
                     }
+                    names.extend(address_taken_param_names.iter().cloned());
                     names
                 })
             });
@@ -8061,6 +8132,7 @@ fn compile_method(
     drop(borrowed_pointer_param_names);
     drop(borrowed_slice_param_names);
 
+    prepend_shared_parameter_cells(&mut block, &address_taken_param_names);
     if value_receiver_needs_cell {
         let receiver_ident = value_ident(recv_source_name);
         block.stmts.insert(
@@ -10728,7 +10800,7 @@ fn compile_slice_expr(slice_expr: ast::SliceExpr) -> syn::Expr {
     }
 
     let slice_source: syn::Expr = if is_owning_pointer_array_slice {
-        syn::parse_quote! { &*#x.lock().unwrap() }
+        syn::parse_quote! { &mut *#x.lock().unwrap() }
     } else {
         x
     };
@@ -11084,6 +11156,19 @@ fn pointer_deref_lvalue_expr(inner: &ast::Expr) -> Option<syn::Expr> {
     Some(syn::parse_quote! { *#inner.lock().unwrap() })
 }
 
+fn pointer_array_cell_expr_from_ref(expr: &ast::Expr) -> Option<syn::Expr> {
+    let go_type = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(expr, &env.borrow()));
+    if !go_type_is_pointer_to_array(&go_type) || !is_owning_pointer_cell_expr_ref(expr) {
+        return None;
+    }
+    pointer_cell_expr_from_ref(expr)
+}
+
+fn pointer_array_lvalue_base_expr(expr: &ast::Expr) -> Option<syn::Expr> {
+    let cell = pointer_array_cell_expr_from_ref(expr)?;
+    Some(syn::parse_quote! { *#cell.lock().unwrap() })
+}
+
 fn slice_lvalue_expr_from_base(
     base: syn::Expr,
     low: Option<&ast::Expr<'_>>,
@@ -11132,7 +11217,8 @@ fn selector_lvalue_expr_from_base(
 
 fn lvalue_expr_from_ref(expr: &ast::Expr) -> Option<syn::Expr> {
     if let ast::Expr::SliceExpr(slice) = expr {
-        let base = lvalue_expr_from_ref(&slice.x)?;
+        let base =
+            pointer_array_lvalue_base_expr(&slice.x).or_else(|| lvalue_expr_from_ref(&slice.x))?;
         return slice_lvalue_expr_from_base(base, slice.low.as_deref(), slice.high.as_deref());
     }
     if !is_ir_addressable_expr(expr) {
@@ -11166,7 +11252,8 @@ fn lvalue_expr_from_ref(expr: &ast::Expr) -> Option<syn::Expr> {
             Some(selector_lvalue_expr_from_base(selector, base))
         }
         ast::Expr::IndexExpr(index) => {
-            let base = lvalue_expr_from_ref(&index.x)?;
+            let base = pointer_array_lvalue_base_expr(&index.x)
+                .or_else(|| lvalue_expr_from_ref(&index.x))?;
             let index = lvalue_index_component_expr(&index.index)?;
             Some(syn::parse_quote! { (#base)[(#index) as usize] })
         }
@@ -11186,7 +11273,8 @@ fn lvalue_expr_from_owned(expr: ast::Expr) -> Option<syn::Expr> {
             Some(syn::parse_quote! { *#call })
         }
         ast::Expr::SliceExpr(slice) => {
-            let base = lvalue_expr_from_owned(*slice.x)?;
+            let base = pointer_array_lvalue_base_expr(&slice.x)
+                .or_else(|| lvalue_expr_from_owned(*slice.x))?;
             slice_lvalue_expr_from_base(base, slice.low.as_deref(), slice.high.as_deref())
         }
         other => lvalue_expr_from_ref(&other),
@@ -12045,6 +12133,85 @@ fn borrowed_interface_selector_reborrow_expr(expr: &ast::Expr) -> Option<syn::Ex
     Some(syn::parse_quote! { &mut *#lvalue })
 }
 
+fn projected_promoted_field_from_pointer_expr(
+    owner_expr: syn::Expr,
+    owner_ty: syn::Type,
+    promoted: &PromotedFieldInfo,
+    field_ident: &syn::Ident,
+    identity_only: bool,
+) -> syn::Expr {
+    let embedded_field = syn::Ident::new(
+        &rust_safe_ident_name(&promoted.embedded_field),
+        proc_macro2::Span::mixed_site(),
+    );
+    let embedded_ty = named_go_type_path(&promoted.embedded_target);
+    let embedded_ptr: syn::Expr = if promoted.embedded_is_pointer {
+        syn::parse_quote! {{
+            let __gors_owner = (#owner_expr).lock().unwrap();
+            (__gors_owner.#embedded_field).clone()
+        }}
+    } else {
+        syn::parse_quote! {
+            crate::builtin::GorsPtr::from_ptr_field(
+                (#owner_expr).clone(),
+                std::mem::offset_of!(#owner_ty, #embedded_field),
+                |__gors_owner: &mut #owner_ty| &mut __gors_owner.#embedded_field,
+            )
+        }
+    };
+    if identity_only {
+        syn::parse_quote! {
+            crate::builtin::GorsPtr::from_ptr_field_identity(
+                (#embedded_ptr).clone(),
+                std::mem::offset_of!(#embedded_ty, #field_ident),
+                |__gors_owner: &mut #embedded_ty| &mut __gors_owner.#field_ident,
+            )
+        }
+    } else {
+        syn::parse_quote! {
+            crate::builtin::GorsPtr::from_ptr_field(
+                (#embedded_ptr).clone(),
+                std::mem::offset_of!(#embedded_ty, #field_ident),
+                |__gors_owner: &mut #embedded_ty| &mut __gors_owner.#field_ident,
+            )
+        }
+    }
+}
+
+fn projected_promoted_field_from_arc_expr(
+    owner_expr: syn::Expr,
+    owner_ty: syn::Type,
+    promoted: &PromotedFieldInfo,
+    field_ident: &syn::Ident,
+) -> syn::Expr {
+    let embedded_field = syn::Ident::new(
+        &rust_safe_ident_name(&promoted.embedded_field),
+        proc_macro2::Span::mixed_site(),
+    );
+    let embedded_ty = named_go_type_path(&promoted.embedded_target);
+    let embedded_ptr: syn::Expr = if promoted.embedded_is_pointer {
+        syn::parse_quote! {{
+            let __gors_owner = (#owner_expr).lock().unwrap();
+            (__gors_owner.#embedded_field).clone()
+        }}
+    } else {
+        syn::parse_quote! {
+            crate::builtin::GorsPtr::from_arc_field(
+                (#owner_expr).clone(),
+                std::mem::offset_of!(#owner_ty, #embedded_field),
+                |__gors_owner: &mut #owner_ty| &mut __gors_owner.#embedded_field,
+            )
+        }
+    };
+    syn::parse_quote! {
+        crate::builtin::GorsPtr::from_ptr_field(
+            (#embedded_ptr).clone(),
+            std::mem::offset_of!(#embedded_ty, #field_ident),
+            |__gors_owner: &mut #embedded_ty| &mut __gors_owner.#field_ident,
+        )
+    }
+}
+
 fn address_of_shared_selector_field_expr(expr: &ast::Expr) -> Option<syn::Expr> {
     let ast::Expr::SelectorExpr(selector) = ast_unparen_expr_ref(expr) else {
         return None;
@@ -12061,6 +12228,19 @@ fn address_of_shared_selector_field_expr(expr: &ast::Expr) -> Option<syn::Expr> 
         &rust_safe_ident_name(selector.sel.name),
         proc_macro2::Span::mixed_site(),
     );
+    let promoted_field_info = TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        let base_ty = typeinfer::GoType::infer_expr(&selector.x, &env);
+        promoted_field_info(&base_ty, selector.sel.name, &env)
+    });
+    if let Some(promoted) = promoted_field_info {
+        return Some(projected_promoted_field_from_arc_expr(
+            syn::parse_quote! { #owner_ident },
+            owner_ty,
+            &promoted,
+            &field_ident,
+        ));
+    }
 
     Some(syn::parse_quote! {
         crate::builtin::GorsPtr::from_arc_field(
@@ -12095,6 +12275,20 @@ fn address_of_pointer_selector_field_expr_with_constructor(
         &rust_safe_ident_name(selector.sel.name),
         proc_macro2::Span::mixed_site(),
     );
+    let promoted_field_info = TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        let base_ty = typeinfer::GoType::infer_expr(&selector.x, &env);
+        promoted_field_info(&base_ty, selector.sel.name, &env)
+    });
+    if let Some(promoted) = promoted_field_info {
+        return Some(projected_promoted_field_from_pointer_expr(
+            owner_expr,
+            owner_ty,
+            &promoted,
+            &field_ident,
+            identity_only,
+        ));
+    }
 
     if identity_only {
         Some(syn::parse_quote! {
@@ -12828,6 +13022,41 @@ fn compile_function_field_call(call_expr: ast::CallExpr) -> Option<syn::Expr> {
                 }
             };
         (&*__gors_func)(#args)
+    }})
+}
+
+fn compile_go_function_value_call_stmt(call_expr: ast::CallExpr) -> Option<syn::Stmt> {
+    let info = function_value_call_info(&call_expr.fun)?;
+    let func: syn::Expr = (*call_expr.fun).into();
+    let args = compile_function_value_call_args(
+        call_expr.args.unwrap_or_default(),
+        &info.params,
+        info.variadic_start,
+        call_expr.ellipsis.is_some(),
+    );
+    let arg_idents = (0..args.len())
+        .map(synthetic_names::goroutine_arg_ident)
+        .collect::<Vec<_>>();
+    let arg_bindings = args
+        .iter()
+        .zip(arg_idents.iter())
+        .map(|(arg, ident)| syn::parse_quote! { let #ident = #arg; })
+        .collect::<Vec<syn::Stmt>>();
+    let func_target_ident = synthetic_names::goroutine_func_target_ident();
+
+    Some(syn::parse_quote! {{
+        let #func_target_ident = (#func).clone();
+        #(#arg_bindings)*
+        ::std::thread::spawn(move || {
+            let __gors_func = {
+                let __gors_func = crate::builtin::lock_func(&#func_target_ident);
+                match __gors_func.as_ref() {
+                    Some(__gors_func) => __gors_func.clone(),
+                    None => crate::builtin::panic_value("nil function"),
+                }
+            };
+            (&*__gors_func)(#(#arg_idents),*);
+        });
     }})
 }
 
@@ -14582,7 +14811,7 @@ fn compile_assignment_lhs(expr: ast::Expr) -> syn::Expr {
 
 fn compile_index_assignment_lhs(index: ast::IndexExpr<'_>) -> Option<syn::Expr> {
     let ast::IndexExpr { x, index, .. } = index;
-    let base = lvalue_expr_from_owned(*x)?;
+    let base = pointer_array_lvalue_base_expr(&x).or_else(|| lvalue_expr_from_owned(*x))?;
     let index = compile_index_component_expr(*index);
     Some(syn::parse_quote! { (#base)[(#index) as usize] })
 }
@@ -14623,6 +14852,7 @@ fn selector_field_go_type(selector: &ast::SelectorExpr) -> Option<typeinfer::GoT
 struct PromotedFieldInfo {
     embedded_field: String,
     embedded_is_pointer: bool,
+    embedded_target: String,
     ty: typeinfer::GoType,
 }
 
@@ -14673,6 +14903,7 @@ fn promoted_field_info(
             return Some(PromotedFieldInfo {
                 embedded_field,
                 embedded_is_pointer,
+                embedded_target: target_name,
                 ty,
             });
         }
@@ -15529,10 +15760,33 @@ fn is_numeric_value_binary_op(op: token::Token) -> bool {
     )
 }
 
+fn const_value_numeric_go_type(value: &ConstValue) -> Option<typeinfer::GoType> {
+    match value {
+        ConstValue::Int(_) => Some(typeinfer::GoType::Int),
+        ConstValue::Uint(_, bits) if *bits <= 8 => Some(typeinfer::GoType::Uint8),
+        ConstValue::Uint(_, bits) if *bits <= 16 => Some(typeinfer::GoType::Uint16),
+        ConstValue::Uint(_, bits) if *bits <= 32 => Some(typeinfer::GoType::Uint32),
+        ConstValue::Uint(_, bits) if *bits <= 64 => Some(typeinfer::GoType::Uint64),
+        ConstValue::Uint(_, _) => Some(typeinfer::GoType::Uintptr),
+        ConstValue::Float(_) | ConstValue::Rational(_) => Some(typeinfer::GoType::Float64),
+        ConstValue::Complex(_, _) => Some(typeinfer::GoType::Complex128),
+        ConstValue::Bool(_) | ConstValue::Str(_) => None,
+    }
+}
+
 fn compile_numeric_binary_expr_with_expected(
     binary_expr: ast::BinaryExpr,
     expected: &typeinfer::GoType,
 ) -> syn::Expr {
+    if let (Some(left), Some(right)) = (
+        const_eval_expr_in_active_env(&binary_expr.x, 0, &BTreeMap::new()),
+        const_eval_expr_in_active_env(&binary_expr.y, 0, &BTreeMap::new()),
+    ) && let Some(value) = const_binary_expr(left, binary_expr.op, right)
+        && let Some(actual) = const_value_numeric_go_type(&value)
+    {
+        return coerce_numeric_expr(expected, &actual, value.to_expr());
+    }
+
     let binary_expr = match flatten_same_binary_operands(binary_expr) {
         Ok((op, operands)) => {
             return compile_flat_binary_operands(op, operands, Some(expected));
@@ -17633,6 +17887,7 @@ impl From<ast::Expr<'_>> for syn::Expr {
             ast::Expr::IndexExpr(index_expr) => {
                 let env = TYPE_ENV.with(|e| e.borrow().clone());
                 let container_type = typeinfer::GoType::infer_expr(&index_expr.x, &env);
+                let pointer_array_cell = pointer_array_cell_expr_from_ref(&index_expr.x);
                 let base: syn::Expr = (*index_expr.x).into();
 
                 if let Some((key_ty, _)) = map_type_preserving_key_alias(&env, &container_type) {
@@ -17656,6 +17911,17 @@ impl From<ast::Expr<'_>> for syn::Expr {
 
                 if is_byte_seq_type_param(&container_type) {
                     return syn::parse_quote! { crate::builtin::byte_at(&#base, (#idx) as usize) };
+                }
+
+                if let Some(pointer_array_cell) = pointer_array_cell {
+                    return syn::parse_quote! {{
+                        let __gors_index_base = (#pointer_array_cell).lock().unwrap();
+                        let __gors_index = (#idx) as usize;
+                        if __gors_index >= __gors_index_base.len() {
+                            crate::builtin::panic_value("index out of range");
+                        }
+                        (__gors_index_base[__gors_index]).clone()
+                    }};
                 }
 
                 if container_type == typeinfer::GoType::String {
@@ -19575,6 +19841,8 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         if let Some(body) = func_decl.body.as_ref() {
             validate_function_semantics(None, &func_decl.type_, body)?;
         }
+        let address_taken_param_names =
+            address_taken_param_names_in_body(&func_decl.type_, func_decl.body.as_ref());
         let borrowed_pointer_param_names =
             BorrowedPointerParamNamesGuard::set(std::collections::HashSet::new());
         let borrowed_generic_slice_params = borrowed_generic_slice_alias_param_names(
@@ -19665,6 +19933,7 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
                         names.extend(ir::for_clause_per_iteration_capture_names_in_block(
                             body, &env,
                         ));
+                        names.extend(address_taken_param_names.iter().cloned());
                         names
                     })
                 });
@@ -19698,6 +19967,7 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         drop(return_types);
         named_returns::restore_idents(previous_named_return_idents);
         let mut block = Box::new(block_result?);
+        prepend_shared_parameter_cells(&mut block, &address_taken_param_names);
         if body_has_defer {
             prepend_defer_stack(&mut block);
             if return_go_types_is_empty {
@@ -19875,6 +20145,15 @@ impl TryFrom<ast::Stmt<'_>> for Vec<syn::Stmt> {
                     )])
                 } else {
                     // go someFunc(args...)
+                    if is_function_value_call(&call_expr) {
+                        let stmt =
+                            compile_go_function_value_call_stmt(call_expr).ok_or_else(|| {
+                                CompilerError::UnsupportedConstruct(
+                                    "invalid goroutine function-value call".to_string(),
+                                )
+                            })?;
+                        return Ok(vec![stmt]);
+                    }
                     let clone_stmts = goroutine_call_capture_clones(&call_expr);
                     let call: syn::Expr = ast::Expr::CallExpr(call_expr).into();
                     if clone_stmts.is_empty() {
@@ -25539,6 +25818,35 @@ func main() {
         assert!(
             output.contains("const mask32 : i128 = 4294967295"),
             "expected large untyped shift-left constants to avoid Rust literal overflow: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_fold_wide_shift_constants_under_expected_integer_type() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func max() int64 {
+                    var t int64
+                    t = 1<<63 - 1
+                    return t
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("9223372036854775807 as i64"),
+            "expected wide shift constant to fold before coercing to int64: {output}"
+        );
+        assert!(
+            !output.contains("<< 63") && !output.contains("<< 63"),
+            "expected generated Rust not to evaluate an overflowing int64 shift: {output}"
         );
     }
 
@@ -33366,6 +33674,90 @@ func main() {
     }
 
     #[test]
+    fn it_should_promote_auto_addressed_function_parameters_to_pointer_cells() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Counter struct {
+                    Value int
+                }
+
+                func (c *Counter) Increment() {
+                    c.Value = c.Value + 1
+                }
+
+                func Bump(c Counter) int {
+                    c.Increment()
+                    return c.Value
+                }
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            !output.contains("pointer receiver is not addressable"),
+            "expected function parameter pointer receiver to be addressable: {output}"
+        );
+        assert!(
+            output.contains("let c = std :: sync :: Arc :: new (std :: sync :: Mutex :: new (c))"),
+            "expected address-taken function parameter to be moved into shared storage: {output}"
+        );
+        assert!(
+            output.contains(
+                "Counter > :: Increment (crate :: builtin :: GorsPtr :: from_arc (c . clone ())"
+            ),
+            "expected pointer receiver call to use the parameter storage cell: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_promote_auto_addressed_method_parameters_to_pointer_cells() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Counter struct {
+                    Value int
+                }
+
+                func (c *Counter) Increment() {
+                    c.Value = c.Value + 1
+                }
+
+                func (c Counter) Add(other Counter) int {
+                    other.Increment()
+                    return other.Value + c.Value
+                }
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            !output.contains("pointer receiver is not addressable"),
+            "expected method parameter pointer receiver to be addressable: {output}"
+        );
+        assert!(
+            output.contains(
+                "let other = std :: sync :: Arc :: new (std :: sync :: Mutex :: new (other))"
+            ),
+            "expected address-taken method parameter to be moved into shared storage: {output}"
+        );
+        assert!(
+            output.contains(
+                "Counter > :: Increment (crate :: builtin :: GorsPtr :: from_arc (other . clone ())"
+            ),
+            "expected pointer receiver call to use the method parameter storage cell: {output}"
+        );
+    }
+
+    #[test]
     fn it_should_bind_pointer_method_value_receivers_as_mutable() {
         let parsed = parse_file(
             "test.go",
@@ -35026,6 +35418,113 @@ func main() {
             (main_rs.contains("impl bucket") || main_rs.contains("impl bucket {"))
                 && main_rs.contains("fn fill"),
             "expected projected UFCS method call to keep the receiver impl method reachable: {main_rs}"
+        );
+    }
+
+    #[test]
+    fn it_should_compile_promoted_pointer_field_method_receiver_as_projected_cell() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type mutex struct {
+	locks int
+}
+
+func (m *mutex) Lock() {
+	m.locks++
+}
+
+type inner struct {
+	mu mutex
+}
+
+type outer struct {
+	inner
+}
+
+func lock(o *outer) {
+	o.mu.Lock()
+}
+
+func main() {
+	o := &outer{}
+	lock(o)
+	_ = o.inner.mu.locks
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+
+        assert!(
+            main_rs.contains("std::mem::offset_of!(outer, inner)")
+                || main_rs.contains("std :: mem :: offset_of ! (outer , inner)"),
+            "expected promoted projection to identify the embedded owner field: {main_rs}"
+        );
+        assert!(
+            main_rs.contains("std::mem::offset_of!(inner, mu)")
+                || main_rs.contains("std :: mem :: offset_of ! (inner , mu)"),
+            "expected promoted projection to identify the promoted field on the embedded type: {main_rs}"
+        );
+        assert!(
+            !main_rs.contains("std::mem::offset_of!(outer, mu)")
+                && !main_rs.contains("std :: mem :: offset_of ! (outer , mu)"),
+            "expected promoted field projection not to use a nonexistent outer field: {main_rs}"
+        );
+    }
+
+    #[test]
+    fn it_should_index_and_slice_pointer_to_array_lvalues_through_the_pointee() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+func touch(dst []byte) {
+	dst[0] = dst[0]
+}
+
+func fill(buf *[4]byte) byte {
+	n := len(buf)
+	buf[n-1] = 'x'
+	touch(buf[:n])
+	copy(buf[1:], []byte{'a', 'b'})
+	return buf[1]
+}
+
+func main() {
+	var buf [4]byte
+	_ = fill(&buf)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+
+        assert!(
+            main_rs.contains("crate::builtin::len(&buf)")
+                || main_rs.contains("crate :: builtin :: len (& buf)"),
+            "expected len to preserve the pointer-to-array value: {main_rs}"
+        );
+        assert!(
+            main_rs.contains("(*buf.lock().unwrap())")
+                || main_rs.contains("(* buf . lock () . unwrap ())"),
+            "expected pointer-to-array indexes and slices to lock the pointee: {main_rs}"
+        );
+        assert!(
+            !main_rs.contains("(buf)[") && !main_rs.contains("(buf) ["),
+            "expected pointer-to-array code not to index the pointer cell directly: {main_rs}"
+        );
+        assert!(
+            !main_rs.contains("&*buf.lock().unwrap()")
+                && !main_rs.contains("& * buf . lock () . unwrap ()"),
+            "expected borrowed pointer-to-array slices not to borrow through an immutable guard: {main_rs}"
         );
     }
 
@@ -38233,6 +38732,56 @@ func main() {
             rust_src.contains("let mut ctx = Context::__gors_clone_box(&*(ctx));")
                 || rust_src.contains("let mut ctx = Context :: __gors_clone_box (& * (ctx)) ;"),
             "Expected interface clone hook in output:\n{}",
+            rust_src
+        );
+    }
+
+    #[test]
+    fn it_should_clone_any_captures_for_go_func_lits_as_send() {
+        let rust_src = go_to_rust(
+            r#"
+            package main
+
+            func watch(arg any) {
+                go func() {
+                    _ = arg.(string)
+                }()
+                _ = arg
+            }
+            "#,
+        );
+        assert!(
+            rust_src.contains("crate::builtin::clone_any_send_ref(&arg)")
+                || rust_src.contains("crate :: builtin :: clone_any_send_ref (& arg)"),
+            "Expected sendable any clone before spawn:\n{}",
+            rust_src
+        );
+    }
+
+    #[test]
+    fn it_should_evaluate_function_value_go_calls_before_spawn() {
+        let rust_src = go_to_rust(
+            r#"
+            package main
+
+            func run(arg any) {
+                go arg.(func())()
+            }
+            "#,
+        );
+        let target_pos = rust_src
+            .find("__gors_go_func_target")
+            .expect("expected goroutine function target binding");
+        let spawn_pos = rust_src.find("spawn").expect("expected thread spawn");
+        assert!(
+            target_pos < spawn_pos,
+            "Expected function target evaluation before spawn:\n{}",
+            rust_src
+        );
+        assert!(
+            rust_src.contains("lock_func(&__gors_go_func_target)")
+                || rust_src.contains("lock_func (& __gors_go_func_target)"),
+            "Expected spawned closure to call the pre-evaluated function cell:\n{}",
             rust_src
         );
     }

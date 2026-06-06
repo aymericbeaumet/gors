@@ -1224,6 +1224,12 @@ impl<T, const N: usize> Len for [T; N] {
     }
 }
 
+impl<T, const N: usize> Len for GorsPtr<[T; N]> {
+    fn len_value(&self) -> usize {
+        N
+    }
+}
+
 impl<K, V> Len for HashMap<K, V> {
     fn len_value(&self) -> usize {
         self.len()
@@ -1270,6 +1276,12 @@ impl<T> Cap for Vec<T> {
 }
 
 impl<T, const N: usize> Cap for [T; N] {
+    fn cap_value(&self) -> usize {
+        N
+    }
+}
+
+impl<T, const N: usize> Cap for GorsPtr<[T; N]> {
     fn cap_value(&self) -> usize {
         N
     }

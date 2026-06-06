@@ -199,6 +199,14 @@ pub(super) fn range_function_arg_ident(index: usize) -> syn::Ident {
     syn::Ident::new(&format!("__gors_range_arg_{index}"), Span::mixed_site())
 }
 
+pub(super) fn goroutine_func_target_ident() -> syn::Ident {
+    syn::Ident::new("__gors_go_func_target", Span::mixed_site())
+}
+
+pub(super) fn goroutine_arg_ident(index: usize) -> syn::Ident {
+    syn::Ident::new(&format!("__gors_go_arg_{index}"), Span::mixed_site())
+}
+
 pub(super) fn next_range_function_return_idents() -> (syn::Ident, syn::Ident) {
     let n = next_id(&RANGE_FUNCTION_COUNTER);
     (
@@ -351,6 +359,11 @@ mod tests {
             range_function_arg_ident(3).to_string(),
             "__gors_range_arg_3"
         );
+        assert_eq!(
+            goroutine_func_target_ident().to_string(),
+            "__gors_go_func_target"
+        );
+        assert_eq!(goroutine_arg_ident(4).to_string(), "__gors_go_arg_4");
         let (range_return, range_return_for_yield) = next_range_function_return_idents();
         assert_eq!(range_return.to_string(), "__gors_range_return_0");
         assert_eq!(

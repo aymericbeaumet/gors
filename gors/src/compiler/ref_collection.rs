@@ -1252,6 +1252,73 @@ mod tests {
     }
 
     #[test]
+    fn collect_refs_follows_tuple_return_types_from_trait_methods()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let module_names = ReachabilityNameSet::from(["time".to_string()]);
+        let file: syn::File = syn::parse_quote! {
+            pub trait Context {
+                fn Deadline(&mut self) -> (crate::time::Time, bool);
+            }
+
+            fn root(ctx: &mut dyn Context, d: crate::time::Time) {
+                let (cur, ok) = ctx.Deadline();
+                if ok && cur.Before(d) {}
+            }
+        };
+        let item_names = ReachabilityNameSet::from(["Context".to_string(), "root".to_string()]);
+        let top_level_names = item_names.clone();
+        let top_level_types =
+            super::super::receiver_type_facts::top_level_item_types(&file.items, &module_names);
+        let top_level_field_types = super::super::receiver_type_facts::top_level_item_field_types(
+            &file.items,
+            &module_names,
+        );
+        let top_level_element_types =
+            super::super::receiver_type_facts::top_level_collection_element_types(
+                &file.items,
+                &module_names,
+            );
+        let top_level_return_types = super::super::receiver_type_facts::top_level_item_return_types(
+            &file.items,
+            &module_names,
+        );
+        let top_level_tuple_return_types =
+            super::super::receiver_type_facts::top_level_item_tuple_return_types(
+                &file.items,
+                &module_names,
+            );
+        let context = RefCollectionContext {
+            module_names: &module_names,
+            item_names: &item_names,
+            top_level_names: &top_level_names,
+            top_level_types: &top_level_types,
+            top_level_field_types: &top_level_field_types,
+            top_level_element_types: &top_level_element_types,
+            top_level_return_types: &top_level_return_types,
+            top_level_tuple_return_types: &top_level_tuple_return_types,
+        };
+        let mut item = file
+            .items
+            .iter()
+            .find(|item| matches!(item, syn::Item::Fn(func) if func.sig.ident == "root"))
+            .cloned()
+            .ok_or_else(|| std::io::Error::other("root"))?;
+
+        let (names, external_refs) = collect_refs_from_item(&mut item, &context);
+
+        assert!(names.contains("Context"), "{names:?}");
+        let time_refs = external_refs
+            .get("time")
+            .ok_or_else(|| std::io::Error::other("time refs"))?;
+        assert!(time_refs.contains("Time"), "{time_refs:?}");
+        assert!(
+            time_refs.contains(&impl_method_reachability_name("Time", "Before")),
+            "{time_refs:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn collect_refs_counts_initializer_item_before_same_name_local_binding() {
         let module_names = ReachabilityNameSet::new();
         let item_names = ReachabilityNameSet::from(["helper".to_string(), "entry".to_string()]);

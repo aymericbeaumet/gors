@@ -13,8 +13,8 @@
     "groupCount": 344,
     "passingGroupCount": 4,
     "caseCount": 12418,
-    "passingCaseCount": 264,
-    "unsupportedCaseCount": 12154,
+    "passingCaseCount": 268,
+    "unsupportedCaseCount": 12150,
     "fixtureCount": 83
   },
   "groups": [
@@ -4069,8 +4069,8 @@
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 17,
-        "passingCaseCount": 12,
-        "unsupportedCaseCount": 5,
+        "passingCaseCount": 16,
+        "unsupportedCaseCount": 1,
         "fixtureCount": 0
       },
       "cases": [
@@ -4200,36 +4200,44 @@
           "title": "WithDeadline",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: WithDeadline depends on time.Time comparison, timerCtx state, time.AfterFunc timers, and cancellation channel propagation."
+          "status": "passing",
+          "fixtures": [
+            "context"
+          ],
+          "reason": ""
         },
         {
           "id": "context::WithDeadlineCause",
           "title": "WithDeadlineCause",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: WithDeadlineCause depends on timerCtx, time.AfterFunc callbacks, deadline cancellation, and stored error causes."
+          "status": "passing",
+          "fixtures": [
+            "context"
+          ],
+          "reason": ""
         },
         {
           "id": "context::WithTimeout",
           "title": "WithTimeout",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: WithTimeout depends on time.Now/Add plus the unsupported deadline timer and cancellation propagation path."
+          "status": "passing",
+          "fixtures": [
+            "context"
+          ],
+          "reason": ""
         },
         {
           "id": "context::WithTimeoutCause",
           "title": "WithTimeoutCause",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: WithTimeoutCause depends on time.Now/Add plus the unsupported cause-carrying deadline timer path."
+          "status": "passing",
+          "fixtures": [
+            "context"
+          ],
+          "reason": ""
         },
         {
           "id": "context::WithValue",

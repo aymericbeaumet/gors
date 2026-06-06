@@ -242,6 +242,22 @@ pub(super) fn top_level_item_tuple_return_types(
                     }
                 }
             }
+            syn::Item::Trait(item_trait) => {
+                let trait_name = item_trait.ident.to_string();
+                for trait_item in &item_trait.items {
+                    let syn::TraitItem::Fn(func) = trait_item else {
+                        continue;
+                    };
+                    if let Some(tuple_types) =
+                        receiver_tuple_types_from_return_type(&func.sig.output, module_names)
+                    {
+                        types.insert(
+                            impl_method_reachability_name(&trait_name, &func.sig.ident.to_string()),
+                            tuple_types,
+                        );
+                    }
+                }
+            }
             _ => {}
         }
     }
