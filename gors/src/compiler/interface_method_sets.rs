@@ -47,7 +47,8 @@ pub(super) fn pointer_type_satisfies(
     super::TYPE_ENV.with(|env| {
         let env = env.borrow();
         if env.is_interface(trait_name) {
-            env.named_type_implements_interface(struct_name, trait_name, true)
+            let methods = satisfaction_methods(&env, trait_name, required_methods);
+            env.named_type_implements_methods(struct_name, &methods, true)
         } else {
             pointer_satisfies(struct_method_list, required_methods)
         }
@@ -64,11 +65,26 @@ pub(super) fn value_type_satisfies(
     super::TYPE_ENV.with(|env| {
         let env = env.borrow();
         if env.is_interface(trait_name) {
-            env.named_type_implements_interface(struct_name, trait_name, false)
+            let methods = satisfaction_methods(&env, trait_name, required_methods);
+            env.named_type_implements_methods(struct_name, &methods, false)
         } else {
             value_method_list_satisfies(struct_method_list, pointer_methods, required_methods)
         }
     })
+}
+
+fn satisfaction_methods(
+    env: &typeinfer::TypeEnv,
+    trait_name: &str,
+    fallback_required_methods: &[String],
+) -> Vec<String> {
+    let mut methods = env.get_interface_methods(trait_name).unwrap_or_default();
+    for method in fallback_required_methods {
+        if !methods.contains(method) {
+            methods.push(method.clone());
+        }
+    }
+    methods
 }
 
 pub(super) fn needed_imports<'src>(decls: &[ast::Decl<'src>]) -> BTreeMap<String, Vec<String>> {

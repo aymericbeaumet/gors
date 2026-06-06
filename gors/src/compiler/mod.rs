@@ -26654,7 +26654,9 @@ func (r *Reader) Seek(offset int64, whence int) int64 {
             "{stream_rs}"
         );
         assert!(
-            stream_rs.contains("Reader::Seek(&mut *__gors_guard, offset, whence)")
+            stream_rs.contains("Reader::Seek(self.clone(), offset, whence)")
+                || stream_rs.contains("Reader :: Seek (self . clone () , offset , whence)")
+                || stream_rs.contains("Reader::Seek(&mut *__gors_guard, offset, whence)")
                 || stream_rs.contains("Reader :: Seek (& mut * __gors_guard , offset , whence)"),
             "{stream_rs}"
         );
@@ -26866,6 +26868,63 @@ func main() {
                 .contains(&"io.Reader".to_string()),
             "{method_set:?}"
         );
+
+        let write_closer = super::interface_method_sets::for_impl("io.WriteCloser", &[]);
+        assert!(
+            write_closer.required_methods.contains(&"Write".to_string()),
+            "{write_closer:?}"
+        );
+        assert!(
+            write_closer.required_methods.contains(&"Close".to_string()),
+            "{write_closer:?}"
+        );
+        assert!(
+            write_closer
+                .embedded_interfaces
+                .contains(&"io.Writer".to_string()),
+            "{write_closer:?}"
+        );
+        assert!(
+            write_closer
+                .embedded_interfaces
+                .contains(&"io.Closer".to_string()),
+            "{write_closer:?}"
+        );
+    }
+
+    #[test]
+    fn interface_method_sets_use_fallback_methods_for_incomplete_imported_interface_facts() {
+        let mut env = super::typeinfer::TypeEnv::new();
+        env.set_type_kind("io.WriteCloser", super::typeinfer::TypeKind::Interface);
+        env.set_interface_methods("io.WriteCloser", vec!["Write".to_string()]);
+        env.set_type_kind("pp", super::typeinfer::TypeKind::Struct);
+        env.set_func(
+            "pp.Write",
+            vec![
+                super::typeinfer::GoType::Int,
+                super::typeinfer::GoType::Error,
+            ],
+        );
+        env.set_pointer_receiver_method("pp.Write");
+
+        super::set_type_env(env);
+        let required_methods = vec!["Write".to_string(), "Close".to_string()];
+        let partial = super::interface_method_sets::pointer_type_satisfies(
+            "pp",
+            "io.WriteCloser",
+            &["Write".to_string()],
+            &required_methods,
+        );
+        let writer = super::interface_method_sets::pointer_type_satisfies(
+            "pp",
+            "io.Writer",
+            &["Write".to_string()],
+            &["Write".to_string()],
+        );
+        super::set_type_env(super::typeinfer::TypeEnv::new());
+
+        assert!(!partial);
+        assert!(writer);
     }
 
     #[test]
@@ -26963,6 +27022,97 @@ func main() {
         );
         assert!(output.contains("impl Namer for Counter"), "{output}");
         assert!(output.contains("impl Detailer for Counter"), "{output}");
+    }
+
+    #[test]
+    fn compile_program_multi_skips_partial_imported_embedded_interface_impls() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/stream"
+
+func main() {
+	stream.Use()
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("ioish/ioish.go").as_path(),
+            r#"
+package ioish
+
+type Writer interface {
+	Write(int) int
+}
+
+type Closer interface {
+	Close() int
+}
+
+type WriteCloser interface {
+	Writer
+	Closer
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("stream/stream.go").as_path(),
+            r#"
+package stream
+
+import "example/ioish"
+
+type Partial struct{}
+
+func (p *Partial) Write(n int) int {
+	return n
+}
+
+type Full struct{}
+
+func (f *Full) Write(n int) int {
+	return n
+}
+
+func (f *Full) Close() int {
+	return 0
+}
+
+func Probe(v any) {
+	_, _ = v.(ioish.WriteCloser)
+}
+
+func Use() {
+	var partial Partial
+	var full Full
+	Probe(&partial)
+	Probe(&full)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let stream_rs = output.files.get("example__stream.rs").unwrap();
+
+        assert!(
+            stream_rs.contains("impl crate::ioish::WriteCloser for crate::builtin::GorsPtr<Full>")
+                || stream_rs.contains(
+                    "impl crate :: ioish :: WriteCloser for crate :: builtin :: GorsPtr < Full >"
+                ),
+            "{stream_rs}"
+        );
+        assert!(
+            !stream_rs
+                .contains("impl crate::ioish::WriteCloser for crate::builtin::GorsPtr<Partial>")
+                && !stream_rs.contains(
+                    "impl crate :: ioish :: WriteCloser for crate :: builtin :: GorsPtr < Partial >"
+                ),
+            "{stream_rs}"
+        );
     }
 
     #[test]

@@ -2384,16 +2384,29 @@ impl TypeEnv {
         include_pointer_receiver_methods: bool,
     ) -> bool {
         self.get_interface_methods(interface_name)
-            .is_none_or(|methods| {
-                methods.iter().all(|method| {
-                    self.named_type_has_method(
-                        type_name,
-                        method,
-                        include_pointer_receiver_methods,
-                        &mut HashSet::new(),
-                    )
-                })
+            .is_some_and(|methods| {
+                self.named_type_implements_methods(
+                    type_name,
+                    &methods,
+                    include_pointer_receiver_methods,
+                )
             })
+    }
+
+    pub fn named_type_implements_methods(
+        &self,
+        type_name: &str,
+        methods: &[std::string::String],
+        include_pointer_receiver_methods: bool,
+    ) -> bool {
+        methods.iter().all(|method| {
+            self.named_type_has_method(
+                type_name,
+                method,
+                include_pointer_receiver_methods,
+                &mut HashSet::new(),
+            )
+        })
     }
 
     fn named_type_has_method(
@@ -2417,13 +2430,14 @@ impl TypeEnv {
         let promoted = self
             .get_struct_fields(type_name)
             .iter()
-            .any(|(_, field_ty)| {
-                self.embedded_type_has_method(
-                    field_ty,
-                    method,
-                    include_pointer_receiver_methods,
-                    visiting,
-                )
+            .any(|(field_name, field_ty)| {
+                self.is_struct_embedded_field(type_name, field_name)
+                    && self.embedded_type_has_method(
+                        field_ty,
+                        method,
+                        include_pointer_receiver_methods,
+                        visiting,
+                    )
             });
         visiting.remove(type_name);
         promoted
@@ -3431,6 +3445,32 @@ mod tests {
             env.get_interface_methods("io.ReadWriter"),
             Some(vec!["Read".to_string(), "Write".to_string()])
         );
+    }
+
+    #[test]
+    fn named_type_implements_interface_promotes_only_embedded_field_methods() {
+        let mut env = TypeEnv::new();
+        env.set_type_kind("Closer", TypeKind::Interface);
+        env.set_interface_methods("Closer", vec!["Close".to_string()]);
+        env.set_type_kind("Inner", TypeKind::Struct);
+        env.set_func("Inner.Close", vec![GoType::Error]);
+        env.set_type_kind("NamedField", TypeKind::Struct);
+        env.set_struct_fields(
+            "NamedField",
+            vec![("inner".to_string(), GoType::Named("Inner".to_string()))],
+        );
+        env.set_type_kind("EmbeddedField", TypeKind::Struct);
+        env.set_struct_fields(
+            "EmbeddedField",
+            vec![("Inner".to_string(), GoType::Named("Inner".to_string()))],
+        );
+        env.set_struct_embedded_fields(
+            "EmbeddedField",
+            std::collections::HashSet::from(["Inner".to_string()]),
+        );
+
+        assert!(!env.named_type_implements_interface("NamedField", "Closer", false));
+        assert!(env.named_type_implements_interface("EmbeddedField", "Closer", false));
     }
 
     #[test]
