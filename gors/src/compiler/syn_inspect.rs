@@ -47,6 +47,9 @@ pub(super) fn call_target_key(func: &syn::Expr, current_module: &str) -> Option<
     let syn::Expr::Path(path) = func else {
         return None;
     };
+    if path.qself.is_some() {
+        return None;
+    }
     let segments = path
         .path
         .segments
@@ -1058,6 +1061,7 @@ mod tests {
         let local: syn::Expr = parse_quote! { sort };
         let module: syn::Expr = parse_quote! { helper::sort };
         let crate_module: syn::Expr = parse_quote! { crate::helper::sort };
+        let ufcs_method: syn::Expr = parse_quote! { <helper>::sort };
         let call: syn::Expr = parse_quote! { sort(values) };
 
         assert_eq!(
@@ -1072,6 +1076,7 @@ mod tests {
             call_target_key(&crate_module, "main").as_deref(),
             Some("helper::sort")
         );
+        assert_eq!(call_target_key(&ufcs_method, "main"), None);
         assert_eq!(call_target_key(&call, "main"), None);
     }
 

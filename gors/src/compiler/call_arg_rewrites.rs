@@ -1634,6 +1634,58 @@ mod tests {
     }
 
     #[test]
+    fn clone_vec_value_call_args_does_not_confuse_ufcs_methods_with_functions() {
+        let main_file: syn::File = rust! {
+            pub struct dataIO;
+
+            pub fn read(mut fd: usize, mut buf: Vec<u8>) {}
+
+            impl dataIO {
+                pub fn read(
+                    mut d: crate::builtin::GorsPtr<Self>,
+                    mut n: isize,
+                ) -> Vec<u8> {
+                    Vec::new()
+                }
+            }
+
+            pub fn call(mut d: crate::builtin::GorsPtr<dataIO>, mut n: Vec<isize>) {
+                let _ = <dataIO>::read(
+                    d,
+                    {
+                        n[0]
+                    },
+                );
+            }
+        };
+        let mut modules = std::collections::BTreeMap::from([(
+            "__main__".to_string(),
+            super::CompiledModule {
+                mod_name: "main".to_string(),
+                import_path: String::new(),
+                file: main_file,
+                filename: "main.rs".to_string(),
+                content_hash: String::new(),
+                is_main: true,
+                is_stdlib: false,
+            },
+        )]);
+
+        super::clone_vec_value_call_args(&mut modules);
+
+        let main_file = compiled_main_file(&modules);
+        let output = quote! { #main_file }.to_string();
+        assert!(
+            output.contains("< dataIO > :: read (d , { n [0] }"),
+            "expected UFCS method argument not to inherit top-level read Vec parameter: {output}"
+        );
+        assert!(
+            !output.contains("< dataIO > :: read (d , ({ n [0] }) . to_vec ())"),
+            "expected UFCS method scalar argument not to be materialized as Vec: {output}"
+        );
+    }
+
+    #[test]
     fn clone_vec_value_call_args_takes_nonclone_any_vec_args() {
         let helper_file: syn::File = rust! {
             pub fn inspect(mut values: Vec<Box<dyn std::any::Any>>, mut index: isize) {}
