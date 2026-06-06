@@ -109,7 +109,10 @@ pub(super) fn impls_for_local_structs(
                     true,
                 )) {
                     let trait_path = super::interface_trait_path_from_name(&interface_name);
-                    let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
+                    let struct_ident = syn::Ident::new(
+                        &super::rust_safe_ident_name(struct_name),
+                        Span::mixed_site(),
+                    );
                     let impl_items = interface_impls::pointer_items(
                         &interface_name,
                         struct_name,
@@ -134,7 +137,10 @@ pub(super) fn impls_for_local_structs(
                         .insert((interface_name.clone(), struct_name.clone()))
                 {
                     let trait_path = super::interface_trait_path_from_name(&interface_name);
-                    let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
+                    let struct_ident = syn::Ident::new(
+                        &super::rust_safe_ident_name(struct_name),
+                        Span::mixed_site(),
+                    );
                     let impl_items = interface_impls::borrowed_pointer_items(
                         &interface_name,
                         struct_name,
@@ -190,7 +196,10 @@ fn push_concrete_impl(
         return;
     }
     let trait_path = super::interface_trait_path_from_name(interface_name);
-    let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
+    let struct_ident = syn::Ident::new(
+        &super::rust_safe_ident_name(struct_name),
+        Span::mixed_site(),
+    );
     let has_borrowed_interface_field =
         super::type_decl_facts::has_borrowed_interface_struct(struct_name);
     let exposes_any = !has_borrowed_interface_field
@@ -283,7 +292,10 @@ fn push_embedded_pointer_impls(
         return;
     }
     let trait_path = super::interface_trait_path_from_name(embedded.name);
-    let struct_ident = syn::Ident::new(embedded.struct_name, Span::mixed_site());
+    let struct_ident = syn::Ident::new(
+        &super::rust_safe_ident_name(embedded.struct_name),
+        Span::mixed_site(),
+    );
     let impl_items = interface_impls::pointer_items(
         embedded.name,
         embedded.struct_name,

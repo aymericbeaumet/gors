@@ -195,7 +195,6 @@
   "compress/zlib::Writer.Flush": "Audited 2026-06-02: Flush depends on lazy zlib header emission and the unsupported flate writer flush path.",
   "compress/zlib::Writer.Reset": "Audited 2026-06-02: Reset depends on preserving level/dictionary state while replacing the underlying io.Writer and resetting stored flate/hash state.",
   "compress/zlib::Writer.Write": "Audited 2026-06-02: Write depends on zlib header serialization, checksum updates through hash.Hash32, and flate writer dispatch for compressed payloads.",
-  "crypto/aes::NewCipher": "Audited 2026-06-02: NewCipher behavior depends on returning crypto/cipher.Block interface values backed by package-private AES state, fixed-array key schedules, and block Encrypt/Decrypt methods.",
   "crypto/cipher::AEAD": "Audited 2026-06-02: AEAD behavior depends on interface dispatch over authenticated-encryption implementations with nonce, associated-data, and byte-slice output aliasing semantics.",
   "crypto/cipher::Block": "Audited 2026-06-02: Block behavior depends on interface dispatch over concrete cipher state whose Encrypt and Decrypt methods mutate caller-provided byte slices.",
   "crypto/cipher::BlockMode": "Audited 2026-06-02: BlockMode behavior depends on stateful interface values whose CryptBlocks methods mutate byte-slice destinations while preserving block-size validation.",

@@ -103,7 +103,7 @@ pub(super) fn interface_method_signature_from_type_env(
         .enumerate()
     {
         let ident = synthetic_names::unnamed_arg_ident(idx);
-        let ty = super::rust_type_preserving_named_go_type(&param);
+        let ty = interface_param_type_from_go_type(interface_name, method_name, idx, &param, env);
         inputs.push(syn::FnArg::Typed(syn::PatType {
             attrs: vec![],
             pat: Box::new(syn::Pat::Ident(syn::PatIdent {
@@ -130,4 +130,21 @@ pub(super) fn interface_method_signature_from_type_env(
         variadic: None,
         output: return_type_from_go_results(&env.get_method_returns(interface_name, method_name)),
     }
+}
+
+fn interface_param_type_from_go_type(
+    interface_name: &str,
+    method_name: &str,
+    index: usize,
+    param: &typeinfer::GoType,
+    env: &typeinfer::TypeEnv,
+) -> syn::Type {
+    let method_key = format!("{interface_name}.{method_name}");
+    if env.func_param_needs_borrowed_slice(&method_key, index)
+        && let typeinfer::GoType::Slice(elem) = env.resolve_alias(param)
+    {
+        let elem = super::rust_type_preserving_named_go_type(&elem);
+        return syn::parse_quote! { &mut [#elem] };
+    }
+    super::rust_type_preserving_named_go_type(param)
 }

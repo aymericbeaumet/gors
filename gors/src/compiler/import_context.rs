@@ -84,6 +84,10 @@ pub(super) fn import_local_name_matches_path(local_name: &str, import_path: &str
     })
 }
 
+pub(super) fn import_path_for_local_name(local_name: &str) -> Option<String> {
+    IMPORT_PATHS_BY_LOCAL_NAME.with(|paths| paths.borrow().get(local_name).cloned())
+}
+
 pub(super) fn file_import_package_names(file: &ast::File<'_>) -> BTreeMap<String, String> {
     file.imports()
         .into_iter()

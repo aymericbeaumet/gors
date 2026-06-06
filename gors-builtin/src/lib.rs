@@ -889,7 +889,7 @@ impl<T> GorsPtr<T> {
         }
     }
 
-    fn ptr_id(&self) -> *const () {
+    pub fn ptr_id(&self) -> *const () {
         match &self.inner {
             None => std::ptr::null(),
             Some(GorsPtrInner::Direct(inner)) => Arc::as_ptr(inner).cast(),

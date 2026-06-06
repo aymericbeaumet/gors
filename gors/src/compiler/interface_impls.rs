@@ -24,7 +24,7 @@ struct PointerMethodCall<'a> {
     struct_ident: &'a syn::Ident,
     method_ident: &'a syn::Ident,
     call_receiver: &'a syn::Expr,
-    arg_idents: &'a [syn::Ident],
+    arg_exprs: &'a [syn::Expr],
 }
 
 pub(super) fn call_receiver(
@@ -531,7 +531,10 @@ fn concrete_direct_method_item(
         .unwrap_or((true, false));
     set_interface_receiver(&mut method.sig, immutable_error_method);
     if immutable_error_method {
-        let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
+        let struct_ident = syn::Ident::new(
+            &super::rust_safe_ident_name(struct_name),
+            Span::mixed_site(),
+        );
         let arg_idents = signature_arg_idents(&method.sig);
         let (original_receiver_is_ref, original_receiver_is_mut) = original_receiver;
         method.block = concrete_error_method_block(
@@ -594,11 +597,21 @@ impl PointerImplTarget {
         let method_is_pointer_receiver =
             pointer_methods.is_some_and(|methods| methods.contains(&method_ident.to_string()));
         let call_receiver_kind = call_receiver(method, method_is_pointer_receiver);
-        let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
-        let arg_idents = signature_arg_idents(&method.sig);
+        let struct_ident = syn::Ident::new(
+            &super::rust_safe_ident_name(struct_name),
+            Span::mixed_site(),
+        );
         let mut sig = method.sig.clone();
         let immutable_error_method = trait_name == "error" && method_ident == "Error";
         set_interface_receiver(&mut sig, immutable_error_method);
+        set_interface_slice_param_types(&mut sig, trait_name, &method_ident.to_string());
+        let arg_idents = signature_arg_idents(&sig);
+        let arg_exprs = interface_forward_arg_exprs(
+            trait_name,
+            struct_name,
+            &method_ident.to_string(),
+            &arg_idents,
+        );
         let call_receiver = self.call_receiver_expr(call_receiver_kind);
         let call = PointerMethodCall {
             sig: &sig,
@@ -607,7 +620,7 @@ impl PointerImplTarget {
             struct_ident: &struct_ident,
             method_ident: &method_ident,
             call_receiver: &call_receiver,
-            arg_idents: &arg_idents,
+            arg_exprs: &arg_exprs,
         };
         let block = self.method_block(call);
         impl_item_fn(sig, block)
@@ -633,17 +646,24 @@ impl PointerImplTarget {
             &super::rust_safe_ident_name(&promoted.owner_type),
             Span::mixed_site(),
         );
-        let arg_idents = signature_arg_idents(&method.sig);
         let mut sig = method.sig;
         let immutable_error_method = trait_name == "error" && method_ident == "Error";
         set_interface_receiver(&mut sig, immutable_error_method);
+        set_interface_slice_param_types(&mut sig, trait_name, &method_ident.to_string());
+        let arg_idents = signature_arg_idents(&sig);
+        let arg_exprs = interface_forward_arg_exprs(
+            trait_name,
+            &promoted.owner_type,
+            &method_ident.to_string(),
+            &arg_idents,
+        );
         let call_receiver = self.promoted_call_receiver_expr(&promoted.steps, call_receiver_kind);
         let block = self.promoted_method_block(
             &sig,
             &owner_ident,
             &method_ident,
             &call_receiver,
-            &arg_idents,
+            &arg_exprs,
             call_receiver_kind,
         );
         Some(impl_item_fn(sig, block))
@@ -670,17 +690,17 @@ impl PointerImplTarget {
         owner_ident: &syn::Ident,
         method_ident: &syn::Ident,
         call_receiver: &syn::Expr,
-        arg_idents: &[syn::Ident],
+        arg_exprs: &[syn::Expr],
         receiver_kind: PointerCallReceiver,
     ) -> syn::Block {
         if self == Self::GorsPtr && matches!(receiver_kind, PointerCallReceiver::PointerCell) {
             return if matches!(sig.output, syn::ReturnType::Default) {
                 syn::parse_quote!({
-                    #owner_ident::#method_ident(#call_receiver, #(#arg_idents),*);
+                    #owner_ident::#method_ident(#call_receiver, #(#arg_exprs),*);
                 })
             } else {
                 syn::parse_quote!({
-                    #owner_ident::#method_ident(#call_receiver, #(#arg_idents),*)
+                    #owner_ident::#method_ident(#call_receiver, #(#arg_exprs),*)
                 })
             };
         }
@@ -688,23 +708,23 @@ impl PointerImplTarget {
             Self::GorsPtr if matches!(sig.output, syn::ReturnType::Default) => {
                 syn::parse_quote!({
                     let mut __gors_guard = self.lock().unwrap();
-                    #owner_ident::#method_ident(#call_receiver, #(#arg_idents),*);
+                    #owner_ident::#method_ident(#call_receiver, #(#arg_exprs),*);
                 })
             }
             Self::GorsPtr => {
                 syn::parse_quote!({
                     let mut __gors_guard = self.lock().unwrap();
-                    #owner_ident::#method_ident(#call_receiver, #(#arg_idents),*)
+                    #owner_ident::#method_ident(#call_receiver, #(#arg_exprs),*)
                 })
             }
             Self::BorrowedMut if matches!(sig.output, syn::ReturnType::Default) => {
                 syn::parse_quote!({
-                    #owner_ident::#method_ident(#call_receiver, #(#arg_idents),*);
+                    #owner_ident::#method_ident(#call_receiver, #(#arg_exprs),*);
                 })
             }
             Self::BorrowedMut => {
                 syn::parse_quote!({
-                    #owner_ident::#method_ident(#call_receiver, #(#arg_idents),*)
+                    #owner_ident::#method_ident(#call_receiver, #(#arg_exprs),*)
                 })
             }
         }
@@ -744,14 +764,14 @@ impl PointerImplTarget {
             let struct_ident = call.struct_ident;
             let method_ident = call.method_ident;
             let call_receiver = call.call_receiver;
-            let arg_idents = call.arg_idents;
+            let arg_exprs = call.arg_exprs;
             return if matches!(call.sig.output, syn::ReturnType::Default) {
                 syn::parse_quote!({
-                    #struct_ident::#method_ident(#call_receiver, #(#arg_idents),*);
+                    #struct_ident::#method_ident(#call_receiver, #(#arg_exprs),*);
                 })
             } else {
                 syn::parse_quote!({
-                    #struct_ident::#method_ident(#call_receiver, #(#arg_idents),*)
+                    #struct_ident::#method_ident(#call_receiver, #(#arg_exprs),*)
                 })
             };
         }
@@ -761,17 +781,17 @@ impl PointerImplTarget {
         {
             let struct_ident = call.struct_ident;
             let method_ident = call.method_ident;
-            let arg_idents = call.arg_idents;
+            let arg_exprs = call.arg_exprs;
             return if matches!(call.sig.output, syn::ReturnType::Default) {
                 syn::parse_quote!({
                     let __gors_receiver = crate::builtin::GorsPtr::new((**self).clone());
-                    #struct_ident::#method_ident(__gors_receiver.clone(), #(#arg_idents),*);
+                    #struct_ident::#method_ident(__gors_receiver.clone(), #(#arg_exprs),*);
                     **self = __gors_receiver.lock().unwrap().clone();
                 })
             } else {
                 syn::parse_quote!({
                     let __gors_receiver = crate::builtin::GorsPtr::new((**self).clone());
-                    let __gors_result = #struct_ident::#method_ident(__gors_receiver.clone(), #(#arg_idents),*);
+                    let __gors_result = #struct_ident::#method_ident(__gors_receiver.clone(), #(#arg_exprs),*);
                     **self = __gors_receiver.lock().unwrap().clone();
                     __gors_result
                 })
@@ -784,16 +804,16 @@ impl PointerImplTarget {
         {
             let struct_ident = call.struct_ident;
             let method_ident = call.method_ident;
-            let arg_idents = call.arg_idents;
+            let arg_exprs = call.arg_exprs;
             return if matches!(call.sig.output, syn::ReturnType::Default) {
                 syn::parse_quote!({
                     let mut __gors_receiver = (**self).clone();
-                    #struct_ident::#method_ident(&mut __gors_receiver, #(#arg_idents),*);
+                    #struct_ident::#method_ident(&mut __gors_receiver, #(#arg_exprs),*);
                 })
             } else {
                 syn::parse_quote!({
                     let mut __gors_receiver = (**self).clone();
-                    #struct_ident::#method_ident(&mut __gors_receiver, #(#arg_idents),*)
+                    #struct_ident::#method_ident(&mut __gors_receiver, #(#arg_exprs),*)
                 })
             };
         }
@@ -801,28 +821,28 @@ impl PointerImplTarget {
         let struct_ident = call.struct_ident;
         let method_ident = call.method_ident;
         let call_receiver = call.call_receiver;
-        let arg_idents = call.arg_idents;
+        let arg_exprs = call.arg_exprs;
         match self {
             Self::GorsPtr if matches!(call.sig.output, syn::ReturnType::Default) => {
                 syn::parse_quote!({
                     let mut __gors_guard = self.lock().unwrap();
-                    #struct_ident::#method_ident(#call_receiver, #(#arg_idents),*);
+                    #struct_ident::#method_ident(#call_receiver, #(#arg_exprs),*);
                 })
             }
             Self::GorsPtr => {
                 syn::parse_quote!({
                     let mut __gors_guard = self.lock().unwrap();
-                    #struct_ident::#method_ident(#call_receiver, #(#arg_idents),*)
+                    #struct_ident::#method_ident(#call_receiver, #(#arg_exprs),*)
                 })
             }
             Self::BorrowedMut if matches!(call.sig.output, syn::ReturnType::Default) => {
                 syn::parse_quote!({
-                    #struct_ident::#method_ident(#call_receiver, #(#arg_idents),*);
+                    #struct_ident::#method_ident(#call_receiver, #(#arg_exprs),*);
                 })
             }
             Self::BorrowedMut => {
                 syn::parse_quote!({
-                    #struct_ident::#method_ident(#call_receiver, #(#arg_idents),*)
+                    #struct_ident::#method_ident(#call_receiver, #(#arg_exprs),*)
                 })
             }
         }
@@ -837,6 +857,55 @@ fn set_interface_receiver(sig: &mut syn::Signature, immutable_error_method: bool
             syn::parse_quote! { &mut self }
         };
     }
+}
+
+fn set_interface_slice_param_types(sig: &mut syn::Signature, trait_name: &str, method_name: &str) {
+    super::TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        let method_key = format!("{trait_name}.{method_name}");
+        let params = env.get_method_params(trait_name, method_name);
+        for (idx, input) in sig.inputs.iter_mut().skip(1).enumerate() {
+            if !env.func_param_needs_borrowed_slice(&method_key, idx) {
+                continue;
+            }
+            let Some(typeinfer::GoType::Slice(elem)) =
+                params.get(idx).map(|param| env.resolve_alias(param))
+            else {
+                continue;
+            };
+            let syn::FnArg::Typed(pat_type) = input else {
+                continue;
+            };
+            let elem = super::rust_type_preserving_named_go_type(&elem);
+            *pat_type.ty = syn::parse_quote! { &mut [#elem] };
+        }
+    });
+}
+
+fn interface_forward_arg_exprs(
+    trait_name: &str,
+    target_type: &str,
+    method_name: &str,
+    arg_idents: &[syn::Ident],
+) -> Vec<syn::Expr> {
+    super::TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        let interface_key = format!("{trait_name}.{method_name}");
+        let target_key = format!("{target_type}.{method_name}");
+        arg_idents
+            .iter()
+            .enumerate()
+            .map(|(idx, ident)| {
+                let trait_borrows = env.func_param_needs_borrowed_slice(&interface_key, idx);
+                let target_borrows = env.func_param_needs_borrowed_slice(&target_key, idx);
+                if trait_borrows && !target_borrows {
+                    syn::parse_quote! { (#ident).to_vec() }
+                } else {
+                    syn::parse_quote! { #ident }
+                }
+            })
+            .collect()
+    })
 }
 
 fn set_mut_self_receiver(sig: &mut syn::Signature) {

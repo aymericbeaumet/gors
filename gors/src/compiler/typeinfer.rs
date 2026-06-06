@@ -909,6 +909,8 @@ pub struct TypeEnv {
     func_params: HashMap<std::string::String, Vec<GoType>>,
     /// Function/method name → interface parameter indices that need owned values.
     owned_interface_params: HashMap<std::string::String, HashSet<usize>>,
+    /// Function/method name → slice parameter indices that must alias caller storage.
+    borrowed_slice_params: HashMap<std::string::String, HashSet<usize>>,
     /// Method names declared with pointer receivers.
     pointer_receiver_methods: HashSet<std::string::String>,
     /// Function/method name → type parameter name → accepted constraint terms.
@@ -962,6 +964,14 @@ pub enum TypeKind {
 }
 
 type InterfaceMethodSignature = (std::string::String, Vec<GoType>, Vec<GoType>, Option<usize>);
+
+fn borrowed_slice_indices_from_params(params: &[GoType]) -> HashSet<usize> {
+    params
+        .iter()
+        .enumerate()
+        .filter_map(|(index, ty)| matches!(ty, GoType::Slice(_)).then_some(index))
+        .collect()
+}
 
 fn interface_method_names(expr: &ast::Expr) -> Vec<std::string::String> {
     let ast::Expr::InterfaceType(interface) = expr else {
@@ -2236,6 +2246,405 @@ fn qualify_package_type_kind(
     }
 }
 
+fn borrowed_slice_param_indices_for_func(fd: &ast::FuncDecl, env: &TypeEnv) -> HashSet<usize> {
+    let Some(body) = fd.body.as_ref() else {
+        return HashSet::new();
+    };
+    let mut indices = HashSet::new();
+    let mut index = 0usize;
+    for field in &fd.type_.params.list {
+        let ty = field
+            .type_
+            .as_ref()
+            .map(GoType::from_expr)
+            .unwrap_or(GoType::Unknown);
+        let is_slice = matches!(env.resolve_alias(&ty), GoType::Slice(_));
+        let count = field.names.as_ref().map_or(1, Vec::len);
+        for offset in 0..count {
+            let param_index = index + offset;
+            let Some(name) = field.names.as_ref().and_then(|names| names.get(offset)) else {
+                continue;
+            };
+            if is_slice
+                && !body_reassigns_ident(body, name.name)
+                && body_mutates_slice_param(body, name.name, env)
+            {
+                indices.insert(param_index);
+            }
+        }
+        index += count;
+    }
+    indices
+}
+
+fn body_reassigns_ident(body: &ast::BlockStmt, name: &str) -> bool {
+    body.list
+        .iter()
+        .any(|stmt| stmt_reassigns_ident(stmt, name))
+}
+
+fn stmt_reassigns_ident(stmt: &ast::Stmt, name: &str) -> bool {
+    match stmt {
+        ast::Stmt::AssignStmt(assign) => assign
+            .lhs
+            .iter()
+            .any(|lhs| matches!(lhs, ast::Expr::Ident(ident) if ident.name == name)),
+        ast::Stmt::BlockStmt(block) => body_reassigns_ident(block, name),
+        ast::Stmt::CaseClause(case) => case
+            .body
+            .iter()
+            .any(|stmt| stmt_reassigns_ident(stmt, name)),
+        ast::Stmt::CommClause(comm) => {
+            comm.comm
+                .as_ref()
+                .is_some_and(|stmt| stmt_reassigns_ident(stmt, name))
+                || comm
+                    .body
+                    .iter()
+                    .any(|stmt| stmt_reassigns_ident(stmt, name))
+        }
+        ast::Stmt::ForStmt(for_stmt) => {
+            for_stmt
+                .init
+                .as_ref()
+                .is_some_and(|stmt| stmt_reassigns_ident(stmt, name))
+                || for_stmt
+                    .post
+                    .as_ref()
+                    .is_some_and(|stmt| stmt_reassigns_ident(stmt, name))
+                || body_reassigns_ident(&for_stmt.body, name)
+        }
+        ast::Stmt::IfStmt(if_stmt) => {
+            if_stmt
+                .init
+                .as_ref()
+                .as_ref()
+                .is_some_and(|stmt| stmt_reassigns_ident(stmt, name))
+                || body_reassigns_ident(&if_stmt.body, name)
+                || if_stmt
+                    .else_
+                    .as_ref()
+                    .as_ref()
+                    .is_some_and(|stmt| stmt_reassigns_ident(stmt, name))
+        }
+        ast::Stmt::LabeledStmt(labeled) => stmt_reassigns_ident(&labeled.stmt, name),
+        ast::Stmt::RangeStmt(range) => body_reassigns_ident(&range.body, name),
+        ast::Stmt::SelectStmt(select) => select
+            .body
+            .list
+            .iter()
+            .any(|stmt| stmt_reassigns_ident(stmt, name)),
+        ast::Stmt::SwitchStmt(switch) => {
+            switch
+                .init
+                .as_ref()
+                .is_some_and(|stmt| stmt_reassigns_ident(stmt, name))
+                || switch
+                    .body
+                    .list
+                    .iter()
+                    .any(|stmt| stmt_reassigns_ident(stmt, name))
+        }
+        ast::Stmt::TypeSwitchStmt(type_switch) => {
+            type_switch
+                .init
+                .as_ref()
+                .is_some_and(|stmt| stmt_reassigns_ident(stmt, name))
+                || stmt_reassigns_ident(&type_switch.assign, name)
+                || type_switch
+                    .body
+                    .list
+                    .iter()
+                    .any(|stmt| stmt_reassigns_ident(stmt, name))
+        }
+        ast::Stmt::BranchStmt(_)
+        | ast::Stmt::DeclStmt(_)
+        | ast::Stmt::DeferStmt(_)
+        | ast::Stmt::EmptyStmt(_)
+        | ast::Stmt::ExprStmt(_)
+        | ast::Stmt::GoStmt(_)
+        | ast::Stmt::IncDecStmt(_)
+        | ast::Stmt::ReturnStmt(_)
+        | ast::Stmt::SendStmt(_) => false,
+    }
+}
+
+fn body_mutates_slice_param(body: &ast::BlockStmt, name: &str, env: &TypeEnv) -> bool {
+    body.list
+        .iter()
+        .any(|stmt| stmt_mutates_slice_param(stmt, name, env))
+}
+
+fn stmt_mutates_slice_param(stmt: &ast::Stmt, name: &str, env: &TypeEnv) -> bool {
+    match stmt {
+        ast::Stmt::AssignStmt(assign) => {
+            assign
+                .lhs
+                .iter()
+                .any(|lhs| lhs_mutates_slice_param(lhs, name))
+                || assign
+                    .rhs
+                    .iter()
+                    .any(|rhs| expr_mutates_slice_param(rhs, name, env))
+        }
+        ast::Stmt::BlockStmt(block) => body_mutates_slice_param(block, name, env),
+        ast::Stmt::CaseClause(case) => case
+            .body
+            .iter()
+            .any(|stmt| stmt_mutates_slice_param(stmt, name, env)),
+        ast::Stmt::CommClause(comm) => {
+            comm.comm
+                .as_ref()
+                .is_some_and(|stmt| stmt_mutates_slice_param(stmt, name, env))
+                || comm
+                    .body
+                    .iter()
+                    .any(|stmt| stmt_mutates_slice_param(stmt, name, env))
+        }
+        ast::Stmt::DeclStmt(decl) => decl.decl.specs.iter().any(|spec| match spec {
+            ast::Spec::ValueSpec(value) => value.values.as_ref().is_some_and(|values| {
+                values
+                    .iter()
+                    .any(|expr| expr_mutates_slice_param(expr, name, env))
+            }),
+            _ => false,
+        }),
+        ast::Stmt::DeferStmt(defer) => call_mutates_slice_param(&defer.call, name, env),
+        ast::Stmt::ExprStmt(expr) => expr_mutates_slice_param(&expr.x, name, env),
+        ast::Stmt::ForStmt(for_stmt) => {
+            for_stmt
+                .init
+                .as_ref()
+                .is_some_and(|stmt| stmt_mutates_slice_param(stmt, name, env))
+                || for_stmt
+                    .cond
+                    .as_ref()
+                    .is_some_and(|expr| expr_mutates_slice_param(expr, name, env))
+                || for_stmt
+                    .post
+                    .as_ref()
+                    .is_some_and(|stmt| stmt_mutates_slice_param(stmt, name, env))
+                || body_mutates_slice_param(&for_stmt.body, name, env)
+        }
+        ast::Stmt::GoStmt(go) => call_mutates_slice_param(&go.call, name, env),
+        ast::Stmt::IfStmt(if_stmt) => {
+            if_stmt
+                .init
+                .as_ref()
+                .as_ref()
+                .is_some_and(|stmt| stmt_mutates_slice_param(stmt, name, env))
+                || expr_mutates_slice_param(&if_stmt.cond, name, env)
+                || body_mutates_slice_param(&if_stmt.body, name, env)
+                || if_stmt
+                    .else_
+                    .as_ref()
+                    .as_ref()
+                    .is_some_and(|stmt| stmt_mutates_slice_param(stmt, name, env))
+        }
+        ast::Stmt::IncDecStmt(inc_dec) => lhs_mutates_slice_param(&inc_dec.x, name),
+        ast::Stmt::LabeledStmt(labeled) => stmt_mutates_slice_param(&labeled.stmt, name, env),
+        ast::Stmt::RangeStmt(range) => {
+            expr_mutates_slice_param(&range.x, name, env)
+                || body_mutates_slice_param(&range.body, name, env)
+        }
+        ast::Stmt::SelectStmt(select) => select
+            .body
+            .list
+            .iter()
+            .any(|stmt| stmt_mutates_slice_param(stmt, name, env)),
+        ast::Stmt::SendStmt(send) => {
+            expr_mutates_slice_param(&send.chan, name, env)
+                || expr_mutates_slice_param(&send.value, name, env)
+        }
+        ast::Stmt::SwitchStmt(switch) => {
+            switch
+                .init
+                .as_ref()
+                .is_some_and(|stmt| stmt_mutates_slice_param(stmt, name, env))
+                || switch
+                    .tag
+                    .as_ref()
+                    .is_some_and(|expr| expr_mutates_slice_param(expr, name, env))
+                || switch
+                    .body
+                    .list
+                    .iter()
+                    .any(|stmt| stmt_mutates_slice_param(stmt, name, env))
+        }
+        ast::Stmt::TypeSwitchStmt(type_switch) => {
+            type_switch
+                .init
+                .as_ref()
+                .is_some_and(|stmt| stmt_mutates_slice_param(stmt, name, env))
+                || stmt_mutates_slice_param(&type_switch.assign, name, env)
+                || type_switch
+                    .body
+                    .list
+                    .iter()
+                    .any(|stmt| stmt_mutates_slice_param(stmt, name, env))
+        }
+        ast::Stmt::BranchStmt(_) | ast::Stmt::EmptyStmt(_) | ast::Stmt::ReturnStmt(_) => false,
+    }
+}
+
+fn expr_mutates_slice_param(expr: &ast::Expr, name: &str, env: &TypeEnv) -> bool {
+    match expr {
+        ast::Expr::CallExpr(call) => call_mutates_slice_param(call, name, env),
+        ast::Expr::BinaryExpr(binary) => {
+            expr_mutates_slice_param(&binary.x, name, env)
+                || expr_mutates_slice_param(&binary.y, name, env)
+        }
+        ast::Expr::CompositeLit(lit) => lit.elts.as_ref().is_some_and(|elts| {
+            elts.iter().any(|elt| match elt {
+                ast::Expr::KeyValueExpr(kv) => {
+                    expr_mutates_slice_param(&kv.key, name, env)
+                        || expr_mutates_slice_param(&kv.value, name, env)
+                }
+                other => expr_mutates_slice_param(other, name, env),
+            })
+        }),
+        ast::Expr::FuncLit(func) => body_mutates_slice_param(&func.body, name, env),
+        ast::Expr::IndexExpr(index) => {
+            expr_mutates_slice_param(&index.x, name, env)
+                || expr_mutates_slice_param(&index.index, name, env)
+        }
+        ast::Expr::ParenExpr(paren) => expr_mutates_slice_param(&paren.x, name, env),
+        ast::Expr::SelectorExpr(selector) => expr_mutates_slice_param(&selector.x, name, env),
+        ast::Expr::SliceExpr(slice) => {
+            expr_mutates_slice_param(&slice.x, name, env)
+                || slice
+                    .low
+                    .as_ref()
+                    .is_some_and(|expr| expr_mutates_slice_param(expr, name, env))
+                || slice
+                    .high
+                    .as_ref()
+                    .is_some_and(|expr| expr_mutates_slice_param(expr, name, env))
+                || slice
+                    .max
+                    .as_ref()
+                    .is_some_and(|expr| expr_mutates_slice_param(expr, name, env))
+        }
+        ast::Expr::StarExpr(star) => expr_mutates_slice_param(&star.x, name, env),
+        ast::Expr::TypeAssertExpr(assert) => expr_mutates_slice_param(&assert.x, name, env),
+        ast::Expr::UnaryExpr(unary) => expr_mutates_slice_param(&unary.x, name, env),
+        _ => false,
+    }
+}
+
+fn call_mutates_slice_param(call: &ast::CallExpr, name: &str, env: &TypeEnv) -> bool {
+    if call_is_copy_into_slice_param(call, name) {
+        return true;
+    }
+    let args_mutate = call.args.as_ref().is_some_and(|args| {
+        let target = call_target_key_for_slice_mutation(&call.fun, env);
+        args.iter().enumerate().any(|(index, arg)| {
+            expr_aliases_slice_param(arg, name)
+                && target
+                    .as_ref()
+                    .is_some_and(|target| env.func_param_needs_borrowed_slice(target, index))
+        }) || args
+            .iter()
+            .any(|arg| expr_mutates_slice_param(arg, name, env))
+    });
+    args_mutate || expr_mutates_slice_param(&call.fun, name, env)
+}
+
+fn call_is_copy_into_slice_param(call: &ast::CallExpr, name: &str) -> bool {
+    matches!(call.fun.as_ref(), ast::Expr::Ident(ident) if ident.name == "copy")
+        && call
+            .args
+            .as_ref()
+            .and_then(|args| args.first())
+            .is_some_and(|arg| expr_aliases_slice_param(arg, name))
+}
+
+fn call_target_key_for_slice_mutation(fun: &ast::Expr, env: &TypeEnv) -> Option<String> {
+    match fun {
+        ast::Expr::Ident(ident) => env.has_func(ident.name).then(|| ident.name.to_string()),
+        ast::Expr::SelectorExpr(selector) => {
+            let ast::Expr::Ident(pkg_or_recv) = selector.x.as_ref() else {
+                return None;
+            };
+            let package_key = format!("{}.{}", pkg_or_recv.name, selector.sel.name);
+            if env.has_func(&package_key) {
+                return Some(package_key);
+            }
+            let receiver = env.get_var(pkg_or_recv.name)?;
+            let receiver_name =
+                receiver_method_type_name_for_slice_mutation(receiver, selector.sel.name, env)?;
+            Some(format!("{receiver_name}.{}", selector.sel.name))
+        }
+        ast::Expr::IndexExpr(index) => call_target_key_for_slice_mutation(&index.x, env),
+        ast::Expr::IndexListExpr(index) => call_target_key_for_slice_mutation(&index.x, env),
+        ast::Expr::ParenExpr(paren) => call_target_key_for_slice_mutation(&paren.x, env),
+        _ => None,
+    }
+}
+
+fn receiver_method_type_name_for_slice_mutation(
+    ty: GoType,
+    method: &str,
+    env: &TypeEnv,
+) -> Option<String> {
+    match ty {
+        GoType::Named(name) | GoType::Interface(name) => {
+            if env.has_method_func(&name, method) {
+                return Some(name);
+            }
+            match env.resolve_alias(&GoType::Named(name)) {
+                GoType::Named(alias_name) | GoType::Interface(alias_name)
+                    if env.has_method_func(&alias_name, method) =>
+                {
+                    Some(alias_name)
+                }
+                _ => None,
+            }
+        }
+        GoType::Pointer(inner) => receiver_method_type_name_for_slice_mutation(*inner, method, env),
+        other => match env.resolve_alias(&other) {
+            GoType::Named(name) | GoType::Interface(name) if env.has_method_func(&name, method) => {
+                Some(name)
+            }
+            GoType::Pointer(inner) => {
+                receiver_method_type_name_for_slice_mutation(*inner, method, env)
+            }
+            _ => None,
+        },
+    }
+}
+
+fn lhs_mutates_slice_param(expr: &ast::Expr, name: &str) -> bool {
+    match expr {
+        ast::Expr::IndexExpr(index) => expr_base_aliases_slice_param(&index.x, name),
+        ast::Expr::ParenExpr(paren) => lhs_mutates_slice_param(&paren.x, name),
+        ast::Expr::SelectorExpr(selector) => lhs_mutates_slice_param(&selector.x, name),
+        ast::Expr::StarExpr(star) => lhs_mutates_slice_param(&star.x, name),
+        _ => false,
+    }
+}
+
+fn expr_aliases_slice_param(expr: &ast::Expr, name: &str) -> bool {
+    match expr {
+        ast::Expr::Ident(ident) => ident.name == name,
+        ast::Expr::ParenExpr(paren) => expr_aliases_slice_param(&paren.x, name),
+        ast::Expr::SliceExpr(slice) => expr_aliases_slice_param(&slice.x, name),
+        _ => false,
+    }
+}
+
+fn expr_base_aliases_slice_param(expr: &ast::Expr, name: &str) -> bool {
+    match expr {
+        ast::Expr::Ident(ident) => ident.name == name,
+        ast::Expr::IndexExpr(index) => expr_base_aliases_slice_param(&index.x, name),
+        ast::Expr::ParenExpr(paren) => expr_base_aliases_slice_param(&paren.x, name),
+        ast::Expr::SelectorExpr(selector) => expr_base_aliases_slice_param(&selector.x, name),
+        ast::Expr::SliceExpr(slice) => expr_base_aliases_slice_param(&slice.x, name),
+        ast::Expr::StarExpr(star) => expr_base_aliases_slice_param(&star.x, name),
+        _ => false,
+    }
+}
+
 impl TypeEnv {
     pub fn new() -> Self {
         Self::default()
@@ -2281,6 +2690,20 @@ impl TypeEnv {
         } else {
             self.owned_interface_params.insert(name.to_string(), params);
         }
+    }
+
+    pub fn set_borrowed_slice_params(&mut self, name: &str, params: HashSet<usize>) {
+        if params.is_empty() {
+            self.borrowed_slice_params.remove(name);
+        } else {
+            self.borrowed_slice_params.insert(name.to_string(), params);
+        }
+    }
+
+    pub fn func_param_needs_borrowed_slice(&self, name: &str, index: usize) -> bool {
+        self.borrowed_slice_params
+            .get(name)
+            .is_some_and(|indices| indices.contains(&index))
     }
 
     pub fn func_param_needs_owned_interface(&self, name: &str, index: usize) -> bool {
@@ -3029,6 +3452,12 @@ impl TypeEnv {
                 indices.clone(),
             );
         }
+        for (name, indices) in &package_env.borrowed_slice_params {
+            self.set_borrowed_slice_params(
+                &qualify_package_member_name(package_name, name, package_env),
+                indices.clone(),
+            );
+        }
         for name in &package_env.pointer_receiver_methods {
             self.set_pointer_receiver_method(&qualify_package_member_name(
                 package_name,
@@ -3186,6 +3615,7 @@ impl TypeEnv {
                 }
             }
         }
+        self.refresh_borrowed_slice_params(&[file]);
         for decl in &file.decls {
             let ast::Decl::GenDecl(gd) = decl else {
                 continue;
@@ -3259,6 +3689,71 @@ impl TypeEnv {
         for file in files {
             self.scan_file(file);
         }
+        self.refresh_borrowed_slice_params(files);
+    }
+
+    pub fn refresh_borrowed_slice_params(&mut self, files: &[&ast::File<'_>]) {
+        loop {
+            let inference_env = self.clone();
+            let changed = self.refresh_borrowed_slice_params_from_env(files, &inference_env);
+            if !changed {
+                break;
+            }
+        }
+    }
+
+    pub fn refresh_borrowed_slice_params_from_env(
+        &mut self,
+        files: &[&ast::File<'_>],
+        inference_env: &TypeEnv,
+    ) -> bool {
+        let mut changed = false;
+        for file in files {
+            for decl in &file.decls {
+                let ast::Decl::FuncDecl(fd) = decl else {
+                    continue;
+                };
+                changed |= self.refresh_func_borrowed_slice_params_from_env(fd, inference_env);
+            }
+        }
+        changed
+    }
+
+    fn refresh_func_borrowed_slice_params_from_env(
+        &mut self,
+        fd: &ast::FuncDecl,
+        inference_env: &TypeEnv,
+    ) -> bool {
+        let params = borrowed_slice_param_indices_for_func(fd, inference_env);
+        let mut changed = false;
+        if let Some(ref recv) = fd.recv
+            && let Some(recv_field) = recv.list.first()
+            && let Some(ref recv_type) = recv_field.type_
+        {
+            let method_key = format!("{}.{}", extract_type_name(recv_type), fd.name.name);
+            changed |= self.replace_borrowed_slice_params_if_changed(&method_key, params.clone());
+        }
+        if fd.recv.is_none() {
+            changed |= self.replace_borrowed_slice_params_if_changed(fd.name.name, params);
+        }
+        changed
+    }
+
+    fn replace_borrowed_slice_params_if_changed(
+        &mut self,
+        name: &str,
+        params: HashSet<usize>,
+    ) -> bool {
+        let current = self
+            .borrowed_slice_params
+            .get(name)
+            .cloned()
+            .unwrap_or_default();
+        if current == params {
+            return false;
+        }
+        self.set_borrowed_slice_params(name, params);
+        true
     }
 
     fn scan_type_spec(&mut self, ts: &ast::TypeSpec) {
@@ -3319,6 +3814,10 @@ impl TypeEnv {
                     let method_key = format!("{}.{}", name.name, method_name);
                     self.set_func_params(&method_key, params);
                     self.set_func(&method_key, returns);
+                    self.set_borrowed_slice_params(
+                        &method_key,
+                        borrowed_slice_indices_from_params(&self.get_func_params(&method_key)),
+                    );
                     if let Some(start) = variadic_start {
                         self.set_func_variadic_start(&method_key, start);
                     }

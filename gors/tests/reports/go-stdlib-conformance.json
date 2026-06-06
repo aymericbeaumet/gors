@@ -11,10 +11,10 @@
   },
   "summary": {
     "groupCount": 344,
-    "passingGroupCount": 6,
+    "passingGroupCount": 7,
     "caseCount": 12418,
-    "passingCaseCount": 282,
-    "unsupportedCaseCount": 12136,
+    "passingCaseCount": 283,
+    "unsupportedCaseCount": 12135,
     "fixtureCount": 83
   },
   "groups": [
@@ -4688,8 +4688,8 @@
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 4,
-        "passingCaseCount": 3,
-        "unsupportedCaseCount": 1,
+        "passingCaseCount": 4,
+        "unsupportedCaseCount": 0,
         "fixtureCount": 0
       },
       "cases": [
@@ -4731,9 +4731,11 @@
           "title": "NewCipher",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: NewCipher behavior depends on returning crypto/cipher.Block interface values backed by package-private AES state, fixed-array key schedules, and block Encrypt/Decrypt methods."
+          "status": "passing",
+          "fixtures": [
+            "crypto/aes"
+          ],
+          "reason": ""
         }
       ]
     },

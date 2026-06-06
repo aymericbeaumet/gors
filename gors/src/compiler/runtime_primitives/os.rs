@@ -68,8 +68,8 @@ pub(super) fn inject_stdout(module: &mut CompiledModule) -> bool {
                     Box::new(*self) as Box<dyn crate::io::Writer>
                 }
 
-                fn Write(&mut self, b: Vec<u8>) -> (isize, Box<dyn crate::builtin::error>) {
-                    File::Write(self, b)
+                fn Write(&mut self, b: &mut [u8]) -> (isize, Box<dyn crate::builtin::error>) {
+                    File::Write(self, b.to_vec())
                 }
             }
         },
@@ -87,12 +87,12 @@ pub(super) fn inject_stdout(module: &mut CompiledModule) -> bool {
                     Box::new(self.clone()) as Box<dyn crate::io::Writer>
                 }
 
-                fn Write(&mut self, b: Vec<u8>) -> (isize, Box<dyn crate::builtin::error>) {
+                fn Write(&mut self, b: &mut [u8]) -> (isize, Box<dyn crate::builtin::error>) {
                     let _file = match self.lock() {
                         Ok(file) => file,
                         Err(err) => crate::builtin::panic_value(err),
                     };
-                    File::write_stdout(b)
+                    File::write_stdout(b.to_vec())
                 }
             }
         },

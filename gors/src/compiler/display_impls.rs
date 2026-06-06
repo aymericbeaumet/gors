@@ -15,7 +15,10 @@ pub(super) fn string_method_items(
         }) {
             continue;
         }
-        let struct_ident = syn::Ident::new(struct_name, proc_macro2::Span::mixed_site());
+        let struct_ident = syn::Ident::new(
+            &super::rust_safe_ident_name(struct_name),
+            proc_macro2::Span::mixed_site(),
+        );
         items.push(syn::parse_quote! {
             impl std::fmt::Display for #struct_ident {
                 fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

@@ -62,7 +62,10 @@ pub(super) fn pointer_interface_key_item() -> syn::ImplItem {
 
 pub(super) fn borrowed_pointer_interface_key_item(struct_name: &str) -> syn::ImplItem {
     let interface_key = interface_key_method_ident();
-    let struct_ident = syn::Ident::new(struct_name, proc_macro2::Span::mixed_site());
+    let struct_ident = syn::Ident::new(
+        &super::rust_safe_ident_name(struct_name),
+        proc_macro2::Span::mixed_site(),
+    );
     syn::parse_quote! {
         fn #interface_key(&self) -> crate::builtin::GorsInterfaceKey {
             crate::builtin::GorsInterfaceKey::for_ptr::<#struct_ident>(

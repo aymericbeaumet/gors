@@ -325,21 +325,12 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
     let parsed_file_refs = parsed_files.iter().map(|(_, ast)| ast).collect::<Vec<_>>();
     package_type_env.scan_files(&parsed_file_refs);
     runtime_primitives::supplement_type_env(import_path, &mut package_type_env);
-    let mut imported_type_envs: BTreeMap<String, crate::compiler::PackageFacts> = BTreeMap::new();
-    for (_, ast) in &parsed_files {
-        for import in ast.imports() {
-            let imported_path = import.path.value.trim_matches('"');
-            if imported_path == import_path {
-                continue;
-            }
-            if let Some((package_name, env)) = scan_type_env(imported_path) {
-                imported_type_envs.insert(
-                    imported_path.to_string(),
-                    crate::compiler::PackageFacts::new(package_name, env),
-                );
-            }
-        }
-    }
+    let imported_type_envs = scan_imported_type_envs(import_path, &parsed_file_refs);
+    refresh_borrowed_slice_params_with_imports(
+        &mut package_type_env,
+        &parsed_file_refs,
+        &imported_type_envs,
+    );
     for (_, ast) in &parsed_files {
         let mut inference_env = package_type_env.clone();
         crate::compiler::merge_import_type_envs(
@@ -450,6 +441,52 @@ fn compile_resolved_file(
             Some(package_mutable_top_level_vars.clone()),
         )
     })
+}
+
+fn scan_imported_type_envs(
+    import_path: &str,
+    files: &[&crate::ast::File<'_>],
+) -> BTreeMap<String, crate::compiler::PackageFacts> {
+    let mut imported_type_envs: BTreeMap<String, crate::compiler::PackageFacts> = BTreeMap::new();
+    for ast in files {
+        for import in ast.imports() {
+            let imported_path = import.path.value.trim_matches('"');
+            if imported_path == import_path {
+                continue;
+            }
+            if let Some((package_name, env)) = scan_type_env(imported_path) {
+                imported_type_envs.insert(
+                    imported_path.to_string(),
+                    crate::compiler::PackageFacts::new(package_name, env),
+                );
+            }
+        }
+    }
+    imported_type_envs
+}
+
+fn refresh_borrowed_slice_params_with_imports(
+    package_type_env: &mut TypeEnv,
+    files: &[&crate::ast::File<'_>],
+    imported_type_envs: &BTreeMap<String, crate::compiler::PackageFacts>,
+) {
+    loop {
+        let mut changed = false;
+        for ast in files {
+            let mut inference_env = package_type_env.clone();
+            crate::compiler::merge_import_type_envs(
+                &mut inference_env,
+                ast,
+                &BTreeMap::new(),
+                imported_type_envs,
+            );
+            changed |=
+                package_type_env.refresh_borrowed_slice_params_from_env(&[*ast], &inference_env);
+        }
+        if !changed {
+            break;
+        }
+    }
 }
 
 struct DeclRecoveryPlan {
@@ -913,6 +950,8 @@ fn scan_type_env_uncached(import_path: &str) -> Option<(String, TypeEnv)> {
     let parsed_file_refs = parsed_files.iter().collect::<Vec<_>>();
     env.scan_files(&parsed_file_refs);
     runtime_primitives::supplement_type_env(import_path, &mut env);
+    let imported_type_envs = scan_imported_type_envs(import_path, &parsed_file_refs);
+    refresh_borrowed_slice_params_with_imports(&mut env, &parsed_file_refs, &imported_type_envs);
 
     package_name.map(|name| (name, env))
 }

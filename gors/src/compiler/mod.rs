@@ -156,6 +156,7 @@ thread_local! {
     static TYPE_ENV: RefCell<typeinfer::TypeEnv> = RefCell::new(typeinfer::TypeEnv::new());
     static MUTABLE_TOP_LEVEL_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static PACKAGE_MUTABLE_TOP_LEVEL_VARS: RefCell<Option<HashSet<String>>> = const { RefCell::new(None) };
+    static REQUIRED_EXTERNAL_IMPORTED_INTERFACE_IMPLS: RefCell<BTreeSet<(String, String, bool)>> = const { RefCell::new(BTreeSet::new()) };
 }
 
 struct LocalTypeEnvScopeGuard {
@@ -3602,12 +3603,13 @@ pub fn compile_with_type_env_and_import_renames(
 
 pub(crate) fn compile_with_type_env_import_renames_and_mutable_vars(
     file: ast::File,
-    type_env: typeinfer::TypeEnv,
+    mut type_env: typeinfer::TypeEnv,
     import_renames: BTreeMap<String, String>,
     mutable_top_level_vars: Option<HashSet<String>>,
 ) -> Result<syn::File, CompilerError> {
     reset_lowering_thread_state();
     set_import_renames(import_renames);
+    type_env.refresh_borrowed_slice_params(&[&file]);
     validate_file_with_type_env(&file, &type_env)?;
     let _ir = ir::lower_file(&file, &type_env);
     set_type_env(type_env);
@@ -4174,6 +4176,7 @@ fn compile_program_impl(
             &graph.local_type_envs,
             &graph.stdlib_type_envs,
         );
+        type_env.refresh_borrowed_slice_params(&[&pkg.ast]);
         let import_rewrites = import_module_rewrites(
             &pkg.ast,
             &graph.local_type_envs,
@@ -4248,6 +4251,7 @@ fn compile_program_impl(
         &graph.stdlib_type_envs,
         &graph.stdlib_module_names,
     );
+    main_type_env.refresh_borrowed_slice_params(&[&program.main_package.ast]);
     let main_lowering = LoweringContext {
         type_env: main_type_env,
         dot_import_rewrites: dot_import_module_rewrites(
@@ -5679,6 +5683,13 @@ fn byte_slice_elem_type_from_expr(expr: &ast::Expr) -> Option<syn::Type> {
     .then(|| type_from_expr_ref(&array.elt))
 }
 
+fn interface_param_type_from_expr(expr: &ast::Expr) -> syn::Type {
+    if let Some(elem) = slice_elem_type_from_expr(expr) {
+        return syn::parse_quote! { &mut [#elem] };
+    }
+    borrowed_interface_value_type_from_expr(expr).unwrap_or_else(|| type_from_expr_ref(expr))
+}
+
 fn expr_is_direct_any_type(expr: &ast::Expr) -> bool {
     match expr {
         ast::Expr::ParenExpr(paren) => expr_is_direct_any_type(&paren.x),
@@ -6399,8 +6410,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                         if let Some(ast::Expr::FuncType(func_type)) = field.type_ {
                             for param in func_type.params.list {
                                 let ty: syn::Type = if let Some(type_expr) = param.type_ {
-                                    borrowed_interface_value_type_from_expr(&type_expr)
-                                        .unwrap_or_else(|| type_expr.into())
+                                    interface_param_type_from_expr(&type_expr)
                                 } else {
                                     syn::parse_quote! { () }
                                 };
@@ -8572,12 +8582,55 @@ fn unsafe_intrinsic_name<'ast>(call_expr: &ast::CallExpr<'ast>) -> Option<&'ast 
 }
 
 fn compile_unsafe_pointer_value(expr: ast::Expr) -> syn::Expr {
+    unsafe_pointer_value_expr_from_ref(&expr).unwrap_or_else(|| syn::parse_quote! { 0usize })
+}
+
+fn unsafe_pointer_value_expr_from_ref(expr: &ast::Expr) -> Option<syn::Expr> {
     match expr {
-        ast::Expr::ParenExpr(paren) => compile_unsafe_pointer_value(*paren.x),
+        ast::Expr::ParenExpr(paren) => unsafe_pointer_value_expr_from_ref(&paren.x),
         ast::Expr::UnaryExpr(unary) if unary.op == token::Token::AND => {
-            syn::parse_quote! { 0usize }
+            address_identity_expr_from_ref(&unary.x)
         }
-        _ => syn::parse_quote! { 0usize },
+        _ => {
+            let env = TYPE_ENV.with(|e| e.borrow().clone());
+            let go_type = typeinfer::GoType::infer_expr(expr, &env);
+            match env.resolve_alias(&go_type) {
+                typeinfer::GoType::Pointer(_) => {
+                    let pointer =
+                        pointer_cell_expr_from_ref(expr).or_else(|| lvalue_expr_from_ref(expr))?;
+                    Some(syn::parse_quote! {
+                        ((#pointer).ptr_id() as usize)
+                    })
+                }
+                typeinfer::GoType::Uintptr | typeinfer::GoType::Uint | typeinfer::GoType::Int => {
+                    let compiled = lvalue_expr_from_ref(expr)?;
+                    Some(syn::parse_quote! { ((#compiled) as usize) })
+                }
+                other if go_type_is_unsafe_pointer_value(&other) => {
+                    let compiled = lvalue_expr_from_ref(expr)?;
+                    Some(syn::parse_quote! { ((#compiled) as usize) })
+                }
+                _ => None,
+            }
+        }
+    }
+}
+
+fn address_identity_expr_from_ref(expr: &ast::Expr) -> Option<syn::Expr> {
+    let lvalue = lvalue_expr_from_ref(expr)?;
+    Some(syn::parse_quote! {{
+        let __gors_address_ref = &#lvalue;
+        (__gors_address_ref as *const _ as usize)
+    }})
+}
+
+fn address_identity_expr_from_pointer_expr_ref(expr: &ast::Expr) -> Option<syn::Expr> {
+    match expr {
+        ast::Expr::ParenExpr(paren) => address_identity_expr_from_pointer_expr_ref(&paren.x),
+        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::AND => {
+            address_identity_expr_from_ref(&unary.x)
+        }
+        _ => None,
     }
 }
 
@@ -9085,6 +9138,7 @@ fn compile_variadic_call_target(fun: ast::Expr) -> VariadicCallTarget {
 
 fn compile_variadic_call(call_expr: ast::CallExpr, variadic_start: usize) -> syn::Expr {
     let param_types = call_signature_param_types(&call_expr);
+    let call_abi = call_abi_for_backend(&call_expr);
     let target = compile_variadic_call_target(*call_expr.fun);
 
     let variadic_elem = param_types.get(variadic_start).and_then(|ty| match ty {
@@ -9108,7 +9162,7 @@ fn compile_variadic_call(call_expr: ast::CallExpr, variadic_start: usize) -> syn
                 && !variadic_is_any
                 && is_ir_addressable_expr(&arg)
                 && !go_type_is_copy(&actual);
-            let arg = compile_call_arg_with_expected(arg, param_types.get(i), &actual);
+            let arg = compile_call_arg_with_abi(arg, param_types.get(i), &actual, &call_abi, i);
             if should_clone {
                 final_args.push(syn::parse_quote! { (#arg).clone() });
             } else {
@@ -9121,10 +9175,12 @@ fn compile_variadic_call(call_expr: ast::CallExpr, variadic_start: usize) -> syn
     for (i, arg) in raw_args.into_iter().enumerate() {
         if i < variadic_start {
             let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
-            final_args.push(compile_call_arg_with_expected(
+            final_args.push(compile_call_arg_with_abi(
                 arg,
                 param_types.get(i),
                 &actual,
+                &call_abi,
+                i,
             ));
         } else if variadic_is_any {
             final_args.push(compile_variadic_any_box_arg(arg, variadic_elem.as_ref()));
@@ -11233,6 +11289,41 @@ fn call_arg_needs_owned_interface(call_abi: &ir::CallAbi, arg_index: usize) -> b
     })
 }
 
+fn call_arg_needs_borrowed_slice(call_abi: &ir::CallAbi, arg_index: usize) -> bool {
+    let Some(target) = call_abi.signature_target.as_deref() else {
+        return false;
+    };
+    let Some(param_index) = (if matches!(call_abi.callee, ir::CalleeKind::MethodExpression) {
+        arg_index.checked_sub(1)
+    } else {
+        Some(arg_index)
+    }) else {
+        return false;
+    };
+    TYPE_ENV.with(|env| {
+        env.borrow()
+            .func_param_needs_borrowed_slice(target, param_index)
+    })
+}
+
+fn compile_call_arg_with_abi(
+    arg: ast::Expr,
+    expected: Option<&typeinfer::GoType>,
+    actual: &typeinfer::GoType,
+    call_abi: &ir::CallAbi,
+    arg_index: usize,
+) -> syn::Expr {
+    if call_arg_needs_borrowed_slice(call_abi, arg_index) {
+        return compile_borrowed_slice_arg_expr(arg);
+    }
+    compile_call_arg_with_expected_and_ownership(
+        arg,
+        expected,
+        actual,
+        call_arg_needs_owned_interface(call_abi, arg_index),
+    )
+}
+
 fn pointer_deref_lvalue_expr(inner: &ast::Expr) -> Option<syn::Expr> {
     if is_unsafe_pointer_bitcast_expr(inner) {
         return compile_unsafe_pointer_bitcast_lvalue(inner);
@@ -12059,11 +12150,99 @@ fn compile_mutable_slice_view_return_expr(expr: &ast::Expr) -> Option<syn::Expr>
     Some(syn::parse_quote! { &mut #lvalue })
 }
 
+fn compile_return_value_with_expected_and_actual(
+    compiled: syn::Expr,
+    expected: Option<&typeinfer::GoType>,
+    actual: Option<&typeinfer::GoType>,
+) -> syn::Expr {
+    let Some(expected) = expected else {
+        return compiled;
+    };
+    let Some(interface_name) = go_type_interface_name(expected) else {
+        return compiled;
+    };
+    let actual = actual.cloned().unwrap_or(typeinfer::GoType::Unknown);
+    record_required_external_imported_interface_impl(expected, &actual);
+    let trait_path = interface_trait_path_from_name(&interface_name);
+    if matches!(expected, typeinfer::GoType::Error) {
+        if go_type_is_interface_like(&actual) {
+            return compiled;
+        }
+        return if is_box_new_call(&compiled) {
+            syn::parse_quote! { #compiled as Box<dyn #trait_path> }
+        } else {
+            syn::parse_quote! { Box::new(#compiled) as Box<dyn #trait_path> }
+        };
+    }
+    if go_type_is_interface_like(&actual) {
+        return compiled;
+    }
+    if is_box_new_call(&compiled) {
+        syn::parse_quote! { #compiled as Box<dyn #trait_path> }
+    } else if let Some(inner) = arc_mutex_new_inner_expr(&compiled) {
+        syn::parse_quote! { Box::new(#inner) as Box<dyn #trait_path> }
+    } else {
+        syn::parse_quote! { Box::new(#compiled) as Box<dyn #trait_path> }
+    }
+}
+
+fn clear_required_external_imported_interface_impls() {
+    REQUIRED_EXTERNAL_IMPORTED_INTERFACE_IMPLS.with(|required| required.borrow_mut().clear());
+}
+
+fn record_required_external_imported_interface_impl(
+    expected: &typeinfer::GoType,
+    actual: &typeinfer::GoType,
+) {
+    let Some(interface_name) = go_type_interface_name(expected) else {
+        return;
+    };
+    if !interface_name.contains('.')
+        || local_interface_name_for_current_package(&interface_name).is_some()
+    {
+        return;
+    }
+    if go_type_is_interface_like(actual) {
+        return;
+    }
+    let Some((go_name, include_pointer_receiver_methods)) = external_concrete_go_name(actual)
+    else {
+        return;
+    };
+    if !external_interface_record_matches_current_import(&go_name) {
+        return;
+    }
+    REQUIRED_EXTERNAL_IMPORTED_INTERFACE_IMPLS.with(|required| {
+        required
+            .borrow_mut()
+            .insert((interface_name, go_name, include_pointer_receiver_methods));
+    });
+}
+
+fn external_concrete_go_name(go_type: &typeinfer::GoType) -> Option<(String, bool)> {
+    match resolved_go_type(go_type) {
+        typeinfer::GoType::Pointer(inner) => match resolved_go_type(&inner) {
+            typeinfer::GoType::Named(name) if name.contains('.') => Some((name, true)),
+            _ => None,
+        },
+        typeinfer::GoType::Named(name) if name.contains('.') => Some((name, false)),
+        _ => None,
+    }
+}
+
+fn compile_nil_return_expr(expected: Option<&typeinfer::GoType>) -> Option<syn::Expr> {
+    let interface_name = expected.and_then(go_type_interface_name)?;
+    Some(boxed_noop_interface_expr(&interface_name))
+}
+
 fn compile_return_expr_with_expected(
     expr: ast::Expr,
     expected: Option<&typeinfer::GoType>,
 ) -> syn::Expr {
     if matches!(&expr, ast::Expr::Ident(id) if id.name == "nil") {
+        if let Some(expr) = compile_nil_return_expr(expected) {
+            return expr;
+        }
         return compile_expr_with_expected(expr, expected);
     }
     if let Some(info) = borrowed_views::current_borrowed_pointer_view_return()
@@ -12077,33 +12256,61 @@ fn compile_return_expr_with_expected(
         return expr;
     }
     if let Some(expected) = expected
-        && let Some(interface_name) = go_type_interface_name(expected)
+        && go_type_interface_name(expected).is_some()
     {
         let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&expr, &env.borrow()));
-        let trait_path = interface_trait_path_from_name(&interface_name);
         let compiled: syn::Expr = expr.into();
-        if matches!(expected, typeinfer::GoType::Error) {
-            if go_type_is_interface_like(&actual) {
-                return compiled;
-            }
-            return if is_box_new_call(&compiled) {
-                syn::parse_quote! { #compiled as Box<dyn #trait_path> }
-            } else {
-                syn::parse_quote! { Box::new(#compiled) as Box<dyn #trait_path> }
-            };
-        }
-        if go_type_is_interface_like(&actual) {
-            return compiled;
-        }
-        return if is_box_new_call(&compiled) {
-            syn::parse_quote! { #compiled as Box<dyn #trait_path> }
-        } else if let Some(inner) = arc_mutex_new_inner_expr(&compiled) {
-            syn::parse_quote! { Box::new(#inner) as Box<dyn #trait_path> }
-        } else {
-            syn::parse_quote! { Box::new(#compiled) as Box<dyn #trait_path> }
-        };
+        return compile_return_value_with_expected_and_actual(
+            compiled,
+            Some(expected),
+            Some(&actual),
+        );
     }
     compile_expr_with_expected(expr, expected)
+}
+
+fn single_call_multi_return_types(
+    expr: &ast::Expr,
+    expected_return_types: &[typeinfer::GoType],
+) -> Option<Vec<typeinfer::GoType>> {
+    if expected_return_types.len() <= 1 {
+        return None;
+    }
+    let return_types = call_return_types(expr);
+    if return_types.len() != expected_return_types.len() {
+        return None;
+    }
+    Some(return_types)
+}
+
+fn compile_single_call_multi_return_expr(
+    expr: ast::Expr,
+    expected_return_types: &[typeinfer::GoType],
+    return_types: &[typeinfer::GoType],
+) -> syn::Expr {
+    let call_expr: syn::Expr = expr.into();
+    let temps = (0..expected_return_types.len())
+        .map(synthetic_names::multi_value_temp_ident)
+        .collect::<Vec<_>>();
+    let temp_pats = temps.iter();
+    let mut elems = syn::punctuated::Punctuated::new();
+    for (idx, temp) in temps.iter().enumerate() {
+        let value: syn::Expr = syn::parse_quote! { #temp };
+        elems.push(compile_return_value_with_expected_and_actual(
+            value,
+            expected_return_types.get(idx),
+            return_types.get(idx),
+        ));
+    }
+    let tuple_expr = syn::Expr::Tuple(syn::ExprTuple {
+        attrs: vec![],
+        paren_token: syn::token::Paren::default(),
+        elems,
+    });
+    syn::parse_quote! {{
+        let (#(#temp_pats),*) = #call_expr;
+        #tuple_expr
+    }}
 }
 
 fn return_result_should_clone_for_later_use(
@@ -15754,6 +15961,20 @@ fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
     };
 
     if matches!(op, token::Token::EQL | token::Token::NEQ)
+        && let (Some(left), Some(right)) = (
+            address_identity_expr_from_pointer_expr_ref(&binary_expr.x),
+            address_identity_expr_from_pointer_expr_ref(&binary_expr.y),
+        )
+    {
+        let eq: syn::Expr = syn::parse_quote! { (#left) == (#right) };
+        return if op == token::Token::EQL {
+            eq
+        } else {
+            syn::parse_quote! { !(#eq) }
+        };
+    }
+
+    if matches!(op, token::Token::EQL | token::Token::NEQ)
         && matches!(resolved_go_type(&left_ty), typeinfer::GoType::Pointer(_))
         && matches!(resolved_go_type(&right_ty), typeinfer::GoType::Pointer(_))
         && !is_borrowed_pointer_expr_ref(&binary_expr.x)
@@ -16192,7 +16413,7 @@ fn compile_type_method_expression_call(call_expr: ast::CallExpr) -> syn::Expr {
             )
         })
     } else {
-        let mut params = call_abi.signature_params;
+        let mut params = call_abi.signature_params.clone();
         if !params.is_empty() {
             params.remove(0);
         }
@@ -16232,7 +16453,13 @@ fn compile_type_method_expression_call(call_expr: ast::CallExpr) -> syn::Expr {
                     && !variadic_is_any
                     && is_ir_addressable_expr(&arg)
                     && !go_type_is_copy(&actual);
-                let arg = compile_call_arg_with_expected(arg, param_types.get(idx), &actual);
+                let arg = compile_call_arg_with_abi(
+                    arg,
+                    param_types.get(idx),
+                    &actual,
+                    &call_abi,
+                    idx + 1,
+                );
                 if should_clone {
                     args.push(syn::parse_quote! { (#arg).clone() });
                 } else {
@@ -16247,10 +16474,12 @@ fn compile_type_method_expression_call(call_expr: ast::CallExpr) -> syn::Expr {
             if idx < variadic_start {
                 let actual =
                     TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
-                method_args.push(compile_call_arg_with_expected(
+                method_args.push(compile_call_arg_with_abi(
                     arg,
                     param_types.get(idx),
                     &actual,
+                    &call_abi,
+                    idx + 1,
                 ));
             } else if variadic_is_any {
                 method_args.push(compile_variadic_any_box_arg(arg, variadic_elem.as_ref()));
@@ -16276,10 +16505,12 @@ fn compile_type_method_expression_call(call_expr: ast::CallExpr) -> syn::Expr {
     }
     for (idx, arg) in raw_method_args.into_iter().enumerate() {
         let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
-        args.push(compile_call_arg_with_expected(
+        args.push(compile_call_arg_with_abi(
             arg,
             param_types.get(idx),
             &actual,
+            &call_abi,
+            idx + 1,
         ));
     }
     syn::parse_quote! { #receiver_path::#method_ident(#args) }
@@ -17642,12 +17873,8 @@ impl From<ast::CallExpr<'_>> for syn::ExprCall {
             for (idx, arg) in cargs.into_iter().enumerate() {
                 let actual =
                     TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
-                let arg = compile_call_arg_with_expected_and_ownership(
-                    arg,
-                    param_types.get(idx),
-                    &actual,
-                    call_arg_needs_owned_interface(&call_abi, idx),
-                );
+                let arg =
+                    compile_call_arg_with_abi(arg, param_types.get(idx), &actual, &call_abi, idx);
                 args.push(arg)
             }
         }
@@ -17735,11 +17962,12 @@ impl From<ast::Expr<'_>> for syn::Expr {
                             for (idx, arg) in cargs.into_iter().enumerate() {
                                 let actual = TYPE_ENV
                                     .with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
-                                let arg = compile_call_arg_with_expected_and_ownership(
+                                let arg = compile_call_arg_with_abi(
                                     arg,
                                     param_types.get(idx),
                                     &actual,
-                                    call_arg_needs_owned_interface(&call_abi, idx),
+                                    &call_abi,
+                                    idx,
                                 );
                                 args.push(arg);
                             }
@@ -18687,6 +18915,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
 
         // Track import names for selector expr disambiguation.
         set_current_file_imports(&file);
+        clear_required_external_imported_interface_impls();
         type_decl_facts::clear_borrowed_interface_structs();
         type_decl_facts::clear_struct_clone_derivability();
         preseed_struct_clone_derivability(&file.decls);
@@ -18935,7 +19164,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
         }
 
         for (type_name, method_list) in &methods {
-            let type_ident = syn::Ident::new(type_name, Span::mixed_site());
+            let type_ident = syn::Ident::new(&rust_safe_ident_name(type_name), Span::mixed_site());
             let type_args = method_generics.get(type_name).cloned().unwrap_or_default();
             let has_borrowed_interface_field =
                 type_decl_facts::has_borrowed_interface_struct(type_name);
@@ -19019,7 +19248,8 @@ impl TryFrom<ast::File<'_>> for syn::File {
                 );
                 if value_satisfies {
                     let trait_path = interface_trait_path_from_name(trait_name);
-                    let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
+                    let struct_ident =
+                        syn::Ident::new(&rust_safe_ident_name(struct_name), Span::mixed_site());
 
                     let exposes_any = !has_borrowed_interface_field
                         && method_generics
@@ -19168,7 +19398,8 @@ impl TryFrom<ast::File<'_>> for syn::File {
                         .is_none_or(std::vec::Vec::is_empty)
                 {
                     let trait_path = interface_trait_path_from_name(trait_name);
-                    let struct_ident = syn::Ident::new(struct_name, Span::mixed_site());
+                    let struct_ident =
+                        syn::Ident::new(&rust_safe_ident_name(struct_name), Span::mixed_site());
                     if emitted_interface_impls.insert((
                         trait_name.clone(),
                         struct_name.clone(),
@@ -19388,6 +19619,10 @@ impl TryFrom<ast::File<'_>> for syn::File {
             is_main_package,
             &mut emitted_interface_impls,
             &mut emitted_borrowed_pointer_interface_impls,
+        ));
+        items.extend(external_imported_interface_impls(
+            &trait_methods,
+            &mut emitted_interface_impls,
         ));
         items.extend(external_local_interface_impls(&trait_methods));
 
@@ -21706,6 +21941,97 @@ fn external_interface_assertion_implementors(
     )
 }
 
+fn external_imported_interface_impls(
+    trait_methods: &BTreeMap<String, Vec<String>>,
+    emitted_interface_impls: &mut BTreeSet<(String, String, bool)>,
+) -> Vec<syn::Item> {
+    let required_impls = REQUIRED_EXTERNAL_IMPORTED_INTERFACE_IMPLS
+        .with(|required| required.borrow().iter().cloned().collect::<Vec<_>>());
+    if required_impls.is_empty() {
+        return Vec::new();
+    }
+    TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        let mut items = Vec::new();
+        for (interface_name, go_name, include_pointer_receiver_methods) in required_impls {
+            let fallback_method_names = trait_methods
+                .get(&interface_name)
+                .cloned()
+                .unwrap_or_default();
+            let method_set =
+                interface_method_sets::for_impl(&interface_name, &fallback_method_names);
+            if method_set.required_methods.is_empty() {
+                continue;
+            }
+            if !env.named_type_implements_interface(
+                &go_name,
+                &interface_name,
+                include_pointer_receiver_methods,
+            ) {
+                continue;
+            }
+            let rust_ty = named_go_type_path(&go_name);
+            let rust_ty = if include_pointer_receiver_methods {
+                syn::parse_quote! { crate::builtin::GorsPtr<#rust_ty> }
+            } else {
+                rust_ty
+            };
+            let record = external_interface_implementors::ExternalInterfaceImplementor {
+                go_name,
+                rust_ty,
+                include_pointer_receiver_methods,
+            };
+            if !emitted_interface_impls.insert((
+                interface_name.clone(),
+                record.go_name.clone(),
+                record.include_pointer_receiver_methods,
+            )) {
+                continue;
+            }
+            let trait_path = interface_trait_path_from_name(&interface_name);
+            let self_ty = record.rust_ty.clone();
+            let impl_items = external_interface_impl_items(
+                &interface_name,
+                &trait_path,
+                &method_set.direct_methods,
+                &record,
+                &env,
+            );
+            let mut attrs = Vec::new();
+            generated_attrs::preserve_for_dce(&mut attrs);
+            items.push(syn::Item::Impl(syn::ItemImpl {
+                attrs,
+                defaultness: None,
+                unsafety: None,
+                impl_token: <Token![impl]>::default(),
+                generics: syn::Generics::default(),
+                trait_: Some((None, trait_path, <Token![for]>::default())),
+                self_ty: Box::new(self_ty),
+                brace_token: syn::token::Brace::default(),
+                items: impl_items,
+            }));
+        }
+        items
+    })
+}
+
+fn external_interface_record_matches_current_import(go_name: &str) -> bool {
+    let Some((qualifier, type_name)) = go_name.split_once('.') else {
+        return false;
+    };
+    let Some(import_path) = import_context::import_path_for_local_name(qualifier) else {
+        return false;
+    };
+    if !crate::resolve::is_known(&import_path) {
+        return true;
+    }
+    crate::resolve::scan_type_env(&import_path).is_some_and(|(_, env)| {
+        env.get_type_kind(type_name).is_some()
+            || env.resolve_alias(&typeinfer::GoType::Named(type_name.to_string()))
+                != typeinfer::GoType::Named(type_name.to_string())
+    })
+}
+
 fn external_local_interface_impls(trait_methods: &BTreeMap<String, Vec<String>>) -> Vec<syn::Item> {
     TYPE_ENV.with(|env| {
         let env = env.borrow();
@@ -21724,9 +22050,9 @@ fn external_local_interface_impls(trait_methods: &BTreeMap<String, Vec<String>>)
             let trait_path = interface_trait_path_from_name(&local_interface_name);
             for record in records {
                 let self_ty = record.rust_ty.clone();
-                let impl_items = external_local_interface_impl_items(
+                let impl_items = external_interface_impl_items(
                     interface_name,
-                    &local_interface_name,
+                    &trait_path,
                     method_names,
                     &record,
                     &env,
@@ -21815,14 +22141,13 @@ fn local_interface_name_for_current_package(interface_name: &str) -> Option<Stri
         .then(|| local_name.to_string())
 }
 
-fn external_local_interface_impl_items(
+fn external_interface_impl_items(
     interface_env_name: &str,
-    local_interface_name: &str,
+    trait_path: &syn::Path,
     method_names: &[String],
     record: &external_interface_implementors::ExternalInterfaceImplementor,
     env: &typeinfer::TypeEnv,
 ) -> Vec<syn::ImplItem> {
-    let trait_path = interface_trait_path_from_name(local_interface_name);
     let as_any = as_any_method_ident();
     let interface_key = interface_key_method_ident();
     let clone_box = clone_box_method_ident();
@@ -21863,41 +22188,88 @@ fn external_local_interface_method_item(
     set_interface_receiver_for_signature(&mut sig);
     let method_ident = syn::Ident::new(&rust_safe_ident_name(method_name), Span::mixed_site());
     let arg_idents = signature_arg_idents(&sig);
+    let arg_exprs =
+        external_interface_bridge_arg_exprs(interface_name, method_name, record, env, &arg_idents);
     let target_ty = gors_ptr_inner_type(&record.rust_ty).unwrap_or_else(|| record.rust_ty.clone());
     let method_has_pointer_receiver =
         env.method_has_pointer_receiver(&method_key(&record.go_name, method_name));
     let block = if record.include_pointer_receiver_methods && method_has_pointer_receiver {
         if matches!(sig.output, syn::ReturnType::Default) {
             syn::parse_quote!({
-                #target_ty::#method_ident(self.clone(), #(#arg_idents),*);
+                #target_ty::#method_ident(self.clone(), #(#arg_exprs),*);
             })
         } else {
             syn::parse_quote!({
-                #target_ty::#method_ident(self.clone(), #(#arg_idents),*)
+                #target_ty::#method_ident(self.clone(), #(#arg_exprs),*)
             })
         }
     } else if record.include_pointer_receiver_methods {
         if matches!(sig.output, syn::ReturnType::Default) {
             syn::parse_quote!({
                 let mut __gors_guard = self.lock().unwrap();
-                #target_ty::#method_ident(&mut *__gors_guard, #(#arg_idents),*);
+                #target_ty::#method_ident(&mut *__gors_guard, #(#arg_exprs),*);
             })
         } else {
             syn::parse_quote!({
                 let mut __gors_guard = self.lock().unwrap();
-                #target_ty::#method_ident(&mut *__gors_guard, #(#arg_idents),*)
+                #target_ty::#method_ident(&mut *__gors_guard, #(#arg_exprs),*)
             })
         }
     } else if matches!(sig.output, syn::ReturnType::Default) {
         syn::parse_quote!({
-            #target_ty::#method_ident(self, #(#arg_idents),*);
+            #target_ty::#method_ident(self, #(#arg_exprs),*);
         })
     } else {
         syn::parse_quote!({
-            #target_ty::#method_ident(self, #(#arg_idents),*)
+            #target_ty::#method_ident(self, #(#arg_exprs),*)
         })
     };
     impl_item_fn(sig, block)
+}
+
+fn external_interface_bridge_arg_exprs(
+    interface_name: &str,
+    method_name: &str,
+    record: &external_interface_implementors::ExternalInterfaceImplementor,
+    env: &typeinfer::TypeEnv,
+    arg_idents: &[syn::Ident],
+) -> Vec<syn::Expr> {
+    let interface_key = method_key(interface_name, method_name);
+    let params = env.get_method_params(interface_name, method_name);
+    arg_idents
+        .iter()
+        .enumerate()
+        .map(|(idx, ident)| {
+            let trait_borrows = env.func_param_needs_borrowed_slice(&interface_key, idx);
+            let target_borrows = method_param_needs_borrowed_slice_for_candidates(
+                env,
+                &record.go_name,
+                method_name,
+                idx,
+            );
+            let param_is_slice = params.get(idx).is_some_and(|param| {
+                matches!(env.resolve_alias(param), typeinfer::GoType::Slice(_))
+            });
+            if trait_borrows && !target_borrows && param_is_slice {
+                syn::parse_quote! { (#ident).to_vec() }
+            } else {
+                syn::parse_quote! { #ident }
+            }
+        })
+        .collect()
+}
+
+fn method_param_needs_borrowed_slice_for_candidates(
+    env: &typeinfer::TypeEnv,
+    type_name: &str,
+    method_name: &str,
+    index: usize,
+) -> bool {
+    interface_type_env::rust_path_name_candidates(type_name)
+        .into_iter()
+        .any(|candidate| {
+            env.func_param_needs_borrowed_slice(&method_key(&candidate, method_name), index)
+        })
 }
 
 fn set_interface_receiver_for_signature(sig: &mut syn::Signature) {
@@ -23458,16 +23830,29 @@ impl From<ast::ReturnStmt<'_>> for syn::ExprReturn {
         let results = return_stmt.results;
         let expr = match results.len() {
             0 => None,
-            1 => Some(compile_return_expr_with_expected(
-                results.into_iter().next().unwrap_or_else(|| {
+            1 => {
+                let result = results.into_iter().next().unwrap_or_else(|| {
                     ast::Expr::Ident(ast::Ident {
                         name_pos: token::Position::default(),
                         name: "__gors_missing_return",
                         obj: None,
                     })
-                }),
-                expected_return_types.first(),
-            )),
+                });
+                if let Some(return_types) =
+                    single_call_multi_return_types(&result, &expected_return_types)
+                {
+                    Some(compile_single_call_multi_return_expr(
+                        result,
+                        &expected_return_types,
+                        &return_types,
+                    ))
+                } else {
+                    Some(compile_return_expr_with_expected(
+                        result,
+                        expected_return_types.first(),
+                    ))
+                }
+            }
             _ => {
                 let clone_flags = results
                     .iter()
@@ -25002,7 +25387,7 @@ func main() {
     }
 
     #[test]
-    fn it_should_lower_address_to_unsafe_pointer_as_pointer_placeholder() {
+    fn it_should_lower_address_to_unsafe_pointer_as_address_identity() {
         let parsed = parse_file(
             "test.go",
             r#"
@@ -25025,7 +25410,14 @@ func main() {
         let compiled = compile(parsed).unwrap();
         let output = quote! { #compiled }.to_string();
 
-        assert_eq!(output.matches("observe (0usize)").count(), 2, "{output}");
+        assert!(
+            output.contains("__gors_address_ref"),
+            "expected unsafe.Pointer address conversion to preserve address identity: {output}"
+        );
+        assert!(
+            output.contains("ptr_id"),
+            "expected unsafe.Pointer pointer conversion to preserve pointer identity: {output}"
+        );
         assert!(
             !output.contains("__gors_index_base [__gors_index]"),
             "expected unsafe.Pointer address conversion not to clone the pointee: {output}"
@@ -27924,6 +28316,96 @@ func (r *Reader) Seek(offset int64, whence int) int64 {
     }
 
     #[test]
+    fn compile_program_multi_emits_imported_interface_impls_for_external_concrete_returns() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/maker"
+
+func main() {
+	_ = maker.New()
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("iface/iface.go").as_path(),
+            r#"
+package iface
+
+type Block interface {
+	BlockSize() int
+	Encrypt(dst, src []byte)
+	Decrypt(dst, src []byte)
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("implpkg/implpkg.go").as_path(),
+            r#"
+package implpkg
+
+type Block struct{}
+
+func New() *Block {
+	return &Block{}
+}
+
+func (b *Block) BlockSize() int {
+	return 16
+}
+
+func (b *Block) Encrypt(dst, src []byte) {
+	if len(dst) > 0 && len(src) > 0 {
+		dst[0] = src[0]
+	}
+}
+
+func (b *Block) Decrypt(dst, src []byte) {
+	if len(dst) > 0 && len(src) > 0 {
+		dst[0] = src[0]
+	}
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("maker/maker.go").as_path(),
+            r#"
+package maker
+
+import (
+	"example/iface"
+	"example/implpkg"
+)
+
+func New() iface.Block {
+	return implpkg.New()
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let maker_rs = output.files.get("example__maker.rs").unwrap();
+
+        assert!(
+            maker_rs.contains(
+                "impl crate::iface::Block for crate::builtin::GorsPtr<crate::implpkg::Block>"
+            ) || maker_rs.contains(
+                "impl crate :: iface :: Block for crate :: builtin :: GorsPtr < crate :: implpkg :: Block >"
+            ),
+            "{maker_rs}"
+        );
+        assert!(
+            maker_rs.contains("crate::implpkg::Block::BlockSize(self.clone())")
+                || maker_rs.contains("crate :: implpkg :: Block :: BlockSize (self . clone ())"),
+            "{maker_rs}"
+        );
+    }
+
+    #[test]
     fn compile_program_multi_emits_imported_value_interface_impls_for_local_named_slices() {
         let tmp = tempfile::tempdir().unwrap();
         write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
@@ -29280,6 +29762,88 @@ func main() {
         );
         assert!(!main_rs.contains("None"), "{main_rs}");
         assert!(main_rs.contains("__GorsNooperror"), "{main_rs}");
+    }
+
+    #[test]
+    fn compile_program_multi_keeps_nil_named_interface_returns_owned() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type Reader interface {
+	Read() int
+}
+
+func empty() (Reader, error) {
+	return nil, nil
+}
+
+func main() {
+	_, _ = empty()
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(
+            main_rs.contains("Box::new(__GorsNoopReader::default()) as Box<dyn Reader>"),
+            "{main_rs}"
+        );
+        assert!(
+            !main_rs.contains("Box::leak(Box::new(__GorsNoopReader::default()))"),
+            "{main_rs}"
+        );
+    }
+
+    #[test]
+    fn compile_program_multi_coerces_single_call_multi_return_elements() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type Block interface {
+	Size() int
+}
+
+type impl struct{}
+
+func (i *impl) Size() int {
+	return 16
+}
+
+func makeBlock() (*impl, error) {
+	return &impl{}, nil
+}
+
+func newBlock() (Block, error) {
+	return makeBlock()
+}
+
+func main() {
+	_, _ = newBlock()
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(
+            main_rs.contains("let (__gors_multi_0, __gors_multi_1) = makeBlock();"),
+            "{main_rs}"
+        );
+        assert!(
+            main_rs.contains("Box::new(__gors_multi_0) as Box<dyn Block>"),
+            "{main_rs}"
+        );
+        assert!(!main_rs.contains("Box::new(makeBlock())"), "{main_rs}");
+        assert!(!main_rs.contains("Box::new(__gors_multi_1)"), "{main_rs}");
     }
 
     #[test]
@@ -34480,15 +35044,14 @@ func main() {
         let output = compile_temp_program(tmp.path());
         let main_rs = output.files.get("main.rs").unwrap();
         assert!(
-            main_rs.contains("fn Fill(&mut self, mut p: &mut [u8])")
-                || main_rs.contains("fn Fill (& mut self , mut p : & mut [u8])"),
+            main_rs.contains("mut p: &mut [u8]") || main_rs.contains("mut p : & mut [u8]"),
             "{main_rs}"
         );
         assert!(
-            main_rs.contains(".Fill(&mut *buf)") || main_rs.contains(". Fill (& mut * buf)"),
+            main_rs.contains("&mut *buf") || main_rs.contains("& mut * buf"),
             "{main_rs}"
         );
-        assert!(!main_rs.contains(".Fill(buf.clone())"), "{main_rs}");
+        assert!(!main_rs.contains("buf.clone()"), "{main_rs}");
     }
 
     #[test]
