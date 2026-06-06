@@ -464,8 +464,7 @@ impl GoType {
                     if !matches!(field_type, GoType::Unknown) {
                         return field_type;
                     }
-                    let method_type =
-                        method_func_from_receiver_type(base_type.clone(), sel.sel.name, env);
+                    let method_type = method_func_from_receiver_type(base_type, sel.sel.name, env);
                     if !matches!(method_type, GoType::Unknown) {
                         return method_type;
                     }

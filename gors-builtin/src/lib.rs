@@ -247,7 +247,7 @@ pub fn clone_any(value: &dyn Any) -> Box<dyn Any> {
 
 pub fn clone_any_ref(value: &dyn Any) -> Box<dyn Any> {
     if let Some(value) = comparable_any(value) {
-        return value.clone_raw_any();
+        return value.clone_comparable_any();
     }
     if let Some(v) = value.downcast_ref::<Box<dyn Any>>() {
         return clone_any_ref(v.as_ref());
@@ -285,6 +285,7 @@ pub fn clone_any_ref(value: &dyn Any) -> Box<dyn Any> {
     clone_if!(f64);
     clone_if!(Vec<u8>);
     clone_if!(Vec<std::string::String>);
+    clone_if!(Box<dyn error>);
 
     Box::new(())
 }
@@ -329,6 +330,7 @@ pub fn clone_any_send_ref(value: &dyn Any) -> Box<dyn Any + Send> {
     clone_if!(f64);
     clone_if!(Vec<u8>);
     clone_if!(Vec<std::string::String>);
+    clone_if!(Box<dyn error>);
 
     Box::new(())
 }
@@ -373,6 +375,7 @@ pub fn clone_any_send_sync(value: &dyn Any) -> Box<dyn Any + Send + Sync> {
     clone_if!(f64);
     clone_if!(Vec<u8>);
     clone_if!(Vec<std::string::String>);
+    clone_if!(Box<dyn error>);
 
     Box::new(())
 }
@@ -1797,8 +1800,10 @@ struct ChanInner<T> {
     closed: bool,
 }
 
+type ChanState<T> = Arc<(Mutex<ChanInner<T>>, Condvar, Condvar)>;
+
 pub struct Chan<T> {
-    inner: Option<Arc<(Mutex<ChanInner<T>>, Condvar, Condvar)>>,
+    inner: Option<ChanState<T>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1937,9 +1942,7 @@ impl<T> Chan<T> {
     where
         T: Default,
     {
-        let Some(inner) = self.inner.as_ref() else {
-            return None;
-        };
+        let inner = self.inner.as_ref()?;
         let (lock, _, tx_cv) = &**inner;
         let mut inner = lock_chan(lock);
         if let Some(val) = inner.buf.pop_front() {
@@ -2593,8 +2596,20 @@ mod tests {
         assert!(!any_eq(left.as_ref(), other.as_ref()));
 
         let cloned = clone_any(left.as_ref());
-        assert!(cloned.downcast_ref::<NamedString>().is_some());
+        assert!(any_downcast_ref::<NamedString>(cloned.as_ref()).is_some());
         assert!(any_eq(cloned.as_ref(), same.as_ref()));
+    }
+
+    #[test]
+    fn comparable_any_clones_preserve_reflect_comparability() {
+        let original = box_any_comparable(NamedString("name".to_string()));
+        let cloned = clone_any(original.as_ref());
+
+        assert!(reflect_type_comparable(cloned.as_ref()));
+        assert_eq!(
+            any_downcast_ref::<NamedString>(cloned.as_ref()).map(|value| value.0.as_str()),
+            Some("name")
+        );
     }
 
     #[test]

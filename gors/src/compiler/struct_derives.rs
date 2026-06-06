@@ -61,7 +61,6 @@ impl FieldFacts {
 
     pub(super) fn collect(
         field_type: &ast::Expr,
-        struct_ident: &syn::Ident,
         field_go_type: &typeinfer::GoType,
         field_is_error: bool,
         has_interface_trait_path: bool,
@@ -81,7 +80,7 @@ impl FieldFacts {
             || (!field_is_error && has_interface_trait_path)
             || contains_nonclone_named;
         let cannot_derive_partial_eq =
-            field_is_error || !super::expr_supports_derived_partial_eq(field_type, struct_ident);
+            field_is_error || !super::expr_supports_derived_partial_eq(field_type);
         let cannot_default = false;
         let can_derive_copy =
             !contains_func && !has_interface_trait_path && super::go_type_is_copy(field_go_type);
@@ -190,11 +189,9 @@ mod tests {
             name: "Context",
             obj: None,
         });
-        let struct_ident = syn::Ident::new("cancelCtx", proc_macro2::Span::mixed_site());
 
         let facts = FieldFacts::collect(
             &field_type,
-            &struct_ident,
             &typeinfer::GoType::Named("Context".to_string()),
             false,
             true,
@@ -214,11 +211,9 @@ mod tests {
             name: "cancelCtx",
             obj: None,
         });
-        let struct_ident = syn::Ident::new("timerCtx", proc_macro2::Span::mixed_site());
 
         let facts = FieldFacts::collect(
             &field_type,
-            &struct_ident,
             &typeinfer::GoType::Named("cancelCtx".to_string()),
             false,
             false,

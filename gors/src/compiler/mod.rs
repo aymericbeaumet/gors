@@ -311,14 +311,13 @@ fn go_type_implements_error(go_type: &typeinfer::GoType) -> bool {
                 return true;
             }
         }
-        typeinfer::GoType::Pointer(inner) => match inner.as_ref() {
-            typeinfer::GoType::Named(name) => {
-                if TYPE_ENV.with(|env| type_has_error_method(&env.borrow(), name, true)) {
-                    return true;
-                }
+        typeinfer::GoType::Pointer(inner) => {
+            if let typeinfer::GoType::Named(name) = inner.as_ref()
+                && TYPE_ENV.with(|env| type_has_error_method(&env.borrow(), name, true))
+            {
+                return true;
             }
-            _ => {}
-        },
+        }
         _ => {}
     }
     match resolved_go_type(go_type) {
@@ -4743,32 +4742,30 @@ fn go_type_is_any(go_type: &typeinfer::GoType) -> bool {
     matches!(resolved_go_type(go_type), typeinfer::GoType::Any)
 }
 
-fn expr_supports_derived_partial_eq(expr: &ast::Expr, self_ident: &syn::Ident) -> bool {
+fn expr_supports_derived_partial_eq(expr: &ast::Expr) -> bool {
     match expr {
-        ast::Expr::ParenExpr(paren) => expr_supports_derived_partial_eq(&paren.x, self_ident),
+        ast::Expr::ParenExpr(paren) => expr_supports_derived_partial_eq(&paren.x),
         ast::Expr::ArrayType(array) => {
-            array.len.is_some() && expr_supports_derived_partial_eq(&array.elt, self_ident)
+            array.len.is_some() && expr_supports_derived_partial_eq(&array.elt)
         }
         ast::Expr::MapType(_) | ast::Expr::FuncType(_) | ast::Expr::InterfaceType(_) => false,
         ast::Expr::StructType(struct_type) => struct_type.fields.as_ref().is_none_or(|fields| {
             fields.list.iter().all(|field| {
-                field.type_.as_ref().is_some_and(|field_type| {
-                    expr_supports_derived_partial_eq(field_type, self_ident)
-                })
+                field
+                    .type_
+                    .as_ref()
+                    .is_some_and(expr_supports_derived_partial_eq)
             })
         }),
         ast::Expr::StarExpr(_) => true,
         ast::Expr::ChanType(_) => true,
         ast::Expr::IndexExpr(index) => {
-            expr_supports_derived_partial_eq(&index.x, self_ident)
-                && expr_supports_derived_partial_eq(&index.index, self_ident)
+            expr_supports_derived_partial_eq(&index.x)
+                && expr_supports_derived_partial_eq(&index.index)
         }
         ast::Expr::IndexListExpr(index) => {
-            expr_supports_derived_partial_eq(&index.x, self_ident)
-                && index
-                    .indices
-                    .iter()
-                    .all(|arg| expr_supports_derived_partial_eq(arg, self_ident))
+            expr_supports_derived_partial_eq(&index.x)
+                && index.indices.iter().all(expr_supports_derived_partial_eq)
         }
         ast::Expr::Ident(_) | ast::Expr::SelectorExpr(_) => TYPE_ENV.with(|env| {
             go_type_supports_derived_partial_eq(
@@ -5565,7 +5562,7 @@ fn preseed_borrowed_interface_structs(decls: &[ast::Decl]) {
     for _ in 0..type_specs.len() {
         let mut changed = false;
         for (name, type_spec) in &type_specs {
-            let name = rust_safe_ident_name(*name);
+            let name = rust_safe_ident_name(name);
             if type_decl_facts::has_borrowed_interface_struct(&name) {
                 continue;
             }
@@ -5709,7 +5706,6 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                     };
                     let field_derive_facts = struct_derives::FieldFacts::collect(
                         &field_type,
-                        &ident,
                         &field_go_type,
                         field_is_error,
                         interface_trait_path.is_some(),
@@ -7638,11 +7634,11 @@ fn compile_method(
         )
     } else if is_slice_receiver || has_borrowed_interface_field {
         (syn::parse_quote! { &mut self }, false)
-    } else if value_receiver_needs_cell {
-        (syn::parse_quote! { mut self }, false)
-    } else if func_decl.body.as_ref().is_some_and(|body| {
-        value_receiver_body_mutates_receiver(body, recv_source_name, &type_name)
-    }) {
+    } else if value_receiver_needs_cell
+        || func_decl.body.as_ref().is_some_and(|body| {
+            value_receiver_body_mutates_receiver(body, recv_source_name, &type_name)
+        })
+    {
         (syn::parse_quote! { mut self }, false)
     } else {
         (syn::parse_quote! { &self }, true)
@@ -9706,7 +9702,6 @@ fn compile_anonymous_struct_type_items(
             };
             let field_derive_facts = struct_derives::FieldFacts::collect(
                 &field_type,
-                ident,
                 &field_go_type,
                 field_is_error,
                 interface_trait_path.is_some(),
@@ -10245,8 +10240,7 @@ fn compile_func_lit_with_capture_mode(func_lit: ast::FuncLit, move_capture: bool
         .into_iter()
         .map(|(_, binding)| binding)
         .collect::<Vec<_>>();
-    let _move_interface_capture_names =
-        SharedCaptureNamesGuard::extend(interface_capture_names.clone());
+    let _move_interface_capture_names = SharedCaptureNamesGuard::extend(interface_capture_names);
     let mut params = syn::punctuated::Punctuated::<syn::Pat, Token![,]>::new();
     let mut param_types = Vec::new();
 
@@ -20841,6 +20835,11 @@ fn type_assert_any_option_expr(source: syn::Expr, source_type: &typeinfer::GoTyp
 }
 
 fn type_assert_source_is_borrowable(expr: &ast::Expr, source_type: &typeinfer::GoType) -> bool {
+    if matches!(resolved_go_type(source_type), typeinfer::GoType::Any)
+        && !matches!(ast_unparen_expr_ref(expr), ast::Expr::Ident(_))
+    {
+        return false;
+    }
     if matches!(expr, ast::Expr::IndexExpr(_))
         && matches!(
             resolved_go_type(source_type),
@@ -21270,10 +21269,23 @@ fn type_assert_interface_expr(
     let trait_path = interface_trait_path_from_name(interface_name);
     let implementors = interface_assertion_implementors(interface_name, Some(source_type));
     let fallback = interface_assertion_fallback(&trait_path, interface_name, comma_ok);
-    if implementors.is_empty() {
-        return fallback;
-    }
-    let mut result = fallback.clone();
+    let mut result: syn::Expr = if comma_ok {
+        syn::parse_quote! {
+            if let Some(__gors_value) = crate::builtin::any_downcast_ref::<Box<dyn #trait_path>>(__gors_any) {
+                (__gors_value.clone(), true)
+            } else {
+                #fallback
+            }
+        }
+    } else {
+        syn::parse_quote! {
+            if let Some(__gors_value) = crate::builtin::any_downcast_ref::<Box<dyn #trait_path>>(__gors_any) {
+                __gors_value.clone()
+            } else {
+                #fallback
+            }
+        }
+    };
     for implementor in implementors.iter().rev() {
         result = if comma_ok {
             syn::parse_quote! {
@@ -29404,6 +29416,72 @@ func main() {
     }
 
     #[test]
+    fn compile_program_multi_type_asserts_boxed_error_payloads() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type errString string
+
+func (e errString) Error() string { return string(e) }
+
+func store(err error) any {
+	return err
+}
+
+func load(value any) error {
+	return value.(error)
+}
+
+func main() {
+	_ = load(store(errString("boom"))).Error()
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(
+            main_rs.contains("any_downcast_ref::<")
+                && main_rs.contains("Box<dyn crate::builtin::error>"),
+            "{main_rs}"
+        );
+    }
+
+    #[test]
+    fn compile_program_multi_binds_any_selector_before_type_assertion() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type holder struct {
+	value any
+}
+
+func read(h *holder) (int, bool) {
+	v, ok := h.value.(int)
+	return v, ok
+}
+
+func main() {
+	_, _ = read(&holder{value: 1})
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(main_rs.contains("let __gors_any_source ="), "{main_rs}");
+        assert!(main_rs.contains("crate::builtin::clone_any"), "{main_rs}");
+    }
+
+    #[test]
     fn compile_program_multi_boxes_variadic_error_as_string() {
         let tmp = tempfile::tempdir().unwrap();
         write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
@@ -35435,6 +35513,46 @@ func main() {
         assert!(output.contains("pub fn Used"), "{output}");
         assert!(!output.contains("impl B"), "{output}");
         assert!(!output.contains("pub fn String (& mut self)"), "{output}");
+    }
+
+    #[test]
+    fn reachable_items_do_not_keep_top_level_functions_for_method_roots() {
+        let file: syn::File = rust! {
+            pub trait RawConn {
+                fn Write(&mut self);
+            }
+
+            pub fn Write() {}
+
+            pub fn Read() {}
+        };
+        let roots = std::collections::HashSet::from([
+            "RawConn".to_string(),
+            super::item_reachability::impl_method_reachability_name("RawConn", "Write"),
+        ]);
+        let module_names = std::collections::HashSet::new();
+
+        let reachable = super::reachable_stdlib_items(&file.items, &roots, &module_names);
+        let item_names = super::item_reachability_names(&file.items);
+        let top_level_names = super::top_level_item_names(&file.items);
+        let kept = file
+            .items
+            .iter()
+            .filter_map(|item| {
+                super::reachable_item_for_names(
+                    item,
+                    &reachable.names,
+                    &item_names,
+                    &top_level_names,
+                    &roots,
+                )
+            })
+            .collect::<Vec<_>>();
+        let output = quote::quote!(#(#kept)*).to_string();
+
+        assert!(output.contains("trait RawConn"), "{output}");
+        assert!(!output.contains("pub fn Write"), "{output}");
+        assert!(!output.contains("pub fn Read"), "{output}");
     }
 
     #[test]

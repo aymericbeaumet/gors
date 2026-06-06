@@ -66,17 +66,15 @@ pub(super) fn pointer_items(
     methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
     pointer_methods: Option<&BTreeSet<String>>,
 ) -> Vec<syn::ImplItem> {
-    items_for_target(
-        PointerImplTarget::GorsPtr,
-        true,
-        true,
+    let context = PointerImplContext {
         trait_name,
         struct_name,
         trait_path,
         method_names,
         methods,
         pointer_methods,
-    )
+    };
+    items_for_target(PointerImplTarget::GorsPtr, true, true, &context)
 }
 
 pub(super) fn non_static_pointer_items(
@@ -87,17 +85,15 @@ pub(super) fn non_static_pointer_items(
     methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
     pointer_methods: Option<&BTreeSet<String>>,
 ) -> Vec<syn::ImplItem> {
-    items_for_target(
-        PointerImplTarget::GorsPtr,
-        false,
-        false,
+    let context = PointerImplContext {
         trait_name,
         struct_name,
         trait_path,
         method_names,
         methods,
         pointer_methods,
-    )
+    };
+    items_for_target(PointerImplTarget::GorsPtr, false, false, &context)
 }
 
 pub(super) fn borrowed_pointer_items(
@@ -108,17 +104,15 @@ pub(super) fn borrowed_pointer_items(
     methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
     pointer_methods: Option<&BTreeSet<String>>,
 ) -> Vec<syn::ImplItem> {
-    items_for_target(
-        PointerImplTarget::BorrowedMut,
-        false,
-        false,
+    let context = PointerImplContext {
         trait_name,
         struct_name,
         trait_path,
         method_names,
         methods,
         pointer_methods,
-    )
+    };
+    items_for_target(PointerImplTarget::BorrowedMut, false, false, &context)
 }
 
 pub(super) fn borrowed_pointer_can_delegate(
@@ -186,52 +180,59 @@ pub(super) fn concrete_items(
     impl_items
 }
 
+struct PointerImplContext<'a> {
+    trait_name: &'a str,
+    struct_name: &'a str,
+    trait_path: &'a syn::Path,
+    method_names: &'a [String],
+    methods: &'a BTreeMap<String, Vec<syn::ImplItemFn>>,
+    pointer_methods: Option<&'a BTreeSet<String>>,
+}
+
 fn items_for_target(
     target: PointerImplTarget,
     exposes_any: bool,
     can_clone_self: bool,
-    trait_name: &str,
-    struct_name: &str,
-    trait_path: &syn::Path,
-    method_names: &[String],
-    methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
-    pointer_methods: Option<&BTreeSet<String>>,
+    context: &PointerImplContext<'_>,
 ) -> Vec<syn::ImplItem> {
     let interface_key_item = match target {
         PointerImplTarget::GorsPtr => interface_hooks::pointer_interface_key_item(),
         PointerImplTarget::BorrowedMut => {
-            interface_hooks::borrowed_pointer_interface_key_item(struct_name)
+            interface_hooks::borrowed_pointer_interface_key_item(context.struct_name)
         }
     };
     let mut impl_items = vec![pointer_as_any_item(exposes_any), interface_key_item];
-    if trait_name != "error" {
+    if context.trait_name != "error" {
         impl_items.push(interface_hooks::clone_box_impl_item(
-            trait_path,
+            context.trait_path,
             can_clone_self,
         ));
     }
     let mut emitted_method_names = BTreeSet::new();
-    if let Some(method_list) = methods.get(struct_name) {
+    if let Some(method_list) = context.methods.get(context.struct_name) {
         for method in method_list {
             let method_name = method.sig.ident.to_string();
-            if method_names.contains(&method_name) {
+            if context.method_names.contains(&method_name) {
                 impl_items.push(target.method_item(
-                    trait_name,
-                    struct_name,
+                    context.trait_name,
+                    context.struct_name,
                     method,
-                    pointer_methods,
+                    context.pointer_methods,
                 ));
                 emitted_method_names.insert(method_name);
             }
         }
     }
-    for method_name in method_names {
+    for method_name in context.method_names {
         if emitted_method_names.contains(method_name) {
             continue;
         }
-        if let Some(item) =
-            target.promoted_method_item(trait_name, struct_name, method_name, methods)
-        {
+        if let Some(item) = target.promoted_method_item(
+            context.trait_name,
+            context.struct_name,
+            method_name,
+            context.methods,
+        ) {
             impl_items.push(item);
         }
     }
@@ -623,7 +624,7 @@ impl PointerImplTarget {
             Span::mixed_site(),
         );
         let arg_idents = signature_arg_idents(&method.sig);
-        let mut sig = method.sig.clone();
+        let mut sig = method.sig;
         let immutable_error_method = trait_name == "error" && method_ident == "Error";
         set_interface_receiver(&mut sig, immutable_error_method);
         let call_receiver = self.promoted_call_receiver_expr(&promoted.steps, call_receiver_kind);

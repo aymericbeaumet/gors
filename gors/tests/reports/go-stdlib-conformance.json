@@ -13,8 +13,8 @@
     "groupCount": 344,
     "passingGroupCount": 4,
     "caseCount": 12418,
-    "passingCaseCount": 258,
-    "unsupportedCaseCount": 12160,
+    "passingCaseCount": 260,
+    "unsupportedCaseCount": 12158,
     "fixtureCount": 83
   },
   "groups": [
@@ -4069,8 +4069,8 @@
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 17,
-        "passingCaseCount": 6,
-        "unsupportedCaseCount": 11,
+        "passingCaseCount": 8,
+        "unsupportedCaseCount": 9,
         "fixtureCount": 0
       },
       "cases": [
@@ -4108,9 +4108,11 @@
           "title": "CancelFunc",
           "subtitle": "type",
           "kind": "type",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: CancelFunc behavior depends on stored function values mutating shared cancelCtx state and idempotent cancellation."
+          "status": "passing",
+          "fixtures": [
+            "context"
+          ],
+          "reason": ""
         },
         {
           "id": "context::Canceled",
@@ -4170,9 +4172,11 @@
           "title": "WithCancel",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: WithCancel depends on cancelCtx propagation, channel close semantics, child maps keyed by interfaces, and returned CancelFunc closures."
+          "status": "passing",
+          "fixtures": [
+            "context"
+          ],
+          "reason": ""
         },
         {
           "id": "context::WithCancelCause",

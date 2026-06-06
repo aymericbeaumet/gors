@@ -1291,7 +1291,7 @@ fn type_switch_case_interface_methods_from_stmt<'a>(
                             continue;
                         };
                         if env.named_type_implements_methods(
-                            &case_type,
+                            case_type,
                             methods,
                             include_pointer_methods,
                         ) {
@@ -2264,8 +2264,10 @@ mod tests {
     }
 
     #[test]
-    fn scan_type_env_preserves_syscall_errno_constant_type() {
-        let (package_name, env) = scan_type_env("syscall").expect("syscall type env");
+    fn scan_type_env_preserves_syscall_errno_constant_type()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (package_name, env) =
+            scan_type_env("syscall").ok_or_else(|| std::io::Error::other("syscall type env"))?;
 
         assert_eq!(package_name, "syscall");
         assert_eq!(
@@ -2274,6 +2276,7 @@ mod tests {
                 "Errno".to_string()
             ))
         );
+        Ok(())
     }
 
     #[test]

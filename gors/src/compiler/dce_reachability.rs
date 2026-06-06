@@ -99,10 +99,9 @@ mod tests {
 
         assert!(reachable.names.contains("copyVal"), "{:?}", reachable.names);
         assert!(
-            reachable
-                .keep
-                .iter()
-                .any(|index| item_named(&items[*index], "copyVal")),
+            reachable.keep.iter().any(|index| items
+                .get(*index)
+                .is_some_and(|item| item_named(item, "copyVal"))),
             "reachable names: {:?}",
             reachable.names
         );

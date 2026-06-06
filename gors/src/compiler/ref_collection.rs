@@ -535,23 +535,21 @@ pub(super) fn collect_refs_from_item(
                     let entry = self.external_refs.entry(module.to_string()).or_default();
                     entry.insert(symbol.to_string());
                     if let Some(assoc) = assoc {
-                        entry.insert(assoc.to_string());
+                        entry.insert(impl_method_reachability_name(symbol, assoc));
                     }
                 }
                 (Some(module), Some(symbol), assoc, _) if self.module_names.contains(module) => {
                     let entry = self.external_refs.entry(module.to_string()).or_default();
                     entry.insert(symbol.to_string());
                     if let Some(assoc) = assoc {
-                        entry.insert(assoc.to_string());
+                        entry.insert(impl_method_reachability_name(symbol, assoc));
                     }
                 }
                 (Some(local), Some(symbol), assoc, _) if self.item_names.contains(local) => {
                     self.local_names.insert(local.to_string());
-                    self.local_names.insert(symbol.to_string());
                     self.local_names
                         .insert(impl_method_reachability_name(local, symbol));
                     if let Some(assoc) = assoc {
-                        self.local_names.insert(assoc.to_string());
                         self.local_names
                             .insert(impl_method_reachability_name(symbol, assoc));
                     }
@@ -955,6 +953,84 @@ mod tests {
     }
 
     #[test]
+    fn collect_refs_qualifies_local_associated_path_members() {
+        let module_names = ReachabilityNameSet::new();
+        let item_names = ReachabilityNameSet::from(["bucket".to_string(), "Read".to_string()]);
+        let top_level_names = item_names.clone();
+        let top_level_types = ReceiverTypeMap::new();
+        let top_level_field_types = ReceiverFieldTypeMap::new();
+        let top_level_element_types = ReceiverTypeMap::new();
+        let top_level_return_types = ReceiverTypeMap::new();
+        let top_level_tuple_return_types = ReceiverTupleReturnMap::new();
+        let context = RefCollectionContext {
+            module_names: &module_names,
+            item_names: &item_names,
+            top_level_names: &top_level_names,
+            top_level_types: &top_level_types,
+            top_level_field_types: &top_level_field_types,
+            top_level_element_types: &top_level_element_types,
+            top_level_return_types: &top_level_return_types,
+            top_level_tuple_return_types: &top_level_tuple_return_types,
+        };
+        let mut item: syn::Item = syn::parse_quote! {
+            fn update(mut receiver: bucket) {
+                bucket::Read(&mut receiver);
+            }
+        };
+
+        let (names, external_refs) = collect_refs_from_item(&mut item, &context);
+
+        assert!(external_refs.is_empty(), "{external_refs:?}");
+        assert!(names.contains("bucket"), "{names:?}");
+        assert!(
+            names.contains(&impl_method_reachability_name("bucket", "Read")),
+            "{names:?}"
+        );
+        assert!(!names.contains("Read"), "{names:?}");
+    }
+
+    #[test]
+    fn collect_refs_qualifies_external_associated_path_members()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let module_names = ReachabilityNameSet::from(["syscall".to_string()]);
+        let item_names = ReachabilityNameSet::new();
+        let top_level_names = item_names.clone();
+        let top_level_types = ReceiverTypeMap::new();
+        let top_level_field_types = ReceiverFieldTypeMap::new();
+        let top_level_element_types = ReceiverTypeMap::new();
+        let top_level_return_types = ReceiverTypeMap::new();
+        let top_level_tuple_return_types = ReceiverTupleReturnMap::new();
+        let context = RefCollectionContext {
+            module_names: &module_names,
+            item_names: &item_names,
+            top_level_names: &top_level_names,
+            top_level_types: &top_level_types,
+            top_level_field_types: &top_level_field_types,
+            top_level_element_types: &top_level_element_types,
+            top_level_return_types: &top_level_return_types,
+            top_level_tuple_return_types: &top_level_tuple_return_types,
+        };
+        let mut item: syn::Item = syn::parse_quote! {
+            fn call_raw(mut value: Box<dyn crate::syscall::RawConn>) {
+                crate::syscall::RawConn::Write(&mut *value, || true);
+            }
+        };
+
+        let (_names, external_refs) = collect_refs_from_item(&mut item, &context);
+        let syscall_refs = external_refs
+            .get("syscall")
+            .ok_or_else(|| std::io::Error::other(format!("syscall refs: {external_refs:?}")))?;
+
+        assert!(syscall_refs.contains("RawConn"), "{external_refs:?}");
+        assert!(
+            syscall_refs.contains(&impl_method_reachability_name("RawConn", "Write")),
+            "{external_refs:?}"
+        );
+        assert!(!syscall_refs.contains("Write"), "{external_refs:?}");
+        Ok(())
+    }
+
+    #[test]
     fn collect_refs_follows_external_trait_impl_and_object_bounds() {
         let module_names = ReachabilityNameSet::from(["runtime".to_string()]);
         let item_names = ReachabilityNameSet::from(["Kind".to_string()]);
@@ -1077,7 +1153,8 @@ mod tests {
     }
 
     #[test]
-    fn collect_refs_follows_tuple_return_types_from_impl_methods() {
+    fn collect_refs_follows_tuple_return_types_from_impl_methods()
+    -> Result<(), Box<dyn std::error::Error>> {
         let module_names = ReachabilityNameSet::new();
         let file: syn::File = syn::parse_quote! {
             pub struct Time;
@@ -1154,7 +1231,7 @@ mod tests {
                 if matches!(super::named_self_type(&item_impl.self_ty).as_deref(), Some("Time")))
             })
             .cloned()
-            .expect("Time impl");
+            .ok_or_else(|| std::io::Error::other("Time impl"))?;
 
         let (names, external_refs) = collect_refs_from_item(&mut item, &context);
 
@@ -1171,6 +1248,7 @@ mod tests {
             names.contains(&impl_method_reachability_name("absDays", "date")),
             "{names:?}"
         );
+        Ok(())
     }
 
     #[test]
