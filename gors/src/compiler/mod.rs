@@ -1226,6 +1226,64 @@ fn ensure_type_param_bound(param: &mut syn::TypeParam, bound: syn::TypeParamBoun
     param.bounds.push(bound);
 }
 
+fn type_param_names_from_generics(generics: &syn::Generics) -> HashSet<String> {
+    generics
+        .type_params()
+        .map(|param| param.ident.to_string())
+        .collect()
+}
+
+fn push_generic_field_bound_type(
+    bound_types: &mut Vec<syn::Type>,
+    field_type: &syn::Type,
+    type_param_names: &HashSet<String>,
+) {
+    if type_param_names.is_empty() || !syn_inspect::type_mentions_name(field_type, type_param_names)
+    {
+        return;
+    }
+    let field_type_key = quote::quote! { #field_type }.to_string();
+    if bound_types
+        .iter()
+        .any(|existing| quote::quote! { #existing }.to_string() == field_type_key)
+    {
+        return;
+    }
+    bound_types.push(field_type.clone());
+}
+
+fn generics_with_field_type_bound(
+    generics: &syn::Generics,
+    field_types: &[syn::Type],
+    bound: syn::TypeParamBound,
+) -> syn::Generics {
+    if field_types.is_empty() {
+        return generics.clone();
+    }
+
+    let mut generics = generics.clone();
+    let mut existing = generics
+        .where_clause
+        .as_ref()
+        .map(|where_clause| {
+            where_clause
+                .predicates
+                .iter()
+                .map(|predicate| quote::quote! { #predicate }.to_string())
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default();
+    let where_clause = generics.make_where_clause();
+    for field_type in field_types {
+        let predicate: syn::WherePredicate = syn::parse_quote! { #field_type: #bound };
+        let key = quote::quote! { #predicate }.to_string();
+        if existing.insert(key) {
+            where_clause.predicates.push(predicate);
+        }
+    }
+    generics
+}
+
 fn method_impl_generics(
     type_args: &[syn::Ident],
     type_generics: Option<&syn::Generics>,
@@ -5491,6 +5549,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
     let vis: syn::Visibility = syn::parse_quote! { pub };
     let ident: syn::Ident = name.into();
     let mut generics = compile_go_type_params_for_type_decl(ts.type_params);
+    let type_param_names = type_param_names_from_generics(&generics);
     let is_alias_decl = ts.assign.is_some();
 
     if is_alias_decl && !matches!(ts.type_, ast::Expr::InterfaceType(_)) {
@@ -5508,6 +5567,8 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             let mut has_borrowed_interface_field = false;
             let mut default_fields: Vec<(syn::Ident, syn::Expr)> = vec![];
             let mut clone_fields: Vec<(syn::Ident, syn::Expr)> = vec![];
+            let mut generic_default_bound_types: Vec<syn::Type> = vec![];
+            let mut generic_clone_bound_types: Vec<syn::Type> = vec![];
             let mut derive_state = struct_derives::State::new();
             let mut blank_field_index = 0usize;
             if let Some(field_list) = struct_type.fields {
@@ -5558,6 +5619,18 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                             } else {
                                 field_name.into()
                             };
+                            push_generic_field_bound_type(
+                                &mut generic_default_bound_types,
+                                &rust_type,
+                                &type_param_names,
+                            );
+                            if field_derive_facts.uses_field_clone() {
+                                push_generic_field_bound_type(
+                                    &mut generic_clone_bound_types,
+                                    &rust_type,
+                                    &type_param_names,
+                                );
+                            }
                             default_fields.push((field_ident.clone(), field_default.clone()));
                             clone_fields.push((
                                 field_ident.clone(),
@@ -5609,6 +5682,18 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                                 rust_type.clone(),
                                 borrowed_interface_trait_path.clone(),
                             ));
+                            push_generic_field_bound_type(
+                                &mut generic_default_bound_types,
+                                &rust_type,
+                                &type_param_names,
+                            );
+                            if field_derive_facts.uses_field_clone() {
+                                push_generic_field_bound_type(
+                                    &mut generic_clone_bound_types,
+                                    &rust_type,
+                                    &type_param_names,
+                                );
+                            }
                             default_fields.push((
                                 field_ident.clone(),
                                 struct_field_default_expr_with_storage(
@@ -5656,7 +5741,8 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
 
             let generics_for_impl = generics.clone();
             let (impl_generics, ty_generics, where_clause) = generics_for_impl.split_for_impl();
-            let mut attrs = if derive_state.cannot_derive_clone {
+            let has_type_params = !type_param_names.is_empty();
+            let mut attrs = if has_type_params || derive_state.cannot_derive_clone {
                 vec![]
             } else if derive_state.cannot_default {
                 if derive_state.cannot_derive_partial_eq {
@@ -5679,8 +5765,15 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             } else {
                 vec![syn::parse_quote! { #[derive(Clone, Default, PartialEq)] }]
             };
-            let can_clone = !(derive_state.cannot_derive_clone
-                && (!derive_state.needs_manual_clone || derive_state.cannot_manual_clone));
+            let needs_manual_clone_impl = !derive_state.cannot_manual_clone
+                && (derive_state.needs_manual_clone
+                    || (has_type_params && !derive_state.cannot_derive_clone));
+            let can_clone = if has_type_params {
+                needs_manual_clone_impl
+            } else {
+                !(derive_state.cannot_derive_clone
+                    && (!derive_state.needs_manual_clone || derive_state.cannot_manual_clone))
+            };
             type_decl_facts::record_struct_clone_derivability(ident.to_string(), can_clone);
             attrs.push(syn::parse_quote! { #[repr(C)] });
             let struct_item = syn::Item::Struct(syn::ItemStruct {
@@ -5688,7 +5781,7 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                 vis,
                 struct_token: <Token![struct]>::default(),
                 ident: ident.clone(),
-                generics,
+                generics: generics.clone(),
                 fields: syn::Fields::Named(syn::FieldsNamed {
                     brace_token: syn::token::Brace::default(),
                     named: fields,
@@ -5697,8 +5790,16 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             });
 
             let default_impl = if !derive_state.cannot_default
-                && (derive_state.needs_manual_default || derive_state.cannot_derive_clone)
+                && (derive_state.needs_manual_default
+                    || derive_state.cannot_derive_clone
+                    || has_type_params)
             {
+                let default_generics = generics_with_field_type_bound(
+                    &generics,
+                    &generic_default_bound_types,
+                    syn::parse_quote! { Default },
+                );
+                let (impl_generics, ty_generics, where_clause) = default_generics.split_for_impl();
                 let defaults = default_fields.iter().map(|(field_ident, default_expr)| {
                     quote::quote! { #field_ident: #default_expr }
                 });
@@ -5714,25 +5815,30 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
             } else {
                 None
             };
-            let manual_clone_impl =
-                (derive_state.needs_manual_clone && !derive_state.cannot_manual_clone).then(|| {
-                    let clones = clone_fields.iter().map(|(field_ident, clone_expr)| {
-                        quote::quote! { #field_ident: #clone_expr }
-                    });
-                    let mut item_impl: syn::ItemImpl = syn::parse_quote! {
-                        impl #impl_generics Clone for #ident #ty_generics #where_clause {
-                            fn clone(&self) -> Self {
-                                Self {
-                                    #(#clones),*
-                                }
+            let manual_clone_impl = needs_manual_clone_impl.then(|| {
+                let clone_generics = generics_with_field_type_bound(
+                    &generics,
+                    &generic_clone_bound_types,
+                    syn::parse_quote! { Clone },
+                );
+                let (impl_generics, ty_generics, where_clause) = clone_generics.split_for_impl();
+                let clones = clone_fields.iter().map(|(field_ident, clone_expr)| {
+                    quote::quote! { #field_ident: #clone_expr }
+                });
+                let mut item_impl: syn::ItemImpl = syn::parse_quote! {
+                    impl #impl_generics Clone for #ident #ty_generics #where_clause {
+                        fn clone(&self) -> Self {
+                            Self {
+                                #(#clones),*
                             }
                         }
-                    };
-                    if has_borrowed_interface_field {
-                        generated_attrs::preserve_for_dce(&mut item_impl.attrs);
                     }
-                    item_impl
-                });
+                };
+                if has_borrowed_interface_field {
+                    generated_attrs::preserve_for_dce(&mut item_impl.attrs);
+                }
+                item_impl
+            });
             let send_sync_impls = if derive_state.needs_manual_send_sync {
                 vec![
                     syn::parse_quote! {
@@ -37359,6 +37465,64 @@ func main() {}
             !output.contains("#[derive(Clone, Default, PartialEq)]\npub struct Holder"),
             "{output}"
         );
+    }
+
+    #[test]
+    fn generic_structs_emit_manual_impls_with_field_type_bounds() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type leaf[K comparable, V any] struct{}
+
+type pointer[T any] struct {
+	v uintptr
+}
+
+type holder[K comparable, V any] struct {
+	root pointer[leaf[K, V]]
+}
+
+type cell[T any] struct {
+	value T
+}
+
+func main() {
+	var _ holder[string, any]
+	var _ cell[string]
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+
+        assert!(main_rs.contains("pub struct leaf<K, V>"), "{main_rs}");
+        assert!(
+            !main_rs.contains(
+                "#[derive(Clone, Copy, Default, PartialEq)]\n#[repr(C)]\npub struct leaf<K, V>"
+            ),
+            "{main_rs}"
+        );
+        assert!(
+            main_rs.contains("impl<K, V> Default for leaf<K, V>"),
+            "{main_rs}"
+        );
+        assert!(
+            main_rs.contains("impl<K, V> Clone for leaf<K, V>"),
+            "{main_rs}"
+        );
+        assert!(
+            main_rs.contains("pointer<leaf<K, V>>: Default"),
+            "{main_rs}"
+        );
+        assert!(main_rs.contains("pointer<leaf<K, V>>: Clone"), "{main_rs}");
+        assert!(main_rs.contains("impl<T> Default for cell<T>"), "{main_rs}");
+        assert!(main_rs.contains("T: Default"), "{main_rs}");
+        assert!(main_rs.contains("impl<T> Clone for cell<T>"), "{main_rs}");
+        assert!(main_rs.contains("T: Clone"), "{main_rs}");
     }
 
     #[test]

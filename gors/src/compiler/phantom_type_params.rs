@@ -82,9 +82,31 @@ fn add_fields_for_file(file: &mut syn::File) {
 
     struct PhantomLiteralUpdater<'a> {
         structs: &'a BTreeMap<String, ()>,
+        current_self_struct: Option<String>,
+    }
+
+    fn impl_self_type_name(ty: &syn::Type) -> Option<String> {
+        let syn::Type::Path(path) = ty else {
+            return None;
+        };
+        if path.qself.is_some() {
+            return None;
+        }
+        path.path
+            .segments
+            .last()
+            .map(|segment| segment.ident.to_string())
     }
 
     impl VisitMut for PhantomLiteralUpdater<'_> {
+        fn visit_item_impl_mut(&mut self, item_impl: &mut syn::ItemImpl) {
+            let previous_self_struct = self.current_self_struct.clone();
+            self.current_self_struct = impl_self_type_name(&item_impl.self_ty)
+                .filter(|name| self.structs.contains_key(name));
+            syn::visit_mut::visit_item_impl_mut(self, item_impl);
+            self.current_self_struct = previous_self_struct;
+        }
+
         fn visit_expr_struct_mut(&mut self, expr_struct: &mut syn::ExprStruct) {
             syn::visit_mut::visit_expr_struct_mut(self, expr_struct);
             let Some(name) = expr_struct
@@ -95,7 +117,12 @@ fn add_fields_for_file(file: &mut syn::File) {
             else {
                 return;
             };
-            if !self.structs.contains_key(&name)
+            let target_name = if name == "Self" {
+                self.current_self_struct.as_deref().unwrap_or(&name)
+            } else {
+                &name
+            };
+            if !self.structs.contains_key(target_name)
                 || expr_struct.fields.iter().any(|field| {
                     matches!(&field.member, syn::Member::Named(ident) if ident == "_gors_phantom")
                 })
@@ -110,6 +137,7 @@ fn add_fields_for_file(file: &mut syn::File) {
 
     PhantomLiteralUpdater {
         structs: &phantom_fields,
+        current_self_struct: None,
     }
     .visit_file_mut(file);
 }
@@ -126,6 +154,14 @@ mod tests {
                 isEntry: bool,
             }
 
+            impl<K: Clone, V> Default for node<K, V> {
+                fn default() -> Self {
+                    Self {
+                        isEntry: false,
+                    }
+                }
+            }
+
             pub fn new<K: Clone, V>() -> node<K, V> {
                 node::<K, V> {
                     isEntry: true,
@@ -138,6 +174,11 @@ mod tests {
 
         assert!(tokens.contains("PhantomData < fn () -> (K , V) >"));
         assert!(tokens.contains("_gors_phantom : std :: marker :: PhantomData"));
+        assert!(
+            tokens.contains(
+                "Self { isEntry : false , _gors_phantom : std :: marker :: PhantomData }"
+            )
+        );
     }
 
     #[test]

@@ -55,6 +55,10 @@ pub(super) struct FieldFacts {
 }
 
 impl FieldFacts {
+    pub(super) fn uses_field_clone(self) -> bool {
+        !self.cannot_derive_clone
+    }
+
     pub(super) fn collect(
         field_type: &ast::Expr,
         struct_ident: &syn::Ident,
