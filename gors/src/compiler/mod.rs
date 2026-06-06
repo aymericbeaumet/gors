@@ -2809,6 +2809,31 @@ fn goroutine_capture_clones(func_lit: &ast::FuncLit) -> Vec<syn::Stmt> {
     })
 }
 
+fn move_closure_interface_captures(func_lit: &ast::FuncLit) -> Vec<(String, syn::Stmt)> {
+    TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        ir::func_lit_captures(func_lit, &env)
+            .into_iter()
+            .filter(|capture| !is_shared_capture_name(&capture.name))
+            .filter_map(|capture| {
+                let interface_name = go_type_interface_name(&capture.ty)?;
+                if interface_name == "error" {
+                    return None;
+                }
+                let ident = value_ident(&capture.name);
+                let trait_path = interface_trait_path_from_name(&interface_name);
+                let clone_box = clone_box_method_ident();
+                let stmt = syn::parse_quote! {
+                    let #ident = std::sync::Arc::new(std::sync::Mutex::new(
+                        #trait_path::#clone_box(&*(#ident)),
+                    ));
+                };
+                Some((capture.name, stmt))
+            })
+            .collect()
+    })
+}
+
 /// Compile a Go select statement into Rust.
 fn compile_select_stmt(select_stmt: ast::SelectStmt) -> Result<Vec<syn::Stmt>, CompilerError> {
     let select_label = synthetic_names::next_select_label();
@@ -10207,6 +10232,21 @@ fn compile_func_lit_with_capture_mode(func_lit: ast::FuncLit, move_capture: bool
     } else {
         Vec::new()
     };
+    let interface_captures = if move_capture {
+        move_closure_interface_captures(&func_lit)
+    } else {
+        Vec::new()
+    };
+    let interface_capture_names = interface_captures
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect::<Vec<_>>();
+    let interface_capture_bindings = interface_captures
+        .into_iter()
+        .map(|(_, binding)| binding)
+        .collect::<Vec<_>>();
+    let _move_interface_capture_names =
+        SharedCaptureNamesGuard::extend(interface_capture_names.clone());
     let mut params = syn::punctuated::Punctuated::<syn::Pat, Token![,]>::new();
     let mut param_types = Vec::new();
 
@@ -10292,9 +10332,11 @@ fn compile_func_lit_with_capture_mode(func_lit: ast::FuncLit, move_capture: bool
         }
     };
 
-    if move_capture && !shared_capture_clones.is_empty() {
+    if move_capture && (!shared_capture_clones.is_empty() || !interface_capture_bindings.is_empty())
+    {
         syn::parse_quote! {{
             #(#shared_capture_clones)*
+            #(#interface_capture_bindings)*
             #closure
         }}
     } else {
@@ -28901,6 +28943,62 @@ func main() {
         assert!(
             !main_rs.contains("removeChild(\n            &mut {")
                 && !main_rs.contains("removeChild (&mut {"),
+            "{main_rs}"
+        );
+    }
+
+    #[test]
+    fn compile_program_multi_boxes_interface_captures_for_stored_func_lits() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type Context interface {
+	Err() error
+}
+
+type canceler interface {
+	cancel(error, error)
+}
+
+type parent struct{}
+
+func (parent) Err() error { return nil }
+
+type child struct{}
+
+func (child) cancel(error, error) {}
+
+func keep(fn func()) {}
+
+func save(parent Context, child canceler) {
+	keep(func() {
+		child.cancel(parent.Err(), parent.Err())
+	})
+	_ = parent
+}
+
+func main() {
+	save(parent{}, child{})
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(
+            main_rs.contains("let parent__local = std::sync::Arc::new")
+                && (main_rs.contains("Context::__gors_clone_box(&*(parent__local))")
+                    || main_rs.contains("Context :: __gors_clone_box (& * (parent__local))")),
+            "{main_rs}"
+        );
+        assert!(
+            main_rs.contains("let child__local = std::sync::Arc::new")
+                && (main_rs.contains("canceler::__gors_clone_box(&*(child__local))")
+                    || main_rs.contains("canceler :: __gors_clone_box (& * (child__local))")),
             "{main_rs}"
         );
     }
