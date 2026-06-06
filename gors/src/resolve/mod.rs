@@ -1034,6 +1034,12 @@ fn reachable_package_names(
                         changed |= value_reachable.insert(reference);
                     }
                 }
+                changed |= expand_type_switch_case_interface_methods(
+                    &mut reachable,
+                    &top_names,
+                    decl,
+                    &env,
+                );
             }
         }
     }
@@ -1100,6 +1106,355 @@ fn expand_reachable_interface_methods(
         }
     }
     changed
+}
+
+fn expand_type_switch_case_interface_methods(
+    reachable: &mut HashSet<String>,
+    top_names: &HashSet<String>,
+    decl: &crate::ast::Decl<'_>,
+    env: &TypeEnv,
+) -> bool {
+    let mut changed = false;
+    type_switch_case_interface_methods_from_decl(decl, env, &mut |case_type, methods| {
+        changed |= reachable.insert(case_type.to_string());
+        for method in methods {
+            let method_root = format!("{case_type}::{method}");
+            if top_names.contains(&method_root) {
+                changed |= reachable.insert(method_root);
+            }
+        }
+    });
+    changed
+}
+
+fn type_switch_case_interface_methods_from_decl<'a>(
+    decl: &'a crate::ast::Decl<'a>,
+    env: &TypeEnv,
+    on_case: &mut impl FnMut(&str, &[String]),
+) {
+    match decl {
+        crate::ast::Decl::FuncDecl(func) => {
+            if let Some(body) = &func.body {
+                type_switch_case_interface_methods_from_block(body, env, on_case);
+            }
+        }
+        crate::ast::Decl::GenDecl(gen_decl) => {
+            type_switch_case_interface_methods_from_gen_decl(gen_decl, env, on_case);
+        }
+    }
+}
+
+fn type_switch_case_interface_methods_from_gen_decl<'a>(
+    gen_decl: &'a crate::ast::GenDecl<'a>,
+    env: &TypeEnv,
+    on_case: &mut impl FnMut(&str, &[String]),
+) {
+    for spec in &gen_decl.specs {
+        if let crate::ast::Spec::ValueSpec(value_spec) = spec {
+            for expr in value_spec.values.as_deref().unwrap_or(&[]) {
+                type_switch_case_interface_methods_from_expr(expr, env, on_case);
+            }
+        }
+    }
+}
+
+fn type_switch_case_interface_methods_from_block<'a>(
+    block: &'a crate::ast::BlockStmt<'a>,
+    env: &TypeEnv,
+    on_case: &mut impl FnMut(&str, &[String]),
+) {
+    for stmt in &block.list {
+        type_switch_case_interface_methods_from_stmt(stmt, env, on_case);
+    }
+}
+
+fn type_switch_case_interface_methods_from_stmt<'a>(
+    stmt: &'a crate::ast::Stmt<'a>,
+    env: &TypeEnv,
+    on_case: &mut impl FnMut(&str, &[String]),
+) {
+    match stmt {
+        crate::ast::Stmt::AssignStmt(assign) => {
+            for expr in assign.lhs.iter().chain(assign.rhs.iter()) {
+                type_switch_case_interface_methods_from_expr(expr, env, on_case);
+            }
+        }
+        crate::ast::Stmt::BlockStmt(block) => {
+            type_switch_case_interface_methods_from_block(block, env, on_case);
+        }
+        crate::ast::Stmt::BranchStmt(_) | crate::ast::Stmt::EmptyStmt(_) => {}
+        crate::ast::Stmt::CaseClause(case_clause) => {
+            for expr in case_clause.list.as_deref().unwrap_or(&[]) {
+                type_switch_case_interface_methods_from_expr(expr, env, on_case);
+            }
+            for stmt in &case_clause.body {
+                type_switch_case_interface_methods_from_stmt(stmt, env, on_case);
+            }
+        }
+        crate::ast::Stmt::CommClause(comm_clause) => {
+            if let Some(comm) = comm_clause.comm.as_deref() {
+                type_switch_case_interface_methods_from_stmt(comm, env, on_case);
+            }
+            for stmt in &comm_clause.body {
+                type_switch_case_interface_methods_from_stmt(stmt, env, on_case);
+            }
+        }
+        crate::ast::Stmt::DeclStmt(decl_stmt) => {
+            type_switch_case_interface_methods_from_gen_decl(&decl_stmt.decl, env, on_case);
+        }
+        crate::ast::Stmt::DeferStmt(defer_stmt) => {
+            type_switch_case_interface_methods_from_call(&defer_stmt.call, env, on_case);
+        }
+        crate::ast::Stmt::ExprStmt(expr_stmt) => {
+            type_switch_case_interface_methods_from_expr(&expr_stmt.x, env, on_case);
+        }
+        crate::ast::Stmt::ForStmt(for_stmt) => {
+            if let Some(init) = for_stmt.init.as_deref() {
+                type_switch_case_interface_methods_from_stmt(init, env, on_case);
+            }
+            if let Some(cond) = &for_stmt.cond {
+                type_switch_case_interface_methods_from_expr(cond, env, on_case);
+            }
+            if let Some(post) = for_stmt.post.as_deref() {
+                type_switch_case_interface_methods_from_stmt(post, env, on_case);
+            }
+            type_switch_case_interface_methods_from_block(&for_stmt.body, env, on_case);
+        }
+        crate::ast::Stmt::GoStmt(go_stmt) => {
+            type_switch_case_interface_methods_from_call(&go_stmt.call, env, on_case);
+        }
+        crate::ast::Stmt::IfStmt(if_stmt) => {
+            if let Some(init) = if_stmt.init.as_ref().as_ref() {
+                type_switch_case_interface_methods_from_stmt(init, env, on_case);
+            }
+            type_switch_case_interface_methods_from_expr(&if_stmt.cond, env, on_case);
+            type_switch_case_interface_methods_from_block(&if_stmt.body, env, on_case);
+            if let Some(else_stmt) = if_stmt.else_.as_ref().as_ref() {
+                type_switch_case_interface_methods_from_stmt(else_stmt, env, on_case);
+            }
+        }
+        crate::ast::Stmt::IncDecStmt(inc_dec) => {
+            type_switch_case_interface_methods_from_expr(&inc_dec.x, env, on_case);
+        }
+        crate::ast::Stmt::LabeledStmt(labeled) => {
+            type_switch_case_interface_methods_from_stmt(&labeled.stmt, env, on_case);
+        }
+        crate::ast::Stmt::RangeStmt(range) => {
+            if let Some(key) = &range.key {
+                type_switch_case_interface_methods_from_expr(key, env, on_case);
+            }
+            if let Some(value) = &range.value {
+                type_switch_case_interface_methods_from_expr(value, env, on_case);
+            }
+            type_switch_case_interface_methods_from_expr(&range.x, env, on_case);
+            type_switch_case_interface_methods_from_block(&range.body, env, on_case);
+        }
+        crate::ast::Stmt::ReturnStmt(return_stmt) => {
+            for expr in &return_stmt.results {
+                type_switch_case_interface_methods_from_expr(expr, env, on_case);
+            }
+        }
+        crate::ast::Stmt::SelectStmt(select_stmt) => {
+            type_switch_case_interface_methods_from_block(&select_stmt.body, env, on_case);
+        }
+        crate::ast::Stmt::SendStmt(send_stmt) => {
+            type_switch_case_interface_methods_from_expr(&send_stmt.chan, env, on_case);
+            type_switch_case_interface_methods_from_expr(&send_stmt.value, env, on_case);
+        }
+        crate::ast::Stmt::SwitchStmt(switch_stmt) => {
+            if let Some(init) = switch_stmt.init.as_deref() {
+                type_switch_case_interface_methods_from_stmt(init, env, on_case);
+            }
+            if let Some(tag) = &switch_stmt.tag {
+                type_switch_case_interface_methods_from_expr(tag, env, on_case);
+            }
+            type_switch_case_interface_methods_from_block(&switch_stmt.body, env, on_case);
+        }
+        crate::ast::Stmt::TypeSwitchStmt(type_switch) => {
+            if let Some(init) = type_switch.init.as_deref() {
+                type_switch_case_interface_methods_from_stmt(init, env, on_case);
+            }
+            type_switch_case_interface_methods_from_stmt(&type_switch.assign, env, on_case);
+            let guard_methods = type_switch_guard_interface_methods(type_switch, env);
+            for stmt in &type_switch.body.list {
+                let crate::ast::Stmt::CaseClause(case_clause) = stmt else {
+                    type_switch_case_interface_methods_from_stmt(stmt, env, on_case);
+                    continue;
+                };
+                if let Some(methods) = guard_methods.as_deref()
+                    && let Some(exprs) = &case_clause.list
+                {
+                    for expr in exprs {
+                        let Some((case_type, include_pointer_methods)) =
+                            type_switch_case_named_type(expr)
+                        else {
+                            continue;
+                        };
+                        if env.named_type_implements_methods(
+                            &case_type,
+                            methods,
+                            include_pointer_methods,
+                        ) {
+                            on_case(case_type, methods);
+                        }
+                    }
+                }
+                for stmt in &case_clause.body {
+                    type_switch_case_interface_methods_from_stmt(stmt, env, on_case);
+                }
+            }
+        }
+    }
+}
+
+fn type_switch_case_interface_methods_from_expr<'a>(
+    expr: &'a crate::ast::Expr<'a>,
+    env: &TypeEnv,
+    on_case: &mut impl FnMut(&str, &[String]),
+) {
+    match expr {
+        crate::ast::Expr::ArrayType(array) => {
+            if let Some(len) = array.len.as_deref() {
+                type_switch_case_interface_methods_from_expr(len, env, on_case);
+            }
+            type_switch_case_interface_methods_from_expr(&array.elt, env, on_case);
+        }
+        crate::ast::Expr::BasicLit(_) | crate::ast::Expr::Ident(_) => {}
+        crate::ast::Expr::BinaryExpr(binary) => {
+            type_switch_case_interface_methods_from_expr(&binary.x, env, on_case);
+            type_switch_case_interface_methods_from_expr(&binary.y, env, on_case);
+        }
+        crate::ast::Expr::CallExpr(call) => {
+            type_switch_case_interface_methods_from_call(call, env, on_case);
+        }
+        crate::ast::Expr::ChanType(chan) => {
+            type_switch_case_interface_methods_from_expr(&chan.value, env, on_case);
+        }
+        crate::ast::Expr::CompositeLit(composite) => {
+            if let Some(type_expr) = composite.type_.as_deref() {
+                type_switch_case_interface_methods_from_expr(type_expr, env, on_case);
+            }
+            for expr in composite.elts.as_deref().unwrap_or(&[]) {
+                type_switch_case_interface_methods_from_expr(expr, env, on_case);
+            }
+        }
+        crate::ast::Expr::Ellipsis(ellipsis) => {
+            if let Some(elt) = ellipsis.elt.as_deref() {
+                type_switch_case_interface_methods_from_expr(elt, env, on_case);
+            }
+        }
+        crate::ast::Expr::FuncLit(func_lit) => {
+            type_switch_case_interface_methods_from_block(&func_lit.body, env, on_case);
+        }
+        crate::ast::Expr::FuncType(_)
+        | crate::ast::Expr::InterfaceType(_)
+        | crate::ast::Expr::MapType(_)
+        | crate::ast::Expr::StructType(_) => {}
+        crate::ast::Expr::IndexExpr(index) => {
+            type_switch_case_interface_methods_from_expr(&index.x, env, on_case);
+            type_switch_case_interface_methods_from_expr(&index.index, env, on_case);
+        }
+        crate::ast::Expr::IndexListExpr(index) => {
+            type_switch_case_interface_methods_from_expr(&index.x, env, on_case);
+            for expr in &index.indices {
+                type_switch_case_interface_methods_from_expr(expr, env, on_case);
+            }
+        }
+        crate::ast::Expr::KeyValueExpr(key_value) => {
+            type_switch_case_interface_methods_from_expr(&key_value.key, env, on_case);
+            type_switch_case_interface_methods_from_expr(&key_value.value, env, on_case);
+        }
+        crate::ast::Expr::ParenExpr(paren) => {
+            type_switch_case_interface_methods_from_expr(&paren.x, env, on_case);
+        }
+        crate::ast::Expr::SelectorExpr(selector) => {
+            type_switch_case_interface_methods_from_expr(&selector.x, env, on_case);
+        }
+        crate::ast::Expr::SliceExpr(slice) => {
+            type_switch_case_interface_methods_from_expr(&slice.x, env, on_case);
+            if let Some(low) = slice.low.as_deref() {
+                type_switch_case_interface_methods_from_expr(low, env, on_case);
+            }
+            if let Some(high) = slice.high.as_deref() {
+                type_switch_case_interface_methods_from_expr(high, env, on_case);
+            }
+            if let Some(max) = slice.max.as_deref() {
+                type_switch_case_interface_methods_from_expr(max, env, on_case);
+            }
+        }
+        crate::ast::Expr::StarExpr(star) => {
+            type_switch_case_interface_methods_from_expr(&star.x, env, on_case);
+        }
+        crate::ast::Expr::TypeAssertExpr(type_assert) => {
+            type_switch_case_interface_methods_from_expr(&type_assert.x, env, on_case);
+            if let Some(type_expr) = type_assert.type_.as_deref() {
+                type_switch_case_interface_methods_from_expr(type_expr, env, on_case);
+            }
+        }
+        crate::ast::Expr::UnaryExpr(unary) => {
+            type_switch_case_interface_methods_from_expr(&unary.x, env, on_case);
+        }
+    }
+}
+
+fn type_switch_case_interface_methods_from_call<'a>(
+    call: &'a crate::ast::CallExpr<'a>,
+    env: &TypeEnv,
+    on_case: &mut impl FnMut(&str, &[String]),
+) {
+    type_switch_case_interface_methods_from_expr(&call.fun, env, on_case);
+    for expr in call.args.as_deref().unwrap_or(&[]) {
+        type_switch_case_interface_methods_from_expr(expr, env, on_case);
+    }
+}
+
+fn type_switch_guard_interface_methods(
+    type_switch: &crate::ast::TypeSwitchStmt<'_>,
+    env: &TypeEnv,
+) -> Option<Vec<String>> {
+    let guard = type_switch_guard_operand(&type_switch.assign)?;
+    let guard_type = env.resolve_alias(&crate::compiler::typeinfer::GoType::infer_expr(guard, env));
+    let crate::compiler::typeinfer::GoType::Named(name) = guard_type else {
+        return None;
+    };
+    env.is_interface(&name)
+        .then(|| env.get_interface_methods(&name))
+        .flatten()
+        .filter(|methods| !methods.is_empty())
+}
+
+fn type_switch_guard_operand<'a>(
+    stmt: &'a crate::ast::Stmt<'a>,
+) -> Option<&'a crate::ast::Expr<'a>> {
+    match stmt {
+        crate::ast::Stmt::ExprStmt(expr) => type_switch_guard_operand_expr(&expr.x),
+        crate::ast::Stmt::AssignStmt(assign) => {
+            assign.rhs.first().and_then(type_switch_guard_operand_expr)
+        }
+        _ => None,
+    }
+}
+
+fn type_switch_guard_operand_expr<'a>(
+    expr: &'a crate::ast::Expr<'a>,
+) -> Option<&'a crate::ast::Expr<'a>> {
+    match expr {
+        crate::ast::Expr::ParenExpr(paren) => type_switch_guard_operand_expr(&paren.x),
+        crate::ast::Expr::TypeAssertExpr(assert) if assert.type_.is_none() => Some(&assert.x),
+        _ => None,
+    }
+}
+
+fn type_switch_case_named_type<'a>(expr: &'a crate::ast::Expr<'a>) -> Option<(&'a str, bool)> {
+    match expr {
+        crate::ast::Expr::Ident(ident) => Some((ident.name, false)),
+        crate::ast::Expr::ParenExpr(paren) => type_switch_case_named_type(&paren.x),
+        crate::ast::Expr::StarExpr(star) => {
+            let (name, _) = type_switch_case_named_type(&star.x)?;
+            Some((name, true))
+        }
+        _ => None,
+    }
 }
 
 fn package_top_level_names(parsed_files: &[(&str, crate::ast::File<'_>)]) -> HashSet<String> {
@@ -1992,6 +2347,47 @@ mod tests {
     }
 
     #[test]
+    fn reachable_names_include_type_switch_case_interface_methods()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let file = crate::parser::parse_file(
+            "fixture.go",
+            r#"
+                package fixture
+
+                type I interface {
+                    A() int
+                    B() int
+                }
+
+                type T struct{}
+
+                func (T) A() int { return 1 }
+                func (T) B() int { return 2 }
+
+                func Use(i I) int {
+                    switch i.(type) {
+                    case T:
+                        return 1
+                    default:
+                        return 0
+                    }
+                }
+            "#,
+        )?;
+        let parsed_files = vec![("fixture.go", file)];
+        let roots = HashSet::from(["Use".to_string()]);
+        let reachable = reachable_package_names(&parsed_files, &roots);
+
+        for expected in ["I", "T", "T::A", "T::B"] {
+            assert!(
+                reachable.contains(expected),
+                "{expected} missing from {reachable:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn reachable_names_include_internal_strconv_appendfloat_package_var()
     -> Result<(), Box<dyn std::error::Error>> {
         let files =
@@ -2055,6 +2451,11 @@ mod tests {
             "valueCtx",
             "cancelCtx",
             "timerCtx",
+            "withoutCancelCtx",
+            "withoutCancelCtx::Deadline",
+            "withoutCancelCtx::Done",
+            "withoutCancelCtx::Err",
+            "withoutCancelCtx::Value",
         ] {
             assert!(
                 reachable.contains(expected),
