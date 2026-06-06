@@ -9159,6 +9159,7 @@ fn compile_owned_interface_expr(expr: ast::Expr, expected: &typeinfer::GoType) -
     }
 
     let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&expr, &env.borrow()));
+    let actual_is_current_receiver = expr_is_current_receiver(&expr, &actual);
     let trait_path = interface_trait_path_from_name(&interface_name);
     if go_type_interface_name(&actual).is_some() {
         let clone_box = clone_box_method_ident();
@@ -9170,6 +9171,9 @@ fn compile_owned_interface_expr(expr: ast::Expr, expected: &typeinfer::GoType) -
     }
 
     let compiled: syn::Expr = expr.into();
+    if actual_is_current_receiver || is_self_or_ref_self_expr(&compiled) {
+        return syn::parse_quote! { Box::new((#compiled).clone()) as Box<dyn #trait_path> };
+    }
     syn::parse_quote! { Box::new(#compiled) as Box<dyn #trait_path> }
 }
 
@@ -24181,6 +24185,44 @@ func main() {
         assert!(
             !output.contains("let __gors_switch_tag = self"),
             "expected switch tag not to keep borrowed receiver reference: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_clone_borrowed_value_receiver_boxed_as_owned_interface() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type I interface {
+                    Value() any
+                }
+
+                type C struct{}
+
+                func sink(i I) any {
+                    i = i
+                    return i.Value()
+                }
+
+                func (c C) Value() any {
+                    return sink(c)
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("Box :: new ((self) . clone ()) as Box < dyn I >"),
+            "expected owned interface conversion to clone the borrowed receiver value: {output}"
+        );
+        assert!(
+            !output.contains("Box :: new (self) as Box < dyn I >"),
+            "expected owned interface conversion not to box a receiver reference: {output}"
         );
     }
 
