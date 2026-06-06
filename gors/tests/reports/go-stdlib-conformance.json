@@ -11,10 +11,10 @@
   },
   "summary": {
     "groupCount": 344,
-    "passingGroupCount": 4,
+    "passingGroupCount": 5,
     "caseCount": 12418,
-    "passingCaseCount": 268,
-    "unsupportedCaseCount": 12150,
+    "passingCaseCount": 269,
+    "unsupportedCaseCount": 12149,
     "fixtureCount": 83
   },
   "groups": [
@@ -4069,8 +4069,8 @@
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 17,
-        "passingCaseCount": 16,
-        "unsupportedCaseCount": 1,
+        "passingCaseCount": 17,
+        "unsupportedCaseCount": 0,
         "fixtureCount": 0
       },
       "cases": [
@@ -4255,9 +4255,11 @@
           "title": "WithoutCancel",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: WithoutCancel depends on wrapper Context delegation, Cause-aware Value traversal, and full cancellation interface semantics."
+          "status": "passing",
+          "fixtures": [
+            "context"
+          ],
+          "reason": ""
         }
       ]
     },

@@ -1322,7 +1322,8 @@ fn owned_interface_param_indices(
     body: &ast::BlockStmt<'_>,
     mut is_named_interface: impl FnMut(&str) -> bool,
 ) -> HashSet<usize> {
-    let assigned = assigned_ident_names_in_block(body);
+    let mut assigned = assigned_ident_names_in_block(body);
+    assigned.extend(stored_or_returned_ident_names_in_block(body));
     if assigned.is_empty() {
         return HashSet::new();
     }
@@ -1348,6 +1349,268 @@ fn owned_interface_param_indices(
         }
     }
     owned
+}
+
+fn stored_or_returned_ident_names_in_block(
+    block: &ast::BlockStmt<'_>,
+) -> HashSet<std::string::String> {
+    let mut names = HashSet::new();
+    for stmt in &block.list {
+        collect_stored_or_returned_ident_names_from_stmt(stmt, &mut names);
+    }
+    names
+}
+
+fn collect_stored_or_returned_ident_names_from_stmt(
+    stmt: &ast::Stmt<'_>,
+    out: &mut HashSet<std::string::String>,
+) {
+    match stmt {
+        ast::Stmt::AssignStmt(assign) => {
+            for rhs in &assign.rhs {
+                collect_stored_ident_names_from_expr(rhs, false, out);
+            }
+        }
+        ast::Stmt::BlockStmt(block) => {
+            for stmt in &block.list {
+                collect_stored_or_returned_ident_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Stmt::CaseClause(case) => {
+            for stmt in &case.body {
+                collect_stored_or_returned_ident_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Stmt::CommClause(comm) => {
+            if let Some(stmt) = &comm.comm {
+                collect_stored_or_returned_ident_names_from_stmt(stmt, out);
+            }
+            for stmt in &comm.body {
+                collect_stored_or_returned_ident_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Stmt::DeclStmt(decl) => {
+            for spec in &decl.decl.specs {
+                if let ast::Spec::ValueSpec(value) = spec
+                    && let Some(values) = &value.values
+                {
+                    for expr in values {
+                        collect_stored_ident_names_from_expr(expr, false, out);
+                    }
+                }
+            }
+        }
+        ast::Stmt::DeferStmt(defer) => collect_stored_ident_names_from_call(&defer.call, out),
+        ast::Stmt::ExprStmt(expr) => collect_stored_ident_names_from_expr(&expr.x, false, out),
+        ast::Stmt::ForStmt(for_stmt) => {
+            if let Some(init) = &for_stmt.init {
+                collect_stored_or_returned_ident_names_from_stmt(init, out);
+            }
+            if let Some(cond) = &for_stmt.cond {
+                collect_stored_ident_names_from_expr(cond, false, out);
+            }
+            if let Some(post) = &for_stmt.post {
+                collect_stored_or_returned_ident_names_from_stmt(post, out);
+            }
+            for stmt in &for_stmt.body.list {
+                collect_stored_or_returned_ident_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Stmt::GoStmt(go) => collect_stored_ident_names_from_call(&go.call, out),
+        ast::Stmt::IfStmt(if_stmt) => {
+            if let Some(init) = &*if_stmt.init {
+                collect_stored_or_returned_ident_names_from_stmt(init, out);
+            }
+            collect_stored_ident_names_from_expr(&if_stmt.cond, false, out);
+            for stmt in &if_stmt.body.list {
+                collect_stored_or_returned_ident_names_from_stmt(stmt, out);
+            }
+            if let Some(else_stmt) = &*if_stmt.else_ {
+                collect_stored_or_returned_ident_names_from_stmt(else_stmt, out);
+            }
+        }
+        ast::Stmt::LabeledStmt(labeled) => {
+            collect_stored_or_returned_ident_names_from_stmt(&labeled.stmt, out)
+        }
+        ast::Stmt::RangeStmt(range) => {
+            collect_stored_ident_names_from_expr(&range.x, false, out);
+            for stmt in &range.body.list {
+                collect_stored_or_returned_ident_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Stmt::ReturnStmt(ret) => {
+            for expr in &ret.results {
+                collect_stored_ident_names_from_expr(expr, true, out);
+            }
+        }
+        ast::Stmt::SelectStmt(select) => {
+            for stmt in &select.body.list {
+                collect_stored_or_returned_ident_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Stmt::SendStmt(send) => {
+            collect_stored_ident_names_from_expr(&send.chan, false, out);
+            collect_stored_ident_names_from_expr(&send.value, false, out);
+        }
+        ast::Stmt::SwitchStmt(switch) => {
+            if let Some(init) = &switch.init {
+                collect_stored_or_returned_ident_names_from_stmt(init, out);
+            }
+            if let Some(tag) = &switch.tag {
+                collect_stored_ident_names_from_expr(tag, false, out);
+            }
+            for stmt in &switch.body.list {
+                collect_stored_or_returned_ident_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Stmt::TypeSwitchStmt(type_switch) => {
+            if let Some(init) = &type_switch.init {
+                collect_stored_or_returned_ident_names_from_stmt(init, out);
+            }
+            collect_stored_or_returned_ident_names_from_stmt(&type_switch.assign, out);
+            for stmt in &type_switch.body.list {
+                collect_stored_or_returned_ident_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Stmt::BranchStmt(_) | ast::Stmt::EmptyStmt(_) | ast::Stmt::IncDecStmt(_) => {}
+    }
+}
+
+fn collect_stored_ident_names_from_expr(
+    expr: &ast::Expr<'_>,
+    storage_position: bool,
+    out: &mut HashSet<std::string::String>,
+) {
+    match expr {
+        ast::Expr::Ident(ident) if storage_position && ident.name != "_" => {
+            out.insert(ident.name.to_string());
+        }
+        ast::Expr::ArrayType(array) => {
+            if let Some(len) = &array.len {
+                collect_stored_ident_names_from_expr(len, false, out);
+            }
+            collect_stored_ident_names_from_expr(&array.elt, false, out);
+        }
+        ast::Expr::BasicLit(_) | ast::Expr::Ident(_) => {}
+        ast::Expr::BinaryExpr(binary) => {
+            collect_stored_ident_names_from_expr(&binary.x, false, out);
+            collect_stored_ident_names_from_expr(&binary.y, false, out);
+        }
+        ast::Expr::CallExpr(call) => collect_stored_ident_names_from_call(call, out),
+        ast::Expr::ChanType(chan) => collect_stored_ident_names_from_expr(&chan.value, false, out),
+        ast::Expr::CompositeLit(lit) => {
+            if let Some(type_) = &lit.type_ {
+                collect_stored_ident_names_from_expr(type_, false, out);
+            }
+            if let Some(elts) = &lit.elts {
+                for elt in elts {
+                    collect_stored_ident_names_from_expr(elt, true, out);
+                }
+            }
+        }
+        ast::Expr::Ellipsis(ellipsis) => {
+            if let Some(elt) = &ellipsis.elt {
+                collect_stored_ident_names_from_expr(elt, storage_position, out);
+            }
+        }
+        ast::Expr::FuncLit(func) => {
+            for stmt in &func.body.list {
+                collect_stored_or_returned_ident_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Expr::FuncType(func) => {
+            for field in &func.params.list {
+                if let Some(type_) = &field.type_ {
+                    collect_stored_ident_names_from_expr(type_, false, out);
+                }
+            }
+            if let Some(results) = &func.results {
+                for field in &results.list {
+                    if let Some(type_) = &field.type_ {
+                        collect_stored_ident_names_from_expr(type_, false, out);
+                    }
+                }
+            }
+        }
+        ast::Expr::IndexExpr(index) => {
+            collect_stored_ident_names_from_expr(&index.x, false, out);
+            collect_stored_ident_names_from_expr(&index.index, false, out);
+        }
+        ast::Expr::IndexListExpr(index) => {
+            collect_stored_ident_names_from_expr(&index.x, false, out);
+            for expr in &index.indices {
+                collect_stored_ident_names_from_expr(expr, false, out);
+            }
+        }
+        ast::Expr::InterfaceType(interface) => {
+            if let Some(methods) = &interface.methods {
+                for field in &methods.list {
+                    if let Some(type_) = &field.type_ {
+                        collect_stored_ident_names_from_expr(type_, false, out);
+                    }
+                }
+            }
+        }
+        ast::Expr::KeyValueExpr(kv) => {
+            collect_stored_ident_names_from_expr(&kv.key, false, out);
+            collect_stored_ident_names_from_expr(&kv.value, true, out);
+        }
+        ast::Expr::MapType(map) => {
+            collect_stored_ident_names_from_expr(&map.key, false, out);
+            collect_stored_ident_names_from_expr(&map.value, false, out);
+        }
+        ast::Expr::ParenExpr(paren) => {
+            collect_stored_ident_names_from_expr(&paren.x, storage_position, out)
+        }
+        ast::Expr::SelectorExpr(selector) => {
+            collect_stored_ident_names_from_expr(&selector.x, false, out);
+        }
+        ast::Expr::SliceExpr(slice) => {
+            collect_stored_ident_names_from_expr(&slice.x, false, out);
+            if let Some(low) = &slice.low {
+                collect_stored_ident_names_from_expr(low, false, out);
+            }
+            if let Some(high) = &slice.high {
+                collect_stored_ident_names_from_expr(high, false, out);
+            }
+            if let Some(max) = &slice.max {
+                collect_stored_ident_names_from_expr(max, false, out);
+            }
+        }
+        ast::Expr::StarExpr(star) => {
+            collect_stored_ident_names_from_expr(&star.x, storage_position, out)
+        }
+        ast::Expr::StructType(struct_type) => {
+            if let Some(fields) = &struct_type.fields {
+                for field in &fields.list {
+                    if let Some(type_) = &field.type_ {
+                        collect_stored_ident_names_from_expr(type_, false, out);
+                    }
+                }
+            }
+        }
+        ast::Expr::TypeAssertExpr(assert) => {
+            collect_stored_ident_names_from_expr(&assert.x, storage_position, out);
+            if let Some(type_) = &assert.type_ {
+                collect_stored_ident_names_from_expr(type_, false, out);
+            }
+        }
+        ast::Expr::UnaryExpr(unary) => {
+            collect_stored_ident_names_from_expr(&unary.x, storage_position, out)
+        }
+    }
+}
+
+fn collect_stored_ident_names_from_call(
+    call: &ast::CallExpr<'_>,
+    out: &mut HashSet<std::string::String>,
+) {
+    collect_stored_ident_names_from_expr(&call.fun, false, out);
+    if let Some(args) = &call.args {
+        for arg in args {
+            collect_stored_ident_names_from_expr(arg, false, out);
+        }
+    }
 }
 
 fn assigned_ident_names_in_block(block: &ast::BlockStmt<'_>) -> HashSet<std::string::String> {
@@ -3421,6 +3684,39 @@ mod tests {
             .expect("return expression");
 
         assert_eq!(GoType::infer_expr(ret, &env), GoType::Any);
+    }
+
+    #[test]
+    fn scan_file_marks_stored_interface_params_owned() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package p
+
+                type Context interface {
+                    Done() int
+                }
+
+                type wrapper struct {
+                    Context
+                }
+
+                func Wrap(parent Context) Context {
+                    return wrapper{parent}
+                }
+
+                func Return(parent Context) Context {
+                    return parent
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+
+        env.scan_file(&file);
+
+        assert!(env.func_param_needs_owned_interface("Wrap", 0));
+        assert!(env.func_param_needs_owned_interface("Return", 0));
     }
 
     #[test]

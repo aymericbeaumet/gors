@@ -9713,15 +9713,8 @@ fn struct_field_is_borrowed_interface(type_name: Option<&str>, field_name: &str)
         return false;
     };
     let field_name = rust_safe_ident_name(field_name);
-    if type_decl_facts::borrowed_interface_fields(type_name)
+    type_decl_facts::borrowed_interface_fields(type_name)
         .is_some_and(|fields| fields.iter().any(|field| field.field_ident == field_name))
-    {
-        return true;
-    }
-    TYPE_ENV.with(|env| {
-        let field_type = env.borrow().get_field_type(type_name, &field_name);
-        go_type_interface_name(&field_type).is_some_and(|name| name != "error")
-    })
 }
 
 fn assignment_lhs_is_borrowed_interface_field(expr: &ast::Expr) -> bool {
@@ -13246,13 +13239,19 @@ fn compile_type_switch_stmt(ts: ast::TypeSwitchStmt) -> Result<Vec<syn::Stmt>, C
     let (binding_name, source_expr) = type_switch_guard_source(*ts.assign)?;
     let source_go_type =
         TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&source_expr, &env.borrow()));
-    let source_is_interface = resolved_go_type(&source_go_type).is_interface();
+    let source_is_trait_interface = go_type_interface_name(&source_go_type).is_some();
+    let source_is_any = matches!(resolved_go_type(&source_go_type), typeinfer::GoType::Any);
     let source_is_addressable = is_ir_addressable_expr(&source_expr);
     let source_expr: syn::Expr = source_expr.into();
     let value_ident = synthetic_names::next_type_switch_value_ident();
     let value_expr: syn::Expr = syn::parse_quote! { #value_ident };
     let value_ref = |value: &syn::Expr| -> syn::Expr {
-        match (source_is_interface, source_is_addressable) {
+        if source_is_trait_interface && !source_is_any {
+            return syn::parse_quote! {
+                (*#value).__gors_as_any().unwrap_or(&() as &dyn std::any::Any)
+            };
+        }
+        match (source_is_any, source_is_addressable) {
             (true, true) => syn::parse_quote! { (&**#value as &dyn std::any::Any) },
             (true, false) => syn::parse_quote! { (&*#value as &dyn std::any::Any) },
             (false, true) => syn::parse_quote! { (&*#value as &dyn std::any::Any) },
@@ -25529,6 +25528,50 @@ func main() {
     }
 
     #[test]
+    fn type_switch_on_trait_interface_uses_concrete_any_payload() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Context interface {
+                    Value(any) any
+                }
+
+                type detached struct{}
+
+                func (detached) Value(any) any {
+                    return nil
+                }
+
+                func check(c Context) int {
+                    switch c.(type) {
+                    case detached:
+                        return 1
+                    default:
+                        return 0
+                    }
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("__gors_as_any () . unwrap_or")
+                || output.contains("__gors_as_any().unwrap_or"),
+            "expected interface type switch to inspect concrete payload: {output}"
+        );
+        assert!(
+            !output.contains("& * __gors_type_switch_value")
+                && !output.contains("&*__gors_type_switch_value"),
+            "expected interface type switch not to downcast the interface box: {output}"
+        );
+    }
+
+    #[test]
     fn type_switch_pointer_binding_promoted_interface_field_clones_box() {
         let parsed = parse_file(
             "test.go",
@@ -28546,6 +28589,44 @@ func (c *cancelCtx) set(parent Context) {
         assert!(
             output.contains("Box :: leak (Context :: __gors_clone_box (& * (parent)))")
                 || output.contains("Box::leak(Context::__gors_clone_box(&*(parent)))"),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn named_interface_struct_field_literals_store_owned_boxes() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+package main
+
+type Context interface {
+	Done() int
+}
+
+type holder struct {
+	c Context
+}
+
+func save(parent Context) holder {
+	return holder{c: parent}
+}
+"#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("c : Context :: __gors_clone_box (& * (parent))")
+                || output.contains("c: Context::__gors_clone_box(&*(parent))"),
+            "{output}"
+        );
+        assert!(
+            !output.contains("c : Box :: leak")
+                && !output.contains("c: Box::leak")
+                && !output.contains("c : Box::leak")
+                && !output.contains("c: Box :: leak"),
             "{output}"
         );
     }

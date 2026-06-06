@@ -195,7 +195,6 @@
   "compress/zlib::Writer.Flush": "Audited 2026-06-02: Flush depends on lazy zlib header emission and the unsupported flate writer flush path.",
   "compress/zlib::Writer.Reset": "Audited 2026-06-02: Reset depends on preserving level/dictionary state while replacing the underlying io.Writer and resetting stored flate/hash state.",
   "compress/zlib::Writer.Write": "Audited 2026-06-02: Write depends on zlib header serialization, checksum updates through hash.Hash32, and flate writer dispatch for compressed payloads.",
-  "context::WithoutCancel": "Audited 2026-06-02: WithoutCancel depends on wrapper Context delegation, Cause-aware Value traversal, and full cancellation interface semantics.",
   "crypto::Decapsulator": "Audited 2026-06-02: Decapsulator behavior depends on generic interface values whose methods return byte-slice secrets, ciphertext errors, and receiver-specific key state.",
   "crypto::Decrypter": "Audited 2026-06-02: Decrypter behavior depends on interface dispatch over private-key receiver state, random io.Reader inputs, byte-slice plaintext results, and DecrypterOpts interface values.",
   "crypto::DecrypterOpts": "Audited 2026-06-02: DecrypterOpts coverage depends on concrete option types carried through Decrypter interface calls and method-set based option dispatch.",

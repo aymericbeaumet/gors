@@ -37,6 +37,16 @@ func main() {
 		fmt.Println("with-value", valued.Value(contextKey("name")), valued.Value(contextKey("missing")) == nil)
 	}
 
+	// gors:stdlib-cover context::WithoutCancel
+	{
+		parent, parentCancel := context.WithCancelCause(context.WithValue(bg, contextKey("kept"), "value"))
+		detached := context.WithoutCancel(parent)
+		_, detachedDeadline := detached.Deadline()
+		fmt.Println("without-cancel-before", detachedDeadline, detached.Done() == nil, detached.Err() == nil, context.Cause(detached) == nil, detached.Value(contextKey("kept")))
+		parentCancel(causeError("parent canceled"))
+		fmt.Println("without-cancel-after", detached.Done() == nil, detached.Err() == nil, context.Cause(detached) == nil, detached.Value(contextKey("kept")), parent.Err().Error(), context.Cause(parent).Error())
+	}
+
 	// gors:stdlib-cover context::WithCancel
 	// gors:stdlib-cover context::CancelFunc
 	cancelable, cancel := context.WithCancel(bg)

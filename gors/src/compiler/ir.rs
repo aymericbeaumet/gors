@@ -653,19 +653,15 @@ fn classify_call_callee(call: &ast::CallExpr<'_>, env: &TypeEnv) -> CalleeKind {
 }
 
 fn classify_selector_call_callee(selector: &ast::SelectorExpr<'_>, env: &TypeEnv) -> CalleeKind {
+    if let Some(method_key) = selector_receiver_method_key(selector, env)
+        && env.has_func(&method_key)
+    {
+        return CalleeKind::Method;
+    }
     if let ast::Expr::Ident(base) = selector.x.as_ref() {
         let package_key = format!("{}.{}", base.name, selector.sel.name);
         if env.has_func(&package_key) {
             return CalleeKind::Function;
-        }
-        if let Some(receiver_name) = env
-            .get_var(base.name)
-            .and_then(|ty| method_receiver_type_name(ty, env))
-        {
-            let method_key = format!("{}.{}", receiver_name, selector.sel.name);
-            if env.has_func(&method_key) {
-                return CalleeKind::Method;
-            }
         }
     }
 
@@ -12523,9 +12519,6 @@ fn call_signature_for_selector(
     selector: &ast::SelectorExpr<'_>,
     env: &TypeEnv,
 ) -> Option<CallSignature> {
-    let ast::Expr::Ident(base) = selector.x.as_ref() else {
-        return call_signature_for_type_method_expression(selector, env);
-    };
     if let Some(method_key) = selector_receiver_method_key(selector, env)
         && env.has_func(&method_key)
     {
@@ -12538,6 +12531,9 @@ fn call_signature_for_selector(
     if selector_base_value_type(selector, env).is_some() {
         return None;
     }
+    let ast::Expr::Ident(base) = selector.x.as_ref() else {
+        return call_signature_for_type_method_expression(selector, env);
+    };
     let package_key = format!("{}.{}", base.name, selector.sel.name);
     if env.has_func(&package_key) {
         return Some(CallSignature {
@@ -12556,11 +12552,13 @@ fn selector_receiver_method_key(selector: &ast::SelectorExpr<'_>, env: &TypeEnv)
 }
 
 fn selector_base_value_type(selector: &ast::SelectorExpr<'_>, env: &TypeEnv) -> Option<GoType> {
-    let ast::Expr::Ident(base) = selector.x.as_ref() else {
-        return None;
-    };
-    env.get_var(base.name)
-        .or_else(|| env.get_top_level_var(base.name))
+    if let ast::Expr::Ident(base) = selector.x.as_ref() {
+        return env
+            .get_var(base.name)
+            .or_else(|| env.get_top_level_var(base.name));
+    }
+    let ty = GoType::infer_expr(&selector.x, env);
+    (!matches!(ty, GoType::Unknown)).then_some(ty)
 }
 
 fn call_signature_for_type_method_expression(
@@ -19990,6 +19988,41 @@ mod tests {
         assert_eq!(
             call.abi.signature_params,
             vec![GoType::Named("T".to_string()), GoType::Int]
+        );
+    }
+
+    #[test]
+    fn call_abi_uses_method_signature_for_selector_receivers() {
+        let ir = lower(
+            r#"
+                package main
+
+                type Context interface {
+                    Done() int
+                }
+
+                type inner struct{}
+                type outer struct {
+                    child inner
+                }
+
+                func (i inner) M(parent Context) {}
+
+                func main() {
+                    var o outer
+                    var parent Context
+                    o.child.M(parent)
+                }
+            "#,
+        );
+        let body = main_body(&ir);
+        let call = expr_stmt_call(body, 2);
+
+        assert_eq!(call.abi.callee, CalleeKind::Method);
+        assert_eq!(call.abi.signature_target.as_deref(), Some("inner.M"));
+        assert_eq!(
+            call.abi.signature_params,
+            vec![GoType::Named("Context".to_string())]
         );
     }
 
