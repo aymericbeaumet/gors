@@ -7369,27 +7369,6 @@ fn compile_method(
     }
     let _active_local_names = ActiveLocalNamesGuard::set(active_local_names);
     let _type_param_kinds = TypeParamKindsGuard::set(&type_args);
-
-    let (self_arg, borrowed_value_receiver): (syn::FnArg, bool) = if is_pointer {
-        let receiver_ident = if recv_name.is_empty() {
-            synthetic_names::method_receiver_ident()
-        } else {
-            syn::Ident::new(&recv_name, Span::mixed_site())
-        };
-        (
-            syn::parse_quote! { mut #receiver_ident: crate::builtin::GorsPtr<Self> },
-            false,
-        )
-    } else if is_slice_receiver || has_borrowed_interface_field {
-        (syn::parse_quote! { &mut self }, false)
-    } else if func_decl.body.as_ref().is_some_and(|body| {
-        value_receiver_body_mutates_receiver(body, recv_source_name, &type_name)
-    }) {
-        (syn::parse_quote! { mut self }, false)
-    } else {
-        (syn::parse_quote! { &self }, true)
-    };
-
     let recv_go_type = if is_pointer {
         typeinfer::GoType::Pointer(Box::new(typeinfer::GoType::Named(type_name.clone())))
     } else {
@@ -7406,6 +7385,41 @@ fn compile_method(
             env.borrow_mut().set_var(&recv_name, recv_go_type);
         });
     }
+    let value_receiver_needs_cell = !is_pointer
+        && !recv_source_name.is_empty()
+        && func_decl.body.as_ref().is_some_and(|body| {
+            TYPE_ENV.with(|env| {
+                let env = env.borrow();
+                ir::address_taken_names_in_block_with_declared_bindings(
+                    body,
+                    &env,
+                    std::iter::once(recv_source_name.to_string()),
+                )
+                .contains(recv_source_name)
+            })
+        });
+
+    let (self_arg, borrowed_value_receiver): (syn::FnArg, bool) = if is_pointer {
+        let receiver_ident = if recv_name.is_empty() {
+            synthetic_names::method_receiver_ident()
+        } else {
+            syn::Ident::new(&recv_name, Span::mixed_site())
+        };
+        (
+            syn::parse_quote! { mut #receiver_ident: crate::builtin::GorsPtr<Self> },
+            false,
+        )
+    } else if is_slice_receiver || has_borrowed_interface_field {
+        (syn::parse_quote! { &mut self }, false)
+    } else if value_receiver_needs_cell {
+        (syn::parse_quote! { mut self }, false)
+    } else if func_decl.body.as_ref().is_some_and(|body| {
+        value_receiver_body_mutates_receiver(body, recv_source_name, &type_name)
+    }) {
+        (syn::parse_quote! { mut self }, false)
+    } else {
+        (syn::parse_quote! { &self }, true)
+    };
     TYPE_ENV.with(|env| {
         let mut e = env.borrow_mut();
         for param in &func_decl.type_.params.list {
@@ -7514,6 +7528,9 @@ fn compile_method(
                     names.extend(ir::for_clause_per_iteration_capture_names_in_block(
                         body, &env,
                     ));
+                    if value_receiver_needs_cell {
+                        names.insert(recv_source_name.to_string());
+                    }
                     names
                 })
             });
@@ -7536,7 +7553,15 @@ fn compile_method(
     drop(borrowed_pointer_param_names);
     drop(borrowed_slice_param_names);
 
-    if !recv_name.is_empty() && !is_pointer {
+    if value_receiver_needs_cell {
+        let receiver_ident = value_ident(recv_source_name);
+        block.stmts.insert(
+            0,
+            syn::parse_quote! {
+                let #receiver_ident = std::sync::Arc::new(std::sync::Mutex::new(self));
+            },
+        );
+    } else if !recv_name.is_empty() && !is_pointer {
         let lowered_recv_name = local_binding_rust_name(&recv_name);
         rewrite_receiver(&mut block, &lowered_recv_name, borrowed_value_receiver);
     }
@@ -31747,7 +31772,8 @@ func main() {
 
     #[test]
     fn it_should_compile_method_with_pointer_receiver() {
-        test(
+        let parsed = parse_file(
+            "test.go",
             r#"
                 package main
 
@@ -31759,18 +31785,18 @@ func main() {
                     c.Value = c.Value + 1
                 }
             "#,
-            rust! {
-                #[derive(Clone, Copy, Default, PartialEq)]
-                #[repr(C)]
-                pub struct Counter {
-                    pub Value: isize,
-                }
-                impl Counter {
-                    pub fn Increment(&mut self) {
-                        self.Value = self.Value + 1;
-                    }
-                }
-            },
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("pub fn Increment (mut c : crate :: builtin :: GorsPtr < Self >)"),
+            "expected pointer receiver method to take the pointer-cell receiver: {output}"
+        );
+        assert!(
+            output.contains("((c) . lock () . unwrap ()) . Value ="),
+            "expected pointer receiver method to mutate through the pointer cell: {output}"
         );
     }
 
@@ -31852,6 +31878,53 @@ func main() {
                 "Counter > :: Increment (crate :: builtin :: GorsPtr :: from_arc (c . clone ())"
             ),
             "expected pointer receiver call to use the shared storage pointer cell: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_promote_auto_addressed_value_receivers_to_pointer_cells() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Counter struct {
+                    Value int
+                }
+
+                func (c *Counter) Increment() {
+                    c.Value = c.Value + 1
+                }
+
+                func (c Counter) Next() int {
+                    c.Increment()
+                    return c.Value
+                }
+
+                func main() {
+                    var c Counter
+                    _ = c.Next()
+                }
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            !output.contains("pointer receiver is not addressable"),
+            "expected value receiver pointer method call to be addressable: {output}"
+        );
+        assert!(
+            output
+                .contains("let c = std :: sync :: Arc :: new (std :: sync :: Mutex :: new (self))"),
+            "expected value receiver copy to be moved into shared receiver storage: {output}"
+        );
+        assert!(
+            output.contains(
+                "Counter > :: Increment (crate :: builtin :: GorsPtr :: from_arc (c . clone ())"
+            ),
+            "expected pointer receiver call to use the shared receiver storage: {output}"
         );
     }
 
@@ -34312,7 +34385,20 @@ func main() {
             output.contains("impl < '__gors > Writer for & '__gors mut sink"),
             "{output}"
         );
-        assert!(output.contains("sink :: Write (& mut * * self"), "{output}");
+        assert!(
+            output.contains(
+                "let __gors_receiver = crate :: builtin :: GorsPtr :: new ((* * self) . clone ())"
+            ),
+            "{output}"
+        );
+        assert!(
+            output.contains("sink :: Write (__gors_receiver . clone ()"),
+            "{output}"
+        );
+        assert!(
+            output.contains("* * self = __gors_receiver . lock () . unwrap () . clone ()"),
+            "{output}"
+        );
     }
 
     #[test]

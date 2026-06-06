@@ -16413,10 +16413,19 @@ fn collect_for_clause_per_iteration_capture_names_in_stmt(
 }
 
 pub fn address_taken_names_in_block(block: &ast::BlockStmt<'_>, env: &TypeEnv) -> BTreeSet<String> {
+    address_taken_names_in_block_with_declared_bindings(block, env, std::iter::empty::<String>())
+}
+
+pub fn address_taken_names_in_block_with_declared_bindings(
+    block: &ast::BlockStmt<'_>,
+    env: &TypeEnv,
+    extra_declared: impl IntoIterator<Item = String>,
+) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     collect_address_taken_names_in_block(block, env, &mut names);
     let mut declared = BTreeSet::new();
     collect_declared_names_in_block(block, &mut declared);
+    declared.extend(extra_declared);
     names.retain(|name| declared.contains(name));
     names
 }
