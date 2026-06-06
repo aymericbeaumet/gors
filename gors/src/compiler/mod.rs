@@ -8676,10 +8676,11 @@ fn compile_builtin(call_expr: ast::CallExpr) -> syn::Expr {
                         }
                     }
                 }
-                ast::Expr::ChanType(_) => match remaining.as_slice() {
-                    [] => syn::parse_quote! { crate::builtin::make_chan(0) },
-                    [cap_arg, ..] => syn::parse_quote! { crate::builtin::make_chan(#cap_arg) },
-                },
+                ast::Expr::ChanType(chan) => {
+                    let elem_type =
+                        rust_type_from_inferred_go_type(&typeinfer::GoType::from_expr(&chan.value));
+                    make_chan_expr(&elem_type, &remaining)
+                }
                 other => compile_named_make_call(&other, &remaining)
                     .unwrap_or_else(|| syn::parse_quote! { Default::default() }),
             }
@@ -8847,14 +8848,21 @@ fn compile_named_make_call(type_arg: &ast::Expr, args: &[syn::Expr]) -> Option<s
             };
             Some(syn::parse_quote! { #named_type(#inner) })
         }
-        typeinfer::GoType::Chan { .. } => {
-            let inner: syn::Expr = match args {
-                [] => syn::parse_quote! { crate::builtin::make_chan(0) },
-                [cap_arg, ..] => syn::parse_quote! { crate::builtin::make_chan(#cap_arg) },
-            };
+        typeinfer::GoType::Chan { elem, .. } => {
+            let elem_type = rust_type_from_inferred_go_type(&elem);
+            let inner = make_chan_expr(&elem_type, args);
             Some(syn::parse_quote! { #named_type(#inner) })
         }
         _ => None,
+    }
+}
+
+fn make_chan_expr(elem_type: &syn::Type, args: &[syn::Expr]) -> syn::Expr {
+    match args {
+        [] => syn::parse_quote! { crate::builtin::make_chan::<#elem_type>(0) },
+        [cap_arg, ..] => {
+            syn::parse_quote! { crate::builtin::make_chan::<#elem_type>((#cap_arg) as usize) }
+        }
     }
 }
 
@@ -36744,8 +36752,30 @@ func (p *printer) run() {
             "#,
         );
         assert!(
-            rust_src.contains("make_chan(5)"),
-            "Expected make_chan(5) in output:\n{}",
+            rust_src.contains("make_chan::<isize>((5) as usize)")
+                || rust_src.contains("make_chan :: < isize > ((5) as usize)"),
+            "Expected typed make_chan capacity in output:\n{}",
+            rust_src
+        );
+    }
+
+    #[test]
+    fn it_should_type_make_channel_when_boxed_as_any() {
+        let rust_src = go_to_rust(
+            r#"
+            package main
+            func main() {
+                var d any
+                d = make(chan struct{})
+                _, _ = d.(chan struct{})
+            }
+            "#,
+        );
+        assert!(
+            rust_src.contains("box_any_comparable(crate::builtin::make_chan::<()>(0))")
+                || rust_src
+                    .contains("box_any_comparable (crate :: builtin :: make_chan :: < () > (0))"),
+            "Expected typed channel construction before boxing:\n{}",
             rust_src
         );
     }
