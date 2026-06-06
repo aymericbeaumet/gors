@@ -6,6 +6,7 @@ pub(super) const IMPORT_PATH: &str = "syscall";
 
 pub(super) fn supplement_type_env(env: &mut TypeEnv) {
     env.set_type_kind("Errno", TypeKind::Alias(GoType::Uintptr));
+    env.set_type_kind("_Socklen", TypeKind::Alias(GoType::Uint32));
     env.set_func("Errno.Error", vec![GoType::String]);
     env.set_func_params("Errno.Error", Vec::new());
 
@@ -26,6 +27,16 @@ pub(super) fn supplement_type_env(env: &mut TypeEnv) {
     env.set_func("read", vec![GoType::Int, GoType::Error]);
     env.set_func_params(
         "read",
+        vec![GoType::Int, GoType::Slice(Box::new(GoType::Uint8))],
+    );
+    env.set_func("Write", vec![GoType::Int, GoType::Error]);
+    env.set_func_params(
+        "Write",
+        vec![GoType::Int, GoType::Slice(Box::new(GoType::Uint8))],
+    );
+    env.set_func("write", vec![GoType::Int, GoType::Error]);
+    env.set_func_params(
+        "write",
         vec![GoType::Int, GoType::Slice(Box::new(GoType::Uint8))],
     );
     env.set_func("Seek", vec![GoType::Int64, GoType::Error]);
@@ -81,6 +92,11 @@ pub(super) fn supplement_items(roots: Option<&HashSet<String>>, items: &mut Vec<
             pub const O_RDONLY: isize = 0;
         });
     }
+    if needs_socklen(roots, &existing) && !existing.contains("_Socklen") {
+        items.push(syn::parse_quote! {
+            pub type _Socklen = u32;
+        });
+    }
     if roots.contains("Close") && !existing.contains("Close") {
         items.push(syn::parse_quote! {
             pub fn Close(mut fd: isize) -> Box<dyn crate::builtin::error> {
@@ -103,7 +119,7 @@ pub(super) fn supplement_items(roots: Option<&HashSet<String>>, items: &mut Vec<
             }
         });
     }
-    if roots.contains("Read") && !existing.contains("read") {
+    if needs_read(roots) && !existing.contains("read") {
         items.push(syn::parse_quote! {
             fn read(
                 mut fd: isize,
@@ -111,6 +127,20 @@ pub(super) fn supplement_items(roots: Option<&HashSet<String>>, items: &mut Vec<
             ) -> (isize, Box<dyn crate::builtin::error>) {
                 (
                     0,
+                    Box::new(crate::builtin::__GorsNooperror::default())
+                        as Box<dyn crate::builtin::error>,
+                )
+            }
+        });
+    }
+    if needs_write(roots) && !existing.contains("write") {
+        items.push(syn::parse_quote! {
+            fn write(
+                mut fd: isize,
+                mut p: Vec<u8>,
+            ) -> (isize, Box<dyn crate::builtin::error>) {
+                (
+                    p.len() as isize,
                     Box::new(crate::builtin::__GorsNooperror::default())
                         as Box<dyn crate::builtin::error>,
                 )
@@ -132,6 +162,23 @@ pub(super) fn supplement_items(roots: Option<&HashSet<String>>, items: &mut Vec<
             }
         });
     }
+}
+
+fn needs_socklen(roots: &HashSet<String>, existing: &HashSet<String>) -> bool {
+    roots.contains("_Socklen")
+        || roots.contains("Sockaddr")
+        || existing.contains("Sockaddr")
+        || roots
+            .iter()
+            .any(|root| root.ends_with("::sockaddr") || root.ends_with(".sockaddr"))
+}
+
+fn needs_read(roots: &HashSet<String>) -> bool {
+    roots.contains("Read") || roots.contains("read")
+}
+
+fn needs_write(roots: &HashSet<String>) -> bool {
+    roots.contains("Write") || roots.contains("write")
 }
 
 fn errno_items() -> Vec<syn::Item> {

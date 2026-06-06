@@ -34,7 +34,9 @@ pub(super) fn supplement_type_env(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compiler::typeinfer::{GoType, TypeEnv, TypeKind};
     use quote::ToTokens;
+    use quote::quote;
 
     fn tokens_for(import_path: &str, roots: &[&str]) -> Option<String> {
         let roots = roots.iter().map(|root| (*root).to_string()).collect();
@@ -48,6 +50,16 @@ mod tests {
             "expected runtime primitive module for {import_path}"
         );
         tokens.unwrap_or_default()
+    }
+
+    fn supplemented_tokens_for(
+        import_path: &str,
+        roots: &[&str],
+        mut items: Vec<syn::Item>,
+    ) -> String {
+        let roots = roots.iter().map(|root| (*root).to_string()).collect();
+        supplement_items(import_path, Some(&roots), &mut items);
+        quote! { #(#items)* }.to_string()
     }
 
     #[test]
@@ -99,6 +111,53 @@ mod tests {
         assert!(tokens.contains("reflect_type_comparable"), "{tokens}");
         assert!(!tokens.contains("pub struct Value"), "{tokens}");
         assert!(!tokens.contains("pub fn Swapper"), "{tokens}");
+    }
+
+    #[test]
+    fn syscall_supplements_write_boundary_and_socklen_alias() {
+        let tokens = supplemented_tokens_for(
+            "syscall",
+            &["Sockaddr", "Write"],
+            vec![syn::parse_quote! {
+                pub trait Sockaddr {
+                    fn sockaddr(
+                        &mut self,
+                    ) -> (usize, _Socklen, Box<dyn crate::builtin::error>);
+                }
+            }],
+        );
+
+        assert!(tokens.contains("pub type _Socklen = u32"), "{tokens}");
+        assert!(tokens.contains("fn write"), "{tokens}");
+        assert!(tokens.contains("p . len () as isize"), "{tokens}");
+        assert!(!tokens.contains("fn read"), "{tokens}");
+    }
+
+    #[test]
+    fn syscall_supplements_write_and_socklen_type_facts() {
+        let mut env = TypeEnv::new();
+        supplement_type_env("syscall", &mut env);
+
+        assert_eq!(
+            env.get_type_kind("_Socklen").cloned(),
+            Some(TypeKind::Alias(GoType::Uint32))
+        );
+        assert_eq!(
+            env.get_func_returns("Write"),
+            vec![GoType::Int, GoType::Error]
+        );
+        assert_eq!(
+            env.get_func_params("Write"),
+            vec![GoType::Int, GoType::Slice(Box::new(GoType::Uint8))]
+        );
+        assert_eq!(
+            env.get_func_returns("write"),
+            vec![GoType::Int, GoType::Error]
+        );
+        assert_eq!(
+            env.get_func_params("write"),
+            vec![GoType::Int, GoType::Slice(Box::new(GoType::Uint8))]
+        );
     }
 
     #[test]
