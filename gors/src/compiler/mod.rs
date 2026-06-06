@@ -11967,6 +11967,10 @@ fn compile_expr_with_expected(
         if matches!(resolved_go_type(&actual), typeinfer::GoType::Any) {
             return expr.into();
         }
+        if go_type_interface_name(&actual).is_some_and(|name| name != "error") {
+            let owned = compile_owned_interface_expr(expr, &actual);
+            return syn::parse_quote! { Box::new(#owned) as Box<dyn std::any::Any> };
+        }
         if go_type_points_to_nonclone_named_struct(&actual)
             && let ast::Expr::UnaryExpr(unary) = &expr
             && unary.op == token::Token::AND
@@ -28666,6 +28670,45 @@ func main() {
             2,
             "{main_rs}"
         );
+    }
+
+    #[test]
+    fn compile_program_multi_boxes_interface_call_args_to_any_by_cloning_interface() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type Interface interface {
+	M()
+}
+
+type source struct{}
+
+func (source) M() {}
+
+func keep(arg any) {}
+
+func pass(arg Interface) {
+	keep(arg)
+}
+
+func main() {
+	pass(source{})
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(
+            main_rs.contains("Box::new(Interface::__gors_clone_box(&*(arg)))")
+                || main_rs.contains("Box :: new (Interface :: __gors_clone_box (& * (arg)))"),
+            "{main_rs}"
+        );
+        assert!(!main_rs.contains("Box::new(&mut *arg)"), "{main_rs}");
     }
 
     #[test]
