@@ -195,7 +195,6 @@
   "compress/zlib::Writer.Flush": "Audited 2026-06-02: Flush depends on lazy zlib header emission and the unsupported flate writer flush path.",
   "compress/zlib::Writer.Reset": "Audited 2026-06-02: Reset depends on preserving level/dictionary state while replacing the underlying io.Writer and resetting stored flate/hash state.",
   "compress/zlib::Writer.Write": "Audited 2026-06-02: Write depends on zlib header serialization, checksum updates through hash.Hash32, and flate writer dispatch for compressed payloads.",
-  "context::AfterFunc": "Audited 2026-06-02: AfterFunc depends on cancellation propagation, sync.Once state, goroutine launch, and stored func() callbacks.",
   "context::CancelCauseFunc": "Audited 2026-06-02: CancelCauseFunc behavior depends on stored function values mutating shared cancelCtx state with optional error causes.",
   "context::Cause": "Audited 2026-06-02: Cause depends on interface Value lookup, pointer type assertions to cancelCtx, mutex-protected state, and atomic.Value error storage.",
   "context::WithCancelCause": "Audited 2026-06-02: WithCancelCause depends on WithCancel plus cause-carrying error interface state shared through derived contexts.",

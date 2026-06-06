@@ -59,6 +59,7 @@ pub(super) fn impls(
             for trait_fn in required_methods {
                 pointer_impl_items.push(pointer_forwarding_impl_item(
                     trait_fn,
+                    &field.trait_path,
                     &struct_ident,
                     &field.field_ident,
                     struct_methods,
@@ -124,6 +125,7 @@ fn field_forwarding_impl_item(
 
 fn pointer_forwarding_impl_item(
     trait_fn: &syn::TraitItemFn,
+    trait_path: &syn::Path,
     struct_ident: &syn::Ident,
     field_ident: &syn::Ident,
     methods: &[syn::ImplItemFn],
@@ -142,7 +144,7 @@ fn pointer_forwarding_impl_item(
     let block = match method_name.as_str() {
         interface_hooks::AS_ANY_METHOD => syn::parse_quote!({ None }),
         interface_hooks::CLONE_BOX_METHOD => {
-            syn::parse_quote!({ crate::builtin::panic_value("cloned non-clone interface value") })
+            syn::parse_quote!({ Box::new(self.clone()) as Box<dyn #trait_path> })
         }
         _ if has_pointer_inherent_method && matches!(sig.output, syn::ReturnType::Default) => {
             syn::parse_quote!({

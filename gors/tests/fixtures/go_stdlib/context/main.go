@@ -51,4 +51,30 @@ func main() {
 	}
 	cancel()
 	fmt.Println("with-cancel-idempotent", cancelable.Err().Error())
+
+	// gors:stdlib-cover context::AfterFunc
+	{
+		stoppedCtx, stoppedCancel := context.WithCancel(bg)
+		stoppedDone := make(chan struct{})
+		stoppedStop := context.AfterFunc(stoppedCtx, func() {
+			close(stoppedDone)
+		})
+		fmt.Println("afterfunc-stop-before-cancel", stoppedStop())
+		stoppedCancel()
+		select {
+		case <-stoppedDone:
+			fmt.Println("afterfunc-stopped-ran", true)
+		default:
+			fmt.Println("afterfunc-stopped-ran", false)
+		}
+
+		runCtx, runCancel := context.WithCancel(bg)
+		runDone := make(chan struct{})
+		runStop := context.AfterFunc(runCtx, func() {
+			close(runDone)
+		})
+		runCancel()
+		<-runDone
+		fmt.Println("afterfunc-ran", runCtx.Err().Error(), runStop())
+	}
 }

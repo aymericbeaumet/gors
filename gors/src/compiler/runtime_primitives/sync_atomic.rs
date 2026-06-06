@@ -1,4 +1,4 @@
-use super::{CompiledModule, module_has_struct, prune_replaced_items};
+use super::{CompiledModule, module_has_item, module_has_struct, prune_replaced_items};
 use std::collections::HashSet;
 
 pub(super) const MODULE: &str = "sync__atomic";
@@ -6,13 +6,21 @@ const INT32_TYPE: &str = "Int32";
 const VALUE_TYPE: &str = "Value";
 
 pub(super) fn replace_module(module: &mut CompiledModule) -> bool {
-    if !module_has_struct(module, INT32_TYPE) && !module_has_struct(module, VALUE_TYPE) {
+    if !module_has_struct(module, INT32_TYPE)
+        && !module_has_struct(module, VALUE_TYPE)
+        && !module_has_item(module, "AddInt32")
+        && !module_has_item(module, "CompareAndSwapInt32")
+        && !module_has_item(module, "LoadUint32")
+        && !module_has_item(module, "StoreUint32")
+    {
         return false;
     }
 
     let item_names = HashSet::from([
         "AddInt32".to_string(),
         "CompareAndSwapInt32".to_string(),
+        "LoadUint32".to_string(),
+        "StoreUint32".to_string(),
         INT32_TYPE.to_string(),
         VALUE_TYPE.to_string(),
     ]);
@@ -40,6 +48,18 @@ pub(super) fn replace_module(module: &mut CompiledModule) -> bool {
                 } else {
                     false
                 }
+            }
+        },
+        syn::parse_quote! {
+            pub fn LoadUint32(mut addr: crate::builtin::GorsPtr<u32>) -> u32 {
+                let value = addr.lock().unwrap();
+                *value
+            }
+        },
+        syn::parse_quote! {
+            pub fn StoreUint32(mut addr: crate::builtin::GorsPtr<u32>, val: u32) {
+                let mut value = addr.lock().unwrap();
+                *value = val;
             }
         },
         syn::parse_quote! {

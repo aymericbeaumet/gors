@@ -42,14 +42,10 @@ pub(super) fn is_shared_capture_name(name: &str) -> bool {
 pub(super) fn move_closure_shared_capture_clones(func_lit: &ast::FuncLit) -> Vec<syn::Stmt> {
     TYPE_ENV.with(|env| {
         let env = env.borrow();
-        let mut names: BTreeSet<_> = ir::func_lit_captures(func_lit, &env)
+        let names: BTreeSet<_> = ir::func_lit_captures(func_lit, &env)
             .into_iter()
             .map(|capture| capture.name)
             .collect();
-        names.extend(ir::mutable_func_lit_capture_names_in_block(
-            &func_lit.body,
-            &env,
-        ));
         names
             .into_iter()
             .filter(|name| is_shared_capture_name(name))

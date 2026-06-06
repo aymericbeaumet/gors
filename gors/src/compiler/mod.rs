@@ -2789,23 +2789,140 @@ fn goroutine_capture_clones(func_lit: &ast::FuncLit) -> Vec<syn::Stmt> {
         let env = env.borrow();
         ir::func_lit_captures(func_lit, &env)
             .into_iter()
-            .map(|capture| {
-                let ident =
-                    syn::Ident::new(&rust_safe_ident_name(&capture.name), Span::mixed_site());
-                let capture_ty = env.get_var(&capture.name);
-                if let Some(interface_name) = capture_ty
-                    .as_ref()
-                    .and_then(go_type_interface_name)
-                    && interface_name != "error"
-                {
-                    let trait_path = interface_trait_path_from_name(&interface_name);
-                    syn::parse_quote! { let mut #ident = #trait_path::__gors_clone_box(&*(#ident)); }
-                } else {
-                    syn::parse_quote! { let #ident = #ident.clone(); }
-                }
+            .filter_map(|capture| {
+                let ty = local_capture_go_type(&env, &capture.name)?;
+                Some(clone_capture_stmt(&capture.name, Some(&ty)))
             })
             .collect()
     })
+}
+
+fn local_capture_go_type(env: &typeinfer::TypeEnv, name: &str) -> Option<typeinfer::GoType> {
+    if env.is_top_level_var(name)
+        || env.get_type_kind(name).is_some()
+        || predeclared::is_type_name(name)
+    {
+        return None;
+    }
+    env.get_var(name)
+}
+
+fn clone_capture_stmt(name: &str, go_type: Option<&typeinfer::GoType>) -> syn::Stmt {
+    let ident = value_ident(name);
+    if let Some(interface_name) = go_type.and_then(go_type_interface_name)
+        && interface_name != "error"
+    {
+        let trait_path = interface_trait_path_from_name(&interface_name);
+        syn::parse_quote! { let mut #ident = #trait_path::__gors_clone_box(&*(#ident)); }
+    } else if go_type.is_some_and(|ty| matches!(resolved_go_type(ty), typeinfer::GoType::Any)) {
+        syn::parse_quote! { let #ident = crate::builtin::clone_any(&#ident); }
+    } else {
+        syn::parse_quote! { let #ident = #ident.clone(); }
+    }
+}
+
+fn move_closure_value_capture_clones(func_lit: &ast::FuncLit) -> Vec<syn::Stmt> {
+    TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        ir::func_lit_captures(func_lit, &env)
+            .into_iter()
+            .filter_map(|capture| {
+                let ty = local_capture_go_type(&env, &capture.name)?;
+                Some(ir::Capture {
+                    ty,
+                    name: capture.name,
+                    mode: capture.mode,
+                })
+            })
+            .filter(|capture| !is_shared_capture_name(&capture.name))
+            .filter(|capture| !go_type_is_copy(&capture.ty))
+            .filter(|capture| {
+                !matches!(
+                    go_type_interface_name(&capture.ty).as_deref(),
+                    Some(interface_name) if interface_name != "error"
+                )
+            })
+            .map(|capture| clone_capture_stmt(&capture.name, Some(&capture.ty)))
+            .collect()
+    })
+}
+
+fn goroutine_call_capture_clones(call: &ast::CallExpr<'_>) -> Vec<syn::Stmt> {
+    let mut names = BTreeSet::new();
+    collect_goroutine_call_capture_names(&call.fun, &mut names);
+    if let Some(args) = &call.args {
+        for arg in args {
+            collect_goroutine_call_capture_names(arg, &mut names);
+        }
+    }
+    TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        names
+            .into_iter()
+            .filter_map(|name| local_capture_go_type(&env, &name).map(|ty| (name, ty)))
+            .map(|(name, ty)| clone_capture_stmt(&name, Some(&ty)))
+            .collect()
+    })
+}
+
+fn collect_goroutine_call_capture_names(expr: &ast::Expr<'_>, names: &mut BTreeSet<String>) {
+    match expr {
+        ast::Expr::Ident(ident) => {
+            names.insert(ident.name.to_string());
+        }
+        ast::Expr::ParenExpr(paren) => collect_goroutine_call_capture_names(&paren.x, names),
+        ast::Expr::SelectorExpr(selector) => {
+            collect_goroutine_call_capture_names(&selector.x, names);
+        }
+        ast::Expr::IndexExpr(index) => {
+            collect_goroutine_call_capture_names(&index.x, names);
+            collect_goroutine_call_capture_names(&index.index, names);
+        }
+        ast::Expr::IndexListExpr(index) => {
+            collect_goroutine_call_capture_names(&index.x, names);
+            for index in &index.indices {
+                collect_goroutine_call_capture_names(index, names);
+            }
+        }
+        ast::Expr::SliceExpr(slice) => {
+            collect_goroutine_call_capture_names(&slice.x, names);
+            if let Some(low) = &slice.low {
+                collect_goroutine_call_capture_names(low, names);
+            }
+            if let Some(high) = &slice.high {
+                collect_goroutine_call_capture_names(high, names);
+            }
+            if let Some(max) = &slice.max {
+                collect_goroutine_call_capture_names(max, names);
+            }
+        }
+        ast::Expr::StarExpr(star) => collect_goroutine_call_capture_names(&star.x, names),
+        ast::Expr::UnaryExpr(unary) => collect_goroutine_call_capture_names(&unary.x, names),
+        ast::Expr::BinaryExpr(binary) => {
+            collect_goroutine_call_capture_names(&binary.x, names);
+            collect_goroutine_call_capture_names(&binary.y, names);
+        }
+        ast::Expr::CallExpr(call) => {
+            collect_goroutine_call_capture_names(&call.fun, names);
+            if let Some(args) = &call.args {
+                for arg in args {
+                    collect_goroutine_call_capture_names(arg, names);
+                }
+            }
+        }
+        ast::Expr::CompositeLit(composite) => {
+            if let Some(elts) = &composite.elts {
+                for elt in elts {
+                    collect_goroutine_call_capture_names(elt, names);
+                }
+            }
+        }
+        ast::Expr::KeyValueExpr(kv) => {
+            collect_goroutine_call_capture_names(&kv.key, names);
+            collect_goroutine_call_capture_names(&kv.value, names);
+        }
+        _ => {}
+    }
 }
 
 fn move_closure_interface_captures(func_lit: &ast::FuncLit) -> Vec<(String, syn::Stmt)> {
@@ -5576,6 +5693,75 @@ fn preseed_borrowed_interface_structs(decls: &[ast::Decl]) {
             break;
         }
     }
+}
+
+fn preseed_struct_clone_derivability(decls: &[ast::Decl]) {
+    let type_specs = decls
+        .iter()
+        .filter_map(|decl| {
+            let ast::Decl::GenDecl(gen_decl) = decl else {
+                return None;
+            };
+            (gen_decl.tok == token::Token::TYPE).then_some(gen_decl)
+        })
+        .flat_map(|gen_decl| gen_decl.specs.iter())
+        .filter_map(|spec| {
+            let ast::Spec::TypeSpec(type_spec) = spec else {
+                return None;
+            };
+            type_spec.name.as_ref().map(|name| (name.name, type_spec))
+        })
+        .collect::<Vec<_>>();
+
+    for _ in 0..type_specs.len() {
+        for (name, type_spec) in &type_specs {
+            let Some(can_clone) = type_spec_struct_can_clone(type_spec) else {
+                continue;
+            };
+            type_decl_facts::record_struct_clone_derivability(
+                rust_safe_ident_name(name),
+                can_clone,
+            );
+        }
+    }
+}
+
+fn type_spec_struct_can_clone(type_spec: &ast::TypeSpec<'_>) -> Option<bool> {
+    let ast::Expr::StructType(struct_type) = &type_spec.type_ else {
+        return None;
+    };
+    let mut derive_state = struct_derives::State::new();
+    let Some(field_list) = &struct_type.fields else {
+        return Some(true);
+    };
+    for field in &field_list.list {
+        let Some(field_type) = &field.type_ else {
+            continue;
+        };
+        let interface_trait_path = interface_trait_path_from_expr(field_type);
+        let field_go_type = typeinfer::GoType::from_expr(field_type);
+        let field_is_error = matches!(field_go_type, typeinfer::GoType::Error);
+        let borrowed_interface_trait_path = if field_is_error {
+            None
+        } else {
+            interface_trait_path.clone()
+        };
+        let field_derive_facts = struct_derives::FieldFacts::collect(
+            field_type,
+            &field_go_type,
+            field_is_error,
+            interface_trait_path.is_some(),
+            borrowed_interface_trait_path.is_some(),
+        );
+        if expr_requires_borrowed_lifetime(field_type) {
+            derive_state.record_borrowed_lifetime_field();
+        }
+        derive_state.record_field(field_derive_facts);
+    }
+    Some(
+        !(derive_state.cannot_derive_clone
+            && (!derive_state.needs_manual_clone || derive_state.cannot_manual_clone)),
+    )
 }
 
 fn container_value_type_from_expr(expr: &ast::Expr) -> syn::Type {
@@ -10227,6 +10413,11 @@ fn compile_func_lit_with_capture_mode(func_lit: ast::FuncLit, move_capture: bool
     } else {
         Vec::new()
     };
+    let value_capture_clones = if move_capture {
+        move_closure_value_capture_clones(&func_lit)
+    } else {
+        Vec::new()
+    };
     let interface_captures = if move_capture {
         move_closure_interface_captures(&func_lit)
     } else {
@@ -10326,10 +10517,14 @@ fn compile_func_lit_with_capture_mode(func_lit: ast::FuncLit, move_capture: bool
         }
     };
 
-    if move_capture && (!shared_capture_clones.is_empty() || !interface_capture_bindings.is_empty())
+    if move_capture
+        && (!shared_capture_clones.is_empty()
+            || !value_capture_clones.is_empty()
+            || !interface_capture_bindings.is_empty())
     {
         syn::parse_quote! {{
             #(#shared_capture_clones)*
+            #(#value_capture_clones)*
             #(#interface_capture_bindings)*
             #closure
         }}
@@ -18004,6 +18199,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
         set_current_file_imports(&file);
         type_decl_facts::clear_borrowed_interface_structs();
         type_decl_facts::clear_struct_clone_derivability();
+        preseed_struct_clone_derivability(&file.decls);
         preseed_borrowed_interface_structs(&file.decls);
 
         preseed_fixed_array_view_methods(&file.decls);
@@ -19568,25 +19764,7 @@ impl TryFrom<ast::Stmt<'_>> for Vec<syn::Stmt> {
                     )])
                 } else {
                     // go someFunc(args...)
-                    let mut clone_stmts: Vec<syn::Stmt> = Vec::new();
-                    if let ast::Expr::Ident(ident) = call_expr.fun.as_ref()
-                        && function_value_call_info(&call_expr.fun).is_some()
-                    {
-                        let name = value_ident(ident.name);
-                        clone_stmts.push(syn::parse_quote! {
-                            let #name = #name.clone();
-                        });
-                    }
-                    if let Some(ref args) = call_expr.args {
-                        for arg in args.iter() {
-                            if let ast::Expr::Ident(ident) = arg {
-                                let name = value_ident(ident.name);
-                                clone_stmts.push(syn::parse_quote! {
-                                    let #name = #name.clone();
-                                });
-                            }
-                        }
-                    }
+                    let clone_stmts = goroutine_call_capture_clones(&call_expr);
                     let call: syn::Expr = ast::Expr::CallExpr(call_expr).into();
                     if clone_stmts.is_empty() {
                         Ok(vec![syn::parse_quote! {
@@ -27972,7 +28150,9 @@ func wrap(parent Context) canceler {
             "{output}"
         );
         assert!(
-            output.contains("fn __gors_clone_box (& self) -> Box < dyn canceler > { crate :: builtin :: panic_value (\"cloned non-clone interface value\") }"),
+            output.contains(
+                "fn __gors_clone_box (& self) -> Box < dyn canceler > { Box :: new (self . clone ()) as Box < dyn canceler > }"
+            ),
             "{output}"
         );
     }
@@ -29013,6 +29193,33 @@ func main() {
                     || main_rs.contains("canceler :: __gors_clone_box (& * (child__local))")),
             "{main_rs}"
         );
+    }
+
+    #[test]
+    fn compile_program_multi_clones_readonly_chan_captures_for_stored_func_lits() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+func keep(fn func()) {}
+
+func main() {
+	done := make(chan struct{})
+	keep(func() {
+		close(done)
+	})
+	_ = done
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(main_rs.contains("let done = done.clone();"), "{main_rs}");
+        assert!(main_rs.contains("close(&done)"), "{main_rs}");
     }
 
     #[test]
@@ -37779,6 +37986,29 @@ func main() {
     }
 
     #[test]
+    fn it_should_clone_selector_receivers_for_go_calls() {
+        let rust_src = go_to_rust(
+            r#"
+            package main
+
+            type holder struct {
+                f func()
+            }
+
+            func run(h *holder) {
+                go h.f()
+                _ = h
+            }
+            "#,
+        );
+        assert!(
+            rust_src.contains("let h = h.clone();"),
+            "Expected selector receiver clone before spawn:\n{}",
+            rust_src
+        );
+    }
+
+    #[test]
     fn it_should_compile_go_stmt_with_named_func() {
         let rust_src = go_to_rust(
             r#"
@@ -38176,6 +38406,45 @@ func main() {}
         assert!(
             !output.contains("#[derive(Clone, Default, PartialEq)]\npub struct Holder"),
             "{output}"
+        );
+    }
+
+    #[test]
+    fn forward_embedded_nonclone_structs_do_not_derive_clone() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type canceler interface {
+	cancel()
+}
+
+type child struct {
+	parent
+}
+
+type parent struct {
+	children map[canceler]struct{}
+}
+
+func (p *parent) count() int {
+	return len(p.children)
+}
+
+func main() {
+	var c child
+	_ = c.count()
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(
+            !main_rs.contains("#[derive(Clone, Default)]\n#[repr(C)]\npub struct child"),
+            "{main_rs}"
         );
     }
 

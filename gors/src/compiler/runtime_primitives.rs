@@ -45,6 +45,14 @@ fn module_has_static(module: &CompiledModule, name: &str) -> bool {
         .any(|item| matches!(item, syn::Item::Static(item_static) if item_static.ident == name))
 }
 
+fn module_has_item(module: &CompiledModule, name: &str) -> bool {
+    module
+        .file
+        .items
+        .iter()
+        .any(|item| item_name(item).as_deref() == Some(name))
+}
+
 fn prune_replaced_items(
     module: &mut CompiledModule,
     item_names: &HashSet<String>,
@@ -147,6 +155,8 @@ mod tests {
             "sync__atomic",
             syn::parse_quote! {
                 pub fn AddInt32(addr: crate::builtin::GorsPtr<i32>, delta: i32) -> i32 { 0 }
+                pub fn LoadUint32(addr: crate::builtin::GorsPtr<u32>) -> u32 { 0 }
+                pub fn StoreUint32(addr: crate::builtin::GorsPtr<u32>, val: u32) {}
                 pub struct Int32;
                 pub struct Value;
                 impl Value {
@@ -160,12 +170,35 @@ mod tests {
         let source = prettyplease::unparse(&module.file);
 
         assert!(source.contains("pub fn AddInt32"), "{source}");
+        assert!(source.contains("pub fn LoadUint32"), "{source}");
+        assert!(source.contains("pub fn StoreUint32"), "{source}");
         assert!(source.contains("pub struct Int32"), "{source}");
         assert!(source.contains("pub struct Value"), "{source}");
         assert!(source.contains("pub fn Load"), "{source}");
         assert!(source.contains("pub fn Store"), "{source}");
         assert!(source.contains("pub fn Keep"), "{source}");
         assert!(!source.contains("pub fn old"), "{source}");
+    }
+
+    #[test]
+    fn sync_atomic_replacement_triggers_on_function_only_roots() {
+        let mut module = stdlib_module(
+            "sync__atomic",
+            syn::parse_quote! {
+                pub fn LoadUint32(addr: crate::builtin::GorsPtr<u32>) -> u32 { 0 }
+                pub fn StoreUint32(addr: crate::builtin::GorsPtr<u32>, val: u32) {}
+                pub fn Keep() -> i32 { 1 }
+            },
+        );
+
+        assert!(sync_atomic::replace_module(&mut module));
+        let source = prettyplease::unparse(&module.file);
+
+        assert!(source.contains("pub fn LoadUint32"), "{source}");
+        assert!(source.contains("*value"), "{source}");
+        assert!(source.contains("pub fn StoreUint32"), "{source}");
+        assert!(source.contains("*value = val"), "{source}");
+        assert!(source.contains("pub fn Keep"), "{source}");
     }
 
     #[test]

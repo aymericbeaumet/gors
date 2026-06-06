@@ -13,8 +13,8 @@
     "groupCount": 344,
     "passingGroupCount": 4,
     "caseCount": 12418,
-    "passingCaseCount": 260,
-    "unsupportedCaseCount": 12158,
+    "passingCaseCount": 261,
+    "unsupportedCaseCount": 12157,
     "fixtureCount": 83
   },
   "groups": [
@@ -4069,8 +4069,8 @@
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 17,
-        "passingCaseCount": 8,
-        "unsupportedCaseCount": 9,
+        "passingCaseCount": 9,
+        "unsupportedCaseCount": 8,
         "fixtureCount": 0
       },
       "cases": [
@@ -4079,9 +4079,11 @@
           "title": "AfterFunc",
           "subtitle": "func",
           "kind": "func",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Audited 2026-06-02: AfterFunc depends on cancellation propagation, sync.Once state, goroutine launch, and stored func() callbacks."
+          "status": "passing",
+          "fixtures": [
+            "context"
+          ],
+          "reason": ""
         },
         {
           "id": "context::Background",

@@ -93,7 +93,7 @@ pub(super) fn non_static_pointer_items(
         methods,
         pointer_methods,
     };
-    items_for_target(PointerImplTarget::GorsPtr, false, false, &context)
+    items_for_target(PointerImplTarget::GorsPtr, false, true, &context)
 }
 
 pub(super) fn borrowed_pointer_items(
