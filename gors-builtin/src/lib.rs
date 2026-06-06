@@ -618,13 +618,13 @@ struct ProjectedFieldCell<Owner, T, F> {
 impl<Owner, T, F> ProjectedCell<T> for ProjectedFieldCell<Owner, T, F>
 where
     Owner: Send + 'static,
-    T: Clone + 'static,
+    T: Default + 'static,
     F: for<'a> Fn(&'a mut Owner) -> &'a mut T + Send + Sync + 'static,
 {
     fn lock_projected(&self) -> Box<dyn ProjectedGuard<T> + '_> {
         let value = {
             let mut owner_guard = lock_projected_owner(&self.owner);
-            (self.field)(&mut *owner_guard).clone()
+            std::mem::take((self.field)(&mut *owner_guard))
         };
         Box::new(ProjectedFieldGuard {
             owner: self.owner.clone(),
@@ -676,7 +676,7 @@ where
     }
 }
 
-struct ProjectedFieldGuard<'a, Owner, T: Clone, F>
+struct ProjectedFieldGuard<'a, Owner, T: Default, F>
 where
     F: for<'b> Fn(&'b mut Owner) -> &'b mut T,
 {
@@ -687,7 +687,7 @@ where
 
 impl<Owner, T, F> std::ops::Deref for ProjectedFieldGuard<'_, Owner, T, F>
 where
-    T: Clone,
+    T: Default,
     F: for<'a> Fn(&'a mut Owner) -> &'a mut T,
 {
     type Target = T;
@@ -699,7 +699,7 @@ where
 
 impl<Owner, T, F> std::ops::DerefMut for ProjectedFieldGuard<'_, Owner, T, F>
 where
-    T: Clone,
+    T: Default,
     F: for<'a> Fn(&'a mut Owner) -> &'a mut T,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
@@ -709,12 +709,12 @@ where
 
 impl<Owner, T, F> Drop for ProjectedFieldGuard<'_, Owner, T, F>
 where
-    T: Clone,
+    T: Default,
     F: for<'a> Fn(&'a mut Owner) -> &'a mut T,
 {
     fn drop(&mut self) {
         let mut owner = lock_projected_owner(&self.owner);
-        *(self.field)(&mut *owner) = self.value.clone();
+        *(self.field)(&mut *owner) = std::mem::take(&mut self.value);
     }
 }
 
@@ -802,7 +802,7 @@ impl<T> GorsPtr<T> {
     pub fn from_arc_field<Owner, F>(owner: Arc<Mutex<Owner>>, field_key: usize, field: F) -> Self
     where
         Owner: Send + 'static,
-        T: Clone + 'static,
+        T: Default + 'static,
         F: for<'a> Fn(&'a mut Owner) -> &'a mut T + Send + Sync + 'static,
     {
         Self::from_ptr_field(GorsPtr::from_arc(owner), field_key, field)
@@ -811,7 +811,7 @@ impl<T> GorsPtr<T> {
     pub fn from_ptr_field<Owner, F>(owner: GorsPtr<Owner>, field_key: usize, field: F) -> Self
     where
         Owner: Send + 'static,
-        T: Clone + 'static,
+        T: Default + 'static,
         F: for<'a> Fn(&'a mut Owner) -> &'a mut T + Send + Sync + 'static,
     {
         Self {
@@ -2352,6 +2352,30 @@ mod tests {
 
         assert!(GorsPtr::ptr_eq(&field_ptr, &same_field_ptr));
         assert_eq!(owner.lock().unwrap().field.value, 1);
+    }
+
+    #[test]
+    fn projected_pointer_field_pointers_lock_default_nonclone_fields() {
+        #[derive(Default)]
+        struct NonClone {
+            value: isize,
+        }
+        struct Holder {
+            field: NonClone,
+        }
+
+        let owner = GorsPtr::new(Holder {
+            field: NonClone { value: 1 },
+        });
+        let field_ptr = GorsPtr::from_ptr_field(
+            owner.clone(),
+            std::mem::offset_of!(Holder, field),
+            |holder: &mut Holder| &mut holder.field,
+        );
+
+        field_ptr.lock().unwrap().value = 7;
+
+        assert_eq!(owner.lock().unwrap().field.value, 7);
     }
 
     #[test]
