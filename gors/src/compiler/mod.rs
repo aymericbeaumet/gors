@@ -36020,6 +36020,47 @@ func main() {
     }
 
     #[test]
+    fn compile_program_multi_borrows_embedded_interface_method_slice_params() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type Reader interface {
+	Read([]byte) (int, error)
+}
+
+type fileReader interface {
+	Reader
+}
+
+type holder struct {
+	curr fileReader
+}
+
+func main() {
+	h := holder{}
+	buf := []byte{0}
+	_, _ = h.curr.Read(buf)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(
+            main_rs.contains("Read(&mut *buf)") || main_rs.contains("Read (& mut * buf)"),
+            "{main_rs}"
+        );
+        assert!(
+            !main_rs.contains("Read((buf).clone())")
+                && !main_rs.contains("Read ((buf) . clone ())"),
+            "{main_rs}"
+        );
+    }
+
+    #[test]
     fn compile_program_multi_borrows_method_value_slice_params() {
         let tmp = tempfile::tempdir().unwrap();
         write_fixture_file(

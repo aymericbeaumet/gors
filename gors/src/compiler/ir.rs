@@ -12548,7 +12548,7 @@ fn call_signature_for_selector(
 fn selector_receiver_method_key(selector: &ast::SelectorExpr<'_>, env: &TypeEnv) -> Option<String> {
     let receiver_name = selector_base_value_type(selector, env)
         .and_then(|ty| method_receiver_type_name(ty, env))?;
-    Some(format!("{}.{}", receiver_name, selector.sel.name))
+    env.get_method_func_key(&receiver_name, selector.sel.name)
 }
 
 fn selector_base_value_type(selector: &ast::SelectorExpr<'_>, env: &TypeEnv) -> Option<GoType> {
@@ -20032,6 +20032,42 @@ mod tests {
         assert_eq!(
             call.abi.signature_params,
             vec![GoType::Named("Context".to_string())]
+        );
+    }
+
+    #[test]
+    fn call_abi_uses_embedded_interface_method_owner_for_selector_receivers() {
+        let ir = lower(
+            r#"
+                package main
+
+                type Reader interface {
+                    Read([]byte) (int, error)
+                }
+
+                type fileReader interface {
+                    Reader
+                }
+
+                type holder struct {
+                    curr fileReader
+                }
+
+                func main() {
+                    var h holder
+                    b := []byte{0}
+                    _, _ = h.curr.Read(b)
+                }
+            "#,
+        );
+        let body = main_body(&ir);
+        let call = assign_rhs_call(body, 2, 0);
+
+        assert_eq!(call.abi.callee, CalleeKind::Method);
+        assert_eq!(call.abi.signature_target.as_deref(), Some("Reader.Read"));
+        assert_eq!(
+            call.abi.signature_params,
+            vec![GoType::Slice(Box::new(GoType::Uint8))]
         );
     }
 

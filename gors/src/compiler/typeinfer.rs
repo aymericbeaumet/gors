@@ -2568,17 +2568,14 @@ fn call_target_key_for_slice_mutation(fun: &ast::Expr, env: &TypeEnv) -> Option<
     match fun {
         ast::Expr::Ident(ident) => env.has_func(ident.name).then(|| ident.name.to_string()),
         ast::Expr::SelectorExpr(selector) => {
-            let ast::Expr::Ident(pkg_or_recv) = selector.x.as_ref() else {
-                return None;
-            };
-            let package_key = format!("{}.{}", pkg_or_recv.name, selector.sel.name);
-            if env.has_func(&package_key) {
-                return Some(package_key);
+            if let ast::Expr::Ident(pkg_or_recv) = selector.x.as_ref() {
+                let package_key = format!("{}.{}", pkg_or_recv.name, selector.sel.name);
+                if env.has_func(&package_key) {
+                    return Some(package_key);
+                }
             }
-            let receiver = env.get_var(pkg_or_recv.name)?;
-            let receiver_name =
-                receiver_method_type_name_for_slice_mutation(receiver, selector.sel.name, env)?;
-            Some(format!("{receiver_name}.{}", selector.sel.name))
+            let receiver = GoType::infer_expr(&selector.x, env);
+            receiver_method_key_for_slice_mutation(receiver, selector.sel.name, env)
         }
         ast::Expr::IndexExpr(index) => call_target_key_for_slice_mutation(&index.x, env),
         ast::Expr::IndexListExpr(index) => call_target_key_for_slice_mutation(&index.x, env),
@@ -2587,33 +2584,30 @@ fn call_target_key_for_slice_mutation(fun: &ast::Expr, env: &TypeEnv) -> Option<
     }
 }
 
-fn receiver_method_type_name_for_slice_mutation(
+fn receiver_method_key_for_slice_mutation(
     ty: GoType,
     method: &str,
     env: &TypeEnv,
 ) -> Option<String> {
     match ty {
         GoType::Named(name) | GoType::Interface(name) => {
-            if env.has_method_func(&name, method) {
-                return Some(name);
+            if let Some(method_key) = env.get_method_func_key(&name, method) {
+                return Some(method_key);
             }
             match env.resolve_alias(&GoType::Named(name)) {
-                GoType::Named(alias_name) | GoType::Interface(alias_name)
-                    if env.has_method_func(&alias_name, method) =>
-                {
-                    Some(alias_name)
+                GoType::Named(alias_name) | GoType::Interface(alias_name) => {
+                    env.get_method_func_key(&alias_name, method)
+                }
+                GoType::Pointer(inner) => {
+                    receiver_method_key_for_slice_mutation(*inner, method, env)
                 }
                 _ => None,
             }
         }
-        GoType::Pointer(inner) => receiver_method_type_name_for_slice_mutation(*inner, method, env),
+        GoType::Pointer(inner) => receiver_method_key_for_slice_mutation(*inner, method, env),
         other => match env.resolve_alias(&other) {
-            GoType::Named(name) | GoType::Interface(name) if env.has_method_func(&name, method) => {
-                Some(name)
-            }
-            GoType::Pointer(inner) => {
-                receiver_method_type_name_for_slice_mutation(*inner, method, env)
-            }
+            GoType::Named(name) | GoType::Interface(name) => env.get_method_func_key(&name, method),
+            GoType::Pointer(inner) => receiver_method_key_for_slice_mutation(*inner, method, env),
             _ => None,
         },
     }
@@ -2836,6 +2830,10 @@ impl TypeEnv {
 
     pub fn has_method_func(&self, receiver: &str, method: &str) -> bool {
         self.method_func_key(receiver, method).is_some()
+    }
+
+    pub fn get_method_func_key(&self, receiver: &str, method: &str) -> Option<std::string::String> {
+        self.method_func_key(receiver, method)
     }
 
     pub fn get_method_return(&self, receiver: &str, method: &str) -> GoType {
@@ -3895,7 +3893,9 @@ impl TypeEnv {
         fd: &ast::FuncDecl,
         inference_env: &TypeEnv,
     ) -> bool {
-        let params = borrowed_slice_param_indices_for_func(fd, inference_env);
+        let mut local_env = inference_env.clone();
+        self.seed_func_decl_vars(&mut local_env, fd);
+        let params = borrowed_slice_param_indices_for_func(fd, &local_env);
         let mut changed = false;
         if let Some(ref recv) = fd.recv
             && let Some(recv_field) = recv.list.first()
@@ -3908,6 +3908,34 @@ impl TypeEnv {
             changed |= self.replace_borrowed_slice_params_if_changed(fd.name.name, params);
         }
         changed
+    }
+
+    fn seed_func_decl_vars(&self, env: &mut TypeEnv, fd: &ast::FuncDecl) {
+        if let Some(recv) = &fd.recv {
+            for field in &recv.list {
+                let Some(recv_type) = field.type_.as_ref() else {
+                    continue;
+                };
+                let recv_go_type = GoType::from_expr(recv_type);
+                if let Some(names) = &field.names {
+                    for name in names {
+                        env.set_var(name.name, recv_go_type.clone());
+                    }
+                }
+            }
+        }
+        for field in &fd.type_.params.list {
+            let ty = field
+                .type_
+                .as_ref()
+                .map(GoType::from_expr)
+                .unwrap_or(GoType::Unknown);
+            if let Some(names) = &field.names {
+                for name in names {
+                    env.set_var(name.name, ty.clone());
+                }
+            }
+        }
     }
 
     fn replace_borrowed_slice_params_if_changed(
@@ -4379,6 +4407,39 @@ mod tests {
             env.get_interface_methods("ReadWriter"),
             Some(vec!["Write".to_string(), "Read".to_string()])
         );
+    }
+
+    #[test]
+    fn refresh_borrowed_slice_params_uses_embedded_interface_method_owner() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package p
+
+                type Reader interface {
+                    Read([]byte) (int, error)
+                }
+
+                type fileReader interface {
+                    Reader
+                }
+
+                type holder struct {
+                    curr fileReader
+                }
+
+                func (h *holder) Read(b []byte) (int, error) {
+                    n, err := h.curr.Read(b)
+                    return n, err
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+
+        env.scan_file(&file);
+
+        assert!(env.func_param_needs_borrowed_slice("holder.Read", 0));
     }
 
     #[test]
