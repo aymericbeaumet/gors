@@ -21098,15 +21098,99 @@ fn collect_mutable_top_level_vars_from_call(
     top_level_vars: &HashSet<String>,
     mutable: &mut HashSet<String>,
 ) {
+    let call_abi = call_abi_for_backend(call);
+    let param_types = if call_abi.signature_params.is_empty() {
+        call_param_types(&call.fun)
+    } else {
+        call_abi.signature_params.clone()
+    };
     if let ast::Expr::SelectorExpr(selector) = call.fun.as_ref()
         && let Some(name) = top_level_root_ident(&selector.x, top_level_vars)
     {
         mutable.insert(name.to_string());
     }
     collect_mutable_top_level_vars_from_expr(&call.fun, top_level_vars, mutable);
-    for arg in call.args.as_deref().unwrap_or_default() {
+    for (arg_index, arg) in call.args.as_deref().unwrap_or_default().iter().enumerate() {
+        if call_abi
+            .args
+            .get(arg_index)
+            .is_some_and(|arg| arg.role == ir::ValueRole::MutBorrow)
+            || param_types
+                .get(arg_index)
+                .is_some_and(is_go_byte_slice_type)
+            || call_arg_is_top_level_slice_alias(arg, top_level_vars)
+        {
+            mark_mutable_top_level_lvalue(arg, top_level_vars, mutable);
+        }
         collect_mutable_top_level_vars_from_expr(arg, top_level_vars, mutable);
     }
+}
+
+fn call_arg_is_top_level_slice_alias(arg: &ast::Expr, top_level_vars: &HashSet<String>) -> bool {
+    if top_level_root_ident(arg, top_level_vars).is_none() {
+        return false;
+    }
+    TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        matches!(
+            env.resolve_alias(&typeinfer::GoType::infer_expr(arg, &env)),
+            typeinfer::GoType::Slice(_)
+        )
+    })
+}
+
+fn set_mutable_top_level_scan_func_bindings(func_decl: &ast::FuncDecl) {
+    let type_param_info = collect_type_param_info(func_decl.type_.type_params.as_ref());
+    TYPE_ENV.with(|env| {
+        let mut env = env.borrow_mut();
+        if let Some(recv) = &func_decl.recv
+            && let Some(recv_field) = recv.list.first()
+        {
+            let ty = recv_field
+                .type_
+                .as_ref()
+                .map(|expr| {
+                    generic_slice_param_go_type(expr, &type_param_info)
+                        .or_else(|| generic_map_param_go_type(expr, &type_param_info))
+                        .unwrap_or_else(|| typeinfer::GoType::from_expr(expr))
+                })
+                .unwrap_or(typeinfer::GoType::Unknown);
+            if let Some(names) = &recv_field.names {
+                for name in names {
+                    env.set_var(name.name, ty.clone());
+                }
+            }
+        }
+        for param in &func_decl.type_.params.list {
+            let ty = param
+                .type_
+                .as_ref()
+                .map(|expr| {
+                    generic_slice_param_go_type(expr, &type_param_info)
+                        .or_else(|| generic_map_param_go_type(expr, &type_param_info))
+                        .unwrap_or_else(|| typeinfer::GoType::from_expr(expr))
+                })
+                .unwrap_or(typeinfer::GoType::Unknown);
+            if let Some(names) = &param.names {
+                for name in names {
+                    env.set_var(name.name, ty.clone());
+                }
+            }
+        }
+    });
+}
+
+fn collect_mutable_top_level_vars_from_func_decl(
+    func_decl: &ast::FuncDecl,
+    top_level_vars: &HashSet<String>,
+    mutable: &mut HashSet<String>,
+) {
+    let Some(body) = func_decl.body.as_ref() else {
+        return;
+    };
+    let _type_env = LocalTypeEnvScopeGuard::push();
+    set_mutable_top_level_scan_func_bindings(func_decl);
+    collect_mutable_top_level_vars_from_block(body, top_level_vars, mutable);
 }
 
 fn collect_mutable_top_level_vars_from_block(
@@ -21250,9 +21334,11 @@ fn mutable_top_level_var_names(decls: &[ast::Decl], is_main_package: bool) -> Ha
     for decl in decls {
         match decl {
             ast::Decl::FuncDecl(func_decl) => {
-                if let Some(body) = func_decl.body.as_ref() {
-                    collect_mutable_top_level_vars_from_block(body, &top_level_vars, &mut mutable);
-                }
+                collect_mutable_top_level_vars_from_func_decl(
+                    func_decl,
+                    &top_level_vars,
+                    &mut mutable,
+                );
             }
             ast::Decl::GenDecl(gen_decl) => {
                 for spec in &gen_decl.specs {
@@ -21272,19 +21358,15 @@ fn mutable_top_level_var_names(decls: &[ast::Decl], is_main_package: bool) -> Ha
     mutable
 }
 
-pub(crate) fn mutable_top_level_var_names_for_files<'file, 'src>(
-    files: impl IntoIterator<Item = &'file ast::File<'src>>,
+fn mutable_top_level_var_names_for_file_refs(
+    files: &[&ast::File<'_>],
     is_main_package: bool,
-) -> HashSet<String>
-where
-    'src: 'file,
-{
+) -> HashSet<String> {
     if is_main_package {
         return HashSet::new();
     }
-    let files = files.into_iter().collect::<Vec<_>>();
     let mut top_level_vars = HashSet::new();
-    for file in &files {
+    for file in files {
         top_level_vars.extend(file_top_level_var_names(&file.decls, false));
     }
     if top_level_vars.is_empty() {
@@ -21295,13 +21377,11 @@ where
         for decl in &file.decls {
             match decl {
                 ast::Decl::FuncDecl(func_decl) => {
-                    if let Some(body) = func_decl.body.as_ref() {
-                        collect_mutable_top_level_vars_from_block(
-                            body,
-                            &top_level_vars,
-                            &mut mutable,
-                        );
-                    }
+                    collect_mutable_top_level_vars_from_func_decl(
+                        func_decl,
+                        &top_level_vars,
+                        &mut mutable,
+                    );
                 }
                 ast::Decl::GenDecl(gen_decl) => {
                     for spec in &gen_decl.specs {
@@ -21320,6 +21400,36 @@ where
         }
     }
     mutable
+}
+
+pub(crate) fn mutable_top_level_var_names_for_files_with_type_env<'file, 'src>(
+    files: impl IntoIterator<Item = &'file ast::File<'src>>,
+    is_main_package: bool,
+    type_env: &typeinfer::TypeEnv,
+) -> HashSet<String>
+where
+    'src: 'file,
+{
+    let files = files.into_iter().collect::<Vec<_>>();
+    let _type_env = LocalTypeEnvScopeGuard::push();
+    set_type_env(type_env.clone());
+    mutable_top_level_var_names_for_file_refs(&files, is_main_package)
+}
+
+#[cfg(test)]
+pub(crate) fn mutable_top_level_var_names_for_files<'file, 'src>(
+    files: impl IntoIterator<Item = &'file ast::File<'src>>,
+    is_main_package: bool,
+) -> HashSet<String>
+where
+    'src: 'file,
+{
+    let files = files.into_iter().collect::<Vec<_>>();
+    let mut type_env = typeinfer::TypeEnv::new();
+    type_env.scan_files(&files);
+    let _type_env = LocalTypeEnvScopeGuard::push();
+    set_type_env(type_env);
+    mutable_top_level_var_names_for_file_refs(&files, is_main_package)
 }
 
 impl TryFrom<ast::File<'_>> for syn::File {
@@ -34915,6 +35025,58 @@ func Read() int {
         let mutable = super::mutable_top_level_var_names_for_files([&file], false);
 
         assert!(mutable.contains("Key"), "{mutable:?}");
+    }
+
+    #[test]
+    fn mutable_top_level_var_analysis_tracks_borrowed_slice_call_args() {
+        let file = parse_file(
+            "state.go",
+            r#"
+                package state
+
+                type sink interface {
+                    Write([]byte) (int, error)
+                }
+
+                type Writer struct {
+                    w sink
+                }
+
+                var Zero [4]byte
+
+                func (tw *Writer) Flush() {
+                    tw.w.Write(Zero[:])
+                }
+            "#,
+        )
+        .unwrap();
+
+        let mutable = super::mutable_top_level_var_names_for_files([&file], false);
+
+        assert!(mutable.contains("Zero"), "{mutable:?}");
+    }
+
+    #[test]
+    fn mutable_top_level_var_analysis_tracks_top_level_slice_alias_args() {
+        let file = parse_file(
+            "state.go",
+            r#"
+                package state
+
+                var Zero [4]byte
+
+                func Accept(v any) {}
+
+                func Flush() {
+                    Accept(Zero[:])
+                }
+            "#,
+        )
+        .unwrap();
+
+        let mutable = super::mutable_top_level_var_names_for_files([&file], false);
+
+        assert!(mutable.contains("Zero"), "{mutable:?}");
     }
 
     #[test]

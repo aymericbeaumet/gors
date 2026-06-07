@@ -321,10 +321,6 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
         return None;
     }
 
-    let package_mutable_top_level_vars = crate::compiler::mutable_top_level_var_names_for_files(
-        parsed_files.iter().map(|(_, ast)| ast),
-        false,
-    );
     let mut package_type_env = TypeEnv::new();
     let parsed_file_refs = parsed_files.iter().map(|(_, ast)| ast).collect::<Vec<_>>();
     package_type_env.scan_files(&parsed_file_refs);
@@ -340,6 +336,12 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
         &parsed_file_refs,
         &imported_type_envs,
     );
+    let package_mutable_top_level_vars =
+        crate::compiler::mutable_top_level_var_names_for_files_with_type_env(
+            parsed_file_refs.iter().copied(),
+            false,
+            &package_type_env,
+        );
     let view_method_seed =
         crate::compiler::borrowed_view_method_seed_for_files(&parsed_file_refs, &package_type_env);
 

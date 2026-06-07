@@ -89,10 +89,53 @@ pub(super) fn hoist_method_args_read_receiver(stmt: &mut syn::Stmt) -> Vec<syn::
         }
         let temp = synthetic_names::premethod_arg_ident(hoisted.len());
         let value = arg.clone();
-        *arg = syn::parse_quote! { #temp };
+        *arg = if expr_is_mut_reference(&value) {
+            syn::parse_quote! { &mut *#temp }
+        } else {
+            syn::parse_quote! { #temp }
+        };
         hoisted.push(syn::parse_quote! {
             let #temp = #value;
         });
     }
     hoisted
+}
+
+fn expr_is_mut_reference(expr: &syn::Expr) -> bool {
+    match expr {
+        syn::Expr::Group(group) => expr_is_mut_reference(&group.expr),
+        syn::Expr::Paren(paren) => expr_is_mut_reference(&paren.expr),
+        syn::Expr::Reference(reference) => reference.mutability.is_some(),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use quote::quote;
+
+    use super::*;
+
+    #[test]
+    fn method_arg_hoist_preserves_mut_reference_replay() {
+        let mut stmt: syn::Stmt = syn::parse_quote! {
+            (tw.lock().unwrap().w).Write(&mut (*zeroBlock.lock().unwrap())[..tw.lock().unwrap().pad]);
+        };
+
+        let hoisted = hoist_method_args_read_receiver(&mut stmt);
+        let output = quote! { #(#hoisted)* #stmt }.to_string();
+
+        assert!(
+            output.contains("let __gors_premethod_arg_0 = & mut"),
+            "expected mutable reference argument to be hoisted: {output}"
+        );
+        assert!(
+            output.contains("Write (& mut * __gors_premethod_arg_0)"),
+            "expected hoisted mutable reference to be replayed by reborrow: {output}"
+        );
+        assert!(
+            !output.contains("Write (& mut __gors_premethod_arg_0)"),
+            "expected no mutable borrow of the mutable-reference binding itself: {output}"
+        );
+    }
 }
