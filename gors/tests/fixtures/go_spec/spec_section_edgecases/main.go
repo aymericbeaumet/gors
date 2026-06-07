@@ -1,9 +1,6 @@
 package main
 
-import (
-	"fmt"
-	"unsafe"
-)
+import "unsafe"
 
 type Celsius float64
 type Fahrenheit float64
@@ -101,34 +98,37 @@ func main() {
 	arithmetic := (((5+3)*2/4)%3 + (6 & 3) + (1 | 2) + (7 ^ 3) + (8 >> 1) + (1 << 2) + (7 &^ 2))
 	logical := true || false && false
 
-	fmt.Println(
-		lettersAndDigits,
-		tokenBoundary,
-		zero.Value(),
-		converted > 10,
-		float64(temperature),
-		chosenInt,
-		chosenString,
-		holder.Value,
-		valuer.Value(),
-		pointerCounter.Value(),
-		received,
-		closedValue,
-		okBeforeDrain,
-		okAfterDrain,
-		len(fullSlice),
-		cap(fullSlice),
-		len(mapping),
-		*pointer > 0,
-		asserted,
-		assertionOK,
-		failed == "",
-		failedOK,
-		arithmetic,
-		logical,
-		classify(-1),
-		classify(0),
-		emptyStatementValue(),
-		packageNumber,
-	)
+	if lettersAndDigits != "AZaz09_" || tokenBoundary != 2 {
+		panic("lexical edgecase changed")
+	}
+	if zero.Value() != 0 || converted <= 10 || float64(temperature) != 32 {
+		panic("basic type edgecase changed")
+	}
+	if chosenInt != 4 || chosenString != "type" || holder.Value != "holder" {
+		panic("generic edgecase changed")
+	}
+	if valuer.Value() != 5 || pointerCounter.Value() != 10 {
+		panic("interface or pointer receiver edgecase changed")
+	}
+	if received != 11 || closedValue != 13 || !okBeforeDrain || okAfterDrain {
+		panic("channel edgecase changed")
+	}
+	if len(fullSlice) != 2 || cap(fullSlice) != 3 || len(mapping) != 1 {
+		panic("slice or map edgecase changed")
+	}
+	if *pointer <= 0 {
+		panic("unsafe align edgecase changed")
+	}
+	if asserted != 14 || !assertionOK || failed != "" || failedOK {
+		panic("type assertion edgecase changed")
+	}
+	if arithmetic != 23 || !logical {
+		panic("operator edgecase changed")
+	}
+	if classify(-1) != "negative" || classify(0) != "zero" || emptyStatementValue() != 3 {
+		panic("control-flow edgecase changed")
+	}
+	if packageNumber != 20 {
+		panic("package init edgecase changed")
+	}
 }

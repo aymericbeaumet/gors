@@ -1,7 +1,5 @@
 package main
 
-import "fmt"
-
 type Holder[T any] struct {
 	Value T
 }
@@ -28,7 +26,13 @@ func PickFirst[T int | string, U int | string](first T, second U) T {
 
 func main() {
 	holder := Holder[string]{Value: "value"}
-	fmt.Println(holder.Get(), Identity(42), Identity("go"))
-	fmt.Println(Max(3, 5), Max(2.5, 1.5))
-	fmt.Println(PickFirst("left", 12), PickFirst(7, "right"))
+	if holder.Get() != "value" || Identity(42) != 42 || Identity("go") != "go" {
+		panic("generic identity changed")
+	}
+	if Max(3, 5) != 5 || Max(2.5, 1.5) != 2.5 {
+		panic("generic ordered max changed")
+	}
+	if PickFirst("left", 12) != "left" || PickFirst(7, "right") != 7 {
+		panic("generic multi-parameter inference changed")
+	}
 }
