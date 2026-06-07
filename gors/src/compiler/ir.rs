@@ -16121,7 +16121,10 @@ fn for_clause_init_define_names(init: Option<&ast::Stmt<'_>>) -> BTreeSet<String
         .collect()
 }
 
-fn func_lit_capture_names_in_block(block: &ast::BlockStmt<'_>, env: &TypeEnv) -> BTreeSet<String> {
+pub(super) fn func_lit_capture_names_in_block(
+    block: &ast::BlockStmt<'_>,
+    env: &TypeEnv,
+) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     collect_func_lit_capture_names_in_block(block, env, &mut names);
     names

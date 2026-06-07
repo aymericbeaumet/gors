@@ -1255,6 +1255,101 @@ fn ensure_type_param_bound(param: &mut syn::TypeParam, bound: syn::TypeParamBoun
     param.bounds.push(bound);
 }
 
+fn add_thread_safe_bounds_for_type_params(
+    generics: &mut syn::Generics,
+    type_param_names: &BTreeSet<String>,
+) {
+    if type_param_names.is_empty() {
+        return;
+    }
+    let rust_names = type_param_names
+        .iter()
+        .map(|name| rust_safe_ident_name(name))
+        .collect::<HashSet<_>>();
+    for param in &mut generics.params {
+        let syn::GenericParam::Type(param) = param else {
+            continue;
+        };
+        if !rust_names.contains(&param.ident.to_string()) {
+            continue;
+        }
+        ensure_type_param_bound(param, syn::parse_quote! { Send });
+        ensure_type_param_bound(param, syn::parse_quote! { Sync });
+        ensure_type_param_bound(param, syn::parse_quote! { 'static });
+    }
+}
+
+fn function_literal_captured_type_params(
+    body: Option<&ast::BlockStmt>,
+    type_param_info: &TypeParamInfo,
+) -> BTreeSet<String> {
+    let Some(body) = body else {
+        return BTreeSet::new();
+    };
+    if type_param_info.names.is_empty() {
+        return BTreeSet::new();
+    }
+    TYPE_ENV.with(|env| {
+        let mut env = env.borrow().clone();
+        seed_current_block_local_bindings(body, &mut env);
+        ir::func_lit_capture_names_in_block(body, &env)
+            .into_iter()
+            .filter_map(|name| env.get_var(&name).or_else(|| env.get_top_level_var(&name)))
+            .flat_map(|ty| {
+                let mut names = BTreeSet::new();
+                collect_type_param_mentions_in_go_type(&ty, &type_param_info.names, &mut names);
+                let resolved = env.resolve_alias(&ty);
+                collect_type_param_mentions_in_go_type(
+                    &resolved,
+                    &type_param_info.names,
+                    &mut names,
+                );
+                names
+            })
+            .collect()
+    })
+}
+
+fn collect_type_param_mentions_in_go_type(
+    ty: &typeinfer::GoType,
+    type_param_names: &HashSet<String>,
+    out: &mut BTreeSet<String>,
+) {
+    match ty {
+        typeinfer::GoType::Named(name) if type_param_names.contains(name) => {
+            out.insert(name.clone());
+        }
+        typeinfer::GoType::Instantiated { name, args } => {
+            if type_param_names.contains(name) {
+                out.insert(name.clone());
+            }
+            for arg in args {
+                collect_type_param_mentions_in_go_type(arg, type_param_names, out);
+            }
+        }
+        typeinfer::GoType::Pointer(inner)
+        | typeinfer::GoType::Slice(inner)
+        | typeinfer::GoType::Array(inner) => {
+            collect_type_param_mentions_in_go_type(inner, type_param_names, out);
+        }
+        typeinfer::GoType::Map(key, value) => {
+            collect_type_param_mentions_in_go_type(key, type_param_names, out);
+            collect_type_param_mentions_in_go_type(value, type_param_names, out);
+        }
+        typeinfer::GoType::Chan { elem, .. } => {
+            collect_type_param_mentions_in_go_type(elem, type_param_names, out);
+        }
+        typeinfer::GoType::Func {
+            params, results, ..
+        } => {
+            for ty in params.iter().chain(results.iter()) {
+                collect_type_param_mentions_in_go_type(ty, type_param_names, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn type_param_names_from_generics(generics: &syn::Generics) -> HashSet<String> {
     generics
         .type_params()
@@ -10439,9 +10534,10 @@ fn wrap_named_func_cell_expr(expected: &typeinfer::GoType, value: syn::Expr) -> 
     }
 }
 
-fn named_func_newtype(go_type: &typeinfer::GoType) -> Option<syn::Type> {
-    let typeinfer::GoType::Named(name) = go_type else {
-        return None;
+fn named_func_newtype(go_type: &typeinfer::GoType) -> Option<syn::Path> {
+    let name = match go_type {
+        typeinfer::GoType::Named(name) | typeinfer::GoType::Instantiated { name, .. } => name,
+        _ => return None,
     };
     TYPE_ENV.with(|env| {
         let env = env.borrow();
@@ -10449,8 +10545,42 @@ fn named_func_newtype(go_type: &typeinfer::GoType) -> Option<syn::Type> {
             return None;
         }
         matches!(env.resolve_alias(go_type), typeinfer::GoType::Func { .. })
-            .then(|| named_go_type_path(name))
+            .then(|| named_func_constructor_path(go_type))
     })
+}
+
+fn named_func_constructor_path(go_type: &typeinfer::GoType) -> syn::Path {
+    let (name, args): (&str, &[typeinfer::GoType]) = match go_type {
+        typeinfer::GoType::Named(name) => (name, &[]),
+        typeinfer::GoType::Instantiated { name, args } => (name, args),
+        _ => unreachable!("named function constructor requires a named function type"),
+    };
+    let parts = qualified_name_rust_segments(name);
+    let last_idx = parts.len().saturating_sub(1);
+    let mut segments = syn::punctuated::Punctuated::new();
+    for (idx, segment) in parts.iter().enumerate() {
+        let ident = syn::Ident::new(&rust_safe_ident_name(segment), Span::mixed_site());
+        let arguments = if idx == last_idx && !args.is_empty() {
+            let args = args
+                .iter()
+                .map(rust_type_preserving_named_go_type)
+                .map(syn::GenericArgument::Type)
+                .collect();
+            syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {
+                colon2_token: Some(<Token![::]>::default()),
+                lt_token: <Token![<]>::default(),
+                args,
+                gt_token: <Token![>]>::default(),
+            })
+        } else {
+            syn::PathArguments::None
+        };
+        segments.push(syn::PathSegment { ident, arguments });
+    }
+    syn::Path {
+        leading_colon: None,
+        segments,
+    }
 }
 
 fn raw_elts_to_field_values(
@@ -21214,6 +21344,8 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         );
         let return_go_types_is_empty = return_go_types.is_empty();
         let body_has_defer = func_decl.body.as_ref().is_some_and(block_has_defer);
+        let captured_thread_safe_type_params =
+            function_literal_captured_type_params(func_decl.body.as_ref(), &type_param_info);
         let panic_returns_through_defer = body_has_defer && return_go_types_is_empty;
         let mut output =
             compile_return_type_with_type_params(func_decl.type_.results, Some(&type_param_info))?;
@@ -21288,7 +21420,8 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         lower_final_return_to_tail_expr(&mut block);
 
         // Convert type parameters to Rust generics (Go 1.18+ generics)
-        let generics = compile_go_type_params(func_decl.type_.type_params);
+        let mut generics = compile_go_type_params(func_decl.type_.type_params);
+        add_thread_safe_bounds_for_type_params(&mut generics, &captured_thread_safe_type_params);
 
         let sig = syn::Signature {
             constness: None,
@@ -39356,6 +39489,7 @@ package main
 
 type Formatter func(int) int
 type AliasFormatter = func(int) int
+type Mapper[T any] func(T) T
 
 type Holder struct {
 	formatter Formatter
@@ -39364,6 +39498,9 @@ type Holder struct {
 
 func inc(x int) int { return x + 1 }
 func useFormatter(Formatter) {}
+func makeIntMapper() Mapper[int] {
+	return func(x int) int { return x }
+}
 
 func main() {
 	var formatter Formatter = inc
@@ -39374,6 +39511,7 @@ func main() {
 	holder.formatter = holder.raw
 	useFormatter(local)
 	_, _ = formatter, alias
+	_ = makeIntMapper()
 	_ = holder
 }
 "#,
@@ -39401,6 +39539,10 @@ func main() {
                 || output.contains("formatter = Formatter ((holder . raw) . clone ())")
                 || output.contains("formatter = Formatter (holder . raw . clone ())"),
             "expected selector function value assignment to wrap named function type: {output}"
+        );
+        assert!(
+            output.contains("-> Mapper < isize >") && output.contains("Mapper :: < isize > ({"),
+            "expected instantiated named function returns to wrap the function cell: {output}"
         );
     }
 
@@ -42643,6 +42785,48 @@ func main() {
                 }
                 pub fn main() {}
             },
+        );
+    }
+
+    #[test]
+    fn it_should_add_thread_safe_bounds_for_generic_function_literal_captures() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+package main
+
+type Seq[V any] func(func(V) bool)
+
+func Keys[Map ~map[K]V, K comparable, V any](m Map) Seq[K] {
+	return func(yield func(K) bool) {
+		_ = m
+	}
+}
+
+func Identity[T any](value T) T {
+	return value
+}
+
+func main() {}
+"#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains(
+                "pub fn Keys < K : PartialEq + Clone + Default + Eq + std :: hash :: Hash + Send + Sync + 'static , V : Clone + Send + Sync + 'static >"
+            ),
+            "expected captured generic map parameters to satisfy shared closure bounds: {output}"
+        );
+        assert!(
+            output.contains("-> Seq < K >") && output.contains("Seq :: < K > ({"),
+            "expected generic named function return to stay wrapped: {output}"
+        );
+        assert!(
+            output.contains("pub fn Identity < T : Clone >"),
+            "expected non-capturing generic functions to keep ordinary bounds: {output}"
         );
     }
 

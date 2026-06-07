@@ -20,7 +20,7 @@ pub(super) fn module(import_path: &str, roots: Option<&HashSet<String>>) -> Opti
     let mut items = Vec::new();
     if roots.contains(CALLERS_FUNC) {
         items.push(syn::parse_quote! {
-            pub fn Callers(mut skip: isize, mut pc: Vec<usize>) -> isize {
+            pub fn Callers(mut skip: isize, mut pc: &mut [usize]) -> isize {
                 0
             }
         });

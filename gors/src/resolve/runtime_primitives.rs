@@ -81,6 +81,7 @@ mod tests {
         );
 
         assert!(tokens.contains("pub fn Callers"), "{tokens}");
+        assert!(tokens.contains("pc : & mut [usize]"), "{tokens}");
         assert!(tokens.contains("pub fn CallersFrames"), "{tokens}");
         assert!(tokens.contains("pub struct Frame"), "{tokens}");
         assert!(tokens.contains("pub struct Frames"), "{tokens}");
