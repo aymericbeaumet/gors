@@ -1,7 +1,5 @@
 package main
 
-import "fmt"
-
 func main() {
 	values := make([]int, 2, 4)
 	values[0] = 1
@@ -26,5 +24,19 @@ func main() {
 	_, closedOk := <-channel
 	print("ignored")
 	println("ignored", 1)
-	fmt.Println(len(values), cap(values), clone[2], *pointer, real(complexValue), imag(complexValue), len(text), mapLen, channelLen, received, ok, closedOk)
+	if len(values) != 3 || cap(values) != 4 || clone[2] != 3 {
+		panic("slice builtins changed")
+	}
+	if *pointer != 4 {
+		panic("new, min, or max builtins changed")
+	}
+	if real(complexValue) != 1 || imag(complexValue) != 2 {
+		panic("complex builtin changed")
+	}
+	if len(text) != 2 || mapLen != 2 {
+		panic("string or map len changed")
+	}
+	if channelLen != 1 || received != 3 || !ok || closedOk {
+		panic("channel builtins changed")
+	}
 }
