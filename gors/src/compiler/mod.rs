@@ -8630,7 +8630,7 @@ fn compile_general_type_conversion(call_expr: ast::CallExpr) -> syn::Expr {
 
     let target_ty = type_from_expr_ref(&target_fun);
     if matches!(target_fun, ast::Expr::StarExpr(_)) && is_unsafe_pointer_arg {
-        if current_pointer_receiver_type_name().is_some()
+        if pointer_conversion_target_matches_current_receiver(&target_fun)
             && expr_contains_unsafe_pointer_conversion_of_current_receiver(&raw_arg)
         {
             if let Some(receiver) = current_pointer_receiver_cell_expr() {
@@ -9032,10 +9032,25 @@ fn compile_unsafe_pointer_bitcast(expr: ast::Expr) -> Option<syn::Expr> {
     if source.op != token::Token::AND {
         return Some(syn::parse_quote! { <#target_ty>::default() });
     }
+    if !unsafe_pointer_bitcast_supports_target_source(&target, &source.x) {
+        return Some(syn::parse_quote! { <#target_ty>::default() });
+    }
     let source: syn::Expr = (*source.x).into();
     Some(syn::parse_quote! {
         crate::builtin::bitcast_ref::<_, #target_ty>(&#source)
     })
+}
+
+fn unsafe_pointer_bitcast_supports_target_source(target: &ast::Expr, source: &ast::Expr) -> bool {
+    let target_type = typeinfer::GoType::from_expr(target);
+    let source_type = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(source, &env.borrow()));
+    matches!(
+        (target_type, source_type),
+        (typeinfer::GoType::Uint32, typeinfer::GoType::Float32)
+            | (typeinfer::GoType::Float32, typeinfer::GoType::Uint32)
+            | (typeinfer::GoType::Uint64, typeinfer::GoType::Float64)
+            | (typeinfer::GoType::Float64, typeinfer::GoType::Uint64)
+    )
 }
 
 fn compile_unsafe_pointer_bitcast_lvalue(expr: &ast::Expr) -> Option<syn::Expr> {
@@ -16297,6 +16312,27 @@ fn current_pointer_receiver_cell_expr() -> Option<syn::Expr> {
     let name = current_receiver::rust_name()?;
     let ident = syn::Ident::new(&name, Span::mixed_site());
     Some(syn::parse_quote! { (#ident).clone() })
+}
+
+fn pointer_conversion_target_matches_current_receiver(target_fun: &ast::Expr) -> bool {
+    let Some(current_receiver_type) = current_pointer_receiver_type_name() else {
+        return false;
+    };
+    let Some(target_name) =
+        pointer_type_target_ref(target_fun).and_then(type_env_name_from_type_expr)
+    else {
+        return false;
+    };
+    if target_name == current_receiver_type {
+        return true;
+    }
+    TYPE_ENV.with(|env| {
+        matches!(
+            env.borrow()
+                .resolve_alias(&typeinfer::GoType::Named(target_name)),
+            typeinfer::GoType::Named(name) if name == current_receiver_type
+        )
+    })
 }
 
 fn expr_is_current_receiver_name(expr: &ast::Expr) -> bool {
@@ -26234,6 +26270,68 @@ func main() {
     }
 
     #[test]
+    fn it_should_keep_supported_primitive_unsafe_pointer_bitcast_dereferences() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                import "unsafe"
+
+                func bits(f float32) uint32 {
+                    return *(*uint32)(unsafe.Pointer(&f))
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("bitcast_ref"),
+            "expected supported primitive unsafe pointer bitcast to use runtime bitcast: {output}"
+        );
+        assert!(
+            output.contains("< _ , u32 >"),
+            "expected bitcast target to stay uint32: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_default_unsupported_struct_unsafe_pointer_bitcast_dereferences() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                import "unsafe"
+
+                type Record struct {
+                    Data uintptr
+                }
+
+                func record(v uint32) Record {
+                    return *(*Record)(unsafe.Pointer(&v))
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("< Record > :: default ()"),
+            "expected unsupported struct unsafe pointer bitcast to become target zero value: {output}"
+        );
+        assert!(
+            !output.contains("bitcast_ref"),
+            "expected unsupported struct unsafe pointer bitcast not to call runtime bitcast: {output}"
+        );
+    }
+
+    #[test]
     fn it_should_default_unsupported_unsafe_pointer_bitcast_dereferences() {
         let parsed = parse_file(
             "test.go",
@@ -26264,6 +26362,61 @@ func main() {
         assert!(
             !output.contains("unsupported unsafe pointer bitcast"),
             "expected unsafe pointer fallback not to emit compile_error: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_preserve_current_receiver_unsafe_pointer_conversion_for_same_target() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                import "unsafe"
+
+                type Type struct{}
+
+                func (t *Type) Self() *Type {
+                    return (*Type)(unsafe.Pointer(t))
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("(t) . clone ()"),
+            "expected current receiver pointer identity to be preserved for same target: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_default_current_receiver_unsafe_pointer_conversion_for_different_target() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                import "unsafe"
+
+                type Type struct{}
+                type MapType struct{}
+
+                func (t *Type) MapType() *MapType {
+                    return (*MapType)(unsafe.Pointer(t))
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("< crate :: builtin :: GorsPtr < MapType > > :: default ()"),
+            "expected different-target receiver pointer reinterpretation to use target zero value: {output}"
         );
     }
 
