@@ -52,6 +52,12 @@ pub(super) fn prune_complex_helpers(items: &mut Vec<syn::Item>, roots: &HashSet<
             "Complex64" | "complex64" | "real64" | "imag64" | "to_complex64"
         )
     });
+    let needs_complex128 = roots.iter().any(|root| {
+        matches!(
+            root.as_str(),
+            "Complex128" | "complex128" | "complex" | "real128" | "imag128" | "to_complex128"
+        )
+    });
     let needs_complex_conversions = roots.iter().any(|root| {
         matches!(
             root.as_str(),
@@ -64,6 +70,12 @@ pub(super) fn prune_complex_helpers(items: &mut Vec<syn::Item>, roots: &HashSet<
             && name == "impl_real_complex_conversions"
         {
             return needs_complex_conversions;
+        }
+        if let syn::Item::Macro(item_macro) = item
+            && let Some(keep) =
+                keep_complex_ops_macro(item_macro, needs_complex64, needs_complex128)
+        {
+            return keep;
         }
         if let syn::Item::Struct(item_struct) = item
             && item_struct.ident == "Complex64"
@@ -96,6 +108,38 @@ pub(super) fn prune_complex_helpers(items: &mut Vec<syn::Item>, roots: &HashSet<
         }
         true
     });
+}
+
+fn keep_complex_ops_macro(
+    item_macro: &syn::ItemMacro,
+    needs_complex64: bool,
+    needs_complex128: bool,
+) -> Option<bool> {
+    if item_macro
+        .ident
+        .as_ref()
+        .is_some_and(|ident| ident == "impl_complex_ops")
+    {
+        return Some(needs_complex64 || needs_complex128);
+    }
+    if item_macro
+        .mac
+        .path
+        .segments
+        .last()
+        .is_none_or(|segment| segment.ident != "impl_complex_ops")
+    {
+        return None;
+    }
+
+    let tokens = item_macro.mac.tokens.to_string();
+    if tokens.contains("Complex64") {
+        return Some(needs_complex64);
+    }
+    if tokens.contains("Complex128") {
+        return Some(needs_complex128);
+    }
+    None
 }
 
 pub(super) fn prune_bitcast_helpers(items: &mut Vec<syn::Item>, roots: &HashSet<String>) {

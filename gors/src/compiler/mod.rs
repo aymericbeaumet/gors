@@ -37124,6 +37124,59 @@ func main() {
     }
 
     #[test]
+    fn complex_helper_pruning_drops_unneeded_macro_invocations() {
+        let mut file: syn::File = syn::parse_quote! {
+            macro_rules! impl_complex_ops {
+                ($ty:ty) => {};
+            }
+
+            struct Complex64;
+            struct Complex128;
+
+            impl_complex_ops!(Complex64);
+            impl_complex_ops!(Complex128);
+        };
+        let roots = std::collections::HashSet::from(["Complex128".to_string()]);
+
+        super::builtin_pruning::prune_complex_helpers(&mut file.items, &roots);
+
+        assert!(
+            file.items
+                .iter()
+                .any(|item| matches!(item, syn::Item::Macro(item_macro) if item_macro.ident.as_ref().is_some_and(|ident| ident == "impl_complex_ops"))),
+            "{}",
+            quote::quote!(#file)
+        );
+        assert!(
+            !file
+                .items
+                .iter()
+                .any(|item| matches!(item, syn::Item::Struct(item_struct) if item_struct.ident == "Complex64")),
+            "{}",
+            quote::quote!(#file)
+        );
+
+        let complex_ops_invocations = file
+            .items
+            .iter()
+            .filter_map(|item| {
+                let syn::Item::Macro(item_macro) = item else {
+                    return None;
+                };
+                (item_macro.ident.is_none()
+                    && item_macro
+                        .mac
+                        .path
+                        .segments
+                        .last()
+                        .is_some_and(|segment| segment.ident == "impl_complex_ops"))
+                .then(|| item_macro.mac.tokens.to_string())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(complex_ops_invocations, ["Complex128"]);
+    }
+
+    #[test]
     fn compile_program_multi_rejects_unreferenced_imported_package_modules() {
         let tmp = tempfile::tempdir().unwrap();
         write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");

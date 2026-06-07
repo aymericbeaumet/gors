@@ -1,7 +1,5 @@
 package main
 
-import "fmt"
-
 type Score int
 type Ratio float64
 
@@ -21,5 +19,10 @@ func main() {
 	ratio += Ratio(1.5)
 	ratio = ratio / Ratio(2.0)
 
-	fmt.Println(int(score), score > Score(10), float64(ratio), ratio == Ratio(2.0))
+	if int(score) != 4 || score > Score(10) {
+		panic("named integer operations changed")
+	}
+	if float64(ratio) != 2.0 || ratio != Ratio(2.0) {
+		panic("named float operations changed")
+	}
 }

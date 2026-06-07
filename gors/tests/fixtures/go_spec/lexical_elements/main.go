@@ -1,7 +1,5 @@
 package main
 
-import "fmt"
-
 func main() {
 	// Line comments and block comments are ignored.
 	decimal := 1_000
@@ -25,7 +23,7 @@ func main() {
 	interpreted := "go\nrs"
 	raw := `go\nrs`
 
-	if decimal == 1000 &&
+	if !(decimal == 1000 &&
 		binary == 42 &&
 		upperBinary == 42 &&
 		octal == 42 &&
@@ -43,7 +41,7 @@ func main() {
 		runeValue == 10 &&
 		escapedRune == 65 &&
 		hexByteRune == 65 &&
-		interpreted != raw {
-		fmt.Println("lexical ok")
+		interpreted != raw) {
+		panic("lexical literal values changed")
 	}
 }
