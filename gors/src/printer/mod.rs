@@ -503,8 +503,7 @@ pub fn generate_multi(
         if !dependency_mods.is_empty() {
             let wrapper_mod = main_wrapper_module_name(&dependency_mods);
             main_parts.push(format!(
-                "#[path = \"lib.rs\"]\nmod {wrapper_mod};\nuse {wrapper_mod}::{{{}}};",
-                dependency_mods.join(", ")
+                "#[path = \"lib.rs\"]\nmod {wrapper_mod};\nuse {wrapper_mod}::*;",
             ));
         }
 

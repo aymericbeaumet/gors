@@ -28669,9 +28669,10 @@ func main() {
         assert!(!output.files.contains_key("fmt.rs"));
         let main_rs = output.files.get("main.rs").unwrap();
         assert!(main_rs.contains("mod __gors_lib"));
-        assert!(main_rs.contains("use __gors_lib::{"));
+        assert!(main_rs.contains("use __gors_lib::*;"));
         assert!(main_rs.contains("builtin"));
         assert!(main_rs.contains("println_value"));
+        assert!(!main_rs.contains("use __gors_lib::{"));
         let lib_rs = output.files.get("lib.rs").unwrap();
         assert!(lib_rs.contains("pub mod builtin"));
         assert!(!lib_rs.contains("pub mod fmt"));
@@ -30281,10 +30282,7 @@ var Value = "qualified"
         let output = compile_temp_program(tmp.path());
         let main_rs = output.files.get("main.rs").unwrap();
         assert!(main_rs.contains("mod __gors_lib;"), "{main_rs}");
-        assert!(
-            main_rs.contains("use __gors_lib::{builtin, lib};"),
-            "{main_rs}"
-        );
+        assert!(main_rs.contains("use __gors_lib::*;"), "{main_rs}");
         assert!(main_rs.contains("lib::__gors_init();"), "{main_rs}");
         assert!(main_rs.contains("lib::Value"), "{main_rs}");
         let lib_rs = output.files.get("example__lib.rs").unwrap();
