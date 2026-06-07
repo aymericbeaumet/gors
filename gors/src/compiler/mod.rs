@@ -10133,13 +10133,26 @@ fn compile_owned_interface_expr(expr: ast::Expr, expected: &typeinfer::GoType) -
     if interface_name == "error" {
         return compile_expr_with_expected(expr, Some(expected));
     }
+    let trait_path = interface_trait_path_from_name(&interface_name);
     if is_nil_expr(&expr) {
         return boxed_noop_interface_expr(&interface_name);
+    }
+    if let ast::Expr::CompositeLit(composite) = expr {
+        return match compile_embedded_interface_composite_lit_as_interface(
+            composite,
+            expected,
+            InterfaceCompositeMode::Owned,
+        ) {
+            Ok(expr) => expr,
+            Err(composite) => {
+                let compiled = compile_composite_lit(composite);
+                syn::parse_quote! { Box::new(#compiled) as Box<dyn #trait_path> }
+            }
+        };
     }
 
     let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&expr, &env.borrow()));
     let actual_is_current_receiver = expr_is_current_receiver(&expr, &actual);
-    let trait_path = interface_trait_path_from_name(&interface_name);
     if go_type_interface_name(&actual).is_some() {
         let clone_box = clone_box_method_ident();
         if let Some(lvalue) = lvalue_expr_from_ref(&expr) {
@@ -10154,6 +10167,85 @@ fn compile_owned_interface_expr(expr: ast::Expr, expected: &typeinfer::GoType) -
         return syn::parse_quote! { Box::new((#compiled).clone()) as Box<dyn #trait_path> };
     }
     syn::parse_quote! { Box::new(#compiled) as Box<dyn #trait_path> }
+}
+
+#[derive(Clone, Copy)]
+enum InterfaceCompositeMode {
+    Borrowed,
+    Owned,
+}
+
+fn compile_embedded_interface_composite_lit_as_interface<'a>(
+    comp_lit: ast::CompositeLit<'a>,
+    expected: &typeinfer::GoType,
+    mode: InterfaceCompositeMode,
+) -> Result<syn::Expr, ast::CompositeLit<'a>> {
+    let Some(type_expr) = comp_lit.type_.as_deref() else {
+        return Err(comp_lit);
+    };
+    let ast::Expr::StructType(struct_type) = type_expr else {
+        return Err(comp_lit);
+    };
+    if !anonymous_struct_has_single_embedded_interface_field(struct_type, expected) {
+        return Err(comp_lit);
+    }
+    let Some(elts) = comp_lit.elts.as_ref() else {
+        return Err(comp_lit);
+    };
+    if elts.len() != 1 || matches!(elts.first(), Some(ast::Expr::KeyValueExpr(_))) {
+        return Err(comp_lit);
+    }
+
+    let mut elts = comp_lit.elts.unwrap_or_default();
+    let elt = elts.remove(0);
+    Ok(match mode {
+        InterfaceCompositeMode::Borrowed => compile_expr_with_expected(elt, Some(expected)),
+        InterfaceCompositeMode::Owned => compile_owned_interface_expr(elt, expected),
+    })
+}
+
+fn anonymous_struct_has_single_embedded_interface_field(
+    struct_type: &ast::StructType,
+    expected: &typeinfer::GoType,
+) -> bool {
+    let Some(expected_interface) = go_type_interface_name(expected) else {
+        return false;
+    };
+    let Some(fields) = struct_type.fields.as_ref() else {
+        return false;
+    };
+    let [field] = fields.list.as_slice() else {
+        return false;
+    };
+    if field.names.as_ref().is_some_and(|names| !names.is_empty()) {
+        return false;
+    }
+    let Some(field_type) = field.type_.as_ref() else {
+        return false;
+    };
+    let field_go_type = typeinfer::GoType::from_expr(field_type);
+    let Some(field_interface) = go_type_interface_name(&field_go_type) else {
+        return false;
+    };
+    interface_satisfies_interface(&field_interface, &expected_interface)
+}
+
+fn interface_satisfies_interface(source_interface: &str, expected_interface: &str) -> bool {
+    if source_interface == expected_interface {
+        return true;
+    }
+    TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        let Some(required_methods) = env.get_interface_methods(expected_interface) else {
+            return false;
+        };
+        let Some(source_methods) = env.get_interface_methods(source_interface) else {
+            return false;
+        };
+        required_methods
+            .iter()
+            .all(|required| source_methods.iter().any(|method| method == required))
+    })
 }
 
 fn shared_func_value_expr(expected: &typeinfer::GoType, compiled: syn::Expr) -> Option<syn::Expr> {
@@ -13356,13 +13448,31 @@ fn compile_expr_with_expected(
             }
             expr = match expr {
                 ast::Expr::CompositeLit(composite) => {
-                    let compiled = compile_composite_lit(composite);
-                    return syn::parse_quote! { Box::leak(Box::new(#compiled)) };
+                    return match compile_embedded_interface_composite_lit_as_interface(
+                        composite,
+                        expected,
+                        InterfaceCompositeMode::Borrowed,
+                    ) {
+                        Ok(expr) => expr,
+                        Err(composite) => {
+                            let compiled = compile_composite_lit(composite);
+                            syn::parse_quote! { Box::leak(Box::new(#compiled)) }
+                        }
+                    };
                 }
                 ast::Expr::UnaryExpr(unary) if unary.op == token::Token::AND => match *unary.x {
                     ast::Expr::CompositeLit(composite) => {
-                        let compiled = compile_composite_lit(composite);
-                        return syn::parse_quote! { Box::leak(Box::new(#compiled)) };
+                        return match compile_embedded_interface_composite_lit_as_interface(
+                            composite,
+                            expected,
+                            InterfaceCompositeMode::Borrowed,
+                        ) {
+                            Ok(expr) => expr,
+                            Err(composite) => {
+                                let compiled = compile_composite_lit(composite);
+                                syn::parse_quote! { Box::leak(Box::new(#compiled)) }
+                            }
+                        };
                     }
                     other => ast::Expr::UnaryExpr(ast::UnaryExpr {
                         op_pos: unary.op_pos,
@@ -29185,6 +29295,68 @@ func (zeroReader) Read(b []byte) (int, error) {
         assert!(
             !compact.contains("zeroReader::Read(&*__gors_guard,(b).to_vec())"),
             "expected no owned slice adapter in pointer interface impl: {stream_rs}"
+        );
+    }
+
+    #[test]
+    fn compile_program_multi_forwards_embedded_interface_literals_to_expected_interface() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/stream"
+
+func main() {
+	stream.Run()
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("stream/stream.go").as_path(),
+            r#"
+package stream
+
+import "io"
+
+type Reader struct{}
+
+func (r *Reader) Read(b []byte) (int, error) {
+	return 0, nil
+}
+
+type Writer struct{}
+
+func (Writer) Write(b []byte) (int, error) {
+	return len(b), nil
+}
+
+func CopyTo(w io.Writer, r *Reader) {
+	io.Copy(w, struct{ io.Reader }{r})
+}
+
+func Run() {
+	var w Writer
+	r := &Reader{}
+	CopyTo(w, r)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let stream_rs = output.files.get("example__stream.rs").unwrap();
+        let compact: String = stream_rs.chars().filter(|c| !c.is_whitespace()).collect();
+
+        assert!(
+            compact.contains("crate::io::Copy(&mut*w,&mutr)")
+                || compact.contains("crate::io::Copy(&mut*w,&mut(r))"),
+            "expected embedded interface literal to forward its embedded value: {stream_rs}"
+        );
+        assert!(
+            !compact.contains("Box::leak(Box::new(Vec::from([r])))"),
+            "expected no anonymous struct literal Vec wrapper for interface argument: {stream_rs}"
         );
     }
 
