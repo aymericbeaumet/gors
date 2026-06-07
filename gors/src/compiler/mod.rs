@@ -12727,7 +12727,7 @@ fn return_result_should_clone_for_later_use(
 
 fn return_result_ident_name<'a>(expr: &'a ast::Expr<'a>) -> Option<&'a str> {
     match expr {
-        ast::Expr::Ident(ident) => Some(ident.name),
+        ast::Expr::Ident(ident) if ident.name != "nil" => Some(ident.name),
         ast::Expr::ParenExpr(paren) => return_result_ident_name(&paren.x),
         _ => None,
     }
@@ -35860,6 +35860,32 @@ func main() {
         assert!(
             output.contains("(h) . clone ()") || output.contains("(h).clone()"),
             "expected reused pointer return value to be cloned before later use: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_not_clone_nil_pointer_return_values_reused_later_in_return_list() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Header struct{}
+                type block struct{}
+
+                func read(err error) (*Header, *block, error) {
+                    return nil, nil, err
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            !output.contains("(Default :: default ()) . clone ()"),
+            "expected nil pointer returns not to be cloned for later nil values: {output}"
         );
     }
 
