@@ -5086,6 +5086,9 @@ fn go_type_supports_derived_partial_eq(
         typeinfer::GoType::Named(name)
             if matches!(env.get_type_kind(name), Some(typeinfer::TypeKind::Struct)) =>
         {
+            if !env.get_type_param_names(name).is_empty() {
+                return false;
+            }
             if !visiting.insert(name.clone()) {
                 return true;
             }
@@ -5099,6 +5102,9 @@ fn go_type_supports_derived_partial_eq(
         typeinfer::GoType::Instantiated { name, args }
             if matches!(env.get_type_kind(name), Some(typeinfer::TypeKind::Struct)) =>
         {
+            if !env.get_type_param_names(name).is_empty() {
+                return false;
+            }
             if !visiting.insert(name.clone()) {
                 return true;
             }
@@ -42512,6 +42518,57 @@ func main() {}
         assert!(
             !output.contains("#[derive(Clone, Default, PartialEq)]\npub struct Holder"),
             "{output}"
+        );
+    }
+
+    #[test]
+    fn imported_generic_struct_fields_prevent_containing_partial_eq_derives() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/cell"
+
+type value struct{}
+
+type Holder struct {
+	p cell.Pointer[value]
+}
+
+func main() {
+	var h Holder
+	_ = h.p
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("cell/cell.go").as_path(),
+            r#"
+package cell
+
+type Pointer[T any] struct {
+	v uintptr
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+
+        assert!(main_rs.contains("pub struct Holder"), "{main_rs}");
+        assert!(
+            main_rs.contains("p: crate::example__cell::Pointer<value>")
+                || main_rs.contains("p: cell::Pointer<value>")
+                || main_rs.contains("p : crate :: example__cell :: Pointer < value >"),
+            "{main_rs}"
+        );
+        assert!(
+            !main_rs.contains("#[derive(Clone, Default, PartialEq)]\n#[repr(C)]\npub struct Holder")
+                && !main_rs.contains("# [derive (Clone , Default , PartialEq)] # [repr (C)] pub struct Holder"),
+            "expected Holder not to derive PartialEq from an imported generic struct field: {main_rs}"
         );
     }
 
