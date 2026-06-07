@@ -2877,6 +2877,48 @@ func root(s sparseArray) {
     }
 
     #[test]
+    fn reachable_names_include_methods_called_on_method_return_locals() {
+        let file = crate::parser::parse_file(
+            "pkg.go",
+            r#"
+package pkg
+
+type block []byte
+
+func (b *block) toGNU() *headerGNU {
+	return nil
+}
+
+type headerGNU []byte
+
+func (h *headerGNU) sparse() sparseArray {
+	return nil
+}
+
+type sparseArray []byte
+
+func (s sparseArray) maxEntries() int {
+	return 0
+}
+
+func root(blk *block) {
+	s := blk.toGNU().sparse()
+	_ = s.maxEntries()
+}
+"#,
+        )
+        .unwrap();
+        let parsed = vec![("pkg.go", file)];
+        let roots = HashSet::from(["root".to_string()]);
+
+        let reachable = reachable_package_names(&parsed, &roots);
+
+        assert!(reachable.contains("block::toGNU"), "{reachable:?}");
+        assert!(reachable.contains("headerGNU::sparse"), "{reachable:?}");
+        assert!(reachable.contains("sparseArray::maxEntries"), "{reachable:?}");
+    }
+
+    #[test]
     fn dedupe_use_items_matches_use_trees_structurally() {
         let duplicate_group: syn::ItemUse =
             syn::parse_quote! { use crate::io::{Read, Write as W}; };

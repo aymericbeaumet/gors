@@ -532,6 +532,15 @@ pub(super) fn receiver_type_from_init_expr(
                 if let Some(qself) = &path.qself
                     && let Some(receiver_type) = receiver_type_from_type(&qself.ty, module_names)
                 {
+                    if let Some(method) = path.path.segments.last()
+                        && let Some(return_type) = qself_method_return_type(
+                            &receiver_type,
+                            &method.ident.to_string(),
+                            top_level_return_types,
+                        )
+                    {
+                        return Some(return_type);
+                    }
                     return Some(receiver_type);
                 }
                 if let Some(receiver_type) =
@@ -609,6 +618,18 @@ pub(super) fn receiver_type_from_init_expr(
         ),
         _ => None,
     }
+}
+
+fn qself_method_return_type(
+    receiver_type: &ReceiverTypeRef,
+    method: &str,
+    top_level_return_types: &std::collections::HashMap<String, ReceiverTypeRef>,
+) -> Option<ReceiverTypeRef> {
+    let method_key = impl_method_reachability_name(&receiver_type.name, method);
+    top_level_return_types
+        .get(&method_key)
+        .cloned()
+        .or_else(|| external_receiver_method_return_type(receiver_type, method))
 }
 
 fn receiver_type_from_trait_object_cast_type(

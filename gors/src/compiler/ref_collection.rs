@@ -953,6 +953,86 @@ mod tests {
     }
 
     #[test]
+    fn collect_refs_uses_qself_method_return_type_for_local_receivers() {
+        let module_names = ReachabilityNameSet::new();
+        let file: syn::File = syn::parse_quote! {
+            pub struct headerGNU;
+            pub struct sparseArray;
+
+            impl headerGNU {
+                fn sparse(&mut self) -> sparseArray {
+                    sparseArray
+                }
+            }
+
+            impl sparseArray {
+                fn maxEntries(&mut self) -> isize {
+                    0
+                }
+            }
+
+            fn root(mut h: headerGNU) {
+                let mut s = <headerGNU>::sparse(&mut h);
+                let _ = (s).clone().maxEntries();
+            }
+        };
+        let item_names = super::super::reachability_names::item_reachability_names(&file.items);
+        let top_level_names = super::super::reachability_names::top_level_item_names(&file.items);
+        let top_level_types =
+            super::super::receiver_type_facts::top_level_item_types(&file.items, &module_names);
+        let top_level_field_types = super::super::receiver_type_facts::top_level_item_field_types(
+            &file.items,
+            &module_names,
+        );
+        let top_level_element_types =
+            super::super::receiver_type_facts::top_level_collection_element_types(
+                &file.items,
+                &module_names,
+            );
+        let top_level_return_types = super::super::receiver_type_facts::top_level_item_return_types(
+            &file.items,
+            &module_names,
+        );
+        let top_level_tuple_return_types =
+            super::super::receiver_type_facts::top_level_item_tuple_return_types(
+                &file.items,
+                &module_names,
+            );
+        let context = RefCollectionContext {
+            module_names: &module_names,
+            item_names: &item_names,
+            top_level_names: &top_level_names,
+            top_level_types: &top_level_types,
+            top_level_field_types: &top_level_field_types,
+            top_level_element_types: &top_level_element_types,
+            top_level_return_types: &top_level_return_types,
+            top_level_tuple_return_types: &top_level_tuple_return_types,
+        };
+        let mut item = file
+            .items
+            .iter()
+            .find(|item| matches!(item, syn::Item::Fn(func) if func.sig.ident == "root"))
+            .cloned()
+            .expect("root function");
+
+        let (names, external_refs) = collect_refs_from_item(&mut item, &context);
+
+        assert!(external_refs.is_empty(), "{external_refs:?}");
+        assert!(
+            names.contains(&impl_method_reachability_name("headerGNU", "sparse")),
+            "{names:?}"
+        );
+        assert!(
+            names.contains(&impl_method_reachability_name("sparseArray", "maxEntries")),
+            "{names:?}"
+        );
+        assert!(
+            !names.contains(&impl_method_reachability_name("headerGNU", "maxEntries")),
+            "{names:?}"
+        );
+    }
+
+    #[test]
     fn collect_refs_qualifies_local_associated_path_members() {
         let module_names = ReachabilityNameSet::new();
         let item_names = ReachabilityNameSet::from(["bucket".to_string(), "Read".to_string()]);
