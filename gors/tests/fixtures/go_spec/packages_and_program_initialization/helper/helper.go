@@ -1,11 +1,14 @@
 package helper
 
-import "fmt"
+var initialized bool
 
 func init() {
-	fmt.Println("helper init")
+	initialized = true
 }
 
 func Value() string {
+	if !initialized {
+		return "uninitialized"
+	}
 	return "helper"
 }

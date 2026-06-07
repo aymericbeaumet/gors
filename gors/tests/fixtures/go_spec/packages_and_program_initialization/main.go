@@ -1,8 +1,6 @@
 package main
 
 import (
-	"fmt"
-
 	"go_spec_packages_and_program_initialization/helper"
 )
 
@@ -13,5 +11,10 @@ func init() {
 }
 
 func main() {
-	fmt.Println(helper.Value(), order[0], order[1])
+	if helper.Value() != "helper" {
+		panic("imported package init did not run")
+	}
+	if len(order) != 2 || order[0] != "var" || order[1] != "init" {
+		panic("main package initialization order mismatch")
+	}
 }
