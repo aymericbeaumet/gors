@@ -161,6 +161,13 @@ thread_local! {
     static PACKAGE_MUTABLE_TOP_LEVEL_VARS: RefCell<Option<HashSet<String>>> = const { RefCell::new(None) };
     static REQUIRED_EXTERNAL_IMPORTED_INTERFACE_IMPLS: RefCell<BTreeSet<(String, String, bool)>> = const { RefCell::new(BTreeSet::new()) };
     static FUNCTION_THREAD_SAFE_TYPE_PARAMS: RefCell<BTreeMap<String, BTreeSet<String>>> = const { RefCell::new(BTreeMap::new()) };
+    static UNSAFE_POINTER_PROVENANCE: RefCell<BTreeMap<String, UnsafePointerProvenance>> = const { RefCell::new(BTreeMap::new()) };
+}
+
+#[derive(Clone)]
+struct UnsafePointerProvenance {
+    target_go_type: typeinfer::GoType,
+    pointer_expr: syn::Expr,
 }
 
 struct LocalTypeEnvScopeGuard {
@@ -177,6 +184,10 @@ struct PackageMutableTopLevelVarsGuard {
 
 struct FunctionThreadSafeTypeParamsGuard {
     previous: BTreeMap<String, BTreeSet<String>>,
+}
+
+struct UnsafePointerProvenanceGuard {
+    previous: BTreeMap<String, UnsafePointerProvenance>,
 }
 
 impl FunctionThreadSafeTypeParamsGuard {
@@ -203,6 +214,22 @@ fn function_thread_safe_type_params(name: &str) -> BTreeSet<String> {
             .cloned()
             .unwrap_or_else(BTreeSet::new)
     })
+}
+
+impl UnsafePointerProvenanceGuard {
+    fn clear() -> Self {
+        let previous = UNSAFE_POINTER_PROVENANCE
+            .with(|provenance| std::mem::take(&mut *provenance.borrow_mut()));
+        Self { previous }
+    }
+}
+
+impl Drop for UnsafePointerProvenanceGuard {
+    fn drop(&mut self) {
+        UNSAFE_POINTER_PROVENANCE.with(|provenance| {
+            *provenance.borrow_mut() = std::mem::take(&mut self.previous);
+        });
+    }
 }
 
 impl MutableTopLevelVarsGuard {
@@ -9449,6 +9476,7 @@ fn compile_method(
     }
     let _active_local_names = ActiveLocalNamesGuard::set(active_local_names);
     let _type_param_kinds = TypeParamKindsGuard::set(&type_args);
+    let _unsafe_pointer_provenance = UnsafePointerProvenanceGuard::clear();
     let recv_go_type = if is_pointer {
         typeinfer::GoType::Pointer(Box::new(typeinfer::GoType::Named(type_name.clone())))
     } else {
@@ -9868,6 +9896,12 @@ fn compile_general_type_conversion(call_expr: ast::CallExpr) -> syn::Expr {
     }
 
     let target_ty = type_from_expr_ref(&target_fun);
+    if matches!(target_fun, ast::Expr::StarExpr(_))
+        && let Some(pointer) =
+            unsafe_pointer_provenance_pointer_conversion(&target_fun, &raw_arg, &env)
+    {
+        return pointer;
+    }
     if matches!(target_fun, ast::Expr::StarExpr(_)) && is_unsafe_pointer_arg {
         if pointer_conversion_target_matches_current_receiver(&target_fun)
             && expr_contains_unsafe_pointer_conversion_of_current_receiver(&raw_arg)
@@ -10101,6 +10135,118 @@ fn address_identity_expr_from_ref(expr: &ast::Expr) -> Option<syn::Expr> {
         let __gors_address_ref = &#lvalue;
         (__gors_address_ref as *const _ as usize)
     }})
+}
+
+fn unsafe_pointer_address_provenance(expr: &ast::Expr) -> Option<UnsafePointerProvenance> {
+    let ast::Expr::UnaryExpr(unary) = ast_unparen_expr_ref(expr) else {
+        return None;
+    };
+    if unary.op != token::Token::AND {
+        return None;
+    }
+    let target_go_type =
+        TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&unary.x, &env.borrow()));
+    let lvalue = lvalue_expr_from_ref(&unary.x)?;
+    let value = clone_expr_for_non_copy_go_type(lvalue, Some(&target_go_type));
+    Some(UnsafePointerProvenance {
+        target_go_type,
+        pointer_expr: syn::parse_quote! { crate::builtin::GorsPtr::new(#value) },
+    })
+}
+
+fn unsafe_pointer_cell_provenance(expr: &ast::Expr) -> Option<UnsafePointerProvenance> {
+    let env = TYPE_ENV.with(|env| env.borrow().clone());
+    let go_type = typeinfer::GoType::infer_expr(expr, &env);
+    let typeinfer::GoType::Pointer(inner) = env.resolve_alias(&go_type) else {
+        return None;
+    };
+    let pointer = pointer_cell_expr_from_ref(expr)?;
+    Some(UnsafePointerProvenance {
+        target_go_type: *inner,
+        pointer_expr: syn::parse_quote! { (#pointer).clone() },
+    })
+}
+
+fn unsafe_pointer_provenance_from_expr_ref(expr: &ast::Expr) -> Option<UnsafePointerProvenance> {
+    match ast_unparen_expr_ref(expr) {
+        ast::Expr::Ident(ident) => UNSAFE_POINTER_PROVENANCE
+            .with(|provenance| provenance.borrow().get(ident.name).cloned()),
+        ast::Expr::CallExpr(call) if ast_inspect::call_is_unsafe_pointer_conversion(call) => {
+            let [arg] = call.args.as_deref().unwrap_or_default() else {
+                return None;
+            };
+            unsafe_pointer_address_provenance(arg).or_else(|| unsafe_pointer_cell_provenance(arg))
+        }
+        _ => None,
+    }
+}
+
+fn set_unsafe_pointer_provenance_for_binding(name: &str, init: Option<&ast::Expr>) {
+    if name == "_" {
+        return;
+    }
+    let provenance = init.and_then(unsafe_pointer_provenance_from_expr_ref);
+    UNSAFE_POINTER_PROVENANCE.with(|map| {
+        let mut map = map.borrow_mut();
+        if let Some(provenance) = provenance {
+            map.insert(name.to_string(), provenance);
+        } else {
+            map.remove(name);
+        }
+    });
+}
+
+fn update_unsafe_pointer_provenance_for_assignment(assign: &ast::AssignStmt) {
+    if assign.lhs.len() == assign.rhs.len()
+        && matches!(assign.tok, token::Token::DEFINE | token::Token::ASSIGN)
+    {
+        for (lhs, rhs) in assign.lhs.iter().zip(assign.rhs.iter()) {
+            if let ast::Expr::Ident(ident) = lhs {
+                set_unsafe_pointer_provenance_for_binding(ident.name, Some(rhs));
+            }
+        }
+    } else {
+        for lhs in &assign.lhs {
+            if let ast::Expr::Ident(ident) = lhs {
+                set_unsafe_pointer_provenance_for_binding(ident.name, None);
+            }
+        }
+    }
+}
+
+fn unsafe_pointer_go_types_match_for_provenance(
+    target: &typeinfer::GoType,
+    source: &typeinfer::GoType,
+    env: &typeinfer::TypeEnv,
+) -> bool {
+    if target == source {
+        return true;
+    }
+    if matches!(
+        (target, source),
+        (
+            typeinfer::GoType::Named(_) | typeinfer::GoType::Instantiated { .. },
+            _
+        ) | (
+            _,
+            typeinfer::GoType::Named(_) | typeinfer::GoType::Instantiated { .. }
+        )
+    ) {
+        return false;
+    }
+    env.resolve_alias(target) == env.resolve_alias(source)
+}
+
+fn unsafe_pointer_provenance_pointer_conversion(
+    target_fun: &ast::Expr,
+    arg: &ast::Expr,
+    env: &typeinfer::TypeEnv,
+) -> Option<syn::Expr> {
+    let target = pointer_type_target_ref(target_fun)?;
+    let target_go_type = typeinfer::GoType::from_expr(target);
+    let provenance = unsafe_pointer_provenance_from_expr_ref(arg)?;
+    unsafe_pointer_go_types_match_for_provenance(&target_go_type, &provenance.target_go_type, env)
+        .then_some(provenance.pointer_expr)
 }
 
 fn address_identity_expr_from_pointer_expr_ref(expr: &ast::Expr) -> Option<syn::Expr> {
@@ -12511,6 +12657,7 @@ fn seed_func_lit_body_bindings(func_type: &ast::FuncType<'_>) {
 fn compile_func_lit_with_capture_mode(func_lit: ast::FuncLit, move_capture: bool) -> syn::Expr {
     let _current_receiver = CurrentReceiverGuard::clear();
     let _local_type_env_scope = LocalTypeEnvScopeGuard::push();
+    let _unsafe_pointer_provenance = UnsafePointerProvenanceGuard::clear();
     seed_func_lit_body_bindings(&func_lit.type_);
     let shared_capture_clones = if move_capture {
         move_closure_shared_capture_clones(&func_lit)
@@ -22757,6 +22904,7 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         let _active_local_names = ActiveLocalNamesGuard::set(active_local_names);
         let type_param_args = type_param_idents(func_decl.type_.type_params.as_ref());
         let _type_param_kinds = TypeParamKindsGuard::set(&type_param_args);
+        let _unsafe_pointer_provenance = UnsafePointerProvenanceGuard::clear();
         let attrs = comment_group_to_attrs(&func_decl.doc);
         let intrinsic_block = compiler_intrinsic_func_block(&func_decl)
             .or_else(|| generic_map_clone_func_block(&func_decl, &type_param_info));
@@ -24289,6 +24437,7 @@ impl From<ast::DeclStmt<'_>> for Vec<syn::Stmt> {
                         } else {
                             None
                         };
+                        set_unsafe_pointer_provenance_for_binding(source_name, init_ast.as_ref());
                         let init_expr: Option<syn::Expr> = init_ast.map(|expr| {
                             let should_clone = binding_init_should_clone(&expr);
                             let expected = go_type.as_ref().or_else(|| {
@@ -25964,6 +26113,7 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                 });
             }
         }
+        update_unsafe_pointer_provenance_for_assignment(&assign_stmt);
 
         // Comma-ok patterns: v, ok := m[k] / v, ok := <-ch / v, ok := x.(T)
         if assign_stmt.lhs.len() == 2 && assign_stmt.rhs.len() == 1 {
@@ -28481,6 +28631,37 @@ func main() {
         assert!(
             !output.contains("__gors_index_base [__gors_index]"),
             "expected unsafe.Pointer address conversion not to clone the pointee: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_materialize_stored_unsafe_pointer_address_roundtrip() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                import "unsafe"
+
+                func value() int {
+                    arr := [2]int{10, 20}
+                    ptr := unsafe.Pointer(&arr[0])
+                    return *(*int)(ptr)
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("GorsPtr :: new ((arr) [(0usize) as usize])"),
+            "expected stored unsafe pointer provenance to materialize from the original lvalue: {output}"
+        );
+        assert!(
+            !output.contains("GorsPtr :: new ((ptr) as isize)"),
+            "expected stored unsafe pointer provenance not to treat the address as an int value: {output}"
         );
     }
 

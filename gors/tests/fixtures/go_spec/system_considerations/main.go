@@ -1,17 +1,18 @@
 package main
 
-import (
-	"fmt"
-	"unsafe"
-)
+import "unsafe"
 
 func main() {
 	var x int
 	size := unsafe.Sizeof(x)
-	fmt.Println(size > 0)
+	if size == 0 {
+		panic("unsafe.Sizeof returned zero")
+	}
 
 	align := unsafe.Alignof(x)
-	fmt.Println(align > 0)
+	if align == 0 {
+		panic("unsafe.Alignof returned zero")
+	}
 
 	type struct1 struct {
 		a byte
@@ -19,10 +20,14 @@ func main() {
 	}
 	var s struct1
 	offset := unsafe.Offsetof(s.b)
-	fmt.Println(offset > 0)
+	if offset == 0 {
+		panic("unsafe.Offsetof returned zero")
+	}
 
 	arr := [2]int{10, 20}
 	ptr := unsafe.Pointer(&arr[0])
 	val := *(*int)(ptr)
-	fmt.Println(val == 10)
+	if val != 10 {
+		panic("unsafe.Pointer address round trip mismatch")
+	}
 }
