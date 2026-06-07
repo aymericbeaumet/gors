@@ -1,7 +1,5 @@
 package main
 
-import "fmt"
-
 var packageCount int = 3
 
 func main() {
@@ -14,5 +12,10 @@ func main() {
 	first, second = second, first
 	pointer := &short
 	*pointer = *pointer + 1
-	fmt.Println(zero, short, first, second, third)
+	if zero != 0 || short != 4 {
+		panic("zero or pointer-updated value changed")
+	}
+	if first != 2 || second != 2 || third != 3 {
+		panic("short declaration assignments changed")
+	}
 }

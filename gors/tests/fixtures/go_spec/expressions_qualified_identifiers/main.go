@@ -1,10 +1,9 @@
 package main
 
-import (
-	"fmt"
-	"go_spec_expressions_qualified_identifiers/lib"
-)
+import "go_spec_expressions_qualified_identifiers/lib"
 
 func main() {
-	fmt.Println(lib.Value)
+	if lib.Value != "qualified" {
+		panic("qualified package value changed")
+	}
 }
