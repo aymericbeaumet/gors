@@ -1,7 +1,5 @@
 package main
 
-import "fmt"
-
 func main() {
 	bytes := []byte{'g', 'o'}
 	bytes = append(bytes, "rs"...)
@@ -14,5 +12,13 @@ func main() {
 	values := []int{1, 2, 3, 4}
 	clear(values[1:3])
 
-	fmt.Println(string(bytes), copied, string(dst), values[0], values[1], values[2], values[3])
+	if string(bytes) != "gors!?" {
+		panic("append result changed")
+	}
+	if copied != 5 || string(dst) != "hello" {
+		panic("copy result changed")
+	}
+	if values[0] != 1 || values[1] != 0 || values[2] != 0 || values[3] != 4 {
+		panic("clear result changed")
+	}
 }

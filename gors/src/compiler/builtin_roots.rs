@@ -56,6 +56,12 @@ pub(super) fn expand(
             expanded.insert(root.to_string());
         }
     }
+    if needs_len_trait(roots) {
+        expanded.insert("Len".to_string());
+    }
+    if needs_byte_seq_trait(roots) {
+        expanded.insert("ByteSeq".to_string());
+    }
     if needs_reflect_value_methods(roots) {
         for root in [
             "__GorsReflectKind",
@@ -105,11 +111,28 @@ fn needs_channel_methods(roots: &std::collections::HashSet<String>) -> bool {
 
 fn needs_gors_ptr_methods(roots: &std::collections::HashSet<String>) -> bool {
     roots.iter().any(|root| {
-        matches!(root.as_str(), "len" | "Len" | "cap" | "Cap" | "panic_value")
-            || root == "GorsPtr"
+        matches!(
+            root.as_str(),
+            "len" | "Len" | "cap" | "Cap" | "panic_value" | "string_from_byte_seq"
+        ) || root == "GorsPtr"
             || root == "GorsNilPointer"
             || root.starts_with("GorsPtr::")
             || root.starts_with("GorsNilPointer::")
+    })
+}
+
+fn needs_len_trait(roots: &std::collections::HashSet<String>) -> bool {
+    roots
+        .iter()
+        .any(|root| matches!(root.as_str(), "len" | "Len" | "string_from_byte_seq"))
+}
+
+fn needs_byte_seq_trait(roots: &std::collections::HashSet<String>) -> bool {
+    roots.iter().any(|root| {
+        matches!(
+            root.as_str(),
+            "ByteSeq" | "byte_at" | "byte_slice" | "string_from_byte_seq"
+        )
     })
 }
 

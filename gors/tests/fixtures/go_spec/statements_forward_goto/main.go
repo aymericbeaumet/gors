@@ -1,7 +1,5 @@
 package main
 
-import "fmt"
-
 func main() {
 	total := 0
 	if true {
@@ -18,5 +16,7 @@ Done:
 		total = 100
 	}
 Print:
-	fmt.Println(total)
+	if total != 3 {
+		panic("forward goto result changed")
+	}
 }

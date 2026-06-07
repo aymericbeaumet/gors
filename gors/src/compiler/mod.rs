@@ -37114,6 +37114,16 @@ func main() {
     }
 
     #[test]
+    fn builtin_root_expansion_keeps_string_byte_sequence_bounds() {
+        let roots = std::collections::HashSet::from(["string_from_byte_seq".to_string()]);
+        let expanded = super::builtin_roots::expand(&roots);
+
+        for expected in ["ByteSeq", "Len", "GorsPtr", "GorsPtr::ptr_id"] {
+            assert!(expanded.contains(expected), "{expanded:?}");
+        }
+    }
+
+    #[test]
     fn compile_program_multi_rejects_unreferenced_imported_package_modules() {
         let tmp = tempfile::tempdir().unwrap();
         write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");

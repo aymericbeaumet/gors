@@ -1,12 +1,14 @@
 package main
 
-import "fmt"
-
 func main() {
 	var x int = 1
 	{
 		var x int = 2
-		fmt.Println(x)
+		if x != 2 {
+			panic("inner block shadowing failed")
+		}
 	}
-	fmt.Println(x)
+	if x != 1 {
+		panic("outer block binding changed")
+	}
 }
