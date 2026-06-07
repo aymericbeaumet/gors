@@ -293,9 +293,9 @@ mod tests {
         assert!(source.contains("pub struct Value"), "{source}");
         assert!(source.contains("pub fn IsValid"), "{source}");
         assert!(source.contains("pub fn Type"), "{source}");
-        assert!(source.contains("pub fn copyVal"), "{source}");
+        assert!(!source.contains("pub fn copyVal"), "{source}");
         assert!(source.contains("pub fn ValueOf"), "{source}");
-        assert!(source.contains("fn deepValueEqual"), "{source}");
+        assert!(!source.contains("fn deepValueEqual"), "{source}");
         assert!(source.contains("pub fn DeepEqual"), "{source}");
         assert!(!source.contains("pub fn old"), "{source}");
     }

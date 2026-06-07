@@ -36113,7 +36113,7 @@ func main() {
     }
 
     #[test]
-    fn prune_generated_dead_code_keeps_reflect_deepequal_helpers() {
+    fn prune_generated_dead_code_keeps_reflect_deepequal_runtime_shim() {
         let mut modules = BTreeMap::from([
             (
                 "__main__".to_string(),
@@ -36178,8 +36178,7 @@ func main() {
         let source = prettyplease::unparse(&modules.get("reflect").unwrap().file);
 
         assert!(source.contains("pub fn DeepEqual"), "{source}");
-        assert!(source.contains("pub fn ValueOf"), "{source}");
-        assert!(source.contains("fn deepValueEqual"), "{source}");
+        assert!(!source.contains("fn deepValueEqual"), "{source}");
     }
 
     #[test]
