@@ -4,7 +4,7 @@ use proc_macro2::Span;
 
 use super::{
     CompiledModule, receiver_method_targets,
-    receiver_type_facts::receiver_type_from_path,
+    receiver_type_facts::{ReceiverTypeRef, receiver_type_from_path},
     receiver_type_scopes,
     syn_inspect::{
         call_target_key, clone_call_receiver_expr, expr_path_ident, expr_path_ident_or_clone,
@@ -37,6 +37,7 @@ type CloneValueParamTargets = BTreeMap<String, BTreeMap<usize, CloneValueParamKi
 type ReceiverTraitSupertraits = receiver_method_targets::Supertraits;
 type ReceiverMethodCloneValueTargets =
     receiver_method_targets::Targets<BTreeMap<usize, CloneValueParamKind>>;
+type ReceiverMethodMutSliceReturnTargets = receiver_method_targets::Targets<()>;
 
 trait ReceiverScopedCallArgRewrite {
     fn rewrite_expr_call(
@@ -107,6 +108,19 @@ where
         self.rewrite
             .rewrite_expr_method_call(&self.receiver_types, call);
     }
+}
+
+fn qself_receiver_method_call(
+    receiver_types: &receiver_type_scopes::Tracker<'_>,
+    call: &syn::ExprCall,
+) -> Option<(ReceiverTypeRef, String)> {
+    let syn::Expr::Path(path) = call.func.as_ref() else {
+        return None;
+    };
+    let qself = path.qself.as_ref()?;
+    let method = path.path.segments.last()?.ident.to_string();
+    let receiver_type = receiver_types.receiver_type_for_type(&qself.ty)?;
+    Some((receiver_type, method))
 }
 
 pub(super) fn borrow_mutated_vec_params(modules: &mut BTreeMap<String, CompiledModule>) {
@@ -292,6 +306,13 @@ fn return_type_is_vec(output: &syn::ReturnType) -> bool {
         return false;
     };
     vec_type_inner(ty).is_some()
+}
+
+fn return_type_is_mut_slice(output: &syn::ReturnType) -> bool {
+    let syn::ReturnType::Type(_, ty) = output else {
+        return false;
+    };
+    mut_ref_vec_inner(ty).is_some()
 }
 
 fn mutated_vec_param_indices(
@@ -485,6 +506,21 @@ impl ReceiverScopedCallArgRewrite for BorrowMutatedVecCallArgs<'_> {
         receiver_types: &receiver_type_scopes::Tracker<'_>,
         call: &mut syn::ExprCall,
     ) {
+        if let Some((receiver_type, method)) = qself_receiver_method_call(receiver_types, call)
+            && let Some(indices) = self.method_targets.target_for_call(
+                receiver_types.module_name(),
+                &method,
+                Some(&receiver_type),
+            )
+        {
+            for (index, arg) in call.args.iter_mut().enumerate().skip(1) {
+                if indices.contains(&(index - 1)) {
+                    borrow_mut_slice_call_arg(arg);
+                }
+            }
+            return;
+        }
+
         let Some(key) = call_target_key(&call.func, receiver_types.module_name()) else {
             return;
         };
@@ -679,6 +715,8 @@ pub(super) fn clone_vec_value_call_args(modules: &mut BTreeMap<String, CompiledM
     let receiver_facts = receiver_type_scopes::ProgramFacts::collect(modules);
     let targets = collect_vec_value_param_targets(modules);
     let method_targets = collect_vec_value_method_targets(modules, receiver_facts.module_names());
+    let mut_slice_return_methods =
+        collect_mut_slice_return_method_targets(modules, receiver_facts.module_names());
     let vec_newtypes = collect_vec_newtypes(modules);
     if targets.is_empty() && method_targets.is_empty() && vec_newtypes.is_empty() {
         return;
@@ -691,6 +729,7 @@ pub(super) fn clone_vec_value_call_args(modules: &mut BTreeMap<String, CompiledM
                 rewrite: CloneVecValueCallArgs {
                     targets: &targets,
                     method_targets: &method_targets,
+                    mut_slice_return_methods: &mut_slice_return_methods,
                     vec_newtypes: &vec_newtypes,
                 },
             },
@@ -799,6 +838,85 @@ fn collect_vec_value_method_targets(
     targets
 }
 
+fn collect_mut_slice_return_method_targets(
+    modules: &BTreeMap<String, CompiledModule>,
+    module_names: &std::collections::HashSet<String>,
+) -> ReceiverMethodMutSliceReturnTargets {
+    let mut targets = ReceiverMethodMutSliceReturnTargets::default();
+    let mut supertraits: ReceiverTraitSupertraits = BTreeMap::new();
+    for module in modules.values() {
+        for item in &module.file.items {
+            match item {
+                syn::Item::Impl(item_impl) => {
+                    let Some(seen_self_name) = named_self_type(&item_impl.self_ty) else {
+                        continue;
+                    };
+                    for impl_item in &item_impl.items {
+                        let syn::ImplItem::Fn(method) = impl_item else {
+                            continue;
+                        };
+                        targets.record_method_seen(
+                            &module.mod_name,
+                            &seen_self_name,
+                            &method.sig.ident.to_string(),
+                        );
+                    }
+                    if item_impl.trait_.is_some() {
+                        continue;
+                    }
+                    for impl_item in &item_impl.items {
+                        let syn::ImplItem::Fn(method) = impl_item else {
+                            continue;
+                        };
+                        if !return_type_is_mut_slice(&method.sig.output) {
+                            continue;
+                        }
+                        targets.insert_receiver(
+                            &module.mod_name,
+                            &seen_self_name,
+                            &method.sig.ident.to_string(),
+                            (),
+                        );
+                    }
+                }
+                syn::Item::Trait(item_trait) => {
+                    let self_name = item_trait.ident.to_string();
+                    record_direct_supertraits(
+                        &mut supertraits,
+                        &module.mod_name,
+                        &self_name,
+                        item_trait,
+                        module_names,
+                    );
+                    for trait_item in &item_trait.items {
+                        let syn::TraitItem::Fn(method) = trait_item else {
+                            continue;
+                        };
+                        targets.record_method_seen(
+                            &module.mod_name,
+                            &self_name,
+                            &method.sig.ident.to_string(),
+                        );
+                        if !return_type_is_mut_slice(&method.sig.output) {
+                            continue;
+                        }
+                        targets.insert_receiver(
+                            &module.mod_name,
+                            &self_name,
+                            &method.sig.ident.to_string(),
+                            (),
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    targets.inherit_supertrait_methods(&supertraits);
+    targets.finalize_unambiguous_names();
+    targets
+}
+
 fn record_direct_supertraits(
     supertraits: &mut ReceiverTraitSupertraits,
     module_name: &str,
@@ -894,6 +1012,7 @@ fn cloneable_value_param_kind(
 struct CloneVecValueCallArgs<'a> {
     targets: &'a CloneValueParamTargets,
     method_targets: &'a ReceiverMethodCloneValueTargets,
+    mut_slice_return_methods: &'a ReceiverMethodMutSliceReturnTargets,
     vec_newtypes: &'a std::collections::HashSet<String>,
 }
 
@@ -911,6 +1030,26 @@ impl ReceiverScopedCallArgRewrite for CloneVecValueCallArgs<'_> {
             clone_value_arg(arg);
         }
 
+        if let Some((receiver_type, method)) = qself_receiver_method_call(receiver_types, call)
+            && let Some(kinds) = self.method_targets.target_for_call(
+                receiver_types.module_name(),
+                &method,
+                Some(&receiver_type),
+            )
+        {
+            for (index, arg) in call.args.iter_mut().enumerate().skip(1) {
+                if let Some(kind) = kinds.get(&(index - 1)) {
+                    normalize_vec_value_arg_with_context(
+                        arg,
+                        *kind,
+                        receiver_types,
+                        self.mut_slice_return_methods,
+                    );
+                }
+            }
+            return;
+        }
+
         let Some(key) = call_target_key(&call.func, receiver_types.module_name()) else {
             return;
         };
@@ -919,7 +1058,12 @@ impl ReceiverScopedCallArgRewrite for CloneVecValueCallArgs<'_> {
         };
         for (index, arg) in call.args.iter_mut().enumerate() {
             if let Some(kind) = kinds.get(&index) {
-                normalize_vec_value_arg(arg, *kind);
+                normalize_vec_value_arg_with_context(
+                    arg,
+                    *kind,
+                    receiver_types,
+                    self.mut_slice_return_methods,
+                );
             }
         }
     }
@@ -939,9 +1083,64 @@ impl ReceiverScopedCallArgRewrite for CloneVecValueCallArgs<'_> {
         };
         for (index, arg) in call.args.iter_mut().enumerate() {
             if let Some(kind) = kinds.get(&index) {
-                normalize_vec_value_arg(arg, *kind);
+                normalize_vec_value_arg_with_context(
+                    arg,
+                    *kind,
+                    receiver_types,
+                    self.mut_slice_return_methods,
+                );
             }
         }
+    }
+}
+
+fn normalize_vec_value_arg_with_context(
+    arg: &mut syn::Expr,
+    kind: CloneValueParamKind,
+    receiver_types: &receiver_type_scopes::Tracker<'_>,
+    mut_slice_return_methods: &ReceiverMethodMutSliceReturnTargets,
+) {
+    if matches!(kind, CloneValueParamKind::Vec)
+        && expr_is_mut_slice_return_call(arg, receiver_types, mut_slice_return_methods)
+    {
+        let inner = arg.clone();
+        *arg = syn::parse_quote! { (#inner).to_vec() };
+        return;
+    }
+
+    normalize_vec_value_arg(arg, kind);
+}
+
+fn expr_is_mut_slice_return_call(
+    expr: &syn::Expr,
+    receiver_types: &receiver_type_scopes::Tracker<'_>,
+    targets: &ReceiverMethodMutSliceReturnTargets,
+) -> bool {
+    match expr {
+        syn::Expr::Call(call) => qself_receiver_method_call(receiver_types, call).is_some_and(
+            |(receiver_type, method)| {
+                targets
+                    .target_for_call(receiver_types.module_name(), &method, Some(&receiver_type))
+                    .is_some()
+            },
+        ),
+        syn::Expr::Group(group) => {
+            expr_is_mut_slice_return_call(&group.expr, receiver_types, targets)
+        }
+        syn::Expr::MethodCall(call) => {
+            let receiver_type = receiver_types.receiver_type_for_expr(&call.receiver);
+            targets
+                .target_for_call(
+                    receiver_types.module_name(),
+                    &call.method.to_string(),
+                    receiver_type.as_ref(),
+                )
+                .is_some()
+        }
+        syn::Expr::Paren(paren) => {
+            expr_is_mut_slice_return_call(&paren.expr, receiver_types, targets)
+        }
+        _ => false,
     }
 }
 
@@ -1282,6 +1481,27 @@ impl ReceiverScopedCallArgRewrite for BorrowMutRefCallArgs<'_> {
         receiver_types: &receiver_type_scopes::Tracker<'_>,
         call: &mut syn::ExprCall,
     ) {
+        if let Some((receiver_type, method)) = qself_receiver_method_call(receiver_types, call)
+            && let Some(param_kinds) = self.method_targets.target_for_call(
+                receiver_types.module_name(),
+                &method,
+                Some(&receiver_type),
+            )
+        {
+            for (index, arg) in call.args.iter_mut().enumerate().skip(1) {
+                if let Some(kind) = param_kinds.get(&(index - 1)) {
+                    borrow_mut_ref_call_arg(
+                        arg,
+                        kind,
+                        receiver_types,
+                        self.direct_trait_impls,
+                        self.mut_ref_trait_impls,
+                    );
+                }
+            }
+            return;
+        }
+
         let Some(key) = call_target_key(&call.func, receiver_types.module_name()) else {
             return;
         };
@@ -1696,6 +1916,57 @@ mod tests {
         assert!(
             !output.contains("< dataIO > :: read (d , ({ n [0] }) . to_vec ())"),
             "expected UFCS method scalar argument not to be materialized as Vec: {output}"
+        );
+    }
+
+    #[test]
+    fn clone_vec_value_call_args_converts_qself_method_slice_args_to_vec() {
+        let main_file: syn::File = rust! {
+            pub struct parser;
+
+            impl parser {
+                pub fn parseString(
+                    mut p: crate::builtin::GorsPtr<Self>,
+                    mut b: Vec<u8>,
+                ) -> String {
+                    String::new()
+                }
+            }
+
+            pub struct headerV7;
+
+            impl headerV7 {
+                pub fn name(&mut self) -> &mut [u8] {
+                    unimplemented!()
+                }
+            }
+
+            pub fn call(mut p: crate::builtin::GorsPtr<parser>, mut h: headerV7) {
+                let _ = <parser>::parseString(p, <headerV7>::name(&mut h));
+            }
+        };
+        let mut modules = std::collections::BTreeMap::from([(
+            "__main__".to_string(),
+            super::CompiledModule {
+                mod_name: "main".to_string(),
+                import_path: String::new(),
+                file: main_file,
+                filename: "main.rs".to_string(),
+                content_hash: String::new(),
+                is_main: true,
+                is_stdlib: false,
+            },
+        )]);
+
+        super::clone_vec_value_call_args(&mut modules);
+
+        let main_file = compiled_main_file(&modules);
+        let output = quote! { #main_file }.to_string();
+        assert!(
+            output.contains(
+                "< parser > :: parseString (p , (< headerV7 > :: name (& mut h)) . to_vec ())"
+            ),
+            "expected qself method slice argument to materialize Vec: {output}"
         );
     }
 

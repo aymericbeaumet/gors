@@ -139,6 +139,10 @@ impl<'a> Tracker<'a> {
         method_receiver_type_from_expr(expr, &context)
     }
 
+    pub(super) fn receiver_type_for_type(&self, ty: &syn::Type) -> Option<ReceiverTypeRef> {
+        receiver_type_from_type(ty, self.module_names)
+    }
+
     pub(super) fn current_self_type(&self) -> Option<&ReceiverTypeRef> {
         self.current_self_type.as_ref()
     }
