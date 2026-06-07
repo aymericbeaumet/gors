@@ -36209,8 +36209,9 @@ func main() {
         let output = quote! { #compiled }.to_string();
 
         assert!(
-            output.contains("((* c . lock () . unwrap ())) . Increment ()"),
-            "expected dereferenced shared receiver to be parenthesized before method call: {output}"
+            output.contains("< Counter > :: Increment (crate :: builtin :: GorsPtr :: from_arc (c . clone ())")
+                || output.contains("<Counter>::Increment(crate::builtin::GorsPtr::from_arc(c.clone())"),
+            "expected shared value receiver to call pointer method through a projected pointer cell: {output}"
         );
         assert!(
             !output.contains("* c . lock () . unwrap () . Increment ()"),
@@ -38342,6 +38343,67 @@ func main() {
             (main_rs.contains("impl bucket") || main_rs.contains("impl bucket {"))
                 && main_rs.contains("fn fill"),
             "expected projected UFCS method call to keep the receiver impl method reachable: {main_rs}"
+        );
+    }
+
+    #[test]
+    fn it_should_keep_captured_pointer_receiver_cells_for_field_method_projection() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type Once struct{}
+
+func (o *Once) Do(f func()) {
+	f()
+}
+
+type inner struct {
+	value int
+}
+
+type outer struct {
+	once Once
+	*inner
+}
+
+func lookup() *inner {
+	return &inner{value: 7}
+}
+
+func (o *outer) Name() int {
+	return o.value
+}
+
+func (o *outer) Value() int {
+	o.once.Do(func() {
+		o.inner = lookup()
+		_ = o.Name()
+		_ = o.value
+	})
+	return o.value
+}
+
+func main() {
+	o := &outer{}
+	_ = o.Value()
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+
+        assert!(
+            main_rs.contains("std::mem::offset_of!(outer, once)")
+                || main_rs.contains("std :: mem :: offset_of ! (outer , once)"),
+            "expected pointer receiver field method to project from the outer pointer cell: {main_rs}"
+        );
+        assert!(
+            !main_rs.contains("__gors_shared_value"),
+            "expected pointer receiver captures to stay as pointer cells, not cloned pointee values: {main_rs}"
         );
     }
 

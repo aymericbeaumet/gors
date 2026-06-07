@@ -15624,8 +15624,10 @@ fn func_lit_free_name_uses(func_lit: &ast::FuncLit<'_>, env: &TypeEnv) -> Scoped
 }
 
 fn receiver_uses_pointer_method(receiver: &str, method: &str, env: &TypeEnv) -> bool {
-    env.get_var(receiver)
-        .is_some_and(|ty| go_type_has_pointer_method(&ty, method, env))
+    env.get_var(receiver).is_some_and(|ty| {
+        !matches!(env.resolve_alias(&ty), GoType::Pointer(_))
+            && go_type_has_pointer_method(&ty, method, env)
+    })
 }
 
 fn go_type_has_pointer_method(ty: &GoType, method: &str, env: &TypeEnv) -> bool {
@@ -20890,6 +20892,45 @@ mod tests {
             &env,
         );
         assert!(names.contains("count"));
+    }
+
+    #[test]
+    fn pointer_method_on_pointer_capture_does_not_make_capture_mutable() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Counter struct {
+                    Value int
+                }
+
+                func (c *Counter) Increment() {
+                    c.Value++
+                }
+
+                func use(c *Counter) {
+                    f := func() {
+                        c.Increment()
+                    }
+                    _ = f
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "use" => Some(func),
+            _ => None,
+        }) else {
+            panic!("expected function");
+        };
+        let names = super::mutable_func_lit_capture_names_in_block(
+            func.body.as_ref().expect("expected body"),
+            &env,
+        );
+        assert!(!names.contains("c"));
     }
 
     #[test]
