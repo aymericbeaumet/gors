@@ -25706,6 +25706,19 @@ fn borrowed_pointer_view_define_guard_cell(rhs: &ast::Expr) -> Option<Option<syn
     Some(None)
 }
 
+fn mutable_slice_view_define_guard_cell(rhs: &ast::Expr) -> Option<Option<syn::Expr>> {
+    let ast::Expr::CallExpr(call) = rhs else {
+        return None;
+    };
+    if !call_returns_mutable_slice_view(call) {
+        return None;
+    }
+    let ast::Expr::SelectorExpr(selector) = call.fun.as_ref() else {
+        return None;
+    };
+    borrowed_pointer_view_define_guard_cell(&selector.x)
+}
+
 fn compile_borrowed_pointer_view_method_call(
     call_expr: ast::CallExpr,
     receiver_guard: Option<&syn::Ident>,
@@ -25729,6 +25742,50 @@ fn compile_borrowed_pointer_view_method_call(
     let method = syn::Ident::new(&rust_safe_ident_name(selector.sel.name), Span::mixed_site());
     let receiver = if let Some(guard) = receiver_guard {
         syn::parse_quote! { &mut *#guard }
+    } else {
+        borrowed_pointer_receiver_arg_expr_from_owned(*selector.x)
+    };
+    let mut args: syn::punctuated::Punctuated<syn::Expr, Token![,]> =
+        syn::punctuated::Punctuated::new();
+    if let Some(cargs) = call_expr.args {
+        for (idx, arg) in cargs.into_iter().enumerate() {
+            let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
+            let arg = compile_call_arg_with_abi(arg, param_types.get(idx), &actual, &call_abi, idx);
+            args.push(arg);
+        }
+    }
+    syn::parse_quote! { <#receiver_ty>::#method(#receiver, #args) }
+}
+
+fn compile_mutable_slice_view_method_call(
+    call_expr: ast::CallExpr,
+    receiver_guard: Option<&syn::Ident>,
+) -> syn::Expr {
+    record_mapping(&call_expr.lparen, None);
+    let call_abi = call_abi_for_backend(&call_expr);
+    let param_types = if call_abi.signature_params.is_empty() {
+        call_param_types(&call_expr.fun)
+    } else {
+        call_abi.signature_params.clone()
+    };
+    let ast::Expr::SelectorExpr(selector) = *call_expr.fun else {
+        return compile_error_expr("invalid mutable slice view call");
+    };
+    let receiver_type =
+        TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&selector.x, &env.borrow()));
+    let Some(receiver_name) = named_method_receiver_type_name(receiver_type) else {
+        return compile_error_expr("invalid mutable slice view receiver");
+    };
+    let receiver_ty = named_go_type_path_with_inferred_type_args(&receiver_name);
+    let method = syn::Ident::new(&rust_safe_ident_name(selector.sel.name), Span::mixed_site());
+    let receiver = if let Some(guard) = receiver_guard {
+        match *selector.x {
+            ast::Expr::CallExpr(call) => {
+                let view = compile_borrowed_pointer_view_method_call(call, Some(guard));
+                syn::parse_quote! { &mut *#view }
+            }
+            other => borrowed_pointer_receiver_arg_expr_from_owned(other),
+        }
     } else {
         borrowed_pointer_receiver_arg_expr_from_owned(*selector.x)
     };
@@ -25774,6 +25831,39 @@ fn compile_borrowed_pointer_view_define(
         ]);
     }
     let init = compile_borrowed_pointer_view_method_call(call, None);
+    Ok(vec![syn::parse_quote! { let mut #ident = #init; }])
+}
+
+fn compile_mutable_slice_view_define(
+    lhs: ast::Expr,
+    rhs: ast::Expr,
+    guard_cell: Option<syn::Expr>,
+) -> Result<Vec<syn::Stmt>, CompilerError> {
+    let ast::Expr::Ident(ident) = lhs else {
+        return Err(CompilerError::InvalidAssignment(
+            "expected identifier on lhs of :=".to_string(),
+        ));
+    };
+    let ast::Expr::CallExpr(call) = rhs else {
+        return Err(CompilerError::InvalidAssignment(
+            "expected mutable slice view call rhs".to_string(),
+        ));
+    };
+    if ident.name == "_" {
+        let init = compile_mutable_slice_view_method_call(call, None);
+        return Ok(vec![syn::parse_quote! { let _ = #init; }]);
+    }
+    let ident = local_binding_ident_for_ast(&ident);
+    if let Some(guard_cell) = guard_cell {
+        let (cell, guard) = synthetic_names::next_borrowed_pointer_view_idents();
+        let init = compile_mutable_slice_view_method_call(call, Some(&guard));
+        return Ok(vec![
+            syn::parse_quote! { let #cell = (#guard_cell).clone(); },
+            syn::parse_quote! { let mut #guard = #cell.lock().unwrap(); },
+            syn::parse_quote! { let mut #ident = #init; },
+        ]);
+    }
+    let init = compile_mutable_slice_view_method_call(call, None);
     Ok(vec![syn::parse_quote! { let mut #ident = #init; }])
 }
 
@@ -26145,6 +26235,19 @@ impl TryFrom<ast::AssignStmt<'_>> for Vec<syn::Stmt> {
                 let lhs = assign_stmt.lhs.remove(0);
                 let rhs = assign_stmt.rhs.remove(0);
                 return compile_borrowed_pointer_view_define(lhs, rhs, guard_cell);
+            }
+
+            if assign_stmt.lhs.len() == 1
+                && assign_stmt.rhs.len() == 1
+                && matches!(assign_stmt.lhs.first(), Some(ast::Expr::Ident(_)))
+                && let Some(guard_cell) = assign_stmt
+                    .rhs
+                    .first()
+                    .and_then(mutable_slice_view_define_guard_cell)
+            {
+                let lhs = assign_stmt.lhs.remove(0);
+                let rhs = assign_stmt.rhs.remove(0);
+                return compile_mutable_slice_view_define(lhs, rhs, guard_cell);
             }
 
             if assign_stmt.lhs.len() == 1
@@ -38243,6 +38346,56 @@ func main() {
             !output.contains("(< block > :: header ((b) . clone ()")
                 && !output.contains("(< block > :: header ((b).clone()"),
             "expected pointer view method not to clone the GorsPtr receiver: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_bind_nested_pointer_slice_view_defines_with_live_guard() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                const blockSize = 8
+
+                type block [blockSize]byte
+                type header [blockSize]byte
+
+                func (b *block) header() *header {
+                    return (*header)(b)
+                }
+
+                func (h *header) name() []byte {
+                    return h[1:][:3]
+                }
+
+                func fill(b *block) {
+                    field := b.header().name()
+                    field[0] = 'A'
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote::quote!(#compiled).to_string();
+
+        assert!(
+            output.contains("let __gors_borrowed_pointer_view_cell_0 = (b) . clone ()")
+                && output.contains(
+                    "let mut __gors_borrowed_pointer_view_0 = __gors_borrowed_pointer_view_cell_0 . lock () . unwrap ()"
+                ),
+            "expected nested slice view define to keep pointer-view guard alive: {output}"
+        );
+        assert!(
+            output.contains(
+                "let mut field = < header > :: name (& mut * < block > :: header (& mut * __gors_borrowed_pointer_view_0"
+            ),
+            "expected nested slice view define to borrow through the live guard: {output}"
+        );
+        assert!(
+            !output.contains("< block > :: header (& mut * b . lock () . unwrap ())"),
+            "expected nested slice view define not to borrow from a temporary lock: {output}"
         );
     }
 
