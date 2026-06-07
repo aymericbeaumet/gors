@@ -16041,10 +16041,14 @@ pub fn for_clause_per_iteration_capture_names(
     }
 
     let mut observed = func_lit_capture_names_in_block(&for_stmt.body, env);
-    collect_address_taken_names_in_block(&for_stmt.body, env, &mut observed);
+    let mut address_env = env.clone();
+    if let Some(init) = &for_stmt.init {
+        collect_address_taken_names_in_stmt(init, &mut address_env, &mut observed);
+    }
+    collect_address_taken_names_in_block(&for_stmt.body, &mut address_env, &mut observed);
     if let Some(post) = &for_stmt.post {
         collect_func_lit_capture_names_in_stmt(post, env, &mut observed);
-        collect_address_taken_names_in_stmt(post, env, &mut observed);
+        collect_address_taken_names_in_stmt(post, &mut address_env, &mut observed);
     }
 
     init_names
@@ -16429,7 +16433,7 @@ pub fn address_taken_names_in_block_with_declared_bindings(
     extra_declared: impl IntoIterator<Item = String>,
 ) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
-    collect_address_taken_names_in_block(block, env, &mut names);
+    collect_address_taken_names_in_block(block, &mut env.clone(), &mut names);
     let mut declared = BTreeSet::new();
     collect_declared_names_in_block(block, &mut declared);
     declared.extend(extra_declared);
@@ -16439,23 +16443,27 @@ pub fn address_taken_names_in_block_with_declared_bindings(
 
 fn collect_address_taken_names_in_block(
     block: &ast::BlockStmt<'_>,
-    env: &TypeEnv,
+    env: &mut TypeEnv,
     names: &mut BTreeSet<String>,
 ) {
+    let mut block_env = env.clone();
     for stmt in &block.list {
-        collect_address_taken_names_in_stmt(stmt, env, names);
+        collect_address_taken_names_in_stmt(stmt, &mut block_env, names);
     }
 }
 
 fn collect_address_taken_names_in_stmt(
     stmt: &ast::Stmt<'_>,
-    env: &TypeEnv,
+    env: &mut TypeEnv,
     names: &mut BTreeSet<String>,
 ) {
     match stmt {
         ast::Stmt::AssignStmt(assign) => {
             for expr in assign.lhs.iter().chain(assign.rhs.iter()) {
                 collect_address_taken_names_in_expr(expr, env, names);
+            }
+            if assign.tok == token::Token::DEFINE {
+                seed_address_taken_define_binding_types(assign, env);
             }
         }
         ast::Stmt::BlockStmt(block) => collect_address_taken_names_in_block(block, env, names),
@@ -16465,16 +16473,18 @@ fn collect_address_taken_names_in_stmt(
                     collect_address_taken_names_in_expr(expr, env, names);
                 }
             }
+            let mut case_env = env.clone();
             for stmt in &case_clause.body {
-                collect_address_taken_names_in_stmt(stmt, env, names);
+                collect_address_taken_names_in_stmt(stmt, &mut case_env, names);
             }
         }
         ast::Stmt::CommClause(comm_clause) => {
+            let mut comm_env = env.clone();
             if let Some(comm) = &comm_clause.comm {
-                collect_address_taken_names_in_stmt(comm, env, names);
+                collect_address_taken_names_in_stmt(comm, &mut comm_env, names);
             }
             for stmt in &comm_clause.body {
-                collect_address_taken_names_in_stmt(stmt, env, names);
+                collect_address_taken_names_in_stmt(stmt, &mut comm_env, names);
             }
         }
         ast::Stmt::DeclStmt(decl) => {
@@ -16487,6 +16497,9 @@ fn collect_address_taken_names_in_stmt(
                     }
                 }
             }
+            if decl.decl.tok == token::Token::VAR {
+                seed_address_taken_var_decl_binding_types(&decl.decl, env);
+            }
         }
         ast::Stmt::DeferStmt(defer_stmt) => {
             collect_address_taken_names_in_expr(&defer_stmt.call.fun, env, names);
@@ -16498,16 +16511,17 @@ fn collect_address_taken_names_in_stmt(
         }
         ast::Stmt::ExprStmt(expr) => collect_address_taken_names_in_expr(&expr.x, env, names),
         ast::Stmt::ForStmt(for_stmt) => {
+            let mut loop_env = env.clone();
             if let Some(init) = &for_stmt.init {
-                collect_address_taken_names_in_stmt(init, env, names);
+                collect_address_taken_names_in_stmt(init, &mut loop_env, names);
             }
             if let Some(cond) = &for_stmt.cond {
-                collect_address_taken_names_in_expr(cond, env, names);
+                collect_address_taken_names_in_expr(cond, &mut loop_env, names);
             }
             if let Some(post) = &for_stmt.post {
-                collect_address_taken_names_in_stmt(post, env, names);
+                collect_address_taken_names_in_stmt(post, &mut loop_env, names);
             }
-            collect_address_taken_names_in_block(&for_stmt.body, env, names);
+            collect_address_taken_names_in_block(&for_stmt.body, &mut loop_env, names);
         }
         ast::Stmt::GoStmt(go_stmt) => {
             collect_address_taken_names_in_expr(&go_stmt.call.fun, env, names);
@@ -16518,13 +16532,14 @@ fn collect_address_taken_names_in_stmt(
             }
         }
         ast::Stmt::IfStmt(if_stmt) => {
+            let mut if_env = env.clone();
             if let Some(init) = if_stmt.init.as_ref().as_ref() {
-                collect_address_taken_names_in_stmt(init, env, names);
+                collect_address_taken_names_in_stmt(init, &mut if_env, names);
             }
-            collect_address_taken_names_in_expr(&if_stmt.cond, env, names);
-            collect_address_taken_names_in_block(&if_stmt.body, env, names);
+            collect_address_taken_names_in_expr(&if_stmt.cond, &mut if_env, names);
+            collect_address_taken_names_in_block(&if_stmt.body, &mut if_env, names);
             if let Some(else_branch) = if_stmt.else_.as_ref().as_ref() {
-                collect_address_taken_names_in_stmt(else_branch, env, names);
+                collect_address_taken_names_in_stmt(else_branch, &mut if_env, names);
             }
         }
         ast::Stmt::IncDecStmt(inc_dec) => {
@@ -16541,7 +16556,11 @@ fn collect_address_taken_names_in_stmt(
                 collect_address_taken_names_in_expr(value, env, names);
             }
             collect_address_taken_names_in_expr(&range.x, env, names);
-            collect_address_taken_names_in_block(&range.body, env, names);
+            let mut range_env = env.clone();
+            if matches!(range.tok, Some(token::Token::DEFINE)) {
+                seed_address_taken_range_binding_types(range, &mut range_env, env);
+            }
+            collect_address_taken_names_in_block(&range.body, &mut range_env, names);
         }
         ast::Stmt::ReturnStmt(ret) => {
             for expr in &ret.results {
@@ -16556,28 +16575,96 @@ fn collect_address_taken_names_in_stmt(
             collect_address_taken_names_in_block(&select_stmt.body, env, names)
         }
         ast::Stmt::SwitchStmt(switch_stmt) => {
+            let mut switch_env = env.clone();
             if let Some(init) = &switch_stmt.init {
-                collect_address_taken_names_in_stmt(init, env, names);
+                collect_address_taken_names_in_stmt(init, &mut switch_env, names);
             }
             if let Some(tag) = &switch_stmt.tag {
-                collect_address_taken_names_in_expr(tag, env, names);
+                collect_address_taken_names_in_expr(tag, &mut switch_env, names);
             }
-            collect_address_taken_names_in_block(&switch_stmt.body, env, names);
+            collect_address_taken_names_in_block(&switch_stmt.body, &mut switch_env, names);
         }
         ast::Stmt::TypeSwitchStmt(type_switch) => {
+            let mut switch_env = env.clone();
             if let Some(init) = &type_switch.init {
-                collect_address_taken_names_in_stmt(init, env, names);
+                collect_address_taken_names_in_stmt(init, &mut switch_env, names);
             }
-            collect_address_taken_names_in_stmt(&type_switch.assign, env, names);
-            collect_address_taken_names_in_block(&type_switch.body, env, names);
+            collect_address_taken_names_in_stmt(&type_switch.assign, &mut switch_env, names);
+            collect_address_taken_names_in_block(&type_switch.body, &mut switch_env, names);
         }
         ast::Stmt::BranchStmt(_) | ast::Stmt::EmptyStmt(_) => {}
     }
 }
 
+fn seed_address_taken_define_binding_types(assign: &ast::AssignStmt<'_>, env: &mut TypeEnv) {
+    let inferred = if assign.lhs.len() == assign.rhs.len() {
+        assign
+            .rhs
+            .iter()
+            .map(|rhs| GoType::infer_expr(rhs, env))
+            .collect::<Vec<_>>()
+    } else {
+        vec![GoType::Unknown; assign.lhs.len()]
+    };
+    for (lhs, ty) in assign.lhs.iter().zip(inferred) {
+        if let ast::Expr::Ident(ident) = lhs
+            && ident.name != "_"
+        {
+            env.set_var(ident.name, ty);
+        }
+    }
+}
+
+fn seed_address_taken_var_decl_binding_types(gen_decl: &ast::GenDecl<'_>, env: &mut TypeEnv) {
+    for spec in &gen_decl.specs {
+        let ast::Spec::ValueSpec(value_spec) = spec else {
+            continue;
+        };
+        let explicit_type = value_spec.type_.as_ref().map(GoType::from_expr);
+        for (idx, name) in value_spec.names.iter().enumerate() {
+            if name.name == "_" {
+                continue;
+            }
+            let ty = explicit_type.clone().unwrap_or_else(|| {
+                value_spec
+                    .values
+                    .as_ref()
+                    .and_then(|values| values.get(idx))
+                    .map(|expr| GoType::infer_expr(expr, env))
+                    .unwrap_or(GoType::Unknown)
+            });
+            env.set_var(name.name, ty);
+        }
+    }
+}
+
+fn seed_address_taken_range_binding_types(
+    range: &ast::RangeStmt<'_>,
+    range_env: &mut TypeEnv,
+    outer_env: &TypeEnv,
+) {
+    let container_ty = outer_env.resolve_alias(&GoType::infer_expr(&range.x, outer_env));
+    let (key_ty, value_ty) = match container_ty {
+        GoType::Slice(elem) | GoType::Array(elem) => (GoType::Int, *elem),
+        GoType::Map(key, value) => (*key, *value),
+        GoType::String => (GoType::Int, GoType::Int32),
+        _ => (GoType::Unknown, GoType::Unknown),
+    };
+    if let Some(ast::Expr::Ident(ident)) = &range.key
+        && ident.name != "_"
+    {
+        range_env.set_var(ident.name, key_ty);
+    }
+    if let Some(ast::Expr::Ident(ident)) = &range.value
+        && ident.name != "_"
+    {
+        range_env.set_var(ident.name, value_ty);
+    }
+}
+
 fn collect_address_taken_names_in_expr(
     expr: &ast::Expr<'_>,
-    env: &TypeEnv,
+    env: &mut TypeEnv,
     names: &mut BTreeSet<String>,
 ) {
     match expr {
@@ -17257,6 +17344,19 @@ fn collect_declared_names_in_stmt(stmt: &ast::Stmt<'_>, names: &mut BTreeSet<Str
             names.extend(assign.lhs.iter().filter_map(ident_name));
         }
         ast::Stmt::BlockStmt(block) => collect_declared_names_in_block(block, names),
+        ast::Stmt::CaseClause(case) => {
+            for stmt in &case.body {
+                collect_declared_names_in_stmt(stmt, names);
+            }
+        }
+        ast::Stmt::CommClause(comm) => {
+            if let Some(stmt) = &comm.comm {
+                collect_declared_names_in_stmt(stmt, names);
+            }
+            for stmt in &comm.body {
+                collect_declared_names_in_stmt(stmt, names);
+            }
+        }
         ast::Stmt::DeclStmt(decl) => {
             for spec in &decl.decl.specs {
                 if let ast::Spec::ValueSpec(value) = spec {
@@ -17293,10 +17393,18 @@ fn collect_declared_names_in_stmt(stmt: &ast::Stmt<'_>, names: &mut BTreeSet<Str
             collect_declared_names_in_block(&range.body, names);
         }
         ast::Stmt::RangeStmt(range) => collect_declared_names_in_block(&range.body, names),
+        ast::Stmt::SelectStmt(select) => collect_declared_names_in_block(&select.body, names),
         ast::Stmt::SwitchStmt(switch) => {
             if let Some(init) = &switch.init {
                 collect_declared_names_in_stmt(init, names);
             }
+            collect_declared_names_in_block(&switch.body, names);
+        }
+        ast::Stmt::TypeSwitchStmt(switch) => {
+            if let Some(init) = &switch.init {
+                collect_declared_names_in_stmt(init, names);
+            }
+            collect_declared_names_in_stmt(&switch.assign, names);
             collect_declared_names_in_block(&switch.body, names);
         }
         ast::Stmt::LabeledStmt(label) => collect_declared_names_in_stmt(&label.stmt, names),
@@ -17510,6 +17618,7 @@ mod tests {
         Addressability, Call, CalleeKind, CaptureMode, Completion, ExprKind, Item, MutationMode,
         OwnershipMode, Stmt, ValueRole, lower_file,
     };
+    use crate::ast;
     use crate::compiler::typeinfer::{GoType, TypeEnv, TypeKind};
     use crate::parser::parse_file;
     use std::collections::BTreeMap;
@@ -19407,6 +19516,48 @@ mod tests {
         assert_eq!(addressability(2), Addressability::NotAddressable);
         assert_eq!(addressability(3), Addressability::Addressable);
         assert_eq!(addressability(4), Addressability::NotAddressable);
+    }
+
+    #[test]
+    fn address_taken_names_tracks_local_var_pointer_method_receivers() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type parser struct{}
+
+                func (*parser) parseString() string {
+                    return ""
+                }
+
+                func main() {
+                    switch 1 {
+                    case 1:
+                        var p parser
+                        switch 2 {
+                        case 2:
+                            _ = p.parseString()
+                        }
+                    }
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(ast::Decl::FuncDecl(func)) = file
+            .decls
+            .iter()
+            .find(|decl| matches!(decl, ast::Decl::FuncDecl(func) if func.name.name == "main"))
+        else {
+            panic!("expected main function");
+        };
+        let body = func.body.as_ref().expect("expected main body");
+
+        let names = super::address_taken_names_in_block(body, &env);
+
+        assert!(names.contains("p"), "{names:?}");
     }
 
     #[test]
