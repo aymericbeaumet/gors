@@ -41737,6 +41737,43 @@ func main() {
     }
 
     #[test]
+    fn it_should_cell_maps_captured_by_index_assigning_function_values() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+package main
+
+func main() {
+	values := map[string]string{}
+	key := "name"
+	f := func() {
+		values[key] = "ok"
+	}
+	_ = f
+}
+"#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains(
+                "let mut values = std :: sync :: Arc :: new (std :: sync :: Mutex :: new"
+            ),
+            "expected captured map to be promoted into a shared cell: {output}"
+        );
+        assert!(
+            output.contains("((* values . lock () . unwrap ())) . insert"),
+            "expected map index assignment to mutate the shared map cell: {output}"
+        );
+        assert!(
+            output.contains("let values = values . clone ()"),
+            "expected stored function literal to clone the shared map cell: {output}"
+        );
+    }
+
+    #[test]
     fn it_should_pass_address_taken_interface_args_as_pointer_cells() {
         let parsed = parse_file(
             "test.go",

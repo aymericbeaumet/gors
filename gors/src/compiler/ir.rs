@@ -15905,6 +15905,16 @@ fn collect_free_name_uses_in_assignment_lhs(
         ast::Expr::Ident(ident) => {
             scoped_record_mutation(scopes, uses, ident.name);
         }
+        ast::Expr::IndexExpr(index) => {
+            collect_free_name_uses_in_mut_borrow_expr(&index.x, scopes, uses, env);
+            collect_free_name_uses_in_expr(&index.index, scopes, uses, env);
+        }
+        ast::Expr::IndexListExpr(index) => {
+            collect_free_name_uses_in_mut_borrow_expr(&index.x, scopes, uses, env);
+            for index in &index.indices {
+                collect_free_name_uses_in_expr(index, scopes, uses, env);
+            }
+        }
         ast::Expr::ParenExpr(paren) => {
             collect_free_name_uses_in_assignment_lhs(&paren.x, scopes, uses, env);
         }
@@ -20971,6 +20981,40 @@ mod tests {
             &env,
         );
         assert!(names.contains("blk"));
+    }
+
+    #[test]
+    fn records_mutable_function_literal_captures_from_index_assignments() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func main() {
+                    values := map[string]string{}
+                    key := "name"
+                    f := func() {
+                        values[key] = "ok"
+                    }
+                    _ = f
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+            _ => None,
+        }) else {
+            panic!("expected function");
+        };
+        let names = super::mutable_func_lit_capture_names_in_block(
+            func.body.as_ref().expect("expected body"),
+            &env,
+        );
+        assert!(names.contains("values"));
+        assert!(!names.contains("key"));
     }
 
     #[test]
