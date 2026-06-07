@@ -10764,14 +10764,19 @@ fn compile_struct_composite_lit(
     }
 }
 
-type AnonymousStructFields = Vec<(String, typeinfer::GoType)>;
+struct AnonymousStructFacts {
+    fields: Vec<(String, typeinfer::GoType)>,
+    embedded_fields: HashSet<String>,
+}
 
 fn compile_anonymous_struct_type_items(
     ident: &syn::Ident,
     struct_type: ast::StructType,
-) -> Result<(Vec<syn::Item>, AnonymousStructFields), CompilerError> {
+) -> Result<(Vec<syn::Item>, AnonymousStructFacts), CompilerError> {
     let mut fields = syn::punctuated::Punctuated::new();
     let mut env_fields = Vec::new();
+    let mut embedded_fields = HashSet::new();
+    let mut embedded_types: Vec<(syn::Ident, syn::Type, Option<syn::Path>)> = vec![];
     let mut default_fields: Vec<(syn::Ident, syn::Expr)> = vec![];
     let mut clone_fields: Vec<(syn::Ident, syn::Expr)> = vec![];
     let mut derive_state = struct_derives::State::new();
@@ -10835,7 +10840,13 @@ fn compile_anonymous_struct_type_items(
                 }
             } else if let Some(name) = extract_type_name(&field_type) {
                 let field_ident = syn::Ident::new(&rust_safe_ident_name(&name), Span::mixed_site());
+                embedded_fields.insert(name.clone());
                 env_fields.push((name, field_go_type.clone()));
+                embedded_types.push((
+                    field_ident.clone(),
+                    rust_type.clone(),
+                    borrowed_interface_trait_path.clone(),
+                ));
                 default_fields.push((field_ident.clone(), field_default.clone()));
                 clone_fields.push((
                     field_ident.clone(),
@@ -10962,7 +10973,55 @@ fn compile_anonymous_struct_type_items(
         items.push(default_impl);
     }
     items.extend(send_sync_impls);
-    Ok((items, env_fields))
+    if let Some((emb_field, emb_ty, interface_trait_path)) =
+        embedded_types.first().filter(|_| embedded_types.len() == 1)
+    {
+        let deref_impl: syn::Item = if let Some(trait_path) = interface_trait_path {
+            syn::parse_quote! {
+                impl std::ops::Deref for #ident {
+                    type Target = dyn #trait_path;
+                    fn deref(&self) -> &(dyn #trait_path) {
+                        &*self.#emb_field
+                    }
+                }
+            }
+        } else {
+            syn::parse_quote! {
+                impl std::ops::Deref for #ident {
+                    type Target = #emb_ty;
+                    fn deref(&self) -> &#emb_ty {
+                        &self.#emb_field
+                    }
+                }
+            }
+        };
+        let deref_mut_impl: syn::Item = if let Some(trait_path) = interface_trait_path {
+            syn::parse_quote! {
+                impl std::ops::DerefMut for #ident {
+                    fn deref_mut(&mut self) -> &mut (dyn #trait_path) {
+                        &mut *self.#emb_field
+                    }
+                }
+            }
+        } else {
+            syn::parse_quote! {
+                impl std::ops::DerefMut for #ident {
+                    fn deref_mut(&mut self) -> &mut #emb_ty {
+                        &mut self.#emb_field
+                    }
+                }
+            }
+        };
+        items.push(deref_impl);
+        items.push(deref_mut_impl);
+    }
+    Ok((
+        items,
+        AnonymousStructFacts {
+            fields: env_fields,
+            embedded_fields,
+        },
+    ))
 }
 
 fn compile_anonymous_struct_define(
@@ -10979,11 +11038,12 @@ fn compile_anonymous_struct_define(
     let binding_ident = local_binding_ident_for_ast(&name);
     let type_ident = synthetic_names::next_anonymous_struct_ident();
     let type_name = type_ident.to_string();
-    let (items, fields) = compile_anonymous_struct_type_items(&type_ident, struct_type)?;
+    let (items, facts) = compile_anonymous_struct_type_items(&type_ident, struct_type)?;
     TYPE_ENV.with(|env| {
         let mut env = env.borrow_mut();
         env.set_type_kind(&type_name, typeinfer::TypeKind::Struct);
-        env.set_struct_fields(&type_name, fields);
+        env.set_struct_fields(&type_name, facts.fields);
+        env.set_struct_embedded_fields(&type_name, facts.embedded_fields);
         if source_name != "_" {
             env.set_var(source_name, typeinfer::GoType::Named(type_name.clone()));
         }
@@ -13493,6 +13553,136 @@ struct PointerFieldMethodTarget {
     receiver: syn::Expr,
 }
 
+struct PromotedPointerMethodTarget {
+    receiver_name: String,
+    receiver_ty: syn::Type,
+    receiver: syn::Expr,
+}
+
+#[derive(Clone)]
+struct PromotedPointerMethodInfo {
+    embedded_field: String,
+    embedded_is_pointer: bool,
+    receiver_name: String,
+}
+
+fn promoted_pointer_method_info(
+    base_ty: &typeinfer::GoType,
+    method_name: &str,
+    env: &typeinfer::TypeEnv,
+) -> Option<PromotedPointerMethodInfo> {
+    let base_name = go_type_struct_name(base_ty, env)?;
+    if env.has_method_func(&base_name, method_name) {
+        return None;
+    }
+    for (embedded_field, embedded_ty) in env.get_struct_fields(&base_name) {
+        if !env.is_struct_embedded_field(&base_name, &embedded_field) {
+            continue;
+        }
+        let (_target_name, embedded_is_pointer) = embedded_field_target(&embedded_ty, env)?;
+        if let Some(receiver_name) =
+            pointer_receiver_method_type_name(&embedded_ty, method_name, env)
+        {
+            return Some(PromotedPointerMethodInfo {
+                embedded_field,
+                embedded_is_pointer,
+                receiver_name,
+            });
+        }
+    }
+    None
+}
+
+fn owning_pointer_pointee_type(go_type: &typeinfer::GoType) -> Option<syn::Type> {
+    let typeinfer::GoType::Pointer(inner) = resolved_go_type(go_type) else {
+        return None;
+    };
+    Some(rust_type_from_inferred_go_type(&inner))
+}
+
+fn promoted_pointer_method_receiver_from_ptr(
+    owner_expr: syn::Expr,
+    owner_ty: syn::Type,
+    info: &PromotedPointerMethodInfo,
+) -> syn::Expr {
+    let embedded_field = syn::Ident::new(
+        &rust_safe_ident_name(&info.embedded_field),
+        proc_macro2::Span::mixed_site(),
+    );
+    if info.embedded_is_pointer {
+        syn::parse_quote! {{
+            let __gors_owner = (#owner_expr).lock().unwrap();
+            (__gors_owner.#embedded_field).clone()
+        }}
+    } else {
+        syn::parse_quote! {
+            crate::builtin::GorsPtr::from_ptr_field(
+                (#owner_expr).clone(),
+                std::mem::offset_of!(#owner_ty, #embedded_field),
+                |__gors_owner: &mut #owner_ty| &mut __gors_owner.#embedded_field,
+            )
+        }
+    }
+}
+
+fn promoted_pointer_method_receiver_from_arc(
+    owner_expr: syn::Expr,
+    owner_ty: syn::Type,
+    info: &PromotedPointerMethodInfo,
+) -> syn::Expr {
+    let embedded_field = syn::Ident::new(
+        &rust_safe_ident_name(&info.embedded_field),
+        proc_macro2::Span::mixed_site(),
+    );
+    if info.embedded_is_pointer {
+        syn::parse_quote! {{
+            let __gors_owner = (#owner_expr).lock().unwrap();
+            (__gors_owner.#embedded_field).clone()
+        }}
+    } else {
+        syn::parse_quote! {
+            crate::builtin::GorsPtr::from_arc_field(
+                (#owner_expr).clone(),
+                std::mem::offset_of!(#owner_ty, #embedded_field),
+                |__gors_owner: &mut #owner_ty| &mut __gors_owner.#embedded_field,
+            )
+        }
+    }
+}
+
+fn promoted_pointer_method_target(
+    selector: &ast::SelectorExpr,
+) -> Option<PromotedPointerMethodTarget> {
+    let method_name = selector.sel.name;
+    let owner_go_type = method_receiver_go_type(&selector.x);
+    let info = TYPE_ENV
+        .with(|env| promoted_pointer_method_info(&owner_go_type, method_name, &env.borrow()))?;
+    let receiver_ty = named_go_type_path_with_inferred_type_args(&info.receiver_name);
+
+    if let Some(owner_ty) = owning_pointer_pointee_type(&owner_go_type) {
+        let owner_expr = pointer_cell_expr_from_ref(&selector.x)?;
+        let receiver = promoted_pointer_method_receiver_from_ptr(owner_expr, owner_ty, &info);
+        return Some(PromotedPointerMethodTarget {
+            receiver_name: info.receiver_name,
+            receiver_ty,
+            receiver,
+        });
+    }
+
+    let (path, go_type, name) = top_level_var_expr_and_type_from_ref(&selector.x)?;
+    if !is_mutable_top_level_var(&name) {
+        return None;
+    }
+    let owner_ty = rust_type_from_inferred_go_type(&go_type);
+    let owner_expr = syn::parse_quote! { *#path };
+    let receiver = promoted_pointer_method_receiver_from_arc(owner_expr, owner_ty, &info);
+    Some(PromotedPointerMethodTarget {
+        receiver_name: info.receiver_name,
+        receiver_ty,
+        receiver,
+    })
+}
+
 fn pointer_field_method_target(selector: &ast::SelectorExpr) -> Option<PointerFieldMethodTarget> {
     let method_name = selector.sel.name;
     let expr = selector.x.as_ref();
@@ -14026,8 +14216,18 @@ fn call_param_types(fun: &ast::Expr) -> Vec<typeinfer::GoType> {
                         .get_var(pkg_or_recv.name)
                         .and_then(|ty| receiver_method_type_name_for_call(ty, &env))
                     {
-                        return env.get_method_params(&name, sel.sel.name);
+                        if env.has_method_func(&name, sel.sel.name) {
+                            return env.get_method_params(&name, sel.sel.name);
+                        }
                     }
+                }
+                let receiver_type = typeinfer::GoType::infer_expr(&sel.x, &env);
+                if let Some(info) = promoted_pointer_method_info(&receiver_type, sel.sel.name, &env)
+                {
+                    return env.get_method_params(&info.receiver_name, sel.sel.name);
+                }
+                if let Some(name) = receiver_method_type_name_for_call(receiver_type, &env) {
+                    return env.get_method_params(&name, sel.sel.name);
                 }
                 Vec::new()
             }
@@ -14427,11 +14627,17 @@ fn call_return_types(expr: &ast::Expr) -> Vec<typeinfer::GoType> {
                         return package_returns;
                     }
 
-                    if let Some(typeinfer::GoType::Named(name)) = env.get_var(pkg_or_recv.name) {
+                    if let Some(typeinfer::GoType::Named(name)) = env.get_var(pkg_or_recv.name)
+                        && env.has_method_func(&name, sel.sel.name)
+                    {
                         return env.get_method_returns(&name, sel.sel.name);
                     }
                 }
                 let receiver_type = typeinfer::GoType::infer_expr(&sel.x, &env);
+                if let Some(info) = promoted_pointer_method_info(&receiver_type, sel.sel.name, &env)
+                {
+                    return env.get_method_returns(&info.receiver_name, sel.sel.name);
+                }
                 if let Some(name) = receiver_method_type_name_for_call(receiver_type, &env) {
                     return env.get_method_returns(&name, sel.sel.name);
                 }
@@ -15729,6 +15935,39 @@ fn compile_top_level_value_spec(
     tok: token::Token,
 ) -> Result<Vec<syn::Item>, CompilerError> {
     let mut items = vec![];
+    let first_name = vs.names.first().map(|name| name.name);
+    let mut type_expr = vs.type_;
+    let anonymous_struct_type = if tok != token::Token::CONST {
+        match type_expr.take() {
+            Some(ast::Expr::StructType(struct_type))
+                if struct_type
+                    .fields
+                    .as_ref()
+                    .is_some_and(|fields| !fields.list.is_empty()) =>
+            {
+                let source_name = first_name.unwrap_or("__anonymous");
+                let type_name = typeinfer::anonymous_top_level_struct_type_name(source_name);
+                let type_ident =
+                    syn::Ident::new(&rust_safe_ident_name(&type_name), Span::mixed_site());
+                let (struct_items, facts) =
+                    compile_anonymous_struct_type_items(&type_ident, struct_type)?;
+                TYPE_ENV.with(|env| {
+                    let mut env = env.borrow_mut();
+                    env.set_type_kind(&type_name, typeinfer::TypeKind::Struct);
+                    env.set_struct_fields(&type_name, facts.fields);
+                    env.set_struct_embedded_fields(&type_name, facts.embedded_fields);
+                });
+                items.extend(struct_items);
+                Some((type_name, type_ident))
+            }
+            other => {
+                type_expr = other;
+                None
+            }
+        }
+    } else {
+        None
+    };
     let mut values_iter = vs.values.unwrap_or_default().into_iter();
 
     for name in vs.names {
@@ -15740,7 +15979,10 @@ fn compile_top_level_value_spec(
         let go_name = name.name;
         let vis: syn::Visibility = (&name).into();
         let ident: syn::Ident = name.into();
-        let explicit_go_type = vs.type_.as_ref().map(typeinfer::GoType::from_expr);
+        let explicit_go_type = anonymous_struct_type
+            .as_ref()
+            .map(|(type_name, _)| typeinfer::GoType::Named(type_name.clone()))
+            .or_else(|| type_expr.as_ref().map(typeinfer::GoType::from_expr));
         let inferred_go_type = explicit_go_type.clone().or_else(|| {
             init_ast.as_ref().and_then(|expr| {
                 TYPE_ENV.with(|env| {
@@ -15756,10 +15998,13 @@ fn compile_top_level_value_spec(
                 env.borrow_mut().set_top_level_var(go_name, go_type.clone());
             });
         }
-        let inferred_type = vs
-            .type_
+        let inferred_type = anonymous_struct_type
             .as_ref()
-            .map(static_value_type_from_expr)
+            .map(|(_, type_ident)| {
+                let type_ident = type_ident.clone();
+                syn::parse_quote! { #type_ident }
+            })
+            .or_else(|| type_expr.as_ref().map(static_value_type_from_expr))
             .or_else(|| init_ast.as_ref().and_then(infer_static_type_from_init))
             .or_else(|| {
                 inferred_go_type
@@ -15771,14 +16016,14 @@ fn compile_top_level_value_spec(
             let mut value = init_ast
                 .map(syn::Expr::from)
                 .unwrap_or_else(|| syn::parse_quote! { 0 });
-            let explicit_alias_name = match vs.type_.as_ref() {
+            let explicit_alias_name = match type_expr.as_ref() {
                 Some(ast::Expr::Ident(id)) => Some(id.name),
                 _ => None,
             };
             let ty: syn::Type =
                 if matches!(explicit_go_type.as_ref(), Some(typeinfer::GoType::String)) {
                     syn::parse_quote! { &str }
-                } else if let Some(type_expr) = vs.type_.as_ref() {
+                } else if let Some(type_expr) = type_expr.as_ref() {
                     type_from_expr_ref(type_expr)
                 } else if let syn::Expr::Lit(syn::ExprLit {
                     lit: syn::Lit::Str(_),
@@ -15842,7 +16087,13 @@ fn compile_top_level_value_spec(
                         expr.into()
                     }
                 }
-                None => zero_values::expr_for_optional_type(vs.type_.as_ref()),
+                None => {
+                    if anonymous_struct_type.is_some() {
+                        syn::parse_quote! { Default::default() }
+                    } else {
+                        zero_values::expr_for_optional_type(type_expr.as_ref())
+                    }
+                }
             };
             let mut ty: syn::Type =
                 inferred_type.unwrap_or_else(|| syn::parse_quote! { Box<dyn std::any::Any> });
@@ -18911,6 +19162,21 @@ impl From<ast::Expr<'_>> for syn::Expr {
                         }
                         if method_has_pointer_receiver_for_expr(&sel.x, sel.sel.name) {
                             return pointer_receiver_method_call_expr(sel, method, args);
+                        }
+                        if let Some(target) = promoted_pointer_method_target(&sel) {
+                            let receiver_ty = target.receiver_ty;
+                            let receiver = target.receiver;
+                            let receiver = if method_uses_borrowed_pointer_receiver(
+                                &target.receiver_name,
+                                sel.sel.name,
+                            ) {
+                                syn::parse_quote! { &mut *#receiver.lock().unwrap() }
+                            } else {
+                                receiver
+                            };
+                            return syn::parse_quote! {
+                                <#receiver_ty>::#method(#receiver, #args)
+                            };
                         }
                         if let Some(target) = pointer_field_method_target(&sel) {
                             let receiver_ty = target.receiver_ty;
@@ -25395,6 +25661,123 @@ func main() {
             "{main_rs}"
         );
         assert!(!main_rs.contains("Vec :: from ([f") && !main_rs.contains("Vec::from([f"));
+    }
+
+    #[test]
+    fn compile_program_multi_lowers_package_anonymous_struct_vars_concretely() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/cachepkg"
+
+func main() {
+	_, _ = cachepkg.Current()
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("cachepkg/cachepkg.go").as_path(),
+            r#"
+package cachepkg
+
+import "example/syncx"
+
+type User struct {
+	Name string
+}
+
+func current() (*User, error) {
+	return &User{Name: "gopher"}, nil
+}
+
+func Current() (*User, error) {
+	cache.Do(func() { cache.u, cache.err = current() })
+	if cache.err != nil {
+		return nil, cache.err
+	}
+	u := *cache.u
+	return &u, nil
+}
+
+var cache struct {
+	syncx.Once
+	u   *User
+	err error
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("syncx/syncx.go").as_path(),
+            r#"
+package syncx
+
+type Once struct {
+	ran bool
+}
+
+func (o *Once) Do(f func()) {
+	if !o.ran {
+		o.ran = true
+		f()
+	}
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let cachepkg_rs = output.files.get("example__cachepkg.rs").unwrap();
+
+        assert!(
+            cachepkg_rs.contains("struct __gors_anon_var_cache"),
+            "{cachepkg_rs}"
+        );
+        assert!(
+            cachepkg_rs.contains("std::sync::Mutex<__gors_anon_var_cache>"),
+            "{cachepkg_rs}"
+        );
+        assert!(
+            cachepkg_rs.contains("Once : crate :: syncx :: Once")
+                || cachepkg_rs.contains("Once: crate::syncx::Once"),
+            "{cachepkg_rs}"
+        );
+        assert!(
+            cachepkg_rs.contains("impl std :: ops :: Deref for __gors_anon_var_cache")
+                || cachepkg_rs.contains("impl std::ops::Deref for __gors_anon_var_cache"),
+            "{cachepkg_rs}"
+        );
+        assert!(
+            cachepkg_rs.contains("GorsPtr :: from_arc_field")
+                || cachepkg_rs.contains("GorsPtr::from_arc_field"),
+            "{cachepkg_rs}"
+        );
+        assert!(
+            cachepkg_rs.contains("std :: mem :: offset_of ! (__gors_anon_var_cache , Once)")
+                || cachepkg_rs.contains("std::mem::offset_of!(__gors_anon_var_cache, Once)"),
+            "{cachepkg_rs}"
+        );
+        assert!(
+            cachepkg_rs.contains("< crate :: syncx :: Once > :: Do")
+                || cachepkg_rs.contains("<crate::syncx::Once>::Do"),
+            "{cachepkg_rs}"
+        );
+        assert!(
+            cachepkg_rs.contains("std :: sync :: Arc :: new (std :: sync :: Mutex :: new (Some")
+                || cachepkg_rs.contains("std::sync::Arc::new(std::sync::Mutex::new(Some"),
+            "{cachepkg_rs}"
+        );
+        assert!(
+            !cachepkg_rs.contains(". Do (") && !cachepkg_rs.contains(".Do("),
+            "{cachepkg_rs}"
+        );
+        assert!(
+            !cachepkg_rs.contains("let cache = cache.clone()")
+                && !cachepkg_rs.contains("let cache = cache . clone ()"),
+            "{cachepkg_rs}"
+        );
     }
 
     #[test]

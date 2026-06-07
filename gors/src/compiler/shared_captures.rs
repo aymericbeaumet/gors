@@ -1,12 +1,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashSet};
 
-use proc_macro2::Span;
-
-use super::{
-    TYPE_ENV, ast, go_type_is_copy, ir, rust_safe_ident_name, synthetic_names, typeinfer,
-    value_ident,
-};
+use super::{TYPE_ENV, ast, go_type_is_copy, ir, synthetic_names, typeinfer, value_ident};
 
 thread_local! {
     static SHARED_CAPTURE_NAMES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
@@ -48,9 +43,9 @@ pub(super) fn move_closure_shared_capture_clones(func_lit: &ast::FuncLit) -> Vec
             .collect();
         names
             .into_iter()
-            .filter(|name| is_shared_capture_name(name))
+            .filter(|name| is_shared_capture_name(name) && !env.is_top_level_var(name))
             .map(|name| {
-                let ident = syn::Ident::new(&rust_safe_ident_name(&name), Span::mixed_site());
+                let ident = value_ident(&name);
                 syn::parse_quote! { let #ident = #ident.clone(); }
             })
             .collect()

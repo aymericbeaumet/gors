@@ -2115,6 +2115,10 @@ pub(crate) fn type_parameter_names(
         .unwrap_or_default()
 }
 
+pub(crate) fn anonymous_top_level_struct_type_name(var_name: &str) -> std::string::String {
+    format!("__gors_anon_var_{var_name}")
+}
+
 fn type_param_constraints(
     type_params: Option<&ast::FieldList<'_>>,
 ) -> HashMap<std::string::String, Vec<GoType>> {
@@ -2308,6 +2312,78 @@ fn qualify_package_constraint_map(
             )
         })
         .collect()
+}
+
+struct StructFieldFacts {
+    fields: Vec<(std::string::String, GoType)>,
+    embedded_fields: HashSet<std::string::String>,
+    array_lengths: Vec<(std::string::String, i128)>,
+}
+
+fn collect_struct_field_facts(struct_type: &ast::StructType<'_>) -> StructFieldFacts {
+    let mut fields = vec![];
+    let mut embedded_fields = HashSet::new();
+    let mut array_lengths = vec![];
+    if let Some(ref field_list) = struct_type.fields {
+        for field in &field_list.list {
+            let array_len = field.type_.as_ref().and_then(array_type_len_value);
+            let ty = field
+                .type_
+                .as_ref()
+                .map(GoType::from_expr)
+                .unwrap_or(GoType::Unknown);
+            if let Some(ref names) = field.names {
+                for field_name in names {
+                    fields.push((field_name.name.to_string(), ty.clone()));
+                    if let Some(len) = array_len {
+                        array_lengths.push((field_name.name.to_string(), len));
+                    }
+                }
+            } else if let Some(type_expr) = &field.type_
+                && let Some(field_name) = embedded_field_name(type_expr)
+            {
+                embedded_fields.insert(field_name.clone());
+                fields.push((field_name, ty.clone()));
+            }
+        }
+    }
+    StructFieldFacts {
+        fields,
+        embedded_fields,
+        array_lengths,
+    }
+}
+
+fn non_empty_struct_type<'a>(expr: &'a ast::Expr<'a>) -> Option<&'a ast::StructType<'a>> {
+    match expr {
+        ast::Expr::ParenExpr(paren) => non_empty_struct_type(&paren.x),
+        ast::Expr::StructType(struct_type)
+            if struct_type
+                .fields
+                .as_ref()
+                .is_some_and(|fields| !fields.list.is_empty()) =>
+        {
+            Some(struct_type)
+        }
+        _ => None,
+    }
+}
+
+fn anonymous_value_spec_struct_type<'a>(
+    vs: &'a ast::ValueSpec<'a>,
+) -> Option<(std::string::String, &'a ast::StructType<'a>)> {
+    let struct_type = vs.type_.as_ref().and_then(non_empty_struct_type)?;
+    let first_name = vs.names.first()?;
+    Some((
+        anonymous_top_level_struct_type_name(first_name.name),
+        struct_type,
+    ))
+}
+
+fn value_spec_explicit_go_type(vs: &ast::ValueSpec<'_>) -> Option<GoType> {
+    anonymous_value_spec_struct_type(vs)
+        .map(|(type_name, _)| GoType::Named(type_name))
+        .or_else(|| vs.type_.as_ref().map(GoType::from_expr))
 }
 
 fn qualify_package_type(package_name: &str, ty: &GoType, package_env: &TypeEnv) -> GoType {
@@ -4076,7 +4152,7 @@ impl TypeEnv {
                 let ast::Spec::ValueSpec(vs) = spec else {
                     continue;
                 };
-                let explicit_type = vs.type_.as_ref().map(GoType::from_expr);
+                let explicit_type = value_spec_explicit_go_type(vs);
                 let values = vs.values.as_ref();
                 for (i, name) in vs.names.iter().enumerate() {
                     let ty = if let Some(ref explicit_type) = explicit_type {
@@ -4206,6 +4282,16 @@ impl TypeEnv {
         true
     }
 
+    fn set_struct_type_facts(&mut self, name: &str, struct_type: &ast::StructType<'_>) {
+        self.set_type_kind(name, TypeKind::Struct);
+        let facts = collect_struct_field_facts(struct_type);
+        self.set_struct_fields(name, facts.fields);
+        self.set_struct_embedded_fields(name, facts.embedded_fields);
+        for (field_name, len) in facts.array_lengths {
+            self.set_struct_field_array_len(name, &field_name, len);
+        }
+    }
+
     fn scan_type_spec(&mut self, ts: &ast::TypeSpec) {
         let Some(ref name) = ts.name else { return };
         let type_param_names = type_parameter_names(ts.type_params.as_ref());
@@ -4220,38 +4306,7 @@ impl TypeEnv {
         }
         match &ts.type_ {
             ast::Expr::StructType(st) => {
-                self.set_type_kind(name.name, TypeKind::Struct);
-                if let Some(ref field_list) = st.fields {
-                    let mut fields = vec![];
-                    let mut embedded_fields = HashSet::new();
-                    for field in &field_list.list {
-                        let array_len = field.type_.as_ref().and_then(array_type_len_value);
-                        let ty = field
-                            .type_
-                            .as_ref()
-                            .map(GoType::from_expr)
-                            .unwrap_or(GoType::Unknown);
-                        if let Some(ref names) = field.names {
-                            for field_name in names {
-                                fields.push((field_name.name.to_string(), ty.clone()));
-                                if let Some(len) = array_len {
-                                    self.set_struct_field_array_len(
-                                        name.name,
-                                        field_name.name,
-                                        len,
-                                    );
-                                }
-                            }
-                        } else if let Some(type_expr) = &field.type_
-                            && let Some(field_name) = embedded_field_name(type_expr)
-                        {
-                            embedded_fields.insert(field_name.clone());
-                            fields.push((field_name, ty.clone()));
-                        }
-                    }
-                    self.set_struct_fields(name.name, fields);
-                    self.set_struct_embedded_fields(name.name, embedded_fields);
-                }
+                self.set_struct_type_facts(name.name, st);
             }
             ast::Expr::InterfaceType(_) => {
                 self.set_type_kind(name.name, TypeKind::Interface);
@@ -4286,7 +4341,12 @@ impl TypeEnv {
         tok: token::Token,
         inherited_const_type: Option<&GoType>,
     ) {
-        let explicit_type = vs.type_.as_ref().map(GoType::from_expr).or_else(|| {
+        if tok != token::Token::CONST
+            && let Some((type_name, struct_type)) = anonymous_value_spec_struct_type(vs)
+        {
+            self.set_struct_type_facts(&type_name, struct_type);
+        }
+        let explicit_type = value_spec_explicit_go_type(vs).or_else(|| {
             (tok == token::Token::CONST && vs.values.is_none())
                 .then(|| inherited_const_type.cloned())
                 .flatten()
@@ -4931,6 +4991,48 @@ func (o *OffsetWriter) WriteAt(p []byte, off int64) (int, error) {
             env.get_var("Second"),
             Some(GoType::Named("Duration".to_string()))
         );
+    }
+
+    #[test]
+    fn scan_file_records_package_anonymous_struct_var_fields_before_use() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package p
+
+                type User struct{}
+                type Once struct{}
+
+                func Current() error {
+                    return cache.err
+                }
+
+                var cache struct {
+                    Once
+                    u *User
+                    err error
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+
+        let cache_type = anonymous_top_level_struct_type_name("cache");
+        assert_eq!(
+            env.get_var("cache"),
+            Some(GoType::Named(cache_type.clone()))
+        );
+        assert_eq!(
+            env.get_field_type(&cache_type, "u"),
+            GoType::Pointer(Box::new(GoType::Named("User".to_string())))
+        );
+        assert_eq!(env.get_field_type(&cache_type, "err"), GoType::Error);
+        assert_eq!(
+            env.get_field_type(&cache_type, "Once"),
+            GoType::Named("Once".to_string())
+        );
+        assert!(env.is_struct_embedded_field(&cache_type, "Once"));
     }
 
     #[test]
