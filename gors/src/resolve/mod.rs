@@ -2915,7 +2915,10 @@ func root(blk *block) {
 
         assert!(reachable.contains("block::toGNU"), "{reachable:?}");
         assert!(reachable.contains("headerGNU::sparse"), "{reachable:?}");
-        assert!(reachable.contains("sparseArray::maxEntries"), "{reachable:?}");
+        assert!(
+            reachable.contains("sparseArray::maxEntries"),
+            "{reachable:?}"
+        );
     }
 
     #[test]

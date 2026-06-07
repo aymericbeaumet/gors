@@ -1099,8 +1099,10 @@ mod tests {
         let mut item = file
             .items
             .iter()
-            .find(|item| matches!(item, syn::Item::Impl(item_impl)
-                if matches!(super::named_self_type(&item_impl.self_ty).as_deref(), Some("Writer"))))
+            .find(|item| {
+                matches!(item, syn::Item::Impl(item_impl)
+                if matches!(super::named_self_type(&item_impl.self_ty).as_deref(), Some("Writer")))
+            })
             .cloned()
             .expect("Writer impl");
 

@@ -1169,7 +1169,37 @@ impl ByteSeq for Vec<u8> {
     }
 }
 
+impl ByteSeq for [u8] {
+    fn byte_at(&self, index: usize) -> u8 {
+        self.get(index).copied().unwrap_or_default()
+    }
+
+    fn byte_slice(&self, start: usize, end: usize) -> Vec<u8> {
+        self.get(start..end).map_or_else(Vec::new, <[u8]>::to_vec)
+    }
+}
+
+impl<const N: usize> ByteSeq for [u8; N] {
+    fn byte_at(&self, index: usize) -> u8 {
+        self.as_slice().byte_at(index)
+    }
+
+    fn byte_slice(&self, start: usize, end: usize) -> Vec<u8> {
+        self.as_slice().byte_slice(start, end)
+    }
+}
+
 impl<T: ByteSeq + ?Sized> ByteSeq for &T {
+    fn byte_at(&self, index: usize) -> u8 {
+        (**self).byte_at(index)
+    }
+
+    fn byte_slice(&self, start: usize, end: usize) -> Vec<u8> {
+        (**self).byte_slice(start, end)
+    }
+}
+
+impl<T: ByteSeq + ?Sized> ByteSeq for &mut T {
     fn byte_at(&self, index: usize) -> u8 {
         (**self).byte_at(index)
     }
@@ -2493,10 +2523,17 @@ mod tests {
 
         assert_eq!(byte_at(&text, 1), b'o');
         assert_eq!(byte_at(&bytes, 2), b'r');
+        assert_eq!(byte_at(bytes.as_slice(), 3), b's');
         assert_eq!(byte_slice(&text, 1, 3), vec![b'o', b'r']);
         assert_eq!(byte_slice(&bytes, 0, 2), vec![b'g', b'o']);
+        assert_eq!(byte_slice(bytes.as_slice(), 2, 4), vec![b'r', b's']);
         assert_eq!(string_from_byte_seq(&text), "gors");
         assert_eq!(string_from_byte_seq(&bytes), "gors");
+        assert_eq!(string_from_byte_seq(bytes.as_slice()), "gors");
+
+        let mut mutable = bytes.clone();
+        let mutable_slice = mutable.as_mut_slice();
+        assert_eq!(string_from_byte_seq(&mutable_slice), "gors");
     }
 
     #[test]

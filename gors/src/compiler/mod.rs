@@ -6887,6 +6887,17 @@ fn compile_type_spec(ts: ast::TypeSpec) -> Result<Vec<syn::Item>, CompilerError>
                     }
                 });
                 items.push(syn::parse_quote! {
+                    impl crate::builtin::ByteSeq for #ident {
+                        fn byte_at(&self, index: usize) -> u8 {
+                            self.0.get(index).copied().unwrap_or_default()
+                        }
+
+                        fn byte_slice(&self, start: usize, end: usize) -> Vec<u8> {
+                            self.0.get(start..end).map_or_else(Vec::new, <[u8]>::to_vec)
+                        }
+                    }
+                });
+                items.push(syn::parse_quote! {
                     impl AsRef<[u8]> for #ident {
                         fn as_ref(&self) -> &[u8] { self.0.as_ref() }
                     }
@@ -8787,7 +8798,7 @@ fn compile_type_conversion(call_expr: ast::CallExpr, kind: &str) -> syn::Expr {
         "string" if is_int_arg || is_numeric_var => {
             syn::parse_quote! { char::from_u32(#arg as u32).map(String::from).unwrap_or_default() }
         }
-        "string" if is_byte_seq_type_param(&arg_go_type) => {
+        "string" if is_byte_seq_type_param(&arg_go_type) || is_go_byte_slice_type(&arg_go_type) => {
             syn::parse_quote! { crate::builtin::string_from_byte_seq(&#arg) }
         }
         "string" => {
@@ -34804,6 +34815,14 @@ func main() {
                         String::from_utf8(self.0.clone()).unwrap_or_default()
                     }
                 }
+                impl crate::builtin::ByteSeq for buffer {
+                    fn byte_at(&self, index: usize) -> u8 {
+                        self.0.get(index).copied().unwrap_or_default()
+                    }
+                    fn byte_slice(&self, start: usize, end: usize) -> Vec<u8> {
+                        self.0.get(start..end).map_or_else(Vec::new, <[u8]>::to_vec)
+                    }
+                }
                 impl AsRef<[u8]> for buffer {
                     fn as_ref(&self) -> &[u8] { self.0.as_ref() }
                 }
@@ -34841,6 +34860,46 @@ func main() {
                     }
                 }
             },
+        );
+    }
+
+    #[test]
+    fn it_should_compile_byte_slice_string_conversion_through_byte_seq() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                const blockSize = 8
+
+                type block [blockSize]byte
+                type header [blockSize]byte
+
+                func (b *block) header() *header {
+                    return (*header)(b)
+                }
+
+                func (h *header) name() []byte {
+                    return h[1:][:3]
+                }
+
+                func value(b *block) string {
+                    return string(b.header().name())
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote::quote!(#compiled).to_string();
+
+        assert!(
+            output.contains("crate :: builtin :: string_from_byte_seq"),
+            "expected string([]byte) conversion to use ByteSeq helper: {output}"
+        );
+        assert!(
+            !output.contains("crate :: builtin :: string (& < header > :: name"),
+            "expected conversion not to add an extra StringValue reference to returned slice view: {output}"
         );
     }
 
