@@ -340,10 +340,8 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
         &parsed_file_refs,
         &imported_type_envs,
     );
-    let view_method_seed = crate::compiler::fixed_array_view_method_seed_for_files(
-        &parsed_file_refs,
-        &package_type_env,
-    );
+    let view_method_seed =
+        crate::compiler::borrowed_view_method_seed_for_files(&parsed_file_refs, &package_type_env);
 
     let import_renames = package_import_renames(&parsed_files);
     let import_path_by_module = package_import_path_by_module(&parsed_files);
@@ -429,7 +427,7 @@ fn compile_resolved_file(
     imported_type_envs: &BTreeMap<String, crate::compiler::PackageFacts>,
     import_renames: &BTreeMap<String, String>,
     package_mutable_top_level_vars: &HashSet<String>,
-    view_method_seed: &crate::compiler::FixedArrayViewMethodSeed,
+    view_method_seed: &crate::compiler::BorrowedViewMethodSeed,
     roots: Option<&HashSet<String>>,
 ) -> Result<syn::File, crate::compiler::CompilerError> {
     let mut type_env = package_type_env.clone();
@@ -655,7 +653,7 @@ struct ResolvedRecoveryContext<'a> {
     imported_type_envs: &'a BTreeMap<String, crate::compiler::PackageFacts>,
     import_renames: &'a BTreeMap<String, String>,
     package_mutable_top_level_vars: &'a HashSet<String>,
-    view_method_seed: &'a crate::compiler::FixedArrayViewMethodSeed,
+    view_method_seed: &'a crate::compiler::BorrowedViewMethodSeed,
     roots: Option<&'a HashSet<String>>,
 }
 

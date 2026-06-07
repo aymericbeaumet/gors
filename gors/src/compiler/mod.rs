@@ -4811,7 +4811,7 @@ pub(crate) fn compile_with_type_env_import_renames_mutable_vars_and_view_seed(
     mut type_env: typeinfer::TypeEnv,
     import_renames: BTreeMap<String, String>,
     mutable_top_level_vars: Option<HashSet<String>>,
-    view_method_seed: Option<&FixedArrayViewMethodSeed>,
+    view_method_seed: Option<&BorrowedViewMethodSeed>,
 ) -> Result<syn::File, CompilerError> {
     reset_lowering_thread_state();
     set_import_renames(import_renames);
@@ -4820,7 +4820,7 @@ pub(crate) fn compile_with_type_env_import_renames_mutable_vars_and_view_seed(
     let _ir = ir::lower_file(&file, &type_env);
     set_type_env(type_env);
     if let Some(seed) = view_method_seed {
-        apply_fixed_array_view_method_seed(seed);
+        apply_borrowed_view_method_seed(seed);
     }
     let _package_mutable_top_level_vars =
         PackageMutableTopLevelVarsGuard::set(mutable_top_level_vars);
@@ -9371,13 +9371,13 @@ fn method_uses_borrowed_pointer_receiver(receiver_name: &str, method_name: &str)
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct FixedArrayViewMethodSeed {
+pub(crate) struct BorrowedViewMethodSeed {
     borrowed_pointer_methods: std::collections::HashSet<String>,
     mutable_slice_methods: std::collections::HashSet<String>,
 }
 
-fn fixed_array_view_method_seed_from_decls(decls: &[ast::Decl]) -> FixedArrayViewMethodSeed {
-    let mut seed = FixedArrayViewMethodSeed::default();
+fn borrowed_view_method_seed_from_decls(decls: &[ast::Decl]) -> BorrowedViewMethodSeed {
+    let mut seed = BorrowedViewMethodSeed::default();
     for decl in decls {
         let ast::Decl::FuncDecl(func_decl) = decl else {
             continue;
@@ -9387,14 +9387,14 @@ fn fixed_array_view_method_seed_from_decls(decls: &[ast::Decl]) -> FixedArrayVie
         else {
             continue;
         };
-        if !is_pointer_receiver {
-            continue;
-        }
         let Some(recv_name) = func_decl_receiver_name(func_decl) else {
             continue;
         };
         let key = method_key(&receiver_type_name, func_decl.name.name);
-        if borrowed_pointer_view_return_info(func_decl, &receiver_type_name, recv_name).is_some() {
+        if is_pointer_receiver
+            && borrowed_pointer_view_return_info(func_decl, &receiver_type_name, recv_name)
+                .is_some()
+        {
             seed.borrowed_pointer_methods.insert(key.clone());
         }
         if mutable_slice_view_return_info(func_decl, recv_name).is_some() {
@@ -9404,15 +9404,15 @@ fn fixed_array_view_method_seed_from_decls(decls: &[ast::Decl]) -> FixedArrayVie
     seed
 }
 
-pub(crate) fn fixed_array_view_method_seed_for_files(
+pub(crate) fn borrowed_view_method_seed_for_files(
     files: &[&ast::File<'_>],
     type_env: &typeinfer::TypeEnv,
-) -> FixedArrayViewMethodSeed {
+) -> BorrowedViewMethodSeed {
     let _type_env = LocalTypeEnvScopeGuard::push();
     set_type_env(type_env.clone());
-    let mut seed = FixedArrayViewMethodSeed::default();
+    let mut seed = BorrowedViewMethodSeed::default();
     for file in files {
-        let file_seed = fixed_array_view_method_seed_from_decls(&file.decls);
+        let file_seed = borrowed_view_method_seed_from_decls(&file.decls);
         seed.borrowed_pointer_methods
             .extend(file_seed.borrowed_pointer_methods);
         seed.mutable_slice_methods
@@ -9421,16 +9421,16 @@ pub(crate) fn fixed_array_view_method_seed_for_files(
     seed
 }
 
-fn apply_fixed_array_view_method_seed(seed: &FixedArrayViewMethodSeed) {
+fn apply_borrowed_view_method_seed(seed: &BorrowedViewMethodSeed) {
     borrowed_views::extend_view_methods(
         seed.borrowed_pointer_methods.clone(),
         seed.mutable_slice_methods.clone(),
     );
 }
 
-fn preseed_fixed_array_view_methods(decls: &[ast::Decl]) {
-    let seed = fixed_array_view_method_seed_from_decls(decls);
-    apply_fixed_array_view_method_seed(&seed);
+fn preseed_borrowed_view_methods(decls: &[ast::Decl]) {
+    let seed = borrowed_view_method_seed_from_decls(decls);
+    apply_borrowed_view_method_seed(&seed);
 }
 
 fn compile_method(
@@ -13506,6 +13506,58 @@ fn lvalue_index_component_expr(expr: &ast::Expr) -> Option<syn::Expr> {
         }
         _ => syn_expr_from_type_expr_like(expr),
     }
+}
+
+fn mutable_slice_view_index_owner_expr(expr: ast::Expr) -> syn::Expr {
+    if is_borrowed_pointer_expr_ref(&expr) {
+        return borrowed_pointer_receiver_arg_expr_from_owned(expr);
+    }
+    expr.into()
+}
+
+fn compile_mutable_slice_view_index_read(
+    call_expr: ast::CallExpr,
+    idx: syn::Expr,
+    clone_any: bool,
+) -> syn::Expr {
+    let call_abi = call_abi_for_backend(&call_expr);
+    let param_types = if call_abi.signature_params.is_empty() {
+        call_param_types(&call_expr.fun)
+    } else {
+        call_abi.signature_params.clone()
+    };
+    let ast::Expr::SelectorExpr(selector) = *call_expr.fun else {
+        return compile_error_expr("invalid mutable slice view call");
+    };
+    let receiver = mutable_slice_view_index_owner_expr(*selector.x);
+    let method = syn::Ident::new(&rust_safe_ident_name(selector.sel.name), Span::mixed_site());
+    let mut args = syn::punctuated::Punctuated::<syn::Expr, Token![,]>::new();
+    if let Some(cargs) = call_expr.args {
+        for (arg_index, arg) in cargs.into_iter().enumerate() {
+            let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&arg, &env.borrow()));
+            args.push(compile_call_arg_with_abi(
+                arg,
+                param_types.get(arg_index),
+                &actual,
+                &call_abi,
+                arg_index,
+            ));
+        }
+    }
+    let read_expr: syn::Expr = if clone_any {
+        syn::parse_quote! { crate::builtin::clone_any(&__gors_index_base[__gors_index]) }
+    } else {
+        syn::parse_quote! { (__gors_index_base[__gors_index]).clone() }
+    };
+    syn::parse_quote! {{
+        let mut __gors_index_owner = #receiver;
+        let __gors_index_base = __gors_index_owner.#method(#args);
+        let __gors_index = (#idx) as usize;
+        if __gors_index >= __gors_index_base.len() {
+            crate::builtin::panic_value("index out of range");
+        }
+        #read_expr
+    }}
 }
 
 fn selector_base_is_shadowed_local_or_var(selector: &ast::SelectorExpr) -> bool {
@@ -20582,12 +20634,14 @@ impl From<ast::Expr<'_>> for syn::Expr {
             },
             ast::Expr::IndexExpr(index_expr) => {
                 let env = TYPE_ENV.with(|e| e.borrow().clone());
-                let container_type = typeinfer::GoType::infer_expr(&index_expr.x, &env);
-                let pointer_array_cell = pointer_array_cell_expr_from_ref(&index_expr.x);
-                let base: syn::Expr = (*index_expr.x).into();
+                let base_ast = *index_expr.x;
+                let index_ast = *index_expr.index;
+                let container_type = typeinfer::GoType::infer_expr(&base_ast, &env);
+                let pointer_array_cell = pointer_array_cell_expr_from_ref(&base_ast);
 
                 if let Some((key_ty, _)) = map_type_preserving_key_alias(&env, &container_type) {
-                    let key = compile_map_key_expr(*index_expr.index, &key_ty);
+                    let base: syn::Expr = base_ast.into();
+                    let key = compile_map_key_expr(index_ast, &key_ty);
                     if interface_map_key_trait_path(&key_ty).is_some() {
                         return syn::parse_quote! {{
                             let __gors_map_key = #key;
@@ -20603,9 +20657,10 @@ impl From<ast::Expr<'_>> for syn::Expr {
                     }};
                 }
 
-                let idx = compile_index_component_expr(*index_expr.index);
+                let idx = compile_index_component_expr(index_ast);
 
                 if is_byte_seq_type_param(&container_type) {
+                    let base: syn::Expr = base_ast.into();
                     return syn::parse_quote! { crate::builtin::byte_at(&#base, (#idx) as usize) };
                 }
 
@@ -20620,6 +20675,23 @@ impl From<ast::Expr<'_>> for syn::Expr {
                     }};
                 }
 
+                let clone_any_index_value = matches!(
+                    env.resolve_alias(&container_type),
+                    typeinfer::GoType::Slice(elem) | typeinfer::GoType::Array(elem)
+                        if matches!(resolved_go_type(&elem), typeinfer::GoType::Any | typeinfer::GoType::Interface(_))
+                );
+
+                let base: syn::Expr = match base_ast {
+                    ast::Expr::CallExpr(call) if call_returns_mutable_slice_view(&call) => {
+                        return compile_mutable_slice_view_index_read(
+                            call,
+                            idx,
+                            clone_any_index_value,
+                        );
+                    }
+                    other => other.into(),
+                };
+
                 if container_type == typeinfer::GoType::String {
                     return syn::parse_quote! {{
                         let __gors_index_base = (#base).clone();
@@ -20631,11 +20703,7 @@ impl From<ast::Expr<'_>> for syn::Expr {
                     }};
                 }
 
-                if matches!(
-                    env.resolve_alias(&container_type),
-                    typeinfer::GoType::Slice(elem) | typeinfer::GoType::Array(elem)
-                        if matches!(resolved_go_type(&elem), typeinfer::GoType::Any | typeinfer::GoType::Interface(_))
-                ) {
+                if clone_any_index_value {
                     return syn::parse_quote! {{
                         let __gors_index_base = &#base;
                         let __gors_index = (#idx) as usize;
@@ -21279,7 +21347,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
             collect_function_thread_safe_type_params_for_decls(&file.decls),
         );
 
-        preseed_fixed_array_view_methods(&file.decls);
+        preseed_borrowed_view_methods(&file.decls);
         let needed_imported_interface_methods = interface_method_sets::needed_imports(&file.decls);
         let receiver_recover_handlers = recover_handlers::collect(&file.decls);
 
@@ -39631,6 +39699,86 @@ func main() {
         assert!(
             !compact.contains("__gors_index_base[(__gors_index)asusize]"),
             "expected no generated-Rust postpass recast around the index temporary: {output}"
+        );
+    }
+
+    #[test]
+    fn slice_index_binds_mutable_view_call_receiver_temporaries() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Chunk []byte
+                type Elem []byte
+
+                func (c Chunk) entry(i int) Elem {
+                    return Elem(c[i:])
+                }
+
+                func (e Elem) offset() []byte {
+                    return e[:1]
+                }
+
+                func main() {
+                    c := Chunk([]byte{7})
+                    _ = c.entry(0).offset()[0]
+                }
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("let mut __gors_index_owner =")
+                && output.contains("__gors_index_owner . offset ()"),
+            "expected mutable slice view receiver to be bound before indexing: {output}"
+        );
+        assert!(
+            !output.contains("let __gors_index_base = &"),
+            "expected mutable slice view index not to borrow a temporary base: {output}"
+        );
+    }
+
+    #[test]
+    fn slice_index_reborrows_borrowed_pointer_view_receiver() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type block [2]byte
+                type header [2]byte
+
+                func (b *block) header() *header {
+                    return (*header)(b)
+                }
+
+                func (h *header) flag() []byte {
+                    return h[:1]
+                }
+
+                func main() {
+                    var b block
+                    h := b.header()
+                    _ = h.flag()[0]
+                    _ = h.flag()[0]
+                }
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+        let compact: String = output.chars().filter(|c| !c.is_whitespace()).collect();
+
+        assert!(
+            compact.contains("letmut__gors_index_owner=&mut*h;"),
+            "expected borrowed pointer view receiver to be reborrowed for slice indexing: {output}"
+        );
+        assert!(
+            !compact.contains("letmut__gors_index_owner=h;"),
+            "expected borrowed pointer view receiver not to be moved into slice indexing: {output}"
         );
     }
 
