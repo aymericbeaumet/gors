@@ -9071,8 +9071,12 @@ fn call_mutates_receiver(call: &ast::CallExpr, recv_name: &str, recv_type_name: 
         return false;
     }
     TYPE_ENV.with(|env| {
-        env.borrow()
-            .method_has_pointer_receiver(&method_key(recv_type_name, selector.sel.name))
+        let env = env.borrow();
+        let receiver_type = typeinfer::GoType::infer_expr(&selector.x, &env);
+        go_type_is_interface_like(&receiver_type)
+            || go_type_is_interface_like(&env.resolve_alias(&receiver_type))
+            || pointer_receiver_method_type_name(&receiver_type, selector.sel.name, &env).is_some()
+            || env.method_has_pointer_receiver(&method_key(recv_type_name, selector.sel.name))
     })
 }
 
@@ -13756,11 +13760,15 @@ fn value_method_call_receiver_should_clone(receiver: &ast::Expr, method_name: &s
     TYPE_ENV.with(|env| {
         let env = env.borrow();
         let receiver_type = typeinfer::GoType::infer_expr(receiver, &env);
-        if matches!(
-            resolved_go_type(&receiver_type),
-            typeinfer::GoType::Pointer(_)
-        ) {
-            return false;
+        if let typeinfer::GoType::Pointer(inner) = env.resolve_alias(&receiver_type) {
+            let inner = *inner;
+            let Some(receiver_name) = receiver_method_type_name_for_call(inner.clone(), &env)
+            else {
+                return false;
+            };
+            return env.has_method_func(&receiver_name, method_name)
+                && !env.method_has_pointer_receiver(&method_key(&receiver_name, method_name))
+                && !go_type_is_copy(&inner);
         }
         let resolved_receiver_type = env.resolve_alias(&receiver_type);
         if go_type_is_interface_like(&receiver_type)
@@ -35934,6 +35942,35 @@ func (enc Encoding) WithPadding(padding int) *Encoding {
     }
 
     #[test]
+    fn value_receiver_interface_field_calls_use_owned_self() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type State interface {
+                    Remain() int
+                }
+
+                type Box struct {
+                    S State
+                }
+
+                func (b Box) Remain() int {
+                    return b.S.Remain()
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote::quote!(#compiled).to_string();
+
+        assert!(output.contains("fn Remain (mut self) -> isize"), "{output}");
+        assert!(!output.contains("fn Remain (& self) -> isize"), "{output}");
+    }
+
+    #[test]
     fn compile_program_multi_value_receiver_pointer_method_calls_use_owned_self() {
         let tmp = tempfile::tempdir().unwrap();
         write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
@@ -35949,6 +35986,8 @@ func main() {
 	_ = v.StepThenRead()
 	_ = v.ReturnStep()
 	_ = v.AssignStep()
+	p := &v
+	_ = p.StepThenRead()
 }
 "#,
         );
@@ -35994,20 +36033,17 @@ func (v *Value) step() int {
         assert!(!main_rs.contains("pub fn ReturnStep(&self)"), "{main_rs}");
         assert!(!main_rs.contains("pub fn AssignStep(&self)"), "{main_rs}");
         let main_rs = output.files.get("main.rs").unwrap();
+        let compact: String = main_rs.chars().filter(|c| !c.is_whitespace()).collect();
         assert!(
-            main_rs.contains("(v).clone().StepThenRead()")
-                || main_rs.contains("((v) . clone ()) . StepThenRead ()"),
+            compact.matches(".clone()).StepThenRead()").count() >= 2,
             "{main_rs}"
         );
+        assert!(compact.contains(".clone()).ReturnStep()"), "{main_rs}");
+        assert!(compact.contains(".clone()).AssignStep()"), "{main_rs}");
         assert!(
-            main_rs.contains("(v).clone().ReturnStep()")
-                || main_rs.contains("((v) . clone ()) . ReturnStep ()"),
-            "{main_rs}"
-        );
-        assert!(
-            main_rs.contains("(v).clone().AssignStep()")
-                || main_rs.contains("((v) . clone ()) . AssignStep ()"),
-            "{main_rs}"
+            compact.contains("(p.lock().unwrap()).clone()).StepThenRead()")
+                || compact.contains("(p.lock().unwrap()).clone().StepThenRead()"),
+            "expected pointer-to-value method calls to clone the pointee before owned receiver dispatch: {main_rs}"
         );
     }
 
