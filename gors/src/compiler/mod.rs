@@ -5096,6 +5096,19 @@ fn go_type_supports_derived_partial_eq(
             visiting.remove(name);
             comparable
         }
+        typeinfer::GoType::Instantiated { name, args }
+            if matches!(env.get_type_kind(name), Some(typeinfer::TypeKind::Struct)) =>
+        {
+            if !visiting.insert(name.clone()) {
+                return true;
+            }
+            let comparable = env
+                .get_struct_fields_with_type_args(name, args)
+                .iter()
+                .all(|(_, field)| go_type_supports_derived_partial_eq(field, env, visiting));
+            visiting.remove(name);
+            comparable
+        }
         typeinfer::GoType::Bool
         | typeinfer::GoType::Int
         | typeinfer::GoType::Int8
@@ -5117,7 +5130,8 @@ fn go_type_supports_derived_partial_eq(
         | typeinfer::GoType::Chan { .. }
         | typeinfer::GoType::Error
         | typeinfer::GoType::Unknown
-        | typeinfer::GoType::Named(_) => true,
+        | typeinfer::GoType::Named(_)
+        | typeinfer::GoType::Instantiated { .. } => true,
     }
 }
 
@@ -8013,15 +8027,23 @@ fn view_method_key_for_selector(selector: &ast::SelectorExpr) -> Option<String> 
 
 fn named_method_receiver_type_name(receiver_type: typeinfer::GoType) -> Option<String> {
     match receiver_type {
-        typeinfer::GoType::Named(name) | typeinfer::GoType::Interface(name) => Some(name),
+        typeinfer::GoType::Named(name)
+        | typeinfer::GoType::Instantiated { name, .. }
+        | typeinfer::GoType::Interface(name) => Some(name),
         typeinfer::GoType::Pointer(inner) => match *inner {
-            typeinfer::GoType::Named(name) | typeinfer::GoType::Interface(name) => Some(name),
+            typeinfer::GoType::Named(name)
+            | typeinfer::GoType::Instantiated { name, .. }
+            | typeinfer::GoType::Interface(name) => Some(name),
             _ => None,
         },
         other => match resolved_go_type(&other) {
-            typeinfer::GoType::Named(name) | typeinfer::GoType::Interface(name) => Some(name),
+            typeinfer::GoType::Named(name)
+            | typeinfer::GoType::Instantiated { name, .. }
+            | typeinfer::GoType::Interface(name) => Some(name),
             typeinfer::GoType::Pointer(inner) => match *inner {
-                typeinfer::GoType::Named(name) | typeinfer::GoType::Interface(name) => Some(name),
+                typeinfer::GoType::Named(name)
+                | typeinfer::GoType::Instantiated { name, .. }
+                | typeinfer::GoType::Interface(name) => Some(name),
                 _ => None,
             },
             _ => None,
@@ -9174,6 +9196,67 @@ fn named_go_type_path(name: &str) -> syn::Type {
     rust_type_path_from_segments(parts.iter().map(String::as_str), true)
 }
 
+fn named_go_type_path_with_inferred_type_args(name: &str) -> syn::Type {
+    let type_param_names = TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        receiver_type_name_candidates(name)
+            .into_iter()
+            .find_map(|candidate| {
+                let names = env.get_type_param_names(&candidate);
+                (!names.is_empty()).then_some(names)
+            })
+            .unwrap_or_else(|| env.get_type_param_names(name))
+    });
+    if type_param_names.is_empty() {
+        return named_go_type_path(name);
+    }
+
+    let use_active_type_params = TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        type_param_names.iter().all(|name| {
+            matches!(
+                env.get_type_kind(name),
+                Some(typeinfer::TypeKind::TypeParam)
+            )
+        })
+    });
+    let parts = qualified_name_rust_segments(name);
+    let mut segments = syn::punctuated::Punctuated::new();
+    let last_idx = parts.len().saturating_sub(1);
+    for (idx, segment) in parts.iter().enumerate() {
+        let ident = syn::Ident::new(&rust_safe_ident_name(segment), Span::mixed_site());
+        let arguments = if idx == last_idx {
+            let mut args = syn::punctuated::Punctuated::new();
+            for type_param_name in &type_param_names {
+                let arg: syn::Type = if use_active_type_params {
+                    let ident =
+                        syn::Ident::new(&rust_safe_ident_name(type_param_name), Span::mixed_site());
+                    syn::parse_quote! { #ident }
+                } else {
+                    syn::parse_quote! { _ }
+                };
+                args.push(syn::GenericArgument::Type(arg));
+            }
+            syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {
+                colon2_token: None,
+                lt_token: <Token![<]>::default(),
+                args,
+                gt_token: <Token![>]>::default(),
+            })
+        } else {
+            syn::PathArguments::None
+        };
+        segments.push(syn::PathSegment { ident, arguments });
+    }
+    syn::Type::Path(syn::TypePath {
+        qself: None,
+        path: syn::Path {
+            leading_colon: None,
+            segments,
+        },
+    })
+}
+
 fn rust_type_from_inferred_go_type(go_type: &typeinfer::GoType) -> syn::Type {
     let resolved = resolved_go_type(go_type);
     if let Some(ty) = rust_type_from_go_type(&resolved) {
@@ -9204,6 +9287,11 @@ fn rust_type_from_inferred_go_type(go_type: &typeinfer::GoType) -> syn::Type {
             params, results, ..
         } => shared_func_type_from_go_parts(&params, &results),
         typeinfer::GoType::Named(name) => named_go_type_path(&name),
+        typeinfer::GoType::Instantiated { name, args } => {
+            let base = named_go_type_path(&name);
+            let args = args.iter().map(rust_type_from_inferred_go_type).collect();
+            type_with_generic_args(base, args)
+        }
         typeinfer::GoType::Any | typeinfer::GoType::Interface(_) => {
             syn::parse_quote! { Box<dyn std::any::Any> }
         }
@@ -9217,6 +9305,14 @@ fn rust_type_preserving_named_go_type(go_type: &typeinfer::GoType) -> syn::Type 
     match go_type {
         typeinfer::GoType::Named(name) | typeinfer::GoType::Interface(name) => {
             named_go_type_path(name)
+        }
+        typeinfer::GoType::Instantiated { name, args } => {
+            let base = named_go_type_path(name);
+            let args = args
+                .iter()
+                .map(rust_type_preserving_named_go_type)
+                .collect();
+            type_with_generic_args(base, args)
         }
         typeinfer::GoType::Pointer(inner) => {
             let inner = rust_type_preserving_named_go_type(inner);
@@ -12088,6 +12184,9 @@ fn pointer_receiver_arg_expr_from_ref(expr: &ast::Expr) -> Option<syn::Expr> {
             "top-level pointer receiver is not mutable",
         ));
     }
+    if let Some(expr) = address_of_pointer_selector_index_expr(expr) {
+        return Some(expr);
+    }
     if let Some(expr) = address_of_pointer_selector_field_expr(expr) {
         return Some(expr);
     }
@@ -12144,7 +12243,7 @@ fn pointer_receiver_method_call_expr(
     }) else {
         return compile_error_expr("invalid pointer receiver method call");
     };
-    let receiver_ty = named_go_type_path(&receiver_name);
+    let receiver_ty = named_go_type_path_with_inferred_type_args(&receiver_name);
     let receiver_expr = *selector.x;
     if method_uses_borrowed_pointer_receiver(&receiver_name, &method_name) {
         let receiver = borrowed_pointer_receiver_arg_expr_from_owned(receiver_expr);
@@ -12173,7 +12272,7 @@ fn pointer_cell_copy_out_method_call_expr(
     {
         return None;
     }
-    let receiver_ty = named_go_type_path(&receiver_name);
+    let receiver_ty = named_go_type_path_with_inferred_type_args(&receiver_name);
     let receiver = pointer_cell_expr_from_ref(&selector.x)?;
     let receiver_ident = synthetic_names::method_receiver_ident();
     let receiver_value_ident = synthetic_names::method_receiver_value_ident();
@@ -13077,6 +13176,34 @@ fn address_of_pointer_selector_field_identity_expr(expr: &ast::Expr) -> Option<s
     address_of_pointer_selector_field_expr_with_constructor(expr, true)
 }
 
+fn address_of_pointer_selector_index_expr(expr: &ast::Expr) -> Option<syn::Expr> {
+    let ast::Expr::IndexExpr(index) = ast_unparen_expr_ref(expr) else {
+        return None;
+    };
+    let ast::Expr::SelectorExpr(selector) = ast_unparen_expr_ref(&index.x) else {
+        return None;
+    };
+    if !is_owning_pointer_cell_expr_ref(&selector.x) {
+        return None;
+    }
+    let owner_ty = pointer_selector_owner_type(&selector.x)?;
+    let owner_expr = pointer_selector_owner_expr(&selector.x)?;
+    let field_ident = syn::Ident::new(
+        &rust_safe_ident_name(selector.sel.name),
+        proc_macro2::Span::mixed_site(),
+    );
+    let index_expr = lvalue_index_component_expr(&index.index)?;
+
+    Some(syn::parse_quote! {
+        crate::builtin::GorsPtr::from_ptr_index(
+            (#owner_expr).clone(),
+            std::mem::offset_of!(#owner_ty, #field_ident),
+            (#index_expr) as usize,
+            |__gors_owner: &mut #owner_ty| &mut __gors_owner.#field_ident,
+        )
+    })
+}
+
 fn address_of_pointer_selector_field_expr_with_constructor(
     expr: &ast::Expr,
     identity_only: bool,
@@ -13229,7 +13356,10 @@ fn method_has_pointer_receiver_for_expr(expr: &ast::Expr, method_name: &str) -> 
 fn shared_selector_owner_type(expr: &ast::Expr) -> Option<syn::Type> {
     let go_type = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(expr, &env.borrow()));
     match resolved_go_type(&go_type) {
-        typeinfer::GoType::Named(name) => Some(named_go_type_path(&name)),
+        typeinfer::GoType::Named(name) => Some(named_go_type_path_with_inferred_type_args(&name)),
+        typeinfer::GoType::Instantiated { name, args } => Some(rust_type_from_inferred_go_type(
+            &typeinfer::GoType::Instantiated { name, args },
+        )),
         go_type => rust_type_from_go_type(&go_type),
     }
 }
@@ -13240,7 +13370,10 @@ fn pointer_selector_owner_type(expr: &ast::Expr) -> Option<syn::Type> {
         return None;
     };
     match resolved_go_type(&inner) {
-        typeinfer::GoType::Named(name) => Some(named_go_type_path(&name)),
+        typeinfer::GoType::Named(name) => Some(named_go_type_path_with_inferred_type_args(&name)),
+        typeinfer::GoType::Instantiated { name, args } => Some(rust_type_from_inferred_go_type(
+            &typeinfer::GoType::Instantiated { name, args },
+        )),
         go_type => rust_type_from_go_type(&go_type),
     }
 }
@@ -13699,7 +13832,9 @@ fn receiver_method_type_name_for_call(
     env: &typeinfer::TypeEnv,
 ) -> Option<String> {
     match ty {
-        typeinfer::GoType::Named(name) | typeinfer::GoType::Interface(name) => {
+        typeinfer::GoType::Named(name)
+        | typeinfer::GoType::Instantiated { name, .. }
+        | typeinfer::GoType::Interface(name) => {
             if env.has_func(&format!("{name}.{}", interface_hooks::AS_ANY_METHOD))
                 || env.get_type_kind(&name).is_some()
             {
@@ -13714,7 +13849,9 @@ fn receiver_method_type_name_for_call(
         }
         typeinfer::GoType::Pointer(inner) => receiver_method_type_name_for_call(*inner, env),
         other => match env.resolve_alias(&other) {
-            typeinfer::GoType::Named(name) | typeinfer::GoType::Interface(name) => Some(name),
+            typeinfer::GoType::Named(name)
+            | typeinfer::GoType::Instantiated { name, .. }
+            | typeinfer::GoType::Interface(name) => Some(name),
             typeinfer::GoType::Pointer(inner) => receiver_method_type_name_for_call(*inner, env),
             _ => None,
         },
@@ -13817,7 +13954,7 @@ fn compile_method_value_expr(selector: ast::SelectorExpr) -> syn::Expr {
         _ => syn::parse_quote! { (#(#result_types),*) },
     };
     let body: syn::Expr = if info.pointer_receiver {
-        let receiver_ty = named_go_type_path(&info.receiver_name);
+        let receiver_ty = named_go_type_path_with_inferred_type_args(&info.receiver_name);
         syn::parse_quote! { #receiver_ty::#method((#receiver_ident).clone(), #(#call_args),*) }
     } else if receiver_is_pointer {
         syn::parse_quote! { (&*#receiver_ident.lock().unwrap()).#method(#(#call_args),*) }
@@ -23741,7 +23878,7 @@ fn compile_borrowed_pointer_view_method_call(
     let Some(receiver_name) = named_method_receiver_type_name(receiver_type) else {
         return compile_error_expr("invalid borrowed pointer view receiver");
     };
-    let receiver_ty = named_go_type_path(&receiver_name);
+    let receiver_ty = named_go_type_path_with_inferred_type_args(&receiver_name);
     let method = syn::Ident::new(&rust_safe_ident_name(selector.sel.name), Span::mixed_site());
     let receiver = if let Some(guard) = receiver_guard {
         syn::parse_quote! { &mut *#guard }
@@ -25576,7 +25713,8 @@ const ENOENT Errno = 2
             "expected nil check on self-pointer field to use pointer-cell nil check: {output}"
         );
         assert!(
-            output.contains("next = ((n) . clone ()) . clone ()"),
+            output.contains("let __gors_assign_0 = ((n) . clone ()) . clone ()")
+                && output.contains(". next = __gors_assign_0"),
             "expected unsafe receiver assignment to preserve receiver pointer-cell identity: {output}"
         );
         assert!(
@@ -27040,10 +27178,10 @@ func main() {
         let output = quote! { #compiled }.to_string();
 
         assert!(
-            output.contains(
-                "((o . lock () . unwrap () . inner) . lock () . unwrap () . value) . Load"
-            ),
-            "expected promoted field receiver to pass through embedded pointer: {output}"
+            output.contains("(__gors_owner . inner) . clone ()")
+                && output.contains("std :: mem :: offset_of ! (inner , value)")
+                && output.contains("< cell > :: Load"),
+            "expected promoted field receiver to pass through embedded pointer projection: {output}"
         );
         assert!(
             output.contains("let mut v"),
@@ -34460,11 +34598,14 @@ func main() {
             "ProjectedCell",
             "ProjectedFieldCell",
             "ProjectedFieldGuard",
+            "ProjectedIndexCell",
+            "ProjectedIndexGuard",
             "ProjectedGuard",
             "GorsPtr::lock",
             "GorsPtr::ptr_eq",
             "GorsPtr::ptr_id",
             "GorsPtr::from_ptr_field",
+            "GorsPtr::from_ptr_index",
         ] {
             assert!(expanded.contains(root), "{expanded:?}");
         }
@@ -38201,6 +38342,217 @@ func main() {
             (main_rs.contains("impl bucket") || main_rs.contains("impl bucket {"))
                 && main_rs.contains("fn fill"),
             "expected projected UFCS method call to keep the receiver impl method reachable: {main_rs}"
+        );
+    }
+
+    #[test]
+    fn it_should_compile_generic_pointer_field_method_receiver_as_projected_cell() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type Pointer[T any] struct {
+	v *T
+}
+
+func (p *Pointer[T]) Load() *T {
+	return p.v
+}
+
+func (p *Pointer[T]) Store(v *T) {
+	p.v = v
+}
+
+type dedup struct {
+	value int
+}
+
+type Matcher struct {
+	dedup Pointer[dedup]
+}
+
+func use(m *Matcher) *dedup {
+	d := m.dedup.Load()
+	if d == nil {
+		d = &dedup{value: 1}
+		m.dedup.Store(d)
+	}
+	return d
+}
+
+func main() {
+	m := &Matcher{}
+	_ = use(m)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+
+        assert!(
+            main_rs.contains("GorsPtr::from_ptr_field")
+                || main_rs.contains("GorsPtr :: from_ptr_field"),
+            "expected generic pointer field method receiver to use projected GorsPtr cells: {main_rs}"
+        );
+        assert!(
+            (main_rs.contains(">> :: Load") || main_rs.contains(">>::Load"))
+                && (main_rs.contains("<Pointer<") || main_rs.contains("< Pointer <"))
+                && main_rs.contains("_"),
+            "expected generic pointer receiver UFCS path to carry inferred type args: {main_rs}"
+        );
+        assert!(
+            !main_rs.contains(". Load ()") && !main_rs.contains(". Store ("),
+            "expected generic pointer field methods not to lower as Rust method syntax: {main_rs}"
+        );
+    }
+
+    #[test]
+    fn it_should_substitute_generic_pointer_method_results_for_instantiated_receivers() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type Pointer[T any] struct {
+	v *T
+}
+
+func (p *Pointer[T]) Load() *T {
+	return p.v
+}
+
+type entry[K comparable, V any] struct {
+	overflow Pointer[entry[K,V]]
+}
+
+func (e *entry[K,V]) next() *entry[K,V] {
+	return e.overflow.Load()
+}
+
+func main() {
+	var e entry[string,int]
+	p := &e
+	_ = p.next()
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+
+        assert!(
+            main_rs.contains("-> crate::builtin::GorsPtr<entry<K, V>>")
+                || main_rs.contains("-> crate :: builtin :: GorsPtr < entry < K , V > >"),
+            "expected instantiated method result to substitute receiver type args: {main_rs}"
+        );
+        assert!(
+            main_rs.contains("std::mem::offset_of!(entry < K, V >, overflow)")
+                || main_rs.contains("std :: mem :: offset_of ! (entry < K , V > , overflow)"),
+            "expected instantiated field projection to use the concrete receiver type args: {main_rs}"
+        );
+    }
+
+    #[test]
+    fn it_should_compile_generic_owner_pointer_field_projection_with_type_args() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type Pointer[T any] struct {
+	v *T
+}
+
+func (p *Pointer[T]) Store(v *T) {
+	p.v = v
+}
+
+type Holder[T any] struct {
+	ptr Pointer[T]
+}
+
+func (h *Holder[T]) Save(v *T) {
+	h.ptr.Store(v)
+}
+
+func main() {
+	value := 1
+	var h Holder[int]
+	h.Save(&value)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+
+        assert!(
+            main_rs.contains("std::mem::offset_of!(Holder<T>, ptr)")
+                || main_rs.contains("std::mem::offset_of!(Holder < T >, ptr)")
+                || main_rs.contains("std :: mem :: offset_of ! (Holder < T > , ptr)"),
+            "expected generic owner projection to use in-scope type args: {main_rs}"
+        );
+        assert!(
+            main_rs.contains("|__gors_owner: &mut Holder<T>|")
+                || main_rs.contains("| __gors_owner : & mut Holder < T > |"),
+            "expected projected field closure owner to use in-scope type args: {main_rs}"
+        );
+    }
+
+    #[test]
+    fn it_should_compile_indexed_pointer_field_method_receiver_as_projected_cell() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type Pointer[T any] struct {
+	v *T
+}
+
+func (p *Pointer[T]) Store(v *T) {
+	p.v = v
+}
+
+type Holder[T any] struct {
+	children [4]Pointer[T]
+}
+
+func (h *Holder[T]) Save(i int, v *T) {
+	h.children[i].Store(v)
+}
+
+func main() {
+	var value int
+	var h Holder[int]
+	p := &h
+	p.Save(1, &value)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+
+        assert!(
+            main_rs.contains("GorsPtr::from_ptr_index")
+                || main_rs.contains("GorsPtr :: from_ptr_index"),
+            "expected indexed pointer field method receiver to use projected index cells: {main_rs}"
+        );
+        assert!(
+            main_rs.contains("std::mem::offset_of!(Holder < T >, children)")
+                || main_rs.contains("std :: mem :: offset_of ! (Holder < T > , children)"),
+            "expected indexed projection to identify the selected owner field: {main_rs}"
+        );
+        assert!(
+            !main_rs.contains("pointer receiver is not addressable"),
+            "expected indexed pointer field method receiver to be addressable: {main_rs}"
         );
     }
 

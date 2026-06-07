@@ -567,6 +567,17 @@ fn collect_imported_receiver_names_from_type(
                     .insert(receiver_name.to_string());
             }
         }
+        GoType::Instantiated { name, args } => {
+            if let Some((package_name, receiver_name)) = name.split_once('.') {
+                receiver_names
+                    .entry(package_name.to_string())
+                    .or_default()
+                    .insert(receiver_name.to_string());
+            }
+            for arg in args {
+                collect_imported_receiver_names_from_type(arg, receiver_names);
+            }
+        }
         GoType::Pointer(inner) | GoType::Slice(inner) | GoType::Array(inner) => {
             collect_imported_receiver_names_from_type(inner, receiver_names);
         }

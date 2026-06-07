@@ -8319,6 +8319,14 @@ fn go_type_identity_key(ty: &GoType) -> String {
             format!("func({params})({results})")
         }
         GoType::Named(name) => format!("named:{name}"),
+        GoType::Instantiated { name, args } => {
+            let args = args
+                .iter()
+                .map(go_type_identity_key)
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("named:{name}[{args}]")
+        }
         GoType::Interface(name) => format!("interface:{name}"),
         GoType::Any => "interface{}".to_string(),
         GoType::Error => "error".to_string(),
@@ -11330,6 +11338,19 @@ fn type_is_comparable_for_validation_inner(
             visiting.remove(name);
             comparable
         }
+        GoType::Instantiated { name, args }
+            if matches!(env.get_type_kind(name), Some(TypeKind::Struct)) =>
+        {
+            if !visiting.insert(name.clone()) {
+                return true;
+            }
+            let comparable = env
+                .get_struct_fields_with_type_args(name, args)
+                .iter()
+                .all(|(_, field)| type_is_comparable_for_validation_inner(field, env, visiting));
+            visiting.remove(name);
+            comparable
+        }
         GoType::Unknown | GoType::Named(_) => true,
         GoType::Bool
         | GoType::Int
@@ -11351,6 +11372,7 @@ fn type_is_comparable_for_validation_inner(
         | GoType::Unit
         | GoType::Pointer(_)
         | GoType::Chan { .. }
+        | GoType::Instantiated { .. }
         | GoType::Interface(_)
         | GoType::Any
         | GoType::Error => true,
@@ -15445,7 +15467,9 @@ pub fn ownership_mode_for_go_type(ty: &GoType, env: &TypeEnv) -> OwnershipMode {
         | GoType::Complex64
         | GoType::Complex128
         | GoType::Unit => OwnershipMode::Copy,
-        GoType::String | GoType::Array(_) | GoType::Named(_) => OwnershipMode::Clone,
+        GoType::String | GoType::Array(_) | GoType::Named(_) | GoType::Instantiated { .. } => {
+            OwnershipMode::Clone
+        }
         GoType::Slice(_) | GoType::Map(_, _) | GoType::Pointer(_) | GoType::Chan { .. } => {
             OwnershipMode::SharedHandle
         }

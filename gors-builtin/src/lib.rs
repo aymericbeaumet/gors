@@ -618,6 +618,15 @@ struct ProjectedFieldCell<Owner, T, F> {
     _field_ty: std::marker::PhantomData<fn() -> T>,
 }
 
+struct ProjectedIndexCell<Owner, Container, T, F> {
+    owner: GorsPtr<Owner>,
+    field_key: usize,
+    index: usize,
+    field: F,
+    _container_ty: std::marker::PhantomData<fn() -> Container>,
+    _field_ty: std::marker::PhantomData<fn() -> T>,
+}
+
 impl<Owner, T, F> ProjectedCell<T> for ProjectedFieldCell<Owner, T, F>
 where
     Owner: Send + 'static,
@@ -646,6 +655,42 @@ where
 
     fn field_key(&self) -> usize {
         self.field_key
+    }
+}
+
+impl<Owner, Container, T, F> ProjectedCell<T> for ProjectedIndexCell<Owner, Container, T, F>
+where
+    Owner: Send + 'static,
+    Container: std::ops::IndexMut<usize, Output = T> + 'static,
+    T: Default + 'static,
+    F: for<'a> Fn(&'a mut Owner) -> &'a mut Container + Send + Sync + 'static,
+{
+    fn lock_projected(&self) -> Box<dyn ProjectedGuard<T> + '_> {
+        let value = {
+            let mut owner_guard = lock_projected_owner(&self.owner);
+            std::mem::take(&mut (self.field)(&mut *owner_guard)[self.index])
+        };
+        Box::new(ProjectedIndexGuard {
+            owner: self.owner.clone(),
+            field: &self.field,
+            index: self.index,
+            value,
+            _container_ty: std::marker::PhantomData,
+        })
+    }
+
+    fn owner_ptr(&self) -> *const () {
+        self.owner.ptr_id()
+    }
+
+    fn cell_ptr(&self) -> *const () {
+        (self as *const Self).cast()
+    }
+
+    fn field_key(&self) -> usize {
+        self.field_key
+            .wrapping_mul(1_000_003)
+            .wrapping_add(self.index)
     }
 }
 
@@ -688,10 +733,35 @@ where
     value: T,
 }
 
+struct ProjectedIndexGuard<'a, Owner, Container, T: Default, F>
+where
+    Container: std::ops::IndexMut<usize, Output = T>,
+    F: for<'b> Fn(&'b mut Owner) -> &'b mut Container,
+{
+    owner: GorsPtr<Owner>,
+    field: &'a F,
+    index: usize,
+    value: T,
+    _container_ty: std::marker::PhantomData<fn() -> Container>,
+}
+
 impl<Owner, T, F> std::ops::Deref for ProjectedFieldGuard<'_, Owner, T, F>
 where
     T: Default,
     F: for<'a> Fn(&'a mut Owner) -> &'a mut T,
+{
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
+
+impl<Owner, Container, T, F> std::ops::Deref for ProjectedIndexGuard<'_, Owner, Container, T, F>
+where
+    Container: std::ops::IndexMut<usize, Output = T>,
+    T: Default,
+    F: for<'a> Fn(&'a mut Owner) -> &'a mut Container,
 {
     type Target = T;
 
@@ -710,6 +780,17 @@ where
     }
 }
 
+impl<Owner, Container, T, F> std::ops::DerefMut for ProjectedIndexGuard<'_, Owner, Container, T, F>
+where
+    Container: std::ops::IndexMut<usize, Output = T>,
+    T: Default,
+    F: for<'a> Fn(&'a mut Owner) -> &'a mut Container,
+{
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.value
+    }
+}
+
 impl<Owner, T, F> Drop for ProjectedFieldGuard<'_, Owner, T, F>
 where
     T: Default,
@@ -718,6 +799,18 @@ where
     fn drop(&mut self) {
         let mut owner = lock_projected_owner(&self.owner);
         *(self.field)(&mut *owner) = std::mem::take(&mut self.value);
+    }
+}
+
+impl<Owner, Container, T, F> Drop for ProjectedIndexGuard<'_, Owner, Container, T, F>
+where
+    Container: std::ops::IndexMut<usize, Output = T>,
+    T: Default,
+    F: for<'a> Fn(&'a mut Owner) -> &'a mut Container,
+{
+    fn drop(&mut self) {
+        let mut owner = lock_projected_owner(&self.owner);
+        (self.field)(&mut *owner)[self.index] = std::mem::take(&mut self.value);
     }
 }
 
@@ -822,6 +915,30 @@ impl<T> GorsPtr<T> {
                 owner,
                 field_key,
                 field,
+                _field_ty: std::marker::PhantomData,
+            }))),
+        }
+    }
+
+    pub fn from_ptr_index<Owner, Container, F>(
+        owner: GorsPtr<Owner>,
+        field_key: usize,
+        index: usize,
+        field: F,
+    ) -> Self
+    where
+        Owner: Send + 'static,
+        Container: std::ops::IndexMut<usize, Output = T> + 'static,
+        T: Default + 'static,
+        F: for<'a> Fn(&'a mut Owner) -> &'a mut Container + Send + Sync + 'static,
+    {
+        Self {
+            inner: Some(GorsPtrInner::Projected(Arc::new(ProjectedIndexCell {
+                owner,
+                field_key,
+                index,
+                field,
+                _container_ty: std::marker::PhantomData,
                 _field_ty: std::marker::PhantomData,
             }))),
         }
@@ -2368,6 +2485,40 @@ mod tests {
         *value_ptr.lock().unwrap() = 7;
 
         assert_eq!(owner.lock().unwrap().value, 7);
+        assert!(GorsPtr::ptr_eq(&value_ptr, &same_value_ptr));
+        assert!(!GorsPtr::ptr_eq(&value_ptr, &other_ptr));
+    }
+
+    #[test]
+    fn projected_pointer_index_pointers_alias_owner_elements() {
+        #[derive(Default)]
+        struct Holder {
+            values: [isize; 3],
+        }
+
+        let owner = GorsPtr::new(Holder { values: [1, 2, 3] });
+        let value_ptr = GorsPtr::from_ptr_index(
+            owner.clone(),
+            std::mem::offset_of!(Holder, values),
+            1,
+            |holder: &mut Holder| &mut holder.values,
+        );
+        let same_value_ptr = GorsPtr::from_ptr_index(
+            owner.clone(),
+            std::mem::offset_of!(Holder, values),
+            1,
+            |holder: &mut Holder| &mut holder.values,
+        );
+        let other_ptr = GorsPtr::from_ptr_index(
+            owner.clone(),
+            std::mem::offset_of!(Holder, values),
+            2,
+            |holder: &mut Holder| &mut holder.values,
+        );
+
+        *value_ptr.lock().unwrap() = 7;
+
+        assert_eq!(owner.lock().unwrap().values, [1, 7, 3]);
         assert!(GorsPtr::ptr_eq(&value_ptr, &same_value_ptr));
         assert!(!GorsPtr::ptr_eq(&value_ptr, &other_ptr));
     }

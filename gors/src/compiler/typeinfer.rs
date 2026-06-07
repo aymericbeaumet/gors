@@ -36,6 +36,10 @@ pub enum GoType {
         variadic_start: Option<usize>,
     },
     Named(std::string::String),
+    Instantiated {
+        name: std::string::String,
+        args: Vec<GoType>,
+    },
     Interface(std::string::String),
     Any,
     Error,
@@ -164,6 +168,14 @@ impl GoType {
                     GoType::Slice(Box::new(GoType::Any))
                 }
             }
+            ast::Expr::IndexExpr(index) => instantiate_named_type(
+                GoType::from_expr(&index.x),
+                vec![GoType::from_expr(&index.index)],
+            ),
+            ast::Expr::IndexListExpr(index) => instantiate_named_type(
+                GoType::from_expr(&index.x),
+                index.indices.iter().map(GoType::from_expr).collect(),
+            ),
             ast::Expr::SelectorExpr(sel) => {
                 if let ast::Expr::Ident(pkg) = &*sel.x {
                     GoType::Named(format!("{}.{}", pkg.name, sel.sel.name))
@@ -726,10 +738,56 @@ fn unparen_expr<'a>(expr: &'a ast::Expr<'a>) -> &'a ast::Expr<'a> {
     }
 }
 
+fn instantiate_named_type(base: GoType, args: Vec<GoType>) -> GoType {
+    match base {
+        GoType::Named(name) | GoType::Interface(name) => GoType::Instantiated { name, args },
+        _ => base,
+    }
+}
+
+fn substitute_receiver_type_params(
+    env: &TypeEnv,
+    receiver_name: &str,
+    receiver_args: &[GoType],
+    ty: GoType,
+) -> GoType {
+    let type_params = env.get_type_param_names(receiver_name);
+    if type_params.len() != receiver_args.len() {
+        return ty;
+    }
+    let substitutions = type_params
+        .into_iter()
+        .zip(receiver_args.iter().cloned())
+        .collect::<HashMap<_, _>>();
+    substitute_type_params(ty, &substitutions)
+}
+
+fn substitute_receiver_type_param_vec(
+    env: &TypeEnv,
+    receiver_name: &str,
+    receiver_args: &[GoType],
+    tys: Vec<GoType>,
+) -> Vec<GoType> {
+    tys.into_iter()
+        .map(|ty| substitute_receiver_type_params(env, receiver_name, receiver_args, ty))
+        .collect()
+}
+
 fn field_type_from_receiver_type(receiver_type: GoType, field: &str, env: &TypeEnv) -> GoType {
     match env.resolve_alias(&receiver_type) {
         GoType::Named(name) => {
             let direct = env.get_field_type(&name, field);
+            if !matches!(direct, GoType::Unknown) {
+                return direct;
+            }
+            promoted_field_type_from_struct(&name, field, env, &mut HashSet::new())
+        }
+        GoType::Instantiated { name, args } => {
+            let direct = env
+                .get_struct_fields_with_type_args(&name, &args)
+                .into_iter()
+                .find_map(|(field_name, ty)| (field_name == field).then_some(ty))
+                .unwrap_or(GoType::Unknown);
             if !matches!(direct, GoType::Unknown) {
                 return direct;
             }
@@ -790,9 +848,26 @@ fn method_return_from_receiver_type(receiver_type: GoType, method: &str, env: &T
                 _ => GoType::Unknown,
             }
         }
+        GoType::Instantiated { name, args } => {
+            let direct = env.get_method_return(&name, method);
+            if !matches!(direct, GoType::Unknown) {
+                return substitute_receiver_type_params(env, &name, &args, direct);
+            }
+            match env.resolve_alias(&GoType::Named(name.clone())) {
+                GoType::Named(alias_name) | GoType::Interface(alias_name) => {
+                    let aliased = env.get_method_return(&alias_name, method);
+                    substitute_receiver_type_params(env, &alias_name, &args, aliased)
+                }
+                _ => GoType::Unknown,
+            }
+        }
         GoType::Pointer(inner) => method_return_from_receiver_type(*inner, method, env),
         other => match env.resolve_alias(&other) {
             GoType::Named(name) | GoType::Interface(name) => env.get_method_return(&name, method),
+            GoType::Instantiated { name, args } => {
+                let result = env.get_method_return(&name, method);
+                substitute_receiver_type_params(env, &name, &args, result)
+            }
             GoType::Pointer(inner) => method_return_from_receiver_type(*inner, method, env),
             _ => GoType::Unknown,
         },
@@ -822,6 +897,47 @@ fn method_func_from_receiver_type(receiver_type: GoType, method: &str, env: &Typ
                 _ => GoType::Unknown,
             }
         }
+        GoType::Instantiated { name, args } => {
+            if env.has_method_func(&name, method) {
+                return GoType::Func {
+                    params: substitute_receiver_type_param_vec(
+                        env,
+                        &name,
+                        &args,
+                        env.get_method_params(&name, method),
+                    ),
+                    results: substitute_receiver_type_param_vec(
+                        env,
+                        &name,
+                        &args,
+                        env.get_method_returns(&name, method),
+                    ),
+                    variadic_start: env.get_method_variadic_start(&name, method),
+                };
+            }
+            match env.resolve_alias(&GoType::Named(name.clone())) {
+                GoType::Named(alias_name) | GoType::Interface(alias_name)
+                    if env.has_method_func(&alias_name, method) =>
+                {
+                    GoType::Func {
+                        params: substitute_receiver_type_param_vec(
+                            env,
+                            &alias_name,
+                            &args,
+                            env.get_method_params(&alias_name, method),
+                        ),
+                        results: substitute_receiver_type_param_vec(
+                            env,
+                            &alias_name,
+                            &args,
+                            env.get_method_returns(&alias_name, method),
+                        ),
+                        variadic_start: env.get_method_variadic_start(&alias_name, method),
+                    }
+                }
+                _ => GoType::Unknown,
+            }
+        }
         GoType::Pointer(inner) => method_func_from_receiver_type(*inner, method, env),
         other => match env.resolve_alias(&other) {
             GoType::Named(name) | GoType::Interface(name) => {
@@ -829,6 +945,27 @@ fn method_func_from_receiver_type(receiver_type: GoType, method: &str, env: &Typ
                     GoType::Func {
                         params: env.get_method_params(&name, method),
                         results: env.get_method_returns(&name, method),
+                        variadic_start: env.get_method_variadic_start(&name, method),
+                    }
+                } else {
+                    GoType::Unknown
+                }
+            }
+            GoType::Instantiated { name, args } => {
+                if env.has_method_func(&name, method) {
+                    GoType::Func {
+                        params: substitute_receiver_type_param_vec(
+                            env,
+                            &name,
+                            &args,
+                            env.get_method_params(&name, method),
+                        ),
+                        results: substitute_receiver_type_param_vec(
+                            env,
+                            &name,
+                            &args,
+                            env.get_method_returns(&name, method),
+                        ),
                         variadic_start: env.get_method_variadic_start(&name, method),
                     }
                 } else {
@@ -843,7 +980,7 @@ fn method_func_from_receiver_type(receiver_type: GoType, method: &str, env: &Typ
 
 fn type_method_receiver_method_name(receiver_type: &GoType, env: &TypeEnv) -> Option<String> {
     match env.resolve_alias(receiver_type) {
-        GoType::Named(name) => Some(name),
+        GoType::Named(name) | GoType::Instantiated { name, .. } => Some(name),
         GoType::Pointer(inner) => type_method_receiver_method_name(&inner, env),
         _ => None,
     }
@@ -2004,6 +2141,17 @@ fn type_param_constraints(
 fn erase_type_param_mentions(ty: GoType, names: &HashSet<std::string::String>) -> GoType {
     match ty {
         GoType::Named(name) if names.contains(&name) => GoType::Unknown,
+        GoType::Instantiated { name, args } if names.contains(&name) => {
+            let _ = args;
+            GoType::Unknown
+        }
+        GoType::Instantiated { name, args } => GoType::Instantiated {
+            name,
+            args: args
+                .into_iter()
+                .map(|ty| erase_type_param_mentions(ty, names))
+                .collect(),
+        },
         GoType::Slice(elem) => GoType::Slice(Box::new(erase_type_param_mentions(*elem, names))),
         GoType::Pointer(elem) => GoType::Pointer(Box::new(erase_type_param_mentions(*elem, names))),
         GoType::Array(elem) => GoType::Array(Box::new(erase_type_param_mentions(*elem, names))),
@@ -2043,6 +2191,13 @@ fn substitute_type_params(
             .get(&name)
             .cloned()
             .unwrap_or(GoType::Named(name)),
+        GoType::Instantiated { name, args } => GoType::Instantiated {
+            name,
+            args: args
+                .into_iter()
+                .map(|ty| substitute_type_params(ty, substitutions))
+                .collect(),
+        },
         GoType::Slice(elem) => {
             GoType::Slice(Box::new(substitute_type_params(*elem, substitutions)))
         }
@@ -2146,6 +2301,21 @@ fn qualify_package_type(package_name: &str, ty: &GoType, package_env: &TypeEnv) 
     match ty {
         GoType::Named(name) if !name.contains('.') && package_env.get_type_kind(name).is_some() => {
             GoType::Named(format!("{package_name}.{name}"))
+        }
+        GoType::Instantiated { name, args } => {
+            let qualified_name = if !name.contains('.') && package_env.get_type_kind(name).is_some()
+            {
+                format!("{package_name}.{name}")
+            } else {
+                name.clone()
+            };
+            GoType::Instantiated {
+                name: qualified_name,
+                args: args
+                    .iter()
+                    .map(|arg| qualify_package_type(package_name, arg, package_env))
+                    .collect(),
+            }
         }
         GoType::Pointer(inner) => GoType::Pointer(Box::new(qualify_package_type(
             package_name,
@@ -3161,14 +3331,25 @@ impl TypeEnv {
             GoType::Named(name) if self.is_interface(&name) => self
                 .get_interface_methods(&name)
                 .is_some_and(|methods| methods.iter().any(|candidate| candidate == method)),
+            GoType::Instantiated { name, .. } if self.is_interface(&name) => self
+                .get_interface_methods(&name)
+                .is_some_and(|methods| methods.iter().any(|candidate| candidate == method)),
             GoType::Named(name) => self.named_type_has_method(
                 &name,
                 method,
                 include_pointer_receiver_methods,
                 visiting,
             ),
+            GoType::Instantiated { name, .. } => self.named_type_has_method(
+                &name,
+                method,
+                include_pointer_receiver_methods,
+                visiting,
+            ),
             GoType::Pointer(inner) => match *inner {
-                GoType::Named(name) => self.named_type_has_method(&name, method, true, visiting),
+                GoType::Named(name) | GoType::Instantiated { name, .. } => {
+                    self.named_type_has_method(&name, method, true, visiting)
+                }
                 _ => false,
             },
             _ => false,
@@ -3181,6 +3362,33 @@ impl TypeEnv {
                 Some(TypeKind::Alias(inner)) => self.resolve_alias(inner),
                 _ => ty.clone(),
             },
+            GoType::Instantiated { name, args } => {
+                let resolved_args = args
+                    .iter()
+                    .map(|arg| self.resolve_alias(arg))
+                    .collect::<Vec<_>>();
+                match self.type_kinds.get(name) {
+                    Some(TypeKind::Alias(inner)) => {
+                        let type_params = self.get_type_param_names(name);
+                        if type_params.len() == resolved_args.len() {
+                            let substitutions = type_params
+                                .into_iter()
+                                .zip(resolved_args)
+                                .collect::<HashMap<_, _>>();
+                            self.resolve_alias(&substitute_type_params(
+                                inner.clone(),
+                                &substitutions,
+                            ))
+                        } else {
+                            self.resolve_alias(inner)
+                        }
+                    }
+                    _ => GoType::Instantiated {
+                        name: name.clone(),
+                        args: resolved_args,
+                    },
+                }
+            }
             GoType::Pointer(inner) => GoType::Pointer(Box::new(self.resolve_alias(inner))),
             GoType::Slice(inner) => GoType::Slice(Box::new(self.resolve_alias(inner))),
             GoType::Array(inner) => GoType::Array(Box::new(self.resolve_alias(inner))),
@@ -3200,6 +3408,21 @@ impl TypeEnv {
         match ty {
             GoType::Named(name) => match self.type_kinds.get(name) {
                 Some(TypeKind::Alias(inner)) => inner.clone(),
+                _ => ty.clone(),
+            },
+            GoType::Instantiated { name, args } => match self.type_kinds.get(name) {
+                Some(TypeKind::Alias(inner)) => {
+                    let type_params = self.get_type_param_names(name);
+                    if type_params.len() == args.len() {
+                        let substitutions = type_params
+                            .into_iter()
+                            .zip(args.iter().cloned())
+                            .collect::<HashMap<_, _>>();
+                        substitute_type_params(inner.clone(), &substitutions)
+                    } else {
+                        inner.clone()
+                    }
+                }
                 _ => ty.clone(),
             },
             _ => ty.clone(),
@@ -3409,7 +3632,9 @@ impl TypeEnv {
         field_name: &str,
     ) -> Option<i128> {
         match self.resolve_alias(receiver_type) {
-            GoType::Named(name) => self.get_field_array_len(&name, field_name),
+            GoType::Named(name) | GoType::Instantiated { name, .. } => {
+                self.get_field_array_len(&name, field_name)
+            }
             GoType::Pointer(inner) => self.get_field_array_len_from_receiver(&inner, field_name),
             _ => None,
         }
