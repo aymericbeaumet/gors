@@ -11089,19 +11089,9 @@ fn compile_slice_expr(slice_expr: ast::SliceExpr) -> syn::Expr {
     let is_owning_pointer_array_slice =
         go_type_is_pointer_to_array(&x_go_type) && is_owning_pointer_cell_expr_ref(&slice_expr.x);
     let x: syn::Expr = (*slice_expr.x).into();
-    // Cast range bounds to usize since Rust requires usize for slice indexing
-    let low: Option<syn::Expr> = slice_expr.low.map(|l| {
-        let e = syn::Expr::from(*l);
-        syn::parse_quote! { (#e) as usize }
-    });
-    let high: Option<syn::Expr> = slice_expr.high.map(|h| {
-        let e = syn::Expr::from(*h);
-        syn::parse_quote! { (#e) as usize }
-    });
-    let max: Option<syn::Expr> = slice_expr.max.map(|m| {
-        let e = syn::Expr::from(*m);
-        syn::parse_quote! { (#e) as usize }
-    });
+    let low: Option<syn::Expr> = slice_expr.low.map(|l| compile_slice_bound_expr(*l));
+    let high: Option<syn::Expr> = slice_expr.high.map(|h| compile_slice_bound_expr(*h));
+    let max: Option<syn::Expr> = slice_expr.max.map(|m| compile_slice_bound_expr(*m));
 
     if is_byte_seq_type_param(&x_go_type) {
         let start: syn::Expr = low
@@ -11198,6 +11188,11 @@ fn compile_slice_expr(slice_expr: ast::SliceExpr) -> syn::Expr {
     } else {
         syn::parse_quote! { (#slice).to_vec() }
     }
+}
+
+fn compile_slice_bound_expr(expr: ast::Expr) -> syn::Expr {
+    let expr = compile_index_component_expr(expr);
+    syn::parse_quote! { (#expr) as usize }
 }
 
 fn same_lvalue_expr(left: &ast::Expr, right: &ast::Expr) -> bool {
@@ -11886,9 +11881,6 @@ fn compile_index_component_expr(expr: ast::Expr) -> syn::Expr {
 }
 
 fn lvalue_index_component_expr(expr: &ast::Expr) -> Option<syn::Expr> {
-    if let Some(expr) = syn_expr_from_type_expr_like(expr) {
-        return Some(expr);
-    }
     if let Some(expr) = const_index_usize_expr(expr) {
         return Some(expr);
     }
@@ -11912,9 +11904,25 @@ fn lvalue_index_component_expr(expr: &ast::Expr) -> Option<syn::Expr> {
             }
         }
         ast::Expr::ParenExpr(paren) => lvalue_index_component_expr(&paren.x),
-        ast::Expr::SelectorExpr(_) => lvalue_expr_from_ref(expr),
-        _ => None,
+        ast::Expr::SelectorExpr(selector) => {
+            if selector_base_is_import(selector)
+                && !selector_base_is_shadowed_local_or_var(selector)
+            {
+                syn_expr_from_type_expr_like(expr)
+            } else {
+                lvalue_expr_from_ref(expr)
+            }
+        }
+        _ => syn_expr_from_type_expr_like(expr),
     }
+}
+
+fn selector_base_is_shadowed_local_or_var(selector: &ast::SelectorExpr) -> bool {
+    let ast::Expr::Ident(base) = selector.x.as_ref() else {
+        return false;
+    };
+    active_local_shadows_unqualified_name(base.name)
+        || TYPE_ENV.with(|env| env.borrow().get_var(base.name).is_some())
 }
 
 fn method_receiver_expr_from_ref(expr: ast::Expr) -> syn::Expr {
@@ -27329,6 +27337,43 @@ func main() {
     }
 
     #[test]
+    fn it_should_label_plain_loop_continues_that_cross_switch_blocks() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func count(limit int) int {
+                    n := 0
+                    for {
+                        if n >= limit {
+                            break
+                        }
+                        n++
+                        switch {
+                        case n % 2 == 0:
+                            continue
+                        }
+                    }
+                    return n
+                }
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let compact = quote! { #compiled }.to_string().replace(' ', "");
+
+        assert!(
+            compact.contains("'__gors_loop_"),
+            "expected plain loop to receive a synthetic Rust label: {compact}"
+        );
+        assert!(
+            compact.contains("continue'__gors_loop_"),
+            "expected switch-contained continue to target the synthetic loop label: {compact}"
+        );
+    }
+
+    #[test]
     fn it_should_reject_invalid_statement_context_expressions() {
         assert_unsupported_construct(
             r#"
@@ -37010,6 +37055,49 @@ func main() {
                 && !main_rs.contains(".data).clone")
                 && !main_rs.contains(". data) . clone"),
             "expected borrowed sliced pointer field argument not to mutate a cloned field: {main_rs}"
+        );
+    }
+
+    #[test]
+    fn it_should_read_pointer_fields_in_borrowed_slice_bounds() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type holder struct {
+	data []byte
+	n    int
+}
+
+func fill(dst []byte) {
+	dst[0] = 'x'
+}
+
+func (h *holder) call() {
+	fill(h.data[:h.n])
+}
+
+func main() {
+	h := &holder{data: []byte("abc"), n: 2}
+	h.call()
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+
+        assert!(
+            main_rs.contains("lock().unwrap().n")
+                || main_rs.contains("lock().unwrap()).n")
+                || main_rs.contains("lock () . unwrap () . n"),
+            "expected pointer-field slice bound to read through the pointer cell: {main_rs}"
+        );
+        assert!(
+            !main_rs.contains("h.n") && !main_rs.contains("h . n"),
+            "expected pointer-field slice bound not to be emitted as a direct GorsPtr field: {main_rs}"
         );
     }
 
