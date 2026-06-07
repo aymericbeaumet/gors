@@ -189,7 +189,16 @@ mod tests {
                 pub fn LoadUint32(addr: crate::builtin::GorsPtr<u32>) -> u32 { 0 }
                 pub fn StoreUint32(addr: crate::builtin::GorsPtr<u32>, val: u32) {}
                 pub struct Int32;
+                pub struct noCopy;
+                pub struct Pointer<T> {
+                    _blank: noCopy,
+                    v: usize,
+                    _marker: std::marker::PhantomData<T>,
+                }
                 pub struct Value;
+                impl<T> Pointer<T> {
+                    pub fn old(&self) {}
+                }
                 impl Value {
                     pub fn old(&self) {}
                 }
@@ -204,6 +213,10 @@ mod tests {
         assert!(source.contains("pub fn LoadUint32"), "{source}");
         assert!(source.contains("pub fn StoreUint32"), "{source}");
         assert!(source.contains("pub struct Int32"), "{source}");
+        assert!(source.contains("pub struct Pointer"), "{source}");
+        assert!(source.contains("GorsPtr<T>"), "{source}");
+        assert!(source.contains("pub fn CompareAndSwap"), "{source}");
+        assert!(source.contains("pub fn Swap"), "{source}");
         assert!(source.contains("pub struct Value"), "{source}");
         assert!(source.contains("pub fn Load"), "{source}");
         assert!(source.contains("pub fn Store"), "{source}");
