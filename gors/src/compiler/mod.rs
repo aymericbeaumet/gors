@@ -37102,6 +37102,18 @@ func main() {
     }
 
     #[test]
+    fn builtin_root_expansion_keeps_pointer_helpers_for_builtin_impls() {
+        for root in ["len", "cap", "panic_value"] {
+            let roots = std::collections::HashSet::from([root.to_string()]);
+            let expanded = super::builtin_roots::expand(&roots);
+
+            for expected in ["GorsPtr", "GorsPtr::lock", "GorsPtr::ptr_id"] {
+                assert!(expanded.contains(expected), "{root}: {expanded:?}");
+            }
+        }
+    }
+
+    #[test]
     fn compile_program_multi_rejects_unreferenced_imported_package_modules() {
         let tmp = tempfile::tempdir().unwrap();
         write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");

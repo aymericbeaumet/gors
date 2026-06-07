@@ -1,10 +1,10 @@
 package main
 
-import "fmt"
-
 type Count = int
 
 func main() {
 	var count Count = 6
-	fmt.Println(count)
+	if count != 6 {
+		panic("alias value changed")
+	}
 }

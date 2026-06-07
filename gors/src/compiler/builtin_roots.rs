@@ -105,7 +105,8 @@ fn needs_channel_methods(roots: &std::collections::HashSet<String>) -> bool {
 
 fn needs_gors_ptr_methods(roots: &std::collections::HashSet<String>) -> bool {
     roots.iter().any(|root| {
-        root == "GorsPtr"
+        matches!(root.as_str(), "len" | "Len" | "cap" | "Cap" | "panic_value")
+            || root == "GorsPtr"
             || root == "GorsNilPointer"
             || root.starts_with("GorsPtr::")
             || root.starts_with("GorsNilPointer::")
