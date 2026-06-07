@@ -41702,6 +41702,41 @@ func Collect[E any](seq Seq[E]) []E {
     }
 
     #[test]
+    fn it_should_cell_arrays_captured_by_borrowed_slice_function_values() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+package main
+
+func fill(buf []byte) {
+	copy(buf, []byte{1})
+}
+
+func main() {
+	var blk [4]byte
+	f := func() {
+		fill(blk[:])
+	}
+	_ = f
+}
+"#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output
+                .contains("let mut blk : std :: sync :: Arc < std :: sync :: Mutex < [u8 ; 4] > >"),
+            "expected captured array to be promoted into a shared cell: {output}"
+        );
+        assert!(
+            output.contains("fill (& mut ((* blk . lock () . unwrap ())) [..])"),
+            "expected borrowed slice argument to lock the shared array cell: {output}"
+        );
+    }
+
+    #[test]
     fn it_should_pass_address_taken_interface_args_as_pointer_cells() {
         let parsed = parse_file(
             "test.go",

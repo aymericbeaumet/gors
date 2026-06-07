@@ -15931,10 +15931,84 @@ fn collect_free_name_uses_in_call(
     env: &TypeEnv,
 ) {
     collect_free_name_uses_in_expr(&call.fun, scopes, uses, env);
+    let abi = call_abi(call, env);
     if let Some(args) = &call.args {
-        for arg in args {
-            collect_free_name_uses_in_expr(arg, scopes, uses, env);
+        for (index, arg) in args.iter().enumerate() {
+            if call_arg_is_mut_borrow(&abi, index, env) {
+                collect_free_name_uses_in_mut_borrow_expr(arg, scopes, uses, env);
+            } else {
+                collect_free_name_uses_in_expr(arg, scopes, uses, env);
+            }
         }
+    }
+}
+
+fn call_arg_is_mut_borrow(abi: &CallAbi, arg_index: usize, env: &TypeEnv) -> bool {
+    if abi
+        .args
+        .get(arg_index)
+        .is_some_and(|arg| arg.role == ValueRole::MutBorrow)
+    {
+        return true;
+    }
+    let Some(target) = abi.signature_target.as_deref() else {
+        return false;
+    };
+    let Some(param_index) = (if matches!(abi.callee, CalleeKind::MethodExpression) {
+        arg_index.checked_sub(1)
+    } else {
+        Some(arg_index)
+    }) else {
+        return false;
+    };
+    env.func_param_needs_borrowed_slice(target, param_index)
+}
+
+fn collect_free_name_uses_in_mut_borrow_expr(
+    expr: &ast::Expr<'_>,
+    scopes: &mut Vec<BTreeSet<String>>,
+    uses: &mut ScopedNameUses,
+    env: &TypeEnv,
+) {
+    match expr {
+        ast::Expr::Ident(ident) => scoped_record_mutation(scopes, uses, ident.name),
+        ast::Expr::ParenExpr(paren) => {
+            collect_free_name_uses_in_mut_borrow_expr(&paren.x, scopes, uses, env);
+        }
+        ast::Expr::IndexExpr(index) => {
+            collect_free_name_uses_in_mut_borrow_expr(&index.x, scopes, uses, env);
+            collect_free_name_uses_in_expr(&index.index, scopes, uses, env);
+        }
+        ast::Expr::IndexListExpr(index) => {
+            collect_free_name_uses_in_mut_borrow_expr(&index.x, scopes, uses, env);
+            for index in &index.indices {
+                collect_free_name_uses_in_expr(index, scopes, uses, env);
+            }
+        }
+        ast::Expr::SelectorExpr(selector) => {
+            if let ast::Expr::Ident(base) = selector.x.as_ref() {
+                let base_ty = env.resolve_alias(&GoType::infer_expr(&selector.x, env));
+                if !matches!(base_ty, GoType::Pointer(_)) {
+                    scoped_record_mutation(scopes, uses, base.name);
+                    return;
+                }
+            }
+            collect_free_name_uses_in_expr(&selector.x, scopes, uses, env);
+        }
+        ast::Expr::SliceExpr(slice) => {
+            collect_free_name_uses_in_mut_borrow_expr(&slice.x, scopes, uses, env);
+            if let Some(low) = &slice.low {
+                collect_free_name_uses_in_expr(low, scopes, uses, env);
+            }
+            if let Some(high) = &slice.high {
+                collect_free_name_uses_in_expr(high, scopes, uses, env);
+            }
+            if let Some(max) = &slice.max {
+                collect_free_name_uses_in_expr(max, scopes, uses, env);
+            }
+        }
+        ast::Expr::StarExpr(star) => collect_free_name_uses_in_expr(&star.x, scopes, uses, env),
+        _ => collect_free_name_uses_in_expr(expr, scopes, uses, env),
     }
 }
 
@@ -20860,6 +20934,43 @@ mod tests {
         assert!(names.contains("count"));
         assert!(!names.contains("done"));
         assert!(!names.contains("label"));
+    }
+
+    #[test]
+    fn records_mutable_function_literal_captures_from_borrowed_slice_args() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func fill(buf []byte) {
+                    copy(buf, []byte{1})
+                }
+
+                func main() {
+                    var blk [512]byte
+                    f := func() {
+                        fill(blk[:])
+                    }
+                    _ = f
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        env.refresh_borrowed_slice_params(&[&file]);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+            _ => None,
+        }) else {
+            panic!("expected function");
+        };
+        let names = super::mutable_func_lit_capture_names_in_block(
+            func.body.as_ref().expect("expected body"),
+            &env,
+        );
+        assert!(names.contains("blk"));
     }
 
     #[test]
