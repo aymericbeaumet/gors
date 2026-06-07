@@ -16009,7 +16009,7 @@ fn compile_top_level_value_spec(
             .or_else(|| {
                 inferred_go_type
                     .as_ref()
-                    .map(rust_type_from_inferred_go_type)
+                    .map(rust_type_preserving_named_go_type)
             });
 
         if tok == token::Token::CONST {
@@ -25814,6 +25814,55 @@ func main() {
             !main_rs.contains("dyn Fn (& mut [u8]) -> usize + Send + Sync")
                 && !main_rs.contains("dyn Fn(&mut [u8]) -> usize + Send + Sync"),
             "{main_rs}"
+        );
+    }
+
+    #[test]
+    fn compile_program_multi_preserves_inferred_named_static_types() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/kindpkg"
+
+func main() {
+	kindpkg.Run()
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("kindpkg/kindpkg.go").as_path(),
+            r#"
+package kindpkg
+
+type bufferKind int
+
+const defaultSize = 70
+
+var groupBuffer = bufferKind(defaultSize)
+
+func retry(kind bufferKind) {}
+
+func Run() {
+	retry(groupBuffer)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let kindpkg_rs = output.files.get("example__kindpkg.rs").unwrap();
+
+        assert!(
+            kindpkg_rs.contains("LazyLock < bufferKind >")
+                || kindpkg_rs.contains("LazyLock<bufferKind>"),
+            "{kindpkg_rs}"
+        );
+        assert!(
+            !kindpkg_rs.contains("LazyLock < isize >") && !kindpkg_rs.contains("LazyLock<isize>"),
+            "{kindpkg_rs}"
         );
     }
 
