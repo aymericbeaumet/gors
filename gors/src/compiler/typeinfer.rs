@@ -982,16 +982,11 @@ fn method_func_from_receiver_type(receiver_type: GoType, method: &str, env: &Typ
 }
 
 fn type_method_expression_func(sel: &ast::SelectorExpr, env: &TypeEnv) -> Option<GoType> {
-    let receiver = super::method_expressions::receiver_for_method(&sel.x, sel.sel.name, env)?;
-    let method_key = format!("{}.{}", receiver.method_name, sel.sel.name);
-    let mut params = vec![receiver.go_type];
-    params.extend(env.get_func_params(&method_key));
+    let method = super::method_expressions::for_selector(sel, env)?;
     Some(GoType::Func {
-        params,
-        results: env.get_func_returns(&method_key),
-        variadic_start: env
-            .get_func_variadic_start(&method_key)
-            .map(|start| start + 1),
+        params: method.params_with_receiver(env),
+        results: method.returns(env),
+        variadic_start: method.variadic_start_with_receiver(env),
     })
 }
 

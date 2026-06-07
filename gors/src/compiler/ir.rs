@@ -7324,11 +7324,8 @@ fn type_method_expression_result_types(
     selector: &ast::SelectorExpr<'_>,
     env: &TypeEnv,
 ) -> Option<Vec<GoType>> {
-    let receiver =
-        super::method_expressions::receiver_for_method(&selector.x, selector.sel.name, env)?;
-    let method_key = format!("{}.{}", receiver.method_name, selector.sel.name);
-    env.has_func(&method_key)
-        .then(|| env.get_func_returns(&method_key))
+    let method = super::method_expressions::for_selector(selector, env)?;
+    Some(method.returns(env))
 }
 
 fn call_result_types_for_fun(fun: &ast::Expr<'_>, env: &TypeEnv) -> Option<Vec<GoType>> {
@@ -12586,17 +12583,11 @@ fn call_signature_for_type_method_expression(
     selector: &ast::SelectorExpr<'_>,
     env: &TypeEnv,
 ) -> Option<CallSignature> {
-    let receiver =
-        super::method_expressions::receiver_for_method(&selector.x, selector.sel.name, env)?;
-    let method_key = format!("{}.{}", receiver.method_name, selector.sel.name);
-    let mut params = vec![receiver.go_type];
-    params.extend(env.get_func_params(&method_key));
+    let method = super::method_expressions::for_selector(selector, env)?;
     Some(CallSignature {
-        target: method_key.clone(),
-        params,
-        variadic_start: env
-            .get_func_variadic_start(&method_key)
-            .map(|start| start + 1),
+        target: method.method_key.clone(),
+        params: method.params_with_receiver(env),
+        variadic_start: method.variadic_start_with_receiver(env),
     })
 }
 

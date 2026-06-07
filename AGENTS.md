@@ -392,7 +392,10 @@ gors-builtin/
   Shared method-expression receiver classification lives in
   `gors/src/compiler/method_expressions.rs`; type inference, IR call ABI, and
   backend lowering must consume that boundary instead of carrying parallel
-  receiver-name/type-argument/pointer-shape classifiers. Shared TypeEnv-backed
+  receiver-name/type-argument/pointer-shape classifiers. That boundary also
+  owns the generated method key plus receiver-aware params/results/variadic
+  signature accessors for type method expressions; do not rebuild those facts in
+  each caller. Shared TypeEnv-backed
   selector facts such as declared selector-base values and qualified
   package-member keys live in `gors/src/compiler/selector_semantics.rs`;
   method-expression detection, type inference, and IR call/result planning

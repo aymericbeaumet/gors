@@ -18621,17 +18621,15 @@ fn type_method_expression_info(selector: &ast::SelectorExpr) -> Option<TypeMetho
         if selector_semantics::selector_base_is_declared_value(selector, &env) {
             return None;
         }
-        let receiver =
-            method_expressions::receiver_for_method(&selector.x, selector.sel.name, &env)?;
-        let method_key = format!("{}.{}", receiver.method_name, selector.sel.name);
-        let pointer_receiver = matches!(&receiver.go_type, typeinfer::GoType::Pointer(_));
+        let method = method_expressions::for_selector(selector, &env)?;
+        let pointer_receiver = matches!(&method.receiver.go_type, typeinfer::GoType::Pointer(_));
         Some(TypeMethodExpressionInfo {
-            params: env.get_func_params(&method_key),
-            results: env.get_func_returns(&method_key),
-            method_pointer_receiver: env.method_has_pointer_receiver(&method_key),
-            method_key,
+            params: method.params(&env),
+            results: method.returns(&env),
+            method_pointer_receiver: env.method_has_pointer_receiver(&method.method_key),
+            method_key: method.method_key,
             receiver_path,
-            receiver_type: receiver.go_type,
+            receiver_type: method.receiver.go_type,
             pointer_receiver,
         })
     })

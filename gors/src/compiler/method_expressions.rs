@@ -10,14 +10,54 @@ pub(super) struct TypeMethodExpressionReceiver {
     pub(super) go_type: GoType,
 }
 
-pub(super) fn receiver_for_method(
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct TypeMethodExpression {
+    pub(super) method_key: String,
+    pub(super) receiver: TypeMethodExpressionReceiver,
+}
+
+impl TypeMethodExpression {
+    pub(super) fn params(&self, env: &TypeEnv) -> Vec<GoType> {
+        env.get_func_params(&self.method_key)
+    }
+
+    pub(super) fn params_with_receiver(&self, env: &TypeEnv) -> Vec<GoType> {
+        let mut params = vec![self.receiver.go_type.clone()];
+        params.extend(self.params(env));
+        params
+    }
+
+    pub(super) fn returns(&self, env: &TypeEnv) -> Vec<GoType> {
+        env.get_func_returns(&self.method_key)
+    }
+
+    pub(super) fn variadic_start(&self, env: &TypeEnv) -> Option<usize> {
+        env.get_func_variadic_start(&self.method_key)
+    }
+
+    pub(super) fn variadic_start_with_receiver(&self, env: &TypeEnv) -> Option<usize> {
+        self.variadic_start(env).map(|start| start + 1)
+    }
+}
+
+pub(super) fn for_selector(
+    selector: &ast::SelectorExpr<'_>,
+    env: &TypeEnv,
+) -> Option<TypeMethodExpression> {
+    for_receiver_expr(&selector.x, selector.sel.name, env)
+}
+
+pub(super) fn for_receiver_expr(
     expr: &ast::Expr<'_>,
     method: &str,
     env: &TypeEnv,
-) -> Option<TypeMethodExpressionReceiver> {
+) -> Option<TypeMethodExpression> {
     let receiver = receiver(expr, env)?;
-    env.has_func(&format!("{}.{}", receiver.method_name, method))
-        .then_some(receiver)
+    let method_key = format!("{}.{}", receiver.method_name, method);
+    env.has_func(&method_key).then_some(TypeMethodExpression {
+        method_key,
+        receiver,
+    })
 }
 
 pub(super) fn receiver(
@@ -170,11 +210,12 @@ mod tests {
         env.set_func("T.M", vec![GoType::Int]);
         env.set_func_params("T.M", Vec::new());
 
-        let receiver = receiver_for_method(&selector.x, selector.sel.name, &env).unwrap();
+        let method = for_selector(selector, &env).unwrap();
 
-        assert_eq!(receiver.method_name, "T");
+        assert_eq!(method.method_key, "T.M");
+        assert_eq!(method.receiver.method_name, "T");
         assert_eq!(
-            receiver.go_type,
+            method.receiver.go_type,
             GoType::Instantiated {
                 name: "T".to_string(),
                 args: vec![GoType::Int],
