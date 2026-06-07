@@ -1,7 +1,5 @@
 package main
 
-import "fmt"
-
 func ints(yield func(int) bool) {
 	for i := 0; i < 5; i++ {
 		if !yield(i) {
@@ -105,5 +103,28 @@ func main() {
 		}
 	}
 
-	fmt.Println(arrayTotal, sliceTotal, mapTotal, stringIndexTotal, stringRuneTotal, channelTotal, intTotal, intCount, typedIntTotal, lastSmall, typedUntypedTotal, fromUntyped, negativeCount, funcTotal, pairTotal, tickCount)
+	if arrayTotal != 15 || sliceTotal != 3 || mapTotal != 32 {
+		panic("array, slice, or map range changed")
+	}
+	if stringIndexTotal != 4 || stringRuneTotal != 26344 {
+		panic("string range changed")
+	}
+	if channelTotal != 15 {
+		panic("channel range changed")
+	}
+	if intTotal != 6 || intCount != 3 {
+		panic("integer range changed")
+	}
+	if typedIntTotal != 6 || lastSmall != 3 {
+		panic("typed integer range changed")
+	}
+	if typedUntypedTotal != 6 || fromUntyped != 3 {
+		panic("untyped integer range assignment changed")
+	}
+	if negativeCount != 0 {
+		panic("negative integer range changed")
+	}
+	if funcTotal != 3 || pairTotal != 15 || tickCount != 3 {
+		panic("function range changed")
+	}
 }

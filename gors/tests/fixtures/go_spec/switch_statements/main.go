@@ -1,7 +1,5 @@
 package main
 
-import "fmt"
-
 func classify(value int) string {
 	switch doubled := value * 2; {
 	case doubled < 0:
@@ -25,5 +23,10 @@ func tag(value int) string {
 }
 
 func main() {
-	fmt.Println(classify(-1), classify(0), classify(3), tag(2), tag(3), tag(9))
+	if classify(-1) != "negative" || classify(0) != "zero" || classify(3) != "positive" {
+		panic("expressionless switch changed")
+	}
+	if tag(2) != "small" || tag(3) != "three" || tag(9) != "other" {
+		panic("expression switch changed")
+	}
 }
