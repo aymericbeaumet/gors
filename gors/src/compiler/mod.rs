@@ -4814,6 +4814,60 @@ fn rewrite_import_module_paths(file: &mut syn::File, rewrites: &BTreeMap<String,
     ImportModuleRewriter { rewrites }.visit_file_mut(file);
 }
 
+fn prefix_sibling_paths_in_macro_tokens(
+    tokens: proc_macro2::TokenStream,
+    pkg_names: &std::collections::HashSet<String>,
+) -> proc_macro2::TokenStream {
+    fn is_colon(token: &proc_macro2::TokenTree) -> bool {
+        matches!(token, proc_macro2::TokenTree::Punct(punct) if punct.as_char() == ':')
+    }
+
+    fn colon_punct(spacing: proc_macro2::Spacing) -> proc_macro2::Punct {
+        let mut punct = proc_macro2::Punct::new(':', spacing);
+        punct.set_span(Span::mixed_site());
+        punct
+    }
+
+    fn path_sep_at(tokens: &[proc_macro2::TokenTree], index: usize) -> bool {
+        tokens.get(index).is_some_and(is_colon) && tokens.get(index + 1).is_some_and(is_colon)
+    }
+
+    let input = tokens.into_iter().collect::<Vec<_>>();
+    let mut output = proc_macro2::TokenStream::new();
+
+    for (index, token) in input.iter().cloned().enumerate() {
+        match token {
+            proc_macro2::TokenTree::Group(group) => {
+                let mut rewritten = proc_macro2::Group::new(
+                    group.delimiter(),
+                    prefix_sibling_paths_in_macro_tokens(group.stream(), pkg_names),
+                );
+                rewritten.set_span(group.span());
+                output.extend([proc_macro2::TokenTree::Group(rewritten)]);
+            }
+            proc_macro2::TokenTree::Ident(ident) => {
+                let name = ident.to_string();
+                let follows_path_sep = index >= 2 && path_sep_at(&input, index - 2);
+                let starts_module_path = path_sep_at(&input, index + 1);
+                if pkg_names.contains(&name) && starts_module_path && !follows_path_sep {
+                    output.extend([
+                        proc_macro2::TokenTree::Ident(proc_macro2::Ident::new(
+                            "crate",
+                            Span::mixed_site(),
+                        )),
+                        proc_macro2::TokenTree::Punct(colon_punct(proc_macro2::Spacing::Joint)),
+                        proc_macro2::TokenTree::Punct(colon_punct(proc_macro2::Spacing::Alone)),
+                    ]);
+                }
+                output.extend([proc_macro2::TokenTree::Ident(ident)]);
+            }
+            token => output.extend([token]),
+        }
+    }
+
+    output
+}
+
 fn prefix_sibling_paths(file: &mut syn::File, pkg_names: &std::collections::HashSet<String>) {
     use syn::visit_mut::VisitMut;
 
@@ -4840,6 +4894,11 @@ fn prefix_sibling_paths(file: &mut syn::File, pkg_names: &std::collections::Hash
                     path.segments.insert(0, crate_seg);
                 }
             }
+        }
+
+        fn visit_macro_mut(&mut self, mac: &mut syn::Macro) {
+            syn::visit_mut::visit_macro_mut(self, mac);
+            mac.tokens = prefix_sibling_paths_in_macro_tokens(mac.tokens.clone(), self.pkg_names);
         }
     }
 
@@ -11490,6 +11549,117 @@ fn compile_call_arg_with_abi(
     )
 }
 
+fn compile_forwarded_multi_return_arg_value(
+    temp: &syn::Ident,
+    expected: Option<&typeinfer::GoType>,
+    actual: Option<&typeinfer::GoType>,
+    call_abi: &ir::CallAbi,
+    arg_index: usize,
+) -> syn::Expr {
+    if call_arg_needs_borrowed_slice(call_abi, arg_index) {
+        return syn::parse_quote! { &mut *#temp };
+    }
+
+    let Some(expected) = expected else {
+        return syn::parse_quote! { #temp };
+    };
+    let actual = actual.cloned().unwrap_or(typeinfer::GoType::Unknown);
+
+    if call_arg_needs_owned_interface(call_abi, arg_index)
+        && !matches!(expected, typeinfer::GoType::Error)
+        && let Some(interface_name) = go_type_interface_name(expected)
+    {
+        let trait_path = interface_trait_path_from_name(&interface_name);
+        if go_type_interface_name(&actual).is_some() {
+            let clone_box = clone_box_method_ident();
+            return syn::parse_quote! { #trait_path::#clone_box(&*(#temp)) };
+        }
+        record_required_external_imported_interface_impl(expected, &actual);
+        return syn::parse_quote! { Box::new(#temp) as Box<dyn #trait_path> };
+    }
+
+    if matches!(resolved_go_type(expected), typeinfer::GoType::Any) {
+        if matches!(resolved_go_type(&actual), typeinfer::GoType::Any) {
+            return syn::parse_quote! { #temp };
+        }
+        if go_type_supports_runtime_any_comparable(&actual) {
+            return syn::parse_quote! { crate::builtin::box_any_comparable(#temp) };
+        }
+        return syn::parse_quote! { Box::new(#temp) as Box<dyn std::any::Any> };
+    }
+
+    if matches!(resolved_go_type(expected), typeinfer::GoType::Error) {
+        if go_type_is_interface_like(&actual) {
+            return syn::parse_quote! { #temp };
+        }
+        return syn::parse_quote! { Box::new(#temp) as Box<dyn crate::builtin::error> };
+    }
+
+    if go_type_interface_name(expected).is_some() {
+        if go_type_is_interface_like(&actual) {
+            return syn::parse_quote! { #temp };
+        }
+        record_required_external_imported_interface_impl(expected, &actual);
+        return syn::parse_quote! { &mut #temp };
+    }
+
+    syn::parse_quote! { #temp }
+}
+
+fn forwarded_single_call_return_types(
+    call_expr: &ast::CallExpr,
+    param_types: &[typeinfer::GoType],
+) -> Option<Vec<typeinfer::GoType>> {
+    if call_expr.ellipsis.is_some() || param_types.len() <= 1 {
+        return None;
+    }
+    let args = call_expr.args.as_ref()?;
+    let [arg] = args.as_slice() else {
+        return None;
+    };
+    if !matches!(ast_unparen_expr_ref(arg), ast::Expr::CallExpr(_)) {
+        return None;
+    }
+    let return_types = call_return_types(arg);
+    (return_types.len() == param_types.len()).then_some(return_types)
+}
+
+fn compile_fixed_call_with_forwarded_multi_return_arg<'a>(
+    call_expr: ast::CallExpr<'a>,
+    param_types: &[typeinfer::GoType],
+    call_abi: &ir::CallAbi,
+) -> Result<syn::Expr, ast::CallExpr<'a>> {
+    let Some(return_types) = forwarded_single_call_return_types(&call_expr, param_types) else {
+        return Err(call_expr);
+    };
+    let mut raw_args = call_expr.args.unwrap_or_default();
+    let arg = raw_args.remove(0);
+    let arg_call: syn::Expr = arg.into();
+    let func = compile_call_function_expr(*call_expr.fun);
+    let temps = (0..param_types.len())
+        .map(synthetic_names::multi_value_temp_ident)
+        .collect::<Vec<_>>();
+    let temp_pats = temps
+        .iter()
+        .map(|temp| syn::parse_quote! { mut #temp })
+        .collect::<Vec<syn::Pat>>();
+    let mut args: syn::punctuated::Punctuated<syn::Expr, Token![,]> =
+        syn::punctuated::Punctuated::new();
+    for (idx, temp) in temps.iter().enumerate() {
+        args.push(compile_forwarded_multi_return_arg_value(
+            temp,
+            param_types.get(idx),
+            return_types.get(idx),
+            call_abi,
+            idx,
+        ));
+    }
+    Ok(syn::parse_quote! {{
+        let (#(#temp_pats),*) = #arg_call;
+        #func(#args)
+    }})
+}
+
 fn pointer_deref_lvalue_expr(inner: &ast::Expr) -> Option<syn::Expr> {
     if is_unsafe_pointer_bitcast_expr(inner) {
         return compile_unsafe_pointer_bitcast_lvalue(inner);
@@ -18107,7 +18277,7 @@ impl From<ast::Expr<'_>> for syn::Expr {
         match expr {
             ast::Expr::BasicLit(basic_lit) => compile_basic_lit_expr(basic_lit),
             ast::Expr::BinaryExpr(binary_expr) => compile_binary_expr(binary_expr),
-            ast::Expr::CallExpr(call_expr) => {
+            ast::Expr::CallExpr(mut call_expr) => {
                 if matches!(
                     unsafe_intrinsic_name(&call_expr),
                     Some("Add" | "Alignof" | "Offsetof" | "Sizeof" | "String" | "SliceData")
@@ -18163,6 +18333,18 @@ impl From<ast::Expr<'_>> for syn::Expr {
                         _ => true,
                     }
                 });
+                if !is_method_call {
+                    match compile_fixed_call_with_forwarded_multi_return_arg(
+                        call_expr,
+                        &param_types,
+                        &call_abi,
+                    ) {
+                        Ok(expr) => return expr,
+                        Err(original) => {
+                            call_expr = original;
+                        }
+                    }
+                }
                 if is_method_call {
                     if let ast::Expr::SelectorExpr(sel) = *call_expr.fun {
                         let should_clone_receiver =
@@ -24682,6 +24864,33 @@ func main() {
     }
 
     #[test]
+    fn prefix_sibling_paths_rewrites_macro_token_paths() {
+        let mut file: syn::File = rust! {
+            pub fn check() {
+                let _ = std::mem::offset_of!(syscall::Stat_t, Atimespec);
+                let _ = std::mem::offset_of!(crate::time::Time, sec);
+                let _ = syscall::Getuid();
+            }
+        };
+        let pkg_names =
+            std::collections::HashSet::from(["syscall".to_string(), "time".to_string()]);
+
+        super::prefix_sibling_paths(&mut file, &pkg_names);
+
+        let output = quote! { #file }.to_string();
+        assert!(
+            output.contains("std :: mem :: offset_of ! (crate :: syscall :: Stat_t , Atimespec)"),
+            "{output}"
+        );
+        assert!(
+            output.contains("std :: mem :: offset_of ! (crate :: time :: Time , sec)"),
+            "{output}"
+        );
+        assert!(output.contains("crate :: syscall :: Getuid"), "{output}");
+        assert!(!output.contains("crate :: crate :: time"), "{output}");
+    }
+
+    #[test]
     fn syn_type_from_ast_expr_maps_go_primitives_without_postpass() {
         fn ident(name: &'static str) -> crate::ast::Ident<'static> {
             crate::ast::Ident {
@@ -30234,6 +30443,125 @@ func main() {
         );
         assert!(!main_rs.contains("Box::new(makeBlock())"), "{main_rs}");
         assert!(!main_rs.contains("Box::new(__gors_multi_1)"), "{main_rs}");
+    }
+
+    #[test]
+    fn compile_program_multi_expands_single_call_multi_return_arguments() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type Timespec struct {
+	Sec int64
+	Nsec int64
+}
+
+type Stat struct {
+	Atimespec Timespec
+}
+
+func (ts *Timespec) Unix() (int64, int64) {
+	return ts.Sec, ts.Nsec
+}
+
+func makeTime(sec int64, nsec int64) int64 {
+	return sec + nsec
+}
+
+func main() {
+	stat := Stat{}
+	_ = makeTime(stat.Atimespec.Unix())
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(
+            main_rs.contains("let (mut __gors_multi_0, mut __gors_multi_1) ="),
+            "{main_rs}"
+        );
+        assert!(
+            main_rs.contains("makeTime(__gors_multi_0, __gors_multi_1)"),
+            "{main_rs}"
+        );
+        assert!(
+            !main_rs.contains("makeTime(stat.Atimespec.Unix())"),
+            "{main_rs}"
+        );
+    }
+
+    #[test]
+    fn compile_program_multi_prefixes_imported_pointer_field_multi_return_offset_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/tarpkg"
+
+func main() {
+	_ = tarpkg.Run()
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("statpkg/statpkg.go").as_path(),
+            r#"
+package statpkg
+
+type Timespec struct {
+	Sec int64
+	Nsec int64
+}
+
+type Stat struct {
+	Atimespec Timespec
+}
+
+func (ts *Timespec) Unix() (int64, int64) {
+	return ts.Sec, ts.Nsec
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("tarpkg/tarpkg.go").as_path(),
+            r#"
+package tarpkg
+
+import "example/statpkg"
+
+func makeTime(sec int64, nsec int64) int64 {
+	return sec + nsec
+}
+
+func Run() int64 {
+	st := &statpkg.Stat{}
+	return makeTime(st.Atimespec.Unix())
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let tarpkg_rs = output.files.get("example__tarpkg.rs").unwrap();
+        let compact_tarpkg_rs = tarpkg_rs.split_whitespace().collect::<String>();
+        assert!(
+            compact_tarpkg_rs.contains("std::mem::offset_of!(crate::statpkg::Stat,Atimespec)"),
+            "{tarpkg_rs}"
+        );
+        assert!(
+            tarpkg_rs.contains("makeTime(__gors_multi_0, __gors_multi_1)"),
+            "{tarpkg_rs}"
+        );
+        assert!(
+            !compact_tarpkg_rs.contains("std::mem::offset_of!(statpkg::Stat,Atimespec)"),
+            "{tarpkg_rs}"
+        );
     }
 
     #[test]

@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 const GO_VERSION_FILE: &str = "../.go-version";
-const STDLIB_PRELOAD_SCHEMA_SUFFIX: &str = "stdlib-static-preload-v1";
+const STDLIB_PRELOAD_SCHEMA_SUFFIX: &str = "stdlib-static-preload-v2";
 
 type BuildResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -47,9 +47,9 @@ fn stdlib_version(go_version: &str) -> String {
     format!("gostdlib{go_version}")
 }
 
-fn stdlib_preload_schema(go_version: &str, target_goos: &str) -> String {
+fn stdlib_preload_schema(go_version: &str, target_goos: &str, target_goarch: &str) -> String {
     format!(
-        "{}-{target_goos}-gors-{STDLIB_PRELOAD_SCHEMA_SUFFIX}",
+        "{}-{target_goos}-gors-defs-{target_goarch}-{STDLIB_PRELOAD_SCHEMA_SUFFIX}",
         stdlib_version(go_version),
     )
 }
@@ -196,7 +196,12 @@ fn validate_sdk_version(sdk_path: &Path, go_version: &str) -> BuildResult<()> {
     Ok(())
 }
 
-fn extract_stdlib_from_sdk(sdk_path: &Path, go_version: &str, target_goos: &str) -> StdlibPackages {
+fn extract_stdlib_from_sdk(
+    sdk_path: &Path,
+    go_version: &str,
+    target_goos: &str,
+    target_goarch: &str,
+) -> StdlibPackages {
     let src_dir = sdk_path.join("src");
     let mut packages = BTreeMap::new();
 
@@ -205,6 +210,7 @@ fn extract_stdlib_from_sdk(sdk_path: &Path, go_version: &str, target_goos: &str)
         base: &Path,
         go_version: &str,
         target_goos: &str,
+        target_goarch: &str,
         packages: &mut StdlibPackages,
     ) {
         let entries = match std::fs::read_dir(dir) {
@@ -223,7 +229,14 @@ fn extract_stdlib_from_sdk(sdk_path: &Path, go_version: &str, target_goos: &str)
                 {
                     continue;
                 }
-                walk(&path, base, go_version, target_goos, packages);
+                walk(
+                    &path,
+                    base,
+                    go_version,
+                    target_goos,
+                    target_goarch,
+                    packages,
+                );
             } else if path.extension().is_some_and(|e| e == "go") {
                 let filename = entry.file_name().to_string_lossy().to_string();
                 if filename.ends_with("_test.go") {
@@ -238,7 +251,13 @@ fn extract_stdlib_from_sdk(sdk_path: &Path, go_version: &str, target_goos: &str)
                     continue;
                 }
                 if let Ok(content) = std::fs::read_to_string(&path) {
-                    if should_compile_file(&filename, &content, go_version, target_goos) {
+                    if should_compile_file(
+                        &filename,
+                        &content,
+                        go_version,
+                        target_goos,
+                        target_goarch,
+                    ) {
                         packages
                             .entry(rel_dir)
                             .or_default()
@@ -249,7 +268,14 @@ fn extract_stdlib_from_sdk(sdk_path: &Path, go_version: &str, target_goos: &str)
         }
     }
 
-    walk(&src_dir, &src_dir, go_version, target_goos, &mut packages);
+    walk(
+        &src_dir,
+        &src_dir,
+        go_version,
+        target_goos,
+        target_goarch,
+        &mut packages,
+    );
     for files in packages.values_mut() {
         files.sort_by(|a, b| a.filename.cmp(&b.filename));
     }
@@ -358,12 +384,18 @@ fn import_paths_from_source(content: &str) -> Vec<String> {
     paths
 }
 
-fn should_compile_file(filename: &str, content: &str, go_version: &str, target_goos: &str) -> bool {
-    file_name_matches_target(filename, target_goos)
+fn should_compile_file(
+    filename: &str,
+    content: &str,
+    go_version: &str,
+    target_goos: &str,
+    target_goarch: &str,
+) -> bool {
+    file_name_matches_target(filename, target_goos, target_goarch)
         && build_constraint_matches(content, go_version, target_goos)
 }
 
-fn file_name_matches_target(filename: &str, target_goos: &str) -> bool {
+fn file_name_matches_target(filename: &str, target_goos: &str, target_goarch: &str) -> bool {
     let Some(stem) = filename.strip_suffix(".go") else {
         return false;
     };
@@ -374,7 +406,9 @@ fn file_name_matches_target(filename: &str, target_goos: &str) -> bool {
 
     if is_go_arch(last) {
         if last != "gors" {
-            return false;
+            if last != target_goarch || !is_arch_specific_definition_file(stem) {
+                return false;
+            }
         }
         if let Some(os_part) = parts.get(parts.len().saturating_sub(2))
             && is_go_os(os_part)
@@ -386,6 +420,10 @@ fn file_name_matches_target(filename: &str, target_goos: &str) -> bool {
     }
 
     !is_go_os(last) || last == target_goos
+}
+
+fn is_arch_specific_definition_file(stem: &str) -> bool {
+    matches!(stem.split('_').next(), Some("defs" | "zerrors" | "ztypes"))
 }
 
 fn build_constraint_matches(content: &str, go_version: &str, target_goos: &str) -> bool {
@@ -623,7 +661,8 @@ fn main() -> BuildResult<()> {
     let source_dir = out_dir.join("go_stdlib_src");
     let marker_path = out_dir.join("go_stdlib.version");
     let target_goos = target_go_os();
-    let preload_schema = stdlib_preload_schema(&go_version, &target_goos);
+    let target_goarch = go_arch()?;
+    let preload_schema = stdlib_preload_schema(&go_version, &target_goos, target_goarch);
 
     if preload_path.exists()
         && source_dir.exists()
@@ -632,10 +671,10 @@ fn main() -> BuildResult<()> {
         return Ok(());
     }
 
-    let packages = extract_stdlib_from_sdk(&sdk_path, &go_version, &target_goos);
+    let packages = extract_stdlib_from_sdk(&sdk_path, &go_version, &target_goos, target_goarch);
 
     eprintln!(
-        "Preloading {} Go stdlib packages for GOOS={target_goos} GOARCH=gors ({} total files)",
+        "Preloading {} Go stdlib packages for GOOS={target_goos} GOARCH=gors with {target_goarch} definition files ({} total files)",
         packages.len(),
         packages.values().map(|v| v.len()).sum::<usize>()
     );

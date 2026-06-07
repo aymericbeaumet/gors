@@ -2518,6 +2518,17 @@ func read() string {
                 "Errno".to_string()
             ))
         );
+        assert_eq!(
+            env.get_field_type("Stat_t", "Atimespec"),
+            crate::compiler::typeinfer::GoType::Named("Timespec".to_string())
+        );
+        assert_eq!(
+            env.get_func_returns("Timespec.Unix"),
+            vec![
+                crate::compiler::typeinfer::GoType::Int64,
+                crate::compiler::typeinfer::GoType::Int64,
+            ]
+        );
         Ok(())
     }
 

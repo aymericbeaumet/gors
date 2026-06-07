@@ -22486,6 +22486,10 @@ mod tests {
                 type Counter struct { Count int }
                 func (c Counter) Get() int { return c.Count }
                 func (c *Counter) Bump(n int) {}
+                type Timespec struct { Sec int64; Nsec int64 }
+                type Stat struct { Atimespec Timespec }
+                func (ts *Timespec) Unix() (int64, int64) { return ts.Sec, ts.Nsec }
+                func unix(sec int64, nsec int64) int64 { return sec + nsec }
 
                 func main() {
                     takes(pair())
@@ -22508,6 +22512,8 @@ mod tests {
                     _ = Counter.Get(value)
                     ptr := &value
                     (*Counter).Bump(ptr, 1)
+                    stat := Stat{}
+                    _ = unix(stat.Atimespec.Unix())
                 }
             "#,
         )
