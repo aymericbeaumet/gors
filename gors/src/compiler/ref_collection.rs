@@ -4,7 +4,7 @@ use super::{
         ReceiverFieldTypeMap, ReceiverTupleReturnMap, ReceiverTupleTypes, ReceiverTypeMap,
         ReceiverTypeRef, external_receiver_method_return_type,
         receiver_type_from_associated_call_path, receiver_type_from_init_expr,
-        receiver_type_from_type,
+        receiver_type_from_type, specialize_self_receiver_type,
     },
     syn_inspect::{
         is_path_call_expr, is_receiver_type_wrapper_method, item_macro_name,
@@ -48,6 +48,10 @@ pub(super) fn collect_refs_from_item(
     }
 
     impl BoundCollector<'_> {
+        fn specialize_receiver_type(&self, receiver_type: ReceiverTypeRef) -> ReceiverTypeRef {
+            specialize_self_receiver_type(receiver_type, self.current_self_type.as_ref())
+        }
+
         fn bound_receiver_type_from_expr(&self, expr: &syn::Expr) -> Option<ReceiverTypeRef> {
             match expr {
                 syn::Expr::Call(call) => self
@@ -198,6 +202,7 @@ pub(super) fn collect_refs_from_item(
                 && let Some(name) = pat_ident_name(&pat_type.pat)
                 && let Some(ty) = receiver_type_from_type(&pat_type.ty, self.module_names)
             {
+                let ty = self.specialize_receiver_type(ty);
                 self.types.insert(name, ty);
             }
             syn::visit_mut::visit_fn_arg_mut(self, arg);
@@ -209,6 +214,7 @@ pub(super) fn collect_refs_from_item(
                     && let Some(name) = pat_ident_name(&pat_type.pat)
                     && let Some(ty) = receiver_type_from_type(&pat_type.ty, self.module_names)
                 {
+                    let ty = self.specialize_receiver_type(ty);
                     self.types.insert(name, ty);
                 }
             }
@@ -233,6 +239,7 @@ pub(super) fn collect_refs_from_item(
                 && let Some(name) = pat_ident_name(&pat_type.pat)
                 && let Some(ty) = receiver_type_from_type(&pat_type.ty, self.module_names)
             {
+                let ty = self.specialize_receiver_type(ty);
                 self.types.insert(name, ty);
             } else if let Some(init) = &local.init
                 && let Some(name) = pat_ident_name(&local.pat)
@@ -245,6 +252,7 @@ pub(super) fn collect_refs_from_item(
                     )
                 })
             {
+                let ty = self.specialize_receiver_type(ty);
                 self.types.insert(name, ty);
             }
             syn::visit_mut::visit_local_mut(self, local);
@@ -1030,6 +1038,85 @@ mod tests {
             !names.contains(&impl_method_reachability_name("headerGNU", "maxEntries")),
             "{names:?}"
         );
+    }
+
+    #[test]
+    fn collect_refs_resolves_self_receiver_fields_through_pointer_cells() {
+        let module_names = ReachabilityNameSet::from(["time".to_string()]);
+        let file: syn::File = syn::parse_quote! {
+            pub struct Header {
+                ModTime: crate::time::Time,
+            }
+
+            impl Header {
+                fn allowedFormats(&mut self) {}
+            }
+
+            pub struct Writer {
+                hdr: Header,
+            }
+
+            impl Writer {
+                fn WriteHeader(mut tw: crate::builtin::GorsPtr<Self>) {
+                    let _ = (std::mem::take(&mut (((tw).lock().unwrap()).hdr).ModTime))
+                        .Round(crate::time::Second);
+                    let _ = ((((tw).lock().unwrap()).hdr).clone()).allowedFormats();
+                }
+            }
+        };
+        let item_names = super::super::reachability_names::item_reachability_names(&file.items);
+        let top_level_names = super::super::reachability_names::top_level_item_names(&file.items);
+        let top_level_types =
+            super::super::receiver_type_facts::top_level_item_types(&file.items, &module_names);
+        let top_level_field_types = super::super::receiver_type_facts::top_level_item_field_types(
+            &file.items,
+            &module_names,
+        );
+        let top_level_element_types =
+            super::super::receiver_type_facts::top_level_collection_element_types(
+                &file.items,
+                &module_names,
+            );
+        let top_level_return_types = super::super::receiver_type_facts::top_level_item_return_types(
+            &file.items,
+            &module_names,
+        );
+        let top_level_tuple_return_types =
+            super::super::receiver_type_facts::top_level_item_tuple_return_types(
+                &file.items,
+                &module_names,
+            );
+        let context = RefCollectionContext {
+            module_names: &module_names,
+            item_names: &item_names,
+            top_level_names: &top_level_names,
+            top_level_types: &top_level_types,
+            top_level_field_types: &top_level_field_types,
+            top_level_element_types: &top_level_element_types,
+            top_level_return_types: &top_level_return_types,
+            top_level_tuple_return_types: &top_level_tuple_return_types,
+        };
+        let mut item = file
+            .items
+            .iter()
+            .find(|item| matches!(item, syn::Item::Impl(item_impl)
+                if matches!(super::named_self_type(&item_impl.self_ty).as_deref(), Some("Writer"))))
+            .cloned()
+            .expect("Writer impl");
+
+        let (names, external_refs) = collect_refs_from_item(&mut item, &context);
+
+        assert!(
+            names.contains(&impl_method_reachability_name("Header", "allowedFormats")),
+            "{names:?}"
+        );
+        let time_refs = external_refs.get("time").expect("time refs");
+        assert!(time_refs.contains("Time"), "{external_refs:?}");
+        assert!(
+            time_refs.contains(&impl_method_reachability_name("Time", "Round")),
+            "{external_refs:?}"
+        );
+        assert!(time_refs.contains("Second"), "{external_refs:?}");
     }
 
     #[test]

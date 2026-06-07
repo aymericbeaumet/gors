@@ -4,7 +4,7 @@ use super::{
     receiver_type_facts::{
         ReceiverFieldTypeMap, ReceiverTypeContext, ReceiverTypeMap, ReceiverTypeRef,
         method_receiver_type_from_expr, receiver_type_from_init_expr, receiver_type_from_type,
-        top_level_item_field_types, top_level_item_return_types,
+        specialize_self_receiver_type, top_level_item_field_types, top_level_item_return_types,
     },
     syn_inspect::{item_name, named_self_type, pat_ident_name},
 };
@@ -115,7 +115,12 @@ impl<'a> Tracker<'a> {
     }
 
     pub(super) fn record_fn_arg(&mut self, arg: &syn::FnArg) {
-        record_fn_arg_receiver_type(arg, self.module_names, &mut self.local_types);
+        record_fn_arg_receiver_type(
+            arg,
+            self.module_names,
+            self.current_self_type.as_ref(),
+            &mut self.local_types,
+        );
     }
 
     pub(super) fn record_local(&mut self, local: &syn::Local) {
@@ -140,7 +145,9 @@ impl<'a> Tracker<'a> {
     }
 
     pub(super) fn receiver_type_for_type(&self, ty: &syn::Type) -> Option<ReceiverTypeRef> {
-        receiver_type_from_type(ty, self.module_names)
+        receiver_type_from_type(ty, self.module_names).map(|receiver_type| {
+            specialize_self_receiver_type(receiver_type, self.current_self_type.as_ref())
+        })
     }
 
     pub(super) fn current_self_type(&self) -> Option<&ReceiverTypeRef> {
@@ -162,6 +169,7 @@ impl<'a> Tracker<'a> {
 fn record_fn_arg_receiver_type(
     arg: &syn::FnArg,
     module_names: &HashSet<String>,
+    current_self_type: Option<&ReceiverTypeRef>,
     scopes: &mut [BTreeMap<String, ReceiverTypeRef>],
 ) {
     let syn::FnArg::Typed(pat_type) = arg else {
@@ -173,6 +181,7 @@ fn record_fn_arg_receiver_type(
     let Some(receiver_type) = receiver_type_from_type(&pat_type.ty, module_names) else {
         return;
     };
+    let receiver_type = specialize_self_receiver_type(receiver_type, current_self_type);
     record_local_receiver_type(name, receiver_type, scopes);
 }
 
@@ -184,6 +193,7 @@ fn local_receiver_type_binding(
     if let syn::Pat::Type(pat_type) = &local.pat
         && let Some(receiver_type) = receiver_type_from_type(&pat_type.ty, context.module_names)
     {
+        let receiver_type = specialize_self_receiver_type(receiver_type, context.current_self_type);
         return Some((name, receiver_type));
     }
     let init = local.init.as_ref()?;
@@ -195,6 +205,7 @@ fn local_receiver_type_binding(
             context.top_level_return_types,
         )
     })?;
+    let receiver_type = specialize_self_receiver_type(receiver_type, context.current_self_type);
     Some((name, receiver_type))
 }
 
@@ -229,6 +240,8 @@ fn tuple_local_receiver_type_bindings(
                     context.top_level_return_types,
                 )
             })?;
+            let receiver_type =
+                specialize_self_receiver_type(receiver_type, context.current_self_type);
             Some((name, receiver_type))
         })
         .collect()

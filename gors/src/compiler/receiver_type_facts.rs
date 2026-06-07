@@ -363,6 +363,26 @@ pub(super) fn method_receiver_type_from_expr(
     }
 }
 
+pub(super) fn specialize_self_receiver_type(
+    mut receiver_type: ReceiverTypeRef,
+    current_self_type: Option<&ReceiverTypeRef>,
+) -> ReceiverTypeRef {
+    if receiver_type.module.is_none()
+        && receiver_type.name == "Self"
+        && let Some(current_self_type) = current_self_type
+    {
+        return current_self_type.clone();
+    }
+
+    if let Some(type_arg) = receiver_type.type_arg.take() {
+        receiver_type.type_arg = Some(Box::new(specialize_self_receiver_type(
+            *type_arg,
+            current_self_type,
+        )));
+    }
+    receiver_type
+}
+
 pub(super) fn receiver_type_from_type(
     ty: &syn::Type,
     module_names: &std::collections::HashSet<String>,
