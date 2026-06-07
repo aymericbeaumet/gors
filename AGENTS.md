@@ -470,6 +470,11 @@ symbol set. The resolver parses selected Go files only when the package is
 needed, filters unused top-level AST declarations before compiling, and caches
 type environments, transitive imports, and resolved token streams. Direct
 imports with no surviving references should not force module generation.
+Resolver source filtering must retain same-package method declarations that are
+only discovered from typed local values inside reachable bodies, such as
+`p.parse()` where `p` is a local `parser` value. Keep that discovery generic and
+type-env driven so stdlib source pruning does not drop ordinary helper methods
+before compiler lowering can reference them.
 Compiler-side stdlib module loading, dependency pruning, unreferenced-module
 cleanup, and `GORS_STDLIB_TRACE` formatting live in
 `gors/src/compiler/stdlib_modules.rs`; `compiler/mod.rs` should only orchestrate

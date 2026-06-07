@@ -1203,6 +1203,13 @@ fn reachable_package_names(
                         changed |= reachable.insert(reference);
                     }
                 }
+                let mut method_refs = HashSet::new();
+                method_refs_from_decl(decl, &env, &mut method_refs);
+                for reference in method_refs {
+                    if top_names.contains(reference.as_str()) {
+                        changed |= reachable.insert(reference);
+                    }
+                }
                 let mut value_refs = HashSet::new();
                 value_refs_from_decl(decl, &mut value_refs);
                 value_field_refs_from_decl(decl, &value_reachable, &mut value_refs);
@@ -2005,6 +2012,373 @@ fn refs_from_expr(expr: &crate::ast::Expr<'_>, refs: &mut HashSet<String>) {
     }
 }
 
+fn method_refs_from_decl(decl: &crate::ast::Decl<'_>, env: &TypeEnv, refs: &mut HashSet<String>) {
+    let mut env = env.clone();
+    match decl {
+        crate::ast::Decl::FuncDecl(func) => {
+            seed_func_decl_method_ref_bindings(func, &mut env);
+            if let Some(body) = &func.body {
+                method_refs_from_block(body, &mut env, refs);
+            }
+        }
+        crate::ast::Decl::GenDecl(gen_decl) => {
+            method_refs_from_gen_decl(gen_decl, &mut env, refs);
+        }
+    }
+}
+
+fn seed_func_decl_method_ref_bindings(func: &crate::ast::FuncDecl<'_>, env: &mut TypeEnv) {
+    seed_field_list_method_ref_bindings(func.recv.as_ref(), env);
+    seed_field_list_method_ref_bindings(Some(&func.type_.params), env);
+    seed_field_list_method_ref_bindings(func.type_.results.as_ref(), env);
+}
+
+fn seed_field_list_method_ref_bindings(
+    fields: Option<&crate::ast::FieldList<'_>>,
+    env: &mut TypeEnv,
+) {
+    let Some(fields) = fields else {
+        return;
+    };
+    for field in &fields.list {
+        let Some(type_expr) = &field.type_ else {
+            continue;
+        };
+        let Some(names) = field.names.as_ref() else {
+            continue;
+        };
+        let ty = crate::compiler::typeinfer::GoType::from_expr(type_expr);
+        for name in names {
+            if name.name != "_" {
+                env.set_var(name.name, ty.clone());
+            }
+        }
+    }
+}
+
+fn method_refs_from_gen_decl(
+    gen_decl: &crate::ast::GenDecl<'_>,
+    env: &mut TypeEnv,
+    refs: &mut HashSet<String>,
+) {
+    for spec in &gen_decl.specs {
+        let crate::ast::Spec::ValueSpec(value_spec) = spec else {
+            continue;
+        };
+        if let Some(values) = value_spec.values.as_deref() {
+            method_refs_from_exprs(values, env, refs);
+        }
+        if let Some(type_expr) = &value_spec.type_ {
+            let ty = crate::compiler::typeinfer::GoType::from_expr(type_expr);
+            for name in &value_spec.names {
+                if name.name != "_" {
+                    env.set_var(name.name, ty.clone());
+                }
+            }
+        } else if let Some(values) = value_spec.values.as_deref() {
+            for (name, value) in value_spec.names.iter().zip(values.iter()) {
+                if name.name != "_" {
+                    let ty = crate::compiler::typeinfer::GoType::infer_expr(value, env);
+                    env.set_var(name.name, ty);
+                }
+            }
+        }
+    }
+}
+
+fn method_refs_from_block(
+    block: &crate::ast::BlockStmt<'_>,
+    env: &mut TypeEnv,
+    refs: &mut HashSet<String>,
+) {
+    let mut block_env = env.clone();
+    for stmt in &block.list {
+        method_refs_from_stmt(stmt, &mut block_env, refs);
+    }
+}
+
+fn method_refs_from_stmt(
+    stmt: &crate::ast::Stmt<'_>,
+    env: &mut TypeEnv,
+    refs: &mut HashSet<String>,
+) {
+    match stmt {
+        crate::ast::Stmt::AssignStmt(assign) => {
+            method_refs_from_exprs(&assign.lhs, env, refs);
+            method_refs_from_exprs(&assign.rhs, env, refs);
+            if assign.tok == crate::token::Token::DEFINE && assign.lhs.len() == assign.rhs.len() {
+                for (lhs, rhs) in assign.lhs.iter().zip(assign.rhs.iter()) {
+                    let crate::ast::Expr::Ident(ident) = lhs else {
+                        continue;
+                    };
+                    if ident.name != "_" {
+                        let ty = crate::compiler::typeinfer::GoType::infer_expr(rhs, env);
+                        env.set_var(ident.name, ty);
+                    }
+                }
+            }
+        }
+        crate::ast::Stmt::BlockStmt(block) => method_refs_from_block(block, env, refs),
+        crate::ast::Stmt::BranchStmt(_) | crate::ast::Stmt::EmptyStmt(_) => {}
+        crate::ast::Stmt::CaseClause(case_clause) => {
+            method_refs_from_exprs(case_clause.list.as_deref().unwrap_or(&[]), env, refs);
+            let mut case_env = env.clone();
+            for stmt in &case_clause.body {
+                method_refs_from_stmt(stmt, &mut case_env, refs);
+            }
+        }
+        crate::ast::Stmt::CommClause(comm_clause) => {
+            let mut comm_env = env.clone();
+            if let Some(comm) = comm_clause.comm.as_deref() {
+                method_refs_from_stmt(comm, &mut comm_env, refs);
+            }
+            for stmt in &comm_clause.body {
+                method_refs_from_stmt(stmt, &mut comm_env, refs);
+            }
+        }
+        crate::ast::Stmt::DeclStmt(decl_stmt) => {
+            method_refs_from_gen_decl(&decl_stmt.decl, env, refs);
+        }
+        crate::ast::Stmt::DeferStmt(defer_stmt) => {
+            method_refs_from_call(&defer_stmt.call, env, refs);
+        }
+        crate::ast::Stmt::ExprStmt(expr_stmt) => method_refs_from_expr(&expr_stmt.x, env, refs),
+        crate::ast::Stmt::ForStmt(for_stmt) => {
+            let mut loop_env = env.clone();
+            if let Some(init) = for_stmt.init.as_deref() {
+                method_refs_from_stmt(init, &mut loop_env, refs);
+            }
+            if let Some(cond) = &for_stmt.cond {
+                method_refs_from_expr(cond, &mut loop_env, refs);
+            }
+            if let Some(post) = for_stmt.post.as_deref() {
+                method_refs_from_stmt(post, &mut loop_env, refs);
+            }
+            method_refs_from_block(&for_stmt.body, &mut loop_env, refs);
+        }
+        crate::ast::Stmt::GoStmt(go_stmt) => method_refs_from_call(&go_stmt.call, env, refs),
+        crate::ast::Stmt::IfStmt(if_stmt) => {
+            let mut if_env = env.clone();
+            if let Some(init) = if_stmt.init.as_ref().as_ref() {
+                method_refs_from_stmt(init, &mut if_env, refs);
+            }
+            method_refs_from_expr(&if_stmt.cond, &mut if_env, refs);
+            method_refs_from_block(&if_stmt.body, &mut if_env, refs);
+            if let Some(else_stmt) = if_stmt.else_.as_ref().as_ref() {
+                method_refs_from_stmt(else_stmt, &mut if_env, refs);
+            }
+        }
+        crate::ast::Stmt::IncDecStmt(inc_dec) => method_refs_from_expr(&inc_dec.x, env, refs),
+        crate::ast::Stmt::LabeledStmt(labeled) => method_refs_from_stmt(&labeled.stmt, env, refs),
+        crate::ast::Stmt::RangeStmt(range) => {
+            method_refs_from_expr(&range.x, env, refs);
+            let mut range_env = env.clone();
+            if range.tok == Some(crate::token::Token::DEFINE) {
+                seed_range_method_ref_bindings(range, &mut range_env, env);
+            }
+            if let Some(key) = &range.key {
+                method_refs_from_expr(key, &mut range_env, refs);
+            }
+            if let Some(value) = &range.value {
+                method_refs_from_expr(value, &mut range_env, refs);
+            }
+            method_refs_from_block(&range.body, &mut range_env, refs);
+        }
+        crate::ast::Stmt::ReturnStmt(return_stmt) => {
+            method_refs_from_exprs(&return_stmt.results, env, refs)
+        }
+        crate::ast::Stmt::SelectStmt(select_stmt) => {
+            method_refs_from_block(&select_stmt.body, env, refs)
+        }
+        crate::ast::Stmt::SendStmt(send_stmt) => {
+            method_refs_from_expr(&send_stmt.chan, env, refs);
+            method_refs_from_expr(&send_stmt.value, env, refs);
+        }
+        crate::ast::Stmt::SwitchStmt(switch_stmt) => {
+            let mut switch_env = env.clone();
+            if let Some(init) = switch_stmt.init.as_deref() {
+                method_refs_from_stmt(init, &mut switch_env, refs);
+            }
+            if let Some(tag) = &switch_stmt.tag {
+                method_refs_from_expr(tag, &mut switch_env, refs);
+            }
+            method_refs_from_block(&switch_stmt.body, &mut switch_env, refs);
+        }
+        crate::ast::Stmt::TypeSwitchStmt(type_switch) => {
+            let mut switch_env = env.clone();
+            if let Some(init) = type_switch.init.as_deref() {
+                method_refs_from_stmt(init, &mut switch_env, refs);
+            }
+            method_refs_from_stmt(&type_switch.assign, &mut switch_env, refs);
+            method_refs_from_block(&type_switch.body, &mut switch_env, refs);
+        }
+    }
+}
+
+fn seed_range_method_ref_bindings(
+    range: &crate::ast::RangeStmt<'_>,
+    range_env: &mut TypeEnv,
+    outer_env: &TypeEnv,
+) {
+    let container_ty = outer_env.resolve_alias(&crate::compiler::typeinfer::GoType::infer_expr(
+        &range.x, outer_env,
+    ));
+    let (key_ty, value_ty) = match container_ty {
+        crate::compiler::typeinfer::GoType::Slice(elem)
+        | crate::compiler::typeinfer::GoType::Array(elem) => {
+            (crate::compiler::typeinfer::GoType::Int, *elem)
+        }
+        crate::compiler::typeinfer::GoType::Map(key, value) => (*key, *value),
+        crate::compiler::typeinfer::GoType::String => (
+            crate::compiler::typeinfer::GoType::Int,
+            crate::compiler::typeinfer::GoType::Int32,
+        ),
+        _ => (
+            crate::compiler::typeinfer::GoType::Unknown,
+            crate::compiler::typeinfer::GoType::Unknown,
+        ),
+    };
+    if let Some(crate::ast::Expr::Ident(ident)) = &range.key
+        && ident.name != "_"
+    {
+        range_env.set_var(ident.name, key_ty);
+    }
+    if let Some(crate::ast::Expr::Ident(ident)) = &range.value
+        && ident.name != "_"
+    {
+        range_env.set_var(ident.name, value_ty);
+    }
+}
+
+fn method_refs_from_call(
+    call: &crate::ast::CallExpr<'_>,
+    env: &mut TypeEnv,
+    refs: &mut HashSet<String>,
+) {
+    if let crate::ast::Expr::SelectorExpr(selector) = call.fun.as_ref()
+        && let Some(receiver) = receiver_name_for_method_expr(&selector.x, env)
+    {
+        refs.insert(format!("{receiver}::{}", selector.sel.name));
+    }
+    method_refs_from_expr(&call.fun, env, refs);
+    method_refs_from_exprs(call.args.as_deref().unwrap_or(&[]), env, refs);
+}
+
+fn method_refs_from_exprs(
+    exprs: &[crate::ast::Expr<'_>],
+    env: &mut TypeEnv,
+    refs: &mut HashSet<String>,
+) {
+    for expr in exprs {
+        method_refs_from_expr(expr, env, refs);
+    }
+}
+
+fn method_refs_from_expr(
+    expr: &crate::ast::Expr<'_>,
+    env: &mut TypeEnv,
+    refs: &mut HashSet<String>,
+) {
+    match expr {
+        crate::ast::Expr::ArrayType(array) => {
+            if let Some(len) = array.len.as_deref() {
+                method_refs_from_expr(len, env, refs);
+            }
+            method_refs_from_expr(&array.elt, env, refs);
+        }
+        crate::ast::Expr::BasicLit(_) | crate::ast::Expr::Ident(_) => {}
+        crate::ast::Expr::BinaryExpr(binary) => {
+            method_refs_from_expr(&binary.x, env, refs);
+            method_refs_from_expr(&binary.y, env, refs);
+        }
+        crate::ast::Expr::CallExpr(call) => method_refs_from_call(call, env, refs),
+        crate::ast::Expr::ChanType(chan) => method_refs_from_expr(&chan.value, env, refs),
+        crate::ast::Expr::CompositeLit(composite) => {
+            if let Some(type_expr) = composite.type_.as_deref() {
+                method_refs_from_expr(type_expr, env, refs);
+            }
+            method_refs_from_exprs(composite.elts.as_deref().unwrap_or(&[]), env, refs);
+        }
+        crate::ast::Expr::Ellipsis(ellipsis) => {
+            if let Some(elt) = ellipsis.elt.as_deref() {
+                method_refs_from_expr(elt, env, refs);
+            }
+        }
+        crate::ast::Expr::FuncLit(func_lit) => {
+            let mut func_env = env.clone();
+            seed_field_list_method_ref_bindings(Some(&func_lit.type_.params), &mut func_env);
+            seed_field_list_method_ref_bindings(func_lit.type_.results.as_ref(), &mut func_env);
+            method_refs_from_block(&func_lit.body, &mut func_env, refs);
+        }
+        crate::ast::Expr::FuncType(_) | crate::ast::Expr::InterfaceType(_) => {}
+        crate::ast::Expr::IndexExpr(index) => {
+            method_refs_from_expr(&index.x, env, refs);
+            method_refs_from_expr(&index.index, env, refs);
+        }
+        crate::ast::Expr::IndexListExpr(index) => {
+            method_refs_from_expr(&index.x, env, refs);
+            method_refs_from_exprs(&index.indices, env, refs);
+        }
+        crate::ast::Expr::KeyValueExpr(key_value) => {
+            method_refs_from_expr(&key_value.key, env, refs);
+            method_refs_from_expr(&key_value.value, env, refs);
+        }
+        crate::ast::Expr::MapType(map) => {
+            method_refs_from_expr(&map.key, env, refs);
+            method_refs_from_expr(&map.value, env, refs);
+        }
+        crate::ast::Expr::ParenExpr(paren) => method_refs_from_expr(&paren.x, env, refs),
+        crate::ast::Expr::SelectorExpr(selector) => method_refs_from_expr(&selector.x, env, refs),
+        crate::ast::Expr::SliceExpr(slice) => {
+            method_refs_from_expr(&slice.x, env, refs);
+            if let Some(low) = slice.low.as_deref() {
+                method_refs_from_expr(low, env, refs);
+            }
+            if let Some(high) = slice.high.as_deref() {
+                method_refs_from_expr(high, env, refs);
+            }
+            if let Some(max) = slice.max.as_deref() {
+                method_refs_from_expr(max, env, refs);
+            }
+        }
+        crate::ast::Expr::StarExpr(star) => method_refs_from_expr(&star.x, env, refs),
+        crate::ast::Expr::StructType(struct_type) => {
+            if let Some(fields) = struct_type.fields.as_ref() {
+                for field in &fields.list {
+                    if let Some(type_expr) = &field.type_ {
+                        method_refs_from_expr(type_expr, env, refs);
+                    }
+                }
+            }
+        }
+        crate::ast::Expr::TypeAssertExpr(type_assert) => {
+            method_refs_from_expr(&type_assert.x, env, refs);
+            if let Some(type_expr) = type_assert.type_.as_deref() {
+                method_refs_from_expr(type_expr, env, refs);
+            }
+        }
+        crate::ast::Expr::UnaryExpr(unary) => method_refs_from_expr(&unary.x, env, refs),
+    }
+}
+
+fn receiver_name_for_method_expr(expr: &crate::ast::Expr<'_>, env: &TypeEnv) -> Option<String> {
+    let ty = crate::compiler::typeinfer::GoType::infer_expr(expr, env);
+    receiver_name_from_go_type(&ty)
+}
+
+fn receiver_name_from_go_type(ty: &crate::compiler::typeinfer::GoType) -> Option<String> {
+    match ty {
+        crate::compiler::typeinfer::GoType::Named(name)
+        | crate::compiler::typeinfer::GoType::Interface(name) => Some(local_receiver_name(name)),
+        crate::compiler::typeinfer::GoType::Pointer(inner) => receiver_name_from_go_type(inner),
+        _ => None,
+    }
+}
+
+fn local_receiver_name(name: &str) -> String {
+    name.rsplit('.').next().unwrap_or(name).to_string()
+}
+
 fn value_refs_from_decl(decl: &crate::ast::Decl<'_>, refs: &mut HashSet<String>) {
     match decl {
         crate::ast::Decl::FuncDecl(func) => {
@@ -2464,6 +2838,42 @@ func read() string {
         assert!(package_env.has_func("godebug.Setting.Value"));
         assert!(package_env.method_has_pointer_receiver("godebug.Setting.Value"));
         assert!(!package_env.has_func("godebug.New"));
+    }
+
+    #[test]
+    fn reachable_names_include_typed_local_and_named_slice_method_calls() {
+        let file = crate::parser::parse_file(
+            "pkg.go",
+            r#"
+package pkg
+
+type parser struct{}
+
+func (*parser) parseString() string {
+	return ""
+}
+
+type sparseArray []byte
+
+func (s sparseArray) entry() int {
+	return 0
+}
+
+func root(s sparseArray) {
+	var p parser
+	_ = p.parseString()
+	_ = s.entry()
+}
+"#,
+        )
+        .unwrap();
+        let parsed = vec![("pkg.go", file)];
+        let roots = HashSet::from(["root".to_string()]);
+
+        let reachable = reachable_package_names(&parsed, &roots);
+
+        assert!(reachable.contains("parser::parseString"), "{reachable:?}");
+        assert!(reachable.contains("sparseArray::entry"), "{reachable:?}");
     }
 
     #[test]
