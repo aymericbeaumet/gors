@@ -1,7 +1,5 @@
 package main
 
-import "fmt"
-
 type Bag struct {
 	values []int
 }
@@ -35,5 +33,16 @@ func main() {
 	}
 	ordered := []int{next(1), next(2), next(3)}
 	result := (bag.At(0) + values[0]*mapping["x"]) == 9
-	fmt.Println(result, text, ok, converted, variadic(1, 2, 3), double(values[1]), bitCleared, ordered[0], ordered[1], ordered[2], order[0], order[1], order[2])
+	if !result || text != "value" || !ok || converted != "go" {
+		panic("basic expression result changed")
+	}
+	if variadic(1, 2, 3) != 6 || double(values[1]) != 6 || bitCleared != 8 {
+		panic("call or arithmetic expression changed")
+	}
+	if ordered[0] != 1 || ordered[1] != 2 || ordered[2] != 3 {
+		panic("composite literal evaluation order changed")
+	}
+	if order[0] != 1 || order[1] != 2 || order[2] != 3 {
+		panic("call evaluation order changed")
+	}
 }

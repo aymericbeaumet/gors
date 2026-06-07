@@ -1,7 +1,5 @@
 package main
 
-import "fmt"
-
 func main() {
 	sendCh := make(chan int, 1)
 	sendResult := 0
@@ -73,5 +71,16 @@ func main() {
 		drainedValue = -2
 	}
 
-	fmt.Println(sendResult, defaultSend, recvResult, defaultRecv, closedValue, closedOK, bufferedValue, bufferedOK, drainedValue, drainedOK)
+	if sendResult != 4 || defaultSend != 9 {
+		panic("select send behavior changed")
+	}
+	if recvResult != 5 || defaultRecv != 7 {
+		panic("select receive behavior changed")
+	}
+	if closedValue != 0 || closedOK {
+		panic("closed channel select behavior changed")
+	}
+	if bufferedValue != 11 || !bufferedOK || drainedValue != 0 || drainedOK {
+		panic("buffered closed channel select changed")
+	}
 }
