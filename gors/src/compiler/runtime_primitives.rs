@@ -12,7 +12,7 @@ pub(super) fn inject_post_prune_helpers(modules: &mut BTreeMap<String, CompiledM
         let changed = match module.mod_name.as_str() {
             reflect::MODULE => reflect::replace_value_module(module),
             os::MODULE => os::inject_stdout(module),
-            sync::MODULE => sync::replace_pool_module(module),
+            sync::MODULE => sync::replace_module(module),
             sync_atomic::MODULE => sync_atomic::replace_module(module),
             _ => false,
         };
@@ -138,7 +138,7 @@ mod tests {
             },
         );
 
-        assert!(sync::replace_pool_module(&mut module));
+        assert!(sync::replace_module(&mut module));
         let source = prettyplease::unparse(&module.file);
 
         assert!(source.contains("pub struct Pool"), "{source}");
@@ -147,6 +147,37 @@ mod tests {
         assert!(source.contains("#[allow(dead_code)]"), "{source}");
         assert!(source.contains("pub struct Mutex"), "{source}");
         assert!(source.contains("pub fn Lock"), "{source}");
+    }
+
+    #[test]
+    fn sync_map_replacement_is_scoped_to_map_modules() {
+        let mut module = stdlib_module(
+            "sync",
+            syn::parse_quote! {
+                pub struct Map;
+                pub struct Mutex;
+                pub struct noCopy;
+                impl Map {
+                    pub fn old(&self) {}
+                }
+                impl Mutex {
+                    pub fn Lock(&self) {}
+                }
+            },
+        );
+
+        assert!(sync::replace_module(&mut module));
+        let source = prettyplease::unparse(&module.file);
+
+        assert!(source.contains("pub struct Map"), "{source}");
+        assert!(source.contains("pub fn Load"), "{source}");
+        assert!(source.contains("pub fn Store"), "{source}");
+        assert!(source.contains("pub fn Range"), "{source}");
+        assert!(!source.contains("pub fn old"), "{source}");
+        assert!(source.contains("#[allow(dead_code)]"), "{source}");
+        assert!(source.contains("pub struct Mutex"), "{source}");
+        assert!(source.contains("pub fn Lock"), "{source}");
+        assert!(source.contains("pub struct noCopy"), "{source}");
     }
 
     #[test]
