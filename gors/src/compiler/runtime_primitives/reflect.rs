@@ -1,5 +1,4 @@
 use super::{CompiledModule, module_has_struct, prune_replaced_items};
-use crate::compiler::syn_inspect::type_mentions_name;
 use crate::reflect_names;
 use std::collections::{BTreeMap, HashSet};
 
@@ -13,13 +12,7 @@ pub(super) fn replace_value_module(module: &mut CompiledModule) -> bool {
         reflect_names::VALUE_TYPE.to_string(),
         reflect_names::MAP_ITER_TYPE.to_string(),
     ]);
-    let signature_names = HashSet::from([reflect_names::VALUE_TYPE.to_string()]);
     prune_replaced_items(module, &replaced_names, &replaced_names);
-    prune_impl_items_with_signature_mentions_type(module, &signature_names);
-    module
-        .file
-        .items
-        .retain(|item| !fn_signature_mentions_type(item, &signature_names));
     module.file.items.extend(value_module_file().items);
     module.file.items.extend(value_method_items(module));
     module.file.items.extend(map_iter_module_file().items);
@@ -200,37 +193,4 @@ fn module_has_trait(module: &CompiledModule, name: &str) -> bool {
         .items
         .iter()
         .any(|item| matches!(item, syn::Item::Trait(item_trait) if item_trait.ident == name))
-}
-
-fn fn_signature_mentions_type(item: &syn::Item, names: &HashSet<String>) -> bool {
-    let syn::Item::Fn(func) = item else {
-        return false;
-    };
-    signature_mentions_type(&func.sig, names)
-}
-
-fn prune_impl_items_with_signature_mentions_type(
-    module: &mut CompiledModule,
-    names: &HashSet<String>,
-) {
-    for item in &mut module.file.items {
-        let syn::Item::Impl(item_impl) = item else {
-            continue;
-        };
-        item_impl.items.retain(|impl_item| match impl_item {
-            syn::ImplItem::Fn(func) => !signature_mentions_type(&func.sig, names),
-            _ => true,
-        });
-    }
-    module.file.items.retain(|item| match item {
-        syn::Item::Impl(item_impl) => !item_impl.items.is_empty(),
-        _ => true,
-    });
-}
-
-fn signature_mentions_type(sig: &syn::Signature, names: &HashSet<String>) -> bool {
-    sig.inputs.iter().any(|input| match input {
-        syn::FnArg::Receiver(receiver) => type_mentions_name(&receiver.ty, names),
-        syn::FnArg::Typed(pat_type) => type_mentions_name(&pat_type.ty, names),
-    }) || matches!(&sig.output, syn::ReturnType::Type(_, ty) if type_mentions_name(ty, names))
 }

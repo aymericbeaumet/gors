@@ -261,7 +261,15 @@ mod tests {
                     Value
                 }
                 pub fn ValueOf(value: Box<dyn std::any::Any>) -> Value {
+                    let _ = value;
                     Value
+                }
+                fn deepValueEqual(v1: Value, v2: Value) -> bool {
+                    let _ = (v1, v2);
+                    true
+                }
+                pub fn DeepEqual(x: Box<dyn std::any::Any>, y: Box<dyn std::any::Any>) -> bool {
+                    deepValueEqual(ValueOf(x), ValueOf(y))
                 }
                 pub fn KeepKind() -> Kind {
                     Slice
@@ -285,8 +293,10 @@ mod tests {
         assert!(source.contains("pub struct Value"), "{source}");
         assert!(source.contains("pub fn IsValid"), "{source}");
         assert!(source.contains("pub fn Type"), "{source}");
-        assert!(!source.contains("pub fn copyVal"), "{source}");
-        assert!(!source.contains("pub fn ValueOf"), "{source}");
+        assert!(source.contains("pub fn copyVal"), "{source}");
+        assert!(source.contains("pub fn ValueOf"), "{source}");
+        assert!(source.contains("fn deepValueEqual"), "{source}");
+        assert!(source.contains("pub fn DeepEqual"), "{source}");
         assert!(!source.contains("pub fn old"), "{source}");
     }
 }

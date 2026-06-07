@@ -36113,6 +36113,76 @@ func main() {
     }
 
     #[test]
+    fn prune_generated_dead_code_keeps_reflect_deepequal_helpers() {
+        let mut modules = BTreeMap::from([
+            (
+                "__main__".to_string(),
+                super::CompiledModule {
+                    mod_name: "__main__".to_string(),
+                    import_path: "__main__".to_string(),
+                    file: syn::parse_quote! {
+                        pub fn main() {
+                            let _ = crate::reflect::DeepEqual(
+                                Box::new(()) as Box<dyn std::any::Any>,
+                                Box::new(()) as Box<dyn std::any::Any>,
+                            );
+                        }
+                    },
+                    filename: "main.rs".to_string(),
+                    content_hash: String::new(),
+                    is_main: true,
+                    is_stdlib: false,
+                },
+            ),
+            (
+                "reflect".to_string(),
+                super::CompiledModule {
+                    mod_name: "reflect".to_string(),
+                    import_path: "reflect".to_string(),
+                    file: syn::parse_quote! {
+                        pub type Kind = isize;
+                        pub struct Value;
+                        pub trait Type {
+                            fn String(&mut self) -> String;
+                        }
+                        #[derive(Default)]
+                        pub struct __GorsNoopType;
+                        impl Type for __GorsNoopType {
+                            fn String(&mut self) -> String {
+                                String::new()
+                            }
+                        }
+                        pub fn ValueOf(value: Box<dyn std::any::Any>) -> Value {
+                            let _ = value;
+                            Value
+                        }
+                        fn deepValueEqual(v1: Value, v2: Value) -> bool {
+                            let _ = (v1, v2);
+                            true
+                        }
+                        pub fn DeepEqual(x: Box<dyn std::any::Any>, y: Box<dyn std::any::Any>) -> bool {
+                            deepValueEqual(ValueOf(x), ValueOf(y))
+                        }
+                    },
+                    filename: "reflect.rs".to_string(),
+                    content_hash: String::new(),
+                    is_main: false,
+                    is_stdlib: true,
+                },
+            ),
+        ]);
+
+        super::prune_generated_dead_code(&mut modules, true);
+        super::inject_post_prune_stdlib_helpers(&mut modules, &["reflect".to_string()]);
+        super::prune_generated_dead_code(&mut modules, true);
+        let source = prettyplease::unparse(&modules.get("reflect").unwrap().file);
+
+        assert!(source.contains("pub fn DeepEqual"), "{source}");
+        assert!(source.contains("pub fn ValueOf"), "{source}");
+        assert!(source.contains("fn deepValueEqual"), "{source}");
+    }
+
+    #[test]
     fn prune_unused_struct_fields_keeps_reachable_root_struct_shape() {
         let file: syn::File = rust! {
             pub struct Block {

@@ -108,6 +108,52 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn reachable_refs_follow_private_field_method_helpers_to_external_roots() {
+        let file: syn::File = syn::parse_quote! {
+            pub struct Header;
+
+            pub struct Writer {
+                hdr: Header,
+            }
+
+            impl Header {
+                fn allowedFormats(&self) -> bool {
+                    crate::reflect::DeepEqual(
+                        Box::new(()) as Box<dyn std::any::Any>,
+                        Box::new(()) as Box<dyn std::any::Any>,
+                    )
+                }
+            }
+
+            impl Writer {
+                pub fn WriteHeader(mut tw: crate::builtin::GorsPtr<Self>) -> bool {
+                    (|| {
+                        ((((tw).lock().unwrap()).hdr).clone()).allowedFormats()
+                    })()
+                }
+            }
+        };
+        let roots = HashSet::from(["Writer".to_string(), "Writer::WriteHeader".to_string()]);
+        let module_names = HashSet::from(["reflect".to_string()]);
+
+        let reachable = reachable_stdlib_items(&file.items, &roots, &module_names);
+
+        assert!(
+            reachable.names.contains("Header::allowedFormats"),
+            "{:?}",
+            reachable.names
+        );
+        assert!(
+            reachable
+                .refs
+                .get("reflect")
+                .is_some_and(|refs| refs.contains("DeepEqual")),
+            "{:?}",
+            reachable.refs
+        );
+    }
+
     fn item_named(item: &syn::Item, expected: &str) -> bool {
         match item {
             syn::Item::Fn(func) => func.sig.ident == expected,
