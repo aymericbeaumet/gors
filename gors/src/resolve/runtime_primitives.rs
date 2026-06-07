@@ -74,6 +74,21 @@ mod tests {
     }
 
     #[test]
+    fn runtime_module_emits_stack_roots() {
+        let tokens = required_tokens_for(
+            "runtime",
+            &["Callers", "CallersFrames", "Frames", "Frames::Next"],
+        );
+
+        assert!(tokens.contains("pub fn Callers"), "{tokens}");
+        assert!(tokens.contains("pub fn CallersFrames"), "{tokens}");
+        assert!(tokens.contains("pub struct Frame"), "{tokens}");
+        assert!(tokens.contains("pub struct Frames"), "{tokens}");
+        assert!(tokens.contains("pub fn Next"), "{tokens}");
+        assert!(tokens.contains("Frame :: default"), "{tokens}");
+    }
+
+    #[test]
     fn reflectlite_value_roots_emit_value_contract_without_swapper() {
         let tokens = required_tokens_for("internal/reflectlite", &["ValueOf", "Value::Len"]);
 
@@ -134,6 +149,16 @@ mod tests {
     }
 
     #[test]
+    fn syscall_supplements_getuid_host_boundary() {
+        let tokens = supplemented_tokens_for("syscall", &["Getuid"], Vec::new());
+
+        assert!(tokens.contains("pub fn Getuid"), "{tokens}");
+        assert!(tokens.contains("unsafe extern"), "{tokens}");
+        assert!(tokens.contains("fn getuid"), "{tokens}");
+        assert!(!tokens.contains("fn write"), "{tokens}");
+    }
+
+    #[test]
     fn syscall_supplements_write_and_socklen_type_facts() {
         let mut env = TypeEnv::new();
         supplement_type_env("syscall", &mut env);
@@ -158,6 +183,8 @@ mod tests {
             env.get_func_params("write"),
             vec![GoType::Int, GoType::Slice(Box::new(GoType::Uint8))]
         );
+        assert_eq!(env.get_func_returns("Getuid"), vec![GoType::Int]);
+        assert_eq!(env.get_func_params("Getuid"), Vec::<GoType>::new());
     }
 
     #[test]

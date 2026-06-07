@@ -41,6 +41,8 @@ pub(super) fn supplement_type_env(env: &mut TypeEnv) {
     );
     env.set_func("Seek", vec![GoType::Int64, GoType::Error]);
     env.set_func_params("Seek", vec![GoType::Int, GoType::Int64, GoType::Int]);
+    env.set_func("Getuid", vec![GoType::Int]);
+    env.set_func_params("Getuid", Vec::new());
 }
 
 fn set_const(env: &mut TypeEnv, name: &str, ty: GoType, value: i128) {
@@ -159,6 +161,24 @@ pub(super) fn supplement_items(roots: Option<&HashSet<String>>, items: &mut Vec<
                     Box::new(crate::builtin::__GorsNooperror::default())
                         as Box<dyn crate::builtin::error>,
                 )
+            }
+        });
+    }
+    if roots.contains("Getuid") && !existing.contains("Getuid") {
+        items.push(syn::parse_quote! {
+            #[cfg(unix)]
+            #[allow(unsafe_code)]
+            pub fn Getuid() -> isize {
+                unsafe extern "C" {
+                    fn getuid() -> u32;
+                }
+                unsafe { getuid() as isize }
+            }
+        });
+        items.push(syn::parse_quote! {
+            #[cfg(not(unix))]
+            pub fn Getuid() -> isize {
+                -1
             }
         });
     }
