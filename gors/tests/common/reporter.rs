@@ -60,6 +60,10 @@ struct ReportCase {
     kind: String,
     status: ReportStatus,
     fixtures: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    fresh_fixtures: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    retained_fixtures: Vec<String>,
     reason: String,
 }
 
@@ -137,6 +141,8 @@ pub fn write_go_spec_conformance() -> Result<(), String> {
                         kind: "spec-test".to_string(),
                         status,
                         fixtures: case.fixtures.unwrap_or_default(),
+                        fresh_fixtures: Vec::new(),
+                        retained_fixtures: Vec::new(),
                         reason: case.reason.unwrap_or_default(),
                     }
                 })
@@ -182,6 +188,10 @@ pub fn write_go_stdlib_conformance(
         &symbols_by_package,
     )?;
     let discovered_fixture_names = collect_fixture_names(&fixture_root)?;
+    let fresh_passed_fixture_names = passed_fixture_names
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
     let passed_fixture_names = if retain_unattempted_fixture_names {
         merge_existing_passing_fixture_names(
             "go-stdlib-conformance.json",
@@ -209,6 +219,8 @@ pub fn write_go_stdlib_conformance(
                 .into_values()
                 .map(|symbol| {
                     let fixtures = symbol.fixtures.into_iter().collect::<Vec<_>>();
+                    let (fresh_fixtures, retained_fixtures) =
+                        partition_fixture_provenance(&fixtures, &fresh_passed_fixture_names);
                     let status = if fixtures.is_empty() {
                         ReportStatus::Unsupported
                     } else {
@@ -227,6 +239,8 @@ pub fn write_go_stdlib_conformance(
                         kind: symbol.kind,
                         status,
                         fixtures,
+                        fresh_fixtures,
+                        retained_fixtures,
                         reason,
                     }
                 })
@@ -285,6 +299,16 @@ fn collect_case_fixtures(cases: &[ReportCase]) -> Vec<String> {
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
+}
+
+fn partition_fixture_provenance(
+    fixtures: &[String],
+    fresh_passed_fixture_names: &BTreeSet<String>,
+) -> (Vec<String>, Vec<String>) {
+    fixtures
+        .iter()
+        .cloned()
+        .partition(|fixture| fresh_passed_fixture_names.contains(fixture))
 }
 
 fn summarize_groups(groups: &[ReportGroup]) -> ReportSummary {
@@ -985,6 +1009,7 @@ fn slug(value: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -1079,6 +1104,85 @@ func coverArchiveTarAPI() {
 
         assert!(fixtures_for(&symbols, "Format.String").is_empty());
         assert!(fixtures_for(&symbols, "Writer.WriteHeader").is_empty());
+    }
+
+    #[test]
+    fn fixture_provenance_partitions_fresh_and_retained_fixtures() {
+        let fixtures = vec![
+            "archive/tar".to_string(),
+            "bufio".to_string(),
+            "bytes".to_string(),
+        ];
+        let fresh = BTreeSet::from(["bufio".to_string(), "bytes".to_string()]);
+
+        let (fresh_fixtures, retained_fixtures) = partition_fixture_provenance(&fixtures, &fresh);
+
+        assert_eq!(
+            fresh_fixtures,
+            vec!["bufio".to_string(), "bytes".to_string()]
+        );
+        assert_eq!(retained_fixtures, vec!["archive/tar".to_string()]);
+    }
+
+    #[test]
+    fn report_case_deserializes_without_fixture_provenance() {
+        let json = r#"
+{
+  "schemaVersion": 1,
+  "kind": "go-stdlib",
+  "title": "Go Standard Library Conformance",
+  "source": {
+    "title": "The Go Standard Library",
+    "url": "",
+    "languageVersion": "go1.26.3",
+    "published": "",
+    "retrieved": ""
+  },
+  "summary": {
+    "groupCount": 1,
+    "passingGroupCount": 1,
+    "caseCount": 1,
+    "passingCaseCount": 1,
+    "unsupportedCaseCount": 0,
+    "fixtureCount": 1
+  },
+  "groups": [
+    {
+      "id": "archive/tar",
+      "title": "archive/tar",
+      "subtitle": "",
+      "fixtures": ["archive/tar"],
+      "summary": {
+        "groupCount": 0,
+        "passingGroupCount": 0,
+        "caseCount": 1,
+        "passingCaseCount": 1,
+        "unsupportedCaseCount": 0,
+        "fixtureCount": 0
+      },
+      "cases": [
+        {
+          "id": "archive/tar::Header",
+          "title": "Header",
+          "subtitle": "type",
+          "kind": "type",
+          "status": "passing",
+          "fixtures": ["archive/tar"],
+          "reason": ""
+        }
+      ]
+    }
+  ]
+}
+"#;
+
+        let report: ConformanceReport = serde_json::from_str(json).unwrap();
+        let group = report.groups.first().expect("report group");
+        let case = group.cases.first().expect("report case");
+
+        assert_eq!(case.fixtures, vec!["archive/tar"]);
+        assert!(case.fresh_fixtures.is_empty());
+        assert!(case.retained_fixtures.is_empty());
     }
 
     #[test]

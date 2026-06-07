@@ -921,6 +921,7 @@ fn is_reachability_name(name: &str) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 

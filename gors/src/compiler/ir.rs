@@ -516,7 +516,7 @@ pub fn call_func_key(fun: &ast::Expr<'_>, env: &TypeEnv) -> Option<String> {
 
                 if let Some(name) = env
                     .get_var(pkg_or_recv.name)
-                    .and_then(|ty| method_receiver_type_name(ty, env))
+                    .and_then(|ty| super::method_expressions::method_receiver_name(&ty, env))
                 {
                     return Some(format!("{}.{}", name, sel.sel.name));
                 }
@@ -7326,8 +7326,9 @@ fn type_method_expression_result_types(
     selector: &ast::SelectorExpr<'_>,
     env: &TypeEnv,
 ) -> Option<Vec<GoType>> {
-    let (receiver_name, _) = type_method_expression_receiver_type(&selector.x, env)?;
-    let method_key = format!("{}.{}", receiver_name, selector.sel.name);
+    let receiver =
+        super::method_expressions::receiver_for_method(&selector.x, selector.sel.name, env)?;
+    let method_key = format!("{}.{}", receiver.method_name, selector.sel.name);
     env.has_func(&method_key)
         .then(|| env.get_func_returns(&method_key))
 }
@@ -12553,8 +12554,11 @@ fn call_signature_for_selector(
     if selector_base_value_type(selector, env).is_some() {
         return None;
     }
+    if let Some(signature) = call_signature_for_type_method_expression(selector, env) {
+        return Some(signature);
+    }
     let ast::Expr::Ident(base) = selector.x.as_ref() else {
-        return call_signature_for_type_method_expression(selector, env);
+        return None;
     };
     let package_key = format!("{}.{}", base.name, selector.sel.name);
     if env.has_func(&package_key) {
@@ -12564,12 +12568,12 @@ fn call_signature_for_selector(
             variadic_start: env.get_func_variadic_start(&package_key),
         });
     }
-    call_signature_for_type_method_expression(selector, env)
+    None
 }
 
 fn selector_receiver_method_key(selector: &ast::SelectorExpr<'_>, env: &TypeEnv) -> Option<String> {
     let receiver_name = selector_base_value_type(selector, env)
-        .and_then(|ty| method_receiver_type_name(ty, env))?;
+        .and_then(|ty| super::method_expressions::method_receiver_name(&ty, env))?;
     env.get_method_func_key(&receiver_name, selector.sel.name)
 }
 
@@ -12579,6 +12583,9 @@ fn selector_base_value_type(selector: &ast::SelectorExpr<'_>, env: &TypeEnv) -> 
             .get_var(base.name)
             .or_else(|| env.get_top_level_var(base.name));
     }
+    if super::method_expressions::receiver(&selector.x, env).is_some() {
+        return None;
+    }
     let ty = GoType::infer_expr(&selector.x, env);
     (!matches!(ty, GoType::Unknown)).then_some(ty)
 }
@@ -12587,12 +12594,10 @@ fn call_signature_for_type_method_expression(
     selector: &ast::SelectorExpr<'_>,
     env: &TypeEnv,
 ) -> Option<CallSignature> {
-    let (receiver_name, receiver_type) = type_method_expression_receiver_type(&selector.x, env)?;
-    let method_key = format!("{}.{}", receiver_name, selector.sel.name);
-    if !env.has_func(&method_key) {
-        return None;
-    }
-    let mut params = vec![receiver_type];
+    let receiver =
+        super::method_expressions::receiver_for_method(&selector.x, selector.sel.name, env)?;
+    let method_key = format!("{}.{}", receiver.method_name, selector.sel.name);
+    let mut params = vec![receiver.go_type];
     params.extend(env.get_func_params(&method_key));
     Some(CallSignature {
         target: method_key.clone(),
@@ -12601,33 +12606,6 @@ fn call_signature_for_type_method_expression(
             .get_func_variadic_start(&method_key)
             .map(|start| start + 1),
     })
-}
-
-fn type_method_expression_receiver_type(
-    expr: &ast::Expr<'_>,
-    env: &TypeEnv,
-) -> Option<(String, GoType)> {
-    match unparen_expr(expr) {
-        ast::Expr::StarExpr(star) => {
-            let (name, _) = type_method_expression_receiver_type(&star.x, env)?;
-            Some((name.clone(), GoType::Pointer(Box::new(GoType::Named(name)))))
-        }
-        ast::Expr::Ident(ident) if env.get_type_kind(ident.name).is_some() => Some((
-            ident.name.to_string(),
-            GoType::Named(ident.name.to_string()),
-        )),
-        ast::Expr::IndexExpr(index) => type_method_expression_receiver_type(&index.x, env),
-        ast::Expr::IndexListExpr(index) => type_method_expression_receiver_type(&index.x, env),
-        _ => None,
-    }
-}
-
-fn method_receiver_type_name(ty: GoType, env: &TypeEnv) -> Option<String> {
-    match env.resolve_alias(&ty) {
-        GoType::Named(name) | GoType::Interface(name) => Some(name),
-        GoType::Pointer(inner) => method_receiver_type_name(*inner, env),
-        _ => None,
-    }
 }
 
 fn call_signature_from_inferred_type(
@@ -15637,7 +15615,7 @@ fn go_type_has_pointer_method(ty: &GoType, method: &str, env: &TypeEnv) -> bool 
                 return true;
             }
         }
-        GoType::Pointer(inner) => return go_type_has_pointer_method(&inner, method, env),
+        GoType::Pointer(inner) => return go_type_has_pointer_method(inner, method, env),
         _ => {}
     }
     match env.resolve_alias(ty) {

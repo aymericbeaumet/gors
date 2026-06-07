@@ -475,6 +475,12 @@ impl GoType {
                 }
             }
             ast::Expr::SelectorExpr(sel) => {
+                let base_is_declared_value =
+                    super::method_expressions::selector_base_is_declared_value(sel, env);
+                if !base_is_declared_value && let Some(func) = type_method_expression_func(sel, env)
+                {
+                    return func;
+                }
                 let base_type = GoType::infer_expr(&sel.x, env);
                 if !matches!(base_type, GoType::Unknown) {
                     let field_type =
@@ -487,13 +493,7 @@ impl GoType {
                         return method_type;
                     }
                 }
-                let base_is_value = matches!(
-                    sel.x.as_ref(),
-                    ast::Expr::Ident(id)
-                        if env.get_var(id.name).is_some()
-                            || env.get_top_level_var(id.name).is_some()
-                );
-                if base_is_value {
+                if base_is_declared_value {
                     return GoType::Unknown;
                 }
                 if let ast::Expr::Ident(id) = &*sel.x {
@@ -511,9 +511,6 @@ impl GoType {
                             variadic_start: env.get_func_variadic_start(&package_key),
                         };
                     }
-                }
-                if let Some(func) = type_method_expression_func(sel, env) {
-                    return func;
                 }
                 GoType::Unknown
             }
@@ -866,7 +863,7 @@ fn method_return_from_receiver_type(receiver_type: GoType, method: &str, env: &T
             if !matches!(direct, GoType::Unknown) {
                 return substitute_receiver_type_params(env, &name, &args, direct);
             }
-            match env.resolve_alias(&GoType::Named(name.clone())) {
+            match env.resolve_alias(&GoType::Named(name)) {
                 GoType::Named(alias_name) | GoType::Interface(alias_name) => {
                     let aliased = env.get_method_return(&alias_name, method);
                     substitute_receiver_type_params(env, &alias_name, &args, aliased)
@@ -928,7 +925,7 @@ fn method_func_from_receiver_type(receiver_type: GoType, method: &str, env: &Typ
                     variadic_start: env.get_method_variadic_start(&name, method),
                 };
             }
-            match env.resolve_alias(&GoType::Named(name.clone())) {
+            match env.resolve_alias(&GoType::Named(name)) {
                 GoType::Named(alias_name) | GoType::Interface(alias_name)
                     if env.has_method_func(&alias_name, method) =>
                 {
@@ -991,53 +988,10 @@ fn method_func_from_receiver_type(receiver_type: GoType, method: &str, env: &Typ
     }
 }
 
-fn type_method_receiver_method_name(receiver_type: &GoType, env: &TypeEnv) -> Option<String> {
-    match env.resolve_alias(receiver_type) {
-        GoType::Named(name) | GoType::Instantiated { name, .. } => Some(name),
-        GoType::Pointer(inner) => type_method_receiver_method_name(&inner, env),
-        _ => None,
-    }
-}
-
-fn type_method_expression_receiver_type(
-    expr: &ast::Expr,
-    method: &str,
-    env: &TypeEnv,
-) -> Option<GoType> {
-    let receiver = match unparen_expr(expr) {
-        ast::Expr::Ident(ident) => env
-            .get_type_kind(ident.name)
-            .is_some()
-            .then_some(GoType::Named(ident.name.to_string()))?,
-        ast::Expr::SelectorExpr(selector) => {
-            let ast::Expr::Ident(pkg) = selector.x.as_ref() else {
-                return None;
-            };
-            let name = format!("{}.{}", pkg.name, selector.sel.name);
-            env.get_type_kind(&name)
-                .is_some()
-                .then_some(GoType::Named(name))?
-        }
-        ast::Expr::StarExpr(star) => {
-            let inner = type_method_expression_receiver_type(&star.x, method, env)?;
-            GoType::Pointer(Box::new(inner))
-        }
-        ast::Expr::IndexExpr(index) => type_method_expression_receiver_type(&index.x, method, env)?,
-        ast::Expr::IndexListExpr(index) => {
-            type_method_expression_receiver_type(&index.x, method, env)?
-        }
-        _ => return None,
-    };
-    let receiver_name = type_method_receiver_method_name(&receiver, env)?;
-    env.has_func(&format!("{receiver_name}.{method}"))
-        .then_some(receiver)
-}
-
 fn type_method_expression_func(sel: &ast::SelectorExpr, env: &TypeEnv) -> Option<GoType> {
-    let receiver = type_method_expression_receiver_type(&sel.x, sel.sel.name, env)?;
-    let receiver_name = type_method_receiver_method_name(&receiver, env)?;
-    let method_key = format!("{}.{}", receiver_name, sel.sel.name);
-    let mut params = vec![receiver];
+    let receiver = super::method_expressions::receiver_for_method(&sel.x, sel.sel.name, env)?;
+    let method_key = format!("{}.{}", receiver.method_name, sel.sel.name);
+    let mut params = vec![receiver.go_type];
     params.extend(env.get_func_params(&method_key));
     Some(GoType::Func {
         params,
@@ -5154,6 +5108,83 @@ func (o *OffsetWriter) WriteAt(p []byte, off int64) (int, error) {
         assert_eq!(
             GoType::infer_expr(ret.results.first().expect("expected result"), &env),
             GoType::Uintptr
+        );
+    }
+
+    #[test]
+    fn infer_method_expression_function_type_includes_receiver_argument() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package p
+
+                type T struct{}
+                func (t T) M(x int) string { return "" }
+
+                func main() {
+                    _ = T.M
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+
+        let ast::Decl::FuncDecl(func) = file.decls.get(2).expect("expected function") else {
+            panic!("expected function declaration");
+        };
+        let body = func.body.as_ref().unwrap();
+        let ast::Stmt::AssignStmt(assign) = body.list.first().expect("expected assignment") else {
+            panic!("expected assignment");
+        };
+
+        assert_eq!(
+            GoType::infer_expr(assign.rhs.first().expect("expected rhs"), &env),
+            GoType::Func {
+                params: vec![GoType::Named("T".to_string()), GoType::Int],
+                results: vec![GoType::String],
+                variadic_start: None,
+            }
+        );
+    }
+
+    #[test]
+    fn infer_method_value_prefers_declared_value_over_type_name() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package p
+
+                type T interface {
+                    M(int) int
+                }
+
+                func use(v T) {
+                    T := v
+                    _ = T.M
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        env.set_var("T", GoType::Interface("T".to_string()));
+
+        let ast::Decl::FuncDecl(func) = file.decls.get(1).expect("expected function") else {
+            panic!("expected function declaration");
+        };
+        let body = func.body.as_ref().unwrap();
+        let ast::Stmt::AssignStmt(assign) = body.list.get(1).expect("expected assignment") else {
+            panic!("expected assignment");
+        };
+
+        assert_eq!(
+            GoType::infer_expr(assign.rhs.first().expect("expected rhs"), &env),
+            GoType::Func {
+                params: vec![GoType::Int],
+                results: vec![GoType::Int],
+                variadic_start: None,
+            }
         );
     }
 

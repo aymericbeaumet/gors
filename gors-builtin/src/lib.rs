@@ -130,6 +130,14 @@ where
     Box::new(Box::new(GorsComparableAny(value)) as Box<dyn GorsAnyComparable>) as Box<dyn Any>
 }
 
+pub fn box_any_comparable_send_sync<T>(value: T) -> Box<dyn Any + Send + Sync>
+where
+    T: Any + Clone + PartialEq + Send + Sync,
+{
+    Box::new(Box::new(GorsComparableAny(value)) as Box<dyn GorsAnyComparable>)
+        as Box<dyn Any + Send + Sync>
+}
+
 fn comparable_any(value: &dyn Any) -> Option<&dyn GorsAnyComparable> {
     value
         .downcast_ref::<Box<dyn GorsAnyComparable>>()
@@ -2682,7 +2690,7 @@ mod tests {
         assert_eq!(string_from_byte_seq(&bytes), "gors");
         assert_eq!(string_from_byte_seq(bytes.as_slice()), "gors");
 
-        let mut mutable = bytes.clone();
+        let mut mutable = bytes;
         let mutable_slice = mutable.as_mut_slice();
         assert_eq!(string_from_byte_seq(&mutable_slice), "gors");
     }

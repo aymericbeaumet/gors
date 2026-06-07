@@ -183,6 +183,23 @@ mod tests {
     }
 
     #[test]
+    fn primitive_fields_keep_copy_derivability() {
+        let field_type = ast::Expr::Ident(ast::Ident {
+            name_pos: crate::token::Position::default(),
+            name: "int",
+            obj: None,
+        });
+
+        let facts = FieldFacts::collect(&field_type, &typeinfer::GoType::Int, false, false, false);
+        let mut state = State::new();
+        state.record_field(facts);
+
+        assert!(state.can_derive_copy);
+        assert!(!state.cannot_derive_clone);
+        assert!(!state.cannot_derive_partial_eq);
+    }
+
+    #[test]
     fn borrowed_interface_fields_are_manual_cloneable() {
         let field_type = ast::Expr::Ident(ast::Ident {
             name_pos: crate::token::Position::default(),

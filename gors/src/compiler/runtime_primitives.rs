@@ -7,15 +7,78 @@ mod reflect;
 mod sync;
 mod sync_atomic;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrimitiveCategory {
+    CompilerIntrinsic,
+    GoRuntimeAbi,
+    HostResource,
+    LanguagePrimitive,
+}
+
+const PRIMITIVE_CATEGORIES: &[PrimitiveCategory] = &[
+    PrimitiveCategory::CompilerIntrinsic,
+    PrimitiveCategory::GoRuntimeAbi,
+    PrimitiveCategory::HostResource,
+    PrimitiveCategory::LanguagePrimitive,
+];
+
+struct PostPrunePrimitive {
+    module: &'static str,
+    category: PrimitiveCategory,
+    owned_symbols: &'static [&'static str],
+    inject: fn(&mut CompiledModule) -> bool,
+}
+
+impl PostPrunePrimitive {
+    fn inject(&self, module: &mut CompiledModule) -> bool {
+        debug_assert_eq!(module.mod_name, self.module);
+        debug_assert!(!self.owned_symbols.is_empty());
+        debug_assert!(PRIMITIVE_CATEGORIES.contains(&self.category));
+        (self.inject)(module)
+    }
+}
+
+const POST_PRUNE_PRIMITIVES: &[PostPrunePrimitive] = &[
+    PostPrunePrimitive {
+        module: reflect::MODULE,
+        category: PrimitiveCategory::CompilerIntrinsic,
+        owned_symbols: &["Value", "MapIter", "ValueOf", "DeepEqual"],
+        inject: reflect::replace_value_module,
+    },
+    PostPrunePrimitive {
+        module: os::MODULE,
+        category: PrimitiveCategory::HostResource,
+        owned_symbols: &["File", "Stdout", "File::Write"],
+        inject: os::inject_stdout,
+    },
+    PostPrunePrimitive {
+        module: sync::MODULE,
+        category: PrimitiveCategory::GoRuntimeAbi,
+        owned_symbols: &["Map", "Pool", "Map::*", "Pool::*"],
+        inject: sync::replace_module,
+    },
+    PostPrunePrimitive {
+        module: sync_atomic::MODULE,
+        category: PrimitiveCategory::GoRuntimeAbi,
+        owned_symbols: &[
+            "AddInt32",
+            "CompareAndSwapInt32",
+            "LoadUint32",
+            "StoreUint32",
+            "Int32",
+            "Pointer",
+            "Value",
+        ],
+        inject: sync_atomic::replace_module,
+    },
+];
+
 pub(super) fn inject_post_prune_helpers(modules: &mut BTreeMap<String, CompiledModule>) {
     for module in modules.values_mut().filter(|module| module.is_stdlib) {
-        let changed = match module.mod_name.as_str() {
-            reflect::MODULE => reflect::replace_value_module(module),
-            os::MODULE => os::inject_stdout(module),
-            sync::MODULE => sync::replace_module(module),
-            sync_atomic::MODULE => sync_atomic::replace_module(module),
-            _ => false,
-        };
+        let changed = POST_PRUNE_PRIMITIVES
+            .iter()
+            .find(|primitive| primitive.module == module.mod_name)
+            .is_some_and(|primitive| primitive.inject(module));
         if changed {
             module.content_hash.clear();
         }
@@ -86,6 +149,32 @@ mod tests {
     }
 
     #[test]
+    fn post_prune_primitives_declare_boundaries() {
+        let modules = POST_PRUNE_PRIMITIVES
+            .iter()
+            .map(|primitive| primitive.module)
+            .collect::<HashSet<_>>();
+
+        assert_eq!(
+            modules,
+            HashSet::from([
+                reflect::MODULE,
+                os::MODULE,
+                sync::MODULE,
+                sync_atomic::MODULE
+            ])
+        );
+        for primitive in POST_PRUNE_PRIMITIVES {
+            assert!(PRIMITIVE_CATEGORIES.contains(&primitive.category));
+            assert!(
+                !primitive.owned_symbols.is_empty(),
+                "{} helper must declare owned symbols",
+                primitive.module
+            );
+        }
+    }
+
+    #[test]
     fn os_stdout_helper_preserves_unrelated_items() {
         let mut module = stdlib_module(
             "os",
@@ -109,7 +198,13 @@ mod tests {
             source.contains("LazyLock<crate::builtin::GorsPtr<File>>"),
             "{source}"
         );
-        assert!(source.contains("pub fn Write"), "{source}");
+        let compact_source: String = source.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            compact_source.contains("pubfnWrite(")
+                && compact_source.contains("mutfile:crate::builtin::GorsPtr<Self>")
+                && compact_source.contains("b:Vec<u8>"),
+            "{source}"
+        );
         assert!(source.contains("#[allow(dead_code)]"), "{source}");
         assert!(
             source.contains("impl crate::io::Writer for File"),

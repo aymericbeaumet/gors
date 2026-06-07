@@ -31,6 +31,8 @@ interface ConformanceCase {
 	readonly kind: string;
 	readonly status: ConformanceStatus;
 	readonly fixtures: readonly string[];
+	readonly freshFixtures?: readonly string[];
+	readonly retainedFixtures?: readonly string[];
 	readonly reason: string;
 }
 
@@ -81,8 +83,36 @@ const reportViews: readonly {
 	},
 ];
 
+type CoverageMode = "fresh" | "mixed" | "retained" | "unsupported";
+
+function freshFixtures(symbol: ConformanceCase): readonly string[] {
+	return symbol.freshFixtures ?? [];
+}
+
+function retainedFixtures(symbol: ConformanceCase): readonly string[] {
+	return symbol.retainedFixtures ?? [];
+}
+
+function coverageMode(symbol: ConformanceCase): CoverageMode {
+	if (symbol.status !== "passing") return "unsupported";
+	const fresh = freshFixtures(symbol);
+	const retained = retainedFixtures(symbol);
+	if (retained.length > 0 && fresh.length === 0) return "retained";
+	if (retained.length > 0) return "mixed";
+	return "fresh";
+}
+
 function symbolCoverageTitle(symbol: ConformanceCase): string {
 	if (symbol.status !== "passing") return `${symbol.kind}; not covered`;
+	const fresh = freshFixtures(symbol);
+	const retained = retainedFixtures(symbol);
+	if (fresh.length > 0 && retained.length > 0) {
+		return `${symbol.kind}; covered by current run ${fresh.join(", ")}; retained from prior run ${retained.join(", ")}`;
+	}
+	if (retained.length > 0)
+		return `${symbol.kind}; retained from prior run ${retained.join(", ")}`;
+	if (fresh.length > 0)
+		return `${symbol.kind}; covered by current run ${fresh.join(", ")}`;
 	if (symbol.fixtures.length === 0) return `${symbol.kind}; covered`;
 	return `${symbol.kind}; covered by ${symbol.fixtures.join(", ")}`;
 }
@@ -100,12 +130,36 @@ function fixtureGithubUrl(
 	return `${FIXTURE_GITHUB_BASE}/${fixtureSet}/${fixture}`;
 }
 
-function statusLabel(status: ConformanceStatus): string {
-	return status === "passing" ? "Covered" : "Uncovered";
+function statusLabel(item: ConformanceCase): string {
+	switch (coverageMode(item)) {
+		case "fresh":
+			return "Covered";
+		case "mixed":
+			return "Mixed";
+		case "retained":
+			return "Retained";
+		case "unsupported":
+			return "Uncovered";
+	}
 }
 
-function statusClass(status: ConformanceStatus): string {
-	return status === "passing" ? "tested" : "none";
+function statusClass(item: ConformanceCase): string {
+	switch (coverageMode(item)) {
+		case "fresh":
+			return "tested";
+		case "mixed":
+		case "retained":
+			return "partial";
+		case "unsupported":
+			return "none";
+	}
+}
+
+function fixtureClass(item: ConformanceCase, fixture: string): string {
+	return retainedFixtures(item).includes(fixture) &&
+		!freshFixtures(item).includes(fixture)
+		? "retained"
+		: "fresh";
 }
 
 function coveragePercent(tested: number, total: number): string {
@@ -157,7 +211,7 @@ function languageVersionLabel(languageVersion: string): string {
               </div>
               <div class="spec-group-cases stdlib-symbols-cell" aria-label={`${group.title} ${view.caseColumn.toLowerCase()} coverage`}>
                 {#each group.cases as item}
-                  <div class={`spec-test stdlib-symbol ${statusClass(item.status)}`} title={symbolCoverageTitle(item)}>
+                  <div class={`spec-test stdlib-symbol ${statusClass(item)}`} title={symbolCoverageTitle(item)}>
                     <div class="spec-test-main">
                       <strong>{item.title}</strong>
                       <span>{item.subtitle || item.kind}</span>
@@ -168,14 +222,14 @@ function languageVersionLabel(languageVersion: string): string {
                         <div class="fixture-cell">
                           {#each item.fixtures as fixture}
                             <a href={fixtureGithubUrl(view.fixtureSet, fixture)} target="_blank" rel="noopener">
-                              <code>{fixture}</code>
+                              <code class={fixtureClass(item, fixture)}>{fixture}</code>
                             </a>
                           {/each}
                         </div>
                       {/if}
                     </div>
-                    <span class={`spec-status ${statusClass(item.status)}`}>
-                      {statusLabel(item.status)}
+                    <span class={`spec-status ${statusClass(item)}`}>
+                      {statusLabel(item)}
                     </span>
                   </div>
                 {/each}
@@ -439,6 +493,12 @@ function languageVersionLabel(languageVersion: string): string {
 
   .fixture-cell code {
     color: #8250df;
+  }
+
+  .fixture-cell code.retained {
+    border-color: #d4a72c;
+    background: #fff8c5;
+    color: #9a6700;
   }
 
   .spec-list {

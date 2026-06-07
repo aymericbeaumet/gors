@@ -529,8 +529,7 @@ fn merge_imported_receiver_facts_for_top_level_vars(
             let Some(package_facts) = imported_type_envs.get(import_path) else {
                 continue;
             };
-            let Some(local_name) =
-                import_type_env_local_name(&import, package_facts.package_name())
+            let Some(local_name) = import_type_env_local_name(import, package_facts.package_name())
             else {
                 continue;
             };
@@ -3141,6 +3140,7 @@ fn is_rust_keyword(value: &str) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::compiler::typeinfer::{GoType, TypeKind};

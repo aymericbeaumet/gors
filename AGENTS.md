@@ -389,6 +389,14 @@ gors-builtin/
   `GoType::Func` with the receiver inserted as the first parameter and lower to
   shared function cells through expected-type expression lowering; keep that
   receiver-aware inference distinct from imported package function selectors.
+  Shared method-expression receiver classification lives in
+  `gors/src/compiler/method_expressions.rs`; type inference, IR call ABI, and
+  backend lowering must consume that boundary instead of carrying parallel
+  receiver-name/type-argument/pointer-shape classifiers. Backend lowering still
+  distinguishes the method-expression receiver argument type from the declared
+  method receiver shape, so `(*T).ValueMethod` accepts a pointer receiver
+  argument while borrowing the pointee for the generated Rust value-receiver
+  call.
 - Method values (`v.M`) infer to generated function-value cells. The backend
   lowers them as closures that bind the receiver once; pointer receiver values
   capture the generated pointer cell and lock it per invocation.
@@ -1194,7 +1202,10 @@ definitions cannot define directly from any in-scope type parameter, while a
 generic alias cannot alias a type parameter declared by that same alias
 declaration.
 Single-file and multi-package compile entrypoints run the same IR validation
-helper before Rust AST lowering.
+helper before Rust AST lowering. Validation dispatch and source-level semantic
+facts are owned by `gors/src/compiler/semantic.rs`; keep `compiler/mod.rs`
+focused on orchestration and diagnostic wording rather than reopening the
+ordered IR validation checklist there.
 The same IR validation layer rejects duplicate non-blank struct field names,
 duplicate methods for a receiver base type, and method names that collide with
 fields on the same struct base type before Rust emission.

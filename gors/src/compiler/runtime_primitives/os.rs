@@ -49,7 +49,14 @@ pub(super) fn inject_stdout(module: &mut CompiledModule) -> bool {
                     }
                 }
 
-                pub fn Write(&mut self, b: Vec<u8>) -> (isize, Box<dyn crate::builtin::error>) {
+                pub fn Write(
+                    mut file: crate::builtin::GorsPtr<Self>,
+                    b: Vec<u8>,
+                ) -> (isize, Box<dyn crate::builtin::error>) {
+                    let _file = match file.lock() {
+                        Ok(file) => file,
+                        Err(err) => crate::builtin::panic_value(err),
+                    };
                     File::write_stdout(b)
                 }
             }
@@ -69,7 +76,7 @@ pub(super) fn inject_stdout(module: &mut CompiledModule) -> bool {
                 }
 
                 fn Write(&mut self, b: &mut [u8]) -> (isize, Box<dyn crate::builtin::error>) {
-                    File::Write(self, b.to_vec())
+                    File::write_stdout(b.to_vec())
                 }
             }
         },
