@@ -37592,6 +37592,64 @@ func main() {
     }
 
     #[test]
+    fn prune_items_to_roots_retains_hook_only_reachable_trait_impls() {
+        let mut file: syn::File = syn::parse_quote! {
+            pub trait Namer {
+                fn Label(&mut self) -> String;
+            }
+
+            pub trait Detailer {
+                fn Detail(&mut self) -> String;
+            }
+
+            pub trait Describer: Namer + Detailer {
+                fn __gors_as_any(&self) -> Option<&dyn std::any::Any>;
+                fn __gors_clone_box(&self) -> Box<dyn Describer>;
+                fn __gors_interface_key(&self) -> crate::builtin::GorsInterfaceKey;
+            }
+
+            pub struct Counter;
+
+            impl Namer for Counter {
+                fn Label(&mut self) -> String {
+                    "counter".to_string()
+                }
+            }
+
+            impl Detailer for Counter {
+                fn Detail(&mut self) -> String {
+                    "detail".to_string()
+                }
+            }
+
+            impl Describer for Counter {
+                fn __gors_as_any(&self) -> Option<&dyn std::any::Any> {
+                    Some(self)
+                }
+
+                fn __gors_clone_box(&self) -> Box<dyn Describer> {
+                    Box::new(self.clone()) as Box<dyn Describer>
+                }
+
+                fn __gors_interface_key(&self) -> crate::builtin::GorsInterfaceKey {
+                    crate::builtin::GorsInterfaceKey::non_comparable()
+                }
+            }
+
+            pub fn root() {
+                let _ = Box::new(Counter) as Box<dyn Describer>;
+            }
+        };
+        let roots = std::collections::HashSet::from(["root".to_string()]);
+        let module_names = std::collections::HashSet::new();
+
+        super::prune_items_to_roots(&mut file.items, &roots, &module_names);
+        let source = quote! { #file }.to_string();
+
+        assert!(source.contains("impl Describer for Counter"), "{source}");
+    }
+
+    #[test]
     fn prune_items_to_roots_does_not_retain_display_impls_from_self_type_only() {
         let mut file: syn::File = syn::parse_quote! {
             pub struct Timer;

@@ -99,6 +99,7 @@ pub(super) fn reachable_item_for_names(
                 impl_item_name_reachable(&self_names, &member_name, names)
             })
         });
+        let hook_only_impl = impl_items_are_only_runtime_hooks(&item_impl.items);
         let self_only_names = self_names
             .iter()
             .cloned()
@@ -121,6 +122,7 @@ pub(super) fn reachable_item_for_names(
             || external_local_impl_reachable
             || (trait_reachable && is_ambient_trait_name(&trait_name))
             || (trait_reachable && item_impl.items.is_empty())
+            || (trait_reachable && self_reachable && hook_only_impl)
             || (self_reachable && is_runtime_support_trait_name(&trait_name))
             || (trait_reachable && is_generated_box_trait_impl(&item_impl.self_ty))
             || (trait_reachable
@@ -168,6 +170,15 @@ pub(super) fn reachable_item_for_names(
     });
 
     (!filtered.items.is_empty()).then(|| syn::Item::Impl(filtered))
+}
+
+fn impl_items_are_only_runtime_hooks(items: &[syn::ImplItem]) -> bool {
+    !items.is_empty()
+        && items.iter().all(|item| {
+            impl_item_member_name(item)
+                .as_deref()
+                .is_some_and(super::interface_hooks::is_runtime_hook)
+        })
 }
 
 fn impl_item_member_name(item: &syn::ImplItem) -> Option<String> {

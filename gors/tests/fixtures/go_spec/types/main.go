@@ -1,7 +1,5 @@
 package main
 
-import "fmt"
-
 type Counter struct {
 	Embedded
 	Value int
@@ -133,5 +131,46 @@ func main() {
 	var nilChan chan int
 	var nilFunc func() int
 	var nilInterface interface{}
-	fmt.Println(booleans, integer, float, real(complexValue), imag(complexValue), text[0], len(slice), structValue.Name, Name(structValue), Describe(Counter{Embedded: Embedded{Name: "detail"}, Value: 1}), <-channel, ReceiveOnly(receiveDirectional), node.Children[0].Value, wrapper.Code, wrapper.TaggedEmbedded.Code, wrapper.Label, shadow.Value, shadow.ShadowEmbedded.Value, assertedAdderOK, assertedAdder.Sum(), typeSwitchTotal, AddOne(&accumulator), accumulator.Total, function(3), nilPointer == nil, nilSlice == nil, nilMap == nil, nilChan == nil, nilFunc == nil, nilInterface == nil)
+	if !booleans || integer != 6 || float != 3.0 {
+		panic("basic types changed")
+	}
+	if real(complexValue) != 1 || imag(complexValue) != 2 || text[0] != 'g' {
+		panic("complex or string value changed")
+	}
+	if len(slice) != 4 || structValue.Name != "score" {
+		panic("slice or embedded field changed")
+	}
+	if Name(structValue) != "counter" {
+		panic("interface value method changed")
+	}
+	if Describe(Counter{Embedded: Embedded{Name: "detail"}, Value: 1}) != "counter:detail" {
+		panic("embedded interface changed")
+	}
+	if <-channel != 42 || ReceiveOnly(receiveDirectional) != 8 {
+		panic("channel type changed")
+	}
+	if node.Children[0].Value != 2 {
+		panic("recursive type changed")
+	}
+	if wrapper.Code != 9 || wrapper.TaggedEmbedded.Code != 9 || wrapper.Label != "tagged" {
+		panic("tagged embedded pointer changed")
+	}
+	if shadow.Value != 2 || shadow.ShadowEmbedded.Value != 1 {
+		panic("shadowed embedded field changed")
+	}
+	if !assertedAdderOK || assertedAdder.Sum() != 9 || typeSwitchTotal != 9 {
+		panic("interface assertion changed")
+	}
+	if AddOne(&accumulator) != 10 || accumulator.Total != 10 {
+		panic("pointer interface mutation changed")
+	}
+	if function(3) != 5 {
+		panic("function literal changed")
+	}
+	if nilPointer != nil || nilSlice != nil || nilMap != nil || nilChan != nil {
+		panic("nil typed value changed")
+	}
+	if nilFunc != nil || nilInterface != nil {
+		panic("nil function or interface changed")
+	}
 }

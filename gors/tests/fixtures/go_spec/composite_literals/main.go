@@ -1,7 +1,5 @@
 package main
 
-import "fmt"
-
 type Point struct {
 	X int
 	Y int
@@ -22,19 +20,22 @@ func main() {
 	left := &Point{1, 2}
 	right := &Point{1, 2}
 
-	fmt.Println(
-		len(primes),
-		vowels['e'],
-		filter[0],
-		filter[4],
-		filter[5],
-		filter[9],
-		len(days),
-		days[1],
-		line.Points[1].Y,
-		table["next"].X,
-		pointers[0].Y,
-		pointers[1].X,
-		left != right,
-	)
+	if len(primes) != 5 || !vowels['e'] {
+		panic("slice or keyed array literal changed")
+	}
+	if filter[0] != -1 || filter[4] != -0.1 || filter[5] != -0.1 || filter[9] != -1 {
+		panic("indexed array literal changed")
+	}
+	if len(days) != 2 || days[1] != "Sun" {
+		panic("ellipsis array literal changed")
+	}
+	if line.Points[1].Y != 4 || table["next"].X != 5 {
+		panic("nested composite literal changed")
+	}
+	if pointers[0].Y != 8 || pointers[1].X != 0 {
+		panic("pointer composite literal changed")
+	}
+	if left == right {
+		panic("distinct composite literal pointers compared equal")
+	}
 }
