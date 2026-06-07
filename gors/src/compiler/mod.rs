@@ -15701,7 +15701,13 @@ fn compile_top_level_value_spec(
             let mut value = match init_ast {
                 Some(expr) => {
                     if let Some(go_type) = inferred_go_type.as_ref() {
-                        compile_expr_with_expected(expr, Some(go_type))
+                        if !matches!(go_type, typeinfer::GoType::Error)
+                            && go_type_interface_name(go_type).is_some()
+                        {
+                            compile_owned_interface_expr(expr, go_type)
+                        } else {
+                            compile_expr_with_expected(expr, Some(go_type))
+                        }
                     } else {
                         expr.into()
                     }
@@ -29718,6 +29724,64 @@ func (zeroReader) Read(b []byte) (int, error) {
     }
 
     #[test]
+    fn compile_program_multi_forwards_borrowed_slices_in_multi_arg_interface_impls() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/stream"
+
+func main() {
+	_ = stream.New()
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("stream/stream.go").as_path(),
+            r#"
+package stream
+
+type WriterAt interface {
+	WriteAt([]byte, int64) (int, error)
+}
+
+type OffsetWriter struct {
+	w WriterAt
+}
+
+func New() WriterAt {
+	return &OffsetWriter{}
+}
+
+func (o *OffsetWriter) WriteAt(p []byte, off int64) (int, error) {
+	return o.w.WriteAt(p, off)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let stream_rs = output.files.get("example__stream.rs").unwrap();
+        let compact: String = stream_rs.chars().filter(|c| !c.is_whitespace()).collect();
+
+        assert!(
+            compact.contains("implWriterAtforcrate::builtin::GorsPtr<OffsetWriter>"),
+            "{stream_rs}"
+        );
+        assert!(
+            compact.contains("OffsetWriter::WriteAt(self.clone(),p,off)")
+                || compact.contains("OffsetWriter::WriteAt(self.clone(),&mut*p,off)"),
+            "expected pointer interface impl to forward borrowed slice without cloning: {stream_rs}"
+        );
+        assert!(
+            !compact.contains("OffsetWriter::WriteAt(self.clone(),(p).to_vec(),off)"),
+            "expected no owned slice adapter for multi-arg borrowed slice impl: {stream_rs}"
+        );
+    }
+
+    #[test]
     fn compile_program_multi_forwards_embedded_interface_literals_to_expected_interface() {
         let tmp = tempfile::tempdir().unwrap();
         write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
@@ -32770,6 +32834,54 @@ var ErrValue error = &wrapError{msg: "boom"}
             !errpkg_rs.contains("impl crate::builtin::error for wrapError"),
             "{errpkg_rs}"
         );
+    }
+
+    #[test]
+    fn compile_program_multi_keeps_imported_interface_vars_owned_static_safe() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/sink"
+
+func main() {
+	_, _ = sink.Discard.Write([]byte("abc"))
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("sink/sink.go").as_path(),
+            r#"
+package sink
+
+type Writer interface {
+	Write([]byte) (int, error)
+}
+
+type discard struct{}
+
+func (discard) Write(p []byte) (int, error) {
+	return len(p), nil
+}
+
+var Discard Writer = discard{}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let sink_rs = output.files.get("example__sink.rs").unwrap();
+        assert!(
+            sink_rs.contains("pub static Discard: std::sync::LazyLock<Box<dyn Writer>>"),
+            "{sink_rs}"
+        );
+        assert!(
+            sink_rs.contains("Box::new(discard::default()) as Box<dyn Writer>"),
+            "{sink_rs}"
+        );
+        assert!(!sink_rs.contains("Box::leak"), "{sink_rs}");
     }
 
     #[test]

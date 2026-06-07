@@ -2671,7 +2671,11 @@ fn stmt_mutates_slice_param(stmt: &ast::Stmt, name: &str, env: &TypeEnv) -> bool
                     .iter()
                     .any(|stmt| stmt_mutates_slice_param(stmt, name, env))
         }
-        ast::Stmt::BranchStmt(_) | ast::Stmt::EmptyStmt(_) | ast::Stmt::ReturnStmt(_) => false,
+        ast::Stmt::ReturnStmt(ret) => ret
+            .results
+            .iter()
+            .any(|expr| expr_mutates_slice_param(expr, name, env)),
+        ast::Stmt::BranchStmt(_) | ast::Stmt::EmptyStmt(_) => false,
     }
 }
 
@@ -4661,7 +4665,7 @@ mod tests {
         let file = parse_file(
             "test.go",
             r#"
-                package p
+package p
 
                 type Reader interface {
                     Read([]byte) (int, error)
@@ -4687,6 +4691,33 @@ mod tests {
         env.scan_file(&file);
 
         assert!(env.func_param_needs_borrowed_slice("holder.Read", 0));
+    }
+
+    #[test]
+    fn refresh_borrowed_slice_params_follows_forwarded_interface_field_calls() {
+        let file = parse_file(
+            "test.go",
+            r#"
+package p
+
+type WriterAt interface {
+	WriteAt([]byte, int64) (int, error)
+}
+
+type OffsetWriter struct {
+	w WriterAt
+}
+
+func (o *OffsetWriter) WriteAt(p []byte, off int64) (int, error) {
+	return o.w.WriteAt(p, off)
+}
+"#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+
+        assert!(env.func_param_needs_borrowed_slice("OffsetWriter.WriteAt", 0));
     }
 
     #[test]
