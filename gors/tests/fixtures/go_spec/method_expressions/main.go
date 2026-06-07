@@ -1,7 +1,5 @@
 package main
 
-import "fmt"
-
 type Counter struct {
 	Value int
 }
@@ -15,6 +13,17 @@ func (c *Counter) Inc(delta int) int {
 	return c.Value
 }
 
+func fail() {
+	zero := len("")
+	_ = 1 / zero
+}
+
+func check(got int, want int) {
+	if got != want {
+		fail()
+	}
+}
+
 func main() {
 	valueReceiver := Counter.Add
 	parenthesized := (Counter).Add
@@ -23,12 +32,10 @@ func main() {
 	counter := Counter{Value: 3}
 	pointer := &Counter{Value: 10}
 
-	fmt.Println(
-		valueReceiver(counter, 4),
-		parenthesized(counter, 5),
-		pointerReceiver(pointer, 2),
-		pointer.Value,
-		pointerToValueReceiver(pointer, 6),
-		pointer.Value,
-	)
+	check(valueReceiver(counter, 4), 7)
+	check(parenthesized(counter, 5), 8)
+	check(pointerReceiver(pointer, 2), 12)
+	check(pointer.Value, 12)
+	check(pointerToValueReceiver(pointer, 6), 18)
+	check(pointer.Value, 12)
 }
