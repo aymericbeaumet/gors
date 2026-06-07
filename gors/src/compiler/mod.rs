@@ -8238,7 +8238,11 @@ fn compile_method(
     });
     if !recv_name.is_empty() {
         TYPE_ENV.with(|env| {
-            env.borrow_mut().set_var(&recv_name, recv_go_type);
+            let mut env = env.borrow_mut();
+            env.set_var(&recv_name, recv_go_type.clone());
+            if recv_source_name != recv_name {
+                env.set_var(recv_source_name, recv_go_type);
+            }
         });
     }
     let value_receiver_needs_cell = !is_pointer
@@ -37187,6 +37191,40 @@ func main() {
         assert!(
             !compact.contains("__gors_index_base[(__gors_index)asusize]"),
             "expected no generated-Rust postpass recast around the index temporary: {output}"
+        );
+    }
+
+    #[test]
+    fn pointer_array_receiver_index_uses_original_go_receiver_name_for_type_facts() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type asciiSet [8]uint32
+
+                func (as *asciiSet) contains(c byte) bool {
+                    return as[c/32] != 0
+                }
+
+                func main() {
+                    var s asciiSet
+                    _ = s.contains(0)
+                }
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+        let compact: String = output.chars().filter(|c| !c.is_whitespace()).collect();
+
+        assert!(
+            compact.contains("let__gors_index_base=(as_).lock().unwrap();"),
+            "expected pointer receiver array indexing to lock the pointer cell: {output}"
+        );
+        assert!(
+            !compact.contains("let__gors_index_base=&as_;"),
+            "expected pointer receiver array indexing not to index the pointer cell: {output}"
         );
     }
 
