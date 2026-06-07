@@ -392,7 +392,12 @@ gors-builtin/
   Shared method-expression receiver classification lives in
   `gors/src/compiler/method_expressions.rs`; type inference, IR call ABI, and
   backend lowering must consume that boundary instead of carrying parallel
-  receiver-name/type-argument/pointer-shape classifiers. Backend lowering still
+  receiver-name/type-argument/pointer-shape classifiers. Shared TypeEnv-backed
+  selector facts such as declared selector-base values and qualified
+  package-member keys live in `gors/src/compiler/selector_semantics.rs`;
+  method-expression detection, type inference, and IR call/result planning
+  should consume those helpers instead of rebuilding selector value-vs-package
+  logic locally. Backend lowering still
   distinguishes the method-expression receiver argument type from the declared
   method receiver shape, so `(*T).ValueMethod` accepts a pointer receiver
   argument while borrowing the pointee for the generated Rust value-receiver

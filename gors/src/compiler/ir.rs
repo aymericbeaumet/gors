@@ -658,8 +658,7 @@ fn classify_selector_call_callee(selector: &ast::SelectorExpr<'_>, env: &TypeEnv
     {
         return CalleeKind::Method;
     }
-    if let ast::Expr::Ident(base) = selector.x.as_ref() {
-        let package_key = format!("{}.{}", base.name, selector.sel.name);
+    if let Some(package_key) = super::selector_semantics::qualified_member_key(selector) {
         if env.has_func(&package_key) {
             return CalleeKind::Function;
         }
@@ -7283,7 +7282,7 @@ fn call_result_count_for_fun(fun: &ast::Expr<'_>, env: &TypeEnv) -> Option<usize
             }
         }
         ast::Expr::SelectorExpr(sel) => {
-            if let ast::Expr::Ident(pkg_or_recv) = &*sel.x {
+            if let Some(package_key) = super::selector_semantics::qualified_member_key(sel) {
                 if let Some(method_key) = selector_receiver_method_key(sel, env)
                     && env.has_func(&method_key)
                 {
@@ -7295,7 +7294,6 @@ fn call_result_count_for_fun(fun: &ast::Expr<'_>, env: &TypeEnv) -> Option<usize
                         _ => None,
                     };
                 }
-                let package_key = format!("{}.{}", pkg_or_recv.name, sel.sel.name);
                 if env.has_func(&package_key) {
                     return Some(env.get_func_returns(&package_key).len());
                 }
@@ -7346,7 +7344,7 @@ fn call_result_types_for_fun(fun: &ast::Expr<'_>, env: &TypeEnv) -> Option<Vec<G
             }
         }
         ast::Expr::SelectorExpr(sel) => {
-            if let ast::Expr::Ident(pkg_or_recv) = &*sel.x {
+            if let Some(package_key) = super::selector_semantics::qualified_member_key(sel) {
                 if let Some(method_key) = selector_receiver_method_key(sel, env)
                     && env.has_func(&method_key)
                 {
@@ -7358,7 +7356,6 @@ fn call_result_types_for_fun(fun: &ast::Expr<'_>, env: &TypeEnv) -> Option<Vec<G
                         _ => None,
                     };
                 }
-                let package_key = format!("{}.{}", pkg_or_recv.name, sel.sel.name);
                 if env.has_func(&package_key) {
                     return Some(env.get_func_returns(&package_key));
                 }
@@ -12557,10 +12554,7 @@ fn call_signature_for_selector(
     if let Some(signature) = call_signature_for_type_method_expression(selector, env) {
         return Some(signature);
     }
-    let ast::Expr::Ident(base) = selector.x.as_ref() else {
-        return None;
-    };
-    let package_key = format!("{}.{}", base.name, selector.sel.name);
+    let package_key = super::selector_semantics::qualified_member_key(selector)?;
     if env.has_func(&package_key) {
         return Some(CallSignature {
             target: package_key.clone(),
@@ -12578,10 +12572,8 @@ fn selector_receiver_method_key(selector: &ast::SelectorExpr<'_>, env: &TypeEnv)
 }
 
 fn selector_base_value_type(selector: &ast::SelectorExpr<'_>, env: &TypeEnv) -> Option<GoType> {
-    if let ast::Expr::Ident(base) = selector.x.as_ref() {
-        return env
-            .get_var(base.name)
-            .or_else(|| env.get_top_level_var(base.name));
+    if let Some(ty) = super::selector_semantics::selector_base_declared_value_type(selector, env) {
+        return Some(ty);
     }
     if super::method_expressions::receiver(&selector.x, env).is_some() {
         return None;

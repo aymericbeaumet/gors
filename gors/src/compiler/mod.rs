@@ -64,6 +64,7 @@ mod reflect_slice_any;
 mod required_module_roots;
 mod return_context;
 mod runtime_primitives;
+mod selector_semantics;
 mod semantic;
 mod semantic_reachability;
 mod shared_captures;
@@ -18617,7 +18618,7 @@ fn type_method_expression_info(selector: &ast::SelectorExpr) -> Option<TypeMetho
     let receiver_path = type_method_expression_receiver_path(&selector.x)?;
     TYPE_ENV.with(|env| {
         let env = env.borrow();
-        if method_expressions::selector_base_is_declared_value(selector, &env) {
+        if selector_semantics::selector_base_is_declared_value(selector, &env) {
             return None;
         }
         let receiver =

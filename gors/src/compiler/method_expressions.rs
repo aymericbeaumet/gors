@@ -10,22 +10,6 @@ pub(super) struct TypeMethodExpressionReceiver {
     pub(super) go_type: GoType,
 }
 
-pub(super) fn selector_base_is_declared_value(sel: &ast::SelectorExpr<'_>, env: &TypeEnv) -> bool {
-    match unparen_expr(&sel.x) {
-        ast::Expr::Ident(id) => {
-            env.get_var(id.name).is_some() || env.get_top_level_var(id.name).is_some()
-        }
-        ast::Expr::SelectorExpr(inner) => {
-            let ast::Expr::Ident(pkg) = inner.x.as_ref() else {
-                return false;
-            };
-            let key = format!("{}.{}", pkg.name, inner.sel.name);
-            env.get_var(&key).is_some() || env.get_top_level_var(&key).is_some()
-        }
-        _ => false,
-    }
-}
-
 pub(super) fn receiver_for_method(
     expr: &ast::Expr<'_>,
     method: &str,
@@ -115,6 +99,7 @@ fn unparen_expr<'a>(expr: &'a ast::Expr<'a>) -> &'a ast::Expr<'a> {
 #[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::compiler::selector_semantics;
     use crate::compiler::typeinfer::TypeKind;
     use crate::parser::parse_file;
 
@@ -155,11 +140,15 @@ mod tests {
         let mut env = TypeEnv::new();
         env.set_type_kind("T", TypeKind::Struct);
 
-        assert!(!selector_base_is_declared_value(selector, &env));
+        assert!(!selector_semantics::selector_base_is_declared_value(
+            selector, &env
+        ));
 
         env.set_var("T", GoType::Int);
 
-        assert!(selector_base_is_declared_value(selector, &env));
+        assert!(selector_semantics::selector_base_is_declared_value(
+            selector, &env
+        ));
     }
 
     #[test]

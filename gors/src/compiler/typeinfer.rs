@@ -268,10 +268,8 @@ impl GoType {
             ast::Expr::Ident(id) => match id.name {
                 "true" | "false" => GoType::Bool,
                 "nil" => GoType::Any,
-                name => env
-                    .get_var(name)
-                    .or_else(|| env.get_top_level_var(name))
-                    .unwrap_or_else(|| {
+                name => {
+                    super::selector_semantics::declared_value_type(name, env).unwrap_or_else(|| {
                         if name == "iota" {
                             GoType::Int
                         } else if env.has_func(name) {
@@ -283,7 +281,8 @@ impl GoType {
                         } else {
                             GoType::Unknown
                         }
-                    }),
+                    })
+                }
             },
             ast::Expr::FuncLit(func_lit) => GoType::from_func_type(&func_lit.type_),
             ast::Expr::UnaryExpr(u) if u.op == token::Token::AND => {
@@ -435,8 +434,7 @@ impl GoType {
                         if super::ast_inspect::selector_is_unsafe_constant(sel) {
                             return GoType::Uintptr;
                         }
-                        if let ast::Expr::Ident(pkg) = &*sel.x {
-                            let key = format!("{}.{}", pkg.name, sel.sel.name);
+                        if let Some(key) = super::selector_semantics::qualified_member_key(sel) {
                             if env.get_type_kind(&key).is_some() {
                                 return GoType::from_expr(&call.fun);
                             }
@@ -476,7 +474,7 @@ impl GoType {
             }
             ast::Expr::SelectorExpr(sel) => {
                 let base_is_declared_value =
-                    super::method_expressions::selector_base_is_declared_value(sel, env);
+                    super::selector_semantics::selector_base_is_declared_value(sel, env);
                 if !base_is_declared_value && let Some(func) = type_method_expression_func(sel, env)
                 {
                     return func;
@@ -496,11 +494,9 @@ impl GoType {
                 if base_is_declared_value {
                     return GoType::Unknown;
                 }
-                if let ast::Expr::Ident(id) = &*sel.x {
-                    let package_key = format!("{}.{}", id.name, sel.sel.name);
-                    if let Some(ty) = env
-                        .get_var(&package_key)
-                        .or_else(|| env.get_top_level_var(&package_key))
+                if let Some(package_key) = super::selector_semantics::qualified_member_key(sel) {
+                    if let Some(ty) =
+                        super::selector_semantics::declared_value_type(&package_key, env)
                     {
                         return ty;
                     }
@@ -595,7 +591,7 @@ fn expr_is_untyped_constant_for_inference(expr: &ast::Expr<'_>, env: &TypeEnv) -
 
 fn const_name_has_named_type(name: &str, env: &TypeEnv) -> bool {
     matches!(
-        env.get_var(name).or_else(|| env.get_top_level_var(name)),
+        super::selector_semantics::declared_value_type(name, env),
         Some(GoType::Named(_))
     )
 }
@@ -732,10 +728,7 @@ fn type_name(expr: &ast::Expr<'_>) -> Option<String> {
     match unparen_expr(expr) {
         ast::Expr::Ident(ident) => Some(ident.name.to_string()),
         ast::Expr::SelectorExpr(selector) => {
-            let ast::Expr::Ident(pkg) = selector.x.as_ref() else {
-                return None;
-            };
-            Some(format!("{}.{}", pkg.name, selector.sel.name))
+            super::selector_semantics::qualified_member_key(selector)
         }
         _ => None,
     }
@@ -2794,8 +2787,7 @@ fn call_target_key_for_slice_mutation(fun: &ast::Expr, env: &TypeEnv) -> Option<
     match fun {
         ast::Expr::Ident(ident) => env.has_func(ident.name).then(|| ident.name.to_string()),
         ast::Expr::SelectorExpr(selector) => {
-            if let ast::Expr::Ident(pkg_or_recv) = selector.x.as_ref() {
-                let package_key = format!("{}.{}", pkg_or_recv.name, selector.sel.name);
+            if let Some(package_key) = super::selector_semantics::qualified_member_key(selector) {
                 if env.has_func(&package_key) {
                     return Some(package_key);
                 }
