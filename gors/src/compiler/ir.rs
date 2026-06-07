@@ -22681,6 +22681,55 @@ mod tests {
     }
 
     #[test]
+    fn accepts_pointer_receiver_value_for_imported_interface_argument() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package godebug
+
+                import "internal/bisect"
+
+                type runtimeStderr struct{}
+
+                var stderr runtimeStderr
+
+                func (*runtimeStderr) Write(b []byte) (int, error) {
+                    return len(b), nil
+                }
+
+                func use(m *bisect.Matcher) {
+                    m.Stack(&stderr)
+                }
+            "#,
+        )
+        .unwrap();
+
+        let mut bisect_env = TypeEnv::new();
+        bisect_env.set_type_kind("Writer", TypeKind::Interface);
+        bisect_env.set_interface_methods("Writer", vec!["Write".to_string()]);
+        bisect_env.set_type_kind("Matcher", TypeKind::Struct);
+        bisect_env.set_func_params("Matcher.Stack", vec![GoType::Named("Writer".to_string())]);
+        bisect_env.set_func("Matcher.Stack", vec![GoType::Bool]);
+        bisect_env.set_pointer_receiver_method("Matcher.Stack");
+
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        env.merge_package("bisect", &bisect_env);
+
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "use" => Some(func),
+            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected use function");
+        };
+
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            None
+        );
+    }
+
+    #[test]
     fn accepts_valid_ordinary_function_calls() {
         let file = parse_file(
             "test.go",

@@ -295,7 +295,11 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
         parsed_files.push((*filename, ast));
     }
 
-    let reachable_names = roots.map(|roots| reachable_package_names(&parsed_files, roots));
+    let reachable_names = roots.map(|roots| {
+        let parsed_file_refs = parsed_files.iter().map(|(_, ast)| ast).collect::<Vec<_>>();
+        let imported_type_envs = scan_imported_type_envs(import_path, &parsed_file_refs);
+        reachable_package_names_with_imports(&parsed_files, roots, &imported_type_envs)
+    });
     if roots.is_some() && reachable_names.as_ref().is_none_or(HashSet::is_empty) {
         cache_resolved_imports(import_path, roots, Vec::new());
         return None;
@@ -1165,9 +1169,18 @@ fn collect_transitive_imports_uncached(import_path: &str) -> Vec<String> {
         .collect()
 }
 
+#[cfg(test)]
 fn reachable_package_names(
     parsed_files: &[(&str, crate::ast::File<'_>)],
     roots: &HashSet<String>,
+) -> HashSet<String> {
+    reachable_package_names_with_imports(parsed_files, roots, &BTreeMap::new())
+}
+
+fn reachable_package_names_with_imports(
+    parsed_files: &[(&str, crate::ast::File<'_>)],
+    roots: &HashSet<String>,
+    imported_type_envs: &BTreeMap<String, crate::compiler::PackageFacts>,
 ) -> HashSet<String> {
     let top_names = package_top_level_names(parsed_files);
     let mut env = TypeEnv::new();
@@ -1176,6 +1189,15 @@ fn reachable_package_names(
         .map(|(_, file)| file)
         .collect::<Vec<_>>();
     env.scan_files(&file_refs);
+    refresh_top_level_vars_with_imports(&mut env, &file_refs, imported_type_envs);
+    for (_, file) in parsed_files {
+        crate::compiler::merge_import_type_envs(
+            &mut env,
+            file,
+            &BTreeMap::new(),
+            imported_type_envs,
+        );
+    }
     let interface_method_roots = interface_method_roots(roots, &top_names, &env);
     let mut reachable: HashSet<String> = roots
         .iter()
@@ -2271,8 +2293,119 @@ fn method_refs_from_call(
     {
         refs.insert(format!("{receiver}::{}", selector.sel.name));
     }
+    method_refs_from_interface_arg_dependencies(call, env, refs);
     method_refs_from_expr(&call.fun, env, refs);
     method_refs_from_exprs(call.args.as_deref().unwrap_or(&[]), env, refs);
+}
+
+fn method_refs_from_interface_arg_dependencies(
+    call: &crate::ast::CallExpr<'_>,
+    env: &TypeEnv,
+    refs: &mut HashSet<String>,
+) {
+    let params = call_param_types_for_method_refs(call, env);
+    let Some(args) = call.args.as_deref() else {
+        return;
+    };
+    for (expected, arg) in params.iter().zip(args.iter()) {
+        let Some(interface_name) = interface_param_name_for_method_refs(expected, env) else {
+            continue;
+        };
+        let actual = crate::compiler::typeinfer::GoType::infer_expr(arg, env);
+        let Some((type_name, include_pointer_receiver_methods)) =
+            concrete_receiver_name_for_interface_arg(&actual, env)
+        else {
+            continue;
+        };
+        if type_name.contains('.') {
+            continue;
+        }
+        if !env.named_type_implements_interface(
+            &type_name,
+            &interface_name,
+            include_pointer_receiver_methods,
+        ) {
+            continue;
+        }
+        if let Some(methods) = env.get_interface_methods(&interface_name) {
+            for method in methods {
+                refs.insert(format!("{type_name}::{method}"));
+            }
+        }
+    }
+}
+
+fn call_param_types_for_method_refs(
+    call: &crate::ast::CallExpr<'_>,
+    env: &TypeEnv,
+) -> Vec<crate::compiler::typeinfer::GoType> {
+    match call.fun.as_ref() {
+        crate::ast::Expr::Ident(ident) => env.get_func_params(ident.name),
+        crate::ast::Expr::SelectorExpr(selector) => {
+            if let crate::ast::Expr::Ident(pkg_or_recv) = selector.x.as_ref() {
+                let package_key = format!("{}.{}", pkg_or_recv.name, selector.sel.name);
+                let package_params = env.get_func_params(&package_key);
+                if !package_params.is_empty() {
+                    return package_params;
+                }
+            }
+            let receiver_type = crate::compiler::typeinfer::GoType::infer_expr(&selector.x, env);
+            for receiver in receiver_names_for_method_lookup(&receiver_type, env) {
+                let params = env.get_method_params(&receiver, selector.sel.name);
+                if !params.is_empty() {
+                    return params;
+                }
+            }
+            Vec::new()
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn receiver_names_for_method_lookup(
+    ty: &crate::compiler::typeinfer::GoType,
+    env: &TypeEnv,
+) -> Vec<String> {
+    let Some(name) = receiver_name_from_go_type_preserving_package(ty, env) else {
+        return Vec::new();
+    };
+    let local = local_receiver_name(&name);
+    if local == name {
+        vec![name]
+    } else {
+        vec![name, local]
+    }
+}
+
+fn interface_param_name_for_method_refs(
+    ty: &crate::compiler::typeinfer::GoType,
+    env: &TypeEnv,
+) -> Option<String> {
+    match env.resolve_alias(ty) {
+        crate::compiler::typeinfer::GoType::Named(name)
+        | crate::compiler::typeinfer::GoType::Interface(name)
+            if env.is_interface(&name) =>
+        {
+            Some(name)
+        }
+        _ => None,
+    }
+}
+
+fn concrete_receiver_name_for_interface_arg(
+    ty: &crate::compiler::typeinfer::GoType,
+    env: &TypeEnv,
+) -> Option<(String, bool)> {
+    match env.resolve_alias(ty) {
+        crate::compiler::typeinfer::GoType::Named(name)
+        | crate::compiler::typeinfer::GoType::Instantiated { name, .. } => Some((name, false)),
+        crate::compiler::typeinfer::GoType::Pointer(inner) => match env.resolve_alias(&inner) {
+            crate::compiler::typeinfer::GoType::Named(name)
+            | crate::compiler::typeinfer::GoType::Instantiated { name, .. } => Some((name, true)),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn method_refs_from_exprs(
@@ -2378,11 +2511,30 @@ fn receiver_name_for_method_expr(expr: &crate::ast::Expr<'_>, env: &TypeEnv) -> 
 }
 
 fn receiver_name_from_go_type(ty: &crate::compiler::typeinfer::GoType) -> Option<String> {
+    receiver_name_from_go_type_preserving_package(ty, &TypeEnv::new())
+        .map(|name| local_receiver_name(&name))
+}
+
+fn receiver_name_from_go_type_preserving_package(
+    ty: &crate::compiler::typeinfer::GoType,
+    env: &TypeEnv,
+) -> Option<String> {
     match ty {
         crate::compiler::typeinfer::GoType::Named(name)
-        | crate::compiler::typeinfer::GoType::Interface(name) => Some(local_receiver_name(name)),
-        crate::compiler::typeinfer::GoType::Pointer(inner) => receiver_name_from_go_type(inner),
-        _ => None,
+        | crate::compiler::typeinfer::GoType::Instantiated { name, .. }
+        | crate::compiler::typeinfer::GoType::Interface(name) => Some(name.clone()),
+        crate::compiler::typeinfer::GoType::Pointer(inner) => {
+            receiver_name_from_go_type_preserving_package(inner, env)
+        }
+        other => match env.resolve_alias(other) {
+            crate::compiler::typeinfer::GoType::Named(name)
+            | crate::compiler::typeinfer::GoType::Instantiated { name, .. }
+            | crate::compiler::typeinfer::GoType::Interface(name) => Some(name),
+            crate::compiler::typeinfer::GoType::Pointer(inner) => {
+                receiver_name_from_go_type_preserving_package(&inner, env)
+            }
+            _ => None,
+        },
     }
 }
 
@@ -2888,6 +3040,51 @@ func root(s sparseArray) {
     }
 
     #[test]
+    fn reachable_names_include_pointer_methods_needed_for_imported_interface_args() {
+        let file = crate::parser::parse_file(
+            "pkg.go",
+            r#"
+package godebug
+
+import "internal/bisect"
+
+type runtimeStderr struct{}
+
+var stderr runtimeStderr
+
+func (*runtimeStderr) Write(b []byte) (int, error) {
+	return len(b), nil
+}
+
+func use(m *bisect.Matcher) {
+	m.Stack(&stderr)
+}
+"#,
+        )
+        .unwrap();
+
+        let mut bisect_env = TypeEnv::new();
+        bisect_env.set_type_kind("Writer", TypeKind::Interface);
+        bisect_env.set_interface_methods("Writer", vec!["Write".to_string()]);
+        bisect_env.set_type_kind("Matcher", TypeKind::Struct);
+        bisect_env.set_func_params("Matcher.Stack", vec![GoType::Named("Writer".to_string())]);
+        bisect_env.set_func("Matcher.Stack", vec![GoType::Bool]);
+        bisect_env.set_pointer_receiver_method("Matcher.Stack");
+        let imported_type_envs = BTreeMap::from([(
+            "internal/bisect".to_string(),
+            crate::compiler::PackageFacts::new("bisect".to_string(), bisect_env),
+        )]);
+        let parsed = vec![("pkg.go", file)];
+        let roots = HashSet::from(["use".to_string()]);
+
+        let reachable = reachable_package_names_with_imports(&parsed, &roots, &imported_type_envs);
+
+        assert!(reachable.contains("stderr"), "{reachable:?}");
+        assert!(reachable.contains("runtimeStderr"), "{reachable:?}");
+        assert!(reachable.contains("runtimeStderr::Write"), "{reachable:?}");
+    }
+
+    #[test]
     fn reachable_names_include_methods_called_on_method_return_locals() {
         let file = crate::parser::parse_file(
             "pkg.go",
@@ -2995,6 +3192,25 @@ func root(blk *block) {
                 crate::compiler::typeinfer::GoType::Int64,
             ]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_internal_godebug_value_keeps_runtime_stderr_writer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let roots = HashSet::from(["Setting".to_string(), "Setting::Value".to_string()]);
+        let module = resolve_with_roots("internal/godebug", &roots)
+            .ok_or_else(|| std::io::Error::other("resolve internal/godebug"))?;
+        let items = module
+            .content
+            .as_ref()
+            .map(|(_, items)| items.as_slice())
+            .unwrap_or_default();
+        let output = quote::quote! { #(#items)* }.to_string();
+
+        assert!(output.contains("fn Value"), "{output}");
+        assert!(output.contains("struct runtimeStderr"), "{output}");
+        assert!(output.contains("fn Write"), "{output}");
         Ok(())
     }
 
