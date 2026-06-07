@@ -13030,6 +13030,13 @@ fn borrowed_interface_address_of_ident_expr(expr: &ast::Expr) -> Option<syn::Exp
         return None;
     };
     let source_name = ident.name;
+    if let Some((path, _go_type, name)) = top_level_var_expr_and_type_from_ref(&unary.x)
+        && is_mutable_top_level_var(&name)
+    {
+        return Some(syn::parse_quote! {
+            &mut (crate::builtin::GorsPtr::from_arc((*#path).clone()))
+        });
+    }
     let ident = value_ident(source_name);
     if is_shared_capture_name(source_name) {
         Some(syn::parse_quote! { &mut (crate::builtin::GorsPtr::from_arc(#ident.clone())) })
@@ -32877,6 +32884,65 @@ func Same() bool {
             "{state_rs}"
         );
         assert!(!state_rs.contains("GorsPtr::new(*Key)"), "{state_rs}");
+    }
+
+    #[test]
+    fn compile_program_multi_passes_package_var_addresses_to_interfaces_as_cells() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/state"
+
+func main() {
+	_ = state.Use()
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("state/state.go").as_path(),
+            r#"
+package state
+
+type Writer interface {
+	Write([]byte) int
+}
+
+type runtimeStderr struct {
+	n int
+}
+
+var stderr runtimeStderr
+
+func (r *runtimeStderr) Write(b []byte) int {
+	r.n += len(b)
+	return r.n
+}
+
+func Stack(w Writer) int {
+	return w.Write([]byte("x"))
+}
+
+func Use() int {
+	return Stack(&stderr)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let state_rs = output.files.get("example__state.rs").unwrap();
+        assert!(
+            state_rs.contains("crate::builtin::GorsPtr::from_arc((*stderr).clone())")
+                || state_rs.contains("crate :: builtin :: GorsPtr :: from_arc ((* stderr) . clone ())"),
+            "expected borrowed interface arg to use the mutable package var cell: {state_rs}"
+        );
+        assert!(
+            !state_rs.contains("Stack(&mut stderr)") && !state_rs.contains("Stack (& mut stderr)"),
+            "expected borrowed interface arg not to borrow the LazyLock static: {state_rs}"
+        );
     }
 
     #[test]
