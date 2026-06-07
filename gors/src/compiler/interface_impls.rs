@@ -515,6 +515,7 @@ fn concrete_direct_method_item(
     method: &syn::ImplItemFn,
 ) -> syn::ImplItem {
     let mut sig = method.sig.clone();
+    let target_borrowed_slice_params = borrowed_slice_param_indices_from_signature(&sig);
     let method_ident = sig.ident.clone();
     let immutable_error_method = trait_name == "error" && method_ident == "Error";
     let original_receiver = sig
@@ -534,11 +535,14 @@ fn concrete_direct_method_item(
         Span::mixed_site(),
     );
     let arg_idents = signature_arg_idents(&sig);
+    let trait_borrowed_slice_params = borrowed_slice_param_indices_from_signature(&sig);
     let arg_exprs = interface_forward_arg_exprs(
         trait_name,
         struct_name,
         &method_ident.to_string(),
         &arg_idents,
+        &trait_borrowed_slice_params,
+        &target_borrowed_slice_params,
     );
     let (original_receiver_is_ref, original_receiver_is_mut) = original_receiver;
     let block = concrete_direct_method_block(
@@ -605,15 +609,19 @@ impl PointerImplTarget {
             Span::mixed_site(),
         );
         let mut sig = method.sig.clone();
+        let target_borrowed_slice_params = borrowed_slice_param_indices_from_signature(&sig);
         let immutable_error_method = trait_name == "error" && method_ident == "Error";
         set_interface_receiver(&mut sig, immutable_error_method);
         set_interface_slice_param_types(&mut sig, trait_name, &method_ident.to_string());
         let arg_idents = signature_arg_idents(&sig);
+        let trait_borrowed_slice_params = borrowed_slice_param_indices_from_signature(&sig);
         let arg_exprs = interface_forward_arg_exprs(
             trait_name,
             struct_name,
             &method_ident.to_string(),
             &arg_idents,
+            &trait_borrowed_slice_params,
+            &target_borrowed_slice_params,
         );
         let call_receiver = self.call_receiver_expr(call_receiver_kind);
         let call = PointerMethodCall {
@@ -650,15 +658,19 @@ impl PointerImplTarget {
             Span::mixed_site(),
         );
         let mut sig = method.sig;
+        let target_borrowed_slice_params = borrowed_slice_param_indices_from_signature(&sig);
         let immutable_error_method = trait_name == "error" && method_ident == "Error";
         set_interface_receiver(&mut sig, immutable_error_method);
         set_interface_slice_param_types(&mut sig, trait_name, &method_ident.to_string());
         let arg_idents = signature_arg_idents(&sig);
+        let trait_borrowed_slice_params = borrowed_slice_param_indices_from_signature(&sig);
         let arg_exprs = interface_forward_arg_exprs(
             trait_name,
             &promoted.owner_type,
             &method_ident.to_string(),
             &arg_idents,
+            &trait_borrowed_slice_params,
+            &target_borrowed_slice_params,
         );
         let call_receiver = self.promoted_call_receiver_expr(&promoted.steps, call_receiver_kind);
         let block = self.promoted_method_block(
@@ -865,10 +877,10 @@ fn set_interface_receiver(sig: &mut syn::Signature, immutable_error_method: bool
 fn set_interface_slice_param_types(sig: &mut syn::Signature, trait_name: &str, method_name: &str) {
     super::TYPE_ENV.with(|env| {
         let env = env.borrow();
-        let method_key = format!("{trait_name}.{method_name}");
         let params = env.get_method_params(trait_name, method_name);
         for (idx, input) in sig.inputs.iter_mut().skip(1).enumerate() {
-            if !env.func_param_needs_borrowed_slice(&method_key, idx) {
+            if !method_param_needs_borrowed_slice_for_candidates(&env, trait_name, method_name, idx)
+            {
                 continue;
             }
             let Some(typeinfer::GoType::Slice(elem)) =
@@ -885,22 +897,78 @@ fn set_interface_slice_param_types(sig: &mut syn::Signature, trait_name: &str, m
     });
 }
 
+fn method_param_needs_borrowed_slice_for_candidates(
+    env: &typeinfer::TypeEnv,
+    receiver_name: &str,
+    method_name: &str,
+    index: usize,
+) -> bool {
+    let mut candidates = super::interface_type_env::rust_path_name_candidates(receiver_name);
+    if let Some(local_name) =
+        super::package_context::local_name_from_current_package_qualified(receiver_name)
+    {
+        candidates.push(local_name);
+    }
+    if let Some(qualified_name) =
+        super::package_context::current_package_qualified_name(receiver_name)
+    {
+        candidates.push(qualified_name);
+    }
+    candidates.dedup();
+    candidates.into_iter().any(|candidate| {
+        env.func_param_needs_borrowed_slice(&format!("{candidate}.{method_name}"), index)
+    })
+}
+
+pub(super) fn borrowed_slice_param_indices_from_signature(sig: &syn::Signature) -> BTreeSet<usize> {
+    sig.inputs
+        .iter()
+        .skip(1)
+        .enumerate()
+        .filter_map(|(idx, input)| match input {
+            syn::FnArg::Typed(pat_type) if type_is_mut_slice_reference(pat_type.ty.as_ref()) => {
+                Some(idx)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn type_is_mut_slice_reference(ty: &syn::Type) -> bool {
+    let syn::Type::Reference(reference) = ty else {
+        return false;
+    };
+    reference.mutability.is_some() && matches!(reference.elem.as_ref(), syn::Type::Slice(_))
+}
+
 fn interface_forward_arg_exprs(
     trait_name: &str,
     target_type: &str,
     method_name: &str,
     arg_idents: &[syn::Ident],
+    trait_borrowed_slice_params: &BTreeSet<usize>,
+    target_borrowed_slice_params: &BTreeSet<usize>,
 ) -> Vec<syn::Expr> {
     super::TYPE_ENV.with(|env| {
         let env = env.borrow();
-        let interface_key = format!("{trait_name}.{method_name}");
-        let target_key = format!("{target_type}.{method_name}");
         arg_idents
             .iter()
             .enumerate()
             .map(|(idx, ident)| {
-                let trait_borrows = env.func_param_needs_borrowed_slice(&interface_key, idx);
-                let target_borrows = env.func_param_needs_borrowed_slice(&target_key, idx);
+                let trait_borrows = trait_borrowed_slice_params.contains(&idx)
+                    || method_param_needs_borrowed_slice_for_candidates(
+                        &env,
+                        trait_name,
+                        method_name,
+                        idx,
+                    );
+                let target_borrows = target_borrowed_slice_params.contains(&idx)
+                    || method_param_needs_borrowed_slice_for_candidates(
+                        &env,
+                        target_type,
+                        method_name,
+                        idx,
+                    );
                 if trait_borrows && !target_borrows {
                     syn::parse_quote! { (#ident).to_vec() }
                 } else {

@@ -2538,7 +2538,7 @@ fn expr_mutates_slice_param(expr: &ast::Expr, name: &str, env: &TypeEnv) -> bool
 }
 
 fn call_mutates_slice_param(call: &ast::CallExpr, name: &str, env: &TypeEnv) -> bool {
-    if call_is_copy_into_slice_param(call, name) {
+    if call_is_builtin_write_into_slice_param(call, name) {
         return true;
     }
     let args_mutate = call.args.as_ref().is_some_and(|args| {
@@ -2555,13 +2555,22 @@ fn call_mutates_slice_param(call: &ast::CallExpr, name: &str, env: &TypeEnv) -> 
     args_mutate || expr_mutates_slice_param(&call.fun, name, env)
 }
 
-fn call_is_copy_into_slice_param(call: &ast::CallExpr, name: &str) -> bool {
-    matches!(call.fun.as_ref(), ast::Expr::Ident(ident) if ident.name == "copy")
-        && call
+fn call_is_builtin_write_into_slice_param(call: &ast::CallExpr, name: &str) -> bool {
+    let ast::Expr::Ident(ident) = call.fun.as_ref() else {
+        return false;
+    };
+    match ident.name {
+        "copy" => call
             .args
             .as_ref()
             .and_then(|args| args.first())
-            .is_some_and(|arg| expr_aliases_slice_param(arg, name))
+            .is_some_and(|arg| expr_aliases_slice_param(arg, name)),
+        "clear" => call.args.as_ref().is_some_and(|args| {
+            args.first()
+                .is_some_and(|arg| expr_aliases_slice_param(arg, name))
+        }),
+        _ => false,
+    }
 }
 
 fn call_target_key_for_slice_mutation(fun: &ast::Expr, env: &TypeEnv) -> Option<String> {

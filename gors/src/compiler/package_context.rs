@@ -68,6 +68,29 @@ pub(super) fn qualify_interface_name(interface_name: &str) -> String {
     })
 }
 
+pub(super) fn local_name_from_current_package_qualified(name: &str) -> Option<String> {
+    let (package_name, local_name) = name.rsplit_once('.')?;
+    CURRENT_GO_PACKAGE_NAME.with(|package| {
+        package
+            .borrow()
+            .as_ref()
+            .is_some_and(|current| current == package_name)
+            .then(|| local_name.to_string())
+    })
+}
+
+pub(super) fn current_package_qualified_name(name: &str) -> Option<String> {
+    if name.contains('.') {
+        return None;
+    }
+    CURRENT_GO_PACKAGE_NAME.with(|package| {
+        package
+            .borrow()
+            .as_ref()
+            .map(|package_name| format!("{package_name}.{name}"))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,5 +120,35 @@ mod tests {
             assert_eq!(qualify_interface_name("error"), "error");
         }
         assert_eq!(qualify_interface_name("Reader"), "Reader");
+    }
+
+    #[test]
+    fn package_name_guard_recovers_current_package_local_names() {
+        assert_eq!(
+            local_name_from_current_package_qualified("ioish.Reader"),
+            None
+        );
+        {
+            let _package = CurrentGoPackageNameGuard::set("ioish".to_string());
+            assert_eq!(
+                local_name_from_current_package_qualified("ioish.Reader").as_deref(),
+                Some("Reader")
+            );
+            assert_eq!(
+                local_name_from_current_package_qualified("other.Reader"),
+                None
+            );
+            assert_eq!(local_name_from_current_package_qualified("Reader"), None);
+            assert_eq!(
+                current_package_qualified_name("Reader").as_deref(),
+                Some("ioish.Reader")
+            );
+            assert_eq!(current_package_qualified_name("other.Reader"), None);
+        }
+        assert_eq!(
+            local_name_from_current_package_qualified("ioish.Reader"),
+            None
+        );
+        assert_eq!(current_package_qualified_name("Reader"), None);
     }
 }

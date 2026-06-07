@@ -20055,7 +20055,7 @@ impl TryFrom<ast::File<'_>> for syn::File {
             &trait_methods,
             &mut emitted_interface_impls,
         ));
-        items.extend(external_local_interface_impls(&trait_methods));
+        items.extend(external_local_interface_impls(&trait_methods, &methods));
 
         items.extend(noop_interfaces::supertrait_impls(
             &items,
@@ -22487,6 +22487,7 @@ fn external_imported_interface_impls(
                 &method_set.direct_methods,
                 &record,
                 &env,
+                None,
             );
             let mut attrs = Vec::new();
             generated_attrs::preserve_for_dce(&mut attrs);
@@ -22523,7 +22524,10 @@ fn external_interface_record_matches_current_import(go_name: &str) -> bool {
     })
 }
 
-fn external_local_interface_impls(trait_methods: &BTreeMap<String, Vec<String>>) -> Vec<syn::Item> {
+fn external_local_interface_impls(
+    trait_methods: &BTreeMap<String, Vec<String>>,
+    methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
+) -> Vec<syn::Item> {
     TYPE_ENV.with(|env| {
         let env = env.borrow();
         let mut items = Vec::new();
@@ -22547,6 +22551,7 @@ fn external_local_interface_impls(trait_methods: &BTreeMap<String, Vec<String>>)
                     method_names,
                     &record,
                     &env,
+                    Some(methods),
                 );
                 let mut attrs = Vec::new();
                 generated_attrs::mark_external_local_interface_impl(&mut attrs);
@@ -22638,6 +22643,7 @@ fn external_interface_impl_items(
     method_names: &[String],
     record: &external_interface_implementors::ExternalInterfaceImplementor,
     env: &typeinfer::TypeEnv,
+    methods: Option<&BTreeMap<String, Vec<syn::ImplItemFn>>>,
 ) -> Vec<syn::ImplItem> {
     let as_any = as_any_method_ident();
     let interface_key = interface_key_method_ident();
@@ -22660,7 +22666,16 @@ fn external_interface_impl_items(
         },
     ];
     items.extend(method_names.iter().map(|method_name| {
-        external_local_interface_method_item(interface_env_name, method_name, record, env)
+        let target_method = methods.and_then(|methods| {
+            external_record_method_for_name(record, method_name.as_str(), methods)
+        });
+        external_local_interface_method_item(
+            interface_env_name,
+            method_name,
+            record,
+            env,
+            target_method,
+        )
     }));
     items
 }
@@ -22670,6 +22685,7 @@ fn external_local_interface_method_item(
     method_name: &str,
     record: &external_interface_implementors::ExternalInterfaceImplementor,
     env: &typeinfer::TypeEnv,
+    target_method: Option<&syn::ImplItemFn>,
 ) -> syn::ImplItem {
     let mut sig = interface_type_env::interface_method_signature_from_type_env(
         interface_name,
@@ -22677,10 +22693,22 @@ fn external_local_interface_method_item(
         env,
     );
     set_interface_receiver_for_signature(&mut sig);
+    let trait_borrowed_slice_params =
+        interface_impls::borrowed_slice_param_indices_from_signature(&sig);
+    let target_borrowed_slice_params = target_method
+        .map(|method| interface_impls::borrowed_slice_param_indices_from_signature(&method.sig))
+        .unwrap_or_default();
     let method_ident = syn::Ident::new(&rust_safe_ident_name(method_name), Span::mixed_site());
     let arg_idents = signature_arg_idents(&sig);
-    let arg_exprs =
-        external_interface_bridge_arg_exprs(interface_name, method_name, record, env, &arg_idents);
+    let arg_exprs = external_interface_bridge_arg_exprs(
+        interface_name,
+        method_name,
+        record,
+        env,
+        &arg_idents,
+        &trait_borrowed_slice_params,
+        &target_borrowed_slice_params,
+    );
     let target_ty = gors_ptr_inner_type(&record.rust_ty).unwrap_or_else(|| record.rust_ty.clone());
     let method_has_pointer_receiver =
         env.method_has_pointer_receiver(&method_key(&record.go_name, method_name));
@@ -22718,12 +22746,37 @@ fn external_local_interface_method_item(
     impl_item_fn(sig, block)
 }
 
+fn external_record_method_for_name<'a>(
+    record: &external_interface_implementors::ExternalInterfaceImplementor,
+    method_name: &str,
+    methods: &'a BTreeMap<String, Vec<syn::ImplItemFn>>,
+) -> Option<&'a syn::ImplItemFn> {
+    let mut candidates = interface_type_env::rust_path_name_candidates(&record.go_name);
+    if let Some(local_name) =
+        package_context::local_name_from_current_package_qualified(&record.go_name)
+    {
+        candidates.push(local_name);
+    }
+    if let Some(qualified_name) = package_context::current_package_qualified_name(&record.go_name) {
+        candidates.push(qualified_name);
+    }
+    candidates.dedup();
+    candidates.into_iter().find_map(|candidate| {
+        methods
+            .get(&candidate)?
+            .iter()
+            .find(|method| method.sig.ident == method_name)
+    })
+}
+
 fn external_interface_bridge_arg_exprs(
     interface_name: &str,
     method_name: &str,
     record: &external_interface_implementors::ExternalInterfaceImplementor,
     env: &typeinfer::TypeEnv,
     arg_idents: &[syn::Ident],
+    trait_borrowed_slice_params: &std::collections::BTreeSet<usize>,
+    target_borrowed_slice_params: &std::collections::BTreeSet<usize>,
 ) -> Vec<syn::Expr> {
     let interface_key = method_key(interface_name, method_name);
     let params = env.get_method_params(interface_name, method_name);
@@ -22731,13 +22784,15 @@ fn external_interface_bridge_arg_exprs(
         .iter()
         .enumerate()
         .map(|(idx, ident)| {
-            let trait_borrows = env.func_param_needs_borrowed_slice(&interface_key, idx);
-            let target_borrows = method_param_needs_borrowed_slice_for_candidates(
-                env,
-                &record.go_name,
-                method_name,
-                idx,
-            );
+            let trait_borrows = trait_borrowed_slice_params.contains(&idx)
+                || env.func_param_needs_borrowed_slice(&interface_key, idx);
+            let target_borrows = target_borrowed_slice_params.contains(&idx)
+                || method_param_needs_borrowed_slice_for_candidates(
+                    env,
+                    &record.go_name,
+                    method_name,
+                    idx,
+                );
             let param_is_slice = params.get(idx).is_some_and(|param| {
                 matches!(env.resolve_alias(param), typeinfer::GoType::Slice(_))
             });
@@ -22756,11 +22811,18 @@ fn method_param_needs_borrowed_slice_for_candidates(
     method_name: &str,
     index: usize,
 ) -> bool {
-    interface_type_env::rust_path_name_candidates(type_name)
-        .into_iter()
-        .any(|candidate| {
-            env.func_param_needs_borrowed_slice(&method_key(&candidate, method_name), index)
-        })
+    let mut candidates = interface_type_env::rust_path_name_candidates(type_name);
+    if let Some(local_name) = package_context::local_name_from_current_package_qualified(type_name)
+    {
+        candidates.push(local_name);
+    }
+    if let Some(qualified_name) = package_context::current_package_qualified_name(type_name) {
+        candidates.push(qualified_name);
+    }
+    candidates.dedup();
+    candidates.into_iter().any(|candidate| {
+        env.func_param_needs_borrowed_slice(&method_key(&candidate, method_name), index)
+    })
 }
 
 fn set_interface_receiver_for_signature(sig: &mut syn::Signature) {
@@ -28983,6 +29045,146 @@ func (r *Reader) Seek(offset int64, whence int) int64 {
                 || stream_rs.contains("Reader::Seek(&mut *__gors_guard, offset, whence)")
                 || stream_rs.contains("Reader :: Seek (& mut * __gors_guard , offset , whence)"),
             "{stream_rs}"
+        );
+    }
+
+    #[test]
+    fn compile_program_multi_forwards_borrowed_slices_in_external_local_interface_impls() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/stream"
+
+func main() {
+	_ = stream.New()
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("ioish/ioish.go").as_path(),
+            r#"
+package ioish
+
+type Reader interface {
+	Read([]byte) int
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("stream/stream.go").as_path(),
+            r#"
+package stream
+
+import "example/ioish"
+
+type zeroReader struct{}
+
+func New() ioish.Reader {
+	return zeroReader{}
+}
+
+func (zeroReader) Read(b []byte) int {
+	if len(b) > 0 {
+		b[0] = 0
+	}
+	return len(b)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let stream_rs = output.files.get("example__stream.rs").unwrap();
+        let compact: String = stream_rs.chars().filter(|c| !c.is_whitespace()).collect();
+
+        assert!(
+            compact.contains("implcrate::ioish::ReaderforzeroReader"),
+            "{stream_rs}"
+        );
+        assert!(
+            compact.contains("zeroReader::Read(self,&mut*b)")
+                || compact.contains("zeroReader::Read(self,b)"),
+            "expected borrowed slice to be forwarded to mutating concrete method: {stream_rs}"
+        );
+        assert!(
+            compact.contains("zeroReader::Read(&*__gors_guard,&mut*b)")
+                || compact.contains("zeroReader::Read(&*__gors_guard,b)"),
+            "expected borrowed slice to be forwarded through pointer interface impl: {stream_rs}"
+        );
+        assert!(
+            !compact.contains("zeroReader::Read(self,(b).to_vec())"),
+            "expected no owned slice adapter when target also borrows: {stream_rs}"
+        );
+        assert!(
+            !compact.contains("zeroReader::Read(&*__gors_guard,(b).to_vec())"),
+            "expected no owned slice adapter in pointer interface impl: {stream_rs}"
+        );
+    }
+
+    #[test]
+    fn compile_program_multi_forwards_borrowed_slices_to_stdlib_interface_impls() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/stream"
+
+func main() {
+	_ = stream.New()
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("stream/stream.go").as_path(),
+            r#"
+package stream
+
+import "io"
+
+type zeroReader struct{}
+
+func New() io.Reader {
+	return zeroReader{}
+}
+
+func (zeroReader) Read(b []byte) (int, error) {
+	clear(b)
+	return len(b), nil
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let stream_rs = output.files.get("example__stream.rs").unwrap();
+        let compact: String = stream_rs.chars().filter(|c| !c.is_whitespace()).collect();
+
+        assert!(
+            compact.contains("implcrate::io::ReaderforzeroReader"),
+            "{stream_rs}"
+        );
+        assert!(
+            compact.contains("zeroReader::Read(self,&mut*b)")
+                || compact.contains("zeroReader::Read(self,b)"),
+            "expected borrowed slice to be forwarded to mutating concrete method: {stream_rs}"
+        );
+        assert!(
+            compact.contains("zeroReader::Read(&*__gors_guard,&mut*b)")
+                || compact.contains("zeroReader::Read(&*__gors_guard,b)"),
+            "expected borrowed slice to be forwarded through pointer interface impl: {stream_rs}"
+        );
+        assert!(
+            !compact.contains("zeroReader::Read(self,(b).to_vec())"),
+            "expected no owned slice adapter when target also borrows: {stream_rs}"
+        );
+        assert!(
+            !compact.contains("zeroReader::Read(&*__gors_guard,(b).to_vec())"),
+            "expected no owned slice adapter in pointer interface impl: {stream_rs}"
         );
     }
 
