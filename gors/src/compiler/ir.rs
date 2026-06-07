@@ -12955,7 +12955,7 @@ fn type_param_constraint_set_allows_actual_type_param(
     };
     let actual_terms = actual_constraints
         .iter()
-        .flat_map(|term| expanded_constraint_terms(term, env))
+        .flat_map(|term| env.expanded_constraint_terms(term))
         .collect::<Vec<_>>();
     !actual_terms.is_empty()
         && actual_terms.iter().all(|actual_term| {
@@ -12963,20 +12963,6 @@ fn type_param_constraint_set_allows_actual_type_param(
                 type_param_constraint_allows_arg(constraint, actual_term, arg, env)
             })
         })
-}
-
-fn expanded_constraint_terms(term: &GoType, env: &TypeEnv) -> Vec<GoType> {
-    let term = env.resolve_alias(term);
-    if let GoType::Named(name) = &term {
-        let terms = env.get_interface_type_terms(name);
-        if !terms.is_empty() {
-            return terms
-                .iter()
-                .flat_map(|term| expanded_constraint_terms(term, env))
-                .collect();
-        }
-    }
-    vec![term]
 }
 
 fn type_param_constraint_allows_arg(
@@ -12989,13 +12975,11 @@ fn type_param_constraint_allows_arg(
     if matches!(&constraint, GoType::Named(name) if name == "comparable") {
         return type_is_comparable_for_validation(actual, env);
     }
-    if let GoType::Named(name) = &constraint {
-        let terms = env.get_interface_type_terms(name);
-        if !terms.is_empty() {
-            return terms
-                .iter()
-                .any(|term| type_param_constraint_allows_arg(term, actual, arg, env));
-        }
+    let expanded_terms = env.expanded_constraint_terms(&constraint);
+    if !matches!(expanded_terms.as_slice(), [single] if single == &constraint) {
+        return expanded_terms
+            .iter()
+            .any(|term| type_param_constraint_allows_arg(term, actual, arg, env));
     }
     if matches!(actual, GoType::Named(name) if env.get_type_kind(name).is_none()) {
         return true;
@@ -20389,6 +20373,51 @@ mod tests {
                 super::RangeKind::Indexed,
             ]
         );
+    }
+
+    #[test]
+    fn classifies_range_over_instantiated_slice_constraint_as_indexed() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type SliceOf[E any] interface {
+                    ~[]E
+                }
+
+                func Index[S SliceOf[E], E comparable](values S, target E) int {
+                    for index, value := range values {
+                        if value == target {
+                            return index
+                        }
+                    }
+                    return -1
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "Index" => Some(func),
+            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected Index function");
+        };
+        let range = func
+            .body
+            .as_ref()
+            .expect("expected body")
+            .list
+            .iter()
+            .find_map(|stmt| match stmt {
+                crate::ast::Stmt::RangeStmt(range) => Some(range),
+                _ => None,
+            })
+            .expect("expected range statement");
+
+        assert_eq!(super::range_kind(&range.x, &env), super::RangeKind::Indexed);
     }
 
     #[test]

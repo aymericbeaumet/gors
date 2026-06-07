@@ -3467,8 +3467,66 @@ impl TypeEnv {
         let GoType::Named(name) = ty else {
             return None;
         };
-        self.get_type_param_constraints(name)
-            .and_then(|terms| terms.first().cloned())
+        let constraints = self.get_type_param_constraints(name)?;
+        let expanded = constraints
+            .iter()
+            .flat_map(|term| self.expanded_constraint_terms(term))
+            .collect::<Vec<_>>();
+        if let [single] = expanded.as_slice() {
+            Some(single.clone())
+        } else {
+            constraints.first().cloned()
+        }
+    }
+
+    pub fn expanded_constraint_terms(&self, term: &GoType) -> Vec<GoType> {
+        self.expanded_constraint_terms_inner(term, &mut HashSet::new())
+    }
+
+    fn expanded_constraint_terms_inner(
+        &self,
+        term: &GoType,
+        visiting: &mut HashSet<std::string::String>,
+    ) -> Vec<GoType> {
+        match self.resolve_alias(term) {
+            GoType::Named(name) | GoType::Interface(name) => {
+                self.expanded_interface_constraint_terms(&name, &[], term, visiting)
+            }
+            GoType::Instantiated { name, args } => {
+                self.expanded_interface_constraint_terms(&name, &args, term, visiting)
+            }
+            other => vec![other],
+        }
+    }
+
+    fn expanded_interface_constraint_terms(
+        &self,
+        name: &str,
+        args: &[GoType],
+        fallback: &GoType,
+        visiting: &mut HashSet<std::string::String>,
+    ) -> Vec<GoType> {
+        let terms = self.get_interface_type_terms(name);
+        if terms.is_empty() || !visiting.insert(name.to_string()) {
+            return vec![self.resolve_alias(fallback)];
+        }
+        let type_params = self.get_type_param_names(name);
+        let substitutions = (type_params.len() == args.len()).then(|| {
+            type_params
+                .into_iter()
+                .zip(args.iter().cloned())
+                .collect::<HashMap<_, _>>()
+        });
+        let expanded = terms
+            .into_iter()
+            .map(|term| match substitutions.as_ref() {
+                Some(substitutions) => substitute_type_params(term, substitutions),
+                None => term,
+            })
+            .flat_map(|term| self.expanded_constraint_terms_inner(&term, visiting))
+            .collect();
+        visiting.remove(name);
+        expanded
     }
 
     pub fn resolve_alias_or_type_param_constraint(&self, ty: &GoType) -> GoType {
@@ -5236,6 +5294,39 @@ func (o *OffsetWriter) WriteAt(p []byte, off int64) (int, error) {
         assert_eq!(
             GoType::infer_expr(assign.rhs.first().expect("expected rhs"), &env),
             GoType::Named("fs.FileMode".to_string())
+        );
+    }
+
+    #[test]
+    fn resolves_instantiated_interface_constraint_to_structural_shape() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package p
+
+                type SliceOf[E any] interface {
+                    ~[]E
+                }
+
+                type OrderedNumber interface {
+                    ~int | ~float64
+                }
+
+                func Index[S SliceOf[E], E comparable](values S) {}
+                func Larger[T OrderedNumber](value T) {}
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+
+        assert_eq!(
+            env.resolve_alias_or_type_param_constraint(&GoType::Named("S".to_string())),
+            GoType::Slice(Box::new(GoType::Unknown))
+        );
+        assert_eq!(
+            env.resolve_alias_or_type_param_constraint(&GoType::Named("T".to_string())),
+            GoType::Named("OrderedNumber".to_string())
         );
     }
 

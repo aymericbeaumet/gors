@@ -1,7 +1,5 @@
 package main
 
-import "fmt"
-
 type SliceOf[E any] interface {
 	~[]E
 }
@@ -32,5 +30,22 @@ func Larger[T OrderedNumber](left T, right T) T {
 
 func main() {
 	values := []int{3, 5, 8}
-	fmt.Println(Index(values, 5), Index(values, 13), Equal("go", "go"), Equal(3, 4), Larger(4, 7), Larger(2.5, 1.5))
+	if Index(values, 5) != 1 {
+		panic("generic slice constraint index mismatch")
+	}
+	if Index(values, 13) != -1 {
+		panic("generic slice constraint missing value mismatch")
+	}
+	if !Equal("go", "go") {
+		panic("generic comparable string equality mismatch")
+	}
+	if Equal(3, 4) {
+		panic("generic comparable int equality mismatch")
+	}
+	if Larger(4, 7) != 7 {
+		panic("generic ordered int comparison mismatch")
+	}
+	if Larger(2.5, 1.5) != 2.5 {
+		panic("generic ordered float comparison mismatch")
+	}
 }
