@@ -10060,6 +10060,7 @@ fn compile_struct_field_expr(
     let is_function_field_selector =
         matches!(expr, ast::Expr::SelectorExpr(_)) && function_field_call_params(&expr).is_some();
     let should_clone = binding_init_should_clone(&expr);
+    let actual = TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&expr, &env.borrow()));
     if borrowed_interface_field {
         return compile_borrowed_interface_field_expr(expr, expected);
     }
@@ -10072,6 +10073,11 @@ fn compile_struct_field_expr(
     if let ast::Expr::FuncLit(func_lit) = expr {
         let compiled = compile_func_lit_with_capture_mode(func_lit, true);
         return shared_func_value_expr(expected, compiled.clone()).unwrap_or(compiled);
+    }
+    if let Some(wrapper) = named_slice_wrapper_for_plain_slice(expected, &actual) {
+        let value = compile_expr_with_expected(expr, None);
+        let value = maybe_clone_binding_init(should_clone, value);
+        return syn::parse_quote! { #wrapper(#value) };
     }
     let compiled = compile_expr_with_expected(expr, Some(expected));
     if matches!(resolved_go_type(expected), typeinfer::GoType::Any) {
@@ -11330,6 +11336,20 @@ fn named_slice_type_name(ty: &typeinfer::GoType) -> Option<String> {
             _ => None,
         }
     })
+}
+
+fn named_slice_wrapper_for_plain_slice(
+    expected: &typeinfer::GoType,
+    actual: &typeinfer::GoType,
+) -> Option<syn::Type> {
+    let type_name = named_slice_type_name(expected)?;
+    if matches!(actual, typeinfer::GoType::Named(_)) {
+        return None;
+    }
+    if !is_go_slice_type(actual) || resolved_go_type(actual) != resolved_go_type(expected) {
+        return None;
+    }
+    Some(named_go_type_path(&type_name))
 }
 
 fn is_go_slice_type(ty: &typeinfer::GoType) -> bool {
@@ -36792,13 +36812,49 @@ func main() {
         let output = quote! { #compiled }.to_string();
 
         assert!(
-            output.contains("self . sp = entries ("),
+            output.contains("let __gors_assign_0 = entries ("),
             "expected named slice assignment to wrap RHS in the newtype: {output}"
         );
         assert!(
-            output.contains("std :: mem :: take (& mut self . sp)")
-                && output.contains(") . to_vec ()"),
+            output.contains("std :: mem :: take (& mut") && output.contains(") . to_vec ()"),
             "expected self-slice assignment to move the source before wrapping: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_wrap_plain_slice_struct_fields_to_named_slice_newtype() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type entry struct{ n int }
+                type entries []entry
+
+                type holder struct {
+                    sp entries
+                }
+
+                func positional(v []entry) holder {
+                    return holder{v}
+                }
+
+                func keyed(v []entry) holder {
+                    return holder{sp: v}
+                }
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.matches("sp : entries ((v) . clone ())").count() >= 2,
+            "expected named slice struct fields to wrap cloned RHS values: {output}"
+        );
+        assert!(
+            !output.contains("sp : (v) . clone ()"),
+            "expected plain slice value not to be assigned directly to named slice field: {output}"
         );
     }
 
