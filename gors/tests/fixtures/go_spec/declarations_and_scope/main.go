@@ -1,7 +1,5 @@
 package main
 
-import "fmt"
-
 const packageConst = 2
 
 type Doubler interface {
@@ -31,5 +29,13 @@ func recursive(value int) int {
 
 func main() {
 	packageVar := packageVar
-	fmt.Println(packageConst, callDouble(packageVar), recursive(5))
+	if packageConst != 2 {
+		panic("package constant changed")
+	}
+	if callDouble(packageVar) != 6 {
+		panic("interface method call changed")
+	}
+	if recursive(5) != 5 {
+		panic("recursive function changed")
+	}
 }

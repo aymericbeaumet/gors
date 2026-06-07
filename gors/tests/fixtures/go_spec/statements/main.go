@@ -1,10 +1,13 @@
 package main
 
-import "fmt"
-
 func main() {
 	total := 0
-	defer fmt.Println("defer", total == 6)
+	deferredValue := total == 6
+	defer func(value bool) {
+		if value {
+			panic("defer argument evaluation changed")
+		}
+	}(deferredValue)
 	for i := 0; i < 4; i++ {
 		if i == 1 {
 			continue
@@ -63,5 +66,13 @@ Label:
 		goto Label
 	}
 	go func() {}()
-	fmt.Println(total, labeled, nilMatched)
+	if total != 16 {
+		panic("statement total changed")
+	}
+	if labeled != 3 {
+		panic("labeled continue result changed")
+	}
+	if nilMatched != 1 {
+		panic("nil type switch result changed")
+	}
 }
