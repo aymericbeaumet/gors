@@ -331,16 +331,11 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
         &parsed_file_refs,
         &imported_type_envs,
     );
-    for (_, ast) in &parsed_files {
-        let mut inference_env = package_type_env.clone();
-        crate::compiler::merge_import_type_envs(
-            &mut inference_env,
-            ast,
-            &BTreeMap::new(),
-            &imported_type_envs,
-        );
-        package_type_env.rescan_file_top_level_vars(ast, &inference_env);
-    }
+    refresh_top_level_vars_with_imports(
+        &mut package_type_env,
+        &parsed_file_refs,
+        &imported_type_envs,
+    );
     let view_method_seed = crate::compiler::fixed_array_view_method_seed_for_files(
         &parsed_file_refs,
         &package_type_env,
@@ -495,6 +490,136 @@ fn refresh_borrowed_slice_params_with_imports(
             break;
         }
     }
+}
+
+fn refresh_top_level_vars_with_imports(
+    package_type_env: &mut TypeEnv,
+    files: &[&crate::ast::File<'_>],
+    imported_type_envs: &BTreeMap<String, crate::compiler::PackageFacts>,
+) {
+    for ast in files {
+        let mut inference_env = package_type_env.clone();
+        crate::compiler::merge_import_type_envs(
+            &mut inference_env,
+            ast,
+            &BTreeMap::new(),
+            imported_type_envs,
+        );
+        package_type_env.rescan_file_top_level_vars(ast, &inference_env);
+    }
+    merge_imported_receiver_facts_for_top_level_vars(package_type_env, files, imported_type_envs);
+}
+
+fn merge_imported_receiver_facts_for_top_level_vars(
+    package_type_env: &mut TypeEnv,
+    files: &[&crate::ast::File<'_>],
+    imported_type_envs: &BTreeMap<String, crate::compiler::PackageFacts>,
+) {
+    let receiver_names_by_local = imported_receiver_names_by_local_name(package_type_env);
+    if receiver_names_by_local.is_empty() {
+        return;
+    }
+    for ast in files {
+        for import in ast.imports() {
+            let import_path = import.path.value.trim_matches('"');
+            let Some(package_facts) = imported_type_envs.get(import_path) else {
+                continue;
+            };
+            let Some(local_name) =
+                import_type_env_local_name(&import, package_facts.package_name())
+            else {
+                continue;
+            };
+            let Some(receiver_names) = receiver_names_by_local.get(&local_name) else {
+                continue;
+            };
+            package_type_env.merge_package_receiver_facts(
+                &local_name,
+                package_facts.type_env(),
+                receiver_names,
+            );
+        }
+    }
+}
+
+fn imported_receiver_names_by_local_name(
+    package_type_env: &TypeEnv,
+) -> BTreeMap<String, HashSet<String>> {
+    let mut receiver_names = BTreeMap::new();
+    for (_, go_type) in package_type_env.top_level_var_types_snapshot() {
+        collect_imported_receiver_names_from_type(&go_type, &mut receiver_names);
+    }
+    receiver_names
+}
+
+fn collect_imported_receiver_names_from_type(
+    go_type: &crate::compiler::typeinfer::GoType,
+    receiver_names: &mut BTreeMap<String, HashSet<String>>,
+) {
+    use crate::compiler::typeinfer::GoType;
+
+    match go_type {
+        GoType::Named(name) | GoType::Interface(name) => {
+            if let Some((package_name, receiver_name)) = name.split_once('.') {
+                receiver_names
+                    .entry(package_name.to_string())
+                    .or_default()
+                    .insert(receiver_name.to_string());
+            }
+        }
+        GoType::Pointer(inner) | GoType::Slice(inner) | GoType::Array(inner) => {
+            collect_imported_receiver_names_from_type(inner, receiver_names);
+        }
+        GoType::Map(key, value) => {
+            collect_imported_receiver_names_from_type(key, receiver_names);
+            collect_imported_receiver_names_from_type(value, receiver_names);
+        }
+        GoType::Chan { elem, .. } => {
+            collect_imported_receiver_names_from_type(elem, receiver_names);
+        }
+        GoType::Func {
+            params, results, ..
+        } => {
+            for go_type in params.iter().chain(results.iter()) {
+                collect_imported_receiver_names_from_type(go_type, receiver_names);
+            }
+        }
+        GoType::Bool
+        | GoType::Int
+        | GoType::Int8
+        | GoType::Int16
+        | GoType::Int32
+        | GoType::Int64
+        | GoType::Uint
+        | GoType::Uint8
+        | GoType::Uint16
+        | GoType::Uint32
+        | GoType::Uint64
+        | GoType::Uintptr
+        | GoType::Float32
+        | GoType::Float64
+        | GoType::Complex64
+        | GoType::Complex128
+        | GoType::String
+        | GoType::Any
+        | GoType::Error
+        | GoType::Unit
+        | GoType::Unknown => {}
+    }
+}
+
+fn import_type_env_local_name(
+    import: &crate::ast::ImportSpec<'_>,
+    package_name: &str,
+) -> Option<String> {
+    import
+        .name
+        .as_ref()
+        .and_then(|name| match name.name {
+            "." | "_" => None,
+            other => Some(other.to_string()),
+        })
+        .or_else(|| Some(package_name.to_string()))
 }
 
 struct DeclRecoveryPlan {
@@ -964,6 +1089,7 @@ fn scan_type_env_uncached(import_path: &str) -> Option<(String, TypeEnv)> {
     runtime_primitives::supplement_type_env(import_path, &mut env);
     let imported_type_envs = scan_imported_type_envs(import_path, &parsed_file_refs);
     refresh_borrowed_slice_params_with_imports(&mut env, &parsed_file_refs, &imported_type_envs);
+    refresh_top_level_vars_with_imports(&mut env, &parsed_file_refs, &imported_type_envs);
 
     package_name.map(|name| (name, env))
 }
@@ -2282,7 +2408,63 @@ fn is_rust_keyword(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compiler::typeinfer::{GoType, TypeKind};
     use quote::ToTokens;
+
+    #[test]
+    fn refresh_top_level_vars_with_imports_promotes_imported_receiver_facts() {
+        let common = crate::parser::parse_file(
+            "common.go",
+            r#"
+package tar
+
+import "internal/godebug"
+
+var tarinsecurepath = godebug.New("tarinsecurepath")
+"#,
+        )
+        .unwrap();
+        let reader = crate::parser::parse_file(
+            "reader.go",
+            r#"
+package tar
+
+func read() string {
+	return tarinsecurepath.Value()
+}
+"#,
+        )
+        .unwrap();
+        let mut godebug_env = TypeEnv::new();
+        godebug_env.set_type_kind("Setting", TypeKind::Struct);
+        godebug_env.set_func(
+            "New",
+            vec![GoType::Pointer(Box::new(GoType::Named(
+                "Setting".to_string(),
+            )))],
+        );
+        godebug_env.set_func("Setting.Value", vec![GoType::String]);
+        godebug_env.set_pointer_receiver_method("Setting.Value");
+        let imported_type_envs = BTreeMap::from([(
+            "internal/godebug".to_string(),
+            crate::compiler::PackageFacts::new("godebug".to_string(), godebug_env),
+        )]);
+        let mut package_env = TypeEnv::new();
+        let files = [&common, &reader];
+        package_env.scan_files(&files);
+
+        refresh_top_level_vars_with_imports(&mut package_env, &files, &imported_type_envs);
+
+        assert_eq!(
+            package_env.get_top_level_var("tarinsecurepath"),
+            Some(GoType::Pointer(Box::new(GoType::Named(
+                "godebug.Setting".to_string()
+            ))))
+        );
+        assert!(package_env.has_func("godebug.Setting.Value"));
+        assert!(package_env.method_has_pointer_receiver("godebug.Setting.Value"));
+        assert!(!package_env.has_func("godebug.New"));
+    }
 
     #[test]
     fn dedupe_use_items_matches_use_trees_structurally() {

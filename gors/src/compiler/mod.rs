@@ -3779,16 +3779,65 @@ impl PackageFacts {
         }
     }
 
-    fn package_name(&self) -> &str {
+    pub(crate) fn package_name(&self) -> &str {
         &self.package_name
     }
 
-    fn type_env(&self) -> &typeinfer::TypeEnv {
+    pub(crate) fn type_env(&self) -> &typeinfer::TypeEnv {
         &self.type_env
+    }
+
+    pub(crate) fn type_env_mut(&mut self) -> &mut typeinfer::TypeEnv {
+        &mut self.type_env
     }
 }
 
 type PackageFactMap = BTreeMap<String, PackageFacts>;
+
+fn local_top_level_var_type_snapshot(
+    local_type_envs: &PackageFactMap,
+) -> Vec<(String, Vec<(String, typeinfer::GoType)>)> {
+    local_type_envs
+        .iter()
+        .map(|(path, facts)| {
+            (
+                path.clone(),
+                facts.type_env().top_level_var_types_snapshot(),
+            )
+        })
+        .collect()
+}
+
+fn refresh_local_top_level_var_types(
+    packages: &[crate::parser::ParsedPackage],
+    local_type_envs: &mut PackageFactMap,
+    stdlib_type_envs: &PackageFactMap,
+) {
+    for _ in 0..local_type_envs.len().max(1) {
+        let before = local_top_level_var_type_snapshot(local_type_envs);
+        let inference_type_envs = local_type_envs.clone();
+        for pkg in packages {
+            let Some(current_facts) = inference_type_envs.get(&pkg.import_path) else {
+                continue;
+            };
+            let mut inference_env = current_facts.type_env().clone();
+            merge_import_type_envs(
+                &mut inference_env,
+                &pkg.ast,
+                &inference_type_envs,
+                stdlib_type_envs,
+            );
+            if let Some(facts) = local_type_envs.get_mut(&pkg.import_path) {
+                facts
+                    .type_env_mut()
+                    .rescan_file_top_level_vars(&pkg.ast, &inference_env);
+            }
+        }
+        if local_top_level_var_type_snapshot(local_type_envs) == before {
+            break;
+        }
+    }
+}
 
 struct CompileSession {
     source_map_config: Option<Vec<(String, String)>>,
@@ -3862,6 +3911,11 @@ impl PackageGraph {
                 stdlib_type_envs.insert(stdlib_path.clone(), PackageFacts::new(package_name, env));
             }
         }
+        refresh_local_top_level_var_types(
+            &program.imports,
+            &mut local_type_envs,
+            &stdlib_type_envs,
+        );
 
         let import_package_names = local_type_envs
             .iter()
@@ -7876,6 +7930,10 @@ fn method_key(type_name: &str, method_name: &str) -> String {
     format!("{type_name}.{method_name}")
 }
 
+fn receiver_type_name_candidates(name: &str) -> Vec<String> {
+    interface_type_env::rust_path_name_candidates(name)
+}
+
 fn view_method_key_for_selector(selector: &ast::SelectorExpr) -> Option<String> {
     let receiver_type =
         TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&selector.x, &env.borrow()));
@@ -7967,9 +8025,13 @@ fn call_returns_mutable_slice_view_by_type(call: &ast::CallExpr) -> bool {
 }
 
 fn method_uses_borrowed_pointer_receiver(receiver_name: &str, method_name: &str) -> bool {
-    let key = method_key(receiver_name, method_name);
-    borrowed_views::has_borrowed_pointer_view_method(&key)
-        || borrowed_views::has_mutable_slice_view_method(&key)
+    receiver_type_name_candidates(receiver_name)
+        .into_iter()
+        .any(|receiver_name| {
+            let key = method_key(&receiver_name, method_name);
+            borrowed_views::has_borrowed_pointer_view_method(&key)
+                || borrowed_views::has_mutable_slice_view_method(&key)
+        })
 }
 
 #[derive(Clone, Default)]
@@ -11754,14 +11816,17 @@ fn pointer_receiver_method_call_expr(
     method: syn::Ident,
     args: syn::punctuated::Punctuated<syn::Expr, Token![,]>,
 ) -> syn::Expr {
-    let receiver_type =
-        TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&selector.x, &env.borrow()));
-    let Some(receiver_name) = named_method_receiver_type_name(receiver_type) else {
+    let receiver_type = method_receiver_go_type(&selector.x);
+    let method_name = method.to_string();
+    let Some(receiver_name) = TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        pointer_receiver_method_type_name(&receiver_type, &method_name, &env)
+    }) else {
         return compile_error_expr("invalid pointer receiver method call");
     };
     let receiver_ty = named_go_type_path(&receiver_name);
     let receiver_expr = *selector.x;
-    if method_uses_borrowed_pointer_receiver(&receiver_name, &method.to_string()) {
+    if method_uses_borrowed_pointer_receiver(&receiver_name, &method_name) {
         let receiver = borrowed_pointer_receiver_arg_expr_from_owned(receiver_expr);
         return syn::parse_quote! { <#receiver_ty>::#method(#receiver, #args) };
     }
@@ -12816,11 +12881,29 @@ fn method_has_pointer_receiver_for_type(
 ) -> bool {
     TYPE_ENV.with(|env| {
         let env = env.borrow();
-        let Some(receiver_name) = named_method_receiver_type_name(receiver_type.clone()) else {
-            return false;
-        };
-        env.method_has_pointer_receiver(&method_key(&receiver_name, method_name))
+        pointer_receiver_method_type_name(receiver_type, method_name, &env).is_some()
     })
+}
+
+fn pointer_receiver_method_type_name(
+    receiver_type: &typeinfer::GoType,
+    method_name: &str,
+    env: &typeinfer::TypeEnv,
+) -> Option<String> {
+    let receiver_name = named_method_receiver_type_name(receiver_type.clone())?;
+    receiver_type_name_candidates(&receiver_name)
+        .into_iter()
+        .find(|candidate| env.method_has_pointer_receiver(&method_key(candidate, method_name)))
+}
+
+fn method_receiver_go_type(expr: &ast::Expr) -> typeinfer::GoType {
+    top_level_var_expr_and_type_from_ref(expr)
+        .map(|(_, go_type, _)| go_type)
+        .unwrap_or_else(|| TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(expr, &env.borrow())))
+}
+
+fn method_has_pointer_receiver_for_expr(expr: &ast::Expr, method_name: &str) -> bool {
+    method_has_pointer_receiver_for_type(&method_receiver_go_type(expr), method_name)
 }
 
 fn shared_selector_owner_type(expr: &ast::Expr) -> Option<syn::Type> {
@@ -18103,11 +18186,7 @@ impl From<ast::Expr<'_>> for syn::Expr {
                                 args.push(arg);
                             }
                         }
-                        if method_has_pointer_receiver_for_type(
-                            &TYPE_ENV
-                                .with(|env| typeinfer::GoType::infer_expr(&sel.x, &env.borrow())),
-                            sel.sel.name,
-                        ) {
+                        if method_has_pointer_receiver_for_expr(&sel.x, sel.sel.name) {
                             return pointer_receiver_method_call_expr(sel, method, args);
                         }
                         if let Some(target) = pointer_field_method_target(&sel) {
@@ -31873,17 +31952,105 @@ func Read() string {
             "{debugpkg_rs}"
         );
         assert!(
-            main_rs.contains("((*debugpkg::Debug).clone().lock().unwrap()).Value()")
+            main_rs.contains("<debugpkg::Setting>::Value(((*debugpkg::Debug).clone()).clone())")
                 || main_rs.contains(
-                    "((debugpkg::Debug).lock().unwrap().clone().lock().unwrap()).Value()"
+                    "< debugpkg :: Setting > :: Value (((* debugpkg :: Debug) . clone ()) . clone ())"
                 ),
             "{main_rs}"
         );
+        assert!(!main_rs.contains(".Value()"), "{main_rs}");
         assert!(
-            debugpkg_rs.contains("((*Debug).clone().lock().unwrap()).Value()")
+            debugpkg_rs.contains("<Setting>::Value(((*Debug).clone()).clone())")
                 || debugpkg_rs
-                    .contains("((Debug).lock().unwrap().clone().lock().unwrap()).Value()"),
+                    .contains("<Setting>::Value(((Debug).lock().unwrap().clone()).clone())")
+                || debugpkg_rs.contains("< Setting > :: Value (((* Debug) . clone ()) . clone ())")
+                || debugpkg_rs.contains(
+                    "< Setting > :: Value (((Debug) . lock () . unwrap () . clone ()) . clone ())"
+                ),
             "{debugpkg_rs}"
+        );
+        assert!(!debugpkg_rs.contains(".Value()"), "{debugpkg_rs}");
+    }
+
+    #[test]
+    fn compile_program_multi_resolves_imported_constructor_pointer_var_method_receivers() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/tarpkg"
+
+func main() {
+	_ = tarpkg.Read()
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("debugpkg/debugpkg.go").as_path(),
+            r#"
+package debugpkg
+
+type Setting struct {
+	value string
+	count int
+}
+
+func NewSetting(value string) *Setting {
+	return &Setting{value: value}
+}
+
+func (s *Setting) Value() string {
+	return s.value
+}
+
+func (s *Setting) IncNonDefault() {
+	s.count = s.count + 1
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("tarpkg/tarpkg.go").as_path(),
+            r#"
+package tarpkg
+
+import "example/debugpkg"
+
+var Debug = debugpkg.NewSetting("on")
+
+func Read() string {
+	if Debug.Value() == "on" {
+		Debug.IncNonDefault()
+	}
+	return Debug.Value()
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let tarpkg_rs = output.files.get("example__tarpkg.rs").unwrap();
+        let compact_tarpkg_rs = tarpkg_rs.split_whitespace().collect::<String>();
+        assert!(
+            compact_tarpkg_rs.contains("crate::builtin::GorsPtr<debugpkg::Setting>")
+                || compact_tarpkg_rs.contains("crate::builtin::GorsPtr<crate::debugpkg::Setting>"),
+            "{tarpkg_rs}"
+        );
+        assert!(
+            compact_tarpkg_rs.contains("<debugpkg::Setting>::Value(")
+                || compact_tarpkg_rs.contains("<crate::debugpkg::Setting>::Value("),
+            "{tarpkg_rs}"
+        );
+        assert!(
+            compact_tarpkg_rs.contains("<debugpkg::Setting>::IncNonDefault(")
+                || compact_tarpkg_rs.contains("<crate::debugpkg::Setting>::IncNonDefault("),
+            "{tarpkg_rs}"
+        );
+        assert!(!compact_tarpkg_rs.contains(".Value()"), "{tarpkg_rs}");
+        assert!(
+            !compact_tarpkg_rs.contains(".IncNonDefault()"),
+            "{tarpkg_rs}"
         );
     }
 

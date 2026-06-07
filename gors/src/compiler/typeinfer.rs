@@ -2235,6 +2235,11 @@ fn qualify_package_types(
         .collect()
 }
 
+fn method_receiver_name(method_key: &str) -> Option<&str> {
+    let (receiver, _) = method_key.rsplit_once('.')?;
+    (!receiver.is_empty()).then_some(receiver)
+}
+
 fn qualify_package_type_kind(
     package_name: &str,
     kind: &TypeKind,
@@ -2665,6 +2670,16 @@ impl TypeEnv {
 
     pub fn get_top_level_var(&self, name: &str) -> Option<GoType> {
         self.top_level_var_types.get(name).cloned()
+    }
+
+    pub fn top_level_var_types_snapshot(&self) -> Vec<(std::string::String, GoType)> {
+        let mut snapshot = self
+            .top_level_var_types
+            .iter()
+            .map(|(name, ty)| (name.clone(), ty.clone()))
+            .collect::<Vec<_>>();
+        snapshot.sort_by(|(left, _), (right, _)| left.cmp(right));
+        snapshot
     }
 
     pub fn get_var(&self, name: &str) -> Option<GoType> {
@@ -3599,6 +3614,162 @@ impl TypeEnv {
         }
     }
 
+    pub fn merge_package_receiver_facts(
+        &mut self,
+        package_name: &str,
+        package_env: &TypeEnv,
+        receiver_names: &HashSet<std::string::String>,
+    ) {
+        if receiver_names.is_empty() {
+            return;
+        }
+        for (name, returns) in &package_env.funcs {
+            if method_receiver_name(name).is_some_and(|receiver| receiver_names.contains(receiver))
+            {
+                let qualified_name = qualify_package_member_name(package_name, name, package_env);
+                self.set_func(
+                    &qualified_name,
+                    qualify_package_types(package_name, returns, package_env),
+                );
+            }
+        }
+        for (name, params) in &package_env.func_params {
+            if method_receiver_name(name).is_some_and(|receiver| receiver_names.contains(receiver))
+            {
+                let qualified_name = qualify_package_member_name(package_name, name, package_env);
+                self.set_func_params(
+                    &qualified_name,
+                    qualify_package_types(package_name, params, package_env),
+                );
+            }
+        }
+        for (name, indices) in &package_env.owned_interface_params {
+            if method_receiver_name(name).is_some_and(|receiver| receiver_names.contains(receiver))
+            {
+                self.set_owned_interface_params(
+                    &qualify_package_member_name(package_name, name, package_env),
+                    indices.clone(),
+                );
+            }
+        }
+        for (name, indices) in &package_env.borrowed_slice_params {
+            if method_receiver_name(name).is_some_and(|receiver| receiver_names.contains(receiver))
+            {
+                self.set_borrowed_slice_params(
+                    &qualify_package_member_name(package_name, name, package_env),
+                    indices.clone(),
+                );
+            }
+        }
+        for name in &package_env.pointer_receiver_methods {
+            if method_receiver_name(name).is_some_and(|receiver| receiver_names.contains(receiver))
+            {
+                self.set_pointer_receiver_method(&qualify_package_member_name(
+                    package_name,
+                    name,
+                    package_env,
+                ));
+            }
+        }
+        for (name, constraints) in &package_env.func_type_param_constraints {
+            if method_receiver_name(name).is_some_and(|receiver| receiver_names.contains(receiver))
+            {
+                let qualified_name = qualify_package_member_name(package_name, name, package_env);
+                self.set_func_type_param_constraints(
+                    &qualified_name,
+                    qualify_package_constraint_map(package_name, constraints, package_env),
+                );
+            }
+        }
+        for (name, start) in &package_env.func_variadic_start {
+            if method_receiver_name(name).is_some_and(|receiver| receiver_names.contains(receiver))
+            {
+                self.set_func_variadic_start(
+                    &qualify_package_member_name(package_name, name, package_env),
+                    *start,
+                );
+            }
+        }
+        for (name, assertions) in &package_env.func_interface_assertions {
+            if method_receiver_name(name).is_some_and(|receiver| receiver_names.contains(receiver))
+            {
+                self.set_func_interface_assertions(
+                    &qualify_package_member_name(package_name, name, package_env),
+                    qualify_package_interface_names(package_name, assertions, package_env),
+                );
+            }
+        }
+        for name in receiver_names {
+            let qualified_name = qualify_package_member_name(package_name, name, package_env);
+            if let Some(kind) = package_env.type_kinds.get(name) {
+                self.set_type_kind(
+                    &qualified_name,
+                    qualify_package_type_kind(package_name, kind, package_env),
+                );
+            }
+            if let Some(count) = package_env.type_param_counts.get(name) {
+                self.set_type_param_count(&qualified_name, *count);
+            }
+            if let Some(type_params) = package_env.type_param_names.get(name) {
+                self.set_type_param_names(&qualified_name, type_params.clone());
+            }
+            if package_env.type_aliases.contains(name) {
+                self.set_type_alias(
+                    &qualified_name,
+                    package_env.type_alias_targets.get(name).map(|target| {
+                        qualify_package_interface_name(package_name, target, package_env)
+                    }),
+                    package_env.instantiated_type_aliases.contains(name),
+                );
+            }
+            if let Some(methods) = package_env.interface_methods.get(name) {
+                self.set_interface_methods(&qualified_name, methods.clone());
+            }
+            if let Some(embedded) = package_env.interface_embedded.get(name) {
+                self.set_interface_embedded(
+                    &qualified_name,
+                    embedded
+                        .iter()
+                        .map(|embedded_name| {
+                            qualify_package_interface_name(package_name, embedded_name, package_env)
+                        })
+                        .collect(),
+                );
+            }
+            if let Some(terms) = package_env.interface_type_terms.get(name) {
+                self.set_interface_type_terms(
+                    &qualified_name,
+                    terms
+                        .iter()
+                        .map(|term| qualify_package_type(package_name, term, package_env))
+                        .collect(),
+                );
+            }
+            if let Some(fields) = package_env.struct_fields.get(name) {
+                self.set_struct_fields(
+                    &qualified_name,
+                    fields
+                        .iter()
+                        .map(|(field_name, ty)| {
+                            (
+                                field_name.clone(),
+                                qualify_package_type(package_name, ty, package_env),
+                            )
+                        })
+                        .collect(),
+                );
+            }
+            if let Some(fields) = package_env.struct_embedded_fields.get(name) {
+                self.set_struct_embedded_fields(&qualified_name, fields.clone());
+            }
+            if let Some(fields) = package_env.struct_field_array_lengths.get(name) {
+                for (field_name, len) in fields {
+                    self.set_struct_field_array_len(&qualified_name, field_name, *len);
+                }
+            }
+        }
+    }
+
     /// Pre-scan a Go AST file to populate type declarations and function signatures.
     pub fn scan_file(&mut self, file: &ast::File) {
         for decl in &file.decls {
@@ -4113,6 +4284,73 @@ mod tests {
             GoType::Pointer(Box::new(GoType::Named("bytes.Reader".to_string())))
         );
         assert!(env.named_type_implements_interface("bytes.Reader", "io.Reader", true));
+    }
+
+    #[test]
+    fn rescan_file_top_level_vars_uses_imported_function_returns() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package tarpkg
+
+                import "example/debugpkg"
+
+                var Debug = debugpkg.NewSetting("on")
+            "#,
+        )
+        .unwrap();
+        let mut debug_env = TypeEnv::new();
+        debug_env.set_type_kind("Setting", TypeKind::Struct);
+        debug_env.set_func(
+            "NewSetting",
+            vec![GoType::Pointer(Box::new(GoType::Named(
+                "Setting".to_string(),
+            )))],
+        );
+
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let mut inference_env = env.clone();
+        inference_env.merge_package("debugpkg", &debug_env);
+
+        env.rescan_file_top_level_vars(&file, &inference_env);
+
+        assert_eq!(
+            env.get_top_level_var("Debug"),
+            Some(GoType::Pointer(Box::new(GoType::Named(
+                "debugpkg.Setting".to_string()
+            ))))
+        );
+    }
+
+    #[test]
+    fn merge_package_receiver_facts_copies_selected_methods_only() {
+        let mut package_env = TypeEnv::new();
+        package_env.set_type_kind("Setting", TypeKind::Struct);
+        package_env.set_func(
+            "New",
+            vec![GoType::Pointer(Box::new(GoType::Named(
+                "Setting".to_string(),
+            )))],
+        );
+        package_env.set_func("Setting.Value", vec![GoType::String]);
+        package_env.set_func_params("Setting.Value", Vec::new());
+        package_env.set_pointer_receiver_method("Setting.Value");
+
+        let mut env = TypeEnv::new();
+        env.merge_package_receiver_facts(
+            "godebug",
+            &package_env,
+            &HashSet::from(["Setting".to_string()]),
+        );
+
+        assert!(!env.has_func("godebug.New"));
+        assert!(env.has_func("godebug.Setting.Value"));
+        assert!(env.method_has_pointer_receiver("godebug.Setting.Value"));
+        assert_eq!(
+            env.get_type_kind("godebug.Setting"),
+            Some(&TypeKind::Struct)
+        );
     }
 
     #[test]
