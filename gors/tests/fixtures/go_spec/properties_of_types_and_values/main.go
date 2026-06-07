@@ -1,7 +1,5 @@
 package main
 
-import "fmt"
-
 type Score struct {
 	Value int
 }
@@ -16,5 +14,13 @@ func main() {
 	left := Score{Value: 3}
 	right := Score{Value: 3}
 	method := left.Double
-	fmt.Println(alias, left == right, method())
+	if alias != 12 {
+		panic("value alias changed")
+	}
+	if left != right {
+		panic("comparable struct equality changed")
+	}
+	if method() != 6 {
+		panic("method value result changed")
+	}
 }

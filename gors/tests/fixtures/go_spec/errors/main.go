@@ -1,7 +1,5 @@
 package main
 
-import "fmt"
-
 type valueError struct{}
 
 func (valueError) Error() string {
@@ -23,17 +21,26 @@ func choose(flag bool) error {
 
 func main() {
 	var err error
-	fmt.Println(err == nil)
+	if err != nil {
+		panic("zero error is not nil")
+	}
 
 	err = valueError{}
-	fmt.Println(err.Error())
-	fmt.Println(err != nil)
+	if err == nil || err.Error() != "value error" {
+		panic("value error changed")
+	}
 
 	err = &pointerError{}
-	fmt.Println(err.Error())
+	if err == nil || err.Error() != "pointer error" {
+		panic("pointer error changed")
+	}
 
 	a := choose(true)
 	b := choose(false)
-	fmt.Println(a.Error())
-	fmt.Println(b.Error())
+	if a == nil || a.Error() != "value error" {
+		panic("chosen value error changed")
+	}
+	if b == nil || b.Error() != "pointer error" {
+		panic("chosen pointer error changed")
+	}
 }

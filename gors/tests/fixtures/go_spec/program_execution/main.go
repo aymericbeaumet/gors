@@ -1,7 +1,8 @@
 package main
 
-import "fmt"
-
 func main() {
-	fmt.Println("main ok")
+	result := "main ok"
+	if result != "main ok" {
+		panic("main execution changed")
+	}
 }
