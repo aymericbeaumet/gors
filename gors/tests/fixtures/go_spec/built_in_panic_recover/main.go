@@ -1,18 +1,15 @@
 package main
 
-import "fmt"
-
 func safe() {
 	defer func() {
-		if recover() != nil {
-			fmt.Println("recovered")
+		if recover() == nil {
+			panic("deferred recover did not observe panic")
 		}
 	}()
 	panic("boom")
-	fmt.Println("unreachable")
+	panic("function continued after recovered panic")
 }
 
 func main() {
 	safe()
-	fmt.Println("after")
 }

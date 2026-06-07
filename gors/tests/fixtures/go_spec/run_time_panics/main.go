@@ -1,19 +1,18 @@
 package main
 
-import "fmt"
-
 func triggerOutOfBounds(s []int, idx int) {
 	_ = s[idx]
 }
 
 func testOutOfBounds() {
 	defer func() {
-		if r := recover(); r != nil {
-			fmt.Println("recovered out of bounds")
+		if r := recover(); r == nil {
+			panic("out-of-bounds panic was not recovered")
 		}
 	}()
 	s := []int{1}
 	triggerOutOfBounds(s, 2)
+	panic("out-of-bounds panic continued after recovery")
 }
 
 func triggerNilPointer(p *int) {
@@ -22,11 +21,12 @@ func triggerNilPointer(p *int) {
 
 func testNilPointer() {
 	defer func() {
-		if r := recover(); r != nil {
-			fmt.Println("recovered nil pointer")
+		if r := recover(); r == nil {
+			panic("nil pointer panic was not recovered")
 		}
 	}()
 	triggerNilPointer(nil)
+	panic("nil pointer panic continued after recovery")
 }
 
 func triggerDivideByZero(a, b int) {
@@ -35,11 +35,12 @@ func triggerDivideByZero(a, b int) {
 
 func testDivideByZero() {
 	defer func() {
-		if r := recover(); r != nil {
-			fmt.Println("recovered divide by zero")
+		if r := recover(); r == nil {
+			panic("divide-by-zero panic was not recovered")
 		}
 	}()
 	triggerDivideByZero(1, 0)
+	panic("divide-by-zero panic continued after recovery")
 }
 
 func main() {
