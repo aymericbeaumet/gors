@@ -157,6 +157,7 @@ thread_local! {
     static MUTABLE_TOP_LEVEL_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static PACKAGE_MUTABLE_TOP_LEVEL_VARS: RefCell<Option<HashSet<String>>> = const { RefCell::new(None) };
     static REQUIRED_EXTERNAL_IMPORTED_INTERFACE_IMPLS: RefCell<BTreeSet<(String, String, bool)>> = const { RefCell::new(BTreeSet::new()) };
+    static FUNCTION_THREAD_SAFE_TYPE_PARAMS: RefCell<BTreeMap<String, BTreeSet<String>>> = const { RefCell::new(BTreeMap::new()) };
 }
 
 struct LocalTypeEnvScopeGuard {
@@ -169,6 +170,36 @@ struct MutableTopLevelVarsGuard {
 
 struct PackageMutableTopLevelVarsGuard {
     previous: Option<HashSet<String>>,
+}
+
+struct FunctionThreadSafeTypeParamsGuard {
+    previous: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl FunctionThreadSafeTypeParamsGuard {
+    fn set(type_params: BTreeMap<String, BTreeSet<String>>) -> Self {
+        let previous = FUNCTION_THREAD_SAFE_TYPE_PARAMS
+            .with(|params| std::mem::replace(&mut *params.borrow_mut(), type_params));
+        Self { previous }
+    }
+}
+
+impl Drop for FunctionThreadSafeTypeParamsGuard {
+    fn drop(&mut self) {
+        FUNCTION_THREAD_SAFE_TYPE_PARAMS.with(|params| {
+            *params.borrow_mut() = std::mem::take(&mut self.previous);
+        });
+    }
+}
+
+fn function_thread_safe_type_params(name: &str) -> BTreeSet<String> {
+    FUNCTION_THREAD_SAFE_TYPE_PARAMS.with(|params| {
+        params
+            .borrow()
+            .get(name)
+            .cloned()
+            .unwrap_or_else(BTreeSet::new)
+    })
 }
 
 impl MutableTopLevelVarsGuard {
@@ -1292,21 +1323,186 @@ fn function_literal_captured_type_params(
     TYPE_ENV.with(|env| {
         let mut env = env.borrow().clone();
         seed_current_block_local_bindings(body, &mut env);
-        ir::func_lit_capture_names_in_block(body, &env)
-            .into_iter()
-            .filter_map(|name| env.get_var(&name).or_else(|| env.get_top_level_var(&name)))
-            .flat_map(|ty| {
-                let mut names = BTreeSet::new();
-                collect_type_param_mentions_in_go_type(&ty, &type_param_info.names, &mut names);
-                let resolved = env.resolve_alias(&ty);
-                collect_type_param_mentions_in_go_type(
-                    &resolved,
-                    &type_param_info.names,
-                    &mut names,
-                );
-                names
+        closure_captured_type_params_in_env(body, type_param_info, &env)
+    })
+}
+
+fn closure_captured_type_params_in_env(
+    body: &ast::BlockStmt,
+    type_param_info: &TypeParamInfo,
+    env: &typeinfer::TypeEnv,
+) -> BTreeSet<String> {
+    if type_param_info.names.is_empty() {
+        return BTreeSet::new();
+    }
+    let mut capture_names = ir::func_lit_capture_names_in_block(body, env);
+    capture_names.extend(ir::mutable_range_function_capture_names_in_block(body, env));
+    capture_names
+        .into_iter()
+        .filter_map(|name| env.get_var(&name).or_else(|| env.get_top_level_var(&name)))
+        .flat_map(|ty| {
+            let mut names = BTreeSet::new();
+            collect_type_param_mentions_in_go_type(&ty, &type_param_info.names, &mut names);
+            let resolved = env.resolve_alias(&ty);
+            collect_type_param_mentions_in_go_type(&resolved, &type_param_info.names, &mut names);
+            names
+        })
+        .collect()
+}
+
+fn param_go_type_with_type_params(
+    expr: &ast::Expr,
+    type_param_info: &TypeParamInfo,
+) -> typeinfer::GoType {
+    generic_slice_param_go_type(expr, type_param_info)
+        .or_else(|| generic_map_param_go_type(expr, type_param_info))
+        .unwrap_or_else(|| typeinfer::GoType::from_expr(expr))
+}
+
+fn func_decl_param_go_type_bindings_with_type_params(
+    func_type: &ast::FuncType,
+    type_param_info: &TypeParamInfo,
+) -> (Vec<typeinfer::GoType>, Vec<(String, typeinfer::GoType)>) {
+    let mut params = Vec::new();
+    let mut bindings = Vec::new();
+    for field in &func_type.params.list {
+        let ty = field
+            .type_
+            .as_ref()
+            .map(|expr| param_go_type_with_type_params(expr, type_param_info))
+            .unwrap_or(typeinfer::GoType::Unknown);
+        let count = field.names.as_ref().map_or(1, Vec::len);
+        params.extend(std::iter::repeat_n(ty.clone(), count));
+        if let Some(names) = &field.names {
+            bindings.extend(names.iter().map(|name| (name.name.to_string(), ty.clone())));
+        }
+    }
+    (params, bindings)
+}
+
+fn seed_func_decl_param_bindings(
+    func_type: &ast::FuncType,
+    type_param_info: &TypeParamInfo,
+    env: &mut typeinfer::TypeEnv,
+) {
+    let (_, bindings) =
+        func_decl_param_go_type_bindings_with_type_params(func_type, type_param_info);
+    for (name, ty) in bindings {
+        env.set_var(&name, ty);
+    }
+}
+
+#[derive(Clone)]
+struct FunctionThreadSafeSignature<'src> {
+    type_param_names: Vec<String>,
+    params: Vec<typeinfer::GoType>,
+    param_bindings: Vec<(String, typeinfer::GoType)>,
+    body: Option<&'src ast::BlockStmt<'src>>,
+}
+
+fn func_decl_thread_safe_key(func_decl: &ast::FuncDecl) -> Option<String> {
+    if let Some(recv) = &func_decl.recv {
+        let recv_type = recv.list.first()?.type_.as_ref()?;
+        let type_name = extract_type_name(recv_type)?;
+        return Some(method_key(&type_name, func_decl.name.name));
+    }
+    Some(func_decl.name.name.to_string())
+}
+
+fn collect_function_thread_safe_type_params_for_decls<'src>(
+    decls: &'src [ast::Decl<'src>],
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut signatures = BTreeMap::new();
+    let mut requirements = BTreeMap::new();
+    for decl in decls {
+        let ast::Decl::FuncDecl(func_decl) = decl else {
+            continue;
+        };
+        let Some(key) = func_decl_thread_safe_key(func_decl) else {
+            continue;
+        };
+        let type_param_info = collect_type_param_info(func_decl.type_.type_params.as_ref());
+        let type_param_names =
+            typeinfer::type_parameter_names(func_decl.type_.type_params.as_ref());
+        let (params, param_bindings) =
+            func_decl_param_go_type_bindings_with_type_params(&func_decl.type_, &type_param_info);
+        let own_requirements = func_decl.body.as_ref().map_or_else(BTreeSet::new, |body| {
+            TYPE_ENV.with(|env| {
+                let mut env = env.borrow().clone();
+                seed_func_decl_param_bindings(&func_decl.type_, &type_param_info, &mut env);
+                seed_current_block_local_bindings(body, &mut env);
+                closure_captured_type_params_in_env(body, &type_param_info, &env)
             })
-            .collect()
+        });
+        signatures.insert(
+            key.clone(),
+            FunctionThreadSafeSignature {
+                type_param_names,
+                params,
+                param_bindings,
+                body: func_decl.body.as_ref(),
+            },
+        );
+        requirements.insert(key, own_requirements);
+    }
+
+    loop {
+        let mut changed = false;
+        for (key, signature) in &signatures {
+            let Some(body) = signature.body else {
+                continue;
+            };
+            let additions =
+                thread_safe_type_params_from_calls(body, signature, &signatures, &requirements);
+            if additions.is_empty() {
+                continue;
+            }
+            let entry = requirements.entry(key.clone()).or_default();
+            let old_len = entry.len();
+            entry.extend(additions);
+            changed |= entry.len() != old_len;
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    requirements
+        .into_iter()
+        .filter(|(_, names)| !names.is_empty())
+        .collect()
+}
+
+fn thread_safe_type_params_from_calls<'src>(
+    body: &'src ast::BlockStmt<'src>,
+    caller: &FunctionThreadSafeSignature<'src>,
+    signatures: &BTreeMap<String, FunctionThreadSafeSignature<'src>>,
+    requirements: &BTreeMap<String, BTreeSet<String>>,
+) -> BTreeSet<String> {
+    if caller.type_param_names.is_empty() {
+        return BTreeSet::new();
+    }
+    TYPE_ENV.with(|env| {
+        let mut env = env.borrow().clone();
+        for (name, ty) in &caller.param_bindings {
+            env.set_var(name, ty.clone());
+        }
+        seed_current_block_local_bindings(body, &mut env);
+        let caller_type_params = caller
+            .type_param_names
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>();
+        let mut out = BTreeSet::new();
+        collect_thread_safe_call_type_params_in_block(
+            body,
+            &env,
+            signatures,
+            requirements,
+            &caller_type_params,
+            &mut out,
+        );
+        out
     })
 }
 
@@ -1344,6 +1540,902 @@ fn collect_type_param_mentions_in_go_type(
         } => {
             for ty in params.iter().chain(results.iter()) {
                 collect_type_param_mentions_in_go_type(ty, type_param_names, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_thread_safe_call_type_params_in_block<'src>(
+    block: &'src ast::BlockStmt<'src>,
+    env: &typeinfer::TypeEnv,
+    signatures: &BTreeMap<String, FunctionThreadSafeSignature<'src>>,
+    requirements: &BTreeMap<String, BTreeSet<String>>,
+    caller_type_params: &HashSet<String>,
+    out: &mut BTreeSet<String>,
+) {
+    for stmt in &block.list {
+        collect_thread_safe_call_type_params_in_stmt(
+            stmt,
+            env,
+            signatures,
+            requirements,
+            caller_type_params,
+            out,
+        );
+    }
+}
+
+fn collect_thread_safe_call_type_params_in_stmt<'src>(
+    stmt: &'src ast::Stmt<'src>,
+    env: &typeinfer::TypeEnv,
+    signatures: &BTreeMap<String, FunctionThreadSafeSignature<'src>>,
+    requirements: &BTreeMap<String, BTreeSet<String>>,
+    caller_type_params: &HashSet<String>,
+    out: &mut BTreeSet<String>,
+) {
+    match stmt {
+        ast::Stmt::AssignStmt(assign) => {
+            for expr in assign.lhs.iter().chain(assign.rhs.iter()) {
+                collect_thread_safe_call_type_params_in_expr(
+                    expr,
+                    env,
+                    signatures,
+                    requirements,
+                    caller_type_params,
+                    out,
+                );
+            }
+        }
+        ast::Stmt::BlockStmt(block) => collect_thread_safe_call_type_params_in_block(
+            block,
+            env,
+            signatures,
+            requirements,
+            caller_type_params,
+            out,
+        ),
+        ast::Stmt::CaseClause(case) => {
+            for expr in case.list.as_deref().unwrap_or_default() {
+                collect_thread_safe_call_type_params_in_expr(
+                    expr,
+                    env,
+                    signatures,
+                    requirements,
+                    caller_type_params,
+                    out,
+                );
+            }
+            for stmt in &case.body {
+                collect_thread_safe_call_type_params_in_stmt(
+                    stmt,
+                    env,
+                    signatures,
+                    requirements,
+                    caller_type_params,
+                    out,
+                );
+            }
+        }
+        ast::Stmt::CommClause(comm) => {
+            if let Some(stmt) = &comm.comm {
+                collect_thread_safe_call_type_params_in_stmt(
+                    stmt,
+                    env,
+                    signatures,
+                    requirements,
+                    caller_type_params,
+                    out,
+                );
+            }
+            for stmt in &comm.body {
+                collect_thread_safe_call_type_params_in_stmt(
+                    stmt,
+                    env,
+                    signatures,
+                    requirements,
+                    caller_type_params,
+                    out,
+                );
+            }
+        }
+        ast::Stmt::DeclStmt(decl) => {
+            for spec in &decl.decl.specs {
+                if let ast::Spec::ValueSpec(value_spec) = spec {
+                    for expr in value_spec.values.as_deref().unwrap_or_default() {
+                        collect_thread_safe_call_type_params_in_expr(
+                            expr,
+                            env,
+                            signatures,
+                            requirements,
+                            caller_type_params,
+                            out,
+                        );
+                    }
+                }
+            }
+        }
+        ast::Stmt::DeferStmt(defer) => collect_thread_safe_call_type_params_in_call(
+            &defer.call,
+            env,
+            signatures,
+            requirements,
+            caller_type_params,
+            out,
+        ),
+        ast::Stmt::ExprStmt(expr) => collect_thread_safe_call_type_params_in_expr(
+            &expr.x,
+            env,
+            signatures,
+            requirements,
+            caller_type_params,
+            out,
+        ),
+        ast::Stmt::ForStmt(for_stmt) => {
+            if let Some(init) = &for_stmt.init {
+                collect_thread_safe_call_type_params_in_stmt(
+                    init,
+                    env,
+                    signatures,
+                    requirements,
+                    caller_type_params,
+                    out,
+                );
+            }
+            if let Some(cond) = &for_stmt.cond {
+                collect_thread_safe_call_type_params_in_expr(
+                    cond,
+                    env,
+                    signatures,
+                    requirements,
+                    caller_type_params,
+                    out,
+                );
+            }
+            if let Some(post) = &for_stmt.post {
+                collect_thread_safe_call_type_params_in_stmt(
+                    post,
+                    env,
+                    signatures,
+                    requirements,
+                    caller_type_params,
+                    out,
+                );
+            }
+            collect_thread_safe_call_type_params_in_block(
+                &for_stmt.body,
+                env,
+                signatures,
+                requirements,
+                caller_type_params,
+                out,
+            );
+        }
+        ast::Stmt::GoStmt(go) => collect_thread_safe_call_type_params_in_call(
+            &go.call,
+            env,
+            signatures,
+            requirements,
+            caller_type_params,
+            out,
+        ),
+        ast::Stmt::IfStmt(if_stmt) => {
+            if let Some(init) = if_stmt.init.as_ref() {
+                collect_thread_safe_call_type_params_in_stmt(
+                    init,
+                    env,
+                    signatures,
+                    requirements,
+                    caller_type_params,
+                    out,
+                );
+            }
+            collect_thread_safe_call_type_params_in_expr(
+                &if_stmt.cond,
+                env,
+                signatures,
+                requirements,
+                caller_type_params,
+                out,
+            );
+            collect_thread_safe_call_type_params_in_block(
+                &if_stmt.body,
+                env,
+                signatures,
+                requirements,
+                caller_type_params,
+                out,
+            );
+            if let Some(else_branch) = if_stmt.else_.as_ref() {
+                collect_thread_safe_call_type_params_in_stmt(
+                    else_branch,
+                    env,
+                    signatures,
+                    requirements,
+                    caller_type_params,
+                    out,
+                );
+            }
+        }
+        ast::Stmt::IncDecStmt(inc_dec) => collect_thread_safe_call_type_params_in_expr(
+            &inc_dec.x,
+            env,
+            signatures,
+            requirements,
+            caller_type_params,
+            out,
+        ),
+        ast::Stmt::LabeledStmt(label) => collect_thread_safe_call_type_params_in_stmt(
+            &label.stmt,
+            env,
+            signatures,
+            requirements,
+            caller_type_params,
+            out,
+        ),
+        ast::Stmt::RangeStmt(range) => {
+            for expr in [&range.key, &range.value].into_iter().flatten() {
+                collect_thread_safe_call_type_params_in_expr(
+                    expr,
+                    env,
+                    signatures,
+                    requirements,
+                    caller_type_params,
+                    out,
+                );
+            }
+            collect_thread_safe_call_type_params_in_expr(
+                &range.x,
+                env,
+                signatures,
+                requirements,
+                caller_type_params,
+                out,
+            );
+            collect_thread_safe_call_type_params_in_block(
+                &range.body,
+                env,
+                signatures,
+                requirements,
+                caller_type_params,
+                out,
+            );
+        }
+        ast::Stmt::ReturnStmt(ret) => {
+            for expr in &ret.results {
+                collect_thread_safe_call_type_params_in_expr(
+                    expr,
+                    env,
+                    signatures,
+                    requirements,
+                    caller_type_params,
+                    out,
+                );
+            }
+        }
+        ast::Stmt::SelectStmt(select_stmt) => collect_thread_safe_call_type_params_in_block(
+            &select_stmt.body,
+            env,
+            signatures,
+            requirements,
+            caller_type_params,
+            out,
+        ),
+        ast::Stmt::SendStmt(send) => {
+            collect_thread_safe_call_type_params_in_expr(
+                &send.chan,
+                env,
+                signatures,
+                requirements,
+                caller_type_params,
+                out,
+            );
+            collect_thread_safe_call_type_params_in_expr(
+                &send.value,
+                env,
+                signatures,
+                requirements,
+                caller_type_params,
+                out,
+            );
+        }
+        ast::Stmt::SwitchStmt(switch_stmt) => {
+            if let Some(init) = &switch_stmt.init {
+                collect_thread_safe_call_type_params_in_stmt(
+                    init,
+                    env,
+                    signatures,
+                    requirements,
+                    caller_type_params,
+                    out,
+                );
+            }
+            if let Some(tag) = &switch_stmt.tag {
+                collect_thread_safe_call_type_params_in_expr(
+                    tag,
+                    env,
+                    signatures,
+                    requirements,
+                    caller_type_params,
+                    out,
+                );
+            }
+            collect_thread_safe_call_type_params_in_block(
+                &switch_stmt.body,
+                env,
+                signatures,
+                requirements,
+                caller_type_params,
+                out,
+            );
+        }
+        ast::Stmt::TypeSwitchStmt(type_switch) => {
+            if let Some(init) = &type_switch.init {
+                collect_thread_safe_call_type_params_in_stmt(
+                    init,
+                    env,
+                    signatures,
+                    requirements,
+                    caller_type_params,
+                    out,
+                );
+            }
+            collect_thread_safe_call_type_params_in_stmt(
+                &type_switch.assign,
+                env,
+                signatures,
+                requirements,
+                caller_type_params,
+                out,
+            );
+            collect_thread_safe_call_type_params_in_block(
+                &type_switch.body,
+                env,
+                signatures,
+                requirements,
+                caller_type_params,
+                out,
+            );
+        }
+        ast::Stmt::BranchStmt(_) | ast::Stmt::EmptyStmt(_) => {}
+    }
+}
+
+fn collect_thread_safe_call_type_params_in_expr<'src>(
+    expr: &'src ast::Expr<'src>,
+    env: &typeinfer::TypeEnv,
+    signatures: &BTreeMap<String, FunctionThreadSafeSignature<'src>>,
+    requirements: &BTreeMap<String, BTreeSet<String>>,
+    caller_type_params: &HashSet<String>,
+    out: &mut BTreeSet<String>,
+) {
+    match expr {
+        ast::Expr::ArrayType(array) => {
+            if let Some(len) = &array.len {
+                collect_thread_safe_call_type_params_in_expr(
+                    len,
+                    env,
+                    signatures,
+                    requirements,
+                    caller_type_params,
+                    out,
+                );
+            }
+            collect_thread_safe_call_type_params_in_expr(
+                &array.elt,
+                env,
+                signatures,
+                requirements,
+                caller_type_params,
+                out,
+            );
+        }
+        ast::Expr::BinaryExpr(binary) => {
+            collect_thread_safe_call_type_params_in_expr(
+                &binary.x,
+                env,
+                signatures,
+                requirements,
+                caller_type_params,
+                out,
+            );
+            collect_thread_safe_call_type_params_in_expr(
+                &binary.y,
+                env,
+                signatures,
+                requirements,
+                caller_type_params,
+                out,
+            );
+        }
+        ast::Expr::CallExpr(call) => collect_thread_safe_call_type_params_in_call(
+            call,
+            env,
+            signatures,
+            requirements,
+            caller_type_params,
+            out,
+        ),
+        ast::Expr::ChanType(chan) => collect_thread_safe_call_type_params_in_expr(
+            &chan.value,
+            env,
+            signatures,
+            requirements,
+            caller_type_params,
+            out,
+        ),
+        ast::Expr::CompositeLit(composite) => {
+            if let Some(ty) = &composite.type_ {
+                collect_thread_safe_call_type_params_in_expr(
+                    ty,
+                    env,
+                    signatures,
+                    requirements,
+                    caller_type_params,
+                    out,
+                );
+            }
+            for expr in composite.elts.as_deref().unwrap_or_default() {
+                collect_thread_safe_call_type_params_in_expr(
+                    expr,
+                    env,
+                    signatures,
+                    requirements,
+                    caller_type_params,
+                    out,
+                );
+            }
+        }
+        ast::Expr::Ellipsis(ellipsis) => {
+            if let Some(elt) = &ellipsis.elt {
+                collect_thread_safe_call_type_params_in_expr(
+                    elt,
+                    env,
+                    signatures,
+                    requirements,
+                    caller_type_params,
+                    out,
+                );
+            }
+        }
+        ast::Expr::FuncLit(func_lit) => collect_thread_safe_call_type_params_in_block(
+            &func_lit.body,
+            env,
+            signatures,
+            requirements,
+            caller_type_params,
+            out,
+        ),
+        ast::Expr::FuncType(func_type) => {
+            for field in func_type.params.list.iter().chain(
+                func_type
+                    .results
+                    .iter()
+                    .flat_map(|results| results.list.iter()),
+            ) {
+                if let Some(ty) = &field.type_ {
+                    collect_thread_safe_call_type_params_in_expr(
+                        ty,
+                        env,
+                        signatures,
+                        requirements,
+                        caller_type_params,
+                        out,
+                    );
+                }
+            }
+        }
+        ast::Expr::IndexExpr(index) => {
+            collect_thread_safe_call_type_params_in_expr(
+                &index.x,
+                env,
+                signatures,
+                requirements,
+                caller_type_params,
+                out,
+            );
+            collect_thread_safe_call_type_params_in_expr(
+                &index.index,
+                env,
+                signatures,
+                requirements,
+                caller_type_params,
+                out,
+            );
+        }
+        ast::Expr::IndexListExpr(index) => {
+            collect_thread_safe_call_type_params_in_expr(
+                &index.x,
+                env,
+                signatures,
+                requirements,
+                caller_type_params,
+                out,
+            );
+            for expr in &index.indices {
+                collect_thread_safe_call_type_params_in_expr(
+                    expr,
+                    env,
+                    signatures,
+                    requirements,
+                    caller_type_params,
+                    out,
+                );
+            }
+        }
+        ast::Expr::InterfaceType(interface) => {
+            if let Some(methods) = &interface.methods {
+                for field in &methods.list {
+                    if let Some(ty) = &field.type_ {
+                        collect_thread_safe_call_type_params_in_expr(
+                            ty,
+                            env,
+                            signatures,
+                            requirements,
+                            caller_type_params,
+                            out,
+                        );
+                    }
+                }
+            }
+        }
+        ast::Expr::KeyValueExpr(kv) => {
+            collect_thread_safe_call_type_params_in_expr(
+                &kv.key,
+                env,
+                signatures,
+                requirements,
+                caller_type_params,
+                out,
+            );
+            collect_thread_safe_call_type_params_in_expr(
+                &kv.value,
+                env,
+                signatures,
+                requirements,
+                caller_type_params,
+                out,
+            );
+        }
+        ast::Expr::MapType(map) => {
+            collect_thread_safe_call_type_params_in_expr(
+                &map.key,
+                env,
+                signatures,
+                requirements,
+                caller_type_params,
+                out,
+            );
+            collect_thread_safe_call_type_params_in_expr(
+                &map.value,
+                env,
+                signatures,
+                requirements,
+                caller_type_params,
+                out,
+            );
+        }
+        ast::Expr::ParenExpr(paren) => collect_thread_safe_call_type_params_in_expr(
+            &paren.x,
+            env,
+            signatures,
+            requirements,
+            caller_type_params,
+            out,
+        ),
+        ast::Expr::SelectorExpr(selector) => collect_thread_safe_call_type_params_in_expr(
+            &selector.x,
+            env,
+            signatures,
+            requirements,
+            caller_type_params,
+            out,
+        ),
+        ast::Expr::SliceExpr(slice) => {
+            collect_thread_safe_call_type_params_in_expr(
+                &slice.x,
+                env,
+                signatures,
+                requirements,
+                caller_type_params,
+                out,
+            );
+            for expr in [&slice.low, &slice.high, &slice.max].into_iter().flatten() {
+                collect_thread_safe_call_type_params_in_expr(
+                    expr,
+                    env,
+                    signatures,
+                    requirements,
+                    caller_type_params,
+                    out,
+                );
+            }
+        }
+        ast::Expr::StarExpr(star) => collect_thread_safe_call_type_params_in_expr(
+            &star.x,
+            env,
+            signatures,
+            requirements,
+            caller_type_params,
+            out,
+        ),
+        ast::Expr::StructType(struct_type) => {
+            if let Some(fields) = &struct_type.fields {
+                for field in &fields.list {
+                    if let Some(ty) = &field.type_ {
+                        collect_thread_safe_call_type_params_in_expr(
+                            ty,
+                            env,
+                            signatures,
+                            requirements,
+                            caller_type_params,
+                            out,
+                        );
+                    }
+                }
+            }
+        }
+        ast::Expr::TypeAssertExpr(assert) => {
+            collect_thread_safe_call_type_params_in_expr(
+                &assert.x,
+                env,
+                signatures,
+                requirements,
+                caller_type_params,
+                out,
+            );
+            if let Some(ty) = &assert.type_ {
+                collect_thread_safe_call_type_params_in_expr(
+                    ty,
+                    env,
+                    signatures,
+                    requirements,
+                    caller_type_params,
+                    out,
+                );
+            }
+        }
+        ast::Expr::UnaryExpr(unary) => collect_thread_safe_call_type_params_in_expr(
+            &unary.x,
+            env,
+            signatures,
+            requirements,
+            caller_type_params,
+            out,
+        ),
+        ast::Expr::BasicLit(_) | ast::Expr::Ident(_) => {}
+    }
+}
+
+fn collect_thread_safe_call_type_params_in_call<'src>(
+    call: &'src ast::CallExpr<'src>,
+    env: &typeinfer::TypeEnv,
+    signatures: &BTreeMap<String, FunctionThreadSafeSignature<'src>>,
+    requirements: &BTreeMap<String, BTreeSet<String>>,
+    caller_type_params: &HashSet<String>,
+    out: &mut BTreeSet<String>,
+) {
+    collect_thread_safe_type_params_from_direct_call(
+        call,
+        env,
+        signatures,
+        requirements,
+        caller_type_params,
+        out,
+    );
+    collect_thread_safe_call_type_params_in_expr(
+        &call.fun,
+        env,
+        signatures,
+        requirements,
+        caller_type_params,
+        out,
+    );
+    for arg in call.args.as_deref().unwrap_or_default() {
+        collect_thread_safe_call_type_params_in_expr(
+            arg,
+            env,
+            signatures,
+            requirements,
+            caller_type_params,
+            out,
+        );
+    }
+}
+
+fn collect_thread_safe_type_params_from_direct_call<'src>(
+    call: &'src ast::CallExpr<'src>,
+    env: &typeinfer::TypeEnv,
+    signatures: &BTreeMap<String, FunctionThreadSafeSignature<'src>>,
+    requirements: &BTreeMap<String, BTreeSet<String>>,
+    caller_type_params: &HashSet<String>,
+    out: &mut BTreeSet<String>,
+) {
+    let Some(callee_name) = direct_thread_safe_callee_name(&call.fun, env) else {
+        return;
+    };
+    let Some(callee_requirements) = requirements.get(&callee_name) else {
+        return;
+    };
+    if callee_requirements.is_empty() {
+        return;
+    }
+    let Some(callee_signature) = signatures.get(&callee_name) else {
+        return;
+    };
+
+    let explicit_type_args = call_explicit_type_arg_go_types(call);
+    if !explicit_type_args.is_empty() {
+        for required in callee_requirements {
+            if let Some(index) = callee_signature
+                .type_param_names
+                .iter()
+                .position(|name| name == required)
+                && let Some(type_arg) = explicit_type_args.get(index)
+            {
+                collect_type_param_mentions_in_go_type(type_arg, caller_type_params, out);
+            }
+        }
+    }
+
+    for (param_ty, arg) in callee_signature
+        .params
+        .iter()
+        .zip(call.args.as_deref().unwrap_or_default())
+    {
+        let arg_ty = typeinfer::GoType::infer_expr(arg, env);
+        collect_thread_safe_type_params_from_type_match(
+            param_ty,
+            &arg_ty,
+            callee_requirements,
+            caller_type_params,
+            out,
+        );
+    }
+}
+
+fn direct_thread_safe_callee_name(expr: &ast::Expr, env: &typeinfer::TypeEnv) -> Option<String> {
+    match ast_unparen_expr_ref(expr) {
+        ast::Expr::Ident(ident) if env.get_var(ident.name).is_none() => {
+            Some(ident.name.to_string())
+        }
+        ast::Expr::SelectorExpr(selector) => {
+            let ast::Expr::Ident(base) = ast_unparen_expr_ref(&selector.x) else {
+                return None;
+            };
+            if env.get_var(base.name).is_some() {
+                return None;
+            }
+            selector_type_env_name(selector)
+                .or_else(|| Some(format!("{}.{}", base.name, selector.sel.name)))
+        }
+        ast::Expr::IndexExpr(index) => direct_thread_safe_callee_name(&index.x, env),
+        ast::Expr::IndexListExpr(index) => direct_thread_safe_callee_name(&index.x, env),
+        _ => None,
+    }
+}
+
+fn call_explicit_type_arg_go_types(call: &ast::CallExpr) -> Vec<typeinfer::GoType> {
+    match ast_unparen_expr_ref(&call.fun) {
+        ast::Expr::IndexExpr(index) => vec![typeinfer::GoType::from_expr(&index.index)],
+        ast::Expr::IndexListExpr(index) => index
+            .indices
+            .iter()
+            .map(typeinfer::GoType::from_expr)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn collect_thread_safe_type_params_from_type_match(
+    callee_ty: &typeinfer::GoType,
+    arg_ty: &typeinfer::GoType,
+    callee_requirements: &BTreeSet<String>,
+    caller_type_params: &HashSet<String>,
+    out: &mut BTreeSet<String>,
+) {
+    match callee_ty {
+        typeinfer::GoType::Named(name) if callee_requirements.contains(name) => {
+            collect_type_param_mentions_in_go_type(arg_ty, caller_type_params, out);
+        }
+        typeinfer::GoType::Instantiated {
+            name: callee_name,
+            args: callee_args,
+        } => {
+            if let typeinfer::GoType::Instantiated {
+                name: arg_name,
+                args: arg_args,
+            } = arg_ty
+                && callee_name == arg_name
+            {
+                for (callee_arg, arg_arg) in callee_args.iter().zip(arg_args.iter()) {
+                    collect_thread_safe_type_params_from_type_match(
+                        callee_arg,
+                        arg_arg,
+                        callee_requirements,
+                        caller_type_params,
+                        out,
+                    );
+                }
+            }
+        }
+        typeinfer::GoType::Pointer(callee_inner)
+        | typeinfer::GoType::Slice(callee_inner)
+        | typeinfer::GoType::Array(callee_inner) => {
+            let arg_inner = match arg_ty {
+                typeinfer::GoType::Pointer(inner)
+                | typeinfer::GoType::Slice(inner)
+                | typeinfer::GoType::Array(inner) => Some(inner),
+                _ => None,
+            };
+            if let Some(arg_inner) = arg_inner {
+                collect_thread_safe_type_params_from_type_match(
+                    callee_inner,
+                    arg_inner,
+                    callee_requirements,
+                    caller_type_params,
+                    out,
+                );
+            }
+        }
+        typeinfer::GoType::Map(callee_key, callee_value) => {
+            if let typeinfer::GoType::Map(arg_key, arg_value) = arg_ty {
+                collect_thread_safe_type_params_from_type_match(
+                    callee_key,
+                    arg_key,
+                    callee_requirements,
+                    caller_type_params,
+                    out,
+                );
+                collect_thread_safe_type_params_from_type_match(
+                    callee_value,
+                    arg_value,
+                    callee_requirements,
+                    caller_type_params,
+                    out,
+                );
+            }
+        }
+        typeinfer::GoType::Chan { elem, .. } => {
+            if let typeinfer::GoType::Chan { elem: arg_elem, .. } = arg_ty {
+                collect_thread_safe_type_params_from_type_match(
+                    elem,
+                    arg_elem,
+                    callee_requirements,
+                    caller_type_params,
+                    out,
+                );
+            }
+        }
+        typeinfer::GoType::Func {
+            params: callee_params,
+            results: callee_results,
+            ..
+        } => {
+            if let typeinfer::GoType::Func {
+                params: arg_params,
+                results: arg_results,
+                ..
+            } = arg_ty
+            {
+                for (callee_param, arg_param) in callee_params.iter().zip(arg_params.iter()) {
+                    collect_thread_safe_type_params_from_type_match(
+                        callee_param,
+                        arg_param,
+                        callee_requirements,
+                        caller_type_params,
+                        out,
+                    );
+                }
+                for (callee_result, arg_result) in callee_results.iter().zip(arg_results.iter()) {
+                    collect_thread_safe_type_params_from_type_match(
+                        callee_result,
+                        arg_result,
+                        callee_requirements,
+                        caller_type_params,
+                        out,
+                    );
+                }
             }
         }
         _ => {}
@@ -7541,17 +8633,66 @@ fn address_taken_param_names_in_body(
     })
 }
 
-fn prepend_shared_parameter_cells(block: &mut syn::Block, names: &BTreeSet<String>) {
+fn prepend_shared_parameter_cells(
+    block: &mut syn::Block,
+    names: &BTreeSet<String>,
+    clone_value_names: &BTreeSet<String>,
+) {
     let stmts = names
         .iter()
         .map(|name| {
             let ident = value_ident(name);
-            syn::parse_quote! {
-                let #ident = std::sync::Arc::new(std::sync::Mutex::new(#ident));
+            if clone_value_names.contains(name) || clone_value_names.contains(&ident.to_string()) {
+                syn::parse_quote! {
+                    let #ident = std::sync::Arc::new(std::sync::Mutex::new((#ident).clone()));
+                }
+            } else {
+                syn::parse_quote! {
+                    let #ident = std::sync::Arc::new(std::sync::Mutex::new(#ident));
+                }
             }
         })
         .collect::<Vec<_>>();
     block.stmts.splice(0..0, stmts);
+}
+
+fn shared_parameter_cell_names(
+    address_taken_param_names: &BTreeSet<String>,
+    shared_capture_names: &BTreeSet<String>,
+    param_names: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut names = address_taken_param_names.clone();
+    names.extend(
+        shared_capture_names
+            .iter()
+            .filter(|name| param_names.contains(*name))
+            .cloned(),
+    );
+    names
+}
+
+fn owned_generic_slice_param_names(
+    params: &ast::FieldList,
+    type_param_info: &TypeParamInfo,
+    borrowed_generic_slice_params: &std::collections::HashSet<String>,
+) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for field in &params.list {
+        let Some(type_expr) = &field.type_ else {
+            continue;
+        };
+        if generic_slice_param_element_type(type_expr, type_param_info).is_none() {
+            continue;
+        }
+        let Some(field_names) = &field.names else {
+            continue;
+        };
+        names.extend(field_names.iter().filter_map(|name| {
+            let rust_name = rust_safe_ident_name(name.name);
+            (!borrowed_generic_slice_params.contains(&rust_name)).then(|| name.name.to_string())
+        }));
+    }
+    names
 }
 
 fn type_param_idents(type_params: Option<&ast::FieldList>) -> Vec<syn::Ident> {
@@ -8456,6 +9597,7 @@ fn compile_method(
             .cloned()
             .unwrap_or_default(),
     );
+    let param_names = field_list_source_binding_names(&func_decl.type_.params);
     let mut inputs = syn::punctuated::Punctuated::new();
     inputs.push(self_arg);
     let mut param_index = 0usize;
@@ -8535,6 +9677,11 @@ fn compile_method(
                     names
                 })
             });
+    let shared_parameter_cell_names = shared_parameter_cell_names(
+        &address_taken_param_names,
+        &body_shared_capture_names,
+        &param_names,
+    );
     let _body_shared_capture_names = SharedCaptureNamesGuard::extend(body_shared_capture_names);
     let body_has_defer = func_decl.body.as_ref().is_some_and(block_has_defer);
     let block_result = if let Some(body) = func_decl.body {
@@ -8554,7 +9701,7 @@ fn compile_method(
     drop(borrowed_pointer_param_names);
     drop(borrowed_slice_param_names);
 
-    prepend_shared_parameter_cells(&mut block, &address_taken_param_names);
+    prepend_shared_parameter_cells(&mut block, &shared_parameter_cell_names, &BTreeSet::new());
     if uses_borrowed_pointer_receiver && !recv_name.is_empty() {
         rewrite_receiver(&mut block, &recv_name, false);
     } else if value_receiver_needs_cell {
@@ -8746,6 +9893,15 @@ fn compile_general_type_conversion(call_expr: ast::CallExpr) -> syn::Expr {
 
     if ast_inspect::expr_is_unsafe_pointer_selector(&target_fun) {
         return compile_unsafe_pointer_value(raw_arg);
+    }
+
+    if let ast::Expr::ArrayType(array) = &target_fun
+        && array.len.is_none()
+        && is_nil_expr(&raw_arg)
+    {
+        let elem =
+            rust_type_from_type_expr(&array.elt).unwrap_or_else(|| type_from_expr_ref(&array.elt));
+        return syn::parse_quote! { Vec::<#elem>::new() };
     }
 
     if matches!(&target_fun, ast::Expr::Ident(id) if id.name == "any") {
@@ -20119,6 +21275,9 @@ impl TryFrom<ast::File<'_>> for syn::File {
         type_decl_facts::clear_struct_clone_derivability();
         preseed_struct_clone_derivability(&file.decls);
         preseed_borrowed_interface_structs(&file.decls);
+        let _function_thread_safe_type_params = FunctionThreadSafeTypeParamsGuard::set(
+            collect_function_thread_safe_type_params_for_decls(&file.decls),
+        );
 
         preseed_fixed_array_view_methods(&file.decls);
         let needed_imported_interface_methods = interface_method_sets::needed_imports(&file.decls);
@@ -21552,6 +22711,12 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         let borrowed_slice_param_names = BorrowedSliceParamNamesGuard::set(borrowed_slice_names);
         let owned_interface_params =
             owned_interface_param_names(func_decl.name.name, &func_decl.type_.params);
+        let param_names = field_list_source_binding_names(&func_decl.type_.params);
+        let owned_generic_slice_params = owned_generic_slice_param_names(
+            &func_decl.type_.params,
+            &type_param_info,
+            &borrowed_generic_slice_params,
+        );
         let mut inputs = syn::punctuated::Punctuated::new();
         let mut param_index = 0usize;
         for param in func_decl.type_.params.list {
@@ -21610,8 +22775,10 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         );
         let return_go_types_is_empty = return_go_types.is_empty();
         let body_has_defer = func_decl.body.as_ref().is_some_and(block_has_defer);
-        let captured_thread_safe_type_params =
+        let mut captured_thread_safe_type_params =
             function_literal_captured_type_params(func_decl.body.as_ref(), &type_param_info);
+        captured_thread_safe_type_params
+            .extend(function_thread_safe_type_params(func_decl.name.name));
         let panic_returns_through_defer = body_has_defer && return_go_types_is_empty;
         let mut output =
             compile_return_type_with_type_params(func_decl.type_.results, Some(&type_param_info))?;
@@ -21639,6 +22806,11 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
                         names
                     })
                 });
+        let shared_parameter_cell_names = shared_parameter_cell_names(
+            &address_taken_param_names,
+            &body_shared_capture_names,
+            &param_names,
+        );
         let _body_shared_capture_names = SharedCaptureNamesGuard::extend(body_shared_capture_names);
         let body_completion = func_decl.body.as_ref().map(|body| {
             TYPE_ENV.with(|env| {
@@ -21669,7 +22841,11 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         drop(return_types);
         named_returns::restore_idents(previous_named_return_idents);
         let mut block = Box::new(block_result?);
-        prepend_shared_parameter_cells(&mut block, &address_taken_param_names);
+        prepend_shared_parameter_cells(
+            &mut block,
+            &shared_parameter_cell_names,
+            &owned_generic_slice_params,
+        );
         if body_has_defer {
             prepend_defer_stack(&mut block);
             if return_go_types_is_empty {
@@ -40474,6 +41650,55 @@ type Seq[V any] func(func(V) bool)
             "{output}"
         );
         assert!(!output.contains("Deref for Seq {"), "{output}");
+    }
+
+    #[test]
+    fn it_should_cell_shared_borrowed_slice_params_for_range_function_callbacks() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+package main
+
+type Seq[V any] func(func(V) bool)
+
+func AppendSeq[Slice ~[]E, E any](s Slice, seq Seq[E]) Slice {
+	for v := range seq {
+		s = append(s, v)
+	}
+	return s
+}
+
+func Collect[E any](seq Seq[E]) []E {
+	return AppendSeq([]E(nil), seq)
+}
+"#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains(
+                "let s = std :: sync :: Arc :: new (std :: sync :: Mutex :: new ((s) . clone ()))"
+            ),
+            "expected borrowed slice parameter to be cloned into a shared cell: {output}"
+        );
+        assert!(
+            output.contains("std :: mem :: take (& mut (* s . lock () . unwrap ()))"),
+            "expected callback mutation to use the shared slice cell: {output}"
+        );
+        assert!(
+            output.contains("pub fn AppendSeq < E : Clone + Send + Sync + 'static >"),
+            "expected captured generic slice element to get thread-safe bounds: {output}"
+        );
+        assert!(
+            output.contains("pub fn Collect < E : Clone + Send + Sync + 'static >"),
+            "expected forwarding generic caller to inherit thread-safe bounds: {output}"
+        );
+        assert!(
+            output.contains("AppendSeq (& mut Vec :: < E > :: new () , seq)"),
+            "expected typed nil generic slice conversion to produce an empty Vec: {output}"
+        );
     }
 
     #[test]
