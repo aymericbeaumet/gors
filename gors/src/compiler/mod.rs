@@ -9466,7 +9466,7 @@ fn rust_func_result_type_from_go_type(go_type: &typeinfer::GoType) -> syn::Type 
         let trait_path = interface_trait_path_from_name(&interface_name);
         return syn::parse_quote! { Box<dyn #trait_path> };
     }
-    rust_type_from_inferred_go_type(go_type)
+    rust_type_preserving_named_go_type(go_type)
 }
 
 fn rust_func_param_type_from_go_type(go_type: &typeinfer::GoType) -> syn::Type {
@@ -9483,7 +9483,7 @@ fn rust_func_param_type_from_go_type(go_type: &typeinfer::GoType) -> syn::Type {
         let elem = rust_type_from_inferred_go_type(&elem);
         return syn::parse_quote! { &mut [#elem] };
     }
-    rust_type_from_inferred_go_type(go_type)
+    rust_type_preserving_named_go_type(go_type)
 }
 
 fn shared_func_type_from_go_type(go_type: &typeinfer::GoType) -> Option<syn::Type> {
@@ -25777,6 +25777,43 @@ func (o *Once) Do(f func()) {
             !cachepkg_rs.contains("let cache = cache.clone()")
                 && !cachepkg_rs.contains("let cache = cache . clone ()"),
             "{cachepkg_rs}"
+        );
+    }
+
+    #[test]
+    fn compile_program_multi_preserves_named_function_result_types() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type Errno uintptr
+
+func retry(f func([]byte) Errno) Errno {
+	return f(nil)
+}
+
+func main() {
+	_ = retry(func(buf []byte) Errno {
+		return Errno(1)
+	})
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+
+        assert!(
+            main_rs.contains("dyn Fn (& mut [u8]) -> Errno + Send + Sync")
+                || main_rs.contains("dyn Fn(&mut [u8]) -> Errno + Send + Sync"),
+            "{main_rs}"
+        );
+        assert!(
+            !main_rs.contains("dyn Fn (& mut [u8]) -> usize + Send + Sync")
+                && !main_rs.contains("dyn Fn(&mut [u8]) -> usize + Send + Sync"),
+            "{main_rs}"
         );
     }
 
