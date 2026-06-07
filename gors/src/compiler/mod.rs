@@ -1333,6 +1333,8 @@ fn method_impl_generics(
         }
         ensure_type_param_bound(param, syn::parse_quote! { Clone });
         ensure_type_param_bound(param, syn::parse_quote! { Default });
+        ensure_type_param_bound(param, syn::parse_quote! { Send });
+        ensure_type_param_bound(param, syn::parse_quote! { 'static });
     }
     generics
 }
@@ -11625,6 +11627,7 @@ fn coerce_assignment_expr(
         }
     }
 
+    rhs_expr = coerce_named_func_assignment_expr(lhs_ty, rhs_ty, rhs_expr);
     rhs_expr = coerce_numeric_expr(lhs_ty, rhs_ty, rhs_expr);
 
     if matches!(resolved_go_type(lhs_ty), typeinfer::GoType::Any)
@@ -11634,6 +11637,24 @@ fn coerce_assignment_expr(
     }
 
     rhs_expr
+}
+
+fn coerce_named_func_assignment_expr(
+    lhs_ty: &typeinfer::GoType,
+    rhs_ty: &typeinfer::GoType,
+    rhs_expr: syn::Expr,
+) -> syn::Expr {
+    let typeinfer::GoType::Named(lhs_name) = lhs_ty else {
+        return rhs_expr;
+    };
+    if named_func_newtype(lhs_ty).is_none()
+        || matches!(rhs_ty, typeinfer::GoType::Named(rhs_name) if rhs_name == lhs_name)
+        || !matches!(resolved_go_type(rhs_ty), typeinfer::GoType::Func { .. })
+        || is_named_constructor_expr(&rhs_expr, lhs_name)
+    {
+        return rhs_expr;
+    }
+    wrap_named_func_cell_expr(lhs_ty, rhs_expr)
 }
 
 fn clone_any_expr(expr: syn::Expr) -> syn::Expr {
@@ -12209,6 +12230,10 @@ fn pointer_receiver_arg_expr_from_ref(expr: &ast::Expr) -> Option<syn::Expr> {
 }
 
 fn pointer_receiver_arg_expr_from_owned(expr: ast::Expr) -> syn::Expr {
+    let expr = match address_of_pointer_selector_index_expr_owned(expr) {
+        Ok(pointer) => return pointer,
+        Err(expr) => expr,
+    };
     if let Some(pointer) = pointer_receiver_arg_expr_from_ref(&expr) {
         return pointer;
     }
@@ -13208,6 +13233,47 @@ fn address_of_pointer_selector_index_expr(expr: &ast::Expr) -> Option<syn::Expr>
     let index_expr = lvalue_index_component_expr(&index.index)?;
 
     Some(syn::parse_quote! {
+        crate::builtin::GorsPtr::from_ptr_index(
+            (#owner_expr).clone(),
+            std::mem::offset_of!(#owner_ty, #field_ident),
+            (#index_expr) as usize,
+            |__gors_owner: &mut #owner_ty| &mut __gors_owner.#field_ident,
+        )
+    })
+}
+
+fn address_of_pointer_selector_index_expr_owned(expr: ast::Expr) -> Result<syn::Expr, ast::Expr> {
+    let ast::Expr::IndexExpr(index) = expr else {
+        return Err(expr);
+    };
+
+    let projected = if let ast::Expr::SelectorExpr(selector) = index.x.as_ref() {
+        if !is_owning_pointer_cell_expr_ref(&selector.x) {
+            None
+        } else {
+            let owner_ty = pointer_selector_owner_type(&selector.x);
+            let owner_expr = pointer_selector_owner_expr(&selector.x);
+            match (owner_ty, owner_expr) {
+                (Some(owner_ty), Some(owner_expr)) => {
+                    let field_ident = syn::Ident::new(
+                        &rust_safe_ident_name(selector.sel.name),
+                        proc_macro2::Span::mixed_site(),
+                    );
+                    Some((owner_expr, owner_ty, field_ident))
+                }
+                _ => None,
+            }
+        }
+    } else {
+        None
+    };
+
+    let Some((owner_expr, owner_ty, field_ident)) = projected else {
+        return Err(ast::Expr::IndexExpr(index));
+    };
+    let index_expr = compile_index_component_expr(*index.index);
+
+    Ok(syn::parse_quote! {
         crate::builtin::GorsPtr::from_ptr_index(
             (#owner_expr).clone(),
             std::mem::offset_of!(#owner_ty, #field_ident),
@@ -18867,10 +18933,10 @@ impl From<ast::Expr<'_>> for syn::Expr {
                                 let __gors_pointer_field = (#field_expr).clone();
                                 __gors_pointer_field
                             }}
-                        } else if field_go_type
-                            .as_ref()
-                            .is_some_and(|field_ty| !go_type_is_copy(field_ty))
-                        {
+                        } else if field_go_type.as_ref().is_some_and(|field_ty| {
+                            matches!(resolved_go_type(field_ty), typeinfer::GoType::Func { .. })
+                                || !go_type_is_copy(field_ty)
+                        }) {
                             syn::parse_quote! { (#field_expr).clone() }
                         } else {
                             field_expr
@@ -27055,6 +27121,51 @@ func main() {
         assert!(
             !output.contains("(10 as u64) * s"),
             "expected outer uint64 context not to coerce only one side of 10*s: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_coerce_untyped_index_masks_after_function_value_calls() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                const mask = 15
+
+                type cell struct{}
+
+                func (c *cell) Load() int {
+                    return 1
+                }
+
+                type hashFunc func(uintptr, uintptr) uintptr
+
+                type table[K any] struct {
+                    hash hashFunc
+                    seed uintptr
+                    children [16]cell
+                }
+
+                func (t *table[K]) use(key K) int {
+                    hash := t.hash(0, t.seed)
+                    hashShift := 8 * mask
+                    return t.children[(hash>>hashShift)&mask].Load()
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("& (mask as usize)") || output.contains("& (15 as usize)"),
+            "expected untyped index mask to adopt function-call result type: {output}"
+        );
+        assert!(
+            !output.contains("& mask) as usize"),
+            "expected lvalue index mask not to remain uncoerced: {output}"
         );
     }
 
@@ -38541,6 +38652,11 @@ func main() {
             "expected generic pointer receiver UFCS path to carry inferred type args: {main_rs}"
         );
         assert!(
+            main_rs.contains("T : Clone + Default + Send + 'static")
+                || main_rs.contains("T: Clone + Default + Send + 'static"),
+            "expected generic pointer receiver impls to satisfy projected GorsPtr owner bounds: {main_rs}"
+        );
+        assert!(
             !main_rs.contains(". Load ()") && !main_rs.contains(". Store ("),
             "expected generic pointer field methods not to lower as Rust method syntax: {main_rs}"
         );
@@ -39129,15 +39245,24 @@ package main
 type Formatter func(int) int
 type AliasFormatter = func(int) int
 
+type Holder struct {
+	formatter Formatter
+	raw       func(int) int
+}
+
 func inc(x int) int { return x + 1 }
 func useFormatter(Formatter) {}
 
 func main() {
 	var formatter Formatter = inc
 	var alias AliasFormatter = inc
+	var holder Holder
 	local := func(x int) int { return x + 2 }
+	holder.raw = local
+	holder.formatter = holder.raw
 	useFormatter(local)
 	_, _ = formatter, alias
+	_ = holder
 }
 "#,
         )
@@ -39157,6 +39282,13 @@ func main() {
         assert!(
             output.contains("useFormatter (Formatter (local . clone ()))"),
             "{output}"
+        );
+        assert!(
+            output.contains("formatter = Formatter (__gors_assign_0)")
+                || output.contains("formatter = Formatter ((holder) . raw . clone ())")
+                || output.contains("formatter = Formatter ((holder . raw) . clone ())")
+                || output.contains("formatter = Formatter (holder . raw . clone ())"),
+            "expected selector function value assignment to wrap named function type: {output}"
         );
     }
 

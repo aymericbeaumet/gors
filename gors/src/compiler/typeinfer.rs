@@ -348,6 +348,12 @@ impl GoType {
                 }
             }
             ast::Expr::CallExpr(call) => {
+                if let Some(result) =
+                    func_call_result_from_callee_type(GoType::infer_expr(&call.fun, env), env)
+                {
+                    return result;
+                }
+
                 // For function calls, return the first result type
                 match &*call.fun {
                     ast::Expr::Ident(id) => {
@@ -551,6 +557,13 @@ impl GoType {
             _ => GoType::Unknown,
         }
     }
+}
+
+fn func_call_result_from_callee_type(ty: GoType, env: &TypeEnv) -> Option<GoType> {
+    let GoType::Func { results, .. } = env.resolve_alias(&ty) else {
+        return None;
+    };
+    Some(results.first().cloned().unwrap_or(GoType::Unknown))
 }
 
 fn expr_is_untyped_constant_for_inference(expr: &ast::Expr<'_>, env: &TypeEnv) -> bool {
@@ -4959,6 +4972,55 @@ mod tests {
         assert_eq!(
             GoType::infer_expr(centurydays.rhs.first().expect("expected rhs"), &env),
             GoType::Uint64
+        );
+    }
+
+    #[test]
+    fn infer_function_value_field_call_uses_named_func_result() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package p
+
+                type hashFunc func(uintptr) uintptr
+
+                type table struct {
+                    hash hashFunc
+                }
+
+                func f(t *table, key uintptr) uintptr {
+                    hash := t.hash(key)
+                    return hash & 15
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        env.set_var(
+            "t",
+            GoType::Pointer(Box::new(GoType::Named("table".to_string()))),
+        );
+        env.set_var("key", GoType::Uintptr);
+
+        let ast::Decl::FuncDecl(func) = file.decls.get(2).expect("expected function") else {
+            panic!("expected function declaration");
+        };
+        let body = func.body.as_ref().unwrap();
+        let ast::Stmt::AssignStmt(assign) = body.list.first().expect("expected assignment") else {
+            panic!("expected assignment");
+        };
+        let hash_ty = GoType::infer_expr(assign.rhs.first().expect("expected rhs"), &env);
+
+        assert_eq!(hash_ty, GoType::Uintptr);
+        env.set_var("hash", hash_ty);
+
+        let ast::Stmt::ReturnStmt(ret) = body.list.get(1).expect("expected return") else {
+            panic!("expected return");
+        };
+        assert_eq!(
+            GoType::infer_expr(ret.results.first().expect("expected result"), &env),
+            GoType::Uintptr
         );
     }
 
