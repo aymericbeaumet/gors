@@ -32942,7 +32942,8 @@ func Use() int {
         let state_rs = output.files.get("example__state.rs").unwrap();
         assert!(
             state_rs.contains("crate::builtin::GorsPtr::from_arc((*stderr).clone())")
-                || state_rs.contains("crate :: builtin :: GorsPtr :: from_arc ((* stderr) . clone ())"),
+                || state_rs
+                    .contains("crate :: builtin :: GorsPtr :: from_arc ((* stderr) . clone ())"),
             "expected borrowed interface arg to use the mutable package var cell: {state_rs}"
         );
         assert!(
@@ -36281,8 +36282,10 @@ func main() {
         let output = quote! { #compiled }.to_string();
 
         assert!(
-            output.contains("< Counter > :: Increment (crate :: builtin :: GorsPtr :: from_arc (c . clone ())")
-                || output.contains("<Counter>::Increment(crate::builtin::GorsPtr::from_arc(c.clone())"),
+            output.contains(
+                "< Counter > :: Increment (crate :: builtin :: GorsPtr :: from_arc (c . clone ())"
+            ) || output
+                .contains("<Counter>::Increment(crate::builtin::GorsPtr::from_arc(c.clone())"),
             "expected shared value receiver to call pointer method through a projected pointer cell: {output}"
         );
         assert!(
@@ -42566,8 +42569,11 @@ type Pointer[T any] struct {
             "{main_rs}"
         );
         assert!(
-            !main_rs.contains("#[derive(Clone, Default, PartialEq)]\n#[repr(C)]\npub struct Holder")
-                && !main_rs.contains("# [derive (Clone , Default , PartialEq)] # [repr (C)] pub struct Holder"),
+            !main_rs
+                .contains("#[derive(Clone, Default, PartialEq)]\n#[repr(C)]\npub struct Holder")
+                && !main_rs.contains(
+                    "# [derive (Clone , Default , PartialEq)] # [repr (C)] pub struct Holder"
+                ),
             "expected Holder not to derive PartialEq from an imported generic struct field: {main_rs}"
         );
     }

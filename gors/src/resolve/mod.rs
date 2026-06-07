@@ -2050,14 +2050,42 @@ fn method_refs_from_decl(decl: &crate::ast::Decl<'_>, env: &TypeEnv, refs: &mut 
     match decl {
         crate::ast::Decl::FuncDecl(func) => {
             seed_func_decl_method_ref_bindings(func, &mut env);
+            let return_types = func_result_types_for_method_refs(func);
             if let Some(body) = &func.body {
-                method_refs_from_block(body, &mut env, refs);
+                method_refs_from_block(body, &mut env, refs, &return_types);
             }
         }
         crate::ast::Decl::GenDecl(gen_decl) => {
             method_refs_from_gen_decl(gen_decl, &mut env, refs);
         }
     }
+}
+
+fn func_result_types_for_method_refs(
+    func: &crate::ast::FuncDecl<'_>,
+) -> Vec<crate::compiler::typeinfer::GoType> {
+    field_list_types_for_method_refs(func.type_.results.as_ref())
+}
+
+fn field_list_types_for_method_refs(
+    fields: Option<&crate::ast::FieldList<'_>>,
+) -> Vec<crate::compiler::typeinfer::GoType> {
+    fields
+        .map(|fields| {
+            fields
+                .list
+                .iter()
+                .flat_map(|field| {
+                    let ty = field
+                        .type_
+                        .as_ref()
+                        .map(crate::compiler::typeinfer::GoType::from_expr)
+                        .unwrap_or(crate::compiler::typeinfer::GoType::Unknown);
+                    std::iter::repeat_n(ty, field.names.as_ref().map_or(1, Vec::len))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn seed_func_decl_method_ref_bindings(func: &crate::ast::FuncDecl<'_>, env: &mut TypeEnv) {
@@ -2100,6 +2128,7 @@ fn method_refs_from_gen_decl(
         };
         if let Some(values) = value_spec.values.as_deref() {
             method_refs_from_exprs(values, env, refs);
+            method_refs_from_value_spec_interface_dependencies(value_spec, values, env, refs);
         }
         if let Some(type_expr) = &value_spec.type_ {
             let ty = crate::compiler::typeinfer::GoType::from_expr(type_expr);
@@ -2119,14 +2148,30 @@ fn method_refs_from_gen_decl(
     }
 }
 
+fn method_refs_from_value_spec_interface_dependencies(
+    value_spec: &crate::ast::ValueSpec<'_>,
+    values: &[crate::ast::Expr<'_>],
+    env: &TypeEnv,
+    refs: &mut HashSet<String>,
+) {
+    let Some(type_expr) = &value_spec.type_ else {
+        return;
+    };
+    let expected = crate::compiler::typeinfer::GoType::from_expr(type_expr);
+    for value in values {
+        method_refs_from_interface_value(&expected, value, env, refs);
+    }
+}
+
 fn method_refs_from_block(
     block: &crate::ast::BlockStmt<'_>,
     env: &mut TypeEnv,
     refs: &mut HashSet<String>,
+    return_types: &[crate::compiler::typeinfer::GoType],
 ) {
     let mut block_env = env.clone();
     for stmt in &block.list {
-        method_refs_from_stmt(stmt, &mut block_env, refs);
+        method_refs_from_stmt(stmt, &mut block_env, refs, return_types);
     }
 }
 
@@ -2134,11 +2179,13 @@ fn method_refs_from_stmt(
     stmt: &crate::ast::Stmt<'_>,
     env: &mut TypeEnv,
     refs: &mut HashSet<String>,
+    return_types: &[crate::compiler::typeinfer::GoType],
 ) {
     match stmt {
         crate::ast::Stmt::AssignStmt(assign) => {
             method_refs_from_exprs(&assign.lhs, env, refs);
             method_refs_from_exprs(&assign.rhs, env, refs);
+            method_refs_from_assignment_interface_dependencies(assign, env, refs);
             if assign.tok == crate::token::Token::DEFINE && assign.lhs.len() == assign.rhs.len() {
                 for (lhs, rhs) in assign.lhs.iter().zip(assign.rhs.iter()) {
                     let crate::ast::Expr::Ident(ident) = lhs else {
@@ -2151,22 +2198,24 @@ fn method_refs_from_stmt(
                 }
             }
         }
-        crate::ast::Stmt::BlockStmt(block) => method_refs_from_block(block, env, refs),
+        crate::ast::Stmt::BlockStmt(block) => {
+            method_refs_from_block(block, env, refs, return_types)
+        }
         crate::ast::Stmt::BranchStmt(_) | crate::ast::Stmt::EmptyStmt(_) => {}
         crate::ast::Stmt::CaseClause(case_clause) => {
             method_refs_from_exprs(case_clause.list.as_deref().unwrap_or(&[]), env, refs);
             let mut case_env = env.clone();
             for stmt in &case_clause.body {
-                method_refs_from_stmt(stmt, &mut case_env, refs);
+                method_refs_from_stmt(stmt, &mut case_env, refs, return_types);
             }
         }
         crate::ast::Stmt::CommClause(comm_clause) => {
             let mut comm_env = env.clone();
             if let Some(comm) = comm_clause.comm.as_deref() {
-                method_refs_from_stmt(comm, &mut comm_env, refs);
+                method_refs_from_stmt(comm, &mut comm_env, refs, return_types);
             }
             for stmt in &comm_clause.body {
-                method_refs_from_stmt(stmt, &mut comm_env, refs);
+                method_refs_from_stmt(stmt, &mut comm_env, refs, return_types);
             }
         }
         crate::ast::Stmt::DeclStmt(decl_stmt) => {
@@ -2179,30 +2228,32 @@ fn method_refs_from_stmt(
         crate::ast::Stmt::ForStmt(for_stmt) => {
             let mut loop_env = env.clone();
             if let Some(init) = for_stmt.init.as_deref() {
-                method_refs_from_stmt(init, &mut loop_env, refs);
+                method_refs_from_stmt(init, &mut loop_env, refs, return_types);
             }
             if let Some(cond) = &for_stmt.cond {
                 method_refs_from_expr(cond, &mut loop_env, refs);
             }
             if let Some(post) = for_stmt.post.as_deref() {
-                method_refs_from_stmt(post, &mut loop_env, refs);
+                method_refs_from_stmt(post, &mut loop_env, refs, return_types);
             }
-            method_refs_from_block(&for_stmt.body, &mut loop_env, refs);
+            method_refs_from_block(&for_stmt.body, &mut loop_env, refs, return_types);
         }
         crate::ast::Stmt::GoStmt(go_stmt) => method_refs_from_call(&go_stmt.call, env, refs),
         crate::ast::Stmt::IfStmt(if_stmt) => {
             let mut if_env = env.clone();
             if let Some(init) = if_stmt.init.as_ref().as_ref() {
-                method_refs_from_stmt(init, &mut if_env, refs);
+                method_refs_from_stmt(init, &mut if_env, refs, return_types);
             }
             method_refs_from_expr(&if_stmt.cond, &mut if_env, refs);
-            method_refs_from_block(&if_stmt.body, &mut if_env, refs);
+            method_refs_from_block(&if_stmt.body, &mut if_env, refs, return_types);
             if let Some(else_stmt) = if_stmt.else_.as_ref().as_ref() {
-                method_refs_from_stmt(else_stmt, &mut if_env, refs);
+                method_refs_from_stmt(else_stmt, &mut if_env, refs, return_types);
             }
         }
         crate::ast::Stmt::IncDecStmt(inc_dec) => method_refs_from_expr(&inc_dec.x, env, refs),
-        crate::ast::Stmt::LabeledStmt(labeled) => method_refs_from_stmt(&labeled.stmt, env, refs),
+        crate::ast::Stmt::LabeledStmt(labeled) => {
+            method_refs_from_stmt(&labeled.stmt, env, refs, return_types)
+        }
         crate::ast::Stmt::RangeStmt(range) => {
             method_refs_from_expr(&range.x, env, refs);
             let mut range_env = env.clone();
@@ -2215,13 +2266,19 @@ fn method_refs_from_stmt(
             if let Some(value) = &range.value {
                 method_refs_from_expr(value, &mut range_env, refs);
             }
-            method_refs_from_block(&range.body, &mut range_env, refs);
+            method_refs_from_block(&range.body, &mut range_env, refs, return_types);
         }
         crate::ast::Stmt::ReturnStmt(return_stmt) => {
-            method_refs_from_exprs(&return_stmt.results, env, refs)
+            method_refs_from_exprs(&return_stmt.results, env, refs);
+            method_refs_from_return_interface_dependencies(
+                &return_stmt.results,
+                return_types,
+                env,
+                refs,
+            );
         }
         crate::ast::Stmt::SelectStmt(select_stmt) => {
-            method_refs_from_block(&select_stmt.body, env, refs)
+            method_refs_from_block(&select_stmt.body, env, refs, return_types)
         }
         crate::ast::Stmt::SendStmt(send_stmt) => {
             method_refs_from_expr(&send_stmt.chan, env, refs);
@@ -2230,21 +2287,49 @@ fn method_refs_from_stmt(
         crate::ast::Stmt::SwitchStmt(switch_stmt) => {
             let mut switch_env = env.clone();
             if let Some(init) = switch_stmt.init.as_deref() {
-                method_refs_from_stmt(init, &mut switch_env, refs);
+                method_refs_from_stmt(init, &mut switch_env, refs, return_types);
             }
             if let Some(tag) = &switch_stmt.tag {
                 method_refs_from_expr(tag, &mut switch_env, refs);
             }
-            method_refs_from_block(&switch_stmt.body, &mut switch_env, refs);
+            method_refs_from_block(&switch_stmt.body, &mut switch_env, refs, return_types);
         }
         crate::ast::Stmt::TypeSwitchStmt(type_switch) => {
             let mut switch_env = env.clone();
             if let Some(init) = type_switch.init.as_deref() {
-                method_refs_from_stmt(init, &mut switch_env, refs);
+                method_refs_from_stmt(init, &mut switch_env, refs, return_types);
             }
-            method_refs_from_stmt(&type_switch.assign, &mut switch_env, refs);
-            method_refs_from_block(&type_switch.body, &mut switch_env, refs);
+            method_refs_from_stmt(&type_switch.assign, &mut switch_env, refs, return_types);
+            method_refs_from_block(&type_switch.body, &mut switch_env, refs, return_types);
         }
+    }
+}
+
+fn method_refs_from_assignment_interface_dependencies(
+    assign: &crate::ast::AssignStmt<'_>,
+    env: &TypeEnv,
+    refs: &mut HashSet<String>,
+) {
+    if assign.lhs.len() != assign.rhs.len() {
+        return;
+    }
+    for (lhs, rhs) in assign.lhs.iter().zip(assign.rhs.iter()) {
+        let expected = crate::compiler::typeinfer::GoType::infer_expr(lhs, env);
+        method_refs_from_interface_value(&expected, rhs, env, refs);
+    }
+}
+
+fn method_refs_from_return_interface_dependencies(
+    results: &[crate::ast::Expr<'_>],
+    return_types: &[crate::compiler::typeinfer::GoType],
+    env: &TypeEnv,
+    refs: &mut HashSet<String>,
+) {
+    if results.len() != return_types.len() {
+        return;
+    }
+    for (expected, result) in return_types.iter().zip(results.iter()) {
+        method_refs_from_interface_value(expected, result, env, refs);
     }
 }
 
@@ -2308,30 +2393,7 @@ fn method_refs_from_interface_arg_dependencies(
         return;
     };
     for (expected, arg) in params.iter().zip(args.iter()) {
-        let Some(interface_name) = interface_param_name_for_method_refs(expected, env) else {
-            continue;
-        };
-        let actual = crate::compiler::typeinfer::GoType::infer_expr(arg, env);
-        let Some((type_name, include_pointer_receiver_methods)) =
-            concrete_receiver_name_for_interface_arg(&actual, env)
-        else {
-            continue;
-        };
-        if type_name.contains('.') {
-            continue;
-        }
-        if !env.named_type_implements_interface(
-            &type_name,
-            &interface_name,
-            include_pointer_receiver_methods,
-        ) {
-            continue;
-        }
-        if let Some(methods) = env.get_interface_methods(&interface_name) {
-            for method in methods {
-                refs.insert(format!("{type_name}::{method}"));
-            }
-        }
+        method_refs_from_interface_value(expected, arg, env, refs);
     }
 }
 
@@ -2377,16 +2439,17 @@ fn receiver_names_for_method_lookup(
     }
 }
 
-fn interface_param_name_for_method_refs(
+fn interface_methods_for_method_refs(
     ty: &crate::compiler::typeinfer::GoType,
     env: &TypeEnv,
-) -> Option<String> {
+) -> Option<Vec<String>> {
     match env.resolve_alias(ty) {
+        crate::compiler::typeinfer::GoType::Error => Some(vec!["Error".to_string()]),
         crate::compiler::typeinfer::GoType::Named(name)
         | crate::compiler::typeinfer::GoType::Interface(name)
             if env.is_interface(&name) =>
         {
-            Some(name)
+            env.get_interface_methods(&name)
         }
         _ => None,
     }
@@ -2396,15 +2459,72 @@ fn concrete_receiver_name_for_interface_arg(
     ty: &crate::compiler::typeinfer::GoType,
     env: &TypeEnv,
 ) -> Option<(String, bool)> {
-    match env.resolve_alias(ty) {
+    match ty {
         crate::compiler::typeinfer::GoType::Named(name)
-        | crate::compiler::typeinfer::GoType::Instantiated { name, .. } => Some((name, false)),
-        crate::compiler::typeinfer::GoType::Pointer(inner) => match env.resolve_alias(&inner) {
+        | crate::compiler::typeinfer::GoType::Instantiated { name, .. } => {
+            concrete_receiver_name_if_not_interface(name, false, env)
+        }
+        crate::compiler::typeinfer::GoType::Pointer(inner) => match inner.as_ref() {
             crate::compiler::typeinfer::GoType::Named(name)
-            | crate::compiler::typeinfer::GoType::Instantiated { name, .. } => Some((name, true)),
+            | crate::compiler::typeinfer::GoType::Instantiated { name, .. } => {
+                concrete_receiver_name_if_not_interface(name, true, env)
+            }
+            other => match env.resolve_alias(other) {
+                crate::compiler::typeinfer::GoType::Named(name)
+                | crate::compiler::typeinfer::GoType::Instantiated { name, .. } => {
+                    concrete_receiver_name_if_not_interface(&name, true, env)
+                }
+                _ => None,
+            },
+        },
+        other => match env.resolve_alias(other) {
+            crate::compiler::typeinfer::GoType::Named(name)
+            | crate::compiler::typeinfer::GoType::Instantiated { name, .. } => {
+                concrete_receiver_name_if_not_interface(&name, false, env)
+            }
             _ => None,
         },
-        _ => None,
+    }
+}
+
+fn concrete_receiver_name_if_not_interface(
+    name: &str,
+    include_pointer_receiver_methods: bool,
+    env: &TypeEnv,
+) -> Option<(String, bool)> {
+    if env.is_interface(name) {
+        None
+    } else {
+        Some((name.to_string(), include_pointer_receiver_methods))
+    }
+}
+
+fn method_refs_from_interface_value(
+    expected: &crate::compiler::typeinfer::GoType,
+    actual: &crate::ast::Expr<'_>,
+    env: &TypeEnv,
+    refs: &mut HashSet<String>,
+) {
+    let Some(methods) = interface_methods_for_method_refs(expected, env) else {
+        return;
+    };
+    if methods.is_empty() {
+        return;
+    }
+    let actual = crate::compiler::typeinfer::GoType::infer_expr(actual, env);
+    let Some((type_name, include_pointer_receiver_methods)) =
+        concrete_receiver_name_for_interface_arg(&actual, env)
+    else {
+        return;
+    };
+    if type_name.contains('.') {
+        return;
+    }
+    if !env.named_type_implements_methods(&type_name, &methods, include_pointer_receiver_methods) {
+        return;
+    }
+    for method in methods {
+        refs.insert(format!("{type_name}::{method}"));
     }
 }
 
@@ -2442,6 +2562,7 @@ fn method_refs_from_expr(
                 method_refs_from_expr(type_expr, env, refs);
             }
             method_refs_from_exprs(composite.elts.as_deref().unwrap_or(&[]), env, refs);
+            method_refs_from_composite_literal_interface_dependencies(composite, env, refs);
         }
         crate::ast::Expr::Ellipsis(ellipsis) => {
             if let Some(elt) = ellipsis.elt.as_deref() {
@@ -2452,7 +2573,8 @@ fn method_refs_from_expr(
             let mut func_env = env.clone();
             seed_field_list_method_ref_bindings(Some(&func_lit.type_.params), &mut func_env);
             seed_field_list_method_ref_bindings(func_lit.type_.results.as_ref(), &mut func_env);
-            method_refs_from_block(&func_lit.body, &mut func_env, refs);
+            let return_types = field_list_types_for_method_refs(func_lit.type_.results.as_ref());
+            method_refs_from_block(&func_lit.body, &mut func_env, refs, &return_types);
         }
         crate::ast::Expr::FuncType(_) | crate::ast::Expr::InterfaceType(_) => {}
         crate::ast::Expr::IndexExpr(index) => {
@@ -2502,6 +2624,82 @@ fn method_refs_from_expr(
             }
         }
         crate::ast::Expr::UnaryExpr(unary) => method_refs_from_expr(&unary.x, env, refs),
+    }
+}
+
+fn method_refs_from_composite_literal_interface_dependencies(
+    composite: &crate::ast::CompositeLit<'_>,
+    env: &TypeEnv,
+    refs: &mut HashSet<String>,
+) {
+    let Some(type_expr) = composite.type_.as_deref() else {
+        return;
+    };
+    let Some(elts) = composite.elts.as_deref() else {
+        return;
+    };
+    match env.resolve_alias(&crate::compiler::typeinfer::GoType::from_expr(type_expr)) {
+        crate::compiler::typeinfer::GoType::Named(name) => {
+            method_refs_from_struct_literal_interface_dependencies(
+                &env.get_struct_fields(&name),
+                elts,
+                env,
+                refs,
+            );
+        }
+        crate::compiler::typeinfer::GoType::Instantiated { name, args } => {
+            method_refs_from_struct_literal_interface_dependencies(
+                &env.get_struct_fields_with_type_args(&name, &args),
+                elts,
+                env,
+                refs,
+            );
+        }
+        crate::compiler::typeinfer::GoType::Slice(elem)
+        | crate::compiler::typeinfer::GoType::Array(elem) => {
+            for elt in elts {
+                let value = match elt {
+                    crate::ast::Expr::KeyValueExpr(key_value) => key_value.value.as_ref(),
+                    other => other,
+                };
+                method_refs_from_interface_value(&elem, value, env, refs);
+            }
+        }
+        crate::compiler::typeinfer::GoType::Map(key, value) => {
+            for elt in elts {
+                let crate::ast::Expr::KeyValueExpr(key_value) = elt else {
+                    continue;
+                };
+                method_refs_from_interface_value(&key, &key_value.key, env, refs);
+                method_refs_from_interface_value(&value, &key_value.value, env, refs);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn method_refs_from_struct_literal_interface_dependencies(
+    fields: &[(String, crate::compiler::typeinfer::GoType)],
+    elts: &[crate::ast::Expr<'_>],
+    env: &TypeEnv,
+    refs: &mut HashSet<String>,
+) {
+    let mut positional_index = 0usize;
+    for elt in elts {
+        if let crate::ast::Expr::KeyValueExpr(key_value) = elt {
+            let crate::ast::Expr::Ident(field_name) = key_value.key.as_ref() else {
+                continue;
+            };
+            if let Some((_, expected)) = fields
+                .iter()
+                .find(|(candidate, _)| candidate == field_name.name)
+            {
+                method_refs_from_interface_value(expected, &key_value.value, env, refs);
+            }
+        } else if let Some((_, expected)) = fields.get(positional_index) {
+            method_refs_from_interface_value(expected, elt, env, refs);
+            positional_index += 1;
+        }
     }
 }
 
@@ -3082,6 +3280,45 @@ func use(m *bisect.Matcher) {
         assert!(reachable.contains("stderr"), "{reachable:?}");
         assert!(reachable.contains("runtimeStderr"), "{reachable:?}");
         assert!(reachable.contains("runtimeStderr::Write"), "{reachable:?}");
+    }
+
+    #[test]
+    fn reachable_names_include_methods_needed_for_concrete_error_values() {
+        let file = crate::parser::parse_file(
+            "pkg.go",
+            r#"
+package pkg
+
+type Error int
+
+const ErrSyntax Error = 1
+
+func (e Error) Error() string {
+	return "syntax"
+}
+
+type holder struct {
+	err error
+}
+
+func root() error {
+	var err error
+	err = ErrSyntax
+	_ = holder{err: ErrSyntax}
+	return ErrSyntax
+}
+"#,
+        )
+        .unwrap();
+        let parsed = vec![("pkg.go", file)];
+        let roots = HashSet::from(["root".to_string()]);
+
+        let reachable = reachable_package_names(&parsed, &roots);
+
+        assert!(reachable.contains("Error"), "{reachable:?}");
+        assert!(reachable.contains("Error::Error"), "{reachable:?}");
+        assert!(reachable.contains("ErrSyntax"), "{reachable:?}");
+        assert!(reachable.contains("holder"), "{reachable:?}");
     }
 
     #[test]
