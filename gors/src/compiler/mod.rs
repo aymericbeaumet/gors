@@ -13071,10 +13071,14 @@ fn compile_call_arg_with_expected_and_ownership(
     {
         return arg.into();
     }
-    let should_clone = any_call_arg_needs_clone(&arg, expected, actual);
+    let should_clone_any = any_call_arg_needs_clone(&arg, expected, actual);
+    let should_clone_value =
+        expected.is_some_and(|expected| expr_should_clone_for_value_param(&arg, expected, actual));
     let arg = compile_expr_with_expected(arg, expected);
-    if should_clone {
+    if should_clone_any {
         clone_any_expr(arg)
+    } else if should_clone_value && !is_clone_call_expr(&arg) {
+        syn::parse_quote! { (#arg).clone() }
     } else {
         arg
     }
@@ -14096,8 +14100,8 @@ fn expr_should_clone_for_value_param(
     if !is_ir_addressable_expr(expr) && !expr_is_reusable_value_ident(expr) {
         return false;
     }
-    let expected = resolved_go_type(expected);
-    let actual = resolved_go_type(actual);
+    let expected = underlying_go_type(expected);
+    let actual = underlying_go_type(actual);
     let expected_cloneable_slice = cloneable_slice_value_type(&expected);
     let actual_cloneable_slice = cloneable_slice_value_type(&actual);
     if (matches!(expected, typeinfer::GoType::Slice(_))
@@ -14120,6 +14124,11 @@ fn expr_should_clone_for_value_param(
             | typeinfer::GoType::Unknown
     ) {
         return false;
+    }
+    if matches!(expected, typeinfer::GoType::Map(_, _))
+        && matches!(actual, typeinfer::GoType::Map(_, _))
+    {
+        return true;
     }
     if expected != actual {
         return false;
@@ -34368,6 +34377,114 @@ func main() {
             "{main_rs}"
         );
         assert!(!main_rs.contains("Box::new(&mut *arg)"), "{main_rs}");
+    }
+
+    #[test]
+    fn it_should_clone_addressable_map_call_args() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func keys(m map[string]string) []string {
+                    return []string{}
+                }
+
+                func main() {
+                    m := map[string]string{"a": "b"}
+                    _ = keys(m)
+                    _ = m["a"]
+                }
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+        let compact: String = output.chars().filter(|c| !c.is_whitespace()).collect();
+
+        assert!(
+            compact.contains("keys(((m).clone()))") || compact.contains("keys((m).clone())"),
+            "expected map call argument to be cloned before later reuse: {output}"
+        );
+        assert!(
+            !compact.contains(".clone()).clone()"),
+            "expected map call argument not to be cloned twice: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_clone_addressable_generic_map_call_args() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func keys[M ~map[K]V, K comparable, V any](m M) []K {
+                    return []K{}
+                }
+
+                func main() {
+                    m := map[string]string{"a": "b"}
+                    _ = keys(m)
+                    _ = m["a"]
+                }
+            "#,
+        )
+        .unwrap();
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+        let compact: String = output.chars().filter(|c| !c.is_whitespace()).collect();
+
+        assert!(
+            compact.contains("keys(") && compact.contains("(m).clone()"),
+            "expected generic map call argument to be cloned before later reuse: {output}"
+        );
+        assert!(
+            !compact.contains(".clone()).clone()"),
+            "expected generic map call argument not to be cloned twice: {output}"
+        );
+    }
+
+    #[test]
+    fn compile_program_multi_clones_imported_generic_map_call_args() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("helper/keys.go").as_path(),
+            r#"
+package helper
+
+func Keys[M ~map[K]V, K comparable, V any](m M) []K {
+	return []K{}
+}
+"#,
+        );
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+import "example/helper"
+
+func main() {
+	m := map[string]string{"a": "b"}
+	_ = helper.Keys(m)
+	_ = m["a"]
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        let compact: String = main_rs.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            compact.contains("helper::Keys(") && compact.contains("(m).clone()"),
+            "expected imported generic map call argument to be cloned before later reuse: {main_rs}"
+        );
+        assert!(
+            !compact.contains(".clone()).clone()"),
+            "expected imported generic map call argument not to be cloned twice: {main_rs}"
+        );
     }
 
     #[test]
