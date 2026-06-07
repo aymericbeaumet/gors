@@ -10,7 +10,7 @@ use super::{
         call_target_key, clone_call_receiver_expr, expr_path_ident, expr_path_ident_or_clone,
         is_box_dyn_any_type, is_box_leak_expr, is_lock_guard_wrapper_method, is_path_call_expr,
         is_slice_range_index_expr, named_self_type, pat_ident_name, slice_type_inner,
-        vec_type_inner, zero_arg_method_call_receiver_expr,
+        strip_paren_or_group, vec_type_inner, zero_arg_method_call_receiver_expr,
     },
     synthetic_names,
 };
@@ -1154,17 +1154,40 @@ fn normalize_vec_value_arg(arg: &mut syn::Expr, kind: CloneValueParamKind) {
         take_value_arg(arg);
         return;
     }
-    if matches!(kind, CloneValueParamKind::Vec)
-        && (is_slice_range_index_expr(arg) || matches!(arg, syn::Expr::Block(_)))
-    {
-        let inner = arg.clone();
-        *arg = syn::parse_quote! { (#inner).to_vec() };
-        return;
-    }
-    if matches!(kind, CloneValueParamKind::Vec) && take_deref_value_arg(arg) {
-        return;
+    if matches!(kind, CloneValueParamKind::Vec) {
+        if is_slice_range_index_expr(arg) || matches!(arg, syn::Expr::Block(_)) {
+            let inner = arg.clone();
+            *arg = syn::parse_quote! { (#inner).to_vec() };
+            return;
+        }
+        if take_deref_value_arg(arg) {
+            return;
+        }
+        if materialize_vec_lvalue_arg(arg) {
+            return;
+        }
     }
     clone_value_arg(arg);
+}
+
+fn materialize_vec_lvalue_arg(arg: &mut syn::Expr) -> bool {
+    if let Some(source) = clone_call_receiver_expr(arg) {
+        let source = strip_paren_or_group(&source).clone();
+        *arg = syn::parse_quote! { (#source).to_vec() };
+        return true;
+    }
+    if !matches!(
+        arg,
+        syn::Expr::Path(_) | syn::Expr::Field(_) | syn::Expr::Index(_)
+    ) {
+        return false;
+    }
+    if matches!(expr_path_ident(arg).as_deref(), Some("self")) {
+        return false;
+    }
+    let inner = arg.clone();
+    *arg = syn::parse_quote! { (#inner).to_vec() };
+    true
 }
 
 fn take_deref_value_arg(arg: &mut syn::Expr) -> bool {
@@ -1825,7 +1848,7 @@ mod tests {
         let output = quote! { #main_file }.to_string();
         assert!(
             output.contains(
-                "crate :: helper :: take ((item . name) . clone () , (values [0]) . clone () , (item . bytes) . clone ())"
+                "crate :: helper :: take ((item . name) . clone () , (values [0]) . clone () , (item . bytes) . to_vec ())"
             ),
             "expected value-copy coercions to follow callee cloneable value parameters: {output}"
         );
@@ -1971,6 +1994,106 @@ mod tests {
     }
 
     #[test]
+    fn clone_vec_value_call_args_converts_mut_slice_locals_to_vec() {
+        let main_file: syn::File = rust! {
+            pub struct parser;
+
+            impl parser {
+                pub fn parseNumeric(
+                    mut p: crate::builtin::GorsPtr<Self>,
+                    mut b: Vec<u8>,
+                ) -> i64 {
+                    0
+                }
+            }
+
+            pub struct headerGNU;
+
+            impl headerGNU {
+                pub fn accessTime(&mut self) -> &mut [u8] {
+                    unimplemented!()
+                }
+            }
+
+            pub fn call(mut p: crate::builtin::GorsPtr<parser>, mut gnu: headerGNU) {
+                let mut b = <headerGNU>::accessTime(&mut gnu);
+                let _ = <parser>::parseNumeric(p, b);
+            }
+        };
+        let mut modules = std::collections::BTreeMap::from([(
+            "__main__".to_string(),
+            super::CompiledModule {
+                mod_name: "main".to_string(),
+                import_path: String::new(),
+                file: main_file,
+                filename: "main.rs".to_string(),
+                content_hash: String::new(),
+                is_main: true,
+                is_stdlib: false,
+            },
+        )]);
+
+        super::clone_vec_value_call_args(&mut modules);
+
+        let main_file = compiled_main_file(&modules);
+        let output = quote! { #main_file }.to_string();
+        assert!(
+            output.contains("< parser > :: parseNumeric (p , (b) . to_vec ())"),
+            "expected mutable-slice local argument to materialize Vec: {output}"
+        );
+    }
+
+    #[test]
+    fn clone_vec_value_call_args_converts_cloned_mut_slice_locals_to_vec() {
+        let main_file: syn::File = rust! {
+            pub struct parser;
+
+            impl parser {
+                pub fn parseNumeric(
+                    mut p: crate::builtin::GorsPtr<Self>,
+                    mut b: Vec<u8>,
+                ) -> i64 {
+                    0
+                }
+            }
+
+            pub struct headerGNU;
+
+            impl headerGNU {
+                pub fn accessTime(&mut self) -> &mut [u8] {
+                    unimplemented!()
+                }
+            }
+
+            pub fn call(mut p: crate::builtin::GorsPtr<parser>, mut gnu: headerGNU) {
+                let mut b = <headerGNU>::accessTime(&mut gnu);
+                let _ = <parser>::parseNumeric(p, (b).clone());
+            }
+        };
+        let mut modules = std::collections::BTreeMap::from([(
+            "__main__".to_string(),
+            super::CompiledModule {
+                mod_name: "main".to_string(),
+                import_path: String::new(),
+                file: main_file,
+                filename: "main.rs".to_string(),
+                content_hash: String::new(),
+                is_main: true,
+                is_stdlib: false,
+            },
+        )]);
+
+        super::clone_vec_value_call_args(&mut modules);
+
+        let main_file = compiled_main_file(&modules);
+        let output = quote! { #main_file }.to_string();
+        assert!(
+            output.contains("< parser > :: parseNumeric (p , (b) . to_vec ())"),
+            "expected cloned mutable-slice local argument to materialize Vec: {output}"
+        );
+    }
+
+    #[test]
     fn clone_vec_value_call_args_takes_nonclone_any_vec_args() {
         let helper_file: syn::File = rust! {
             pub fn inspect(mut values: Vec<Box<dyn std::any::Any>>, mut index: isize) {}
@@ -2027,8 +2150,8 @@ mod tests {
             "expected temporary non-clone any Vec argument to remain unchanged: {output}"
         );
         assert!(
-            output.contains("crate :: helper :: bytes ((data) . clone ())"),
-            "expected ordinary Vec argument to keep cloneable-value behavior: {output}"
+            output.contains("crate :: helper :: bytes ((data) . to_vec ())"),
+            "expected ordinary Vec argument to materialize an owned Vec value: {output}"
         );
     }
 
@@ -2333,10 +2456,10 @@ mod tests {
 
         let main_file = compiled_main_file(&modules);
         let output = quote! { #main_file }.to_string();
-        let clone_count = output.matches("h . Write ((data) . clone ())").count();
+        let clone_count = output.matches("h . Write ((data) . to_vec ())").count();
         assert_eq!(
             clone_count, 2,
-            "expected Vec argument clones to follow inherited Writer::Write signature: {output}"
+            "expected Vec argument materialization to follow inherited Writer::Write signature: {output}"
         );
     }
 
