@@ -7,41 +7,12 @@ mod tracked;
 use quote::ToTokens;
 use sha2::{Digest, Sha256};
 use std::sync::{Mutex, OnceLock};
-use std::time::Instant;
 
 pub use tracked::{
     BlankLineInfo, CommentToInsert, generate_with_comments, generate_with_comments_and_blanks,
 };
 
-#[derive(Clone)]
-struct ProfileTimer {
-    label: &'static str,
-    start: Option<Instant>,
-}
-
-impl ProfileTimer {
-    fn start(label: &'static str) -> Self {
-        let enabled = std::env::var("GORS_PROFILE")
-            .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
-        Self {
-            label,
-            start: enabled.then(Instant::now),
-        }
-    }
-}
-
-impl Drop for ProfileTimer {
-    fn drop(&mut self) {
-        let Some(start) = self.start else {
-            return;
-        };
-        eprintln!(
-            "[gors-profile] {}: {:.2}ms",
-            self.label,
-            start.elapsed().as_secs_f64() * 1000.0
-        );
-    }
-}
+use crate::profile::ProfileTimer;
 
 /// Source mapping between input and output positions.
 #[derive(Debug, Clone, Default)]

@@ -81,6 +81,7 @@ mod zero_values;
 use crate::generated_names::{
     as_any_method_ident, clone_box_method_ident, interface_key_method_ident, noop_interface_ident,
 };
+use crate::profile::ProfileTimer;
 use crate::{ast, token};
 use active_names::{
     ActiveItemNamesGuard, ActiveLocalNamesGuard, active_local_shadows_unqualified_name,
@@ -143,7 +144,6 @@ use source_map_context::record_mapping;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
-use std::time::Instant;
 use syn::Token;
 use syn_inspect::{
     arc_mutex_new_inner_expr, box_dyn_any_cast_source_expr, call_expr_path_last_ident,
@@ -295,35 +295,6 @@ impl Drop for LocalTypeEnvScopeGuard {
         TYPE_ENV.with(|env| {
             *env.borrow_mut() = self.previous.clone();
         });
-    }
-}
-
-struct ProfileTimer {
-    label: &'static str,
-    start: Option<Instant>,
-}
-
-impl ProfileTimer {
-    fn start(label: &'static str) -> Self {
-        let enabled = std::env::var("GORS_PROFILE")
-            .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
-        Self {
-            label,
-            start: enabled.then(Instant::now),
-        }
-    }
-}
-
-impl Drop for ProfileTimer {
-    fn drop(&mut self) {
-        let Some(start) = self.start else {
-            return;
-        };
-        eprintln!(
-            "[gors-profile] {}: {:.2}ms",
-            self.label,
-            start.elapsed().as_secs_f64() * 1000.0
-        );
     }
 }
 

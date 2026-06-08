@@ -6,6 +6,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, OnceLock, RwLock};
 
+use crate::profile::ProfileTimer;
+
 mod runtime_primitives;
 mod structural_helpers;
 
@@ -274,13 +276,16 @@ fn resolve_cache_key(import_path: &str, roots: Option<&HashSet<String>>) -> Stri
 }
 
 fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Option<syn::ItemMod> {
+    let total_timer = ProfileTimer::start(format!("resolve.{import_path}.total"));
     if let Some(module) = runtime_primitives::module(import_path, roots) {
         cache_resolved_imports(import_path, roots, Vec::new());
+        drop(total_timer);
         return Some(module);
     }
 
     let files = package_files(import_path)?;
 
+    let parse_timer = ProfileTimer::start(format!("resolve.{import_path}.parse"));
     let mut parsed_files = Vec::new();
     for (filename, content) in files.iter() {
         let ast = match crate::parser::parse_file(filename, content) {
@@ -294,17 +299,22 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
         };
         parsed_files.push((*filename, ast));
     }
+    drop(parse_timer);
 
+    let reachable_timer = ProfileTimer::start(format!("resolve.{import_path}.reachable"));
     let reachable_names = roots.map(|roots| {
         let parsed_file_refs = parsed_files.iter().map(|(_, ast)| ast).collect::<Vec<_>>();
         let imported_type_envs = scan_imported_type_envs(import_path, &parsed_file_refs);
         reachable_package_names_with_imports(&parsed_files, roots, &imported_type_envs)
     });
+    drop(reachable_timer);
     if roots.is_some() && reachable_names.as_ref().is_none_or(HashSet::is_empty) {
         cache_resolved_imports(import_path, roots, Vec::new());
+        drop(total_timer);
         return None;
     }
 
+    let filter_timer = ProfileTimer::start(format!("resolve.{import_path}.filter"));
     let parsed_files: Vec<_> = parsed_files
         .into_iter()
         .filter_map(|(filename, ast)| {
@@ -315,12 +325,15 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
             file_has_compilable_decl(&filtered).then_some((filename, filtered))
         })
         .collect();
+    drop(filter_timer);
 
     if parsed_files.is_empty() {
         cache_resolved_imports(import_path, roots, Vec::new());
+        drop(total_timer);
         return None;
     }
 
+    let type_env_timer = ProfileTimer::start(format!("resolve.{import_path}.type_env"));
     let mut package_type_env = TypeEnv::new();
     let parsed_file_refs = parsed_files.iter().map(|(_, ast)| ast).collect::<Vec<_>>();
     package_type_env.scan_files(&parsed_file_refs);
@@ -344,9 +357,12 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
         );
     let view_method_seed =
         crate::compiler::borrowed_view_method_seed_for_files(&parsed_file_refs, &package_type_env);
+    drop(type_env_timer);
 
+    let import_timer = ProfileTimer::start(format!("resolve.{import_path}.imports"));
     let import_renames = package_import_renames(&parsed_files);
     let import_path_by_module = package_import_path_by_module(&parsed_files);
+    drop(import_timer);
     let mut all_items: Vec<syn::Item> = Vec::new();
     let recovery_context = ResolvedRecoveryContext {
         import_path,
@@ -358,6 +374,7 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
         roots,
     };
 
+    let compile_timer = ProfileTimer::start(format!("resolve.{import_path}.compile"));
     for (filename, ast) in parsed_files {
         let compiled = match compile_resolved_file(
             ast,
@@ -389,11 +406,16 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
         };
         all_items.extend(compiled.items);
     }
+    drop(compile_timer);
+
+    let post_timer = ProfileTimer::start(format!("resolve.{import_path}.post"));
     runtime_primitives::supplement_items(import_path, roots, &mut all_items);
     crate::compiler::merge_package_init_items(&mut all_items);
 
     if all_items.is_empty() {
         cache_resolved_imports(import_path, roots, Vec::new());
+        drop(post_timer);
+        drop(total_timer);
         return None;
     }
 
@@ -420,7 +442,10 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
     let mut all_items = merged_file.items;
     prefix_crate_paths(&mut all_items, &module_refs);
 
-    Some(item_mod_for(import_path, all_items))
+    let module = item_mod_for(import_path, all_items);
+    drop(post_timer);
+    drop(total_timer);
+    Some(module)
 }
 
 fn compile_resolved_file(
