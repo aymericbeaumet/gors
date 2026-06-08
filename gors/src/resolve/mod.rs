@@ -3757,4 +3757,35 @@ func root(blk *block) {
         assert!(tokens.contains("static errors"), "{tokens}");
         Ok(())
     }
+
+    #[test]
+    fn resolve_archive_tar_borrows_resliced_reg_file_reader_buffers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let roots = HashSet::from([
+            "NewReader".to_string(),
+            "Reader".to_string(),
+            "Reader::Read".to_string(),
+        ]);
+        let module = resolve_with_roots("archive/tar", &roots)
+            .ok_or_else(|| std::io::Error::other("resolve archive/tar"))?;
+        let compact = module
+            .to_token_stream()
+            .to_string()
+            .split_whitespace()
+            .collect::<String>();
+
+        assert!(
+            compact.contains("pubfnRead(mutfr:crate::builtin::GorsPtr<Self>,mutb:&mut[u8]"),
+            "{compact}"
+        );
+        assert!(
+            compact.contains("regFileReader::Read(self.clone(),&mut*b)"),
+            "{compact}"
+        );
+        assert!(
+            !compact.contains("regFileReader::Read(self.clone(),(b).to_vec())"),
+            "{compact}"
+        );
+        Ok(())
+    }
 }

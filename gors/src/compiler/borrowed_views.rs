@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, HashSet};
 thread_local! {
     static BORROWED_POINTER_PARAM_NAMES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static BORROWED_POINTER_VIEW_NAMES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
-    static BORROWED_POINTER_VIEW_METHODS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static BORROWED_POINTER_VIEW_METHODS: RefCell<BTreeMap<String, BorrowedPointerViewReturn>> = const { RefCell::new(BTreeMap::new()) };
     static MUTABLE_SLICE_VIEW_METHODS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static BORROWED_POINTER_VIEW_RETURN: RefCell<Option<BorrowedPointerViewReturn>> = const { RefCell::new(None) };
     static MUTABLE_SLICE_VIEW_RETURN: RefCell<Option<MutableSliceViewReturn>> = const { RefCell::new(None) };
@@ -136,22 +136,21 @@ impl Drop for BorrowedSliceParamNamesGuard {
     }
 }
 
-pub(super) struct SliceAliasTargetsGuard {
-    previous: BTreeMap<String, SliceAliasTarget>,
-}
+pub(super) struct SliceAliasTargetsGuard;
 
 impl SliceAliasTargetsGuard {
     pub(super) fn clear() -> Self {
-        let previous =
-            SLICE_ALIAS_TARGETS.with(|aliases| std::mem::take(&mut *aliases.borrow_mut()));
-        Self { previous }
+        SLICE_ALIAS_TARGETS.with(|aliases| {
+            aliases.borrow_mut().clear();
+        });
+        Self
     }
 }
 
 impl Drop for SliceAliasTargetsGuard {
     fn drop(&mut self) {
         SLICE_ALIAS_TARGETS.with(|aliases| {
-            *aliases.borrow_mut() = self.previous.clone();
+            aliases.borrow_mut().clear();
         });
     }
 }
@@ -193,7 +192,7 @@ pub(super) fn clear_view_methods() {
 }
 
 pub(super) fn extend_view_methods(
-    borrowed_pointer_methods: HashSet<String>,
+    borrowed_pointer_methods: BTreeMap<String, BorrowedPointerViewReturn>,
     mutable_slice_methods: HashSet<String>,
 ) {
     BORROWED_POINTER_VIEW_METHODS.with(|methods| {
@@ -205,7 +204,11 @@ pub(super) fn extend_view_methods(
 }
 
 pub(super) fn has_borrowed_pointer_view_method(key: &str) -> bool {
-    BORROWED_POINTER_VIEW_METHODS.with(|methods| methods.borrow().contains(key))
+    BORROWED_POINTER_VIEW_METHODS.with(|methods| methods.borrow().contains_key(key))
+}
+
+pub(super) fn borrowed_pointer_view_method_return(key: &str) -> Option<BorrowedPointerViewReturn> {
+    BORROWED_POINTER_VIEW_METHODS.with(|methods| methods.borrow().get(key).cloned())
 }
 
 pub(super) fn has_mutable_slice_view_method(key: &str) -> bool {

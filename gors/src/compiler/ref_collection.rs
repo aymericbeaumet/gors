@@ -707,6 +707,10 @@ pub(super) fn collect_refs_from_item(
 
         fn visit_expr_method_call_mut(&mut self, method: &mut syn::ExprMethodCall) {
             let name = method.method.to_string();
+            if is_receiver_type_wrapper_method(&method.method) {
+                syn::visit_mut::visit_expr_method_call_mut(self, method);
+                return;
+            }
             if let Some(receiver_type) = self.receiver_type_from_expr(&method.receiver) {
                 self.insert_receiver_method_ref(receiver_type, &name);
             } else {
@@ -871,6 +875,7 @@ fn is_reachability_name(name: &str) -> bool {
         name,
         "AsMut"
             | "AsRef"
+            | "as_ref"
             | "Box"
             | "Clone"
             | "Copy"
@@ -902,12 +907,14 @@ fn is_reachability_name(name: &str) -> bool {
             | "is_empty"
             | "iter"
             | "len"
+            | "lock"
             | "new"
             | "push"
             | "std"
             | "to_string"
             | "true"
             | "u8"
+            | "unwrap"
             | "u16"
             | "u32"
             | "u64"
@@ -1120,6 +1127,119 @@ mod tests {
             "{external_refs:?}"
         );
         assert!(time_refs.contains("Second"), "{external_refs:?}");
+    }
+
+    #[test]
+    fn collect_refs_ignores_external_receiver_wrapper_methods() {
+        let module_names = ReachabilityNameSet::from(["io".to_string()]);
+        let file: syn::File = syn::parse_quote! {
+            fn use_reader(mut reader: crate::io::Reader) {
+                let _ = reader.clone().Read();
+                let _ = reader.lock().unwrap().Read();
+                let _ = reader.as_ref().Read();
+            }
+        };
+        let item_names = super::super::reachability_names::item_reachability_names(&file.items);
+        let top_level_names = super::super::reachability_names::top_level_item_names(&file.items);
+        let top_level_types =
+            super::super::receiver_type_facts::top_level_item_types(&file.items, &module_names);
+        let top_level_field_types = super::super::receiver_type_facts::top_level_item_field_types(
+            &file.items,
+            &module_names,
+        );
+        let top_level_element_types =
+            super::super::receiver_type_facts::top_level_collection_element_types(
+                &file.items,
+                &module_names,
+            );
+        let top_level_return_types = super::super::receiver_type_facts::top_level_item_return_types(
+            &file.items,
+            &module_names,
+        );
+        let top_level_tuple_return_types =
+            super::super::receiver_type_facts::top_level_item_tuple_return_types(
+                &file.items,
+                &module_names,
+            );
+        let context = RefCollectionContext {
+            module_names: &module_names,
+            item_names: &item_names,
+            top_level_names: &top_level_names,
+            top_level_types: &top_level_types,
+            top_level_field_types: &top_level_field_types,
+            top_level_element_types: &top_level_element_types,
+            top_level_return_types: &top_level_return_types,
+            top_level_tuple_return_types: &top_level_tuple_return_types,
+        };
+        let mut item = file.items.first().cloned().expect("function item");
+
+        let (_names, external_refs) = collect_refs_from_item(&mut item, &context);
+
+        let io_refs = external_refs.get("io").expect("io refs");
+        assert!(io_refs.contains("Reader"), "{external_refs:?}");
+        assert!(
+            io_refs.contains(&impl_method_reachability_name("Reader", "Read")),
+            "{external_refs:?}"
+        );
+        for wrapper in ["as_ref", "clone", "lock", "unwrap"] {
+            assert!(
+                !io_refs.contains(&impl_method_reachability_name("Reader", wrapper)),
+                "{external_refs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn collect_refs_ignores_external_call_result_to_string_wrapper() {
+        let module_names = ReachabilityNameSet::from(["path".to_string()]);
+        let file: syn::File = syn::parse_quote! {
+            fn use_path() {
+                let _ = crate::path::Clean("a").to_string();
+            }
+        };
+        let item_names = super::super::reachability_names::item_reachability_names(&file.items);
+        let top_level_names = super::super::reachability_names::top_level_item_names(&file.items);
+        let top_level_types =
+            super::super::receiver_type_facts::top_level_item_types(&file.items, &module_names);
+        let top_level_field_types = super::super::receiver_type_facts::top_level_item_field_types(
+            &file.items,
+            &module_names,
+        );
+        let top_level_element_types =
+            super::super::receiver_type_facts::top_level_collection_element_types(
+                &file.items,
+                &module_names,
+            );
+        let top_level_return_types = super::super::receiver_type_facts::top_level_item_return_types(
+            &file.items,
+            &module_names,
+        );
+        let top_level_tuple_return_types =
+            super::super::receiver_type_facts::top_level_item_tuple_return_types(
+                &file.items,
+                &module_names,
+            );
+        let context = RefCollectionContext {
+            module_names: &module_names,
+            item_names: &item_names,
+            top_level_names: &top_level_names,
+            top_level_types: &top_level_types,
+            top_level_field_types: &top_level_field_types,
+            top_level_element_types: &top_level_element_types,
+            top_level_return_types: &top_level_return_types,
+            top_level_tuple_return_types: &top_level_tuple_return_types,
+        };
+        let mut item = file.items.first().cloned().expect("function item");
+
+        let (_names, external_refs) = collect_refs_from_item(&mut item, &context);
+
+        let path_refs = external_refs.get("path").expect("path refs");
+        assert!(path_refs.contains("Clean"), "{external_refs:?}");
+        assert!(
+            !path_refs.contains("to_string")
+                && !path_refs.contains(&impl_method_reachability_name("Clean", "to_string")),
+            "{external_refs:?}"
+        );
     }
 
     #[test]

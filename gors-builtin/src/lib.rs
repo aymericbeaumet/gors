@@ -241,7 +241,7 @@ impl error for Box<dyn error> {
     }
 }
 
-pub fn error_string(value: &mut Box<dyn error>) -> std::string::String {
+pub fn error_string(value: &Box<dyn error>) -> std::string::String {
     if value.__gors_as_any().is_none() {
         std::string::String::new()
     } else {

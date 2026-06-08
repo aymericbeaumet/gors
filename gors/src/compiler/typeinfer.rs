@@ -2472,7 +2472,7 @@ fn borrowed_slice_param_indices_for_func(fd: &ast::FuncDecl, env: &TypeEnv) -> H
                 continue;
             };
             if is_slice
-                && !body_reassigns_ident(body, name.name)
+                && !body_reassigns_ident_breaking_slice_alias(body, name.name)
                 && body_mutates_slice_param(body, name.name, env)
             {
                 indices.insert(param_index);
@@ -2483,85 +2483,84 @@ fn borrowed_slice_param_indices_for_func(fd: &ast::FuncDecl, env: &TypeEnv) -> H
     indices
 }
 
-fn body_reassigns_ident(body: &ast::BlockStmt, name: &str) -> bool {
+fn body_reassigns_ident_breaking_slice_alias(body: &ast::BlockStmt, name: &str) -> bool {
     body.list
         .iter()
-        .any(|stmt| stmt_reassigns_ident(stmt, name))
+        .any(|stmt| stmt_reassigns_ident_breaking_slice_alias(stmt, name))
 }
 
-fn stmt_reassigns_ident(stmt: &ast::Stmt, name: &str) -> bool {
+fn stmt_reassigns_ident_breaking_slice_alias(stmt: &ast::Stmt, name: &str) -> bool {
     match stmt {
-        ast::Stmt::AssignStmt(assign) => assign
-            .lhs
-            .iter()
-            .any(|lhs| matches!(lhs, ast::Expr::Ident(ident) if ident.name == name)),
-        ast::Stmt::BlockStmt(block) => body_reassigns_ident(block, name),
+        ast::Stmt::AssignStmt(assign) => assign_reassigns_ident_breaking_slice_alias(assign, name),
+        ast::Stmt::BlockStmt(block) => body_reassigns_ident_breaking_slice_alias(block, name),
         ast::Stmt::CaseClause(case) => case
             .body
             .iter()
-            .any(|stmt| stmt_reassigns_ident(stmt, name)),
+            .any(|stmt| stmt_reassigns_ident_breaking_slice_alias(stmt, name)),
         ast::Stmt::CommClause(comm) => {
             comm.comm
                 .as_ref()
-                .is_some_and(|stmt| stmt_reassigns_ident(stmt, name))
+                .is_some_and(|stmt| stmt_reassigns_ident_breaking_slice_alias(stmt, name))
                 || comm
                     .body
                     .iter()
-                    .any(|stmt| stmt_reassigns_ident(stmt, name))
+                    .any(|stmt| stmt_reassigns_ident_breaking_slice_alias(stmt, name))
         }
         ast::Stmt::ForStmt(for_stmt) => {
             for_stmt
                 .init
                 .as_ref()
-                .is_some_and(|stmt| stmt_reassigns_ident(stmt, name))
+                .is_some_and(|stmt| stmt_reassigns_ident_breaking_slice_alias(stmt, name))
                 || for_stmt
                     .post
                     .as_ref()
-                    .is_some_and(|stmt| stmt_reassigns_ident(stmt, name))
-                || body_reassigns_ident(&for_stmt.body, name)
+                    .is_some_and(|stmt| stmt_reassigns_ident_breaking_slice_alias(stmt, name))
+                || body_reassigns_ident_breaking_slice_alias(&for_stmt.body, name)
         }
         ast::Stmt::IfStmt(if_stmt) => {
             if_stmt
                 .init
                 .as_ref()
                 .as_ref()
-                .is_some_and(|stmt| stmt_reassigns_ident(stmt, name))
-                || body_reassigns_ident(&if_stmt.body, name)
+                .is_some_and(|stmt| stmt_reassigns_ident_breaking_slice_alias(stmt, name))
+                || body_reassigns_ident_breaking_slice_alias(&if_stmt.body, name)
                 || if_stmt
                     .else_
                     .as_ref()
                     .as_ref()
-                    .is_some_and(|stmt| stmt_reassigns_ident(stmt, name))
+                    .is_some_and(|stmt| stmt_reassigns_ident_breaking_slice_alias(stmt, name))
         }
-        ast::Stmt::LabeledStmt(labeled) => stmt_reassigns_ident(&labeled.stmt, name),
-        ast::Stmt::RangeStmt(range) => body_reassigns_ident(&range.body, name),
+        ast::Stmt::LabeledStmt(labeled) => {
+            stmt_reassigns_ident_breaking_slice_alias(&labeled.stmt, name)
+        }
+        ast::Stmt::RangeStmt(range) => body_reassigns_ident_breaking_slice_alias(&range.body, name),
         ast::Stmt::SelectStmt(select) => select
             .body
             .list
             .iter()
-            .any(|stmt| stmt_reassigns_ident(stmt, name)),
+            .any(|stmt| stmt_reassigns_ident_breaking_slice_alias(stmt, name)),
         ast::Stmt::SwitchStmt(switch) => {
             switch
                 .init
                 .as_ref()
-                .is_some_and(|stmt| stmt_reassigns_ident(stmt, name))
+                .is_some_and(|stmt| stmt_reassigns_ident_breaking_slice_alias(stmt, name))
                 || switch
                     .body
                     .list
                     .iter()
-                    .any(|stmt| stmt_reassigns_ident(stmt, name))
+                    .any(|stmt| stmt_reassigns_ident_breaking_slice_alias(stmt, name))
         }
         ast::Stmt::TypeSwitchStmt(type_switch) => {
             type_switch
                 .init
                 .as_ref()
-                .is_some_and(|stmt| stmt_reassigns_ident(stmt, name))
-                || stmt_reassigns_ident(&type_switch.assign, name)
+                .is_some_and(|stmt| stmt_reassigns_ident_breaking_slice_alias(stmt, name))
+                || stmt_reassigns_ident_breaking_slice_alias(&type_switch.assign, name)
                 || type_switch
                     .body
                     .list
                     .iter()
-                    .any(|stmt| stmt_reassigns_ident(stmt, name))
+                    .any(|stmt| stmt_reassigns_ident_breaking_slice_alias(stmt, name))
         }
         ast::Stmt::BranchStmt(_)
         | ast::Stmt::DeclStmt(_)
@@ -2573,6 +2572,23 @@ fn stmt_reassigns_ident(stmt: &ast::Stmt, name: &str) -> bool {
         | ast::Stmt::ReturnStmt(_)
         | ast::Stmt::SendStmt(_) => false,
     }
+}
+
+fn assign_reassigns_ident_breaking_slice_alias(assign: &ast::AssignStmt, name: &str) -> bool {
+    assign.lhs.iter().enumerate().any(|(index, lhs)| {
+        if !matches!(lhs, ast::Expr::Ident(ident) if ident.name == name) {
+            return false;
+        }
+        if !matches!(assign.tok, token::Token::ASSIGN | token::Token::DEFINE)
+            || assign.lhs.len() != assign.rhs.len()
+        {
+            return true;
+        }
+        assign
+            .rhs
+            .get(index)
+            .is_none_or(|rhs| !expr_aliases_slice_param(rhs, name))
+    })
 }
 
 fn body_mutates_slice_param(body: &ast::BlockStmt, name: &str, env: &TypeEnv) -> bool {
@@ -4214,6 +4230,12 @@ impl TypeEnv {
         changed
     }
 
+    pub fn borrowed_slice_param_indices_for_func_decl(&self, fd: &ast::FuncDecl) -> HashSet<usize> {
+        let mut local_env = self.clone();
+        self.seed_func_decl_vars(&mut local_env, fd);
+        borrowed_slice_param_indices_for_func(fd, &local_env)
+    }
+
     fn refresh_func_borrowed_slice_params_from_env(
         &mut self,
         fd: &ast::FuncDecl,
@@ -4777,6 +4799,98 @@ func (o *OffsetWriter) WriteAt(p []byte, off int64) (int, error) {
         env.scan_file(&file);
 
         assert!(env.func_param_needs_borrowed_slice("OffsetWriter.WriteAt", 0));
+    }
+
+    #[test]
+    fn refresh_borrowed_slice_params_preserves_self_reslice_forwarding() {
+        let file = parse_file(
+            "test.go",
+            r#"
+package p
+
+type Reader interface {
+	Read([]byte) (int, error)
+}
+
+type regFileReader struct {
+	r  Reader
+	nb int64
+}
+
+func (fr *regFileReader) Read(b []byte) (n int, err error) {
+	if int64(len(b)) > fr.nb {
+		b = b[:fr.nb]
+	}
+	if len(b) > 0 {
+		n, err = fr.r.Read(b)
+		fr.nb -= int64(n)
+	}
+	return n, err
+}
+"#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+
+        assert!(env.func_param_needs_borrowed_slice("regFileReader.Read", 0));
+    }
+
+    #[test]
+    fn refresh_borrowed_slice_params_follows_external_interface_field_calls_after_reslice() {
+        let file = parse_file(
+            "test.go",
+            r#"
+package p
+
+import "io"
+
+type regFileReader struct {
+	r  io.Reader
+	nb int64
+}
+
+func (fr *regFileReader) Read(b []byte) (n int, err error) {
+	if int64(len(b)) > fr.nb {
+		b = b[:fr.nb]
+	}
+	if len(b) > 0 {
+		n, err = fr.r.Read(b)
+		fr.nb -= int64(n)
+	}
+	return n, err
+}
+"#,
+        )
+        .unwrap();
+        let io_file = parse_file(
+            "io.go",
+            r#"
+package io
+
+type Reader interface {
+	Read([]byte) (int, error)
+}
+"#,
+        )
+        .unwrap();
+        let mut io_env = TypeEnv::new();
+        io_env.scan_file(&io_file);
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let mut inference_env = env.clone();
+        inference_env.merge_package("io", &io_env);
+
+        env.refresh_borrowed_slice_params_from_env(&[&file], &inference_env);
+
+        assert!(env.func_param_needs_borrowed_slice("regFileReader.Read", 0));
+    }
+
+    #[test]
+    fn scan_stdlib_archive_tar_marks_resliced_reg_file_reader_read_borrowed() {
+        let (_, env) = crate::resolve::scan_type_env("archive/tar").unwrap();
+
+        assert!(env.func_param_needs_borrowed_slice("regFileReader.Read", 0));
     }
 
     #[test]

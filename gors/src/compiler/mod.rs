@@ -8594,11 +8594,18 @@ fn address_taken_param_names_in_body(
     func_type: &ast::FuncType,
     body: Option<&ast::BlockStmt<'_>>,
 ) -> BTreeSet<String> {
+    let param_names = field_list_source_binding_names(&func_type.params);
+    address_taken_declared_names_in_body(body, &param_names)
+}
+
+fn address_taken_declared_names_in_body(
+    body: Option<&ast::BlockStmt<'_>>,
+    declared_names: &BTreeSet<String>,
+) -> BTreeSet<String> {
     let Some(body) = body else {
         return BTreeSet::new();
     };
-    let param_names = field_list_source_binding_names(&func_type.params);
-    if param_names.is_empty() {
+    if declared_names.is_empty() {
         return BTreeSet::new();
     }
     TYPE_ENV.with(|env| {
@@ -8606,10 +8613,10 @@ fn address_taken_param_names_in_body(
         ir::address_taken_names_in_block_with_declared_bindings(
             body,
             &env,
-            param_names.iter().cloned(),
+            declared_names.iter().cloned(),
         )
         .into_iter()
-        .filter(|name| param_names.contains(name))
+        .filter(|name| declared_names.contains(name))
         .collect()
     })
 }
@@ -9357,7 +9364,7 @@ fn method_uses_borrowed_pointer_receiver(receiver_name: &str, method_name: &str)
 
 #[derive(Clone, Default)]
 pub(crate) struct BorrowedViewMethodSeed {
-    borrowed_pointer_methods: std::collections::HashSet<String>,
+    borrowed_pointer_methods: std::collections::BTreeMap<String, BorrowedPointerViewReturn>,
     mutable_slice_methods: std::collections::HashSet<String>,
 }
 
@@ -9377,10 +9384,10 @@ fn borrowed_view_method_seed_from_decls(decls: &[ast::Decl]) -> BorrowedViewMeth
         };
         let key = method_key(&receiver_type_name, func_decl.name.name);
         if is_pointer_receiver
-            && borrowed_pointer_view_return_info(func_decl, &receiver_type_name, recv_name)
-                .is_some()
+            && let Some(info) =
+                borrowed_pointer_view_return_info(func_decl, &receiver_type_name, recv_name)
         {
-            seed.borrowed_pointer_methods.insert(key.clone());
+            seed.borrowed_pointer_methods.insert(key.clone(), info);
         }
         if mutable_slice_view_return_info(func_decl, recv_name).is_some() {
             seed.mutable_slice_methods.insert(key);
@@ -9563,7 +9570,7 @@ fn compile_method(
     let borrowed_pointer_param_names = BorrowedPointerParamNamesGuard::set(borrowed_pointer_names);
     let method_key = method_key(&type_name, func_decl.name.name);
     let borrowed_slice_param_indices =
-        borrowed_slice_param_indices_for_key(&method_key, &func_decl.type_.params);
+        borrowed_slice_param_indices_for_func_decl(&method_key, &func_decl);
     let borrowed_slice_param_names =
         BorrowedSliceParamNamesGuard::set(borrowed_slice_param_names_for_indices(
             &func_decl.type_.params,
@@ -9584,6 +9591,12 @@ fn compile_method(
             .unwrap_or_default(),
     );
     let param_names = field_list_source_binding_names(&func_decl.type_.params);
+    let named_result_source_names = func_decl
+        .type_
+        .results
+        .as_ref()
+        .map(field_list_source_binding_names)
+        .unwrap_or_default();
     let mut inputs = syn::punctuated::Punctuated::new();
     inputs.push(self_arg);
     let mut param_index = 0usize;
@@ -9637,6 +9650,8 @@ fn compile_method(
             }
         }
     }
+    let address_taken_result_names =
+        address_taken_declared_names_in_body(func_decl.body.as_ref(), &named_result_source_names);
 
     let return_go_types = collect_return_go_types(func_decl.type_.results.as_ref());
     let return_go_types_is_empty = return_go_types.is_empty();
@@ -9660,6 +9675,7 @@ fn compile_method(
                         names.insert(recv_source_name.to_string());
                     }
                     names.extend(address_taken_param_names.iter().cloned());
+                    names.extend(address_taken_result_names.iter().cloned());
                     names
                 })
             });
@@ -9799,6 +9815,15 @@ fn is_general_type_conversion_call(call_expr: &ast::CallExpr) -> bool {
             call_abi_for_backend(call_expr).callee,
             ir::CalleeKind::TypeConversion
         )
+}
+
+fn is_explicit_type_conversion_expr(expr: &ast::Expr) -> bool {
+    match ast_unparen_expr_ref(expr) {
+        ast::Expr::CallExpr(call) => {
+            special_type_conversion_kind(call).is_some() || is_general_type_conversion_call(call)
+        }
+        _ => false,
+    }
 }
 
 fn is_function_value_call(call_expr: &ast::CallExpr) -> bool {
@@ -10984,7 +11009,7 @@ fn compile_variadic_any_arg(
             let expr = lvalue_expr_from_ref(&arg).unwrap_or_else(|| {
                 compile_expr_with_expected(arg, Some(&typeinfer::GoType::Error))
             });
-            syn::parse_quote! { crate::builtin::error_string(&mut #expr) }
+            syn::parse_quote! { crate::builtin::error_string(&#expr) }
         }
         _ if matches!(
             variadic_elem.map(resolved_go_type),
@@ -12963,6 +12988,23 @@ fn compile_self_slice_assignment_rhs<'a>(
         syn::parse_quote! { let __gors_slice_max = (#max) as usize; }
     });
 
+    if matches!(lhs, ast::Expr::Ident(ident) if is_borrowed_slice_param_name(ident.name))
+        && !is_string_slice
+    {
+        let slice: syn::Expr = match (has_low, has_high) {
+            (false, false) => syn::parse_quote! { (#target)[..] },
+            (true, false) => syn::parse_quote! { (#target)[__gors_slice_low..] },
+            (false, true) => syn::parse_quote! { (#target)[..__gors_slice_high] },
+            (true, true) => syn::parse_quote! { (#target)[__gors_slice_low..__gors_slice_high] },
+        };
+        return SelfSliceAssignmentRhs::Compiled(syn::parse_quote! {{
+            #low_stmt
+            #high_stmt
+            #max_stmt
+            &mut #slice
+        }});
+    }
+
     let start: syn::Expr = if has_low {
         syn::parse_quote! { __gors_slice_low }
     } else {
@@ -13664,7 +13706,6 @@ fn compile_mutable_slice_view_index_read(
     let ast::Expr::SelectorExpr(selector) = *call_expr.fun else {
         return compile_error_expr("invalid mutable slice view call");
     };
-    let receiver = mutable_slice_view_index_owner_expr(*selector.x);
     let method = syn::Ident::new(&rust_safe_ident_name(selector.sel.name), Span::mixed_site());
     let mut args = syn::punctuated::Punctuated::<syn::Expr, Token![,]>::new();
     if let Some(cargs) = call_expr.args {
@@ -13684,6 +13725,44 @@ fn compile_mutable_slice_view_index_read(
     } else {
         syn::parse_quote! { (__gors_index_base[__gors_index]).clone() }
     };
+    let receiver_ast = *selector.x;
+    let receiver_type =
+        TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&receiver_ast, &env.borrow()));
+    if let Some(receiver_name) = named_method_receiver_type_name(receiver_type) {
+        let receiver_ty = named_go_type_path_with_inferred_type_args(&receiver_name);
+        if method_uses_borrowed_pointer_receiver(&receiver_name, &method.to_string()) {
+            if let Some(pointer_cell) = pointer_cell_expr_from_ref(&receiver_ast)
+                .or_else(|| pointer_receiver_arg_expr_from_ref(&receiver_ast))
+            {
+                return syn::parse_quote! {{
+                    let __gors_index_owner_cell = (#pointer_cell).clone();
+                    let mut __gors_index_owner_guard =
+                        __gors_index_owner_cell.lock().unwrap();
+                    let __gors_index_base =
+                        <#receiver_ty>::#method(&mut *__gors_index_owner_guard, #args);
+                    let __gors_index = (#idx) as usize;
+                    if __gors_index >= __gors_index_base.len() {
+                        crate::builtin::panic_value("index out of range");
+                    }
+                    #read_expr
+                }};
+            }
+            if is_borrowed_pointer_expr_ref(&receiver_ast) {
+                let receiver = borrowed_pointer_receiver_arg_expr_from_owned(receiver_ast);
+                return syn::parse_quote! {{
+                    let mut __gors_index_owner = #receiver;
+                    let __gors_index_base =
+                        <#receiver_ty>::#method(__gors_index_owner, #args);
+                    let __gors_index = (#idx) as usize;
+                    if __gors_index >= __gors_index_base.len() {
+                        crate::builtin::panic_value("index out of range");
+                    }
+                    #read_expr
+                }};
+            }
+        }
+    }
+    let receiver = mutable_slice_view_index_owner_expr(receiver_ast);
     syn::parse_quote! {{
         let mut __gors_index_owner = #receiver;
         let __gors_index_base = __gors_index_owner.#method(#args);
@@ -15073,6 +15152,45 @@ fn pointer_field_method_target(selector: &ast::SelectorExpr) -> Option<PointerFi
         receiver_ty,
         receiver,
     })
+}
+
+fn pointer_cell_interface_field_method_call_expr(
+    selector: &ast::SelectorExpr,
+    method: syn::Ident,
+    args: syn::punctuated::Punctuated<syn::Expr, Token![,]>,
+) -> Option<syn::Expr> {
+    let ast::Expr::SelectorExpr(field_selector) = ast_unparen_expr_ref(&selector.x) else {
+        return None;
+    };
+    if !is_owning_pointer_cell_expr_ref(&field_selector.x) {
+        return None;
+    }
+    let field_ty = selector_field_go_type(field_selector)?;
+    if !go_type_is_interface_like(&field_ty) {
+        return None;
+    }
+    let receiver = lvalue_expr_from_ref(&selector.x)?;
+    let receiver_ident = synthetic_names::method_receiver_ident();
+    let result_ident = synthetic_names::method_result_ident();
+    let mut arg_bindings: Vec<syn::Stmt> = Vec::new();
+    let mut call_args = syn::punctuated::Punctuated::<syn::Expr, Token![,]>::new();
+    for (idx, arg) in args.into_iter().enumerate() {
+        let arg_ident = synthetic_names::premethod_arg_ident(idx);
+        arg_bindings.push(syn::parse_quote! {
+            let #arg_ident = #arg;
+        });
+        call_args.push(syn::parse_quote! { #arg_ident });
+    }
+
+    Some(syn::parse_quote! {{
+        let mut #receiver_ident = {
+            let __gors_pointer_field = (#receiver).clone();
+            __gors_pointer_field
+        };
+        #(#arg_bindings)*
+        let #result_ident = #receiver_ident.#method(#call_args);
+        #result_ident
+    }})
 }
 
 fn method_has_pointer_receiver_for_type(
@@ -18550,6 +18668,8 @@ fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
     } else {
         &left_ty
     };
+    let left_is_const_like = is_const_like_expr(&binary_expr.x);
+    let left_is_explicit_conversion = is_explicit_type_conversion_expr(&binary_expr.x);
     let left = if is_shift {
         if original_op == token::Token::SHL
             && shift_left_needs_wide_untyped_left(&binary_expr.x, &binary_expr.y)
@@ -18590,6 +18710,18 @@ fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
         )
     };
     let right = maybe_cast_expr(right, right_cast);
+    if is_shift
+        && (!left_is_const_like || left_is_explicit_conversion)
+        && let Some(expr) = compile_go_typed_shift_expr(
+            left.clone(),
+            right.clone(),
+            original_op,
+            &left_ty,
+            &right_ty,
+        )
+    {
+        return expr;
+    }
     if original_op == token::Token::AND_NOT {
         let not_right = syn::Expr::Unary(syn::ExprUnary {
             attrs: vec![],
@@ -18609,6 +18741,110 @@ fn compile_binary_expr(binary_expr: ast::BinaryExpr) -> syn::Expr {
         op,
         right: Box::new(right),
     })
+}
+
+fn compile_go_typed_shift_expr(
+    left: syn::Expr,
+    right: syn::Expr,
+    op: token::Token,
+    left_ty: &typeinfer::GoType,
+    right_ty: &typeinfer::GoType,
+) -> Option<syn::Expr> {
+    let left_go_ty = match left_ty {
+        typeinfer::GoType::Int
+        | typeinfer::GoType::Int8
+        | typeinfer::GoType::Int16
+        | typeinfer::GoType::Int32
+        | typeinfer::GoType::Int64
+        | typeinfer::GoType::Uint
+        | typeinfer::GoType::Uint8
+        | typeinfer::GoType::Uint16
+        | typeinfer::GoType::Uint32
+        | typeinfer::GoType::Uint64
+        | typeinfer::GoType::Uintptr => left_ty.clone(),
+        _ => return None,
+    };
+    let left_rust_ty = rust_type_from_go_type(&left_go_ty)?;
+    let right_go_ty = resolved_go_type(right_ty);
+    let right_is_signed = right_go_ty.is_signed_int();
+    let left_is_signed = left_go_ty.is_signed_int();
+    match (op, right_is_signed, left_is_signed) {
+        (token::Token::SHL, true, _) => Some(syn::parse_quote! {{
+            let __gors_shift_left: #left_rust_ty = #left;
+            let __gors_shift_count = #right;
+            if __gors_shift_count < 0 {
+                crate::builtin::panic_value("negative shift count");
+            }
+            let __gors_shift_count = __gors_shift_count as u128;
+            if __gors_shift_count >= (<#left_rust_ty>::BITS as u128) {
+                0 as #left_rust_ty
+            } else {
+                __gors_shift_left.wrapping_shl(__gors_shift_count as u32)
+            }
+        }}),
+        (token::Token::SHL, false, _) => Some(syn::parse_quote! {{
+            let __gors_shift_left: #left_rust_ty = #left;
+            let __gors_shift_count = (#right) as u128;
+            if __gors_shift_count >= (<#left_rust_ty>::BITS as u128) {
+                0 as #left_rust_ty
+            } else {
+                __gors_shift_left.wrapping_shl(__gors_shift_count as u32)
+            }
+        }}),
+        (token::Token::SHR, true, true) => Some(syn::parse_quote! {{
+            let __gors_shift_left: #left_rust_ty = #left;
+            let __gors_shift_count = #right;
+            if __gors_shift_count < 0 {
+                crate::builtin::panic_value("negative shift count");
+            }
+            let __gors_shift_count = __gors_shift_count as u128;
+            if __gors_shift_count >= (<#left_rust_ty>::BITS as u128) {
+                if __gors_shift_left < 0 {
+                    -1 as #left_rust_ty
+                } else {
+                    0 as #left_rust_ty
+                }
+            } else {
+                __gors_shift_left.wrapping_shr(__gors_shift_count as u32)
+            }
+        }}),
+        (token::Token::SHR, true, false) => Some(syn::parse_quote! {{
+            let __gors_shift_left: #left_rust_ty = #left;
+            let __gors_shift_count = #right;
+            if __gors_shift_count < 0 {
+                crate::builtin::panic_value("negative shift count");
+            }
+            let __gors_shift_count = __gors_shift_count as u128;
+            if __gors_shift_count >= (<#left_rust_ty>::BITS as u128) {
+                0 as #left_rust_ty
+            } else {
+                __gors_shift_left.wrapping_shr(__gors_shift_count as u32)
+            }
+        }}),
+        (token::Token::SHR, false, true) => Some(syn::parse_quote! {{
+            let __gors_shift_left: #left_rust_ty = #left;
+            let __gors_shift_count = (#right) as u128;
+            if __gors_shift_count >= (<#left_rust_ty>::BITS as u128) {
+                if __gors_shift_left < 0 {
+                    -1 as #left_rust_ty
+                } else {
+                    0 as #left_rust_ty
+                }
+            } else {
+                __gors_shift_left.wrapping_shr(__gors_shift_count as u32)
+            }
+        }}),
+        (token::Token::SHR, false, false) => Some(syn::parse_quote! {{
+            let __gors_shift_left: #left_rust_ty = #left;
+            let __gors_shift_count = (#right) as u128;
+            if __gors_shift_count >= (<#left_rust_ty>::BITS as u128) {
+                0 as #left_rust_ty
+            } else {
+                __gors_shift_left.wrapping_shr(__gors_shift_count as u32)
+            }
+        }}),
+        _ => None,
+    }
 }
 
 fn is_numeric_value_binary_op(op: token::Token) -> bool {
@@ -18676,6 +18912,8 @@ fn compile_numeric_binary_expr_with_expected(
         ast::Expr::BinaryExpr(binary) => Some(binary.op),
         _ => None,
     };
+    let left_is_const_like = is_const_like_expr(&binary_expr.x);
+    let left_is_explicit_conversion = is_explicit_type_conversion_expr(&binary_expr.x);
     let left = parenthesize_binary_child_if_needed(
         compile_expr_with_expected(*binary_expr.x, Some(&natural_type)),
         left_child_op,
@@ -18688,6 +18926,13 @@ fn compile_numeric_binary_expr_with_expected(
         compile_expr_with_expected(*binary_expr.y, Some(&natural_type))
     };
     let right = parenthesize_binary_child_if_needed(right, right_child_op, op, BinarySide::Right);
+    if matches!(op, token::Token::SHL | token::Token::SHR)
+        && (!left_is_const_like || left_is_explicit_conversion)
+        && let Some(expr) =
+            compile_go_typed_shift_expr(left.clone(), right.clone(), op, &left_ty, &right_ty)
+    {
+        return coerce_numeric_expr(expected, &natural_type, expr);
+    }
     let expr = if op == token::Token::AND_NOT {
         let not_right: syn::Expr = syn::parse_quote! { !#right };
         syn::parse_quote! { #left & #not_right }
@@ -20406,6 +20651,8 @@ impl From<ast::Expr<'_>> for syn::Expr {
                 } else {
                     call_abi.signature_params.clone()
                 };
+                let slice_alias_writebacks =
+                    slice_alias_writebacks_for_call(&call_expr, &call_abi, &param_types);
                 // Detect method call vs package function call
                 let is_method_call = matches!(&*call_expr.fun, ast::Expr::SelectorExpr(sel) if {
                     match &*sel.x {
@@ -20419,7 +20666,12 @@ impl From<ast::Expr<'_>> for syn::Expr {
                         &param_types,
                         &call_abi,
                     ) {
-                        Ok(expr) => return expr,
+                        Ok(expr) => {
+                            return wrap_call_expr_with_slice_alias_writebacks(
+                                expr,
+                                slice_alias_writebacks,
+                            );
+                        }
                         Err(original) => {
                             call_expr = *original;
                         }
@@ -20449,7 +20701,11 @@ impl From<ast::Expr<'_>> for syn::Expr {
                             }
                         }
                         if method_has_pointer_receiver_for_expr(&sel.x, sel.sel.name) {
-                            return pointer_receiver_method_call_expr(sel, method, args);
+                            let expr = pointer_receiver_method_call_expr(sel, method, args);
+                            return wrap_call_expr_with_slice_alias_writebacks(
+                                expr,
+                                slice_alias_writebacks,
+                            );
                         }
                         if let Some(target) = promoted_pointer_method_target(&sel) {
                             let receiver_ty = target.receiver_ty;
@@ -20462,23 +20718,44 @@ impl From<ast::Expr<'_>> for syn::Expr {
                             } else {
                                 receiver
                             };
-                            return syn::parse_quote! {
+                            let expr = syn::parse_quote! {
                                 <#receiver_ty>::#method(#receiver, #args)
                             };
+                            return wrap_call_expr_with_slice_alias_writebacks(
+                                expr,
+                                slice_alias_writebacks,
+                            );
                         }
                         if let Some(target) = pointer_field_method_target(&sel) {
                             let receiver_ty = target.receiver_ty;
                             let receiver = target.receiver;
-                            return syn::parse_quote! {
+                            let expr = syn::parse_quote! {
                                 <#receiver_ty>::#method(&mut *#receiver, #args)
                             };
+                            return wrap_call_expr_with_slice_alias_writebacks(
+                                expr,
+                                slice_alias_writebacks,
+                            );
                         }
                         if let Some(expr) = pointer_cell_copy_out_method_call_expr(
                             &sel,
                             method.clone(),
                             args.clone(),
                         ) {
-                            return expr;
+                            return wrap_call_expr_with_slice_alias_writebacks(
+                                expr,
+                                slice_alias_writebacks,
+                            );
+                        }
+                        if let Some(expr) = pointer_cell_interface_field_method_call_expr(
+                            &sel,
+                            method.clone(),
+                            args.clone(),
+                        ) {
+                            return wrap_call_expr_with_slice_alias_writebacks(
+                                expr,
+                                slice_alias_writebacks,
+                            );
                         }
                         let receiver = method_receiver_expr_from_ref(*sel.x);
                         let receiver = if should_clone_receiver {
@@ -20486,10 +20763,15 @@ impl From<ast::Expr<'_>> for syn::Expr {
                         } else {
                             receiver
                         };
-                        return method_call_expr(receiver, method, args);
+                        let expr = method_call_expr(receiver, method, args);
+                        return wrap_call_expr_with_slice_alias_writebacks(
+                            expr,
+                            slice_alias_writebacks,
+                        );
                     }
                 }
-                Self::Call(call_expr.into())
+                let expr = Self::Call(call_expr.into());
+                wrap_call_expr_with_slice_alias_writebacks(expr, slice_alias_writebacks)
             }
             ast::Expr::Ident(ident) if ident.name == "nil" => syn::parse_quote! { None },
             ast::Expr::Ident(ident) if ident.name == "true" => syn::parse_quote! { true },
@@ -22319,19 +22601,60 @@ fn borrowed_slice_param_indices_for_key(
 ) -> std::collections::HashSet<usize> {
     TYPE_ENV.with(|env| {
         let env = env.borrow();
+        let mut keys = vec![func_key.to_string()];
+        if let Some(qualified) = package_context::current_package_qualified_name(func_key) {
+            keys.push(qualified);
+        }
+        if let Some(local) = package_context::local_name_from_current_package_qualified(func_key) {
+            keys.push(local);
+        }
+        keys.dedup();
         let mut indices = std::collections::HashSet::new();
         let mut index = 0usize;
         for field in &params.list {
             let count = field.names.as_ref().map_or(1, Vec::len);
             for offset in 0..count {
                 let param_index = index + offset;
-                if env.func_param_needs_borrowed_slice(func_key, param_index) {
+                if keys
+                    .iter()
+                    .any(|key| env.func_param_needs_borrowed_slice(key, param_index))
+                {
                     indices.insert(param_index);
                 }
             }
             index += count;
         }
         indices
+    })
+}
+
+fn borrowed_slice_param_indices_for_func_decl(
+    func_key: &str,
+    func_decl: &ast::FuncDecl,
+) -> std::collections::HashSet<usize> {
+    let mut indices = borrowed_slice_param_indices_for_key(func_key, &func_decl.type_.params);
+    if indices.is_empty() && field_list_has_slice_param(&func_decl.type_.params) {
+        TYPE_ENV.with(|env| {
+            indices.extend(
+                env.borrow()
+                    .borrowed_slice_param_indices_for_func_decl(func_decl),
+            );
+        });
+    }
+    indices
+}
+
+fn field_list_has_slice_param(params: &ast::FieldList) -> bool {
+    TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        params.list.iter().any(|field| {
+            field.type_.as_ref().is_some_and(|type_expr| {
+                matches!(
+                    env.resolve_alias(&typeinfer::GoType::from_expr(type_expr)),
+                    typeinfer::GoType::Slice(_)
+                )
+            })
+        })
     })
 }
 
@@ -22961,7 +23284,7 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
             func_decl.body.as_ref(),
         );
         let borrowed_slice_param_indices =
-            borrowed_slice_param_indices_for_key(func_decl.name.name, &func_decl.type_.params);
+            borrowed_slice_param_indices_for_func_decl(func_decl.name.name, &func_decl);
         let mut borrowed_slice_names = borrowed_slice_param_names_for_indices(
             &func_decl.type_.params,
             &borrowed_slice_param_indices,
@@ -22971,6 +23294,12 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
         let owned_interface_params =
             owned_interface_param_names(func_decl.name.name, &func_decl.type_.params);
         let param_names = field_list_source_binding_names(&func_decl.type_.params);
+        let named_result_source_names = func_decl
+            .type_
+            .results
+            .as_ref()
+            .map(field_list_source_binding_names)
+            .unwrap_or_default();
         let owned_generic_slice_params = owned_generic_slice_param_names(
             &func_decl.type_.params,
             &type_param_info,
@@ -23027,6 +23356,10 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
                 }
             }
         }
+        let address_taken_result_names = address_taken_declared_names_in_body(
+            func_decl.body.as_ref(),
+            &named_result_source_names,
+        );
 
         let return_go_types = collect_return_go_types_with_type_params(
             func_decl.type_.results.as_ref(),
@@ -23062,6 +23395,7 @@ impl TryFrom<ast::FuncDecl<'_>> for syn::ItemFn {
                             body, &env,
                         ));
                         names.extend(address_taken_param_names.iter().cloned());
+                        names.extend(address_taken_result_names.iter().cloned());
                         names
                     })
                 });
@@ -25668,6 +26002,35 @@ fn slice_alias_target_from_rhs(rhs: &ast::Expr) -> Option<SliceAliasTarget> {
     })
 }
 
+fn expr_root_ident_name<'a>(expr: &'a ast::Expr<'a>) -> Option<&'a str> {
+    match ast_unparen_expr_ref(expr) {
+        ast::Expr::Ident(ident) => Some(ident.name),
+        ast::Expr::SelectorExpr(selector) => expr_root_ident_name(&selector.x),
+        ast::Expr::CallExpr(call) => match call.fun.as_ref() {
+            ast::Expr::SelectorExpr(selector) => expr_root_ident_name(&selector.x),
+            _ => None,
+        },
+        ast::Expr::SliceExpr(slice) => expr_root_ident_name(&slice.x),
+        ast::Expr::IndexExpr(index) => expr_root_ident_name(&index.x),
+        ast::Expr::StarExpr(star) => expr_root_ident_name(&star.x),
+        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::MUL => {
+            expr_root_ident_name(&unary.x)
+        }
+        _ => None,
+    }
+}
+
+fn slice_alias_root_name<'a>(expr: &'a ast::Expr<'a>) -> Option<&'a str> {
+    match ast_unparen_expr_ref(expr) {
+        ast::Expr::Ident(ident) => borrowed_views::slice_alias_target(ident.name)
+            .is_some()
+            .then_some(ident.name),
+        ast::Expr::SliceExpr(slice) => slice_alias_root_name(&slice.x),
+        ast::Expr::ParenExpr(paren) => slice_alias_root_name(&paren.x),
+        _ => None,
+    }
+}
+
 fn direct_assignment_ident_name<'a>(expr: &ast::Expr<'a>) -> Option<&'a str> {
     match expr {
         ast::Expr::Ident(ident) if ident.name != "_" => Some(ident.name),
@@ -25706,10 +26069,12 @@ fn update_borrowed_pointer_view_names_for_assignment(assign_stmt: &ast::AssignSt
     else {
         return;
     };
-    if assign_stmt
-        .rhs
-        .first()
-        .is_some_and(expr_returns_borrowed_pointer_view)
+    if let Some(rhs) = assign_stmt.rhs.first()
+        && expr_returns_borrowed_pointer_view(rhs)
+        && matches!(
+            borrowed_pointer_view_define_guard_cell(rhs),
+            Some(None) | None
+        )
     {
         borrowed_views::insert_borrowed_pointer_view_name(lhs_name);
     }
@@ -25789,7 +26154,18 @@ fn mutable_slice_view_define_guard_cell(rhs: &ast::Expr) -> Option<Option<syn::E
     let ast::Expr::SelectorExpr(selector) = call.fun.as_ref() else {
         return None;
     };
-    borrowed_pointer_view_define_guard_cell(&selector.x)
+    borrowed_pointer_view_define_guard_cell(&selector.x).or_else(|| {
+        if is_borrowed_pointer_expr_ref(&selector.x) {
+            return Some(None);
+        }
+        if let Some(pointer) = pointer_cell_expr_from_ref(&selector.x) {
+            return Some(Some(pointer));
+        }
+        if let Some(pointer) = pointer_receiver_arg_expr_from_ref(&selector.x) {
+            return Some(Some(pointer));
+        }
+        None
+    })
 }
 
 fn compile_borrowed_pointer_view_method_call(
@@ -25830,6 +26206,37 @@ fn compile_borrowed_pointer_view_method_call(
     syn::parse_quote! { <#receiver_ty>::#method(#receiver, #args) }
 }
 
+fn borrowed_pointer_view_owner_and_target_types(
+    call: &ast::CallExpr,
+) -> Option<(syn::Type, syn::Type)> {
+    let ast::Expr::SelectorExpr(selector) = call.fun.as_ref() else {
+        return None;
+    };
+    let receiver_type =
+        TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&selector.x, &env.borrow()));
+    let receiver_name = named_method_receiver_type_name(receiver_type.clone())?;
+    let owner_ty = named_go_type_path_with_inferred_type_args(&receiver_name);
+    for receiver_name in receiver_type_name_candidates(&receiver_name) {
+        let key = method_key(&receiver_name, selector.sel.name);
+        if let Some(info) = borrowed_views::borrowed_pointer_view_method_return(&key) {
+            return Some((owner_ty, info.target_ty));
+        }
+    }
+    TYPE_ENV.with(|env| {
+        let env = env.borrow();
+        for receiver_name in receiver_type_name_candidates(&receiver_name) {
+            let return_ty = env.get_method_return(&receiver_name, selector.sel.name);
+            let typeinfer::GoType::Pointer(target) = env.resolve_alias(&return_ty) else {
+                continue;
+            };
+            if let Some(target_ty) = rust_type_from_go_type(&target) {
+                return Some((owner_ty, target_ty));
+            }
+        }
+        None
+    })
+}
+
 fn compile_mutable_slice_view_method_call(
     call_expr: ast::CallExpr,
     receiver_guard: Option<&syn::Ident>,
@@ -25857,7 +26264,7 @@ fn compile_mutable_slice_view_method_call(
                 let view = compile_borrowed_pointer_view_method_call(call, Some(guard));
                 syn::parse_quote! { &mut *#view }
             }
-            other => borrowed_pointer_receiver_arg_expr_from_owned(other),
+            _ => syn::parse_quote! { &mut *#guard },
         }
     } else {
         borrowed_pointer_receiver_arg_expr_from_owned(*selector.x)
@@ -25872,6 +26279,13 @@ fn compile_mutable_slice_view_method_call(
         }
     }
     syn::parse_quote! { <#receiver_ty>::#method(#receiver, #args) }
+}
+
+fn mutable_slice_view_alias_base_name(call: &ast::CallExpr) -> Option<String> {
+    let ast::Expr::SelectorExpr(selector) = call.fun.as_ref() else {
+        return None;
+    };
+    Some(expr_root_ident_name(&selector.x)?.to_string())
 }
 
 fn compile_borrowed_pointer_view_define(
@@ -25893,15 +26307,27 @@ fn compile_borrowed_pointer_view_define(
         let init = compile_borrowed_pointer_view_method_call(call, None);
         return Ok(vec![syn::parse_quote! { let _ = #init; }]);
     }
+    let ident_name = rust_safe_ident_name(ident.name);
     let ident = local_binding_ident_for_ast(&ident);
     if let Some(guard_cell) = guard_cell {
-        let (cell, guard) = synthetic_names::next_borrowed_pointer_view_idents();
-        let init = compile_borrowed_pointer_view_method_call(call, Some(&guard));
-        return Ok(vec![
-            syn::parse_quote! { let #cell = (#guard_cell).clone(); },
-            syn::parse_quote! { let mut #guard = #cell.lock().unwrap(); },
-            syn::parse_quote! { let mut #ident = #init; },
-        ]);
+        let Some((owner_ty, target_ty)) = borrowed_pointer_view_owner_and_target_types(&call)
+        else {
+            return Err(CompilerError::UnsupportedConstruct(
+                "borrowed pointer view target type is unknown".to_string(),
+            ));
+        };
+        borrowed_views::remove_borrowed_pointer_view_names(&[ident_name]);
+        return Ok(vec![syn::parse_quote! {
+            #[allow(unsafe_code)]
+            let mut #ident: crate::builtin::GorsPtr<#target_ty> =
+                crate::builtin::GorsPtr::from_ptr_field(
+                    (#guard_cell).clone(),
+                    0usize,
+                    |__gors_owner: &mut #owner_ty| unsafe {
+                        &mut *(__gors_owner as *mut #owner_ty as *mut #target_ty)
+                    },
+                );
+        }]);
     }
     let init = compile_borrowed_pointer_view_method_call(call, None);
     Ok(vec![syn::parse_quote! { let mut #ident = #init; }])
@@ -25917,6 +26343,12 @@ fn compile_mutable_slice_view_define(
             "expected identifier on lhs of :=".to_string(),
         ));
     };
+    let returns_plain_slice = TYPE_ENV.with(|env| {
+        matches!(
+            typeinfer::GoType::infer_expr(&rhs, &env.borrow()),
+            typeinfer::GoType::Slice(_)
+        )
+    });
     let ast::Expr::CallExpr(call) = rhs else {
         return Err(CompilerError::InvalidAssignment(
             "expected mutable slice view call rhs".to_string(),
@@ -25926,14 +26358,23 @@ fn compile_mutable_slice_view_define(
         let init = compile_mutable_slice_view_method_call(call, None);
         return Ok(vec![syn::parse_quote! { let _ = #init; }]);
     }
+    let ident_name = ident.name.to_string();
     let ident = local_binding_ident_for_ast(&ident);
-    if let Some(guard_cell) = guard_cell {
-        let (cell, guard) = synthetic_names::next_borrowed_pointer_view_idents();
-        let init = compile_mutable_slice_view_method_call(call, Some(&guard));
+    if guard_cell.is_some() && returns_plain_slice {
+        let alias_base_name = mutable_slice_view_alias_base_name(&call);
+        let init = compile_mutable_slice_view_method_call(call, None);
+        if let Some(base_name) = alias_base_name {
+            borrowed_views::insert_slice_alias_target(
+                ident_name,
+                SliceAliasTarget {
+                    base_name,
+                    base_expr: init.clone(),
+                    offset: syn::parse_quote! { 0usize },
+                },
+            );
+        }
         return Ok(vec![
-            syn::parse_quote! { let #cell = (#guard_cell).clone(); },
-            syn::parse_quote! { let mut #guard = #cell.lock().unwrap(); },
-            syn::parse_quote! { let mut #ident = #init; },
+            syn::parse_quote! { let mut #ident = (#init).to_vec(); },
         ]);
     }
     let init = compile_mutable_slice_view_method_call(call, None);
@@ -26009,6 +26450,75 @@ fn slice_alias_writeback_assignment_stmts(
         #alias_left = #alias_value;
         #backing_left = #value_ident;
     }}])
+}
+
+fn slice_alias_sync_stmt(alias_name: &str) -> Option<syn::Stmt> {
+    let target = borrowed_views::slice_alias_target(alias_name)?;
+    let alias = syn::Ident::new(&rust_safe_ident_name(alias_name), Span::mixed_site());
+    let base = target.base_expr;
+    let offset = target.offset;
+    let alias_offset_ident = synthetic_names::slice_alias_offset_ident();
+    let alias_index_ident = synthetic_names::slice_alias_index_ident();
+    let alias_value_ident = synthetic_names::slice_alias_value_ident();
+    Some(syn::parse_quote! {{
+        let #alias_offset_ident = #offset;
+        for (#alias_index_ident, #alias_value_ident) in (#alias).iter().cloned().enumerate() {
+            (#base)[#alias_index_ident + #alias_offset_ident] = #alias_value_ident;
+        }
+    }})
+}
+
+fn call_arg_mutates_slice_alias(
+    call_abi: &ir::CallAbi,
+    param_types: &[typeinfer::GoType],
+    arg_index: usize,
+) -> bool {
+    call_abi
+        .args
+        .get(arg_index)
+        .is_some_and(|arg| arg.role == ir::ValueRole::MutBorrow)
+        || call_arg_needs_borrowed_slice(call_abi, arg_index)
+        || param_types
+            .get(arg_index)
+            .is_some_and(is_go_byte_slice_type)
+}
+
+fn slice_alias_writebacks_for_call(
+    call: &ast::CallExpr,
+    call_abi: &ir::CallAbi,
+    param_types: &[typeinfer::GoType],
+) -> Vec<syn::Stmt> {
+    let mut seen = HashSet::new();
+    let mut writebacks = vec![];
+    for (arg_index, arg) in call.args.as_deref().unwrap_or_default().iter().enumerate() {
+        if !call_arg_mutates_slice_alias(call_abi, param_types, arg_index) {
+            continue;
+        }
+        let Some(alias_name) = slice_alias_root_name(arg) else {
+            continue;
+        };
+        if seen.insert(alias_name.to_string())
+            && let Some(stmt) = slice_alias_sync_stmt(alias_name)
+        {
+            writebacks.push(stmt);
+        }
+    }
+    writebacks
+}
+
+fn wrap_call_expr_with_slice_alias_writebacks(
+    expr: syn::Expr,
+    writebacks: Vec<syn::Stmt>,
+) -> syn::Expr {
+    if writebacks.is_empty() {
+        return expr;
+    }
+    let result = synthetic_names::call_result_ident();
+    syn::parse_quote! {{
+        let #result = #expr;
+        #(#writebacks)*
+        #result
+    }}
 }
 
 fn assignment_lhs_needs_rhs_temp(lhs: &ast::Expr) -> bool {
@@ -29893,6 +30403,33 @@ func main() {
         assert!(
             !output.contains("<< 63") && !output.contains("<< 63"),
             "expected generated Rust not to evaluate an overflowing int64 shift: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_guard_runtime_typed_shift_counts_by_operand_width() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func max(bitSize int) uint64 {
+                    return uint64(1)<<uint(bitSize) - 1
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote! { #compiled }.to_string();
+
+        assert!(
+            output.contains("< u64 > :: BITS") && output.contains("wrapping_shl"),
+            "expected typed runtime shifts to guard counts by the left operand width: {output}"
+        );
+        assert!(
+            !output.contains("1 as u64) <<"),
+            "expected generated Rust not to use raw shifts for typed runtime counts: {output}"
         );
     }
 
@@ -33790,6 +34327,55 @@ func main() {
     }
 
     #[test]
+    fn compile_program_multi_wraps_address_taken_named_results() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type state struct {
+	value int
+}
+
+func fill(p *state) {
+	p.value = 7
+}
+
+func makeState() (out state) {
+	fill(&out)
+	return
+}
+
+func main() {
+	s := makeState()
+	println(s.value)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(
+            main_rs.contains("let mut out: std::sync::Arc<std::sync::Mutex<state>>"),
+            "{main_rs}"
+        );
+        assert!(
+            main_rs.contains("std::sync::Mutex::new(Default::default())"),
+            "{main_rs}"
+        );
+        assert!(
+            main_rs.contains("fill((crate::builtin::GorsPtr::from_arc(out.clone())).clone())"),
+            "{main_rs}"
+        );
+        assert!(
+            !main_rs.contains("crate::builtin::GorsPtr::new(out)"),
+            "{main_rs}"
+        );
+    }
+
+    #[test]
     fn compile_program_multi_does_not_double_borrow_imported_interface_literals() {
         let tmp = tempfile::tempdir().unwrap();
         write_fixture_file(tmp.path().join("go.mod").as_path(), "module example\n");
@@ -35058,7 +35644,7 @@ func main() {
         let output = compile_temp_program(tmp.path());
         let main_rs = output.files.get("main.rs").unwrap();
         assert!(
-            main_rs.contains("crate::builtin::error_string(&mut err)"),
+            main_rs.contains("crate::builtin::error_string(&err)"),
             "{main_rs}"
         );
         assert!(!main_rs.contains("(err).clone()"), "{main_rs}");
@@ -35076,8 +35662,10 @@ package main
 import "example/errpkg"
 
 func main() {
-	_ = errpkg.ErrValue.Error()
+	sink(errpkg.ErrValue)
 }
+
+func sink(args ...any) {}
 "#,
         );
         write_fixture_file(
@@ -35122,6 +35710,15 @@ var ErrValue error = &wrapError{msg: "boom"}
         assert!(
             !errpkg_rs.contains("impl crate::builtin::error for wrapError"),
             "{errpkg_rs}"
+        );
+        let main_rs = output.files.get("main.rs").unwrap();
+        assert!(
+            main_rs.contains("crate::builtin::error_string(&errpkg::ErrValue)"),
+            "{main_rs}"
+        );
+        assert!(
+            !main_rs.contains("crate::builtin::error_string(&mut errpkg::ErrValue)"),
+            "{main_rs}"
         );
     }
 
@@ -35390,6 +35987,49 @@ func Read() int {
         let mutable = super::mutable_top_level_var_names_for_files([&file], false);
 
         assert!(mutable.contains("Zero"), "{mutable:?}");
+    }
+
+    #[test]
+    fn interface_field_method_calls_from_pointer_cells_clone_receiver_before_args() {
+        let parsed = parse_file(
+            "state.go",
+            r#"
+                package state
+
+                type sink interface {
+                    Write([]byte) (int, error)
+                }
+
+                type Writer struct {
+                    w sink
+                    blk [4]byte
+                }
+
+                func (tw *Writer) Flush() {
+                    tw.w.Write(tw.blk[:])
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote::quote!(#compiled).to_string();
+        let compact: String = output.chars().filter(|c| !c.is_whitespace()).collect();
+
+        assert!(
+            compact.contains(
+                "letmut__gors_method_receiver={let__gors_pointer_field=(((tw).lock().unwrap()).w).clone();__gors_pointer_field};"
+            ),
+            "expected interface field receiver to be cloned out of the pointer-cell lock: {output}"
+        );
+        assert!(
+            compact.contains("__gors_method_receiver.Write(__gors_premethod_arg_0)"),
+            "expected method call to dispatch through the cloned interface receiver: {output}"
+        );
+        assert!(
+            !compact.contains("(((tw).lock().unwrap()).w).Write("),
+            "expected method call not to hold the owner lock during argument evaluation: {output}"
+        );
     }
 
     #[test]
@@ -38597,20 +39237,12 @@ func main() {
             "expected slice view method: {output}"
         );
         assert!(
-            output.contains("let __gors_borrowed_pointer_view_cell_0 = (b) . clone ()")
-                && output.contains(
-                    "let mut __gors_borrowed_pointer_view_0 = __gors_borrowed_pointer_view_cell_0 . lock () . unwrap ()"
-                ),
-            "expected borrowed pointer view binding to name the cell and keep the receiver guard alive: {output}"
+            output.contains("let mut h : crate :: builtin :: GorsPtr < header >")
+                && output.contains("crate :: builtin :: GorsPtr :: from_ptr_field"),
+            "expected borrowed pointer view binding to use projected pointer storage: {output}"
         );
         assert!(
-            output.contains(
-                "let mut h = < block > :: header (& mut * __gors_borrowed_pointer_view_0"
-            ),
-            "expected borrowed pointer view binding to borrow through the guard: {output}"
-        );
-        assert!(
-            output.contains("(* < header > :: name (& mut * h ,)) [(0usize) as usize] ="),
+            output.contains("(* < header > :: name") && output.contains("[(0usize) as usize] ="),
             "expected index assignment through returned slice view: {output}"
         );
         assert!(
@@ -38630,7 +39262,7 @@ func main() {
     }
 
     #[test]
-    fn it_should_bind_nested_pointer_slice_view_defines_with_live_guard() {
+    fn it_should_snapshot_pointer_slice_view_defines_and_sync_writes() {
         let parsed = parse_file(
             "test.go",
             r#"
@@ -38661,21 +39293,19 @@ func main() {
         let output = quote::quote!(#compiled).to_string();
 
         assert!(
-            output.contains("let __gors_borrowed_pointer_view_cell_0 = (b) . clone ()")
-                && output.contains(
-                    "let mut __gors_borrowed_pointer_view_0 = __gors_borrowed_pointer_view_cell_0 . lock () . unwrap ()"
-                ),
-            "expected nested slice view define to keep pointer-view guard alive: {output}"
+            output.contains("let mut field = (< header > :: name")
+                && output.contains(") . to_vec ()"),
+            "expected nested slice view define to snapshot the projected view: {output}"
         );
         assert!(
-            output.contains(
-                "let mut field = < header > :: name (& mut * < block > :: header (& mut * __gors_borrowed_pointer_view_0"
-            ),
-            "expected nested slice view define to borrow through the live guard: {output}"
+            !output.contains("let mut __gors_borrowed_pointer_view_0"),
+            "expected nested slice view define not to keep a projected guard alive: {output}"
         );
         assert!(
-            !output.contains("< block > :: header (& mut * b . lock () . unwrap ())"),
-            "expected nested slice view define not to borrow from a temporary lock: {output}"
+            output.contains("let __gors_slice_alias_value =")
+                && output.contains("< header > :: name")
+                && output.contains("= __gors_slice_alias_value"),
+            "expected alias index assignment to write back to the projected slice: {output}"
         );
     }
 
@@ -38733,6 +39363,167 @@ func main() {
         assert!(
             output.contains("(* < header > :: name (& mut * h ,)) [(0usize) as usize] ="),
             "expected later calls on the borrowed view to use the borrowed receiver: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_materialize_pointer_cell_backed_views_as_projected_pointers() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                const blockSize = 8
+
+                type block [blockSize]byte
+                type headerV7 [blockSize]byte
+                type headerUSTAR [blockSize]byte
+                type writer struct {
+                    blk block
+                }
+
+                func (b *block) toV7() *headerV7 {
+                    return (*headerV7)(b)
+                }
+
+                func (b *block) toUSTAR() *headerUSTAR {
+                    return (*headerUSTAR)(b)
+                }
+
+                func (h *headerV7) set(v byte) {
+                    h[0] = v
+                }
+
+                func (h *headerUSTAR) set(v byte) {
+                    h[1] = v
+                }
+
+                func fill(w *writer) {
+                    v7 := w.blk.toV7()
+                    v7.set(1)
+                    ustar := w.blk.toUSTAR()
+                    ustar.set(2)
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote::quote!(#compiled).to_string();
+        assert!(
+            output.contains("let mut v7 : crate :: builtin :: GorsPtr < headerV7 >")
+                && output.contains("crate :: builtin :: GorsPtr :: from_ptr_field"),
+            "expected first view binding to use projected pointer storage: {output}"
+        );
+        assert!(
+            output.contains("let mut ustar : crate :: builtin :: GorsPtr < headerUSTAR >")
+                && output
+                    .matches("crate :: builtin :: GorsPtr :: from_ptr_field")
+                    .count()
+                    >= 2,
+            "expected second view binding to use projected pointer storage: {output}"
+        );
+        assert!(
+            output.contains("< headerV7 > :: set ((v7) . clone () ,")
+                && output.contains("< headerUSTAR > :: set ((ustar) . clone () ,"),
+            "expected later calls on projected views to pass cloned pointer handles: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_snapshot_mutable_slice_views_from_pointer_cells() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                const blockSize = 8
+
+                type block [blockSize]byte
+                type headerGNU [blockSize]byte
+                type reader struct {
+                    blk block
+                }
+
+                func (b *block) gnu() *headerGNU {
+                    return (*headerGNU)(b)
+                }
+
+                func (h *headerGNU) accessTime() []byte {
+                    return h[:1]
+                }
+
+                func fill(r *reader) {
+                    gnu := r.blk.gnu()
+                    b := gnu.accessTime()
+                    _ = b[0]
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote::quote!(#compiled).to_string();
+
+        assert!(
+            output.contains("let mut b = (< headerGNU > :: accessTime")
+                && output.contains(") . to_vec ()"),
+            "expected mutable slice view define to snapshot the pointer-cell view: {output}"
+        );
+        assert!(
+            !output.contains("let mut __gors_borrowed_pointer_view_0"),
+            "expected mutable slice view define not to keep a projected guard alive: {output}"
+        );
+    }
+
+    #[test]
+    fn it_should_sync_mutating_calls_on_pointer_cell_slice_aliases() {
+        let parsed = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                const blockSize = 8
+
+                type block [blockSize]byte
+                type header [blockSize]byte
+
+                func (b *block) header() *header {
+                    return (*header)(b)
+                }
+
+                func (h *header) name() []byte {
+                    return h[1:][:3]
+                }
+
+                func write(b []byte) {
+                    b[0] = 'Z'
+                }
+
+                func fill(b *block) {
+                    field := b.header().name()
+                    write(field[:1])
+                }
+            "#,
+        )
+        .unwrap();
+
+        let compiled = compile(parsed).unwrap();
+        let output = quote::quote!(#compiled).to_string();
+
+        assert!(
+            output.contains("let mut field = (< header > :: name")
+                && output.contains(") . to_vec ()"),
+            "expected mutable slice view alias to be snapshotted: {output}"
+        );
+        assert!(
+            output.contains("let __gors_call_result = write")
+                && output.contains("__gors_slice_alias_index + __gors_slice_alias_offset"),
+            "expected mutating slice-alias call to sync the alias back to the projected slice: {output}"
+        );
+        assert!(
+            output.contains("field . iter () . cloned () . enumerate ()"),
+            "expected writeback to iterate over the alias buffer: {output}"
         );
     }
 
@@ -39925,6 +40716,71 @@ func main() {
     }
 
     #[test]
+    fn compile_program_multi_borrows_resliced_slice_params_forwarded_to_interface_fields() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture_file(
+            tmp.path().join("main.go").as_path(),
+            r#"
+package main
+
+type Reader interface {
+	Read([]byte) (int, error)
+}
+
+type sink struct{}
+
+func (s *sink) Read(p []byte) (int, error) {
+	p[0] = 7
+	return len(p), nil
+}
+
+type regFileReader struct {
+	r  Reader
+	nb int64
+}
+
+func (fr *regFileReader) Read(b []byte) (n int, err error) {
+	if int64(len(b)) > fr.nb {
+		b = b[:fr.nb]
+	}
+	if len(b) > 0 {
+		n, err = fr.r.Read(b)
+		fr.nb -= int64(n)
+	}
+	return n, err
+}
+
+func main() {
+	var r Reader = &regFileReader{r: &sink{}, nb: 1}
+	buf := []byte{0}
+	r.Read(buf)
+}
+"#,
+        );
+
+        let output = compile_temp_program(tmp.path());
+        let main_rs = output.files.get("main.rs").unwrap();
+        let compact = main_rs.split_whitespace().collect::<String>();
+        assert!(
+            compact.contains("fnRead(mutfr:crate::builtin::GorsPtr<Self>,mutb:&mut[u8]"),
+            "{main_rs}"
+        );
+        assert!(
+            compact.contains("b={let__gors_slice_high=")
+                && compact.contains("&mut(b)[..__gors_slice_high]"),
+            "{main_rs}"
+        );
+        assert!(
+            compact.contains(".Read(__gors_premethod_arg_0)"),
+            "{main_rs}"
+        );
+        assert!(
+            !compact.contains("regFileReader::Read(self.clone(),(b).to_vec())"),
+            "{main_rs}"
+        );
+    }
+
+    #[test]
     fn compile_program_multi_keeps_reassigned_method_slice_params_owned() {
         let tmp = tempfile::tempdir().unwrap();
         write_fixture_file(
@@ -40490,12 +41346,15 @@ func main() {
         let compact: String = output.chars().filter(|c| !c.is_whitespace()).collect();
 
         assert!(
-            compact.contains("letmut__gors_index_owner=&mut*h;"),
-            "expected borrowed pointer view receiver to be reborrowed for slice indexing: {output}"
+            compact.contains("let__gors_index_owner_cell=(h).clone();")
+                && compact.contains(
+                    "letmut__gors_index_owner_guard=__gors_index_owner_cell.lock().unwrap();"
+                ),
+            "expected pointer view receiver to be guarded for slice indexing: {output}"
         );
         assert!(
             !compact.contains("letmut__gors_index_owner=h;"),
-            "expected borrowed pointer view receiver not to be moved into slice indexing: {output}"
+            "expected pointer view receiver not to be moved into slice indexing: {output}"
         );
     }
 

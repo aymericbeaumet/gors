@@ -14,7 +14,6 @@ thread_local! {
     static LOOP_BODY_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static UNNAMED_ARG_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static ANONYMOUS_STRUCT_COUNTER: RefCell<usize> = const { RefCell::new(0) };
-    static BORROWED_POINTER_VIEW_COUNTER: RefCell<usize> = const { RefCell::new(0) };
 }
 
 pub(super) fn reset_lowering_counters() {
@@ -27,7 +26,6 @@ pub(super) fn reset_lowering_counters() {
     LOOP_COUNTER.with(|counter| *counter.borrow_mut() = 0);
     LOOP_BODY_COUNTER.with(|counter| *counter.borrow_mut() = 0);
     ANONYMOUS_STRUCT_COUNTER.with(|counter| *counter.borrow_mut() = 0);
-    BORROWED_POINTER_VIEW_COUNTER.with(|counter| *counter.borrow_mut() = 0);
 }
 
 pub(super) fn reset_unnamed_arg_counter() {
@@ -42,20 +40,6 @@ pub(super) fn next_unnamed_arg_ident() -> syn::Ident {
 pub(super) fn next_anonymous_struct_ident() -> syn::Ident {
     let n = next_id(&ANONYMOUS_STRUCT_COUNTER);
     syn::Ident::new(&format!("__gors_anon_struct_{n}"), Span::mixed_site())
-}
-
-pub(super) fn next_borrowed_pointer_view_idents() -> (syn::Ident, syn::Ident) {
-    let n = next_id(&BORROWED_POINTER_VIEW_COUNTER);
-    (
-        syn::Ident::new(
-            &format!("__gors_borrowed_pointer_view_cell_{n}"),
-            Span::mixed_site(),
-        ),
-        syn::Ident::new(
-            &format!("__gors_borrowed_pointer_view_{n}"),
-            Span::mixed_site(),
-        ),
-    )
 }
 
 pub(super) fn unnamed_arg_ident(index: usize) -> syn::Ident {
@@ -246,6 +230,10 @@ pub(super) fn method_result_ident() -> syn::Ident {
     syn::Ident::new("__gors_method_result", Span::mixed_site())
 }
 
+pub(super) fn call_result_ident() -> syn::Ident {
+    syn::Ident::new("__gors_call_result", Span::mixed_site())
+}
+
 pub(super) fn method_arg_idents(count: usize) -> Vec<syn::Ident> {
     (0..count)
         .map(|index| syn::Ident::new(&format!("__gors_method_arg_{index}"), Span::mixed_site()))
@@ -395,6 +383,7 @@ mod tests {
             "__gors_method_receiver_value"
         );
         assert_eq!(method_result_ident().to_string(), "__gors_method_result");
+        assert_eq!(call_result_ident().to_string(), "__gors_call_result");
         let mut method_args = method_arg_idents(2).into_iter();
         assert_eq!(
             method_args.next().map(|ident| ident.to_string()),
