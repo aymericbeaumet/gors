@@ -26433,7 +26433,7 @@ fn slice_alias_sync_stmt(alias_name: &str) -> Option<syn::Stmt> {
     let alias_value_ident = synthetic_names::slice_alias_value_ident();
     Some(syn::parse_quote! {{
         let #alias_offset_ident = #offset;
-        for (#alias_index_ident, #alias_value_ident) in (#alias).iter().cloned().enumerate() {
+        for (#alias_index_ident, #alias_value_ident) in #alias.iter().cloned().enumerate() {
             (#base)[#alias_index_ident + #alias_offset_ident] = #alias_value_ident;
         }
     }})
