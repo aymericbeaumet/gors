@@ -3443,8 +3443,12 @@ func root(blk *block) {
                 "Errno".to_string()
             ))
         );
+        #[cfg(target_os = "macos")]
+        let stat_atime_field = "Atimespec";
+        #[cfg(not(target_os = "macos"))]
+        let stat_atime_field = "Atim";
         assert_eq!(
-            env.get_field_type("Stat_t", "Atimespec"),
+            env.get_field_type("Stat_t", stat_atime_field),
             crate::compiler::typeinfer::GoType::Named("Timespec".to_string())
         );
         assert_eq!(
