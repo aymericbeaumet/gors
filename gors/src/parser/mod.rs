@@ -117,6 +117,20 @@ impl fmt::Display for ParserError {
 
 pub type Result<T> = std::result::Result<T, ParserError>;
 
+enum TypeParameterParse<'scanner> {
+    None,
+    TypeParameters(ast::FieldList<'scanner>),
+    ConsumedSlice {
+        lbrack: Position<'scanner>,
+        rbrack: Position<'scanner>,
+    },
+    ConsumedArray {
+        lbrack: Position<'scanner>,
+        rbrack: Position<'scanner>,
+        len: ast::Expr<'scanner>,
+    },
+}
+
 trait ResultExt<T> {
     fn required(self) -> Result<T>;
 }
@@ -629,7 +643,7 @@ fn parse_go_mod(module_root: &str) -> std::result::Result<String, PathParseError
 fn collect_stdlib_imports(file: &ast::File<'_>, stdlib_imports: &mut Vec<String>) {
     for import_spec in file.imports() {
         let import_path = import_spec.path.value.trim_matches('"');
-        if crate::go_stdlib::is_known(import_path)
+        if crate::resolve::is_known(import_path)
             && !stdlib_imports.contains(&import_path.to_string())
         {
             stdlib_imports.push(import_path.to_string());
@@ -656,7 +670,7 @@ fn resolve_imports_recursive(
         let rel_path = match import_path.strip_prefix(module_name) {
             Some(rest) => rest.trim_start_matches('/'),
             None => {
-                if crate::go_stdlib::is_known(import_path)
+                if crate::resolve::is_known(import_path)
                     && !stdlib_imports.contains(&import_path.to_string())
                 {
                     stdlib_imports.push(import_path.to_string());
@@ -1284,17 +1298,11 @@ impl<'scanner> Parser<'scanner> {
             // - type Foo [5]int    (array type - [ followed by expression)
             // Type parameters always have: [ identifier constraint ]
             // So we look for [ followed by identifier
-            let result = self.parse_type_parameters()?;
-            // If we got an empty list, this was [] for a slice type
-            // TypeParameters already consumed [] so we need to account for that when parsing type
-            match result {
-                Some(field_list) if field_list.list.is_empty() => {
-                    // This was [] - it's a slice type, not type params
-                    // We need to construct the slice type here since [ ] was consumed
+            match self.parse_type_parameters()? {
+                TypeParameterParse::ConsumedSlice { lbrack, .. } => {
+                    // This was [] - it's a slice type, not type params.
                     let assign = self.token(Token::ASSIGN)?.map(|(pos, _, _)| pos);
                     let element_type = self.parse_type().required()?;
-                    // opening should always be set when we have a field_list, use default position as fallback
-                    let lbrack = field_list.opening.unwrap_or_default();
                     return Ok(Some(ast::TypeSpec {
                         doc: None,
                         name: Some(name),
@@ -1308,18 +1316,10 @@ impl<'scanner> Parser<'scanner> {
                         comment: None,
                     }));
                 }
-                Some(mut field_list)
-                    if field_list.list.first().is_some_and(|field| {
-                        field_list.list.len() == 1 && field.names.is_none()
-                    }) =>
-                {
-                    // This was [expr] - it's an array type, not type params
-                    // TypeParameters stored the length expression in the type_ field
+                TypeParameterParse::ConsumedArray { lbrack, len, .. } => {
+                    // This was [expr] - it's an array type, not type params.
                     let assign = self.token(Token::ASSIGN)?.map(|(pos, _, _)| pos);
                     let element_type = self.parse_type().required()?;
-                    let len_expr = field_list.list.pop().and_then(|f| f.type_);
-                    // opening should always be set when we have a field_list, use default position as fallback
-                    let lbrack = field_list.opening.unwrap_or_default();
                     return Ok(Some(ast::TypeSpec {
                         doc: None,
                         name: Some(name),
@@ -1327,13 +1327,13 @@ impl<'scanner> Parser<'scanner> {
                         assign,
                         type_: ast::Expr::ArrayType(ast::ArrayType {
                             lbrack,
-                            len: len_expr.map(Box::new),
+                            len: Some(Box::new(len)),
                             elt: Box::new(element_type),
                         }),
                         comment: None,
                     }));
                 }
-                Some(field_list)
+                TypeParameterParse::TypeParameters(field_list)
                     if field_list.list.len() == 1
                         && field_list
                             .list
@@ -1397,7 +1397,8 @@ impl<'scanner> Parser<'scanner> {
                     }
                     Some(field_list)
                 }
-                other => other,
+                TypeParameterParse::TypeParameters(field_list) => Some(field_list),
+                TypeParameterParse::None => None,
             }
         } else {
             None
@@ -4677,7 +4678,30 @@ impl<'scanner> Parser<'scanner> {
         let name = self.identifier().required()?;
 
         // Parse optional type parameters (Go 1.18+ generics)
-        let type_params = self.parse_type_parameters()?;
+        let type_params = match self.parse_type_parameters()? {
+            TypeParameterParse::None => None,
+            TypeParameterParse::TypeParameters(type_params) => Some(type_params),
+            TypeParameterParse::ConsumedSlice { lbrack, rbrack } => Some(ast::FieldList {
+                opening: Some(lbrack),
+                list: Vec::new(),
+                closing: Some(rbrack),
+            }),
+            TypeParameterParse::ConsumedArray {
+                lbrack,
+                rbrack,
+                len,
+            } => Some(ast::FieldList {
+                opening: Some(lbrack),
+                list: vec![ast::Field {
+                    doc: None,
+                    names: None,
+                    type_: Some(len),
+                    tag: None,
+                    comment: None,
+                }],
+                closing: Some(rbrack),
+            }),
+        };
 
         let mut type_ = self.parse_signature(Some(func.0)).required()?;
         type_.type_params = type_params;
@@ -4697,17 +4721,16 @@ impl<'scanner> Parser<'scanner> {
     // TypeParamList  = TypeParamDecl { "," TypeParamDecl } .
     // TypeParamDecl  = IdentifierList TypeConstraint .
     //
-    // NOTE: This function will NOT consume tokens if it determines this is not type parameters.
-    // It distinguishes between:
+    // Distinguishes between type parameters and bracketed type prefixes:
     // - [T any]      -> type parameters
-    // - []int        -> slice type (not type parameters)
-    // - [5]int       -> array type (not type parameters)
-    fn parse_type_parameters(&mut self) -> Result<Option<ast::FieldList<'scanner>>> {
+    // - []int        -> consumed slice prefix
+    // - [5]int       -> consumed array prefix
+    fn parse_type_parameters(&mut self) -> Result<TypeParameterParse<'scanner>> {
         log::debug!("Parser::parse_type_parameters()");
 
         // Must start with [
         if self.current_step.1 != Token::LBRACK {
-            return Ok(None);
+            return Ok(TypeParameterParse::None);
         }
 
         // TypeParameters require at least one TypeParamDecl which starts with an identifier
@@ -4721,20 +4744,14 @@ impl<'scanner> Parser<'scanner> {
 
         // If immediately followed by ], this is a slice type, not type params
         if self.current_step.1 == Token::RBRACK {
-            // This is [], put tokens back conceptually by returning special result
-            // Since we already consumed [, we need to handle this case specially
-            // Actually, we can't easily "unread" tokens. The caller needs to handle this.
-            // Let's return an empty list and have caller detect this case.
             let rbrack = self.token(Token::RBRACK).required()?;
-            return Ok(Some(ast::FieldList {
-                opening: Some(lbrack.0),
-                list: vec![], // Empty signals "not really type params"
-                closing: Some(rbrack.0),
-            }));
+            return Ok(TypeParameterParse::ConsumedSlice {
+                lbrack: lbrack.0,
+                rbrack: rbrack.0,
+            });
         }
 
         // If not followed by identifier, this is not type parameters (could be array type [5]int)
-        // Return None with a special marker that we've consumed [
         if self.current_step.1 != Token::IDENT {
             // Handle [...]Type (auto-sized array)
             let len = if let Some(ellipsis) = self.token(Token::ELLIPSIS)? {
@@ -4746,21 +4763,11 @@ impl<'scanner> Parser<'scanner> {
                 self.parse_expression().required()?
             };
             let rbrack = self.token(Token::RBRACK).required()?;
-            // Return a FieldList with a special single field containing the array length expression
-            // The caller will need to detect this and construct an ArrayType
-            return Ok(Some(ast::FieldList {
-                opening: Some(lbrack.0),
-                // Store the len expression in a Field's type_ field as a marker
-                // This is a bit hacky but avoids changing the function signature
-                list: vec![ast::Field {
-                    doc: None,
-                    names: None,
-                    type_: Some(len),
-                    tag: None,
-                    comment: None,
-                }],
-                closing: Some(rbrack.0),
-            }));
+            return Ok(TypeParameterParse::ConsumedArray {
+                lbrack: lbrack.0,
+                rbrack: rbrack.0,
+                len,
+            });
         }
 
         // We have [ident... - need to distinguish between:
@@ -4777,17 +4784,11 @@ impl<'scanner> Parser<'scanner> {
         } else if self.current_step.1 == Token::RBRACK {
             // [ident] — array type with single ident as length
             let rbrack = self.token(Token::RBRACK).required()?;
-            return Ok(Some(ast::FieldList {
-                opening: Some(lbrack.0),
-                list: vec![ast::Field {
-                    doc: None,
-                    names: None,
-                    type_: Some(ast::Expr::Ident(first_ident)),
-                    tag: None,
-                    comment: None,
-                }],
-                closing: Some(rbrack.0),
-            }));
+            return Ok(TypeParameterParse::ConsumedArray {
+                lbrack: lbrack.0,
+                rbrack: rbrack.0,
+                len: ast::Expr::Ident(first_ident),
+            });
         } else {
             // Parse the rest of the expression starting from first_ident.
             // Following Go's parser: parse full expression, then determine
@@ -4863,7 +4864,7 @@ impl<'scanner> Parser<'scanner> {
                                 fields.push(self.parse_type_param_decl().required()?);
                             }
                             let rbrack = self.token(Token::RBRACK).required()?;
-                            return Ok(Some(ast::FieldList {
+                            return Ok(TypeParameterParse::TypeParameters(ast::FieldList {
                                 opening: Some(lbrack.0),
                                 list: fields,
                                 closing: Some(rbrack.0),
@@ -4878,17 +4879,11 @@ impl<'scanner> Parser<'scanner> {
                 };
 
                 let rbrack = self.token(Token::RBRACK).required()?;
-                return Ok(Some(ast::FieldList {
-                    opening: Some(lbrack.0),
-                    list: vec![ast::Field {
-                        doc: None,
-                        names: None,
-                        type_: Some(x),
-                        tag: None,
-                        comment: None,
-                    }],
-                    closing: Some(rbrack.0),
-                }));
+                return Ok(TypeParameterParse::ConsumedArray {
+                    lbrack: lbrack.0,
+                    rbrack: rbrack.0,
+                    len: x,
+                });
             }
             // Otherwise first_ident is just a name — fall through to type param parsing
         }
@@ -4916,17 +4911,11 @@ impl<'scanner> Parser<'scanner> {
                     .expression(binary_expr, Token::lowest_precedence())
                     .required()?;
                 let rbrack = self.token(Token::RBRACK).required()?;
-                return Ok(Some(ast::FieldList {
-                    opening: Some(lbrack.0),
-                    list: vec![ast::Field {
-                        doc: None,
-                        names: None,
-                        type_: Some(len_expr),
-                        tag: None,
-                        comment: None,
-                    }],
-                    closing: Some(rbrack.0),
-                }));
+                return Ok(TypeParameterParse::ConsumedArray {
+                    lbrack: lbrack.0,
+                    rbrack: rbrack.0,
+                    len: len_expr,
+                });
             }
 
             // Otherwise, this is a pointer type constraint
@@ -4970,7 +4959,7 @@ impl<'scanner> Parser<'scanner> {
 
             let rbrack = self.token(Token::RBRACK).required()?;
 
-            return Ok(Some(ast::FieldList {
+            return Ok(TypeParameterParse::TypeParameters(ast::FieldList {
                 opening: Some(lbrack.0),
                 list: fields,
                 closing: Some(rbrack.0),
@@ -5009,17 +4998,11 @@ impl<'scanner> Parser<'scanner> {
                 .expression(left, Token::lowest_precedence())
                 .required()?;
             let rbrack = self.token(Token::RBRACK).required()?;
-            return Ok(Some(ast::FieldList {
-                opening: Some(lbrack.0),
-                list: vec![ast::Field {
-                    doc: None,
-                    names: None,
-                    type_: Some(len_expr),
-                    tag: None,
-                    comment: None,
-                }],
-                closing: Some(rbrack.0),
-            }));
+            return Ok(TypeParameterParse::ConsumedArray {
+                lbrack: lbrack.0,
+                rbrack: rbrack.0,
+                len: len_expr,
+            });
         }
 
         // If followed by comma, could be multiple idents like [T, U any]
@@ -5086,7 +5069,7 @@ impl<'scanner> Parser<'scanner> {
 
         let rbrack = self.token(Token::RBRACK).required()?;
 
-        Ok(Some(ast::FieldList {
+        Ok(TypeParameterParse::TypeParameters(ast::FieldList {
             opening: Some(lbrack.0),
             list: fields,
             closing: Some(rbrack.0),

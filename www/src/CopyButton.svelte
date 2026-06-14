@@ -1,9 +1,11 @@
-<script>
-export let getContent;
+<script lang="ts">
+import { onDestroy } from "svelte";
+
+export let getContent: () => string | null | undefined;
 export let title = "Copy";
 
 let copied = false;
-let timer;
+let timer: ReturnType<typeof setTimeout> | null = null;
 
 async function copy() {
 	const content = getContent();
@@ -11,7 +13,7 @@ async function copy() {
 	try {
 		await navigator.clipboard.writeText(content);
 		copied = true;
-		clearTimeout(timer);
+		if (timer) clearTimeout(timer);
 		timer = setTimeout(() => {
 			copied = false;
 		}, 2000);
@@ -19,6 +21,10 @@ async function copy() {
 		/* ignore */
 	}
 }
+
+onDestroy(() => {
+	if (timer) clearTimeout(timer);
+});
 </script>
 
 <button class="copy-button" class:copied {title} on:click={copy}>

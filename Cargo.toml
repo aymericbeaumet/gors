@@ -1,5 +1,10 @@
 [workspace]
 resolver = "3"
+default-members = [
+  "gors",
+  "gors-cli",
+  "gors-builtin",
+]
 members = [
   "gors",
   "gors-cli",
@@ -45,8 +50,17 @@ too_many_lines = "allow"           # Large compiler functions and tests are spli
 
 [profile.dev]
 opt-level = 0
+split-debuginfo = "unpacked"
 
 [profile.release]
 codegen-units = 1
 lto = "fat"
 opt-level = 3
+
+[profile.ci]
+inherits = "release"
+codegen-units = 16
+debug = 1
+lto = "off"
+opt-level = 1
+split-debuginfo = "unpacked"

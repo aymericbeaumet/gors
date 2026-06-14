@@ -6,6 +6,7 @@ const CopyWebpackPlugin = require("copy-webpack-plugin");
 const FaviconsWebpackPlugin = require("favicons-webpack-plugin");
 const HtmlWebpackPlugin = require("html-webpack-plugin");
 const MonacoWebpackPlugin = require("monaco-editor-webpack-plugin");
+const sveltePreprocess = require("svelte-preprocess");
 
 function contentHash(filePath) {
 	const data = fs.readFileSync(filePath);
@@ -24,6 +25,8 @@ const staticAssets = [
 
 const assetManifest = {};
 const copyPatterns = [];
+const devServerLiveReload = process.env.GORS_WEB_LIVE_RELOAD !== "0";
+const webpackSourceMaps = process.env.GORS_WEB_SOURCE_MAPS === "1";
 
 for (const { src, name, ext } of staticAssets) {
 	const hash = contentHash(src);
@@ -65,18 +68,17 @@ class AssetManifestPlugin {
 	}
 }
 
-module.exports = (_, argv) => {
-	const isDev = argv.mode === "development";
-
+module.exports = () => {
 	return {
-		entry: "./src/main.js",
+		entry: "./src/main.ts",
+		devtool: webpackSourceMaps ? "source-map" : false,
 		output: {
 			filename: "bundle-[contenthash:16].js",
 			path: path.resolve(__dirname, "dist"),
 			clean: true,
 		},
 		resolve: {
-			extensions: [".mjs", ".js", ".svelte"],
+			extensions: [".mjs", ".ts", ".js", ".svelte"],
 			mainFields: ["svelte", "browser", "module", "main"],
 			conditionNames: ["svelte", "browser", "import"],
 			fallback: {
@@ -87,12 +89,23 @@ module.exports = (_, argv) => {
 		module: {
 			rules: [
 				{
+					test: /\.ts$/,
+					exclude: /node_modules/,
+					use: {
+						loader: "ts-loader",
+						options: {
+							transpileOnly: true,
+						},
+					},
+				},
+				{
 					test: /\.svelte$/,
 					use: {
 						loader: "svelte-loader",
 						options: {
 							emitCss: false,
-							hotReload: isDev,
+							hotReload: false,
+							preprocess: sveltePreprocess(),
 						},
 					},
 				},
@@ -114,12 +127,21 @@ module.exports = (_, argv) => {
 			new CopyWebpackPlugin({ patterns: copyPatterns }),
 			new AssetManifestPlugin(),
 			new FaviconsWebpackPlugin("./favicon.png"),
-			new HtmlWebpackPlugin({ template: "index.html" }),
-			new MonacoWebpackPlugin(),
+			new HtmlWebpackPlugin({ template: "index.html", filename: "index.html" }),
+			new HtmlWebpackPlugin({
+				template: "index.html",
+				filename: "conformance/index.html",
+			}),
+			new HtmlWebpackPlugin({ template: "index.html", filename: "404.html" }),
+			new MonacoWebpackPlugin({
+				languages: ["go", "rust"],
+			}),
 		],
 		devServer: {
+			allowedHosts: ["127.0.0.1", "localhost"],
 			static: {
 				directory: path.resolve(__dirname, "dist"),
+				watch: devServerLiveReload,
 			},
 			compress: true,
 			port: 8080,
@@ -127,7 +149,10 @@ module.exports = (_, argv) => {
 				"Cross-Origin-Opener-Policy": "same-origin",
 				"Cross-Origin-Embedder-Policy": "require-corp",
 			},
-			hot: true,
+			historyApiFallback: true,
+			hot: false,
+			liveReload: devServerLiveReload,
+			watchFiles: devServerLiveReload ? ["src/**/*", "index.html"] : [],
 		},
 		experiments: {
 			asyncWebAssembly: true,

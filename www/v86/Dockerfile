@@ -5,6 +5,7 @@ RUN apk add --no-cache curl linux-virt linux-firmware-none rust
 RUN mkinitfs -F "base virtio 9p" $(cat /usr/share/kernel/virt/kernel.release)
 
 FROM --platform=linux/386 alpine:edge
+ARG RUST_VERSION=1.96.0
 
 RUN apk add --no-cache openrc alpine-base linux-virt linux-firmware-none rust mold
 
@@ -103,6 +104,6 @@ RUN find /usr/lib/rustlib -name '*.so' -exec strip --strip-unneeded {} + 2>/dev/
     strip --strip-unneeded /usr/bin/rustc 2>/dev/null; \
     true
 
-RUN rustc --version
+RUN rustc --version | grep "rustc ${RUST_VERSION} "
 
 ENTRYPOINT ["/bin/sh"]

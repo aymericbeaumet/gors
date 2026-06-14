@@ -1,0 +1,3 @@
+module go_spec_negative_types_interface_method_sets
+
+go 1.22

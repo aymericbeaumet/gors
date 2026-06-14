@@ -2,6 +2,8 @@
 name = "gors"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.96.0"
+autotests = false
 license = "MIT"
 description = "Experimental go toolchain written in rust (parser, compiler) "
 homepage = "https://aymericbeaumet.github.io/gors/"
@@ -15,10 +17,30 @@ path = "src/lib.rs"
 workspace = true
 
 [features]
-test_integration_lexer = ["dep:rayon"]
-test_integration_parser = ["dep:rayon"]
-test_integration_run = ["dep:rayon"]
-test_integration_generate = ["dep:rayon"]
+test_integration_go_repositories = ["dep:rayon"]
+test_integration_go_spec = ["dep:rayon"]
+test_integration_go_stdlib = ["dep:rayon"]
+test_integration_go_programs = ["dep:rayon"]
+
+[[test]]
+name = "test_integration_go_repositories"
+path = "tests/test_integration_go_repositories.rs"
+required-features = ["test_integration_go_repositories"]
+
+[[test]]
+name = "test_integration_go_spec"
+path = "tests/test_integration_go_spec.rs"
+required-features = ["test_integration_go_spec"]
+
+[[test]]
+name = "test_integration_go_stdlib"
+path = "tests/test_integration_go_stdlib.rs"
+required-features = ["test_integration_go_stdlib"]
+
+[[test]]
+name = "test_integration_go_programs"
+path = "tests/test_integration_go_programs.rs"
+required-features = ["test_integration_go_programs"]
 
 [dependencies]
 # Library dependencies
@@ -32,10 +54,7 @@ sourcemap = "9"
 syn = { version = "2.0", features = ["full", "visit", "visit-mut"] }
 unicode-general-category = "1.1"
 
-# Stdlib archive decompression (used by embedded stdlib at runtime)
-flate2 = "1"
 sha2 = "0.11"
-tar = "0.4"
 
 serde_json = "1.0"
 rayon = { version = "1.12", optional = true }

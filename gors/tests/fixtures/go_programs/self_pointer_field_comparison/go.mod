@@ -1,0 +1,1 @@
+module self_pointer_field_comparison

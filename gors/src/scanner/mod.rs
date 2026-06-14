@@ -136,6 +136,9 @@ impl<'a> Scanner<'a> {
             pending_semi_pos: None,
         };
         s.next(); // read the first character
+        if s.current_char == Some('\u{feff}') && s.offset == 0 {
+            s.next();
+        }
         s
     }
 

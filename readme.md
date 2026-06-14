@@ -88,25 +88,34 @@ Hello, World!
 ### Prerequisites
 
 ```bash
-brew install rustup go binaryen watchexec
-rustup toolchain install stable && rustup toolchain install nightly && rustup default stable
+brew install rustup binaryen watchexec
+rustup toolchain install 1.96.0 --component rustfmt --component clippy && rustup toolchain install nightly && rustup default 1.96.0
 cargo install --force cargo-fuzz
 ```
+
+The Go SDK is pinned by `.go-version`; the Rust build downloads and extracts
+that SDK into `$CARGO_HOME/gors-cache/` for the embedded stdlib and integration
+test oracle.
 
 ### Building and Testing
 
 ```bash
+# Run the same local build/test/check commands as CI
+make all
+
 # Lint
 cargo clippy --workspace -- -D warnings
 
 # Build
 cargo build --workspace
 
-# Run all ungated tests
-cargo test
+# Run unit tests
+make rust-test-unit
 
-# Run lexer/parser integrations too
-cargo test --package=gors --features integration
+# Run integration suites
+make rust-test-integration-lexer
+make rust-test-integration-parser
+make rust-test-integration-run
 
 # Fuzz testing
 cargo +nightly fuzz run scanner
@@ -119,10 +128,10 @@ cargo doc -p gors --open
 ### Debug Mode
 
 ```bash
-RUST_LOG=debug cargo run -p gors-cli -- tokens gors/tests/fixtures/go_programs/fizzbuzz/main.go
-RUST_LOG=debug cargo run -p gors-cli -- ast gors/tests/fixtures/go_programs/fizzbuzz/main.go
-RUST_LOG=debug cargo run -p gors-cli -- build gors/tests/fixtures/go_programs/fizzbuzz
-RUST_LOG=debug cargo run -p gors-cli -- run gors/tests/fixtures/go_programs/fizzbuzz
+RUST_LOG=debug cargo run -- tokens tests/fixtures/go_programs/fizzbuzz/main.go
+RUST_LOG=debug cargo run -- ast tests/fixtures/go_programs/fizzbuzz/main.go
+RUST_LOG=debug cargo run -- build tests/fixtures/go_programs/fizzbuzz
+RUST_LOG=debug cargo run -- run tests/fixtures/go_programs/fizzbuzz
 ```
 
 ## License

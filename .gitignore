@@ -3,6 +3,8 @@
 /main*
 pkg/
 target/
-tests/fixtures/go_runner/gors-go
-gors/tests/fixtures/go_runner/gors-go
+gors/tests/tools/go_oracle/go-oracle*
 gors_output/
+test-results/
+www/playwright-report/
+www/test-results/

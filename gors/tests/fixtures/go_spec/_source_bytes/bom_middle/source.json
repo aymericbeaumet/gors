@@ -1,0 +1,4 @@
+{
+  "filename": "main.go",
+  "source": "package main\n\n\uFEFFfunc main() {}\n"
+}

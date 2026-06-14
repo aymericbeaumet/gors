@@ -7,41 +7,12 @@ mod tracked;
 use quote::ToTokens;
 use sha2::{Digest, Sha256};
 use std::sync::{Mutex, OnceLock};
-use std::time::Instant;
 
 pub use tracked::{
     BlankLineInfo, CommentToInsert, generate_with_comments, generate_with_comments_and_blanks,
 };
 
-#[derive(Clone)]
-struct ProfileTimer {
-    label: &'static str,
-    start: Option<Instant>,
-}
-
-impl ProfileTimer {
-    fn start(label: &'static str) -> Self {
-        let enabled = std::env::var("GORS_PROFILE")
-            .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
-        Self {
-            label,
-            start: enabled.then(Instant::now),
-        }
-    }
-}
-
-impl Drop for ProfileTimer {
-    fn drop(&mut self) {
-        let Some(start) = self.start else {
-            return;
-        };
-        eprintln!(
-            "[gors-profile] {}: {:.2}ms",
-            self.label,
-            start.elapsed().as_secs_f64() * 1000.0
-        );
-    }
-}
+use crate::profile::ProfileTimer;
 
 /// Source mapping between input and output positions.
 #[derive(Debug, Clone, Default)]
@@ -449,6 +420,14 @@ pub struct GeneratedOutput {
 static MULTI_CODEGEN_CACHE: OnceLock<Mutex<std::collections::BTreeMap<String, GeneratedOutput>>> =
     OnceLock::new();
 
+fn main_wrapper_module_name(dependency_mods: &[&str]) -> String {
+    let mut name = "__gors_lib".to_string();
+    while dependency_mods.contains(&name.as_str()) {
+        name.push('_');
+    }
+    name
+}
+
 pub fn generate_multi(
     program: crate::compiler::CompiledProgram,
 ) -> Result<GeneratedOutput, Box<dyn std::error::Error>> {
@@ -493,9 +472,9 @@ pub fn generate_multi(
             .map(|module| module.mod_name.as_str())
             .collect();
         if !dependency_mods.is_empty() {
+            let wrapper_mod = main_wrapper_module_name(&dependency_mods);
             main_parts.push(format!(
-                "#[path = \"lib.rs\"]\nmod lib;\nuse lib::{{{}}};",
-                dependency_mods.join(", ")
+                "#[path = \"lib.rs\"]\nmod {wrapper_mod};\nuse {wrapper_mod}::*;",
             ));
         }
 
@@ -598,14 +577,21 @@ pub const GORS_BUILTINS: &str = include_str!(concat!(
 pub fn generate_with_sourcemap(
     file: syn::File,
     source_file: &str,
-) -> Result<(String, SourceMap), CodegenError> {
+) -> Result<(String, sourcemap::SourceMap), CodegenError> {
     let output = generate(file).map_err(|e| CodegenError::generation(e.to_string()))?;
-
-    // For now, create an empty source map
-    // TODO: Integrate with the compiler's source map tracking
-    let source_map = SourceMap::new(source_file);
+    let source_map = if crate::compiler::source_map_tracker_is_active() {
+        crate::compiler::build_source_map(&output)
+    } else {
+        empty_sourcemap(source_file)
+    };
 
     Ok((output, source_map))
+}
+
+fn empty_sourcemap(source_file: &str) -> sourcemap::SourceMap {
+    let mut builder = sourcemap::SourceMapBuilder::new(None);
+    builder.add_source(source_file);
+    builder.into_sourcemap()
 }
 
 #[cfg(test)]
@@ -628,6 +614,28 @@ mod tests {
             is_main,
             is_stdlib: false,
         }
+    }
+
+    #[test]
+    fn generate_with_sourcemap_uses_active_compiler_tracker() {
+        crate::compiler::clear_source_map_tracker();
+        let go_source = "package main\n\nfunc main() {}\n";
+        let parsed = crate::parser::parse_file("test.go", go_source).unwrap();
+        let compiled =
+            crate::compiler::compile_with_source_map(parsed, "test.go", go_source).unwrap();
+
+        let (rust_source, source_map) =
+            super::generate_with_sourcemap(compiled, "output.rs").unwrap();
+
+        assert!(rust_source.contains("fn main"), "{rust_source}");
+        assert!(source_map.get_token_count() > 0);
+        assert_eq!(source_map.get_source(0), Some("test.go"));
+        let names = (0..source_map.get_name_count())
+            .filter_map(|idx| source_map.get_name(idx))
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"func"), "{names:?}");
+        assert!(names.contains(&"main"), "{names:?}");
+        crate::compiler::clear_source_map_tracker();
     }
 
     #[test]
@@ -701,5 +709,49 @@ mod tests {
 
         let single = super::generate_single(program).unwrap();
         assert!(single.find("mod alpha").unwrap() < single.find("mod zeta").unwrap());
+    }
+
+    #[test]
+    fn generated_multi_files_have_header_lints_and_blank_line() {
+        let mut modules = BTreeMap::new();
+        modules.insert(
+            "__main__".to_string(),
+            compiled_module(
+                "main",
+                "main.rs",
+                syn::parse_quote! {
+                    pub fn main() {}
+                },
+                true,
+            ),
+        );
+        modules.insert(
+            "dependency".to_string(),
+            compiled_module(
+                "dependency",
+                "dependency.rs",
+                syn::parse_quote! {
+                    pub fn Used() {}
+                },
+                false,
+            ),
+        );
+        let program = crate::compiler::CompiledProgram {
+            modules,
+            has_main: true,
+        };
+        let output = super::generate_multi(program).unwrap();
+        let expected_prefix = format!("{}{}\n\n", super::GENERATED_HEADER, super::GENERATED_LINTS);
+
+        for (filename, source) in &output.files {
+            assert!(
+                source.starts_with(&expected_prefix),
+                "{filename} should start with the generated header and lint prelude"
+            );
+            assert!(
+                !source.contains("allow(dead_code)"),
+                "{filename} should keep dead-code denial enabled"
+            );
+        }
     }
 }

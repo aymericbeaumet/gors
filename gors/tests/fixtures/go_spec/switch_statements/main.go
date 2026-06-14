@@ -1,0 +1,32 @@
+package main
+
+func classify(value int) string {
+	switch doubled := value * 2; {
+	case doubled < 0:
+		return "negative"
+	case doubled == 0:
+		return "zero"
+	default:
+		return "positive"
+	}
+}
+
+func tag(value int) string {
+	switch value {
+	case 1, 2:
+		return "small"
+	case 3:
+		return "three"
+	default:
+		return "other"
+	}
+}
+
+func main() {
+	if classify(-1) != "negative" || classify(0) != "zero" || classify(3) != "positive" {
+		panic("expressionless switch changed")
+	}
+	if tag(2) != "small" || tag(3) != "three" || tag(9) != "other" {
+		panic("expression switch changed")
+	}
+}
