@@ -10272,9 +10272,9 @@ fn compile_unsafe_offsetof_arg(expr: ast::Expr) -> syn::Expr {
         },
         _ => return syn::parse_quote! { 0usize },
     };
-    let struct_ident = syn::Ident::new(&rust_safe_ident_name(&struct_name), Span::mixed_site());
+    let struct_ty = named_go_type_path(&struct_name);
     let field_ident = syn::Ident::new(&rust_safe_ident_name(selector.sel.name), Span::mixed_site());
-    syn::parse_quote! { std::mem::offset_of!(#struct_ident, #field_ident) }
+    syn::parse_quote! { std::mem::offset_of!(#struct_ty, #field_ident) }
 }
 
 fn unsafe_string_byte_source(expr: ast::Expr) -> Option<ast::Expr> {
