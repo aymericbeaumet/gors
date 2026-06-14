@@ -3,7 +3,7 @@ use super::{
     item_reachability::impl_method_reachability_name,
     resolved_go_type,
     syn_inspect::{
-        first_type_arg_for_path_last_ident_any, is_path_call_expr, is_receiver_type_wrapper_method,
+        first_type_arg_for_path_last_ident_any, is_path_call_expr, is_transparent_receiver_method,
         named_self_type,
     },
     typeinfer,
@@ -337,7 +337,7 @@ pub(super) fn method_receiver_type_from_expr(
                 .cloned()
         }
         syn::Expr::Group(group) => method_receiver_type_from_expr(&group.expr, context),
-        syn::Expr::MethodCall(method) if is_receiver_type_wrapper_method(&method.method) => {
+        syn::Expr::MethodCall(method) if is_transparent_receiver_method(&method.method) => {
             method_receiver_type_from_expr(&method.receiver, context)
         }
         syn::Expr::Paren(paren) => method_receiver_type_from_expr(&paren.expr, context),
@@ -622,7 +622,7 @@ pub(super) fn receiver_type_from_init_expr(
             .filter(|receiver_type| {
                 receiver_type.module.is_some() || item_names.contains(&receiver_type.name)
             }),
-        syn::Expr::MethodCall(method) if is_receiver_type_wrapper_method(&method.method) => {
+        syn::Expr::MethodCall(method) if is_transparent_receiver_method(&method.method) => {
             receiver_type_from_init_expr(
                 &method.receiver,
                 module_names,

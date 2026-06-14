@@ -7,7 +7,7 @@ use super::{
         receiver_type_from_type, specialize_self_receiver_type,
     },
     syn_inspect::{
-        is_path_call_expr, is_receiver_type_wrapper_method, item_macro_name,
+        is_path_call_expr, is_transparent_receiver_method, item_macro_name,
         macro_token_item_names, named_self_type, pat_ident_name, pat_ident_names, path_is,
         self_type_reachability_names,
     },
@@ -74,7 +74,7 @@ pub(super) fn collect_refs_from_item(
                     self.top_level_element_types.get(&base_type.name).cloned()
                 }
                 syn::Expr::MethodCall(method)
-                    if is_receiver_type_wrapper_method(&method.method) =>
+                    if is_transparent_receiver_method(&method.method) =>
                 {
                     receiver_type_from_init_expr(
                         &method.receiver,
@@ -323,7 +323,7 @@ pub(super) fn collect_refs_from_item(
                 external_path_symbol_from_expr(&try_expr.expr, module_names)
             }
             syn::Expr::Unary(unary) => external_path_symbol_from_expr(&unary.expr, module_names),
-            syn::Expr::MethodCall(method) if is_receiver_type_wrapper_method(&method.method) => {
+            syn::Expr::MethodCall(method) if is_transparent_receiver_method(&method.method) => {
                 external_path_symbol_from_expr(&method.receiver, module_names)
             }
             syn::Expr::Field(field) => {
@@ -412,7 +412,7 @@ pub(super) fn collect_refs_from_item(
                 })
                 .or_else(|| self.receiver_type_from_expr(&call.func)),
                 syn::Expr::MethodCall(method)
-                    if is_receiver_type_wrapper_method(&method.method) =>
+                    if is_transparent_receiver_method(&method.method) =>
                 {
                     self.receiver_type_from_expr(&method.receiver)
                 }
@@ -707,7 +707,7 @@ pub(super) fn collect_refs_from_item(
 
         fn visit_expr_method_call_mut(&mut self, method: &mut syn::ExprMethodCall) {
             let name = method.method.to_string();
-            if is_receiver_type_wrapper_method(&method.method) {
+            if is_transparent_receiver_method(&method.method) {
                 syn::visit_mut::visit_expr_method_call_mut(self, method);
                 return;
             }

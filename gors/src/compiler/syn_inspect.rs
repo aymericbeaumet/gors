@@ -230,7 +230,7 @@ pub(super) fn receiver_root_ident_name(expr: &syn::Expr) -> Option<String> {
     }
 }
 
-fn is_transparent_receiver_method(method: &syn::Ident) -> bool {
+pub(super) fn is_transparent_receiver_method(method: &syn::Ident) -> bool {
     ident_matches_any(method, &["as_mut", "as_ref"]) || is_receiver_type_wrapper_method(method)
 }
 
