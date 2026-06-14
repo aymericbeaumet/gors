@@ -2,13 +2,13 @@ use std::borrow::Cow;
 use std::time::Instant;
 
 #[derive(Clone)]
-pub(crate) struct ProfileTimer {
+pub struct ProfileTimer {
     label: Cow<'static, str>,
     start: Option<Instant>,
 }
 
 impl ProfileTimer {
-    pub(crate) fn start(label: impl Into<Cow<'static, str>>) -> Self {
+    pub fn start(label: impl Into<Cow<'static, str>>) -> Self {
         let enabled = std::env::var("GORS_PROFILE")
             .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
         Self {

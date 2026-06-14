@@ -26185,7 +26185,7 @@ fn borrowed_pointer_view_owner_and_target_types(
     };
     let receiver_type =
         TYPE_ENV.with(|env| typeinfer::GoType::infer_expr(&selector.x, &env.borrow()));
-    let receiver_name = named_method_receiver_type_name(receiver_type.clone())?;
+    let receiver_name = named_method_receiver_type_name(receiver_type)?;
     let owner_ty = named_go_type_path_with_inferred_type_args(&receiver_name);
     for receiver_name in receiver_type_name_candidates(&receiver_name) {
         let key = method_key(&receiver_name, selector.sel.name);
