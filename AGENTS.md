@@ -1509,6 +1509,17 @@ Preserve Go AST grouping when emitting nested binary expressions: Go and Rust
 operator precedence differ for shifts and bitwise operators, so child binary
 expressions need parentheses whenever Rust would otherwise regroup them.
 
+## CI and Pages deploy
+
+CI runs on pull requests and on pushes to `main`. The website deploy must use
+GitHub Pages' native workflow artifact path: upload `www/dist` with
+`actions/upload-pages-artifact`, then publish with `actions/deploy-pages` to the
+`github-pages` environment. Do not force-push `www/dist` to `gh-pages`; the web
+bundle includes a large v86 filesystem, and branch-based Pages deploys are
+unreliable for that artifact size. The repository Pages source must remain
+`build_type: workflow`, and the custom domain is stored in repository Pages
+settings rather than in a generated `CNAME` file.
+
 ## Known limitations
 
 - Closure support is partial; function values use shared `Arc<Mutex<Option<Arc<dyn Fn...>>>>` cells rather than a full Go environment object.
