@@ -29066,10 +29066,8 @@ func main() {
         let output = quote! { #compiled }.to_string();
 
         assert!(
-            output.contains(
-                "let mut ch = (< crate :: builtin :: GorsPtr < ChanType > > :: default ()) . clone ()"
-            ),
-            "expected unsafe pointer conversion placeholder to keep target type: {output}"
+            output.contains("let mut ch = ((t) . clone ()) . clone ()"),
+            "expected identity unsafe pointer conversion to forward the source handle: {output}"
         );
         assert!(
             output.contains("ch . lock () . unwrap () . Dir"),
@@ -39323,17 +39321,14 @@ func main() {
             "expected pointer-field view receiver to use projected pointer storage: {output}"
         );
         assert!(
-            output.contains("let mut __gors_borrowed_pointer_view_0")
-                && output.contains("let mut h = < block > :: header"),
-            "expected pointer-field view binding to keep a guard alive: {output}"
+            output.contains("let mut h : crate :: builtin :: GorsPtr < header >"),
+            "expected pointer-field view binding to retain a typed GorsPtr handle: {output}"
         );
         assert!(
-            output.contains("let __gors_borrowed_pointer_view_cell_0"),
-            "expected pointer-field view binding to name the projected pointer cell: {output}"
-        );
-        assert!(
-            output.contains("(* < header > :: name (& mut * h ,)) [(0usize) as usize] ="),
-            "expected later calls on the borrowed view to use the borrowed receiver: {output}"
+            output.contains(
+                "(* < header > :: name (& mut * h . lock () . unwrap () ,)) [(0usize) as usize] ="
+            ),
+            "expected later calls on the borrowed view to lock the projected handle: {output}"
         );
     }
 
