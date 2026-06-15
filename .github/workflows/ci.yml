@@ -147,10 +147,7 @@ jobs:
           key: gors-go-sdk-${{ runner.os }}-${{ hashFiles('.go-version') }}
 
       - name: Test integration go stdlib
-        # Surface every failing fixture in one run rather than the first
-        # one Make's FAIL_FAST=1 would surface. Skip lists are easier to
-        # land in bulk than iteratively.
-        run: GORS_TEST_FAIL_FAST=0 GORS_TEST_VERBOSE=1 cargo test --profile ci --package=gors --features test_integration_go_stdlib --test test_integration_go_stdlib -- --nocapture
+        run: make rust-test-integration-go-stdlib
 
   rust-test-integration-go-programs:
     runs-on: ubuntu-latest
