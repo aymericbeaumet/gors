@@ -10272,9 +10272,9 @@ fn compile_unsafe_offsetof_arg(expr: ast::Expr) -> syn::Expr {
         },
         _ => return syn::parse_quote! { 0usize },
     };
-    let struct_ident = syn::Ident::new(&rust_safe_ident_name(&struct_name), Span::mixed_site());
+    let struct_ty = named_go_type_path(&struct_name);
     let field_ident = syn::Ident::new(&rust_safe_ident_name(selector.sel.name), Span::mixed_site());
-    syn::parse_quote! { std::mem::offset_of!(#struct_ident, #field_ident) }
+    syn::parse_quote! { std::mem::offset_of!(#struct_ty, #field_ident) }
 }
 
 fn unsafe_string_byte_source(expr: ast::Expr) -> Option<ast::Expr> {
@@ -26433,7 +26433,7 @@ fn slice_alias_sync_stmt(alias_name: &str) -> Option<syn::Stmt> {
     let alias_value_ident = synthetic_names::slice_alias_value_ident();
     Some(syn::parse_quote! {{
         let #alias_offset_ident = #offset;
-        for (#alias_index_ident, #alias_value_ident) in (#alias).iter().cloned().enumerate() {
+        for (#alias_index_ident, #alias_value_ident) in #alias.iter().cloned().enumerate() {
             (#base)[#alias_index_ident + #alias_offset_ident] = #alias_value_ident;
         }
     }})
@@ -29066,10 +29066,8 @@ func main() {
         let output = quote! { #compiled }.to_string();
 
         assert!(
-            output.contains(
-                "let mut ch = (< crate :: builtin :: GorsPtr < ChanType > > :: default ()) . clone ()"
-            ),
-            "expected unsafe pointer conversion placeholder to keep target type: {output}"
+            output.contains("let mut ch = ((t) . clone ()) . clone ()"),
+            "expected identity unsafe pointer conversion to forward the source handle: {output}"
         );
         assert!(
             output.contains("ch . lock () . unwrap () . Dir"),
@@ -39323,17 +39321,14 @@ func main() {
             "expected pointer-field view receiver to use projected pointer storage: {output}"
         );
         assert!(
-            output.contains("let mut __gors_borrowed_pointer_view_0")
-                && output.contains("let mut h = < block > :: header"),
-            "expected pointer-field view binding to keep a guard alive: {output}"
+            output.contains("let mut h : crate :: builtin :: GorsPtr < header >"),
+            "expected pointer-field view binding to retain a typed GorsPtr handle: {output}"
         );
         assert!(
-            output.contains("let __gors_borrowed_pointer_view_cell_0"),
-            "expected pointer-field view binding to name the projected pointer cell: {output}"
-        );
-        assert!(
-            output.contains("(* < header > :: name (& mut * h ,)) [(0usize) as usize] ="),
-            "expected later calls on the borrowed view to use the borrowed receiver: {output}"
+            output.contains(
+                "(* < header > :: name (& mut * h . lock () . unwrap () ,)) [(0usize) as usize] ="
+            ),
+            "expected later calls on the borrowed view to lock the projected handle: {output}"
         );
     }
 

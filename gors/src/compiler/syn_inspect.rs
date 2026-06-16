@@ -172,7 +172,7 @@ pub(super) fn ident_matches_any(ident: &syn::Ident, names: &[&str]) -> bool {
 }
 
 pub(super) fn is_receiver_type_wrapper_method(method: &syn::Ident) -> bool {
-    ident_matches_any(method, &["as_ref", "clone", "lock", "to_string", "unwrap"])
+    ident_matches_any(method, &["clone", "lock", "to_string", "unwrap"])
 }
 
 pub(super) fn is_lock_guard_wrapper_method(method: &syn::Ident) -> bool {
@@ -230,7 +230,7 @@ pub(super) fn receiver_root_ident_name(expr: &syn::Expr) -> Option<String> {
     }
 }
 
-fn is_transparent_receiver_method(method: &syn::Ident) -> bool {
+pub(super) fn is_transparent_receiver_method(method: &syn::Ident) -> bool {
     ident_matches_any(method, &["as_mut", "as_ref"]) || is_receiver_type_wrapper_method(method)
 }
 

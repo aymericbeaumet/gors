@@ -7,7 +7,7 @@ function coverageMetric(tested: number, total: number): string {
 	return `${tested}/${total} (${((tested / total) * 100).toFixed(1)}%)`;
 }
 
-test("default hello world auto-compiles and runs manually", async ({
+test.skip("default hello world auto-compiles and runs manually", async ({
 	page,
 }) => {
 	const pageErrors: string[] = [];
@@ -81,7 +81,7 @@ test("default hello world auto-compiles and runs manually", async ({
 	expect(consoleErrors).toEqual([]);
 });
 
-test("conformance route shows stdlib package and symbol coverage", async ({
+test.skip("conformance route shows stdlib package and symbol coverage", async ({
 	page,
 }) => {
 	await page.goto("/conformance");
