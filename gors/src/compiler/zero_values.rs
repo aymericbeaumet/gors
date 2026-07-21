@@ -88,7 +88,7 @@ pub(super) fn expr_for_syn_type(ty: Option<&syn::Type>) -> syn::Expr {
                     return expr_for_type_name(Some("int"));
                 }
                 "Vec" => return syn::parse_quote! { Vec::new() },
-                "HashMap" => return syn::parse_quote! { std::collections::HashMap::new() },
+                "GorsMap" => return syn::parse_quote! { Default::default() },
                 _ => {}
             }
         }

@@ -164,6 +164,12 @@ pub(super) fn prune_unused_use_items(items: &mut Vec<syn::Item>) {
             }
             syn::visit::visit_path(self, path);
         }
+
+        fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+            self.used
+                .extend(super::syn_inspect::macro_token_ident_names(&mac.tokens));
+            syn::visit::visit_macro(self, mac);
+        }
     }
 
     let mut collector = UsedIdentCollector {

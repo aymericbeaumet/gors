@@ -1,0 +1,121 @@
+{
+  "expectedProgramCount": 83,
+  "fixtures": {
+    "_builtin": {
+      "status": "unsupported",
+      "reasonFile": "_builtin/NOTES.md"
+    },
+    "_bytes": {
+      "status": "unsupported",
+      "reasonFile": "_bytes/NOTES.md"
+    },
+    "_context": {
+      "status": "unsupported",
+      "reasonFile": "_context/NOTES.md"
+    },
+    "_log": {
+      "status": "unsupported",
+      "reasonFile": "_log/NOTES.md"
+    },
+    "_mime": {
+      "status": "unsupported",
+      "reasonFile": "_mime/NOTES.md"
+    },
+    "_sort": {
+      "status": "unsupported",
+      "reasonFile": "_sort/NOTES.md"
+    },
+    "_strings": {
+      "status": "unsupported",
+      "reasonFile": "_strings/NOTES.md"
+    },
+    "archive/_zip": {
+      "status": "unsupported",
+      "reasonFile": "archive/_zip/NOTES.md"
+    },
+    "compress/_bzip2": {
+      "status": "unsupported",
+      "reasonFile": "compress/_bzip2/NOTES.md"
+    },
+    "compress/_flate": {
+      "status": "unsupported",
+      "reasonFile": "compress/_flate/NOTES.md"
+    },
+    "container/_list": {
+      "status": "unsupported",
+      "reasonFile": "container/_list/NOTES.md"
+    },
+    "crypto/_main": {
+      "status": "unsupported",
+      "reasonFile": "crypto/_main/NOTES.md"
+    },
+    "crypto/_md5": {
+      "status": "unsupported",
+      "reasonFile": "crypto/_md5/NOTES.md"
+    },
+    "crypto/_sha1": {
+      "status": "unsupported",
+      "reasonFile": "crypto/_sha1/NOTES.md"
+    },
+    "crypto/_sha256": {
+      "status": "unsupported",
+      "reasonFile": "crypto/_sha256/NOTES.md"
+    },
+    "crypto/_sha512": {
+      "status": "unsupported",
+      "reasonFile": "crypto/_sha512/NOTES.md"
+    },
+    "encoding/_base64": {
+      "status": "unsupported",
+      "reasonFile": "encoding/_base64/NOTES.md"
+    },
+    "encoding/_binary": {
+      "status": "unsupported",
+      "reasonFile": "encoding/_binary/NOTES.md"
+    },
+    "go/_scanner": {
+      "status": "unsupported",
+      "reasonFile": "go/_scanner/NOTES.md"
+    },
+    "go/_token": {
+      "status": "unsupported",
+      "reasonFile": "go/_token/NOTES.md"
+    },
+    "hash/_adler32": {
+      "status": "unsupported",
+      "reasonFile": "hash/_adler32/NOTES.md"
+    },
+    "hash/_fnv": {
+      "status": "unsupported",
+      "reasonFile": "hash/_fnv/NOTES.md"
+    },
+    "image/_gif": {
+      "status": "unsupported",
+      "reasonFile": "image/_gif/NOTES.md"
+    },
+    "image/_jpeg": {
+      "status": "unsupported",
+      "reasonFile": "image/_jpeg/NOTES.md"
+    },
+    "image/_png": {
+      "status": "unsupported",
+      "reasonFile": "image/_png/NOTES.md"
+    },
+    "log/_slog": {
+      "status": "unsupported",
+      "reasonFile": "log/_slog/NOTES.md"
+    },
+    "net/_http": {
+      "status": "unsupported",
+      "reasonFile": "net/_http/NOTES.md"
+    },
+    "path/_main": {
+      "status": "unsupported",
+      "reasonFile": "path/_main/NOTES.md"
+    },
+    "runtime/_metrics": {
+      "status": "unsupported",
+      "reasonFile": "runtime/_metrics/NOTES.md"
+    }
+  }
+}

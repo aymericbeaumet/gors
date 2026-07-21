@@ -1,11 +1,14 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::STDLIB_VERSION;
 
 const MANIFEST_FILENAME: &str = ".gors_manifest.json";
 const MANIFEST_VERSION: u32 = 2;
+static MANIFEST_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BuildManifest {
@@ -41,8 +44,40 @@ impl BuildManifest {
 
     pub fn save(&self, output_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let path = output_dir.join(MANIFEST_FILENAME);
-        let content = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, content)?;
+        std::fs::create_dir_all(output_dir)?;
+        let content = serde_json::to_vec_pretty(self)?;
+        let temp_path = loop {
+            let suffix = MANIFEST_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let candidate = output_dir.join(format!(
+                "{MANIFEST_FILENAME}.tmp-{}-{suffix}",
+                std::process::id()
+            ));
+            match std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&candidate)
+            {
+                Ok(mut file) => {
+                    let write_result = (|| -> Result<(), std::io::Error> {
+                        file.write_all(&content)?;
+                        file.write_all(b"\n")?;
+                        file.sync_all()
+                    })();
+                    if let Err(error) = write_result {
+                        drop(file);
+                        let _ = std::fs::remove_file(&candidate);
+                        return Err(error.into());
+                    }
+                    break candidate;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error.into()),
+            }
+        };
+        if let Err(error) = std::fs::rename(&temp_path, path) {
+            let _ = std::fs::remove_file(temp_path);
+            return Err(error.into());
+        }
         Ok(())
     }
 

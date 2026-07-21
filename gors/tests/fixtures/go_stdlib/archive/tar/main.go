@@ -23,6 +23,8 @@ func main() {
 	caseFileInfoHeader()
 	fmt.Println("== archive/tar/roundtrip ==")
 	caseRoundTrip()
+	fmt.Println("== archive/tar/add-fs ==")
+	caseAddFS()
 }
 
 func caseErrors() {
@@ -180,6 +182,63 @@ func (r *sliceReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
+type memoryFS struct{}
+
+func (memoryFS) Open(name string) (fs.File, error) {
+	switch name {
+	case ".":
+		return &memoryFile{info: namedInfo{name: ".", mode: fs.ModeDir | 0755}}, nil
+	case "docs":
+		return &memoryFile{info: namedInfo{name: "docs", mode: fs.ModeDir | 0755}}, nil
+	case "docs/message.txt":
+		data := []byte("hello from fs")
+		return &memoryFile{
+			info: namedInfo{name: "message.txt", size: int64(len(data)), mode: 0640},
+			data: data,
+		}, nil
+	default:
+		return nil, fs.ErrNotExist
+	}
+}
+
+func (memoryFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	switch name {
+	case ".":
+		return []fs.DirEntry{
+			fs.FileInfoToDirEntry(namedInfo{name: "docs", mode: fs.ModeDir | 0755}),
+		}, nil
+	case "docs":
+		return []fs.DirEntry{
+			fs.FileInfoToDirEntry(namedInfo{name: "message.txt", size: 13, mode: 0640}),
+		}, nil
+	default:
+		return nil, fs.ErrNotExist
+	}
+}
+
+type memoryFile struct {
+	info namedInfo
+	data []byte
+	pos  int
+}
+
+func (f *memoryFile) Stat() (fs.FileInfo, error) {
+	return f.info, nil
+}
+
+func (f *memoryFile) Read(p []byte) (int, error) {
+	if f.pos >= len(f.data) {
+		return 0, io.EOF
+	}
+	n := copy(p, f.data[f.pos:])
+	f.pos += n
+	return n, nil
+}
+
+func (f *memoryFile) Close() error {
+	return nil
+}
+
 func caseRoundTrip() {
 	// gors:stdlib-cover archive/tar::NewWriter archive/tar::Writer archive/tar::Writer.WriteHeader archive/tar::Writer.Write archive/tar::Writer.Flush archive/tar::Writer.Close
 	sink := captureWriter{}
@@ -206,4 +265,26 @@ func caseRoundTrip() {
 	fmt.Println(readN, readErr == nil || readErr == io.EOF, string(buf[:readN]))
 	nextHeader, nextErr := reader.Next()
 	fmt.Println(nextHeader == nil, nextErr == io.EOF, source.pos == len(source.data))
+}
+
+func caseAddFS() {
+	// gors:stdlib-cover archive/tar::Writer.AddFS
+	sink := captureWriter{}
+	writer := tar.NewWriter(&sink)
+	addErr := writer.AddFS(memoryFS{})
+	closeErr := writer.Close()
+	fmt.Println(addErr == nil, closeErr == nil, len(sink.data) > 0)
+
+	reader := tar.NewReader(&sliceReader{data: sink.data})
+	dirHeader, dirErr := reader.Next()
+	fmt.Println(dirErr == nil, dirHeader.Name, dirHeader.Size, dirHeader.Mode, dirHeader.Typeflag)
+
+	fileHeader, fileErr := reader.Next()
+	buf := make([]byte, 32)
+	n, readErr := reader.Read(buf)
+	fmt.Println(fileErr == nil, fileHeader.Name, fileHeader.Size, fileHeader.Mode, fileHeader.Typeflag)
+	fmt.Println(n, readErr == nil || readErr == io.EOF, string(buf[:n]))
+
+	endHeader, endErr := reader.Next()
+	fmt.Println(endHeader == nil, endErr == io.EOF)
 }

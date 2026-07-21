@@ -1,0 +1,17 @@
+{
+  "expectedProgramCount": 121,
+  "fixtures": {
+    "_generic_type_method": {
+      "status": "unsupported",
+      "reasonFile": "_generic_type_method/NOTES.md"
+    },
+    "_type_switch_eval_once": {
+      "status": "unsupported",
+      "reasonFile": "_type_switch_eval_once/NOTES.md"
+    },
+    "_variadic_method": {
+      "status": "unsupported",
+      "reasonFile": "_variadic_method/NOTES.md"
+    }
+  }
+}

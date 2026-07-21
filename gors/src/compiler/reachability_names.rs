@@ -3,7 +3,9 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use super::CompiledModule;
 use super::item_reachability::impl_method_reachability_name;
 use super::receiver_type_facts::ReceiverTypeMap;
-use super::syn_inspect::{item_name, named_self_type, self_type_reachability_names};
+use super::syn_inspect::{
+    item_name, macro_declared_item_names, named_self_type, self_type_reachability_names,
+};
 
 pub(super) fn main_module_root_names(module: &CompiledModule, has_main: bool) -> HashSet<String> {
     if has_main {
@@ -72,6 +74,9 @@ pub(super) fn item_reachability_names(items: &[syn::Item]) -> HashSet<String> {
         if let Some(name) = item_name(item) {
             names.insert(name);
         }
+        if let syn::Item::Macro(item_macro) = item {
+            names.extend(macro_declared_item_names(&item_macro.mac.tokens));
+        }
         if let syn::Item::Impl(item_impl) = item {
             let self_names = self_type_reachability_names(&item_impl.self_ty);
             for impl_item in &item_impl.items {
@@ -116,7 +121,13 @@ pub(super) fn item_reachability_names(items: &[syn::Item]) -> HashSet<String> {
 }
 
 pub(super) fn top_level_item_names(items: &[syn::Item]) -> HashSet<String> {
-    items.iter().filter_map(item_name).collect()
+    let mut names = items.iter().filter_map(item_name).collect::<HashSet<_>>();
+    for item in items {
+        if let syn::Item::Macro(item_macro) = item {
+            names.extend(macro_declared_item_names(&item_macro.mac.tokens));
+        }
+    }
+    names
 }
 
 pub(super) fn trait_supertrait_names(items: &[syn::Item]) -> BTreeMap<String, Vec<String>> {

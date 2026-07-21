@@ -5,6 +5,10 @@ use std::path::{Path, PathBuf};
 
 const GO_VERSION_FILE: &str = "../.go-version";
 const STDLIB_PRELOAD_SCHEMA_SUFFIX: &str = "stdlib-static-preload-v2";
+const COMPILER_FINGERPRINT_DOMAIN: &[u8] = b"gors-compiler-artifact-v1\0";
+const RESOLVER_CACHE_FINGERPRINT_DOMAIN: &[u8] = b"gors-resolver-cache-abi-v1\0";
+const RESOLVER_CACHE_OPERATIONAL_FEATURES: &[&str] =
+    &["CARGO_FEATURE_PARALLEL", "CARGO_FEATURE_WASM_THREADS"];
 
 type BuildResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -32,6 +36,123 @@ fn read_go_version() -> BuildResult<String> {
     Ok(version.to_string())
 }
 
+fn compiler_source_fingerprint(
+    sdk_fingerprint: &str,
+    target_goos: &str,
+    target_goarch: &str,
+    domain: &[u8],
+    ignored_features: &[&str],
+) -> BuildResult<String> {
+    fn collect_rust_sources(root: &Path, files: &mut Vec<PathBuf>) -> BuildResult<()> {
+        for entry in std::fs::read_dir(root)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                collect_rust_sources(&path, files)?;
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                files.push(path);
+            }
+        }
+        Ok(())
+    }
+
+    let mut files = Vec::new();
+    collect_rust_sources(Path::new("src"), &mut files)?;
+    collect_rust_sources(Path::new("../gors-builtin/src"), &mut files)?;
+    files.extend(
+        [
+            "build.rs",
+            "Cargo.toml",
+            "../Cargo.toml",
+            "../Cargo.lock",
+            GO_VERSION_FILE,
+            "../gors-builtin/Cargo.toml",
+        ]
+        .into_iter()
+        .map(PathBuf::from),
+    );
+    files.sort();
+
+    let mut hasher = Sha256::new();
+    hasher.update(domain);
+    hasher.update(b"embedded-go-sdk\0");
+    hasher.update(sdk_fingerprint.as_bytes());
+    hasher.update(b"\0target-goos\0");
+    hasher.update(target_goos.as_bytes());
+    hasher.update(b"\0target-goarch\0");
+    hasher.update(target_goarch.as_bytes());
+    hasher.update(b"\0");
+    for key in ["TARGET", "PROFILE", "CARGO_PKG_VERSION"] {
+        hasher.update(key.as_bytes());
+        hasher.update(b"=");
+        hasher.update(std::env::var(key)?.as_bytes());
+        hasher.update(b"\0");
+    }
+    let mut enabled_features = std::env::vars()
+        .filter_map(|(key, value)| {
+            (key.starts_with("CARGO_FEATURE_") && !ignored_features.contains(&key.as_str()))
+                .then_some((key, value))
+        })
+        .collect::<Vec<_>>();
+    enabled_features.sort();
+    for (key, value) in enabled_features {
+        hasher.update(key.as_bytes());
+        hasher.update(b"=");
+        hasher.update(value.as_bytes());
+        hasher.update(b"\0");
+    }
+    for path in files {
+        hasher.update(path.to_string_lossy().as_bytes());
+        hasher.update(b"\0");
+        hasher.update(std::fs::read(&path)?);
+        hasher.update(b"\0");
+    }
+    if std::env::var("TARGET")?.starts_with("wasm32-") {
+        for path in ["../www/wasm/Cargo.toml", "../www/wasm/Cargo.lock"] {
+            hasher.update(path.as_bytes());
+            hasher.update(b"\0");
+            hasher.update(std::fs::read(path)?);
+            hasher.update(b"\0");
+        }
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+fn stdlib_source_fingerprint(
+    packages: &StdlibPackages,
+    go_version: &str,
+    target_goos: &str,
+    target_goarch: &str,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"gors-embedded-go-sdk-v1\0");
+    hasher.update(go_version.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(target_goos.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(target_goarch.as_bytes());
+    hasher.update(b"\0");
+    for (import_path, files) in packages {
+        hasher.update(import_path.as_bytes());
+        hasher.update(b"\0");
+        for file in files {
+            hasher.update(file.filename.as_bytes());
+            hasher.update(b"\0");
+            hasher.update(file.content.as_bytes());
+            hasher.update(b"\0");
+        }
+    }
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 fn is_go_version(version: &str) -> bool {
     let mut count = 0;
     for part in version.split('.') {
@@ -47,9 +168,14 @@ fn stdlib_version(go_version: &str) -> String {
     format!("gostdlib{go_version}")
 }
 
-fn stdlib_preload_schema(go_version: &str, target_goos: &str, target_goarch: &str) -> String {
+fn stdlib_preload_schema(
+    go_version: &str,
+    target_goos: &str,
+    target_goarch: &str,
+    sdk_fingerprint: &str,
+) -> String {
     format!(
-        "{}-{target_goos}-gors-defs-{target_goarch}-{STDLIB_PRELOAD_SCHEMA_SUFFIX}",
+        "{}-{target_goos}-gors-defs-{target_goarch}-{STDLIB_PRELOAD_SCHEMA_SUFFIX}-{sdk_fingerprint}",
         stdlib_version(go_version),
     )
 }
@@ -642,15 +768,52 @@ fn is_unix_goos(value: &str) -> bool {
 
 fn main() -> BuildResult<()> {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=src");
+    println!("cargo:rerun-if-changed=Cargo.toml");
+    println!("cargo:rerun-if-changed=../Cargo.toml");
+    println!("cargo:rerun-if-changed=../Cargo.lock");
+    println!("cargo:rerun-if-changed=../gors-builtin/Cargo.toml");
     println!("cargo:rerun-if-changed={GO_VERSION_FILE}");
-    println!("cargo:rerun-if-changed=../gors-builtin/src/lib.rs");
+    println!("cargo:rerun-if-changed=../gors-builtin/src");
     println!("cargo:rerun-if-env-changed=GORS_GO_SDK_PATH");
+    if std::env::var("TARGET")?.starts_with("wasm32-") {
+        println!("cargo:rerun-if-changed=../www/wasm/Cargo.toml");
+        println!("cargo:rerun-if-changed=../www/wasm/Cargo.lock");
+    }
 
     let go_version = read_go_version()?;
     let stdlib_version = stdlib_version(&go_version);
     let sdk_path = ensure_go_sdk(&go_version)?;
+    if std::env::var_os("GORS_GO_SDK_PATH").is_some() {
+        println!(
+            "cargo:rerun-if-changed={}",
+            sdk_path.join("VERSION").display()
+        );
+        println!("cargo:rerun-if-changed={}", sdk_path.join("src").display());
+    }
+    let target_goos = target_go_os();
+    let target_goarch = go_arch()?;
+    let packages = extract_stdlib_from_sdk(&sdk_path, &go_version, &target_goos, target_goarch);
+    let sdk_fingerprint =
+        stdlib_source_fingerprint(&packages, &go_version, &target_goos, target_goarch);
+    let compiler_fingerprint = compiler_source_fingerprint(
+        &sdk_fingerprint,
+        &target_goos,
+        target_goarch,
+        COMPILER_FINGERPRINT_DOMAIN,
+        &[],
+    )?;
+    let resolver_cache_fingerprint = compiler_source_fingerprint(
+        &sdk_fingerprint,
+        &target_goos,
+        target_goarch,
+        RESOLVER_CACHE_FINGERPRINT_DOMAIN,
+        RESOLVER_CACHE_OPERATIONAL_FEATURES,
+    )?;
     println!("cargo:rustc-env=GORS_GO_VERSION={go_version}");
     println!("cargo:rustc-env=GORS_STDLIB_VERSION={stdlib_version}");
+    println!("cargo:rustc-env=GORS_COMPILER_FINGERPRINT={compiler_fingerprint}");
+    println!("cargo:rustc-env=GORS_RESOLVER_CACHE_FINGERPRINT={resolver_cache_fingerprint}");
     println!(
         "cargo:rustc-env=GORS_BUILT_GO_SDK_PATH={}",
         sdk_path.display()
@@ -660,9 +823,8 @@ fn main() -> BuildResult<()> {
     let preload_path = out_dir.join("go_stdlib.rs");
     let source_dir = out_dir.join("go_stdlib_src");
     let marker_path = out_dir.join("go_stdlib.version");
-    let target_goos = target_go_os();
-    let target_goarch = go_arch()?;
-    let preload_schema = stdlib_preload_schema(&go_version, &target_goos, target_goarch);
+    let preload_schema =
+        stdlib_preload_schema(&go_version, &target_goos, target_goarch, &sdk_fingerprint);
 
     if preload_path.exists()
         && source_dir.exists()
@@ -670,8 +832,6 @@ fn main() -> BuildResult<()> {
     {
         return Ok(());
     }
-
-    let packages = extract_stdlib_from_sdk(&sdk_path, &go_version, &target_goos, target_goarch);
 
     eprintln!(
         "Preloading {} Go stdlib packages for GOOS={target_goos} GOARCH=gors with {target_goarch} definition files ({} total files)",

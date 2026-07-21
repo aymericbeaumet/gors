@@ -2,6 +2,30 @@ use gors::error::{Diagnostic, DiagnosticKind};
 use gors::mapping::SourceMap;
 use wasm_bindgen::prelude::*;
 
+#[cfg(feature = "threads")]
+pub use wasm_bindgen_rayon::init_thread_pool;
+
+/// Number of workers in the initialized Rayon pool.
+#[cfg(feature = "threads")]
+#[wasm_bindgen]
+pub fn compiler_thread_count() -> u32 {
+    rayon::current_num_threads() as u32
+}
+
+/// Export the generic resolver's mechanically generated module cache.
+#[wasm_bindgen]
+pub fn export_resolver_cache() -> Result<Vec<u8>, JsValue> {
+    gors::resolve::export_resolved_module_cache().map_err(|error| JsValue::from_str(&error))
+}
+
+/// Restore a cache created by the same resolver ABI and Go SDK.
+#[wasm_bindgen]
+pub fn import_resolver_cache(bytes: &[u8]) -> Result<u32, JsValue> {
+    gors::resolve::import_resolved_module_cache(bytes)
+        .map(|stats| stats.imported as u32)
+        .map_err(|error| JsValue::from_str(&error))
+}
+
 /// Result of a build operation.
 #[wasm_bindgen]
 pub struct BuildResult {
@@ -82,7 +106,8 @@ impl BuildResult {
     /// Get source-map tokens as structured-clone friendly JSON.
     ///
     /// Each entry is [output_line, output_col, go_line, go_col, name], with
-    /// lines and columns stored as 0-based values.
+    /// lines stored as 0-based values and columns as 0-based UTF-16 code-unit
+    /// offsets, as required by Source Map v3.
     #[wasm_bindgen]
     pub fn get_mappings_json(&self) -> String {
         let Some(ref sm) = self.source_map else {
@@ -109,6 +134,51 @@ impl BuildResult {
             out.push(',');
             push_json_string(&mut out, token.get_name().unwrap_or(""));
             out.push(']');
+        }
+        out.push(']');
+        out
+    }
+
+    /// Get source-map positions as flat groups of
+    /// [output_line, output_utf16_col, go_line, go_utf16_col].
+    ///
+    /// wasm-bindgen exposes this as a Uint32Array, which the compiler worker can
+    /// transfer to the UI thread without structured-cloning nested arrays.
+    #[wasm_bindgen]
+    pub fn get_mapping_positions(&self) -> Vec<u32> {
+        let Some(ref sm) = self.source_map else {
+            return Vec::new();
+        };
+
+        let mut positions = Vec::with_capacity(sm.get_token_count() as usize * 4);
+        for i in 0..sm.get_token_count() {
+            let Some(token) = sm.get_token(i as usize) else {
+                continue;
+            };
+            positions.push(token.get_dst_line());
+            positions.push(token.get_dst_col());
+            positions.push(token.get_src_line());
+            positions.push(token.get_src_col());
+        }
+        positions
+    }
+
+    /// Get the Go token names corresponding to `get_mapping_positions()`.
+    #[wasm_bindgen]
+    pub fn get_mapping_names_json(&self) -> String {
+        let Some(ref sm) = self.source_map else {
+            return "[]".to_string();
+        };
+
+        let mut out = String::from("[");
+        for i in 0..sm.get_token_count() {
+            let Some(token) = sm.get_token(i as usize) else {
+                continue;
+            };
+            if out.len() > 1 {
+                out.push(',');
+            }
+            push_json_string(&mut out, token.get_name().unwrap_or(""));
         }
         out.push(']');
         out
@@ -178,8 +248,10 @@ impl BuildResult {
         let start_line = token.get_src_line() + 1;
         let start_col = token.get_src_col() + 1;
 
-        // The stored name is the Go token name - use its length directly
-        let name_len = token.get_name().map(|n| n.len() as u32).unwrap_or(1);
+        let name_len = token
+            .get_name()
+            .map(|name| name.encode_utf16().count() as u32)
+            .unwrap_or(1);
         let end_line = start_line;
         let end_col = start_col + name_len;
 
@@ -252,7 +324,7 @@ impl BuildResult {
         // Extract the actual Rust token at the destination position to get its length
         // This avoids hardcoding length mappings between Go and Rust tokens
         let name_len = extract_rust_token_at(&self.output, dst_line, dst_col)
-            .map(|t| t.len() as u32)
+            .map(|token| token.encode_utf16().count() as u32)
             .unwrap_or(1);
         let end_line = start_line;
         let end_col = start_col + name_len;
@@ -295,73 +367,93 @@ impl BuildResult {
     }
 
     fn error_result(diagnostic: Diagnostic) -> Self {
+        let source_line = diagnostic.source_line.unwrap_or_default();
+        let (error_column, error_end_column) = if source_line.is_empty() {
+            (diagnostic.column as u32, diagnostic.end_column as u32)
+        } else {
+            (
+                gors::mapping::utf8_byte_column_to_utf16(&source_line, diagnostic.column as u32),
+                gors::mapping::utf8_byte_column_to_utf16(
+                    &source_line,
+                    diagnostic.end_column as u32,
+                ),
+            )
+        };
         Self {
             success: false,
             output: String::new(),
             error_message: diagnostic.message.clone(),
             error_file: diagnostic.file.clone(),
             error_line: diagnostic.line as u32,
-            error_column: diagnostic.column as u32,
-            error_end_column: diagnostic.end_column as u32,
+            error_column,
+            error_end_column,
             error_kind: match diagnostic.kind {
                 DiagnosticKind::Scanner => "scanner".to_string(),
                 DiagnosticKind::Parser => "parser".to_string(),
                 DiagnosticKind::Compiler => "compiler".to_string(),
             },
-            error_source_line: diagnostic.source_line.unwrap_or_default(),
+            error_source_line: source_line,
             source_map: None,
         }
     }
 }
 
 /// Extract the token at a given position from Rust source code.
-/// Returns the token text if found.
+/// `col` is a zero-based UTF-16 code-unit offset from Source Map v3.
 fn extract_rust_token_at(rust_source: &str, line: u32, col: u32) -> Option<String> {
-    let lines: Vec<&str> = rust_source.lines().collect();
-    let line_idx = line as usize;
-    if line_idx >= lines.len() {
-        return None;
-    }
-
-    let line_text = lines[line_idx];
-    let col_idx = col as usize;
-    if col_idx >= line_text.len() {
-        return None;
-    }
-
-    let chars: Vec<char> = line_text.chars().collect();
-    if col_idx >= chars.len() {
-        return None;
-    }
-
-    let start_char = chars[col_idx];
+    let line_text = rust_source.lines().nth(line as usize)?;
+    let byte_offset = utf16_column_to_byte_offset(line_text, col)?;
+    let tail = line_text.get(byte_offset..)?;
+    let mut chars = tail.chars().peekable();
+    let start_char = chars.next()?;
 
     // Check for comment
-    if col_idx + 1 < chars.len()
-        && start_char == '/'
-        && (chars[col_idx + 1] == '/' || chars[col_idx + 1] == '*')
+    if start_char == '/'
+        && chars
+            .peek()
+            .is_some_and(|next| *next == '/' || *next == '*')
     {
         // Return the rest of the line for line comments, or find end for block comments
-        if chars[col_idx + 1] == '/' {
-            return Some(line_text[col_idx..].to_string());
+        if chars.peek() == Some(&'/') {
+            return Some(tail.to_string());
         }
     }
 
     // Check for identifier/keyword
     if start_char.is_alphabetic() || start_char == '_' {
-        let mut end = col_idx;
-        while end < chars.len() && (chars[end].is_alphanumeric() || chars[end] == '_') {
-            end += 1;
+        let mut token = String::from(start_char);
+        while chars
+            .peek()
+            .is_some_and(|ch| ch.is_alphanumeric() || *ch == '_')
+        {
+            if let Some(ch) = chars.next() {
+                token.push(ch);
+            }
         }
         // Handle macro invocation (e.g., println!)
-        if end < chars.len() && chars[end] == '!' {
-            end += 1;
+        if chars.peek() == Some(&'!') {
+            token.push('!');
         }
-        return Some(chars[col_idx..end].iter().collect());
+        return Some(token);
     }
 
     // For other tokens (operators, etc.), return single char
     Some(start_char.to_string())
+}
+
+fn utf16_column_to_byte_offset(line: &str, utf16_column: u32) -> Option<usize> {
+    let target = utf16_column as usize;
+    let mut current = 0usize;
+    for (byte_offset, ch) in line.char_indices() {
+        if current == target {
+            return Some(byte_offset);
+        }
+        current += ch.len_utf16();
+        if current > target {
+            return None;
+        }
+    }
+    (current == target).then_some(line.len())
 }
 
 fn push_json_string(out: &mut String, value: &str) {
@@ -386,14 +478,14 @@ fn push_json_string(out: &mut String, value: &str) {
     out.push('"');
 }
 
-fn collect_comments(ast: &gors::ast::File<'_>) -> Vec<CommentInfo> {
+fn collect_comments(ast: &gors::ast::File<'_>, source: &str) -> Vec<CommentInfo> {
     let mut doc_comment_lines: std::collections::HashSet<u32> = std::collections::HashSet::new();
     for decl in &ast.decls {
-        if let gors::ast::Decl::FuncDecl(func_decl) = decl {
-            if let Some(ref doc) = func_decl.doc {
-                for comment in &doc.list {
-                    doc_comment_lines.insert(comment.slash.line as u32);
-                }
+        if let gors::ast::Decl::FuncDecl(func_decl) = decl
+            && let Some(ref doc) = func_decl.doc
+        {
+            for comment in &doc.list {
+                doc_comment_lines.insert(comment.slash.line as u32);
             }
         }
     }
@@ -402,9 +494,17 @@ fn collect_comments(ast: &gors::ast::File<'_>) -> Vec<CommentInfo> {
     for comment_group in &ast.comments {
         for comment in &comment_group.list {
             let is_doc = doc_comment_lines.contains(&(comment.slash.line as u32));
+            let go_col = source
+                .lines()
+                .nth(comment.slash.line.saturating_sub(1))
+                .map(|line| {
+                    gors::mapping::utf8_byte_column_to_utf16(line, comment.slash.column as u32)
+                })
+                .unwrap_or(comment.slash.column as u32)
+                .saturating_sub(1);
             comments.push(CommentInfo {
                 go_line: comment.slash.line as u32,
-                go_col: comment.slash.column.saturating_sub(1) as u32,
+                go_col,
                 text: comment.text.to_string(),
                 is_doc,
             });
@@ -440,17 +540,21 @@ pub fn build_rust(input: String) -> BuildResult {
     };
 
     // Collect comments from the parsed AST before compilation consumes it
-    let comments = collect_comments(&program.main_package.ast);
+    let comments = collect_comments(&program.main_package.ast, &input);
 
-    let compiled =
-        match gors::compiler::compile_program_multi_with_source_map(program, "main.go", &input) {
-            Ok(result) => result,
-            Err(err) => {
-                let diagnostic =
-                    Diagnostic::new("main.go", 0, 0, err.to_string(), DiagnosticKind::Compiler);
-                return BuildResult::error_result(diagnostic);
-            }
-        };
+    let compiled = match gors::compiler::compile_program_multi_with_source_map_and_options(
+        program,
+        "main.go",
+        &input,
+        compiler_options(),
+    ) {
+        Ok(result) => result,
+        Err(err) => {
+            let diagnostic =
+                Diagnostic::new("main.go", 0, 0, err.to_string(), DiagnosticKind::Compiler);
+            return BuildResult::error_result(diagnostic);
+        }
+    };
 
     let rust_code = match gors::printer::generate_single(compiled) {
         Ok(output) => output,
@@ -476,12 +580,24 @@ pub fn build_rust(input: String) -> BuildResult {
     BuildResult::success_rust(output, source_map)
 }
 
+fn compiler_options() -> gors::compiler::CompileOptions {
+    #[cfg(feature = "threads")]
+    {
+        return gors::compiler::CompileOptions::with_jobs(rayon::current_num_threads());
+    }
+
+    #[cfg(not(feature = "threads"))]
+    {
+        gors::compiler::CompileOptions::default()
+    }
+}
+
 /// A mapping for a comment's position in both Go and Rust
 struct CommentMapping {
     go_line: u32,   // 0-based
-    go_col: u32,    // 0-based, position of // or /* in Go source
+    go_col: u32,    // 0-based UTF-16 position of // or /* in Go source
     rust_line: u32, // 0-based (final position in output)
-    rust_col: u32,  // 0-based
+    rust_col: u32,  // 0-based UTF-16 column
     /// The original Rust line this comment was inserted before (0-based)
     /// Used to calculate line shifts for code mappings
     inserted_before_original_line: u32,
@@ -581,6 +697,7 @@ fn build_source_map_with_comments(
 /// Information about a comment to insert.
 struct CommentInfo {
     go_line: u32,
+    /// Zero-based UTF-16 column for Source Map v3.
     go_col: u32,
     text: String,
     is_doc: bool,
@@ -760,7 +877,7 @@ mod tests {
         let program = gors::parser::parse_program_from_source("main.go", input)
             .map_err(|e| format!("Parse error: {:?}", e))?;
 
-        let comments = collect_comments(&program.main_package.ast);
+        let comments = collect_comments(&program.main_package.ast, input);
 
         let compiled =
             gors::compiler::compile_program_multi_with_source_map(program, "main.go", input)
@@ -773,6 +890,32 @@ mod tests {
         let (output, _) = insert_comments_with_sourcemap(&rust_code, &comments, &source_map);
 
         Ok(output)
+    }
+
+    #[test]
+    fn browser_diagnostics_convert_go_byte_columns_to_utf16() {
+        let diagnostic = Diagnostic::new("main.go", 1, 4, "bad rune", DiagnosticKind::Scanner)
+            .with_source_line("é 😀name");
+        assert_eq!(diagnostic.end_column, 8);
+
+        let result = BuildResult::error_result(diagnostic);
+
+        assert_eq!(result.error_column, 3);
+        assert_eq!(result.error_end_column, 5);
+    }
+
+    #[test]
+    fn rust_token_lookup_uses_utf16_source_map_columns() {
+        let source = "/* é😀 */ 𐐀name!();";
+        let byte_offset = source.find("𐐀name").unwrap();
+        let utf16_column = source[..byte_offset].encode_utf16().count() as u32;
+
+        assert_eq!(
+            extract_rust_token_at(source, 0, utf16_column).as_deref(),
+            Some("𐐀name!")
+        );
+        assert_eq!(utf16_column_to_byte_offset("😀x", 2), Some(4));
+        assert_eq!(utf16_column_to_byte_offset("😀x", 1), None);
     }
 
     #[test]
@@ -1072,7 +1215,7 @@ func bar() {
         let program = gors::parser::parse_program_from_source("main.go", input)
             .map_err(|e| format!("Parse error: {:?}", e))?;
 
-        let comments = collect_comments(&program.main_package.ast);
+        let comments = collect_comments(&program.main_package.ast, input);
 
         let compiled =
             gors::compiler::compile_program_multi_with_source_map(program, "main.go", input)

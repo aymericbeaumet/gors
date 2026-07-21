@@ -235,6 +235,20 @@ pub(super) fn byte_vec_expr(bytes: &[u8]) -> syn::Expr {
     syn::parse_quote! { Vec::<u8>::from([#(#elems),*]) }
 }
 
+pub(super) fn string_literal_expr(lit: &ast::BasicLit) -> Option<syn::Expr> {
+    let bytes = go_string_literal_bytes(lit)?;
+    if let Ok(value) = std::str::from_utf8(&bytes)
+        && !value.contains('\u{10ffff}')
+    {
+        let value = syn::LitStr::new(value, Span::mixed_site());
+        return Some(syn::parse_quote! { #value });
+    }
+    let bytes = byte_vec_expr(&bytes);
+    Some(syn::parse_quote! {
+        crate::builtin::go_string_from_bytes(&#bytes)
+    })
+}
+
 pub(super) fn string_const_bytes_fn_ident(name: &str) -> syn::Ident {
     synthetic_names::string_const_bytes_fn_ident(name)
 }
@@ -335,6 +349,31 @@ mod tests {
             go_string_literal_bytes(&string_lit("`a\r\nb`")),
             Some(vec![b'a', b'\n', b'b'])
         );
+    }
+
+    #[test]
+    fn valid_utf8_string_literals_stay_direct_and_readable() {
+        let expr = string_literal_expr(&string_lit(r#""Hello, 世界""#));
+
+        assert!(expr.is_some());
+        if let Some(expr) = expr {
+            assert_eq!(quote::quote! { #expr }.to_string(), r#""Hello, 世界""#);
+        }
+    }
+
+    #[test]
+    fn encoded_string_literals_keep_lossless_byte_path() {
+        for literal in [r#""\xff""#, r#""\U0010ffff""#] {
+            let expr = string_literal_expr(&string_lit(literal));
+            assert!(expr.is_some(), "{literal}");
+            if let Some(expr) = expr {
+                assert!(
+                    quote::quote! { #expr }
+                        .to_string()
+                        .contains("crate :: builtin :: go_string_from_bytes")
+                );
+            }
+        }
     }
 
     #[test]

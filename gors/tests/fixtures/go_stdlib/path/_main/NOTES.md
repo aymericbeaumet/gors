@@ -1,4 +1,4 @@
-## Known-failing fixture (skipped via `_` prefix)
+## Known-failing fixture (excluded via `fixtures.json`)
 
 The generated binary times out (10s) instead of producing output —
 likely an infinite loop or hang in the `path` package translation

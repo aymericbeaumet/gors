@@ -1,29 +1,25 @@
 #!/bin/bash
 #
-# Fuzzing script for gors
-# Uses cargo-afl for coverage-guided fuzzing with multi-CPU support
+# Bounded cargo-fuzz runner for gors.
 #
 # Usage:
 #   ./scripts/fuzz.sh <target> [options]
 #
-# Targets: scanner, parser, roundtrip
+# Targets: scanner, parser, roundtrip, compiler
 #
 # Options:
-#   -j N    Number of parallel fuzzers (default: all CPUs)
-#   -t SEC  Timeout per run in seconds (default: 1000ms = 1s)
-#   -c      Continue previous fuzzing session
+#   -j N    Number of parallel libFuzzer workers (default: all CPUs)
+#   -t SEC  Total fuzzing budget in seconds (default: 3600)
 #   -h      Show this help
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FUZZ_DIR="$(dirname "$SCRIPT_DIR")"
-PROJECT_ROOT="$(dirname "$FUZZ_DIR")"
 
-# Default values
 NUM_JOBS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
-TIMEOUT="1000+"
-CONTINUE=false
+DURATION_SECONDS=3600
+FUZZ_TOOLCHAIN="${GORS_FUZZ_TOOLCHAIN:-nightly-2026-07-01}"
 
 show_help() {
     echo "Fuzzing script for gors"
@@ -33,35 +29,41 @@ show_help() {
     echo "Targets:"
     echo "  scanner    Fuzz the Go scanner/lexer"
     echo "  parser     Fuzz the Go parser"
-    echo "  roundtrip  Fuzz parse->print->reparse cycle"
+    echo "  roundtrip  Fuzz deterministic parse/AST-snapshot output"
+    echo "  compiler   Fuzz generic Go AST to Rust AST lowering"
     echo ""
     echo "Options:"
     echo "  -j N    Number of parallel fuzzers (default: $NUM_JOBS)"
-    echo "  -t MS   Timeout per run in milliseconds (default: $TIMEOUT)"
-    echo "  -c      Continue previous fuzzing session"
+    echo "  -t SEC  Total fuzzing budget in seconds (default: $DURATION_SECONDS)"
     echo "  -h      Show this help"
     echo ""
+    echo "Environment:"
+    echo "  GORS_FUZZ_TOOLCHAIN  Installed nightly to use (default: $FUZZ_TOOLCHAIN)"
+    echo ""
     echo "Examples:"
-    echo "  $0 scanner              # Fuzz scanner with all CPUs"
-    echo "  $0 parser -j 4          # Fuzz parser with 4 CPUs"
-    echo "  $0 roundtrip -c         # Continue roundtrip fuzzing"
+    echo "  $0 scanner -t 300       # Fuzz scanner for five minutes"
+    echo "  $0 parser -j 4 -t 1800  # Fuzz parser with four workers"
+    echo "  $0 compiler -t 3600     # Fuzz compiler lowering for one hour"
 }
 
-# Parse arguments
 TARGET=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -j)
+            if [[ $# -lt 2 ]]; then
+                echo "Error: -j requires a worker count"
+                exit 1
+            fi
             NUM_JOBS="$2"
             shift 2
             ;;
         -t)
-            TIMEOUT="$2+"
+            if [[ $# -lt 2 ]]; then
+                echo "Error: -t requires a duration"
+                exit 1
+            fi
+            DURATION_SECONDS="$2"
             shift 2
-            ;;
-        -c)
-            CONTINUE=true
-            shift
             ;;
         -h|--help)
             show_help
@@ -91,9 +93,8 @@ if [ -z "$TARGET" ]; then
     exit 1
 fi
 
-# Validate target
 case "$TARGET" in
-    scanner|parser|roundtrip)
+    scanner|parser|roundtrip|compiler)
         ;;
     *)
         echo "Error: Unknown target '$TARGET'"
@@ -102,99 +103,36 @@ case "$TARGET" in
         ;;
 esac
 
-BINARY="fuzz_${TARGET}"
+if ! [[ "$NUM_JOBS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Error: jobs must be a positive integer"
+    exit 1
+fi
+if ! [[ "$DURATION_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Error: duration must be a positive integer"
+    exit 1
+fi
+
 CORPUS_DIR="${FUZZ_DIR}/corpus/${TARGET}"
-OUT_DIR="${FUZZ_DIR}/out/${TARGET}"
-SYNC_DIR="${FUZZ_DIR}/sync/${TARGET}"
+WORK_CORPUS_DIR="${FUZZ_DIR}/work-corpus/${TARGET}"
+ARTIFACT_DIR="${FUZZ_DIR}/artifacts/${TARGET}"
+mkdir -p "$CORPUS_DIR" "$WORK_CORPUS_DIR" "$ARTIFACT_DIR"
 
-# Check if cargo-afl is installed
-if ! command -v cargo-afl &> /dev/null; then
-    echo "cargo-afl is not installed. Installing..."
-    cargo install afl
-fi
+echo "Target: $TARGET"
+echo "Seed corpus: $CORPUS_DIR"
+echo "Working corpus: $WORK_CORPUS_DIR"
+echo "Artifacts: $ARTIFACT_DIR"
+echo "Workers: $NUM_JOBS"
+echo "Budget: ${DURATION_SECONDS}s"
+echo "Toolchain: $FUZZ_TOOLCHAIN"
 
-# Build the fuzz target with AFL instrumentation
-echo "Building $BINARY with AFL instrumentation..."
 cd "$FUZZ_DIR"
-cargo afl build --release --features afl-fuzz --bin "$BINARY"
-
-FUZZ_BINARY="${PROJECT_ROOT}/target/release/${BINARY}"
-
-if [ ! -f "$FUZZ_BINARY" ]; then
-    echo "Error: Built binary not found at $FUZZ_BINARY"
-    exit 1
-fi
-
-# Create output directories
-mkdir -p "$OUT_DIR" "$SYNC_DIR"
-
-# Check if we should resume or start fresh
-if [ "$CONTINUE" = false ] && [ -d "$SYNC_DIR/fuzzer-main" ]; then
-    echo "Previous fuzzing session found. Use -c to continue or remove $SYNC_DIR to start fresh."
-    exit 1
-fi
-
-# Determine AFL input flag
-if [ "$CONTINUE" = true ] && [ -d "$SYNC_DIR/fuzzer-main" ]; then
-    INPUT_FLAG="-i-"
-else
-    INPUT_FLAG="-i $CORPUS_DIR"
-fi
-
-echo ""
-echo "=== Fuzzing Configuration ==="
-echo "Target:     $TARGET"
-echo "Binary:     $FUZZ_BINARY"
-echo "Corpus:     $CORPUS_DIR"
-echo "Output:     $SYNC_DIR"
-echo "CPUs:       $NUM_JOBS"
-echo "Timeout:    $TIMEOUT ms"
-echo "Continue:   $CONTINUE"
-echo ""
-
-# Function to cleanup background processes
-cleanup() {
-    echo ""
-    echo "Stopping fuzzers..."
-    jobs -p | xargs -r kill 2>/dev/null || true
-    wait 2>/dev/null || true
-    echo "Done."
-}
-trap cleanup EXIT
-
-# Start the main fuzzer
-echo "Starting main fuzzer..."
-AFL_SKIP_CPUFREQ=1 cargo afl fuzz \
-    $INPUT_FLAG \
-    -o "$SYNC_DIR" \
-    -M fuzzer-main \
-    -t "$TIMEOUT" \
-    -- "$FUZZ_BINARY" &
-
-MAIN_PID=$!
-sleep 2
-
-# Start secondary fuzzers
-if [ "$NUM_JOBS" -gt 1 ]; then
-    for i in $(seq 2 "$NUM_JOBS"); do
-        echo "Starting secondary fuzzer $i..."
-        AFL_SKIP_CPUFREQ=1 cargo afl fuzz \
-            $INPUT_FLAG \
-            -o "$SYNC_DIR" \
-            -S "fuzzer-$i" \
-            -t "$TIMEOUT" \
-            -- "$FUZZ_BINARY" &
-        sleep 1
-    done
-fi
-
-echo ""
-echo "Fuzzing started with $NUM_JOBS parallel processes."
-echo "Press Ctrl+C to stop."
-echo ""
-echo "Crashes will be saved to: $SYNC_DIR/*/crashes/"
-echo "Use './scripts/export-crashes.sh $TARGET' to export crashes as test files."
-echo ""
-
-# Wait for main fuzzer
-wait $MAIN_PID
+CARGO_PROFILE_RELEASE_LTO="${CARGO_PROFILE_RELEASE_LTO:-off}" \
+    cargo "+${FUZZ_TOOLCHAIN}" fuzz run --features fuzzing --codegen-units 16 \
+    "$TARGET" "$WORK_CORPUS_DIR" "$CORPUS_DIR" -- \
+    "-max_total_time=${DURATION_SECONDS}" \
+    "-timeout=10" \
+    "-rss_limit_mb=4096" \
+    "-max_len=262144" \
+    "-seed=1" \
+    "-jobs=${NUM_JOBS}" \
+    "-workers=${NUM_JOBS}"

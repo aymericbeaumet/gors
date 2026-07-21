@@ -10,16 +10,24 @@ export interface GorsBuildResult {
 	readonly output: string;
 	readonly error_message: string;
 	readonly error_line: number;
+	/** One-based UTF-16 code-unit column for browser editors. */
 	readonly error_column: number;
+	/** One-based exclusive UTF-16 code-unit column for browser editors. */
 	readonly error_end_column: number;
 	readonly error_kind: string;
-	get_mappings_json(): string;
+	get_mapping_names_json(): string;
+	get_mapping_positions(): Uint32Array;
 	mapping_count(): number;
 	free(): void;
 }
 
-type WasmBindings = {
+export type GorsWasm = {
 	build_rust(input: string): GorsBuildResult;
+	export_resolver_cache(): Uint8Array;
+	import_resolver_cache(bytes: Uint8Array): number;
+};
+
+type ManualWasmBindings = GorsWasm & {
 	__wbg_set_wasm(exports: WebAssembly.Exports): void;
 };
 
@@ -27,8 +35,10 @@ type StartableExports = WebAssembly.Exports & {
 	__wbindgen_start?: () => void;
 };
 
-const wasmBindings = bindings as WasmBindings;
-let initPromise: Promise<WasmBindings> | null = null;
+const wasmBindings = bindings as ManualWasmBindings;
+let initPromise: Promise<GorsWasm> | null = null;
+
+export const usesThreadedRuntime = false;
 
 function importObject(): WebAssembly.Imports {
 	return {
@@ -57,7 +67,7 @@ async function instantiateWasm(): Promise<StartableExports> {
 	return instance.exports;
 }
 
-export function loadGorsWasm(): Promise<WasmBindings> {
+export function loadGorsWasm(): Promise<GorsWasm> {
 	initPromise ??= instantiateWasm().then((exports) => {
 		wasmBindings.__wbg_set_wasm(exports);
 		exports.__wbindgen_start?.();

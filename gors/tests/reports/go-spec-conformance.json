@@ -7,15 +7,15 @@
     "url": "https://go.dev/ref/spec",
     "languageVersion": "go1.26",
     "published": "2026-01-12",
-    "retrieved": "2026-06-01"
+    "retrieved": "2026-07-20"
   },
   "summary": {
     "groupCount": 15,
     "passingGroupCount": 15,
-    "caseCount": 192,
-    "passingCaseCount": 192,
+    "caseCount": 211,
+    "passingCaseCount": 211,
     "unsupportedCaseCount": 0,
-    "fixtureCount": 0
+    "fixtureCount": 57
   },
   "groups": [
     {
@@ -35,7 +35,7 @@
         "caseCount": 6,
         "passingCaseCount": 6,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 0
+        "fixtureCount": 5
       },
       "cases": [
         {
@@ -45,6 +45,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "source_code_representation"
+          ],
+          "freshFixtures": [
             "source_code_representation"
           ],
           "reason": ""
@@ -58,6 +61,9 @@
           "fixtures": [
             "source_code_representation"
           ],
+          "freshFixtures": [
+            "source_code_representation"
+          ],
           "reason": ""
         },
         {
@@ -67,6 +73,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "source_code_representation"
+          ],
+          "freshFixtures": [
             "source_code_representation"
           ],
           "reason": ""
@@ -81,6 +90,10 @@
             "source_code_representation",
             "spec_section_edgecases"
           ],
+          "freshFixtures": [
+            "source_code_representation",
+            "spec_section_edgecases"
+          ],
           "reason": ""
         },
         {
@@ -90,6 +103,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "_source_bytes/source_nul"
+          ],
+          "freshFixtures": [
             "_source_bytes/source_nul"
           ],
           "reason": ""
@@ -104,6 +120,10 @@
             "_source_bytes/bom_leading",
             "_source_bytes/bom_middle"
           ],
+          "freshFixtures": [
+            "_source_bytes/bom_leading",
+            "_source_bytes/bom_middle"
+          ],
           "reason": ""
         }
       ]
@@ -114,15 +134,16 @@
       "subtitle": "",
       "fixtures": [
         "lexical_elements",
-        "spec_section_edgecases"
+        "spec_section_edgecases",
+        "string_bytes_and_invalid_utf8"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 17,
-        "passingCaseCount": 17,
+        "caseCount": 18,
+        "passingCaseCount": 18,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 0
+        "fixtureCount": 3
       },
       "cases": [
         {
@@ -132,6 +153,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "lexical_elements"
+          ],
+          "freshFixtures": [
             "lexical_elements"
           ],
           "reason": ""
@@ -146,6 +170,10 @@
             "lexical_elements",
             "spec_section_edgecases"
           ],
+          "freshFixtures": [
+            "lexical_elements",
+            "spec_section_edgecases"
+          ],
           "reason": ""
         },
         {
@@ -155,6 +183,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "lexical_elements"
+          ],
+          "freshFixtures": [
             "lexical_elements"
           ],
           "reason": ""
@@ -168,6 +199,9 @@
           "fixtures": [
             "lexical_elements"
           ],
+          "freshFixtures": [
+            "lexical_elements"
+          ],
           "reason": ""
         },
         {
@@ -177,6 +211,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "lexical_elements"
+          ],
+          "freshFixtures": [
             "lexical_elements"
           ],
           "reason": ""
@@ -190,6 +227,9 @@
           "fixtures": [
             "lexical_elements"
           ],
+          "freshFixtures": [
+            "lexical_elements"
+          ],
           "reason": ""
         },
         {
@@ -199,6 +239,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "lexical_elements"
+          ],
+          "freshFixtures": [
             "lexical_elements"
           ],
           "reason": ""
@@ -212,6 +255,9 @@
           "fixtures": [
             "lexical_elements"
           ],
+          "freshFixtures": [
+            "lexical_elements"
+          ],
           "reason": ""
         },
         {
@@ -221,6 +267,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "lexical_elements"
+          ],
+          "freshFixtures": [
             "lexical_elements"
           ],
           "reason": ""
@@ -234,6 +283,9 @@
           "fixtures": [
             "lexical_elements"
           ],
+          "freshFixtures": [
+            "lexical_elements"
+          ],
           "reason": ""
         },
         {
@@ -243,6 +295,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "lexical_elements"
+          ],
+          "freshFixtures": [
             "lexical_elements"
           ],
           "reason": ""
@@ -256,6 +311,9 @@
           "fixtures": [
             "lexical_elements"
           ],
+          "freshFixtures": [
+            "lexical_elements"
+          ],
           "reason": ""
         },
         {
@@ -265,6 +323,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "lexical_elements"
+          ],
+          "freshFixtures": [
             "lexical_elements"
           ],
           "reason": ""
@@ -278,6 +339,9 @@
           "fixtures": [
             "lexical_elements"
           ],
+          "freshFixtures": [
+            "lexical_elements"
+          ],
           "reason": ""
         },
         {
@@ -287,6 +351,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "lexical_elements"
+          ],
+          "freshFixtures": [
             "lexical_elements"
           ],
           "reason": ""
@@ -300,6 +367,9 @@
           "fixtures": [
             "lexical_elements"
           ],
+          "freshFixtures": [
+            "lexical_elements"
+          ],
           "reason": ""
         },
         {
@@ -311,6 +381,23 @@
           "fixtures": [
             "lexical_elements"
           ],
+          "freshFixtures": [
+            "lexical_elements"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "lexical-string-byte-escapes",
+          "title": "Hexadecimal and octal string escapes preserve arbitrary individual bytes",
+          "subtitle": "String literals",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "string_bytes_and_invalid_utf8"
+          ],
+          "freshFixtures": [
+            "string_bytes_and_invalid_utf8"
+          ],
           "reason": ""
         }
       ]
@@ -321,15 +408,16 @@
       "subtitle": "",
       "fixtures": [
         "_negative/constants_representability",
-        "constants"
+        "constants",
+        "large_constant_precision"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 9,
-        "passingCaseCount": 9,
+        "caseCount": 10,
+        "passingCaseCount": 10,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 0
+        "fixtureCount": 3
       },
       "cases": [
         {
@@ -339,6 +427,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "constants"
+          ],
+          "freshFixtures": [
             "constants"
           ],
           "reason": ""
@@ -352,6 +443,9 @@
           "fixtures": [
             "constants"
           ],
+          "freshFixtures": [
+            "constants"
+          ],
           "reason": ""
         },
         {
@@ -361,6 +455,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "constants"
+          ],
+          "freshFixtures": [
             "constants"
           ],
           "reason": ""
@@ -374,6 +471,9 @@
           "fixtures": [
             "constants"
           ],
+          "freshFixtures": [
+            "constants"
+          ],
           "reason": ""
         },
         {
@@ -383,6 +483,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "constants"
+          ],
+          "freshFixtures": [
             "constants"
           ],
           "reason": ""
@@ -396,6 +499,23 @@
           "fixtures": [
             "constants"
           ],
+          "freshFixtures": [
+            "constants"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "constants-minimum-256-bit-precision",
+          "title": "Constant folding preserves integer intermediates through at least 256 bits",
+          "subtitle": "Constants",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "large_constant_precision"
+          ],
+          "freshFixtures": [
+            "large_constant_precision"
+          ],
           "reason": ""
         },
         {
@@ -405,6 +525,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "_negative/constants_representability"
+          ],
+          "freshFixtures": [
             "_negative/constants_representability"
           ],
           "reason": ""
@@ -418,6 +541,9 @@
           "fixtures": [
             "constants"
           ],
+          "freshFixtures": [
+            "constants"
+          ],
           "reason": ""
         },
         {
@@ -427,6 +553,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "constants"
+          ],
+          "freshFixtures": [
             "constants"
           ],
           "reason": ""
@@ -447,7 +576,7 @@
         "caseCount": 8,
         "passingCaseCount": 8,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 0
+        "fixtureCount": 2
       },
       "cases": [
         {
@@ -457,6 +586,10 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "variables_and_zero_values",
+            "spec_section_edgecases"
+          ],
+          "freshFixtures": [
             "variables_and_zero_values",
             "spec_section_edgecases"
           ],
@@ -471,6 +604,9 @@
           "fixtures": [
             "variables_and_zero_values"
           ],
+          "freshFixtures": [
+            "variables_and_zero_values"
+          ],
           "reason": ""
         },
         {
@@ -480,6 +616,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "variables_and_zero_values"
+          ],
+          "freshFixtures": [
             "variables_and_zero_values"
           ],
           "reason": ""
@@ -493,6 +632,9 @@
           "fixtures": [
             "variables_and_zero_values"
           ],
+          "freshFixtures": [
+            "variables_and_zero_values"
+          ],
           "reason": ""
         },
         {
@@ -502,6 +644,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "variables_and_zero_values"
+          ],
+          "freshFixtures": [
             "variables_and_zero_values"
           ],
           "reason": ""
@@ -515,6 +660,9 @@
           "fixtures": [
             "variables_and_zero_values"
           ],
+          "freshFixtures": [
+            "variables_and_zero_values"
+          ],
           "reason": ""
         },
         {
@@ -524,6 +672,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "variables_and_zero_values"
+          ],
+          "freshFixtures": [
             "variables_and_zero_values"
           ],
           "reason": ""
@@ -537,6 +688,9 @@
           "fixtures": [
             "variables_and_zero_values"
           ],
+          "freshFixtures": [
+            "variables_and_zero_values"
+          ],
           "reason": ""
         }
       ]
@@ -547,7 +701,10 @@
       "subtitle": "",
       "fixtures": [
         "_negative/types_interface_method_sets",
+        "map_lookup_and_nil",
         "named_numeric_types",
+        "slice_capacity_and_append",
+        "string_bytes_and_invalid_utf8",
         "types",
         "types_aliases",
         "types_slice_alias_mutation"
@@ -555,10 +712,10 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 27,
-        "passingCaseCount": 27,
+        "caseCount": 30,
+        "passingCaseCount": 30,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 0
+        "fixtureCount": 8
       },
       "cases": [
         {
@@ -568,6 +725,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
             "types"
           ],
           "reason": ""
@@ -581,6 +741,9 @@
           "fixtures": [
             "types"
           ],
+          "freshFixtures": [
+            "types"
+          ],
           "reason": ""
         },
         {
@@ -590,6 +753,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
             "types"
           ],
           "reason": ""
@@ -603,6 +769,9 @@
           "fixtures": [
             "named_numeric_types"
           ],
+          "freshFixtures": [
+            "named_numeric_types"
+          ],
           "reason": ""
         },
         {
@@ -612,6 +781,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
             "types"
           ],
           "reason": ""
@@ -625,6 +797,23 @@
           "fixtures": [
             "types"
           ],
+          "freshFixtures": [
+            "types"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "types-string-byte-index-and-conversions",
+          "title": "String indexing and byte-slice conversions operate on the exact underlying bytes",
+          "subtitle": "String types",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "string_bytes_and_invalid_utf8"
+          ],
+          "freshFixtures": [
+            "string_bytes_and_invalid_utf8"
+          ],
           "reason": ""
         },
         {
@@ -634,6 +823,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
             "types"
           ],
           "reason": ""
@@ -647,6 +839,9 @@
           "fixtures": [
             "types"
           ],
+          "freshFixtures": [
+            "types"
+          ],
           "reason": ""
         },
         {
@@ -658,6 +853,23 @@
           "fixtures": [
             "types_slice_alias_mutation"
           ],
+          "freshFixtures": [
+            "types_slice_alias_mutation"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "types-slice-capacity-and-append-aliasing",
+          "title": "Slice capacity governs reslicing, append reuse, and backing-array detachment",
+          "subtitle": "Slice types",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "slice_capacity_and_append"
+          ],
+          "freshFixtures": [
+            "slice_capacity_and_append"
+          ],
           "reason": ""
         },
         {
@@ -667,6 +879,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
             "types"
           ],
           "reason": ""
@@ -680,6 +895,9 @@
           "fixtures": [
             "types"
           ],
+          "freshFixtures": [
+            "types"
+          ],
           "reason": ""
         },
         {
@@ -689,6 +907,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
             "types"
           ],
           "reason": ""
@@ -702,6 +923,9 @@
           "fixtures": [
             "types"
           ],
+          "freshFixtures": [
+            "types"
+          ],
           "reason": ""
         },
         {
@@ -711,6 +935,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
             "types"
           ],
           "reason": ""
@@ -724,6 +951,9 @@
           "fixtures": [
             "types"
           ],
+          "freshFixtures": [
+            "types"
+          ],
           "reason": ""
         },
         {
@@ -733,6 +963,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
             "types"
           ],
           "reason": ""
@@ -746,6 +979,9 @@
           "fixtures": [
             "types"
           ],
+          "freshFixtures": [
+            "types"
+          ],
           "reason": ""
         },
         {
@@ -755,6 +991,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
             "types"
           ],
           "reason": ""
@@ -768,6 +1007,9 @@
           "fixtures": [
             "types"
           ],
+          "freshFixtures": [
+            "types"
+          ],
           "reason": ""
         },
         {
@@ -777,6 +1019,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
             "types"
           ],
           "reason": ""
@@ -790,6 +1035,9 @@
           "fixtures": [
             "types"
           ],
+          "freshFixtures": [
+            "types"
+          ],
           "reason": ""
         },
         {
@@ -799,6 +1047,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "_negative/types_interface_method_sets"
+          ],
+          "freshFixtures": [
             "_negative/types_interface_method_sets"
           ],
           "reason": ""
@@ -812,6 +1063,23 @@
           "fixtures": [
             "types"
           ],
+          "freshFixtures": [
+            "types"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "types-map-zero-value-comma-ok-and-nil",
+          "title": "Map lookup distinguishes present zero values from missing keys and nil maps remain readable",
+          "subtitle": "Map types",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "map_lookup_and_nil"
+          ],
+          "freshFixtures": [
+            "map_lookup_and_nil"
+          ],
           "reason": ""
         },
         {
@@ -821,6 +1089,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
             "types"
           ],
           "reason": ""
@@ -834,6 +1105,9 @@
           "fixtures": [
             "types"
           ],
+          "freshFixtures": [
+            "types"
+          ],
           "reason": ""
         },
         {
@@ -843,6 +1117,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "types_aliases"
+          ],
+          "freshFixtures": [
             "types_aliases"
           ],
           "reason": ""
@@ -856,6 +1133,9 @@
           "fixtures": [
             "types"
           ],
+          "freshFixtures": [
+            "types"
+          ],
           "reason": ""
         }
       ]
@@ -866,6 +1146,7 @@
       "subtitle": "",
       "fixtures": [
         "_negative/properties_non_comparable",
+        "map_reference_and_nil_write",
         "named_numeric_types",
         "properties_of_types_and_values",
         "spec_section_edgecases"
@@ -873,10 +1154,10 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 7,
-        "passingCaseCount": 7,
+        "caseCount": 8,
+        "passingCaseCount": 8,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 0
+        "fixtureCount": 5
       },
       "cases": [
         {
@@ -889,6 +1170,24 @@
             "properties_of_types_and_values",
             "spec_section_edgecases"
           ],
+          "freshFixtures": [
+            "properties_of_types_and_values",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "properties-map-reference-sharing",
+          "title": "Assigned map values share the same underlying map data",
+          "subtitle": "Representation of values",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "map_reference_and_nil_write"
+          ],
+          "freshFixtures": [
+            "map_reference_and_nil_write"
+          ],
           "reason": ""
         },
         {
@@ -898,6 +1197,10 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "named_numeric_types",
+            "spec_section_edgecases"
+          ],
+          "freshFixtures": [
             "named_numeric_types",
             "spec_section_edgecases"
           ],
@@ -913,6 +1216,10 @@
             "named_numeric_types",
             "spec_section_edgecases"
           ],
+          "freshFixtures": [
+            "named_numeric_types",
+            "spec_section_edgecases"
+          ],
           "reason": ""
         },
         {
@@ -922,6 +1229,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "properties_of_types_and_values"
+          ],
+          "freshFixtures": [
             "properties_of_types_and_values"
           ],
           "reason": ""
@@ -935,6 +1245,9 @@
           "fixtures": [
             "properties_of_types_and_values"
           ],
+          "freshFixtures": [
+            "properties_of_types_and_values"
+          ],
           "reason": ""
         },
         {
@@ -946,6 +1259,9 @@
           "fixtures": [
             "_negative/properties_non_comparable"
           ],
+          "freshFixtures": [
+            "_negative/properties_non_comparable"
+          ],
           "reason": ""
         },
         {
@@ -955,6 +1271,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "properties_of_types_and_values"
+          ],
+          "freshFixtures": [
             "properties_of_types_and_values"
           ],
           "reason": ""
@@ -982,7 +1301,7 @@
         "caseCount": 15,
         "passingCaseCount": 15,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 0
+        "fixtureCount": 9
       },
       "cases": [
         {
@@ -992,6 +1311,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "declarations_and_scope_blocks"
+          ],
+          "freshFixtures": [
             "declarations_and_scope_blocks"
           ],
           "reason": ""
@@ -1005,6 +1327,9 @@
           "fixtures": [
             "declarations_and_scope_labels"
           ],
+          "freshFixtures": [
+            "declarations_and_scope_labels"
+          ],
           "reason": ""
         },
         {
@@ -1014,6 +1339,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "declarations_and_scope_predeclared"
+          ],
+          "freshFixtures": [
             "declarations_and_scope_predeclared"
           ],
           "reason": ""
@@ -1027,6 +1355,9 @@
           "fixtures": [
             "declarations_and_scope_exported"
           ],
+          "freshFixtures": [
+            "declarations_and_scope_exported"
+          ],
           "reason": ""
         },
         {
@@ -1036,6 +1367,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "declarations_and_scope_uniqueness"
+          ],
+          "freshFixtures": [
             "declarations_and_scope_uniqueness"
           ],
           "reason": ""
@@ -1049,6 +1383,9 @@
           "fixtures": [
             "declarations_and_scope"
           ],
+          "freshFixtures": [
+            "declarations_and_scope"
+          ],
           "reason": ""
         },
         {
@@ -1058,6 +1395,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "declarations_and_scope"
+          ],
+          "freshFixtures": [
             "declarations_and_scope"
           ],
           "reason": ""
@@ -1071,6 +1411,9 @@
           "fixtures": [
             "declarations_and_scope"
           ],
+          "freshFixtures": [
+            "declarations_and_scope"
+          ],
           "reason": ""
         },
         {
@@ -1080,6 +1423,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "declarations_and_scope"
+          ],
+          "freshFixtures": [
             "declarations_and_scope"
           ],
           "reason": ""
@@ -1095,6 +1441,11 @@
             "generics_type_sets",
             "spec_section_edgecases"
           ],
+          "freshFixtures": [
+            "generics",
+            "generics_type_sets",
+            "spec_section_edgecases"
+          ],
           "reason": ""
         },
         {
@@ -1104,6 +1455,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "declarations_and_scope"
+          ],
+          "freshFixtures": [
             "declarations_and_scope"
           ],
           "reason": ""
@@ -1117,6 +1471,9 @@
           "fixtures": [
             "declarations_and_scope"
           ],
+          "freshFixtures": [
+            "declarations_and_scope"
+          ],
           "reason": ""
         },
         {
@@ -1126,6 +1483,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "declarations_and_scope"
+          ],
+          "freshFixtures": [
             "declarations_and_scope"
           ],
           "reason": ""
@@ -1139,6 +1499,9 @@
           "fixtures": [
             "declarations_and_scope"
           ],
+          "freshFixtures": [
+            "declarations_and_scope"
+          ],
           "reason": ""
         },
         {
@@ -1148,6 +1511,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "declarations_and_scope"
+          ],
+          "freshFixtures": [
             "declarations_and_scope"
           ],
           "reason": ""
@@ -1166,17 +1532,19 @@
         "expressions_qualified_identifiers",
         "expressions_variadic_spread",
         "generics",
+        "map_reference_and_nil_write",
         "method_expressions",
+        "method_value_receiver_capture",
         "spec_section_edgecases",
         "types"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 27,
-        "passingCaseCount": 27,
+        "caseCount": 29,
+        "passingCaseCount": 29,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 0
+        "fixtureCount": 12
       },
       "cases": [
         {
@@ -1186,6 +1554,10 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "expressions",
+            "spec_section_edgecases"
+          ],
+          "freshFixtures": [
             "expressions",
             "spec_section_edgecases"
           ],
@@ -1201,6 +1573,10 @@
             "expressions",
             "spec_section_edgecases"
           ],
+          "freshFixtures": [
+            "expressions",
+            "spec_section_edgecases"
+          ],
           "reason": ""
         },
         {
@@ -1212,6 +1588,23 @@
           "fixtures": [
             "expressions_method_values"
           ],
+          "freshFixtures": [
+            "expressions_method_values"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "expr-interface-method-value-receiver-capture",
+          "title": "Method values save value receivers and preserve pointer or interface receiver identity",
+          "subtitle": "Method values",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "method_value_receiver_capture"
+          ],
+          "freshFixtures": [
+            "method_value_receiver_capture"
+          ],
           "reason": ""
         },
         {
@@ -1221,6 +1614,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "expressions_qualified_identifiers"
+          ],
+          "freshFixtures": [
             "expressions_qualified_identifiers"
           ],
           "reason": ""
@@ -1234,6 +1630,9 @@
           "fixtures": [
             "expressions_variadic_spread"
           ],
+          "freshFixtures": [
+            "expressions_variadic_spread"
+          ],
           "reason": ""
         },
         {
@@ -1243,6 +1642,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "expressions"
+          ],
+          "freshFixtures": [
             "expressions"
           ],
           "reason": ""
@@ -1256,6 +1658,9 @@
           "fixtures": [
             "expressions"
           ],
+          "freshFixtures": [
+            "expressions"
+          ],
           "reason": ""
         },
         {
@@ -1265,6 +1670,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "method_expressions"
+          ],
+          "freshFixtures": [
             "method_expressions"
           ],
           "reason": ""
@@ -1278,6 +1686,23 @@
           "fixtures": [
             "expressions"
           ],
+          "freshFixtures": [
+            "expressions"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "expr-nil-map-assignment-panics",
+          "title": "Assigning an element through a nil map causes a run-time panic",
+          "subtitle": "Index expressions",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "map_reference_and_nil_write"
+          ],
+          "freshFixtures": [
+            "map_reference_and_nil_write"
+          ],
           "reason": ""
         },
         {
@@ -1287,6 +1712,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "expressions"
+          ],
+          "freshFixtures": [
             "expressions"
           ],
           "reason": ""
@@ -1300,6 +1728,9 @@
           "fixtures": [
             "expressions"
           ],
+          "freshFixtures": [
+            "expressions"
+          ],
           "reason": ""
         },
         {
@@ -1309,6 +1740,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "composite_literals"
+          ],
+          "freshFixtures": [
             "composite_literals"
           ],
           "reason": ""
@@ -1322,6 +1756,9 @@
           "fixtures": [
             "composite_literals"
           ],
+          "freshFixtures": [
+            "composite_literals"
+          ],
           "reason": ""
         },
         {
@@ -1331,6 +1768,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "composite_literals"
+          ],
+          "freshFixtures": [
             "composite_literals"
           ],
           "reason": ""
@@ -1344,6 +1784,9 @@
           "fixtures": [
             "expressions"
           ],
+          "freshFixtures": [
+            "expressions"
+          ],
           "reason": ""
         },
         {
@@ -1353,6 +1796,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "expressions"
+          ],
+          "freshFixtures": [
             "expressions"
           ],
           "reason": ""
@@ -1366,6 +1812,9 @@
           "fixtures": [
             "expressions"
           ],
+          "freshFixtures": [
+            "expressions"
+          ],
           "reason": ""
         },
         {
@@ -1377,6 +1826,9 @@
           "fixtures": [
             "expressions"
           ],
+          "freshFixtures": [
+            "expressions"
+          ],
           "reason": ""
         },
         {
@@ -1386,6 +1838,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "expressions"
+          ],
+          "freshFixtures": [
             "expressions"
           ],
           "reason": ""
@@ -1400,6 +1855,10 @@
             "expressions",
             "spec_section_edgecases"
           ],
+          "freshFixtures": [
+            "expressions",
+            "spec_section_edgecases"
+          ],
           "reason": ""
         },
         {
@@ -1409,6 +1868,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "expressions"
+          ],
+          "freshFixtures": [
             "expressions"
           ],
           "reason": ""
@@ -1422,6 +1884,9 @@
           "fixtures": [
             "types"
           ],
+          "freshFixtures": [
+            "types"
+          ],
           "reason": ""
         },
         {
@@ -1431,6 +1896,10 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "expressions",
+            "spec_section_edgecases"
+          ],
+          "freshFixtures": [
             "expressions",
             "spec_section_edgecases"
           ],
@@ -1446,6 +1915,10 @@
             "built_in_functions",
             "spec_section_edgecases"
           ],
+          "freshFixtures": [
+            "built_in_functions",
+            "spec_section_edgecases"
+          ],
           "reason": ""
         },
         {
@@ -1455,6 +1928,10 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "generics",
+            "spec_section_edgecases"
+          ],
+          "freshFixtures": [
             "generics",
             "spec_section_edgecases"
           ],
@@ -1469,6 +1946,9 @@
           "fixtures": [
             "expressions"
           ],
+          "freshFixtures": [
+            "expressions"
+          ],
           "reason": ""
         },
         {
@@ -1480,6 +1960,9 @@
           "fixtures": [
             "expressions"
           ],
+          "freshFixtures": [
+            "expressions"
+          ],
           "reason": ""
         }
       ]
@@ -1489,22 +1972,28 @@
       "title": "Statements",
       "subtitle": "",
       "fixtures": [
+        "assignment_evaluation_order",
+        "assignment_two_phase",
+        "control_flow_evaluation",
         "declarations_and_scope_labels",
+        "defer_lifo_and_arguments",
+        "for_iteration_variables",
         "range_statements",
         "return_statements",
         "select_statements",
         "spec_section_edgecases",
         "statements",
         "statements_forward_goto",
+        "string_bytes_and_invalid_utf8",
         "switch_statements"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 37,
-        "passingCaseCount": 37,
+        "caseCount": 46,
+        "passingCaseCount": 46,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 0
+        "fixtureCount": 14
       },
       "cases": [
         {
@@ -1514,6 +2003,11 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "statements",
+            "return_statements",
+            "spec_section_edgecases"
+          ],
+          "freshFixtures": [
             "statements",
             "return_statements",
             "spec_section_edgecases"
@@ -1529,6 +2023,9 @@
           "fixtures": [
             "spec_section_edgecases"
           ],
+          "freshFixtures": [
+            "spec_section_edgecases"
+          ],
           "reason": ""
         },
         {
@@ -1538,6 +2035,10 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "statements",
+            "spec_section_edgecases"
+          ],
+          "freshFixtures": [
             "statements",
             "spec_section_edgecases"
           ],
@@ -1553,6 +2054,10 @@
             "declarations_and_scope_labels",
             "spec_section_edgecases"
           ],
+          "freshFixtures": [
+            "declarations_and_scope_labels",
+            "spec_section_edgecases"
+          ],
           "reason": ""
         },
         {
@@ -1562,6 +2067,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "statements"
+          ],
+          "freshFixtures": [
             "statements"
           ],
           "reason": ""
@@ -1575,6 +2083,9 @@
           "fixtures": [
             "statements"
           ],
+          "freshFixtures": [
+            "statements"
+          ],
           "reason": ""
         },
         {
@@ -1584,6 +2095,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "statements"
+          ],
+          "freshFixtures": [
             "statements"
           ],
           "reason": ""
@@ -1597,6 +2111,37 @@
           "fixtures": [
             "statements"
           ],
+          "freshFixtures": [
+            "statements"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "stmt-assignment-two-phase-index-places",
+          "title": "Indexed left-hand operands are evaluated before assignment writes begin",
+          "subtitle": "Assignment statements",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "assignment_two_phase"
+          ],
+          "freshFixtures": [
+            "assignment_two_phase"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "stmt-assignment-evaluation-order",
+          "title": "Left-hand index operands and right-hand expressions are evaluated before assignment writes",
+          "subtitle": "Assignment statements",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "assignment_evaluation_order"
+          ],
+          "freshFixtures": [
+            "assignment_evaluation_order"
+          ],
           "reason": ""
         },
         {
@@ -1606,6 +2151,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "statements"
+          ],
+          "freshFixtures": [
             "statements"
           ],
           "reason": ""
@@ -1619,6 +2167,9 @@
           "fixtures": [
             "statements"
           ],
+          "freshFixtures": [
+            "statements"
+          ],
           "reason": ""
         },
         {
@@ -1628,6 +2179,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "switch_statements"
+          ],
+          "freshFixtures": [
             "switch_statements"
           ],
           "reason": ""
@@ -1641,6 +2195,23 @@
           "fixtures": [
             "switch_statements"
           ],
+          "freshFixtures": [
+            "switch_statements"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "stmt-switch-source-order-and-default",
+          "title": "Switch tags evaluate once and case expressions are tested in source order before default",
+          "subtitle": "Switch statements",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "control_flow_evaluation"
+          ],
+          "freshFixtures": [
+            "control_flow_evaluation"
+          ],
           "reason": ""
         },
         {
@@ -1650,6 +2221,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "statements"
+          ],
+          "freshFixtures": [
             "statements"
           ],
           "reason": ""
@@ -1663,6 +2237,9 @@
           "fixtures": [
             "statements"
           ],
+          "freshFixtures": [
+            "statements"
+          ],
           "reason": ""
         },
         {
@@ -1672,6 +2249,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "statements"
+          ],
+          "freshFixtures": [
             "statements"
           ],
           "reason": ""
@@ -1685,6 +2265,9 @@
           "fixtures": [
             "statements"
           ],
+          "freshFixtures": [
+            "statements"
+          ],
           "reason": ""
         },
         {
@@ -1694,6 +2277,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "statements"
+          ],
+          "freshFixtures": [
             "statements"
           ],
           "reason": ""
@@ -1707,6 +2293,9 @@
           "fixtures": [
             "select_statements"
           ],
+          "freshFixtures": [
+            "select_statements"
+          ],
           "reason": ""
         },
         {
@@ -1716,6 +2305,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "select_statements"
+          ],
+          "freshFixtures": [
             "select_statements"
           ],
           "reason": ""
@@ -1729,6 +2321,9 @@
           "fixtures": [
             "select_statements"
           ],
+          "freshFixtures": [
+            "select_statements"
+          ],
           "reason": ""
         },
         {
@@ -1740,6 +2335,37 @@
           "fixtures": [
             "statements"
           ],
+          "freshFixtures": [
+            "statements"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "stmt-for-per-iteration-variables",
+          "title": "Each for-clause iteration has distinct variables captured by closures",
+          "subtitle": "For statements",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "for_iteration_variables"
+          ],
+          "freshFixtures": [
+            "for_iteration_variables"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "stmt-for-continue-runs-post",
+          "title": "continue in a for-clause loop executes the post statement before the next condition",
+          "subtitle": "Continue statements",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "control_flow_evaluation"
+          ],
+          "freshFixtures": [
+            "control_flow_evaluation"
+          ],
           "reason": ""
         },
         {
@@ -1749,6 +2375,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "statements"
+          ],
+          "freshFixtures": [
             "statements"
           ],
           "reason": ""
@@ -1762,6 +2391,9 @@
           "fixtures": [
             "range_statements"
           ],
+          "freshFixtures": [
+            "range_statements"
+          ],
           "reason": ""
         },
         {
@@ -1771,6 +2403,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "range_statements"
+          ],
+          "freshFixtures": [
             "range_statements"
           ],
           "reason": ""
@@ -1784,6 +2419,9 @@
           "fixtures": [
             "range_statements"
           ],
+          "freshFixtures": [
+            "range_statements"
+          ],
           "reason": ""
         },
         {
@@ -1793,6 +2431,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "range_statements"
+          ],
+          "freshFixtures": [
             "range_statements"
           ],
           "reason": ""
@@ -1806,6 +2447,51 @@
           "fixtures": [
             "range_statements"
           ],
+          "freshFixtures": [
+            "range_statements"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "stmt-range-per-iteration-variables",
+          "title": "Each range iteration has distinct variables captured by closures",
+          "subtitle": "For statements with range clause",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "for_iteration_variables"
+          ],
+          "freshFixtures": [
+            "for_iteration_variables"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "stmt-range-expression-evaluated-once",
+          "title": "A non-constant range expression is evaluated exactly once before iteration",
+          "subtitle": "For statements with range clause",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "control_flow_evaluation"
+          ],
+          "freshFixtures": [
+            "control_flow_evaluation"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "stmt-range-invalid-utf8-string",
+          "title": "Ranging over invalid UTF-8 bytes yields replacement runes and advances one byte",
+          "subtitle": "For statements with range clause",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "string_bytes_and_invalid_utf8"
+          ],
+          "freshFixtures": [
+            "string_bytes_and_invalid_utf8"
+          ],
           "reason": ""
         },
         {
@@ -1815,6 +2501,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "statements"
+          ],
+          "freshFixtures": [
             "statements"
           ],
           "reason": ""
@@ -1828,6 +2517,23 @@
           "fixtures": [
             "statements"
           ],
+          "freshFixtures": [
+            "statements"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "stmt-defer-saved-arguments-and-named-result",
+          "title": "Deferred calls save arguments immediately, run in reverse order, and may update named results",
+          "subtitle": "Defer statements",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "defer_lifo_and_arguments"
+          ],
+          "freshFixtures": [
+            "defer_lifo_and_arguments"
+          ],
           "reason": ""
         },
         {
@@ -1837,6 +2543,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "statements"
+          ],
+          "freshFixtures": [
             "statements"
           ],
           "reason": ""
@@ -1850,6 +2559,9 @@
           "fixtures": [
             "return_statements"
           ],
+          "freshFixtures": [
+            "return_statements"
+          ],
           "reason": ""
         },
         {
@@ -1859,6 +2571,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "return_statements"
+          ],
+          "freshFixtures": [
             "return_statements"
           ],
           "reason": ""
@@ -1872,6 +2587,9 @@
           "fixtures": [
             "return_statements"
           ],
+          "freshFixtures": [
+            "return_statements"
+          ],
           "reason": ""
         },
         {
@@ -1881,6 +2599,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "statements"
+          ],
+          "freshFixtures": [
             "statements"
           ],
           "reason": ""
@@ -1894,6 +2615,9 @@
           "fixtures": [
             "statements"
           ],
+          "freshFixtures": [
+            "statements"
+          ],
           "reason": ""
         },
         {
@@ -1905,6 +2629,9 @@
           "fixtures": [
             "statements"
           ],
+          "freshFixtures": [
+            "statements"
+          ],
           "reason": ""
         },
         {
@@ -1914,6 +2641,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "statements_forward_goto"
+          ],
+          "freshFixtures": [
             "statements_forward_goto"
           ],
           "reason": ""
@@ -1928,15 +2658,16 @@
         "append_copy_clear_builtins",
         "built_in_functions",
         "built_in_panic_recover",
+        "map_lookup_and_nil",
         "spec_section_edgecases"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 15,
-        "passingCaseCount": 15,
+        "caseCount": 17,
+        "passingCaseCount": 17,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 0
+        "fixtureCount": 5
       },
       "cases": [
         {
@@ -1946,6 +2677,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "built_in_functions"
+          ],
+          "freshFixtures": [
             "built_in_functions"
           ],
           "reason": ""
@@ -1959,6 +2693,9 @@
           "fixtures": [
             "append_copy_clear_builtins"
           ],
+          "freshFixtures": [
+            "append_copy_clear_builtins"
+          ],
           "reason": ""
         },
         {
@@ -1968,6 +2705,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "append_copy_clear_builtins"
+          ],
+          "freshFixtures": [
             "append_copy_clear_builtins"
           ],
           "reason": ""
@@ -1981,6 +2721,9 @@
           "fixtures": [
             "built_in_functions"
           ],
+          "freshFixtures": [
+            "built_in_functions"
+          ],
           "reason": ""
         },
         {
@@ -1992,6 +2735,9 @@
           "fixtures": [
             "built_in_functions"
           ],
+          "freshFixtures": [
+            "built_in_functions"
+          ],
           "reason": ""
         },
         {
@@ -2001,6 +2747,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "built_in_functions"
+          ],
+          "freshFixtures": [
             "built_in_functions"
           ],
           "reason": ""
@@ -2015,6 +2764,10 @@
             "built_in_functions",
             "spec_section_edgecases"
           ],
+          "freshFixtures": [
+            "built_in_functions",
+            "spec_section_edgecases"
+          ],
           "reason": ""
         },
         {
@@ -2026,6 +2779,37 @@
           "fixtures": [
             "built_in_functions"
           ],
+          "freshFixtures": [
+            "built_in_functions"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "builtin-delete-nil-map-noop",
+          "title": "Deleting a missing key from a nil map is a no-op",
+          "subtitle": "Deletion of map elements",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "map_lookup_and_nil"
+          ],
+          "freshFixtures": [
+            "map_lookup_and_nil"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "builtin-clear-nil-map-noop",
+          "title": "Clearing a nil map is a no-op",
+          "subtitle": "Clear",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "map_lookup_and_nil"
+          ],
+          "freshFixtures": [
+            "map_lookup_and_nil"
+          ],
           "reason": ""
         },
         {
@@ -2035,6 +2819,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "append_copy_clear_builtins"
+          ],
+          "freshFixtures": [
             "append_copy_clear_builtins"
           ],
           "reason": ""
@@ -2048,6 +2835,9 @@
           "fixtures": [
             "built_in_functions"
           ],
+          "freshFixtures": [
+            "built_in_functions"
+          ],
           "reason": ""
         },
         {
@@ -2057,6 +2847,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "built_in_functions"
+          ],
+          "freshFixtures": [
             "built_in_functions"
           ],
           "reason": ""
@@ -2070,6 +2863,9 @@
           "fixtures": [
             "built_in_panic_recover"
           ],
+          "freshFixtures": [
+            "built_in_panic_recover"
+          ],
           "reason": ""
         },
         {
@@ -2079,6 +2875,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "built_in_functions"
+          ],
+          "freshFixtures": [
             "built_in_functions"
           ],
           "reason": ""
@@ -2093,6 +2892,10 @@
             "built_in_functions",
             "spec_section_edgecases"
           ],
+          "freshFixtures": [
+            "built_in_functions",
+            "spec_section_edgecases"
+          ],
           "reason": ""
         },
         {
@@ -2102,6 +2905,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "built_in_functions"
+          ],
+          "freshFixtures": [
             "built_in_functions"
           ],
           "reason": ""
@@ -2115,6 +2921,7 @@
       "fixtures": [
         "packages_and_program_initialization",
         "packages_import_aliases",
+        "program_execution",
         "spec_section_edgecases"
       ],
       "summary": {
@@ -2123,7 +2930,7 @@
         "caseCount": 10,
         "passingCaseCount": 10,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 0
+        "fixtureCount": 4
       },
       "cases": [
         {
@@ -2133,7 +2940,12 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
-            "packages_and_program_initialization"
+            "packages_and_program_initialization",
+            "program_execution"
+          ],
+          "freshFixtures": [
+            "packages_and_program_initialization",
+            "program_execution"
           ],
           "reason": ""
         },
@@ -2144,6 +2956,10 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "packages_and_program_initialization",
+            "spec_section_edgecases"
+          ],
+          "freshFixtures": [
             "packages_and_program_initialization",
             "spec_section_edgecases"
           ],
@@ -2159,6 +2975,10 @@
             "packages_and_program_initialization",
             "spec_section_edgecases"
           ],
+          "freshFixtures": [
+            "packages_and_program_initialization",
+            "spec_section_edgecases"
+          ],
           "reason": ""
         },
         {
@@ -2168,6 +2988,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "packages_and_program_initialization"
+          ],
+          "freshFixtures": [
             "packages_and_program_initialization"
           ],
           "reason": ""
@@ -2181,6 +3004,9 @@
           "fixtures": [
             "packages_and_program_initialization"
           ],
+          "freshFixtures": [
+            "packages_and_program_initialization"
+          ],
           "reason": ""
         },
         {
@@ -2190,6 +3016,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "packages_and_program_initialization"
+          ],
+          "freshFixtures": [
             "packages_and_program_initialization"
           ],
           "reason": ""
@@ -2203,6 +3032,9 @@
           "fixtures": [
             "packages_import_aliases"
           ],
+          "freshFixtures": [
+            "packages_import_aliases"
+          ],
           "reason": ""
         },
         {
@@ -2212,6 +3044,10 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "packages_and_program_initialization",
+            "spec_section_edgecases"
+          ],
+          "freshFixtures": [
             "packages_and_program_initialization",
             "spec_section_edgecases"
           ],
@@ -2227,6 +3063,10 @@
             "packages_and_program_initialization",
             "spec_section_edgecases"
           ],
+          "freshFixtures": [
+            "packages_and_program_initialization",
+            "spec_section_edgecases"
+          ],
           "reason": ""
         },
         {
@@ -2236,6 +3076,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "packages_and_program_initialization"
+          ],
+          "freshFixtures": [
             "packages_and_program_initialization"
           ],
           "reason": ""
@@ -2258,7 +3101,7 @@
         "caseCount": 10,
         "passingCaseCount": 10,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 0
+        "fixtureCount": 4
       },
       "cases": [
         {
@@ -2268,6 +3111,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "generics"
+          ],
+          "freshFixtures": [
             "generics"
           ],
           "reason": ""
@@ -2281,6 +3127,9 @@
           "fixtures": [
             "generics"
           ],
+          "freshFixtures": [
+            "generics"
+          ],
           "reason": ""
         },
         {
@@ -2290,6 +3139,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "generics"
+          ],
+          "freshFixtures": [
             "generics"
           ],
           "reason": ""
@@ -2303,6 +3155,9 @@
           "fixtures": [
             "generics"
           ],
+          "freshFixtures": [
+            "generics"
+          ],
           "reason": ""
         },
         {
@@ -2312,6 +3167,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "_negative/generics_constraints"
+          ],
+          "freshFixtures": [
             "_negative/generics_constraints"
           ],
           "reason": ""
@@ -2325,6 +3183,9 @@
           "fixtures": [
             "generics_type_sets"
           ],
+          "freshFixtures": [
+            "generics_type_sets"
+          ],
           "reason": ""
         },
         {
@@ -2334,6 +3195,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "generics_type_sets"
+          ],
+          "freshFixtures": [
             "generics_type_sets"
           ],
           "reason": ""
@@ -2347,6 +3211,9 @@
           "fixtures": [
             "generics_type_sets"
           ],
+          "freshFixtures": [
+            "generics_type_sets"
+          ],
           "reason": ""
         },
         {
@@ -2358,6 +3225,9 @@
           "fixtures": [
             "generics"
           ],
+          "freshFixtures": [
+            "generics"
+          ],
           "reason": ""
         },
         {
@@ -2367,6 +3237,11 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "generics",
+            "generics_type_sets",
+            "spec_section_edgecases"
+          ],
+          "freshFixtures": [
             "generics",
             "generics_type_sets",
             "spec_section_edgecases"
@@ -2388,7 +3263,7 @@
         "caseCount": 1,
         "passingCaseCount": 1,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 0
+        "fixtureCount": 1
       },
       "cases": [
         {
@@ -2398,6 +3273,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "errors"
+          ],
+          "freshFixtures": [
             "errors"
           ],
           "reason": ""
@@ -2417,7 +3295,7 @@
         "caseCount": 1,
         "passingCaseCount": 1,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 0
+        "fixtureCount": 1
       },
       "cases": [
         {
@@ -2427,6 +3305,9 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "run_time_panics"
+          ],
+          "freshFixtures": [
             "run_time_panics"
           ],
           "reason": ""
@@ -2447,7 +3328,7 @@
         "caseCount": 2,
         "passingCaseCount": 2,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 0
+        "fixtureCount": 2
       },
       "cases": [
         {
@@ -2459,6 +3340,9 @@
           "fixtures": [
             "system_considerations"
           ],
+          "freshFixtures": [
+            "system_considerations"
+          ],
           "reason": ""
         },
         {
@@ -2468,6 +3352,10 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
+            "system_considerations",
+            "spec_section_edgecases"
+          ],
+          "freshFixtures": [
             "system_considerations",
             "spec_section_edgecases"
           ],

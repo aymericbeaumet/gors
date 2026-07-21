@@ -13,7 +13,9 @@ use super::receiver_type_facts::{
     top_level_item_return_types, top_level_item_tuple_return_types, top_level_item_types,
 };
 use super::ref_collection::{RefCollectionContext, collect_refs_from_item};
-use super::syn_inspect::{item_name, named_self_type, self_type_reachability_names};
+use super::syn_inspect::{
+    item_name, macro_declared_item_names, named_self_type, self_type_reachability_names,
+};
 use super::{CompiledModule, generated_attrs, interface_hooks};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -542,6 +544,18 @@ fn semantic_item_ids_for_item(module: &str, item: &syn::Item) -> Vec<SemanticIte
     }
 
     match item {
+        syn::Item::Macro(item_macro) => {
+            for name in macro_declared_item_names(&item_macro.mac.tokens) {
+                if ids.iter().any(|id| id.name == name) {
+                    continue;
+                }
+                ids.push(SemanticItemId {
+                    module: module.to_string(),
+                    kind: SemanticItemKind::Macro,
+                    name,
+                });
+            }
+        }
         syn::Item::Impl(item_impl) => {
             let self_names = self_type_reachability_names(&item_impl.self_ty);
             for impl_item in &item_impl.items {

@@ -1,6 +1,7 @@
 use super::syn_inspect::{
-    item_macro_name, item_name, macro_token_item_names, named_self_type, path_is,
-    path_mentions_name, path_starts_with, self_type_reachability_names, type_mentions_name,
+    item_macro_name, item_name, macro_declared_item_names, macro_token_item_names, named_self_type,
+    path_is, path_mentions_name, path_starts_with, self_type_reachability_names,
+    type_mentions_name,
 };
 
 pub(super) fn reachable_item_for_names(
@@ -53,8 +54,10 @@ pub(super) fn reachable_item_for_names(
 
     if let syn::Item::Macro(item_macro) = item {
         let name = item_macro_name(item_macro);
+        let declared_names = macro_declared_item_names(&item_macro.mac.tokens);
         let token_names = macro_token_item_names(&item_macro.mac.tokens, item_names);
         return (name.as_ref().is_some_and(|name| names.contains(name))
+            || declared_names.iter().any(|name| names.contains(name))
             || token_names.iter().any(|name| names.contains(name)))
         .then(|| item.clone());
     }

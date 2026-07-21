@@ -1,4 +1,4 @@
-## Known-failing fixture (skipped via `_` prefix)
+## Known-failing fixture (excluded via `fixtures.json`)
 
 `ch <- "first"` sends an &str literal into a `Chan<String>`. The generated
 Rust calls `ch.send("first")` instead of `ch.send("first".to_string())`,

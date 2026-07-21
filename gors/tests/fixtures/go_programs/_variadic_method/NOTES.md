@@ -1,4 +1,4 @@
-## Known-failing fixture (skipped via `_` prefix)
+## Known-failing fixture (excluded via `fixtures.json`)
 
 `ptr := &acc; ptr.Add(1, 2)` lowers to a method call on
 `GorsPtrGuard<'_, Accumulator>`, which doesn't expose Go-defined methods

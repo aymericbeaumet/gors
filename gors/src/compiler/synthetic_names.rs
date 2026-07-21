@@ -8,6 +8,7 @@ thread_local! {
     static SWITCH_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static SELECT_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static GOTO_STATE_COUNTER: RefCell<usize> = const { RefCell::new(0) };
+    static SLICE_RANGE_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static RANGE_FUNCTION_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static NAMED_RETURN_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static LOOP_COUNTER: RefCell<usize> = const { RefCell::new(0) };
@@ -21,6 +22,7 @@ pub(super) fn reset_lowering_counters() {
     SWITCH_COUNTER.with(|counter| *counter.borrow_mut() = 0);
     SELECT_COUNTER.with(|counter| *counter.borrow_mut() = 0);
     GOTO_STATE_COUNTER.with(|counter| *counter.borrow_mut() = 0);
+    SLICE_RANGE_COUNTER.with(|counter| *counter.borrow_mut() = 0);
     RANGE_FUNCTION_COUNTER.with(|counter| *counter.borrow_mut() = 0);
     NAMED_RETURN_COUNTER.with(|counter| *counter.borrow_mut() = 0);
     LOOP_COUNTER.with(|counter| *counter.borrow_mut() = 0);
@@ -112,6 +114,14 @@ pub(super) fn assignment_temp_ident(index: usize) -> syn::Ident {
     syn::Ident::new(&format!("__gors_assign_{index}"), Span::mixed_site())
 }
 
+pub(super) fn assignment_place_temp_ident(index: usize) -> syn::Ident {
+    syn::Ident::new(&format!("__gors_assign_place_{index}"), Span::mixed_site())
+}
+
+pub(super) fn assignment_base_temp_ident(index: usize) -> syn::Ident {
+    syn::Ident::new(&format!("__gors_assign_base_{index}"), Span::mixed_site())
+}
+
 pub(super) fn shared_value_ident() -> syn::Ident {
     syn::Ident::new("__gors_shared_value", Span::mixed_site())
 }
@@ -163,6 +173,77 @@ pub(super) fn slice_alias_index_ident() -> syn::Ident {
 
 pub(super) fn slice_alias_value_ident() -> syn::Ident {
     syn::Ident::new("__gors_slice_alias_value", Span::mixed_site())
+}
+
+pub(super) fn range_index_ident() -> syn::Ident {
+    syn::Ident::new("__gors_range_index", Span::mixed_site())
+}
+
+pub(super) fn range_len_ident() -> syn::Ident {
+    syn::Ident::new("__gors_range_len", Span::mixed_site())
+}
+
+pub(super) fn range_values_ident() -> syn::Ident {
+    syn::Ident::new("__gors_range_values", Span::mixed_site())
+}
+
+pub(super) fn next_slice_range_id() -> usize {
+    next_id(&SLICE_RANGE_COUNTER)
+}
+
+pub(super) fn slice_range_index_ident(range_id: usize) -> syn::Ident {
+    syn::Ident::new(
+        &format!("__gors_range_index_{range_id}"),
+        Span::mixed_site(),
+    )
+}
+
+pub(super) fn slice_range_len_ident(range_id: usize) -> syn::Ident {
+    syn::Ident::new(&format!("__gors_range_len_{range_id}"), Span::mixed_site())
+}
+
+pub(super) fn slice_range_values_ident(range_id: usize) -> syn::Ident {
+    syn::Ident::new(
+        &format!("__gors_range_values_{range_id}"),
+        Span::mixed_site(),
+    )
+}
+
+pub(super) fn slice_range_source_offset_ident(range_id: usize) -> syn::Ident {
+    syn::Ident::new(
+        &format!("__gors_range_source_offset_{range_id}"),
+        Span::mixed_site(),
+    )
+}
+
+pub(super) fn slice_range_mirror_offset_ident(range_id: usize, index: usize) -> syn::Ident {
+    syn::Ident::new(
+        &format!("__gors_range_mirror_offset_{range_id}_{index}"),
+        Span::mixed_site(),
+    )
+}
+
+pub(super) fn slice_range_mirror_attached_ident(range_id: usize, index: usize) -> syn::Ident {
+    syn::Ident::new(
+        &format!("__gors_range_mirror_attached_{range_id}_{index}"),
+        Span::mixed_site(),
+    )
+}
+
+pub(super) fn range_header_value_ident() -> syn::Ident {
+    syn::Ident::new("__gors_range_header_value", Span::mixed_site())
+}
+
+pub(super) fn range_mirror_index_ident() -> syn::Ident {
+    syn::Ident::new("__gors_range_mirror_index", Span::mixed_site())
+}
+
+pub(super) fn range_mirror_root_index_ident() -> syn::Ident {
+    syn::Ident::new("__gors_range_mirror_root_index", Span::mixed_site())
+}
+
+pub(super) fn range_mirror_value_ident() -> syn::Ident {
+    syn::Ident::new("__gors_range_mirror_value", Span::mixed_site())
 }
 
 pub(super) fn next_type_switch_value_ident() -> syn::Ident {
@@ -237,6 +318,17 @@ pub(super) fn call_result_ident() -> syn::Ident {
 pub(super) fn method_arg_idents(count: usize) -> Vec<syn::Ident> {
     (0..count)
         .map(|index| syn::Ident::new(&format!("__gors_method_arg_{index}"), Span::mixed_site()))
+        .collect()
+}
+
+pub(super) fn function_adapter_arg_idents(count: usize) -> Vec<syn::Ident> {
+    (0..count)
+        .map(|index| {
+            syn::Ident::new(
+                &format!("__gors_function_adapter_arg_{index}"),
+                Span::mixed_site(),
+            )
+        })
         .collect()
 }
 
@@ -351,6 +443,51 @@ mod tests {
         assert_eq!(
             slice_alias_value_ident().to_string(),
             "__gors_slice_alias_value"
+        );
+        assert_eq!(range_index_ident().to_string(), "__gors_range_index");
+        assert_eq!(range_len_ident().to_string(), "__gors_range_len");
+        assert_eq!(range_values_ident().to_string(), "__gors_range_values");
+        let slice_range_id = next_slice_range_id();
+        assert_eq!(slice_range_id, 0);
+        assert_eq!(
+            slice_range_index_ident(slice_range_id).to_string(),
+            "__gors_range_index_0"
+        );
+        assert_eq!(
+            slice_range_len_ident(slice_range_id).to_string(),
+            "__gors_range_len_0"
+        );
+        assert_eq!(
+            slice_range_values_ident(slice_range_id).to_string(),
+            "__gors_range_values_0"
+        );
+        assert_eq!(
+            slice_range_source_offset_ident(slice_range_id).to_string(),
+            "__gors_range_source_offset_0"
+        );
+        assert_eq!(
+            slice_range_mirror_offset_ident(slice_range_id, 3).to_string(),
+            "__gors_range_mirror_offset_0_3"
+        );
+        assert_eq!(
+            slice_range_mirror_attached_ident(slice_range_id, 3).to_string(),
+            "__gors_range_mirror_attached_0_3"
+        );
+        assert_eq!(
+            range_mirror_index_ident().to_string(),
+            "__gors_range_mirror_index"
+        );
+        assert_eq!(
+            range_mirror_root_index_ident().to_string(),
+            "__gors_range_mirror_root_index"
+        );
+        assert_eq!(
+            range_mirror_value_ident().to_string(),
+            "__gors_range_mirror_value"
+        );
+        assert_eq!(
+            range_header_value_ident().to_string(),
+            "__gors_range_header_value"
         );
         assert_eq!(
             next_type_switch_value_ident().to_string(),

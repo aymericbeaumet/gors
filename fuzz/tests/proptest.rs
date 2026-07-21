@@ -5,7 +5,7 @@
 //!
 //! The number of test cases can be controlled via the GORS_FUZZ_CASES environment
 //! variable. Defaults are smoke-sized so `cargo test --workspace` stays fast;
-//! use `make fuzz` or explicit environment values for deeper runs.
+//! use `make fuzz-test` or explicit environment values for deeper runs.
 
 // Tests may use unwrap for assertions
 #![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
@@ -303,6 +303,12 @@ proptest! {
     #[test]
     fn parser_no_panic_bytes(input in arbitrary_bytes_as_utf8()) {
         let _ = gors::parser::parse_file("test.go", &input);
+    }
+
+    /// Test that accepted generated sources never panic generic lowering
+    #[test]
+    fn compiler_no_panic(source in go_source_strategy()) {
+        fuzz::exercise_compiler(source.as_bytes());
     }
 
     /// Test that valid Go source parses successfully

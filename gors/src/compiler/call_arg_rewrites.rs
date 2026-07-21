@@ -1460,6 +1460,23 @@ fn borrow_mut_ref_call_arg(
         return;
     }
 
+    if matches!(kind, MutRefParamKind::TraitObject { .. })
+        && (cloned_lvalue_source(arg).is_some() || cloned_lvalue_block_source(arg).is_some())
+    {
+        // Interface arguments use mutable Rust references to model a copied Go
+        // interface value. Keep the clone as that copy: borrowing its source
+        // can both mutate the caller's value and keep a generated MutexGuard
+        // alive while the callee re-enters the same shared capture.
+        let owned = arg.clone();
+        *arg = syn::parse_quote! {
+            &mut {
+                let __gors_owned_interface = #owned;
+                __gors_owned_interface
+            }
+        };
+        return;
+    }
+
     borrow_mut_vec_call_arg(arg);
 }
 
@@ -1793,11 +1810,58 @@ mod tests {
     use quote::quote;
     use syn::parse_quote as rust;
 
+    type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
     fn compiled_main_file(
         modules: &std::collections::BTreeMap<String, super::CompiledModule>,
     ) -> &syn::File {
         assert!(modules.contains_key("__main__"), "missing main module");
         &modules["__main__"].file
+    }
+
+    fn rewrite_mut_ref_args(main_file: syn::File) -> TestResult<syn::File> {
+        let mut modules = std::collections::BTreeMap::from([(
+            "__main__".to_string(),
+            super::CompiledModule {
+                mod_name: "main".to_string(),
+                import_path: String::new(),
+                file: main_file,
+                filename: "main.rs".to_string(),
+                content_hash: String::new(),
+                is_main: true,
+                is_stdlib: false,
+            },
+        )]);
+        super::borrow_mut_ref_call_args(&mut modules);
+        let main_module = modules
+            .remove("__main__")
+            .ok_or_else(|| std::io::Error::other("missing main module after argument rewrite"))?;
+        Ok(main_module.file)
+    }
+
+    fn assert_rust_file_runs(file: &syn::File) -> TestResult {
+        let build = tempfile::tempdir()?;
+        let source_path = build.path().join("main.rs");
+        let binary_path = build.path().join("main");
+        std::fs::write(&source_path, prettyplease::unparse(file))?;
+        let rustc = std::process::Command::new("rustup")
+            .args(["run", "1.96.0", "rustc"])
+            .arg(&source_path)
+            .args(["--edition=2024", "-o"])
+            .arg(&binary_path)
+            .output()?;
+        assert!(
+            rustc.status.success(),
+            "rewritten Rust failed to compile:\n{}",
+            String::from_utf8_lossy(&rustc.stderr)
+        );
+        let run = std::process::Command::new(binary_path).output()?;
+        assert!(
+            run.status.success(),
+            "rewritten Rust failed at runtime:\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        Ok(())
     }
 
     #[test]
@@ -2508,6 +2572,145 @@ mod tests {
             output.contains("crate :: helper :: sort (& mut values)"),
             "expected mutable borrow to follow callee signature: {output}"
         );
+    }
+
+    #[test]
+    fn borrow_mut_ref_call_args_owns_shared_interface_clones_before_borrowing() {
+        let main_file: syn::File = rust! {
+            pub trait FS {
+                fn Open(&mut self);
+            }
+
+            pub fn read_link(mut fsys: &mut dyn FS) {}
+
+            pub fn call(fsys: std::sync::Arc<std::sync::Mutex<Box<dyn FS>>>) {
+                read_link({
+                    let __gors_shared = fsys.lock().unwrap().clone();
+                    __gors_shared
+                });
+            }
+        };
+        let mut modules = std::collections::BTreeMap::from([(
+            "__main__".to_string(),
+            super::CompiledModule {
+                mod_name: "main".to_string(),
+                import_path: String::new(),
+                file: main_file,
+                filename: "main.rs".to_string(),
+                content_hash: String::new(),
+                is_main: true,
+                is_stdlib: false,
+            },
+        )]);
+
+        super::borrow_mut_ref_call_args(&mut modules);
+
+        let main_file = compiled_main_file(&modules);
+        let output = quote! { #main_file }.to_string();
+        assert!(
+            output.contains("let __gors_owned_interface = {")
+                && output.contains("fsys . lock () . unwrap () . clone ()")
+                && output.contains("__gors_owned_interface"),
+            "expected the captured interface clone to be owned before borrowing: {output}"
+        );
+        assert!(
+            !output.contains("& mut * fsys . lock () . unwrap ()"),
+            "expected no guard borrow to escape into the call: {output}"
+        );
+    }
+
+    #[test]
+    fn borrow_mut_ref_call_args_compiles_concrete_mutex_values() -> TestResult {
+        let main_file: syn::File = rust! {
+            trait Probe {
+                fn probe(&mut self);
+            }
+
+            #[derive(Clone)]
+            struct Concrete;
+
+            impl Probe for Concrete {
+                fn probe(&mut self) {}
+            }
+
+            fn inspect(value: &mut dyn Probe) {
+                value.probe();
+            }
+
+            fn call(value: std::sync::Arc<std::sync::Mutex<Concrete>>) {
+                inspect((value.lock().unwrap()).clone());
+            }
+
+            fn main() {
+                call(std::sync::Arc::new(std::sync::Mutex::new(Concrete)));
+            }
+        };
+
+        let main_file = rewrite_mut_ref_args(main_file)?;
+        assert_rust_file_runs(&main_file)
+    }
+
+    #[test]
+    fn borrow_mut_ref_call_args_release_capture_guards_before_reentrant_calls() -> TestResult {
+        let main_file: syn::File = rust! {
+            trait FS {
+                fn open(&mut self);
+                fn clone_box(&self) -> Box<dyn FS>;
+            }
+
+            impl Clone for Box<dyn FS> {
+                fn clone(&self) -> Self {
+                    (**self).clone_box()
+                }
+            }
+
+            impl FS for Box<dyn FS> {
+                fn open(&mut self) {
+                    (**self).open();
+                }
+
+                fn clone_box(&self) -> Box<dyn FS> {
+                    (**self).clone_box()
+                }
+            }
+
+            #[derive(Clone)]
+            struct Reentrant {
+                owner: std::sync::Weak<std::sync::Mutex<Box<dyn FS>>>,
+            }
+
+            impl FS for Reentrant {
+                fn open(&mut self) {
+                    let owner = self.owner.upgrade().unwrap();
+                    let available = owner.try_lock().is_ok();
+                    assert!(available, "the interface capture guard escaped into the callee");
+                }
+
+                fn clone_box(&self) -> Box<dyn FS> {
+                    Box::new(self.clone())
+                }
+            }
+
+            fn read_link(fsys: &mut dyn FS) {
+                fsys.open();
+            }
+
+            fn main() {
+                let fsys: std::sync::Arc<std::sync::Mutex<Box<dyn FS>>> =
+                    std::sync::Arc::new_cyclic(|owner| {
+                        std::sync::Mutex::new(
+                            Box::new(Reentrant { owner: owner.clone() }) as Box<dyn FS>,
+                        )
+                    });
+                read_link({
+                    let __gors_shared = fsys.lock().unwrap().clone();
+                    __gors_shared
+                });
+            }
+        };
+
+        let main_file = rewrite_mut_ref_args(main_file)?;
+        assert_rust_file_runs(&main_file)
     }
 
     #[test]

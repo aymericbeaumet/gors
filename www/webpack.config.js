@@ -8,6 +8,9 @@ const HtmlWebpackPlugin = require("html-webpack-plugin");
 const MonacoWebpackPlugin = require("monaco-editor-webpack-plugin");
 const sveltePreprocess = require("svelte-preprocess");
 
+const compilerHarness = process.env.GORS_WEB_COMPILER_HARNESS === "1";
+const threadedWasmPreview = process.env.GORS_WASM_THREADS === "1";
+
 function contentHash(filePath) {
 	const data = fs.readFileSync(filePath);
 	return crypto.createHash("sha256").update(data).digest("hex").slice(0, 16);
@@ -16,12 +19,18 @@ function contentHash(filePath) {
 const v86BuildDir = path.resolve(__dirname, "node_modules/v86/build");
 const biosDir = path.resolve(__dirname, "v86/bios");
 
-const staticAssets = [
-	{ src: path.join(v86BuildDir, "libv86.js"), name: "libv86", ext: ".js" },
-	{ src: path.join(v86BuildDir, "v86.wasm"), name: "v86", ext: ".wasm" },
-	{ src: path.join(biosDir, "seabios.bin"), name: "seabios", ext: ".bin" },
-	{ src: path.join(biosDir, "vgabios.bin"), name: "vgabios", ext: ".bin" },
-];
+const staticAssets = compilerHarness
+	? []
+	: [
+			{
+				src: path.join(v86BuildDir, "libv86.js"),
+				name: "libv86",
+				ext: ".js",
+			},
+			{ src: path.join(v86BuildDir, "v86.wasm"), name: "v86", ext: ".wasm" },
+			{ src: path.join(biosDir, "seabios.bin"), name: "seabios", ext: ".bin" },
+			{ src: path.join(biosDir, "vgabios.bin"), name: "vgabios", ext: ".bin" },
+		];
 
 const assetManifest = {};
 const copyPatterns = [];
@@ -35,18 +44,20 @@ for (const { src, name, ext } of staticAssets) {
 	copyPatterns.push({ from: src, to: `assets/${hashedName}` });
 }
 
-copyPatterns.push(
-	{
-		from: "v86/dist/rootfs.json",
-		to: "assets/[name][ext]",
-		noErrorOnMissing: true,
-	},
-	{
-		from: "v86/dist/rootfs-flat/",
-		to: "assets/rootfs-flat/",
-		noErrorOnMissing: true,
-	},
-);
+if (!compilerHarness) {
+	copyPatterns.push(
+		{
+			from: "v86/dist/rootfs.json",
+			to: "assets/[name][ext]",
+			noErrorOnMissing: true,
+		},
+		{
+			from: "v86/dist/rootfs-flat/",
+			to: "assets/rootfs-flat/",
+			noErrorOnMissing: true,
+		},
+	);
+}
 
 class AssetManifestPlugin {
 	apply(compiler) {
@@ -69,8 +80,33 @@ class AssetManifestPlugin {
 }
 
 module.exports = () => {
+	const plugins = compilerHarness
+		? [
+				new HtmlWebpackPlugin({
+					template: "tests/compiler/harness.html",
+					filename: "index.html",
+				}),
+			]
+		: [
+				new CopyWebpackPlugin({ patterns: copyPatterns }),
+				new AssetManifestPlugin(),
+				new FaviconsWebpackPlugin("./favicon.png"),
+				new HtmlWebpackPlugin({
+					template: "index.html",
+					filename: "index.html",
+				}),
+				new HtmlWebpackPlugin({
+					template: "index.html",
+					filename: "conformance/index.html",
+				}),
+				new HtmlWebpackPlugin({ template: "index.html", filename: "404.html" }),
+				new MonacoWebpackPlugin({
+					languages: ["go", "rust"],
+				}),
+			];
+
 	return {
-		entry: "./src/main.ts",
+		entry: compilerHarness ? "./tests/compiler/harness.ts" : "./src/main.ts",
 		devtool: webpackSourceMaps ? "source-map" : false,
 		output: {
 			filename: "bundle-[contenthash:16].js",
@@ -84,6 +120,18 @@ module.exports = () => {
 			fallback: {
 				fs: false,
 				path: false,
+			},
+			alias: {
+				"gors-wasm-runtime$": path.resolve(
+					__dirname,
+					threadedWasmPreview
+						? "gors-wasm-threaded-loader.ts"
+						: "gors-wasm-loader.ts",
+				),
+				"gors-wasm-threads-package$": path.resolve(
+					__dirname,
+					"wasm/pkg-threads/gors.js",
+				),
 			},
 		},
 		module: {
@@ -118,25 +166,27 @@ module.exports = () => {
 					type: "asset/resource",
 				},
 				{
+					test: /\.go$/,
+					type: "asset/source",
+				},
+				{
+					test: /\.bin\.gz$/,
+					type: "asset/resource",
+					generator: {
+						filename: "assets/[name]-[contenthash:16][ext]",
+					},
+				},
+				{
 					test: /node_modules\/svelte\/.*\.mjs$/,
+					resolve: { fullySpecified: false },
+				},
+				{
+					test: /wasm\/pkg-threads\/.*\.js$/,
 					resolve: { fullySpecified: false },
 				},
 			],
 		},
-		plugins: [
-			new CopyWebpackPlugin({ patterns: copyPatterns }),
-			new AssetManifestPlugin(),
-			new FaviconsWebpackPlugin("./favicon.png"),
-			new HtmlWebpackPlugin({ template: "index.html", filename: "index.html" }),
-			new HtmlWebpackPlugin({
-				template: "index.html",
-				filename: "conformance/index.html",
-			}),
-			new HtmlWebpackPlugin({ template: "index.html", filename: "404.html" }),
-			new MonacoWebpackPlugin({
-				languages: ["go", "rust"],
-			}),
-		],
+		plugins,
 		devServer: {
 			allowedHosts: ["127.0.0.1", "localhost"],
 			static: {

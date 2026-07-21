@@ -8,6 +8,28 @@ pub use sourcemap::{SourceMap, SourceMapBuilder};
 
 use std::collections::HashMap;
 
+/// Convert a 1-based UTF-8 byte column from the Go scanner into a 1-based
+/// UTF-16 code-unit column for Source Map v3 and Monaco.
+///
+/// A zero column is preserved for positions hidden by Go `//line` directives.
+/// Columns beyond the line are clamped to its end, and a column inside a
+/// multi-byte scalar is clamped to that scalar's start.
+pub fn utf8_byte_column_to_utf16(line: &str, column: u32) -> u32 {
+    if column == 0 {
+        return 0;
+    }
+
+    let mut byte_offset = (column.saturating_sub(1) as usize).min(line.len());
+    while byte_offset > 0 && !line.is_char_boundary(byte_offset) {
+        byte_offset -= 1;
+    }
+    let utf16_offset = line[..byte_offset]
+        .encode_utf16()
+        .count()
+        .min(u32::MAX as usize) as u32;
+    utf16_offset.saturating_add(1)
+}
+
 /// A pending mapping collected during compilation.
 /// Contains Go source position and optional name, waiting for Rust position.
 #[derive(Debug, Clone)]
@@ -31,6 +53,9 @@ pub struct SourceMapTracker {
     sources: Vec<(String, Option<String>)>,
     /// Rust output file path
     rust_file: Option<String>,
+    /// Whether lowering should append new mappings. Sources and completed
+    /// mappings remain available after recording is paused for code generation.
+    recording: bool,
 }
 
 impl SourceMapTracker {
@@ -51,6 +76,12 @@ impl SourceMapTracker {
         self.pending.clear();
         self.sources = sources;
         self.rust_file = Some(rust_file.to_string());
+        self.recording = true;
+    }
+
+    /// Stop accepting mappings while retaining the completed map inputs.
+    pub fn pause(&mut self) {
+        self.recording = false;
     }
 
     /// Check if tracking is active.
@@ -73,7 +104,7 @@ impl SourceMapTracker {
         orig_col: u32,
         name: Option<&str>,
     ) {
-        if self.sources.is_empty() {
+        if self.sources.is_empty() || !self.recording {
             return;
         }
         self.pending.push(PendingMapping {
@@ -90,11 +121,14 @@ impl SourceMapTracker {
     }
 
     /// Build the final source map given the generated Rust source.
-    /// This matches pending mappings to tokens in the Rust output.
+    /// This matches pending mappings to tokens in the Rust output. Scanner
+    /// columns remain UTF-8 byte offsets until this boundary; emitted Source
+    /// Map v3 columns are UTF-16 code-unit offsets.
     pub fn build_source_map(&self, rust_source: &str) -> SourceMap {
         let mut builder = SourceMapBuilder::new(self.rust_file.as_deref());
 
         let mut source_indices = HashMap::new();
+        let mut source_lines = HashMap::new();
         if self.sources.is_empty() {
             let src_idx = builder.add_source("input.go");
             source_indices.insert("input.go".to_string(), src_idx);
@@ -103,11 +137,17 @@ impl SourceMapTracker {
                 let src_idx = builder.add_source(source);
                 if let Some(content) = content {
                     builder.set_source_contents(src_idx, Some(content.as_str()));
+                    source_lines.insert(source.as_str(), content.lines().collect::<Vec<_>>());
                 }
                 source_indices.insert(source.clone(), src_idx);
             }
         }
-        let fallback_source_idx = source_indices.values().next().copied();
+        let fallback_source = self.sources.first().map(|(source, _)| source.as_str());
+        let fallback_source_idx = fallback_source
+            .and_then(|source| source_indices.get(source))
+            .copied()
+            .or_else(|| source_indices.values().next().copied());
+        let fallback_source_lines = fallback_source.and_then(|source| source_lines.get(source));
 
         // Extract tokens from the Rust source
         let tokens = extract_tokens(rust_source);
@@ -139,11 +179,23 @@ impl SourceMapTracker {
                             .and_then(|source| source_indices.get(source))
                             .copied()
                             .or(fallback_source_idx);
+                        let original_lines = match pending.source.as_deref() {
+                            Some(source) => source_lines.get(source),
+                            None => fallback_source_lines,
+                        };
+                        let original_column = original_lines
+                            .and_then(|lines| {
+                                lines.get(pending.orig_line.saturating_sub(1) as usize)
+                            })
+                            .map(|line| {
+                                utf8_byte_column_to_utf16(line, pending.orig_col).saturating_sub(1)
+                            })
+                            .unwrap_or_else(|| pending.orig_col.saturating_sub(1));
                         builder.add_raw(
                             token.start_line.saturating_sub(1),   // generated line (0-based)
                             token.start_column.saturating_sub(1), // generated column (0-based)
                             pending.orig_line.saturating_sub(1),  // original line (0-based)
-                            pending.orig_col.saturating_sub(1),   // original column (0-based)
+                            original_column, // original UTF-16 column (0-based)
                             src_idx,
                             Some(name_idx),
                             false, // is_range: false for point mappings
@@ -162,6 +214,7 @@ impl SourceMapTracker {
         self.pending.clear();
         self.sources.clear();
         self.rust_file = None;
+        self.recording = false;
     }
 }
 
@@ -183,6 +236,10 @@ struct TokenInfo {
     start_column: u32,
 }
 
+fn utf16_width(ch: char) -> u32 {
+    ch.len_utf16() as u32
+}
+
 /// Extract token positions from Rust source code.
 fn extract_tokens(rust_source: &str) -> Vec<TokenInfo> {
     let mut tokens = Vec::new();
@@ -198,7 +255,7 @@ fn extract_tokens(rust_source: &str) -> Vec<TokenInfo> {
                 line += 1;
                 column = 1;
             } else {
-                column += 1;
+                column += utf16_width(ch);
             }
             i += 1;
             continue;
@@ -207,9 +264,12 @@ fn extract_tokens(rust_source: &str) -> Vec<TokenInfo> {
         // Skip comments
         if ch == '/' {
             if chars.get(i + 1).is_some_and(|next| *next == '/') {
-                while chars.get(i).is_some_and(|current| *current != '\n') {
+                while let Some(current) = chars.get(i).copied() {
+                    if current == '\n' {
+                        break;
+                    }
                     i += 1;
-                    column += 1;
+                    column += utf16_width(current);
                 }
                 continue;
             } else if chars.get(i + 1).is_some_and(|next| *next == '*') {
@@ -226,7 +286,7 @@ fn extract_tokens(rust_source: &str) -> Vec<TokenInfo> {
                         line += 1;
                         column = 1;
                     } else {
-                        column += 1;
+                        column += utf16_width(current);
                     }
                     i += 1;
                 }
@@ -249,7 +309,7 @@ fn extract_tokens(rust_source: &str) -> Vec<TokenInfo> {
                     break;
                 }
                 text.push(current);
-                column += 1;
+                column += utf16_width(current);
                 i += 1;
             }
             tokens.push(TokenInfo {
@@ -280,7 +340,7 @@ fn extract_tokens(rust_source: &str) -> Vec<TokenInfo> {
                     break;
                 }
                 text.push(current);
-                column += 1;
+                column += utf16_width(current);
                 i += 1;
             }
             // Handle type suffixes
@@ -322,14 +382,14 @@ fn extract_tokens(rust_source: &str) -> Vec<TokenInfo> {
                     line += 1;
                     column = 1;
                 } else {
-                    column += 1;
+                    column += utf16_width(current);
                 }
                 text.push(current);
                 i += 1;
             }
             if let Some(current) = chars.get(i).copied() {
                 text.push(current);
-                column += 1;
+                column += utf16_width(current);
                 i += 1;
             }
             tokens.push(TokenInfo {
@@ -359,12 +419,12 @@ fn extract_tokens(rust_source: &str) -> Vec<TokenInfo> {
                     break;
                 };
                 text.push(current);
-                column += 1;
+                column += utf16_width(current);
                 i += 1;
             }
             if let Some(current) = chars.get(i).copied() {
                 text.push(current);
-                column += 1;
+                column += utf16_width(current);
                 i += 1;
             }
             tokens.push(TokenInfo {
@@ -376,7 +436,7 @@ fn extract_tokens(rust_source: &str) -> Vec<TokenInfo> {
         }
 
         // Skip other characters (operators, punctuation)
-        column += 1;
+        column += utf16_width(ch);
         i += 1;
     }
 
@@ -449,6 +509,25 @@ mod tests {
     }
 
     #[test]
+    fn test_source_map_tracker_pause_retains_completed_mappings() {
+        let mut tracker = SourceMapTracker::new();
+        tracker.start("main.go", "main.rs", Some("package main"));
+        tracker.record(1, 1, Some("main"));
+        tracker.pause();
+        tracker.record_for_source(Some("stdlib.go".to_string()), 2, 1, Some("ignored"));
+
+        assert!(tracker.is_active());
+        assert_eq!(tracker.pending_mappings().len(), 1);
+        assert_eq!(
+            tracker
+                .pending_mappings()
+                .first()
+                .and_then(|mapping| mapping.source.as_deref()),
+            Some("main.go")
+        );
+    }
+
+    #[test]
     fn test_extract_tokens() {
         let source = "fn main() { let x = 42; }";
         let tokens = extract_tokens(source);
@@ -475,5 +554,58 @@ mod tests {
         assert_eq!(main_token.text, "main");
         assert_eq!(main_token.start_line, 1);
         assert_eq!(main_token.start_column, 4);
+    }
+
+    #[test]
+    fn converts_go_byte_columns_to_utf16_columns() {
+        assert_eq!(utf8_byte_column_to_utf16("éx", 3), 2);
+        assert_eq!(utf8_byte_column_to_utf16("😀x", 5), 3);
+        assert_eq!(utf8_byte_column_to_utf16("é😀x", 7), 4);
+        assert_eq!(utf8_byte_column_to_utf16("é😀x", 0), 0);
+    }
+
+    #[test]
+    fn source_map_columns_use_utf16_for_go_and_rust() {
+        let go_source = "var _ = \"é😀\"; target := 1";
+        let rust_source = "fn f() { let _ = \"é😀\"; let target = 1; }";
+        let mut tracker = SourceMapTracker::new();
+        tracker.start("main.go", "main.rs", Some(go_source));
+        tracker.record(
+            1,
+            (go_source.find("target").unwrap() + 1) as u32,
+            Some("target"),
+        );
+
+        let source_map = tracker.build_source_map(rust_source);
+        let token = source_map
+            .tokens()
+            .find(|token| token.get_name() == Some("target"))
+            .unwrap();
+        let go_byte_offset = go_source.find("target").unwrap();
+        let rust_byte_offset = rust_source.find("target").unwrap();
+
+        assert_eq!(
+            token.get_src_col(),
+            go_source[..go_byte_offset].encode_utf16().count() as u32
+        );
+        assert_eq!(
+            token.get_dst_col(),
+            rust_source[..rust_byte_offset].encode_utf16().count() as u32
+        );
+    }
+
+    #[test]
+    fn source_map_does_not_convert_columns_with_unavailable_source_text() {
+        let mut tracker = SourceMapTracker::new();
+        tracker.start("main.go", "main.rs", Some("é😀target"));
+        tracker.record_for_source(Some("virtual.go".to_string()), 1, 7, Some("target"));
+
+        let source_map = tracker.build_source_map("let target = 1;");
+        let token = source_map
+            .tokens()
+            .find(|token| token.get_name() == Some("target"))
+            .unwrap();
+
+        assert_eq!(token.get_src_col(), 6);
     }
 }

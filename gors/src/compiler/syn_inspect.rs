@@ -920,21 +920,23 @@ pub(super) fn macro_token_item_names(
     tokens: &proc_macro2::TokenStream,
     item_names: &std::collections::HashSet<String>,
 ) -> std::collections::HashSet<String> {
-    fn collect(
-        tokens: proc_macro2::TokenStream,
-        item_names: &std::collections::HashSet<String>,
-        names: &mut std::collections::HashSet<String>,
-    ) {
+    macro_token_ident_names(tokens)
+        .into_iter()
+        .filter(|name| item_names.contains(name))
+        .collect()
+}
+
+pub(super) fn macro_token_ident_names(
+    tokens: &proc_macro2::TokenStream,
+) -> std::collections::HashSet<String> {
+    fn collect(tokens: proc_macro2::TokenStream, names: &mut std::collections::HashSet<String>) {
         for token in tokens {
             match token {
                 proc_macro2::TokenTree::Ident(ident) => {
-                    let name = ident.to_string();
-                    if item_names.contains(&name) {
-                        names.insert(name);
-                    }
+                    names.insert(ident.to_string());
                 }
                 proc_macro2::TokenTree::Group(group) => {
-                    collect(group.stream(), item_names, names);
+                    collect(group.stream(), names);
                 }
                 proc_macro2::TokenTree::Literal(_) | proc_macro2::TokenTree::Punct(_) => {}
             }
@@ -942,8 +944,16 @@ pub(super) fn macro_token_item_names(
     }
 
     let mut names = std::collections::HashSet::new();
-    collect(tokens.clone(), item_names, &mut names);
+    collect(tokens.clone(), &mut names);
     names
+}
+
+pub(super) fn macro_declared_item_names(
+    tokens: &proc_macro2::TokenStream,
+) -> std::collections::HashSet<String> {
+    syn::parse2::<syn::File>(tokens.clone())
+        .map(|file| file.items.iter().filter_map(item_name).collect())
+        .unwrap_or_default()
 }
 
 pub(super) fn type_mentions_name(

@@ -291,18 +291,14 @@ pub(super) fn method_receiver_type_from_expr(
 ) -> Option<ReceiverTypeRef> {
     match expr {
         syn::Expr::Call(call) => {
-            if is_path_call_expr(&call.func, &["crate", "builtin", "GorsPtr", "new"])
-                || is_path_call_expr(&call.func, &["crate", "builtin", "GorsPtr", "from_arc"])
-            {
-                return call.args.first().and_then(|arg| {
-                    method_receiver_type_from_expr(arg, context).or_else(|| {
-                        receiver_type_from_init_expr(
-                            arg,
-                            context.module_names,
-                            context.item_names,
-                            context.top_level_return_types,
-                        )
-                    })
+            if let Some(arg) = transparent_receiver_constructor_arg(call) {
+                return method_receiver_type_from_expr(arg, context).or_else(|| {
+                    receiver_type_from_init_expr(
+                        arg,
+                        context.module_names,
+                        context.item_names,
+                        context.top_level_return_types,
+                    )
                 });
             }
             receiver_type_from_init_expr(
@@ -523,28 +519,13 @@ pub(super) fn receiver_type_from_init_expr(
 ) -> Option<ReceiverTypeRef> {
     match expr {
         syn::Expr::Call(call) => {
-            if is_path_call_expr(&call.func, &["Box", "new"]) {
-                return call.args.first().and_then(|arg| {
-                    receiver_type_from_init_expr(
-                        arg,
-                        module_names,
-                        item_names,
-                        top_level_return_types,
-                    )
-                });
-            }
-            if is_path_call_expr(&call.func, &["std", "sync", "Arc", "new"])
-                || is_path_call_expr(&call.func, &["std", "sync", "Mutex", "new"])
-                || is_path_call_expr(&call.func, &["crate", "builtin", "GorsPtr", "new"])
-            {
-                return call.args.first().and_then(|arg| {
-                    receiver_type_from_init_expr(
-                        arg,
-                        module_names,
-                        item_names,
-                        top_level_return_types,
-                    )
-                });
+            if let Some(arg) = transparent_receiver_constructor_arg(call) {
+                return receiver_type_from_init_expr(
+                    arg,
+                    module_names,
+                    item_names,
+                    top_level_return_types,
+                );
             }
             if let syn::Expr::Path(path) = &*call.func
                 && let Some(first) = path.path.segments.first()
@@ -638,6 +619,15 @@ pub(super) fn receiver_type_from_init_expr(
         ),
         _ => None,
     }
+}
+
+pub(super) fn transparent_receiver_constructor_arg(call: &syn::ExprCall) -> Option<&syn::Expr> {
+    let is_transparent = is_path_call_expr(&call.func, &["Box", "new"])
+        || is_path_call_expr(&call.func, &["std", "sync", "Arc", "new"])
+        || is_path_call_expr(&call.func, &["std", "sync", "Mutex", "new"])
+        || is_path_call_expr(&call.func, &["crate", "builtin", "GorsPtr", "new"])
+        || is_path_call_expr(&call.func, &["crate", "builtin", "GorsPtr", "from_arc"]);
+    is_transparent.then(|| call.args.first()).flatten()
 }
 
 fn qself_method_return_type(

@@ -1,0 +1,21 @@
+{
+  "expectedProgramCount": 54,
+  "fixtures": {
+    "_negative/constants_representability": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/generics_constraints": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/properties_non_comparable": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/types_interface_method_sets": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    }
+  }
+}

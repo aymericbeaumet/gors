@@ -108,9 +108,9 @@ fn go_type_contains_nonclone_named(go_type: &typeinfer::GoType) -> bool {
         typeinfer::GoType::Array(inner) | typeinfer::GoType::Slice(inner) => {
             go_type_contains_nonclone_named(&inner)
         }
-        typeinfer::GoType::Map(key, value) => {
-            go_type_contains_nonclone_named(&key) || go_type_contains_nonclone_named(&value)
-        }
+        // A Go map clone copies only the shared map handle, so neither key nor
+        // value cloneability constrains a containing struct's Clone impl.
+        typeinfer::GoType::Map(_, _) => false,
         _ => false,
     }
 }

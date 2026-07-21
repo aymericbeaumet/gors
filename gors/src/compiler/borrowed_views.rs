@@ -28,6 +28,7 @@ pub(super) struct SliceAliasTarget {
     pub(super) base_name: String,
     pub(super) base_expr: syn::Expr,
     pub(super) offset: syn::Expr,
+    pub(super) capacity: syn::Expr,
 }
 
 pub(super) struct BorrowedPointerParamNamesGuard {
@@ -286,6 +287,7 @@ mod tests {
                 base_name: "values".to_string(),
                 base_expr: syn::parse_quote! { values },
                 offset: syn::parse_quote! { 1usize },
+                capacity: syn::parse_quote! { 3usize },
             },
         );
         insert_slice_alias_target(
@@ -294,6 +296,7 @@ mod tests {
                 base_name: "tail".to_string(),
                 base_expr: syn::parse_quote! { tail },
                 offset: syn::parse_quote! { 2usize },
+                capacity: syn::parse_quote! { 1usize },
             },
         );
 
@@ -313,6 +316,7 @@ mod tests {
                 base_name: "values".to_string(),
                 base_expr: syn::parse_quote! { values },
                 offset: syn::parse_quote! { 3usize },
+                capacity: syn::parse_quote! { 5usize },
             },
         );
 
@@ -325,5 +329,11 @@ mod tests {
         });
         let expected = quote!(3usize).to_string();
         assert_eq!(offset.as_deref(), Some(expected.as_str()));
+        let capacity = targets.first().map(|(_, target)| {
+            let capacity = &target.capacity;
+            quote!(#capacity).to_string()
+        });
+        let expected = quote!(5usize).to_string();
+        assert_eq!(capacity.as_deref(), Some(expected.as_str()));
     }
 }

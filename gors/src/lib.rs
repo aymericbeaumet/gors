@@ -46,6 +46,19 @@ pub const GO_VERSION: &str = env!("GORS_GO_VERSION");
 /// Version label for the embedded Go stdlib archive compiled into gors.
 pub const STDLIB_VERSION: &str = env!("GORS_STDLIB_VERSION");
 
+/// Content fingerprint for compiler and generated-runtime sources.
+///
+/// Persistent compiler artifacts include this value so they are rejected
+/// automatically when lowering or runtime semantics change.
+pub const COMPILER_FINGERPRINT: &str = env!("GORS_COMPILER_FINGERPRINT");
+
+/// Content and semantic ABI fingerprint for persistent resolver archives.
+///
+/// Unlike [`COMPILER_FINGERPRINT`], this intentionally ignores features that
+/// only change task scheduling, allowing deterministic resolver output to move
+/// between single-threaded and parallel builds of the same target.
+pub const RESOLVER_CACHE_FINGERPRINT: &str = env!("GORS_RESOLVER_CACHE_FINGERPRINT");
+
 #[cfg(any(
     feature = "test_integration_go_repositories",
     feature = "test_integration_go_spec",

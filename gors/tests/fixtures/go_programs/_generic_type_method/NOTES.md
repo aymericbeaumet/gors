@@ -1,4 +1,4 @@
-## Known-failing fixture (skipped via `_` prefix)
+## Known-failing fixture (excluded via `fixtures.json`)
 
 `ints.Set(5)` calls `Set(*Holder[T])` on a non-addressable value receiver,
 which Go silently address-of's. The current lowering emits

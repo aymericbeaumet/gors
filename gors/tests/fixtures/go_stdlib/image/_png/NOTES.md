@@ -1,4 +1,4 @@
-## Known-failing fixture (skipped via `_` prefix)
+## Known-failing fixture (excluded via `fixtures.json`)
 
 Same compiler panic as `image/_gif`: `gors/src/compiler/mod.rs:13115`
 fires `"color.Palette" is not a valid Ident` because a qualified Go

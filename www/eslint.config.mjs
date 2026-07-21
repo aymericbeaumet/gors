@@ -10,6 +10,7 @@ export default [
 			"playwright-report/",
 			"test-results/",
 			"wasm/pkg/",
+			"wasm/pkg-threads/",
 			"wasm/target/",
 			"v86/",
 			"src/*.svelte",

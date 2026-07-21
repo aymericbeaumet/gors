@@ -9,9 +9,11 @@
 //! - `GORS_TEST_FILTER`: Only test files matching this substring
 //! - `GORS_TEST_VERBOSE`: Show progress during testing (set to "1" to enable)
 //! - `GORS_TEST_FAIL_FAST`: Cancel queued/running tests after the first failure where supported
+//! - `GORS_TEST_INCLUDE_UNSUPPORTED`: Run fixtures explicitly marked unsupported for diagnosis
+//! - `GORS_UPDATE_CONFORMANCE_REPORTS`: Write canonical reports after a complete fresh run
 //! - `GORS_TEST_THREADS`: Worker threads for integration tests (default: all available CPUs)
 //! - `GORS_TEST_RUN_THREADS`: Worker threads for generated-program run tests
-//!   (default: `GORS_TEST_THREADS` when set, otherwise twice all available CPUs)
+//!   (default: `GORS_TEST_THREADS` when set, otherwise all available CPUs)
 //! - `GORS_TEST_GO_RUN_TIMEOUT_SECS`: Timeout for Go reference program runs (default: 30)
 //! - `GORS_TEST_GENERATED_RUN_TIMEOUT_SECS`: Timeout for generated Rust program runs (default: 10)
 
@@ -41,6 +43,8 @@ pub struct TestConfig {
     pub verbose: bool,
     /// Stop after the first failure
     pub fail_fast: bool,
+    /// Include fixtures explicitly classified as unsupported
+    pub include_unsupported: bool,
 }
 
 impl TestConfig {
@@ -55,6 +59,9 @@ impl TestConfig {
                 .map(|v| v == "1" || v.to_lowercase() == "true")
                 .unwrap_or(false),
             fail_fast: std::env::var("GORS_TEST_FAIL_FAST")
+                .map(|v| v == "1" || v.to_lowercase() == "true")
+                .unwrap_or(false),
+            include_unsupported: std::env::var("GORS_TEST_INCLUDE_UNSUPPORTED")
                 .map(|v| v == "1" || v.to_lowercase() == "true")
                 .unwrap_or(false),
         }

@@ -2,8 +2,13 @@
 	"extends": "./tsconfig.json",
 	"compilerOptions": {
 		"types": ["node", "vitest/globals"],
-		"lib": ["ES2022"],
+		"lib": ["ES2022", "DOM"],
 		"noEmit": true
 	},
-	"include": ["playwright.config.ts", "vitest.config.ts", "tests/**/*.ts"]
+	"include": [
+		"playwright.config.ts",
+		"playwright.compiler.config.ts",
+		"vitest.config.ts",
+		"tests/**/*.ts"
+	]
 }

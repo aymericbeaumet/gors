@@ -186,12 +186,12 @@ fn collect_decl_needed_imports(
 ) {
     match decl {
         ast::Decl::FuncDecl(func) => {
-            let collect_signature = func.recv.is_none()
-                && func.name.name.starts_with("New")
-                && super::reachability_context::active_roots_allow(func.name.name);
-            if collect_signature {
-                collect_func_type_needed_imports(&func.type_, env, out);
-            }
+            // Every declaration compiled from this file contributes its interface
+            // obligations, irrespective of naming or whether it is a function or a
+            // method. (Resolver inputs have already been reachability-filtered.) In
+            // particular, a concrete type and its methods can live in a different
+            // Go file from an interface returned by an ordinary function.
+            collect_func_type_needed_imports(&func.type_, env, out);
             if let Some(body) = &func.body {
                 collect_block_needed_imports(body, env, out);
             }

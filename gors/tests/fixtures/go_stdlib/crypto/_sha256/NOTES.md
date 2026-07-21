@@ -1,4 +1,4 @@
-## Known-failing fixture (skipped via `_` prefix)
+## Known-failing fixture (excluded via `fixtures.json`)
 
 Skipped preemptively alongside `crypto/_sha1` — same fixture shape,
 same underlying lowering bug in the `crypto/shaN` package translation.

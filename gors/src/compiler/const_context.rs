@@ -48,10 +48,12 @@ pub(super) fn set_local_const_value(name: &str, value: ConstValue) {
 }
 
 pub(super) fn set_package_const_integer_value(name: &str, value: &ConstValue) {
-    let Some(value) = value.as_i128() else {
+    let Some(value) = value.as_exact_int() else {
         return;
     };
-    TYPE_ENV.with(|env| env.borrow_mut().set_const_integer_value(name, value));
+    TYPE_ENV.with(|env| {
+        env.borrow_mut().set_const_integer_exact_value(name, &value);
+    });
 }
 
 pub(super) fn is_local_const_name(name: &str) -> bool {
@@ -71,6 +73,7 @@ pub(super) fn local_const_go_type_for_expr(expr: &ast::Expr) -> Option<typeinfer
     match local_const_value(ident.name)? {
         ConstValue::Bool(_) => Some(typeinfer::GoType::Bool),
         ConstValue::Complex(_, _) => Some(typeinfer::GoType::Complex128),
+        ConstValue::ExactInt(_) => Some(typeinfer::GoType::Int),
         ConstValue::Float(_) => Some(typeinfer::GoType::Float64),
         ConstValue::Int(_) => Some(typeinfer::GoType::Int),
         ConstValue::Rational(_) => Some(typeinfer::GoType::Float64),

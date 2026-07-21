@@ -3,11 +3,13 @@ import { onMount, onDestroy, tick } from "svelte";
 import * as monaco from "monaco-editor";
 import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import defaultPlaygroundSource from "../default-playground.go";
 import {
 	CompilerCancelledError,
 	Go2RustCompiler,
 	type CompileResult,
 } from "../go2rust-compiler";
+import type { CompilerPhase, CompilerPhaseTiming } from "../go2rust-protocol";
 import { RustRunner, State, type State as VmState } from "../rust-runner";
 import {
 	formatConsoleLine,
@@ -127,6 +129,7 @@ let rustExpectedValue = "";
 let transpiling = false;
 let activePipelines = 0;
 let pipelineStage: PipelineStage = "idle";
+let compilerPhase: CompilerPhase | null = null;
 
 // xterm
 let term: Terminal;
@@ -152,7 +155,15 @@ $: pipelineBusy = activePipelines > 0;
 $: runDisabled = pipelineBusy || !cache.rustCode;
 $: runButtonLabel =
 	pipelineStage === "gors"
-		? "gors"
+		? compilerPhase === "loading-wasm"
+			? "loading gors"
+			: compilerPhase === "loading-cache"
+				? "loading cache"
+				: compilerPhase === "indexing-source-map"
+					? "source map"
+					: compilerPhase === "queued"
+						? "gors queued"
+						: "gors"
 		: pipelineStage === "rustc"
 			? "rustc"
 			: pipelineStage === "main"
@@ -199,6 +210,21 @@ function formatDuration(durationMs: number): string {
 	return durationMs < 1000
 		? `${Math.round(durationMs)}ms`
 		: `${(durationMs / 1000).toFixed(2)}s`;
+}
+
+function formatBytes(bytes: number): string {
+	if (bytes < 1024) return `${bytes}B`;
+	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KiB`;
+	return `${(bytes / (1024 * 1024)).toFixed(1)}MiB`;
+}
+
+function formatCompilerTimings(
+	timings: readonly CompilerPhaseTiming[],
+): string {
+	return timings
+		.filter(({ durationMs }) => durationMs >= 1)
+		.map(({ phase, durationMs }) => `${phase} ${formatDuration(durationMs)}`)
+		.join(", ");
 }
 
 // Source map highlighting
@@ -369,21 +395,26 @@ async function doTranspile() {
 
 	conCmd("$ gors build -o main.rs main.go");
 	pipelineStage = "gors";
+	compilerPhase = "queued";
 	transpiling = true;
 	await tick();
 	const gen = pipelineGeneration;
 	let goResult: CompileResult;
 	try {
-		goResult = await go2rust.compile(goCode);
+		goResult = await go2rust.compile(goCode, (status) => {
+			if (gen === pipelineGeneration) compilerPhase = status.phase;
+		});
 	} catch (err) {
 		transpiling = false;
 		pipelineStage = "idle";
+		compilerPhase = null;
 		if (err instanceof CompilerCancelledError) return null;
 		conErr(err instanceof Error ? err.message : String(err));
 		return null;
 	}
 	transpiling = false;
 	pipelineStage = "idle";
+	compilerPhase = null;
 	if (gen !== pipelineGeneration || goCode !== activeGoModel.getValue()) {
 		return null;
 	}
@@ -418,6 +449,16 @@ async function doTranspile() {
 			goResult.cacheHit ? " (cached)" : ""
 		}`,
 	);
+	const timingSummary = formatCompilerTimings(goResult.timings);
+	if (timingSummary) conOut(`gors phases: ${timingSummary}`);
+	if (
+		goResult.persistentCache.restored &&
+		goResult.persistentCache.importedEntries > 0
+	) {
+		conOut(
+			`gors resolver cache: restored ${goResult.persistentCache.importedEntries} entries (${formatBytes(goResult.persistentCache.bytes)})`,
+		);
+	}
 	setRustValue(goResult.rustCode);
 	sourceMap = goResult.sourceMap;
 	cache = {
@@ -521,6 +562,7 @@ async function runPipeline() {
 
 function onGoChanged() {
 	pipelineGeneration++;
+	compilerPhase = null;
 	cache = { ...cache, jobId: null, compiled: false };
 	resetRustOutput();
 	if (activePipelines > 0) {
@@ -730,19 +772,7 @@ $: if (rustEditor && !rustEditorReady) {
 $: if (goEditor && rustEditor && !initialized) {
 	initialized = true;
 	if (route === "playground") goEditor.focus();
-	goEditor
-		.getModel()
-		?.setValue(
-			[
-				"package main",
-				"",
-				'import "fmt"',
-				"",
-				"func main() {",
-				'\tfmt.Println("Hello, World!")',
-				"}",
-			].join("\n"),
-		);
+	goEditor.getModel()?.setValue(defaultPlaygroundSource.trimEnd());
 	goEditor.setPosition({ lineNumber: 6, column: 2 });
 	initializePaneHeights();
 	if (route === "playground") schedulePipeline(0);
@@ -876,7 +906,7 @@ onDestroy(() => {
             <div class="editor-header">
               <div class="label"><span class="dot"></span><span>main.rs</span></div>
               <div class="actions">
-                <button type="button" class="action-button run-button" title="Run the compiled program in the Linux VM" on:click={handleRun} disabled={runDisabled}>
+                <button type="button" class="action-button run-button" data-compiler-phase={compilerPhase ?? "idle"} title="Run the compiled program in the Linux VM" on:click={handleRun} disabled={runDisabled}>
                   {#if runButtonBusy}
                     <span class="btn-spinner"></span>
                   {:else}

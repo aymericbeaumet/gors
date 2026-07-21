@@ -1,6 +1,12 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+#[cfg(any(
+    all(feature = "parallel", not(target_family = "wasm")),
+    all(feature = "wasm-threads", target_family = "wasm")
+))]
+use rayon::prelude::*;
+
 use super::{
     CompiledModule, dce_pruning, dce_reachability::reachable_stdlib_items,
     external_roots::ExternalRootCollector, required_module_roots::RequiredModuleRoots,
@@ -9,6 +15,8 @@ use super::{
 pub(super) fn resolve_required_stdlib_modules(
     modules: &mut BTreeMap<String, CompiledModule>,
     roots: &[String],
+    jobs: usize,
+    can_parallelize: bool,
 ) {
     let init_root_mod_names = init_root_module_names(roots);
     let mut import_path_by_module: HashMap<String, String> = crate::resolve::list_packages()
@@ -37,9 +45,10 @@ pub(super) fn resolve_required_stdlib_modules(
         }
     }
 
-    let mut loaded_roots: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut install_state = ResolvedModuleInstallState::new(modules);
+    let mut processed_full_modules = HashSet::new();
     loop {
-        let pending: Vec<(String, String)> = required
+        let mut pending: Vec<(String, String, HashSet<String>)> = required
             .keys()
             .filter(|module_name| {
                 required
@@ -50,79 +59,101 @@ pub(super) fn resolve_required_stdlib_modules(
                 let Some(roots) = required.get(module_name.as_str()) else {
                     return false;
                 };
-                !loaded_roots
+                !install_state
+                    .loaded_roots
                     .get(module_name.as_str())
                     .is_some_and(|loaded| roots.is_subset(loaded))
             })
             .filter_map(|module_name| {
-                import_path_by_module
-                    .get(module_name)
-                    .map(|path| (module_name.clone(), path.clone()))
+                import_path_by_module.get(module_name).map(|path| {
+                    (
+                        module_name.clone(),
+                        path.clone(),
+                        required.cloned_or_default(module_name),
+                    )
+                })
             })
             .collect();
+        pending.sort_by(|left, right| (&left.1, &left.0).cmp(&(&right.1, &right.0)));
 
         if pending.is_empty() {
             break;
         }
 
         let mut loaded_any = false;
-        for (module_name, import_path) in pending {
-            let required_roots = required.cloned_or_default(&module_name);
-            trace_stdlib_resolution(format_args!(
-                "[gors] resolve stdlib {import_path} as {module_name} with roots {}",
-                format_reachability_roots(required_roots.iter())
-            ));
-            let items = if let Some(stdlib_mod) =
-                crate::resolve::resolve_with_roots(&import_path, &required_roots)
-            {
-                match stdlib_mod.content {
-                    Some((_, items)) => items,
-                    None => vec![],
-                }
-            } else {
+        for resolved in resolve_pending_modules(pending, jobs, can_parallelize) {
+            let ResolvedPendingModule {
+                module_name,
+                import_path,
+                required_roots,
+                source,
+                dependencies,
+            } = resolved;
+            let Some(source) = source else {
                 trace_stdlib_resolution(format_args!(
                     "[gors] stdlib {import_path} produced no Rust items"
                 ));
-                loaded_roots.insert(module_name, required_roots);
+                install_state
+                    .loaded_roots
+                    .insert(module_name, required_roots);
                 continue;
             };
+            let file = match syn::parse_str::<syn::File>(&source) {
+                Ok(file) => file,
+                Err(error) => {
+                    trace_stdlib_resolution(format_args!(
+                        "[gors] stdlib {import_path} cache payload did not parse: {error}"
+                    ));
+                    install_state
+                        .loaded_roots
+                        .insert(module_name, required_roots);
+                    continue;
+                }
+            };
 
-            for dep in crate::resolve::collect_resolved_imports(&import_path, &required_roots) {
+            for dep in dependencies {
                 let dep_module = crate::resolve::module_name(&dep);
                 stdlib_mod_names.insert(dep_module.clone());
                 import_path_by_module.entry(dep_module).or_insert(dep);
             }
 
-            let filename = format!("{}.rs", crate::resolve::module_name(&import_path));
-            let loaded_module_name = module_name.clone();
-            modules.insert(
-                import_path.clone(),
-                CompiledModule {
-                    mod_name: module_name,
-                    import_path,
-                    file: syn::File {
-                        attrs: vec![],
-                        items,
-                        shebang: None,
-                    },
-                    filename,
-                    content_hash: String::new(),
-                    is_main: false,
-                    is_stdlib: true,
-                },
+            install_resolved_module(
+                modules,
+                &mut install_state,
+                module_name,
+                import_path,
+                required_roots,
+                file,
             );
-            loaded_roots.insert(loaded_module_name, required_roots);
             loaded_any = true;
         }
 
-        let external_root_collector = ExternalRootCollector::new(&stdlib_mod_names);
+        let external_root_collector = ExternalRootCollector::with_item_fingerprints(
+            &stdlib_mod_names,
+            &install_state.item_fingerprints,
+        );
         let mut changed = false;
         for module in modules.values().filter(|module| module.is_stdlib) {
             let refs = if module.mod_name == "builtin" {
+                if !processed_full_modules.insert(module.import_path.clone()) {
+                    continue;
+                }
                 external_root_collector.refs_from_items(&module.file.items)
             } else if let Some(roots) = required.get(&module.mod_name) {
                 let roots = roots_with_package_init(module, roots, &init_root_mod_names);
-                external_root_collector.refs_from_reachable_module_roots(module, roots.as_ref())
+                if install_state
+                    .processed_roots
+                    .get(&module.import_path)
+                    .is_some_and(|processed| processed == roots.as_ref())
+                {
+                    continue;
+                }
+                let refs = external_root_collector
+                    .refs_from_reachable_module_roots(module, roots.as_ref());
+                install_state
+                    .processed_roots
+                    .insert(module.import_path.clone(), roots.into_owned());
+                refs
             } else {
                 continue;
             };
@@ -133,6 +164,188 @@ pub(super) fn resolve_required_stdlib_modules(
             break;
         }
     }
+}
+
+struct ResolvedModuleInstallState {
+    item_fingerprints: HashMap<String, String>,
+    loaded_roots: HashMap<String, HashSet<String>>,
+    processed_roots: HashMap<String, HashSet<String>>,
+}
+
+impl ResolvedModuleInstallState {
+    fn new(modules: &BTreeMap<String, CompiledModule>) -> Self {
+        let item_fingerprints = modules
+            .values()
+            .map(|module| {
+                (
+                    module.import_path.clone(),
+                    super::reachability_cache::items_fingerprint(&module.file.items),
+                )
+            })
+            .collect();
+        Self {
+            item_fingerprints,
+            loaded_roots: HashMap::new(),
+            processed_roots: HashMap::new(),
+        }
+    }
+}
+
+fn install_resolved_module(
+    modules: &mut BTreeMap<String, CompiledModule>,
+    state: &mut ResolvedModuleInstallState,
+    module_name: String,
+    import_path: String,
+    required_roots: HashSet<String>,
+    file: syn::File,
+) {
+    let filename = format!("{}.rs", crate::resolve::module_name(&import_path));
+    state.item_fingerprints.insert(
+        import_path.clone(),
+        super::reachability_cache::items_fingerprint(&file.items),
+    );
+    state
+        .loaded_roots
+        .insert(module_name.clone(), required_roots);
+
+    // Required roots can grow while an older rooted source is being scanned.
+    // That scan may record the expanded roots even though the newly reachable
+    // items are not present until the resolver publishes its wider source on
+    // the next iteration. Replacing the source therefore invalidates the
+    // processed marker even when the required root set itself is unchanged.
+    state.processed_roots.remove(&import_path);
+
+    modules.insert(
+        import_path.clone(),
+        CompiledModule {
+            mod_name: module_name,
+            import_path,
+            file,
+            filename,
+            content_hash: String::new(),
+            is_main: false,
+            is_stdlib: true,
+        },
+    );
+}
+
+struct ResolvedPendingModule {
+    module_name: String,
+    import_path: String,
+    required_roots: HashSet<String>,
+    source: Option<String>,
+    dependencies: Vec<String>,
+}
+
+fn resolve_pending_module(
+    (module_name, import_path, required_roots): &(String, String, HashSet<String>),
+    file_jobs: usize,
+) -> ResolvedPendingModule {
+    trace_stdlib_resolution(format_args!(
+        "[gors] resolve stdlib {import_path} as {module_name} with roots {}",
+        format_reachability_roots(required_roots.iter())
+    ));
+    let source = crate::resolve::resolve_with_roots_and_options(
+        import_path,
+        required_roots,
+        crate::compiler::CompileOptions::with_jobs(file_jobs),
+    )
+    .map(|module| {
+        let items = module.content.map(|(_, items)| items).unwrap_or_default();
+        prettyplease::unparse(&syn::File {
+            shebang: None,
+            attrs: vec![],
+            items,
+        })
+    });
+    let dependencies = crate::resolve::collect_resolved_imports(import_path, required_roots);
+    ResolvedPendingModule {
+        module_name: module_name.clone(),
+        import_path: import_path.clone(),
+        required_roots: required_roots.clone(),
+        source,
+        dependencies,
+    }
+}
+
+fn resolve_pending_modules(
+    pending: Vec<(String, String, HashSet<String>)>,
+    jobs: usize,
+    can_parallelize: bool,
+) -> Vec<ResolvedPendingModule> {
+    let uncached_tasks = if can_parallelize && jobs > 1 {
+        pending
+            .iter()
+            .enumerate()
+            .filter_map(|(index, task)| {
+                let (_, import_path, roots) = task;
+                (!crate::resolve::has_initialized_resolved_module(import_path, roots))
+                    .then_some((index, task))
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+
+    #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+    if uncached_tasks.len() > 1 && rayon::current_thread_index().is_none() {
+        let thread_count = jobs.min(uncached_tasks.len());
+        if let Ok(pool) = rayon::ThreadPoolBuilder::new()
+            .num_threads(thread_count)
+            .thread_name(|index| format!("gors-package-{index}"))
+            .build()
+        {
+            let resolved = pool.install(|| {
+                uncached_tasks
+                    .par_iter()
+                    .map(|&(index, task)| (index, resolve_pending_module(task, 1)))
+                    .collect()
+            });
+            return merge_parallel_resolved_modules(&pending, resolved, jobs);
+        }
+    }
+
+    #[cfg(all(feature = "wasm-threads", target_family = "wasm"))]
+    if uncached_tasks.len() > 1 {
+        let resolved = uncached_tasks
+            .par_iter()
+            .map(|&(index, task)| (index, resolve_pending_module(task, 1)))
+            .collect();
+        return merge_parallel_resolved_modules(&pending, resolved, jobs);
+    }
+
+    let _ = uncached_tasks;
+    let file_jobs = if can_parallelize { jobs } else { 1 };
+    pending
+        .iter()
+        .map(|task| resolve_pending_module(task, file_jobs))
+        .collect()
+}
+
+#[cfg(any(
+    all(feature = "parallel", not(target_family = "wasm")),
+    all(feature = "wasm-threads", target_family = "wasm")
+))]
+fn merge_parallel_resolved_modules(
+    pending: &[(String, String, HashSet<String>)],
+    parallel: Vec<(usize, ResolvedPendingModule)>,
+    jobs: usize,
+) -> Vec<ResolvedPendingModule> {
+    let mut parallel = parallel.into_iter().peekable();
+    pending
+        .iter()
+        .enumerate()
+        .map(|(index, task)| {
+            if parallel
+                .peek()
+                .is_some_and(|(parallel_index, _)| *parallel_index == index)
+                && let Some((_, result)) = parallel.next()
+            {
+                return result;
+            }
+            resolve_pending_module(task, jobs)
+        })
+        .collect()
 }
 
 fn trace_stdlib_resolution(args: std::fmt::Arguments<'_>) {
@@ -166,7 +379,17 @@ pub(super) fn prune_dependency_stdlib_modules(
     }
 
     let root_mod_names: HashSet<String> = std::iter::once("builtin".to_string()).collect();
-    let external_root_collector = ExternalRootCollector::new(&stdlib_mod_names);
+    let item_fingerprints = modules
+        .values()
+        .map(|module| {
+            (
+                module.import_path.clone(),
+                super::reachability_cache::items_fingerprint(&module.file.items),
+            )
+        })
+        .collect();
+    let external_root_collector =
+        ExternalRootCollector::with_item_fingerprints(&stdlib_mod_names, &item_fingerprints);
     let mut preserved_mod_names: HashSet<String> = root_mod_names.iter().cloned().collect();
     for module in modules.values().filter(|module| !module.is_stdlib) {
         preserved_mod_names
@@ -194,14 +417,28 @@ pub(super) fn prune_dependency_stdlib_modules(
         ));
     }
 
+    let mut processed_roots = HashMap::new();
+    let mut processed_full_modules = HashSet::new();
     loop {
         let mut changed = false;
         for module in modules.values().filter(|module| module.is_stdlib) {
             let refs = if root_mod_names.contains(&module.mod_name) {
+                if !processed_full_modules.insert(module.import_path.clone()) {
+                    continue;
+                }
                 external_root_collector.refs_from_items(&module.file.items)
             } else if let Some(roots) = required.get(&module.mod_name) {
                 let roots = roots_with_package_init(module, roots, &init_root_mod_names);
-                external_root_collector.refs_from_reachable_module_roots(module, roots.as_ref())
+                if processed_roots
+                    .get(&module.import_path)
+                    .is_some_and(|processed| processed == roots.as_ref())
+                {
+                    continue;
+                }
+                let refs = external_root_collector
+                    .refs_from_reachable_module_roots(module, roots.as_ref());
+                processed_roots.insert(module.import_path.clone(), roots.into_owned());
+                refs
             } else {
                 continue;
             };
@@ -319,5 +556,94 @@ pub(super) fn prune_unreferenced_stdlib_modules(
         for key in removable {
             modules.remove(&key);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wider_resolved_source_invalidates_roots_processed_against_prior_source()
+    -> Result<(), &'static str> {
+        let module_name = "wrapper".to_string();
+        let import_path = "example/wrapper".to_string();
+        let required_roots = HashSet::from([
+            "Atoi".to_string(),
+            "FormatInt".to_string(),
+            "FormatUint".to_string(),
+        ]);
+        let old_file: syn::File = syn::parse_quote! {
+            pub fn FormatInt() {
+                crate::leaf::FormatInt();
+            }
+        };
+        let mut modules = BTreeMap::from([(
+            import_path.clone(),
+            CompiledModule {
+                mod_name: module_name.clone(),
+                import_path: import_path.clone(),
+                file: old_file,
+                filename: "wrapper.rs".to_string(),
+                content_hash: String::new(),
+                is_main: false,
+                is_stdlib: true,
+            },
+        )]);
+        let mut install_state = ResolvedModuleInstallState::new(&modules);
+        install_state.loaded_roots.insert(
+            module_name.clone(),
+            HashSet::from(["FormatInt".to_string()]),
+        );
+
+        // A downstream module can add roots before this module is reloaded.
+        // The old source then appears processed for the wider root set even
+        // though it does not contain the newly reachable items yet.
+        install_state
+            .processed_roots
+            .insert(import_path.clone(), required_roots.clone());
+        let wider_file: syn::File = syn::parse_quote! {
+            pub fn Atoi() {
+                crate::leaf::Atoi();
+            }
+
+            pub fn FormatInt() {
+                crate::leaf::FormatInt();
+            }
+
+            pub fn FormatUint() {
+                crate::leaf::FormatUint();
+            }
+        };
+
+        install_resolved_module(
+            &mut modules,
+            &mut install_state,
+            module_name.clone(),
+            import_path.clone(),
+            required_roots.clone(),
+            wider_file,
+        );
+
+        assert_eq!(
+            install_state.loaded_roots.get(&module_name),
+            Some(&required_roots)
+        );
+        assert!(!install_state.processed_roots.contains_key(&import_path));
+
+        let module_names = HashSet::from([module_name, "leaf".to_string()]);
+        let collector = ExternalRootCollector::with_item_fingerprints(
+            &module_names,
+            &install_state.item_fingerprints,
+        );
+        let reloaded_module = modules.get(&import_path).ok_or("missing reloaded module")?;
+        let refs = collector.refs_from_reachable_module_roots(reloaded_module, &required_roots);
+        let leaf_roots = refs
+            .get("leaf")
+            .ok_or("missing leaf roots from wider source")?;
+        assert!(leaf_roots.contains("Atoi"));
+        assert!(leaf_roots.contains("FormatInt"));
+        assert!(leaf_roots.contains("FormatUint"));
+        Ok(())
     }
 }

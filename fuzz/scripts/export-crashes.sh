@@ -1,91 +1,87 @@
 #!/bin/bash
 #
-# Export fuzzing crashes as test files
+# Promote cargo-fuzz artifacts into the checked-in regression corpus.
 #
-# This script takes crash inputs from AFL and saves them as .go test files
-# in gors-cli/tests/files/fuzz_*.go for regression testing.
-#
-# Usage:
-#   ./scripts/export-crashes.sh [target]
-#
-# If no target is specified, exports crashes from all targets.
+# Run the resulting corpus through the stable replay tests before committing it.
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FUZZ_DIR="$(dirname "$SCRIPT_DIR")"
-PROJECT_ROOT="$(dirname "$FUZZ_DIR")"
-TEST_FILES_DIR="${PROJECT_ROOT}/gors-cli/tests/files"
-SYNC_DIR="${FUZZ_DIR}/sync"
+ARTIFACTS_DIR="${FUZZ_DIR}/artifacts"
+
+is_known_target() {
+    case "$1" in
+        scanner|parser|roundtrip|compiler)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
 
 export_target() {
     local TARGET="$1"
-    local TARGET_SYNC_DIR="${SYNC_DIR}/${TARGET}"
-    
-    if [ ! -d "$TARGET_SYNC_DIR" ]; then
-        echo "No fuzzing output found for target '$TARGET'"
+    local TARGET_ARTIFACT_DIR="${ARTIFACTS_DIR}/${TARGET}"
+    local TARGET_CORPUS_DIR="${FUZZ_DIR}/corpus/${TARGET}"
+
+    if [ ! -d "$TARGET_ARTIFACT_DIR" ]; then
+        echo "No artifacts found for target '$TARGET'"
         return 0
     fi
-    
-    local CRASH_COUNT=0
+
+    mkdir -p "$TARGET_CORPUS_DIR"
+    local ARTIFACT_COUNT=0
     local EXPORT_COUNT=0
-    
-    # Find all crash files across all fuzzer instances
-    for CRASH_DIR in "$TARGET_SYNC_DIR"/*/crashes; do
-        if [ ! -d "$CRASH_DIR" ]; then
+    local ARTIFACT
+    local HASH
+    local OUT_FILE
+
+    for ARTIFACT in "$TARGET_ARTIFACT_DIR"/*; do
+        if [ ! -f "$ARTIFACT" ]; then
             continue
         fi
-        
-        for CRASH_FILE in "$CRASH_DIR"/*; do
-            if [ ! -f "$CRASH_FILE" ] || [[ "$(basename "$CRASH_FILE")" == "README.txt" ]]; then
-                continue
-            fi
-            
-            CRASH_COUNT=$((CRASH_COUNT + 1))
-            
-            # Generate a unique filename based on content hash
-            local HASH=$(sha256sum "$CRASH_FILE" | cut -c1-8)
-            local OUT_FILE="${TEST_FILES_DIR}/fuzz_${TARGET}_${HASH}.go"
-            
-            # Skip if already exported
-            if [ -f "$OUT_FILE" ]; then
-                echo "  Already exported: $OUT_FILE"
-                continue
-            fi
-            
-            # Check if the file content is valid UTF-8
-            if ! iconv -f UTF-8 -t UTF-8 "$CRASH_FILE" > /dev/null 2>&1; then
-                echo "  Skipping non-UTF-8 crash: $(basename "$CRASH_FILE")"
-                continue
-            fi
-            
-            # Copy the crash file
-            cp "$CRASH_FILE" "$OUT_FILE"
-            EXPORT_COUNT=$((EXPORT_COUNT + 1))
-            echo "  Exported: $OUT_FILE"
-        done
+
+        ARTIFACT_COUNT=$((ARTIFACT_COUNT + 1))
+        if command -v sha256sum >/dev/null 2>&1; then
+            HASH="$(sha256sum "$ARTIFACT" | cut -c1-16)"
+        else
+            HASH="$(shasum -a 256 "$ARTIFACT" | cut -c1-16)"
+        fi
+        OUT_FILE="${TARGET_CORPUS_DIR}/regression-${HASH}"
+
+        if [ -f "$OUT_FILE" ]; then
+            echo "  Already promoted: $OUT_FILE"
+            continue
+        fi
+
+        cp "$ARTIFACT" "$OUT_FILE"
+        EXPORT_COUNT=$((EXPORT_COUNT + 1))
+        echo "  Promoted: $OUT_FILE"
     done
-    
-    echo "Target '$TARGET': Found $CRASH_COUNT crashes, exported $EXPORT_COUNT new files"
+
+    echo "Target '$TARGET': found $ARTIFACT_COUNT artifacts, promoted $EXPORT_COUNT"
 }
 
-# Ensure test files directory exists
-mkdir -p "$TEST_FILES_DIR"
+if [ $# -gt 1 ]; then
+    echo "Usage: $0 [scanner|parser|roundtrip|compiler]"
+    exit 1
+fi
 
 if [ $# -eq 0 ]; then
-    # Export all targets
-    echo "Exporting crashes from all targets..."
+    echo "Promoting artifacts from all targets..."
     echo ""
-    for TARGET in scanner parser roundtrip; do
+    for TARGET in scanner parser roundtrip compiler; do
         export_target "$TARGET"
     done
 else
-    # Export specified target
+    if ! is_known_target "$1"; then
+        echo "Error: unknown target '$1'"
+        exit 1
+    fi
     export_target "$1"
 fi
 
 echo ""
-echo "Done. Test files are in: $TEST_FILES_DIR"
-echo ""
-echo "To run tests with the new files:"
-echo "  cargo test --package gors-cli"
+echo "Run 'cargo test --package fuzz --test corpus' before committing promoted inputs."

@@ -1,74 +1,71 @@
 # gors [![GitHub Actions](https://github.com/aymericbeaumet/gors/actions/workflows/ci.yml/badge.svg)](https://github.com/aymericbeaumet/gors/actions/workflows/ci.yml)
 
 [gors](https://github.com/aymericbeaumet/gors) is an experimental Go toolchain
-written in Rust, featuring a parser, compiler, and code printer that transpiles
-Go to Rust.
+written in Rust. It scans and parses Go source, lowers the Go AST to a Rust
+`syn` AST, applies compiler passes, and emits formatted Rust source. Try it at
+[gors.aymericbeaumet.com](https://gors.aymericbeaumet.com).
 
-## Features
+The standard-library package graph is resolved and lowered from the pinned Go
+SDK through the generic compiler pipeline. Compatibility work must improve
+generic parsing, typing, lowering, reachability, or language/runtime
+primitives; it must not reimplement a Go stdlib API in Rust or add
+package/function-specific compiler behavior. Existing runtime/ABI and targeted
+host-resource shims remain limited to the boundary documented in
+[`AGENTS.md`](AGENTS.md).
 
-- **Scanner/Lexer**: Tokenizes Go source code
-- **Parser**: Generates an AST compatible with Go's `go/ast` package
-- **Compiler**: Transpiles Go AST to Rust `syn` AST
-- **Code Generator**: Outputs formatted Rust code
+## Components
 
-## Supported Go Constructs
-
-- Package declarations and imports
-- Functions and methods
-- Variables and constants
-- Control flow: `if`, `for`, `switch`, `select`
-- Branch statements: `break`, `continue`, `goto`, `fallthrough`
-- Labeled statements
-- Basic types and composite literals
-- Pointers and references
-- Channels (parsing only)
+- Scanner and parser for Go source and AST construction
+- Go AST to Rust `syn` AST compiler
+- Generic embedded Go SDK package resolution and reachability pruning
+- Rust source printer with Go-to-Rust source-map support
+- CLI and persistent browser/Wasm compiler surfaces
 
 ## Install
 
-### Using Homebrew (Recommended)
+With Homebrew:
 
 ```bash
 brew tap aymericbeaumet/tap
 brew install gors
 ```
 
-### Using Cargo
-
-_This method requires the [Rust
-toolchain](https://www.rust-lang.org/tools/install) to be installed on your
-machine._
+With Cargo:
 
 ```bash
 cargo install --git https://github.com/aymericbeaumet/gors.git gors-cli
 ```
 
-### From Source
+Or from a checkout:
 
 ```bash
-git clone --depth=1 https://github.com/aymericbeaumet/gors.git /tmp/gors
-cargo install --path=/tmp/gors/gors-cli
+cargo install --path gors-cli
 ```
 
 ## Usage
 
 ```bash
-# Tokenize a Go file
-gors tokens path/to/file.go
+# Transpile into a multi-file Rust crate.
+gors build --output generated-rust main.go
 
-# Parse and print AST
-gors ast path/to/file.go
+# Transpile, compile, and run.
+gors run main.go
 
-# Compile to Rust (outputs main.rs)
-gors build --emit=rust path/to/file.go
-
-# Compile and run
-gors run path/to/file.go
+# Advanced scanner/parser inspection.
+gors tokens main.go
+gors ast main.go
 ```
 
-### Example
+`run` also accepts multiple files, directories, and module package paths. Values
+after `--` are forwarded to the generated program:
+
+```bash
+gors run main.go -- --flag value
+```
+
+For example:
 
 ```go
-// hello.go
 package main
 
 import "fmt"
@@ -78,61 +75,69 @@ func main() {
 }
 ```
 
-```bash
+```console
 $ gors run hello.go
 Hello, World!
 ```
 
+## Fast feedback
+
+`build` and `run` cache validated compiler output; `run` also caches the compiled
+Rust executable. The bounded cache invalidates on source/module, compiler, SDK,
+CLI, toolchain, target, configuration, or output changes.
+
+```bash
+gors build --jobs 8 --timings-json timings.json main.go
+gors run --jobs 8 --timings-json timings.json main.go
+```
+
+The job count resolves from `--jobs`, then `GORS_JOBS`, then available CPU
+parallelism. `--timings-json` records phase durations and cache events after a
+successful command; `GORS_PROFILE=1` prints phase timings to stderr.
+
 ## Development
 
-### Prerequisites
+The workspace pins Rust 1.96.0 and its Go SDK. The Rust build downloads and
+verifies that SDK under `$CARGO_HOME/gors-cache/`; do not substitute a system Go
+toolchain for integration-oracle results.
 
 ```bash
-brew install rustup binaryen watchexec
-rustup toolchain install 1.96.0 --component rustfmt --component clippy && rustup toolchain install nightly && rustup default 1.96.0
-cargo install --force cargo-fuzz
-```
-
-The Go SDK is pinned by `.go-version`; the Rust build downloads and extracts
-that SDK into `$CARGO_HOME/gors-cache/` for the embedded stdlib and integration
-test oracle.
-
-### Building and Testing
-
-```bash
-# Run the same local build/test/check commands as CI
+# Broad build, lint, unit, and integration gate.
 make all
 
-# Lint
-cargo clippy --workspace -- -D warnings
+# Stable deterministic corpus/property replay.
+make fuzz-test
 
-# Build
-cargo build --workspace
-
-# Run unit tests
-make rust-test-unit
-
-# Run integration suites
-make rust-test-integration-lexer
-make rust-test-integration-parser
-make rust-test-integration-run
-
-# Fuzz testing
-cargo +nightly fuzz run scanner
-cargo +nightly fuzz run parser
-
-# Generate documentation
-cargo doc -p gors --open
+# Browser development server.
+make dev
 ```
 
-### Debug Mode
+For a focused [Go specification](https://go.dev/ref/spec) fixture:
 
 ```bash
-RUST_LOG=debug cargo run -- tokens tests/fixtures/go_programs/fizzbuzz/main.go
-RUST_LOG=debug cargo run -- ast tests/fixtures/go_programs/fizzbuzz/main.go
-RUST_LOG=debug cargo run -- build tests/fixtures/go_programs/fizzbuzz
-RUST_LOG=debug cargo run -- run tests/fixtures/go_programs/fizzbuzz
+make rust-test-integration-go-spec-fixture FIXTURE=assignment_two_phase
 ```
+
+The generated-program oracle requires the pinned Go program and generated Rust
+program to succeed, then compares stdout and stderr byte-for-byte. Canonical
+reports are written only by complete, unfiltered runs:
+
+```bash
+make conformance-report
+make conformance-check
+```
+
+Production browser compilation uses a persistent worker and stable
+single-threaded Wasm. An opt-in cross-origin-isolated threaded preview is
+available for local benchmarking:
+
+```bash
+npm --prefix www run serve:compiler-preview:threads
+```
+
+See [the Wasm notes](www/wasm/readme.md),
+[threaded preview contract](www/wasm/threads-preview.md), and
+[fuzzing guide](fuzz/readme.md) for details.
 
 ## License
 

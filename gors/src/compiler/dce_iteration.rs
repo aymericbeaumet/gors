@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use super::CompiledModule;
 use super::external_roots::ExternalRootCollector;
@@ -8,6 +8,7 @@ use super::semantic_reachability::{
 
 pub(super) struct DceIterationContext {
     module_names: HashSet<String>,
+    item_fingerprints: HashMap<String, String>,
     semantic_graph: Option<SemanticReachabilityGraph>,
 }
 
@@ -18,6 +19,15 @@ impl DceIterationContext {
             .filter(|module| !module.is_main)
             .map(|module| module.mod_name.clone())
             .collect();
+        let item_fingerprints = modules
+            .values()
+            .map(|module| {
+                (
+                    module.import_path.clone(),
+                    super::reachability_cache::items_fingerprint(&module.file.items),
+                )
+            })
+            .collect();
         let semantic_graph = semantic_reachability_graph_enabled().then(|| {
             let semantic_graph = SemanticReachabilityGraph::from_modules(modules, has_main);
             debug_assert!(semantic_graph.has_consistent_local_edges());
@@ -26,6 +36,7 @@ impl DceIterationContext {
         });
         Self {
             module_names,
+            item_fingerprints,
             semantic_graph,
         }
     }
@@ -35,6 +46,10 @@ impl DceIterationContext {
     }
 
     pub(super) fn external_root_collector(&self) -> ExternalRootCollector<'_> {
-        ExternalRootCollector::with_semantic_audit(&self.module_names, self.semantic_graph.as_ref())
+        ExternalRootCollector::with_semantic_audit(
+            &self.module_names,
+            &self.item_fingerprints,
+            self.semantic_graph.as_ref(),
+        )
     }
 }

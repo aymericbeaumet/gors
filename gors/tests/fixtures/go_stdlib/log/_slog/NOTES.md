@@ -1,4 +1,4 @@
-## Known-failing fixture (skipped via `_` prefix)
+## Known-failing fixture (excluded via `fixtures.json`)
 
 Compiler panics at `gors/src/compiler/mod.rs:13115` with
 `"buffer.Buffer" is not a valid Ident` — the same dotted-qualified-type

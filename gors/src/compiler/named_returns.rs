@@ -66,6 +66,7 @@ pub(super) fn wrap_block(
     block: &mut syn::Block,
     named_return_info: &[(syn::Ident, Option<syn::Type>, syn::Expr)],
     named_return_idents: &[syn::Ident],
+    catch_deferred_panics: bool,
 ) {
     let label = synthetic_names::next_named_return_label();
     let mut declarations: Vec<syn::Stmt> = named_return_info
@@ -78,9 +79,23 @@ pub(super) fn wrap_block(
         stmts: body_stmts,
     };
     rewrite_returns_to_break(&mut body, named_return_idents, &label);
-    let body_stmts = body.stmts;
-    let labeled_body: syn::Stmt = syn::parse_quote! { #label: { #(#body_stmts)* }; };
-    declarations.push(labeled_body);
+    if catch_deferred_panics {
+        let defer_decl = body.stmts.remove(0);
+        let body_stmts = body.stmts;
+        declarations.push(syn::parse_quote! {{
+            #defer_decl
+            let __gors_panic_result = crate::builtin::catch_go_unwind(|| {
+                #label: { #(#body_stmts)* };
+            });
+            if let Err(__gors_panic_payload) = __gors_panic_result {
+                crate::builtin::set_recover_payload_box(__gors_panic_payload);
+            }
+        }});
+    } else {
+        let body_stmts = body.stmts;
+        let labeled_body: syn::Stmt = syn::parse_quote! { #label: { #(#body_stmts)* }; };
+        declarations.push(labeled_body);
+    }
     declarations.push(named_return_return_stmt(named_return_idents));
     block.stmts = declarations;
 }
@@ -256,12 +271,45 @@ mod tests {
             ),
         ];
 
-        super::wrap_block(&mut block, &info, &[left, right]);
+        super::wrap_block(&mut block, &info, &[left, right], false);
         let output = quote!(#block).to_string();
 
         assert!(output.contains("'__gors_named_return_0"));
         assert!(output.contains("__gors_named_return_1_0"));
         assert!(output.contains("break '__gors_named_return_0"));
         assert!(output.contains("return (left , right)"));
+    }
+
+    #[test]
+    fn wrap_block_exposes_panic_payload_before_deferred_calls_run() {
+        super::synthetic_names::reset_lowering_counters();
+        let mut block: syn::Block = rust!({
+            let mut __gors_defer_stack = crate::builtin::DeferStack::new();
+            panic!("boom");
+        });
+        let result = syn::Ident::new("result", proc_macro2::Span::mixed_site());
+        let info = vec![(
+            result.clone(),
+            Some(rust!(isize)),
+            syn::parse_quote! { Default::default() },
+        )];
+
+        super::wrap_block(&mut block, &info, &[result], true);
+        let output = quote!(#block).to_string();
+        let positions = (
+            output.find("__gors_defer_stack"),
+            output.find("catch_go_unwind"),
+            output.find("set_recover_payload_box"),
+            output.rfind("return result"),
+        );
+        assert!(
+            matches!(positions, (Some(_), Some(_), Some(_), Some(_))),
+            "{output}"
+        );
+        if let (Some(defer_stack), Some(catch), Some(payload), Some(final_return)) = positions {
+            assert!(defer_stack < catch, "{output}");
+            assert!(catch < payload, "{output}");
+            assert!(payload < final_return, "{output}");
+        }
     }
 }

@@ -1,4 +1,4 @@
-## Known-failing fixture (skipped via `_` prefix)
+## Known-failing fixture (excluded via `fixtures.json`)
 
 The generated `main.rs` fails `rustc` compilation in CI (exit status 1). The
 fixture surface is tiny — it just prints `md5.Size` and `md5.BlockSize` — so

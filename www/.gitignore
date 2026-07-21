@@ -1,3 +1,5 @@
 /dist/
+/generated/
 /node_modules/
+/wasm/pkg-threads/
 wasi-shim.js

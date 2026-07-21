@@ -5,6 +5,7 @@ use super::{
         ReceiverTypeRef, external_receiver_method_return_type,
         receiver_type_from_associated_call_path, receiver_type_from_init_expr,
         receiver_type_from_type, specialize_self_receiver_type,
+        transparent_receiver_constructor_arg,
     },
     syn_inspect::{
         is_path_call_expr, is_transparent_receiver_method, item_macro_name, macro_token_item_names,
@@ -34,133 +35,10 @@ pub(super) fn collect_refs_from_item(
 ) {
     use syn::visit_mut::VisitMut;
 
-    struct BoundCollector<'a> {
+    #[derive(Clone, Default)]
+    struct BoundScope {
         names: std::collections::HashSet<String>,
         types: std::collections::HashMap<String, ReceiverTypeRef>,
-        module_names: &'a ReachabilityNameSet,
-        item_names: &'a ReachabilityNameSet,
-        top_level_field_types: &'a ReceiverFieldTypeMap,
-        top_level_element_types: &'a ReceiverTypeMap,
-        top_level_return_types: &'a ReceiverTypeMap,
-        top_level_tuple_return_types: &'a ReceiverTupleReturnMap,
-        current_self_type: Option<ReceiverTypeRef>,
-    }
-
-    impl BoundCollector<'_> {
-        fn specialize_receiver_type(&self, receiver_type: ReceiverTypeRef) -> ReceiverTypeRef {
-            specialize_self_receiver_type(receiver_type, self.current_self_type.as_ref())
-        }
-
-        fn bound_receiver_type_from_expr(&self, expr: &syn::Expr) -> Option<ReceiverTypeRef> {
-            match expr {
-                syn::Expr::Call(call) => self
-                    .bound_receiver_type_from_iife_call(call)
-                    .or_else(|| self.bound_receiver_type_from_expr(&call.func)),
-                syn::Expr::Cast(cast) => self.bound_receiver_type_from_expr(&cast.expr),
-                syn::Expr::Field(field) => {
-                    let base_type = self.bound_receiver_type_from_expr(&field.base)?;
-                    let syn::Member::Named(member) = &field.member else {
-                        return None;
-                    };
-                    self.top_level_field_types
-                        .get(&base_type.name)
-                        .and_then(|fields| fields.get(&member.to_string()))
-                        .cloned()
-                }
-                syn::Expr::Group(group) => self.bound_receiver_type_from_expr(&group.expr),
-                syn::Expr::Index(index) => {
-                    let base_type = self.bound_receiver_type_from_expr(&index.expr)?;
-                    self.top_level_element_types.get(&base_type.name).cloned()
-                }
-                syn::Expr::MethodCall(method) if is_transparent_receiver_method(&method.method) => {
-                    receiver_type_from_init_expr(
-                        &method.receiver,
-                        self.module_names,
-                        self.item_names,
-                        self.top_level_return_types,
-                    )
-                    .or_else(|| self.bound_receiver_type_from_expr(&method.receiver))
-                }
-                syn::Expr::MethodCall(method) => {
-                    let receiver_type = self.bound_receiver_type_from_expr(&method.receiver)?;
-                    let method_key = impl_method_reachability_name(
-                        &receiver_type.name,
-                        &method.method.to_string(),
-                    );
-                    self.top_level_return_types
-                        .get(&method_key)
-                        .cloned()
-                        .or_else(|| {
-                            external_receiver_method_return_type(
-                                &receiver_type,
-                                &method.method.to_string(),
-                            )
-                        })
-                }
-                syn::Expr::Paren(paren) => self.bound_receiver_type_from_expr(&paren.expr),
-                syn::Expr::Path(path)
-                    if path.path.leading_colon.is_none() && path.path.segments.len() == 1 =>
-                {
-                    let name = path.path.segments.first()?.ident.to_string();
-                    if name == "self" {
-                        return self.current_self_type.clone();
-                    }
-                    self.types.get(&name).cloned()
-                }
-                syn::Expr::Reference(reference) => {
-                    self.bound_receiver_type_from_expr(&reference.expr)
-                }
-                syn::Expr::Unary(unary) => self.bound_receiver_type_from_expr(&unary.expr),
-                _ => None,
-            }
-        }
-
-        fn bound_receiver_type_from_iife_call(
-            &self,
-            call: &syn::ExprCall,
-        ) -> Option<ReceiverTypeRef> {
-            if !call.args.is_empty() {
-                return None;
-            }
-            let closure = closure_expr_from_call_func(&call.func)?;
-            let tail = tail_expr_from_expr(&closure.body)?;
-            self.bound_receiver_type_from_expr(tail)
-        }
-
-        fn bound_receiver_tuple_types_from_expr(
-            &self,
-            expr: &syn::Expr,
-        ) -> Option<ReceiverTupleTypes> {
-            match expr {
-                syn::Expr::Call(call) => {
-                    if let syn::Expr::Path(path) = &*call.func
-                        && let Some(first) = path.path.segments.first()
-                        && let Some(types) = self
-                            .top_level_tuple_return_types
-                            .get(&first.ident.to_string())
-                    {
-                        return Some(types.clone());
-                    }
-                    self.bound_receiver_tuple_types_from_expr(&call.func)
-                }
-                syn::Expr::Cast(cast) => self.bound_receiver_tuple_types_from_expr(&cast.expr),
-                syn::Expr::Group(group) => self.bound_receiver_tuple_types_from_expr(&group.expr),
-                syn::Expr::MethodCall(method) => {
-                    let receiver_type = self.bound_receiver_type_from_expr(&method.receiver)?;
-                    let method_key = impl_method_reachability_name(
-                        &receiver_type.name,
-                        &method.method.to_string(),
-                    );
-                    self.top_level_tuple_return_types.get(&method_key).cloned()
-                }
-                syn::Expr::Paren(paren) => self.bound_receiver_tuple_types_from_expr(&paren.expr),
-                syn::Expr::Reference(reference) => {
-                    self.bound_receiver_tuple_types_from_expr(&reference.expr)
-                }
-                syn::Expr::Unary(unary) => self.bound_receiver_tuple_types_from_expr(&unary.expr),
-                _ => None,
-            }
-        }
     }
 
     fn closure_expr_from_call_func(expr: &syn::Expr) -> Option<&syn::ExprClosure> {
@@ -169,98 +47,6 @@ pub(super) fn collect_refs_from_item(
             syn::Expr::Group(group) => closure_expr_from_call_func(&group.expr),
             syn::Expr::Paren(paren) => closure_expr_from_call_func(&paren.expr),
             _ => None,
-        }
-    }
-
-    fn tail_expr_from_expr(expr: &syn::Expr) -> Option<&syn::Expr> {
-        match expr {
-            syn::Expr::Block(block) => tail_expr_from_block(&block.block),
-            syn::Expr::Group(group) => tail_expr_from_expr(&group.expr),
-            syn::Expr::Paren(paren) => tail_expr_from_expr(&paren.expr),
-            _ => Some(expr),
-        }
-    }
-
-    fn tail_expr_from_block(block: &syn::Block) -> Option<&syn::Expr> {
-        let syn::Stmt::Expr(expr, None) = block.stmts.last()? else {
-            return None;
-        };
-        Some(expr)
-    }
-
-    impl VisitMut for BoundCollector<'_> {
-        fn visit_pat_ident_mut(&mut self, pat: &mut syn::PatIdent) {
-            self.names.insert(pat.ident.to_string());
-            syn::visit_mut::visit_pat_ident_mut(self, pat);
-        }
-
-        fn visit_fn_arg_mut(&mut self, arg: &mut syn::FnArg) {
-            if let syn::FnArg::Typed(pat_type) = arg
-                && let Some(name) = pat_ident_name(&pat_type.pat)
-                && let Some(ty) = receiver_type_from_type(&pat_type.ty, self.module_names)
-            {
-                let ty = self.specialize_receiver_type(ty);
-                self.types.insert(name, ty);
-            }
-            syn::visit_mut::visit_fn_arg_mut(self, arg);
-        }
-
-        fn visit_expr_closure_mut(&mut self, closure: &mut syn::ExprClosure) {
-            for input in &closure.inputs {
-                if let syn::Pat::Type(pat_type) = input
-                    && let Some(name) = pat_ident_name(&pat_type.pat)
-                    && let Some(ty) = receiver_type_from_type(&pat_type.ty, self.module_names)
-                {
-                    let ty = self.specialize_receiver_type(ty);
-                    self.types.insert(name, ty);
-                }
-            }
-            syn::visit_mut::visit_expr_closure_mut(self, closure);
-        }
-
-        fn visit_local_mut(&mut self, local: &mut syn::Local) {
-            if let Some(init) = &local.init
-                && let syn::Pat::Tuple(tuple_pat) = &local.pat
-                && let Some(tuple_types) = self.bound_receiver_tuple_types_from_expr(&init.expr)
-            {
-                for (pat, receiver_type) in tuple_pat.elems.iter().zip(tuple_types) {
-                    if let Some(name) = pat_ident_name(pat)
-                        && let Some(receiver_type) = receiver_type
-                    {
-                        self.types.insert(name, receiver_type);
-                    }
-                }
-            }
-
-            if let syn::Pat::Type(pat_type) = &local.pat
-                && let Some(name) = pat_ident_name(&pat_type.pat)
-                && let Some(ty) = receiver_type_from_type(&pat_type.ty, self.module_names)
-            {
-                let ty = self.specialize_receiver_type(ty);
-                self.types.insert(name, ty);
-            } else if let Some(init) = &local.init
-                && let Some(name) = pat_ident_name(&local.pat)
-                && let Some(ty) = self.bound_receiver_type_from_expr(&init.expr).or_else(|| {
-                    receiver_type_from_init_expr(
-                        &init.expr,
-                        self.module_names,
-                        self.item_names,
-                        self.top_level_return_types,
-                    )
-                })
-            {
-                let ty = self.specialize_receiver_type(ty);
-                self.types.insert(name, ty);
-            }
-            syn::visit_mut::visit_local_mut(self, local);
-        }
-
-        fn visit_item_impl_mut(&mut self, item_impl: &mut syn::ItemImpl) {
-            let previous_self_type = self.current_self_type.clone();
-            self.current_self_type =
-                named_self_type(&item_impl.self_ty).map(|name| ReceiverTypeRef::new(None, name));
-            syn::visit_mut::visit_item_impl_mut(self, item_impl);
-            self.current_self_type = previous_self_type;
         }
     }
 
@@ -366,8 +152,8 @@ pub(super) fn collect_refs_from_item(
         >,
         top_level_element_types: &'a std::collections::HashMap<String, ReceiverTypeRef>,
         top_level_return_types: &'a std::collections::HashMap<String, ReceiverTypeRef>,
-        bound_names: std::collections::HashSet<String>,
-        bound_types: std::collections::HashMap<String, ReceiverTypeRef>,
+        top_level_tuple_return_types: &'a ReceiverTupleReturnMap,
+        bound_scopes: Vec<BoundScope>,
         current_self_type: Option<ReceiverTypeRef>,
         current_self_reachability_names: Vec<String>,
         local_names: std::collections::HashSet<String>,
@@ -376,9 +162,23 @@ pub(super) fn collect_refs_from_item(
 
     impl RefCollector<'_> {
         fn receiver_type_from_expr(&self, expr: &syn::Expr) -> Option<ReceiverTypeRef> {
+            let mut scopes = self.bound_scopes.clone();
+            self.receiver_type_from_expr_in_scopes(expr, &mut scopes)
+        }
+
+        fn receiver_type_from_expr_in_scopes(
+            &self,
+            expr: &syn::Expr,
+            scopes: &mut Vec<BoundScope>,
+        ) -> Option<ReceiverTypeRef> {
             match expr {
-                syn::Expr::Group(group) => self.receiver_type_from_expr(&group.expr),
-                syn::Expr::Paren(paren) => self.receiver_type_from_expr(&paren.expr),
+                syn::Expr::Block(block) => self.receiver_type_from_block(&block.block, scopes),
+                syn::Expr::Group(group) => {
+                    self.receiver_type_from_expr_in_scopes(&group.expr, scopes)
+                }
+                syn::Expr::Paren(paren) => {
+                    self.receiver_type_from_expr_in_scopes(&paren.expr, scopes)
+                }
                 syn::Expr::Path(path)
                     if path.path.leading_colon.is_none() && path.path.segments.len() == 1 =>
                 {
@@ -386,33 +186,42 @@ pub(super) fn collect_refs_from_item(
                     if name == "self" {
                         return self.current_self_type.clone();
                     }
-                    self.bound_types
-                        .get(&name)
-                        .cloned()
-                        .or_else(|| self.top_level_types.get(&name).cloned())
-                }
-                syn::Expr::Call(call) => receiver_type_from_init_expr(
-                    expr,
-                    self.module_names,
-                    self.item_names,
-                    self.top_level_return_types,
-                )
-                .or_else(|| self.receiver_type_from_iife_call(call))
-                .or_else(|| {
-                    if is_path_call_expr(&call.func, &["std", "mem", "take"]) {
-                        call.args
-                            .first()
-                            .and_then(|arg| self.receiver_type_from_expr(arg))
+                    if Self::is_bound_in_scopes(scopes, &name) {
+                        Self::bound_receiver_type_in_scopes(scopes, &name)
                     } else {
-                        None
+                        self.top_level_types.get(&name).cloned()
                     }
-                })
-                .or_else(|| self.receiver_type_from_expr(&call.func)),
+                }
+                syn::Expr::Call(call) => self
+                    .receiver_type_from_iife_call(call, scopes)
+                    .or_else(|| {
+                        transparent_receiver_constructor_arg(call)
+                            .and_then(|arg| self.receiver_type_from_expr_in_scopes(arg, scopes))
+                    })
+                    .or_else(|| {
+                        receiver_type_from_init_expr(
+                            expr,
+                            self.module_names,
+                            self.item_names,
+                            self.top_level_return_types,
+                        )
+                    })
+                    .or_else(|| {
+                        if is_path_call_expr(&call.func, &["std", "mem", "take"]) {
+                            call.args
+                                .first()
+                                .and_then(|arg| self.receiver_type_from_expr_in_scopes(arg, scopes))
+                        } else {
+                            None
+                        }
+                    })
+                    .or_else(|| self.receiver_type_from_expr_in_scopes(&call.func, scopes)),
                 syn::Expr::MethodCall(method) if is_transparent_receiver_method(&method.method) => {
-                    self.receiver_type_from_expr(&method.receiver)
+                    self.receiver_type_from_expr_in_scopes(&method.receiver, scopes)
                 }
                 syn::Expr::MethodCall(method) => {
-                    let receiver_type = self.receiver_type_from_expr(&method.receiver)?;
+                    let receiver_type =
+                        self.receiver_type_from_expr_in_scopes(&method.receiver, scopes)?;
                     let method_key = impl_method_reachability_name(
                         &receiver_type.name,
                         &method.method.to_string(),
@@ -427,9 +236,9 @@ pub(super) fn collect_refs_from_item(
                             )
                         })
                 }
-                syn::Expr::Cast(cast) => self.receiver_type_from_expr(&cast.expr),
+                syn::Expr::Cast(cast) => self.receiver_type_from_expr_in_scopes(&cast.expr, scopes),
                 syn::Expr::Field(field) => {
-                    let base_type = self.receiver_type_from_expr(&field.base)?;
+                    let base_type = self.receiver_type_from_expr_in_scopes(&field.base, scopes)?;
                     let syn::Member::Named(member) = &field.member else {
                         return None;
                     };
@@ -439,24 +248,273 @@ pub(super) fn collect_refs_from_item(
                         .cloned()
                 }
                 syn::Expr::Index(index) => {
-                    let base_type = self.receiver_type_from_expr(&index.expr)?;
+                    let base_type = self.receiver_type_from_expr_in_scopes(&index.expr, scopes)?;
                     self.top_level_element_types.get(&base_type.name).cloned()
                 }
-                syn::Expr::Reference(reference) => self.receiver_type_from_expr(&reference.expr),
+                syn::Expr::Reference(reference) => {
+                    self.receiver_type_from_expr_in_scopes(&reference.expr, scopes)
+                }
                 syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Deref(_)) => {
-                    self.receiver_type_from_expr(&unary.expr)
+                    self.receiver_type_from_expr_in_scopes(&unary.expr, scopes)
                 }
                 _ => None,
             }
         }
 
-        fn receiver_type_from_iife_call(&self, call: &syn::ExprCall) -> Option<ReceiverTypeRef> {
+        fn receiver_type_from_block(
+            &self,
+            block: &syn::Block,
+            scopes: &mut Vec<BoundScope>,
+        ) -> Option<ReceiverTypeRef> {
+            scopes.push(BoundScope::default());
+            let mut result = None;
+            for (index, stmt) in block.stmts.iter().enumerate() {
+                match stmt {
+                    syn::Stmt::Local(local) => self.record_local_in_scopes(local, scopes),
+                    syn::Stmt::Expr(expr, None) if index + 1 == block.stmts.len() => {
+                        result = self.receiver_type_from_expr_in_scopes(expr, scopes);
+                    }
+                    _ => {}
+                }
+            }
+            scopes.pop();
+            result
+        }
+
+        fn receiver_type_from_iife_call(
+            &self,
+            call: &syn::ExprCall,
+            scopes: &mut Vec<BoundScope>,
+        ) -> Option<ReceiverTypeRef> {
             if !call.args.is_empty() {
                 return None;
             }
             let closure = closure_expr_from_call_func(&call.func)?;
-            let tail = tail_expr_from_expr(&closure.body)?;
-            self.receiver_type_from_expr(tail)
+            scopes.push(BoundScope::default());
+            for input in &closure.inputs {
+                self.record_closure_input_in_scopes(input, scopes);
+            }
+            let result = self.receiver_type_from_expr_in_scopes(&closure.body, scopes);
+            scopes.pop();
+            result
+        }
+
+        fn receiver_tuple_types_from_expr_in_scopes(
+            &self,
+            expr: &syn::Expr,
+            scopes: &mut Vec<BoundScope>,
+        ) -> Option<ReceiverTupleTypes> {
+            match expr {
+                syn::Expr::Block(block) => {
+                    self.receiver_tuple_types_from_block(&block.block, scopes)
+                }
+                syn::Expr::Call(call) => {
+                    if let syn::Expr::Path(path) = &*call.func
+                        && let Some(first) = path.path.segments.first()
+                        && let Some(types) = self
+                            .top_level_tuple_return_types
+                            .get(&first.ident.to_string())
+                    {
+                        return Some(types.clone());
+                    }
+                    self.receiver_tuple_types_from_iife_call(call, scopes)
+                        .or_else(|| {
+                            self.receiver_tuple_types_from_expr_in_scopes(&call.func, scopes)
+                        })
+                }
+                syn::Expr::Cast(cast) => {
+                    self.receiver_tuple_types_from_expr_in_scopes(&cast.expr, scopes)
+                }
+                syn::Expr::Group(group) => {
+                    self.receiver_tuple_types_from_expr_in_scopes(&group.expr, scopes)
+                }
+                syn::Expr::MethodCall(method) => {
+                    let receiver_type =
+                        self.receiver_type_from_expr_in_scopes(&method.receiver, scopes)?;
+                    let method_key = impl_method_reachability_name(
+                        &receiver_type.name,
+                        &method.method.to_string(),
+                    );
+                    self.top_level_tuple_return_types.get(&method_key).cloned()
+                }
+                syn::Expr::Paren(paren) => {
+                    self.receiver_tuple_types_from_expr_in_scopes(&paren.expr, scopes)
+                }
+                syn::Expr::Reference(reference) => {
+                    self.receiver_tuple_types_from_expr_in_scopes(&reference.expr, scopes)
+                }
+                syn::Expr::Unary(unary) => {
+                    self.receiver_tuple_types_from_expr_in_scopes(&unary.expr, scopes)
+                }
+                _ => None,
+            }
+        }
+
+        fn receiver_tuple_types_from_block(
+            &self,
+            block: &syn::Block,
+            scopes: &mut Vec<BoundScope>,
+        ) -> Option<ReceiverTupleTypes> {
+            scopes.push(BoundScope::default());
+            let mut result = None;
+            for (index, stmt) in block.stmts.iter().enumerate() {
+                match stmt {
+                    syn::Stmt::Local(local) => self.record_local_in_scopes(local, scopes),
+                    syn::Stmt::Expr(expr, None) if index + 1 == block.stmts.len() => {
+                        result = self.receiver_tuple_types_from_expr_in_scopes(expr, scopes);
+                    }
+                    _ => {}
+                }
+            }
+            scopes.pop();
+            result
+        }
+
+        fn receiver_tuple_types_from_iife_call(
+            &self,
+            call: &syn::ExprCall,
+            scopes: &mut Vec<BoundScope>,
+        ) -> Option<ReceiverTupleTypes> {
+            if !call.args.is_empty() {
+                return None;
+            }
+            let closure = closure_expr_from_call_func(&call.func)?;
+            scopes.push(BoundScope::default());
+            for input in &closure.inputs {
+                self.record_closure_input_in_scopes(input, scopes);
+            }
+            let result = self.receiver_tuple_types_from_expr_in_scopes(&closure.body, scopes);
+            scopes.pop();
+            result
+        }
+
+        fn is_bound_in_scopes(scopes: &[BoundScope], name: &str) -> bool {
+            scopes.iter().rev().any(|scope| scope.names.contains(name))
+        }
+
+        fn bound_receiver_type_in_scopes(
+            scopes: &[BoundScope],
+            name: &str,
+        ) -> Option<ReceiverTypeRef> {
+            for scope in scopes.iter().rev() {
+                if scope.names.contains(name) {
+                    return scope.types.get(name).cloned();
+                }
+            }
+            None
+        }
+
+        fn bind_names_in_scopes(
+            scopes: &mut [BoundScope],
+            names: impl IntoIterator<Item = String>,
+            types: std::collections::HashMap<String, ReceiverTypeRef>,
+        ) {
+            let Some(scope) = scopes.last_mut() else {
+                return;
+            };
+            for name in names {
+                scope.names.insert(name.clone());
+                scope.types.remove(&name);
+                if let Some(receiver_type) = types.get(&name) {
+                    scope.types.insert(name, receiver_type.clone());
+                }
+            }
+        }
+
+        fn record_fn_arg_in_current_scope(&mut self, arg: &syn::FnArg) {
+            let syn::FnArg::Typed(pat_type) = arg else {
+                return;
+            };
+            let mut types = std::collections::HashMap::new();
+            if let Some(name) = pat_ident_name(&pat_type.pat)
+                && let Some(receiver_type) =
+                    receiver_type_from_type(&pat_type.ty, self.module_names)
+            {
+                types.insert(
+                    name,
+                    specialize_self_receiver_type(receiver_type, self.current_self_type.as_ref()),
+                );
+            }
+            Self::bind_names_in_scopes(
+                &mut self.bound_scopes,
+                pat_ident_names(&pat_type.pat),
+                types,
+            );
+        }
+
+        fn record_closure_input_in_scopes(&self, input: &syn::Pat, scopes: &mut [BoundScope]) {
+            let mut types = std::collections::HashMap::new();
+            if let syn::Pat::Type(pat_type) = input
+                && let Some(name) = pat_ident_name(&pat_type.pat)
+                && let Some(receiver_type) =
+                    receiver_type_from_type(&pat_type.ty, self.module_names)
+            {
+                types.insert(
+                    name,
+                    specialize_self_receiver_type(receiver_type, self.current_self_type.as_ref()),
+                );
+            }
+            Self::bind_names_in_scopes(scopes, pat_ident_names(input), types);
+        }
+
+        fn record_closure_input_in_current_scope(&mut self, input: &syn::Pat) {
+            let mut scopes = std::mem::take(&mut self.bound_scopes);
+            self.record_closure_input_in_scopes(input, &mut scopes);
+            self.bound_scopes = scopes;
+        }
+
+        fn record_local_in_scopes(&self, local: &syn::Local, scopes: &mut Vec<BoundScope>) {
+            let mut types = std::collections::HashMap::new();
+
+            if let Some(init) = &local.init
+                && let syn::Pat::Tuple(tuple_pat) = &local.pat
+                && let Some(tuple_types) =
+                    self.receiver_tuple_types_from_expr_in_scopes(&init.expr, scopes)
+            {
+                for (pat, receiver_type) in tuple_pat.elems.iter().zip(tuple_types) {
+                    if let Some(name) = pat_ident_name(pat)
+                        && let Some(receiver_type) = receiver_type
+                    {
+                        types.insert(name, receiver_type);
+                    }
+                }
+            }
+
+            if let syn::Pat::Type(pat_type) = &local.pat
+                && let Some(name) = pat_ident_name(&pat_type.pat)
+                && let Some(receiver_type) =
+                    receiver_type_from_type(&pat_type.ty, self.module_names)
+            {
+                types.insert(
+                    name,
+                    specialize_self_receiver_type(receiver_type, self.current_self_type.as_ref()),
+                );
+            } else if let Some(init) = &local.init
+                && let Some(name) = pat_ident_name(&local.pat)
+                && let Some(receiver_type) = self
+                    .receiver_type_from_expr_in_scopes(&init.expr, scopes)
+                    .or_else(|| {
+                        receiver_type_from_init_expr(
+                            &init.expr,
+                            self.module_names,
+                            self.item_names,
+                            self.top_level_return_types,
+                        )
+                    })
+            {
+                types.insert(
+                    name,
+                    specialize_self_receiver_type(receiver_type, self.current_self_type.as_ref()),
+                );
+            }
+
+            Self::bind_names_in_scopes(scopes, pat_ident_names(&local.pat), types);
+        }
+
+        fn record_local_in_current_scope(&mut self, local: &syn::Local) {
+            let mut scopes = std::mem::take(&mut self.bound_scopes);
+            self.record_local_in_scopes(local, &mut scopes);
+            self.bound_scopes = scopes;
         }
 
         fn insert_receiver_method_ref(&mut self, receiver_type: ReceiverTypeRef, method: &str) {
@@ -517,6 +575,48 @@ pub(super) fn collect_refs_from_item(
     }
 
     impl VisitMut for RefCollector<'_> {
+        fn visit_item_fn_mut(&mut self, func: &mut syn::ItemFn) {
+            self.bound_scopes.push(BoundScope::default());
+            for arg in &func.sig.inputs {
+                self.record_fn_arg_in_current_scope(arg);
+            }
+            syn::visit_mut::visit_item_fn_mut(self, func);
+            self.bound_scopes.pop();
+        }
+
+        fn visit_impl_item_fn_mut(&mut self, func: &mut syn::ImplItemFn) {
+            self.bound_scopes.push(BoundScope::default());
+            for arg in &func.sig.inputs {
+                self.record_fn_arg_in_current_scope(arg);
+            }
+            syn::visit_mut::visit_impl_item_fn_mut(self, func);
+            self.bound_scopes.pop();
+        }
+
+        fn visit_trait_item_fn_mut(&mut self, func: &mut syn::TraitItemFn) {
+            self.bound_scopes.push(BoundScope::default());
+            for arg in &func.sig.inputs {
+                self.record_fn_arg_in_current_scope(arg);
+            }
+            syn::visit_mut::visit_trait_item_fn_mut(self, func);
+            self.bound_scopes.pop();
+        }
+
+        fn visit_block_mut(&mut self, block: &mut syn::Block) {
+            self.bound_scopes.push(BoundScope::default());
+            syn::visit_mut::visit_block_mut(self, block);
+            self.bound_scopes.pop();
+        }
+
+        fn visit_expr_closure_mut(&mut self, closure: &mut syn::ExprClosure) {
+            self.bound_scopes.push(BoundScope::default());
+            for input in &closure.inputs {
+                self.record_closure_input_in_current_scope(input);
+            }
+            syn::visit_mut::visit_expr_closure_mut(self, closure);
+            self.bound_scopes.pop();
+        }
+
         fn visit_path_mut(&mut self, path: &mut syn::Path) {
             syn::visit_mut::visit_path_mut(self, path);
 
@@ -583,7 +683,9 @@ pub(super) fn collect_refs_from_item(
             else {
                 return;
             };
-            if self.item_names.contains(&name) && !self.bound_names.contains(&name) {
+            if self.item_names.contains(&name)
+                && !Self::is_bound_in_scopes(&self.bound_scopes, &name)
+            {
                 self.local_names.insert(name);
             }
         }
@@ -773,33 +875,19 @@ pub(super) fn collect_refs_from_item(
         }
 
         fn visit_local_mut(&mut self, local: &mut syn::Local) {
+            for attr in &mut local.attrs {
+                self.visit_attribute_mut(attr);
+            }
+            self.visit_pat_mut(&mut local.pat);
             if let Some(init) = &mut local.init {
-                let removed = pat_ident_names(&local.pat)
-                    .into_iter()
-                    .filter(|name| self.bound_names.remove(name.as_str()))
-                    .collect::<Vec<_>>();
                 self.visit_expr_mut(&mut init.expr);
-                for name in removed {
-                    self.bound_names.insert(name);
+                if let Some((_, diverge)) = &mut init.diverge {
+                    self.visit_expr_mut(diverge);
                 }
             }
-            syn::visit_mut::visit_local_mut(self, local);
+            self.record_local_in_current_scope(local);
         }
     }
-
-    let mut bound_collector = BoundCollector {
-        names: std::collections::HashSet::new(),
-        types: std::collections::HashMap::new(),
-        module_names: context.module_names,
-        item_names: context.item_names,
-        top_level_field_types: context.top_level_field_types,
-        top_level_element_types: context.top_level_element_types,
-        top_level_return_types: context.top_level_return_types,
-        top_level_tuple_return_types: context.top_level_tuple_return_types,
-        current_self_type: None,
-    };
-    let mut item_for_bounds = item.clone();
-    bound_collector.visit_item_mut(&mut item_for_bounds);
 
     let mut collector = RefCollector {
         module_names: context.module_names,
@@ -809,8 +897,8 @@ pub(super) fn collect_refs_from_item(
         top_level_field_types: context.top_level_field_types,
         top_level_element_types: context.top_level_element_types,
         top_level_return_types: context.top_level_return_types,
-        bound_names: bound_collector.names,
-        bound_types: bound_collector.types,
+        top_level_tuple_return_types: context.top_level_tuple_return_types,
+        bound_scopes: vec![BoundScope::default()],
         current_self_type: None,
         current_self_reachability_names: Vec::new(),
         local_names: std::collections::HashSet::new(),
@@ -927,6 +1015,55 @@ fn is_reachability_name(name: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn collect_function_refs(
+        file: &syn::File,
+        module_names: &ReachabilityNameSet,
+        function: &str,
+    ) -> (
+        std::collections::HashSet<String>,
+        std::collections::HashMap<String, std::collections::HashSet<String>>,
+    ) {
+        let item_names = super::super::reachability_names::item_reachability_names(&file.items);
+        let top_level_names = super::super::reachability_names::top_level_item_names(&file.items);
+        let top_level_types =
+            super::super::receiver_type_facts::top_level_item_types(&file.items, module_names);
+        let top_level_field_types = super::super::receiver_type_facts::top_level_item_field_types(
+            &file.items,
+            module_names,
+        );
+        let top_level_element_types =
+            super::super::receiver_type_facts::top_level_collection_element_types(
+                &file.items,
+                module_names,
+            );
+        let top_level_return_types = super::super::receiver_type_facts::top_level_item_return_types(
+            &file.items,
+            module_names,
+        );
+        let top_level_tuple_return_types =
+            super::super::receiver_type_facts::top_level_item_tuple_return_types(
+                &file.items,
+                module_names,
+            );
+        let context = RefCollectionContext {
+            module_names,
+            item_names: &item_names,
+            top_level_names: &top_level_names,
+            top_level_types: &top_level_types,
+            top_level_field_types: &top_level_field_types,
+            top_level_element_types: &top_level_element_types,
+            top_level_return_types: &top_level_return_types,
+            top_level_tuple_return_types: &top_level_tuple_return_types,
+        };
+        let mut item = file
+            .items
+            .iter()
+            .find(|item| matches!(item, syn::Item::Fn(func) if func.sig.ident == function))
+            .cloned()
+            .expect("function item");
+        collect_refs_from_item(&mut item, &context)
+    }
+
     #[test]
     fn collect_refs_follows_qself_associated_method_calls() {
         let module_names = ReachabilityNameSet::new();
@@ -959,6 +1096,242 @@ mod tests {
         assert!(names.contains("bucket"), "{names:?}");
         assert!(
             names.contains(&impl_method_reachability_name("bucket", "fill")),
+            "{names:?}"
+        );
+    }
+
+    #[test]
+    fn collect_refs_follows_method_calls_inside_saved_method_value_closures() {
+        let module_names = ReachabilityNameSet::new();
+        let file: syn::File = syn::parse_quote! {
+            pub struct Counter;
+
+            impl Counter {
+                pub fn Read(&self) -> isize {
+                    7
+                }
+            }
+
+            fn root(counter: Counter) {
+                let saved = {
+                    let receiver = counter.clone();
+                    move || receiver.Read()
+                };
+                let _ = saved();
+            }
+        };
+        let item_names = super::super::reachability_names::item_reachability_names(&file.items);
+        let top_level_names = super::super::reachability_names::top_level_item_names(&file.items);
+        let top_level_types =
+            super::super::receiver_type_facts::top_level_item_types(&file.items, &module_names);
+        let top_level_field_types = super::super::receiver_type_facts::top_level_item_field_types(
+            &file.items,
+            &module_names,
+        );
+        let top_level_element_types =
+            super::super::receiver_type_facts::top_level_collection_element_types(
+                &file.items,
+                &module_names,
+            );
+        let top_level_return_types = super::super::receiver_type_facts::top_level_item_return_types(
+            &file.items,
+            &module_names,
+        );
+        let top_level_tuple_return_types =
+            super::super::receiver_type_facts::top_level_item_tuple_return_types(
+                &file.items,
+                &module_names,
+            );
+        let context = RefCollectionContext {
+            module_names: &module_names,
+            item_names: &item_names,
+            top_level_names: &top_level_names,
+            top_level_types: &top_level_types,
+            top_level_field_types: &top_level_field_types,
+            top_level_element_types: &top_level_element_types,
+            top_level_return_types: &top_level_return_types,
+            top_level_tuple_return_types: &top_level_tuple_return_types,
+        };
+        let mut item = file
+            .items
+            .iter()
+            .find(|item| matches!(item, syn::Item::Fn(func) if func.sig.ident == "root"))
+            .cloned()
+            .expect("root function item");
+
+        let (names, external_refs) = collect_refs_from_item(&mut item, &context);
+
+        assert!(external_refs.is_empty(), "{external_refs:?}");
+        assert!(names.contains("Counter"), "{names:?}");
+        assert!(
+            names.contains(&impl_method_reachability_name("Counter", "Read")),
+            "{names:?}"
+        );
+    }
+
+    #[test]
+    fn collect_refs_follows_external_receiver_methods_through_block_values() {
+        let module_names = ReachabilityNameSet::from(["builtin".to_string()]);
+        let file: syn::File = syn::parse_quote! {
+            struct Holder {
+                items: crate::builtin::GorsMap<String, String>,
+            }
+
+            struct Other;
+
+            impl Other {
+                fn touch(&self) {}
+            }
+
+            fn root(holder: Holder, other: Other) {
+                let _ = ({
+                    let items = holder.items.clone();
+                    items
+                }).is_nil();
+                let items = other;
+                items.touch();
+            }
+        };
+        let item_names = super::super::reachability_names::item_reachability_names(&file.items);
+        let top_level_names = super::super::reachability_names::top_level_item_names(&file.items);
+        let top_level_types =
+            super::super::receiver_type_facts::top_level_item_types(&file.items, &module_names);
+        let top_level_field_types = super::super::receiver_type_facts::top_level_item_field_types(
+            &file.items,
+            &module_names,
+        );
+        let top_level_element_types =
+            super::super::receiver_type_facts::top_level_collection_element_types(
+                &file.items,
+                &module_names,
+            );
+        let top_level_return_types = super::super::receiver_type_facts::top_level_item_return_types(
+            &file.items,
+            &module_names,
+        );
+        let top_level_tuple_return_types =
+            super::super::receiver_type_facts::top_level_item_tuple_return_types(
+                &file.items,
+                &module_names,
+            );
+        let context = RefCollectionContext {
+            module_names: &module_names,
+            item_names: &item_names,
+            top_level_names: &top_level_names,
+            top_level_types: &top_level_types,
+            top_level_field_types: &top_level_field_types,
+            top_level_element_types: &top_level_element_types,
+            top_level_return_types: &top_level_return_types,
+            top_level_tuple_return_types: &top_level_tuple_return_types,
+        };
+        let mut item = file
+            .items
+            .iter()
+            .find(|item| matches!(item, syn::Item::Fn(func) if func.sig.ident == "root"))
+            .cloned()
+            .expect("root function");
+
+        let (_names, external_refs) = collect_refs_from_item(&mut item, &context);
+        let builtin_refs = external_refs.get("builtin").expect("builtin references");
+
+        assert!(builtin_refs.contains("GorsMap"), "{builtin_refs:?}");
+        assert!(
+            builtin_refs.contains(&impl_method_reachability_name("GorsMap", "is_nil")),
+            "{builtin_refs:?}"
+        );
+        assert!(
+            _names.contains(&impl_method_reachability_name("Other", "touch")),
+            "{_names:?}"
+        );
+    }
+
+    #[test]
+    fn collect_refs_keeps_sibling_block_receiver_bindings_separate() {
+        let module_names = ReachabilityNameSet::new();
+        let file: syn::File = syn::parse_quote! {
+            struct Left;
+            struct Right;
+
+            impl Left {
+                fn read(&self) {}
+            }
+
+            impl Right {
+                fn write(&self) {}
+            }
+
+            fn root(left: Left, right: Right) {
+                {
+                    let receiver = left;
+                    receiver.read();
+                }
+                {
+                    let receiver = right;
+                    receiver.write();
+                }
+            }
+        };
+
+        let (names, external_refs) = collect_function_refs(&file, &module_names, "root");
+
+        assert!(external_refs.is_empty(), "{external_refs:?}");
+        assert!(
+            names.contains(&impl_method_reachability_name("Left", "read")),
+            "{names:?}"
+        );
+        assert!(
+            names.contains(&impl_method_reachability_name("Right", "write")),
+            "{names:?}"
+        );
+        assert!(
+            !names.contains(&impl_method_reachability_name("Right", "read")),
+            "{names:?}"
+        );
+        assert!(
+            !names.contains(&impl_method_reachability_name("Left", "write")),
+            "{names:?}"
+        );
+    }
+
+    #[test]
+    fn collect_refs_restores_receiver_binding_after_closure_parameter_shadowing() {
+        let module_names = ReachabilityNameSet::new();
+        let file: syn::File = syn::parse_quote! {
+            struct Outer;
+            struct Inner;
+
+            impl Outer {
+                fn outside(&self) {}
+            }
+
+            impl Inner {
+                fn inside(&self) {}
+            }
+
+            fn root(receiver: Outer) {
+                let callback = |receiver: Inner| receiver.inside();
+                receiver.outside();
+                let _ = callback;
+            }
+        };
+
+        let (names, external_refs) = collect_function_refs(&file, &module_names, "root");
+
+        assert!(external_refs.is_empty(), "{external_refs:?}");
+        assert!(
+            names.contains(&impl_method_reachability_name("Inner", "inside")),
+            "{names:?}"
+        );
+        assert!(
+            names.contains(&impl_method_reachability_name("Outer", "outside")),
+            "{names:?}"
+        );
+        assert!(
+            !names.contains(&impl_method_reachability_name("Outer", "inside")),
+            "{names:?}"
+        );
+        assert!(
+            !names.contains(&impl_method_reachability_name("Inner", "outside")),
             "{names:?}"
         );
     }

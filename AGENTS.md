@@ -186,6 +186,19 @@ gors-builtin/
   Deferred and goroutine function-value calls must use the same argument
   packing path as ordinary function-value calls; `go f(...)` also clones a
   function-value identifier before entering the spawned closure.
+- Stored function ABIs recursively own interface values inside slices, maps,
+  channels, pointers, variadics, and fixed arrays. Render signatures from the
+  Go AST when it is available so fixed-array lengths survive. Function-item
+  adapters only have the length-erased `GoType::Array`; keep their container
+  shape and use `[T; _]` in the local `Arc<dyn Fn>` coercion while leaving the
+  adapter closure parameters and result inferred from the called function item.
+  Do not collapse those arrays to `Vec<T>`, including when they are nested in
+  another container or the function value is inferred without an outer Rust
+  expected type.
+- Generated runtime interfaces provide `Default for Box<dyn Trait>` through
+  their no-op sentinel. This is the generic interface zero value used by
+  `make([]Interface, n)`, fixed interface arrays, and nested container values;
+  do not add interface-specific defaults.
 - Ordinary Go function literals lower to borrowing Rust closures so local
   captures can be mutated across calls. Only function literals being stored
   behind generated function types should use `move`, because those are stored
@@ -196,6 +209,11 @@ gors-builtin/
   arguments or assignments are wrapped as shared function cells by casting the
   inner `Box` to `Box<dyn FnMut(...) -> ... + Send>`; do not cast the outer
   `Arc`, because Rust rejects non-primitive casts between `Arc` instantiations.
+- When a mutable trait-object call argument comes from cloning a shared capture,
+  materialize the cloned interface in an owned temporary before borrowing it.
+  Borrowing through the source lock can both mutate the caller's value and keep
+  a `MutexGuard` alive across a reentrant call; do not strip the clone or pass a
+  borrow of the guard-backed source.
 - Function literals use IR capture analysis for shared mutable captures. Mutable
   outer captures discovered anywhere in a block, including callback arguments,
   returned closures, goroutines, and function literals nested inside composite
@@ -205,6 +223,34 @@ gors-builtin/
 - Assignments and compound assignments to shared captures must evaluate the RHS
   into a temporary before locking the LHS cell, so expressions like
   `x = x + 1` and `x += x` do not try to acquire the same `Mutex` twice.
+- Non-declaration multi-assignments follow Go's two-phase rule. Prepare every
+  supported target before evaluating any RHS, compile/coerce every RHS into
+  temporaries, and only then perform writes from left to right. Prepared targets
+  currently cover discards, ordinary addressable lvalues, explicit pointer
+  dereferences, implicit pointer selectors, map indexes with staged keys, and
+  index targets with staged indexes (including pointer-to-array bases). The same
+  boundary applies to equal-count RHS lists, multi-result calls, and supported
+  comma-ok map/channel/type-assertion forms. This preserves target evaluation
+  order within the current value model. Keep that staging boundary distinct
+  from the `GorsMap` identity and tracked slice-alias writeback rules below;
+  those representations decide what each prepared write mutates. When a staged
+  single non-map assignment contains index or pointer operands, use the same
+  prepared-target boundary: snapshot any owning pointer cell, evaluate indexes,
+  evaluate the RHS, and only then lock the staged owner for the write. This
+  prevents an index such as `p.buf[p.i]` from re-locking `p` while the buffer
+  field is already borrowed through its guard. When a staged
+  direct-identifier write replaces a slice header used by an active range
+  snapshot, synchronize and detach that old header immediately before the
+  write, after all RHS values have been evaluated. Use the same prepared-target
+  boundary for non-define select receive assignments. Call-valued index bases
+  need a prepared-place distinction: owned slice results may be staged as
+  values, but compiler-emitted borrowed/projected slice views must not keep an
+  `&mut` view or `GorsPtrGuard` alive across RHS evaluation. Prepare an
+  owner-backed projection descriptor that captures the Go slice header before
+  the RHS and reacquires the owner only for writeback. Offset-based descriptors
+  must prove stable inline backing, such as a fixed array; heap-backed `Vec`
+  views require shared backing identity and cannot safely reuse an offset after
+  an RHS reallocation.
 - Addressable non-Copy binding initializers are cloned for `var` and `:=`
   declarations. This preserves Go value-copy semantics for struct/string/array
   bindings and avoids Rust moves such as `d := c` invalidating later uses of
@@ -243,6 +289,15 @@ gors-builtin/
   compile keys and values with the expected map key/value Go types. This keeps
   `map[string]T{"k": v}`, `m["k"]`, and `delete(m, "k")` on owned `String`
   keys instead of accidentally inferring `&str` keys from Rust literals.
+- Ordinary Go map values lower to the generic
+  `crate::builtin::GorsMap<K, V>` handle, whose optional
+  `Arc<Mutex<HashMap<K, V>>>` allocation preserves both nil state and shared map
+  identity. Cloning or assigning a map handle must share later mutations;
+  reads, `len`, `delete`, `clear`, and range on a nil map are valid empty
+  operations, while insertion or compound update on a nil map must panic.
+  `deep_clone` is reserved for source semantics that explicitly require an
+  independent map, such as the generic runtime-linkname clone-body rewrite; do
+  not replace ordinary Go map assignment with it.
 - Builtins that write into a destination, such as `copy`, must compile that
   destination through the lvalue path rather than ordinary expression lowering.
   Addressable slice expressions such as `e.encode[:]`, including array fields
@@ -254,6 +309,14 @@ gors-builtin/
   literal or string constant as bytes, including `[]byte(s)` and `copy(dst, s)`,
   must preserve byte escapes such as `\xff` directly instead of routing through
   Rust UTF-8 `String::as_bytes()`.
+- The existing generated `String` ABI carries arbitrary Go byte strings through
+  a lossless escaped-scalar encoding owned by
+  `gors-builtin::{go_string_from_bytes, go_string_bytes}`. Valid UTF-8 stays
+  readable; invalid bytes and the escape scalar round-trip without loss. String
+  byte indexing/slicing, `len`, `[]byte`/`[]rune` conversion, range decoding,
+  raw output, and lexical comparison must go through the generic Go-string
+  helpers rather than Rust UTF-8 byte/character assumptions. Keep this a
+  language representation rule, not a stdlib-specific replacement.
 - Main-package package-level vars are injected as startup locals in `main()`.
   Preserve explicit Go types there: typed initializers must be compiled with the
   expected type and emitted with a Rust type annotation, and typed zero values
@@ -342,12 +405,22 @@ gors-builtin/
   index, nil pointer, or integer divide-by-zero panics from callees, can become
   recover payloads before deferred calls run. Keep this simple until broader
   panic/recover conformance requires a richer control-flow model.
+  Runtime recover payloads and panic-hook suppression depth are thread-local.
+  The process-wide hook is installed once and forwards to the prior hook unless
+  the current thread is inside a generated recover boundary; one goroutine's
+  recover handling must never silence an unrelated thread's panic diagnostics.
 - Named result parameters are declared before a synthetic labeled function-exit
   block. Explicit and bare `return` statements inside that block assign the
   named results and break to the exit label, then the final Rust return reads
   the named results after RAII defer guards have been dropped. This preserves
   Go's ordering where deferred calls can mutate named results before the caller
   sees them.
+- When a named-result function also contains `defer`, the labeled body—not the
+  final named-result read—runs inside `crate::builtin::catch_go_unwind`. A panic
+  payload is installed for `recover` before the defer stack drops, so a
+  recovering deferred call can mutate named results and the function returns
+  those final values. Do not wrap the final return in that boundary or let an
+  unrecovered payload bypass the defer stack's resume path.
 - Lowering-generated labels and temporary identifiers with deterministic
   counters belong in `gors/src/compiler/synthetic_names.rs`. Focused lowering
   modules such as named returns, switch/select, goto, and range lowering should
@@ -406,8 +479,13 @@ gors-builtin/
   argument while borrowing the pointee for the generated Rust value-receiver
   call.
 - Method values (`v.M`) infer to generated function-value cells. The backend
-  lowers them as closures that bind the receiver once; pointer receiver values
-  capture the generated pointer cell and lock it per invocation.
+  lowers them as closures that evaluate and bind the receiver exactly once.
+  Value receivers capture a Go value copy, pointer receivers capture the
+  generated pointer cell and retain identity, and interface receivers use
+  `__gors_clone_box` to snapshot the interface value into owned shared storage
+  before the closure is created. Reassignment of the original value or
+  interface after `f := v.M` must not retarget `f`; pointer-visible pointee
+  mutations must remain visible.
 - Go value-receiver methods that assign to the receiver or its fields must lower
   to an owned `mut self` receiver. Borrowed `&self` is only valid for
   non-mutating value receivers; mutating value receivers such as
@@ -419,6 +497,34 @@ gors-builtin/
   as `encoding/binary.LittleEndian`; Rust privacy must not block that generated
   call path.
 
+### Parallel compilation
+
+- `compiler::CompileOptions::jobs` is the single package-task budget. Native
+  builds use scoped Rayon pools behind the `parallel` feature; stable Wasm keeps
+  the default budget of one, while the opt-in `wasm-threads` build uses the
+  already-initialized `wasm-bindgen-rayon` global pool. A zero budget is
+  normalized to one.
+- Parallel work is split at deterministic ownership boundaries: independent
+  local packages, independent pending stdlib packages, and safe per-file
+  resolver work. Package-wide type and interface analysis remains sequential,
+  per-file parallel lowering is disabled when external interface implementors
+  require shared package facts, and nested custom Rayon pools must not be
+  created from an existing Rayon worker. When stdlib packages are parallelized,
+  each package receives a single-file budget; otherwise one package may spend
+  the available budget across safe files.
+- Worker tasks return deterministic formatted Rust `String` values. The
+  coordinator reparses those strings into `syn` nodes and installs modules in
+  stable order; non-`Send` syntax trees never cross native or Wasm worker
+  boundaries. `jobs` is operational rather than semantic, so outputs and cache
+  identities must remain identical across worker counts. Keep explicit
+  single-worker versus multi-worker determinism tests.
+- Do not dispatch already initialized type environments or resolved modules
+  through Rayon merely because a job budget is available. Warm cache reads and
+  generated-source reparses stay sequential; parallel package dispatch requires
+  more than one genuinely uncached module, while one uncached package may still
+  spend the budget across safe files. This avoids native pool construction and
+  Wasm shared-memory contention on the interactive cached path.
+
 ### Incremental builds
 
 - `.gors_manifest.json` tracks content hashes per module
@@ -427,6 +533,45 @@ gors-builtin/
 - Files tracked by the previous manifest but absent from the new generated
   output are removed, so DCE/module-pruning changes do not leave stale `.rs`
   files in the output directory.
+- CLI publication of a generated directory is serialized by
+  `.gors-build.lock`. Changed files are fully written and synced in same-directory
+  temporaries, leaf modules are atomically persisted before `lib.rs` and
+  `main.rs`, stale outputs are removed under the same lock, and the new manifest
+  is published last. Keep the lock across the whole write/remove/manifest
+  transaction so two `gors` processes cannot interleave programs in one output
+  directory.
+- `gors run` keeps the same lock through generated-source publication, `rustc`
+  executable replacement, executable-manifest publication, and successful child
+  spawn. It releases the lock immediately after `Command::spawn`, before waiting
+  for the child, so another invocation cannot replace the validated executable
+  before launch but a long-running generated program never blocks later builds
+  or runs.
+- `.gors_cli_cache.json` is a separate CLI cache manifest. It validates the
+  exact command/configuration identity, compiler and CLI fingerprints, pinned
+  Go SDK, Rust toolchain/edition, target, `GORSPATH`, module context, eligible
+  input-file membership and contents, and output hashes. Do not conflate it with
+  the per-module write-skipping manifest above.
+- The pre-parse CLI key treats `GORSPATH` as search-root identity: it hashes the
+  configured value, root order, normalized/canonical root paths, and root kind,
+  but never recursively scans every possible Go file in those trees. After
+  parsing, `InputSnapshot` is the exact semantic guard: it hashes every resolved
+  source file and records eligible `.go` directory membership. Root relocation
+  must invalidate the lookup key, while edits/additions in packages actually
+  selected by resolution must invalidate snapshot validation without making a
+  warm lookup proportional to the entire `GORSPATH`.
+- The CLI cache lives under `${XDG_CACHE_HOME:-$HOME/.cache}/gors` when those
+  roots are available. It is pruned to 256 entries, 5 GiB, and 14 days;
+  manifests, source maps, executables, and resolver archives that publish cache
+  state must use atomic replacement. `build` reuses validated generated output;
+  `run` can additionally reuse its validated `rustc` executable. `jobs` changes
+  scheduling only and therefore does not fragment semantically identical cache
+  entries.
+- Active `build` and `run` cache users hold a shared `.gors-cache.lock` before
+  taking their per-output `.gors-build.lock`, through cache lookup, compilation,
+  and publication. Pruning takes the cache-wide lock exclusively, rechecks the
+  once-daily marker after acquisition, and only then removes entries. Preserve
+  that shared-then-output lock order: it lets unrelated compilers proceed in
+  parallel without allowing cache GC to delete an active publication.
 
 ## Stdlib system
 
@@ -482,28 +627,73 @@ packages on demand from the actual cross-module symbols that remain after
 reachability pruning.
 
 Stdlib resolution is root-specific and cached by import path plus reachable
-symbol set. The resolver parses selected Go files only when the package is
-needed, filters unused top-level AST declarations before compiling, and caches
-type environments, transitive imports, and resolved token streams. Direct
+symbol set. Generated module source and its exact resolved-import set share one
+per-key `OnceLock`, so concurrent cold callers perform one compilation and
+wait for the same result rather than duplicating semantic work. The resolver
+may reuse an already initialized rooted entry whose roots are a superset of the
+requested set, because source reachability is monotonic and compiler-side DCE
+still prunes against the actual roots. Prefer the smallest such superset with
+the cache key as a deterministic tie-breaker; never substitute an uninitialized
+entry, a different import path, an uncacheable entry, or the unfiltered
+`roots=None` lowering mode. Reused module source and resolved-import metadata
+must come from the same selected slot. The resolver parses selected Go files
+only when the package is needed, filters unused
+top-level AST declarations before compiling, and caches type environments,
+transitive imports, and generated module source. Direct
 imports with no surviving references should not force module generation.
 Resolver source filtering must retain same-package method declarations that are
 only discovered from typed local values inside reachable bodies, such as
 `p.parse()` where `p` is a local `parser` value. Keep that discovery generic and
 type-env driven so stdlib source pruning does not drop ordinary helper methods
 before compiler lowering can reference them.
+Resolver archive schema 4 serializes only mechanically generated module source,
+exact imports, root sets, and type environments. Before either global cache
+write lock mutates semantic state, import must validate and prepare the whole
+archive: header/fingerprints, entry counts and known paths, strict sorted
+uniqueness, generated Rust parsing, record digests, canonical type-environment
+serialization and digest, serde round-trip, and the actual embedded Go package
+name. Treat those digests as corruption detection, not authentication.
+Archive output is deterministic: records, roots, imports, JSON object keys, and
+all known `HashSet` fields are canonicalized before hashing and serialization.
+Wasm imports are capped at 64 MiB and 1,024 records; native imports at 256 MiB
+and 4,096 records. The initialized root-set cache is LRU-bounded to 64 MiB/256
+entries on Wasm and 256 MiB/1,024 entries natively; eviction skips uninitialized
+or initializing slots. Keep operational telemetry behind
+`resolved_module_cache_stats()`.
+The resolver-cache fingerprint covers compiler and builtin source/manifests,
+`build.rs`, the workspace manifests and lockfile, target/profile, every
+semantic feature, GOOS/GOARCH, and the exact filtered embedded SDK bytes. It
+excludes only the `parallel` and `wasm-threads` scheduling features so stable,
+native-parallel, and threaded builds for the same target can exchange
+deterministic resolver output. The full compiler fingerprint remains sensitive
+to every feature for CLI and complete-artifact caches. Wasm also includes the
+tracked `www/wasm` manifest and lockfile; custom SDK source/version changes must
+invalidate the preload marker. This archive is a cache of generic Go
+compilation, never a place to ship handwritten Rust replacements for Go stdlib
+APIs.
 Compiler-side stdlib module loading, dependency pruning, unreferenced-module
 cleanup, and `GORS_STDLIB_TRACE` formatting live in
 `gors/src/compiler/stdlib_modules.rs`; `compiler/mod.rs` should only orchestrate
 when those steps run in the compile pipeline.
 Compiler-side stdlib/DCE reachability is also memoized by the Rust item token
 stream, requested roots, and known module names; keep that key aligned with any
-future reachability input that can change the kept item set.
+future reachability input that can change the kept item set. Precompute the item
+fingerprint once while a module's syntax is immutable and reuse it across
+root-specific lookups. Cross-module root fixed points must likewise remember the
+last expanded root set processed for each module and revisit only modules whose
+roots grew. When the resolver publishes wider rooted source for a module,
+invalidate the processed-roots marker for the replaced source: required roots
+may already have grown and been scanned against the older, narrower item set.
+Rescanning every stable module after an unrelated module changes turns
+dependency propagation quadratic without changing semantics.
 `reachable_stdlib_items()` returns a named `ReachableItems` result: `keep`
 drives item retention, `refs` drives external module-root propagation, and
 `names` drives intra-module item/member retention. Do not return anonymous
 tuples or unpack positional reachability slots in callers. Cache lookup/storage
 belongs behind the reachable-items cache helpers so the reachability function
-stays focused on computation rather than lock mechanics.
+stays focused on computation rather than lock mechanics. Within one reachability
+computation, collect references from each distinct reachable item state once;
+local-name growth, not duplicate keep/external-ref inserts, controls convergence.
 Compiler-side root propagation should go through the private
 `RequiredModuleRoots` helper in
 `gors/src/compiler/required_module_roots.rs` rather than open-coded
@@ -548,20 +738,39 @@ external-root discovery should construct `RefCollectionContext` and call
 context structs in the compiler root. That visitor is also responsible for
 generated associated-method call shapes, including qself/UFCS calls such as
 `<T>::M(...)`, so DCE keeps receiver impl methods emitted by projected receiver
-lowering.
+lowering. Receiver facts in that visitor are lexical and sequential: function,
+closure, and block bindings must not leak across scopes, a local initializer is
+analyzed before its pattern is bound, and a block-valued receiver is inferred
+from the environment immediately preceding that block's tail expression. Apply
+the same scoped replay to tuple destructuring through generated block values and
+zero-argument IIFEs so later receiver methods retain their concrete impls.
+Item macros participate in reachability through shared helpers in
+`gors/src/compiler/syn_inspect.rs`: identifiers referenced in macro tokens are
+edges, and item names declared by a macro body are discovered by parsing that
+body as a `syn::File`. Reachability-name collection, semantic graph construction,
+item retention, and unused-`use` pruning must consume the same macro facts.
+Do not add macro-name-specific DCE exceptions or let a macro-declared reachable
+item lose the imports referenced by its body.
 Builtin runtime-helper pruning lives in `gors/src/compiler/builtin_pruning.rs`;
 the DCE loop should delegate builtin channel, complex, bitcast, and builtin
 trait retention policy there instead of carrying runtime-specific root lists in
 the compiler root.
+Builtin helper dependencies introduced by retained builtin impls form a
+closure, not a one-shot root expansion. `prune_builtin_items_to_roots()` must
+recompute reachability, expand `reachable.names` through
+`gors/src/compiler/builtin_roots.rs`, add newly implied roots, and iterate until
+stable before retaining items. This keeps indirect requirements such as
+projected `GorsPtr` helpers and their `lock`/`ptr_id` dependencies without
+keeping unrelated builtin code.
 Post-reachability item filtering lives in `gors/src/compiler/dce_pruning.rs`;
 the DCE loop should delegate reachable-item retention, unused generated struct
 field pruning, and unused `use` pruning there rather than keeping AST visitors
 inside `compiler/mod.rs`.
-Active reachability root scope lives in
-`gors/src/compiler/reachability_context.rs`. Resolver/stdlib parsing should keep
-using `compiler::with_active_reachability_roots()`, and compiler-side consumers
-should query named helpers such as `active_roots_allow()` instead of reading a
-compiler-root thread-local.
+Resolver roots are consumed before lowering by filtering each package AST to its
+reachable declarations. Do not carry a dynamic active-root scope into compiler
+lowering: interface-obligation discovery must inspect every declaration
+signature in each already-filtered file, regardless of function or method
+naming, so cross-file interface implementors remain complete.
 
 ## Go toolchain
 
@@ -616,16 +825,23 @@ features. Compiler/printer/generator regression tests live inside the `gors`
 crate as unit tests attached to the modules they cover, such as
 `gors/src/printer/mod.rs` and `gors/src/compiler/manifest.rs`. Unit tests assert
 in-process contracts only; they must not invoke `go`, `gors`, or `rustc`.
+Use reduced synthetic Go/Rust inputs or small local packages for generic
+compiler and resolver contracts. Do not compile a large embedded stdlib package
+as a unit-test proxy when the same reachability, type, adapter, DCE, or
+publication contract can be isolated; keep full-package coverage in the stdlib
+integration suite. A focused real-package unit test remains appropriate when
+the contract genuinely depends on that package's source shape.
 Shared integration test harness code lives in `gors/tests/common.rs`.
 Integration test entrypoints live in `gors/tests/` and are wired into the
 `gors` crate through explicit `[[test]]` entries in `gors/Cargo.toml`;
 integration fixtures remain under `gors/tests/fixtures/`.
 
-`make all` is the local CI-parity gate. It depends on `make rust-build`,
-`make rust-lint`, `make rust-test`, `make web-build`, `make web-lint`, and
-`make web-test`, so a successful local run covers the same build/test/check
-commands as CI. GitHub-only artifact upload and Pages deploy steps are
-intentionally not represented locally.
+`make all` is the broad local build/lint/unit/integration gate. It depends on
+`make rust-build`, `make rust-lint`, `make rust-test`, `make web-build`,
+`make web-lint`, and `make web-test`. CI additionally runs `make fuzz-test`,
+the compiler-focused Playwright suite (`npm --prefix www run test:compiler`),
+canonical report drift checks, and GitHub-only Pages artifact/deploy steps; do
+not call `make all` exact CI parity unless those checks are folded into it.
 
 CI runs on `pull_request` for PR branches and on `push` only for `main`.
 Do not re-enable feature-branch push CI unless the duplicate PR/push checks are
@@ -663,9 +879,14 @@ Integration tests use matching Make targets and Cargo feature gates:
 integration-test binary names match the feature gates and are declared in
 `gors/Cargo.toml`, so the Make targets do not need extra test-name filters.
 
-CI runs integration tests as single unsharded jobs with a 30-minute job timeout.
-Do not split them into shard targets unless the test
-contract changes again.
+Pull requests run the full Go-spec suite plus one deterministic end-to-end
+fixture from each repository, stdlib, and arbitrary-program corpus. Pushes to
+`main` run all four complete integration suites. Repository and spec jobs have a
+30-minute timeout; the full stdlib and arbitrary-program jobs have 60 minutes.
+PRs also run deterministic fuzz/property smoke and the persistent browser
+compiler test. The full v86 browser integration remains a `main`-push gate.
+Stale PR workflows may be cancelled; every `main` run must finish so its full
+conformance and deploy decision remain trustworthy.
 
 The integration binaries in `gors/tests/` are feature-gated as whole files:
 `go_repositories` runs both lexer and parser acceptance against the reference
@@ -686,7 +907,16 @@ file can exhaust hosted CI memory before progress is reported.
 
 1. Create a directory in `gors/tests/fixtures/go_programs/` (e.g., `my_feature/`)
 2. Add `main.go` (and optionally `go.mod` for multi-package programs)
-3. The test framework auto-discovers it and compares output with `go run`
+3. Update the fixture set's `fixtures.json` expected count. Any
+   underscore-prefixed fixture needs an explicit `run`, `unsupported`, or
+   `compile_error` status, and every non-running entry needs a non-empty reason
+   or reason file.
+4. Run the focused fixture target, then the complete affected suite. The
+   generated-program harness starts the pinned Go oracle first, requires it to
+   exit successfully, then requires generated Rust to exit successfully and
+   compares raw stdout and stderr bytes exactly. A Go spawn failure, timeout, or
+   nonzero exit is a broken oracle/fixture, not permission to skip the case;
+   expected compile errors belong in the explicit Go-spec compile-error path.
 
 For broad stdlib API coverage, prefer grouping related checks into one package
 fixture such as `gors/tests/fixtures/go_stdlib/strings/main.go` rather than
@@ -709,14 +939,19 @@ keeping any coverage marker, verify the exact row one by one against the
 fixture's observable output; remove or leave unsupported any marker that only
 proves reachability, type checking, method-set satisfaction, or symbol
 resolution. The reporter must ignore ordinary selector references.
-Generated-program fixtures compare stdout only. Use `fmt.Print*` for observable
-fixture output unless the fixture is explicitly testing the predeclared
-`print`/`println` builtins, because Go's predeclared `print` and `println`
-write to stderr under the pinned SDK.
-After adding or changing `gors/tests/fixtures/go_stdlib` fixtures, run
-`npm --prefix www run generate:go-stdlib-conformance` from the repository root to
-run the stdlib generated-program integration test and refresh
-`gors/tests/reports/go-stdlib-conformance.json`. The Rust reporter derives
+Generated-program fixtures compare both stdout and stderr. Prefer `fmt.Print*`
+for ordinary deterministic observations; use Go's predeclared `print` and
+`println` only when stderr behavior is itself under test.
+After adding or changing Go-spec or stdlib fixtures, use
+`make conformance-report` from the repository root to run both complete suites
+and refresh their canonical reports. Use `make conformance-check` to regenerate
+and fail if `gors/tests/reports/` differs. Canonical report writes require
+`GORS_UPDATE_CONFORMANCE_REPORTS=1` and a complete unfiltered, unlimited,
+non-diagnostic, uncancelled run; focused runs must never rewrite the canonical
+reports. For faster iteration, use
+`make rust-test-integration-go-spec-fixture FIXTURE=<substring>` or
+`make rust-test-integration-go-stdlib-fixture FIXTURE=<substring>`.
+The Rust stdlib reporter derives
 untested package/symbol rows from the embedded Go SDK source; keep its coverage
 classification aligned with the behavioral rule above, not with mere selector
 presence in fixture source.
@@ -724,14 +959,16 @@ The Go specification conformance matrix lives in
 `gors/tests/fixtures/go_spec/spec.json` and is emitted by the Rust reporter as
 `gors/tests/reports/go-spec-conformance.json`. Mark implemented entries as
 `passing` only when they point at runnable generated-program fixtures under
-`gors/tests/fixtures/go_spec`; known gaps stay `unsupported` with an explicit
-reason and may keep reduced repros under
-`gors/tests/fixtures/go_spec/_unsupported/`. After editing the matrix, run
-`npm --prefix www run generate:go-spec-conformance` from the repository root.
+`gors/tests/fixtures/go_spec`. The matrix is a 100% supported contract: keep all
+211 entries passing, and add reduced repros as ordinary runnable fixtures
+directly under `gors/tests/fixtures/go_spec/` rather than creating an
+unsupported bucket or hidden skip.
 The run harness caches generated-program binaries under
-`target/gors-integration-run/` using a key derived from the generated Rust
-source, `gors::STDLIB_VERSION`, `rustc -vV`, and the rustc flag set; keep
-compiler-sensitive inputs in that key if the harness starts skipping more work.
+`target/gors-integration-run/` using every regular fixture file, the compiled
+integration-test binary fingerprint, `gors::STDLIB_VERSION`, pinned
+`rustc -vV`, and the exact rustc flag contract. Keep every compiler-sensitive
+input in that key if the harness starts skipping more work. Successful entries
+are bounded to 5 GiB and 14 days.
 The generated Rust test harness and any manual generated-artifact `rustc`
 reproduction must compile with Rust edition 2024 through the pinned toolchain.
 Do not call `rustc` directly or use older edition flags; invoke
@@ -744,13 +981,12 @@ Large stdlib fixtures such as `go_stdlib/net/http` can overflow the default test
 thread stack while parsing and compiling real Go stdlib packages.
 Each generated-program worker starts its Go reference `go run` child before the
 generated Rust compile/run path so Go, gors, and rustc work overlap across the
-whole Rayon pool. By default the run harness uses twice the detected CPU count
-because workers often block on child processes and filesystem work; keep the
-`GORS_TEST_RUN_THREADS` override as the exact concurrency control for local CPU
-saturation experiments. Keep child-process capture on temp files plus polling
-and kill-on-abort behavior so parallel fail-fast does not deadlock on
-stdout/stderr pipes, and still wait for the Go reference before reporting
-generated Rust failures so invalid Go fixtures skip instead of failing gors.
+whole Rayon pool. By default the run harness uses one worker per available CPU;
+keep `GORS_TEST_RUN_THREADS` as the exact run-specific override. Keep
+child-process capture on temp files plus polling and kill-on-abort behavior so
+parallel fail-fast does not deadlock on stdout/stderr pipes. Always finish and
+validate the Go reference before deciding a fixture result, even when Rust
+generation or execution has already failed.
 
 ### Environment variables for test tuning
 
@@ -761,14 +997,31 @@ generated Rust failures so invalid Go fixtures skip instead of failing gors.
 - `GORS_TEST_THREADS=N` — worker threads for lexer/parser integration tests
   and an explicit generated-program run-test fallback
 - `GORS_TEST_RUN_THREADS=N` — worker threads for generated-program run tests;
-  defaults to `GORS_TEST_THREADS` when set, otherwise twice all available CPUs.
-  Use this run-specific override for exact CPU-saturation experiments; higher
-  values can increase reported CPU use while slowing the suite through
-  allocation and cache contention.
+  defaults to `GORS_TEST_THREADS` when set, otherwise all available CPUs. Use
+  this run-specific override for exact CPU-saturation experiments; higher
+  values can slow the suite through allocation and cache contention.
 - `GORS_TEST_GO_RUN_TIMEOUT_SECS=N` — override the generated-program harness
   timeout for Go reference runs (default: 30 seconds)
 - `GORS_TEST_GENERATED_RUN_TIMEOUT_SECS=N` — override the generated-program
   harness timeout for compiled Rust program runs (default: 10 seconds)
+
+## Fuzzing
+
+Fuzzing has two complementary lanes. Pull requests replay checked-in corpora and
+run deterministic proptest cases on stable Rust (`make fuzz-test`). Local,
+scheduled, and manually dispatched coverage-guided runs use the fixed
+`nightly-2026-07-01` toolchain with pinned `cargo-fuzz`; their optimized profile
+keeps LTO off and uses 16 codegen units to shorten instrumented rebuilds.
+Scanner, parser, deterministic parse snapshot, and generic compiler/printer
+targets remain distinct. The compiler target may exercise ordinary embedded Go
+source, but it must never introduce a Rust replacement for a Go stdlib API.
+
+Reviewed seeds live in `fuzz/corpus/<target>/`; evolving libFuzzer inputs and
+artifacts stay ignored under `fuzz/work-corpus/` and `fuzz/artifacts/`. Minimize
+and understand a crash before promoting it with
+`fuzz/scripts/export-crashes.sh`, then add a focused regression when warranted.
+See `fuzz/readme.md` for the exact bounded/unbounded commands and target
+properties.
 
 ## Run patterns
 
@@ -792,6 +1045,24 @@ Arguments after the source paths are forwarded to the compiled program:
 When the first argument ends with `.go`, all leading `.go` arguments are treated as
 source files. Otherwise, the first argument is a directory/package path.
 
+`build` and `run` accept `--jobs N` and `--timings-json PATH`. Resolve the job
+budget in this order: explicit flag, `GORS_JOBS`, then
+`available_parallelism()`; all values must be positive. Because `run` treats
+remaining values as source/program arguments, put its compiler options before
+the source, for example:
+
+```bash
+cargo run -- build --jobs 8 --timings-json timings.json main.go
+cargo run -- run --jobs 8 --timings-json timings.json main.go
+```
+
+The timing report is written after a successful command and includes the
+command, resolved jobs, total duration, named phases, and cache hit/miss events.
+Set `GORS_PROFILE=1` for human-readable phase timings on stderr. The validated,
+bounded cache described under Incremental builds makes repeated `build`
+transpilation and `run` transpilation/`rustc` work reusable without weakening
+input, compiler, toolchain, or artifact identity checks.
+
 Key differences from `go run`:
 - Uses `GORSPATH` instead of `GOPATH`
 - The embedded Go stdlib comes from the hermetically downloaded SDK pinned in `.go-version`
@@ -809,10 +1080,55 @@ worker back to the `wasm/pkg/gors.js` bundler entry without rechecking Chromium:
 webpack's top-level async wasm module path can stall before the worker message
 handler is installed.
 
+One persistent worker owns the Wasm instance and generic resolver state for the
+page lifetime. The main-thread client rejects superseded callers, while the
+worker keeps only the latest queued edit. Stable synchronous Wasm cannot receive
+a cancel message while compiling, so a superseding edit gets a short grace
+period and then terminates/replaces that stable controller worker; the
+replacement reloads the validated persistent resolver cache and compiles the
+newest input. Do not apply this preemption to the threaded runtime: its
+controller owns nested Rayon workers that cannot be safely torn down by the
+same path, so threaded mode remains latest-only and discards stale results
+after completion. Keep the worker output cache source-keyed and LRU-bounded to
+16 MiB. Packed source-map positions cross as transferred `Uint32Array` data;
+names remain strings.
+`www/tests/compiler/` is the browser-level contract for worker reuse, cache
+hits, stable-worker stale-compile preemption, latest-only coalescing, and opt-in
+thread initialization.
+
+Go scanner/parser positions and Rust diagnostic internals use UTF-8 byte
+columns, while Source Map v3 and Monaco use UTF-16 code-unit columns. Preserve
+byte columns through scanner/compiler tracking, convert against the exact source
+line only at the source-map/browser boundary, and count generated Rust token
+columns and token widths with UTF-16 units. Packed mappings, browser
+diagnostics, comment mappings, hover spans, and cursor lookups must all expose
+zero-based UTF-16 columns; never feed a byte offset directly into Monaco or
+JavaScript string indexing.
+
+The worker persists at most one 64 MiB resolver archive in IndexedDB. It tries a
+valid persisted snapshot first, then the deterministic gzip seed generated by
+the exact stable release Wasm compiler and `www/default-playground.go`, and
+otherwise proceeds as a cache miss. Rust owns archive validation; invalid
+browser snapshots are deleted. Stable and threaded builds intentionally share
+the seed only when the builds differ by the two operational scheduling
+features; every semantic source, dependency, target, profile, SDK, or other
+feature difference must reject it.
+
+Production remains stable single-threaded because GitHub Pages cannot supply the
+cross-origin isolation required by shared-memory Wasm. The opt-in threaded
+preview uses `nightly-2026-07-01`, `-Z build-std` with atomics/shared memory,
+`wasm-bindgen-rayon`, and a separate loader selected by
+`GORS_WASM_THREADS=1`. Its server must emit COOP `same-origin` and COEP
+`require-corp`; the loader requires `crossOriginIsolated` and
+`SharedArrayBuffer`, initializes
+`max(1, min(4, navigator.hardwareConcurrency - 1))` workers, and verifies
+`compiler_thread_count()` before exposing the compiler. Both modes use the same
+persistent-worker protocol and deterministic string/reparse compiler boundary.
+
 `www/` is currently a webpack-hosted Svelte SPA, not SvelteKit. The wasm/v86
-asset pipeline is wired through webpack, and app routes such as `/coverage` are
+asset pipeline is wired through webpack, and app routes such as `/conformance` are
 served by history fallback plus emitted static fallback HTML
-(`coverage/index.html` and `404.html`). Treat a SvelteKit migration as a larger
+(`conformance/index.html` and `404.html`). Treat a SvelteKit migration as a larger
 asset-pipeline migration rather than a routing-only change.
 
 The first-party browser/runtime code in `www/` is TypeScript. `make web-lint`
@@ -852,7 +1168,7 @@ bundle. Set `GORS_WEB_SOURCE_MAPS=1` only when intentionally debugging webpack
 bundle source maps. The playground also caps client-side source-map indexing for
 very large compiler outputs; when the cap is exceeded, Rust output remains
 visible but hover/cursor mapping is disabled for that result.
-Coverage-page tests should derive package and symbol totals from
+Conformance-page tests should derive package and symbol totals from
 `gors/tests/reports/go-spec-conformance.json` and
 `gors/tests/reports/go-stdlib-conformance.json`, not hardcode rendered summary
 strings, because adding a `go_stdlib` fixture intentionally changes those
@@ -1079,6 +1395,16 @@ Compile-time constant handling treats `len` of string constants and `len`/`cap`
 of array or pointer-to-array composite literals as constants when their operands
 contain no channel receive or non-constant call; constant `complex`, `real`,
 `imag`, `min`, and `max` builtin calls are evaluated during const emission.
+Integer constant evaluation uses compiler-only
+`gors/src/compiler/constant_int.rs::ExactInt` backed by arbitrary-precision
+`BigInt`. Literal parsing, unary/binary arithmetic, shifts, bitwise operations,
+comparison, `iota`, `min`/`max`, and integer representability checks must remain
+exact beyond the Go specification's minimum 256-bit intermediate precision.
+`TypeEnv` serializes exact integer facts as decimal strings so declaration
+inheritance and imported-package merges do not truncate them. Generated
+programs must materialize a fixed Rust integer only after the expected Go type
+proves representability; `num-bigint` is a compiler dependency, not generated
+runtime support.
 IR type-conversion validation allows representable untyped numeric constants,
 including integer-valued floating constants produced by constant `real`, `imag`,
 `min`, and `max` calls, to convert to integer targets.
@@ -1159,9 +1485,13 @@ arguments before passing them to the generated variadic vector, because Go does
 not consume the caller's slice header; `...any` vectors may contain
 `Box<dyn Any>` and must remain movable rather than cloned.
 Generated-code reachability must trace receiver types through transparent
-wrappers introduced by the backend, including `Arc::new`, `Mutex::new`,
-`.clone()`, `.lock()`, and `.unwrap()`, so impl methods used through generated
-pointer cells are not pruned.
+wrappers introduced by the backend. Keep transparent constructor recognition
+centralized in `receiver_type_facts.rs` for `Box::new`, `Arc::new`,
+`Mutex::new`, and `GorsPtr::{new,from_arc}`; ref collection must resolve their
+arguments through its current lexical scopes and current `Self` type before
+falling back to context-free facts. Together with transparent `.clone()`,
+`.lock()`, and `.unwrap()` calls, this keeps impl methods used through generated
+pointer cells from being pruned.
 
 Deferred calls evaluate their argument expressions at the `defer` statement, not
 inside the generated drop guard. The compiler saves deferred function values and
@@ -1386,17 +1716,29 @@ written through by index, or passed to another mutable slice parameter, to
 `&mut Vec<T>` and rewrites call sites to borrow the caller's buffer. Do not apply
 that rewrite to functions returning a slice; those need Go's returned slice
 value semantics.
+Generated borrowed slice views can also have the unsized Rust type `[T]` behind
+`&[T]` or `&mut [T]`. Rust slices do not retain the spare capacity from a Go
+slice header, so the generic `Cap for [T]` runtime implementation reports the
+visible slice length. Preserving a larger Go capacity across that ABI requires
+a richer borrowed slice-header representation; do not encode exceptions for
+individual callers.
 
 Generic receiver methods keep the receiver generic parameters on the generated
 Rust `impl` and currently add `Clone` bounds for those parameters. The method
 lowering borrows receivers and clones non-copy field/parameter values to model
 Go value semantics; do not remove those bounds without replacing the clone-based
 value lowering with an ownership model that still compiles generic methods.
-Slice expressions currently materialize owned `Vec` copies. Full slice
-expressions (`a[low:high:max]`) preserve observable `len`/`cap` by reserving
-capacity for `max-low`, but they still do not share the original Go backing
-array; fixing shared backing-array semantics belongs in the IR/value model, not
-in another ad hoc slice codegen special case.
+Slice expressions use `crate::builtin::go_slice` to validate `low <= high <=
+max <= cap`, preserve the requested `len` and `cap`, and materialize
+zero-initialized backing elements when a legal reslice extends beyond the
+currently initialized length. For direct local aliases, lowering records the
+base expression, offset, and capacity in `SliceAliasTarget`: index writes flow
+to the base while the alias remains attached, base writes flow back into
+overlapping aliases, append within capacity remains attached, and append beyond
+capacity detaches. Full-slice expressions therefore enforce their reduced
+capacity when deciding reuse. This is a generic lowering/data-flow model for
+the supported cases, not a universal shared slice-header runtime; broaden it in
+IR/alias tracking rather than with package- or fixture-specific code.
 Pointer dereference lvalues (`*p = x`, `(*p)++`) lower through the IR
 addressability path to shared-cell assignments for owning pointers and direct
 `&mut T` dereferences for borrowed pointer parameters.
@@ -1477,17 +1819,19 @@ assembly-backed native stdlib files fall back to pure Go generic implementations
 before parsing.
 
 The resolver caches package file selection, type environments, transitive
-imports, and root-specific resolved modules through shared `RwLock`/per-key
-initialization state so parallel integration tests can reuse stdlib work.
-Per-file stdlib parser/compiler skips are quiet by default; set
+imports, and root-specific resolved modules. Generated source and resolved
+imports share the root-set key's single-flight `OnceLock`; archive validation,
+atomic publication, and memory/entry caps follow the primary Stdlib system
+contract above. Per-file stdlib parser/compiler skips are quiet by default; set
 `GORS_STDLIB_TRACE=1` to see resolver decisions and skipped files.
 Stdlib resolution must not rely on catching compiler panics. Parser/compiler
 gaps should return normal errors and be logged as skips; actual panics should
 fail the invoking test or build so wasm does not turn them into `unreachable`
 traps.
-Root-specific resolved-module cache contention should fall back to uncached
-resolution on the waiting worker instead of blocking on the cache `RwLock`;
-the duplicate cold work keeps fixture-level integration parallelism saturated.
+Do not bypass single-flight resolution on contention or publish a partially
+validated persistent archive. Duplicate cold compilation wastes the feedback
+loop and can separate generated source from the import identity used to compile
+it.
 
 Stdlib output is pruned at item level from roots such as `crate::fmt::Println`.
 Imports whose source references were lowered away may be pruned from generated
@@ -1519,6 +1863,10 @@ bundle includes a large v86 filesystem, and branch-based Pages deploys are
 unreliable for that artifact size. The repository Pages source must remain
 `build_type: workflow`, and the custom domain is stored in repository Pages
 settings rather than in a generated `CNAME` file.
+The `main` deploy depends on Rust lint/build/unit/fuzz plus all complete
+generated-program suites, and on web lint/build/unit/v86/compiler tests. Do not
+publish merely because `www/dist` built: deployment represents the fully gated
+compiler and conformance state.
 
 ## Known limitations
 

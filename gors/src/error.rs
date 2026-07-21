@@ -16,9 +16,9 @@ pub struct Diagnostic {
     pub file: String,
     /// Line number (1-indexed)
     pub line: usize,
-    /// Column number (1-indexed, start of error)
+    /// Column number (1-indexed UTF-8 byte offset, matching Go tooling)
     pub column: usize,
-    /// End column number (1-indexed, for highlighting range)
+    /// End column number (1-indexed exclusive UTF-8 byte offset)
     pub end_column: usize,
     /// The error message
     pub message: String,
@@ -143,43 +143,46 @@ impl Diagnostic {
 
     /// Calculate the end column for error highlighting based on the token at the error position.
     fn calculate_end_column(&self, source_line: &str) -> usize {
-        let col = self.column.saturating_sub(1); // 0-indexed
-        let chars: Vec<char> = source_line.chars().collect();
-
-        if col >= chars.len() {
+        let start = byte_offset_for_column(source_line, self.column);
+        if start >= source_line.len() {
             return self.column + 1;
         }
 
-        let mut end = col;
-        let Some(start_char) = chars.get(col).copied() else {
+        let tail = &source_line[start..];
+        let mut chars = tail.char_indices().peekable();
+        let Some((_, start_char)) = chars.next() else {
             return self.column + 1;
         };
+        let mut end = start + start_char.len_utf8();
 
         if start_char.is_alphanumeric() || start_char == '_' {
             // Identifier or keyword - find end of word
-            while chars
-                .get(end)
-                .is_some_and(|ch| ch.is_alphanumeric() || *ch == '_')
-            {
-                end += 1;
+            while let Some((offset, ch)) = chars.peek().copied() {
+                if !(ch.is_alphanumeric() || ch == '_') {
+                    break;
+                }
+                end = start + offset + ch.len_utf8();
+                chars.next();
             }
         } else if start_char == '"' || start_char == '\'' || start_char == '`' {
             // String/char literal - find closing quote or end of line
-            end += 1;
-            while chars.get(end).is_some_and(|ch| *ch != start_char) {
-                if chars.get(end).is_some_and(|ch| *ch == '\\') && end + 1 < chars.len() {
-                    end += 1; // Skip escaped char
+            let mut escaped = false;
+            for (offset, ch) in chars {
+                end = start + offset + ch.len_utf8();
+                if escaped {
+                    escaped = false;
+                    continue;
                 }
-                end += 1;
-            }
-            if end < chars.len() {
-                end += 1; // Include closing quote
+                if ch == '\\' && start_char != '`' {
+                    escaped = true;
+                } else if ch == start_char {
+                    break;
+                }
             }
         } else {
             // Single character token or operator
-            end += 1;
             // Check for multi-character operators
-            if let Some(next_char) = chars.get(end).copied() {
+            if let Some((offset, next_char)) = chars.next() {
                 let two_char: String = [start_char, next_char].iter().collect();
                 if matches!(
                     two_char.as_str(),
@@ -198,12 +201,12 @@ impl Diagnostic {
                         | "<<"
                         | ">>"
                 ) {
-                    end += 1;
+                    end = start + offset + next_char.len_utf8();
                 }
             }
         }
 
-        end + 1 // Convert back to 1-indexed
+        end + 1
     }
 
     /// Format for terminal output with colors (when supported)
@@ -245,9 +248,9 @@ impl Diagnostic {
             let spaces = " ".repeat(gutter_width);
             let prefix = if self.column > 1 {
                 // Calculate visual position accounting for tabs
-                let visual_col: usize = source_line
+                let byte_offset = byte_offset_for_column(source_line, self.column);
+                let visual_col: usize = source_line[..byte_offset]
                     .chars()
-                    .take(self.column - 1)
                     .map(|c| if c == '\t' { 4 } else { 1 })
                     .sum();
                 " ".repeat(visual_col)
@@ -275,6 +278,14 @@ impl fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.format_plain())
     }
+}
+
+fn byte_offset_for_column(source_line: &str, column: usize) -> usize {
+    let mut byte_offset = column.saturating_sub(1).min(source_line.len());
+    while byte_offset > 0 && !source_line.is_char_boundary(byte_offset) {
+        byte_offset -= 1;
+    }
+    byte_offset
 }
 
 /// A collection of diagnostics that can be displayed together
@@ -338,7 +349,7 @@ pub fn offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
             line += 1;
             col = 1;
         } else {
-            col += 1;
+            col += c.len_utf8();
         }
     }
     (line, col)
@@ -369,5 +380,17 @@ mod tests {
         assert_eq!(offset_to_line_col(source, 5), (1, 6)); // at newline
         assert_eq!(offset_to_line_col(source, 6), (2, 1));
         assert_eq!(offset_to_line_col(source, 12), (3, 1));
+    }
+
+    #[test]
+    fn diagnostic_columns_remain_utf8_byte_offsets() {
+        let bmp = Diagnostic::new("test.go", 1, 1, "bad name", DiagnosticKind::Parser)
+            .with_source_line("éclair +");
+        let non_bmp = Diagnostic::new("test.go", 1, 1, "bad name", DiagnosticKind::Parser)
+            .with_source_line("𐐀name +");
+
+        assert_eq!(bmp.end_column, "éclair".len() + 1);
+        assert_eq!(non_bmp.end_column, "𐐀name".len() + 1);
+        assert_eq!(offset_to_line_col("é😀x", "é😀".len()), (1, 7));
     }
 }

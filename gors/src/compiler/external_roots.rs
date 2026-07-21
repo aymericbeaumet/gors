@@ -1,12 +1,18 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use super::dce_reachability::reachable_stdlib_items;
+use super::dce_reachability::{reachable_stdlib_items, reachable_stdlib_items_with_fingerprint};
+use super::reachability_names::{item_reachability_names, top_level_item_names};
+use super::receiver_type_facts::{
+    top_level_collection_element_types, top_level_item_field_types, top_level_item_return_types,
+    top_level_item_tuple_return_types, top_level_item_types,
+};
 use super::ref_collection::{RefCollectionContext, collect_refs_from_item};
 use super::semantic_reachability::SemanticReachabilityGraph;
 use super::{CompiledModule, required_module_roots};
 
 pub(super) struct ExternalRootCollector<'a> {
     module_names: &'a HashSet<String>,
+    item_fingerprints: Option<&'a HashMap<String, String>>,
     semantic_graph: Option<&'a SemanticReachabilityGraph>,
 }
 
@@ -14,16 +20,30 @@ impl<'a> ExternalRootCollector<'a> {
     pub(super) fn new(module_names: &'a HashSet<String>) -> Self {
         Self {
             module_names,
+            item_fingerprints: None,
+            semantic_graph: None,
+        }
+    }
+
+    pub(super) fn with_item_fingerprints(
+        module_names: &'a HashSet<String>,
+        item_fingerprints: &'a HashMap<String, String>,
+    ) -> Self {
+        Self {
+            module_names,
+            item_fingerprints: Some(item_fingerprints),
             semantic_graph: None,
         }
     }
 
     pub(super) fn with_semantic_audit(
         module_names: &'a HashSet<String>,
+        item_fingerprints: &'a HashMap<String, String>,
         semantic_graph: Option<&'a SemanticReachabilityGraph>,
     ) -> Self {
         Self {
             module_names,
+            item_fingerprints: Some(item_fingerprints),
             semantic_graph,
         }
     }
@@ -52,7 +72,21 @@ impl<'a> ExternalRootCollector<'a> {
         module: &CompiledModule,
         roots: &HashSet<String>,
     ) -> HashMap<String, HashSet<String>> {
-        let refs = reachable_stdlib_items(&module.file.items, roots, self.module_names).refs;
+        let reachable = self
+            .item_fingerprints
+            .and_then(|fingerprints| fingerprints.get(&module.import_path))
+            .map_or_else(
+                || reachable_stdlib_items(&module.file.items, roots, self.module_names),
+                |fingerprint| {
+                    reachable_stdlib_items_with_fingerprint(
+                        &module.file.items,
+                        fingerprint,
+                        roots,
+                        self.module_names,
+                    )
+                },
+            );
+        let refs = reachable.refs;
         debug_assert_semantic_external_refs(self.semantic_graph, &module.mod_name, roots, &refs);
         refs
     }
@@ -91,24 +125,24 @@ pub(super) fn collect_external_refs(
     module_names: &HashSet<String>,
 ) -> HashMap<String, HashSet<String>> {
     let mut external_refs = HashMap::new();
-    let empty_types = HashMap::new();
-    let empty_field_types = HashMap::new();
-    let empty_element_types = HashMap::new();
-    let empty_return_types = HashMap::new();
-    let empty_tuple_return_types = HashMap::new();
+    let item_names = item_reachability_names(items);
+    let top_level_names = top_level_item_names(items);
+    let top_level_types = top_level_item_types(items, module_names);
+    let top_level_field_types = top_level_item_field_types(items, module_names);
+    let top_level_element_types = top_level_collection_element_types(items, module_names);
+    let top_level_return_types = top_level_item_return_types(items, module_names);
+    let top_level_tuple_return_types = top_level_item_tuple_return_types(items, module_names);
     for item in items {
         let mut item_clone = item.clone();
-        let empty_item_names = HashSet::new();
-        let empty_top_level_names = HashSet::new();
         let context = RefCollectionContext {
             module_names,
-            item_names: &empty_item_names,
-            top_level_names: &empty_top_level_names,
-            top_level_types: &empty_types,
-            top_level_field_types: &empty_field_types,
-            top_level_element_types: &empty_element_types,
-            top_level_return_types: &empty_return_types,
-            top_level_tuple_return_types: &empty_tuple_return_types,
+            item_names: &item_names,
+            top_level_names: &top_level_names,
+            top_level_types: &top_level_types,
+            top_level_field_types: &top_level_field_types,
+            top_level_element_types: &top_level_element_types,
+            top_level_return_types: &top_level_return_types,
+            top_level_tuple_return_types: &top_level_tuple_return_types,
         };
         let (_, refs) = collect_refs_from_item(&mut item_clone, &context);
         required_module_roots::merge_refs(&mut external_refs, refs);

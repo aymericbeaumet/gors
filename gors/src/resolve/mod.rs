@@ -3,10 +3,19 @@
 //! This module resolves import paths to Go source packages, currently backed by
 //! build-time generated metadata from the embedded Go SDK.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
+#[cfg(any(
+    all(feature = "parallel", not(target_family = "wasm")),
+    all(feature = "wasm-threads", target_family = "wasm")
+))]
+use rayon::prelude::*;
+
 use crate::profile::ProfileTimer;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 mod runtime_primitives;
 mod structural_helpers;
@@ -32,20 +41,153 @@ type TypeEnvCell = Arc<OnceLock<Option<(String, TypeEnv)>>>;
 type PackageFilesCache = HashMap<String, Arc<OnceLock<Option<Arc<PackageFiles>>>>>;
 type TypeEnvCache = HashMap<String, TypeEnvCell>;
 type TransitiveImportsCache = HashMap<String, Arc<OnceLock<Vec<String>>>>;
-type ResolvedModuleCache = HashMap<String, Arc<RwLock<ResolvedModuleEntry>>>;
+type ResolvedModuleCache = HashMap<String, Arc<ResolvedModuleSlot>>;
 
+struct ResolvedModuleSlot {
+    entry: OnceLock<ResolvedModuleEntry>,
+    last_used: AtomicU64,
+}
+
+impl ResolvedModuleSlot {
+    fn new() -> Self {
+        Self {
+            entry: OnceLock::new(),
+            last_used: AtomicU64::new(next_resolved_cache_tick()),
+        }
+    }
+
+    fn touch(&self) {
+        self.last_used
+            .store(next_resolved_cache_tick(), Ordering::Relaxed);
+    }
+}
+
+#[derive(Debug, Clone)]
 enum ResolvedModuleEntry {
-    Vacant,
-    Missing,
-    Source(String),
+    Missing {
+        imports: Vec<String>,
+    },
+    Source {
+        source: String,
+        imports: Vec<String>,
+    },
     Uncacheable,
+}
+
+impl ResolvedModuleEntry {
+    fn imports(&self) -> Option<&[String]> {
+        match self {
+            Self::Missing { imports } | Self::Source { imports, .. } => Some(imports),
+            Self::Uncacheable => None,
+        }
+    }
+
+    fn estimated_bytes(&self) -> usize {
+        let imports = self
+            .imports()
+            .map_or(0, |imports| imports.iter().map(String::len).sum());
+        match self {
+            Self::Source { source, .. } => source.len().saturating_add(imports),
+            Self::Missing { .. } => imports,
+            Self::Uncacheable => 0,
+        }
+    }
+}
+
+struct ResolvedModuleOutput {
+    module: Option<syn::ItemMod>,
+    imports: Vec<String>,
+}
+
+const RESOLVED_CACHE_SCHEMA: u32 = 4;
+#[cfg(target_family = "wasm")]
+const MAX_IMPORTED_RESOLVED_CACHE_BYTES: usize = 64 * 1024 * 1024;
+#[cfg(not(target_family = "wasm"))]
+const MAX_IMPORTED_RESOLVED_CACHE_BYTES: usize = 256 * 1024 * 1024;
+#[cfg(target_family = "wasm")]
+const MAX_IMPORTED_RESOLVED_CACHE_ENTRIES: usize = 1_024;
+#[cfg(not(target_family = "wasm"))]
+const MAX_IMPORTED_RESOLVED_CACHE_ENTRIES: usize = 4_096;
+#[cfg(target_family = "wasm")]
+const MAX_IN_MEMORY_RESOLVED_CACHE_BYTES: usize = 64 * 1024 * 1024;
+#[cfg(not(target_family = "wasm"))]
+const MAX_IN_MEMORY_RESOLVED_CACHE_BYTES: usize = 256 * 1024 * 1024;
+#[cfg(target_family = "wasm")]
+const MAX_IN_MEMORY_RESOLVED_CACHE_ENTRIES: usize = 256;
+#[cfg(not(target_family = "wasm"))]
+const MAX_IN_MEMORY_RESOLVED_CACHE_ENTRIES: usize = 1_024;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ResolvedCacheArchive {
+    schema: u32,
+    go_version: String,
+    stdlib_version: String,
+    #[serde(rename = "compilerFingerprint")]
+    resolver_fingerprint: String,
+    entries: Vec<ResolvedCacheRecord>,
+    type_envs: Vec<ResolvedTypeEnvRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ResolvedCacheRecord {
+    import_path: String,
+    roots: Option<Vec<String>>,
+    source: Option<String>,
+    imports: Vec<String>,
+    integrity: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ResolvedTypeEnvRecord {
+    import_path: String,
+    package_name: String,
+    env: serde_json::Value,
+    integrity: String,
+}
+
+#[derive(Debug)]
+struct PreparedResolvedCacheArchive {
+    entries: Vec<(String, ResolvedModuleEntry)>,
+    type_envs: Vec<(String, String, TypeEnv)>,
+}
+
+/// Result of importing a persistent resolver cache.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedCacheImportStats {
+    /// Records accepted into previously empty in-memory cache slots.
+    pub imported: usize,
+    /// Valid records whose cache slots were already initialized.
+    pub already_present: usize,
+    /// Type environments accepted into previously empty in-memory cache slots.
+    pub type_envs_imported: usize,
+    /// Valid type environments whose cache slots were already initialized.
+    pub type_envs_already_present: usize,
+}
+
+/// Current bounded in-memory generated-module cache usage.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedModuleCacheStats {
+    /// Cache slots, including a slot currently being initialized.
+    pub entries: usize,
+    /// Fully initialized cache slots.
+    pub initialized: usize,
+    /// Estimated generated-source and dependency metadata bytes.
+    pub bytes: usize,
+    /// Initialized slots evicted since process start.
+    pub evictions: u64,
 }
 
 static PACKAGE_FILES: OnceLock<RwLock<PackageFilesCache>> = OnceLock::new();
 static TYPE_ENVS: OnceLock<RwLock<TypeEnvCache>> = OnceLock::new();
 static TRANSITIVE_IMPORTS: OnceLock<RwLock<TransitiveImportsCache>> = OnceLock::new();
 static RESOLVED_MODULES: OnceLock<RwLock<ResolvedModuleCache>> = OnceLock::new();
-static RESOLVED_IMPORTS: OnceLock<RwLock<HashMap<String, Vec<String>>>> = OnceLock::new();
+static RESOLVED_CACHE_CLOCK: AtomicU64 = AtomicU64::new(1);
+static RESOLVED_CACHE_EVICTIONS: AtomicU64 = AtomicU64::new(0);
 
 fn package_file_cache() -> &'static RwLock<PackageFilesCache> {
     PACKAGE_FILES.get_or_init(|| RwLock::new(HashMap::new()))
@@ -77,8 +219,8 @@ fn resolved_modules() -> &'static RwLock<ResolvedModuleCache> {
     RESOLVED_MODULES.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
-fn resolved_imports() -> &'static RwLock<HashMap<String, Vec<String>>> {
-    RESOLVED_IMPORTS.get_or_init(|| RwLock::new(HashMap::new()))
+fn next_resolved_cache_tick() -> u64 {
+    RESOLVED_CACHE_CLOCK.fetch_add(1, Ordering::Relaxed)
 }
 
 fn embedded_package(import_path: &str) -> Option<&'static EmbeddedGoPackage> {
@@ -158,88 +300,721 @@ pub fn module_name(import_path: &str) -> String {
 }
 
 pub fn resolve(import_path: &str) -> Option<syn::ItemMod> {
-    resolve_cached(import_path, None)
+    resolve_cached(
+        import_path,
+        None,
+        crate::compiler::CompileOptions::default(),
+    )
 }
 
 pub fn resolve_with_roots(import_path: &str, roots: &HashSet<String>) -> Option<syn::ItemMod> {
+    resolve_with_roots_and_options(
+        import_path,
+        roots,
+        crate::compiler::CompileOptions::default(),
+    )
+}
+
+/// Resolve the reachable portion of a package using the requested compiler
+/// task concurrency.
+///
+/// Package-wide analysis remains deterministic and sequential. When it is
+/// safe, independent source files may lower concurrently; generated Rust is
+/// formatted in the worker and reparsed by the coordinator so non-`Send`
+/// `syn` nodes never cross a thread boundary.
+pub fn resolve_with_roots_and_options(
+    import_path: &str,
+    roots: &HashSet<String>,
+    options: crate::compiler::CompileOptions,
+) -> Option<syn::ItemMod> {
     if roots.is_empty() {
         return None;
     }
-    resolve_cached(import_path, Some(roots))
+    resolve_cached(import_path, Some(roots), options)
 }
 
-fn resolve_cached(import_path: &str, roots: Option<&HashSet<String>>) -> Option<syn::ItemMod> {
+fn resolve_cached(
+    import_path: &str,
+    roots: Option<&HashSet<String>>,
+    options: crate::compiler::CompileOptions,
+) -> Option<syn::ItemMod> {
     if crate::compiler::has_external_interface_implementors() {
-        return resolve_uncached(import_path, roots);
+        return resolve_uncached(
+            import_path,
+            roots,
+            crate::compiler::CompileOptions::default(),
+        )
+        .module;
     }
 
     let cache_key = resolve_cache_key(import_path, roots);
-    let Some(cell) = resolved_module_cell(&cache_key) else {
-        return resolve_uncached(import_path, roots);
+    let Some(cell) = resolved_module_cell(import_path, roots, &cache_key) else {
+        return resolve_uncached(import_path, roots, options).module;
     };
 
-    // Cold stdlib roots are expensive enough that blocking every worker behind
-    // one cache initializer leaves the generated-program harness mostly idle.
-    if let Ok(entry) = cell.try_read() {
-        match &*entry {
-            ResolvedModuleEntry::Missing => return None,
-            ResolvedModuleEntry::Source(source) => {
-                if let Some(module) = parse_cached_module(import_path, source) {
-                    return Some(module);
-                }
-            }
-            ResolvedModuleEntry::Vacant | ResolvedModuleEntry::Uncacheable => {}
+    let entry = cell.entry.get_or_init(|| {
+        let resolved = resolve_uncached(import_path, roots, options);
+        let imports = resolved.imports;
+        let Some(module) = resolved.module else {
+            return ResolvedModuleEntry::Missing { imports };
+        };
+        let source = module_content_cache_source(&module);
+        if parse_cached_module(import_path, &source).is_some() {
+            ResolvedModuleEntry::Source { source, imports }
+        } else {
+            ResolvedModuleEntry::Uncacheable
         }
-    } else {
-        return resolve_uncached(import_path, roots);
-    }
-
-    let Ok(mut entry) = cell.try_write() else {
-        return resolve_uncached(import_path, roots);
+    });
+    cell.touch();
+    let resolved = match entry {
+        ResolvedModuleEntry::Missing { .. } => None,
+        ResolvedModuleEntry::Source { source, .. } => parse_cached_module(import_path, source),
+        ResolvedModuleEntry::Uncacheable => resolve_uncached(import_path, roots, options).module,
     };
-    match &*entry {
-        ResolvedModuleEntry::Missing => return None,
-        ResolvedModuleEntry::Source(source) => {
-            if let Some(module) = parse_cached_module(import_path, source) {
-                return Some(module);
-            }
-        }
-        ResolvedModuleEntry::Vacant | ResolvedModuleEntry::Uncacheable => {}
-    }
-
-    let resolved = resolve_uncached(import_path, roots);
-    match &resolved {
-        None => {
-            *entry = ResolvedModuleEntry::Missing;
-        }
-        Some(module) => {
-            let source = module_content_cache_source(module);
-            if parse_cached_module(import_path, &source).is_some() {
-                *entry = ResolvedModuleEntry::Source(source);
-            } else {
-                *entry = ResolvedModuleEntry::Uncacheable;
-            }
-        }
-    }
+    trim_resolved_module_cache();
     resolved
 }
 
-fn resolved_module_cell(cache_key: &str) -> Option<Arc<RwLock<ResolvedModuleEntry>>> {
+fn resolved_module_cell(
+    import_path: &str,
+    roots: Option<&HashSet<String>>,
+    cache_key: &str,
+) -> Option<Arc<ResolvedModuleSlot>> {
     if let Ok(cache) = resolved_modules().read()
-        && let Some(cell) = cache.get(cache_key)
+        && let Some((_, cell)) =
+            reusable_resolved_module_slot(&cache, import_path, roots, cache_key)
     {
+        cell.touch();
         return Some(cell.clone());
     }
 
     let Ok(mut cache) = resolved_modules().write() else {
         return None;
     };
+    if let Some((_, cell)) = reusable_resolved_module_slot(&cache, import_path, roots, cache_key) {
+        cell.touch();
+        return Some(cell.clone());
+    }
     Some(
         cache
             .entry(cache_key.to_string())
-            .or_insert_with(|| Arc::new(RwLock::new(ResolvedModuleEntry::Vacant)))
+            .or_insert_with(|| Arc::new(ResolvedModuleSlot::new()))
             .clone(),
     )
+}
+
+fn reusable_resolved_module_slot<'a>(
+    cache: &'a ResolvedModuleCache,
+    import_path: &str,
+    roots: Option<&HashSet<String>>,
+    cache_key: &str,
+) -> Option<(&'a str, &'a Arc<ResolvedModuleSlot>)> {
+    // An exact slot owns its initialization, including when another worker is
+    // currently filling it. Otherwise, an initialized module compiled for a
+    // superset of the requested roots is safe to reuse: source reachability is
+    // monotonic and compiler-side DCE still prunes from the actual roots. Keep
+    // the smallest rooted superset to minimize downstream work, use the cache
+    // key as a deterministic tie-breaker. An unfiltered (`None`) compilation
+    // is a distinct lowering mode rather than a root set, so it is not reused.
+    if let Some((stored_key, slot)) = cache.get_key_value(cache_key) {
+        return Some((stored_key.as_str(), slot));
+    }
+
+    let requested_roots = roots?;
+    cache
+        .iter()
+        .filter_map(|(candidate_key, slot)| {
+            let entry = slot.entry.get()?;
+            if matches!(entry, ResolvedModuleEntry::Uncacheable) {
+                return None;
+            }
+            let (candidate_import_path, candidate_roots) = parse_resolve_cache_key(candidate_key)?;
+            if candidate_import_path != import_path {
+                return None;
+            }
+            let rank = match candidate_roots {
+                Some(candidate_roots)
+                    if requested_roots
+                        .iter()
+                        .all(|root| candidate_roots.binary_search(root).is_ok()) =>
+                {
+                    candidate_roots.len()
+                }
+                Some(_) | None => return None,
+            };
+            Some((rank, candidate_key.as_str(), slot))
+        })
+        .min_by(|left, right| (&left.0, left.1).cmp(&(&right.0, right.1)))
+        .map(|(_, candidate_key, slot)| (candidate_key, slot))
+}
+
+fn trim_resolved_module_cache_map(
+    cache: &mut ResolvedModuleCache,
+    max_entries: usize,
+    max_bytes: usize,
+) -> usize {
+    let mut bytes = cache
+        .iter()
+        .filter_map(|(cache_key, slot)| {
+            slot.entry
+                .get()
+                .map(|entry| cache_key.len().saturating_add(entry.estimated_bytes()))
+        })
+        .sum::<usize>();
+    if cache.len() <= max_entries && bytes <= max_bytes {
+        return 0;
+    }
+
+    let mut candidates = cache
+        .iter()
+        .filter_map(|(cache_key, slot)| {
+            slot.entry.get().map(|entry| {
+                (
+                    slot.last_used.load(Ordering::Relaxed),
+                    cache_key.clone(),
+                    cache_key.len().saturating_add(entry.estimated_bytes()),
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| (&left.0, &left.1).cmp(&(&right.0, &right.1)));
+
+    let mut evicted = 0;
+    for (_, cache_key, entry_bytes) in candidates {
+        if cache.len() <= max_entries && bytes <= max_bytes {
+            break;
+        }
+        if cache.remove(&cache_key).is_some() {
+            bytes = bytes.saturating_sub(entry_bytes);
+            evicted += 1;
+        }
+    }
+    evicted
+}
+
+fn trim_resolved_module_cache() {
+    let Ok(mut cache) = resolved_modules().write() else {
+        return;
+    };
+    let evicted = trim_resolved_module_cache_map(
+        &mut cache,
+        MAX_IN_MEMORY_RESOLVED_CACHE_ENTRIES,
+        MAX_IN_MEMORY_RESOLVED_CACHE_BYTES,
+    );
+    RESOLVED_CACHE_EVICTIONS.fetch_add(evicted as u64, Ordering::Relaxed);
+}
+
+/// Return bounded generated-module cache telemetry without initializing entries.
+pub fn resolved_module_cache_stats() -> ResolvedModuleCacheStats {
+    let Ok(cache) = resolved_modules().read() else {
+        return ResolvedModuleCacheStats {
+            evictions: RESOLVED_CACHE_EVICTIONS.load(Ordering::Relaxed),
+            ..ResolvedModuleCacheStats::default()
+        };
+    };
+    let mut initialized = 0;
+    let mut bytes = 0usize;
+    for (cache_key, slot) in cache.iter() {
+        bytes = bytes.saturating_add(cache_key.len());
+        let Some(entry) = slot.entry.get() else {
+            continue;
+        };
+        initialized += 1;
+        bytes = bytes.saturating_add(entry.estimated_bytes());
+    }
+    ResolvedModuleCacheStats {
+        entries: cache.len(),
+        initialized,
+        bytes,
+        evictions: RESOLVED_CACHE_EVICTIONS.load(Ordering::Relaxed),
+    }
+}
+
+pub(crate) fn has_initialized_resolved_module(import_path: &str, roots: &HashSet<String>) -> bool {
+    let cache_key = resolve_cache_key(import_path, Some(roots));
+    let Ok(cache) = resolved_modules().read() else {
+        return false;
+    };
+    reusable_resolved_module_slot(&cache, import_path, Some(roots), &cache_key)
+        .and_then(|(_, slot)| slot.entry.get())
+        .is_some_and(|entry| !matches!(entry, ResolvedModuleEntry::Uncacheable))
+}
+
+/// Serialize reusable, mechanically generated stdlib modules resolved by this
+/// process. The archive contains generated Rust source, never handwritten
+/// replacements for Go packages.
+pub fn export_resolved_module_cache() -> Result<Vec<u8>, String> {
+    let mut entries = {
+        let cache = resolved_modules()
+            .read()
+            .map_err(|_| "resolved module cache lock is poisoned".to_string())?;
+        let mut entries = Vec::new();
+        for (cache_key, slot) in cache.iter() {
+            let Some(entry) = slot.entry.get() else {
+                continue;
+            };
+            let Some((import_path, roots)) = parse_resolve_cache_key(cache_key) else {
+                continue;
+            };
+            let (source, mut imports) = match entry {
+                ResolvedModuleEntry::Missing { imports } => (None, imports.clone()),
+                ResolvedModuleEntry::Source { source, imports } => {
+                    (Some(source.clone()), imports.clone())
+                }
+                ResolvedModuleEntry::Uncacheable => continue,
+            };
+            imports.sort();
+            imports.dedup();
+            let mut record = ResolvedCacheRecord {
+                import_path,
+                roots,
+                source,
+                imports,
+                integrity: String::new(),
+            };
+            record.integrity = resolved_record_integrity(&record)?;
+            entries.push(record);
+        }
+        drop(cache);
+        entries
+    };
+    entries.sort_by(|left, right| {
+        (&left.import_path, &left.roots).cmp(&(&right.import_path, &right.roots))
+    });
+    let mut type_env_records = {
+        let type_envs = type_envs()
+            .read()
+            .map_err(|_| "type environment cache lock is poisoned".to_string())?;
+        let mut records = Vec::new();
+        for (import_path, cell) in type_envs.iter() {
+            let Some((package_name, env)) = cell.get().and_then(Option::as_ref) else {
+                continue;
+            };
+            let env = canonical_type_env_value(env)?;
+            let integrity = type_env_record_integrity(import_path, package_name, &env)?;
+            records.push(ResolvedTypeEnvRecord {
+                import_path: import_path.clone(),
+                package_name: package_name.clone(),
+                env,
+                integrity,
+            });
+        }
+        drop(type_envs);
+        records
+    };
+    type_env_records.sort_by(|left, right| left.import_path.cmp(&right.import_path));
+    serde_json::to_vec(&ResolvedCacheArchive {
+        schema: RESOLVED_CACHE_SCHEMA,
+        go_version: crate::GO_VERSION.to_string(),
+        stdlib_version: crate::STDLIB_VERSION.to_string(),
+        resolver_fingerprint: crate::RESOLVER_CACHE_FINGERPRINT.to_string(),
+        entries,
+        type_envs: type_env_records,
+    })
+    .map_err(|error| format!("failed to encode resolved module cache: {error}"))
+}
+
+/// Import a cache previously returned by [`export_resolved_module_cache`].
+///
+/// Archives are rejected unless their schema, Go SDK, stdlib, and resolver ABI
+/// fingerprints match exactly.
+pub fn import_resolved_module_cache(bytes: &[u8]) -> Result<ResolvedCacheImportStats, String> {
+    if bytes.len() > MAX_IMPORTED_RESOLVED_CACHE_BYTES {
+        return Err(format!(
+            "resolved module cache is too large: {} bytes exceeds {}",
+            bytes.len(),
+            MAX_IMPORTED_RESOLVED_CACHE_BYTES
+        ));
+    }
+    let archive: ResolvedCacheArchive = serde_json::from_slice(bytes)
+        .map_err(|error| format!("failed to decode resolved module cache: {error}"))?;
+    let prepared = prepare_resolved_cache_archive(archive)?;
+
+    // Acquire every fallible global lock before publishing any validated
+    // semantic data. Once validation has completed, individual OnceLock writes
+    // cannot fail: an initialized slot simply counts as already present.
+    let mut modules = resolved_modules()
+        .write()
+        .map_err(|_| "resolved module cache lock is poisoned".to_string())?;
+    let mut envs = type_envs()
+        .write()
+        .map_err(|_| "type environment cache lock is poisoned".to_string())?;
+    let mut stats = ResolvedCacheImportStats::default();
+    for (cache_key, entry) in prepared.entries {
+        let slot = modules
+            .entry(cache_key)
+            .or_insert_with(|| Arc::new(ResolvedModuleSlot::new()));
+        if slot.entry.set(entry).is_ok() {
+            stats.imported += 1;
+        } else {
+            stats.already_present += 1;
+        }
+        slot.touch();
+    }
+    for (import_path, package_name, env) in prepared.type_envs {
+        let cell = envs
+            .entry(import_path)
+            .or_insert_with(|| Arc::new(OnceLock::new()));
+        if cell.set(Some((package_name, env))).is_ok() {
+            stats.type_envs_imported += 1;
+        } else {
+            stats.type_envs_already_present += 1;
+        }
+    }
+    drop(envs);
+    drop(modules);
+    trim_resolved_module_cache();
+    Ok(stats)
+}
+
+fn prepare_resolved_cache_archive(
+    archive: ResolvedCacheArchive,
+) -> Result<PreparedResolvedCacheArchive, String> {
+    validate_resolved_cache_archive(&archive)?;
+    if archive.entries.len() + archive.type_envs.len() > MAX_IMPORTED_RESOLVED_CACHE_ENTRIES {
+        return Err(format!(
+            "resolved module cache has too many entries: {} exceeds {}",
+            archive.entries.len() + archive.type_envs.len(),
+            MAX_IMPORTED_RESOLVED_CACHE_ENTRIES
+        ));
+    }
+
+    let mut seen_entries = BTreeSet::new();
+    let mut prepared_entries = Vec::with_capacity(archive.entries.len());
+    for record in archive.entries {
+        if !is_known(&record.import_path) {
+            return Err(format!(
+                "resolved module cache contains unknown package {}",
+                record.import_path
+            ));
+        }
+        if record.import_path.contains('\0') {
+            return Err("resolved module cache contains an invalid package path".to_string());
+        }
+        if let Some(roots) = &record.roots {
+            if roots.is_empty() {
+                return Err(format!(
+                    "resolved module cache contains an empty root set for {}",
+                    record.import_path
+                ));
+            }
+            validate_sorted_unique_strings(roots, "roots", &record.import_path)?;
+            if roots
+                .iter()
+                .any(|root| root.is_empty() || root.contains([',', '\0']))
+            {
+                return Err(format!(
+                    "resolved module cache contains an invalid root for {}",
+                    record.import_path
+                ));
+            }
+        }
+        validate_sorted_unique_strings(&record.imports, "imports", &record.import_path)?;
+        for dependency in &record.imports {
+            if !is_known(dependency) {
+                return Err(format!(
+                    "resolved module cache contains unknown dependency {dependency} for {}",
+                    record.import_path
+                ));
+            }
+        }
+        if record.source.is_none() && !record.imports.is_empty() {
+            return Err(format!(
+                "resolved module cache contains dependencies for missing package {}",
+                record.import_path
+            ));
+        }
+        if resolved_record_integrity(&record)? != record.integrity {
+            return Err(format!(
+                "resolved module cache integrity mismatch for {}",
+                record.import_path
+            ));
+        }
+        if let Some(source) = record.source.as_deref() {
+            syn::parse_str::<syn::File>(source).map_err(|error| {
+                format!(
+                    "resolved module cache contains invalid Rust for {}: {error}",
+                    record.import_path
+                )
+            })?;
+        }
+        let roots = record
+            .roots
+            .as_ref()
+            .map(|roots| roots.iter().cloned().collect::<HashSet<_>>());
+        let cache_key = resolve_cache_key(&record.import_path, roots.as_ref());
+        if !seen_entries.insert(cache_key.clone()) {
+            return Err(format!(
+                "resolved module cache contains duplicate entry for {}",
+                record.import_path
+            ));
+        }
+        let entry = match record.source {
+            None => ResolvedModuleEntry::Missing {
+                imports: record.imports,
+            },
+            Some(source) => ResolvedModuleEntry::Source {
+                source,
+                imports: record.imports,
+            },
+        };
+        prepared_entries.push((cache_key, entry));
+    }
+
+    let mut seen_type_envs = BTreeSet::new();
+    let mut prepared_type_envs = Vec::with_capacity(archive.type_envs.len());
+    for record in archive.type_envs {
+        if !is_known(&record.import_path) {
+            return Err(format!(
+                "resolved module cache contains unknown type environment {}",
+                record.import_path
+            ));
+        }
+        if !seen_type_envs.insert(record.import_path.clone()) {
+            return Err(format!(
+                "resolved module cache contains duplicate type environment {}",
+                record.import_path
+            ));
+        }
+        let actual_package_name = embedded_package_name(&record.import_path)?;
+        if record.package_name != actual_package_name {
+            return Err(format!(
+                "resolved module cache package name mismatch for {}: expected {}, got {}",
+                record.import_path, actual_package_name, record.package_name
+            ));
+        }
+        let mut canonical_env = record.env.clone();
+        canonicalize_type_env_value(&mut canonical_env)?;
+        if type_env_record_integrity(&record.import_path, &record.package_name, &canonical_env)?
+            != record.integrity
+        {
+            return Err(format!(
+                "resolved module cache type environment integrity mismatch for {}",
+                record.import_path
+            ));
+        }
+        let env: TypeEnv = serde_json::from_value(canonical_env.clone()).map_err(|error| {
+            format!(
+                "resolved module cache contains an invalid type environment for {}: {error}",
+                record.import_path
+            )
+        })?;
+        if canonical_type_env_value(&env)? != canonical_env {
+            return Err(format!(
+                "resolved module cache contains a non-canonical type environment for {}",
+                record.import_path
+            ));
+        }
+        prepared_type_envs.push((record.import_path, record.package_name, env));
+    }
+
+    Ok(PreparedResolvedCacheArchive {
+        entries: prepared_entries,
+        type_envs: prepared_type_envs,
+    })
+}
+
+fn validate_sorted_unique_strings(
+    values: &[String],
+    field: &str,
+    import_path: &str,
+) -> Result<(), String> {
+    if values
+        .iter()
+        .zip(values.iter().skip(1))
+        .any(|(left, right)| left >= right)
+    {
+        return Err(format!(
+            "resolved module cache contains unsorted or duplicate {field} for {import_path}"
+        ));
+    }
+    Ok(())
+}
+
+fn resolved_record_integrity(record: &ResolvedCacheRecord) -> Result<String, String> {
+    let value = serde_json::json!({
+        "importPath": record.import_path,
+        "roots": record.roots,
+        "source": record.source,
+        "imports": record.imports,
+    });
+    Ok(integrity_hash(
+        b"gors-resolved-module-cache-record-v1\0",
+        &serde_json::to_vec(&value)
+            .map_err(|error| format!("failed to encode resolved module integrity: {error}"))?,
+    ))
+}
+
+fn type_env_record_integrity(
+    import_path: &str,
+    package_name: &str,
+    env: &serde_json::Value,
+) -> Result<String, String> {
+    let value = serde_json::json!({
+        "importPath": import_path,
+        "packageName": package_name,
+        "env": env,
+    });
+    Ok(integrity_hash(
+        b"gors-resolved-type-env-cache-record-v1\0",
+        &serde_json::to_vec(&value)
+            .map_err(|error| format!("failed to encode type environment integrity: {error}"))?,
+    ))
+}
+
+fn integrity_hash(domain: &[u8], bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(domain);
+    hasher.update(bytes);
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn canonical_type_env_value(env: &TypeEnv) -> Result<serde_json::Value, String> {
+    let mut value = serde_json::to_value(env)
+        .map_err(|error| format!("failed to encode type environment: {error}"))?;
+    canonicalize_type_env_value(&mut value)?;
+    Ok(value)
+}
+
+fn canonicalize_type_env_value(value: &mut serde_json::Value) -> Result<(), String> {
+    canonicalize_json_objects(value);
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| "type environment wire value must be an object".to_string())?;
+    for field in [
+        "pointer_receiver_methods",
+        "type_aliases",
+        "instantiated_type_aliases",
+        "string_consts",
+        "top_level_vars",
+        "consts",
+    ] {
+        if let Some(value) = object.get_mut(field) {
+            sort_json_set(value, field)?;
+        }
+    }
+    for field in [
+        "owned_interface_params",
+        "borrowed_slice_params",
+        "struct_embedded_fields",
+    ] {
+        let Some(values) = object.get_mut(field) else {
+            continue;
+        };
+        let values = values
+            .as_object_mut()
+            .ok_or_else(|| format!("type environment {field} must be an object"))?;
+        for value in values.values_mut() {
+            sort_json_set(value, field)?;
+        }
+    }
+    Ok(())
+}
+
+fn canonicalize_json_objects(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(object) => {
+            let mut fields = std::mem::take(object).into_iter().collect::<Vec<_>>();
+            fields.sort_by(|left, right| left.0.cmp(&right.0));
+            for (key, mut value) in fields {
+                canonicalize_json_objects(&mut value);
+                object.insert(key, value);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                canonicalize_json_objects(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn sort_json_set(value: &mut serde_json::Value, field: &str) -> Result<(), String> {
+    let values = value
+        .as_array_mut()
+        .ok_or_else(|| format!("type environment {field} set must be an array"))?;
+    let mut keyed = std::mem::take(values)
+        .into_iter()
+        .map(|value| {
+            serde_json::to_vec(&value)
+                .map(|key| (key, value))
+                .map_err(|error| format!("failed to canonicalize type environment set: {error}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    keyed.sort_by(|left, right| left.0.cmp(&right.0));
+    values.extend(keyed.into_iter().map(|(_, value)| value));
+    Ok(())
+}
+
+fn embedded_package_name(import_path: &str) -> Result<String, String> {
+    let package = embedded_package(import_path)
+        .ok_or_else(|| format!("resolved module cache contains unknown package {import_path}"))?;
+    let mut package_name = None;
+    for file in package.files {
+        let Ok(ast) = crate::parser::parse_file(file.filename, file.content) else {
+            continue;
+        };
+        let name = ast.name.name.to_string();
+        if package_name
+            .as_ref()
+            .is_some_and(|existing| existing != &name)
+        {
+            return Err(format!(
+                "embedded Go SDK contains conflicting package names for {import_path}"
+            ));
+        }
+        package_name = Some(name);
+    }
+    package_name.ok_or_else(|| {
+        format!("embedded Go SDK has no parseable package declaration for {import_path}")
+    })
+}
+
+fn validate_resolved_cache_archive(archive: &ResolvedCacheArchive) -> Result<(), String> {
+    if archive.schema != RESOLVED_CACHE_SCHEMA {
+        return Err(format!(
+            "resolved module cache schema mismatch: expected {}, got {}",
+            RESOLVED_CACHE_SCHEMA, archive.schema
+        ));
+    }
+    if archive.go_version != crate::GO_VERSION {
+        return Err(format!(
+            "resolved module cache Go version mismatch: expected {}, got {}",
+            crate::GO_VERSION,
+            archive.go_version
+        ));
+    }
+    if archive.stdlib_version != crate::STDLIB_VERSION {
+        return Err(format!(
+            "resolved module cache stdlib version mismatch: expected {}, got {}",
+            crate::STDLIB_VERSION,
+            archive.stdlib_version
+        ));
+    }
+    if archive.resolver_fingerprint != crate::RESOLVER_CACHE_FINGERPRINT {
+        return Err("resolved module cache resolver fingerprint mismatch".to_string());
+    }
+    Ok(())
+}
+
+fn parse_resolve_cache_key(cache_key: &str) -> Option<(String, Option<Vec<String>>)> {
+    let Some((import_path, roots)) = cache_key.split_once('\0') else {
+        return Some((cache_key.to_string(), None));
+    };
+    if import_path.is_empty() {
+        return None;
+    }
+    let roots = if roots.is_empty() {
+        Vec::new()
+    } else {
+        roots.split(',').map(str::to_string).collect()
+    };
+    Some((import_path.to_string(), Some(roots)))
 }
 
 fn parse_cached_module(import_path: &str, source: &str) -> Option<syn::ItemMod> {
@@ -275,15 +1050,26 @@ fn resolve_cache_key(import_path: &str, roots: Option<&HashSet<String>>) -> Stri
     format!("{import_path}\0{}", roots.join(","))
 }
 
-fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Option<syn::ItemMod> {
+fn resolve_uncached(
+    import_path: &str,
+    roots: Option<&HashSet<String>>,
+    options: crate::compiler::CompileOptions,
+) -> ResolvedModuleOutput {
     let total_timer = ProfileTimer::start(format!("resolve.{import_path}.total"));
     if let Some(module) = runtime_primitives::module(import_path, roots) {
-        cache_resolved_imports(import_path, roots, Vec::new());
         drop(total_timer);
-        return Some(module);
+        return ResolvedModuleOutput {
+            module: Some(module),
+            imports: Vec::new(),
+        };
     }
 
-    let files = package_files(import_path)?;
+    let Some(files) = package_files(import_path) else {
+        return ResolvedModuleOutput {
+            module: None,
+            imports: Vec::new(),
+        };
+    };
 
     let parse_timer = ProfileTimer::start(format!("resolve.{import_path}.parse"));
     let mut parsed_files = Vec::new();
@@ -309,9 +1095,11 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
     });
     drop(reachable_timer);
     if roots.is_some() && reachable_names.as_ref().is_none_or(HashSet::is_empty) {
-        cache_resolved_imports(import_path, roots, Vec::new());
         drop(total_timer);
-        return None;
+        return ResolvedModuleOutput {
+            module: None,
+            imports: Vec::new(),
+        };
     }
 
     let filter_timer = ProfileTimer::start(format!("resolve.{import_path}.filter"));
@@ -328,9 +1116,11 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
     drop(filter_timer);
 
     if parsed_files.is_empty() {
-        cache_resolved_imports(import_path, roots, Vec::new());
         drop(total_timer);
-        return None;
+        return ResolvedModuleOutput {
+            module: None,
+            imports: Vec::new(),
+        };
     }
 
     let type_env_timer = ProfileTimer::start(format!("resolve.{import_path}.type_env"));
@@ -371,20 +1161,14 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
         import_renames: &import_renames,
         package_mutable_top_level_vars: &package_mutable_top_level_vars,
         view_method_seed: &view_method_seed,
-        roots,
     };
 
     let compile_timer = ProfileTimer::start(format!("resolve.{import_path}.compile"));
-    for (filename, ast) in parsed_files {
-        let compiled = match compile_resolved_file(
-            ast,
-            &package_type_env,
-            &imported_type_envs,
-            &import_renames,
-            &package_mutable_top_level_vars,
-            &view_method_seed,
-            roots,
-        ) {
+    let (compiled_files, _) =
+        compile_resolved_files(parsed_files, &recovery_context, options.jobs());
+    for compiled_file in compiled_files {
+        let filename = compiled_file.filename;
+        let compiled = match compiled_file.result {
             Ok(compiled) => compiled,
             Err(e) => {
                 log_skip(format_args!(
@@ -413,10 +1197,12 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
     crate::compiler::merge_package_init_items(&mut all_items);
 
     if all_items.is_empty() {
-        cache_resolved_imports(import_path, roots, Vec::new());
         drop(post_timer);
         drop(total_timer);
-        return None;
+        return ResolvedModuleOutput {
+            module: None,
+            imports: Vec::new(),
+        };
     }
 
     let mut merged_file = syn::File {
@@ -430,7 +1216,6 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
 
     dedupe_use_items(&mut all_items);
     let used_imports = used_imports_from_items(&mut all_items, &import_path_by_module);
-    cache_resolved_imports(import_path, roots, used_imports.clone());
     let module_refs: HashSet<String> = used_imports.iter().map(|path| module_name(path)).collect();
     structural_helpers::inject(&mut all_items);
     let mut merged_file = syn::File {
@@ -445,7 +1230,10 @@ fn resolve_uncached(import_path: &str, roots: Option<&HashSet<String>>) -> Optio
     let module = item_mod_for(import_path, all_items);
     drop(post_timer);
     drop(total_timer);
-    Some(module)
+    ResolvedModuleOutput {
+        module: Some(module),
+        imports: used_imports,
+    }
 }
 
 fn compile_resolved_file(
@@ -455,7 +1243,6 @@ fn compile_resolved_file(
     import_renames: &BTreeMap<String, String>,
     package_mutable_top_level_vars: &HashSet<String>,
     view_method_seed: &crate::compiler::BorrowedViewMethodSeed,
-    roots: Option<&HashSet<String>>,
 ) -> Result<syn::File, crate::compiler::CompilerError> {
     let mut type_env = package_type_env.clone();
     crate::compiler::merge_import_type_envs(
@@ -464,15 +1251,210 @@ fn compile_resolved_file(
         &BTreeMap::new(),
         imported_type_envs,
     );
-    crate::compiler::with_active_reachability_roots(roots, || {
-        crate::compiler::compile_with_type_env_import_renames_mutable_vars_and_view_seed(
-            ast,
-            type_env,
-            import_renames.clone(),
-            Some(package_mutable_top_level_vars.clone()),
-            Some(view_method_seed),
+    crate::compiler::compile_with_type_env_import_renames_mutable_vars_and_view_seed(
+        ast,
+        type_env,
+        import_renames.clone(),
+        Some(package_mutable_top_level_vars.clone()),
+        Some(view_method_seed),
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResolvedFileCompileMode {
+    Sequential,
+    #[cfg(any(
+        all(feature = "parallel", not(target_family = "wasm")),
+        all(feature = "wasm-threads", target_family = "wasm")
+    ))]
+    Parallel,
+}
+
+struct CompiledResolvedFile<'a> {
+    filename: &'a str,
+    result: Result<syn::File, String>,
+}
+
+#[cfg(any(
+    all(feature = "parallel", not(target_family = "wasm")),
+    all(feature = "wasm-threads", target_family = "wasm")
+))]
+struct CompiledResolvedFileSource<'a> {
+    filename: &'a str,
+    result: Result<String, String>,
+}
+
+#[cfg(any(
+    all(feature = "parallel", not(target_family = "wasm")),
+    all(feature = "wasm-threads", target_family = "wasm")
+))]
+struct ParallelResolvedCompileContext<'a> {
+    import_path: &'a str,
+    package_type_env: &'a TypeEnv,
+    imported_type_envs: &'a BTreeMap<String, crate::compiler::PackageFacts>,
+    import_renames: &'a BTreeMap<String, String>,
+    package_mutable_top_level_vars: &'a HashSet<String>,
+    view_method_seed: &'a crate::compiler::BorrowedViewMethodSeedSnapshot,
+}
+
+fn compile_resolved_files<'a>(
+    parsed_files: Vec<(&'a str, crate::ast::File<'a>)>,
+    context: &ResolvedRecoveryContext<'_>,
+    jobs: usize,
+) -> (Vec<CompiledResolvedFile<'a>>, ResolvedFileCompileMode) {
+    let can_parallelize = jobs > 1
+        && parsed_files.len() > 1
+        && !crate::compiler::has_external_interface_implementors();
+
+    #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+    if can_parallelize && rayon::current_thread_index().is_none() {
+        let thread_count = jobs.min(parsed_files.len());
+        if let Ok(pool) = rayon::ThreadPoolBuilder::new()
+            .num_threads(thread_count)
+            .thread_name(|index| format!("gors-file-{index}"))
+            .build()
+        {
+            let view_method_seed = context.view_method_seed.snapshot();
+            let parallel_context = ParallelResolvedCompileContext {
+                import_path: context.import_path,
+                package_type_env: context.package_type_env,
+                imported_type_envs: context.imported_type_envs,
+                import_renames: context.import_renames,
+                package_mutable_top_level_vars: context.package_mutable_top_level_vars,
+                view_method_seed: &view_method_seed,
+            };
+            let compiled =
+                pool.install(|| compile_resolved_files_to_sources(parsed_files, &parallel_context));
+            return (
+                reparse_compiled_resolved_files(compiled),
+                ResolvedFileCompileMode::Parallel,
+            );
+        }
+    }
+
+    #[cfg(all(feature = "wasm-threads", target_family = "wasm"))]
+    if can_parallelize {
+        let view_method_seed = context.view_method_seed.snapshot();
+        let parallel_context = ParallelResolvedCompileContext {
+            import_path: context.import_path,
+            package_type_env: context.package_type_env,
+            imported_type_envs: context.imported_type_envs,
+            import_renames: context.import_renames,
+            package_mutable_top_level_vars: context.package_mutable_top_level_vars,
+            view_method_seed: &view_method_seed,
+        };
+        let compiled = compile_resolved_files_to_sources(parsed_files, &parallel_context);
+        return (
+            reparse_compiled_resolved_files(compiled),
+            ResolvedFileCompileMode::Parallel,
+        );
+    }
+
+    let _ = can_parallelize;
+    (
+        parsed_files
+            .into_iter()
+            .map(|(filename, ast)| CompiledResolvedFile {
+                filename,
+                result: compile_one_resolved_file(filename, ast, context),
+            })
+            .collect(),
+        ResolvedFileCompileMode::Sequential,
+    )
+}
+
+#[cfg(any(
+    all(feature = "parallel", not(target_family = "wasm")),
+    all(feature = "wasm-threads", target_family = "wasm")
+))]
+fn compile_resolved_files_to_sources<'a>(
+    parsed_files: Vec<(&'a str, crate::ast::File<'a>)>,
+    context: &ParallelResolvedCompileContext<'_>,
+) -> Vec<CompiledResolvedFileSource<'a>> {
+    parsed_files
+        .into_par_iter()
+        .map_init(
+            || context.view_method_seed.rehydrate(),
+            |view_method_seed, (filename, ast)| CompiledResolvedFileSource {
+                filename,
+                result: match view_method_seed {
+                    Ok(view_method_seed) => {
+                        compile_one_parallel_resolved_file(filename, ast, context, view_method_seed)
+                            .map(|file| prettyplease::unparse(&file))
+                    }
+                    Err(error) => Err(error.clone()),
+                },
+            },
         )
-    })
+        .collect()
+}
+
+#[cfg(any(
+    all(feature = "parallel", not(target_family = "wasm")),
+    all(feature = "wasm-threads", target_family = "wasm")
+))]
+fn compile_one_parallel_resolved_file(
+    filename: &str,
+    ast: crate::ast::File<'_>,
+    context: &ParallelResolvedCompileContext<'_>,
+    view_method_seed: &crate::compiler::BorrowedViewMethodSeed,
+) -> Result<syn::File, String> {
+    let file_timer = ProfileTimer::start(format!(
+        "resolve.{}.compile_file.{filename}",
+        context.import_path
+    ));
+    let compiled = compile_resolved_file(
+        ast,
+        context.package_type_env,
+        context.imported_type_envs,
+        context.import_renames,
+        context.package_mutable_top_level_vars,
+        view_method_seed,
+    )
+    .map_err(|error| error.to_string());
+    drop(file_timer);
+    compiled
+}
+
+#[cfg(any(
+    all(feature = "parallel", not(target_family = "wasm")),
+    all(feature = "wasm-threads", target_family = "wasm")
+))]
+fn reparse_compiled_resolved_files(
+    compiled: Vec<CompiledResolvedFileSource<'_>>,
+) -> Vec<CompiledResolvedFile<'_>> {
+    compiled
+        .into_iter()
+        .map(|compiled| CompiledResolvedFile {
+            filename: compiled.filename,
+            result: compiled.result.and_then(|source| {
+                syn::parse_str(&source)
+                    .map_err(|error| format!("generated Rust round-trip parse error: {error}"))
+            }),
+        })
+        .collect()
+}
+
+fn compile_one_resolved_file(
+    filename: &str,
+    ast: crate::ast::File<'_>,
+    context: &ResolvedRecoveryContext<'_>,
+) -> Result<syn::File, String> {
+    let file_timer = ProfileTimer::start(format!(
+        "resolve.{}.compile_file.{filename}",
+        context.import_path
+    ));
+    let compiled = compile_resolved_file(
+        ast,
+        context.package_type_env,
+        context.imported_type_envs,
+        context.import_renames,
+        context.package_mutable_top_level_vars,
+        context.view_method_seed,
+    )
+    .map_err(|error| error.to_string());
+    drop(file_timer);
+    compiled
 }
 
 fn scan_imported_type_envs(
@@ -680,7 +1662,6 @@ struct ResolvedRecoveryContext<'a> {
     import_renames: &'a BTreeMap<String, String>,
     package_mutable_top_level_vars: &'a HashSet<String>,
     view_method_seed: &'a crate::compiler::BorrowedViewMethodSeed,
-    roots: Option<&'a HashSet<String>>,
 }
 
 fn recover_resolved_file_items<'a>(
@@ -709,7 +1690,6 @@ fn recover_resolved_file_items<'a>(
             context.import_renames,
             context.package_mutable_top_level_vars,
             context.view_method_seed,
-            context.roots,
         ) {
             Ok(compiled) => {
                 selection.whole_decl_indices.insert(plan.non_import_index);
@@ -743,7 +1723,6 @@ fn recover_resolved_file_items<'a>(
                 context.import_renames,
                 context.package_mutable_top_level_vars,
                 context.view_method_seed,
-                context.roots,
             ) {
                 Ok(compiled) => {
                     selection
@@ -773,7 +1752,6 @@ fn recover_resolved_file_items<'a>(
         context.import_renames,
         context.package_mutable_top_level_vars,
         context.view_method_seed,
-        context.roots,
     ) {
         Ok(compiled) => compiled.items,
         Err(error) => {
@@ -1089,6 +2067,14 @@ pub fn scan_type_env(import_path: &str) -> Option<(String, TypeEnv)> {
         .clone()
 }
 
+pub(crate) fn has_initialized_type_env(import_path: &str) -> bool {
+    type_envs()
+        .read()
+        .ok()
+        .and_then(|cache| cache.get(import_path).cloned())
+        .is_some_and(|cell| cell.get().is_some())
+}
+
 fn type_env_cell(import_path: &str) -> Option<TypeEnvCell> {
     if let Ok(cache) = type_envs().read()
         && let Some(cell) = cache.get(import_path)
@@ -1161,23 +2147,14 @@ fn transitive_imports_cell(import_path: &str) -> Option<Arc<OnceLock<Vec<String>
 
 pub fn collect_resolved_imports(import_path: &str, roots: &HashSet<String>) -> Vec<String> {
     let cache_key = resolve_cache_key(import_path, Some(roots));
-    if let Ok(cache) = resolved_imports().read()
-        && let Some(cached) = cache.get(&cache_key)
+    if let Ok(cache) = resolved_modules().read()
+        && let Some((_, slot)) =
+            reusable_resolved_module_slot(&cache, import_path, Some(roots), &cache_key)
+        && let Some(imports) = slot.entry.get().and_then(ResolvedModuleEntry::imports)
     {
-        return cached.clone();
+        return imports.to_vec();
     }
     collect_transitive_imports(import_path)
-}
-
-fn cache_resolved_imports(
-    import_path: &str,
-    roots: Option<&HashSet<String>>,
-    imports: Vec<String>,
-) {
-    let cache_key = resolve_cache_key(import_path, roots);
-    if let Ok(mut cache) = resolved_imports().write() {
-        cache.entry(cache_key).or_insert(imports);
-    }
 }
 
 fn collect_transitive_imports_uncached(import_path: &str) -> Vec<String> {
@@ -1223,65 +2200,132 @@ fn reachable_package_names_with_imports(
         );
     }
     let interface_method_roots = interface_method_roots(roots, &top_names, &env);
-    let mut reachable: HashSet<String> = roots
+    let decls = parsed_files
+        .iter()
+        .flat_map(|(_, file)| file.decls.iter())
+        .collect::<Vec<_>>();
+    let mut decls_by_name: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut receiver_methods: HashMap<String, Vec<String>> = HashMap::new();
+    for (index, decl) in decls.iter().enumerate() {
+        for name in decl_names(decl) {
+            decls_by_name.entry(name).or_default().push(index);
+        }
+        if let crate::ast::Decl::FuncDecl(func) = decl
+            && let (Some(receiver), Some(method)) =
+                (receiver_type_name(func), receiver_method_name(func))
+        {
+            receiver_methods.entry(receiver).or_default().push(method);
+        }
+    }
+
+    let mut reachable = HashSet::new();
+    let mut reachable_queue = VecDeque::new();
+    let mut value_reachable = HashSet::new();
+    let mut value_queue = VecDeque::new();
+    let mut initial_roots = roots
         .iter()
         .filter(|name| top_names.contains(name.as_str()))
         .cloned()
-        .collect();
-    let mut value_reachable = reachable
-        .iter()
-        .filter(|name| !name.contains("::"))
-        .cloned()
-        .collect::<HashSet<_>>();
+        .collect::<Vec<_>>();
+    initial_roots.sort();
+    for root in initial_roots {
+        enqueue_reachable(&mut reachable, &mut reachable_queue, root.clone());
+        if !root.contains("::") && value_reachable.insert(root.clone()) {
+            value_queue.push_back(root);
+        }
+    }
+    if top_names.contains("init") {
+        enqueue_reachable(&mut reachable, &mut reachable_queue, "init".to_string());
+    }
 
-    let mut changed = true;
-    while changed {
-        changed = false;
-        changed |= expand_value_receiver_methods(&mut reachable, &value_reachable, &top_names);
-        changed |= expand_reachable_interface_methods(
-            &mut reachable,
-            &value_reachable,
-            &top_names,
-            &interface_method_roots,
-            &env,
-        );
-        for (_, file) in parsed_files {
-            for decl in &file.decls {
-                if !decl_is_reachable(decl, &reachable) {
+    let mut processed_decls = HashSet::new();
+    while !reachable_queue.is_empty() || !value_queue.is_empty() {
+        while let Some(concrete) = value_queue.pop_front() {
+            if let Some(methods) = receiver_methods.get(&concrete) {
+                for method in methods {
+                    enqueue_reachable(&mut reachable, &mut reachable_queue, method.clone());
+                }
+            }
+            for (interface_name, methods) in &interface_method_roots {
+                if !env.named_type_implements_interface(&concrete, interface_name, true) {
                     continue;
                 }
-                for name in decl_names(decl) {
-                    changed |= reachable.insert(name);
-                }
-                let mut refs = HashSet::new();
-                refs_from_decl(decl, &mut refs);
-                for reference in refs {
-                    if top_names.contains(reference.as_str()) {
-                        changed |= reachable.insert(reference);
+                for method in methods {
+                    let method_root = format!("{concrete}::{method}");
+                    if top_names.contains(&method_root) {
+                        enqueue_reachable(&mut reachable, &mut reachable_queue, method_root);
                     }
                 }
-                let mut method_refs = HashSet::new();
-                method_refs_from_decl(decl, &env, &mut method_refs);
-                for reference in method_refs {
-                    if top_names.contains(reference.as_str()) {
-                        changed |= reachable.insert(reference);
-                    }
+            }
+
+            let mut field_refs = HashSet::new();
+            let concrete_only = HashSet::from([concrete.clone()]);
+            if let Some(indices) = decls_by_name.get(&concrete) {
+                for index in indices {
+                    let Some(decl) = decls.get(*index).copied() else {
+                        continue;
+                    };
+                    value_field_refs_from_decl(decl, &concrete_only, &mut field_refs);
                 }
-                let mut value_refs = HashSet::new();
-                value_refs_from_decl(decl, &mut value_refs);
-                value_field_refs_from_decl(decl, &value_reachable, &mut value_refs);
-                for reference in value_refs {
-                    if top_names.contains(reference.as_str()) {
-                        changed |= reachable.insert(reference.clone());
-                        changed |= value_reachable.insert(reference);
-                    }
+            }
+            enqueue_value_refs(
+                field_refs,
+                &top_names,
+                &mut reachable,
+                &mut reachable_queue,
+                &mut value_reachable,
+                &mut value_queue,
+            );
+        }
+
+        let Some(name) = reachable_queue.pop_front() else {
+            continue;
+        };
+        let Some(indices) = decls_by_name.get(&name) else {
+            continue;
+        };
+        for index in indices {
+            if !processed_decls.insert(*index) {
+                continue;
+            }
+            let Some(decl) = decls.get(*index).copied() else {
+                continue;
+            };
+            for name in decl_names(decl) {
+                enqueue_reachable(&mut reachable, &mut reachable_queue, name);
+            }
+
+            let mut refs = HashSet::new();
+            refs_from_decl(decl, &mut refs);
+            let mut method_refs = HashSet::new();
+            method_refs_from_decl(decl, &env, &mut method_refs);
+            refs.extend(method_refs);
+            for reference in refs {
+                if top_names.contains(reference.as_str()) {
+                    enqueue_reachable(&mut reachable, &mut reachable_queue, reference);
                 }
-                changed |= expand_type_switch_case_interface_methods(
-                    &mut reachable,
-                    &top_names,
-                    decl,
-                    &env,
-                );
+            }
+
+            let mut value_refs = HashSet::new();
+            value_refs_from_decl(decl, &mut value_refs);
+            enqueue_value_refs(
+                value_refs,
+                &top_names,
+                &mut reachable,
+                &mut reachable_queue,
+                &mut value_reachable,
+                &mut value_queue,
+            );
+
+            let mut type_switch_refs = HashSet::new();
+            expand_type_switch_case_interface_methods(
+                &mut type_switch_refs,
+                &top_names,
+                decl,
+                &env,
+            );
+            for reference in type_switch_refs {
+                enqueue_reachable(&mut reachable, &mut reachable_queue, reference);
             }
         }
     }
@@ -1289,21 +2333,29 @@ fn reachable_package_names_with_imports(
     reachable
 }
 
-fn expand_value_receiver_methods(
-    reachable: &mut HashSet<String>,
-    value_reachable: &HashSet<String>,
+fn enqueue_reachable(reachable: &mut HashSet<String>, queue: &mut VecDeque<String>, name: String) {
+    if reachable.insert(name.clone()) {
+        queue.push_back(name);
+    }
+}
+
+fn enqueue_value_refs(
+    refs: HashSet<String>,
     top_names: &HashSet<String>,
-) -> bool {
-    let mut changed = false;
-    for concrete in value_reachable {
-        let receiver_prefix = format!("{concrete}::");
-        for name in top_names {
-            if name.starts_with(&receiver_prefix) {
-                changed |= reachable.insert(name.clone());
-            }
+    reachable: &mut HashSet<String>,
+    reachable_queue: &mut VecDeque<String>,
+    value_reachable: &mut HashSet<String>,
+    value_queue: &mut VecDeque<String>,
+) {
+    for reference in refs {
+        if !top_names.contains(reference.as_str()) {
+            continue;
+        }
+        enqueue_reachable(reachable, reachable_queue, reference.clone());
+        if value_reachable.insert(reference.clone()) {
+            value_queue.push_back(reference);
         }
     }
-    changed
 }
 
 fn interface_method_roots(
@@ -1324,30 +2376,6 @@ fn interface_method_roots(
         }
     }
     method_roots
-}
-
-fn expand_reachable_interface_methods(
-    reachable: &mut HashSet<String>,
-    value_reachable: &HashSet<String>,
-    top_names: &HashSet<String>,
-    interface_method_roots: &BTreeMap<String, BTreeSet<String>>,
-    env: &TypeEnv,
-) -> bool {
-    let mut changed = false;
-    for concrete in value_reachable {
-        for (interface_name, methods) in interface_method_roots {
-            if !env.named_type_implements_interface(concrete, interface_name, true) {
-                continue;
-            }
-            for method in methods {
-                let method_root = format!("{concrete}::{method}");
-                if top_names.contains(&method_root) {
-                    changed |= reachable.insert(method_root);
-                }
-            }
-        }
-    }
-    changed
 }
 
 fn expand_type_switch_case_interface_methods(
@@ -1734,24 +2762,6 @@ fn spec_names(spec: &crate::ast::Spec<'_>) -> Vec<String> {
             .iter()
             .map(|name| name.name.to_string())
             .collect(),
-    }
-}
-
-fn decl_is_reachable(decl: &crate::ast::Decl<'_>, reachable: &HashSet<String>) -> bool {
-    match decl {
-        crate::ast::Decl::FuncDecl(func) => {
-            if func_decl_is_package_init(func) {
-                true
-            } else if func.recv.is_none() {
-                reachable.contains(func.name.name)
-            } else {
-                receiver_method_name(func).is_some_and(|name| reachable.contains(&name))
-            }
-        }
-        crate::ast::Decl::GenDecl(gen_decl) => gen_decl
-            .specs
-            .iter()
-            .any(|spec| spec_names(spec).iter().any(|name| reachable.contains(name))),
     }
 }
 
@@ -3171,6 +4181,549 @@ mod tests {
     use crate::compiler::typeinfer::{GoType, TypeKind};
     use quote::ToTokens;
 
+    fn cache_archive(
+        entries: Vec<ResolvedCacheRecord>,
+        type_envs: Vec<ResolvedTypeEnvRecord>,
+    ) -> ResolvedCacheArchive {
+        ResolvedCacheArchive {
+            schema: RESOLVED_CACHE_SCHEMA,
+            go_version: crate::GO_VERSION.to_string(),
+            stdlib_version: crate::STDLIB_VERSION.to_string(),
+            resolver_fingerprint: crate::RESOLVER_CACHE_FINGERPRINT.to_string(),
+            entries,
+            type_envs,
+        }
+    }
+
+    fn cache_record(
+        import_path: &str,
+        roots: Option<Vec<&str>>,
+        source: Option<&str>,
+        imports: Vec<&str>,
+    ) -> ResolvedCacheRecord {
+        let mut record = ResolvedCacheRecord {
+            import_path: import_path.to_string(),
+            roots: roots.map(|roots| roots.into_iter().map(str::to_string).collect()),
+            source: source.map(str::to_string),
+            imports: imports.into_iter().map(str::to_string).collect(),
+            integrity: String::new(),
+        };
+        record.integrity = resolved_record_integrity(&record).unwrap();
+        record
+    }
+
+    fn type_env_record(import_path: &str) -> ResolvedTypeEnvRecord {
+        let (package_name, env) = scan_type_env_uncached(import_path).unwrap();
+        let env = canonical_type_env_value(&env).unwrap();
+        let integrity = type_env_record_integrity(import_path, &package_name, &env).unwrap();
+        ResolvedTypeEnvRecord {
+            import_path: import_path.to_string(),
+            package_name,
+            env,
+            integrity,
+        }
+    }
+
+    fn initialized_resolved_slot(entry: ResolvedModuleEntry) -> Arc<ResolvedModuleSlot> {
+        let slot = Arc::new(ResolvedModuleSlot::new());
+        slot.entry.set(entry).unwrap();
+        slot
+    }
+
+    fn source_entry(source: &str, imports: &[&str]) -> ResolvedModuleEntry {
+        ResolvedModuleEntry::Source {
+            source: source.to_string(),
+            imports: imports.iter().map(|import| (*import).to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn resolved_cache_key_round_trips_sorted_roots() {
+        let roots = HashSet::from(["Write".to_string(), "Read".to_string()]);
+        let cache_key = resolve_cache_key("io", Some(&roots));
+
+        assert_eq!(
+            parse_resolve_cache_key(&cache_key),
+            Some((
+                "io".to_string(),
+                Some(vec!["Read".to_string(), "Write".to_string()])
+            ))
+        );
+        assert_eq!(
+            parse_resolve_cache_key("fmt"),
+            Some(("fmt".to_string(), None))
+        );
+    }
+
+    #[test]
+    fn resolved_cache_prefers_smallest_deterministic_initialized_superset() {
+        let requested = HashSet::from(["A".to_string()]);
+        let exact_key = resolve_cache_key("cmp", Some(&requested));
+        let ab_key = resolve_cache_key(
+            "cmp",
+            Some(&HashSet::from(["A".to_string(), "B".to_string()])),
+        );
+        let ac_key = resolve_cache_key(
+            "cmp",
+            Some(&HashSet::from(["A".to_string(), "C".to_string()])),
+        );
+        let abc_key = resolve_cache_key(
+            "cmp",
+            Some(&HashSet::from([
+                "A".to_string(),
+                "B".to_string(),
+                "C".to_string(),
+            ])),
+        );
+        let uncacheable_key = resolve_cache_key(
+            "cmp",
+            Some(&HashSet::from(["A".to_string(), "AA".to_string()])),
+        );
+        let initializing_key = resolve_cache_key(
+            "cmp",
+            Some(&HashSet::from(["A".to_string(), "AB".to_string()])),
+        );
+        let unrelated_key = resolve_cache_key(
+            "io",
+            Some(&HashSet::from(["A".to_string(), "B".to_string()])),
+        );
+        let cache = HashMap::from([
+            (
+                abc_key,
+                initialized_resolved_slot(source_entry("abc", &["os"])),
+            ),
+            (
+                ac_key,
+                initialized_resolved_slot(source_entry("ac", &["strings"])),
+            ),
+            (
+                ab_key.clone(),
+                initialized_resolved_slot(source_entry("ab", &["bytes"])),
+            ),
+            (
+                uncacheable_key,
+                initialized_resolved_slot(ResolvedModuleEntry::Uncacheable),
+            ),
+            (initializing_key, Arc::new(ResolvedModuleSlot::new())),
+            (
+                unrelated_key,
+                initialized_resolved_slot(source_entry("unrelated", &["io"])),
+            ),
+        ]);
+
+        let (selected_key, selected_slot) =
+            reusable_resolved_module_slot(&cache, "cmp", Some(&requested), &exact_key).unwrap();
+        assert_eq!(selected_key, ab_key);
+        assert_eq!(
+            selected_slot
+                .entry
+                .get()
+                .and_then(ResolvedModuleEntry::imports),
+            Some(["bytes".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn resolved_cache_exact_slot_wins_and_unfiltered_entries_stay_separate() {
+        let requested = HashSet::from(["A".to_string()]);
+        let exact_key = resolve_cache_key("cmp", Some(&requested));
+        let full_slot = initialized_resolved_slot(source_entry("full", &["reflect"]));
+        let exact_slot = Arc::new(ResolvedModuleSlot::new());
+        let mut cache = HashMap::from([("cmp".to_string(), full_slot)]);
+
+        assert!(
+            reusable_resolved_module_slot(&cache, "cmp", Some(&requested), &exact_key).is_none()
+        );
+
+        cache.insert(exact_key.clone(), exact_slot.clone());
+        let (selected_key, selected_slot) =
+            reusable_resolved_module_slot(&cache, "cmp", Some(&requested), &exact_key).unwrap();
+        assert_eq!(selected_key, exact_key);
+        assert!(Arc::ptr_eq(selected_slot, &exact_slot));
+    }
+
+    #[test]
+    fn imported_resolved_cache_superset_serves_module_and_dependency_metadata() {
+        let narrow_root = "__gors_cache_superset_probe_a";
+        let broad_root = "__gors_cache_superset_probe_b";
+        let narrow_roots = HashSet::from([narrow_root.to_string()]);
+        let narrow_key = resolve_cache_key("cmp", Some(&narrow_roots));
+        assert!(
+            resolved_modules()
+                .read()
+                .unwrap()
+                .get(&narrow_key)
+                .is_none()
+        );
+
+        let record = cache_record(
+            "cmp",
+            Some(vec![narrow_root, broad_root]),
+            Some("pub fn __gors_cache_superset_probe() {}\n"),
+            vec!["io"],
+        );
+        let bytes = serde_json::to_vec(&cache_archive(vec![record], Vec::new())).unwrap();
+        let stats = import_resolved_module_cache(&bytes).unwrap();
+        assert_eq!(stats.imported, 1);
+        assert!(has_initialized_resolved_module("cmp", &narrow_roots));
+
+        let module = resolve_with_roots("cmp", &narrow_roots).unwrap();
+        assert!(
+            module
+                .to_token_stream()
+                .to_string()
+                .contains("__gors_cache_superset_probe")
+        );
+        assert_eq!(
+            collect_resolved_imports("cmp", &narrow_roots),
+            vec!["io".to_string()]
+        );
+        assert!(
+            resolved_modules()
+                .read()
+                .unwrap()
+                .get(&narrow_key)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn resolved_cache_rejects_other_resolver_fingerprints() {
+        let archive = ResolvedCacheArchive {
+            schema: RESOLVED_CACHE_SCHEMA,
+            go_version: crate::GO_VERSION.to_string(),
+            stdlib_version: crate::STDLIB_VERSION.to_string(),
+            resolver_fingerprint: "other-resolver".to_string(),
+            entries: Vec::new(),
+            type_envs: Vec::new(),
+        };
+
+        assert_eq!(
+            validate_resolved_cache_archive(&archive),
+            Err("resolved module cache resolver fingerprint mismatch".to_string())
+        );
+    }
+
+    #[test]
+    fn resolved_cache_validates_every_record_before_mutating_global_caches() {
+        let probe_root = "__gors_cache_atomicity_probe";
+        let probe_key = resolve_cache_key("cmp", Some(&HashSet::from([probe_root.to_string()])));
+        assert!(resolved_modules().read().unwrap().get(&probe_key).is_none());
+
+        let valid = cache_record(
+            "cmp",
+            Some(vec![probe_root]),
+            Some("pub fn cache_atomicity_probe() {}\n"),
+            Vec::new(),
+        );
+        let invalid = cache_record(
+            "gors/cache/unknown",
+            Some(vec!["Probe"]),
+            Some("pub fn invalid_package() {}\n"),
+            Vec::new(),
+        );
+        let bytes = serde_json::to_vec(&cache_archive(vec![valid, invalid], Vec::new())).unwrap();
+
+        assert!(
+            import_resolved_module_cache(&bytes)
+                .unwrap_err()
+                .contains("unknown package")
+        );
+        assert!(resolved_modules().read().unwrap().get(&probe_key).is_none());
+    }
+
+    #[test]
+    fn resolved_cache_rejects_duplicate_records_and_invalid_generated_source() {
+        let record = cache_record(
+            "cmp",
+            Some(vec!["__gors_duplicate_probe"]),
+            Some("pub fn duplicate_probe() {}\n"),
+            Vec::new(),
+        );
+        assert!(
+            prepare_resolved_cache_archive(cache_archive(vec![record.clone(), record], Vec::new()))
+                .unwrap_err()
+                .contains("duplicate entry")
+        );
+
+        let invalid = cache_record(
+            "cmp",
+            Some(vec!["__gors_invalid_source_probe"]),
+            Some("pub fn invalid source"),
+            Vec::new(),
+        );
+        assert!(
+            prepare_resolved_cache_archive(cache_archive(vec![invalid], Vec::new()))
+                .unwrap_err()
+                .contains("invalid Rust")
+        );
+
+        let duplicate_dependencies = cache_record(
+            "cmp",
+            Some(vec!["__gors_duplicate_dependency_probe"]),
+            Some("pub fn duplicate_dependency_probe() {}\n"),
+            vec!["io", "io"],
+        );
+        assert!(
+            prepare_resolved_cache_archive(cache_archive(vec![duplicate_dependencies], Vec::new()))
+                .unwrap_err()
+                .contains("duplicate imports")
+        );
+    }
+
+    #[test]
+    fn resolved_cache_rejects_type_env_corruption_and_package_name_mismatches() {
+        let mut corrupted = type_env_record("cmp");
+        corrupted.integrity = "corrupted".to_string();
+        assert!(
+            prepare_resolved_cache_archive(cache_archive(Vec::new(), vec![corrupted]))
+                .unwrap_err()
+                .contains("type environment integrity mismatch")
+        );
+
+        let mut mismatched = type_env_record("cmp");
+        mismatched.package_name = "not_cmp".to_string();
+        mismatched.integrity =
+            type_env_record_integrity("cmp", &mismatched.package_name, &mismatched.env).unwrap();
+        assert!(
+            prepare_resolved_cache_archive(cache_archive(Vec::new(), vec![mismatched]))
+                .unwrap_err()
+                .contains("package name mismatch")
+        );
+
+        let duplicate = type_env_record("cmp");
+        assert!(
+            prepare_resolved_cache_archive(cache_archive(
+                Vec::new(),
+                vec![duplicate.clone(), duplicate]
+            ))
+            .unwrap_err()
+            .contains("duplicate type environment")
+        );
+    }
+
+    #[test]
+    fn type_env_wire_encoding_is_deterministic_across_independent_scans() {
+        let (_, first) = scan_type_env_uncached("cmp").unwrap();
+        let (_, second) = scan_type_env_uncached("cmp").unwrap();
+        let first = serde_json::to_vec(&canonical_type_env_value(&first).unwrap()).unwrap();
+        let second = serde_json::to_vec(&canonical_type_env_value(&second).unwrap()).unwrap();
+
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn resolved_cache_eviction_is_bounded_and_keeps_records_paired() {
+        fn initialized_slot(entry: ResolvedModuleEntry, last_used: u64) -> Arc<ResolvedModuleSlot> {
+            let slot = initialized_resolved_slot(entry);
+            slot.last_used.store(last_used, Ordering::Relaxed);
+            slot
+        }
+
+        let initializing = Arc::new(ResolvedModuleSlot::new());
+        let mut cache = HashMap::from([
+            (
+                "old".to_string(),
+                initialized_slot(
+                    ResolvedModuleEntry::Source {
+                        source: "old source".to_string(),
+                        imports: vec!["cmp".to_string()],
+                    },
+                    1,
+                ),
+            ),
+            (
+                "new".to_string(),
+                initialized_slot(
+                    ResolvedModuleEntry::Source {
+                        source: "new source".to_string(),
+                        imports: vec!["io".to_string()],
+                    },
+                    2,
+                ),
+            ),
+            ("initializing".to_string(), initializing),
+        ]);
+
+        assert_eq!(trim_resolved_module_cache_map(&mut cache, 2, usize::MAX), 1);
+        assert_eq!(cache.len(), 2);
+        assert!(!cache.contains_key("old"));
+        assert!(cache.contains_key("initializing"));
+        assert!(
+            cache
+                .get("initializing")
+                .is_some_and(|slot| slot.entry.get().is_none())
+        );
+        let entry = cache.get("new").and_then(|slot| slot.entry.get());
+        assert!(entry.is_some());
+        if let Some(entry) = entry {
+            let source = match entry {
+                ResolvedModuleEntry::Source { source, .. } => Some(source.as_str()),
+                _ => None,
+            };
+            assert_eq!(source, Some("new source"));
+            assert_eq!(entry.imports(), Some(["io".to_string()].as_slice()));
+        }
+
+        let mut oversized = HashMap::from([(
+            "oversized".to_string(),
+            initialized_slot(
+                ResolvedModuleEntry::Source {
+                    source: "generated source larger than the test budget".to_string(),
+                    imports: Vec::new(),
+                },
+                1,
+            ),
+        )]);
+        assert_eq!(trim_resolved_module_cache_map(&mut oversized, 1, 8), 1);
+        assert!(oversized.is_empty());
+    }
+
+    #[test]
+    fn resolved_cache_exports_and_reimports_generated_modules() {
+        let roots = HashSet::from(["Compare".to_string()]);
+        assert!(resolve_with_roots("cmp", &roots).is_some());
+        assert!(scan_type_env("cmp").is_some());
+        assert!(has_initialized_type_env("cmp"));
+
+        let bytes = export_resolved_module_cache().unwrap();
+        let archive: ResolvedCacheArchive = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(archive.schema, RESOLVED_CACHE_SCHEMA);
+        assert_eq!(
+            archive.resolver_fingerprint,
+            crate::RESOLVER_CACHE_FINGERPRINT
+        );
+        let encoded: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            encoded
+                .get("compilerFingerprint")
+                .and_then(serde_json::Value::as_str),
+            Some(crate::RESOLVER_CACHE_FINGERPRINT)
+        );
+        assert!(encoded.get("resolverFingerprint").is_none());
+        assert!(archive.entries.iter().any(|entry| {
+            entry.import_path == "cmp"
+                && entry
+                    .roots
+                    .as_ref()
+                    .is_some_and(|roots| roots == &["Compare".to_string()])
+                && entry.source.is_some()
+        }));
+        assert!(
+            archive
+                .type_envs
+                .iter()
+                .any(|entry| entry.import_path == "cmp")
+        );
+
+        let stats = import_resolved_module_cache(&bytes).unwrap();
+        assert!(stats.already_present >= 1);
+        assert!(stats.type_envs_already_present >= 1);
+    }
+
+    #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+    #[test]
+    fn parallel_resolved_file_compilation_matches_sequential_output() {
+        fn compile_fixture(jobs: usize) -> (String, ResolvedFileCompileMode) {
+            let parsed_files = vec![
+                (
+                    "views.go",
+                    crate::parser::parse_file(
+                        "views.go",
+                        r#"
+package views
+
+const blockSize = 8
+
+type block [blockSize]byte
+type header [blockSize]byte
+
+func (b *block) header() *header {
+	return (*header)(b)
+}
+
+func (h *header) name() []byte {
+	return h[1:][:3]
+}
+"#,
+                    )
+                    .unwrap(),
+                ),
+                (
+                    "write.go",
+                    crate::parser::parse_file(
+                        "write.go",
+                        r#"
+package views
+
+func Fill(b *block) {
+	field := b.header().name()
+	field[0] = 'A'
+}
+"#,
+                    )
+                    .unwrap(),
+                ),
+            ];
+            let parsed_file_refs = parsed_files
+                .iter()
+                .map(|(_, file)| file)
+                .collect::<Vec<_>>();
+            let mut package_type_env = TypeEnv::new();
+            package_type_env.scan_files(&parsed_file_refs);
+            let imported_type_envs = BTreeMap::new();
+            let import_renames = BTreeMap::new();
+            let package_mutable_top_level_vars =
+                crate::compiler::mutable_top_level_var_names_for_files_with_type_env(
+                    parsed_file_refs.iter().copied(),
+                    false,
+                    &package_type_env,
+                );
+            let view_method_seed = crate::compiler::borrowed_view_method_seed_for_files(
+                &parsed_file_refs,
+                &package_type_env,
+            );
+            let context = ResolvedRecoveryContext {
+                import_path: "views",
+                package_type_env: &package_type_env,
+                imported_type_envs: &imported_type_envs,
+                import_renames: &import_renames,
+                package_mutable_top_level_vars: &package_mutable_top_level_vars,
+                view_method_seed: &view_method_seed,
+            };
+
+            let (compiled, mode) = compile_resolved_files(parsed_files, &context, jobs);
+            let mut items = Vec::new();
+            for compiled_file in compiled {
+                items.extend(compiled_file.result.unwrap().items);
+            }
+            (
+                prettyplease::unparse(&syn::File {
+                    shebang: None,
+                    attrs: vec![],
+                    items,
+                }),
+                mode,
+            )
+        }
+
+        let (sequential, sequential_mode) = compile_fixture(1);
+        let (parallel, parallel_mode) = compile_fixture(4);
+        let outer_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .unwrap();
+        let (nested, nested_mode) = outer_pool.install(|| compile_fixture(4));
+
+        assert_eq!(sequential_mode, ResolvedFileCompileMode::Sequential);
+        assert_eq!(parallel_mode, ResolvedFileCompileMode::Parallel);
+        assert_eq!(nested_mode, ResolvedFileCompileMode::Sequential);
+        assert_eq!(parallel, sequential);
+        assert_eq!(nested, sequential);
+        assert!(parallel.contains(".to_vec();"), "{parallel}");
+        assert!(parallel.contains("__gors_slice_alias_value"), "{parallel}");
+    }
+
     #[test]
     fn refresh_top_level_vars_with_imports_promotes_imported_receiver_facts() {
         let common = crate::parser::parse_file(
@@ -3431,24 +4984,37 @@ func root(blk *block) {
     }
 
     #[test]
-    fn scan_type_env_preserves_syscall_errno_constant_type()
+    fn scanned_type_env_preserves_named_constants_fields_and_method_results()
     -> Result<(), Box<dyn std::error::Error>> {
-        let (package_name, env) =
-            scan_type_env("syscall").ok_or_else(|| std::io::Error::other("syscall type env"))?;
+        let file = crate::parser::parse_file(
+            "fixture.go",
+            r#"
+package fixture
 
-        assert_eq!(package_name, "syscall");
+type Errno uintptr
+const ENOENT Errno = 2
+
+type Timespec struct{}
+type Stat_t struct {
+	Atimespec Timespec
+}
+
+func (Timespec) Unix() (int64, int64) {
+	return 0, 0
+}
+"#,
+        )?;
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+
         assert_eq!(
             env.get_var("ENOENT"),
             Some(crate::compiler::typeinfer::GoType::Named(
                 "Errno".to_string()
             ))
         );
-        #[cfg(target_os = "macos")]
-        let stat_atime_field = "Atimespec";
-        #[cfg(not(target_os = "macos"))]
-        let stat_atime_field = "Atim";
         assert_eq!(
-            env.get_field_type("Stat_t", stat_atime_field),
+            env.get_field_type("Stat_t", "Atimespec"),
             crate::compiler::typeinfer::GoType::Named("Timespec".to_string())
         );
         assert_eq!(
@@ -3592,39 +5158,34 @@ func root(blk *block) {
     }
 
     #[test]
-    fn reachable_names_include_internal_strconv_appendfloat_package_var()
+    fn reachable_names_include_private_helpers_called_by_receiver_methods()
     -> Result<(), Box<dyn std::error::Error>> {
-        let files =
-            package_files("internal/strconv").ok_or_else(|| std::io::Error::other("files"))?;
-        let mut parsed_files = Vec::new();
-        for (filename, content) in files.iter() {
-            parsed_files.push((*filename, crate::parser::parse_file(filename, content)?));
-        }
-        let roots = HashSet::from(["AppendFloat".to_string()]);
-        let reachable = reachable_package_names(&parsed_files, &roots);
+        let source = r#"
+package fixture
 
-        assert!(reachable.contains("AppendFloat"), "{reachable:?}");
-        assert!(reachable.contains("genericFtoa"), "{reachable:?}");
-        assert!(reachable.contains("optimize"), "{reachable:?}");
-        Ok(())
-    }
+type MapIter struct{}
 
-    #[test]
-    fn reachable_names_include_reflect_mapiter_copyval() -> Result<(), Box<dyn std::error::Error>> {
-        let files = package_files("reflect").ok_or_else(|| std::io::Error::other("files"))?;
-        let mut parsed_files = Vec::new();
-        for (filename, content) in files.iter() {
-            parsed_files.push((*filename, crate::parser::parse_file(filename, content)?));
-        }
+func (iter *MapIter) Key() int {
+	return copyVal(1)
+}
+
+func copyVal(value int) int {
+	return value
+}
+
+func deadHelper() int {
+	return 0
+}
+"#;
+        let file = crate::parser::parse_file("fixture.go", source)?;
+        let parsed_files = vec![("fixture.go", file)];
         let roots = HashSet::from(["MapIter".to_string()]);
         let reachable = reachable_package_names(&parsed_files, &roots);
 
         assert!(reachable.contains("MapIter"), "{reachable:?}");
+        assert!(reachable.contains("MapIter::Key"), "{reachable:?}");
         assert!(reachable.contains("copyVal"), "{reachable:?}");
-        let module = resolve_with_roots("reflect", &roots)
-            .ok_or_else(|| std::io::Error::other("resolve reflect"))?;
-        let tokens = module.to_token_stream().to_string();
-        assert!(tokens.contains("fn copyVal"), "{tokens}");
+        assert!(!reachable.contains("deadHelper"), "{reachable:?}");
         Ok(())
     }
 
@@ -3690,13 +5251,24 @@ func root(blk *block) {
     }
 
     #[test]
-    fn reachable_names_include_context_package_init_dependencies()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let files = package_files("context").ok_or_else(|| std::io::Error::other("files"))?;
-        let mut parsed_files = Vec::new();
-        for (filename, content) in files.iter() {
-            parsed_files.push((*filename, crate::parser::parse_file(filename, content)?));
-        }
+    fn reachable_names_include_package_init_dependencies() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let source = r#"
+package fixture
+
+var closedchan = make(chan struct{})
+
+func init() {
+	close(closedchan)
+}
+
+func WithCancel() {}
+
+func deadHelper() {}
+"#;
+        let file = crate::parser::parse_file("fixture.go", source)?;
+        let reachable_file = crate::parser::parse_file("fixture.go", source)?;
+        let parsed_files = vec![("fixture.go", reachable_file)];
         let roots = HashSet::from(["WithCancel".to_string()]);
         let reachable = reachable_package_names(&parsed_files, &roots);
 
@@ -3707,9 +5279,10 @@ func root(blk *block) {
             );
         }
 
-        let module = resolve_with_roots("context", &roots)
-            .ok_or_else(|| std::io::Error::other("resolve context"))?;
-        let tokens = module.to_token_stream().to_string();
+        assert!(!reachable.contains("deadHelper"), "{reachable:?}");
+        let filtered = filter_file_to_reachable(file, &reachable);
+        let compiled = crate::compiler::compile(filtered)?;
+        let tokens = compiled.to_token_stream().to_string();
 
         for expected in ["pub fn __gors_init", "closedchan", "close"] {
             assert!(
@@ -3721,16 +5294,30 @@ func root(blk *block) {
     }
 
     #[test]
-    fn resolve_roots_merge_multiple_package_init_functions()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let roots = HashSet::from(["Args".to_string()]);
-        let module =
-            resolve_with_roots("os", &roots).ok_or_else(|| std::io::Error::other("resolve os"))?;
-        let tokens = module.to_token_stream().to_string();
+    fn resolved_files_merge_multiple_package_init_functions() {
+        let mut items: Vec<syn::Item> = vec![
+            syn::parse_quote! {
+                pub fn __gors_init() {
+                    runtime_args();
+                }
+            },
+            syn::parse_quote! {
+                pub fn helper() {}
+            },
+            syn::parse_quote! {
+                pub fn __gors_init() {
+                    runtime_envs();
+                }
+            },
+        ];
+
+        crate::compiler::merge_package_init_items(&mut items);
+        let tokens = quote::quote! { #(#items)* }.to_string();
 
         assert_eq!(tokens.matches("pub fn __gors_init").count(), 1, "{tokens}");
         assert!(tokens.contains("runtime_args"), "{tokens}");
-        Ok(())
+        assert!(tokens.contains("runtime_envs"), "{tokens}");
+        assert!(tokens.contains("pub fn helper"), "{tokens}");
     }
 
     #[test]
@@ -3748,56 +5335,131 @@ func root(blk *block) {
     }
 
     #[test]
-    fn resolve_roots_retain_package_vars_reached_through_functions()
+    fn filtered_package_retains_vars_reached_through_functions()
     -> Result<(), Box<dyn std::error::Error>> {
+        let source = r#"
+package fixture
+
+var optimize = true
+
+func AppendFloat() bool {
+	return genericFtoa()
+}
+
+func genericFtoa() bool {
+	return optimize
+}
+
+func deadHelper() bool {
+	return false
+}
+"#;
+        let file = crate::parser::parse_file("fixture.go", source)?;
+        let reachable_file = crate::parser::parse_file("fixture.go", source)?;
+        let parsed_files = vec![("fixture.go", reachable_file)];
         let roots = HashSet::from(["AppendFloat".to_string()]);
-        let module = resolve_with_roots("internal/strconv", &roots)
-            .ok_or_else(|| std::io::Error::other("resolve internal/strconv"))?;
-        let tokens = module.to_token_stream().to_string();
+        let reachable = reachable_package_names(&parsed_files, &roots);
+        let filtered = filter_file_to_reachable(file, &reachable);
+        let compiled = crate::compiler::compile(filtered)?;
+        let tokens = compiled.to_token_stream().to_string();
 
         assert!(tokens.contains("pub fn AppendFloat"), "{tokens}");
         assert!(tokens.contains("fn genericFtoa"), "{tokens}");
         assert!(tokens.contains("static optimize_"), "{tokens}");
+        assert!(!tokens.contains("deadHelper"), "{tokens}");
         Ok(())
     }
 
     #[test]
-    fn resolve_roots_retain_private_syscall_helpers_reached_from_public_functions()
+    fn filtered_package_retains_private_helpers_constants_and_vars()
     -> Result<(), Box<dyn std::error::Error>> {
+        let source = r#"
+package fixture
+
+const (
+	ENOENT   = 2
+	O_RDONLY = 0
+	deadCode = 99
+)
+
+var errors = []string{"ok"}
+
+func Open(path string, mode int) (int, int) {
+	return open(path, mode), ENOENT
+}
+
+func open(path string, mode int) int {
+	_ = errors
+	return len(path) + mode
+}
+
+func Read(fd int) int {
+	return read(fd)
+}
+
+func read(fd int) int {
+	return fd
+}
+
+func deadHelper() {}
+"#;
+        let file = crate::parser::parse_file("fixture.go", source)?;
+        let reachable_file = crate::parser::parse_file("fixture.go", source)?;
+        let parsed_files = vec![("fixture.go", reachable_file)];
         let roots = HashSet::from([
-            "Close".to_string(),
             "ENOENT".to_string(),
             "Open".to_string(),
             "O_RDONLY".to_string(),
             "Read".to_string(),
-            "Seek".to_string(),
         ]);
-        let module = resolve_with_roots("syscall", &roots)
-            .ok_or_else(|| std::io::Error::other("resolve syscall"))?;
-        let tokens = module.to_token_stream().to_string();
+        let reachable = reachable_package_names(&parsed_files, &roots);
+        let filtered = filter_file_to_reachable(file, &reachable);
+        let compiled = crate::compiler::compile(filtered)?;
+        let tokens = compiled.to_token_stream().to_string();
 
-        assert!(tokens.contains("pub fn Close"), "{tokens}");
         assert!(tokens.contains("pub fn Open"), "{tokens}");
         assert!(tokens.contains("pub fn Read"), "{tokens}");
         assert!(tokens.contains("fn read"), "{tokens}");
-        assert!(tokens.contains("pub fn Seek"), "{tokens}");
+        assert!(tokens.contains("fn open"), "{tokens}");
         assert!(tokens.contains("pub const ENOENT"), "{tokens}");
         assert!(tokens.contains("pub const O_RDONLY"), "{tokens}");
         assert!(tokens.contains("static errors"), "{tokens}");
+        assert!(!tokens.contains("deadHelper"), "{tokens}");
         Ok(())
     }
 
     #[test]
-    fn resolve_archive_tar_borrows_resliced_reg_file_reader_buffers()
+    fn generated_interface_adapter_borrows_resliced_reader_buffers()
     -> Result<(), Box<dyn std::error::Error>> {
-        let roots = HashSet::from([
-            "NewReader".to_string(),
-            "Reader".to_string(),
-            "Reader::Read".to_string(),
-        ]);
-        let module = resolve_with_roots("archive/tar", &roots)
-            .ok_or_else(|| std::io::Error::other("resolve archive/tar"))?;
-        let compact = module
+        let source = r#"
+package fixture
+
+type Reader interface {
+	Read([]byte) (int, error)
+}
+
+type regFileReader struct {
+	r  Reader
+	nb int
+}
+
+func (fr *regFileReader) Read(b []byte) (n int, err error) {
+	if len(b) > fr.nb {
+		b = b[:fr.nb]
+	}
+	if len(b) > 0 {
+		n, err = fr.r.Read(b)
+	}
+	return n, err
+}
+
+func use(reader Reader, b []byte) {
+	reader.Read(b)
+}
+"#;
+        let file = crate::parser::parse_file("fixture.go", source)?;
+        let compiled = crate::compiler::compile(file)?;
+        let compact = compiled
             .to_token_stream()
             .to_string()
             .split_whitespace()
@@ -3815,6 +5477,65 @@ func root(blk *block) {
             !compact.contains("regFileReader::Read(self.clone(),(b).to_vec())"),
             "{compact}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn rooted_interface_return_keeps_composite_value_method_set()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = r#"
+package fixture
+
+type Info interface {
+	Name() string
+}
+
+type Entry interface {
+	Name() string
+	Info() Info
+}
+
+type entryInfo struct {
+	info Info
+}
+
+func (entryInfo) Name() string { return "entry" }
+func (e entryInfo) Info() Info { return e.info }
+
+func Wrap(info Info) Entry {
+	return entryInfo{info: info}
+}
+"#;
+        let file = crate::parser::parse_file("fixture.go", source)?;
+        let reachable_file = crate::parser::parse_file("fixture.go", source)?;
+        let parsed_files = vec![("fixture.go", reachable_file)];
+        let roots = HashSet::from(["Wrap".to_string()]);
+
+        let reachable = reachable_package_names(&parsed_files, &roots);
+
+        for expected in ["entryInfo", "entryInfo::Name", "entryInfo::Info"] {
+            assert!(
+                reachable.contains(expected),
+                "{expected} missing from {reachable:?}",
+            );
+        }
+
+        let filtered = filter_file_to_reachable(file, &reachable);
+        let compiled = crate::compiler::compile(filtered)?;
+        let tokens = compiled.to_token_stream().to_string();
+        assert!(tokens.contains("impl Entry for entryInfo"), "{tokens}");
+        Ok(())
+    }
+
+    #[test]
+    fn rooted_sdk_interface_conversion_keeps_private_concrete_impl()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let roots = HashSet::from(["FileInfoToDirEntry".to_string()]);
+        let module = resolve_with_roots("io/fs", &roots)
+            .ok_or_else(|| std::io::Error::other("resolve io/fs"))?;
+        let tokens = module.to_token_stream().to_string();
+
+        assert!(tokens.contains("impl DirEntry for dirInfo"), "{tokens}");
         Ok(())
     }
 }

@@ -1,4 +1,4 @@
-## Known-failing fixture (skipped via `_` prefix)
+## Known-failing fixture (excluded via `fixtures.json`)
 
 Same shape as `crypto/_md5`: the fixture just prints `sha1.Size` and
 `sha1.BlockSize`, but the generated `main.rs` fails `rustc` (exit

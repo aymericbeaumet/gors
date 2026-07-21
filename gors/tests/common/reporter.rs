@@ -2,11 +2,14 @@ use crate::common::{fixtures_dir, workspace_root};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 const REPORT_SCHEMA_VERSION: u32 = 1;
 const GO_INTERNAL_UNSUPPORTED_REASON: &str = "Go internal package visibility: generated-program fixtures outside the parent tree cannot import this package directly; cover exported behavior through an importing parent package or add package-local harness support.";
 const GO_ASM_GENERATOR_UNSUPPORTED_REASON: &str = "Go assembly generator package: this package is go:generate support code for assembly output, so generated-program coverage should exercise the compiled parent package behavior instead of the generator program.";
+const NO_FRESH_STDLIB_EVIDENCE_REASON: &str =
+    "No fresh passing behavioral generated-program evidence was recorded for this exported symbol.";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -102,7 +105,6 @@ struct SpecCase {
     id: String,
     section: String,
     title: String,
-    status: String,
     fixtures: Option<Vec<String>>,
     reason: Option<String>,
 }
@@ -114,7 +116,15 @@ struct StdlibSymbol {
     fixtures: BTreeSet<String>,
 }
 
-pub fn write_go_spec_conformance() -> Result<(), String> {
+pub fn canonical_report_requested() -> bool {
+    std::env::var("GORS_UPDATE_CONFORMANCE_REPORTS")
+        .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+}
+
+pub fn write_go_spec_conformance(
+    passed_fixture_names: &[String],
+    attempted_fixture_names: &[String],
+) -> Result<(), String> {
     let manifest_path = fixtures_dir().join("go_spec/spec.json");
     let manifest: SpecManifest = serde_json::from_str(
         &fs::read_to_string(&manifest_path)
@@ -122,6 +132,14 @@ pub fn write_go_spec_conformance() -> Result<(), String> {
     )
     .map_err(|e| format!("cannot parse {}: {e}", manifest_path.display()))?;
 
+    let passed = passed_fixture_names
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let attempted = attempted_fixture_names
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
     let groups = manifest
         .categories
         .into_iter()
@@ -129,25 +147,9 @@ pub fn write_go_spec_conformance() -> Result<(), String> {
             let cases = category
                 .tests
                 .into_iter()
-                .map(|case| {
-                    let status = match case.status.as_str() {
-                        "passing" => ReportStatus::Passing,
-                        _ => ReportStatus::Unsupported,
-                    };
-                    ReportCase {
-                        id: case.id,
-                        title: case.title,
-                        subtitle: case.section,
-                        kind: "spec-test".to_string(),
-                        status,
-                        fixtures: case.fixtures.unwrap_or_default(),
-                        fresh_fixtures: Vec::new(),
-                        retained_fixtures: Vec::new(),
-                        reason: case.reason.unwrap_or_default(),
-                    }
-                })
+                .map(|case| spec_report_case(case, &passed, &attempted))
                 .collect::<Vec<_>>();
-            let summary = summarize_cases(&cases, 0);
+            let summary = summarize_cases(&cases, collect_case_fixtures(&cases).len());
             ReportGroup {
                 id: slug(&category.name),
                 title: category.name,
@@ -170,42 +172,89 @@ pub fn write_go_spec_conformance() -> Result<(), String> {
             published: manifest.source.published,
             retrieved: manifest.source.retrieved,
         },
-        summary: summarize_groups(&groups),
+        summary: {
+            let mut summary = summarize_groups(&groups);
+            summary.fixture_count = passed.len();
+            summary
+        },
         groups,
     };
     write_report("go-spec-conformance.json", &report)
 }
 
-pub fn write_go_stdlib_conformance(
-    passed_fixture_names: &[String],
-    attempted_fixture_names: &[String],
-    retain_unattempted_fixture_names: bool,
-) -> Result<(), String> {
+fn spec_report_case(
+    case: SpecCase,
+    passed: &BTreeSet<String>,
+    attempted: &BTreeSet<String>,
+) -> ReportCase {
+    let declared_fixtures = case.fixtures.unwrap_or_default();
+    let fresh_fixtures = declared_fixtures
+        .iter()
+        .filter(|fixture| passed.contains(*fixture))
+        .cloned()
+        .collect::<Vec<_>>();
+    let missing_fixtures = declared_fixtures
+        .iter()
+        .filter(|fixture| !passed.contains(*fixture))
+        .cloned()
+        .collect::<Vec<_>>();
+    let status = if !declared_fixtures.is_empty() && missing_fixtures.is_empty() {
+        ReportStatus::Passing
+    } else {
+        ReportStatus::Unsupported
+    };
+    let reason = if status == ReportStatus::Passing {
+        String::new()
+    } else if let Some(reason) = case.reason.filter(|reason| !reason.trim().is_empty()) {
+        reason
+    } else if declared_fixtures.is_empty() {
+        "No executable fixture is registered for this specification case.".to_string()
+    } else {
+        let attempted_but_not_passing = missing_fixtures
+            .iter()
+            .filter(|fixture| attempted.contains(*fixture))
+            .cloned()
+            .collect::<Vec<_>>();
+        if attempted_but_not_passing.is_empty() {
+            format!(
+                "No fresh execution evidence was recorded for fixtures: {}.",
+                missing_fixtures.join(", ")
+            )
+        } else {
+            format!(
+                "Fresh fixture execution did not pass for: {}.",
+                attempted_but_not_passing.join(", ")
+            )
+        }
+    };
+    ReportCase {
+        id: case.id,
+        title: case.title,
+        subtitle: case.section,
+        kind: "spec-test".to_string(),
+        status,
+        fixtures: fresh_fixtures.clone(),
+        fresh_fixtures,
+        retained_fixtures: Vec::new(),
+        reason,
+    }
+}
+
+pub fn write_go_stdlib_conformance(passed_fixture_names: &[String]) -> Result<(), String> {
     let fixture_root = fixtures_dir().join("go_stdlib");
     let mut symbols_by_package = collect_stdlib_symbols()?;
     let mut unsupported_reasons = load_stdlib_unsupported_reasons(
         &fixture_root.join("unsupported.json"),
         &symbols_by_package,
     )?;
-    let discovered_fixture_names = collect_fixture_names(&fixture_root)?;
     let fresh_passed_fixture_names = passed_fixture_names
         .iter()
         .cloned()
         .collect::<BTreeSet<_>>();
-    let passed_fixture_names = if retain_unattempted_fixture_names {
-        merge_existing_passing_fixture_names(
-            "go-stdlib-conformance.json",
-            passed_fixture_names,
-            attempted_fixture_names,
-        )?
-    } else {
-        passed_fixture_names
-            .iter()
-            .cloned()
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect()
-    };
+    let passed_fixture_names = fresh_passed_fixture_names
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
     let _fixture_names = add_fixture_usage(
         &fixture_root,
         &passed_fixture_names,
@@ -219,8 +268,6 @@ pub fn write_go_stdlib_conformance(
                 .into_values()
                 .map(|symbol| {
                     let fixtures = symbol.fixtures.into_iter().collect::<Vec<_>>();
-                    let (fresh_fixtures, retained_fixtures) =
-                        partition_fixture_provenance(&fixtures, &fresh_passed_fixture_names);
                     let status = if fixtures.is_empty() {
                         ReportStatus::Unsupported
                     } else {
@@ -238,9 +285,9 @@ pub fn write_go_stdlib_conformance(
                         subtitle: symbol.kind.clone(),
                         kind: symbol.kind,
                         status,
+                        fresh_fixtures: fixtures.clone(),
                         fixtures,
-                        fresh_fixtures,
-                        retained_fixtures,
+                        retained_fixtures: Vec::new(),
                         reason,
                     }
                 })
@@ -259,7 +306,7 @@ pub fn write_go_stdlib_conformance(
     reject_stale_unsupported_reasons(&fixture_root.join("unsupported.json"), &unsupported_reasons)?;
 
     let mut summary = summarize_groups(&groups);
-    summary.fixture_count = discovered_fixture_names.len();
+    summary.fixture_count = fresh_passed_fixture_names.len();
     let report = ConformanceReport {
         schema_version: REPORT_SCHEMA_VERSION,
         kind: "go-stdlib".to_string(),
@@ -301,16 +348,6 @@ fn collect_case_fixtures(cases: &[ReportCase]) -> Vec<String> {
         .collect()
 }
 
-fn partition_fixture_provenance(
-    fixtures: &[String],
-    fresh_passed_fixture_names: &BTreeSet<String>,
-) -> (Vec<String>, Vec<String>) {
-    fixtures
-        .iter()
-        .cloned()
-        .partition(|fixture| fresh_passed_fixture_names.contains(fixture))
-}
-
 fn summarize_groups(groups: &[ReportGroup]) -> ReportSummary {
     let case_count = groups
         .iter()
@@ -346,43 +383,20 @@ fn write_report(filename: &str, report: &ConformanceReport) -> Result<(), String
         .ok_or_else(|| format!("report path has no parent: {}", path.display()))?;
     fs::create_dir_all(report_dir).map_err(|e| e.to_string())?;
     let json = serde_json::to_string_pretty(report).map_err(|e| e.to_string())?;
-    fs::write(&path, format!("{json}\n")).map_err(|e| e.to_string())?;
+    let mut temporary =
+        tempfile::NamedTempFile::new_in(report_dir).map_err(|error| error.to_string())?;
+    temporary
+        .write_all(format!("{json}\n").as_bytes())
+        .map_err(|error| error.to_string())?;
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(|error| error.to_string())?;
+    temporary
+        .persist(&path)
+        .map_err(|error| error.error.to_string())?;
     eprintln!("Wrote {}", path.display());
     Ok(())
-}
-
-fn merge_existing_passing_fixture_names(
-    filename: &str,
-    passed_fixture_names: &[String],
-    attempted_fixture_names: &[String],
-) -> Result<Vec<String>, String> {
-    let mut fixtures = passed_fixture_names
-        .iter()
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    let attempted = attempted_fixture_names
-        .iter()
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    let path = report_path(filename);
-    if !path.exists() {
-        return Ok(fixtures.into_iter().collect());
-    }
-    let existing: ConformanceReport = serde_json::from_str(
-        &fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?,
-    )
-    .map_err(|e| format!("cannot parse {}: {e}", path.display()))?;
-    for case in existing.groups.into_iter().flat_map(|group| group.cases) {
-        if case.status != ReportStatus::Passing {
-            continue;
-        }
-        for fixture in case.fixtures {
-            if !attempted.contains(&fixture) {
-                fixtures.insert(fixture);
-            }
-        }
-    }
-    Ok(fixtures.into_iter().collect())
 }
 
 fn collect_stdlib_symbols() -> Result<BTreeMap<String, BTreeMap<String, StdlibSymbol>>, String> {
@@ -479,7 +493,7 @@ fn stdlib_unsupported_reason(
     unsupported_reasons
         .remove(id)
         .or_else(|| default_stdlib_unsupported_reason(package_path))
-        .unwrap_or_default()
+        .unwrap_or_else(|| NO_FRESH_STDLIB_EVIDENCE_REASON.to_string())
 }
 
 fn default_stdlib_unsupported_reason(package_path: &str) -> Option<String> {
@@ -542,46 +556,6 @@ fn add_fixture_usage(
         add_behavioral_fixture_usage(symbols_by_package, &source, fixture)?;
     }
     Ok(fixtures)
-}
-
-fn collect_fixture_names(root: &Path) -> Result<Vec<String>, String> {
-    let mut fixtures = Vec::new();
-    collect_fixture_names_recursive(root, "", &mut fixtures)?;
-    fixtures.sort();
-    fixtures.dedup();
-    Ok(fixtures)
-}
-
-fn collect_fixture_names_recursive(
-    root: &Path,
-    relative: &str,
-    fixtures: &mut Vec<String>,
-) -> Result<(), String> {
-    let dir = if relative.is_empty() {
-        root.to_path_buf()
-    } else {
-        root.join(relative)
-    };
-    for entry in fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        if !entry.path().is_dir() {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with('_') {
-            continue;
-        }
-        let next = if relative.is_empty() {
-            name
-        } else {
-            format!("{relative}/{name}")
-        };
-        if root.join(&next).join("main.go").exists() {
-            fixtures.push(next.clone());
-        }
-        collect_fixture_names_recursive(root, &next, fixtures)?;
-    }
-    Ok(())
 }
 
 fn add_symbol(
@@ -1107,21 +1081,32 @@ func coverArchiveTarAPI() {
     }
 
     #[test]
-    fn fixture_provenance_partitions_fresh_and_retained_fixtures() {
-        let fixtures = vec![
-            "archive/tar".to_string(),
-            "bufio".to_string(),
-            "bytes".to_string(),
-        ];
-        let fresh = BTreeSet::from(["bufio".to_string(), "bytes".to_string()]);
+    fn spec_case_passes_only_with_fresh_fixture_evidence() {
+        let make_case = || SpecCase {
+            id: "maps-alias".to_string(),
+            section: "Map types".to_string(),
+            title: "Map assignment shares state".to_string(),
+            fixtures: Some(vec!["types_map_alias".to_string()]),
+            reason: None,
+        };
 
-        let (fresh_fixtures, retained_fixtures) = partition_fixture_provenance(&fixtures, &fresh);
-
-        assert_eq!(
-            fresh_fixtures,
-            vec!["bufio".to_string(), "bytes".to_string()]
+        let without_evidence = spec_report_case(
+            make_case(),
+            &BTreeSet::new(),
+            &BTreeSet::from(["types_map_alias".to_string()]),
         );
-        assert_eq!(retained_fixtures, vec!["archive/tar".to_string()]);
+        let with_evidence = spec_report_case(
+            make_case(),
+            &BTreeSet::from(["types_map_alias".to_string()]),
+            &BTreeSet::from(["types_map_alias".to_string()]),
+        );
+
+        assert_eq!(without_evidence.status, ReportStatus::Unsupported);
+        assert!(!without_evidence.reason.is_empty());
+        assert!(without_evidence.fixtures.is_empty());
+        assert_eq!(with_evidence.status, ReportStatus::Passing);
+        assert_eq!(with_evidence.fixtures, vec!["types_map_alias"]);
+        assert!(with_evidence.reason.is_empty());
     }
 
     #[test]
@@ -1360,6 +1345,16 @@ func main() {
     }
 
     #[test]
+    fn unsupported_reason_never_defaults_to_empty() {
+        let mut reasons = BTreeMap::new();
+
+        assert_eq!(
+            stdlib_unsupported_reason("archive/tar", "archive/tar::NewReader", &mut reasons),
+            NO_FRESH_STDLIB_EVIDENCE_REASON
+        );
+    }
+
+    #[test]
     fn unsupported_reason_keeps_explicit_internal_package_reason() {
         let mut reasons = BTreeMap::from([(
             "crypto/internal/fips140/aes::New".to_string(),
@@ -1375,15 +1370,5 @@ func main() {
             "AES lowering still needs generic array-addressability support"
         );
         assert!(reasons.is_empty());
-    }
-
-    #[test]
-    fn unsupported_reason_stays_empty_for_non_internal_packages() {
-        let mut reasons = BTreeMap::new();
-
-        assert_eq!(
-            stdlib_unsupported_reason("crypto/hmac", "crypto/hmac::New", &mut reasons),
-            ""
-        );
     }
 }

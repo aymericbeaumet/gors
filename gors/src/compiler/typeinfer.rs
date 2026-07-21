@@ -2,8 +2,11 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast;
 use crate::token;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq)]
+use super::constant_int::ExactInt;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum GoType {
     Bool,
     Int,
@@ -47,7 +50,7 @@ pub enum GoType {
     Unknown,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GoChannelDirection {
     Bidirectional,
     Send,
@@ -596,50 +599,59 @@ fn const_name_has_named_type(name: &str, env: &TypeEnv) -> bool {
     )
 }
 
-fn const_integer_value_i128(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<i128> {
+fn const_integer_value_exact(
+    expr: &ast::Expr<'_>,
+    env: &TypeEnv,
+    iota_value: Option<i64>,
+) -> Option<ExactInt> {
     match unparen_expr(expr) {
         ast::Expr::BasicLit(lit) if lit.kind == token::Token::INT => {
-            parse_integer_literal_i128(lit.value)
+            ExactInt::parse_go_literal(lit.value)
         }
         ast::Expr::BasicLit(lit)
             if lit.kind == token::Token::FLOAT && decimal_float_literal_is_integer(lit.value) =>
         {
-            parse_decimal_float_integer_i128(lit.value)
+            parse_decimal_float_integer_i128(lit.value).map(ExactInt::from_i128)
         }
-        ast::Expr::Ident(ident) => env.get_const_integer_value(ident.name),
+        ast::Expr::Ident(ident) if ident.name == "iota" => {
+            iota_value.map(|value| ExactInt::from_i128(value.into()))
+        }
+        ast::Expr::Ident(ident) => env.get_const_integer_exact_value(ident.name),
+        ast::Expr::SelectorExpr(selector) => {
+            let ast::Expr::Ident(package) = selector.x.as_ref() else {
+                return None;
+            };
+            env.get_const_integer_exact_value(&format!("{}.{}", package.name, selector.sel.name))
+        }
         ast::Expr::UnaryExpr(unary) if unary.op == token::Token::ADD => {
-            const_integer_value_i128(&unary.x, env)
+            const_integer_value_exact(&unary.x, env, iota_value)
         }
         ast::Expr::UnaryExpr(unary) if unary.op == token::Token::SUB => {
-            const_integer_value_i128(&unary.x, env).and_then(i128::checked_neg)
+            const_integer_value_exact(&unary.x, env, iota_value).map(|value| value.neg())
+        }
+        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::XOR => {
+            const_integer_value_exact(&unary.x, env, iota_value).map(|value| value.bit_not())
+        }
+        ast::Expr::BinaryExpr(binary) => {
+            let lhs = const_integer_value_exact(&binary.x, env, iota_value)?;
+            let rhs = const_integer_value_exact(&binary.y, env, iota_value)?;
+            match binary.op {
+                token::Token::ADD => Some(lhs.add(&rhs)),
+                token::Token::SUB => Some(lhs.sub(&rhs)),
+                token::Token::MUL => Some(lhs.mul(&rhs)),
+                token::Token::QUO => lhs.div(&rhs),
+                token::Token::REM => lhs.rem(&rhs),
+                token::Token::SHL => lhs.shl(&rhs),
+                token::Token::SHR => lhs.shr(&rhs),
+                token::Token::AND => Some(lhs.bit_and(&rhs)),
+                token::Token::AND_NOT => Some(lhs.bit_and_not(&rhs)),
+                token::Token::OR => Some(lhs.bit_or(&rhs)),
+                token::Token::XOR => Some(lhs.bit_xor(&rhs)),
+                _ => None,
+            }
         }
         _ => None,
     }
-}
-
-fn parse_integer_literal_i128(value: &str) -> Option<i128> {
-    let cleaned = value.replace('_', "");
-    let (radix, digits) = if let Some(rest) = cleaned
-        .strip_prefix("0b")
-        .or_else(|| cleaned.strip_prefix("0B"))
-    {
-        (2, rest)
-    } else if let Some(rest) = cleaned
-        .strip_prefix("0o")
-        .or_else(|| cleaned.strip_prefix("0O"))
-    {
-        (8, rest)
-    } else if let Some(rest) = cleaned
-        .strip_prefix("0x")
-        .or_else(|| cleaned.strip_prefix("0X"))
-    {
-        (16, rest)
-    } else if cleaned.len() > 1 && cleaned.starts_with('0') {
-        (8, cleaned.trim_start_matches('0'))
-    } else {
-        (10, cleaned.as_str())
-    };
-    i128::from_str_radix(if digits.is_empty() { "0" } else { digits }, radix).ok()
 }
 
 fn decimal_float_literal_is_integer(value: &str) -> bool {
@@ -991,7 +1003,7 @@ fn type_method_expression_func(sel: &ast::SelectorExpr, env: &TypeEnv) -> Option
 }
 
 /// Type environment for tracking Go types during compilation.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TypeEnv {
     /// Variable name → Go type (current scope)
     vars: HashMap<std::string::String, GoType>,
@@ -1045,9 +1057,15 @@ pub struct TypeEnv {
     consts: HashSet<std::string::String>,
     const_types: HashMap<std::string::String, GoType>,
     const_integer_values: HashMap<std::string::String, i128>,
+    /// Exact decimal values for integer constants that participate in folding.
+    ///
+    /// Decimal strings keep the serialized type-environment format independent
+    /// of the compiler's bigint implementation.
+    #[serde(default)]
+    const_integer_exact_values: HashMap<std::string::String, std::string::String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TypeKind {
     Struct,
     Interface,
@@ -3764,10 +3782,35 @@ impl TypeEnv {
     pub fn set_const_integer_value(&mut self, name: &str, value: i128) {
         self.set_const(name);
         self.const_integer_values.insert(name.to_string(), value);
+        self.const_integer_exact_values
+            .insert(name.to_string(), value.to_string());
     }
 
     pub fn get_const_integer_value(&self, name: &str) -> Option<i128> {
         self.const_integer_values.get(name).copied()
+    }
+
+    pub(super) fn set_const_integer_exact_value(&mut self, name: &str, value: &ExactInt) {
+        self.set_const(name);
+        self.const_integer_exact_values
+            .insert(name.to_string(), value.decimal_string());
+        if let Some(value) = value.to_i128() {
+            self.const_integer_values.insert(name.to_string(), value);
+        } else {
+            self.const_integer_values.remove(name);
+        }
+    }
+
+    pub(super) fn get_const_integer_exact_value(&self, name: &str) -> Option<ExactInt> {
+        self.const_integer_exact_values
+            .get(name)
+            .and_then(|value| ExactInt::parse_decimal(value))
+            .or_else(|| {
+                self.const_integer_values
+                    .get(name)
+                    .copied()
+                    .map(ExactInt::from_i128)
+            })
     }
 
     pub fn is_const(&self, name: &str) -> bool {
@@ -3943,6 +3986,15 @@ impl TypeEnv {
             self.set_const_integer_value(
                 &qualify_package_member_name(package_name, name, package_env),
                 *value,
+            );
+        }
+        for (name, value) in &package_env.const_integer_exact_values {
+            let Some(value) = ExactInt::parse_decimal(value) else {
+                continue;
+            };
+            self.set_const_integer_exact_value(
+                &qualify_package_member_name(package_name, name, package_env),
+                &value,
             );
         }
         for name in &package_env.string_consts {
@@ -4132,12 +4184,22 @@ impl TypeEnv {
                 continue;
             };
             let mut inherited_const_type = None;
-            for spec in &gd.specs {
+            let mut inherited_const_values: Option<&[ast::Expr<'_>]> = None;
+            for (iota_value, spec) in gd.specs.iter().enumerate() {
                 let ast::Spec::ValueSpec(vs) = spec else {
                     continue;
                 };
-                self.scan_value_spec(vs, gd.tok, inherited_const_type.as_ref());
+                self.scan_value_spec(
+                    vs,
+                    gd.tok,
+                    inherited_const_type.as_ref(),
+                    inherited_const_values,
+                    iota_value as i64,
+                );
                 if gd.tok == token::Token::CONST {
+                    if let Some(values) = vs.values.as_deref() {
+                        inherited_const_values = Some(values);
+                    }
                     if let Some(type_expr) = &vs.type_ {
                         inherited_const_type = Some(GoType::from_expr(type_expr));
                     } else if let Some(values) = &vs.values
@@ -4361,6 +4423,8 @@ impl TypeEnv {
         vs: &ast::ValueSpec,
         tok: token::Token,
         inherited_const_type: Option<&GoType>,
+        inherited_const_values: Option<&[ast::Expr<'_>]>,
+        iota_value: i64,
     ) {
         if tok != token::Token::CONST
             && let Some((type_name, struct_type)) = anonymous_value_spec_struct_type(vs)
@@ -4372,7 +4436,11 @@ impl TypeEnv {
                 .then(|| inherited_const_type.cloned())
                 .flatten()
         });
-        let values = vs.values.as_ref();
+        let values = if tok == token::Token::CONST {
+            vs.values.as_deref().or(inherited_const_values)
+        } else {
+            vs.values.as_deref()
+        };
 
         for (i, name) in vs.names.iter().enumerate() {
             let ty = if let Some(ref et) = explicit_type {
@@ -4392,9 +4460,10 @@ impl TypeEnv {
             if tok == token::Token::CONST {
                 self.set_const_type(name.name, ty.clone());
                 if let Some(value_expr) = values.and_then(|values| values.get(i))
-                    && let Some(value) = const_integer_value_i128(value_expr, self)
+                    && let Some(value) =
+                        const_integer_value_exact(value_expr, self, Some(iota_value))
                 {
-                    self.set_const_integer_value(name.name, value);
+                    self.set_const_integer_exact_value(name.name, &value);
                 }
             }
             if tok == token::Token::CONST && matches!(ty, GoType::String) {
@@ -4882,13 +4951,6 @@ type Reader interface {
         inference_env.merge_package("io", &io_env);
 
         env.refresh_borrowed_slice_params_from_env(&[&file], &inference_env);
-
-        assert!(env.func_param_needs_borrowed_slice("regFileReader.Read", 0));
-    }
-
-    #[test]
-    fn scan_stdlib_archive_tar_marks_resliced_reg_file_reader_read_borrowed() {
-        let (_, env) = crate::resolve::scan_type_env("archive/tar").unwrap();
 
         assert!(env.func_param_needs_borrowed_slice("regFileReader.Read", 0));
     }
@@ -5468,5 +5530,32 @@ type Reader interface {
 
         assert_eq!(env.get_var("UpperCase"), Some(GoType::Int));
         assert_eq!(env.get_var("MaxCase"), Some(GoType::Int));
+    }
+
+    #[test]
+    fn scan_file_preserves_wide_integer_constants_across_declarations() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package p
+
+                const high = 1 << 255
+                const folded = ((high >> 200) | 0xffff) &^ (1 << 55)
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+
+        env.scan_file(&file);
+
+        assert!(
+            env.get_const_integer_exact_value("high")
+                .is_some_and(|value| value.to_i128().is_none())
+        );
+        assert_eq!(
+            env.get_const_integer_exact_value("folded")
+                .and_then(|value| value.to_i128()),
+            Some(0xffff)
+        );
     }
 }

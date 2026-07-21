@@ -8,6 +8,9 @@ thread_local! {
 }
 
 pub(super) fn record_mapping(pos: &token::Position, name: Option<&str>) {
+    // token::Position follows Go tooling: line/column are 1-based and column
+    // counts UTF-8 bytes. SourceMapTracker performs the UTF-16 conversion only
+    // when emitting the browser-facing Source Map v3 data.
     let source = if pos.file.is_empty() {
         None
     } else if pos.file.starts_with('/') {
@@ -31,6 +34,12 @@ pub(super) fn start(go_file: &str, rust_file: &str, go_source: Option<&str>) {
 pub(super) fn start_many(sources: Vec<(String, Option<String>)>, rust_file: &str) {
     TRACKER.with(|tracker| {
         tracker.borrow_mut().start_many(sources, rust_file);
+    });
+}
+
+pub(super) fn pause() {
+    TRACKER.with(|tracker| {
+        tracker.borrow_mut().pause();
     });
 }
 

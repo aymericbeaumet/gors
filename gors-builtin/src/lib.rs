@@ -6,9 +6,10 @@
 )]
 
 use std::any::{Any, TypeId};
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, Once};
 
 pub type any = dyn Any;
 pub type r#bool = std::primitive::bool;
@@ -65,6 +66,185 @@ impl GorsInterfaceKey {
 
     pub fn non_comparable() -> Self {
         panic_value("hash of unhashable type")
+    }
+}
+
+/// Go map values are small, nil-capable references to shared map data.
+///
+/// Keeping the optional allocation outside the mutex makes the zero value a
+/// true nil map while cloning a non-nil value only clones the shared handle.
+pub struct GorsMap<K, V> {
+    inner: Option<Arc<Mutex<HashMap<K, V>>>>,
+}
+
+impl<K, V> Clone for GorsMap<K, V> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl<K, V> Default for GorsMap<K, V> {
+    fn default() -> Self {
+        Self { inner: None }
+    }
+}
+
+impl<K, V> GorsMap<K, V> {
+    pub fn new() -> Self {
+        Self {
+            inner: Some(Arc::new(Mutex::new(HashMap::new()))),
+        }
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            inner: Some(Arc::new(Mutex::new(HashMap::with_capacity(capacity)))),
+        }
+    }
+
+    pub fn is_nil(&self) -> bool {
+        self.inner.is_none()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.as_ref().is_none_or(|inner| {
+            inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_empty()
+        })
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.as_ref().map_or(0, |inner| {
+            inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .len()
+        })
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.inner.as_ref().map_or(0, |inner| {
+            inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .capacity()
+        })
+    }
+
+    pub fn get_with<R>(&self, key: &K, read: impl FnOnce(Option<&V>) -> R) -> R
+    where
+        K: Eq + Hash,
+    {
+        match &self.inner {
+            Some(inner) => {
+                let map = inner
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                read(map.get(key))
+            }
+            None => read(None),
+        }
+    }
+
+    pub fn collect_entries<R>(&self, mut collect: impl FnMut(&K, &V) -> R) -> Vec<R> {
+        self.inner.as_ref().map_or_else(Vec::new, |inner| {
+            let map = inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            map.iter().map(|(key, value)| collect(key, value)).collect()
+        })
+    }
+
+    pub fn insert(&self, key: K, value: V) -> Option<V>
+    where
+        K: Eq + Hash,
+    {
+        let Some(inner) = &self.inner else {
+            panic_value("assignment to entry in nil map");
+        };
+        inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(key, value)
+    }
+
+    pub fn update_or_insert_with(
+        &self,
+        key: K,
+        default: impl FnOnce() -> V,
+        update: impl FnOnce(&mut V),
+    ) where
+        K: Eq + Hash,
+    {
+        let Some(inner) = &self.inner else {
+            panic_value("assignment to entry in nil map");
+        };
+        let mut map = inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        update(map.entry(key).or_insert_with(default));
+    }
+
+    pub fn delete(&self, key: &K)
+    where
+        K: Eq + Hash,
+    {
+        if let Some(inner) = &self.inner {
+            let mut map = inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            map.remove(key);
+        }
+    }
+
+    pub fn clear(&self) {
+        if let Some(inner) = &self.inner {
+            let mut map = inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            map.clear();
+        }
+    }
+
+    pub fn deep_clone(&self) -> Self
+    where
+        K: Clone,
+        V: Clone,
+    {
+        self.inner.as_ref().map_or_else(Self::default, |inner| {
+            let map = inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            Self {
+                inner: Some(Arc::new(Mutex::new(map.clone()))),
+            }
+        })
+    }
+}
+
+impl<K, V, const N: usize> From<[(K, V); N]> for GorsMap<K, V>
+where
+    K: Eq + Hash,
+{
+    fn from(entries: [(K, V); N]) -> Self {
+        Self {
+            inner: Some(Arc::new(Mutex::new(HashMap::from(entries)))),
+        }
+    }
+}
+
+impl<K, V> FromIterator<(K, V)> for GorsMap<K, V>
+where
+    K: Eq + Hash,
+{
+    fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
+        Self {
+            inner: Some(Arc::new(Mutex::new(iter.into_iter().collect()))),
+        }
     }
 }
 
@@ -1031,14 +1211,38 @@ impl<T> PartialEq for GorsPtr<T> {
 
 impl<T> Eq for GorsPtr<T> {}
 
-static RECOVER_PAYLOAD: Mutex<Option<Box<dyn Any + Send>>> = Mutex::new(None);
+thread_local! {
+    static RECOVER_PAYLOAD: RefCell<Option<Box<dyn Any + Send>>> = const { RefCell::new(None) };
+    static SUPPRESS_GO_PANIC_HOOK_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
 
-fn recover_payload_lock() -> MutexGuard<'static, Option<Box<dyn Any + Send>>> {
-    match RECOVER_PAYLOAD.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
+static INSTALL_GO_PANIC_HOOK: Once = Once::new();
+
+struct GoPanicHookGuard;
+
+impl GoPanicHookGuard {
+    fn suppress() -> Self {
+        INSTALL_GO_PANIC_HOOK.call_once(|| {
+            let previous = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                let suppressed = SUPPRESS_GO_PANIC_HOOK_DEPTH.with(|depth| depth.get() != 0);
+                if !suppressed {
+                    previous(info);
+                }
+            }));
+        });
+        SUPPRESS_GO_PANIC_HOOK_DEPTH.with(|depth| depth.set(depth.get().saturating_add(1)));
+        Self
     }
 }
+
+impl Drop for GoPanicHookGuard {
+    fn drop(&mut self) {
+        SUPPRESS_GO_PANIC_HOOK_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+
+struct UnrecoveredGoPanic(Box<dyn Any + Send>);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum __GorsReflectKind {
@@ -1207,6 +1411,12 @@ impl<K, V> __GorsReflectKindValue for HashMap<K, V> {
     }
 }
 
+impl<K, V> __GorsReflectKindValue for GorsMap<K, V> {
+    fn __gors_reflect_kind(&self) -> __GorsReflectKind {
+        __GorsReflectKind::Map
+    }
+}
+
 impl<T> __GorsReflectKindValue for Chan<T> {
     fn __gors_reflect_kind(&self) -> __GorsReflectKind {
         __GorsReflectKind::Chan
@@ -1272,35 +1482,226 @@ pub trait ByteSeq {
     fn byte_slice(&self, start: usize, end: usize) -> Vec<u8>;
 }
 
+fn byte_at_or_panic(bytes: &[u8], index: usize) -> u8 {
+    bytes
+        .get(index)
+        .copied()
+        .unwrap_or_else(|| panic_value("index out of range"))
+}
+
+fn byte_slice_or_panic(bytes: &[u8], start: usize, end: usize) -> Vec<u8> {
+    bytes
+        .get(start..end)
+        .map(<[u8]>::to_vec)
+        .unwrap_or_else(|| panic_value("slice bounds out of range"))
+}
+
+const GO_STRING_ESCAPE: char = '\u{10ffff}';
+const GO_STRING_ESCAPED_BYTE_BASE: u32 = 0xe000;
+
+fn push_go_string_valid_segment(out: &mut std::string::String, value: &str) {
+    for ch in value.chars() {
+        out.push(ch);
+        if ch == GO_STRING_ESCAPE {
+            out.push(GO_STRING_ESCAPE);
+        }
+    }
+}
+
+/// Encode arbitrary Go string bytes in the generated Rust `String` ABI.
+///
+/// Valid UTF-8 stays readable. Invalid bytes use an escaped private-use scalar,
+/// and the escape scalar itself is doubled, so decoding is lossless for every
+/// possible byte sequence.
+pub fn go_string_from_bytes(bytes: &[u8]) -> std::string::String {
+    let mut out = std::string::String::with_capacity(bytes.len());
+    let mut remaining = bytes;
+    while !remaining.is_empty() {
+        match std::str::from_utf8(remaining) {
+            Ok(valid) => {
+                push_go_string_valid_segment(&mut out, valid);
+                break;
+            }
+            Err(error) => {
+                let valid_len = error.valid_up_to();
+                if let Some(valid) = remaining
+                    .get(..valid_len)
+                    .and_then(|prefix| std::str::from_utf8(prefix).ok())
+                    .filter(|_| valid_len != 0)
+                {
+                    push_go_string_valid_segment(&mut out, valid);
+                }
+                let invalid_len = error
+                    .error_len()
+                    .unwrap_or_else(|| remaining.len().saturating_sub(valid_len))
+                    .max(1);
+                let invalid_end = valid_len.saturating_add(invalid_len).min(remaining.len());
+                let Some(invalid_bytes) = remaining.get(valid_len..invalid_end) else {
+                    break;
+                };
+                for byte in invalid_bytes {
+                    out.push(GO_STRING_ESCAPE);
+                    if let Some(escaped) =
+                        char::from_u32(GO_STRING_ESCAPED_BYTE_BASE + u32::from(*byte))
+                    {
+                        out.push(escaped);
+                    }
+                }
+                if invalid_end == 0 {
+                    break;
+                }
+                let Some(next) = remaining.get(invalid_end..) else {
+                    break;
+                };
+                remaining = next;
+            }
+        }
+    }
+    out
+}
+
+pub fn go_string_bytes(value: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(value.len());
+    let mut chars = value.chars();
+    while let Some(ch) = chars.next() {
+        if ch != GO_STRING_ESCAPE {
+            let mut encoded = [0u8; 4];
+            out.extend_from_slice(ch.encode_utf8(&mut encoded).as_bytes());
+            continue;
+        }
+        match chars.next() {
+            Some(next) if next == GO_STRING_ESCAPE => {
+                let mut encoded = [0u8; 4];
+                out.extend_from_slice(next.encode_utf8(&mut encoded).as_bytes());
+            }
+            Some(next)
+                if (GO_STRING_ESCAPED_BYTE_BASE
+                    ..=GO_STRING_ESCAPED_BYTE_BASE + u32::from(u8::MAX))
+                    .contains(&(next as u32)) =>
+            {
+                out.push((next as u32 - GO_STRING_ESCAPED_BYTE_BASE) as u8);
+            }
+            Some(next) => {
+                let mut encoded = [0u8; 4];
+                out.extend_from_slice(ch.encode_utf8(&mut encoded).as_bytes());
+                out.extend_from_slice(next.encode_utf8(&mut encoded).as_bytes());
+            }
+            None => {
+                let mut encoded = [0u8; 4];
+                out.extend_from_slice(ch.encode_utf8(&mut encoded).as_bytes());
+            }
+        }
+    }
+    out
+}
+
+fn decode_go_utf8_rune(bytes: &[u8]) -> (i32, usize) {
+    let Some(&first) = bytes.first() else {
+        return (0xfffd, 0);
+    };
+    if first < 0x80 {
+        return (i32::from(first), 1);
+    }
+    let (width, minimum, mut value) = match first {
+        0xc2..=0xdf => (2usize, 0x80u32, u32::from(first & 0x1f)),
+        0xe0..=0xef => (3usize, 0x800u32, u32::from(first & 0x0f)),
+        0xf0..=0xf4 => (4usize, 0x10000u32, u32::from(first & 0x07)),
+        _ => return (0xfffd, 1),
+    };
+    let Some(sequence) = bytes.get(..width) else {
+        return (0xfffd, 1);
+    };
+    let Some(continuations) = sequence.get(1..) else {
+        return (0xfffd, 1);
+    };
+    for &next in continuations {
+        if next & 0xc0 != 0x80 {
+            return (0xfffd, 1);
+        }
+        value = (value << 6) | u32::from(next & 0x3f);
+    }
+    let Some(&second) = sequence.get(1) else {
+        return (0xfffd, 1);
+    };
+    if value < minimum
+        || value > char::MAX as u32
+        || (0xd800..=0xdfff).contains(&value)
+        || (first == 0xe0 && second < 0xa0)
+        || (first == 0xed && second >= 0xa0)
+        || (first == 0xf0 && second < 0x90)
+        || (first == 0xf4 && second >= 0x90)
+    {
+        return (0xfffd, 1);
+    }
+    (value as i32, width)
+}
+
+pub fn go_string_char_indices(value: &str) -> std::vec::IntoIter<(isize, i32)> {
+    let bytes = go_string_bytes(value);
+    let mut values = Vec::new();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        let Some(remaining) = bytes.get(index..) else {
+            break;
+        };
+        let (rune, width) = decode_go_utf8_rune(remaining);
+        values.push((index as isize, rune));
+        index = index.saturating_add(width.max(1));
+    }
+    values.into_iter()
+}
+
+pub fn go_string_runes(value: &str) -> Vec<i32> {
+    go_string_char_indices(value)
+        .map(|(_, rune)| rune)
+        .collect()
+}
+
+pub fn go_string_slice(value: &str, start: usize, end: usize) -> std::string::String {
+    let bytes = go_string_bytes(value);
+    let Some(slice) = bytes.get(start..end) else {
+        panic_value("slice bounds out of range");
+    };
+    go_string_from_bytes(slice)
+}
+
 impl ByteSeq for std::string::String {
     fn byte_at(&self, index: usize) -> u8 {
-        self.as_bytes().get(index).copied().unwrap_or_default()
+        byte_at_or_panic(&go_string_bytes(self), index)
     }
 
     fn byte_slice(&self, start: usize, end: usize) -> Vec<u8> {
-        self.as_bytes()
-            .get(start..end)
-            .map_or_else(Vec::new, <[u8]>::to_vec)
+        byte_slice_or_panic(&go_string_bytes(self), start, end)
+    }
+}
+
+impl ByteSeq for str {
+    fn byte_at(&self, index: usize) -> u8 {
+        byte_at_or_panic(&go_string_bytes(self), index)
+    }
+
+    fn byte_slice(&self, start: usize, end: usize) -> Vec<u8> {
+        byte_slice_or_panic(&go_string_bytes(self), start, end)
     }
 }
 
 impl ByteSeq for Vec<u8> {
     fn byte_at(&self, index: usize) -> u8 {
-        self.get(index).copied().unwrap_or_default()
+        byte_at_or_panic(self, index)
     }
 
     fn byte_slice(&self, start: usize, end: usize) -> Vec<u8> {
-        self.get(start..end).map_or_else(Vec::new, <[u8]>::to_vec)
+        byte_slice_or_panic(self, start, end)
     }
 }
 
 impl ByteSeq for [u8] {
     fn byte_at(&self, index: usize) -> u8 {
-        self.get(index).copied().unwrap_or_default()
+        byte_at_or_panic(self, index)
     }
 
     fn byte_slice(&self, start: usize, end: usize) -> Vec<u8> {
-        self.get(start..end).map_or_else(Vec::new, <[u8]>::to_vec)
+        byte_slice_or_panic(self, start, end)
     }
 }
 
@@ -1346,7 +1747,7 @@ pub fn byte_slice<T: ByteSeq + ?Sized>(value: &T, start: usize, end: usize) -> V
 
 #[inline]
 pub fn string_from_byte_seq<T: ByteSeq + Len + ?Sized>(value: &T) -> std::string::String {
-    std::string::String::from_utf8(value.byte_slice(0, value.len_value())).unwrap_or_default()
+    go_string_from_bytes(&value.byte_slice(0, value.len_value()))
 }
 
 impl<T> Len for Vec<T> {
@@ -1357,13 +1758,13 @@ impl<T> Len for Vec<T> {
 
 impl Len for std::string::String {
     fn len_value(&self) -> usize {
-        self.len()
+        go_string_bytes(self).len()
     }
 }
 
 impl Len for str {
     fn len_value(&self) -> usize {
-        self.len()
+        go_string_bytes(self).len()
     }
 }
 
@@ -1386,6 +1787,12 @@ impl<T, const N: usize> Len for GorsPtr<[T; N]> {
 }
 
 impl<K, V> Len for HashMap<K, V> {
+    fn len_value(&self) -> usize {
+        self.len()
+    }
+}
+
+impl<K, V> Len for GorsMap<K, V> {
     fn len_value(&self) -> usize {
         self.len()
     }
@@ -1430,6 +1837,14 @@ impl<T> Cap for Vec<T> {
     }
 }
 
+impl<T> Cap for [T] {
+    fn cap_value(&self) -> usize {
+        // A borrowed Rust slice does not retain the Go slice header's backing
+        // capacity, so its visible length is the only representable capacity.
+        self.len()
+    }
+}
+
 impl<T, const N: usize> Cap for [T; N] {
     fn cap_value(&self) -> usize {
         N
@@ -1471,6 +1886,30 @@ pub fn cap<T: Cap + ?Sized>(v: &T) -> usize {
     v.cap_value()
 }
 
+#[inline]
+pub fn go_slice<T: Clone + Default>(
+    source: &[T],
+    source_capacity: usize,
+    start: usize,
+    end: usize,
+    max: usize,
+) -> Vec<T> {
+    if start > end || end > max || max > source_capacity {
+        panic_value("slice bounds out of range");
+    }
+
+    let mut result = Vec::with_capacity(max - start);
+    let initialized_end = end.min(source.len());
+    if start < initialized_end {
+        let Some(initialized) = source.get(start..initialized_end) else {
+            panic_value("slice bounds out of range");
+        };
+        result.extend_from_slice(initialized);
+    }
+    result.resize_with(end - start, Default::default);
+    result
+}
+
 pub trait Append<E> {
     fn append_value(self, elem: E) -> Self;
 }
@@ -1491,14 +1930,14 @@ impl<T> Append<Vec<T>> for Vec<T> {
 
 impl Append<std::string::String> for Vec<u8> {
     fn append_value(mut self, elem: std::string::String) -> Self {
-        self.extend(elem.into_bytes());
+        self.extend(go_string_bytes(&elem));
         self
     }
 }
 
 impl Append<&str> for Vec<u8> {
     fn append_value(mut self, elem: &str) -> Self {
-        self.extend(elem.as_bytes());
+        self.extend(go_string_bytes(elem));
         self
     }
 }
@@ -1523,29 +1962,35 @@ pub trait StringValue {
 
 impl StringValue for Vec<u8> {
     fn string_value(self) -> std::string::String {
-        std::string::String::from_utf8(self).unwrap_or_default()
+        go_string_from_bytes(&self)
     }
 }
 
 impl StringValue for &Vec<u8> {
     fn string_value(self) -> std::string::String {
-        std::string::String::from_utf8(self.clone()).unwrap_or_default()
+        go_string_from_bytes(self)
     }
+}
+
+fn go_string_from_runes(runes: impl IntoIterator<Item = i32>) -> std::string::String {
+    let mut bytes = Vec::new();
+    for rune in runes {
+        let value = char::from_u32(rune as u32).unwrap_or('\u{fffd}');
+        let mut encoded = [0u8; 4];
+        bytes.extend_from_slice(value.encode_utf8(&mut encoded).as_bytes());
+    }
+    go_string_from_bytes(&bytes)
 }
 
 impl StringValue for Vec<i32> {
     fn string_value(self) -> std::string::String {
-        self.into_iter()
-            .filter_map(|r| char::from_u32(r as u32))
-            .collect()
+        go_string_from_runes(self)
     }
 }
 
 impl StringValue for &Vec<i32> {
     fn string_value(self) -> std::string::String {
-        self.iter()
-            .filter_map(|&r| char::from_u32(r as u32))
-            .collect()
+        go_string_from_runes(self.iter().copied())
     }
 }
 
@@ -1569,13 +2014,18 @@ impl StringValue for &str {
 
 impl StringValue for &[u8] {
     fn string_value(self) -> std::string::String {
-        std::string::String::from_utf8(self.to_vec()).unwrap_or_default()
+        go_string_from_bytes(self)
     }
 }
 
 #[inline]
 pub fn string<T: StringValue>(v: T) -> std::string::String {
     v.string_value()
+}
+
+#[inline]
+pub fn go_string_cmp(left: &str, right: &str) -> std::cmp::Ordering {
+    go_string_bytes(left).cmp(&go_string_bytes(right))
 }
 
 #[inline]
@@ -1604,9 +2054,25 @@ where
     copy_slice(dst, src)
 }
 
+pub trait Delete<K> {
+    fn delete_key(&mut self, key: &K);
+}
+
+impl<K: Hash + Eq, V> Delete<K> for HashMap<K, V> {
+    fn delete_key(&mut self, key: &K) {
+        self.remove(key);
+    }
+}
+
+impl<K: Hash + Eq, V> Delete<K> for GorsMap<K, V> {
+    fn delete_key(&mut self, key: &K) {
+        self.delete(key);
+    }
+}
+
 #[inline]
-pub fn delete<K: Hash + Eq, V>(m: &mut HashMap<K, V>, key: &K) {
-    m.remove(key);
+pub fn delete<K, M: Delete<K> + ?Sized>(m: &mut M, key: &K) {
+    m.delete_key(key);
 }
 
 pub trait Clear {
@@ -1632,6 +2098,12 @@ impl<T: Default> Clear for [T] {
 impl<K, V> Clear for HashMap<K, V> {
     fn clear_value(&mut self) {
         self.clear();
+    }
+}
+
+impl<K, V> Clear for GorsMap<K, V> {
+    fn clear_value(&mut self) {
+        GorsMap::clear(self);
     }
 }
 
@@ -1661,13 +2133,13 @@ pub fn make_vec_cap<T>(cap: usize) -> Vec<T> {
 }
 
 #[inline]
-pub fn make_map<K, V>() -> HashMap<K, V> {
-    HashMap::new()
+pub fn make_map<K, V>() -> GorsMap<K, V> {
+    GorsMap::new()
 }
 
 #[inline]
-pub fn make_map_cap<K, V>(cap: usize) -> HashMap<K, V> {
-    HashMap::with_capacity(cap)
+pub fn make_map_cap<K, V>(cap: usize) -> GorsMap<K, V> {
+    GorsMap::with_capacity(cap)
 }
 
 #[inline]
@@ -2287,32 +2759,61 @@ pub fn panic_any_payload(value: Box<dyn Any>) -> ! {
 
 #[inline]
 pub fn set_recover_payload<T: Any + Send + 'static>(value: T) {
-    *recover_payload_lock() = Some(Box::new(value));
+    RECOVER_PAYLOAD.with(|payload| *payload.borrow_mut() = Some(Box::new(value)));
 }
 
 #[inline]
 pub fn set_recover_payload_any(value: Box<dyn Any>) {
-    *recover_payload_lock() = Some(any_box_to_send(value));
+    set_recover_payload_box(any_box_to_send(value));
 }
 
 #[inline]
-pub fn set_recover_payload_box(value: Box<dyn Any + Send>) {
-    *recover_payload_lock() = Some(value);
+pub fn set_recover_payload_box(mut value: Box<dyn Any + Send>) {
+    if value.is::<UnrecoveredGoPanic>() {
+        value = value
+            .downcast::<UnrecoveredGoPanic>()
+            .map(|wrapper| wrapper.0)
+            .unwrap_or_else(|value| value);
+    }
+    RECOVER_PAYLOAD.with(|payload| *payload.borrow_mut() = Some(value));
 }
 
 #[inline]
 pub fn recover() -> Box<dyn Any + Send> {
-    recover_payload_lock()
-        .take()
+    RECOVER_PAYLOAD
+        .with(|payload| payload.borrow_mut().take())
         .unwrap_or_else(|| Box::new(()))
 }
 
 #[inline]
 pub fn resume_unrecovered_panic() {
-    let payload = recover_payload_lock().take();
+    let payload = RECOVER_PAYLOAD.with(|payload| payload.borrow_mut().take());
     if let Some(payload) = payload {
-        std::panic::resume_unwind(payload);
+        panic_unrecovered_payload(payload);
     }
+}
+
+#[inline]
+#[allow(clippy::panic)]
+fn panic_unrecovered_payload(payload: Box<dyn Any + Send>) -> ! {
+    let payload = match payload.downcast::<std::string::String>() {
+        Ok(value) => std::panic::panic_any(*value),
+        Err(payload) => payload,
+    };
+    let payload = match payload.downcast::<&'static str>() {
+        Ok(value) => std::panic::panic_any(*value),
+        Err(payload) => payload,
+    };
+    std::panic::panic_any(UnrecoveredGoPanic(payload))
+}
+
+#[inline]
+pub fn catch_go_unwind<F, R>(f: F) -> Result<R, Box<dyn Any + Send>>
+where
+    F: FnOnce() -> R,
+{
+    let _hook = GoPanicHookGuard::suppress();
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
 }
 
 #[inline]
@@ -2352,6 +2853,28 @@ pub fn print_value<T: std::fmt::Display>(value: T) {
 #[inline]
 pub fn println_value<T: std::fmt::Display>(value: T) {
     ::std::eprintln!("{value}");
+}
+
+fn write_go_string(value: std::string::String, newline: bool) {
+    use std::io::Write as _;
+
+    let bytes = go_string_bytes(&value);
+    let stderr = std::io::stderr();
+    let mut stderr = stderr.lock();
+    let _ = stderr.write_all(&bytes);
+    if newline {
+        let _ = stderr.write_all(b"\n");
+    }
+}
+
+#[inline]
+pub fn print_go_string(value: std::string::String) {
+    write_go_string(value, false);
+}
+
+#[inline]
+pub fn println_go_string(value: std::string::String) {
+    write_go_string(value, true);
 }
 
 pub fn format_slice<T: std::fmt::Display>(values: &[T]) -> std::string::String {
@@ -2431,6 +2954,14 @@ mod tests {
         assert!(PartialEq::eq(&err_a, &err_b));
         assert!(!PartialEq::eq(&nil_a, &err_c));
         assert!(!PartialEq::eq(&err_b, &err_c));
+    }
+
+    #[test]
+    fn error_string_accepts_values_borrowed_through_lazy_lock() {
+        static VALUE: std::sync::LazyLock<Box<dyn error>> =
+            std::sync::LazyLock::new(|| Box::new(__GorsStringError("static error".to_string())));
+
+        assert_eq!(error_string(&*VALUE), "static error");
     }
 
     #[test]
@@ -2591,9 +3122,90 @@ mod tests {
     }
 
     #[test]
+    fn go_strings_round_trip_invalid_utf8_and_escape_scalar() {
+        let mut bytes = vec![0xff, b'a', 0xc3, 0xbf];
+        bytes.extend_from_slice("\u{10ffff}".as_bytes());
+        let encoded = go_string_from_bytes(&bytes);
+
+        assert_eq!(go_string_bytes(&encoded), bytes);
+        assert_eq!(len(&encoded), bytes.len());
+        assert_eq!(byte_at(&encoded, 0), 0xff);
+    }
+
+    #[test]
+    fn appending_go_strings_to_bytes_preserves_lossless_encoding() {
+        let bytes = [0xff, b'a', 0xc3, 0xbf];
+        let encoded = go_string_from_bytes(&bytes);
+
+        assert_eq!(append(Vec::<u8>::new(), encoded.clone()), bytes);
+        assert_eq!(append(Vec::<u8>::new(), encoded.as_str()), bytes);
+    }
+
+    #[test]
+    fn byte_sequences_panic_for_out_of_bounds_indexes_and_slices() {
+        for value in [
+            Box::new(vec![b'a']) as Box<dyn ByteSeq>,
+            Box::new(go_string_from_bytes(b"a")) as Box<dyn ByteSeq>,
+        ] {
+            assert!(
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| value.byte_at(1)))
+                    .is_err()
+            );
+            assert!(
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| value.byte_slice(0, 2)))
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn go_string_range_matches_go_invalid_utf8_decoding() {
+        let encoded = go_string_from_bytes(&[0xff, b'a', 0xc3, 0xbf]);
+
+        assert_eq!(
+            go_string_char_indices(&encoded).collect::<Vec<_>>(),
+            vec![(0, 0xfffd), (1, i32::from(b'a')), (2, 0x00ff)]
+        );
+        assert_eq!(
+            go_string_runes(&encoded),
+            vec![0xfffd, i32::from(b'a'), 0x00ff]
+        );
+    }
+
+    #[test]
+    fn rune_slice_string_conversion_replaces_each_invalid_rune() {
+        let runes = vec![-1, 0xd800, 0x110000, i32::from(b'a')];
+        let expected = "\u{fffd}\u{fffd}\u{fffd}a";
+
+        assert_eq!(string(runes.clone()), expected);
+        assert_eq!(string(&runes), expected);
+    }
+
+    #[test]
+    fn rune_slice_string_conversion_escapes_internal_abi_scalars() {
+        let runes = vec![0x10ffff, 0xe080];
+        let expected = "\u{10ffff}\u{e080}".as_bytes();
+
+        assert_eq!(go_string_bytes(&string(runes.clone())), expected);
+        assert_eq!(go_string_bytes(&string(&runes)), expected);
+    }
+
+    #[test]
+    fn go_string_comparison_uses_raw_byte_order() {
+        let lower_raw_byte = go_string_from_bytes(&[0x80]);
+        let higher_utf8 = go_string_from_bytes("\u{00ff}".as_bytes());
+
+        assert_eq!(
+            go_string_cmp(&lower_raw_byte, &higher_utf8),
+            std::cmp::Ordering::Less
+        );
+    }
+
+    #[test]
     fn len_and_cap_cover_sequences_maps_and_channels() {
         let values = vec![1, 2, 3];
         let array = [1, 2, 3, 4];
+        let mut borrowed_values = [1, 2, 3, 4];
         let text = "hello".to_string();
         let mut map = HashMap::new();
         map.insert("a", 1);
@@ -2604,6 +3216,8 @@ mod tests {
         assert_eq!(cap(&values), values.capacity());
         assert_eq!(len(&array), 4);
         assert_eq!(cap(&array), 4);
+        let borrowed_slice = &mut borrowed_values[1..3];
+        assert_eq!(cap(borrowed_slice), borrowed_slice.len());
         assert_eq!(len(&text), 5);
         assert_eq!(len(&map), 1);
         assert_eq!(len(&ch), 1);
@@ -2643,6 +3257,24 @@ mod tests {
     }
 
     #[test]
+    fn vec_slicing_preserves_capacity_and_zero_initialized_backing_values() {
+        let mut values = Vec::with_capacity(4);
+        values.extend([1, 2]);
+
+        let shared = go_slice(&values, values.capacity(), 0, 1, values.capacity());
+        assert_eq!(shared, vec![1]);
+        assert_eq!(shared.capacity(), 4);
+
+        let limited = go_slice(&values, values.capacity(), 0, 1, 1);
+        assert_eq!(limited, vec![1]);
+        assert_eq!(limited.capacity(), 1);
+
+        let extended = go_slice(&values, values.capacity(), 0, 3, values.capacity());
+        assert_eq!(extended, vec![1, 2, 0]);
+        assert_eq!(extended.capacity(), 4);
+    }
+
+    #[test]
     fn make_new_max_min_and_string_conversion_work() {
         let boxed: Box<i32> = r#new();
         assert_eq!(*boxed, 0);
@@ -2656,6 +3288,48 @@ mod tests {
         assert_eq!(min3(2, 5, 4), 2);
         assert_eq!(string(vec![104, 105]), "hi");
         assert_eq!(string("hi"), "hi");
+    }
+
+    #[test]
+    fn go_maps_preserve_nil_state_and_shared_identity() {
+        let nil_map: GorsMap<String, isize> = GorsMap::default();
+        assert!(nil_map.is_nil());
+        assert_eq!(nil_map.len(), 0);
+        assert_eq!(
+            nil_map.get_with(&"missing".to_string(), |value| value.copied()),
+            None
+        );
+        nil_map.delete(&"missing".to_string());
+        nil_map.clear();
+
+        let map = GorsMap::from([("value".to_string(), 1_isize)]);
+        let alias = map.clone();
+        alias.insert("value".to_string(), 2);
+        assert_eq!(
+            map.get_with(&"value".to_string(), |value| value.copied()),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn nil_map_updates_panic_but_deep_clones_are_independent() {
+        let nil_map: GorsMap<String, isize> = GorsMap::default();
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            nil_map.insert("missing".to_string(), 1);
+        }));
+        assert!(panic.is_err());
+
+        let map = GorsMap::from([("value".to_string(), 1_isize)]);
+        let independent = map.deep_clone();
+        independent.insert("value".to_string(), 3);
+        assert_eq!(
+            map.get_with(&"value".to_string(), |value| value.copied()),
+            Some(1)
+        );
+        assert_eq!(
+            independent.get_with(&"value".to_string(), |value| value.copied()),
+            Some(3)
+        );
     }
 
     #[test]
@@ -2678,17 +3352,26 @@ mod tests {
     #[test]
     fn byte_sequence_helpers_cover_strings_and_byte_slices() {
         let text = "gors".to_string();
+        let literal = "gors";
         let bytes = vec![b'g', b'o', b'r', b's'];
 
         assert_eq!(byte_at(&text, 1), b'o');
+        assert_eq!(byte_at(literal, 1), b'o');
         assert_eq!(byte_at(&bytes, 2), b'r');
         assert_eq!(byte_at(bytes.as_slice(), 3), b's');
         assert_eq!(byte_slice(&text, 1, 3), vec![b'o', b'r']);
+        assert_eq!(byte_slice(literal, 1, 3), vec![b'o', b'r']);
         assert_eq!(byte_slice(&bytes, 0, 2), vec![b'g', b'o']);
         assert_eq!(byte_slice(bytes.as_slice(), 2, 4), vec![b'r', b's']);
         assert_eq!(string_from_byte_seq(&text), "gors");
+        assert_eq!(string_from_byte_seq(literal), "gors");
         assert_eq!(string_from_byte_seq(&bytes), "gors");
         assert_eq!(string_from_byte_seq(bytes.as_slice()), "gors");
+
+        let encoded = go_string_from_bytes(&[0xff, b'o']);
+        let borrowed = encoded.as_str();
+        assert_eq!(len(borrowed), 2);
+        assert_eq!(byte_at(borrowed, 0), 0xff);
 
         let mut mutable = bytes;
         let mutable_slice = mutable.as_mut_slice();

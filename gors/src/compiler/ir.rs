@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{ast, token};
 
+use super::constant_int::ExactInt;
 use super::typeinfer::{GoChannelDirection, GoType, TypeEnv, TypeKind};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -9028,8 +9029,8 @@ fn range_integer_constant_iteration_uses_target_type(
     idx == 0
         && expected.is_integer()
         && expr_is_untyped_integer_constant_for_comparison(&range.x, env)
-        && integer_constant_value_i128(&range.x)
-            .is_none_or(|value| integer_constant_fits_type(value, expected))
+        && integer_constant_value_exact_with_env(&range.x, env)
+            .is_none_or(|value| exact_integer_constant_fits_type(&value, expected))
 }
 
 fn range_iteration_types(range: &ast::RangeStmt<'_>, env: &TypeEnv) -> Option<Vec<GoType>> {
@@ -10833,7 +10834,7 @@ fn binary_shift_left_operand_is_integer(
 
 fn shift_count_is_negative_constant(expr: &ast::Expr<'_>, env: &TypeEnv) -> bool {
     expr_is_untyped_numeric_constant_for_comparison(expr, env)
-        && integer_constant_value_i128_with_env(expr, env).is_some_and(|value| value < 0)
+        && integer_constant_value_exact_with_env(expr, env).is_some_and(|value| value.is_negative())
 }
 
 fn binary_operand_is_integer(ty: &GoType, expr: &ast::Expr<'_>) -> bool {
@@ -11146,8 +11147,8 @@ fn comparison_constant_is_assignable_to(
         GoType::Bool => matches!(actual, GoType::Bool),
         GoType::String => matches!(actual, GoType::String),
         expected if expected.is_integer() => {
-            if let Some(value) = integer_constant_value_i128_with_env(expr, env) {
-                return integer_constant_fits_type(value, expected);
+            if let Some(value) = integer_constant_value_exact_with_env(expr, env) {
+                return exact_integer_constant_fits_type(&value, expected);
             }
             actual.is_integer() || (actual.is_float() && expr_is_integer_constant(expr))
         }
@@ -11166,10 +11167,10 @@ fn untyped_constant_default_type_is_representable(
 ) -> bool {
     match actual {
         GoType::Float64 => float_constant_is_assignable_to(expr, actual, &GoType::Float64, env),
-        GoType::Int => integer_constant_value_i128_with_env(expr, env)
-            .is_none_or(|value| integer_constant_fits_type(value, &GoType::Int)),
-        GoType::Int32 => integer_constant_value_i128_with_env(expr, env)
-            .is_none_or(|value| integer_constant_fits_type(value, &GoType::Int32)),
+        GoType::Int => integer_constant_value_exact_with_env(expr, env)
+            .is_none_or(|value| exact_integer_constant_fits_type(&value, &GoType::Int)),
+        GoType::Int32 => integer_constant_value_exact_with_env(expr, env)
+            .is_none_or(|value| exact_integer_constant_fits_type(&value, &GoType::Int32)),
         GoType::Bool | GoType::String | GoType::Complex128 => true,
         GoType::Unknown | GoType::Named(_) => true,
         _ => true,
@@ -11198,7 +11199,7 @@ fn float_constant_is_assignable_to(
     if let Some(representable) = float_constant_is_representable_by_type(expr, expected) {
         return representable;
     }
-    go_type_is_ordered_numeric(actual) || integer_constant_value_i128_with_env(expr, env).is_some()
+    go_type_is_ordered_numeric(actual) || integer_constant_value_exact_with_env(expr, env).is_some()
 }
 
 fn float_constant_is_representable_by_type(
@@ -11951,78 +11952,137 @@ fn parse_integer_literal_usize(value: &str) -> Option<usize> {
     usize::from_str_radix(if digits.is_empty() { "0" } else { digits }, radix).ok()
 }
 
-fn integer_constant_value_i128(expr: &ast::Expr<'_>) -> Option<i128> {
+fn integer_constant_value_exact_with_env(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<ExactInt> {
     match unparen_expr(expr) {
         ast::Expr::BasicLit(lit) if lit.kind == token::Token::INT => {
-            parse_integer_literal_i128(lit.value)
+            ExactInt::parse_go_literal(lit.value)
         }
         ast::Expr::BasicLit(lit) if lit.kind == token::Token::CHAR => {
-            rune_literal_value_i128(lit.value)
+            rune_literal_value_i128(lit.value).map(ExactInt::from_i128)
         }
         ast::Expr::BasicLit(lit)
             if lit.kind == token::Token::IMAG && imaginary_literal_is_zero(lit.value) =>
         {
-            Some(0)
+            Some(ExactInt::from_i128(0))
         }
         ast::Expr::BasicLit(lit)
             if lit.kind == token::Token::FLOAT && decimal_float_literal_is_integer(lit.value) =>
         {
-            parse_decimal_float_integer_i128(lit.value)
+            parse_decimal_float_integer_i128(lit.value).map(ExactInt::from_i128)
         }
-        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::ADD => {
-            integer_constant_value_i128(&unary.x)
-        }
-        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::SUB => {
-            integer_constant_value_i128(&unary.x).and_then(i128::checked_neg)
-        }
-        _ => None,
-    }
-}
-
-fn integer_constant_value_i128_with_env(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<i128> {
-    match unparen_expr(expr) {
         ast::Expr::Ident(ident) if env.is_const(ident.name) => {
-            env.get_const_integer_value(ident.name)
+            env.get_const_integer_exact_value(ident.name)
         }
         ast::Expr::SelectorExpr(selector) => {
             let ast::Expr::Ident(base) = selector.x.as_ref() else {
                 return None;
             };
-            env.get_const_integer_value(&format!("{}.{}", base.name, selector.sel.name))
+            env.get_const_integer_exact_value(&format!("{}.{}", base.name, selector.sel.name))
         }
         ast::Expr::UnaryExpr(unary) if unary.op == token::Token::ADD => {
-            integer_constant_value_i128_with_env(&unary.x, env)
+            integer_constant_value_exact_with_env(&unary.x, env)
         }
         ast::Expr::UnaryExpr(unary) if unary.op == token::Token::SUB => {
-            integer_constant_value_i128_with_env(&unary.x, env).and_then(i128::checked_neg)
+            integer_constant_value_exact_with_env(&unary.x, env).map(|value| value.neg())
         }
-        _ => integer_constant_value_i128(expr),
+        ast::Expr::UnaryExpr(unary) if unary.op == token::Token::XOR => {
+            integer_constant_value_exact_with_env(&unary.x, env).map(|value| value.bit_not())
+        }
+        ast::Expr::BinaryExpr(binary) => {
+            let lhs = integer_constant_value_exact_with_env(&binary.x, env)?;
+            let rhs = integer_constant_value_exact_with_env(&binary.y, env)?;
+            match binary.op {
+                token::Token::ADD => Some(lhs.add(&rhs)),
+                token::Token::SUB => Some(lhs.sub(&rhs)),
+                token::Token::MUL => Some(lhs.mul(&rhs)),
+                token::Token::QUO => lhs.div(&rhs),
+                token::Token::REM => lhs.rem(&rhs),
+                token::Token::SHL => lhs.shl(&rhs),
+                token::Token::SHR => lhs.shr(&rhs),
+                token::Token::AND => Some(lhs.bit_and(&rhs)),
+                token::Token::AND_NOT => Some(lhs.bit_and_not(&rhs)),
+                token::Token::OR => Some(lhs.bit_or(&rhs)),
+                token::Token::XOR => Some(lhs.bit_xor(&rhs)),
+                _ => None,
+            }
+        }
+        ast::Expr::CallExpr(call) => integer_constant_builtin_call_value_exact(call, env),
+        _ => None,
     }
 }
 
-fn parse_integer_literal_i128(value: &str) -> Option<i128> {
-    let cleaned = value.replace('_', "");
-    let (radix, digits) = if let Some(rest) = cleaned
-        .strip_prefix("0b")
-        .or_else(|| cleaned.strip_prefix("0B"))
-    {
-        (2, rest)
-    } else if let Some(rest) = cleaned
-        .strip_prefix("0o")
-        .or_else(|| cleaned.strip_prefix("0O"))
-    {
-        (8, rest)
-    } else if let Some(rest) = cleaned
-        .strip_prefix("0x")
-        .or_else(|| cleaned.strip_prefix("0X"))
-    {
-        (16, rest)
-    } else if cleaned.len() > 1 && cleaned.starts_with('0') {
-        (8, cleaned.trim_start_matches('0'))
-    } else {
-        (10, cleaned.as_str())
-    };
-    i128::from_str_radix(if digits.is_empty() { "0" } else { digits }, radix).ok()
+fn integer_constant_builtin_call_value_exact(
+    call: &ast::CallExpr<'_>,
+    env: &TypeEnv,
+) -> Option<ExactInt> {
+    match unshadowed_builtin_call_kind(call, env)? {
+        BuiltinCallKind::Real => {
+            let [arg] = call.args.as_deref()? else {
+                return None;
+            };
+            match unparen_expr(arg) {
+                ast::Expr::BasicLit(lit) if lit.kind == token::Token::IMAG => {
+                    Some(ExactInt::from_i128(0))
+                }
+                ast::Expr::CallExpr(complex_call)
+                    if matches!(
+                        unshadowed_builtin_call_kind(complex_call, env),
+                        Some(BuiltinCallKind::Complex)
+                    ) =>
+                {
+                    let [real, _] = complex_call.args.as_deref()? else {
+                        return None;
+                    };
+                    integer_constant_value_exact_with_env(real, env)
+                }
+                _ => integer_constant_value_exact_with_env(arg, env),
+            }
+        }
+        BuiltinCallKind::Imag => {
+            let [arg] = call.args.as_deref()? else {
+                return None;
+            };
+            match unparen_expr(arg) {
+                ast::Expr::BasicLit(lit) if lit.kind == token::Token::IMAG => {
+                    let value = lit.value.strip_suffix('i')?;
+                    ExactInt::parse_go_literal(value).or_else(|| {
+                        parse_decimal_float_integer_i128(value).map(ExactInt::from_i128)
+                    })
+                }
+                ast::Expr::CallExpr(complex_call)
+                    if matches!(
+                        unshadowed_builtin_call_kind(complex_call, env),
+                        Some(BuiltinCallKind::Complex)
+                    ) =>
+                {
+                    let [_, imag] = complex_call.args.as_deref()? else {
+                        return None;
+                    };
+                    integer_constant_value_exact_with_env(imag, env)
+                }
+                _ => Some(ExactInt::from_i128(0)),
+            }
+        }
+        BuiltinCallKind::Min | BuiltinCallKind::Max => {
+            let kind = unshadowed_builtin_call_kind(call, env)?;
+            let mut values = call
+                .args
+                .as_deref()?
+                .iter()
+                .map(|arg| integer_constant_value_exact_with_env(arg, env));
+            let first = values.next()??;
+            values.try_fold(first, |best, value| {
+                let value = value?;
+                let use_value = match kind {
+                    BuiltinCallKind::Max => value.cmp(&best).is_gt(),
+                    BuiltinCallKind::Min => value.cmp(&best).is_lt(),
+                    _ => false,
+                };
+                Some(if use_value { value } else { best })
+            })
+        }
+        _ => None,
+    }
 }
 
 fn rune_literal_value_i128(value: &str) -> Option<i128> {
@@ -12099,13 +12159,6 @@ fn imaginary_literal_is_zero(value: &str) -> bool {
     numeric_literal_mantissa_is_zero(value)
 }
 
-fn imaginary_literal_integer_value_i128(value: &str) -> Option<i128> {
-    let value = value.strip_suffix('i')?;
-    parse_integer_literal_i128(value).or_else(|| {
-        decimal_float_literal_is_integer(value).then(|| parse_decimal_float_integer_i128(value))?
-    })
-}
-
 fn numeric_literal_mantissa_is_zero(value: &str) -> bool {
     let value = value.replace('_', "").to_ascii_lowercase();
     let mantissa = value
@@ -12166,18 +12219,18 @@ fn parse_decimal_float_integer_i128(value: &str) -> Option<i128> {
     }
 }
 
-fn integer_constant_fits_type(value: i128, ty: &GoType) -> bool {
+fn exact_integer_constant_fits_type(value: &ExactInt, ty: &GoType) -> bool {
     match ty {
-        GoType::Int => (isize::MIN as i128..=isize::MAX as i128).contains(&value),
-        GoType::Int8 => (i8::MIN as i128..=i8::MAX as i128).contains(&value),
-        GoType::Int16 => (i16::MIN as i128..=i16::MAX as i128).contains(&value),
-        GoType::Int32 => (i32::MIN as i128..=i32::MAX as i128).contains(&value),
-        GoType::Int64 => (i64::MIN as i128..=i64::MAX as i128).contains(&value),
-        GoType::Uint | GoType::Uintptr => (0..=usize::MAX as i128).contains(&value),
-        GoType::Uint8 => (0..=u8::MAX as i128).contains(&value),
-        GoType::Uint16 => (0..=u16::MAX as i128).contains(&value),
-        GoType::Uint32 => (0..=u32::MAX as i128).contains(&value),
-        GoType::Uint64 => (0..=u64::MAX as i128).contains(&value),
+        GoType::Int => value.fits_signed_bits(isize::BITS),
+        GoType::Int8 => value.fits_signed_bits(i8::BITS),
+        GoType::Int16 => value.fits_signed_bits(i16::BITS),
+        GoType::Int32 => value.fits_signed_bits(i32::BITS),
+        GoType::Int64 => value.fits_signed_bits(i64::BITS),
+        GoType::Uint | GoType::Uintptr => value.fits_unsigned_bits(usize::BITS),
+        GoType::Uint8 => value.fits_unsigned_bits(u8::BITS),
+        GoType::Uint16 => value.fits_unsigned_bits(u16::BITS),
+        GoType::Uint32 => value.fits_unsigned_bits(u32::BITS),
+        GoType::Uint64 => value.fits_unsigned_bits(u64::BITS),
         _ => false,
     }
 }
@@ -12367,8 +12420,8 @@ fn constant_conversion_is_representable_by_type(
     env: &TypeEnv,
 ) -> bool {
     match target {
-        target if target.is_integer() => integer_constant_value_for_conversion_i128(expr, env)
-            .is_some_and(|value| integer_constant_fits_type(value, target)),
+        target if target.is_integer() => integer_constant_value_for_conversion_exact(expr, env)
+            .is_some_and(|value| exact_integer_constant_fits_type(&value, target)),
         GoType::Float32 | GoType::Float64 => {
             float_constant_is_representable_by_type(expr, target).unwrap_or(false)
         }
@@ -12379,91 +12432,19 @@ fn constant_conversion_is_representable_by_type(
     }
 }
 
-fn integer_constant_value_for_conversion_i128(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<i128> {
+fn integer_constant_value_for_conversion_exact(
+    expr: &ast::Expr<'_>,
+    env: &TypeEnv,
+) -> Option<ExactInt> {
     match unparen_expr(expr) {
-        ast::Expr::ParenExpr(paren) => integer_constant_value_for_conversion_i128(&paren.x, env),
         ast::Expr::UnaryExpr(unary) if unary.op == token::Token::ADD => {
-            integer_constant_value_for_conversion_i128(&unary.x, env)
+            integer_constant_value_for_conversion_exact(&unary.x, env)
         }
         ast::Expr::UnaryExpr(unary) if unary.op == token::Token::SUB => {
-            integer_constant_value_for_conversion_i128(&unary.x, env).and_then(i128::checked_neg)
+            integer_constant_value_for_conversion_exact(&unary.x, env).map(|value| value.neg())
         }
-        ast::Expr::CallExpr(call) => integer_constant_builtin_call_value_i128(call, env),
-        _ => integer_constant_value_i128(expr),
-    }
-}
-
-fn integer_constant_builtin_call_value_i128(
-    call: &ast::CallExpr<'_>,
-    env: &TypeEnv,
-) -> Option<i128> {
-    match unshadowed_builtin_call_kind(call, env)? {
-        BuiltinCallKind::Real => {
-            let [arg] = call.args.as_deref()? else {
-                return None;
-            };
-            real_part_integer_constant_value_i128(arg, env)
-        }
-        BuiltinCallKind::Imag => {
-            let [arg] = call.args.as_deref()? else {
-                return None;
-            };
-            imag_part_integer_constant_value_i128(arg, env)
-        }
-        BuiltinCallKind::Min | BuiltinCallKind::Max => {
-            let args = call.args.as_deref()?;
-            let mut values = args
-                .iter()
-                .map(|arg| integer_constant_value_for_conversion_i128(arg, env));
-            let first = values.next()??;
-            values.try_fold(first, |best, value| {
-                let value = value?;
-                Some(match unshadowed_builtin_call_kind(call, env) {
-                    Some(BuiltinCallKind::Max) => best.max(value),
-                    Some(BuiltinCallKind::Min) => best.min(value),
-                    _ => best,
-                })
-            })
-        }
-        _ => None,
-    }
-}
-
-fn real_part_integer_constant_value_i128(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<i128> {
-    match unparen_expr(expr) {
-        ast::Expr::BasicLit(lit) if lit.kind == token::Token::IMAG => Some(0),
-        ast::Expr::CallExpr(call)
-            if matches!(
-                unshadowed_builtin_call_kind(call, env),
-                Some(BuiltinCallKind::Complex)
-            ) =>
-        {
-            let [real, _] = call.args.as_deref()? else {
-                return None;
-            };
-            integer_constant_value_for_conversion_i128(real, env)
-        }
-        _ => integer_constant_value_for_conversion_i128(expr, env),
-    }
-}
-
-fn imag_part_integer_constant_value_i128(expr: &ast::Expr<'_>, env: &TypeEnv) -> Option<i128> {
-    match unparen_expr(expr) {
-        ast::Expr::BasicLit(lit) if lit.kind == token::Token::IMAG => {
-            imaginary_literal_integer_value_i128(lit.value)
-        }
-        ast::Expr::CallExpr(call)
-            if matches!(
-                unshadowed_builtin_call_kind(call, env),
-                Some(BuiltinCallKind::Complex)
-            ) =>
-        {
-            let [_, imag] = call.args.as_deref()? else {
-                return None;
-            };
-            integer_constant_value_for_conversion_i128(imag, env)
-        }
-        _ => Some(0),
+        ast::Expr::CallExpr(call) => integer_constant_builtin_call_value_exact(call, env),
+        _ => integer_constant_value_exact_with_env(expr, env),
     }
 }
 
@@ -15556,6 +15537,7 @@ pub fn func_lit_captures(func_lit: &ast::FuncLit<'_>, env: &TypeEnv) -> Vec<Capt
 struct ScopedNameUses {
     referenced: BTreeSet<String>,
     mutated: BTreeSet<String>,
+    reassigned: BTreeSet<String>,
 }
 
 fn func_lit_free_name_uses(func_lit: &ast::FuncLit<'_>, env: &TypeEnv) -> ScopedNameUses {
@@ -15643,6 +15625,13 @@ fn scoped_record_mutation(scopes: &[BTreeSet<String>], uses: &mut ScopedNameUses
     }
 }
 
+fn scoped_record_reassignment(scopes: &[BTreeSet<String>], uses: &mut ScopedNameUses, name: &str) {
+    if !scoped_name_is_bound(scopes, name) {
+        uses.reassigned.insert(name.to_string());
+    }
+    scoped_record_mutation(scopes, uses, name);
+}
+
 fn collect_free_name_uses_in_stmt(
     stmt: &ast::Stmt<'_>,
     scopes: &mut Vec<BTreeSet<String>>,
@@ -15683,10 +15672,12 @@ fn collect_free_name_uses_in_stmt(
             collect_free_name_uses_in_nested_stmt_list(&case_clause.body, scopes, uses, env);
         }
         ast::Stmt::CommClause(comm_clause) => {
+            scopes.push(BTreeSet::new());
             if let Some(comm) = &comm_clause.comm {
                 collect_free_name_uses_in_stmt(comm, scopes, uses, env);
             }
-            collect_free_name_uses_in_nested_stmt_list(&comm_clause.body, scopes, uses, env);
+            collect_free_name_uses_in_stmt_list(&comm_clause.body, scopes, uses, env);
+            scopes.pop();
         }
         ast::Stmt::DeclStmt(decl) => {
             for spec in &decl.decl.specs {
@@ -15747,7 +15738,7 @@ fn collect_free_name_uses_in_stmt(
         }
         ast::Stmt::IncDecStmt(inc_dec) => {
             if let Some(name) = ident_name(&inc_dec.x) {
-                scoped_record_mutation(scopes, uses, &name);
+                scoped_record_reassignment(scopes, uses, &name);
             } else {
                 collect_free_name_uses_in_expr(&inc_dec.x, scopes, uses, env);
             }
@@ -15848,7 +15839,7 @@ fn collect_free_name_uses_in_assignment_lhs(
 ) {
     match expr {
         ast::Expr::Ident(ident) => {
-            scoped_record_mutation(scopes, uses, ident.name);
+            scoped_record_reassignment(scopes, uses, ident.name);
         }
         ast::Expr::IndexExpr(index) => {
             collect_free_name_uses_in_mut_borrow_expr(&index.x, scopes, uses, env);
@@ -16007,7 +15998,9 @@ fn collect_free_name_uses_in_expr(
         ast::Expr::FuncLit(func_lit) => {
             let nested_uses = func_lit_free_name_uses(func_lit, env);
             for name in nested_uses.referenced {
-                if nested_uses.mutated.contains(&name) {
+                if nested_uses.reassigned.contains(&name) {
+                    scoped_record_reassignment(scopes, uses, &name);
+                } else if nested_uses.mutated.contains(&name) {
                     scoped_record_mutation(scopes, uses, &name);
                 } else {
                     scoped_record_reference(scopes, uses, &name);
@@ -16037,7 +16030,9 @@ fn collect_free_name_uses_in_expr(
             if let ast::Expr::Ident(receiver) = selector.x.as_ref()
                 && receiver_uses_pointer_method(receiver.name, selector.sel.name, env)
             {
-                scoped_record_mutation(scopes, uses, receiver.name);
+                // A pointer-receiver method can replace the complete receiver
+                // value, including a named slice's range header.
+                scoped_record_reassignment(scopes, uses, receiver.name);
             }
             collect_free_name_uses_in_expr(&selector.x, scopes, uses, env);
         }
@@ -16133,6 +16128,26 @@ pub fn mutable_range_function_capture_names(
         .into_iter()
         .filter(|name| !is_predeclared_name(name))
         .collect()
+}
+
+pub fn range_body_reassigns_source_binding(
+    range: &ast::RangeStmt<'_>,
+    source_name: &str,
+    env: &TypeEnv,
+) -> bool {
+    range_function_body_free_name_uses(range, env)
+        .reassigned
+        .contains(source_name)
+}
+
+pub fn range_body_mutates_binding(
+    range: &ast::RangeStmt<'_>,
+    binding_name: &str,
+    env: &TypeEnv,
+) -> bool {
+    range_function_body_free_name_uses(range, env)
+        .mutated
+        .contains(binding_name)
 }
 
 fn for_clause_init_define_names(init: Option<&ast::Stmt<'_>>) -> BTreeSet<String> {
@@ -19616,6 +19631,46 @@ mod tests {
         let names = super::address_taken_names_in_block(body, &env);
 
         assert!(names.contains("p"), "{names:?}");
+    }
+
+    #[test]
+    fn address_taken_names_tracks_saved_pointer_method_receivers() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type counter struct {
+                    value int
+                }
+
+                func (c *counter) add(delta int) int {
+                    c.value += delta
+                    return c.value
+                }
+
+                func main() {
+                    var c counter
+                    saved := c.add
+                    _ = saved
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(ast::Decl::FuncDecl(func)) = file
+            .decls
+            .iter()
+            .find(|decl| matches!(decl, ast::Decl::FuncDecl(func) if func.name.name == "main"))
+        else {
+            panic!("expected main function");
+        };
+        let body = func.body.as_ref().expect("expected main body");
+
+        let names = super::address_taken_names_in_block(body, &env);
+
+        assert!(names.contains("c"), "{names:?}");
     }
 
     #[test]
