@@ -22,6 +22,7 @@ use version::extract_go_version;
 
 pub use error::{ParserError, Result};
 pub use import_path::ImportPathIssue;
+pub(crate) use import_path::decode_and_validate as decode_import_path_literal;
 pub use program::{
     ParsedPackage, ParsedProgram, PathParseError, parse_path, parse_program, parse_program_files,
     parse_program_from_source,
@@ -91,10 +92,7 @@ pub fn parse_file<'a>(filename: &'a str, buffer: &'a str) -> Result<ast::File<'a
         .required()
         .map_err(|err| match err {
             ParserError::UnexpectedToken => ParserError::UnexpectedTokenAt {
-                file: format!(
-                    "{}/{}",
-                    parser.current_step.0.directory, parser.current_step.0.file
-                ),
+                file: parser.current_step.0.filename().into_owned(),
                 line: parser.current_step.0.line,
                 column: parser.current_step.0.column,
                 token: parser.current_step.1,

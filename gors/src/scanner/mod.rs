@@ -11,7 +11,7 @@ mod tests;
 
 pub use error::{Result, ScannerError, ScannerErrorKind};
 
-use crate::token::{Position, Token};
+use crate::token::{Position, SourceOrigin, Token};
 use lexical::{is_hex_digit, is_letter, is_octal_digit};
 
 /// A scan step containing position, token, and literal value.
@@ -33,8 +33,8 @@ pub type Step<'a> = (Position<'a>, Token, &'a str);
 /// - Line directives (`//line` and `/*line`)
 #[derive(Debug)]
 pub struct Scanner<'a> {
-    directory: &'a str,
-    file: &'a str,
+    origin: SourceOrigin<'a>,
+    line_directive_base: &'a str,
     buffer: &'a str,
     //
     chars: std::iter::Peekable<std::str::Chars<'a>>,
@@ -55,7 +55,13 @@ pub struct Scanner<'a> {
     pending_semi_pos: Option<(usize, usize, usize)>, // (offset, line, column) for semicolon after multi-line comment
 }
 
-type LineInfo<'a> = (Option<&'a str>, usize, Option<usize>, bool);
+#[derive(Clone, Copy, Debug)]
+struct LineInfo<'a> {
+    filename: Option<&'a str>,
+    line: usize,
+    column: Option<usize>,
+    hide_column: bool,
+}
 
 impl<'a> Scanner<'a> {
     /// Create a new Scanner for the given source file.
@@ -65,10 +71,9 @@ impl<'a> Scanner<'a> {
     /// * `filename` - The name of the source file (may include path)
     /// * `buffer` - The Go source code to scan
     pub fn new(filename: &'a str, buffer: &'a str) -> Self {
-        let (directory, file) = filename.rsplit_once('/').unwrap_or(("", filename));
         let mut s = Scanner {
-            directory,
-            file,
+            origin: SourceOrigin::initial(filename),
+            line_directive_base: source_directory_prefix(filename),
             buffer,
             //
             chars: buffer.chars().peekable(),
@@ -102,8 +107,7 @@ impl<'a> Scanner<'a> {
             self.pending_semi = false;
             let pos = if let Some((offset, line, column)) = self.pending_semi_pos.take() {
                 Position {
-                    directory: self.directory,
-                    file: self.file,
+                    origin: self.origin,
                     offset,
                     line,
                     column: if self.hide_column { 0 } else { column },
@@ -131,8 +135,7 @@ impl<'a> Scanner<'a> {
                         let pos = if let Some((offset, line, column)) = self.pending_semi_pos.take()
                         {
                             Position {
-                                directory: self.directory,
-                                file: self.file,
+                                origin: self.origin,
                                 offset,
                                 line,
                                 column: if self.hide_column { 0 } else { column },
@@ -436,12 +439,7 @@ impl<'a> Scanner<'a> {
                 '`' => return self.scan_raw_string(),
                 c if is_letter(c) => return self.scan_pkg_or_keyword_or_ident(),
                 _ => {
-                    return Err(ScannerError {
-                        kind: ScannerErrorKind::IllegalCharacter,
-                        line: self.line,
-                        column: self.column,
-                        offset: self.offset,
-                    });
+                    return Err(self.error(ScannerErrorKind::IllegalCharacter));
                 }
             };
         }
@@ -450,8 +448,7 @@ impl<'a> Scanner<'a> {
         if insert_semi {
             let pos = if let Some((offset, line, column)) = self.pending_semi_pos.take() {
                 Position {
-                    directory: self.directory,
-                    file: self.file,
+                    origin: self.origin,
                     offset,
                     line,
                     column: if self.hide_column { 0 } else { column },
@@ -467,17 +464,22 @@ impl<'a> Scanner<'a> {
 
     fn consume_pending_line_info(&mut self) {
         if let Some(line_info) = self.pending_line_info.take() {
-            if let Some(file) = line_info.0 {
-                self.file = file;
+            if let Some(filename) = line_info.filename {
+                let relative_to = if is_rooted_source_name(filename) {
+                    ""
+                } else {
+                    self.line_directive_base
+                };
+                self.origin = SourceOrigin::line_directive(filename, relative_to);
             }
 
-            self.line = line_info.1;
+            self.line = line_info.line;
 
-            if let Some(column) = line_info.2 {
+            if let Some(column) = line_info.column {
                 self.column = column;
             }
 
-            self.hide_column = line_info.3;
+            self.hide_column = line_info.hide_column;
         }
     }
 
@@ -513,8 +515,7 @@ impl<'a> Scanner<'a> {
 
     const fn position(&self) -> Position<'a> {
         Position {
-            directory: self.directory,
-            file: self.file,
+            origin: self.origin,
             offset: self.start_offset,
             line: self.start_line,
             column: if self.hide_column {
@@ -538,6 +539,7 @@ impl<'a> Scanner<'a> {
     fn error(&self, kind: ScannerErrorKind) -> ScannerError {
         ScannerError {
             kind,
+            file: self.origin.filename().into_owned(),
             line: self.line,
             column: self.column,
             offset: self.offset,
@@ -623,6 +625,44 @@ impl<'a> Scanner<'a> {
 
         Ok(())
     }
+}
+
+/// Return the initial source directory with its original trailing separator.
+///
+/// Source names are compiler inputs, not host filesystem paths: recognizing
+/// both separators keeps Windows paths and browser URIs deterministic on every
+/// Cargo target.
+fn source_directory_prefix(filename: &str) -> &str {
+    let separator = filename
+        .char_indices()
+        .rev()
+        .find(|(_, character)| matches!(character, '/' | '\\'));
+    separator.map_or("", |(index, character)| {
+        &filename[..index + character.len_utf8()]
+    })
+}
+
+fn is_rooted_source_name(filename: &str) -> bool {
+    let bytes = filename.as_bytes();
+    if matches!(bytes.first(), Some(b'/' | b'\\')) {
+        return true;
+    }
+
+    if matches!(
+        bytes,
+        [drive, b':', b'/' | b'\\', ..] if drive.is_ascii_alphabetic()
+    ) {
+        return true;
+    }
+
+    let Some(colon) = filename.find(':') else {
+        return false;
+    };
+    colon > 1
+        && filename[..colon].bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_alphabetic()
+                || (index > 0 && (byte.is_ascii_digit() || matches!(byte, b'+' | b'-' | b'.')))
+        })
 }
 
 impl<'a> IntoIterator for Scanner<'a> {

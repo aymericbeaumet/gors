@@ -6,7 +6,7 @@
 use std::fmt;
 
 /// Why a parsed Go import literal cannot name a package.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum ImportPathIssue {
     MalformedLiteral,
     InvalidEscape,
@@ -69,7 +69,7 @@ impl fmt::Display for ImportPathIssue {
 }
 
 /// Decode one Go string literal and validate its package import-path value.
-pub(super) fn decode_and_validate(literal: &str) -> Result<String, ImportPathIssue> {
+pub fn decode_and_validate(literal: &str) -> Result<String, ImportPathIssue> {
     let bytes = decode_go_string_literal(literal)?;
     let path = String::from_utf8(bytes).map_err(|_| ImportPathIssue::InvalidUtf8)?;
     validate(&path)?;

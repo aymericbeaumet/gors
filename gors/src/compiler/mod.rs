@@ -21,6 +21,7 @@ mod emit;
 pub mod fingerprint;
 pub mod hir;
 pub mod ids;
+pub mod input;
 mod lowering;
 pub mod mir;
 pub mod rust_ir;

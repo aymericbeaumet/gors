@@ -122,6 +122,9 @@ pub mod resolve;
 /// position tracking for source locations.
 pub mod token;
 
+/// Filesystem discovery for syntax-unvalidated compiler inputs.
+pub mod workspace;
+
 // The build-script platform mapping is pure and shared here only so ordinary
 // library unit tests exercise host/target separation. It is not a runtime API.
 #[cfg(test)]

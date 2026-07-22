@@ -17,8 +17,7 @@ impl<'scanner> Parser<'scanner> {
         self.token(Token::SEMICOLON).required()?;
 
         let file_start = Position {
-            directory: self.original_directory,
-            file: self.original_file,
+            origin: self.original_origin,
             offset: 0,
             line: 1,
             column: 1,

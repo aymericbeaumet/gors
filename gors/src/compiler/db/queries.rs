@@ -7,8 +7,6 @@ use crate::ast;
 use crate::compiler::fingerprint::fingerprint_parts;
 use crate::compiler::{Diagnostic, lowering, mir, rust_ir};
 use crate::parser::SourceContent;
-use crate::scanner::Scanner;
-use crate::token::Token;
 
 use super::super::ids::{DefId, DefinitionKey, DefinitionKind, FileId, PackageId};
 use super::model::{
@@ -21,6 +19,8 @@ use super::products::{
     VerifiedMirFunction, VerifiedRustIrFunction, VerifiedRustIrPackage,
 };
 use super::provenance::make_function_relative;
+use super::source_metadata::{FileComments, FileImports};
+use super::source_projection::{body_source, project_comments, project_imports, signature_source};
 use super::telemetry::{QueryKind, Telemetry};
 
 #[salsa::db]
@@ -104,6 +104,12 @@ pub(super) struct FileFacts<'db> {
     pub(super) package: Arc<str>,
     #[tracked]
     #[returns(clone)]
+    pub(super) imports: Arc<FileImports>,
+    #[tracked]
+    #[returns(clone)]
+    pub(super) comments: Arc<FileComments>,
+    #[tracked]
+    #[returns(clone)]
     pub(super) functions: Vec<FunctionProjection<'db>>,
     #[tracked]
     #[returns(clone)]
@@ -133,6 +139,8 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
                 package_id,
                 logical_path,
                 Arc::from(""),
+                Arc::new(FileImports::new(file, Arc::from([]), Arc::from([]))),
+                Arc::new(FileComments::new(file, Arc::from([]))),
                 Vec::new(),
                 Some(ParseFailure::new(
                     error.message(),
@@ -146,6 +154,8 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
     };
     db.unwind_if_revision_cancelled();
     let declared_package: Arc<str> = Arc::from(parsed.name.name);
+    let imports = Arc::new(project_imports(file, &parsed));
+    let comments = Arc::new(project_comments(file, &content, &parsed));
 
     let mut seen = BTreeSet::new();
     let mut projected = Vec::new();
@@ -279,6 +289,8 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
         package_id,
         logical_path,
         declared_package,
+        imports,
+        comments,
         functions,
         None,
         issues,
@@ -593,6 +605,7 @@ pub(super) fn package_analysis_product(db: &dyn Db, input: PackageInput) -> Arc<
 
     let mut package_name: Option<Arc<str>> = None;
     let mut files = Vec::with_capacity(sources.len());
+    let mut direct_imports = BTreeSet::new();
     let mut functions = Vec::new();
     let mut exported_signatures = Vec::new();
     let mut issues = Vec::new();
@@ -610,6 +623,26 @@ pub(super) fn package_analysis_product(db: &dyn Db, input: PackageInput) -> Arc<
             continue;
         }
 
+        let imports = facts.imports(db);
+        direct_imports.extend(
+            imports
+                .direct()
+                .iter()
+                .map(|import| Arc::<str>::from(import.path())),
+        );
+        issues.extend(
+            imports
+                .invalid()
+                .iter()
+                .map(|import| PackageIssue::InvalidImportPath {
+                    file: import.file(),
+                    literal: Arc::from(import.literal()),
+                    line: import.line(),
+                    column: import.column(),
+                    virtual_file: import.virtual_file().map(Arc::from),
+                    issue: import.issue().clone(),
+                }),
+        );
         let declared_package = facts.package(db);
         if let Some(expected) = &package_name {
             if expected != &declared_package {
@@ -672,6 +705,7 @@ pub(super) fn package_analysis_product(db: &dyn Db, input: PackageInput) -> Arc<
         package,
         package_name.unwrap_or_else(|| Arc::from("")),
         files.into(),
+        direct_imports.into_iter().collect::<Vec<_>>().into(),
         functions.into(),
         issues.into(),
         &exported_signatures,
@@ -703,63 +737,6 @@ pub(super) fn public_api_product(db: &dyn Db, facts: FileFacts<'_>) -> Arc<Publi
         .map(|function| signature_product(db, function).as_ref().clone())
         .collect::<Vec<_>>();
     Arc::new(PublicApi::new(facts.file(db), signatures.into()))
-}
-
-fn signature_source(
-    content: &SourceContent,
-    logical_path: &str,
-    function: &ast::FuncDecl<'_>,
-) -> Arc<str> {
-    let start = function
-        .type_
-        .func
-        .as_ref()
-        .map_or(function.name.name_pos.offset, |position| position.offset);
-    let end = function.body.as_ref().map_or_else(
-        || bodyless_signature_end(content, logical_path, start),
-        |body| body.lbrace.offset,
-    );
-    source_range(content.source(), start, end)
-}
-
-fn body_source(content: &SourceContent, body: &ast::BlockStmt<'_>) -> Arc<str> {
-    source_range(
-        content.source(),
-        body.lbrace.offset,
-        body.rbrace.offset.saturating_add(1),
-    )
-}
-
-fn source_range(source: &str, start: usize, end: usize) -> Arc<str> {
-    source
-        .get(start..end)
-        .map_or_else(|| Arc::from(""), Arc::from)
-}
-
-fn bodyless_signature_end(content: &SourceContent, logical_path: &str, start: usize) -> usize {
-    let Some(suffix) = content.source().get(start..) else {
-        return content.source().len();
-    };
-    let mut scanner = Scanner::new(logical_path, suffix);
-    let mut nesting = 0_u32;
-    loop {
-        let Ok((position, token, _)) = scanner.scan() else {
-            return content.source().len();
-        };
-        match token {
-            Token::LPAREN | Token::LBRACK | Token::LBRACE => {
-                nesting = nesting.saturating_add(1);
-            }
-            Token::RPAREN | Token::RBRACK | Token::RBRACE => {
-                nesting = nesting.saturating_sub(1);
-            }
-            Token::SEMICOLON if nesting == 0 => {
-                return start.saturating_add(position.offset);
-            }
-            Token::EOF => return content.source().len(),
-            _ => {}
-        }
-    }
 }
 
 fn is_exported(name: &str) -> bool {

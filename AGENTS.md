@@ -258,11 +258,31 @@ filename change creates a new `FileId` and remains semantic, because filenames
 can affect Go build selection. Raw Salsa snapshots are scheduler-internal and
 must never escape to callers that could retain them across an input mutation.
 
+Token positions carry an explicit `SourceOrigin`. Initial filenames, Windows
+paths, and URIs are retained byte-for-byte; explicit `//line` filenames are
+resolved lexically against the initial source directory without host-platform
+`Path` normalization. Stable file identity still comes from the manifest's
+logical path. Physical comment coordinates are derived from byte offsets and
+`SourceContent`. Query-owned import issues and semantic spans retain explicit
+virtual origins; later diagnostic and source-map publication must preserve that
+typed distinction instead of repainting every string filename.
+
+The file projection owns decoded direct-import occurrences, structured invalid
+imports, and owned source comments from its one ephemeral parse. Those products
+contain `FileId` and content-relative provenance, never checkout paths. Import
+paths are sorted and deduplicated only at the package-analysis boundary;
+occurrence products preserve source order and duplicates.
+
 Production callers still construct a validated `ParsedProgram` before entering
 `CompilerSession`, so CLI and browser paths repeat parsing and syntax-invalid
 revisions cannot yet participate in retained-session recovery. Replacing that
 boundary with an unvalidated source/package manifest owned by the query system
 is P0; do not mistake content/path separation for owned incremental syntax.
+`compiler::input` now provides the syntax-unvalidated, enum-tagged
+`ProgramInput` model, and `workspace` can select and read a command-line package
+exactly once without parsing or recursive import discovery. These foundations
+are not the production boundary until `CompilerSession`, CLI, and Wasm accept
+them directly and production references to `ParsedProgram` are removed.
 
 Source mappings and diagnostics are ordinary explicit outputs. The current
 `SourceMapPlan` follows that rule and is safe to build or consume independently;
@@ -375,6 +395,7 @@ weaken parser behavior to fit the bootstrap backend.
         ast/                parser-owned Go AST
         compiler/
           db/               demand-driven compiler queries and telemetry
+          input/            syntax-unvalidated compiler input manifests
           fingerprint/      canonical stage encoders and fingerprints
           session.rs        reusable production compilation session
           semantic/         name resolution, typing, and typed HIR construction
@@ -388,6 +409,7 @@ weaken parser behavior to fit the bootstrap backend.
         resolve/            embedded Go SDK source metadata only
         printer/            syn formatting and file layout
         sourcemap/          Go to Rust source maps
+        workspace/          raw filesystem source selection and loading
         token/              Go token definitions
         error.rs            user-facing parse diagnostics
         lib.rs              library entry point

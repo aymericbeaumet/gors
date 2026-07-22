@@ -376,7 +376,10 @@ architecture described here:
   `ParsedProgram` before session installation and projections parse again, while
   browser comments parse separately. Syntax-invalid revisions therefore remain
   outside the retained session. There is still no reusable incremental syntax
-  tree with stable syntax anchors or explicit parse-product memory accounting;
+  tree with stable syntax anchors or explicit parse-product memory accounting.
+  A syntax-unvalidated `ProgramInput` model and parse-free raw workspace loader
+  now exist, and the tracked file projection owns imports and comments from one
+  parse, but production callers have not yet cut over to those inputs;
 - workspace, package, file, and definition IDs are stable; node, local, and
   basic-block IDs are still revision-local dense indexes and cannot be
   persistent query or CAS keys;

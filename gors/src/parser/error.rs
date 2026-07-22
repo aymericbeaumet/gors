@@ -39,7 +39,7 @@ impl ParserError {
     /// Get the location information if available
     pub fn location(&self) -> Option<(String, usize, usize)> {
         match self {
-            Self::ScannerError(e) => Some((String::new(), e.line, e.column)),
+            Self::ScannerError(e) => Some((e.file.clone(), e.line, e.column)),
             Self::UnexpectedTokenAt {
                 file, line, column, ..
             } => Some((file.clone(), *line, *column)),

@@ -154,7 +154,11 @@ impl FileLowerer {
 
     fn span(&self, position: &Position<'_>) -> SourceSpan {
         SourceSpan {
-            file: self.file_name.clone(),
+            file: if position.origin.is_line_directive() {
+                position.filename().into_owned()
+            } else {
+                self.file_name.clone()
+            },
             start: position.offset,
             end: position.offset,
             line: position.line,
@@ -635,10 +639,10 @@ fn logical_file_name(position: &Position<'_>) -> String {
     // portable across checkout roots. The query database must replace this
     // bootstrap rule with its canonical package-relative file key.
     position
-        .file
+        .filename()
         .rsplit(['/', '\\'])
         .next()
-        .unwrap_or(position.file)
+        .unwrap_or_default()
         .to_string()
 }
 

@@ -2,8 +2,11 @@
 
 use std::sync::Arc;
 
+use crate::parser::ImportPathIssue;
+
 use super::super::fingerprint::{Fingerprint, fingerprint_parts};
 use super::super::ids::{DefId, DefinitionKey, FileId, PackageId};
+use super::source_metadata::write_import_issue;
 
 /// Configuration owned by one compiler database invocation.
 ///
@@ -273,6 +276,15 @@ impl FileAnalysis {
 pub enum PackageIssue {
     /// One package input file currently has invalid Go syntax.
     FileParseFailure { file: FileId, failure: ParseFailure },
+    /// One import literal cannot name a canonical Go package.
+    InvalidImportPath {
+        file: FileId,
+        literal: Arc<str>,
+        line: usize,
+        column: usize,
+        virtual_file: Option<Arc<str>>,
+        issue: ImportPathIssue,
+    },
     /// Independently parsed files disagree on their package clause.
     PackageClauseMismatch {
         file: FileId,
@@ -303,6 +315,7 @@ pub struct PackageAnalysis {
     package: PackageId,
     package_name: Arc<str>,
     files: Arc<[FileId]>,
+    direct_imports: Arc<[Arc<str>]>,
     functions: Arc<[FunctionDescriptor]>,
     issues: Arc<[PackageIssue]>,
     public_api_fingerprint: Fingerprint,
@@ -314,6 +327,7 @@ impl PackageAnalysis {
         package: PackageId,
         package_name: Arc<str>,
         files: Arc<[FileId]>,
+        direct_imports: Arc<[Arc<str>]>,
         functions: Arc<[FunctionDescriptor]>,
         issues: Arc<[PackageIssue]>,
         exported_signatures: &[FunctionSignature],
@@ -333,6 +347,9 @@ impl PackageAnalysis {
         for file in &*files {
             fingerprint.bytes(file.canonical_bytes());
         }
+        for import in &*direct_imports {
+            fingerprint.bytes(import.as_bytes());
+        }
         for function in &*functions {
             fingerprint.bytes(function.id.canonical_bytes());
             fingerprint.bytes(function.file.canonical_bytes());
@@ -346,6 +363,28 @@ impl PackageAnalysis {
                     fingerprint.bytes(failure.message.as_bytes());
                     fingerprint.optional_usize(failure.line);
                     fingerprint.optional_usize(failure.column);
+                }
+                PackageIssue::InvalidImportPath {
+                    file,
+                    literal,
+                    line,
+                    column,
+                    virtual_file,
+                    issue,
+                } => {
+                    fingerprint.bytes(b"invalid-import-path");
+                    fingerprint.bytes(file.canonical_bytes());
+                    fingerprint.bytes(literal.as_bytes());
+                    fingerprint.usize(*line);
+                    fingerprint.usize(*column);
+                    match virtual_file {
+                        Some(file) => {
+                            fingerprint.bytes(b"virtual-file");
+                            fingerprint.bytes(file.as_bytes());
+                        }
+                        None => fingerprint.bytes(b"physical-file"),
+                    }
+                    write_import_issue(&mut fingerprint, issue);
                 }
                 PackageIssue::PackageClauseMismatch {
                     file,
@@ -385,6 +424,7 @@ impl PackageAnalysis {
             package,
             package_name,
             files,
+            direct_imports,
             functions,
             issues,
             public_api_fingerprint,
@@ -408,6 +448,12 @@ impl PackageAnalysis {
     #[must_use]
     pub fn files(&self) -> &[FileId] {
         &self.files
+    }
+
+    /// Canonical direct import paths, sorted and deduplicated package-wide.
+    #[must_use]
+    pub fn direct_imports(&self) -> &[Arc<str>] {
+        &self.direct_imports
     }
 
     /// All indexed function declarations in stable key and evidence order.
@@ -443,6 +489,13 @@ impl PackageAnalysis {
         let issues = self.issues.iter().fold(0_usize, |total, issue| {
             let retained = match issue {
                 PackageIssue::FileParseFailure { failure, .. } => failure.retained_bytes(),
+                PackageIssue::InvalidImportPath {
+                    literal,
+                    virtual_file,
+                    ..
+                } => literal
+                    .len()
+                    .saturating_add(virtual_file.as_ref().map_or(0, |file| file.len())),
                 PackageIssue::PackageClauseMismatch {
                     expected, found, ..
                 } => expected.len().saturating_add(found.len()),
@@ -458,6 +511,11 @@ impl PackageAnalysis {
         self.package_name
             .len()
             .saturating_add(self.files.len().saturating_mul(32))
+            .saturating_add(
+                self.direct_imports
+                    .iter()
+                    .fold(0_usize, |total, import| total.saturating_add(import.len())),
+            )
             .saturating_add(functions)
             .saturating_add(issues)
             .saturating_add(64)
@@ -679,11 +737,15 @@ impl FingerprintBuilder {
         self.parts.push(value.to_vec());
     }
 
+    pub(super) fn usize(&mut self, value: usize) {
+        self.bytes(&u64::try_from(value).unwrap_or(u64::MAX).to_be_bytes());
+    }
+
     fn optional_usize(&mut self, value: Option<usize>) {
         match value {
             Some(value) => {
                 self.bytes(b"some");
-                self.bytes(&u64::try_from(value).unwrap_or(u64::MAX).to_be_bytes());
+                self.usize(value);
             }
             None => self.bytes(b"none"),
         }

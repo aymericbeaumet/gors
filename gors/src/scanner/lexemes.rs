@@ -261,11 +261,13 @@ impl<'a> Scanner<'a> {
                     //line filename:line:col
                     /*line :line:col*/
                     /*line filename:line:col*/
-                    let file = if !file.is_empty() { Some(file) } else { None };
-                    let col = Some(line);
-                    let line = l;
-                    let hide_column = false;
-                    return Ok(Some((file, line, col, hide_column)));
+                    let filename = (!file.is_empty()).then_some(file);
+                    return Ok(Some(LineInfo {
+                        filename,
+                        line: l,
+                        column: Some(line),
+                        hide_column: false,
+                    }));
                 }
             }
 
@@ -273,7 +275,12 @@ impl<'a> Scanner<'a> {
             //line filename:line
             /*line :line*/
             /*line filename:line*/
-            Ok(Some((Some(file), line, None, true)))
+            Ok(Some(LineInfo {
+                filename: (!file.is_empty()).then_some(file),
+                line,
+                column: None,
+                hide_column: true,
+            }))
         } else {
             Ok(None)
         }

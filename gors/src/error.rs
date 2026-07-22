@@ -31,8 +31,9 @@ pub struct Diagnostic {
 impl Diagnostic {
     /// Create a Diagnostic from a ScannerError with source context
     pub fn from_scanner_error(err: &ScannerError, file: &str, source: &str) -> Self {
+        let actual_file = if err.file.is_empty() { file } else { &err.file };
         Self::new(
-            file,
+            actual_file,
             err.line,
             err.column,
             err.message(),

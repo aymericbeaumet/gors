@@ -1,7 +1,7 @@
 use super::{ParserError, Result};
 use crate::ast;
 use crate::scanner;
-use crate::token::{Position, Token};
+use crate::token::{Position, SourceOrigin, Token};
 
 fn make_basic_lit<'a>((value_pos, kind, value): scanner::Step<'a>) -> ast::BasicLit<'a> {
     let hide_column = value_pos.column == 0;
@@ -30,8 +30,7 @@ pub(super) struct Parser<'scanner> {
     pub(super) expr_level: isize,
     pub(super) go_version: &'scanner str,
     pub(super) buffer: &'scanner str,
-    pub(super) original_directory: &'scanner str,
-    pub(super) original_file: &'scanner str,
+    pub(super) original_origin: SourceOrigin<'scanner>,
     pub(super) lead_comment: Option<ast::CommentGroup<'scanner>>,
     pub(super) line_comment: Option<ast::CommentGroup<'scanner>>,
     pub(super) all_comments: Vec<ast::CommentGroup<'scanner>>,
@@ -44,15 +43,13 @@ impl<'scanner> Parser<'scanner> {
         buffer: &'scanner str,
         filename: &'scanner str,
     ) -> Self {
-        let (directory, file) = filename.rsplit_once('/').unwrap_or(("", filename));
         Self {
             steps: scanner.into_iter(),
             current_step: (Position::default(), Token::EOF, ""),
             expr_level: 0,
             go_version,
             buffer,
-            original_directory: directory,
-            original_file: file,
+            original_origin: SourceOrigin::initial(filename),
             lead_comment: None,
             line_comment: None,
             all_comments: Vec::new(),

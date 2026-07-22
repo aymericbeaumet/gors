@@ -7,6 +7,8 @@ use std::fmt;
 #[derive(Debug, Clone)]
 pub struct ScannerError {
     pub kind: ScannerErrorKind,
+    /// Exact initial or resolved line-directive filename at the error site.
+    pub file: String,
     pub line: usize,
     pub column: usize,
     pub offset: usize,
@@ -47,13 +49,24 @@ impl std::error::Error for ScannerError {}
 
 impl fmt::Display for ScannerError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "{}:{}: {}",
-            self.line,
-            self.column,
-            self.message()
-        )
+        if self.file.is_empty() {
+            write!(
+                formatter,
+                "{}:{}: {}",
+                self.line,
+                self.column,
+                self.message()
+            )
+        } else {
+            write!(
+                formatter,
+                "{}:{}:{}: {}",
+                self.file,
+                self.line,
+                self.column,
+                self.message()
+            )
+        }
     }
 }
 

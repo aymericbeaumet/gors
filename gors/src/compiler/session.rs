@@ -498,6 +498,22 @@ impl CompilerSession {
                     line: failure.line().unwrap_or(0),
                     column: failure.column().unwrap_or(0),
                 },
+                PackageIssue::InvalidImportPath {
+                    file,
+                    literal,
+                    line,
+                    column,
+                    virtual_file,
+                    issue,
+                } => CompilerDiagnostic {
+                    code: "GORS2002",
+                    message: format!("invalid import path literal {literal}: {issue}"),
+                    file: virtual_file
+                        .as_deref()
+                        .map_or_else(|| self.source_path_or_empty(*file), str::to_string),
+                    line: *line,
+                    column: *column,
+                },
                 PackageIssue::PackageClauseMismatch {
                     file,
                     expected,

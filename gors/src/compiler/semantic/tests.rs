@@ -462,3 +462,19 @@ fn validates_special_function_boundaries() {
         "package init functions are not implemented",
     );
 }
+
+#[test]
+fn explicit_line_origin_flows_into_semantic_diagnostics() {
+    let diagnostics = lower_at(
+        "/workspace/main.go",
+        "package main\n//line generated.go:40\nfunc (value int) method() {}\n",
+    )
+    .unwrap_err();
+    let diagnostic = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.message.contains("methods are not implemented"))
+        .expect("unsupported method diagnostic");
+
+    assert_eq!(diagnostic.span.file, "/workspace/generated.go");
+    assert_eq!(diagnostic.span.line, 40);
+}

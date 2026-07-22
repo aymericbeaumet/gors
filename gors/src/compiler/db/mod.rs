@@ -8,6 +8,8 @@ mod model;
 mod products;
 mod provenance;
 mod queries;
+mod source_metadata;
+mod source_projection;
 mod telemetry;
 
 use std::collections::BTreeMap;
@@ -31,6 +33,7 @@ pub use products::{
     CompilerStage, FunctionProvenance, NormalizedMirFunction, StageFailure, TypedFunctionSignature,
     TypedHirFunction, VerifiedMirFunction, VerifiedRustIrFunction, VerifiedRustIrPackage,
 };
+pub use source_metadata::{DirectImport, FileComments, FileImports, InvalidImport, SourceComment};
 pub use telemetry::{EngineEventCounts, QueryKind, TelemetrySnapshot};
 
 /// Compiler-database lookup or stable-identity failure.
@@ -340,6 +343,16 @@ impl CompilerDatabase {
     pub fn analyze_file(&self, file: FileId) -> Result<Arc<FileAnalysis>, QueryError> {
         let facts = self.file_facts(file)?;
         Ok(queries::file_analysis_product(self, facts))
+    }
+
+    /// Demand owned direct-import facts from the file's shared parse query.
+    pub fn file_imports(&self, file: FileId) -> Result<Arc<FileImports>, QueryError> {
+        Ok(self.file_facts(file)?.imports(self))
+    }
+
+    /// Demand owned checkout-independent comments from the shared parse query.
+    pub fn file_comments(&self, file: FileId) -> Result<Arc<FileComments>, QueryError> {
+        Ok(self.file_facts(file)?.comments(self))
     }
 
     /// Stable package owning an active source file.

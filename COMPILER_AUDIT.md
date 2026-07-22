@@ -359,13 +359,24 @@ request path. A package-relative filename change remains a semantic identity
 change. Revision-scoped raw Salsa snapshots are scheduler-internal so callers
 cannot retain one and block a later mutation.
 
-This split does not yet give the compiler ownership of syntax installation.
-Production entry points validate into `ParsedProgram` before the session, which
-duplicates parser work in CLI and browser flows and prevents a syntax-invalid
-edit from entering the retained database. The next input boundary must be an
-unvalidated manifest of package identities, logical filenames, display paths,
-and `SourceContent`; parsing and parse failures then become query-owned products.
-`//line` virtual origins must remain distinct from physical presentation paths.
+This split does not yet give the production compiler ownership of syntax
+installation. Enum-tagged `ProgramInput`, package and file manifests now model
+unvalidated package identities, logical filenames, display paths, and
+`SourceContent`; the raw workspace loader selects and reads a command-line
+package exactly once without parsing or recursively discovering imports. The
+file projection also publishes owned imports, structured invalid imports, and
+physical comment anchors from its one ephemeral parse. Production entry points
+still validate into `ParsedProgram` before the session, however, so CLI and
+browser flows duplicate parser work and syntax-invalid edits cannot yet enter
+the retained database. The hard cut must wire the raw manifest through the
+session and remove every production `ParsedProgram` reference.
+
+Scanner positions now distinguish exact initial origins from explicit `//line`
+origins across Unix, Windows, and URI spellings without host-path
+normalization. Query-owned import diagnostics preserve that virtual filename,
+and comment positions are reconstructed physically from content byte offsets.
+The broader diagnostic and source-map provenance model still needs to carry
+that typed origin through every later stage rather than repainting string paths.
 
 Native sessions can now share an explicit `CompilerHost` with one lazy bounded
 worker pool. Cold or changed revisions prewarm stable per-definition Rust-IR

@@ -43,16 +43,7 @@ impl<W: Write> Printable<W> for ast::ObjKind {
 
 impl<W: Write> Printable<W> for token::Position<'_> {
     fn print(&self, p: &mut Printer<W>) -> PrintResult {
-        if self.file.is_empty() {
-            write!(p.w, "{}", self.line)?;
-        } else if self.file.starts_with('/') {
-            write!(p.w, "{}:{}", self.file, self.line)?;
-        } else {
-            write!(p.w, "{}/{}:{}", self.directory, self.file, self.line)?;
-        }
-        if self.column != 0 {
-            write!(p.w, ":{}", self.column)?;
-        }
+        write!(p.w, "{self}")?;
         p.newline()?;
         Ok(())
     }

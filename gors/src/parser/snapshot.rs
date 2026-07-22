@@ -55,6 +55,26 @@ impl SourceContent {
             .and_then(|index| self.line_starts.get(index).copied())
     }
 
+    /// Physical one-based line and byte column for a source byte offset.
+    ///
+    /// This deliberately ignores virtual `//line` coordinates. Consumers
+    /// that place source text, such as browser comment reinsertion, need the
+    /// exact physical content position instead.
+    #[must_use]
+    pub fn line_column(&self, byte_offset: usize) -> Option<(usize, usize)> {
+        if byte_offset > self.source.len() {
+            return None;
+        }
+        let line = self
+            .line_starts
+            .partition_point(|line_start| *line_start <= byte_offset);
+        let line_start = self.line_starts.get(line.saturating_sub(1)).copied()?;
+        Some((
+            line,
+            byte_offset.saturating_sub(line_start).saturating_add(1),
+        ))
+    }
+
     /// Number of source lines represented by the line index.
     #[must_use]
     pub fn line_count(&self) -> usize {

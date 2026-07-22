@@ -8,7 +8,71 @@
 #![allow(non_camel_case_types)] // For consistency with the Go tokens
 
 use serde::{Serialize, Serializer, ser::SerializeMap};
+use std::borrow::Cow;
 use std::fmt;
+
+/// The filename origin attached to a source position.
+///
+/// Initial names are retained byte-for-byte. A `//line` name is kept distinct
+/// so a relative virtual name can be resolved against the initial source
+/// directory without re-splitting or normalizing either name through the host
+/// platform's path rules.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SourceOrigin<'a> {
+    /// No source name is available, as for [`Position::default`].
+    #[default]
+    Unknown,
+    /// The exact filename or URI supplied with the source buffer.
+    Initial(&'a str),
+    /// A virtual filename installed by a Go line directive.
+    LineDirective {
+        /// Exact filename written in the directive.
+        filename: &'a str,
+        /// Initial source directory prefix, including its final separator.
+        /// Empty for rooted paths, URIs, and sources without a directory.
+        relative_to: &'a str,
+    },
+}
+
+impl<'a> SourceOrigin<'a> {
+    /// Construct an exact initial source origin.
+    #[must_use]
+    pub const fn initial(filename: &'a str) -> Self {
+        Self::Initial(filename)
+    }
+
+    /// Construct a line-directive origin with an already classified base.
+    #[must_use]
+    pub const fn line_directive(filename: &'a str, relative_to: &'a str) -> Self {
+        Self::LineDirective {
+            filename,
+            relative_to,
+        }
+    }
+
+    /// Resolve the user-facing filename without platform path normalization.
+    #[must_use]
+    pub fn filename(self) -> Cow<'a, str> {
+        match self {
+            Self::Unknown => Cow::Borrowed(""),
+            Self::Initial(filename)
+            | Self::LineDirective {
+                filename,
+                relative_to: "",
+            } => Cow::Borrowed(filename),
+            Self::LineDirective {
+                filename,
+                relative_to,
+            } => Cow::Owned(format!("{relative_to}{filename}")),
+        }
+    }
+
+    /// Whether this origin was installed by a line directive.
+    #[must_use]
+    pub const fn is_line_directive(self) -> bool {
+        matches!(self, Self::LineDirective { .. })
+    }
+}
 
 /// Source position within a file.
 ///
@@ -16,22 +80,23 @@ use std::fmt;
 /// including file path, byte offset, line number, and column number.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Position<'a> {
-    pub directory: &'a str,
-    pub file: &'a str,
+    pub origin: SourceOrigin<'a>,
     pub offset: usize,
     pub line: usize,
     pub column: usize,
 }
 
+impl<'a> Position<'a> {
+    /// Exact initial name or resolved line-directive filename for this position.
+    #[must_use]
+    pub fn filename(&self) -> Cow<'a, str> {
+        self.origin.filename()
+    }
+}
+
 impl<'a> fmt::Display for Position<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let filename = if self.file.is_empty() {
-            String::new()
-        } else if self.file.starts_with('/') {
-            self.file.to_string()
-        } else {
-            format!("{}/{}", self.directory, self.file)
-        };
+        let filename = self.filename();
 
         if filename.is_empty() {
             write!(f, "{}", self.line)?;
@@ -54,14 +119,7 @@ impl<'a> Serialize for Position<'a> {
     {
         let mut map = serializer.serialize_map(Some(4))?;
 
-        if self.file.is_empty() {
-            map.serialize_entry("Filename", "")?;
-        } else if self.file.starts_with('/') {
-            map.serialize_entry("Filename", self.file)?;
-        } else {
-            // Allocation is required here to construct the full path string
-            map.serialize_entry("Filename", &format!("{}/{}", self.directory, self.file))?;
-        }
+        map.serialize_entry("Filename", self.filename().as_ref())?;
         map.serialize_entry("Offset", &self.offset)?;
         map.serialize_entry("Line", &self.line)?;
         map.serialize_entry("Column", &self.column)?;
