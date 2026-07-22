@@ -90,6 +90,11 @@ fail_on_matches \
   gors/src/compiler/session.rs \
   gors/src/compiler/db
 
+fail_on_matches \
+  'bootstrap sessions must materialize only the entry manifest:' \
+  '\.packages\(\)' \
+  gors/src/compiler/session.rs
+
 if ! rg -q \
   '^[[:space:]]*pub\(in crate::compiler\) fn snapshot\(&self\) -> CompilerDatabaseSnapshot' \
   gors/src/compiler/db/mod.rs; then

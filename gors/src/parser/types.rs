@@ -1,4 +1,4 @@
-use super::{ParserError, Result, ResultExt, core::Parser};
+use super::{RawParserError, Result, ResultExt, core::Parser};
 use crate::ast;
 use crate::token::Token;
 
@@ -758,7 +758,7 @@ impl<'scanner> Parser<'scanner> {
                 }));
             }
 
-            return Err(ParserError::UnexpectedToken);
+            return Err(RawParserError::UnexpectedToken);
         }
 
         if let Some(type_) = self.parse_type_name()? {

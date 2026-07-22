@@ -1,4 +1,4 @@
-use super::{ParserError, Result};
+use super::{RawParserError, Result};
 use crate::ast;
 use crate::scanner;
 use crate::token::{Position, SourceOrigin, Token};
@@ -278,7 +278,7 @@ impl<'scanner> Parser<'scanner> {
                 }
                 Some(Err(e)) => return Err(e.into()),
                 None => {
-                    return Err(ParserError::UnexpectedEndOfFile {
+                    return Err(RawParserError::UnexpectedEndOfFile {
                         offset: self.buffer.len(),
                     });
                 }

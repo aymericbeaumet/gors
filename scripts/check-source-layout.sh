@@ -4,6 +4,7 @@ set -euo pipefail
 
 readonly max_lines="${GORS_MAX_SOURCE_LINES:-1000}"
 readonly inline_test_split_lines="${GORS_INLINE_TEST_SPLIT_LINES:-600}"
+readonly cli_main_max_lines="${GORS_CLI_MAIN_MAX_LINES:-150}"
 
 sources=()
 while IFS= read -r source; do
@@ -41,6 +42,13 @@ for source in "${sources[@]}"; do
     failed=1
   fi
 done
+
+cli_main_lines="$(wc -l < gors-cli/src/main.rs | tr -d ' ')"
+if ((cli_main_lines > cli_main_max_lines)); then
+  printf '%s has %s lines; keep command dispatch below the %s-line limit\n' \
+    'gors-cli/src/main.rs' "${cli_main_lines}" "${cli_main_max_lines}" >&2
+  failed=1
+fi
 
 if [[ -d gors/src/compiler/backend ]]; then
   printf '%s\n' 'gors/src/compiler/backend is redundant; stages belong directly under compiler' >&2

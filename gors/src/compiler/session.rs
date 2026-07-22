@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use self::readiness::RustIrRoot;
 use super::db::{
-    BuildConfig, CompilerDatabase, Fingerprint, PackageAnalysis, PackageIssue, QueryError,
-    SourceInputMutation, StageFailure,
+    BuildConfig, CompilerDatabase, Fingerprint, PackageAnalysis, PackageIssue, ParseFailure,
+    QueryError, SourceInputMutation, StageFailure,
 };
 use super::ids::{FileId, PackageId};
 use super::input::{PackageInputManifest, ProgramInput, WorkspaceKey};
@@ -222,17 +222,12 @@ impl CompilerSession {
         mutations: &mut Vec<SourceInputMutation>,
     ) -> Result<(InstalledProgram, BTreeSet<FileId>), CompilerError> {
         let mut next_sources = BTreeSet::new();
-        let mut main = None;
-        for package in program.packages() {
-            let (files, package_id) =
-                self.install_package(program.workspace(), package, &mut next_sources, mutations)?;
-            if package.key() == program.entry_package().key() {
-                main = Some((files, package_id));
-            }
-        }
-        let (main_files, main_package) = main.ok_or_else(|| {
-            CompilerError::backend("validated program input omitted its entry package")
-        })?;
+        let (main_files, main_package) = self.install_package(
+            program.workspace(),
+            program.entry_package(),
+            &mut next_sources,
+            mutations,
+        )?;
         Ok((
             InstalledProgram {
                 main_package,
@@ -471,13 +466,9 @@ impl CompilerSession {
         let mut diagnostics = issues
             .iter()
             .map(|issue| match issue {
-                PackageIssue::FileParseFailure { file, failure } => CompilerDiagnostic {
-                    code: "GORS2002",
-                    message: failure.message().to_string(),
-                    file: self.source_path_or_empty(*file),
-                    line: failure.line().unwrap_or(0),
-                    column: failure.column().unwrap_or(0),
-                },
+                PackageIssue::FileParseFailure { file, failure } => {
+                    self.parse_failure_diagnostic(*file, failure)
+                }
                 PackageIssue::InvalidImportPath {
                     file,
                     literal,
@@ -548,11 +539,69 @@ impl CompilerSession {
         CompilerError { diagnostics }
     }
 
+    fn parse_failure_diagnostic(&self, file: FileId, failure: &ParseFailure) -> CompilerDiagnostic {
+        let presentation_path = self.source_path_or_empty(file);
+        let coordinate = match self.database.source_coordinate_map(file) {
+            Ok(map) => match map
+                .adjusted_coordinate_for(failure.physical_range().start(), &presentation_path)
+            {
+                Ok(Some(coordinate)) => coordinate,
+                Ok(None) => {
+                    return coordinate_projection_failure(
+                        presentation_path,
+                        failure,
+                        "parser coordinate map does not cover its physical failure anchor",
+                    );
+                }
+                Err(error) => {
+                    return coordinate_projection_failure(
+                        presentation_path,
+                        failure,
+                        &format!("parser coordinate projection failed: {error}"),
+                    );
+                }
+            },
+            Err(error) => {
+                return coordinate_projection_failure(
+                    presentation_path,
+                    failure,
+                    &format!("parser coordinate map is unavailable: {error}"),
+                );
+            }
+        };
+        CompilerDiagnostic {
+            code: "GORS2002",
+            message: failure.message().to_string(),
+            file: coordinate.filename().to_string(),
+            line: coordinate_component(coordinate.position().line().get()),
+            column: coordinate_component(coordinate.position().column().to_go_column()),
+        }
+    }
+
     fn source_path_or_empty(&self, file: FileId) -> String {
         self.database.source_snapshot(file).map_or_else(
             |_| String::new(),
             |snapshot| snapshot.diagnostic_path().to_string(),
         )
+    }
+}
+
+#[allow(clippy::cast_lossless)]
+const fn coordinate_component(value: u32) -> usize {
+    value as usize
+}
+
+fn coordinate_projection_failure(
+    file: String,
+    failure: &ParseFailure,
+    detail: &str,
+) -> CompilerDiagnostic {
+    CompilerDiagnostic {
+        code: "GORS2002",
+        message: format!("{} ({detail})", failure.message()),
+        file,
+        line: 1,
+        column: 1,
     }
 }
 

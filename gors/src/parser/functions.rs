@@ -1,4 +1,4 @@
-use super::{ParserError, Result, ResultExt, TypeParameterParse, core::Parser};
+use super::{RawParserError, Result, ResultExt, TypeParameterParse, core::Parser};
 use crate::ast;
 use crate::token::Token;
 
@@ -237,7 +237,7 @@ impl<'scanner> Parser<'scanner> {
                     if is_type_param {
                         if let ast::Expr::Ident(name) = *call.fun {
                             let Some(arg) = call.args.take().and_then(|mut a| a.pop()) else {
-                                return Err(ParserError::UnexpectedToken);
+                                return Err(RawParserError::UnexpectedToken);
                             };
                             let constraint = ast::Expr::ParenExpr(ast::ParenExpr {
                                 lparen: call.lparen,
@@ -265,7 +265,7 @@ impl<'scanner> Parser<'scanner> {
                                 closing: Some(rbrack.0),
                             }));
                         }
-                        return Err(ParserError::UnexpectedToken);
+                        return Err(RawParserError::UnexpectedToken);
                     } else {
                         ast::Expr::CallExpr(call)
                     }

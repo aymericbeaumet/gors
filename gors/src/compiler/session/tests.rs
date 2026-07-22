@@ -295,6 +295,65 @@ fn syntax_invalid_input_is_query_owned_and_repeated_revision_is_green() {
 }
 
 #[test]
+fn syntax_diagnostic_path_moves_without_semantic_reexecution() {
+    let source = "package main\nfunc main( {\n";
+    let mut session = CompilerSession::default();
+    let first = session
+        .compile_program(raw_program("main.go", "/checkout/one/main.go", source))
+        .err()
+        .expect("invalid source must fail");
+    assert_eq!(
+        first.diagnostics().first().unwrap().file,
+        "/checkout/one/main.go"
+    );
+
+    session.database().reset_telemetry();
+    let moved = session
+        .compile_program(raw_program("main.go", "/checkout/two/main.go", source))
+        .err()
+        .expect("moved invalid source must fail");
+    assert_eq!(
+        moved.diagnostics().first().unwrap().file,
+        "/checkout/two/main.go"
+    );
+    assert_eq!(session.database().telemetry().total_executions(), 0);
+}
+
+#[test]
+fn relative_line_directive_uses_the_current_diagnostic_directory() {
+    let source = "package main\n//line generated.go:40\nfunc main( {\n";
+    let mut session = CompilerSession::default();
+    let error = session
+        .compile_program(raw_program("main.go", "/checkout/project/main.go", source))
+        .err()
+        .expect("invalid source must fail");
+    let diagnostic = error.diagnostics().first().unwrap();
+
+    assert_eq!(diagnostic.file, "/checkout/project/generated.go");
+    assert_eq!((diagnostic.line, diagnostic.column), (40, 0));
+}
+
+#[test]
+fn rooted_and_uri_line_directive_names_are_presentation_independent() {
+    for (directive, expected) in [
+        ("/virtual/generated.go", "/virtual/generated.go"),
+        (r"C:\virtual\generated.go", r"C:\virtual\generated.go"),
+        ("mem://generated/pkg/main.go", "mem://generated/pkg/main.go"),
+    ] {
+        let source = format!("package main\n//line {directive}:40\nfunc main( {{\n");
+        let mut session = CompilerSession::default();
+        let error = session
+            .compile_program(raw_program("main.go", "/checkout/project/main.go", &source))
+            .err()
+            .expect("invalid source must fail");
+        let diagnostic = error.diagnostics().first().unwrap();
+
+        assert_eq!(diagnostic.file, expected);
+        assert_eq!((diagnostic.line, diagnostic.column), (40, 0));
+    }
+}
+
+#[test]
 fn source_map_plan_owns_entry_comments_across_session_revisions() {
     let mut session = CompilerSession::default();
     let (_, first_plan) = session
@@ -320,7 +379,7 @@ fn source_map_plan_owns_entry_comments_across_session_revisions() {
 }
 
 #[test]
-fn every_manifest_package_is_installed_before_query_owned_import_rejection() {
+fn catalog_dependency_is_not_materialized_before_import_rejection() {
     let entry = super::super::input::PackageKey::command_line();
     let dependency = super::super::input::PackageKey::import_path("example/dependency").unwrap();
     let entry_manifest = PackageInputManifest::new(
@@ -358,20 +417,19 @@ fn every_manifest_package_is_installed_before_query_owned_import_rejection() {
 
     assert_eq!(error.diagnostics().first().unwrap().code, "GORS2001");
     assert!(error.to_string().contains("imports are not implemented"));
-    assert_eq!(session.database().active_files().len(), 2);
+    assert_eq!(session.database().active_files().len(), 1);
     let packages = session
         .database()
         .active_files()
         .into_iter()
         .map(|file| session.database().package_for_file(file).unwrap())
         .collect::<BTreeSet<_>>();
-    assert_eq!(packages.len(), 2);
+    assert_eq!(packages.len(), 1);
 }
 
 #[test]
-fn unrelated_invalid_manifest_package_is_not_analyzed_eagerly() {
+fn huge_valid_and_invalid_catalog_packages_cost_nothing_beyond_entry() {
     let entry = super::super::input::PackageKey::command_line();
-    let unrelated = super::super::input::PackageKey::import_path("example/unrelated").unwrap();
     let entry_manifest = PackageInputManifest::new(
         entry.clone(),
         [super::super::input::SourceFileInput::from_source(
@@ -382,12 +440,27 @@ fn unrelated_invalid_manifest_package_is_not_analyzed_eagerly() {
         .unwrap()],
     )
     .unwrap();
-    let unrelated_manifest = PackageInputManifest::new(
-        unrelated,
+    let baseline_input =
+        ProgramInput::new(test_workspace(), entry.clone(), [entry_manifest.clone()]).unwrap();
+    let payload = "x".repeat(1024 * 1024);
+    let valid = super::super::input::PackageKey::import_path("example/valid").unwrap();
+    let valid_manifest = PackageInputManifest::new(
+        valid,
+        [super::super::input::SourceFileInput::from_source(
+            "huge.go",
+            "/checkout/valid/huge.go",
+            format!("package valid\nvar Payload = `{payload}`\n"),
+        )
+        .unwrap()],
+    )
+    .unwrap();
+    let invalid = super::super::input::PackageKey::import_path("example/invalid").unwrap();
+    let invalid_manifest = PackageInputManifest::new(
+        invalid,
         [super::super::input::SourceFileInput::from_source(
             "broken.go",
-            "/checkout/unrelated/broken.go",
-            "package unrelated\nfunc broken( {\n",
+            "/checkout/invalid/broken.go",
+            format!("package invalid\nfunc broken( {{\n// {payload}"),
         )
         .unwrap()],
     )
@@ -395,23 +468,21 @@ fn unrelated_invalid_manifest_package_is_not_analyzed_eagerly() {
     let input = ProgramInput::new(
         test_workspace(),
         entry,
-        [unrelated_manifest, entry_manifest],
+        [invalid_manifest, valid_manifest, entry_manifest],
     )
     .unwrap();
+    let mut baseline = CompilerSession::default();
+    baseline.compile_program(baseline_input).unwrap();
+    let baseline_files = baseline.database().active_files();
+    let baseline_bytes = baseline.database().retained_source_bytes();
+    let baseline_telemetry = baseline.database().telemetry();
     let mut session = CompilerSession::default();
 
     session.compile_program(input).unwrap();
 
-    assert_eq!(session.database().active_files().len(), 2);
-    let telemetry = session.database().telemetry();
-    assert_eq!(
-        telemetry.executions(super::super::db::QueryKind::PackageAnalysis),
-        1
-    );
-    assert_eq!(
-        telemetry.executions(super::super::db::QueryKind::FileProjection),
-        1
-    );
+    assert_eq!(session.database().active_files(), baseline_files);
+    assert_eq!(session.database().retained_source_bytes(), baseline_bytes);
+    assert_eq!(session.database().telemetry(), baseline_telemetry);
 }
 
 #[test]
@@ -453,6 +524,7 @@ fn unrelated_package_edit_preserves_entry_queries_and_scheduler_readiness() {
         .compile_program(input("package unrelated\nfunc Value() int { return 1 }\n"))
         .unwrap();
     let scheduler = host.telemetry();
+    let retained_bytes = session.database().retained_source_bytes();
     session.database().reset_telemetry();
 
     session
@@ -461,6 +533,57 @@ fn unrelated_package_edit_preserves_entry_queries_and_scheduler_readiness() {
 
     assert_eq!(session.database().telemetry().total_executions(), 0);
     assert_eq!(host.telemetry(), scheduler);
+    assert_eq!(session.database().active_files().len(), 1);
+    assert_eq!(session.database().retained_source_bytes(), retained_bytes);
+}
+
+#[test]
+fn previous_entry_is_removed_when_retained_only_as_catalog_package() {
+    let workspace = test_workspace();
+    let previous_key =
+        super::super::input::PackageKey::import_path("example/previous-entry").unwrap();
+    let previous_manifest = PackageInputManifest::new(
+        previous_key.clone(),
+        [super::super::input::SourceFileInput::from_source(
+            "previous.go",
+            "/checkout/previous.go",
+            "package main\nfunc main() {}\n",
+        )
+        .unwrap()],
+    )
+    .unwrap();
+    let first =
+        ProgramInput::new(workspace.clone(), previous_key, [previous_manifest.clone()]).unwrap();
+    let mut session = CompilerSession::default();
+    session.compile_program(first).unwrap();
+    let previous_file = *session.database().active_files().first().unwrap();
+    let previous_package = session.database().package_for_file(previous_file).unwrap();
+
+    let entry = super::super::input::PackageKey::command_line();
+    let entry_manifest = PackageInputManifest::new(
+        entry.clone(),
+        [super::super::input::SourceFileInput::from_source(
+            "main.go",
+            "/checkout/main.go",
+            "package main\nfunc main() {}\n",
+        )
+        .unwrap()],
+    )
+    .unwrap();
+    let second = ProgramInput::new(workspace, entry, [previous_manifest, entry_manifest]).unwrap();
+
+    session.compile_program(second).unwrap();
+
+    let active = session.database().active_files();
+    assert_eq!(active.len(), 1);
+    assert_ne!(active.first().copied(), Some(previous_file));
+    assert!(session.database().source_snapshot(previous_file).is_err());
+    assert!(
+        session
+            .database()
+            .analyze_package(previous_package)
+            .is_err()
+    );
 }
 
 #[test]

@@ -503,7 +503,8 @@ fn run_gors_in_memory(command: &str, file: &Path) -> Result<(Vec<u8>, Duration),
 fn gors_ast_output(file: &Path) -> Result<Vec<u8>, String> {
     let filename = file.to_str().ok_or_else(|| "non-utf8 path".to_string())?;
     let buffer = std::fs::read_to_string(file).map_err(|e| e.to_string())?;
-    let ast = gors::parser::parse_file(filename, &buffer).map_err(|e| e.to_string())?;
+    let parsed = gors::parser::parse_file(filename, &buffer).map_err(|e| e.to_string())?;
+    let (ast, _) = parsed.into_parts();
     let mut output = Vec::new();
     gors::ast::fprint(&mut output, ast).map_err(|e| e.to_string())?;
     Ok(output)

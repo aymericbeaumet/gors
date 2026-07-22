@@ -43,12 +43,14 @@ pub fn exercise_ast_snapshot(data: &[u8]) {
     let Some(source) = source_from_bytes(data) else {
         return;
     };
-    let Ok(first_ast) = gors::parser::parse_file("fuzz.go", &source) else {
+    let Ok(first) = gors::parser::parse_file("fuzz.go", &source) else {
         return;
     };
-    let Ok(second_ast) = gors::parser::parse_file("fuzz.go", &source) else {
+    let Ok(second) = gors::parser::parse_file("fuzz.go", &source) else {
         panic!("the parser accepted identical input only once");
     };
+    let (first_ast, first_map) = first.into_parts();
+    let (second_ast, second_map) = second.into_parts();
 
     let mut first = Vec::new();
     let mut second = Vec::new();
@@ -58,6 +60,10 @@ pub fn exercise_ast_snapshot(data: &[u8]) {
         panic!("AST printing failed for an accepted Go source");
     }
     assert_eq!(first, second, "AST printing is not deterministic");
+    assert_eq!(
+        first_map, second_map,
+        "source coordinate mapping is not deterministic"
+    );
 }
 
 /// Exercise generic Go AST to Rust AST lowering and Rust source printing.

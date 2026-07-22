@@ -1,4 +1,4 @@
-use super::{ParserError, Result, ResultExt, core::Parser, core::is_type_switch_guard};
+use super::{RawParserError, Result, ResultExt, core::Parser, core::is_type_switch_guard};
 use crate::ast;
 use crate::token::Token;
 
@@ -232,7 +232,7 @@ impl<'scanner> Parser<'scanner> {
                             Some(ast::Stmt::ExprStmt(ast::ExprStmt { x: expr }))
                         }
                     } else {
-                        return Err(ParserError::UnexpectedToken);
+                        return Err(RawParserError::UnexpectedToken);
                     }
                 }
             }
@@ -267,7 +267,7 @@ impl<'scanner> Parser<'scanner> {
 
         let call = match self.parse_expression().required()? {
             ast::Expr::CallExpr(v) => v,
-            _ => return Err(ParserError::UnexpectedToken),
+            _ => return Err(RawParserError::UnexpectedToken),
         };
 
         Ok(Some(ast::GoStmt { go: go.0, call }))
@@ -296,7 +296,7 @@ impl<'scanner> Parser<'scanner> {
             } else if let ast::Stmt::ExprStmt(expr_stmt) = simple_stmt {
                 (None, expr_stmt.x)
             } else {
-                return Err(ParserError::UnexpectedToken);
+                return Err(RawParserError::UnexpectedToken);
             }
         } else {
             (None, self.parse_expression().required()?)
@@ -311,7 +311,7 @@ impl<'scanner> Parser<'scanner> {
             } else if let Some(block_stmt) = self.parse_block()? {
                 Some(ast::Stmt::BlockStmt(block_stmt))
             } else {
-                return Err(ParserError::UnexpectedToken);
+                return Err(RawParserError::UnexpectedToken);
             }
         } else {
             None
@@ -393,7 +393,7 @@ impl<'scanner> Parser<'scanner> {
                 return Ok(Some(ast::Stmt::ExprStmt(ast::ExprStmt { x: expr })));
             }
 
-            return Err(ParserError::UnexpectedToken);
+            return Err(RawParserError::UnexpectedToken);
         }
 
         Ok(None)
@@ -410,7 +410,7 @@ impl<'scanner> Parser<'scanner> {
 
         let call = match self.parse_expression().required()? {
             ast::Expr::CallExpr(v) => v,
-            _ => return Err(ParserError::UnexpectedToken),
+            _ => return Err(RawParserError::UnexpectedToken),
         };
 
         Ok(Some(ast::DeferStmt {

@@ -285,14 +285,16 @@ lexical pass while maintaining independent physical and adjusted counters;
 both `Scanner` and its production `IntoIter` expose the consumed map without a
 second scan. Directive transitions at EOF are ignored, matching
 `go/token.File`, and empty two-field filenames clear the adjusted filename
-while empty explicit-column forms retain it. This is still only the
-scanner/source foundation: the parser must publish the completed map, and HIR,
-MIR, Rust IR, diagnostics, and source maps retain the old mixed provenance and
-must migrate to physical `FileRange` anchors plus that separate coordinate
-map. Parser failures already retain an exact physical zero-width `TextRange`
-beside their legacy adjusted line/column fields; do not collapse those domains
-again. Publishing the map and its adjusted filename with parse products remains
-part of the end-to-end P0 provenance migration.
+while empty explicit-column forms retain it. The one public `parse_file` path
+now publishes `ParsedFile`, pairing its ephemeral borrowed AST with the complete
+scanner-built map; every public `ParserError` owns the consumed map, an exact
+physical zero-width `TextRange`, and a separate adjusted filename plus typed
+`LogicalLineColumn`. The file-projection query retains the same map on both
+success and failure and exposes it as an ordinary query output; it never
+rescans or reconstructs line directives. HIR, MIR, Rust IR, remaining
+diagnostics, and source maps still retain mixed provenance and must migrate to
+physical `FileRange` anchors plus that separate coordinate map. Do not collapse
+those domains again or restore an AST-only parse compatibility entry point.
 
 The file projection owns decoded direct-import occurrences, structured invalid
 imports, and owned source comments from its one ephemeral parse. Those products
@@ -313,17 +315,20 @@ uses that exact revision for cache comparison and, on a miss, compilation.
 
 Workspace and package identities are enum-tagged `WorkspaceKey` and
 `PackageKey` values encoded directly by the collision-checked semantic interner;
-do not flatten them into caller-constructed strings. Every package explicitly
-listed in a manifest is installed as an input, but compilation requests only
-the entry package's semantic root. Unrelated manifest packages must remain
-unparsed and unanalyzed until a query actually depends on them.
+do not flatten them into caller-constructed strings. `ProgramInput` is the
+caller-owned package catalog for one invocation. The bootstrap session installs
+only its entry package manifest; unrelated catalog packages must not become
+Salsa `SourceInput` or `PackageInput` values, retain database bytes, or advance
+the query revision. Future import expansion must materialize reachable package
+inputs on demand from direct-import facts and resolver metadata.
 
 Session input installation is one delta transaction. The compiler journals only
 changed, inserted, and removed source inputs, includes stale-file removal in the
 same rollback boundary, and rolls mutations back in reverse application order.
 Exact no-op installs must not call a Salsa setter or synthesize rollback snapshots.
-Do not restore the deleted O(all-active-files) snapshot/rollback path; future
-lazy manifest work should reduce the mutation set further.
+Do not restore the deleted O(all-active-files) snapshot/rollback path or an
+all-`program.packages()` installation loop. Future reachable-package admission
+must extend this transaction rather than constructing a session-side graph.
 
 The filesystem workspace loader requires an explicit caller-owned
 `WorkspaceKey`; it must never synthesize an ad-hoc identity or derive semantic
@@ -421,6 +426,10 @@ surface becomes large. Do not defer them until stdlib compliance.
 - Substantial tests live in sibling `tests.rs` files or integration-test
   modules. A large implementation file must not also carry a large inline test
   module.
+- `gors-cli/src/main.rs` is dispatch only. Command orchestration, option
+  definitions, cache-path policy, generated-output publication, diagnostics,
+  and the `rustc` boundary live in focused sibling modules; do not rebuild a
+  monolithic CLI entrypoint.
 - Generated and vendored sources are excluded from the size budget. Any other
   exception requires a documented architectural reason and an explicit guard
   entry; grandfathering a large file is not a reason.

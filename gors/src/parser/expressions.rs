@@ -1,4 +1,4 @@
-use super::{ParserError, Result, ResultExt, core::Parser};
+use super::{RawParserError, Result, ResultExt, core::Parser};
 use crate::ast;
 use crate::token::Token;
 
@@ -432,7 +432,7 @@ impl<'scanner> Parser<'scanner> {
 
                 // Neither expression nor type could be parsed
                 self.expr_level -= 1;
-                return Err(ParserError::UnexpectedToken);
+                return Err(RawParserError::UnexpectedToken);
             }
             FUNC => {
                 // Try function literal first; if no body, fall back to function type

@@ -8,6 +8,7 @@ use gors::compiler::db::{
 };
 use gors::compiler::ids::{DefId, FileId};
 use gors::compiler::input::{PackageKey, SourceSnapshot, WorkspaceKey};
+use gors::compiler::source::{LogicalColumn, TextSize};
 use gors::parser::ImportPathIssue;
 
 const ORIGINAL: &str = r#"package main
@@ -638,8 +639,32 @@ fn parse_failure_separates_physical_anchor_from_line_directive_coordinates() {
         failure.physical_range().start().to_usize(),
         invalid.find('{').unwrap()
     );
-    assert_eq!(failure.line(), Some(40));
-    assert_eq!(failure.column(), Some(0));
+    let map = db.source_coordinate_map(file).unwrap();
+    let adjusted = map
+        .adjusted_coordinate_for(
+            failure.physical_range().start(),
+            "/checkout/project/main.go",
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(adjusted.filename(), "/checkout/project/virtual.go");
+    assert_eq!(adjusted.position().line().get(), 40);
+    assert_eq!(adjusted.position().column(), LogicalColumn::Hidden);
+}
+
+#[test]
+fn successful_file_query_retains_the_complete_parser_coordinate_map() {
+    let source = "package main\n//line virtual.go:40\nfunc main() {}\n";
+    let mut db = CompilerDatabase::default();
+    let file = insert(&mut db, source);
+    let map = db.source_coordinate_map(file).unwrap();
+    let eof = TextSize::try_from(source.len()).unwrap();
+
+    assert_eq!(map.text_len(), eof);
+    let adjusted = map.adjusted_coordinate(eof).unwrap().unwrap();
+    assert_eq!(adjusted.filename(), "virtual.go");
+    assert_eq!(adjusted.position().column(), LogicalColumn::Hidden);
+    assert_eq!(db.telemetry().executions(QueryKind::FileProjection), 1);
 }
 
 #[test]
@@ -654,8 +679,17 @@ fn scanner_failure_keeps_hidden_column_and_exact_physical_anchor() {
         failure.physical_range().start().to_usize(),
         invalid.find('@').unwrap()
     );
-    assert_eq!(failure.line(), Some(40));
-    assert_eq!(failure.column(), Some(0));
+    let map = db.source_coordinate_map(file).unwrap();
+    let adjusted = map
+        .adjusted_coordinate_for(
+            failure.physical_range().start(),
+            "/checkout/project/main.go",
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(adjusted.filename(), "/checkout/project/virtual.go");
+    assert_eq!(adjusted.position().line().get(), 40);
+    assert_eq!(adjusted.position().column(), LogicalColumn::Hidden);
 }
 
 #[test]

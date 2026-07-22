@@ -207,8 +207,9 @@ Stable, collision-checked `WorkspaceId`, `PackageId`, `FileId`, and
 package-owned `DefId` keys now implement the persistent part of this contract.
 A schema-tagged canonical encoder consumes enum-tagged `WorkspaceKey` and
 `PackageKey` values directly; callers do not manufacture flattened string
-identities. Every manifest package is installed under those identities, while
-semantic analysis remains demand-driven from the selected entry package.
+identities. The selected entry manifest is installed under those identities;
+catalog packages receive compiler identities only when reachability demands
+their admission.
 A named definition keeps its identity when it moves between files in one
 package, while identical package-clause names at distinct import paths remain
 distinct. `NodeId`, `LocalId`, and `BasicBlockId` are still dense owner-local
@@ -383,14 +384,12 @@ architecture described here:
   invalid-import facts, semantic projection, and browser comments share one
   query-owned ephemeral parse. There is still no reusable incremental syntax
   tree with stable syntax anchors or explicit parse-product memory accounting;
-- all explicitly supplied manifest packages are installed, but only the entry
-  package is analyzed until another query requests a package root. The raw
-  loader intentionally performs no recursive import or module discovery; that
-  graph must be rebuilt as query-owned manifest expansion from direct-import
-  facts and resolver metadata, not as a parser compatibility layer. Installing
-  unreachable package payloads still retains their bytes and can advance the
-  Salsa revision, so package manifests must become lazily materialized query
-  inputs rather than eagerly installed source sets;
+- the bootstrap session installs only the entry manifest from the caller-owned
+  `ProgramInput` catalog. Unrelated packages create no Salsa inputs, retain no
+  database bytes, and execute no queries. The raw loader intentionally performs
+  no recursive import or module discovery; reachable expansion must be rebuilt
+  as query-owned manifest admission from direct-import facts and resolver
+  metadata, not as a parser compatibility layer or session-side package graph;
 - compiler-owned source inputs now enforce fixed-width byte lengths and expose
   checked `TextSize`, half-open `TextRange`, `FileRange`, physical positions,
   and an adjusted column type that can represent Go's hidden column zero. Parse
@@ -422,9 +421,8 @@ architecture described here:
   published or input mutation resumes;
 - program installation journals only changed, inserted, and removed sources,
   includes stale-file deletion in the same reversible transaction, and gives
-  exact no-op installs no Salsa setter or cancellation. Explicitly supplied
-  unreachable packages are still materialized eagerly, so manifest inputs must
-  become reachable on demand;
+  exact no-op installs no Salsa setter or cancellation. The mutation set is the
+  entry manifest today and must expand only with proven reachable imports;
 - the browser worker explicitly retains one `CompilerSession` across changed
   edits, consumes query-owned comments, and uses its exact-output cache only
   when that artifact matches the currently installed successful source

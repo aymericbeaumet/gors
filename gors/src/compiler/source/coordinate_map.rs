@@ -18,7 +18,15 @@ pub struct LineDirectiveSegment {
     physical_start: TextSize,
     physical_position: PhysicalLineColumn,
     adjusted_filename: Arc<str>,
+    filename_projection: FilenameProjection,
     logical_start: LogicalLineColumn,
+}
+
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+enum FilenameProjection {
+    Initial,
+    Relative(Arc<str>),
+    Exact(Arc<str>),
 }
 
 impl LineDirectiveSegment {
@@ -44,25 +52,28 @@ impl LineDirectiveSegment {
 }
 
 /// Adjusted display coordinate produced from one physical byte offset.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct AdjustedSourceCoordinate<'a> {
-    filename: &'a str,
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct AdjustedSourceCoordinate {
+    filename: Arc<str>,
     position: LogicalLineColumn,
 }
 
-impl<'a> AdjustedSourceCoordinate<'a> {
+impl AdjustedSourceCoordinate {
     #[must_use]
-    pub const fn new(filename: &'a str, position: LogicalLineColumn) -> Self {
-        Self { filename, position }
+    pub fn new(filename: impl Into<Arc<str>>, position: LogicalLineColumn) -> Self {
+        Self {
+            filename: filename.into(),
+            position,
+        }
     }
 
     #[must_use]
-    pub const fn filename(self) -> &'a str {
-        self.filename
+    pub fn filename(&self) -> &str {
+        &self.filename
     }
 
     #[must_use]
-    pub const fn position(self) -> LogicalLineColumn {
+    pub const fn position(&self) -> LogicalLineColumn {
         self.position
     }
 }
@@ -72,7 +83,7 @@ impl<'a> AdjustedSourceCoordinate<'a> {
 /// The scanner constructs line starts and directive segments during its normal
 /// single pass. Offsets remain authoritative even when a directive resets the
 /// displayed line number or hides displayed columns.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct SourceCoordinateMap {
     initial_filename: Arc<str>,
     text_len: TextSize,
@@ -81,6 +92,15 @@ pub struct SourceCoordinateMap {
 }
 
 impl SourceCoordinateMap {
+    pub(crate) fn empty(initial_filename: &str) -> Self {
+        Self {
+            initial_filename: Arc::from(initial_filename),
+            text_len: TextSize::ZERO,
+            line_starts: Arc::from([TextSize::ZERO]),
+            segments: Arc::from([]),
+        }
+    }
+
     #[must_use]
     pub fn initial_filename(&self) -> &str {
         &self.initial_filename
@@ -128,7 +148,22 @@ impl SourceCoordinateMap {
     pub fn adjusted_coordinate(
         &self,
         byte_offset: TextSize,
-    ) -> Result<Option<AdjustedSourceCoordinate<'_>>, SourceCoordinateMapError> {
+    ) -> Result<Option<AdjustedSourceCoordinate>, SourceCoordinateMapError> {
+        self.adjusted_coordinate_for(byte_offset, &self.initial_filename)
+    }
+
+    /// Project an adjusted coordinate through a current presentation filename.
+    ///
+    /// Relative line-directive names are resolved lexically against this
+    /// filename's directory. Empty, rooted, Windows-absolute, and URI names
+    /// remain exact. This lets checkout-independent query maps be presented
+    /// through a moved [`crate::compiler::input::SourceSnapshot`] without
+    /// rerunning the scanner or invalidating semantic queries.
+    pub fn adjusted_coordinate_for(
+        &self,
+        byte_offset: TextSize,
+        presentation_filename: &str,
+    ) -> Result<Option<AdjustedSourceCoordinate>, SourceCoordinateMapError> {
         let Some(physical) = self.physical_coordinate(byte_offset)? else {
             return Ok(None);
         };
@@ -143,7 +178,7 @@ impl SourceCoordinateMap {
                 LogicalColumn::Known(physical.byte_column()),
             );
             return Ok(Some(AdjustedSourceCoordinate::new(
-                &self.initial_filename,
+                presentation_filename,
                 position,
             )));
         };
@@ -174,8 +209,9 @@ impl SourceCoordinateMap {
             }
             LogicalColumn::Known(_) => LogicalColumn::Known(physical.byte_column()),
         };
+        let filename = project_filename(&segment.filename_projection, presentation_filename);
         Ok(Some(AdjustedSourceCoordinate::new(
-            segment.adjusted_filename(),
+            filename,
             LogicalLineColumn::new(logical_line, logical_column),
         )))
     }
@@ -220,8 +256,16 @@ impl From<TextSizeOverflow> for SourceCoordinateMapError {
 #[derive(Clone, Debug)]
 pub struct SourceCoordinateMapBuilder {
     initial_filename: Arc<str>,
+    active_filename: FilenameProjection,
     line_starts: Vec<usize>,
     segments: Vec<RecordedSegment>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum FilenameUpdate<'a> {
+    Set(&'a str),
+    Retain,
+    Clear,
 }
 
 #[derive(Clone, Debug)]
@@ -229,7 +273,7 @@ struct RecordedSegment {
     physical_start: usize,
     physical_line: usize,
     physical_column: usize,
-    adjusted_filename: Arc<str>,
+    filename_projection: FilenameProjection,
     logical_line: usize,
     logical_column: Option<usize>,
 }
@@ -238,6 +282,7 @@ impl SourceCoordinateMapBuilder {
     pub fn new(initial_filename: &str) -> Self {
         Self {
             initial_filename: Arc::from(initial_filename),
+            active_filename: FilenameProjection::Initial,
             line_starts: vec![0],
             segments: Vec::new(),
         }
@@ -254,7 +299,7 @@ impl SourceCoordinateMapBuilder {
         physical_start: usize,
         physical_line: usize,
         physical_column: usize,
-        adjusted_filename: Arc<str>,
+        filename_update: FilenameUpdate<'_>,
         logical_line: usize,
         logical_column: Option<usize>,
     ) {
@@ -264,11 +309,19 @@ impl SourceCoordinateMapBuilder {
                 .is_none_or(|segment| segment.physical_start < physical_start),
             "line-directive transitions must be recorded in byte order"
         );
+        self.active_filename = match filename_update {
+            FilenameUpdate::Set(filename) if is_rooted_source_name(filename) => {
+                FilenameProjection::Exact(Arc::from(filename))
+            }
+            FilenameUpdate::Set(filename) => FilenameProjection::Relative(Arc::from(filename)),
+            FilenameUpdate::Retain => self.active_filename.clone(),
+            FilenameUpdate::Clear => FilenameProjection::Exact(Arc::from("")),
+        };
         self.segments.push(RecordedSegment {
             physical_start,
             physical_line,
             physical_column,
-            adjusted_filename,
+            filename_projection: self.active_filename.clone(),
             logical_line,
             logical_column,
         });
@@ -306,7 +359,11 @@ impl SourceCoordinateMapBuilder {
                         segment.physical_column,
                     )
                     .map_err(SourceCoordinateMapError::Physical)?,
-                    adjusted_filename: Arc::clone(&segment.adjusted_filename),
+                    adjusted_filename: project_filename(
+                        &segment.filename_projection,
+                        &self.initial_filename,
+                    ),
+                    filename_projection: segment.filename_projection.clone(),
                     logical_start: LogicalLineColumn::new(logical_line, logical_column),
                 })
             })
@@ -322,4 +379,57 @@ impl SourceCoordinateMapBuilder {
 
 fn checked_nonzero_u32(value: usize) -> Option<NonZeroU32> {
     u32::try_from(value).ok().and_then(NonZeroU32::new)
+}
+
+fn project_filename(projection: &FilenameProjection, initial_filename: &str) -> Arc<str> {
+    match projection {
+        FilenameProjection::Initial => Arc::from(initial_filename),
+        FilenameProjection::Exact(filename) => Arc::clone(filename),
+        FilenameProjection::Relative(filename) => {
+            let base = source_directory_prefix(initial_filename);
+            if base.is_empty() {
+                Arc::clone(filename)
+            } else {
+                Arc::from(format!("{base}{filename}"))
+            }
+        }
+    }
+}
+
+/// Return the source directory with its original trailing separator.
+///
+/// Source names are compiler inputs, not host filesystem paths: recognizing
+/// both separators keeps Windows paths and browser URIs deterministic on every
+/// Cargo target.
+pub fn source_directory_prefix(filename: &str) -> &str {
+    let separator = filename
+        .char_indices()
+        .rev()
+        .find(|(_, character)| matches!(character, '/' | '\\'));
+    separator.map_or("", |(index, character)| {
+        &filename[..index + character.len_utf8()]
+    })
+}
+
+pub fn is_rooted_source_name(filename: &str) -> bool {
+    let bytes = filename.as_bytes();
+    if matches!(bytes.first(), Some(b'/' | b'\\')) {
+        return true;
+    }
+
+    if matches!(
+        bytes,
+        [drive, b':', b'/' | b'\\', ..] if drive.is_ascii_alphabetic()
+    ) {
+        return true;
+    }
+
+    let Some(colon) = filename.find(':') else {
+        return false;
+    };
+    colon > 1
+        && filename[..colon].bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_alphabetic()
+                || (index > 0 && (byte.is_ascii_digit() || matches!(byte, b'+' | b'-' | b'.')))
+        })
 }

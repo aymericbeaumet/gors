@@ -327,7 +327,8 @@ proptest! {
 
         // Print the AST
         let mut output = Vec::new();
-        let print_result = gors::ast::fprint(&mut output, ast.unwrap());
+        let (ast, _) = ast.unwrap().into_parts();
+        let print_result = gors::ast::fprint(&mut output, ast);
         prop_assert!(print_result.is_ok(), "Print failed: {:?}", print_result.err());
 
         // Verify the output is valid UTF-8
@@ -342,7 +343,7 @@ proptest! {
         // Parse
         let ast = gors::parser::parse_file("test.go", &source);
         prop_assert!(ast.is_ok(), "Parse failed: {:?}", ast.err());
-        let ast = ast.unwrap();
+        let (ast, _) = ast.unwrap().into_parts();
 
         // Print AST dump
         let mut output = Vec::new();

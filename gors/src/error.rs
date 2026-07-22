@@ -43,46 +43,30 @@ impl Diagnostic {
     }
 
     /// Create a Diagnostic from a ParserError with source context
-    pub fn from_parser_error(err: &ParserError, file: &str, source: &str) -> Self {
-        match err {
-            ParserError::ScannerError(scanner_err) => {
-                Self::from_scanner_error(scanner_err, file, source)
-            }
-            ParserError::UnexpectedEndOfFile { .. } => {
-                // Position at the end of the source
-                let (line, column) = if source.is_empty() {
-                    (1, 1)
-                } else {
-                    offset_to_line_col(source, source.len())
-                };
-                Self::new(file, line, column, err.message(), DiagnosticKind::Parser)
-                    .with_source(source)
-            }
-            ParserError::UnexpectedToken => {
-                // No position info available
-                Self::new(file, 0, 0, err.message(), DiagnosticKind::Parser)
-            }
-            ParserError::UnexpectedTokenAt {
-                file: err_file,
-                line,
-                column,
-                ..
-            } => {
-                let actual_file = if err_file.is_empty() || err_file == "/" {
-                    file
-                } else {
-                    err_file
-                };
-                Self::new(
-                    actual_file,
-                    *line,
-                    *column,
-                    err.message(),
-                    DiagnosticKind::Parser,
-                )
-                .with_source(source)
-            }
+    #[allow(clippy::cast_lossless)]
+    pub fn from_parser_error(err: &ParserError, _file: &str, source: &str) -> Self {
+        let logical = err.logical_position();
+        let kind = if err.is_scanner_error() {
+            DiagnosticKind::Scanner
+        } else {
+            DiagnosticKind::Parser
+        };
+        let mut diagnostic = Self::new(
+            err.adjusted_filename(),
+            logical.line().get() as usize,
+            logical.column().to_go_column() as usize,
+            err.message(),
+            kind,
+        );
+
+        if let Ok(Some(physical)) = err
+            .source_coordinate_map()
+            .physical_coordinate(err.physical_range().start())
+            && let Some(source_line) = source.lines().nth(physical.line().get() as usize - 1)
+        {
+            diagnostic = diagnostic.with_source_line(source_line);
         }
+        diagnostic
     }
 }
 
@@ -116,7 +100,7 @@ impl Diagnostic {
             file: file.into(),
             line,
             column,
-            end_column: column + 1, // Default to single character
+            end_column: if column == 0 { 0 } else { column + 1 },
             message: message.into(),
             source_line: None,
             kind,
@@ -144,6 +128,9 @@ impl Diagnostic {
 
     /// Calculate the end column for error highlighting based on the token at the error position.
     fn calculate_end_column(&self, source_line: &str) -> usize {
+        if self.column == 0 {
+            return 0;
+        }
         let start = byte_offset_for_column(source_line, self.column);
         if start >= source_line.len() {
             return self.column + 1;
@@ -215,8 +202,12 @@ impl Diagnostic {
         let mut output = String::new();
 
         // Location line
-        let location = if self.file.is_empty() {
+        let location = if self.file.is_empty() && self.column == 0 {
+            self.line.to_string()
+        } else if self.file.is_empty() {
             format!("{}:{}", self.line, self.column)
+        } else if self.column == 0 {
+            format!("{}:{}", self.file, self.line)
         } else {
             format!("{}:{}:{}", self.file, self.line, self.column)
         };
@@ -245,24 +236,26 @@ impl Diagnostic {
             output.push_str(source_line);
             output.push('\n');
 
-            // Caret line pointing to error position
-            let spaces = " ".repeat(gutter_width);
-            let prefix = if self.column > 1 {
-                // Calculate visual position accounting for tabs
-                let byte_offset = byte_offset_for_column(source_line, self.column);
-                let visual_col: usize = source_line[..byte_offset]
-                    .chars()
-                    .map(|c| if c == '\t' { 4 } else { 1 })
-                    .sum();
-                " ".repeat(visual_col)
-            } else {
-                String::new()
-            };
+            if self.column != 0 {
+                // Caret line pointing to a known error column.
+                let spaces = " ".repeat(gutter_width);
+                let prefix = if self.column > 1 {
+                    // Calculate visual position accounting for tabs
+                    let byte_offset = byte_offset_for_column(source_line, self.column);
+                    let visual_col: usize = source_line[..byte_offset]
+                        .chars()
+                        .map(|c| if c == '\t' { 4 } else { 1 })
+                        .sum();
+                    " ".repeat(visual_col)
+                } else {
+                    String::new()
+                };
 
-            if use_colors {
-                output.push_str(&format!("{}{}\x1b[32m^\x1b[0m\n", spaces, prefix));
-            } else {
-                output.push_str(&format!("{}{}^\n", spaces, prefix));
+                if use_colors {
+                    output.push_str(&format!("{}{}\x1b[32m^\x1b[0m\n", spaces, prefix));
+                } else {
+                    output.push_str(&format!("{}{}^\n", spaces, prefix));
+                }
             }
         }
 
@@ -393,5 +386,19 @@ mod tests {
         assert_eq!(bmp.end_column, "éclair".len() + 1);
         assert_eq!(non_bmp.end_column, "𐐀name".len() + 1);
         assert_eq!(offset_to_line_col("é😀x", "é😀".len()), (1, 7));
+    }
+
+    #[test]
+    fn parser_diagnostic_omits_a_hidden_line_directive_column() {
+        let source = "package main\n//line generated.go:40\n@\n";
+        let error = crate::parser::parse_file("main.go", source).unwrap_err();
+        let diagnostic = Diagnostic::from_parser_error(&error, "main.go", source);
+        let output = diagnostic.format_plain();
+
+        assert_eq!(diagnostic.file, "generated.go");
+        assert_eq!((diagnostic.line, diagnostic.column), (40, 0));
+        assert!(output.starts_with("generated.go:40: scanner error"));
+        assert!(!output.contains("generated.go:40:0"));
+        assert!(!output.contains('^'));
     }
 }

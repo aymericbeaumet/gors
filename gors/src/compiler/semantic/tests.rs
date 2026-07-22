@@ -8,7 +8,7 @@ fn lower(source: &str) -> Result<hir::File, Vec<Diagnostic>> {
 
 fn lower_at(filename: &str, source: &str) -> Result<hir::File, Vec<Diagnostic>> {
     let parsed = crate::parser::parse_file(filename, source).expect("valid Go syntax");
-    lower_file(&parsed)
+    lower_file(parsed.ast())
 }
 
 fn function<'a>(file: &'a hir::File, name: &str) -> &'a hir::Function {
@@ -178,9 +178,9 @@ fn standalone_ids_do_not_embed_checkout_paths() {
     let first = crate::parser::parse_file("/one/checkout/main.go", source).unwrap();
     let second = crate::parser::parse_file("/different/root/main.go", source).unwrap();
     let windows = crate::parser::parse_file(r"C:\different\root\main.go", source).unwrap();
-    let first_hir = lower_file(&first).unwrap();
-    let second_hir = lower_file(&second).unwrap();
-    let windows_hir = lower_file(&windows).unwrap();
+    let first_hir = lower_file(first.ast()).unwrap();
+    let second_hir = lower_file(second.ast()).unwrap();
+    let windows_hir = lower_file(windows.ast()).unwrap();
     assert_eq!(
         function(&first_hir, "helper").id,
         function(&second_hir, "helper").id
@@ -201,8 +201,8 @@ fn canonical_import_paths_isolate_definition_ids_and_rust_symbols() {
     let second_package = PackageKey::ImportPath("example/two".into());
     let first_context = semantic_context(&workspace, &first_package, "main.go").unwrap();
     let second_context = semantic_context(&workspace, &second_package, "main.go").unwrap();
-    let first = lower_file_with_context(&parsed, first_context).unwrap();
-    let second = lower_file_with_context(&parsed, second_context).unwrap();
+    let first = lower_file_with_context(parsed.ast(), first_context).unwrap();
+    let second = lower_file_with_context(parsed.ast(), second_context).unwrap();
     let first_id = function(&first, "helper").id;
     let second_id = function(&second, "helper").id;
     assert_ne!(first_id, second_id);

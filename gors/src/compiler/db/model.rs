@@ -77,22 +77,13 @@ impl Default for BuildConfig {
 pub struct ParseFailure {
     message: Arc<str>,
     physical_range: TextRange,
-    line: Option<usize>,
-    column: Option<usize>,
 }
 
 impl ParseFailure {
-    pub(super) fn new(
-        message: impl Into<Arc<str>>,
-        physical_range: TextRange,
-        line: Option<usize>,
-        column: Option<usize>,
-    ) -> Self {
+    pub(super) fn new(message: impl Into<Arc<str>>, physical_range: TextRange) -> Self {
         Self {
             message: message.into(),
             physical_range,
-            line,
-            column,
         }
     }
 
@@ -108,23 +99,14 @@ impl ParseFailure {
         self.physical_range
     }
 
-    /// One-based source line, when reported by the parser.
-    #[must_use]
-    pub const fn line(&self) -> Option<usize> {
-        self.line
-    }
-
-    /// Go-adjusted source column, when reported by the parser.
-    ///
-    /// Positive values are one-based UTF-8 byte columns; zero means a
-    /// two-field line directive deliberately hid column information.
-    #[must_use]
-    pub const fn column(&self) -> Option<usize> {
-        self.column
-    }
-
     pub(super) fn retained_bytes(&self) -> usize {
         self.message.len()
+    }
+
+    fn write_fingerprint(&self, writer: &mut FingerprintBuilder) {
+        writer.bytes(self.message.as_bytes());
+        writer.usize(self.physical_range.start().to_usize());
+        writer.usize(self.physical_range.end().to_usize());
     }
 }
 
@@ -201,11 +183,7 @@ impl FileAnalysis {
         }
         if let Some(failure) = &failure {
             writer.bytes(b"parse-failure");
-            writer.bytes(failure.message.as_bytes());
-            writer.usize(failure.physical_range.start().to_usize());
-            writer.usize(failure.physical_range.end().to_usize());
-            writer.optional_usize(failure.line);
-            writer.optional_usize(failure.column);
+            failure.write_fingerprint(&mut writer);
         }
         for issue in &*issues {
             match issue {
@@ -375,11 +353,7 @@ impl PackageAnalysis {
                 PackageIssue::FileParseFailure { file, failure } => {
                     fingerprint.bytes(b"file-parse-failure");
                     fingerprint.bytes(file.canonical_bytes());
-                    fingerprint.bytes(failure.message.as_bytes());
-                    fingerprint.usize(failure.physical_range.start().to_usize());
-                    fingerprint.usize(failure.physical_range.end().to_usize());
-                    fingerprint.optional_usize(failure.line);
-                    fingerprint.optional_usize(failure.column);
+                    failure.write_fingerprint(&mut fingerprint);
                 }
                 PackageIssue::InvalidImportPath {
                     file,
@@ -756,16 +730,6 @@ impl FingerprintBuilder {
 
     pub(super) fn usize(&mut self, value: usize) {
         self.bytes(&u64::try_from(value).unwrap_or(u64::MAX).to_be_bytes());
-    }
-
-    fn optional_usize(&mut self, value: Option<usize>) {
-        match value {
-            Some(value) => {
-                self.bytes(b"some");
-                self.usize(value);
-            }
-            None => self.bytes(b"none"),
-        }
     }
 
     pub(super) fn finish(self) -> Fingerprint {

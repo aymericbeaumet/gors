@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::ast;
 use crate::compiler::fingerprint::{fingerprint_parts, rust_ir_root_inputs};
 use crate::compiler::input::SourceContent;
-use crate::compiler::source::{TextRange, TextSize};
+use crate::compiler::source::SourceCoordinateMap;
 use crate::compiler::{Diagnostic, lowering, mir, rust_ir};
 
 use super::super::ids::{DefId, DefinitionKey, DefinitionKind, FileId, PackageId};
@@ -102,6 +102,9 @@ pub(super) struct FileFacts<'db> {
     pub(super) logical_path: Arc<str>,
     #[tracked]
     #[returns(clone)]
+    pub(super) coordinate_map: Arc<SourceCoordinateMap>,
+    #[tracked]
+    #[returns(clone)]
     pub(super) package: Arc<str>,
     #[tracked]
     #[returns(clone)]
@@ -133,31 +136,25 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
     let parsed = match crate::parser::parse_file(&logical_path, content.source()) {
         Ok(parsed) => parsed,
         Err(error) => {
-            let location = error.location();
-            let physical_offset = error
-                .byte_offset()
-                .and_then(|offset| TextSize::try_from(offset).ok())
-                .unwrap_or_else(|| content.text_len());
+            let coordinate_map = Arc::new(error.source_coordinate_map().clone());
             return FileFacts::new(
                 db,
                 file,
                 package_id,
                 logical_path,
+                coordinate_map,
                 Arc::from(""),
                 Arc::new(FileImports::new(file, Arc::from([]), Arc::from([]))),
                 Arc::new(FileComments::new(file, Arc::from([]))),
                 Vec::new(),
-                Some(ParseFailure::new(
-                    error.message(),
-                    TextRange::empty(physical_offset),
-                    location.as_ref().map(|(_, line, _)| *line),
-                    location.as_ref().map(|(_, _, column)| *column),
-                )),
+                Some(ParseFailure::new(error.message(), error.physical_range())),
                 Vec::new(),
                 None,
             );
         }
     };
+    let (parsed, coordinate_map) = parsed.into_parts();
+    let coordinate_map = Arc::new(coordinate_map);
     db.unwind_if_revision_cancelled();
     let declared_package: Arc<str> = Arc::from(parsed.name.name);
     let imports = Arc::new(project_imports(file, &parsed));
@@ -294,6 +291,7 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
         file,
         package_id,
         logical_path,
+        coordinate_map,
         declared_package,
         imports,
         comments,

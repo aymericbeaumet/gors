@@ -4,7 +4,7 @@ use super::{Scanner, Token};
 use crate::compiler::source::{
     AdjustedSourceCoordinate, LogicalColumn, SourceCoordinateMap, TextSize,
 };
-use crate::parser::{ParserError, parse_file};
+use crate::parser::parse_file;
 use crate::token::{Position, SourceOrigin};
 
 fn position_of_ident<'a>(filename: &'a str, source: &'a str, name: &str) -> Position<'a> {
@@ -28,11 +28,7 @@ fn coordinate_map(filename: &str, source: &str) -> SourceCoordinateMap {
     scanner.source_coordinate_map().unwrap()
 }
 
-fn adjusted_at<'a>(
-    map: &'a SourceCoordinateMap,
-    source: &str,
-    needle: &str,
-) -> AdjustedSourceCoordinate<'a> {
+fn adjusted_at(map: &SourceCoordinateMap, source: &str, needle: &str) -> AdjustedSourceCoordinate {
     let offset = source.find(needle).unwrap();
     map.adjusted_coordinate(TextSize::try_from(offset).unwrap())
         .unwrap()
@@ -92,6 +88,40 @@ fn rooted_line_names_are_never_prefixed_by_the_initial_directory() {
         assert!(position.origin.is_line_directive());
         assert_eq!(position.filename(), expected);
     }
+}
+
+#[test]
+fn coordinate_map_rebases_only_relative_names_for_presentation() {
+    let source = concat!(
+        "//line generated.go:10\nrelative\n",
+        "//line /virtual/absolute.go:20\nabsolute\n",
+        "//line mem://generated/uri.go:30\nuri\n",
+    );
+    let map = coordinate_map("pkg/main.go", source);
+    let project = |needle: &str, presentation: &str| {
+        let payload = format!("\n{needle}\n");
+        let offset = source.find(&payload).unwrap() + 1;
+        map.adjusted_coordinate_for(TextSize::try_from(offset).unwrap(), presentation)
+            .unwrap()
+            .unwrap()
+    };
+
+    assert_eq!(
+        project("relative", "/checkout/pkg/main.go").filename(),
+        "/checkout/pkg/generated.go"
+    );
+    assert_eq!(
+        project("relative", r"C:\checkout\pkg\main.go").filename(),
+        r"C:\checkout\pkg\generated.go"
+    );
+    assert_eq!(
+        project("absolute", "/checkout/pkg/main.go").filename(),
+        "/virtual/absolute.go"
+    );
+    assert_eq!(
+        project("uri", "/checkout/pkg/main.go").filename(),
+        "mem://generated/uri.go"
+    );
 }
 
 #[test]
@@ -318,16 +348,16 @@ fn line_directive_numbers_follow_go_bounds_and_spacing() {
 #[test]
 fn parser_errors_report_exact_initial_and_virtual_names() {
     let error = parse_file("main.go", "package )\n").unwrap_err();
-    assert_eq!(error.location().unwrap().0, "main.go");
+    assert_eq!(error.adjusted_filename(), "main.go");
 
     let error = parse_file(
         r"C:\workspace\main.go",
         "package sample\n//line generated.go:40\nfunc )\n",
     )
     .unwrap_err();
-    let (file, line, _) = error.location().unwrap();
-    assert_eq!(file, r"C:\workspace\generated.go");
-    assert_eq!(line, 40);
+    assert_eq!(error.adjusted_filename(), r"C:\workspace\generated.go");
+    assert_eq!(error.logical_position().line().get(), 40);
+    assert_eq!(error.logical_position().column(), LogicalColumn::Hidden);
 }
 
 #[test]
@@ -343,10 +373,17 @@ fn scanner_errors_report_the_active_virtual_name() {
         error.to_string(),
         "mem://workspace/generated.go:40: illegal character"
     );
-    assert!(matches!(
-        ParserError::from(error).location(),
-        Some((file, 40, 0)) if file == "mem://workspace/generated.go"
-    ));
+    let parser_error =
+        parse_file("mem://workspace/main.go", "//line generated.go:40\n@\n").unwrap_err();
+    assert_eq!(
+        parser_error.adjusted_filename(),
+        "mem://workspace/generated.go"
+    );
+    assert_eq!(parser_error.logical_position().line().get(), 40);
+    assert_eq!(
+        parser_error.logical_position().column(),
+        LogicalColumn::Hidden
+    );
 }
 
 #[test] // fuzz

@@ -85,8 +85,8 @@ impl CacheRequest {
         hash_part(&mut hasher, gors::STDLIB_VERSION.as_bytes());
         hash_part(&mut hasher, gors::COMPILER_FINGERPRINT.as_bytes());
         hash_part(&mut hasher, cli_abi_fingerprint.as_bytes());
-        hash_part(&mut hasher, super::RUST_TOOLCHAIN.as_bytes());
-        hash_part(&mut hasher, super::RUST_EDITION.as_bytes());
+        hash_part(&mut hasher, crate::rustc::RUST_TOOLCHAIN.as_bytes());
+        hash_part(&mut hasher, crate::rustc::RUST_EDITION.as_bytes());
         hash_part(&mut hasher, std::env::consts::OS.as_bytes());
         hash_part(&mut hasher, std::env::consts::ARCH.as_bytes());
         hash_gorspath(&mut hasher, gorspath);

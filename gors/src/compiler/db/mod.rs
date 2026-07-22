@@ -21,6 +21,7 @@ use salsa::{Durability, Setter as _};
 
 use super::ids::{DefId, FileId, IdentityInterner, PackageId};
 use super::input::{PackageKey, SourceSnapshot, WorkspaceKey};
+use super::source::SourceCoordinateMap;
 use queries::{BuildInput, FileFacts, FunctionProjection, PackageInput, SourceInput};
 use telemetry::Telemetry;
 
@@ -323,6 +324,14 @@ impl CompilerDatabase {
     /// Demand owned checkout-independent comments from the shared parse query.
     pub fn file_comments(&self, file: FileId) -> Result<Arc<FileComments>, QueryError> {
         Ok(self.file_facts(file)?.comments(self))
+    }
+
+    /// Demand the scanner-built physical-to-adjusted map from the shared parse query.
+    pub fn source_coordinate_map(
+        &self,
+        file: FileId,
+    ) -> Result<Arc<SourceCoordinateMap>, QueryError> {
+        Ok(self.file_facts(file)?.coordinate_map(self))
     }
 
     /// Stable package owning an active source file.

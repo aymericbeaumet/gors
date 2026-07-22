@@ -367,9 +367,9 @@ Manifest installation now records only actual source mutations. Changed,
 inserted, and stale-removed inputs share one reversible journal; rollback walks
 that journal backward and restores package membership as well as content and
 diagnostic paths. Exact no-op installation performs no Salsa setter or
-cancellation. This removes the former O(all-active-files) snapshot, but every
-manifest package is still materialized eagerly and must become reachable input
-on demand.
+cancellation. This removes the former O(all-active-files) snapshot. The current
+bootstrap compilation materializes only the entry manifest; unrelated packages
+remain in the caller-owned `ProgramInput` catalog and retain no database bytes.
 
 The raw input hard cut is complete. `CompilerSession` and the free facade take
 `ProgramInput`; the CLI's raw workspace loader selects and reads command-line
@@ -386,12 +386,12 @@ hits and misses. The cache compares its manifest against that supplied immutable
 snapshot instead of rereading filesystem inputs, and a miss compiles the same
 loaded revision.
 
-All packages explicitly supplied by a manifest are installed under their typed
-workspace/package/file identities, but only the entry package is analyzed for
-the current compilation root. An unrelated package's syntax or semantic error
-must not fail the entry build until a query requests that package. This is
-demand-driven installation, not package support: the bootstrap backend still
-rejects imports and multi-file entry packages.
+Only the explicitly selected entry manifest is installed under its typed
+workspace/package/file identities. Unrelated catalog packages do not become
+Salsa inputs and their syntax or semantic errors cannot affect the entry build.
+This is a demand-driven input cut, not package support: the bootstrap backend
+still rejects imports and multi-file entry packages. Reachable import expansion
+must later be query-owned rather than a session-side package graph.
 
 The raw loader intentionally does not recurse through imports or discover a Go
 module. That former parser package-graph path was deleted rather than adapted.
@@ -596,6 +596,12 @@ First-party code is subject to a checked 1,000-physical-line hard limit, with
 files, inline-test growth in already-large Rust modules, the obsolete backend
 directory, and the old source-map directory. Generated, vendored, and fixture
 sources are the only routine exclusions.
+
+The CLI now follows the same ownership rule: `main.rs` only dispatches parsed
+commands. Build and run flows, inspection commands, cache paths, output
+publication, diagnostics, and the external Rust compiler boundary are separate
+modules, so cache/timing or process-lifetime changes no longer grow one shared
+entrypoint.
 
 `scripts/check-compiler-architecture.sh`, also invoked by `make rust-lint`,
 rejects legacy compiler imports and directories, resolver codegen/cache terms,
