@@ -1,10 +1,11 @@
 //! Query execution and engine-event telemetry.
 
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Compiler-owned query categories exposed to tests and performance tooling.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[repr(usize)]
 pub enum QueryKind {
     /// Parse one immutable source snapshot and project its declarations.
     FileProjection,
@@ -42,6 +43,33 @@ pub enum QueryKind {
     RustIrPackage,
 }
 
+impl QueryKind {
+    const COUNT: usize = Self::RustIrPackage as usize + 1;
+    const ALL: [Self; Self::COUNT] = [
+        Self::FileProjection,
+        Self::SemanticFile,
+        Self::FileAnalysis,
+        Self::PackageAnalysis,
+        Self::PublicApi,
+        Self::FunctionSignature,
+        Self::FunctionBody,
+        Self::FunctionProvenance,
+        Self::TypedHir,
+        Self::TypedSignature,
+        Self::PackageFunctionLookup,
+        Self::SignatureDependencies,
+        Self::ExecutableRole,
+        Self::VerifiedGoMir,
+        Self::NormalizedGoMir,
+        Self::VerifiedRustIr,
+        Self::RustIrPackage,
+    ];
+
+    const fn index(self) -> usize {
+        self as usize
+    }
+}
+
 /// Coarse Salsa engine events, kept separate from compiler query counters.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct EngineEventCounts {
@@ -72,7 +100,10 @@ impl TelemetrySnapshot {
     /// Total compiler-owned query body executions.
     #[must_use]
     pub fn total_executions(&self) -> u64 {
-        self.executions.values().copied().sum()
+        self.executions
+            .values()
+            .copied()
+            .fold(0_u64, u64::saturating_add)
     }
 
     /// Coarse events observed directly from the Salsa engine.
@@ -82,50 +113,75 @@ impl TelemetrySnapshot {
     }
 }
 
-#[derive(Default)]
 pub(super) struct Telemetry {
-    state: Mutex<TelemetrySnapshot>,
+    executions: [AtomicU64; QueryKind::COUNT],
+    will_execute: AtomicU64,
+    did_validate: AtomicU64,
+    did_discard: AtomicU64,
+    cancellation_checks: AtomicU64,
+}
+
+impl Default for Telemetry {
+    fn default() -> Self {
+        Self {
+            executions: std::array::from_fn(|_| AtomicU64::new(0)),
+            will_execute: AtomicU64::new(0),
+            did_validate: AtomicU64::new(0),
+            did_discard: AtomicU64::new(0),
+            cancellation_checks: AtomicU64::new(0),
+        }
+    }
 }
 
 impl Telemetry {
     pub(super) fn record_query(&self, kind: QueryKind) {
-        self.with_state(|state| {
-            let count = state.executions.entry(kind).or_default();
-            *count = count.saturating_add(1);
-        });
+        if let Some(counter) = self.executions.get(kind.index()) {
+            counter.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     pub(super) fn record_event(&self, event: &salsa::EventKind) {
-        self.with_state(|state| match event {
-            salsa::EventKind::WillExecute { .. } => {
-                state.engine.will_execute = state.engine.will_execute.saturating_add(1);
-            }
-            salsa::EventKind::DidValidateMemoizedValue { .. } => {
-                state.engine.did_validate = state.engine.did_validate.saturating_add(1);
-            }
-            salsa::EventKind::DidDiscard { .. } => {
-                state.engine.did_discard = state.engine.did_discard.saturating_add(1);
-            }
-            salsa::EventKind::WillCheckCancellation => {
-                state.engine.cancellation_checks =
-                    state.engine.cancellation_checks.saturating_add(1);
-            }
-            _ => {}
-        });
+        let counter = match event {
+            salsa::EventKind::WillExecute { .. } => Some(&self.will_execute),
+            salsa::EventKind::DidValidateMemoizedValue { .. } => Some(&self.did_validate),
+            salsa::EventKind::DidDiscard { .. } => Some(&self.did_discard),
+            salsa::EventKind::WillCheckCancellation => Some(&self.cancellation_checks),
+            _ => None,
+        };
+        if let Some(counter) = counter {
+            counter.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     pub(super) fn snapshot(&self) -> TelemetrySnapshot {
-        self.with_state(|state| state.clone())
+        let executions = QueryKind::ALL
+            .into_iter()
+            .filter_map(|kind| {
+                let executions = self
+                    .executions
+                    .get(kind.index())
+                    .map_or(0, |counter| counter.load(Ordering::Relaxed));
+                (executions != 0).then_some((kind, executions))
+            })
+            .collect();
+        TelemetrySnapshot {
+            executions,
+            engine: EngineEventCounts {
+                will_execute: self.will_execute.load(Ordering::Relaxed),
+                did_validate: self.did_validate.load(Ordering::Relaxed),
+                did_discard: self.did_discard.load(Ordering::Relaxed),
+                cancellation_checks: self.cancellation_checks.load(Ordering::Relaxed),
+            },
+        }
     }
 
     pub(super) fn reset(&self) {
-        self.with_state(|state| *state = TelemetrySnapshot::default());
-    }
-
-    fn with_state<T>(&self, operation: impl FnOnce(&mut TelemetrySnapshot) -> T) -> T {
-        match self.state.lock() {
-            Ok(mut state) => operation(&mut state),
-            Err(poisoned) => operation(&mut poisoned.into_inner()),
+        for counter in &self.executions {
+            counter.store(0, Ordering::Relaxed);
         }
+        self.will_execute.store(0, Ordering::Relaxed);
+        self.did_validate.store(0, Ordering::Relaxed);
+        self.did_discard.store(0, Ordering::Relaxed);
+        self.cancellation_checks.store(0, Ordering::Relaxed);
     }
 }

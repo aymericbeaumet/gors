@@ -349,6 +349,18 @@ fields and function-relative provenance allow unchanged sibling products to
 backdate. That is useful incremental reuse, not the final owned incremental
 syntax boundary or a cross-process cache.
 
+Native sessions can now share an explicit `CompilerHost` with one lazy bounded
+worker pool. Cold or changed revisions prewarm stable per-definition Rust-IR
+roots through revision-scoped Salsa snapshots, join every worker before later
+input mutation, and leave canonical package assembly as the only error/output
+publication boundary. Exact no-op revisions bypass the wave; Wasm, default
+sessions, and free one-shot calls stay inline, so creating multiple ordinary
+sessions cannot silently multiply hardware-sized pools. Parallel sessions must
+use an explicit host or budget. The CLI and performance harness carry that
+explicit positive job budget and record bounded scheduler evidence. This is
+only the semantic-query slice: it does not yet admit parsing, rustc, linking,
+memory, or foreground cancellation through one global scheduler.
+
 Build configuration now derives the compiler's runtime ABI identity from the
 single numeric ABI version in `gors-runtime` instead of carrying a stale
 parallel string. Target, pinned Go version, and runtime ABI are explicit query

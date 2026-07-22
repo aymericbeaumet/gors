@@ -378,7 +378,12 @@ architecture described here:
   per-definition verified and normalized Go MIR, configured verified Rust IR,
   and package assembly with exact self/direct-callee signature dependencies;
   parse/semantic projection remains file-granular, convenience entry points
-  retain no session across calls, and no native daemon/watch owner exists;
+  retain no session across calls, and no native daemon/watch owner exists. An
+  explicit shareable `CompilerHost` now owns one lazy bounded native pool for
+  cold/changed per-definition Rust-IR roots; exact no-op revisions bypass the
+  wave, Wasm/default/free calls stay inline, parallelism requires an explicit
+  host or budget, and every revision-scoped snapshot is joined before input
+  mutation;
 - the browser worker explicitly retains one `CompilerSession` across changed
   edits and uses its exact-output cache only when that artifact matches the
   currently installed successful source revision; this is a real warm semantic
@@ -390,9 +395,9 @@ architecture described here:
 - dynamic divide/remainder-by-zero and negative-shift faults currently unwind
   through Rust `panic_any`, so those executions do not yet have Go-compatible
   process behavior and cannot enter behavior-validated performance evidence;
-- initial query counters and invalidation tests exist, but timing reports do
-  not yet expose complete dependency traces, retained memory, cancellation, or
-  scheduler evidence;
+- atomic query counters, scheduler wave evidence, and invalidation tests exist,
+  and CLI/performance timings record the exact compiler job budget; reports do
+  not yet expose complete dependency traces, retained memory, or cancellation;
 - `gors build` currently publishes generated Rust sources rather than a runnable
   executable, so a harness-composed gors-plus-rustc measurement is diagnostic
   only until the default artifact command owns the complete publication path;

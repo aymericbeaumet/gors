@@ -10,12 +10,17 @@ use cache::{
 use clap::{CommandFactory, Parser};
 use gors::error::{Diagnostic, DiagnosticKind};
 use std::io::Write;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use timings::TimingCollector;
 
 const RUST_TOOLCHAIN: &str = "1.96.0";
 const RUST_EDITION: &str = "2024";
+
+fn default_job_budget() -> NonZeroUsize {
+    std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN)
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     pretty_env_logger::init();
@@ -111,6 +116,9 @@ struct Build {
     /// Write machine-readable phase timings to this JSON file
     #[arg(long, value_name = "PATH")]
     timings_json: Option<String>,
+    /// Maximum number of compiler jobs
+    #[arg(long, value_name = "N", default_value_t = default_job_budget())]
+    jobs: NonZeroUsize,
 }
 
 #[derive(Parser)]
@@ -121,6 +129,9 @@ struct Run {
     /// Write machine-readable phase timings to this JSON file
     #[arg(long, value_name = "PATH")]
     timings_json: Option<String>,
+    /// Maximum number of compiler jobs
+    #[arg(long, value_name = "N", default_value_t = default_job_budget())]
+    jobs: NonZeroUsize,
     /// Go source file(s), directory, or package path, followed by optional program arguments
     #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
     args: Vec<String>,
@@ -180,7 +191,8 @@ fn ast_output(file: &str) -> Result<Vec<u8>, String> {
 }
 
 fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
-    let timings = TimingCollector::new();
+    let timings = TimingCollector::new(cmd.jobs);
+    let compiler_host = gors::compiler::CompilerHost::new(cmd.jobs)?;
     let cache_base = gors_cache_base()?;
     let source_paths = vec![cmd.path.clone()];
     let output_dir = cmd
@@ -247,7 +259,10 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| cmd.path.clone());
 
     let compile_timer = timings.phase("cli.compile");
-    let (compiled, source_map_plan) = match compile_program(program, sourcemap_path.is_some()) {
+    let compilation = compile_program(program, sourcemap_path.is_some(), &compiler_host);
+    timings.scheduler_telemetry(compiler_host.telemetry());
+    drop(compiler_host);
+    let (compiled, source_map_plan) = match compilation {
         Ok(compiled) => compiled,
         Err(err) => {
             print_compiler_error(&err, &primary_file);
@@ -493,6 +508,7 @@ fn gors_cache_base() -> Result<PathBuf, Box<dyn std::error::Error>> {
 fn compile_program(
     program: gors::parser::ParsedProgram,
     source_maps: bool,
+    host: &gors::compiler::CompilerHost,
 ) -> Result<
     (
         gors::compiler::CompiledProgram,
@@ -500,11 +516,15 @@ fn compile_program(
     ),
     gors::compiler::CompilerError,
 > {
+    let mut session = host.session(gors::compiler::db::BuildConfig::default())?;
     if source_maps {
-        gors::compiler::compile_program_with_source_map(program)
+        session
+            .compile_program_with_source_map(program)
             .map(|(compiled, plan)| (compiled, Some(plan)))
     } else {
-        gors::compiler::compile_program(program).map(|compiled| (compiled, None))
+        session
+            .compile_program(program)
+            .map(|compiled| (compiled, None))
     }
 }
 
@@ -595,7 +615,8 @@ fn split_run_args(args: &[String]) -> (Vec<String>, Vec<String>) {
 
 fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
     let (source_paths, program_args) = split_run_args(&cmd.args);
-    let timings = TimingCollector::new();
+    let timings = TimingCollector::new(cmd.jobs);
+    let compiler_host = gors::compiler::CompilerHost::new(cmd.jobs)?;
     let cache_base = gors_cache_base()?;
     let cache_dir = run_cache_dir(&source_paths, cmd.release)?;
     maybe_prune_cli_cache(&cache_base, Some(&cache_dir))?;
@@ -646,7 +667,10 @@ fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or_else(|| source_paths.first().cloned().unwrap_or_default());
 
         let compile_timer = timings.phase("cli.compile");
-        let compiled = match compile_program(program, false) {
+        let compilation = compile_program(program, false, &compiler_host);
+        timings.scheduler_telemetry(compiler_host.telemetry());
+        drop(compiler_host);
+        let compiled = match compilation {
             Ok((compiled, None)) => compiled,
             Ok((_, Some(_))) => {
                 return Err("unexpected source-map plan for run compilation".into());
@@ -718,30 +742,6 @@ fn print_compiler_error(error: &gors::compiler::CompilerError, fallback_file: &s
             format!("{}: {}", diagnostic.code, diagnostic.message),
             DiagnosticKind::Compiler,
         ));
-    }
-}
-
-/// Helper to get file path and contents for error reporting.
-/// If path is a directory, returns the first .go file in it.
-fn get_file_for_error(path: &str) -> Option<(String, String)> {
-    let metadata = std::fs::metadata(path).ok()?;
-    if metadata.is_file() {
-        let buffer = std::fs::read_to_string(path).ok()?;
-        Some((path.to_string(), buffer))
-    } else if metadata.is_dir() {
-        let entries = std::fs::read_dir(path).ok()?;
-        for entry in entries.flatten() {
-            let file_path = entry.path();
-            if let Some(name) = file_path.file_name().and_then(|n| n.to_str()) {
-                if name.ends_with(".go") && !name.ends_with("_test.go") && !name.starts_with('.') {
-                    let buffer = std::fs::read_to_string(&file_path).ok()?;
-                    return Some((file_path.to_string_lossy().into_owned(), buffer));
-                }
-            }
-        }
-        None
-    } else {
-        None
     }
 }
 

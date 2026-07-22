@@ -21,7 +21,12 @@ from perf_harness.model import (
     validate_corpus,
     validate_result,
 )
-from perf_harness.native import ARTIFACT_DRIVER_PRODUCTION, Toolchains, pipeline_plan
+from perf_harness.native import (
+    ARTIFACT_DRIVER_PRODUCTION,
+    Toolchains,
+    _validate_gors_timing_evidence,
+    pipeline_plan,
+)
 
 
 def synthetic_result(*, commit: str, p50: float = 91.0, p95: float = 96.0) -> dict:
@@ -190,6 +195,39 @@ class CheckedInDataTests(unittest.TestCase):
 
 
 class NativeBoundaryTests(unittest.TestCase):
+    def test_scheduler_evidence_accepts_explicit_zero_cache_hit(self) -> None:
+        _validate_gors_timing_evidence(
+            {
+                "jobs": 4,
+                "scheduler": {
+                    "serialWaves": 0,
+                    "parallelWaves": 0,
+                    "scheduledRoots": 0,
+                    "snapshotsCreated": 0,
+                    "poolStarts": 0,
+                    "peakWorkers": 0,
+                },
+            },
+            4,
+        )
+
+    def test_scheduler_evidence_rejects_budget_overrun(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "exceeded the certified job budget"):
+            _validate_gors_timing_evidence(
+                {
+                    "jobs": 2,
+                    "scheduler": {
+                        "serialWaves": 0,
+                        "parallelWaves": 1,
+                        "scheduledRoots": 8,
+                        "snapshotsCreated": 3,
+                        "poolStarts": 1,
+                        "peakWorkers": 3,
+                    },
+                },
+                2,
+            )
+
     def test_bootstrap_artifact_lane_includes_external_rustc_and_link(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -220,6 +258,10 @@ class NativeBoundaryTests(unittest.TestCase):
             [command["stage"] for command in plan["commands"]],
             ["gors.compile_emit", "gors.external_rustc_link"],
         )
+        self.assertEqual(plan["jobBudget"], 1)
+        self.assertIn("--jobs", plan["commands"][0]["argv"])
+        jobs_index = plan["commands"][0]["argv"].index("--jobs")
+        self.assertEqual(plan["commands"][0]["argv"][jobs_index + 1], "1")
         self.assertIn("-Clto=fat", plan["commands"][1]["argv"])
 
 

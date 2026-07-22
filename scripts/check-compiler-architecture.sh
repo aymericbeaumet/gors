@@ -50,6 +50,24 @@ fail_on_matches \
   'thread_local!' \
   gors/src/compiler gors/src/resolve
 
+rayon_files="$(rg -l 'rayon::|ThreadPoolBuilder|into_par_iter' \
+  gors/src/compiler --glob '*.rs' || true)"
+while IFS= read -r source; do
+  [[ -z "${source}" ]] && continue
+  case "${source}" in
+    gors/src/compiler/scheduler.rs) ;;
+    *)
+      printf 'compiler parallel work must use the one host scheduler: %s\n' "${source}" >&2
+      failed=1
+      ;;
+  esac
+done <<< "${rayon_files}"
+
+fail_on_matches \
+  'tracked compiler queries must not create or submit nested worker jobs:' \
+  'rayon::|ThreadPoolBuilder|into_par_iter|std::thread::spawn' \
+  gors/src/compiler/db
+
 fail_on_matches \
   'high-level parser products must not leak source or publish static ASTs:' \
   "Box::leak|ast::File<'static>|merge_files" \

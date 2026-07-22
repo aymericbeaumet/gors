@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -10,9 +11,11 @@ pub struct TimingCollector {
 
 struct TimingCollectorInner {
     started: Instant,
+    jobs: NonZeroUsize,
     profile_stderr: bool,
     phases: Mutex<Vec<PhaseTiming>>,
     cache_events: Mutex<Vec<CacheEvent>>,
+    scheduler: Mutex<SchedulerTiming>,
 }
 
 #[derive(Clone, Serialize)]
@@ -29,26 +32,56 @@ struct CacheEvent {
     hit: bool,
 }
 
+#[derive(Clone, Copy, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SchedulerTiming {
+    serial_waves: u64,
+    parallel_waves: u64,
+    scheduled_roots: u64,
+    snapshots_created: u64,
+    pool_starts: u64,
+    peak_workers: usize,
+}
+
+impl From<gors::compiler::SchedulerTelemetry> for SchedulerTiming {
+    fn from(value: gors::compiler::SchedulerTelemetry) -> Self {
+        Self {
+            serial_waves: value.serial_waves,
+            parallel_waves: value.parallel_waves,
+            scheduled_roots: value.scheduled_roots,
+            snapshots_created: value.snapshots_created,
+            pool_starts: value.pool_starts,
+            peak_workers: value.peak_workers,
+        }
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TimingReport<'a> {
     version: u32,
     command: &'a str,
+    jobs: usize,
     total_ms: f64,
     phases: &'a [PhaseTiming],
     cache_events: &'a [CacheEvent],
+    scheduler: SchedulerTiming,
 }
 
 impl TimingCollector {
-    pub fn new() -> Self {
+    pub fn new(jobs: NonZeroUsize) -> Self {
         let profile_stderr = std::env::var("GORS_PROFILE")
             .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
         Self {
             inner: Arc::new(TimingCollectorInner {
                 started: Instant::now(),
+                jobs,
                 profile_stderr,
                 phases: Mutex::new(Vec::new()),
                 cache_events: Mutex::new(Vec::new()),
+                // Cache-hit commands execute no compiler wave but must still
+                // publish explicit zero evidence instead of an ambiguous null.
+                scheduler: Mutex::new(SchedulerTiming::default()),
             }),
         }
     }
@@ -65,6 +98,14 @@ impl TimingCollector {
         if let Ok(mut events) = self.inner.cache_events.lock() {
             events.push(CacheEvent { layer, hit });
         }
+    }
+
+    pub fn scheduler_telemetry(&self, telemetry: gors::compiler::SchedulerTelemetry) {
+        let mut scheduler = match self.inner.scheduler.lock() {
+            Ok(scheduler) => scheduler,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *scheduler = telemetry.into();
     }
 
     pub fn write_json(
@@ -88,12 +129,19 @@ impl TimingCollector {
             .lock()
             .map_err(|_| "timing cache-event storage is unavailable")?
             .clone();
+        let scheduler = *self
+            .inner
+            .scheduler
+            .lock()
+            .map_err(|_| "scheduler timing storage is unavailable")?;
         let report = TimingReport {
-            version: 2,
+            version: 3,
             command,
+            jobs: self.inner.jobs.get(),
             total_ms: duration_ms(self.inner.started.elapsed()),
             phases: &phases,
             cache_events: &cache_events,
+            scheduler,
         };
 
         if let Some(parent) = path
@@ -147,7 +195,7 @@ mod tests {
     fn writes_machine_readable_timing_report() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("nested").join("timings.json");
-        let collector = TimingCollector::new();
+        let collector = TimingCollector::new(NonZeroUsize::new(2).unwrap());
         {
             let _phase = collector.phase("cli.test");
         }
@@ -158,9 +206,19 @@ mod tests {
 
         let value: serde_json::Value =
             serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-        assert_eq!(value.get("version").unwrap(), 2);
+        assert_eq!(value.get("version").unwrap(), 3);
         assert_eq!(value.get("command").unwrap(), "build");
-        assert!(value.get("jobs").is_none());
+        assert_eq!(value.get("jobs").unwrap(), 2);
+        let scheduler = value
+            .get("scheduler")
+            .and_then(serde_json::Value::as_object)
+            .expect("scheduler evidence must always be present");
+        assert_eq!(scheduler.get("serialWaves").unwrap(), 0);
+        assert_eq!(scheduler.get("parallelWaves").unwrap(), 0);
+        assert_eq!(scheduler.get("scheduledRoots").unwrap(), 0);
+        assert_eq!(scheduler.get("snapshotsCreated").unwrap(), 0);
+        assert_eq!(scheduler.get("poolStarts").unwrap(), 0);
+        assert_eq!(scheduler.get("peakWorkers").unwrap(), 0);
         let first_phase = value
             .get("phases")
             .and_then(serde_json::Value::as_array)

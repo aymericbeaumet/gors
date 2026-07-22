@@ -371,6 +371,7 @@ pub(super) fn mir_signature_dependencies_product(
     definitions.insert(caller);
     let mut signatures = BTreeMap::new();
     for definition in definitions {
+        db.unwind_if_revision_cancelled();
         let projection = if definition == caller {
             function
         } else {
@@ -398,7 +399,9 @@ pub(super) fn verified_mir_product(
 ) -> StageResult<VerifiedMirFunction> {
     db.query_telemetry().record_query(QueryKind::VerifiedGoMir);
     let hir = typed_hir_product(db, function)?;
+    db.unwind_if_revision_cancelled();
     let signatures = mir_signature_dependencies_product(db, input, function)?;
+    db.unwind_if_revision_cancelled();
     let definition = function.id(db);
     let lowered = mir::lower_function(hir.function()).map_err(|diagnostic| {
         Arc::new(StageFailure::one_for_definition(
@@ -407,6 +410,7 @@ pub(super) fn verified_mir_product(
             diagnostic,
         ))
     })?;
+    db.unwind_if_revision_cancelled();
     mir::verify_function(&lowered, &signatures.signatures).map_err(|diagnostic| {
         Arc::new(StageFailure::one_for_definition(
             CompilerStage::GoMir,
@@ -426,7 +430,9 @@ pub(super) fn normalized_mir_product(
     db.query_telemetry()
         .record_query(QueryKind::NormalizedGoMir);
     let mir = verified_mir_product(db, input, function)?;
+    db.unwind_if_revision_cancelled();
     let signatures = mir_signature_dependencies_product(db, input, function)?;
+    db.unwind_if_revision_cancelled();
     let definition = function.id(db);
     let normalized = mir::normalize_function(mir.function().clone(), &signatures.signatures)
         .map_err(|diagnostics| {
@@ -436,6 +442,7 @@ pub(super) fn normalized_mir_product(
                 diagnostics,
             ))
         })?;
+    db.unwind_if_revision_cancelled();
     mir::verify_function(&normalized, &signatures.signatures).map_err(|diagnostic| {
         Arc::new(StageFailure::one_for_definition(
             CompilerStage::GoMirNormalization,
@@ -489,7 +496,9 @@ pub(super) fn verified_rust_ir_product(
 ) -> StageResult<VerifiedRustIrFunction> {
     db.query_telemetry().record_query(QueryKind::VerifiedRustIr);
     let normalized = normalized_mir_product(db, input, function)?;
+    db.unwind_if_revision_cancelled();
     let signatures = rust_signature_dependencies_product(db, input, function)?;
+    db.unwind_if_revision_cancelled();
     let executable_package = executable_role_product(db, function);
     let definition = function.id(db);
     let lowered = lowering::lower_function(normalized.function().clone(), executable_package)
@@ -500,6 +509,7 @@ pub(super) fn verified_rust_ir_product(
                 diagnostic,
             ))
         })?;
+    db.unwind_if_revision_cancelled();
     rust_ir::verify_function(&lowered, &signatures.signatures).map_err(|diagnostic| {
         Arc::new(StageFailure::one_for_definition(
             CompilerStage::RustRepresentation,
@@ -528,6 +538,7 @@ pub(super) fn rust_ir_package_product(
         let mut projected = facts.functions(db);
         projected.sort_by_key(|function| function.id(db));
         for function in projected {
+            db.unwind_if_revision_cancelled();
             functions.push(
                 verified_rust_ir_product(db, input, function)?
                     .function()

@@ -24,6 +24,7 @@ pub mod ids;
 mod lowering;
 pub mod mir;
 pub mod rust_ir;
+mod scheduler;
 mod semantic;
 mod session;
 pub mod types;
@@ -31,6 +32,7 @@ pub mod types;
 pub use diagnostic::Diagnostic;
 pub use hir::File as HirFile;
 pub use rust_ir::File as RustIrFile;
+pub use scheduler::{CompilerHost, SchedulerTelemetry};
 pub use session::CompilerSession;
 
 use std::collections::BTreeMap;
@@ -286,7 +288,10 @@ fn compile_program_impl(
     program: crate::parser::ParsedProgram,
     with_source_map: bool,
 ) -> Result<(CompiledProgram, Option<SourceMapPlan>), CompilerError> {
-    let mut session = CompilerSession::default();
+    // The free facade is intentionally one-shot. Avoid constructing native
+    // workers that cannot be reused; retained callers and the CLI should own a
+    // CompilerHost with an explicit job budget.
+    let mut session = CompilerHost::inline().session(db::BuildConfig::default())?;
     if with_source_map {
         let (compiled, plan) = session.compile_program_with_source_map(program)?;
         Ok((compiled, Some(plan)))

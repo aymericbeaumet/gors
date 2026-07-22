@@ -1,11 +1,13 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
 use std::collections::BTreeMap;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-use gors::compiler::CompilerSession;
 use gors::compiler::db::{BuildConfig, FileAnalysis, QueryKind};
+use gors::compiler::fingerprint::Fingerprint;
 use gors::compiler::ids::{DefId, FileId};
+use gors::compiler::{CompilerHost, CompilerSession, SchedulerTelemetry};
 
 const ORIGINAL: &str = r#"package main
 
@@ -39,6 +41,42 @@ func g() int { return 7 }
 func main() { println(g()) }
 "#;
 
+const PARALLEL_PROGRAM: &str = r#"package main
+
+func a() int { return 1 }
+func b() int { return 2 }
+func c() int { return 3 }
+func d() int { return 4 }
+func e() int { return 5 }
+func f() int { return 6 }
+func g() int { return 7 }
+func main() { println(g()) }
+"#;
+
+const PARALLEL_PROGRAM_EDIT: &str = r#"package main
+
+func a() int { return 1 }
+func b() int { return 2 }
+func c() int { return 3 }
+func d() int { return 4 }
+func e() int { return 5 }
+func f() int { return 60 }
+func g() int { return 7 }
+func main() { println(g()) }
+"#;
+
+const PARALLEL_STAGE_FAILURES: &str = r#"package main
+
+func a() int {}
+func b() int { return 2 }
+func c() int { return 3 }
+func d() int { return 4 }
+func e() int { return 5 }
+func f() string {}
+func g() int { return 7 }
+func main() { println(g()) }
+"#;
+
 fn program(path: &str, source: &str) -> gors::parser::ParsedProgram {
     gors::parser::parse_program_from_source(path, source).unwrap()
 }
@@ -55,6 +93,117 @@ fn functions(analysis: &FileAnalysis) -> BTreeMap<String, DefId> {
         .iter()
         .map(|function| (function.name().to_string(), function.id()))
         .collect()
+}
+
+fn parallel_evidence(jobs: usize) -> (String, Vec<u8>, Fingerprint, SchedulerTelemetry) {
+    let host = CompilerHost::new(NonZeroUsize::new(jobs).unwrap()).unwrap();
+    let mut session = host.session(BuildConfig::default()).unwrap();
+    let (compiled, plan) = session
+        .compile_program_with_source_map(program("main.go", PARALLEL_PROGRAM))
+        .unwrap();
+    let rust = gors::printer::generate_single(compiled).unwrap();
+    let mut source_map = Vec::new();
+    plan.build(&rust).to_writer(&mut source_map).unwrap();
+    let file = only_file(&session);
+    let package = session.database().package_for_file(file).unwrap();
+    let fingerprint = session
+        .database()
+        .verified_rust_ir_package(package)
+        .unwrap()
+        .fingerprint();
+    (rust, source_map, fingerprint, host.telemetry())
+}
+
+#[test]
+fn ordinary_sessions_are_inline_until_parallelism_is_explicit() {
+    let session = CompilerSession::default();
+    assert_eq!(session.job_budget(), NonZeroUsize::MIN);
+    assert_eq!(session.scheduler_telemetry(), SchedulerTelemetry::default());
+
+    let session = CompilerSession::new(BuildConfig::default()).unwrap();
+    assert_eq!(session.job_budget(), NonZeroUsize::MIN);
+    assert_eq!(session.scheduler_telemetry(), SchedulerTelemetry::default());
+}
+
+#[test]
+fn worker_counts_preserve_output_source_map_and_stage_fingerprint() {
+    let serial = parallel_evidence(1);
+    let two_workers = parallel_evidence(2);
+    let four_workers = parallel_evidence(4);
+
+    assert_eq!(
+        (&serial.0, &serial.1, serial.2),
+        (&two_workers.0, &two_workers.1, two_workers.2)
+    );
+    assert_eq!(
+        (&serial.0, &serial.1, serial.2),
+        (&four_workers.0, &four_workers.1, four_workers.2)
+    );
+    assert_eq!(serial.3.serial_waves, 1);
+    assert_eq!(serial.3.snapshots_created, 0);
+    assert_eq!(serial.3.pool_starts, 0);
+    assert_eq!(two_workers.3.parallel_waves, 1);
+    assert_eq!(two_workers.3.snapshots_created, 2);
+    assert_eq!(two_workers.3.peak_workers, 2);
+    assert_eq!(four_workers.3.parallel_waves, 1);
+    assert_eq!(four_workers.3.snapshots_created, 4);
+    assert_eq!(four_workers.3.peak_workers, 4);
+}
+
+#[test]
+fn exact_noop_skips_fanout_and_changed_revision_reuses_the_pool() {
+    let host = CompilerHost::new(NonZeroUsize::new(4).unwrap()).unwrap();
+    let mut session = host.session(BuildConfig::default()).unwrap();
+    session
+        .compile_program(program("main.go", PARALLEL_PROGRAM))
+        .unwrap();
+    let cold = host.telemetry();
+    assert_eq!(cold.scheduled_roots, 8);
+    assert_eq!(cold.parallel_waves, 1);
+    assert_eq!(cold.pool_starts, 1);
+
+    session.database().reset_telemetry();
+    session
+        .compile_program(program("main.go", PARALLEL_PROGRAM))
+        .unwrap();
+    assert_eq!(session.database().telemetry().total_executions(), 0);
+    assert_eq!(host.telemetry(), cold);
+
+    session
+        .compile_program(program("main.go", PARALLEL_PROGRAM_EDIT))
+        .unwrap();
+    let edited = host.telemetry();
+    assert_eq!(edited.scheduled_roots, 16);
+    assert_eq!(edited.parallel_waves, 2);
+    assert_eq!(edited.pool_starts, 1);
+
+    session
+        .compile_program(program("main.go", PARALLEL_PROGRAM_EDIT))
+        .unwrap();
+    assert_eq!(host.telemetry(), edited);
+}
+
+#[test]
+fn canonical_package_root_selects_the_same_error_for_every_worker_count() {
+    let compile = |jobs| {
+        let host = CompilerHost::new(NonZeroUsize::new(jobs).unwrap()).unwrap();
+        let mut session = host.session(BuildConfig::default()).unwrap();
+        let error = session
+            .compile_program(program("main.go", PARALLEL_STAGE_FAILURES))
+            .err()
+            .expect("functions missing returns must fail MIR construction");
+        (error, host.telemetry())
+    };
+
+    let serial = compile(1);
+    let two_workers = compile(2);
+    let four_workers = compile(4);
+    assert_eq!(two_workers.0, serial.0);
+    assert_eq!(four_workers.0, serial.0);
+    assert_eq!(serial.1.serial_waves, 1, "{}", serial.0);
+    assert_eq!(two_workers.1.parallel_waves, 1);
+    assert_eq!(four_workers.1.parallel_waves, 1);
+    assert!(serial.0.to_string().contains("without returning"));
 }
 
 #[test]

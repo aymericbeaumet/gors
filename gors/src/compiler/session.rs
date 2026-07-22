@@ -1,6 +1,9 @@
 //! Stateful production compiler session backed by the red-green query graph.
 
+mod prewarm;
+
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroUsize;
 
 use crate::parser::{ParsedPackage, ParsedProgram};
 
@@ -8,6 +11,7 @@ use super::db::{
     BuildConfig, CompilerDatabase, PackageAnalysis, PackageIssue, QueryError, StageFailure,
 };
 use super::ids::{FileId, PackageId};
+use super::scheduler::{CompilerHost, SchedulerTelemetry};
 use super::{CompiledProgram, CompilerDiagnostic, CompilerError, SourceMapPlan, emit};
 
 const WORKSPACE_IDENTITY: &str = "gors:canonical-workspace";
@@ -19,6 +23,8 @@ const WORKSPACE_IDENTITY: &str = "gors:canonical-workspace";
 /// build daemons, and performance harnesses should retain this value.
 pub struct CompilerSession {
     database: CompilerDatabase,
+    host: CompilerHost,
+    ready_package_roots: BTreeSet<PackageId>,
 }
 
 impl CompilerSession {
@@ -29,10 +35,35 @@ impl CompilerSession {
     /// production session must never label generated Rust with an ABI that its
     /// terminal artifact cannot package.
     pub fn new(config: BuildConfig) -> Result<Self, CompilerError> {
+        CompilerHost::inline().session(config)
+    }
+
+    /// Create a private host with an exact positive compiler job budget.
+    ///
+    /// Callers managing multiple sessions should construct one
+    /// [`CompilerHost`] and use [`CompilerHost::session`] so they share a
+    /// single bounded worker pool.
+    pub fn with_job_budget(
+        config: BuildConfig,
+        job_budget: NonZeroUsize,
+    ) -> Result<Self, CompilerError> {
+        CompilerHost::new(job_budget)?.session(config)
+    }
+
+    pub(super) fn from_host(
+        config: BuildConfig,
+        host: CompilerHost,
+    ) -> Result<Self, CompilerError> {
         validate_packaged_runtime_abi(&config)?;
-        Ok(Self {
+        Ok(Self::from_validated_host(config, host))
+    }
+
+    fn from_validated_host(config: BuildConfig, host: CompilerHost) -> Self {
+        Self {
             database: CompilerDatabase::new(config),
-        })
+            host,
+            ready_package_roots: BTreeSet::new(),
+        }
     }
 
     /// Read the owned database for telemetry and immutable stage inspection.
@@ -41,12 +72,34 @@ impl CompilerSession {
         &self.database
     }
 
+    /// Host-level maximum parallelism shared by this session.
+    #[must_use]
+    pub fn job_budget(&self) -> NonZeroUsize {
+        self.host.job_budget()
+    }
+
+    /// Current non-semantic scheduler counters.
+    #[must_use]
+    pub fn scheduler_telemetry(&self) -> SchedulerTelemetry {
+        self.host.telemetry()
+    }
+
     /// Change explicit build inputs while preserving target-independent memos.
     pub fn set_build_config(&mut self, config: BuildConfig) -> Result<(), CompilerError> {
         validate_packaged_runtime_abi(&config)?;
+        let changed = self
+            .database
+            .build_config()
+            .map_err(|error| self.query_error(error))?
+            .as_ref()
+            != &config;
         self.database
             .set_build_config(config)
-            .map_err(|error| self.query_error(error))
+            .map_err(|error| self.query_error(error))?;
+        if changed {
+            self.ready_package_roots.clear();
+        }
+        Ok(())
     }
 
     /// Compile through the complete tracked semantic and representation spine.
@@ -75,6 +128,9 @@ impl CompilerSession {
         with_source_map: bool,
     ) -> Result<(CompiledProgram, Option<SourceMapPlan>), CompilerError> {
         let installed = self.install_program(&program)?;
+        if installed.inputs_changed {
+            self.ready_package_roots.clear();
+        }
         let mut analyses = BTreeMap::new();
         for package in &installed.packages {
             let analysis = self
@@ -96,10 +152,14 @@ impl CompilerSession {
                 .semantic_status(file.id)
                 .map_err(|error| self.query_error(error))?;
         }
+        if !self.ready_package_roots.contains(&installed.main_package) {
+            self.prewarm_rust_ir(main_analysis)?;
+        }
         let rust_ir = self
             .database
             .verified_rust_ir_package(installed.main_package)
             .map_err(|error| self.query_error(error))?;
+        self.ready_package_roots.insert(installed.main_package);
         let source_map = with_source_map
             .then(|| self.source_map_plan(&installed, main_analysis, rust_ir.file()))
             .transpose()?;
@@ -130,7 +190,16 @@ impl CompilerSession {
             .collect::<Result<BTreeMap<_, _>, _>>()
             .map_err(|error| self.query_error(error))?;
         match self.install_program_inputs(program) {
-            Ok((installed, next_sources)) => {
+            Ok((mut installed, next_sources)) => {
+                installed.inputs_changed = previous_sources.len() != next_sources.len()
+                    || next_sources.iter().any(|file| {
+                        let Ok(current) = self.database.source_snapshot(*file) else {
+                            return true;
+                        };
+                        previous_sources
+                            .get(file)
+                            .is_none_or(|previous| previous.as_ref() != current.as_ref())
+                    });
                 let stale = previous_sources
                     .keys()
                     .filter(|file| !next_sources.contains(file))
@@ -170,6 +239,7 @@ impl CompilerSession {
                 main_package,
                 main_files,
                 packages,
+                inputs_changed: false,
             },
             next_sources,
         ))
@@ -501,9 +571,7 @@ impl CompilerSession {
 
 impl Default for CompilerSession {
     fn default() -> Self {
-        Self {
-            database: CompilerDatabase::new(BuildConfig::default()),
-        }
+        Self::from_validated_host(BuildConfig::default(), CompilerHost::inline())
     }
 }
 
@@ -522,6 +590,7 @@ struct InstalledProgram {
     main_package: PackageId,
     main_files: Vec<InstalledFile>,
     packages: Vec<PackageId>,
+    inputs_changed: bool,
 }
 
 struct InstalledFile {

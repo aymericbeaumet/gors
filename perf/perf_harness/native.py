@@ -196,6 +196,56 @@ def _rss_bytes(value: int) -> int:
     return value if sys.platform == "darwin" else value * 1024
 
 
+def _validate_gors_timing_evidence(timings: Any, expected_jobs: int) -> None:
+    if not isinstance(timings, dict):
+        raise RuntimeError("gors did not publish compiler timing evidence")
+    if timings.get("jobs") != expected_jobs:
+        raise RuntimeError(
+            "gors timing job budget does not match the certified plan: "
+            f"expected {expected_jobs}, got {timings.get('jobs')}"
+        )
+    scheduler = timings.get("scheduler")
+    if not isinstance(scheduler, dict):
+        raise RuntimeError("gors did not publish scheduler timing evidence")
+    scheduler_fields = (
+        "serialWaves",
+        "parallelWaves",
+        "scheduledRoots",
+        "snapshotsCreated",
+        "poolStarts",
+        "peakWorkers",
+    )
+    if any(
+        type(scheduler.get(field)) is not int or scheduler[field] < 0
+        for field in scheduler_fields
+    ):
+        raise RuntimeError("gors scheduler timing evidence is malformed")
+    if scheduler["peakWorkers"] > expected_jobs:
+        raise RuntimeError(
+            "gors scheduler exceeded the certified job budget: "
+            f"budget {expected_jobs}, peak {scheduler['peakWorkers']}"
+        )
+    if scheduler["poolStarts"] > 1:
+        raise RuntimeError("gors started more than one compiler worker pool")
+    if scheduler["parallelWaves"] == 0 and (
+        scheduler["snapshotsCreated"] != 0
+        or scheduler["peakWorkers"] != 0
+        or scheduler["poolStarts"] != 0
+    ):
+        raise RuntimeError("gors serial scheduler evidence is incoherent")
+    wave_count = scheduler["serialWaves"] + scheduler["parallelWaves"]
+    if wave_count == 0 and scheduler["scheduledRoots"] != 0:
+        raise RuntimeError("gors cache-hit scheduler evidence is incoherent")
+    if wave_count > 0 and scheduler["scheduledRoots"] < wave_count:
+        raise RuntimeError("gors scheduler root evidence is incoherent")
+    if scheduler["parallelWaves"] > 0 and (
+        scheduler["snapshotsCreated"] < 2 * scheduler["parallelWaves"]
+        or scheduler["peakWorkers"] < 2
+        or scheduler["poolStarts"] != 1
+    ):
+        raise RuntimeError("gors parallel scheduler evidence is incoherent")
+
+
 def _measurement_worker(plan: dict[str, Any], sender: Any) -> None:
     try:
         usage_before = resource.getrusage(resource.RUSAGE_CHILDREN)
@@ -235,6 +285,9 @@ def _measurement_worker(plan: dict[str, Any], sender: Any) -> None:
         timing_path = plan.get("gorsTimings")
         if timing_path and Path(timing_path).is_file():
             timings = json.loads(Path(timing_path).read_text(encoding="utf-8"))
+        expected_jobs = plan.get("jobBudget")
+        if expected_jobs is not None:
+            _validate_gors_timing_evidence(timings, expected_jobs)
         sender.send(
             {
                 "ok": True,
@@ -373,6 +426,7 @@ def pipeline_plan(
     if compiler == "gors":
         generated = side_root / "generated"
         timings = side_root / "gors-timings.json"
+        timings.unlink(missing_ok=True)
         cache = side_root / "cache"
         generated.mkdir(parents=True, exist_ok=True)
         cache.mkdir(parents=True, exist_ok=True)
@@ -383,6 +437,8 @@ def pipeline_plan(
                 "argv": [
                     str(toolchains.gors),
                     "build",
+                    "--jobs",
+                    str(job_budget),
                     str(source),
                     "--release",
                     "--output",
@@ -405,6 +461,7 @@ def pipeline_plan(
             "pendingArtifact": str(pending),
             "artifact": str(artifact),
             "gorsTimings": str(timings),
+            "jobBudget": job_budget,
         }, artifact
     if compiler == "go":
         cache = side_root / "gocache"

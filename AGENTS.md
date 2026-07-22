@@ -231,12 +231,21 @@ callees' signatures; unrelated declaration or signature edits must leave a leaf
 function's HIR, MIR, normalized MIR, and Rust IR green. Production program
 compilation delegates to `CompilerSession`; convenience functions create a
 short-lived session, while the browser worker retains one explicitly across
-edits. A native daemon or watch mode still does not exist. Terminal syn emission
+edits. Native retained sessions may share one explicit `CompilerHost`: it owns
+one lazy fixed-capacity job pool, fans cold or changed per-definition Rust-IR
+roots across revision-scoped database snapshots, joins and drops every snapshot
+before later input mutation, and leaves exact no-op revisions on the green
+package-root path. Free convenience calls, default sessions, and Wasm remain
+inline; parallel sessions require an explicit host or job budget, and the CLI
+owns an explicit positive job budget. Queries must not create nested pools or
+submit scheduler work. This is not yet the global scheduler for parsing, external
+codegen, linking, cancellation, or memory admission, and a native daemon or
+watch mode still does not exist. Terminal syn emission
 remains outside the semantic queries. Parsing and semantic projection are still
 file-granular, although tracked function fields and function-relative provenance
-allow unchanged sibling stage products to backdate. Query counters are not a
-memory budget, scheduler, cancellation protocol, or persistent CAS; do not claim
-those target properties from the current kernel.
+allow unchanged sibling stage products to backdate. Query and scheduler counters
+are not a memory budget, complete cancellation protocol, global scheduler, or
+persistent CAS; do not claim those target properties from the current kernel.
 
 Source mappings and diagnostics are ordinary explicit outputs. The current
 `SourceMapPlan` follows that rule and is safe to build or consume independently;

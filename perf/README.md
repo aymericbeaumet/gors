@@ -11,7 +11,7 @@ The current CLI has no artifact-only command: `gors build` emits Rust source and
 `gors run` compiles and then executes it. The harness therefore owns a temporary
 bootstrap artifact driver whose measured interval is:
 
-    gors build --release
+    gors build --release --jobs <budget>
       -> repository-pinned rustc with the CLI release flags
       -> link
       -> atomic executable publication
@@ -64,6 +64,12 @@ default is 50 pairs per scenario split across three independent sessions:
       PERF_HARDWARE_CLASS=linux-perf-v1 \
       PERF_JOBS=16 \
       PERF_ARGS=--dedicated
+
+`PERF_JOBS` is passed to both the gors semantic compiler host and Go's
+`-p`/`GOMAXPROCS` boundary. The harness rejects missing, malformed, or
+out-of-budget gors scheduler evidence. The separately launched rustc/link step
+is not yet admitted through that host, so end-to-end job-budget symmetry remains
+a promotion blocker rather than a property of the current harness.
 
 The result keeps every randomized pair, child CPU and peak-RSS observations,
 artifact sizes, direct-child counts, gors internal phase timings, exact behavior

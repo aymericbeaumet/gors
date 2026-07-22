@@ -42,12 +42,21 @@ fn split_run_args_treats_package_path_as_single_source() {
 
 #[test]
 fn build_accepts_timing_report_option() {
-    let opts = Opts::try_parse_from(["gors", "build", "--timings-json", "timings.json", "main.go"])
-        .unwrap();
+    let opts = Opts::try_parse_from([
+        "gors",
+        "build",
+        "--jobs",
+        "3",
+        "--timings-json",
+        "timings.json",
+        "main.go",
+    ])
+    .unwrap();
     let SubCommand::Build(build) = opts.subcmd else {
         panic!("expected build command");
     };
     assert_eq!(build.timings_json.as_deref(), Some("timings.json"));
+    assert_eq!(build.jobs.get(), 3);
     assert_eq!(build.path, "main.go");
 }
 
@@ -56,6 +65,8 @@ fn run_accepts_timing_option_before_trailing_program_arguments() {
     let opts = Opts::try_parse_from([
         "gors",
         "run",
+        "--jobs",
+        "2",
         "--timings-json",
         "timings.json",
         "main.go",
@@ -66,7 +77,13 @@ fn run_accepts_timing_option_before_trailing_program_arguments() {
         panic!("expected run command");
     };
     assert_eq!(run.timings_json.as_deref(), Some("timings.json"));
+    assert_eq!(run.jobs.get(), 2);
     assert_eq!(run.args, args(&["main.go", "--program-flag"]));
+}
+
+#[test]
+fn compiler_job_budget_must_be_positive() {
+    assert!(Opts::try_parse_from(["gors", "build", "--jobs", "0", "main.go"]).is_err());
 }
 
 #[test]
