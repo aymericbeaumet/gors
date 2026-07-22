@@ -1,2248 +1,461 @@
 # AGENTS.md — Guidelines for AI Agents
 
-> **Keep this file current.** When you make architectural decisions, discover
-> non-obvious constraints, or learn something that would save a future agent
-> time, update the relevant section below.
-
-## Project overview
-
-gors is a Go-to-Rust transpiler written in Rust. It parses Go source code into
-an AST, compiles it to a Rust `syn` AST, applies transformation passes, and
-generates formatted Rust source code.
-
-Pipeline: Go source → scanner → parser → Go AST → compiler → Rust AST → passes → printer → Rust source
-
-### Parser contracts
-
-- `gors/src/parser/mod.rs::parse_type_parameters()` returns a private
-  `TypeParameterParse` enum for the bracketed forms it consumes. Keep slice and
-  array prefixes (`[]T`, `[N]T`) as explicit enum variants rather than smuggling
-  them through sentinel `ast::FieldList` values. Function declarations may still
-  convert those consumed prefixes into invalid type-parameter lists so the IR
-  signature validator can report semantic signature errors instead of making
-  parsing fail early.
-
-## Repository layout
-
-```
-gors/
-  src/
-    scanner/       # Go lexer (token stream)
-    parser/        # Go parser (Go AST), import resolution, go.mod support
-    ast/           # Go AST data structures
-    compiler/      # Go AST → Rust syn AST conversion + transformation passes
-      passes/      # Post-compilation Rust→Rust AST transforms
-      manifest.rs  # Build manifest for incremental compilation
-    printer/       # syn AST → formatted Rust source via prettyplease
-    resolve/       # Import-path resolution for embedded Go SDK packages
-    toolchain/     # Hermetic Go toolchain download and management
-    mapping/       # Source map tracking (Go ↔ Rust position mapping)
-    token/         # Go token types
-    error.rs       # Diagnostic formatting
-    lib.rs         # Library entrypoint
-  tests/
-    test_integration_go_repositories.rs # Lexer/parser acceptance vs Go oracle
-    test_integration_go_spec.rs         # Go spec generated-program acceptance
-    test_integration_go_stdlib.rs       # Go stdlib generated-program acceptance
-    test_integration_go_programs.rs     # Arbitrary generated-program acceptance
-    common.rs                           # Shared integration test infrastructure
-    common/runner.rs                    # Shared generated-program runner
-    common/reporter.rs                  # Shared conformance report writer
-    fixtures/
-      go_repositories/ # Lexer/parser corpus: submodules plus go_files/
-      go_spec/         # Go spec acceptance fixtures grouped by spec category
-      go_stdlib/       # Go stdlib acceptance fixtures grouped by import path
-      go_programs/     # Arbitrary runnable Go programs
-    tools/
-      go_oracle/ # Small Go helper that emits reference scanner/parser output
-gors-cli/
-  src/main.rs      # CLI: ast, build, run, tokens subcommands
-gors-builtin/
-  src/lib.rs       # Go builtin helpers embedded as generated builtin.rs
-```
-
-## Compilation model
-
-### Multi-file output (current)
-
-`compile_program_multi()` produces a `CompiledProgram` with individual modules:
-- Each Go package → individual `.rs` file
-- Native parallel package, file, type-environment, and local-package compilation
-  pools must be constructed through `compiler::worker_pool`. Its compiler-owned
-  stack policy keeps recursive source lowering independent of whether a package
-  happens to run on Rust's smaller default spawned-thread stack; do not create a
-  production Rayon pool for compiler work directly.
-- Naming: `import_path.replace('/', "__")` + `.rs` (e.g., `example/math` → `example__math.rs`)
-- `lib.rs` declares all modules with `#[path]` attributes
-- `main.rs` includes `lib.rs` through an internal collision-free wrapper module
-  such as `__gors_lib`; do not name that wrapper `lib`, because Go packages can
-  legitimately be imported with the package name `lib`.
-- `main.rs` includes `lib.rs` and contains main function items
-- Stdlib modules are resolved lazily from build-time generated Go SDK metadata
-  and filtered to reachable root symbols before being compiled to Rust. Do not add
-  package-specific or function-specific Rust replacements for Go stdlib APIs;
-  treat stdlib packages as ordinary Go code and fix the generic transpilation
-  path when they fail. Runtime support is allowed only for language/runtime
-  primitives or host resources, and must not encode the behavior of a stdlib
-  function or method. Host-resource helpers that patch generated stdlib modules,
-  such as process stdout support, must replace only the targeted host items and
-  preserve the rest of the compiled Go stdlib module so unrelated reachable
-  constants, types, and functions remain generic compiler output. A post-prune
-  host replacement must also remove a private helper/type implementation
-  closure when it is referenced only by the replaced surface; preservation
-  markers computed before replacement must not keep code that reads removed
-  fields or calls removed methods. Prove that no surviving item references the
-  helper before removing that closure, and preserve independently reachable
-  helpers. When the replacement regenerates an external trait implementation,
-  it owns that exact generated trait ABI and must discard the stale implementation.
-- Runtime/host stdlib helper ownership is intentionally split: post-prune
-  runtime primitive dispatch lives in `gors/src/compiler/runtime_primitives.rs`,
-  with reflect, os, and sync replacements split under
-  `gors/src/compiler/runtime_primitives/`; `reflect.TypeOf(...).Kind()`
-  detection lives in `gors/src/compiler/reflect_kind.rs`; shared reflect and
-  reflectlite primitive symbol names live in `gors/src/reflect_names.rs`;
-  generated reflect path recognition lives behind named predicates in
-  `gors/src/compiler/reflect_semantics.rs` and should match exact generated
-  reflect module/member paths rather than prefixes; reflect slice-to-`any`
-  writeback lowering lives in
-  `gors/src/compiler/reflect_slice_any.rs`;
-  resolver-level synthetic `runtime` and `internal/reflectlite` primitive module
-  generation lives in `gors/src/resolve/runtime_primitives.rs`. Every
-  resolver-owned primitive must be emitted when its exact reachability root is
-  requested; generic lifetime barriers such as `runtime.KeepAlive` must not
-  disappear when the synthetic module also serves unrelated runtime roots.
-  A resolver-owned primitive whose Rust representation intentionally differs
-  from its Go declaration must supplement imported `TypeEnv` ABI facts to match
-  that representation. Synthetic reflect type equality must compare the erased
-  payload's dynamic type through `builtin::any_dynamic_type_id`, not the clone/
-  comparable wrapper's Rust `TypeId`; the unit nil sentinel has no dynamic type.
-  Resolver-injected
-  syscall metadata helpers must derive their writes from the generated host
-  struct shape (for example, whichever `Stat_t` fields the active Go SDK
-  exposes) rather than hard-coding one platform layout. Keep public
-  `syscall.Getenv` as generic Go output; exact `Getenv`/`runtime_envs` roots
-  inject only the private bodyless `runtime_envs` host ABI, whose environment
-  snapshot preserves raw host key/value bytes through the Go string runtime
-  representation. Raw host filesystem syscall boundaries such as `Lstat`,
-  `Fstat`, `Unlink`, and `Rmdir` must return the generated `syscall.Errno` dynamic type,
-  preserving `raw_os_error` when available and using a nonzero typed fallback;
-  keep public `os` decision-making and `PathError` construction as compiled Go.
-  Descriptor metadata helpers must borrow or duplicate the supplied raw descriptor
-  without taking ownership, then populate only fields present in the generated
-  `Stat_t` shape.
-  Resolver-injected
-  structural helper dispatch lives in `gors/src/resolve/structural_helpers.rs`,
-  with noop interface sentinels, mutable-reference forwarding, and fmt flush
-  helper injection split under `gors/src/resolve/structural_helpers/`. Keep
-  shared resolver structural-helper `syn` predicates in
-  `gors/src/resolve/structural_helpers/syn_helpers.rs`; focused helper modules
-  should consume those predicates instead of carrying local path/type-shape
-  matchers.
-  `compiler/mod.rs` and `resolve/mod.rs` focused on orchestration rather than
-  inlining these policies. Resolver fmt flush injection should be driven by the
-  generated receiver/source-buffer data flow, not by package-specific receiver
-  names or a literal `State` trait gate. When the resolver injects
-  `__gors_flush_fmt`, it must also attach the generated
-  `gors:fmt-flush-source=...` and `gors:fmt-flush-method=...` doc markers so
-  compiler post-helper flush insertion consumes the resolver's plan instead of
-  rediscovering source fields or trigger methods from generated method bodies.
-  Generated marker strings and `syn::Attribute` parsing helpers belong in
-  `gors/src/generated_names.rs`; compiler passes should consume marker facts
-  there rather than re-parsing doc attributes locally.
-  Resolver noop interface helper
-  injection should derive method bodies from generated trait signatures, actual
-  `__GorsNoopInterface::default()` uses, and signature dependencies rather than
-  a package-specific trait-name condition. Shared no-op interface method body
-  synthesis lives in `gors/src/noop_methods.rs`; compiler-generated named
-  interface sentinels and resolver-injected fmt sentinels must choose their
-  explicit non-hook return policy there instead of carrying duplicate hook/body
-  builders. Within the `coerce_types` pass,
-  generated fmt flush metadata lives in
-  `gors/src/compiler/passes/coerce_types/structural_helpers/fmt_flush.rs`;
-  reflection fallback pruning lives in
-  `gors/src/compiler/passes/coerce_types/structural_helpers/reflection_fallback.rs`;
-  `structural_helpers.rs` should stay focused on post-helper orchestration.
-  Shared Go-source AST predicates used across lowering, type inference, and IR
-  validation live in `gors/src/compiler/ast_inspect.rs`; do not reopen
-  package/member selector matching such as `unsafe.Pointer`, or package
-  `init` function classification, in each phase. Shared Go predeclared-name
-  tables live in `gors/src/compiler/predeclared.rs`; type inference, IR
-  validation, and lowering should consume those predicates instead of carrying
-  local copies.
-
-### Cross-module references
-
-- `prefix_sibling_paths` rewrites references to sibling packages as `crate::pkg::Symbol`;
-  generated cross-module and standard-library paths remain qualified at their
-  lowering sites instead of being rewritten into synthetic top-level `use`
-  declarations by a postpass.
-- Local package names that collide with any known stdlib module use an
-  import-path-derived Rust module name (`example/math` → `example__math`) and
-  import rewrites preserve the original Go selector name in source lowering.
-- Imported package type environments are merged under the Go source's local
-  import name when an alias is present. Selectors and type constraints in the
-  AST use that local name (`import ord "example/ordered"` →
-  `ord.Less`, `ord.Ordered`), while later Rust module rewrites map it to the
-  generated module name. These selector aliases are strictly file-scoped:
-  package-wide/cached type facts canonicalize imported references to the stable
-  generated Rust module identity, and package-wide import lookup maps must
-  contain canonical module names rather than aliases collected across files.
-  Merging a package `TypeEnv` must also retain whether each type declaration is
-  a true `=` alias (plus its qualified target), not only its underlying
-  `TypeKind`; otherwise downstream coercion constructs a Rust type alias as if
-  it were a defined Go newtype. Lowering a resolved package must carry its
-  generated Rust module identity separately from its Go package clause; named
-  and anonymous self-package trait paths use `crate::<module>::Trait`, not a
-  source-package path such as `fs::Trait`. Keyed composite literals of true
-  aliases to structs must construct the resolved struct target with the alias
-  target's field facts rather than falling through to an empty default value.
-  Keep stable declared-type identities separate from those true-alias facts:
-  package merges must carry file-local and generated-module spellings of the
-  same declaration, and exact method-signature comparison must normalize those
-  identities recursively without treating structurally identical named types
-  as interchangeable. Resolver-scanned imported package facts must record that
-  stable generated-module identity before they are merged under a source
-  file's local import name; doing this only in the top-level `PackageGraph`
-  makes valid stdlib interface returns fail validation during lazy resolution.
-  External interface implementor records must normalize their Go type identity
-  through the active file's import rewrite before constructing Rust paths or
-  deduplicating records; otherwise the canonical and file-local spellings can
-  emit duplicate impls for the same generated Rust type. An exact program-level
-  implementor record may attest direct methods for an opaque external type when
-  no declaration facts were merged for that type. A pointer implementor can mix
-  value- and pointer-receiver methods, so the program record and its worker wire
-  snapshot must transport the exact pointer-receiver method names; the
-  type-level `include_pointer_receiver_methods` flag alone is not a forwarding
-  ABI. Once concrete declaration facts exist, interface forwarding must
-  distinguish declared methods from promoted embedded methods and must not
-  invent a recursive `T::M` fallback.
-  Program-level assertion candidates come from the locally declared concrete
-  names in the main, local-package, and scanned reachable-stdlib type facts.
-  Include defined maps, slices, and other named types as well as structs, but
-  exclude true aliases, interfaces, type parameters, and qualified facts merely
-  retained from another package; map every candidate to its exact generated
-  Rust module path. Candidate Go identities and whole-program local/stdlib
-  `TypeEnv` merges must use that generated module identity as well, never the
-  source package name: distinct import paths may legally declare the same
-  package name. Assign colliding local packages import-path-derived module names
-  before building the census. Build the cross-package candidate map only for
-  interface assertion/type-switch targets recorded in
-  `TypeEnv::func_interface_assertions`;
-  ordinary interface declarations do not justify a declarations-by-concretes
-  Cartesian product, and direct coercions record their exact obligations while
-  lowering. Generic Go types and generated borrowed-interface storage require
-  explicit Rust generic arguments, so generic fallback emitters must exclude
-  them and leave their impls to emitters that own the declaration generics.
-  A named interface field owns `Box<dyn Trait>` and does not by itself make a
-  struct lifetime-bearing; only anonymous embedded-interface storage, or a
-  recursively contained lifetime-bearing struct, requires the generated Rust
-  lifetime. Each structural assertion candidate branch carries a compiler-owned
-  concrete-type marker. Resolve the conservative census before lowering any
-  local, main, or stdlib package and install the same serialized snapshot on
-  every Rayon worker. Then remove those branches and removable fallbacks from a
-  candidate-blind DCE snapshot; retain in the real program only candidate
-  branches and fallback impls whose base concrete type survived for an ordinary
-  reachability reason. Retained casts must use the exact qualified
-  trait path so they create canonical cross-module impl roots rather than
-  relying on a consumer fallback.
-  Canonical nested import-path interface names such as `io/fs.File` must also
-  resolve to the package-local spelling recorded by resolver type facts (for
-  example `fs.File`). Borrowed interface adapters must take their parameter and
-  result ABI from that resolved interface, never from the concrete method
-  signature fallback.
-  Top-level value inference must be refreshed after imports are merged for
-  constants as well as variables. An untyped local constant initialized from
-  an imported named constant inherits that named type; retaining the pre-import
-  `Unknown` fact degrades later compound assignments to the primitive
-  underlying Rust type.
-  Local `PackageGraph` facts must retain direct imports under those identities
-  and propagate them through the local import graph: a downstream caller must
-  recognize an interface returned through an intermediate package even when it
-  does not import the interface's defining package itself. Consumers enumerating
-  declarations owned by one package must filter out those qualified retained
-  import facts rather than treating names such as `model.Time` as local Rust
-  identifiers. Likewise, retained transitive interfaces are inference facts,
-  not blanket local-impl candidates: admit directly imported or source-required
-  interfaces, then expand only their actual embedded-interface dependencies.
-- Package type environments contain package declarations and signatures, not
-  receiver, parameter, or named-result bindings from arbitrary functions.
-  Consumers that inspect a function body outside normal lowering must use
-  `TypeEnv::scoped_for_func_decl()` to seed that function's lexical bindings
-  and type-parameter constraints. Backend function and method lowering must
-  keep the same boundary through `LocalTypeEnvScopeGuard` so one declaration
-  cannot shadow imports or values in the next declaration.
-- Package-level vars in imported/transpiled packages are emitted as concrete
-  `std::sync::LazyLock<T>` statics. Main-package vars are still injected into
-  `main()` as startup locals. Imported package-level vars initialized by
-  function calls must still use the Go-inferred type when choosing the
-  `LazyLock<T>` type; do not fall back to Rust initializer inference alone, or
-  values such as constructor-returned pointers can degrade to `Box<dyn Any>`.
-  Pointer-typed package-level vars used as method receivers in generated modules
-  must be read through the same `LazyLock<T>` value path as ordinary expressions
-  before locking a pointer cell; do not emit `Var.lock()` or `pkg::Var.lock()`
-  against the static itself. Whether a package static has an outer mutable value
-  cell is a serialized `TypeEnv` representation fact; qualify and propagate it
-  through imports so every consumer emits the same read path as the owner.
-  Because that fact is a set, include it in the resolver cache's canonical
-  `TypeEnv` wire ordering whenever the serialized environment schema changes.
-  Lazy resolver/type-environment scans can publish those facts recursively;
-  materialize any active `RefCell<TypeEnv>` lookup result and drop its borrow
-  before entering resolver fallback code.
-  Non-pointer static receivers should be dereferenced
-  for method dispatch instead of eagerly cloned, so non-`Clone` runtime
-  primitives such as `sync.Pool` can still be borrowed.
-  Host-resource replacements for pointer-typed package vars, such as
-  `os.Stdout`, must preserve the Go pointer shape as a generated pointer-cell
-  value and provide both inherent methods and interface-hook trait impls for the
-  injected resource.
-- Method calls whose generated receiver locks a package-level or pointer cell
-  must scope the `MutexGuard` to that single call. Do not emit multiple
-  `x.lock().unwrap().M()` temporaries directly into one Rust argument list,
-  because Rust can keep the first guard alive until the statement ends and
-  deadlock the next call. Use the final generated callee signature to stage
-  lock-bearing by-value arguments left-to-right; borrowed arguments must retain
-  their guards through the call. A mutable slice projected through a pointer
-  owner that the callee can re-lock needs detached call-local storage plus
-  writeback, with the owner and slice range evaluated once in Go order. Evaluate
-  every low/high/max bound before borrowing or locking that owner, because a
-  bound may read a sibling field through the same pointer cell. Interface-field
-  and other receiver-staging method wrappers must consume that same guarded-slice
-  argument plan rather than hiding the projection in an argument temporary. If
-  the callee panics, catch the unwind, write the detached slice back, and then
-  resume the original panic so mutations made before the panic remain visible.
-  When an existing mutable-reference argument wraps a cloned-lvalue block,
-  recover the block's original pointer-backed lvalue instead of mutating the
-  detached clone.
-- Go function values stored in generated data structures and explicit local
-  variables of `func(...)` type are reference-counted nil-capable cells:
-  `std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<dyn Fn(...) -> ... + Send + Sync>>>>`.
-  Calls clone the inner `Arc` while holding `crate::builtin::lock_func`, then
-  release the mutex before invoking the function. This is required for recursive
-  function values. Do not reintroduce `Rc<RefCell<...>>`; keep the representation
-  thread-safe so goroutine lowering can share the same value model.
-- Function item values can come from local identifiers or imported package
-  selectors. Keep selector type inference returning `GoType::Func` for package
-  functions so `f := pkg.Func; f(args...)` lowers through the shared
-  function-value path. `GoType::Func` also carries the variadic parameter start;
-  preserve that metadata when inferring, assigning, or validating function
-  values so stored variadic functions keep packed and spread call semantics.
-  Deferred and goroutine function-value calls must use the same argument
-  packing path as ordinary function-value calls; `go f(...)` also clones a
-  function-value identifier before entering the spawned closure.
-- Stored function ABIs recursively own interface values inside slices, maps,
-  channels, pointers, variadics, and fixed arrays. Render signatures from the
-  Go AST when it is available so fixed-array lengths survive. Function-item
-  adapters only have the length-erased `GoType::Array`; keep their container
-  shape and use `[T; _]` in the local `Arc<dyn Fn>` coercion while leaving the
-  adapter closure parameters and result inferred from the called function item.
-  Do not collapse those arrays to `Vec<T>`, including when they are nested in
-  another container or the function value is inferred without an outer Rust
-  expected type.
-- `GoType::Array` remains length-erased for ordinary inference, so serialized
-  `TypeEnv` function/interface signature facts must separately retain the exact
-  recursive fixed-array shape. Imported and transitively embedded interface ABI
-  fallback must render `[T; N]` from those facts, never `Vec<T>` or `[T; _]` in
-  an item signature, and interface satisfaction must distinguish array lengths.
-- Generated runtime interfaces provide `Default for Box<dyn Trait>` through
-  their no-op sentinel. This is the generic interface zero value used by
-  `make([]Interface, n)`, fixed interface arrays, and nested container values;
-  do not add interface-specific defaults.
-- Ordinary Go function literals lower to borrowing Rust closures so local
-  captures can be mutated across calls. Only function literals being stored
-  behind generated function types should use `move`, because those are stored
-  behind the shared `Arc<Mutex<Option<Arc<dyn Fn(...) -> ... + Send + Sync>>>>`
-  representation.
-- Expected-type expression lowering owns Go function-value coercions. Function
-  literals and named or selector function items passed to `func(...)`-typed
-  arguments or assignments are wrapped as shared function cells by casting the
-  inner `Box` to `Box<dyn FnMut(...) -> ... + Send>`; do not cast the outer
-  `Arc`, because Rust rejects non-primitive casts between `Arc` instantiations.
-- Go interface results own their dynamic value and must not acquire a Rust
-  lifetime tied to an interface parameter merely because that parameter lowers
-  to `&mut dyn Trait`. Named interface fields clone into owned boxes, while the
-  existing embedded-interface representation materializes a stable owned clone
-  before borrowing it; function and method signatures therefore must not add a
-  blanket `+ '_` bound to boxed interface results. When a non-mutating Go value
-  receiver is represented as Rust `&self`, boxing it into an owned interface or
-  `any` result must clone `*self`; cloning or boxing `self` preserves a Rust
-  reference instead of the Go receiver value.
-- When a mutable trait-object call argument comes from cloning a shared capture,
-  materialize the cloned interface in an owned temporary before borrowing it.
-  Borrowing through the source lock can both mutate the caller's value and keep
-  a `MutexGuard` alive across a reentrant call; do not strip the clone or pass a
-  borrow of the guard-backed source.
-- Function literals use IR capture analysis for shared mutable captures. Mutable
-  outer captures discovered anywhere in a block, including callback arguments,
-  returned closures, goroutines, and function literals nested inside composite
-  literals, are promoted to `Arc<Mutex<T>>` in the enclosing block. Any `move`
-  closure that captures those cells must clone the `Arc` before constructing the
-  closure so later outer-scope reads still see the same storage.
-- Assignments and compound assignments to shared captures must evaluate the RHS
-  into a temporary before locking the LHS cell, so expressions like
-  `x = x + 1` and `x += x` do not try to acquire the same `Mutex` twice.
-- Non-declaration multi-assignments follow Go's two-phase rule. Prepare every
-  supported target before evaluating any RHS, compile/coerce every RHS into
-  temporaries, and only then perform writes from left to right. Prepared targets
-  currently cover discards, ordinary addressable lvalues, explicit pointer
-  dereferences, implicit pointer selectors, map indexes with staged keys, and
-  index targets with staged indexes (including pointer-to-array bases). The same
-  boundary applies to equal-count RHS lists, multi-result calls, and supported
-  comma-ok map/channel/type-assertion forms. This preserves target evaluation
-  order within the current value model. Keep that staging boundary distinct
-  from the `GorsMap` identity and tracked slice-alias writeback rules below;
-  those representations decide what each prepared write mutates. When a staged
-  single non-map assignment contains index or pointer operands, use the same
-  prepared-target boundary: snapshot any owning pointer cell, evaluate indexes,
-  evaluate the RHS, and only then lock the staged owner for the write. This
-  prevents an index such as `p.buf[p.i]` from re-locking `p` while the buffer
-  field is already borrowed through its guard. A selector whose base is an
-  indexed aggregate follows the same rule: fully stage every index expression
-  before locking the aggregate for the final field write, because an index may
-  read through a pointer projected from that same aggregate. When a staged
-  direct-identifier write replaces a slice header used by an active range
-  snapshot, synchronize and detach that old header immediately before the
-  write, after all RHS values have been evaluated. Use the same prepared-target
-  boundary for non-define select receive assignments. When
-  `take_rhs_lvalue_reads` moves a non-Copy LHS value into its RHS, stage that
-  move as a block-local statement at the original read position and yield the
-  temporary. This drops any projected owner guard before later RHS operands are
-  evaluated without reordering earlier operands. Compiler slice-alias
-  facts are lexical: suspend and later restore facts shadowed by a nested
-  binding, and detach any surviving alias whose backing expression, offset, or
-  capacity depends on a binding leaving scope. Preserve retargeting when both
-  the alias and its backing binding remain live. Call-valued index bases
-  need a prepared-place distinction: owned slice results may be staged as
-  values, but compiler-emitted borrowed/projected slice views must not keep an
-  `&mut` view or `GorsPtrGuard` alive across RHS evaluation. Prepare an
-  owner-backed projection descriptor that captures the Go slice header before
-  the RHS and reacquires the owner only for writeback. Offset-based descriptors
-  must prove stable inline backing, such as a fixed array; heap-backed `Vec`
-  views require shared backing identity and cannot safely reuse an offset after
-  an RHS reallocation.
-- Addressable non-Copy binding initializers are cloned for `var` and `:=`
-  declarations. This preserves Go value-copy semantics for struct/string/array
-  bindings and avoids Rust moves such as `d := c` invalidating later uses of
-  `c`. Function values and pointers stay cheap-copy through their existing
-  representations.
-- Expected-type expression lowering also owns non-Copy assignment RHS cloning:
-  assigning an addressable same-type value into a field or local should be
-  cloned from Go type facts there, not patched later by Rust identifier or field
-  names.
-- Go pointer values lower to nil-aware `crate::builtin::GorsPtr<T>` cells. Locals
-  whose address is taken are promoted through the IR addressability analysis into
-  shared `Arc<Mutex<T>>` storage and exposed through `GorsPtr::from_arc`, so
-  `p := &x`, `*p = v`, and later reads of `x` observe the shared storage.
-  Address-of fields on promoted local struct owners, such as `&h.value`, lower
-  through projected `GorsPtr::from_arc_field` cells so writes update the owner
-  field instead of a cloned field value. Address-of fields on direct owning
-  pointer cells, such as a pointer parameter `&p.value`, lower through
-  `GorsPtr::from_ptr_field` for the same aliasing rule. Do not blindly use
-  projected field cells for shared-capture pointer cells until receiver locking
-  can avoid re-locking the same pointer cell during method calls.
-  Address-of local array and slice indexes must likewise promote the container
-  and construct a projected index cell rather than copying the indexed value.
-  Evaluate the index and perform its bounds check when the Go pointer is created,
-  then retain that index so later index-variable changes do not retarget it.
-  Pointer-receiver method calls on non-pointer fields reached through owning
-  pointer cells, such as `h.bucket.fill(...)`, must lower the receiver through a
-  projected `GorsPtr::from_ptr_field` cell and call the inherent method by UFCS
-  so the owner lock is not held while method arguments or body code lock sibling
-  fields. Pointer-valued selectors passed to interfaces must likewise copy and
-  borrow the `GorsPtr<T>` handle; do not reborrow the pointee merely because its
-  struct contains interface fields, because that changes the Go dynamic type and
-  pointer method set. Pointer-to-array selector reads must copy the inner pointer
-  handle while its owner guard is alive, then bind that handle before locking the
-  pointee so no guard borrows through a temporary owner. Index and slice-bound
-  arithmetic must lower local selectors through ordinary value/lvalue semantics,
-  not through the type-like qualified-path emitter. Do not lower ordinary Go
-  pointer parameters to borrowed `&mut T`; the shared pointer model must carry nil
-  and aliasing through calls.
-- Nil pointer values must lower to the pointer zero value for assignments,
-  fields, returns, and other value construction. Do not emit an immediate panic
-  for `nil` itself; the panic belongs to dereference/use.
-- Generated Go structs use `#[repr(C)]` so Rust preserves declaration-order
-  layout for codegen that depends on Go field offsets, such as
-  `unsafe.Offsetof`. Keep unsafe support simple and codegen-first while
-  conformance is still incomplete; broaden semantics through generic lowering
-  rather than package-specific stdlib replacements.
-- Map literals, comma-ok map indexes, map assignments, and `delete` calls must
-  compile keys and values with the expected map key/value Go types. This keeps
-  `map[string]T{"k": v}`, `m["k"]`, and `delete(m, "k")` on owned `String`
-  keys instead of accidentally inferring `&str` keys from Rust literals.
-- Ordinary Go map values lower to the generic
-  `crate::builtin::GorsMap<K, V>` handle, whose optional
-  `Arc<Mutex<HashMap<K, V>>>` allocation preserves both nil state and shared map
-  identity. Cloning or assigning a map handle must share later mutations;
-  reads, `len`, `delete`, `clear`, and range on a nil map are valid empty
-  operations, while insertion or compound update on a nil map must panic.
-  `deep_clone` is reserved for source semantics that explicitly require an
-  independent map, such as the generic runtime-linkname clone-body rewrite; do
-  not replace ordinary Go map assignment with it.
-- Builtins that write into a destination, such as `copy`, must compile that
-  destination through the lvalue path rather than ordinary expression lowering.
-  Addressable slice expressions such as `e.encode[:]`, including array fields
-  and nested index components, need to stay mutable lvalues.
-- String `+=` lowers to `String::push_str(&rhs)` rather than Rust `+=`, because
-  Go accepts string operands by value while Rust's `String` add-assign expects a
-  borrowed string slice.
-- Go string literals are byte sequences. Any lowering that views a string
-  literal or string constant as bytes, including `[]byte(s)` and `copy(dst, s)`,
-  must preserve byte escapes such as `\xff` directly instead of routing through
-  Rust UTF-8 `String::as_bytes()`.
-- The existing generated `String` ABI carries arbitrary Go byte strings through
-  a lossless escaped-scalar encoding owned by
-  `gors-builtin::{go_string_from_bytes, go_string_bytes}`. Valid UTF-8 stays
-  readable; invalid bytes and the escape scalar round-trip without loss. String
-  byte indexing/slicing, `len`, `[]byte`/`[]rune` conversion, range decoding,
-  raw output, and lexical comparison must go through the generic Go-string
-  helpers rather than Rust UTF-8 byte/character assumptions. Keep this a
-  language representation rule, not a stdlib-specific replacement.
-- Main-package package-level vars are injected as startup locals in `main()`.
-  Preserve explicit Go types there: typed initializers must be compiled with the
-  expected type and emitted with a Rust type annotation, and typed zero values
-  should use the same default-expression path as local var declarations.
-- Runtime interface hooks (`__gors_as_any` for downcasts and
-  `__gors_clone_box` for cloned boxed interface values) are part of the
-  generated interface contract. DCE must preserve the hooks on reachable traits
-  and trait impls, and any injected structural stdlib helper that implements a
-  Go interface, such as `os.File` for `io.Writer`, must implement the hooks too.
-- Named-interface equality and interface-valued map keys share the owned
-  `GorsInterfaceKey` contract. Nil interface sentinels use the nil key, while a
-  typed nil pointer retains its pointer dynamic type. Pointer keys compare
-  identity; comparable concrete keys compare dynamic type plus the retained Go
-  value; non-comparable keys retain a typed marker and panic only when equality
-  or hashing actually uses it. Eligibility for Rust `PartialEq`-backed keys is
-  a generated-representation fact: resolve qualified names through the package
-  type environment, and reject structs containing generated trait-object
-  fields even though Go permits interface fields in comparable struct types.
-  Synthetic reflection type handles must provide their own type-identity
-  equality when their Go source representation is replaced. Interface
-  comparisons must evaluate both
-  operands into owned temporaries before asking either dynamic value for its key
-  so a non-comparable left operand cannot suppress right-operand effects.
-- Multi-file package assembly structurally deduplicates only completely
-  equivalent generated trait impls; differing impls for the same trait and self
-  type remain visible so Rust coherence failures expose compiler disagreements.
-  Compiler-generated embedded-interface forwarders must normalize their
-  parameter bindings package-wide so alpha-equivalent bodies emitted from
-  different Go files remain structurally identical without weakening that
-  strict deduplication rule.
-  At whole-program assembly, a concrete type's defining module owns its
-  canonical interface impl. A consumer-module fallback may be removed in favor
-  of that owner impl only when it carries the dedicated compiler-owned
-  removable-interface-fallback marker; never infer removal permission from a
-  DCE-preservation or external-local reachability marker, and never resolve
-  arbitrary user or generated same-target conflicts by choosing one body.
-  Structural interface obligations whose interface and concrete type belong to
-  different generated packages are canonicalized by
-  `gors/src/compiler/cross_module_interface_impls.rs`. Reachability roots for
-  those obligations must carry the exact generated trait module and exact
-  value, `GorsPtr<T>`, or borrowed-pointer target shape; never fan out from a
-  trait basename or emit every target adapter. Discover them through the same
-  non-mutating cross-module fixed point used by DCE so dead consumers cannot
-  preserve synthesized impls. A reachable local coercion may be the first use
-  of an external interface, so synthesis must also consume exact qualified impl
-  roots from each module's reachable-name closure even when no impl item exists
-  yet. Canonical synthesis must consume the main, local-package, and reachable
-  stdlib type facts; restricting its concrete-owner facts to stdlib modules
-  leaves retained local assertion candidates without an owner impl. Generated
-  module/import-path identity is
-  canonical in interface facts; a Go package-name fallback is valid only when
-  that package name identifies one import path. A matching compiler-marked
-  removable fallback in the concrete owner must be replaced by the canonical
-  impl rather than blocking it. Run equivalent-impl deduplication again after
-  final sibling-path prefixing: relative and crate-qualified fallback spellings
-  can become syntactically identical only at that boundary.
-  Receiver reachability through an associated interface call must use the
-  method's declared return type before following a chained method call. Treating
-  `Trait::Method(receiver).Next()` as though `Next` belonged to `Trait` prunes
-  the actual return type's method even though the generated Rust call remains.
-  Anonymous method interfaces used by type assertions and type-switch cases are
-  represented by deterministic hidden traits. Discover their signatures
-  broadly, but root candidate synthesis only at actual assertion sites,
-  including package-level value initializers. Render their methods through the
-  shared TypeEnv interface ABI path so exact fixed arrays and variadics match
-  named interfaces. Their deterministic identity hash must use those same
-  active TypeEnv shapes after local and imported constants have been resolved;
-  a scratch environment loses array lengths such as `[pkg.Width]byte`.
-  Non-asserted anonymous type expressions must not emit or
-  preserve hidden traits or impls.
-  Rust receiver-method reachability must resolve local generated type aliases
-  (for example an alias of an imported errno type) before rooting the receiver
-  method in a module. Alias facts are inference metadata, not top-level values
-  or synthetic receiver roots.
-  Composite interface
-  impls structurally depend on every transitive embedded-interface impl for the
-  same self type. Keep that dependency explicit through generated impl markers
-  so DCE cannot retain a composite impl while pruning one of its Rust
-  supertrait obligations.
-- Structs with embedded borrowed interface fields, such as `sort.reverse`, must
-  emit both the value trait impl and the matching `GorsPtr<T>` trait impl. The
-  pointer-cell impl should delegate to an inherent method when the struct
-  overrides an embedded method, and otherwise delegate through the embedded
-  interface field. Borrowed-interface struct facts are package-wide even though
-  Go files are lowered independently; seed them from the package type
-  environment before lowering every file so cross-file composite literals and
-  lifetime-parameterized pointer impls use the declaration's storage shape.
-  Cross-file promoted-method adapters may delegate through an embedded owner's
-  proven interface impl instead of guessing its inherent Rust receiver ABI.
-  Pointer-cell adapters must project or clone the embedded handle before the
-  call so they do not retain the outer owner lock across interface dispatch.
-  Value-wrapper runtime hooks must preserve the wrapper's own dynamic identity:
-  `__gors_as_any` returns the wrapper, `__gors_clone_box` clones the wrapper,
-  and `__gors_interface_key` describes the wrapper rather than delegating any
-  of those hooks through the embedded interface field. Otherwise embedding a
-  narrow interface can make the wrapper acquire unrelated interfaces from the
-  field's concrete dynamic value.
-  Embedded-method discovery must preserve the nominal identity of defined named
-  types, including defined map and slice types, and unwrap only true Go `=`
-  aliases. A synthesized interface adapter may call the concrete receiver by
-  UFCS only when that receiver declares the method; otherwise it must delegate
-  through the resolved embedded owner or reject the candidate instead of
-  emitting a self-recursive fallback.
-- Calls through named interfaces use UFCS on the statically resolved declaring
-  interface. This is required for composite interfaces whose Rust supertraits
-  declare the same Go method or runtime hook; method-call syntax is ambiguous
-  and trait-object upcasting is not a substitute for Go method-set dispatch.
-- Type-declaration facts that drive later interface impl generation live in
-  `gors/src/compiler/type_decl_facts.rs`. Type lowering records borrowed
-  interface fields and struct clone derivability there; interface impl emitters
-  should query the named helpers instead of reaching into compiler-root
-  thread-local maps.
-- The predeclared `error` interface lowers to the shared
-  `crate::builtin::error` trait object, not to `String`. Its nil value is the
-  noop-interface sentinel `crate::builtin::__GorsNooperror`, and ordinary Go
-  types satisfy it through the same generated interface-implementation path when
-  their method set includes `Error() string`.
-- Values boxed into `any`/`interface{}` must first materialize the Go concrete
-  Rust type. In particular, numeric constants need an explicit cast such as
-  `42 as isize` before boxing so type assertions and type switches downcast to
-  Go's `int` representation instead of Rust's default literal type. Generic
-  erasure helpers must likewise retain an explicit concrete container type for
-  maps, slices, pointers, and channels; otherwise Rust can infer nested literals
-  using its defaults after the Go expected-type context has disappeared.
-- Cloneable concrete values erased into local `any` use local clone/comparable
-  wrappers when their generated representation is not `Send + Sync`; those
-  wrappers must never be upgraded through the send-capable erased APIs. Keep
-  the local and cross-thread wrapper capabilities distinct, and select them
-  from structural Go representation facts rather than type or package names.
-- Generated structs that contain `any` fields may need compiler-emitted
-  `Send`/`Sync` impls with item-local `#[allow(unsafe_code)]` so they can
-  satisfy generated Go interface traits, which are modeled as thread-safe. Keep
-  this as generated runtime glue and do not weaken the generated crate-level
-  `unsafe_code` deny for ordinary output.
-- `[]any`/`[]interface{}` index expressions cannot call Rust `Clone` on
-  `Box<dyn Any>` directly. Use the runtime `builtin::clone_any` helper for
-  copied interface elements, and bind cloned interface-index temporaries before
-  type assertions so downcasts do not borrow a dropped temporary.
-- The predeclared `error` interface is represented as an owned
-  `Box<dyn crate::builtin::error>`, including in struct fields and named
-  returns. Do not treat `error` fields like borrowed structural interfaces.
-  Boxing an existing boxed error is tolerated through the runtime delegating
-  `error` impl for `Box<dyn error>`. Its clone hook must preserve the concrete
-  dynamic error value, and equality must compare owned `GorsInterfaceKey`
-  values rather than display strings so typed errno/path errors survive
-  ordinary by-value calls. Converting an error interface to `any` must erase
-  through `__gors_as_any` so type assertions and reflection observe the
-  concrete dynamic error, while a nil error remains the nil `any` sentinel.
-  Runtime `any` equality must panic when both operands have the same clone-only
-  non-comparable dynamic type; returning false is valid only when their dynamic
-  types differ. Variadic `any` arguments should
-  materialize error values through `builtin::error_string` instead of cloning the
-  trait object.
-- Backward `goto Label` targeting the immediately labeled statement is still
-  lowered by wrapping that statement in a generated Rust labeled `loop` and
-  translating the `goto` to `continue 'Label`. Scope-safe forward gotos whose
-  target is a direct label in the same statement list lower through an IR-planned
-  generated state loop, including normal blocks and breakable switch/select case
-  bodies. IR identifies direct-list locals that cross state segments, and the
-  backend hoists typed zero-value bindings before rewriting the original
-  declarations to segment-local assignments. Direct local `const` and `type`
-  declarations are compile-time bindings rather than runtime hoist candidates;
-  state lowering carries their generated declarations into each later state arm
-  where Go lexical scope makes them visible. The impossible state-dispatch arm
-  must diverge so an otherwise returning non-void state machine cannot fall
-  through as Rust `()`. In `fallthrough` switch cases, a
-  lowered fallthrough inside a goto-state case body must set the fallthrough flag
-  and break the generated goto loop before the switch case dispatcher continues.
-  Broader forward gotos still require full CFG restructuring in the IR before
-  backend lowering.
-- Go expression switches without `fallthrough` lower to an exclusive Rust
-  `if`/`else` chain inside a generated label so Rust can see moved case values
-  are branch-local. Switches containing `fallthrough` still lower through an
-  explicit selected-case slot plus a fallthrough flag. Both paths preserve
-  source-order case expression evaluation, let `default` appear anywhere while
-  still running only when no case matches, and map unlabeled case-level `break`
-  to the generated Rust switch block label. Empty expression switches are valid
-  no-ops, but the tag expression must still be evaluated once when present.
-  Expression-switch and type-switch init statements both lower in the generated
-  switch block before the body so their bindings are available inside cases
-  without leaking after the switch. Type-switch guards lower to a generated
-  temporary so the guard expression is evaluated exactly once, including empty
-  type switches.
-- `for` loops with post statements wrap the body in a generated labeled block
-  whenever a matching `continue` is present. This covers both unlabeled
-  continues and `continue label` targeting the current loop so Go's post clause
-  still runs before the next iteration.
-- Select statements wrap generated bodies in a labeled block and rewrite
-  unlabeled select-case `break` statements to that label. Channel select
-  readiness uses `Chan::try_recv` and `Chan::try_send`, so builtin DCE roots must
-  preserve those methods whenever select lowering or channel helpers reference
-  them.
-- Non-void functions and function literals with no explicit final Rust `return`
-  get a tail `panic!("gors: missing return")` fallback unless lowering already
-  ended the block with a Rust tail value expression. Go rejects reachable
-  missing-return paths, but valid Go control-flow constructs and bodyless stdlib
-  fallbacks can still need a Rust tail expression after lowering.
-- Void functions and function literals with deferred calls wrap their body in a
-  simple `catch_unwind` boundary so implicit generated panics, such as checked
-  index, nil pointer, or integer divide-by-zero panics from callees, can become
-  recover payloads before deferred calls run. Keep this simple until broader
-  panic/recover conformance requires a richer control-flow model.
-  Runtime recover payloads and panic-hook suppression depth are thread-local.
-  The process-wide hook is installed once and forwards to the prior hook unless
-  the current thread is inside a generated recover boundary; one goroutine's
-  recover handling must never silence an unrelated thread's panic diagnostics.
-- Named result parameters are declared before a synthetic labeled function-exit
-  block. Explicit and bare `return` statements inside that block assign the
-  named results and break to the exit label, then the final Rust return reads
-  the named results after RAII defer guards have been dropped. This preserves
-  Go's ordering where deferred calls can mutate named results before the caller
-  sees them.
-- When a named-result function also contains `defer`, the labeled body—not the
-  final named-result read—runs inside `crate::builtin::catch_go_unwind`. A panic
-  payload is installed for `recover` before the defer stack drops, so a
-  recovering deferred call can mutate named results and the function returns
-  those final values. Do not wrap the final return in that boundary or let an
-  unrecovered payload bypass the defer stack's resume path.
-- Lowering-generated labels and temporary identifiers with deterministic
-  counters belong in `gors/src/compiler/synthetic_names.rs`. Focused lowering
-  modules such as named returns, switch/select, goto, and range lowering should
-  request names there instead of owning local counter/spelling state.
-- Deferred calls are pushed onto a function-scoped LIFO stack after evaluating
-  the function value/receiver arguments that the current lowering can save.
-  Dropping that stack at function exit preserves Go's nested-block defer timing
-  and keeps named-result mutation before the final Rust return.
-- Named `[]byte` types are newtypes, but the compiler also emits helper impls
-  (`Len`, `Cap`, `StringValue`, `AsRef<[u8]>`, `AsMut<[u8]>`, and `Append`
-  variants) so stdlib code can use them like Go byte slices.
-- Builtin `make` for named container types must allocate the underlying
-  slice/map/channel representation and wrap it in the named Rust newtype. Do
-  not lower `make(MySlice, n)` or `make(MyMap, n)` to `Default::default()`,
-  because Go expects the requested length/capacity to be observable through
-  subsequent slice/map operations.
-- Generic map-clone lowering is a source-body semantic rewrite for the
-  nil-preserving `return clone(m).(M)` runtime-linkname pattern, not an exported
-  function-name special case. Do not reintroduce a `maps.Clone` or `Clone`
-  trigger; the replacement must depend on the generic map parameter/result and
-  the runtime clone body shape.
-- Bool-to-`uint8` intrinsic lowering is selected by the Go source's
-  `compiler intrinsic` marker plus the exact `func(bool) uint8` signature, not
-  by the helper function's spelling.
-- Named `string` types are also newtypes and must implement `StringValue` for
-  owned, shared-reference, and mutable-reference receivers. Method receiver
-  rewriting must avoid turning `string(r)` into `builtin::string(&self)` because
-  trait impl receiver shims can make that `&&mut T`; use the receiver value
-  itself for the builtin string conversion.
-- Deferred recover-handler elision is scoped through
-  `gors/src/compiler/recover_handlers.rs`. It should derive from receiver
-  methods that start with a real `if err := recover(); err != nil` guard and
-  only elide defers on the current receiver to those active handlers; do not
-  reintroduce a `catchPanic` method-name trigger.
-- Direct method-expression calls lower through the generated Rust inherent
-  method (`T.M(v, x)` -> `T::M(&v, x)`, `(*T).M(p, x)` -> `T::M(&mut *p, x)`),
-  and variadic method-expression arguments use the same packed/spread lowering
-  as ordinary variadic calls. Stored method-expression function values infer as
-  `GoType::Func` with the receiver inserted as the first parameter and lower to
-  shared function cells through expected-type expression lowering; keep that
-  receiver-aware inference distinct from imported package function selectors.
-  Shared method-expression receiver classification lives in
-  `gors/src/compiler/method_expressions.rs`; type inference, IR call ABI, and
-  backend lowering must consume that boundary instead of carrying parallel
-  receiver-name/type-argument/pointer-shape classifiers. That boundary also
-  owns the generated method key plus receiver-aware params/results/variadic
-  signature accessors for type method expressions; do not rebuild those facts in
-  each caller. Shared TypeEnv-backed
-  selector facts such as declared selector-base values and qualified
-  package-member keys live in `gors/src/compiler/selector_semantics.rs`;
-  backend value-selector classification must also use
-  `selector_base_is_unshadowed_import`, because a receiver, parameter, or local
-  value may shadow a same-named file import for the selector's lexical scope.
-  recursive embedded field and method lookup belongs there too. Its selector
-  resolver preserves the complete projection path, searches breadth-first so
-  shallow members shadow deeper ones, reports same-depth ambiguity, retains
-  instantiated receiver arguments, and terminates cycles per candidate path.
-  Type inference, IR call planning, backend field/method projection, and
-  interface satisfaction must consume that shared result instead of carrying
-  one-hop or first-match promotion walkers.
-  method-expression detection, type inference, and IR call/result planning
-  should consume those helpers instead of rebuilding selector value-vs-package
-  logic locally. Backend lowering still
-  distinguishes the method-expression receiver argument type from the declared
-  method receiver shape, so `(*T).ValueMethod` accepts a pointer receiver
-  argument while borrowing the pointee for the generated Rust value-receiver
-  call.
-- Method values (`v.M`) infer to generated function-value cells. The backend
-  lowers them as closures that evaluate and bind the receiver exactly once.
-  Value receivers capture a Go value copy, pointer receivers capture the
-  generated pointer cell and retain identity, and interface receivers use
-  `__gors_clone_box` to snapshot the interface value into owned shared storage
-  before the closure is created. Reassignment of the original value or
-  interface after `f := v.M` must not retarget `f`; pointer-visible pointee
-  mutations must remain visible.
-- Go value-receiver methods that assign to the receiver or its fields must lower
-  to an owned `mut self` receiver. Borrowed `&self` is only valid for
-  non-mutating value receivers; mutating value receivers such as
-  `encoding/base64.Encoding.WithPadding` must mutate the Go copy and may return
-  a pointer to that copy.
-- Generated Rust nominal types are emitted public even when the Go type is not
-  exported. Cross-module generated code may need to call public methods through
-  exported package-level values whose concrete receiver type is unexported, such
-  as `encoding/binary.LittleEndian`; Rust privacy must not block that generated
-  call path.
-
-### Parallel compilation
-
-- `compiler::CompileOptions::jobs` is the single package-task budget. Native
-  builds use scoped Rayon pools behind the `parallel` feature; stable Wasm keeps
-  the default budget of one, while the opt-in `wasm-threads` build uses the
-  already-initialized `wasm-bindgen-rayon` global pool. A zero budget is
-  normalized to one.
-- Parallel work is split at deterministic ownership boundaries: independent
-  local packages, independent pending stdlib packages, and safe per-file
-  resolver work. Package-wide type and interface analysis remains sequential,
-  per-file parallel lowering is disabled when external interface implementors
-  require shared package facts, and nested custom Rayon pools must not be
-  created from an existing Rayon worker. When stdlib packages are parallelized,
-  each package receives a single-file budget; otherwise one package may spend
-  the available budget across safe files. External implementor maps are shared
-  as immutable snapshots and explicitly installed in each pending-package
-  worker's compiler TLS, so their presence does not serialize independent
-  stdlib packages; do not rely on coordinator thread-local state crossing a
-  Rayon boundary.
-- Worker tasks return deterministic formatted Rust `String` values. The
-  coordinator reparses those strings into `syn` nodes and installs modules in
-  stable order; non-`Send` syntax trees never cross native or Wasm worker
-  boundaries. `jobs` is operational rather than semantic, so outputs and cache
-  identities must remain identical across worker counts. Keep explicit
-  single-worker versus multi-worker determinism tests.
-- Do not dispatch already initialized type environments or resolved modules
-  through Rayon merely because a job budget is available. Warm cache reads and
-  generated-source reparses stay sequential; parallel package dispatch requires
-  more than one genuinely uncached module, while one uncached package may still
-  spend the budget across safe files. This avoids native pool construction and
-  Wasm shared-memory contention on the interactive cached path.
-
-### Incremental builds
-
-- `.gors_manifest.json` tracks content hashes per module
-- `compute_content_hash()` concatenates sorted Go source files → SHA-256
-- Unchanged modules are skipped during `build`
-- Files tracked by the previous manifest but absent from the new generated
-  output are removed, so DCE/module-pruning changes do not leave stale `.rs`
-  files in the output directory.
-- CLI publication of a generated directory is serialized by
-  `.gors-build.lock`. Changed files are fully written and synced in same-directory
-  temporaries, leaf modules are atomically persisted before `lib.rs` and
-  `main.rs`, stale outputs are removed under the same lock, and the new manifest
-  is published last. Keep the lock across the whole write/remove/manifest
-  transaction so two `gors` processes cannot interleave programs in one output
-  directory.
-- `gors run` keeps the same lock through generated-source publication, `rustc`
-  executable replacement, executable-manifest publication, and successful child
-  spawn. It releases the lock immediately after `Command::spawn`, before waiting
-  for the child, so another invocation cannot replace the validated executable
-  before launch but a long-running generated program never blocks later builds
-  or runs.
-- `.gors_cli_cache.json` is a separate CLI cache manifest. It validates the
-  exact command/configuration identity, compiler and CLI fingerprints, pinned
-  Go SDK, Rust toolchain/edition, target, `GORSPATH`, module context, eligible
-  input-file membership and contents, and output hashes. Do not conflate it with
-  the per-module write-skipping manifest above.
-- The pre-parse CLI key treats `GORSPATH` as search-root identity: it hashes the
-  configured value, root order, normalized/canonical root paths, and root kind,
-  but never recursively scans every possible Go file in those trees. After
-  parsing, `InputSnapshot` is the exact semantic guard: it hashes every resolved
-  source file and records eligible `.go` directory membership. Root relocation
-  must invalidate the lookup key, while edits/additions in packages actually
-  selected by resolution must invalidate snapshot validation without making a
-  warm lookup proportional to the entire `GORSPATH`.
-- The CLI cache lives under `${XDG_CACHE_HOME:-$HOME/.cache}/gors` when those
-  roots are available. It is pruned to 256 entries, 5 GiB, and 14 days;
-  manifests, source maps, executables, and resolver archives that publish cache
-  state must use atomic replacement. `build` reuses validated generated output;
-  `run` can additionally reuse its validated `rustc` executable. `jobs` changes
-  scheduling only and therefore does not fragment semantically identical cache
-  entries.
-- Active `build` and `run` cache users hold a shared `.gors-cache.lock` before
-  taking their per-output `.gors-build.lock`, through cache lookup, compilation,
-  and publication. Pruning takes the cache-wide lock exclusively, rechecks the
-  once-daily marker after acquisition, and only then removes entries. Preserve
-  that shared-then-output lock order: it lets unrelated compilers proceed in
-  parallel without allowing cache GC to delete an active publication.
-
-## Stdlib system
-
-Go stdlib imports are resolved as ordinary Go packages through the resolver in
-`gors/src/resolve/mod.rs`, backed by build-time generated metadata from the
-embedded Go SDK. The old handwritten stdlib modules have been removed.
-Import-path-to-module naming is generic (`unicode/utf8` → `unicode__utf8`, Rust
-keywords get a trailing `_`).
-
-`gors-builtin/src/lib.rs` implements Go predeclared builtin support and is copied
-into every generated Rust program as `builtin.rs`. It must not contain
-handwritten implementations of specific Go stdlib packages such as `fmt`,
-`strings`, or `sort`.
-
-Stdlib coverage tests are generic compiler tests. The Go stdlib is used because
-it is broad, real Go code; any fix needed for `fmt`, `strings`, `sort`, or
-another package should improve parsing, type inference, code generation,
-reachability, or backend/runtime primitives for arbitrary Go packages. Do not
-make a stdlib test pass by reimplementing that stdlib function, method, type, or
-constant in Rust, or by adding package-name-specific lowering rules.
-Stdlib conformance work must proceed package by package in alphabetical order
-from `gors/tests/reports/go-stdlib-conformance.json`. Before moving past a
-package, audit all package integration check rows one by one, including rows
-already marked `passing`; do not sample, spot-check, or infer coverage from
-report status. For that package, inspect every exported package-level
-function, method, type, constant, and variable reported by the matrix, open the
-fixture that claims each row, and add or fix integration coverage until each
-supported row is backed by an e2e generated-program check that compares Go output
-with gors output. Treat report rows and `// gors:stdlib-cover` comments as an
-audit queue, not as proof; verify the fixture body and its observable stdout
-comparison yourself rather than relying on aggregate report status. Do not mark
-a package complete until every reported
-exported function, method, type, constant, and variable for that package has been
-audited against an actual e2e check that proves Go and gors agree. If a passing
-row cannot be tied to such a check, fix the fixture/reporter or downgrade the
-row before moving on. A symbol is not covered just because a fixture compiles
-with `var _ = pkg.Symbol`, `var _ Type`, a method expression, assignment of a
-method/function value that is never called, or another selector-only reference;
-those references may exercise reachability, type checking, or symbol resolution,
-but they do not prove behavior. Mark a stdlib method as covered only when an
-integration fixture calls that method on representative receiver state and
-observes enough return values, receiver mutations, errors, or side effects
-through stdout to prove that Go and gors behave the same under the integration
-harness. Mark a stdlib function as covered under the same rule: the fixture must
-call it and compare deterministic observable behavior against the pinned Go SDK.
-If the conformance reporter marks selector-only references as passing, fix the
-reporter or the fixture semantics before claiming package completion.
-
-The `ParsedProgram.stdlib_imports` field tracks which stdlib packages a program
-uses directly. `compile_program_multi()` scans those packages for type
-information, compiles user/local code first, then resolves embedded stdlib
-packages on demand from the actual cross-module symbols that remain after
-reachability pruning.
-
-Stdlib resolution is root-specific and cached by import path plus reachable
-symbol set. Generated module source and its exact resolved-import set share one
-per-key `OnceLock`, so concurrent cold callers perform one compilation and
-wait for the same result rather than duplicating semantic work. The resolver
-may reuse an already initialized rooted entry whose roots are a superset of the
-requested set, because source reachability is monotonic and compiler-side DCE
-still prunes against the actual roots. Prefer the smallest such superset with
-the cache key as a deterministic tie-breaker; never substitute an uninitialized
-entry, a different import path, an uncacheable entry, or the unfiltered
-`roots=None` lowering mode. Reused module source and resolved-import metadata
-must come from the same selected slot. The resolver parses selected Go files
-only when the package is needed, filters unused
-top-level AST declarations before compiling, and caches type environments,
-transitive imports, and generated module source. Direct
-imports with no surviving references should not force module generation.
-Resolver source filtering must retain same-package method declarations that are
-only discovered from typed local values inside reachable bodies, such as
-`p.parse()` where `p` is a local `parser` value. Keep that discovery generic and
-type-env driven so stdlib source pruning does not drop ordinary helper methods
-before compiler lowering can reference them.
-Resolver archive schema 4 serializes only mechanically generated module source,
-exact imports, root sets, and type environments. Before either global cache
-write lock mutates semantic state, import must validate and prepare the whole
-archive: header/fingerprints, entry counts and known paths, strict sorted
-uniqueness, generated Rust parsing, record digests, canonical type-environment
-serialization and digest, serde round-trip, and the actual embedded Go package
-name. Treat those digests as corruption detection, not authentication.
-Archive output is deterministic: records, roots, imports, JSON object keys, and
-all known `HashSet` fields are canonicalized before hashing and serialization.
-Wasm imports are capped at 64 MiB and 1,024 records; native imports at 256 MiB
-and 4,096 records. The initialized root-set cache is LRU-bounded to 64 MiB/256
-entries on Wasm and 256 MiB/1,024 entries natively; eviction skips uninitialized
-or initializing slots. Keep operational telemetry behind
-`resolved_module_cache_stats()`.
-The resolver-cache fingerprint covers compiler and builtin source/manifests,
-`build.rs`, the workspace manifests and lockfile, target/profile, every
-semantic feature, GOOS/GOARCH, and the exact filtered embedded SDK bytes. It
-excludes only the `parallel` and `wasm-threads` scheduling features so stable,
-native-parallel, and threaded builds for the same target can exchange
-deterministic resolver output. The full compiler fingerprint remains sensitive
-to every feature for CLI and complete-artifact caches. Wasm also includes the
-tracked `www/wasm` manifest and lockfile; custom SDK source/version changes must
-invalidate the preload marker. This archive is a cache of generic Go
-compilation, never a place to ship handwritten Rust replacements for Go stdlib
-APIs.
-Compiler-side stdlib module loading, dependency pruning, unreferenced-module
-cleanup, and `GORS_STDLIB_TRACE` formatting live in
-`gors/src/compiler/stdlib_modules.rs`; `compiler/mod.rs` should only orchestrate
-when those steps run in the compile pipeline.
-Compiler-side stdlib/DCE reachability is also memoized by the Rust item token
-stream, requested roots, and known module names; keep that key aligned with any
-future reachability input that can change the kept item set. Precompute the item
-fingerprint once while a module's syntax is immutable and reuse it across
-root-specific lookups. Cross-module root fixed points must likewise remember the
-last expanded root set processed for each module and revisit only modules whose
-roots grew. When the resolver publishes wider rooted source for a module,
-invalidate the processed-roots marker for the replaced source: required roots
-may already have grown and been scanned against the older, narrower item set.
-Rescanning every stable module after an unrelated module changes turns
-dependency propagation quadratic without changing semantics.
-`reachable_stdlib_items()` returns a named `ReachableItems` result: `keep`
-drives item retention, `refs` drives external module-root propagation, and
-`names` drives intra-module item/member retention. Do not return anonymous
-tuples or unpack positional reachability slots in callers. Cache lookup/storage
-belongs behind the reachable-items cache helpers so the reachability function
-stays focused on computation rather than lock mechanics. Within one reachability
-computation, collect references from each distinct reachable item state once;
-local-name growth, not duplicate keep/external-ref inserts, controls convergence.
-Compiler-side root propagation should go through the private
-`RequiredModuleRoots` helper in
-`gors/src/compiler/required_module_roots.rs` rather than open-coded
-`HashMap<String, HashSet<String>>` loops. The same module owns the shared
-module-root merge primitive used by DCE and external-reference collection.
-`SemanticReachabilityGraph` lives in
-`gors/src/compiler/semantic_reachability.rs`; it records item-level
-local/external refs, supports traversal from explicit module root names, and
-mirrors DCE expansion for supertraits plus top-level receiver-method roots
-through `SyntheticRoot` nodes such as `LittleEndian::Uint32` pointing at
-concrete receiver methods such as `littleEndian::Uint32`. With
-`GORS_SEMANTIC_REACHABILITY_AUDIT=1`, the DCE audit path compares semantic
-external-root traversal against the current token-derived collector for both
-main-package roots and transitive non-main module roots. Broaden that graph
-toward the remaining existing DCE semantics before replacing token-derived
-pruning paths.
-Per-iteration DCE state lives in `gors/src/compiler/dce_iteration.rs` through
-`DceIterationContext`, and cross-module external-root discovery lives in
-`gors/src/compiler/external_roots.rs` through `ExternalRootCollector`. Keep
-semantic reachability auditing attached to those DCE boundaries instead of
-scattering ad hoc `collect_external_refs()` calls through stdlib resolution,
-pruning, or post-prune preservation code.
-Reachable-item cache state, module-level DCE fingerprints, and
-length-delimited reachability fingerprinting live in
-`gors/src/compiler/reachability_cache.rs`; DCE orchestration should request
-cache keys, cached entries, and fingerprint builders from that module instead
-of owning lock mechanics or hash serialization in `compiler/mod.rs`.
-Cached reachable-item computation lives in
-`gors/src/compiler/dce_reachability.rs`; it expands roots, collects item refs,
-merges external module roots, and stores `ReachableItems` cache entries. The
-compiler root should call `reachable_stdlib_items()` rather than owning that
-fixpoint body.
-Reachability root/name discovery and expansion live in
-`gors/src/compiler/reachability_names.rs`; DCE and semantic reachability should
-share main-module root selection, exported-root collection, item/top-level name discovery, trait
-supertrait/method maps, and top-level receiver-method root expansion through
-that module rather than duplicating name logic.
-Resolver roots that explicitly request a package-boundary receiver method keep
-that receiver's complete declared method set available for later structural
-interface satisfaction. Keep this promotion bounded to requested receiver roots;
-do not recursively promote every receiver discovered through method-body edges.
-Ref-collection traversal and input state live in
-`gors/src/compiler/ref_collection.rs`; token DCE, semantic reachability, and
-external-root discovery should construct `RefCollectionContext` and call
-`collect_refs_from_item` from that module rather than owning ad hoc visitors or
-context structs in the compiler root. That visitor is also responsible for
-generated associated-method call shapes, including qself/UFCS calls such as
-`<T>::M(...)`, so DCE keeps receiver impl methods emitted by projected receiver
-lowering. Receiver facts in that visitor are lexical and sequential: function,
-closure, and block bindings must not leak across scopes, a local initializer is
-analyzed before its pattern is bound, and a block-valued receiver is inferred
-from the environment immediately preceding that block's tail expression. Apply
-the same scoped replay to tuple destructuring through generated block values and
-zero-argument IIFEs so later receiver methods retain their concrete impls.
-Item macros participate in reachability through shared helpers in
-`gors/src/compiler/syn_inspect.rs`: identifiers referenced in macro tokens are
-edges, and item names declared by a macro body are discovered by parsing that
-body as a `syn::File`. Reachability-name collection, semantic graph construction,
-item retention, and unused-`use` pruning must consume the same macro facts.
-Do not add macro-name-specific DCE exceptions or let a macro-declared reachable
-item lose the imports referenced by its body.
-Builtin runtime-helper pruning lives in `gors/src/compiler/builtin_pruning.rs`;
-the DCE loop should delegate builtin channel, complex, bitcast, and builtin
-trait retention policy there instead of carrying runtime-specific root lists in
-the compiler root.
-Builtin helper dependencies introduced by retained builtin impls form a
-closure, not a one-shot root expansion. `prune_builtin_items_to_roots()` must
-recompute reachability, expand `reachable.names` through
-`gors/src/compiler/builtin_roots.rs`, add newly implied roots, and iterate until
-stable before retaining items. This keeps indirect requirements such as
-projected `GorsPtr` helpers and their `lock`/`ptr_id` dependencies without
-keeping unrelated builtin code.
-`GorsMap` is likewise a cohesive language-runtime method family once its
-storage type is reachable. Named Go map types call those methods through Rust
-`Deref`, which hides the builtin receiver from syntactic reference collection;
-expand the `GorsMap::*` roots together rather than adding call-site or stdlib
-package exceptions.
-Capacity-preserving `GorsSliceStorage` and its borrowed `GorsSliceParam` adapter
-form the same kind of cohesive runtime family. Retaining either representation
-must keep both types, their private target state, and their complete inherent
-method dependency closure; trait `Drop` bodies can call private storage methods
-that a call-site-only root scan cannot see after pruning.
-`GorsSliceStorage` keeps every element in its logical capacity fully initialized
-inside owned backing storage while tracking the Go header's start, length, and
-capacity separately; do not replace this with unsafe `Vec::set_len`. Promotion
-from `Vec` initializes spare capacity with `Default`, while generated non-default
-types supply their Go zero value through `with_len_capacity_by`. A borrowed
-`GorsSliceParam` owns a local header copy and writes the entire initialized
-capacity back on drop, so writes above the caller's old length survive a later
-caller reslice without leaking callee header changes.
-Builtin post-pruners must consume that final transitive reachable-name set, not
-the original external root set; a retained generic item can introduce trait or
-method dependencies that are invisible at the initial call boundary.
-Post-reachability item filtering lives in `gors/src/compiler/dce_pruning.rs`;
-the DCE loop should delegate reachable-item retention, unused generated struct
-field pruning, and unused `use` pruning there rather than keeping AST visitors
-inside `compiler/mod.rs`.
-Resolver roots are consumed before lowering by filtering each package AST to its
-reachable declarations. Do not carry a dynamic active-root scope into compiler
-lowering: interface-obligation discovery must inspect every declaration
-signature in each already-filtered file, regardless of function or method
-naming, so cross-file interface implementors remain complete.
-
-## Go toolchain
-
-The pinned Go SDK version lives in the repository root `.go-version` file. Do
-not hardcode the Go version elsewhere unless the target format cannot reference
-that file; when that happens, keep the duplicated value aligned.
-
-`gors/build.rs` reads `.go-version`, downloads the matching Go SDK tarball,
-verifies its `.sha256`, extracts it once under `$CARGO_HOME/gors-cache/`, and
-uses that extracted SDK as the source for generated `go_stdlib.rs` metadata and
-copied `go_stdlib_src/` files under Cargo `OUT_DIR`. The build exports
-`gors::GO_VERSION` and `gors::STDLIB_VERSION` (`gostdlibx.y.z`) so generated
-output manifests and `gors version` change when the embedded stdlib changes.
-It must also rerun when `../gors-builtin/src/lib.rs` changes because compiler
-tests and generated programs embed `builtin.rs` from that source.
-
-Integration tests must not call a system `go`. `tests/common.rs::go_command()`
-uses the extracted SDK `bin/go` from the `gors` build, with `GOTOOLCHAIN=local`,
-for both `go_oracle` and `go run` comparisons. CI should not install Go via
-`actions/setup-go`, as the pinned tarball is the source of truth.
-GitHub Actions caches `$CARGO_HOME/gors-cache` as `~/.cargo/gors-cache`, keyed
-by runner OS and root `.go-version`, so SDK download/extraction changes must keep
-that cache path and key source aligned.
-Manual fixture debugging must follow the same rule: prefer filtered integration
-targets such as
-`rtk env GORS_TEST_FILTER=container/heap make rust-test-integration-go-stdlib`
-over ad hoc `go run`. Do not run commands such as
-`rtk go run ./gors/tests/fixtures/go_stdlib/container/heap`; that uses the
-system Go tool instead of the pinned SDK. If a direct Go reference run is
-unavoidable, invoke the cached SDK through `gors/tests/common.rs::go_command()`
-or the exact `gors::GO_SDK_PATH/bin/go` binary it resolves. Do not run bare
-system `go` commands against fixture paths from the workspace.
-
-## Testing
-
-The Rust toolchain is pinned to `1.96.0` in `rust-toolchain.toml`. Keep all
-workspace crates on Rust edition 2024, keep each package `rust-version` aligned
-to `1.96.0`, and do not switch CI back to floating `stable`. Any direct rustc
-path used by tests or the CLI must invoke `rustup run 1.96.0 rustc` and pass
-edition 2024. Do not use `rtk rustc --edition=2021`; manual reproductions must
-use `rtk rustup run 1.96.0 rustc --edition=2024 ...`, and Rust tests that assert
-compiler invocations must expect the same pinned toolchain and edition.
-
-### Unit tests
-
-```bash
-make rust-test-unit
-```
-
-`make rust-test-unit` runs the normal workspace test suite without integration
-features. Compiler/printer/generator regression tests live inside the `gors`
-crate as unit tests attached to the modules they cover, such as
-`gors/src/printer/mod.rs` and `gors/src/compiler/manifest.rs`. Unit tests assert
-in-process contracts only; they must not invoke `go`, `gors`, or `rustc`.
-Use reduced synthetic Go/Rust inputs or small local packages for generic
-compiler and resolver contracts. Do not compile a large embedded stdlib package
-as a unit-test proxy when the same reachability, type, adapter, DCE, or
-publication contract can be isolated; keep full-package coverage in the stdlib
-integration suite. A focused real-package unit test remains appropriate when
-the contract genuinely depends on that package's source shape.
-Shared integration test harness code lives in `gors/tests/common.rs`.
-Integration test entrypoints live in `gors/tests/` and are wired into the
-`gors` crate through explicit `[[test]]` entries in `gors/Cargo.toml`;
-integration fixtures remain under `gors/tests/fixtures/`.
-
-`make all` is the broad local build/lint/unit/integration gate. It depends on
-`make rust-build`, `make rust-lint`, `make rust-test`, `make web-build`,
-`make web-lint`, and `make web-test`. CI additionally runs `make fuzz-test`,
-the compiler-focused Playwright suite (`npm --prefix www run test:compiler`),
-canonical report drift checks, and GitHub-only Pages artifact/deploy steps; do
-not call `make all` exact CI parity unless those checks are folded into it.
-
-CI runs on `pull_request` for PR branches and on `push` only for `main`.
-Do not re-enable feature-branch push CI unless the duplicate PR/push checks are
-actually needed.
-
-`make rust-test` is the local full-suite test convenience command. It depends on
-the split unit and integration targets below and should not redefine its own
-combined Cargo command. CI should call the split `make rust-test-*` targets
-below for clearer job boundaries and failure output.
-
-Unit tests and directly invoked partial integration targets use the custom `ci`
-profile, which is a debuggable release-style profile: light optimization,
-debug symbols, no LTO, and many codegen units. The aggregate
-`make rust-test-integration` target intentionally overrides the integration
-profile to `release` so full integration sweeps optimize for faster runtime.
-Keep this split in the Makefile through `RUST_TEST_PARTIAL_PROFILE`,
-`RUST_TEST_INTEGRATION_PROFILE`, and `RUST_TEST_FULL_INTEGRATION_PROFILE`.
-macOS builds use Apple's `ld_prime` linker through Cargo target rustflags for
-faster links in all profiles.
-
-### Integration tests
-
-```bash
-make rust-test-integration-go-repositories
-make rust-test-integration-go-spec
-make rust-test-integration-go-stdlib
-make rust-test-integration-go-programs
-```
-
-Integration tests use matching Make targets and Cargo feature gates:
-`rust-test-integration-go-repositories` → `test_integration_go_repositories`,
-`rust-test-integration-go-spec` → `test_integration_go_spec`,
-`rust-test-integration-go-stdlib` → `test_integration_go_stdlib`, and
-`rust-test-integration-go-programs` → `test_integration_go_programs`. Their
-integration-test binary names match the feature gates and are declared in
-`gors/Cargo.toml`, so the Make targets do not need extra test-name filters.
-
-Pull requests run the full Go-spec suite plus one deterministic end-to-end
-fixture from each repository, stdlib, and arbitrary-program corpus. Pushes to
-`main` run all four complete integration suites. Repository and spec jobs have a
-30-minute timeout; the full stdlib and arbitrary-program jobs have 60 minutes.
-PRs also run deterministic fuzz/property smoke and the persistent browser
-compiler test. The full v86 browser integration remains a `main`-push gate.
-Stale PR workflows may be cancelled; every `main` run must finish so its full
-conformance and deploy decision remain trustworthy.
-
-The integration binaries in `gors/tests/` are feature-gated as whole files:
-`go_repositories` runs both lexer and parser acceptance against the reference
-repository corpus, while `go_spec`, `go_stdlib`, and `go_programs` compare
-in-process generated Rust program output with the pinned Go SDK's `go run`.
-Lexer/parser integration may execute the batched Go fixture runner for reference
-output, but that runner must be built with `gors/tests/common.rs::go_command()`
-rather than system `go`; the gors side should use library APIs in-process rather
-than spawning the `gors` CLI. CLI
-argument and output-file writer contracts belong in `gors-cli` unit tests.
-Compiler/printer/generator coverage belongs in module-local unit tests under
-`gors/src/` unless it must execute generated Rust or compare against Go.
-Lexer/parser corpus tests must compare files in bounded batches and discard Go
-oracle output batch-by-batch; precollecting oracle output for every repository
-file can exhaust hosted CI memory before progress is reported.
-
-### Adding a test program
-
-1. Create a directory in `gors/tests/fixtures/go_programs/` (e.g., `my_feature/`)
-2. Add `main.go` (and optionally `go.mod` for multi-package programs)
-3. Update the fixture set's `fixtures.json` expected count. Any
-   underscore-prefixed fixture needs an explicit `run`, `unsupported`, or
-   `compile_error` status, and every non-running entry needs a non-empty reason
-   or reason file.
-4. Run the focused fixture target, then the complete affected suite. The
-   generated-program harness starts the pinned Go oracle first, requires it to
-   exit successfully, then requires generated Rust to exit successfully and
-   compares raw stdout and stderr bytes exactly. A Go spawn failure, timeout, or
-   nonzero exit is a broken oracle/fixture, not permission to skip the case;
-   expected compile errors belong in the explicit Go-spec compile-error path.
-
-For broad stdlib API coverage, prefer grouping related checks into one package
-fixture such as `gors/tests/fixtures/go_stdlib/strings/main.go` rather than
-creating one runnable fixture per function; `rust-test-integration-go-stdlib` pays a
-full transpile plus `rustc` execution cost per discovered program directory.
-Within those grouped fixtures, coverage must be behavioral: call each function
-or method under test, print deterministic results or state transitions, and let
-the generated-program harness compare stdout against the pinned Go SDK. Do not
-use compile-only references such as `var _ = strings.Clone`, `var _ T`, or
-`var _ = (*T).M` as evidence that a package, function, method, or type is done;
-for method rows specifically, coverage requires an e2e integration check that
-invokes the method and proves Go and gors produce the same observable behavior.
-A method row is covered only if the fixture invokes that method and proves Go
-and gors produce the same observable behavior. A method expression, stored
-method value, interface assertion, or blank identifier assignment only counts
-after the fixture invokes it and checks the observable result.
-Mark covered stdlib rows with explicit `// gors:stdlib-cover package::Symbol`
-comments only after the fixture contains that behavioral check. Before adding or
-keeping any coverage marker, verify the exact row one by one against the
-fixture's observable output; remove or leave unsupported any marker that only
-proves reachability, type checking, method-set satisfaction, or symbol
-resolution. The reporter must ignore ordinary selector references.
-Generated-program fixtures compare both stdout and stderr. Prefer `fmt.Print*`
-for ordinary deterministic observations; use Go's predeclared `print` and
-`println` only when stderr behavior is itself under test.
-After adding or changing Go-spec or stdlib fixtures, use
-`make conformance-report` from the repository root to run both complete suites
-and refresh their canonical reports. Use `make conformance-check` to regenerate
-and fail if `gors/tests/reports/` differs. Canonical report writes require
-`GORS_UPDATE_CONFORMANCE_REPORTS=1` and a complete unfiltered, unlimited,
-non-diagnostic, uncancelled run; focused runs must never rewrite the canonical
-reports. For faster iteration, use
-`make rust-test-integration-go-spec-fixture FIXTURE=<substring>` or
-`make rust-test-integration-go-stdlib-fixture FIXTURE=<substring>`.
-The Rust stdlib reporter derives
-untested package/symbol rows from the embedded Go SDK source; keep its coverage
-classification aligned with the behavioral rule above, not with mere selector
-presence in fixture source.
-The Go specification conformance matrix lives in
-`gors/tests/fixtures/go_spec/spec.json` and is emitted by the Rust reporter as
-`gors/tests/reports/go-spec-conformance.json`. Mark implemented entries as
-`passing` only when they point at runnable generated-program fixtures under
-`gors/tests/fixtures/go_spec`. The matrix is a 100% supported contract: keep all
-211 entries passing, and add reduced repros as ordinary runnable fixtures
-directly under `gors/tests/fixtures/go_spec/` rather than creating an
-unsupported bucket or hidden skip.
-The run harness caches generated-program binaries under
-`target/gors-integration-run/` using every regular fixture file, the compiled
-integration-test binary fingerprint, `gors::STDLIB_VERSION`, pinned
-`rustc -vV`, and the exact rustc flag contract. Keep every compiler-sensitive
-input in that key if the harness starts skipping more work. Successful entries
-are bounded to 5 GiB and 14 days.
-The generated Rust test harness and any manual generated-artifact `rustc`
-reproduction must compile with Rust edition 2024 through the pinned toolchain.
-Do not call `rustc` directly or use older edition flags; invoke
-`rtk rustup run 1.96.0 rustc --edition=2024 <artifact>/main.rs` or, preferably,
-rerun the filtered integration target so the harness supplies the same flags
-used by CI.
-Generated-program integration targets execute fixtures in a Rayon pool
-with 16 MiB worker stacks, matching the lexer/parser integration stack budget.
-Large stdlib fixtures such as `go_stdlib/net/http` can overflow the default test
-thread stack while parsing and compiling real Go stdlib packages.
-Each generated-program worker starts its Go reference `go run` child before the
-generated Rust compile/run path so Go, gors, and rustc work overlap across the
-whole Rayon pool. By default the run harness uses one worker per available CPU;
-keep `GORS_TEST_RUN_THREADS` as the exact run-specific override. Keep
-child-process capture on temp files plus polling and kill-on-abort behavior so
-parallel fail-fast does not deadlock on stdout/stderr pipes. Always finish and
-validate the Go reference before deciding a fixture result, even when Rust
-generation or execution has already failed.
-
-### Environment variables for test tuning
-
-- `GORS_TEST_LIMIT=N` — cap number of files tested
-- `GORS_TEST_FILTER=substring` — only test matching files
-- `GORS_TEST_VERBOSE=1` — show progress
-- `GORS_TEST_FAIL_FAST=1` — cancel queued/running integration work after the first failure where supported
-- `GORS_TEST_THREADS=N` — worker threads for lexer/parser integration tests
-  and an explicit generated-program run-test fallback
-- `GORS_TEST_RUN_THREADS=N` — worker threads for generated-program run tests;
-  defaults to `GORS_TEST_THREADS` when set, otherwise all available CPUs. Use
-  this run-specific override for exact CPU-saturation experiments; higher
-  values can slow the suite through allocation and cache contention.
-- `GORS_TEST_GO_RUN_TIMEOUT_SECS=N` — override the generated-program harness
-  timeout for Go reference runs (default: 30 seconds)
-- `GORS_TEST_GENERATED_RUN_TIMEOUT_SECS=N` — override the generated-program
-  harness timeout for compiled Rust program runs (default: 10 seconds)
-
-## Fuzzing
-
-Fuzzing has two complementary lanes. Pull requests replay checked-in corpora and
-run deterministic proptest cases on stable Rust (`make fuzz-test`). Local,
-scheduled, and manually dispatched coverage-guided runs use the fixed
-`nightly-2026-07-01` toolchain with pinned `cargo-fuzz`; their optimized profile
-keeps LTO off and uses 16 codegen units to shorten instrumented rebuilds.
-Scanner, parser, deterministic parse snapshot, and generic compiler/printer
-targets remain distinct. The compiler target may exercise ordinary embedded Go
-source, but it must never introduce a Rust replacement for a Go stdlib API.
-
-Reviewed seeds live in `fuzz/corpus/<target>/`; evolving libFuzzer inputs and
-artifacts stay ignored under `fuzz/work-corpus/` and `fuzz/artifacts/`. Minimize
-and understand a crash before promoting it with
-`fuzz/scripts/export-crashes.sh`, then add a focused regression when warranted.
-See `fuzz/readme.md` for the exact bounded/unbounded commands and target
-properties.
-
-## Run patterns
-
-From the workspace root, `cargo run -- ...` defaults to the `gors` CLI binary.
-The root manifest uses `workspace.default-members` to keep the fuzz helper
-binaries out of implicit default selection; use explicit `--workspace` or
-`--package=fuzz` commands when checks need to include fuzz targets.
-
-`gors run` supports the same invocation styles as `go run`:
-
-| Pattern | Example | Description |
-|---------|---------|-------------|
-| Single file | `gors run main.go` | Compile and run a single Go file |
-| Multiple files | `gors run main.go utils.go` | Explicit file list, all must be same package |
-| Directory | `gors run .` | All `.go` files in the directory (go.mod aware) |
-| Package path | `gors run ./cmd/server` | A specific sub-package within the module |
-
-Arguments after the source paths are forwarded to the compiled program:
-`gors run main.go -- --flag value`.
-
-When the first argument ends with `.go`, all leading `.go` arguments are treated as
-source files. Otherwise, the first argument is a directory/package path.
-
-`build` and `run` accept `--jobs N` and `--timings-json PATH`. Resolve the job
-budget in this order: explicit flag, `GORS_JOBS`, then
-`available_parallelism()`; all values must be positive. Because `run` treats
-remaining values as source/program arguments, put its compiler options before
-the source, for example:
-
-```bash
-cargo run -- build --jobs 8 --timings-json timings.json main.go
-cargo run -- run --jobs 8 --timings-json timings.json main.go
-```
-
-The timing report is written after a successful command and includes the
-command, resolved jobs, total duration, named phases, and cache hit/miss events.
-Set `GORS_PROFILE=1` for human-readable phase timings on stderr. The validated,
-bounded cache described under Incremental builds makes repeated `build`
-transpilation and `run` transpilation/`rustc` work reusable without weakening
-input, compiler, toolchain, or artifact identity checks.
-
-Key differences from `go run`:
-- Uses `GORSPATH` instead of `GOPATH`
-- The embedded Go stdlib comes from the hermetically downloaded SDK pinned in `.go-version`
-- Transpiles Go → Rust and compiles with `rustc`, not `go build`
-
-## Web UI (`www/`)
-
-The browser demo must not call the wasm compiler directly on the main thread.
-`www/go2rust-compiler.ts` owns the async API and delegates transpilation to
-`www/go2rust-worker.ts`; keep source-map data structured-cloneable and hydrate
-UI lookup helpers on the main thread. The worker loads wasm through
-`www/gors-wasm-loader.ts`, which instantiates `gors_bg.wasm` as an explicit
-asset before wiring it into wasm-bindgen's generated JS glue. Do not switch the
-worker back to the `wasm/pkg/gors.js` bundler entry without rechecking Chromium:
-webpack's top-level async wasm module path can stall before the worker message
-handler is installed.
-
-One persistent worker owns the Wasm instance and generic resolver state for the
-page lifetime. The main-thread client rejects superseded callers, while the
-worker keeps only the latest queued edit. Stable synchronous Wasm cannot receive
-a cancel message while compiling, so a superseding edit gets a short grace
-period and then terminates/replaces that stable controller worker; the
-replacement reloads the validated persistent resolver cache and compiles the
-newest input. Do not apply this preemption to the threaded runtime: its
-controller owns nested Rayon workers that cannot be safely torn down by the
-same path, so threaded mode remains latest-only and discards stale results
-after completion. Keep the worker output cache source-keyed and LRU-bounded to
-16 MiB. Packed source-map positions cross as transferred `Uint32Array` data;
-names remain strings.
-`www/tests/compiler/` is the browser-level contract for worker reuse, cache
-hits, stable-worker stale-compile preemption, latest-only coalescing, and opt-in
-thread initialization.
-
-Go scanner/parser positions and Rust diagnostic internals use UTF-8 byte
-columns, while Source Map v3 and Monaco use UTF-16 code-unit columns. Preserve
-byte columns through scanner/compiler tracking, convert against the exact source
-line only at the source-map/browser boundary, and count generated Rust token
-columns and token widths with UTF-16 units. Packed mappings, browser
-diagnostics, comment mappings, hover spans, and cursor lookups must all expose
-zero-based UTF-16 columns; never feed a byte offset directly into Monaco or
-JavaScript string indexing.
-
-The worker persists at most one 64 MiB resolver archive in IndexedDB. It tries a
-valid persisted snapshot first, then the deterministic gzip seed generated by
-the exact stable release Wasm compiler and `www/default-playground.go`, and
-otherwise proceeds as a cache miss. Rust owns archive validation; invalid
-browser snapshots are deleted. Stable and threaded builds intentionally share
-the seed only when the builds differ by the two operational scheduling
-features; every semantic source, dependency, target, profile, SDK, or other
-feature difference must reject it.
-
-Production remains stable single-threaded because GitHub Pages cannot supply the
-cross-origin isolation required by shared-memory Wasm. The opt-in threaded
-preview uses `nightly-2026-07-01`, `-Z build-std` with atomics/shared memory,
-`wasm-bindgen-rayon`, and a separate loader selected by
-`GORS_WASM_THREADS=1`. Its server must emit COOP `same-origin` and COEP
-`require-corp`; the loader requires `crossOriginIsolated` and
-`SharedArrayBuffer`, initializes
-`max(1, min(4, navigator.hardwareConcurrency - 1))` workers, and verifies
-`compiler_thread_count()` before exposing the compiler. Both modes use the same
-persistent-worker protocol and deterministic string/reparse compiler boundary.
-
-`www/` is currently a webpack-hosted Svelte SPA, not SvelteKit. The wasm/v86
-asset pipeline is wired through webpack, and app routes such as `/conformance` are
-served by history fallback plus emitted static fallback HTML
-(`conformance/index.html` and `404.html`). Treat a SvelteKit migration as a larger
-asset-pipeline migration rather than a routing-only change.
-
-The first-party browser/runtime code in `www/` is TypeScript. `make web-lint`
-includes both ESLint and TypeScript/Svelte type checking, while
-`make web-test-unit` runs Vitest and `make web-test-integration` runs the
-Playwright browser test against the real default app pipeline, including VM
-startup, Rust compilation, and program execution. The default `/playground`
-Hello World example is part of that integration contract: it must auto-compile
-through the wasm worker before the VM run step. `make web-test-integration`
-installs Chromium by default; CI passes
-`PLAYWRIGHT_INSTALL_ARGS="--with-deps chromium"` so browser system
-dependencies are installed after `web-install`. The Playwright web-server
-startup timeout must account for cold v86 rootfs extraction plus webpack's first
-bundle on hosted runners; do not shrink it back to a short dev-server default
-without validating CI cold-start timing.
-Playwright integration should start its own webpack server by default; only set
-`PLAYWRIGHT_REUSE_EXISTING_SERVER=1` for deliberate manual reuse. This prevents
-local dev servers from masking missing dependencies or disappearing while
-`npm ci` rewrites `www/node_modules`. It also uses `GORS_WEB_TEST_PORT`
-(default `18080`) instead of the human dev-server port `8080`, so local browser
-sessions on `http://localhost:8080` do not collide with CI-parity tests.
-The Playwright-owned webpack server disables live reload/watch; the VM run test
-can take several minutes and must not reset the playground while it is waiting
-for the Linux VM to finish.
-`make web-lint` runs before `wasm-pack build`, so TypeScript checked by that
-target must not depend on generated declarations under `www/wasm/pkg/`; define a
-small local interface for the wasm-bindgen surface when lint needs those types.
-The webpack dev server must accept both `127.0.0.1` and `localhost` hosts,
-because Playwright uses the former while local browser testing commonly uses the
-latter.
-Monaco must stay restricted to the playground languages (`go` and `rust`) in
-webpack. Re-enabling the default language set ships large unused workers such as
-TypeScript and can put Chrome under unnecessary `Map`/source-index pressure.
-Webpack source maps are disabled by default, including during `npm run dev`, to
-avoid browser DevTools exhausting source-map `Map` state on the large generated
-bundle. Set `GORS_WEB_SOURCE_MAPS=1` only when intentionally debugging webpack
-bundle source maps. The playground also caps client-side source-map indexing for
-very large compiler outputs; when the cap is exceeded, Rust output remains
-visible but hover/cursor mapping is disabled for that result.
-Conformance-page tests should derive package and symbol totals from
-`gors/tests/reports/go-spec-conformance.json` and
-`gors/tests/reports/go-stdlib-conformance.json`, not hardcode rendered summary
-strings, because adding a `go_stdlib` fixture intentionally changes those
-generated totals.
-
-CI deploys `www/dist` with native GitHub Pages artifacts
-(`actions/upload-pages-artifact` plus `actions/deploy-pages`) rather than by
-force-pushing a generated `gh-pages` branch. The v86 root filesystem makes the
-published site hundreds of MB, so branch-based deploys can fail during `git
-push` with HTTP 408/timeouts. The repository Pages source must be set to
-GitHub Actions (`build_type: workflow`) for this deploy path.
-
-## Type inference
-
-`gors/src/compiler/typeinfer.rs` provides a `TypeEnv` that pre-scans Go AST files
-before compilation to collect variable types, function signatures, struct fields,
-and interface declarations. The `GoType` enum represents Go types. Used during
-code generation for type-aware decisions (string indexing, numeric casts,
-interface detection).
-Index expression inference must preserve named element and map value types.
-Resolve only the outer container alias when discovering string/slice/array/map
-shape; recursively resolving element aliases erases newtypes such as
-`[N]encoding` elements and can make generated comparisons coerce constants to
-the underlying Rust scalar instead of the Go defined type.
-Struct field scanning also records fixed array field lengths so compile-time
-`len`/`cap` evaluation can fold selectors such as `len(Dirent{}.Name)` without
-hardcoding package-specific stdlib behavior.
-Const evaluation for conversion calls must resolve defined named types to their
-underlying scalar type before evaluating the value; stdlib declarations such as
-`mime.BEncoding = WordEncoder('b')` depend on preserving the converted constant
-instead of falling back to a zero placeholder.
-Generic type parameters with structural map constraints such as `M ~map[K]V`
-must retain their map shape during IR validation and backend lowering. Range
-clauses, comma-ok indexes, and map-index assignment over those parameters should
-use the underlying map key/value shape, while generated Rust signatures can
-lower the map-shaped parameter to a concrete `HashMap<K, V>` until full named-map
-identity preservation is implemented.
-Package-level function signatures and method signatures live in separate
-`TypeEnv` namespaces. Methods must be registered only as receiver-qualified keys
-such as `StringSlice.Search`, never as plain `Search`, because Go permits package
-functions and methods to share the same simple name and call-site lowering needs
-the package function signature for `func(...)` argument coercions.
-Generated Rust postpasses that coerce method-call arguments from signatures must
-use receiver-qualified method keys as well, including the generated module name
-when available. A plain method-name fallback is acceptable only when that method
-name is unambiguous across the generated impl set; otherwise one receiver's
-signature can incorrectly rewrite a same-named method call on another receiver.
-Multi-result assignment type registration must also resolve method calls through
-selector receivers such as `pkg.Value.Method()`, not only direct package
-functions or local receiver identifiers, so later uses like `err == nil` see the
-correct result type.
-
-`gors/src/compiler/ir.rs` is the typed Go IR layer being introduced between the
-parser AST and Rust `syn` backend. Current compile entrypoints build this IR as
-a semantic prepass before the legacy direct AST-to-syn lowering. Keep new
-language-semantic work moving into the IR first, especially addressability,
-capture modes, control-flow shape, and type-directed expression lowering; the
-Rust backend should consume those semantics instead of rediscovering them with
-ad hoc AST checks.
-IR control-flow completion (`ast_block_completion`, `block_completion`,
-`stmt_completion`) classifies whether lowered blocks can complete normally.
-Use it for backend decisions that need Go reachability or return-shape
-semantics instead of duplicating statement-shape checks in codegen.
-Functions with result parameters are validated against that completion analysis
-before lowering; do not restore backend-only missing-return panic insertion as
-the sole enforcement mechanism.
-It follows Go's terminating-statement rules rather than generic Rust
-reachability: statement lists are classified by their final non-empty statement,
-labeled statements inherit the labeled statement's completion, built-in `panic`
-calls terminate, empty `select {}` and no-condition non-range `for` loops can
-terminate control flow, and `for`/`switch`/`select` termination must reject only
-`break` statements that refer to that specific construct. Keep nested breakable
-statements label-aware so an unlabeled `break` inside a nested switch/select/loop
-does not make the outer construct complete.
-IR also owns capture and goto discovery. Keep extending those analyses in
-`ir.rs` before adding backend-only statement walkers; codegen may still carry
-temporary guards for legacy lowering, but the semantic decision should come from
-the IR.
-IR goto validation rejects undefined labels, jumps into nested blocks, and
-forward gotos that would skip same-block local declarations before the Rust
-state-machine lowering hoists locals for valid forward jumps; do not use
-hoisting to make Go-invalid control flow compile. Goto validation recurses into
-function literals with a fresh label scope, and checks switch/select clause
-statement lists as implicit blocks for declaration-skipping jumps.
-IR branch validation rejects `break`, `continue`, and `fallthrough` placements
-that Go disallows before Rust lowering. Labeled `break`/`continue` must target
-an enclosing breakable statement or loop respectively, and `fallthrough` is
-accepted only as the final non-empty top-level statement of a non-final
-expression-switch case. Branch validation recurses into function literals with a
-fresh branch context, because labels, loops, and switches outside the literal do
-not enclose its body.
-IR statement-context validation rejects non-call/non-receive expression
-statements, type conversions used as statements, and builtins that the Go spec
-forbids in statement context (`append`, `cap`, `complex`, `imag`, `len`, `make`,
-`new`, `real`, and the corresponding `unsafe` builtins). Keep it type-env aware
-so shadowed predeclared names are not treated as builtins.
-Backend builtin-call lowering must use the same type-env-aware unshadowed check
-as IR validation. A local, package-level, or range binding named `print`,
-`println`, `len`, or any other predeclared builtin is an ordinary Go identifier,
-not a builtin lowering trigger.
-Backend special type-conversion lowering follows the same shadowing rule for
-predeclared type names. Calls such as `string(x)`, `any(x)`, or `[]byte(x)` are
-special conversions only when their predeclared type identifiers are unshadowed;
-otherwise they must continue through ordinary function-call or declared-type
-conversion lowering.
-IR assignment validation applies type checks to ordinary assignments and to
-redeclarations within `:=`: existing non-blank names on the left side of a short
-variable declaration must receive values assignable to their original type.
-IR nil assignability validation treats `nil` as valid only for known nilable
-targets (pointer, function, slice, map, channel, and interface types) in
-assignments, var initializers, return statements, channel sends, ordinary call
-arguments, and builtin `append`/`delete` values. Bare inference from `nil` such
-as `x := nil` or `var x = nil` is rejected before backend lowering.
-IR expression validation rejects blank identifier uses as values or types while
-still allowing `_` in assignment targets, short declarations, range assignment
-targets, and blank declarations/import aliases.
-Shared file validation rejects unused local variables in function bodies for
-single-file and complete-program compilation while allowing unused parameters,
-receivers, named results, package-level variables, blank bindings, and local
-const/type declarations. A plain assignment to a bare identifier does not count
-as use; reads, compound assignments, increments/decrements, and uses from nested
-function literals do.
-`compile_with_source_map()` must use the same single-file validation and import
-package-name resolution as `compile()` before lowering; source-map generation
-must not bypass Go spec checks.
-IR label validation rejects duplicate labels and labels that are never targeted
-by `goto`, labeled `break`, or labeled `continue`. Label scope is the enclosing
-function body; do not count labels or label uses inside nested function
-literals, but do validate each nested function literal's labels in its own
-scope before lowering.
-IR range-clause validation rejects too many iteration variables before backend
-lowering: channels and integer ranges permit one effective binding, while
-function ranges are capped by the yield callback arity. A blank second binding
-is treated as absent per the Go spec. Known non-rangeable operands such as
-bools, floats, complex values, pointers, and functions without the iterator
-yield signature are rejected in IR before backend lowering; unknown or
-unresolved named operands remain permissive until type inference can prove
-their shape.
-IR condition validation rejects known non-boolean `if` and conditional `for`
-expressions after simple-statement bindings have been recorded; unknown or
-unresolved named conditions stay permissive until type inference can prove them
-invalid.
-IR send-statement validation rejects known non-channel channel operands before
-backend lowering and rejects sends to known receive-only channels; send-value
-assignability rejects simple known scalar mismatches such as sending `string` to
-`chan int`, but stays permissive for aggregate, pointer, unknown, named,
-interface, nil-like values, and numeric constants because the current type
-environment does not preserve full Go assignability or untyped-constant
-information.
-IR receive validation rejects known non-channel receive operands in statement,
-assignment, and value-declaration contexts. Receive expression type inference
-returns the channel element type for known channel operands so boolean channel
-receives are valid in `if`/`for` conditions. Known send-only channel receives
-and ranges are rejected in IR; broader nested receive validation is still
-limited by legacy expression traversal.
-IR range-clause validation treats `for ... = range ...` as assignment:
-preexisting iteration variables must be assignable from the produced key/value
-types. `for ... := range ...` introduces range-scoped variables with the
-iteration value types instead.
-IR select communication validation rejects non-communication `case` statements
-before backend lowering. A select case may be default, a send statement, a
-receive expression statement, or an `=`/`:=` receive assignment; short receive
-declarations require identifier left-hand sides.
-IR addressability follows the Go spec rule rather than treating every selector
-or index expression as assignable: constants and unshadowed predeclared
-identifiers are not addressable, map/string indexes are not addressable, array
-indexes require an addressable array operand, and field selectors require an
-addressable value or a pointer operand when the target type is known. Shadowed
-predeclared names are addressable when the type environment has recorded their
-binding. IR block lowering updates a cloned type environment for local `var`,
-`const`, `:=`, and `for ... := range` bindings so later expressions in the same
-lowering pass see local shadowing. Selector targets with unknown type
-information remain permissive until IR local type flow is complete; this keeps
-real stdlib code compiling instead of rejecting valid selector assignments
-because the legacy type environment has not learned every local type yet.
-IR assignment validation rejects non-assignable left operands before backend
-lowering; blank identifiers and map-index operands are valid assignment targets,
-but string indexes, literals, calls, constants, and unshadowed predeclared names
-are not. Short variable declarations reject non-identifier left operands in
-plain assignments and range clauses. Plain `=` assignments also reject simple
-known scalar mismatches, including values forwarded from a single multi-result
-function call, through the conservative assignability helper shared with
-channel sends and returns.
-IR value-declaration validation rejects simple known scalar mismatches for
-explicitly typed `var` initializers, including values forwarded from a single
-multi-result function call, using that same conservative assignability helper.
-IR const-declaration validation uses the same conservative helper for explicitly
-typed const initializers, so known scalar mismatches such as assigning a string
-constant to an `int` const are rejected before backend lowering.
-Const declarations also reject known runtime initializers such as user-function
-calls or references to known variables; ambiguous imported selectors and
-unsafe-style constants stay permissive until the type environment can prove
-their value category.
-IR return validation rejects simple known scalar mismatches for explicit result
-expressions and single multi-result function calls, using the same conservative
-assignability helper as channel send validation. It remains permissive for
-aggregate, pointer, unknown, named, interface, nil-like values, and numeric
-constants until the type environment preserves full assignability details.
-IR statement validation checks unshadowed builtin `clear`, `close`, and `delete`
-calls in expression, `go`, and `defer` statement contexts: `clear` requires one
-map or slice argument, `close` requires one send-capable channel argument, and
-`delete` requires a map plus an assignable key.
-IR expression validation also walks top-level declarations and function bodies
-for unshadowed builtin calls. `len` accepts string, array, slice, map, and
-channel operands; `cap` accepts array, slice, and channel operands; `copy`
-requires a destination slice plus a source slice with matching element type,
-with the Go `[]byte`/`string` exception; `append` requires a destination slice
-and assignable elements or a matching spread slice, with the Go `[]byte`/string
-spread exception; `make` requires a slice, map, or channel type with the
-spec-defined argument counts and integer-like size arguments; `new` rejects
-spread calls, missing/extra arguments, and `nil`, but accepts either a type
-argument or a value expression as specified by Go 1.26;
-`complex`, `real`, and `imag` enforce the spec's complex-number operand shape;
-`min` and `max` require at least one ordered numeric/string argument and reject
-spread calls. Their result and untyped arguments adopt the first typed
-operand's Go type; when every argument is untyped, inference and lowering use
-the first argument's default Go type. This coercion must happen before emitting
-the shared Rust generic call so
-mixed calls such as `min(uint64Value, untypedLimit)` do not default the limit to
-Rust `isize`. Zero-result builtins (`clear`, `close`, `delete`, `panic`,
-`print`, and `println`) are valid in statement contexts but invalid where a
-value is required; `recover`, `print`, and `println` enforce their fixed
-arity/spread rules. Unshadowed builtin function names are valid only as call
-expressions and are rejected when used as function values.
-IR binary/compound shift validation rejects negative untyped constant shift
-counts; typed integer shift-count variables remain valid, including signed
-integer variables.
-Compile-time constant handling treats `len` of string constants and `len`/`cap`
-of array or pointer-to-array composite literals as constants when their operands
-contain no channel receive or non-constant call; constant `complex`, `real`,
-`imag`, `min`, and `max` builtin calls are evaluated during const emission.
-Integer constant evaluation uses compiler-only
-`gors/src/compiler/constant_int.rs::ExactInt` backed by arbitrary-precision
-`BigInt`. Literal parsing, unary/binary arithmetic, shifts, bitwise operations,
-comparison, `iota`, `min`/`max`, and integer representability checks must remain
-exact beyond the Go specification's minimum 256-bit intermediate precision.
-`TypeEnv` serializes exact integer facts as decimal strings so declaration
-inheritance and imported-package merges do not truncate them. Generated
-programs must materialize a fixed Rust integer only after the expected Go type
-proves representability; `num-bigint` is a compiler dependency, not generated
-runtime support.
-IR type-conversion validation allows representable untyped numeric constants,
-including integer-valued floating constants produced by constant `real`, `imag`,
-`min`, and `max` calls, to convert to integer targets.
-IR array type validation rejects runtime values and non-numeric constants in
-length positions; constant builtin lengths such as `len([3]int{})` remain valid.
-IR expression validation distinguishes value and type contexts: bare type names
-used as values are rejected, while conversion targets, builtin `new`/`make` type
-arguments, declaration types, composite literal types, and type-switch cases stay
-in type context. Known function/type index expressions such as `f[int]` also
-validate their indices as type arguments, and `:=` range targets are treated as
-new bindings before their loop bodies are checked.
-Function literal bodies are included in IR expression validation with their
-parameter/result bindings seeded so shadowed predeclared names stay shadowed.
-The same IR expression pass validates ordinary function and method calls whose
-signature is known to `TypeEnv`: fixed-arity calls must match parameter count,
-single multi-result calls may forward results to matching parameters, variadic
-calls validate fixed arguments plus element/spread assignability, and function
-literals are checked from their AST signature. Unknown callees stay permissive
-until type inference can prove their signature. Return statements must walk
-returned expressions before only checking result count/type, so `return f(bad)`
-gets the same call validation as assignments and expression statements. Type
-conversion calls are a separate IR validation path: they require exactly one
-single-valued argument and reject spread arguments before backend lowering.
-Backend assignment lowering must use the checked assignment-lhs path, including
-`++`/`--` and `for ... = range` targets, so known non-addressable operands fail
-as compiler errors instead of falling back to arbitrary expression codegen. IR
-validation also checks `++`/`--` directly: the operand must be addressable or a
-map index, may not be `_`, and must have numeric type when known.
-Index-expression validation is intentionally conservative around generics and
-unknown named operands, but rejects known non-indexable operands, non-integer
-array/slice/string indexes, and map keys that are not assignable to the map key
-type.
-Slice-expression validation follows the same boundary: known non-sliceable
-operands fail, bounds must have integer type when known, and full slice
-expressions on strings are rejected before lowering.
-Compound assignments are validated in IR after left-side/addressability and
-value-count checks: the right operand must be assignable to the left type, `+=`
-allows numeric and string left operands, arithmetic compound ops require numeric
-left operands, bitwise/remainder ops require integer left operands, and shifts
-require integer left and right operands.
-Binary expression validation is conservative for unknown/named operands, but it
-checks known operands for logical bool operators, numeric/string `+`, numeric
-arithmetic, integer bitwise/remainder, integer shifts, comparable equality, and
-ordered numeric/string comparisons. Integer-only binary operators must still
-accept integer-valued untyped numeric literals such as `1e9` when the other
-operand has an integer type.
-Unary expression validation checks known operands for numeric `+`/`-`, boolean
-`!`, integer `^`, addressable `&`, pointer dereference `*`, and receive-capable
-`<-`; unresolved named/unknown operands stay permissive.
-Select lowering appends synthetic `break;` statements to multi-case arms, so
-case-body statements embedded before that break must be emitted as non-tail Rust
-statements; otherwise block expression bodies can make Syn report `expected ;`.
-IR statement validation rejects `++`/`--` operands with known non-numeric types
-before backend lowering; unresolved named/unknown operand types stay permissive
-until type inference can prove them invalid. Map-index `++`/`--` is valid per
-the Go spec and lowers through the map entry API rather than the normal
-addressable-lvalue path.
-
-The generated-code fallback pruner must preserve control-flow containers while
-removing only unsupported reflection-dependent branches. When it prunes a local
-initialized from unsupported reflection, it also drops later statements in that
-block that depend on the pruned binding so generated Rust remains type-checkable.
-
-Thread-local `TYPE_ENV` is populated in `compile()` and consulted via
-`get_var_go_type()`, `is_type_interface()`, `get_func_returns()`.
-Package-level string constants are also tracked in `TypeEnv` so generated
-owned-`String` constant functions are scoped per package; do not use a global
-cross-package string-constant set for identifier lowering.
-
-Variadic `...any` calls are lowered to normal `Vec::from([..])` expressions,
-not `vec![..]` macros, so dependency discovery and later AST passes can see
-module references inside variadic arguments.
-Variadic selector calls must preserve the same package-function versus method
-receiver distinction as ordinary calls; method selectors lower to Rust
-`ExprMethodCall` with the packed variadic `Vec` as the final argument.
-Spread arguments (`f(xs...)`) for non-`any` variadics clone addressable non-Copy
-arguments before passing them to the generated variadic vector, because Go does
-not consume the caller's slice header; `...any` vectors may contain
-`Box<dyn Any>` and must remain movable rather than cloned.
-Generated-code reachability must trace receiver types through transparent
-wrappers introduced by the backend. Keep transparent constructor recognition
-centralized in `receiver_type_facts.rs` for `Box::new`, `Arc::new`,
-`Mutex::new`, and `GorsPtr::{new,from_arc}`; ref collection must resolve their
-arguments through its current lexical scopes and current `Self` type before
-falling back to context-free facts. Together with transparent `.clone()`,
-`.lock()`, and `.unwrap()` calls, this keeps impl methods used through generated
-pointer cells from being pruned.
-
-Deferred calls evaluate their argument expressions at the `defer` statement, not
-inside the generated drop guard. The compiler saves deferred function values and
-arguments in per-defer temporaries, cloning addressable non-Copy argument values
-where needed so later statements can still use or mutate the original Go
-variable.
-
-Function-literal capture analysis lives in `gors/src/compiler/ir.rs` and uses a
-lexical scope stack rather than whole-body declaration/reference set subtraction.
-Keep nested shadowing cases there: a name declared in an inner block must not
-mask a later reference to an outer captured name, and nested function literals
-must propagate their free-variable uses to the enclosing literal.
-For-clause variables declared by `:=` need Go 1.22 per-iteration identity when
-their identity is observable, such as closure capture or address-taking inside
-the loop. Keep the IR helper that detects those names aligned with backend loop
-lowering: the generated loop must create the next iteration's cell before
-running the post statement, including `continue` paths.
-
-Go function-typed values use the shared function-value representation
-`Arc<Mutex<Option<Arc<dyn Fn...>>>>` consistently. If type inference learns that
-a short declaration or `var` initializer is a `func` value, compile the
-initializer with that expected Go type so calls use the same `lock_func` lowering
-as named function-typed variables and returned function values.
-
-Function signature validation is an IR-fronted compiler check in
-`gors/src/compiler/ir.rs`. It rejects duplicate non-blank parameter/result names,
-mixed named and unnamed parameter/result lists, variadic results, non-final or
-multi-name variadic parameters, and receivers that are variadic or declare other
-than one parameter before backend lowering.
-Receiver-type validation uses the package type environment and rejects method
-receiver bases that are undefined, unnamed, interfaces, or pointer types.
-Method signature validation rejects method declarations with their own type
-parameter list; receiver type parameters belong on the receiver type instead.
-Generic type parameter declarations are validated in the same IR layer:
-function and type declaration type-parameter lists must have explicit names and
-constraints, non-blank type parameter names must be unique, receiver generic
-argument lists must use identifiers, and receiver type-parameter names share the
-method signature uniqueness set. Receiver type-parameter arity is checked
-against `TypeEnv`'s recorded type declaration arity, including rejecting type
-arguments on non-generic receiver bases. `TypeEnv` also tracks alias syntax and
-instantiated-alias targets so receiver aliases are rejected when the alias is
-generic or denotes an instantiated generic type, including through pointer
-indirections.
-Type declarations involving type parameters are also checked in IR: type
-definitions cannot define directly from any in-scope type parameter, while a
-generic alias cannot alias a type parameter declared by that same alias
-declaration.
-Single-file and multi-package compile entrypoints run the same IR validation
-helper before Rust AST lowering. Validation dispatch and source-level semantic
-facts are owned by `gors/src/compiler/semantic.rs`; keep `compiler/mod.rs`
-focused on orchestration and diagnostic wording rather than reopening the
-ordered IR validation checklist there.
-The same IR validation layer rejects duplicate non-blank struct field names,
-duplicate methods for a receiver base type, and method names that collide with
-fields on the same struct base type before Rust emission.
-Top-level declaration validation rejects duplicate package-block names across
-const, var, type, and function declarations while ignoring `_` and receiver
-methods. The package-block name `init` is special: multiple `func init()`
-declarations are allowed and do not introduce a binding, but non-function
-top-level `init` declarations and `init` functions with type parameters,
-parameters, or results are rejected in IR. Package clause validation rejects
-the blank package name `_` before backend lowering.
-Executable multi-file/package compilation also rejects a `package main` program
-with no top-level `func main` before Rust generation, while the lower-level
-single-file compiler entrypoint remains permissive for partial snippet tests.
-IR declaration validation also rejects duplicate non-blank names within a
-single grouped or multi-name const, var, or type declaration, including local
-declaration statements.
-Import names are file-block bindings: IR rejects duplicate normal import names
-across all import declarations in the file and import names that conflict with
-package block declarations. Default import names come from the imported package
-clause when the compiler has resolved package metadata, so versioned paths such
-as `math/rand/v2` bind as `rand` rather than the path base. Blank and dot
-imports are ignored by this conservative name check. Because gors merges
-package ASTs before validation, import-name validation groups imports by their
-original source file positions rather than treating the merged AST as one file
-block. Single-file `compile()` and complete `compile_program_multi()` builds
-also reject unused normal imports by looking for same-file qualified selectors;
-single-file `compile()` resolves stdlib package names before that validation so
-versioned stdlib paths use their package clause name. This check intentionally
-stays out of `compile_with_type_env*`, which is used for root-pruned stdlib ASTs
-where pruning can leave otherwise-unused imports.
-For package `main`, the same signature validation rejects `func main` when it
-declares type parameters, parameters, or results.
-Short variable declarations are also checked there for duplicate non-blank names
-on the left side and for introducing at least one new non-blank name in the
-current lexical block. The no-new-name check is scope-based rather than
-`TypeEnv`-based so nested short declarations can still shadow outer bindings.
-Regular local const, var, and type declarations use the same lexical-block
-model to reject redeclaring parameters, named results, or earlier local
-declarations in the same block while still allowing nested-block shadowing and
-valid short redeclarations with at least one new name.
-Assignment arity is validated in the same IR statement pass before backend
-lowering. It distinguishes single-valued expressions from real multi-valued
-function calls, map indexes, channel receives, and type assertions so invalid
-forms such as `x := pair()` or `x, ok := slice[0]` do not reach Rust codegen as
-tuple destructuring or comma-ok lowering.
-Return statement arity is also validated before backend lowering. Empty returns
-are allowed only for functions with no results or named result parameters, a
-single return expression may forward a matching multi-valued function call, and
-explicit multi-expression returns must contain only single-valued expressions.
-Type switch guards are validated against the spec grammar before lowering:
-only `x.(type)` and `identifier := x.(type)` forms are accepted, with exactly
-one non-blank guard identifier when the short declaration form is used.
-Const and var declaration initializer arity is validated before backend
-lowering. Const specs must match identifier/value counts, omitted const
-expressions inherit the previous non-empty expression list in the same const
-group, and var initializers reuse assignment-style single/multi-valued counts.
-The same statement validation rejects short variable declarations in a `for`
-post statement; Go only permits them in init/simple statement positions.
-Switch, type-switch, and select statements reject multiple `default` clauses in
-the same IR-fronted statement validation pass.
-Blank labels (`_:`) are valid placeholder labels but do not define branch/goto
-targets and are ignored by duplicate/unused label checks and goto-state planning.
-
-Range-over-function support is IR-classified as a function range and backend
-lowered by synthesizing the Go `yield` callback as the same shared function
-value representation. Normal function items still call directly; only actual
-function-typed values should use `lock_func` call lowering. Unlabeled
-`break`/`continue` in the loop body return `false`/`true` from the synthesized
-callback, and `return` fills a per-loop return slot, stops iteration, and
-returns from the enclosing function after the range-function call. Variables
-mutated by the synthesized callback are included in the block's shared-capture
-set before declarations are lowered, and the callback clones those shared cells
-before entering its `move` closure.
-Range over `*[N]T` is classified as an indexed range like `[N]T`/`[]T`, but
-backend lowering must lock the generated pointer cell and iterate a cloned
-snapshot for key/value loops. Key-only and blank range loops over pointer arrays
-should count `len(*p)` without indexing.
-
-Fixed Rust types derived from `GoType` are built as `syn` AST paths directly
-rather than reparsed with `parse_quote!`; this keeps the wasm stdlib compile
-path from crashing inside Syn's type parser.
-Assignment and compound-assignment lowering should also construct `syn`
-assignment/binary expression nodes directly when either side is dynamic; do not
-round-trip generated assignment tokens back through `parse_quote!`.
-Numeric coercion casts around generated binary expressions follow the same AST
-rule: build `syn::ExprCast` directly so Rust precedence cannot attach the cast
-to only the binary expression's right operand.
-Build generated binary operations as `syn::ExprBinary` nodes too. Re-parsing a
-cast left operand next to `<` can make Syn interpret the comparison as generic
-arguments and panic with `expected >`.
-Defined numeric types retain every direct Go underlying layer in their Rust
-storage (`type Base uint32; type Outer Base` becomes `Outer(Base(u32))`). Keep
-that direct storage chain separate from the recursively resolved primitive:
-conversions, index and `make` size operands, and fmt-style variadic-`any`
-lowering must unwrap one generated `From` hop per layer, while coercion into a
-nested defined target wraps those layers in reverse. Do not emit transitive
-`From<Outer> for u32` impls or cast a defined newtype directly to a primitive.
-
-Compiler output should route Go panic-like runtime failures through
-`crate::builtin::panic_value(...)` rather than emitting raw Rust `panic!` or
-`std::panic::panic_any(...)` calls in generated code.
-
-IR validation treats `nil` as assignable/comparable only to nilable types
-(pointer, func, slice, map, channel, interface, `any`, `error`, or unresolved
-unknowns). Use `TypeEnv::resolve_alias()` and named interface metadata before
-deciding nilability; named structs and named numeric/string/bool aliases must
-not silently accept `nil`.
-Comparison validation has its own assignability check: typed numeric operands
-with different types are not comparable merely because both are numeric, while
-untyped constants are allowed when representable by the other operand's type.
-Non-shift arithmetic and bitwise binary validation enforces the related operator
-rule: operand types must be identical unless one side is an untyped constant
-that can be converted to the other side's type. `min` and `max` reuse the same
-expression-aware compatibility rule after checking that all arguments are
-ordered and all numeric or all string. Complex types are numeric for arithmetic
-and equality, but not ordered: `<`, `<=`, `>`, `>=`, `min`, and `max` must
-reject `complex64`/`complex128`.
-Initializer/return validation, equal-count assignment validation, sends, direct
-call arguments, `append`, `delete`, expression switch cases, range assignment
-targets, composite literal element/key/value/field checks, map index keys, and
-index/slice bounds must be expression-aware: typed numeric values are not
-assignable across numeric types without an explicit conversion, while
-representable untyped constants are allowed. Statement validation seeds its
-cloned `TypeEnv` with the current function signature before checking assignment
-semantics, because the
-compiler-wide pre-scan registers parameter/result names globally and stdlib
-functions reuse names such as `hi`/`lo`. Multi-return forwarding still uses the
-conservative type-only fallback. Keep unresolved/named types conservative until
-imported named return types are package-qualified end-to-end; otherwise
-reachable stdlib methods such as `reflect.Value.Field` can appear as `Value` in
-importing packages.
-`make` size arguments follow the same constant rules as indices: literal
-constants must be non-negative integer constants, and two constant slice bounds
-must satisfy `len <= cap`; non-constant integer values remain runtime-checked.
-Type conversion validation rejects concrete invalid conversions between known
-predeclared types, but stays conservative for named and unknown types so generic
-underlying-type conversion support can continue to compile real packages.
-Untyped integer-valued literal assignability checks must enforce target integer
-bounds (`byte = 256`, `byte = 256.0`, and `uint = -1` are invalid) before
-falling back to broad constant-kind compatibility. Rune literals are integer
-constants for this purpose, so escaped rune values must also be checked against
-the target bounds (`byte = '\u0100'` is invalid).
-Zero imaginary constants such as `0i` are representable by real numeric types;
-nonzero imaginary constants must still be rejected for real targets.
-Float constant assignment/conversion must reject overflow for the target float
-type (`float64(1e1000)` is invalid) while preserving underflow-to-zero cases
-such as `float64(-1e-1000)`.
-Untyped constants assigned to `any`/interface targets must still be
-representable by their default type before boxing (`var x any = 1e1000` is
-invalid).
-Type conversions only remain compile-time constants when the conversion result
-is a scalar constant type; conversions such as `[]byte("go")` are runtime values
-and must not take the untyped-constant assignability path.
-Binary expression validation rejects `/` and `%` when the divisor is an untyped
-numeric constant zero, before falling through to ordinary operand-type checks.
-Const initializer validation uses the same constant-zero divisor rule and reports
-invalid constant expressions separately from non-constant initializers.
-`new` builtin validation requires a type argument: reject clear value
-expressions (`new(123)`, `new(x)`), but stay conservative for unknown identifiers
-and selectors so scoped type parameters/imported types are not rejected early.
-Range over an untyped integer constant with a preexisting iteration variable
-uses the iteration variable's type, but the range expression itself must still
-be representable by that type (`byte` over `256` is invalid).
-Shift validation uses separate left-operand and count rules. The right operand
-may be an integer-valued untyped constant such as `1.0`, but the left operand
-only accepts an integer-valued float constant when the shift count is also
-constant; `_ = 1.0 << s` must be rejected without a typed assignment context.
-
-Imaginary literals are treated as untyped complex constants in the Go front end
-and lower through `crate::builtin::complex128`; expected `complex64` constant
-contexts use the builtin `complex64` constructor instead of a Rust cast.
-Complex arithmetic with constant real operands must coerce those operands
-through expected-type lowering to the complex side's type so expressions such as
-`1 + 2i` and `z + 3` generate `Complex*` operations rather than Rust numeric
-casts.
-The const evaluator also has a `ConstValue::Complex` path for top-level complex
-constants; keep typed `complex64` constants on `crate::builtin::complex64`
-instead of emitting a `Complex128` initializer.
-
-Go slice parameters map to `Vec<T>` values unless the compiled body mutates the
-slice's backing storage. The post-compile multi-module pass rewrites parameters
-written through by index, or passed to another mutable slice parameter, to
-`&mut [T]` and rewrites call sites to borrow the caller's buffer. Do not apply
-that rewrite to functions returning a slice; those need Go's returned slice
-value semantics.
-Post-prune forwarding-adapter reconciliation may remove an obsolete `to_vec()`
-only when the final borrowed inherent target and the adapter call share the
-exact canonical module-local `Type::method` path. Never reconcile calls by their
-terminal receiver and method identifiers: imported paths and qualified trait
-calls can legitimately end in the same names and must retain their owned bridge.
-Generated borrowed slice views can also have the unsized Rust type `[T]` behind
-`&[T]` or `&mut [T]`. Rust slices do not retain the spare capacity from a Go
-slice header, so the generic `Cap for [T]` runtime implementation reports the
-visible slice length. A pre-DCE whole-program pass detects mutable slice
-parameters that reslice beyond the visible length from `len`/`cap` facts and
-gives only those parameters the capacity-carrying
-`builtin::GorsSliceParam<T>` ABI. The wrapper keeps a callee-local Go slice
-header, supports subsequent reslices, and writes mutations in the original
-visible range back when the call ends; ordinary borrowed slice and interface
-ABIs remain `&mut [T]`. Non-string self-reslice assignments must also route
-through `builtin::go_slice` with the original capacity so owned `Vec<T>` values
-can legally extend within capacity and do not discard that capacity. Broaden
-the structural detection or slice representation rather than encoding
-exceptions for individual callers.
-
-Generic receiver methods keep the receiver generic parameters on the generated
-Rust `impl` and currently add `Clone` bounds for those parameters. The method
-lowering borrows receivers and clones non-copy field/parameter values to model
-Go value semantics; do not remove those bounds without replacing the clone-based
-value lowering with an ownership model that still compiles generic methods.
-Slice expressions use `crate::builtin::go_slice` to validate `low <= high <=
-max <= cap`, preserve the requested `len` and `cap`, and materialize
-zero-initialized backing elements when a legal reslice extends beyond the
-currently initialized length. For direct local aliases, lowering records the
-base expression, offset, and capacity in `SliceAliasTarget`: index writes flow
-to the base while the alias remains attached, base writes flow back into
-overlapping aliases, append within capacity remains attached, and append beyond
-capacity detaches. Full-slice expressions therefore enforce their reduced
-capacity when deciding reuse. This is a generic lowering/data-flow model for
-the supported cases, not a universal shared slice-header runtime; broaden it in
-IR/alias tracking rather than with package- or fixture-specific code.
-Pointer dereference lvalues (`*p = x`, `(*p)++`) lower through the IR
-addressability path to shared-cell assignments for owning pointers and direct
-`&mut T` dereferences for borrowed pointer parameters.
-IR expression validation checks composite literals before code generation for
-map key/value assignability, required map keys, array/slice index keys, struct
-field names, duplicate simple constant keys, and struct field value
-assignability. Keep these checks conservative when the type environment cannot
-prove the literal's underlying type.
-Map type validation rejects non-comparable key types, including slice, map, and
-function keys as well as arrays or structs that recursively contain
-non-comparable fields. Reuse the same comparability helper for equality and
-expression-switch validation so the semantic rule stays consistent.
-Array type validation rejects obvious invalid lengths such as negative numeric
-literals, non-representable numeric literals, strings, and `nil`. It stays
-conservative for identifiers and compound constant expressions until constant
-evaluation is represented explicitly in IR.
-Expression-switch validation checks the switch tag and case expressions before
-case-body compilation: nil tags are rejected, tags and cases must be comparable,
-case expressions must be single-valued, duplicate literal/predeclared/known-const
-case values are rejected, and each case must be comparable to the tag or to
-implicit `true` when the tag is omitted.
-Type-switch validation checks semantic constraints after the guard shape check:
-the guard operand must be an interface, `nil` and concrete case types must not
-be duplicated, and obvious concrete cases for named interfaces must implement
-the interface method set.
-Type-assertion validation applies the same interface operand and implementor
-checks for `x.(T)`: the operand must be an interface, and obvious concrete
-assertion targets must implement the named source interface.
-Interface type validation rejects duplicate directly declared method names while
-recursing through method signatures. Embedded interface duplicate detection still
-needs fuller interface method-set modeling.
-
-## Compiler passes (in order)
-
-Main package (`pass()`):
-1. `coerce_types` — focused generated-Rust ownership, coercion, and helper cleanup
-
-Final explicit `return expr` cleanup belongs to function/method block
-finalization during Go-to-Rust lowering. Do not reintroduce a style-only
-whole-file postpass for this.
-
-Local variables, parameters, range bindings, and other value bindings that would
-shadow generated item names are disambiguated during Go-to-Rust lowering. Do not
-reintroduce a whole-file Rust AST renaming pass for that; it is scope-blind and
-can rewrite item references that appear before a local declaration.
-
-Channel lowering uses the shared `crate::builtin::Chan` runtime copied from
-`gors-builtin/src/lib.rs`; do not inject a generated `gors_channel` module from
-postpasses.
-
-Array, slice, and string index expressions cast index components to `usize`
-at Go index/slice lowering sites; do not reintroduce a global generated-Rust
-index rewrite.
-
-`coerce_types` also prunes unsupported reflection fallback branches from the
-generated `fmt` path. Keep that pruning scoped to reflection/fmt-like blocks;
-ordinary user fields named `value` must remain usable as `self.value`.
-Resolver-injected structural helpers are added after package merge, so helper
-dependent coercions belong in `pass_after_structural_helpers()`, not in the
-main package/file pass. Keep that post-helper pass narrow: it currently owns
-generated fmt flush insertion through its `fmt_flush` submodule and self-value
-reflection fallback pruning through its `reflection_fallback` submodule after
-helpers such as `__gors_flush_fmt` have been injected.
-
-Imported packages (`pass_for_imported_package()`): coerce_types.
-
-## Stdlib system — embedded Go source
-
-Go stdlib is embedded in the `gors` crate binary data via `gors/build.rs`, which
-downloads the SDK pinned in `.go-version`, extracts it under
-`$CARGO_HOME/gors-cache/`, filters `go/src/**/*.go` (excluding tests, vendor,
-cmd), copies selected files into `OUT_DIR/go_stdlib_src/`, and generates a
-static `OUT_DIR/go_stdlib.rs` package table with per-package file lists and
-direct stdlib imports. All stdlib/internal packages in that table are available
-through the generic resolver. GOOS filtering follows the Rust target OS, but
-GOARCH filtering uses a synthetic non-native `gors` architecture so
-assembly-backed native stdlib files fall back to pure Go generic implementations
-before parsing.
-
-The resolver caches package file selection, type environments, transitive
-imports, and root-specific resolved modules. Generated source and resolved
-imports share the root-set key's single-flight `OnceLock`; archive validation,
-atomic publication, and memory/entry caps follow the primary Stdlib system
-contract above. Per-file stdlib parser/compiler skips are quiet by default; set
-`GORS_STDLIB_TRACE=1` to see resolver decisions and skipped files.
-Stdlib resolution must not rely on catching compiler panics. Parser/compiler
-gaps should return normal errors and be logged as skips; actual panics should
-fail the invoking test or build so wasm does not turn them into `unreachable`
-traps.
-Do not bypass single-flight resolution on contention or publish a partially
-validated persistent archive. Duplicate cold compilation wastes the feedback
-loop and can separate generated source from the import identity used to compile
-it.
-
-Stdlib output is pruned at item level from roots such as `crate::fmt::Println`.
-Imports whose source references were lowered away may be pruned from generated
-modules rather than preserved solely because the Go import existed, but pruning
-must not hide a source-level unused normal import. Such imports are rejected
-before Rust generation unless they use the blank identifier for side effects.
-Pruning must not be used as a substitute for compiling reachable stdlib code
-generically.
-
-Generated Rust files start with a `//! Generated by gors. Do not edit.`
-rustdoc header, immediately followed by the printer-level lint prelude that
-denies `dead_code`, `unused_imports`, `unused_macros`, and `unsafe_code`, while
-still allowing Go naming via `nonstandard_style` and suppressing mechanical
-generated-code warnings such as unused temporaries, redundant parentheses, and
-unreachable branches; one blank line separates the prelude from generated code.
-Dependency modules are emitted alphabetically by Rust module name, and generated
-items/methods are ordered with public functions before private functions.
-Preserve Go AST grouping when emitting nested binary expressions: Go and Rust
-operator precedence differ for shifts and bitwise operators, so child binary
-expressions need parentheses whenever Rust would otherwise regroup them.
-
-## CI and Pages deploy
-
-CI runs on pull requests and on pushes to `main`. The website deploy must use
-GitHub Pages' native workflow artifact path: upload `www/dist` with
-`actions/upload-pages-artifact`, then publish with `actions/deploy-pages` to the
-`github-pages` environment. Do not force-push `www/dist` to `gh-pages`; the web
-bundle includes a large v86 filesystem, and branch-based Pages deploys are
-unreliable for that artifact size. The repository Pages source must remain
-`build_type: workflow`, and the custom domain is stored in repository Pages
-settings rather than in a generated `CNAME` file.
-The `main` deploy depends on Rust lint/build/unit/fuzz plus all complete
-generated-program suites, and on web lint/build/unit/v86/compiler tests. Do not
-publish merely because `www/dist` built: deployment represents the fully gated
-compiler and conformance state.
-
-## Known limitations
-
-- Closure support is partial; function values use shared `Arc<Mutex<Option<Arc<dyn Fn...>>>>` cells rather than a full Go environment object.
-- Arbitrary forward `goto` is not fully supported; direct-label statement-list gotos lower through an IR-planned state loop with direct-local hoisting, including normal blocks and switch/select case bodies, while gotos that require broader CFG restructuring remain unsupported.
-- `reflect` is not fully supported; currently only the pieces needed by pruned stdlib paths compile reliably
-- Source maps can track multiple files in the main package, but imported/local
-  package modules do not yet get separate source-map output.
-
-## Conventions
-
-- Lints are workspace-level in `Cargo.toml` — `panic`, `unwrap_used`, `expect_used` are denied
-- Test modules use `#[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]`
-- No comments unless the WHY is non-obvious
-- Prefer editing existing files over creating new ones
+Keep this file current when an architectural decision, invariant, or
+non-obvious operating constraint changes.
+
+## Project
+
+gors is a Go-to-Rust compiler written in Rust. The compiler has completed an
+intentional hard cutover. There is one supported architecture:
+
+    Go source
+      -> scanner and parser
+      -> Go AST
+      -> semantic analysis and typed HIR
+      -> explicit-order Go MIR and verification
+      -> representation-neutral Go MIR transforms and reverification
+      -> mandatory Rust representation lowering
+      -> verified Rust IR
+      -> terminal Rust syn emission
+      -> prettyplease
+      -> Rust source
+
+Backward compatibility with the removed compiler is not a goal. Prefer a clear
+unsupported diagnostic over fallback to an old lowering path.
+
+## Non-negotiable compiler boundaries
+
+### One backend
+
+- The typed HIR, Go MIR, and Rust IR pipeline is the only production compiler.
+- Do not add a direct Go AST to syn path, per-node fallback, compatibility
+  adapter, feature flag, or second backend.
+- Delete obsolete code instead of leaving dormant legacy modules in the tree.
+- A Go construct not represented by the new semantic model must fail with a
+  structured source diagnostic.
+
+### Go AST
+
+- The AST is a parser product, not a backend IR.
+- Semantic identity, typing, evaluation order, and Rust representation do not
+  belong in parser nodes.
+- Backend code may consume the AST only while constructing semantic facts and
+  HIR. MIR and later phases must not retain Go AST references.
+- Incremental parse products must own or reference-count their source snapshot
+  and must be independently evictable per file. `Box::leak`, leaked arenas, and
+  self-referential `'static` ASTs are forbidden in the query database.
+- Parse files independently. Multi-file package composition belongs in the
+  semantic package index, not an AST merge that invalidates every file.
+
+### Typed HIR
+
+HIR is the canonical semantic representation. It must:
+
+- use stable definition, local, node, and source-file identities;
+- retain source spans on diagnosable nodes;
+- resolve names before MIR construction;
+- represent exact Go types and exact untyped constants;
+- distinguish definitions, aliases, instantiations, values, places, and
+  constants without string-path inference;
+- make unsupported constructs explicit.
+
+Do not add an Unknown escape hatch plus side tables. Extend the type algebra or
+reject the program.
+
+HIR should be smaller and more semantic than the Go AST. It must not become a
+second copy of every parser node.
+
+Stable means stable across revisions: IDs may not be allocation counters,
+vector indexes, byte offsets, or traversal ordinals. Inserting or reordering an
+unrelated declaration must not renumber existing definitions or invalidate
+their queries. Persistent keys use structured workspace, package, file, owner,
+and declaration identities with collision-checked interning.
+
+### Explicit-order MIR
+
+MIR owns executable semantics. It must make these facts explicit before Rust is
+generated:
+
+- Go evaluation and assignment order;
+- temporary lifetime and sequence points;
+- control-flow edges;
+- places and projections;
+- calls, returns, panic edges, and deferred work;
+- aliasing, escape, and effects facts used by representation lowering.
+
+Go MIR contains Go executable meaning, not Rust ownership operations. Reads do
+not become Rust moves or clones here. Every MIR transform must preserve types,
+source provenance, panic order, and effects and must be checkable by a verifier.
+The transform set may begin empty; exact-Go constant folding, CFG
+simplification, and DCE belong here when introduced, never inside target
+representation lowering.
+
+### Rust representation lowering
+
+Rust representation lowering is the mandatory bridge from verified Go MIR to
+verified Rust IR. It is not an optional optimizer and there is no flag or path
+that bypasses it. This stage owns:
+
+- concrete Rust value and runtime-ABI representations;
+- storage classes, initialization, and drop points;
+- explicit copy, clone, move, shared-borrow, and mutable-borrow decisions;
+- control-flow structuring and runtime intrinsic selection;
+- proof-backed no-copy, last-use, escape, alias, and effect refinements.
+
+The initial policy is deliberately conservative: copy values that are actually
+`Copy`, clone owned non-`Copy` values, and keep unstructured control flow when a
+structured form has not been proven. As analyses improve, this same mandatory
+stage makes output more idiomatic without changing Go behavior or adding a
+post-syntax repair pass.
+
+Rust IR is semantic and syntax-independent. It must retain source provenance,
+make every ownership and representation decision explicit, and pass its own
+verifier before emission. Both Rust syntax emission and any future direct
+object backend consume this same product; Rust IR must not contain syn nodes or
+require reparsing generated Rust. Representation lowering must reject invalid
+MIR; it must never repair it.
+
+Rust-IR effect summaries include both preserved Go-observable effects and
+effects introduced by the selected representation, such as allocation during a
+conservative string clone or literal construction. The verifier derives or
+checks those effects from explicit operations; lowering must not blindly copy
+the Go-MIR summary.
+
+### Terminal syn emitter
+
+- syn is an output syntax tree, never a semantic IR.
+- The emitter renders verified Rust IR as Rust syntax. It must not discover Go
+  types, repair evaluation order, perform reachability, infer ownership or
+  representation, or recognize stdlib functions by generated Rust shape.
+- Do not add semantic post-syn passes. Formatting is the only normal operation
+  after emission.
+- Keep syn and quote usage confined to the emitter and the narrow public output
+  facade. Any other occurrence requires an explicit architectural review.
+
+### Runtime boundary
+
+A runtime library is expected, but its boundary is strict:
+
+- allowed: Go value representations, allocation and alias identity, interfaces,
+  maps, slices, strings, pointers, channels, goroutines, panic/defer/recover,
+  scheduler support, and explicit host-resource primitives;
+- forbidden: Rust replacements for public Go stdlib functions or methods,
+  generated-module patching, and helpers that compensate for missing semantic
+  lowering.
+
+Runtime entry points form a versioned ABI. Language-intrinsic intent must be
+explicit and typed in HIR and Go MIR rather than inferred from names; mandatory
+Rust representation lowering selects an exact typed ABI operation in Rust IR.
+Every operation is documented and tested independently. Stdlib packages remain
+Go source compiled through the same frontend as user packages.
+
+The semantic compiler does not parse, inject, or patch runtime source. Terminal
+artifact packaging owns the bootstrap bundled runtime module and copies its
+versioned source directly. Native production artifacts should eventually link a
+precompiled runtime ABI rather than rebuilding the module for every program.
+
+### Resolver boundary
+
+The resolver is source metadata only. It may expose:
+
+- whether a pinned Go SDK package exists;
+- its build-selected Go source files;
+- its build-selected `//go:embed` assets and content hashes;
+- its classified cgo, Go assembly, and system-object inputs;
+- its direct import paths;
+- a stable generated module name.
+
+The resolver must not type-check packages, emit or patch Rust, recover partial
+declarations, or cache generated Rust or syn trees. Incremental work belongs in
+a future semantic query database keyed by source and compiler inputs.
+
+Do not ship the entire uncompressed Go SDK as Rust string constants in every
+native and Wasm compiler artifact. The target distribution is a small canonical
+package/file/import/hash index plus content-addressed compressed source shards.
+Native builds load verified shards from a sidecar store with bounded caching;
+Wasm fetches immutable shards on first reachable import and may cache those
+input shards in browser storage. Query keys depend on reachable file hashes,
+not one global SDK-content fingerprint.
+
+The build host selects only the downloadable Go SDK archive. Cargo target
+OS/architecture select Go source build constraints (`wasm32-unknown-unknown`
+maps to `GOOS=js GOARCH=wasm`); target metadata must never fall back to the host.
+
+### Incremental and parallel foundation
+
+Incrementality and parallelism are correctness-relevant architecture, not a
+late optimization layer. The compiler must be organized around one explicitly
+owned, demand-driven red-green query database with fine-grained dependency
+edges. Public API and implementation fingerprints are separate so private body
+edits do not re-type-check importers.
+
+- Query values are immutable, deterministic, reference-counted, cost-accounted,
+  and evictable under an explicit memory budget.
+- An on-disk content-addressed semantic cache uses canonical encoding, checksums,
+  atomic publication, schema validation, and complete compiler, target, SDK,
+  runtime ABI, source, and dependency keys. Corruption is a cache miss.
+- A canonical package DAG exposes ready work. One bounded global job budget and
+  one work-stealing scheduler cover parsing, semantics, MIR, Rust
+  representation lowering, codegen, external tools, and linking; nested phase
+  pools are forbidden.
+- Cancellation prevents obsolete revisions from publishing results. Foreground
+  work can preempt speculation, and memory backpressure reduces concurrency.
+- Scheduling order and worker count must not affect IDs, diagnostics, stage
+  fingerprints, dumps, or output bytes. Publication is sorted by stable key.
+- Compiler semantics may not depend on mutable process globals, thread-local
+  contexts, the current working directory, or ambient environment reads.
+
+Source mappings and diagnostics are ordinary explicit outputs. The current
+`SourceMapPlan` follows that rule and is safe to build or consume independently;
+preserve that ownership model when it becomes a query result. Do not reintroduce
+a thread-local source-map context or create another exception to the
+no-global-state rule.
+
+The bootstrap mapper's formatted-token name matching is not the target source
+map architecture. Terminal emission must eventually return exact stable
+emission anchors paired with Rust-IR provenance; rendering resolves those
+anchors to generated byte ranges, and Source Map v3 conversion consumes that
+explicit product. Do not infer mappings by matching identifier text or token
+occurrence order.
+
+The production performance target is to outperform the hermetic Go compiler
+pinned by `.go-version` on behavior-validated cold builds and recurring warm
+builds. Compiler-only and runnable-artifact timings are reported separately.
+Cold, no-op warm, leaf edit, dependency private-body edit, and dependency API
+edit are distinct scenarios. The exact measurement, promotion, hardware, and
+terminal-backend decision rules live in `COMPILER_PERFORMANCE.md` and are
+architectural requirements.
+
+## Initial migration frontier
+
+The first authoritative backend slice intentionally supports a narrow executable
+subset:
+
+- one source file in one package, with no imports;
+- primitive `bool`, 64-bit bootstrap `int`, and byte-string values;
+- exact scalar constants;
+- free functions, parameters, named results, and locals;
+- direct function calls and print or println intrinsics;
+- scalar expressions, assignments, returns, if, for, break, and continue.
+
+The current executable claim covers non-panicking scalar executions only.
+Dynamic division or remainder by zero and negative dynamic shifts still reach
+Rust `panic_any`; replace that bootstrap boundary with versioned Go
+panic/process semantics and process-level differential tests before claiming
+those faulting executions as compliant.
+
+This is a bootstrap frontier, not a compatibility claim. Until implemented in
+HIR and MIR, expect explicit failures for:
+
+- multi-file and imported package compilation, including the Go stdlib;
+- package variables, declared composite types, methods, and generics;
+- arrays, slices, maps, structs, pointers, interfaces, and function values;
+- range, switch, type switch, select, labels, closures, defer, panic/recover,
+  goroutines, and channels;
+- unsafe and host-resource integration.
+
+Narrow integer types, unsigned integers, and floating-point values are also
+explicitly unsupported until their exact Go conversion, overflow, comparison,
+and runtime representation rules exist in HIR and MIR.
+
+Regressions against the former backend are accepted during the cutover. Do not
+hide them by routing a fixture through removed code.
+
+The existing Go-spec, stdlib, repository, and arbitrary-program fixtures are a
+prioritized backlog and differential oracle. Pre-cutover conformance reports
+are historical artifacts and are not evidence for the authoritative backend.
+Only a complete, unfiltered rerun may establish a new baseline.
+
+The narrow frontier does not suspend performance architecture. Owned parse
+products, stable cross-revision identities, query boundaries, deterministic
+stage fingerprints, and cost/invalidation tests must land before the feature
+surface becomes large. Do not defer them until stdlib compliance.
+
+## Source organization
+
+- `compiler/mod.rs` is an orchestration and public-facade module. Canonical
+  stages live directly below `compiler/`; do not add a redundant `backend/`
+  namespace when only one backend exists.
+- Split implementation by semantic responsibility, not arbitrary line ranges.
+  A module should have one reason to change and a narrow internal API.
+- First-party source files have a hard limit of 1,000 physical lines. Prefer
+  roughly 300 to 700 lines; approaching the limit is a signal to extract a
+  coherent module.
+- Substantial tests live in sibling `tests.rs` files or integration-test
+  modules. A large implementation file must not also carry a large inline test
+  module.
+- Generated and vendored sources are excluded from the size budget. Any other
+  exception requires a documented architectural reason and an explicit guard
+  entry; grandfathering a large file is not a reason.
+
+## Parser contract
+
+`gors/src/parser/functions.rs::Parser::parse_type_parameters()` returns the
+private `parser::TypeParameterParse` enum for bracketed forms it consumes. Keep
+slice and array prefixes, `[]T` and `[N]T`, as explicit enum variants rather
+than sentinel `ast::FieldList` values. Function declarations may convert
+consumed prefixes into invalid type-parameter lists so semantic signature
+validation can report a signature error instead of making parsing fail early.
+
+Parser and scanner acceptance are independent of backend conformance. Do not
+weaken parser behavior to fit the bootstrap backend.
+
+## Repository map
+
+    gors/
+      src/
+        artifact/           terminal runtime and artifact packaging inputs
+        scanner/            Go tokenization
+        parser/             Go parsing, imports, and go.mod discovery
+        ast/                parser-owned Go AST
+        compiler/
+          semantic/         name resolution, typing, and typed HIR construction
+          mir/              explicit-order lowering, data model, and verifier
+          rust_ir/          explicit Rust representation and ownership IR
+          lowering/         mandatory Go MIR to verified Rust IR lowering
+          emit.rs           terminal Rust syntax emission
+          hir.rs            typed high-level IR
+          ids.rs            compiler semantic identities
+          types.rs          exact Go type model
+        resolve/            embedded Go SDK source metadata only
+        printer/            syn formatting and file layout
+        sourcemap/          Go to Rust source maps
+        token/              Go token definitions
+        error.rs            user-facing parse diagnostics
+        lib.rs              library entry point
+      tests/
+        test_integration_go_repositories.rs
+        test_integration_go_spec.rs
+        test_integration_go_stdlib.rs
+        test_integration_go_programs.rs
+        common/
+        fixtures/
+        tools/go_oracle/
+    gors-cli/               commands and generated-artifact cache manifests
+    gors-runtime/           runtime ABI and Go value representations
+    perf/                   native performance evidence schemas, corpus, and gates
+    www/                    browser application
+
+The exact public compiler facade may remain temporarily small enough for the
+CLI and Wasm callers, but every entry point must delegate to the same backend.
+An API wrapper is acceptable; an alternate semantic path is not.
+
+`COMPILER_PERFORMANCE.md` is the normative performance and incremental
+architecture contract. `COMPILER_AUDIT.md` records the broader replacement
+decision and roadmap.
+
+## Development workflow
+
+Fast local checks:
+
+    cargo fmt --all
+    cargo check --workspace
+    cargo test -p gors --lib
+
+Repository gates:
+
+    make rust-lint
+    make rust-build
+    make rust-test-unit
+
+Run a focused generated-program fixture while expanding the frontier:
+
+    make rust-test-integration-go-spec-fixture FIXTURE=<fixture>
+    make rust-test-integration-go-stdlib-fixture FIXTURE=<fixture>
+
+The broad generated-program suites are expected to expose migration backlog
+until their constructs have native HIR and MIR support. A red unsupported
+fixture is actionable coverage; it is not permission to restore legacy code.
+
+Performance certification is opt-in and belongs on dedicated, normalized
+workers. Once any scenario is promoted under `COMPILER_PERFORMANCE.md`, its
+locked median and p95 budgets become mandatory non-regression acceptance gates.
+Never publish a faster-than-Go claim from browser cache-hit timings, filtered
+fixtures, compiler-only timings, or a run that excludes terminal codegen/linking.
+
+The web compiler must use the same Rust backend. Browser caching may cache
+source inputs and final complete outputs, but must not introduce a persistent
+generated-Rust resolver archive or a separate semantic implementation.
+
+## Architectural guard searches
+
+Run these after compiler-architecture changes. Each match must be removed or
+explained by the named boundary.
+
+The enforced aggregate check is:
+
+    bash scripts/check-compiler-architecture.sh
+
+Legacy compiler modules or imports should be absent:
+
+    rg -n 'compiler::(ir|typeinfer|passes)|mod (ir|typeinfer|passes)' gors gors-cli www
+
+Generated-Rust resolver/cache concepts should be absent:
+
+    rg -ni 'resolver.?cache|resolved.?module|partial.?declaration|type.?environment.?cache' gors gors-cli www
+
+Semantic syn manipulation should be limited to the terminal emitter and public
+output facade:
+
+    rg -n 'syn::|quote!|parse_quote!' gors/src/compiler
+
+The old model must not reappear under a new name:
+
+    rg -ni 'post.?syn|rust.?ast.?pass|ast.?to.?syn|fallback.?lower' gors/src
+
+Also inspect all unsupported diagnostics before claiming support:
+
+    rg -n 'GORS2001|unsupported' gors/src/compiler
+
+## Change rules
+
+- Extend semantic types and HIR before adding syntax emission.
+- Add or update MIR validation whenever a new instruction or terminator is
+  introduced.
+- Add or update Rust IR validation whenever a representation or ownership
+  operation is introduced.
+- Add a negative diagnostic test and a positive stage or execution test with
+  each new language construct.
+- Preserve deterministic identity allocation, iteration order, diagnostics,
+  representation-lowering results, and generated syntax.
+- Add an incremental invalidation assertion and query-cost observation with
+  each new language construct; a semantically correct feature with coarse or
+  unbounded invalidation is incomplete.
+- Keep stage products schema-versioned, canonically fingerprinted, and
+  optionally dumpable without checkout-specific paths.
+- Do not add phase-local worker pools or unbounded spawning. All work consumes
+  the compiler database's single global job and memory budgets.
+- Never infer semantics from generated Rust identifiers, doc markers, or syn
+  tree shape.
+- Never add a stdlib-package-name conditional to codegen.
+- Never publish conformance percentages from filtered runs.
+- Remove obsolete modules, tests, configuration, and documentation in the same
+  change that replaces them.
+
+## 2026 architecture direction
+
+Development order is:
+
+1. Preserve the completed destructive cutover and independent parser contract,
+   and install machine-readable stage and performance measurement.
+2. Replace leaking program parse products and traversal-ordinal identities with
+   owned per-file snapshots and stable cross-revision keys, then put parsing,
+   indexing, semantics, HIR, MIR, and Rust representation lowering behind the
+   red-green query database.
+3. Expand exact types, constants, generics, control-flow MIR, places, calls,
+   effects, representation facts, both IR verifiers, and runtime ABI through
+   fine-grained queries; every feature includes invalidation and cost coverage.
+4. Build the canonical package DAG, deterministic global scheduler,
+   cancellation, memory eviction, and on-disk semantic CAS while compiling the
+   pinned stdlib generically.
+5. Run the terminal Rust feasibility gate as soon as representative package
+   codegen exists. If rustc plus linking makes the target impossible, replace
+   the production artifact path with direct fast codegen from the same verified
+   Rust IR; never create a second semantic pipeline.
+6. Grow proof-driven Rust representation lowering, differential fuzzing, and
+   performance work throughout every phase. Promote cold and warm thresholds
+   immediately when earned; after promotion they are mandatory acceptance
+   criteria.
+
+Compatibility is measured against Go behavior, not against Rust emitted by the
+deleted compiler.

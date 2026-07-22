@@ -1,24 +1,19 @@
 use flate2::read::GzDecoder;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+#[path = "build/platform.rs"]
+mod platform;
+#[path = "build/sdk_index.rs"]
+mod sdk_index;
+
+use sdk_index::StdlibPackages;
+
 const GO_VERSION_FILE: &str = "../.go-version";
-const STDLIB_PRELOAD_SCHEMA_SUFFIX: &str = "stdlib-static-preload-v2";
+const STDLIB_PRELOAD_SCHEMA_SUFFIX: &str = "stdlib-source-metadata-v4";
 const COMPILER_FINGERPRINT_DOMAIN: &[u8] = b"gors-compiler-artifact-v1\0";
-const RESOLVER_CACHE_FINGERPRINT_DOMAIN: &[u8] = b"gors-resolver-cache-abi-v1\0";
-const RESOLVER_CACHE_OPERATIONAL_FEATURES: &[&str] =
-    &["CARGO_FEATURE_PARALLEL", "CARGO_FEATURE_WASM_THREADS"];
 
 type BuildResult<T> = Result<T, Box<dyn std::error::Error>>;
-
-#[derive(Clone)]
-struct StdlibSourceFile {
-    filename: String,
-    content: String,
-}
-
-type StdlibPackages = BTreeMap<String, Vec<StdlibSourceFile>>;
 
 fn build_error(message: impl Into<String>) -> std::io::Error {
     std::io::Error::other(message.into())
@@ -40,8 +35,6 @@ fn compiler_source_fingerprint(
     sdk_fingerprint: &str,
     target_goos: &str,
     target_goarch: &str,
-    domain: &[u8],
-    ignored_features: &[&str],
 ) -> BuildResult<String> {
     fn collect_rust_sources(root: &Path, files: &mut Vec<PathBuf>) -> BuildResult<()> {
         for entry in std::fs::read_dir(root)? {
@@ -58,15 +51,17 @@ fn compiler_source_fingerprint(
 
     let mut files = Vec::new();
     collect_rust_sources(Path::new("src"), &mut files)?;
-    collect_rust_sources(Path::new("../gors-builtin/src"), &mut files)?;
+    collect_rust_sources(Path::new("../gors-runtime/src"), &mut files)?;
     files.extend(
         [
             "build.rs",
+            "build/platform.rs",
+            "build/sdk_index.rs",
             "Cargo.toml",
             "../Cargo.toml",
             "../Cargo.lock",
             GO_VERSION_FILE,
-            "../gors-builtin/Cargo.toml",
+            "../gors-runtime/Cargo.toml",
         ]
         .into_iter()
         .map(PathBuf::from),
@@ -74,7 +69,7 @@ fn compiler_source_fingerprint(
     files.sort();
 
     let mut hasher = Sha256::new();
-    hasher.update(domain);
+    hasher.update(COMPILER_FINGERPRINT_DOMAIN);
     hasher.update(b"embedded-go-sdk\0");
     hasher.update(sdk_fingerprint.as_bytes());
     hasher.update(b"\0target-goos\0");
@@ -89,10 +84,7 @@ fn compiler_source_fingerprint(
         hasher.update(b"\0");
     }
     let mut enabled_features = std::env::vars()
-        .filter_map(|(key, value)| {
-            (key.starts_with("CARGO_FEATURE_") && !ignored_features.contains(&key.as_str()))
-                .then_some((key, value))
-        })
+        .filter_map(|(key, value)| key.starts_with("CARGO_FEATURE_").then_some((key, value)))
         .collect::<Vec<_>>();
     enabled_features.sort();
     for (key, value) in enabled_features {
@@ -129,20 +121,46 @@ fn stdlib_source_fingerprint(
     target_goarch: &str,
 ) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(b"gors-embedded-go-sdk-v1\0");
+    hasher.update(b"gors-embedded-go-sdk-v2\0");
     hasher.update(go_version.as_bytes());
     hasher.update(b"\0");
     hasher.update(target_goos.as_bytes());
     hasher.update(b"\0");
     hasher.update(target_goarch.as_bytes());
     hasher.update(b"\0");
-    for (import_path, files) in packages {
+    for (import_path, package) in packages {
         hasher.update(import_path.as_bytes());
         hasher.update(b"\0");
-        for file in files {
+        for file in &package.files {
             hasher.update(file.filename.as_bytes());
             hasher.update(b"\0");
             hasher.update(file.content.as_bytes());
+            hasher.update(b"\0");
+        }
+        for dependency in &package.direct_imports {
+            hasher.update(dependency.as_bytes());
+            hasher.update(b"\0");
+        }
+        for pattern in &package.embed_patterns {
+            hasher.update(pattern.as_bytes());
+            hasher.update(b"\0");
+        }
+        for asset in &package.embed_files {
+            hasher.update(asset.path.as_bytes());
+            hasher.update(b"\0");
+            hasher.update(asset.sha256.as_bytes());
+            hasher.update(b"\0");
+            hasher.update(&asset.content);
+            hasher.update(b"\0");
+        }
+        for input in &package.unsupported_inputs {
+            hasher.update(input.kind.rust_variant().as_bytes());
+            hasher.update(b"\0");
+            hasher.update(input.file.path.as_bytes());
+            hasher.update(b"\0");
+            hasher.update(input.file.sha256.as_bytes());
+            hasher.update(b"\0");
+            hasher.update(&input.file.content);
             hasher.update(b"\0");
         }
     }
@@ -180,35 +198,31 @@ fn stdlib_preload_schema(
     )
 }
 
-fn go_arch() -> BuildResult<&'static str> {
-    match std::env::consts::ARCH {
-        "x86_64" => Ok("amd64"),
-        "aarch64" => Ok("arm64"),
-        arch => Err(build_error(format!("unsupported arch for Go SDK download: {arch}")).into()),
-    }
+fn host_sdk_platform() -> BuildResult<platform::GoPlatform> {
+    platform::host_sdk_platform(std::env::consts::OS, std::env::consts::ARCH)
+        .map_err(|message| build_error(message).into())
 }
 
-fn go_os() -> BuildResult<&'static str> {
-    match std::env::consts::OS {
-        "macos" => Ok("darwin"),
-        "linux" => Ok("linux"),
-        os => Err(build_error(format!("unsupported OS for Go SDK download: {os}")).into()),
-    }
+fn target_source_platform() -> BuildResult<platform::GoPlatform> {
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS")?;
+    let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH")?;
+    platform::target_source_platform(&target_os, &target_arch)
+        .map_err(|message| build_error(message).into())
 }
 
 fn download_url(go_version: &str) -> BuildResult<String> {
+    let host = host_sdk_platform()?;
     Ok(format!(
         "https://dl.google.com/go/go{go_version}.{}-{}.tar.gz",
-        go_os()?,
-        go_arch()?
+        host.os, host.arch
     ))
 }
 
 fn checksum_url(go_version: &str) -> BuildResult<String> {
+    let host = host_sdk_platform()?;
     Ok(format!(
         "https://dl.google.com/go/go{go_version}.{}-{}.tar.gz.sha256",
-        go_os()?,
-        go_arch()?
+        host.os, host.arch
     ))
 }
 
@@ -245,7 +259,8 @@ fn cache_dir() -> BuildResult<PathBuf> {
 }
 
 fn go_sdk_cache_key(go_version: &str) -> BuildResult<String> {
-    Ok(format!("go{go_version}.{}-{}", go_os()?, go_arch()?))
+    let host = host_sdk_platform()?;
+    Ok(format!("go{go_version}.{}-{}", host.os, host.arch))
 }
 
 fn ensure_go_sdk(go_version: &str) -> BuildResult<PathBuf> {
@@ -322,92 +337,6 @@ fn validate_sdk_version(sdk_path: &Path, go_version: &str) -> BuildResult<()> {
     Ok(())
 }
 
-fn extract_stdlib_from_sdk(
-    sdk_path: &Path,
-    go_version: &str,
-    target_goos: &str,
-    target_goarch: &str,
-) -> StdlibPackages {
-    let src_dir = sdk_path.join("src");
-    let mut packages = BTreeMap::new();
-
-    fn walk(
-        dir: &Path,
-        base: &Path,
-        go_version: &str,
-        target_goos: &str,
-        target_goarch: &str,
-        packages: &mut StdlibPackages,
-    ) {
-        let entries = match std::fs::read_dir(dir) {
-            Ok(e) => e,
-            Err(_) => return,
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                let name = entry.file_name();
-                let name_str = name.to_string_lossy();
-                if name_str == "testdata"
-                    || name_str == "vendor"
-                    || name_str == "cmd"
-                    || name_str.starts_with('.')
-                {
-                    continue;
-                }
-                walk(
-                    &path,
-                    base,
-                    go_version,
-                    target_goos,
-                    target_goarch,
-                    packages,
-                );
-            } else if path.extension().is_some_and(|e| e == "go") {
-                let filename = entry.file_name().to_string_lossy().to_string();
-                if filename.ends_with("_test.go") {
-                    continue;
-                }
-                let rel_dir = path
-                    .parent()
-                    .and_then(|p| p.strip_prefix(base).ok())
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                if rel_dir.is_empty() {
-                    continue;
-                }
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    if should_compile_file(
-                        &filename,
-                        &content,
-                        go_version,
-                        target_goos,
-                        target_goarch,
-                    ) {
-                        packages
-                            .entry(rel_dir)
-                            .or_default()
-                            .push(StdlibSourceFile { filename, content });
-                    }
-                }
-            }
-        }
-    }
-
-    walk(
-        &src_dir,
-        &src_dir,
-        go_version,
-        target_goos,
-        target_goarch,
-        &mut packages,
-    );
-    for files in packages.values_mut() {
-        files.sort_by(|a, b| a.filename.cmp(&b.filename));
-    }
-    packages
-}
-
 fn create_stdlib_preload(
     packages: &StdlibPackages,
     output_path: &Path,
@@ -418,13 +347,10 @@ fn create_stdlib_preload(
     }
     std::fs::create_dir_all(source_dir)?;
 
-    let known_packages: BTreeSet<_> = packages.keys().cloned().collect();
-    let direct_imports = package_direct_imports(packages, &known_packages);
-
     let mut metadata = String::new();
     metadata.push_str("static EMBEDDED_PACKAGES: &[EmbeddedGoPackage] = &[\n");
 
-    for (pkg_path, files) in packages {
+    for (pkg_path, package) in packages {
         let pkg_dir = source_dir.join(pkg_path);
         std::fs::create_dir_all(&pkg_dir)?;
 
@@ -433,9 +359,8 @@ fn create_stdlib_preload(
         metadata.push_str(&rust_string(pkg_path));
         metadata.push_str(",\n        files: &[\n");
 
-        for file in files {
-            let file_path = pkg_dir.join(&file.filename);
-            std::fs::write(&file_path, &file.content)?;
+        for file in &package.files {
+            materialize_package_file(&pkg_dir, &file.filename, file.content.as_bytes())?;
             metadata.push_str("            EmbeddedGoFile { filename: ");
             metadata.push_str(&rust_string(&file.filename));
             metadata.push_str(", content: include_str!(concat!(env!(\"OUT_DIR\"), ");
@@ -446,12 +371,46 @@ fn create_stdlib_preload(
             metadata.push_str(")) },\n");
         }
         metadata.push_str("        ],\n        direct_imports: &[\n");
-        if let Some(imports) = direct_imports.get(pkg_path) {
-            for import_path in imports {
-                metadata.push_str("            ");
-                metadata.push_str(&rust_string(import_path));
-                metadata.push_str(",\n");
-            }
+        for import_path in &package.direct_imports {
+            metadata.push_str("            ");
+            metadata.push_str(&rust_string(import_path));
+            metadata.push_str(",\n");
+        }
+        metadata.push_str("        ],\n        embed_patterns: &[\n");
+        for pattern in &package.embed_patterns {
+            metadata.push_str("            ");
+            metadata.push_str(&rust_string(pattern));
+            metadata.push_str(",\n");
+        }
+        metadata.push_str("        ],\n        embed_files: &[\n");
+        for asset in &package.embed_files {
+            materialize_package_file(&pkg_dir, &asset.path, &asset.content)?;
+            metadata.push_str("            EmbeddedGoAsset { path: ");
+            metadata.push_str(&rust_string(&asset.path));
+            metadata.push_str(", content: include_bytes!(concat!(env!(\"OUT_DIR\"), ");
+            metadata.push_str(&rust_string(&format!(
+                "/go_stdlib_src/{pkg_path}/{}",
+                asset.path
+            )));
+            metadata.push_str(")), sha256: ");
+            metadata.push_str(&rust_string(&asset.sha256));
+            metadata.push_str(" },\n");
+        }
+        metadata.push_str("        ],\n        unsupported_inputs: &[\n");
+        for input in &package.unsupported_inputs {
+            materialize_package_file(&pkg_dir, &input.file.path, &input.file.content)?;
+            metadata.push_str("            UnsupportedGoInput { kind: UnsupportedGoInputKind::");
+            metadata.push_str(input.kind.rust_variant());
+            metadata.push_str(", path: ");
+            metadata.push_str(&rust_string(&input.file.path));
+            metadata.push_str(", content: include_bytes!(concat!(env!(\"OUT_DIR\"), ");
+            metadata.push_str(&rust_string(&format!(
+                "/go_stdlib_src/{pkg_path}/{}",
+                input.file.path
+            )));
+            metadata.push_str(")), sha256: ");
+            metadata.push_str(&rust_string(&input.file.sha256));
+            metadata.push_str(" },\n");
         }
         metadata.push_str("        ],\n    },\n");
     }
@@ -461,321 +420,52 @@ fn create_stdlib_preload(
     Ok(())
 }
 
-fn package_direct_imports(
-    packages: &StdlibPackages,
-    known_packages: &BTreeSet<String>,
-) -> BTreeMap<String, Vec<String>> {
-    let mut result = BTreeMap::new();
-    for (pkg_path, files) in packages {
-        let mut imports = BTreeSet::new();
-        for file in files {
-            for import_path in import_paths_from_source(&file.content) {
-                if import_path != *pkg_path && known_packages.contains(&import_path) {
-                    imports.insert(import_path);
-                }
-            }
+fn materialize_package_file(
+    package_dir: &Path,
+    relative_path: &str,
+    content: &[u8],
+) -> BuildResult<()> {
+    let path = package_dir.join(relative_path);
+    let parent = path.parent().ok_or_else(|| {
+        build_error(format!(
+            "generated SDK metadata path has no parent: {}",
+            path.display()
+        ))
+    })?;
+    std::fs::create_dir_all(parent)?;
+    if path.exists() {
+        let existing = std::fs::read(&path)?;
+        if existing != content {
+            return Err(build_error(format!(
+                "conflicting build-selected SDK inputs map to {}",
+                path.display()
+            ))
+            .into());
         }
-        result.insert(pkg_path.clone(), imports.into_iter().collect());
+        return Ok(());
     }
-    result
+    std::fs::write(path, content)?;
+    Ok(())
 }
 
 fn rust_string(value: &str) -> String {
     format!("{value:?}")
 }
 
-fn import_paths_from_source(content: &str) -> Vec<String> {
-    let mut paths = Vec::new();
-    let mut in_import_block = false;
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("import (") {
-            in_import_block = true;
-            continue;
-        }
-        if in_import_block && trimmed == ")" {
-            in_import_block = false;
-            continue;
-        }
-        if trimmed.starts_with("import ") || in_import_block {
-            if let Some(start) = trimmed.find('"')
-                && let Some(end) = trimmed[start + 1..].find('"')
-            {
-                paths.push(trimmed[start + 1..start + 1 + end].to_string());
-            }
-        }
-    }
-
-    paths
-}
-
-fn should_compile_file(
-    filename: &str,
-    content: &str,
-    go_version: &str,
-    target_goos: &str,
-    target_goarch: &str,
-) -> bool {
-    file_name_matches_target(filename, target_goos, target_goarch)
-        && build_constraint_matches(content, go_version, target_goos)
-}
-
-fn file_name_matches_target(filename: &str, target_goos: &str, target_goarch: &str) -> bool {
-    let Some(stem) = filename.strip_suffix(".go") else {
-        return false;
-    };
-    let parts: Vec<&str> = stem.split('_').collect();
-    let Some(last) = parts.last().copied() else {
-        return true;
-    };
-
-    if is_go_arch(last) {
-        if last != "gors" {
-            if last != target_goarch || !is_arch_specific_definition_file(stem) {
-                return false;
-            }
-        }
-        if let Some(os_part) = parts.get(parts.len().saturating_sub(2))
-            && is_go_os(os_part)
-            && *os_part != target_goos
-        {
-            return false;
-        }
-        return true;
-    }
-
-    !is_go_os(last) || last == target_goos
-}
-
-fn is_arch_specific_definition_file(stem: &str) -> bool {
-    matches!(stem.split('_').next(), Some("defs" | "zerrors" | "ztypes"))
-}
-
-fn build_constraint_matches(content: &str, go_version: &str, target_goos: &str) -> bool {
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if let Some(expr) = trimmed.strip_prefix("//go:build ") {
-            return BuildExprParser::new(expr, go_version, target_goos).parse();
-        }
-        if trimmed.starts_with("//") || trimmed.is_empty() {
-            continue;
-        }
-        break;
-    }
-    true
-}
-
-struct BuildExprParser<'a> {
-    tokens: Vec<&'a str>,
-    pos: usize,
-    go_version: &'a str,
-    target_goos: &'a str,
-}
-
-impl<'a> BuildExprParser<'a> {
-    fn new(expr: &'a str, go_version: &'a str, target_goos: &'a str) -> Self {
-        Self {
-            tokens: tokenize_build_expr(expr),
-            pos: 0,
-            go_version,
-            target_goos,
-        }
-    }
-
-    fn parse(&mut self) -> bool {
-        self.parse_or()
-    }
-
-    fn parse_or(&mut self) -> bool {
-        let mut value = self.parse_and();
-        while self.peek() == Some("||") {
-            self.pos += 1;
-            value = self.parse_and() || value;
-        }
-        value
-    }
-
-    fn parse_and(&mut self) -> bool {
-        let mut value = self.parse_unary();
-        while self.peek() == Some("&&") {
-            self.pos += 1;
-            value = self.parse_unary() && value;
-        }
-        value
-    }
-
-    fn parse_unary(&mut self) -> bool {
-        if self.peek() == Some("!") {
-            self.pos += 1;
-            return !self.parse_unary();
-        }
-        self.parse_primary()
-    }
-
-    fn parse_primary(&mut self) -> bool {
-        match self.next() {
-            Some("(") => {
-                let value = self.parse_or();
-                if self.peek() == Some(")") {
-                    self.pos += 1;
-                }
-                value
-            }
-            Some(tag) => build_tag_matches(tag, self.go_version, self.target_goos),
-            None => true,
-        }
-    }
-
-    fn peek(&self) -> Option<&'a str> {
-        self.tokens.get(self.pos).copied()
-    }
-
-    fn next(&mut self) -> Option<&'a str> {
-        let token = self.peek()?;
-        self.pos += 1;
-        Some(token)
-    }
-}
-
-fn tokenize_build_expr(expr: &str) -> Vec<&str> {
-    let mut tokens = Vec::new();
-    let mut start = None;
-
-    for (idx, ch) in expr.char_indices() {
-        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '.' {
-            if start.is_none() {
-                start = Some(idx);
-            }
-            continue;
-        }
-
-        if let Some(s) = start.take() {
-            tokens.push(&expr[s..idx]);
-        }
-
-        match ch {
-            '!' | '(' | ')' => tokens.push(&expr[idx..idx + ch.len_utf8()]),
-            '&' | '|' => {
-                let end = idx + 2;
-                if expr.get(idx..end) == Some("&&") || expr.get(idx..end) == Some("||") {
-                    tokens.push(&expr[idx..end]);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    if let Some(s) = start {
-        tokens.push(&expr[s..]);
-    }
-
-    tokens
-}
-
-fn build_tag_matches(tag: &str, go_version: &str, target_goos: &str) -> bool {
-    if tag == target_goos || tag == "gors" {
-        return true;
-    }
-    if tag == "unix" {
-        return is_unix_goos(target_goos);
-    }
-    if let Some(version) = tag.strip_prefix("go1.") {
-        return version
-            .parse::<u32>()
-            .is_ok_and(|minor| go_version_minor(go_version).is_some_and(|max| minor <= max));
-    }
-    matches!(tag, "gc")
-}
-
-fn go_version_minor(version: &str) -> Option<u32> {
-    let mut parts = version.split('.');
-    if parts.next()? != "1" {
-        return None;
-    }
-    parts.next()?.parse::<u32>().ok()
-}
-
-fn target_go_os() -> String {
-    let os =
-        std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_else(|_| std::env::consts::OS.to_string());
-    match os.as_str() {
-        "macos" => "darwin".to_string(),
-        other => other.to_string(),
-    }
-}
-
-fn is_go_os(value: &str) -> bool {
-    matches!(
-        value,
-        "aix"
-            | "android"
-            | "darwin"
-            | "dragonfly"
-            | "freebsd"
-            | "hurd"
-            | "illumos"
-            | "ios"
-            | "js"
-            | "linux"
-            | "netbsd"
-            | "openbsd"
-            | "plan9"
-            | "solaris"
-            | "wasip1"
-            | "windows"
-    )
-}
-
-fn is_go_arch(value: &str) -> bool {
-    matches!(
-        value,
-        "386"
-            | "amd64"
-            | "arm"
-            | "arm64"
-            | "loong64"
-            | "mips"
-            | "mips64"
-            | "mips64le"
-            | "mipsle"
-            | "ppc64"
-            | "ppc64le"
-            | "riscv64"
-            | "s390x"
-            | "wasm"
-            | "gors"
-    )
-}
-
-fn is_unix_goos(value: &str) -> bool {
-    matches!(
-        value,
-        "aix"
-            | "android"
-            | "darwin"
-            | "dragonfly"
-            | "freebsd"
-            | "hurd"
-            | "illumos"
-            | "ios"
-            | "linux"
-            | "netbsd"
-            | "openbsd"
-            | "solaris"
-    )
-}
-
 fn main() -> BuildResult<()> {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=build/platform.rs");
+    println!("cargo:rerun-if-changed=build/sdk_index.rs");
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-changed=../Cargo.toml");
     println!("cargo:rerun-if-changed=../Cargo.lock");
-    println!("cargo:rerun-if-changed=../gors-builtin/Cargo.toml");
+    println!("cargo:rerun-if-changed=../gors-runtime/Cargo.toml");
     println!("cargo:rerun-if-changed={GO_VERSION_FILE}");
-    println!("cargo:rerun-if-changed=../gors-builtin/src");
+    println!("cargo:rerun-if-changed=../gors-runtime/src");
     println!("cargo:rerun-if-env-changed=GORS_GO_SDK_PATH");
+    println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_OS");
+    println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_ARCH");
     if std::env::var("TARGET")?.starts_with("wasm32-") {
         println!("cargo:rerun-if-changed=../www/wasm/Cargo.toml");
         println!("cargo:rerun-if-changed=../www/wasm/Cargo.lock");
@@ -791,29 +481,19 @@ fn main() -> BuildResult<()> {
         );
         println!("cargo:rerun-if-changed={}", sdk_path.join("src").display());
     }
-    let target_goos = target_go_os();
-    let target_goarch = go_arch()?;
-    let packages = extract_stdlib_from_sdk(&sdk_path, &go_version, &target_goos, target_goarch);
+    let target = target_source_platform()?;
+    let target_goos = target.os;
+    let target_goarch = target.arch;
+    let oracle_cache = cache_dir()?.join("go-source-oracle");
+    let packages =
+        sdk_index::load_stdlib_from_sdk(&sdk_path, &oracle_cache, target_goos, target_goarch)?;
     let sdk_fingerprint =
-        stdlib_source_fingerprint(&packages, &go_version, &target_goos, target_goarch);
-    let compiler_fingerprint = compiler_source_fingerprint(
-        &sdk_fingerprint,
-        &target_goos,
-        target_goarch,
-        COMPILER_FINGERPRINT_DOMAIN,
-        &[],
-    )?;
-    let resolver_cache_fingerprint = compiler_source_fingerprint(
-        &sdk_fingerprint,
-        &target_goos,
-        target_goarch,
-        RESOLVER_CACHE_FINGERPRINT_DOMAIN,
-        RESOLVER_CACHE_OPERATIONAL_FEATURES,
-    )?;
+        stdlib_source_fingerprint(&packages, &go_version, target_goos, target_goarch);
+    let compiler_fingerprint =
+        compiler_source_fingerprint(&sdk_fingerprint, target_goos, target_goarch)?;
     println!("cargo:rustc-env=GORS_GO_VERSION={go_version}");
     println!("cargo:rustc-env=GORS_STDLIB_VERSION={stdlib_version}");
     println!("cargo:rustc-env=GORS_COMPILER_FINGERPRINT={compiler_fingerprint}");
-    println!("cargo:rustc-env=GORS_RESOLVER_CACHE_FINGERPRINT={resolver_cache_fingerprint}");
     println!(
         "cargo:rustc-env=GORS_BUILT_GO_SDK_PATH={}",
         sdk_path.display()
@@ -824,7 +504,7 @@ fn main() -> BuildResult<()> {
     let source_dir = out_dir.join("go_stdlib_src");
     let marker_path = out_dir.join("go_stdlib.version");
     let preload_schema =
-        stdlib_preload_schema(&go_version, &target_goos, target_goarch, &sdk_fingerprint);
+        stdlib_preload_schema(&go_version, target_goos, target_goarch, &sdk_fingerprint);
 
     if preload_path.exists()
         && source_dir.exists()
@@ -834,9 +514,20 @@ fn main() -> BuildResult<()> {
     }
 
     eprintln!(
-        "Preloading {} Go stdlib packages for GOOS={target_goos} GOARCH=gors with {target_goarch} definition files ({} total files)",
+        "Preloading {} build-selected Go stdlib packages for target GOOS={target_goos} GOARCH={target_goarch} with gors overrides ({} Go files, {} embed assets, {} classified host inputs)",
         packages.len(),
-        packages.values().map(|v| v.len()).sum::<usize>()
+        packages
+            .values()
+            .map(|package| package.files.len())
+            .sum::<usize>(),
+        packages
+            .values()
+            .map(|package| package.embed_files.len())
+            .sum::<usize>(),
+        packages
+            .values()
+            .map(|package| package.unsupported_inputs.len())
+            .sum::<usize>()
     );
 
     create_stdlib_preload(&packages, &preload_path, &source_dir)?;

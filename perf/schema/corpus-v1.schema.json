@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gors.dev/schemas/performance-corpus-v1.json",
+  "title": "gors native performance corpus",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "corpusVersion",
+    "digest",
+    "workloads",
+    "scenarioSupport"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "corpusVersion": { "type": "string", "minLength": 1 },
+    "digest": { "$ref": "#/$defs/sha256" },
+    "workloads": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "baseSource",
+          "leafSource",
+          "baseBehavior",
+          "leafBehavior"
+        ],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "baseSource": { "type": "string", "minLength": 1 },
+          "leafSource": { "type": "string", "minLength": 1 },
+          "baseBehavior": { "$ref": "#/$defs/behavior" },
+          "leafBehavior": { "$ref": "#/$defs/behavior" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "scenarioSupport": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "supported"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "supported": { "type": "boolean" },
+          "reason": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "behavior": {
+      "type": "object",
+      "required": ["exitCode", "stdoutUtf8", "stderrUtf8"],
+      "properties": {
+        "exitCode": { "type": "integer" },
+        "stdoutUtf8": { "type": "string" },
+        "stderrUtf8": { "type": "string" },
+        "requiredSentinelUtf8": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -3,13 +3,11 @@
 		"includes": [
 			"**",
 			"!dist/**",
-			"!generated/**",
 			"!node_modules/**",
 			"!playwright-report/**",
 			"!test-results/**",
 			"!v86/**",
 			"!wasm/pkg/**",
-			"!wasm/pkg-threads/**",
 			"!wasm/target/**"
 		]
 	}

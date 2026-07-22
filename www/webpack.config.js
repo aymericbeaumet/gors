@@ -9,7 +9,6 @@ const MonacoWebpackPlugin = require("monaco-editor-webpack-plugin");
 const sveltePreprocess = require("svelte-preprocess");
 
 const compilerHarness = process.env.GORS_WEB_COMPILER_HARNESS === "1";
-const threadedWasmPreview = process.env.GORS_WASM_THREADS === "1";
 
 function contentHash(filePath) {
 	const data = fs.readFileSync(filePath);
@@ -122,16 +121,7 @@ module.exports = () => {
 				path: false,
 			},
 			alias: {
-				"gors-wasm-runtime$": path.resolve(
-					__dirname,
-					threadedWasmPreview
-						? "gors-wasm-threaded-loader.ts"
-						: "gors-wasm-loader.ts",
-				),
-				"gors-wasm-threads-package$": path.resolve(
-					__dirname,
-					"wasm/pkg-threads/gors.js",
-				),
+				"gors-wasm-runtime$": path.resolve(__dirname, "gors-wasm-loader.ts"),
 			},
 		},
 		module: {
@@ -180,10 +170,6 @@ module.exports = () => {
 					test: /node_modules\/svelte\/.*\.mjs$/,
 					resolve: { fullySpecified: false },
 				},
-				{
-					test: /wasm\/pkg-threads\/.*\.js$/,
-					resolve: { fullySpecified: false },
-				},
 			],
 		},
 		plugins,
@@ -195,10 +181,6 @@ module.exports = () => {
 			},
 			compress: true,
 			port: 8080,
-			headers: {
-				"Cross-Origin-Opener-Policy": "same-origin",
-				"Cross-Origin-Embedder-Policy": "require-corp",
-			},
 			historyApiFallback: true,
 			hot: false,
 			liveReload: devServerLiveReload,

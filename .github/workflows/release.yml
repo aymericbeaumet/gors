@@ -70,6 +70,8 @@ jobs:
   # Build for multiple platforms
   build:
     needs: create-release
+    # gors/build.rs selects the downloadable Go SDK from the runner host, but
+    # selects embedded Go source metadata from each Rust target below.
     strategy:
       matrix:
         include:

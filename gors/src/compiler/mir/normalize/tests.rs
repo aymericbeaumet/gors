@@ -1,0 +1,29 @@
+use super::*;
+
+struct CorruptBlockId;
+
+impl MirPass for CorruptBlockId {
+    fn name(&self) -> &'static str {
+        "corrupt-block-id"
+    }
+
+    fn run(&self, file: &mut mir::File) -> Result<(), Diagnostic> {
+        file.functions[0].blocks[0].id = BasicBlockId(99);
+        Ok(())
+    }
+}
+
+#[test]
+fn pass_manager_rejects_a_pass_that_breaks_mir() {
+    let source = "package main\nfunc main() { println(true) }\n";
+    let ast = crate::parser::parse_file("pass.go", source).unwrap();
+    let hir = crate::compiler::lower_to_hir(&ast).unwrap();
+    let mir = crate::compiler::lower_to_mir(&hir).unwrap();
+    let corrupt = CorruptBlockId;
+    let passes: [&dyn MirPass; 1] = [&corrupt];
+    let error = PassManager::new(&passes).run(mir).unwrap_err();
+
+    assert_eq!(error.len(), 1);
+    assert!(error[0].message.contains("after pass `corrupt-block-id`"));
+    assert!(error[0].message.contains("block IDs are not dense"));
+}

@@ -503,7 +503,7 @@ fn assert_compile_error_fixture(dir: &Path, case_id: &str) {
 
     let source_path = dir.to_string_lossy().into_owned();
     let rejected = match gors::parser::parse_program_files(&[source_path]) {
-        Ok(program) => gors::compiler::compile_program_multi(program).is_err(),
+        Ok(program) => gors::compiler::compile_program(program).is_err(),
         Err(_) => true,
     };
     assert!(

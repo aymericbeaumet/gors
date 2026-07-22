@@ -640,10 +640,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gors-builtin"
-version = "0.1.0"
-
-[[package]]
 name = "gors-cli"
 version = "0.1.0"
 dependencies = [
@@ -656,6 +652,10 @@ dependencies = [
  "sha2",
  "tempfile",
 ]
+
+[[package]]
+name = "gors-runtime"
+version = "0.1.0"
 
 [[package]]
 name = "h2"

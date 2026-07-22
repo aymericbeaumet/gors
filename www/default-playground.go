@@ -1,7 +1,9 @@
 package main
 
-import "fmt"
-
 func main() {
-	fmt.Println("Hello, World!")
+	total := 0
+	for value := 0; value < 5; value++ {
+		total += value
+	}
+	println(total)
 }

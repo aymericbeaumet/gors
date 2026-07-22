@@ -18,13 +18,7 @@ crate-type = ["cdylib"]
 [lints.clippy]
 all = { level = "warn", priority = -1 }
 
-[features]
-default = []
-threads = ["dep:rayon", "dep:wasm-bindgen-rayon", "gors/wasm-threads"]
-
 [dependencies]
 console_error_panic_hook = "0.1"
 gors = { path = "../../gors", default-features = false }
-rayon = { version = "1.12", optional = true }
 wasm-bindgen = "0.2"
-wasm-bindgen-rayon = { version = "1.3", optional = true }

@@ -1,0 +1,19 @@
+.site-shell {
+	display: flex;
+	max-width: 100%;
+	min-height: 100vh;
+	flex-direction: column;
+	overflow-x: clip;
+	padding-top: 51px;
+}
+
+.coverage-route {
+	display: flex;
+	flex: 1;
+	max-width: 100%;
+	min-height: calc(100vh - 51px);
+	min-width: 0;
+	flex-direction: column;
+	overflow-x: clip;
+	overflow-y: visible;
+}

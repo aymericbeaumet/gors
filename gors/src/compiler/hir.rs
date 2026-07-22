@@ -1,0 +1,220 @@
+//! Typed, source-shaped high-level IR.
+
+use super::ids::{DefId, LocalId, NodeId, SourceSpan};
+use super::types::{ConstValue, Signature, Ty};
+
+#[derive(Clone, Debug)]
+pub struct File {
+    pub package: String,
+    pub constants: Vec<Constant>,
+    pub functions: Vec<Function>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Constant {
+    pub id: DefId,
+    pub name: String,
+    pub ty: Ty,
+    pub value: ConstValue,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug)]
+pub struct Function {
+    pub id: DefId,
+    pub node: NodeId,
+    pub name: String,
+    pub signature: Signature,
+    pub params: Vec<LocalId>,
+    pub named_results: Vec<Option<LocalId>>,
+    pub locals: Vec<Local>,
+    pub body: Block,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug)]
+pub struct Local {
+    pub id: LocalId,
+    pub name: Option<String>,
+    pub ty: Ty,
+    pub kind: LocalKind,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LocalKind {
+    Parameter,
+    NamedResult,
+    Variable,
+    Temporary,
+}
+
+#[derive(Clone, Debug)]
+pub struct Block {
+    pub node: NodeId,
+    pub stmts: Vec<Stmt>,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug)]
+pub struct Stmt {
+    pub node: NodeId,
+    pub kind: StmtKind,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug)]
+pub enum StmtKind {
+    /// All initializers are evaluated before any destination is written.
+    Let {
+        destinations: Vec<Place>,
+        values: Vec<Expr>,
+    },
+    Assign {
+        destinations: Vec<Place>,
+        op: AssignOp,
+        values: Vec<Expr>,
+    },
+    Expr(Expr),
+    Return(Vec<Expr>),
+    If {
+        init: Option<Box<Stmt>>,
+        condition: Expr,
+        then_block: Block,
+        else_branch: Option<Box<Stmt>>,
+    },
+    For {
+        init: Option<Box<Stmt>>,
+        condition: Option<Expr>,
+        post: Option<Box<Stmt>>,
+        body: Block,
+    },
+    Block(Block),
+    Break,
+    Continue,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AssignOp {
+    Set,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
+    AndNot,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Place {
+    Local(LocalId),
+    Discard,
+}
+
+#[derive(Clone, Debug)]
+pub struct Expr {
+    pub node: NodeId,
+    pub kind: ExprKind,
+    pub ty: Ty,
+    pub category: ValueCategory,
+    pub effects: Effects,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug)]
+pub enum ExprKind {
+    Constant(ConstValue),
+    Local(LocalId),
+    GlobalConstant(DefId, ConstValue),
+    Binary {
+        op: BinaryOp,
+        left: Box<Expr>,
+        right: Box<Expr>,
+    },
+    Unary {
+        op: UnaryOp,
+        operand: Box<Expr>,
+    },
+    Call {
+        callee: Callee,
+        args: Vec<Expr>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Callee {
+    Function(DefId),
+    Builtin(Builtin),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Builtin {
+    Print,
+    Println,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BinaryOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
+    AndNot,
+    Equal,
+    NotEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+    LogicalAnd,
+    LogicalOr,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UnaryOp {
+    Positive,
+    Negative,
+    Not,
+    BitNot,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ValueCategory {
+    Value,
+    Place,
+    Constant,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Effects {
+    pub may_read: bool,
+    pub may_call: bool,
+    pub may_allocate: bool,
+    pub may_block: bool,
+    pub may_panic: bool,
+    pub may_write: bool,
+}
+
+impl Effects {
+    pub fn union(self, other: Self) -> Self {
+        Self {
+            may_read: self.may_read || other.may_read,
+            may_call: self.may_call || other.may_call,
+            may_allocate: self.may_allocate || other.may_allocate,
+            may_block: self.may_block || other.may_block,
+            may_panic: self.may_panic || other.may_panic,
+            may_write: self.may_write || other.may_write,
+        }
+    }
+}

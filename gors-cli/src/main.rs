@@ -5,8 +5,7 @@ mod timings;
 
 use cache::{
     CacheAccessLock, CacheRequest, CacheRequestOptions, CliCacheManifest, FileArtifact,
-    InputSnapshot, export_resolver_cache, generated_file_hashes, import_resolver_cache,
-    maybe_prune_cli_cache, remove_legacy_incremental,
+    GeneratedOutputManifest, InputSnapshot, generated_file_hashes, maybe_prune_cli_cache,
 };
 use clap::{CommandFactory, Parser};
 use gors::error::{Diagnostic, DiagnosticKind};
@@ -109,9 +108,6 @@ struct Build {
     /// Output file path
     #[arg(short, long)]
     output: Option<String>,
-    /// Maximum compiler package tasks to run concurrently
-    #[arg(long, value_parser = parse_jobs)]
-    jobs: Option<usize>,
     /// Write machine-readable phase timings to this JSON file
     #[arg(long, value_name = "PATH")]
     timings_json: Option<String>,
@@ -122,9 +118,6 @@ struct Run {
     /// Build in release mode, with optimizations
     #[arg(long)]
     release: bool,
-    /// Maximum compiler package tasks to run concurrently
-    #[arg(long, value_parser = parse_jobs)]
-    jobs: Option<usize>,
     /// Write machine-readable phase timings to this JSON file
     #[arg(long, value_name = "PATH")]
     timings_json: Option<String>,
@@ -187,7 +180,6 @@ fn ast_output(file: &str) -> Result<Vec<u8>, String> {
 }
 
 fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
-    let jobs = resolved_jobs(cmd.jobs)?;
     let timings = TimingCollector::new();
     let cache_base = gors_cache_base()?;
     let source_paths = vec![cmd.path.clone()];
@@ -203,7 +195,6 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
         release: cmd.release,
         output: Some(&output_dir),
         sourcemap: sourcemap_path.as_deref(),
-        jobs,
     })?;
     maybe_prune_cli_cache(&cache_base, Some(&output_dir))?;
     let cache_access_lock = CacheAccessLock::acquire_shared(&cache_base)?;
@@ -220,7 +211,7 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
             manifest.generated_file_count(),
             output_dir.display()
         );
-        timings.write_json(cmd.timings_json.as_deref().map(Path::new), "build", jobs)?;
+        timings.write_json(cmd.timings_json.as_deref().map(Path::new), "build")?;
         drop(output_lock);
         drop(cache_access_lock);
         return Ok(());
@@ -247,10 +238,6 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
     };
     drop(parse_timer);
     let inputs = InputSnapshot::capture(&program, &source_paths)?;
-    let uses_stdlib = !program.stdlib_imports.is_empty();
-    if uses_stdlib {
-        timings.cache_event("resolver", import_resolver_cache(&cache_base));
-    }
 
     let primary_file = program
         .main_package
@@ -260,24 +247,14 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| cmd.path.clone());
 
     let compile_timer = timings.phase("cli.compile");
-    let compiled = match compile_program(program, jobs, sourcemap_path.is_some()) {
+    let (compiled, source_map_plan) = match compile_program(program, sourcemap_path.is_some()) {
         Ok(compiled) => compiled,
         Err(err) => {
-            let diagnostic = Diagnostic::new(
-                &primary_file,
-                0,
-                0,
-                err.to_string(),
-                DiagnosticKind::Compiler,
-            );
-            print_error(&diagnostic);
+            print_compiler_error(&err, &primary_file);
             std::process::exit(1);
         }
     };
     drop(compile_timer);
-    if uses_stdlib {
-        let _ = export_resolver_cache(&cache_base);
-    }
 
     let print_timer = timings.phase("cli.print");
     let output = gors::printer::generate_multi(compiled)?;
@@ -287,7 +264,12 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
     let stats = write_generated_output_locked(&output, &output_dir)?;
     let sourcemap = sourcemap_path
         .as_deref()
-        .map(|path| write_source_map(&output, path))
+        .map(|path| {
+            let plan = source_map_plan
+                .as_ref()
+                .ok_or("compiler did not return the requested source-map plan")?;
+            write_source_map(&output, plan, path)
+        })
         .transpose()?;
     drop(write_timer);
 
@@ -297,7 +279,6 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
         release: cmd.release,
         output: Some(&output_dir),
         sourcemap: sourcemap_path.as_deref(),
-        jobs,
     })?;
     if request == completed_request {
         CliCacheManifest::new(&request, inputs, generated_files, sourcemap).save(&output_dir)?;
@@ -316,7 +297,7 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    timings.write_json(cmd.timings_json.as_deref().map(Path::new), "build", jobs)?;
+    timings.write_json(cmd.timings_json.as_deref().map(Path::new), "build")?;
     drop(output_lock);
     drop(cache_access_lock);
     Ok(())
@@ -410,8 +391,8 @@ fn write_generated_output_locked(
     output: &gors::printer::GeneratedOutput,
     output_dir: &Path,
 ) -> Result<FileWriteStats, Box<dyn std::error::Error>> {
-    let prev_manifest = gors::compiler::manifest::BuildManifest::load(output_dir);
-    let mut new_manifest = gors::compiler::manifest::BuildManifest::new();
+    let previous_manifest = GeneratedOutputManifest::load(output_dir);
+    let mut new_manifest = GeneratedOutputManifest::new();
     let mut stats = FileWriteStats {
         written: 0,
         skipped: 0,
@@ -422,9 +403,9 @@ fn write_generated_output_locked(
     for (filename, source) in &output.files {
         let file_path = output_dir.join(filename);
         let current_hash = sha2_hash(source);
-        let unchanged = prev_manifest
+        let unchanged = previous_manifest
             .as_ref()
-            .is_some_and(|manifest| !manifest.needs_recompile(filename, &current_hash));
+            .is_some_and(|manifest| manifest.matches(filename, &current_hash));
 
         if unchanged && file_path.exists() {
             stats.skipped += 1;
@@ -434,13 +415,7 @@ fn write_generated_output_locked(
             stats.written += 1;
         }
 
-        new_manifest.modules.insert(
-            filename.clone(),
-            gors::compiler::manifest::ModuleEntry {
-                content_hash: current_hash,
-                output_file: filename.clone(),
-            },
-        );
+        new_manifest.record(filename.clone(), current_hash);
     }
 
     // Publish leaf modules before the coordinator files that reference them.
@@ -451,12 +426,12 @@ fn write_generated_output_locked(
         temp.persist(file_path).map_err(|error| error.error)?;
     }
 
-    if let Some(prev_manifest) = &prev_manifest {
-        for (filename, entry) in &prev_manifest.modules {
+    if let Some(previous_manifest) = &previous_manifest {
+        for (filename, output_file) in previous_manifest.files() {
             if output.files.contains_key(filename) {
                 continue;
             }
-            let file_path = output_dir.join(&entry.output_file);
+            let file_path = output_dir.join(output_file);
             if file_path.is_file() {
                 std::fs::remove_file(&file_path)?;
                 stats.removed += 1;
@@ -515,48 +490,34 @@ fn gors_cache_base() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(std::env::temp_dir().join("gors-cache"))
 }
 
-fn parse_jobs(value: &str) -> Result<usize, String> {
-    let jobs = value
-        .parse::<usize>()
-        .map_err(|_| format!("'{value}' is not a positive integer"))?;
-    if jobs == 0 {
-        return Err("job count must be at least 1".to_string());
-    }
-    Ok(jobs)
-}
-
-fn resolved_jobs(cli_jobs: Option<usize>) -> Result<usize, Box<dyn std::error::Error>> {
-    if let Some(jobs) = cli_jobs {
-        return Ok(jobs);
-    }
-    if let Ok(value) = std::env::var("GORS_JOBS") {
-        return parse_jobs(&value).map_err(Into::into);
-    }
-    Ok(std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get))
-}
-
 fn compile_program(
     program: gors::parser::ParsedProgram,
-    jobs: usize,
     source_maps: bool,
-) -> Result<gors::compiler::CompiledProgram, gors::compiler::CompilerError> {
-    let options = gors::compiler::CompileOptions::with_jobs(jobs);
+) -> Result<
+    (
+        gors::compiler::CompiledProgram,
+        Option<gors::compiler::SourceMapPlan>,
+    ),
+    gors::compiler::CompilerError,
+> {
     if source_maps {
-        gors::compiler::compile_program_multi_with_source_maps_and_options(program, options)
+        gors::compiler::compile_program_with_source_map(program)
+            .map(|(compiled, plan)| (compiled, Some(plan)))
     } else {
-        gors::compiler::compile_program_multi_with_options(program, options)
+        gors::compiler::compile_program(program).map(|compiled| (compiled, None))
     }
 }
 
 fn write_source_map(
     output: &gors::printer::GeneratedOutput,
+    plan: &gors::compiler::SourceMapPlan,
     path: &Path,
 ) -> Result<FileArtifact, Box<dyn std::error::Error>> {
     let main_source = output
         .files
         .get("main.rs")
         .ok_or("generated program has no main.rs for source-map output")?;
-    let source_map = gors::compiler::build_source_map(main_source);
+    let source_map = plan.build(main_source);
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -565,7 +526,6 @@ fn write_source_map(
     let mut temp = tempfile::NamedTempFile::new_in(parent)?;
     source_map.to_writer(temp.as_file_mut())?;
     temp.as_file_mut().sync_all()?;
-    gors::compiler::clear_source_map_tracker();
     temp.persist(path).map_err(|error| error.error)?;
     FileArtifact::capture(path)
 }
@@ -635,21 +595,18 @@ fn split_run_args(args: &[String]) -> (Vec<String>, Vec<String>) {
 
 fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
     let (source_paths, program_args) = split_run_args(&cmd.args);
-    let jobs = resolved_jobs(cmd.jobs)?;
     let timings = TimingCollector::new();
     let cache_base = gors_cache_base()?;
     let cache_dir = run_cache_dir(&source_paths, cmd.release)?;
     maybe_prune_cli_cache(&cache_base, Some(&cache_dir))?;
     let cache_access_lock = CacheAccessLock::acquire_shared(&cache_base)?;
     let cache_lock = OutputDirectoryLock::acquire(&cache_dir)?;
-    remove_legacy_incremental(&cache_dir)?;
     let request = CacheRequest::new(CacheRequestOptions {
         command: "run",
         source_paths: &source_paths,
         release: cmd.release,
         output: Some(&cache_dir),
         sourcemap: None,
-        jobs,
     })?;
     let mut cache_manifest = {
         let _cache_timer = timings.phase("cli.cache_lookup");
@@ -681,10 +638,6 @@ fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
         };
         drop(parse_timer);
         let inputs = InputSnapshot::capture(&program, &source_paths)?;
-        let uses_stdlib = !program.stdlib_imports.is_empty();
-        if uses_stdlib {
-            timings.cache_event("resolver", import_resolver_cache(&cache_base));
-        }
 
         let primary_file = program
             .main_package
@@ -694,24 +647,17 @@ fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or_else(|| source_paths.first().cloned().unwrap_or_default());
 
         let compile_timer = timings.phase("cli.compile");
-        let compiled = match compile_program(program, jobs, false) {
-            Ok(compiled) => compiled,
+        let compiled = match compile_program(program, false) {
+            Ok((compiled, None)) => compiled,
+            Ok((_, Some(_))) => {
+                return Err("unexpected source-map plan for run compilation".into());
+            }
             Err(err) => {
-                let diagnostic = Diagnostic::new(
-                    &primary_file,
-                    0,
-                    0,
-                    err.to_string(),
-                    DiagnosticKind::Compiler,
-                );
-                print_error(&diagnostic);
+                print_compiler_error(&err, &primary_file);
                 std::process::exit(1);
             }
         };
         drop(compile_timer);
-        if uses_stdlib {
-            let _ = export_resolver_cache(&cache_base);
-        }
 
         let print_timer = timings.phase("cli.print");
         let output = gors::printer::generate_multi(compiled)?;
@@ -727,7 +673,6 @@ fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
             release: cmd.release,
             output: Some(&cache_dir),
             sourcemap: None,
-            jobs,
         })?;
         if request == completed_request {
             let manifest = CliCacheManifest::new(&request, inputs, generated_files, None);
@@ -756,8 +701,25 @@ fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
     drop(cache_access_lock);
     let status = child.wait()?;
     drop(execute_timer);
-    timings.write_json(cmd.timings_json.as_deref().map(Path::new), "run", jobs)?;
+    timings.write_json(cmd.timings_json.as_deref().map(Path::new), "run")?;
     std::process::exit(status.code().unwrap_or(1));
+}
+
+fn print_compiler_error(error: &gors::compiler::CompilerError, fallback_file: &str) {
+    for diagnostic in error.diagnostics() {
+        let file = if diagnostic.file.is_empty() {
+            fallback_file
+        } else {
+            &diagnostic.file
+        };
+        print_error(&Diagnostic::new(
+            file,
+            diagnostic.line,
+            diagnostic.column,
+            format!("{}: {}", diagnostic.code, diagnostic.message),
+            DiagnosticKind::Compiler,
+        ));
+    }
 }
 
 /// Helper to get file path and contents for error reporting.
@@ -953,335 +915,4 @@ impl<'a> IntoIterator for RustcArgs<'a> {
 }
 
 #[cfg(test)]
-#[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
-mod tests {
-    use super::*;
-    use std::collections::BTreeMap;
-    use std::process::Stdio;
-    use std::sync::mpsc;
-    use std::time::{Duration, Instant};
-
-    const LOCK_CHILD_DIRECTORY_ENV: &str = "GORS_TEST_LOCK_CHILD_DIRECTORY";
-
-    fn args(values: &[&str]) -> Vec<String> {
-        values.iter().map(|value| value.to_string()).collect()
-    }
-
-    #[test]
-    fn split_run_args_keeps_single_file_as_source() {
-        let (sources, program_args) = split_run_args(&args(&["main.go", "--", "arg"]));
-        assert_eq!(sources, args(&["main.go"]));
-        assert_eq!(program_args, args(&["--", "arg"]));
-    }
-
-    #[test]
-    fn split_run_args_groups_leading_go_files() {
-        let (sources, program_args) = split_run_args(&args(&["main.go", "helpers.go", "--flag"]));
-        assert_eq!(sources, args(&["main.go", "helpers.go"]));
-        assert_eq!(program_args, args(&["--flag"]));
-    }
-
-    #[test]
-    fn split_run_args_treats_directory_as_single_source() {
-        let (sources, program_args) = split_run_args(&args(&[".", "--flag", "value"]));
-        assert_eq!(sources, args(&["."]));
-        assert_eq!(program_args, args(&["--flag", "value"]));
-    }
-
-    #[test]
-    fn split_run_args_treats_package_path_as_single_source() {
-        let (sources, program_args) = split_run_args(&args(&["./cmd/myapp", "arg"]));
-        assert_eq!(sources, args(&["./cmd/myapp"]));
-        assert_eq!(program_args, args(&["arg"]));
-    }
-
-    #[test]
-    fn build_accepts_jobs_and_timing_report_options() {
-        let opts = Opts::try_parse_from([
-            "gors",
-            "build",
-            "--jobs",
-            "4",
-            "--timings-json",
-            "timings.json",
-            "main.go",
-        ])
-        .unwrap();
-        let SubCommand::Build(build) = opts.subcmd else {
-            panic!("expected build command");
-        };
-        assert_eq!(build.jobs, Some(4));
-        assert_eq!(build.timings_json.as_deref(), Some("timings.json"));
-        assert_eq!(build.path, "main.go");
-    }
-
-    #[test]
-    fn run_accepts_jobs_before_trailing_program_arguments() {
-        let opts = Opts::try_parse_from([
-            "gors",
-            "run",
-            "--jobs",
-            "2",
-            "--timings-json",
-            "timings.json",
-            "main.go",
-            "--program-flag",
-        ])
-        .unwrap();
-        let SubCommand::Run(run) = opts.subcmd else {
-            panic!("expected run command");
-        };
-        assert_eq!(run.jobs, Some(2));
-        assert_eq!(run.timings_json.as_deref(), Some("timings.json"));
-        assert_eq!(run.args, args(&["main.go", "--program-flag"]));
-    }
-
-    #[test]
-    fn jobs_rejects_zero() {
-        assert!(Opts::try_parse_from(["gors", "build", "--jobs", "0", "main.go"]).is_err());
-    }
-
-    #[test]
-    fn rustc_arguments_do_not_create_per_invocation_incremental_state() {
-        let flags = Vec::from(RustcArgs {
-            src: "main.rs",
-            out: Some("main"),
-            emit: None,
-            release: false,
-        });
-        assert!(
-            flags.iter().all(|flag| !flag.contains("incremental")),
-            "{flags:?}"
-        );
-    }
-
-    #[test]
-    fn write_generated_output_removes_files_missing_from_new_manifest() {
-        let tmp = tempfile::tempdir().unwrap();
-
-        let mut first_files = BTreeMap::new();
-        first_files.insert("main.rs".to_string(), "fn main() {}\n".to_string());
-        first_files.insert("stale.rs".to_string(), "fn stale() {}\n".to_string());
-        let first = gors::printer::GeneratedOutput { files: first_files };
-        let first_stats = write_generated_output(&first, tmp.path()).unwrap();
-        assert_eq!(first_stats.written, 2);
-        assert!(tmp.path().join("stale.rs").exists());
-
-        let mut second_files = BTreeMap::new();
-        second_files.insert("main.rs".to_string(), "fn main() {}\n".to_string());
-        let second = gors::printer::GeneratedOutput {
-            files: second_files,
-        };
-        let second_stats = write_generated_output(&second, tmp.path()).unwrap();
-
-        assert_eq!(second_stats.skipped, 1);
-        assert_eq!(second_stats.removed, 1);
-        assert!(!tmp.path().join("stale.rs").exists());
-    }
-
-    #[test]
-    fn concurrent_output_publications_publish_one_consistent_transaction() {
-        let tmp = tempfile::tempdir().unwrap();
-        let output_dir = tmp.path().to_path_buf();
-        let source_map_path = output_dir.join("program.map");
-        let executable_path = output_dir.join("main");
-        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
-        let active_publishers = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-
-        let handles: Vec<_> = [("alpha", "fn alpha() {}\n"), ("beta", "fn beta() {}\n")]
-            .into_iter()
-            .map(|(module, body)| {
-                let output_dir = output_dir.clone();
-                let source_map_path = source_map_path.clone();
-                let executable_path = executable_path.clone();
-                let barrier = std::sync::Arc::clone(&barrier);
-                let active_publishers = std::sync::Arc::clone(&active_publishers);
-                std::thread::spawn(move || {
-                    let source_path = output_dir.join(format!("{module}.go"));
-                    std::fs::write(
-                        &source_path,
-                        format!("package main\n\nfunc main() {{ println(\"{module}\") }}\n"),
-                    )
-                    .unwrap();
-                    let source_paths = vec![source_path.to_string_lossy().into_owned()];
-                    let program = gors::parser::parse_program(
-                        source_paths.first().expect("single source path"),
-                    )
-                    .unwrap();
-                    let inputs = InputSnapshot::capture(&program, &source_paths).unwrap();
-                    let request = CacheRequest::new(CacheRequestOptions {
-                        command: "run",
-                        source_paths: &source_paths,
-                        release: false,
-                        output: Some(&output_dir),
-                        sourcemap: Some(&source_map_path),
-                        jobs: 1,
-                    })
-                    .unwrap();
-                    let mut files = BTreeMap::new();
-                    files.insert(
-                        "main.rs".to_string(),
-                        format!("mod {module};\nfn main() {{ {module}(); }}\n"),
-                    );
-                    files.insert(format!("{module}.rs"), body.to_string());
-                    let output = gors::printer::GeneratedOutput { files };
-                    let generated_files = generated_file_hashes(&output);
-                    barrier.wait();
-
-                    let _output_lock = OutputDirectoryLock::acquire(&output_dir).unwrap();
-                    assert_eq!(
-                        active_publishers.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
-                        0,
-                        "publication transactions overlapped"
-                    );
-                    std::thread::sleep(Duration::from_millis(25));
-                    write_generated_output_locked(&output, &output_dir).unwrap();
-                    prepare_atomic_write(&source_map_path, &format!("{module}-map\n"))
-                        .unwrap()
-                        .persist(&source_map_path)
-                        .unwrap();
-                    let source_map = FileArtifact::capture(&source_map_path).unwrap();
-                    let mut manifest =
-                        CliCacheManifest::new(&request, inputs, generated_files, Some(source_map));
-                    manifest.save(&output_dir).unwrap();
-                    prepare_atomic_write(&executable_path, &format!("{module}-executable\n"))
-                        .unwrap()
-                        .persist(&executable_path)
-                        .unwrap();
-                    manifest.set_executable(&executable_path).unwrap();
-                    manifest.save(&output_dir).unwrap();
-                    assert_eq!(
-                        active_publishers.fetch_sub(1, std::sync::atomic::Ordering::SeqCst),
-                        1
-                    );
-                })
-            })
-            .collect();
-
-        for handle in handles {
-            handle.join().unwrap();
-        }
-
-        let manifest =
-            gors::compiler::manifest::BuildManifest::load(&output_dir).expect("manifest");
-        let main = std::fs::read_to_string(output_dir.join("main.rs")).unwrap();
-        let published = if manifest.modules.contains_key("alpha.rs") {
-            "alpha"
-        } else {
-            "beta"
-        };
-        let stale = if published == "alpha" {
-            "beta"
-        } else {
-            "alpha"
-        };
-
-        assert!(main.contains(published));
-        assert!(output_dir.join(format!("{published}.rs")).exists());
-        assert!(!manifest.modules.contains_key(&format!("{stale}.rs")));
-        assert!(!output_dir.join(format!("{stale}.rs")).exists());
-        assert_eq!(
-            std::fs::read_to_string(&source_map_path).unwrap(),
-            format!("{published}-map\n")
-        );
-        assert_eq!(
-            std::fs::read_to_string(&executable_path).unwrap(),
-            format!("{published}-executable\n")
-        );
-
-        let source_paths = vec![
-            output_dir
-                .join(format!("{published}.go"))
-                .to_string_lossy()
-                .into_owned(),
-        ];
-        let request = CacheRequest::new(CacheRequestOptions {
-            command: "run",
-            source_paths: &source_paths,
-            release: false,
-            output: Some(&output_dir),
-            sourcemap: Some(&source_map_path),
-            jobs: 1,
-        })
-        .unwrap();
-        let cli_manifest = CliCacheManifest::load_if_generated_valid(&output_dir, &request)
-            .expect("published CLI cache manifest");
-        assert!(cli_manifest.executable_is_valid(&executable_path));
-    }
-
-    #[test]
-    fn spawned_program_does_not_retain_publication_locks_while_running() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cache_base = tmp.path().join("cache");
-        let output_dir = cache_base.join("run").join("entry");
-        let cache_access_lock = CacheAccessLock::acquire_shared(&cache_base).unwrap();
-        let output_lock = OutputDirectoryLock::acquire(&output_dir).unwrap();
-        let mut command = Command::new(std::env::current_exe().unwrap());
-        command
-            .args([
-                "tests::output_lock_child_waits_for_release",
-                "--exact",
-                "--nocapture",
-            ])
-            .env(LOCK_CHILD_DIRECTORY_ENV, tmp.path())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let mut child = output_lock.spawn_and_release(&mut command).unwrap();
-        drop(cache_access_lock);
-        let started = tmp.path().join("child-started");
-        let release = tmp.path().join("child-release");
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while !started.is_file() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(started.is_file(), "child process did not start");
-        assert!(
-            child.try_wait().unwrap().is_none(),
-            "child process exited before the lock check"
-        );
-
-        let (acquired_tx, acquired_rx) = mpsc::channel();
-        let contender = std::thread::spawn(move || {
-            let _lock = OutputDirectoryLock::acquire(&output_dir).unwrap();
-            acquired_tx.send(()).unwrap();
-        });
-        let acquired_while_running = acquired_rx.recv_timeout(Duration::from_secs(2)).is_ok();
-
-        let (pruned_tx, pruned_rx) = mpsc::channel();
-        let pruner = std::thread::spawn(move || {
-            maybe_prune_cli_cache(&cache_base, None).unwrap();
-            pruned_tx.send(()).unwrap();
-        });
-        let pruned_while_running = pruned_rx.recv_timeout(Duration::from_secs(2)).is_ok();
-
-        std::fs::write(release, b"release").unwrap();
-        let status = child.wait().unwrap();
-        contender.join().unwrap();
-        pruner.join().unwrap();
-
-        assert!(
-            acquired_while_running,
-            "output lock remained held for the child process lifetime"
-        );
-        assert!(
-            pruned_while_running,
-            "cache-wide shared lock remained held for the child process lifetime"
-        );
-        assert!(status.success());
-    }
-
-    #[test]
-    fn output_lock_child_waits_for_release() {
-        let Some(directory) = std::env::var_os(LOCK_CHILD_DIRECTORY_ENV) else {
-            return;
-        };
-        let directory = PathBuf::from(directory);
-        std::fs::write(directory.join("child-started"), b"started").unwrap();
-        let release = directory.join("child-release");
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while !release.is_file() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(release.is_file(), "parent did not release child process");
-    }
-}
+mod tests;

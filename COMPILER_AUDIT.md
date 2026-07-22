@@ -1,288 +1,671 @@
-# Compiler compliance and performance audit
+# Compiler architecture audit and replacement plan
 
-Date: 2026-07-20
-Branch: `perf/compiler-compliance-feedback-loop`
-Reference toolchains: Go 1.26.3, Rust 1.96.0
+Date: 2026-07-22
+Status: hard cutover complete; semantic foundation in progress
+Compatibility policy: no compatibility with the deleted backend
 
-## Scope and non-negotiable boundary
+## Executive decision
 
-This audit covers the Go scanner/parser/compiler/printer pipeline, generated
-program integration harness, CLI feedback loop, and browser/Wasm compiler. The
-Go language reference for conformance work is the official
-[Go specification](https://go.dev/ref/spec).
+The previous compiler architecture was not a robust base for Go or stdlib
+compliance. Correctness was distributed across direct Go AST to syn lowering,
+large Rust-syntax transformation passes, resolver-side recompilation and
+patching, string-shaped identities, and runtime exceptions. The repository
+contained an IR, but production lowering did not use it as the authoritative
+semantic representation.
 
-The standard-library package graph is resolved and lowered from the pinned Go
-SDK through the generic pipeline. This branch adds no package- or
-function-specific Rust implementation of a Go stdlib API; compliance fixes land
-in generic parsing, typing, lowering, reachability, or language representation.
-The persistent resolver cache and browser seed cache mechanically generated
-compiler output rather than providing an alternate Rust stdlib. Existing
-runtime/ABI primitives and targeted host-resource shims remain limited to the
-project's documented boundary and preserve the surrounding generated module.
+That made each compliance fix expensive and fragile:
 
-## Highest-impact findings
+- there was no single stage at which Go meaning was complete;
+- evaluation order and value semantics could be repaired after Rust syntax had
+  already erased the evidence needed to reason about them;
+- generated Rust shape became an accidental API between compiler passes;
+- the resolver was a second compiler and a cache of generated implementation;
+- optimizations and correctness repairs were interleaved;
+- stdlib progress rewarded package-specific symptoms rather than language-level
+  completeness.
 
-1. **The old conformance report could overstate support.** Filtered runs could
-   update canonical reports, underscore-prefixed fixtures were skipped by an
-   implicit naming convention, previous stdlib passing rows were retained, and
-   generated programs compared stdout without requiring matching exit status
-   and stderr.
-2. **Cold stdlib compilation dominated the feedback loop.** Root sets could
-   grow over one compilation and trigger repeated lowering of the same large
-   package, while resolved modules and type environments existed only in
-   process memory.
-3. **CLI cache identity mixed cheap lookup facts with expensive semantic
-   validation.** Recursive `GORSPATH` inspection would make a nominal warm
-   lookup proportional to the whole search tree, while generated-output writes
-   needed a cross-process publication boundary.
-4. **Concurrency stopped at coarse package boundaries.** Local packages,
-   stdlib type scans, and stdlib resolution did not consistently share one
-   deterministic job budget.
-5. **The browser discarded its hottest state and stale work could block the
-   newest edit.** Worker replacement lost resolver state, source maps crossed as
-   nested objects, and synchronous stable Wasm could not consume a cancellation
-   message while compiling.
-6. **The spec matrix omitted important representation pressure.** Arbitrary Go
-   string bytes, exact wide integers, slice capacity/backing behavior, map
-   identity/nil writes, and stored method-value receiver capture needed generic
-   compiler or runtime-representation fixes.
+The replacement is deliberately destructive:
 
-## Implemented results
+    Go AST
+      -> semantic analysis
+      -> typed HIR
+      -> explicit-order Go MIR and verification
+      -> representation-neutral Go MIR transforms and reverification
+      -> mandatory Rust representation lowering
+      -> verified Rust IR
+      -> terminal syn emitter
+      -> formatting
 
-### Truthful compliance evidence
+The direct AST to syn backend, post-syn semantic passes, shadow IR, generated
+Rust resolver, partial-package recovery, and generated-Rust resolver caches are
+removed. Unsupported programs receive a structured diagnostic. They never
+fall back.
 
-- Every generated-program suite has an explicit `fixtures.json` policy.
-  Underscore names no longer imply a hidden skip.
-- The runner treats Go spawn failures, non-zero exits, and timeouts as harness
-  failures. Runnable checks require both programs to succeed and compare raw
-  stdout and stderr bytes.
-- Filtered, limited, diagnostic, cancelled, or otherwise partial runs cannot
-  write canonical reports. Report updates require a complete run plus
-  `GORS_UPDATE_CONFORMANCE_REPORTS=1`, and reports are rebuilt from fresh
-  evidence rather than merged with stale passing rows.
-- The Go-spec source matrix now contains 211 explicit cases, all 211 supported
-  and marked passing. Its reduced repros are ordinary runnable fixtures; there
-  is no non-running bucket or naming-based skip for matrix coverage.
-- New executable coverage exercises assignment evaluation and two-phase writes,
-  control-flow evaluation, defer ordering and saved arguments, per-iteration
-  loop variables, map lookup/nil behavior, arbitrary string bytes, slice
-  capacity and append behavior, wide constants, and method-value capture.
-- The canonical JSON report is authoritative only after the complete
-  unfiltered suite regenerates it. Focused fixture runs are development
-  evidence, never permission to publish a partial report.
+## Direct answers
 
-### Generic language and runtime fixes
+### Is the compiler pipeline robust?
 
-- Non-declaration multi-assignment stages supported target places, evaluates and
-  coerces all RHS values into temporaries, and only then writes left to right.
-  This covers ordinary lvalues, pointer dereferences/selectors, map keys, index
-  targets, multi-result calls, and supported comma-ok forms.
-- Go strings retain the generated `String` ABI but use a reversible
-  escaped-scalar representation for arbitrary byte sequences. Generic helpers
-  own literal construction, raw byte recovery, byte `len`/index/slice,
-  `[]byte`/`[]rune` conversion, invalid-UTF-8 range decoding, raw output, and
-  bytewise lexical comparison.
-- Compiler-only `ExactInt` values use arbitrary-precision `BigInt` for integer
-  literal parsing, constant arithmetic, shifts, bitwise operations,
-  comparisons, `iota`, `min`/`max`, and representability checks. Exact values
-  survive declaration inheritance and imported `TypeEnv` serialization without
-  adding a big-integer dependency to generated programs.
-- Ordinary maps lower to generic, nil-capable `GorsMap<K, V>` handles. Copying a
-  map shares its allocation; nil reads and empty operations remain valid; nil
-  insertion/update panics; the existing source-body-driven deep-clone rewrite
-  remains independent of ordinary map assignment.
-- Generic slice construction validates Go bounds, preserves observable
-  length/capacity, and zero-initializes legal reslices into uninitialized
-  capacity. Direct local slice aliases carry base/offset/capacity facts so
-  overlapping writes synchronize while attached, append within capacity keeps
-  the backing relationship, and append beyond capacity detaches. This is
-  compiler data flow, not a package-specific special case.
-- Method values evaluate their receiver once. Value receivers snapshot a Go
-  value copy, pointer receivers retain pointer-cell identity, and interface
-  receivers clone their boxed dynamic value into owned storage before the
-  closure is constructed.
-- Named-result functions with `defer` put the labeled function body inside the
-  Go panic boundary, publish the recover payload before the defer stack drops,
-  and read the final named results after recovering defers can mutate them.
-- Builtin DCE computes an iterative dependency closure. Reachability and
-  generic builtin-root expansion repeat until no newly retained builtin impl or
-  helper implies another root, preventing indirectly required pointer/string
-  helpers from being pruned.
-- Panic/recover payloads and panic-hook suppression depth remain thread-local,
-  so one goroutine's recover boundary cannot silence an unrelated thread's
-  diagnostics.
+The old one was not. Its output could work, but the architecture could not
+localize semantic responsibility or make transformations independently
+verifiable. The replacement pipeline can become robust because each boundary
+has one canonical product and one owner.
 
-### Compiler and CLI feedback loop
+The new pipeline is initially much less feature-complete. That is intentional:
+small, explicit, and structurally correct is a better compliance base than a
+large backend whose invariants are implicit.
 
-- Resolver entries use single-flight `OnceLock` cells. An initialized rooted
-  entry can satisfy a subset request; selection chooses the smallest
-  deterministic superset and compiler DCE still prunes from the actual roots.
-  Unfiltered, uninitialized, uncacheable, and cross-package entries are not
-  substituted.
-- Reachable Go declarations are discovered with an indexed event work queue
-  rather than repeatedly scanning every declaration to a fixed point.
-- Resolver archives persist mechanically generated Rust modules and serialized
-  type environments. Imports validate the exact schema, Go SDK, embedded
-  stdlib, compiler source/dependencies, target, profile, and resolver ABI
-  fingerprint. Only the `parallel` and `wasm-threads` scheduling features are
-  normalized, allowing deterministic stable/threaded cache reuse without
-  relaxing any semantic invalidation.
-- CLI build/run caches validate source snapshots, eligible directory
-  membership, generated file hashes, source maps, compiler identity, and
-  executables. Cache publication is atomic and bounded by age, entry count, and
-  bytes.
-- The pre-parse `GORSPATH` key hashes search-root identity and order without
-  recursively scanning directory contents. The post-parse `InputSnapshot`
-  validates the exact resolved files and eligible `.go` membership that can
-  affect the program.
-- Generated output uses an output-directory file lock. Changed files are
-  prepared and synced in same-directory temporaries, leaf modules are
-  atomically published before coordinator files, stale artifacts are removed
-  under the lock, and the manifest is published last.
-- `--jobs`, `GORS_JOBS`, and `--timings-json` expose the deterministic task
-  budget and machine-readable phase/cache telemetry. Local packages, stdlib
-  type scans, and independent stdlib packages use native task pools without
-  moving non-`Send` `syn` trees between workers.
-- Per-invocation rustc incremental directories were removed because they grew
-  the integration cache without helping the single-file rustc invocation
-  model.
+### Should gors use IR?
 
-### Browser and Wasm path
+Yes. Go semantics require an intermediate form that can represent evaluation
+order, aliasing, places, exact types, control flow, panic edges, interface
+identity, and ownership decisions before Rust syntax is chosen.
 
-- One persistent worker owns the Wasm instance, resolver state, and one
-  source-keyed 16 MiB output LRU. Source maps cross the worker boundary as a
-  transferred packed `Uint32Array` rather than nested structured-clone data.
-- The worker persists at most one 64 MiB validated resolver archive in
-  IndexedDB. On a miss it tries the deterministic gzip seed generated by the
-  stable release Wasm compiler. The threaded preview shares that seed through
-  the scheduling-independent resolver ABI; incompatible or corrupt state is
-  rejected by Rust and deleted.
-- Requests are latest-only. If stable synchronous Wasm remains blocked on a
-  superseded compile after a short grace period, the main-thread controller
-  replaces that worker and starts the newest request with persistent resolver
-  state available again. The threaded preview is deliberately excluded from
-  this termination path because its controller owns nested Rayon workers; it
-  discards stale results after completion.
-- Scanner and compiler diagnostics retain UTF-8 byte columns internally.
-  Source Map v3, packed browser mappings, generated Rust token positions,
-  comment mappings, hover spans, and Monaco diagnostics use zero-based UTF-16
-  code-unit columns, with conversion performed against the exact source line at
-  the browser/source-map boundary.
-- Production remains the stable single-threaded artifact because GitHub Pages
-  cannot provide the cross-origin isolation required by shared-memory Wasm.
-  The opt-in `wasm-bindgen-rayon` preview uses the same deterministic
-  string/reparse compiler architecture and requires COOP/COEP,
-  `crossOriginIsolated`, and `SharedArrayBuffer`. Its Rayon pool is capped at
-  four workers after reserving one logical CPU for the controller/UI, avoiding
-  the severe shared-memory contention observed with unbounded browser core
-  counts.
+The old IR should not be preserved merely because it was called IR. A
+source-shaped, lossy mirror that is bypassed by codegen adds complexity without
+authority. The replacement uses three purpose-specific forms:
 
-## Final performance measurements
+- typed HIR for resolved Go meaning;
+- Go MIR for executable order, control flow, effects, places, and storage;
+- Rust IR for explicit representation, ABI, ownership, and control-flow
+  realization decisions.
 
-Measurements below use the final working tree on
-`perf/compiler-compliance-feedback-loop`, based on commit `6102ee417a57`.
-The host is macOS/Darwin 25.5 arm64 on an Apple M4 Pro with 14 logical/physical
-cores and 48 GiB RAM. Native builds use Rust 1.96.0 release; browser runs use
-Playwright's Chromium 148.0.7778.96. "Cold" means a fresh gors application
-cache, not a purged OS page cache.
+If a fact is required after HIR, it must be represented in HIR, Go MIR, or Rust
+IR rather than reconstructed from names or syn.
 
-### Native CLI
+### Should output at each step be simpler?
 
-The benchmark source imports `cmp`, `fmt`, and `math/bits`. The jobs=1 and
-jobs=14 cases use independent cache and output roots; their 21 generated files
-are byte-identical.
+Yes. Every stage now produces only what its immediate consumers need. There is
+no all-purpose TypeEnv, no partial generated package, and no Rust tree used as a
+semantic scratchpad.
 
-| Cache state | Jobs | Total | Compile phase | Result |
-| --- | ---: | ---: | ---: | --- |
-| Fresh compiler + resolver cache | 1 | 117.99 s | 117.80 s | baseline |
-| Fresh compiler + resolver cache | 14 | 95.29 s | 95.11 s | 1.24x / 19.2% faster |
-| Edited project, resolver archive reused | 14 | 2.27 s | 1.70 s | 42.0x faster than cold jobs=14 |
-| Exact output-cache repeat | 1 | 13 ms | skipped | worker-count-independent hit |
+### Should there be a final optimizer?
 
-The remaining cold cost is mostly package-internal and sequential lowering;
-threads improve it materially but do not make cold stdlib generation
-interactive. Persistent generic resolver output is the decisive feedback-loop
-improvement.
+No optional final optimizer and no post-syn rewrite. What the old design called
+optimization is actually mandatory **Rust representation lowering**. It
+converts verified Go MIR into verified Rust IR while choosing explicit copy,
+clone, move, borrow, storage, ABI, runtime, and control-flow strategies. Those
+decisions require types, effects, places, alias facts, and use-def information
+and cannot safely be inferred from emitted Rust syntax.
 
-### Browser/Wasm
+The first implementation should be conservative rather than clever: copy
+actual `Copy` values, clone owned non-`Copy` values, and preserve explicit MIR
+control flow. As analyses improve, the same non-optional lowering becomes more
+idiomatic and removes proven redundant clones. The emitter receives every
+ownership and representation decision already explicit; its job is syntax
+selection, not discovery.
 
-The deterministic schema-4 seed contains 34 generated modules and 58 type
-environments: 3,600,164 bytes raw and 461,124 bytes gzip-compressed. Generating
-it from the pinned SDK took 92.38 s once at build time. Runtime results:
+### Should there be a runtime helper library?
 
-| Runtime/cache state | Total | Compile phase |
-| --- | ---: | ---: |
-| Stable Wasm, bundled-seed first compile | 2.361 s | 1.796 s |
-| Stable Wasm, persisted resolver + edited source | 2.365 s | 1.790 s |
-| Stable Wasm, exact output-cache repeat | 1.30 ms | cache hit |
-| Threaded Wasm (4 Rayon workers), bundled-seed first compile | 2.265 s | 1.710 s |
-| Threaded Wasm, persisted resolver + edited source | 2.091 s | 1.580 s |
-| Threaded Wasm, exact output-cache repeat | 1.09 ms | cache hit |
+Yes. A compact, versioned runtime ABI is the right owner for Go language value
+representations, concurrency, panic machinery, and host resources.
 
-Before the resolver ABI was normalized, threaded Wasm rejected the stable seed
-and the same first compile took 155.57 s. Strict stable-to-threaded seed reuse
-therefore removes that roughly 69x failure mode. The full compiler fingerprints
-remain different while both builds emit the same resolver fingerprint, and
-Playwright byte-compares stable/threaded output for predeclared, seeded stdlib,
-and post-seed resolver cases.
+It is not the right owner for public Go stdlib behavior. The stdlib remains Go
+source and must exercise the generic frontend. A helper that implements
+fmt.Printf, os.Open, or another public API would hide compiler incompleteness.
+An intrinsic that allocates a Go map, manipulates a slice header, schedules a
+goroutine, or writes raw bytes to a host descriptor is an appropriate runtime
+boundary.
 
-Warm cached type environments and modules no longer enter the Rayon pool. That
-reduced the threaded first compile from 3.33 s to 2.26 s; the final seeded run
-was 4-12% faster than stable on the two edited-source samples. Shared-memory
-scheduling is still workload-sensitive: a deliberately uncached four-package
-expansion measured 168 ms stable versus 298 ms threaded. Production therefore
-remains stable single-threaded because the current host cannot provide
-cross-origin isolation; the threaded artifact remains opt-in rather than being
-presented as a universal speedup.
+## Canonical stage products
 
-### Test feedback loop
+| Stage | Canonical product | Must contain | Must not contain |
+| --- | --- | --- | --- |
+| Scanner and parser | Go AST | source spelling, syntax, comments, positions | Rust representation or inferred semantics |
+| Semantic analysis | semantic index plus typed HIR | stable identities, scopes, exact types and constants, resolved calls, source spans | syn, generated Rust paths, Unknown recovery |
+| Go MIR construction | verified explicit-order Go MIR | blocks, terminators, places, temporaries, effects, panic edges, and Go call facts | Go AST references, parser ambiguity, or Rust move/clone choices |
+| Go MIR transforms | reverified Go MIR | representation-neutral exact-Go canonicalization and proofs | Rust ownership, ABI, syntax, or unverified graph rewrites |
+| Rust representation lowering | verified Rust IR | concrete representations, runtime ABI, storage, copy/clone/move/borrow uses, drop points, and Rust control-flow plan | syn nodes, syntax heuristics, or semantic repair |
+| Emitter | syn file | deterministic Rust syntax for verified Rust IR | type inference, representation choice, ownership inference, reachability, or Go evaluation-order recovery |
+| Printer | Rust source and maps | formatting, file layout, final mappings | compiler semantics |
 
-- `cargo test -p gors --lib`: 461.43 s test time before duplicate large-stdlib
-  unit proxies, 29.40 s after focused synthetic/local replacements (15.7x).
-- Complete Go-spec run with 50 cold fixture-cache misses: 12.49 s after the
-  one-time release integration-binary build.
-- Immediate complete Go-spec rerun: 50/50 fixture-cache hits, 1.43 s test time
-  and 1.62 s wall time.
-- Browser compiler worker regression: stable seed restored by threaded Wasm,
-  four-worker pool initialized, compile and latest-only scheduling complete in
-  1.2 s for the focused case.
+Each boundary needs a verifier or a validation contract. Phase-local dumps must
+be deterministic so failures can be reduced and compared.
 
-Representative measurement commands:
+The cutover facade now models its packaged result as an explicit entry unit plus
+a deterministic module map, and source mapping is returned as an explicit
+`SourceMapPlan`. The printer no longer owns an output cache or a post-syn module
+ordering transform. Generated-output manifests are owned by the CLI artifact
+cache, not the semantic compiler. These are the intended boundaries: packaging
+and mappings are values, deterministic order is established before publication,
+and the printer remains terminal formatting rather than another compiler stage.
 
-```sh
-XDG_CACHE_HOME=/tmp/gors-final-bench/cache-j1 target/release/gors build \
-  --jobs 1 --output /tmp/gors-final-bench/output-j1 \
-  --timings-json /tmp/gors-final-bench/cold-j1.json project-a
-XDG_CACHE_HOME=/tmp/gors-final-bench/cache-j14 target/release/gors build \
-  --jobs 14 --output /tmp/gors-final-bench/output-j14 \
-  --timings-json /tmp/gors-final-bench/cold-j14.json project-a
-GORS_COMPILER_BENCHMARK=1 GORS_WEB_COMPILER_PREBUILT=1 \
-  npm --prefix www run test:compiler -- --grep "browser compiler benchmark"
-GORS_WASM_THREADS=1 GORS_COMPILER_BENCHMARK=1 \
-  GORS_WEB_COMPILER_PREBUILT=1 npm --prefix www run test:compiler -- \
-  --grep "browser compiler benchmark"
-RUST_TEST_INTEGRATION_PROFILE=release make rust-test-integration-go-spec
-```
+The current source-map contents are still bootstrap debt: the plan records only
+package and function landmarks, then retokenizes formatted Rust and matches
+identifier text by occurrence. That cannot survive mangling, duplicate names,
+generated helpers, or broad statement coverage. Replace it with exact emitter
+anchors paired with Rust-IR provenance and generated byte ranges; keep the
+explicit plan ownership, but delete token-text guessing before broad package
+support.
 
-## Validation contract
+## Required semantic invariants
 
-The final branch gate is:
+### Identity
 
-```sh
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo clippy -p gors --no-default-features --all-targets -- -D warnings
-cargo test --workspace --lib --bins --examples
-GORS_UPDATE_CONFORMANCE_REPORTS=1 RUST_TEST_INTEGRATION_PROFILE=release \
-  make rust-test-integration-go-spec
-npm --prefix www run format:check
-npm --prefix www run lint
-npm --prefix www run test:unit
-npm --prefix www run test:compiler
-npm --prefix www run test:compiler:threads
-```
+Definitions, packages, types, methods, fields, locals, instantiations, and
+source files need stable typed IDs. Import paths and user-visible names remain
+metadata, not internal identity.
 
-After the complete Go-spec run, both the source matrix and regenerated canonical
-report must contain 211 supported/passing cases, zero non-passing cases, and
-100% coverage. Scheduled coverage-guided fuzzing remains separate from the fast
-deterministic corpus/property replay used on pull requests.
+Distinct packages with the same package clause must never collide. Aliases
+refer to canonical definitions rather than manufacturing structurally similar
+types.
+
+### Types and constants
+
+The type algebra must model Go types exactly enough for identity, assignability,
+method sets, generic constraints, and ABI lowering. It must retain:
+
+- defined type versus alias identity;
+- pointer and value method sets;
+- exact fixed-array lengths;
+- generic parameters and substitutions;
+- interface type sets and dynamic representation;
+- nil-capable versus non-nil values;
+- exact untyped constants until contextual conversion.
+
+There must be no Unknown type that silently reaches MIR. Recovery types may
+exist for IDE diagnostics, but code generation must reject a poisoned program.
+
+### Evaluation and effects
+
+MIR must make Go sequence points explicit. In particular:
+
+- assignment destinations are prepared in Go order;
+- right-hand sides are evaluated before writes where required;
+- multi-assignment writes occur left to right;
+- call arguments and receivers are evaluated exactly once;
+- map, index, pointer, and selector projections retain identity;
+- defer arguments are captured at defer time;
+- panic and recover edges are represented, not inferred;
+- goroutine and closure captures have explicit storage and escape facts.
+
+Effects include at least may-read, may-write, may-call, may-allocate, may-block,
+and may-panic. Representation lowering uses effects instead of recognizing
+callee names.
+
+### Determinism
+
+Stable inputs must produce byte-identical HIR, Go MIR, Rust IR, diagnostics, and
+Rust output regardless of worker count. Ordered data structures or explicit
+stable sorting are mandatory at publication boundaries.
+
+## Rust representation lowering design
+
+Rust representation lowering is a mandatory, verified conversion, not an
+optional optimization profile. Its bootstrap policy is intentionally boring:
+
+1. Accept only verified Go MIR with valid types, places, dominance, effects,
+   panic edges, terminators, and instruction-level provenance.
+2. Map each Go type, place, call, and intrinsic to one explicit Rust/runtime
+   representation without changing Go evaluation order or control flow.
+3. Emit `Copy` only for values whose selected representation is actually
+   `Copy`; conservatively clone owned non-`Copy` values and retain explicit
+   runtime handles.
+4. Preserve the MIR control-flow graph unless a structure-preserving conversion
+   is mechanically required by the terminal target.
+5. Build syntax-independent Rust IR with explicit ownership, ABI, storage,
+   runtime operations, effects, panic behavior, and source provenance.
+6. Verify that Rust IR before any terminal emitter can consume it.
+
+The Rust-IR effect summary must conservatively include implementation effects
+introduced by the chosen representation as well as preserved Go effects. For
+example, the bootstrap `Vec<u8>` string representation makes literal
+construction and conservative clone operations allocate even though a Go
+source-level string read is not itself an allocation. Those costs must remain
+visible to verification and later no-copy decisions.
+
+Representation-neutral Go transformations remain a separately verified MIR
+boundary. Exact-Go constant folding, CFG simplification, DCE, and alias-safe
+load/store elimination belong in MIR transforms when introduced; they must not
+be hidden inside Rust representation lowering. The transform set may initially
+be empty, but the production path always verifies the resulting MIR and exposes
+no user switch to select a second pipeline.
+
+No-copy is not a text substitution. A Go value assignment may become a Rust
+move only if the source has no later observable use, aliases retain Go
+behavior, and destruction order remains irrelevant. Otherwise it is a copy,
+clone, borrow, or runtime-handle operation chosen from semantic facts.
+
+Later representation refinements can add:
+
+- sparse conditional constant propagation;
+- scalar replacement of non-escaping aggregates;
+- bounds-check elimination using range facts;
+- interface devirtualization from closed-world reachability;
+- representation-aware inlining;
+- loop simplification and invariant-code motion;
+- allocation sinking and stack promotion;
+- profile-guided cost models.
+
+Every refinement needs differential execution coverage and verification. There
+is no production flag that bypasses representation lowering; a test-only
+conservative policy may be used as an oracle, but it is not another compiler
+path or a user-visible mode.
+
+## Runtime ABI
+
+The runtime should expose small typed primitives selected explicitly by Rust IR.
+The target contracts are:
+
+| Area | Runtime responsibility |
+| --- | --- |
+| Strings | arbitrary Go bytes, byte length/index/slice, comparison, host I/O conversion |
+| Slices | nil header, length, capacity, shared backing identity, append, bounds checks |
+| Maps | nil state, shared identity, key hashing/equality, iteration state, mutation |
+| Pointers | nil, alias identity, projections, safe ownership of shared storage |
+| Interfaces | dynamic type identity, method table, owned value, equality and assertions |
+| Function values | nil state, closure environment, recursive and concurrent calls |
+| Channels | queueing, blocking, close, select registration |
+| Goroutines | scheduling, wakeup, panic propagation policy |
+| Panic/defer/recover | frame-local defer stack, payload, unwind and recover boundary |
+| Host resources | raw process, filesystem, clock, entropy, and descriptor operations |
+
+The ABI must be versioned and covered by Rust-level unit tests plus small Go
+differential fixtures. Generated code should call runtime primitives directly;
+the compiler must not patch emitted stdlib modules afterward.
+
+The semantic compiler must not parse or inject runtime source. Bootstrap Rust
+artifact packaging copies the exact versioned runtime module directly, while a
+production native artifact path should link a precompiled ABI object or crate.
+That removes repeated runtime parsing today and repeated runtime compilation in
+the target architecture without moving public stdlib behavior behind helpers.
+
+Representation policy should be centralized. HIR describes Go types and MIR
+captures Go places, value uses, control flow, and effects. Mandatory Rust
+representation lowering alone chooses concrete storage, ownership operations,
+runtime ABI calls, and Rust types. Representation details must not leak back
+into name resolution or Go MIR.
+
+## Packages, stdlib, and incremental compilation
+
+The embedded SDK resolver now stops at source discovery. The target package
+pipeline is:
+
+1. Build a canonical import graph from user and pinned SDK sources.
+2. Assign stable PackageId values from canonical import identities.
+3. Parse and index package declarations.
+4. Resolve and type-check through demand-driven semantic queries.
+5. Build and verify HIR and Go MIR for reachable declarations.
+6. Apply representation-neutral MIR transforms and reverify the result.
+7. Perform mandatory Rust representation lowering, verify Rust IR, and emit
+   each package deterministically.
+
+Reachability belongs on semantic definitions, before Rust emission. It must not
+scan syn paths.
+
+Source-only is the right semantic boundary, but the current distribution is not
+the right physical one. In the audited native selection, build generation
+embedded 1,615 files and about 17.7 MB of raw Go source; the Wasm selection
+embedded about 17.1 MB. Those bytes dominate artifact constant/data sections
+and one global SDK fingerprint invalidates every package when any SDK file
+changes. Replace the monolithic Rust `include_str!` table with a compact
+canonical package/file/import/embed-asset/hash index and content-addressed
+compressed package shards. Native compilers load verified sidecar shards lazily
+under a bounded cache; Wasm fetches immutable reachable shards and caches only
+those source inputs. Semantic queries depend on reachable file and asset hashes.
+
+Incremental compilation should cache semantic query results, not generated Rust
+resolver modules. Query keys include source content, build tags, target,
+toolchain, compiler schema, package identity, and semantic dependencies.
+Serialized entries require schema validation and deterministic encoding.
+
+This cannot be layered over the current bootstrap identities. Program parsing
+currently publishes `ast::File<'static>` values constructed with `Box::leak`,
+and the first HIR slice assigns file, definition, and node identities from
+fixed or traversal-order counters. Incremental compilation requires owned,
+evictable per-file parse products and structured cross-revision identities
+before those values become cache keys.
+
+The target is one explicitly owned, demand-driven red-green query database.
+Each query records fine-grained dependency edges automatically; public API and
+implementation fingerprints remain separate so a private dependency edit does
+not re-type-check importers. Immutable query values are memory-accounted and
+evictable. An on-disk content-addressed semantic cache uses deterministic
+encoding, atomic publication, checksums, and complete schema, source, SDK,
+target, runtime ABI, and dependency keys.
+
+Parallelism operates on ready package-DAG nodes and query boundaries. One
+bounded global job budget covers discovery, parsing, semantics, MIR,
+Rust representation lowering, emission, external codegen, and linking.
+Deterministic work stealing, cancellation, foreground priority, and memory
+backpressure replace phase-specific pools. Scheduling must not affect IDs,
+diagnostics, stage fingerprints, dumps, or output.
+
+The complete incremental architecture, performance measurement protocol, and
+faster-than-Go promotion rules are normative in `COMPILER_PERFORMANCE.md`.
+
+The stdlib is the strongest language-compliance workload, not the first
+bootstrap target. Restore it by implementing generic language features in
+dependency order. Do not special-case a failing package.
+
+## Current bootstrap frontier and accepted regressions
+
+The initial authoritative backend slice intentionally targets one import-free
+source file with:
+
+- primitive `bool`, 64-bit bootstrap `int`, byte-string values, and exact
+  constants representable by those types;
+- free functions and direct calls;
+- parameters, named results, and local bindings;
+- scalar unary and binary expressions;
+- assignment, return, if, for, break, continue, print, and println.
+
+Only non-panicking executions of that scalar slice are a current behavior
+claim. Dynamic integer division or remainder by zero and negative dynamic
+shifts have explicit panic effects, but the bootstrap runtime still realizes
+them through Rust `panic_any`. A versioned Go panic boundary plus process-level
+differential checks for exit status and raw stderr must replace that boundary
+before those faulting executions count as compliant.
+
+Everything outside that slice must fail clearly. Immediate backlog includes
+multi-file packages, imports, package variables, declared and composite types,
+methods, generics, pointers, interfaces, arrays, slices, maps, function values,
+closures, range, switch, select, defer, panic/recover, goroutines, channels,
+unsafe, and host resources.
+
+Narrow and unsigned integers and floating-point values are deliberately outside
+the executable frontier until the type model, conversions, overflow behavior,
+and runtime ABI represent their exact Go semantics.
+
+This cutover knowingly regresses most generated-program and stdlib fixtures.
+Those fixtures are retained as an ordered migration inventory. Pre-cutover
+pass counts and performance measurements are invalid for the new compiler and
+must not appear as current evidence.
+
+The migration frontier also carries two immediate architecture regressions that
+must not survive feature expansion: leaked `'static` program ASTs and
+traversal-ordinal semantic IDs. Fixing them, installing per-stage fingerprints,
+and defining fine-grained query boundaries precede broad compliance work.
+Incrementality and parallel performance are part of each feature's definition
+of done rather than a post-compliance project.
+
+The token-guessing bootstrap source mapper is a third pre-expansion replacement:
+instruction provenance must flow through Rust IR to exact emitted anchors rather
+than being rediscovered from formatted identifier text.
+
+The monolithic embedded SDK source table is a fourth: replace it before imports
+become a hot path so SDK contents are lazy, bounded, target-correct, and keyed at
+reachable-file granularity.
+
+The source-only `gors build` command is a fifth product boundary: competitive
+artifact certification cannot promote a harness-composed transpile-plus-rustc
+shortcut. The default build command must atomically publish the validated
+runnable artifact, while an explicit inspection mode may continue to export
+generated Rust.
+
+The Rust `panic_any` realization of dynamic arithmetic faults is a sixth:
+replace it with the versioned runtime's Go panic/process boundary and compare
+observable failure behavior against the pinned Go toolchain before broadening
+the executable compliance claim.
+
+A failing fixture must be classified as one of:
+
+- parser or scanner defect;
+- unsupported semantic feature;
+- HIR construction defect;
+- MIR semantic or verification defect;
+- runtime ABI defect;
+- emitter defect;
+- Rust toolchain or harness defect.
+
+That classification is the feedback loop the old architecture lacked.
+
+## Deletion and enforcement checklist
+
+The cutover is not complete while any of these remain:
+
+- direct Go AST to syn lowering;
+- the old source-shaped IR or TypeEnv inference system;
+- compiler semantic thread-local state;
+- post-syn coercion, ownership, reachability, or host-patching passes;
+- resolver compilation, partial declaration recovery, or syn generation;
+- generated Rust and serialized TypeEnv resolver caches;
+- browser cache seed archives for generated resolver output;
+- compatibility flags, per-node fallback, or dormant legacy modules;
+- documentation or tests that present old conformance reports as current.
+
+Guard searches:
+
+    rg -n 'compiler::(ir|typeinfer|passes)|mod (ir|typeinfer|passes)' gors gors-cli www
+    rg -ni 'resolver.?cache|partial.?declaration|type.?environment.?cache' gors gors-cli www
+    rg -ni 'post.?syn|rust.?ast.?pass|ast.?to.?syn|fallback.?lower' gors/src
+    rg -n 'syn::|quote!|parse_quote!' gors/src/compiler
+
+Matches in the final search are permitted only in the terminal emitter and
+narrow output facade. Generated syntax must never become an input to semantics.
+
+## Maintainability and module topology
+
+The replacement must not reproduce the deleted 30,000-line compiler under a
+new filename. Pipeline ownership is visible in the directory tree: semantic
+analysis, HIR, Go MIR construction and verification, Rust representation
+lowering, Rust IR verification, terminal emission, runtime ABI, source maps,
+and printing are separate modules with narrow direction-of-travel dependencies.
+Because there is one backend, there is no redundant `compiler/backend`
+namespace. Source-map facilities live under the unambiguous `sourcemap` module;
+the old `mapping` name has no compatibility alias.
+
+First-party code is subject to a checked 1,000-physical-line hard limit, with
+300 to 700 lines preferred. Large test modules are separate sibling files.
+`scripts/check-source-layout.sh`, invoked by `make rust-lint`, rejects oversized
+files, inline-test growth in already-large Rust modules, the obsolete backend
+directory, and the old source-map directory. Generated, vendored, and fixture
+sources are the only routine exclusions.
+
+`scripts/check-compiler-architecture.sh`, also invoked by `make rust-lint`,
+rejects legacy compiler imports and directories, resolver codegen/cache terms,
+semantic thread-local state, post-syn/fallback lowering, syn dependencies
+outside the terminal boundary, and emitter dependencies on HIR, Go MIR, or the
+lowering implementation.
+
+The limit is a backstop, not a design technique. Splits follow semantic
+responsibility and keep internals private; numbered fragments or arbitrary
+line-range shards do not satisfy the architecture.
+
+## Validation strategy
+
+### Per-stage tests
+
+- parser oracle tests remain independent and should not regress;
+- semantic tests assert identity, typing, constants, diagnostics, and spans;
+- HIR snapshots cover resolved meaning, not formatting;
+- MIR snapshots cover order, places, effects, and control flow;
+- verifier tests deliberately construct invalid MIR;
+- emitter snapshots exercise verified Rust IR forms without reparsing Go;
+- runtime tests exercise value representations and panic or concurrency edges.
+
+### Differential tests
+
+Run generated Rust and the pinned Go toolchain from the same source and compare:
+
+- exit status;
+- raw stdout and stderr bytes;
+- panic behavior where observable;
+- deterministic results for deterministic programs.
+
+Add property and metamorphic tests for assignment order, aliases, integer
+constants, string bytes, slice capacity, maps, method sets, interfaces,
+closures, defer, and concurrency. Fuzz every parser and IR boundary, including
+serialized query data when incremental compilation arrives.
+
+### Conformance reporting
+
+Only complete unfiltered runs may publish a baseline. A report row should carry
+the first failing stage and diagnostic code so aggregate numbers drive
+architecture work instead of concealing it. Filtered runs are local evidence
+only.
+
+### Performance reporting
+
+Track compiler-engine and runnable-artifact latency as separate lanes. The
+artifact lane includes terminal codegen and linking; a fast HIR-to-Rust-source
+measurement is not a fast build. Required scenarios are cold first build,
+no-op warm build, leaf body edit, dependency private-body edit, and dependency
+public-API edit. Report raw and normalized p50 and p95, paired ratios against
+the hermetic Go compiler pinned by `.go-version`, confidence intervals, peak
+memory, cache and query events, HIR and MIR size, generated or object size,
+external codegen and link time, runtime throughput, allocation count, clone
+count, and binary size.
+
+Certification uses a versioned hermetic corpus, at least 50 paired samples per
+scenario across three independent sessions, randomized pair order, fixed global
+worker budgets, stable hardware classes, calibration and host-health rules, and
+behavior validation of every artifact. No competitive number is claimed from
+filtered runs or a changed input that reused a stale output.
+
+A scenario is first achieved only when gors p50 and p95 are at most 95% of the
+pinned Go values and the upper bootstrap confidence bound for the median paired
+ratio is below 1.00. On first achievement its evidence and budgets are promoted
+to a versioned manifest. That scenario is then a mandatory non-regression gate;
+promotion is not postponed until every language feature is complete. See
+`COMPILER_PERFORMANCE.md` for the exact protocol and migration rules.
+
+## Phased 2026 roadmap
+
+### Phase 0 — hard cutover (complete)
+
+Deliver:
+
+- one production backend and one public facade;
+- typed HIR, explicit-order Go MIR, both IR verifiers, mandatory Rust
+  representation lowering, and the terminal emitter;
+- source-only resolver;
+- deletion of every legacy and generated-Rust cache path;
+- stable structured diagnostics for unsupported source;
+- a small import-free end-to-end golden suite;
+- a machine-readable native benchmark evidence schema plus the normative cold
+  and warm performance contract.
+
+Exit gate: workspace build and unit checks pass, guard searches find no legacy
+path, and unsupported fixtures cannot execute an alternate backend.
+
+### Phase 1 — semantic foundation
+
+Deliver:
+
+- owned and evictable per-file parse products with no leaked source revisions;
+- canonical packages, definitions, scopes, aliases, and stable cross-revision
+  source and semantic IDs that are not traversal ordinals;
+- complete exact constant evaluation and representability;
+- named and composite types, method sets, interfaces, and generics;
+- the first demand-driven red-green query database with exact dependency edges,
+  public API versus body fingerprints, and deterministic phase dumps;
+- machine-readable per-stage timing, fingerprint, invalidation, and memory
+  telemetry emitted by that query database;
+- poisoned-program rejection before MIR.
+
+Exit gate: semantic fixtures match the Go oracle for the supported declaration
+and type-system surface, no Unknown reaches MIR, unrelated edits preserve IDs,
+and no-op, body-edit, and API-edit invalidation tests prove the intended query
+reuse.
+
+### Phase 2 — executable Go MIR
+
+Deliver:
+
+- complete places and projections;
+- calls, multiple results, two-phase assignment, loops, range, and switches;
+- closures and function values;
+- defer, panic/recover, goroutines, channels, and select;
+- escape, alias, liveness, and effect analyses;
+- mandatory Go MIR verifier after construction;
+- explicit panic effects and unwind edges for every potentially panicking
+  operation;
+- per-feature query invalidation and cost tests so semantic progress cannot
+  silently create package-wide recomputation.
+
+Exit gate: the core language fixture matrix executes equivalently through the
+single mandatory Go MIR to Rust IR path, and mutation tests prove both verifiers
+reject malformed products.
+
+### Phase 3 — runtime ABI
+
+Deliver:
+
+- canonical string, slice, map, pointer, interface, and function-value models;
+- concurrency and panic runtime;
+- host-resource primitive layer;
+- versioned intrinsic manifest and ABI compatibility checks;
+- portable native and Wasm implementations where applicable.
+
+Exit gate: runtime-focused differential and stress suites pass under sanitizers,
+threaded execution, and Wasm constraints.
+
+### Phase 4 — packages and generic stdlib
+
+Deliver:
+
+- multi-file package initialization and canonical import graph;
+- demand-driven cross-package semantic queries;
+- reachability before MIR emission;
+- deterministic work stealing under one bounded global job budget;
+- cancellation, foreground priority, and memory-budget backpressure;
+- a checksummed, schema-versioned content-addressed semantic and codegen cache;
+- stdlib compilation from pinned Go source without API replacements.
+
+Exit gate: complete stdlib fixture runs publish a fresh replacement-backend
+baseline, every failure names its first compiler stage, worker-count output is
+byte-identical, and cold/no-op/leaf/dependency-body/dependency-API benchmark
+traces demonstrate fine-grained reuse even before they beat Go.
+
+### Phase 5 — Rust representation refinement and artifact decision
+
+Deliver:
+
+- no-copy and semantic-move planning;
+- scalar replacement, bounds-check elimination, devirtualization, and inlining;
+- runtime representation specialization where Go behavior permits;
+- output stability, rustc-time, clone-count, and runtime performance budgets;
+- one mandatory, deterministic Rust IR lowering policy with readable canonical
+  stage dumps;
+- an early terminal Rust feasibility gate that compares rustc-plus-link's lower
+  bound with the entire pinned Go build;
+- direct fast object or machine-code generation from the same verified Rust IR
+  if the Rust syntax terminal route cannot satisfy the cold and edited-build
+  target.
+
+Exit gate: representation refinements improve performance and generated
+idiomaticness without changing differential behavior, no emitter heuristic is
+needed for correctness, and the production artifact backend has an
+evidence-backed path to the faster-than-Go threshold. A direct backend is a
+terminal codegen replacement, never a second semantic pipeline.
+
+### Phase 6 — SOTA feedback loop
+
+Deliver:
+
+- continuous differential fuzzing against the pinned Go toolchain;
+- automatic fixture reduction and first-failing-stage classification;
+- deterministic replay artifacts containing source, HIR, MIR, and diagnostics;
+- per-query incremental invalidation tests;
+- profile-guided representation cost-model experiments;
+- published conformance and performance dashboards based only on fresh runs;
+- immediate promotion of each cold or warm scenario once its p50, p95, and
+  reproducibility threshold is earned.
+
+Exit gate: compiler changes can be evaluated by semantic stage, compatibility,
+compile cost, generated-code cost, and runtime cost in one reproducible run.
+Every promoted performance scenario is a mandatory non-regression acceptance
+gate, including both cold first builds and recurring warm edits.
+
+## Definition of success
+
+The compiler is a credible 2026 architecture when:
+
+- every Go semantic decision has exactly one owning stage;
+- HIR and MIR are authoritative and independently verifiable;
+- syn is terminal;
+- unsupported source fails explicitly without fallback;
+- the runtime exposes a small language ABI rather than a shadow stdlib;
+- package and incremental caches store semantic facts with exact invalidation;
+- parse products release obsolete source revisions and semantic identities stay
+  stable across unrelated edits;
+- deterministic parallel queries operate under bounded global job and memory
+  budgets with cancellation and on-disk semantic reuse;
+- optimizations are proof-driven and behaviorally differential-tested;
+- stdlib compliance rises through generic language support;
+- output is deterministic, measurable, and inspectable at every stage;
+- the production artifact path beats the pinned Go compiler under the promoted
+  cold and warm acceptance contract, or is still explicitly reported as a
+  target rather than a claim.
+
+The compatibility target is Go behavior. The deleted compiler is not a target.

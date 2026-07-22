@@ -1,23 +1,10 @@
 import { MAX_SOURCE_MAP_INDEX_MAPPINGS } from "./src/source-map-index";
-import {
-	loadGorsWasm,
-	type GorsBuildResult,
-	type GorsWasm,
-	usesThreadedRuntime,
-} from "gors-wasm-runtime";
-import {
-	MAX_PERSISTED_RESOLVER_CACHE_BYTES,
-	deleteResolverCacheSnapshot,
-	loadResolverCacheSnapshot,
-	storeResolverCacheSnapshot,
-} from "./compiler-cache-storage";
+import { loadGorsWasm, type GorsBuildResult } from "gors-wasm-runtime";
 import type {
 	CancelRequest,
 	CompileRequest,
 	CompilerPhase,
 	CompilerPhaseTiming,
-	FlushCacheRequest,
-	PersistentCacheInfo,
 	WorkerCompileResult,
 	WorkerRequest,
 	WorkerResponse,
@@ -26,11 +13,6 @@ import type {
 // Cache generated code and mapping buffers by bytes, not entry count. A single
 // stdlib-heavy result can be much larger than dozens of small programs.
 const MAX_CACHE_BYTES = 16 * 1024 * 1024;
-const MAX_PACKAGED_RESOLVER_CACHE_BYTES = 16 * 1024 * 1024;
-const RESOLVER_CACHE_SEED_URL = new URL(
-	"./generated/resolver-cache-seed-v1.bin.gz",
-	import.meta.url,
-);
 
 const worker = self as unknown as {
 	onmessage: ((event: MessageEvent<WorkerRequest>) => void) | null;
@@ -56,24 +38,6 @@ let activeRequestId: number | null = null;
 let drainScheduled = false;
 let draining = false;
 const cancelledRequestIds = new Set<number>();
-let resolverCacheRestorePromise: Promise<PersistentCacheInfo> | null = null;
-let resolverCacheInfo: PersistentCacheInfo = {
-	restored: false,
-	importedEntries: 0,
-	bytes: 0,
-};
-let resolverCacheGeneration = 0;
-let persistedResolverCacheGeneration = 0;
-let persistedResolverCacheBytes = 0;
-let resolverCachePersistTimer: ReturnType<typeof setTimeout> | null = null;
-interface ResolverCachePersistResult {
-	bytes: number;
-	generation: number;
-	stored: boolean;
-}
-let resolverCachePersistPromise: Promise<ResolverCachePersistResult> | null =
-	null;
-let resolverCachePersistenceDisabled = false;
 
 function postStatus(id: number, phase: CompilerPhase, startedAt: number): void {
 	worker.postMessage({
@@ -120,215 +84,6 @@ function touchCache(goSource: string, entry: CacheEntry): void {
 		cache.delete(oldestKey);
 		if (oldest) cacheBytes -= oldest.bytes;
 	}
-}
-
-async function discardResolverCacheSnapshot(): Promise<void> {
-	try {
-		await deleteResolverCacheSnapshot();
-	} catch {
-		// Storage failures are cache misses, never compilation failures.
-	}
-}
-
-async function readStreamCapped(
-	stream: ReadableStream<Uint8Array>,
-	maxBytes: number,
-): Promise<Uint8Array<ArrayBuffer> | null> {
-	const reader = stream.getReader();
-	const chunks: Uint8Array[] = [];
-	let byteLength = 0;
-	while (true) {
-		const { done, value } = await reader.read();
-		if (done) break;
-		byteLength += value.byteLength;
-		if (byteLength > maxBytes) {
-			await reader.cancel();
-			return null;
-		}
-		chunks.push(value);
-	}
-
-	if (byteLength === 0) return null;
-	const bytes = new Uint8Array(byteLength);
-	let offset = 0;
-	for (const chunk of chunks) {
-		bytes.set(chunk, offset);
-		offset += chunk.byteLength;
-	}
-	return bytes;
-}
-
-async function loadResolverCacheSeed(): Promise<Uint8Array | null> {
-	try {
-		const response = await fetch(RESOLVER_CACHE_SEED_URL);
-		if (!response.ok || !response.body) return null;
-		const contentLength = Number(response.headers.get("Content-Length"));
-		if (
-			Number.isFinite(contentLength) &&
-			contentLength > MAX_PERSISTED_RESOLVER_CACHE_BYTES
-		) {
-			return null;
-		}
-
-		const packaged = await readStreamCapped(
-			response.body,
-			MAX_PERSISTED_RESOLVER_CACHE_BYTES,
-		);
-		if (!packaged) return null;
-
-		// Some CDNs transparently decode a .gz response before Fetch exposes its
-		// body. Accept that raw archive directly; otherwise decode the gzip
-		// stream ourselves.
-		const isGzip = packaged[0] === 0x1f && packaged[1] === 0x8b;
-		if (!isGzip) {
-			return packaged;
-		}
-		if (packaged.byteLength > MAX_PACKAGED_RESOLVER_CACHE_BYTES) return null;
-		if (typeof DecompressionStream !== "function") return null;
-		return readStreamCapped(
-			new Blob([packaged])
-				.stream()
-				.pipeThrough(new DecompressionStream("gzip")),
-			MAX_PERSISTED_RESOLVER_CACHE_BYTES,
-		);
-	} catch {
-		return null;
-	}
-}
-
-async function importResolverCache(
-	gors: GorsWasm,
-	bytes: Uint8Array,
-): Promise<PersistentCacheInfo | null> {
-	try {
-		const importedEntries = gors.import_resolver_cache(bytes);
-		return {
-			restored: true,
-			importedEntries,
-			bytes: bytes.byteLength,
-		};
-	} catch {
-		return null;
-	}
-}
-
-async function restoreResolverCache(
-	gors: GorsWasm,
-): Promise<PersistentCacheInfo> {
-	try {
-		const bytes = await loadResolverCacheSnapshot();
-		if (bytes) {
-			const restored = await importResolverCache(gors, bytes);
-			if (restored) {
-				persistedResolverCacheBytes = bytes.byteLength;
-				resolverCacheInfo = restored;
-				return resolverCacheInfo;
-			}
-		}
-
-		await discardResolverCacheSnapshot();
-		const seed = await loadResolverCacheSeed();
-		if (seed) {
-			const restored = await importResolverCache(gors, seed);
-			if (restored) {
-				resolverCacheInfo = restored;
-				// The seed is a bundled first-load fallback, not proof that an
-				// IndexedDB snapshot exists. The normal delayed export persists
-				// the post-compile superset.
-				persistedResolverCacheBytes = 0;
-				persistedResolverCacheGeneration = -1;
-			}
-		}
-		return resolverCacheInfo;
-	} catch {
-		const seed = await loadResolverCacheSeed();
-		if (!seed) return resolverCacheInfo;
-		const restored = await importResolverCache(gors, seed);
-		if (restored) {
-			resolverCacheInfo = restored;
-			persistedResolverCacheGeneration = -1;
-		}
-		return resolverCacheInfo;
-	}
-}
-
-function ensureResolverCacheRestored(
-	gors: GorsWasm,
-): Promise<PersistentCacheInfo> {
-	resolverCacheRestorePromise ??= restoreResolverCache(gors);
-	return resolverCacheRestorePromise;
-}
-
-function cancelScheduledResolverCachePersist(): void {
-	if (!resolverCachePersistTimer) return;
-	clearTimeout(resolverCachePersistTimer);
-	resolverCachePersistTimer = null;
-}
-
-async function persistResolverCacheOnce(
-	gors: GorsWasm,
-): Promise<ResolverCachePersistResult> {
-	if (resolverCacheGeneration === persistedResolverCacheGeneration) {
-		return {
-			bytes: persistedResolverCacheBytes,
-			generation: persistedResolverCacheGeneration,
-			stored: true,
-		};
-	}
-
-	const generation = resolverCacheGeneration;
-	try {
-		const bytes = gors.export_resolver_cache();
-		if (bytes.byteLength > MAX_PERSISTED_RESOLVER_CACHE_BYTES) {
-			resolverCachePersistenceDisabled = true;
-			await discardResolverCacheSnapshot();
-			return { bytes: 0, generation, stored: false };
-		}
-		const stored = await storeResolverCacheSnapshot(bytes);
-		if (!stored) return { bytes: 0, generation, stored: false };
-		persistedResolverCacheGeneration = generation;
-		persistedResolverCacheBytes = bytes.byteLength;
-		return { bytes: bytes.byteLength, generation, stored: true };
-	} catch {
-		return { bytes: 0, generation, stored: false };
-	}
-}
-
-async function flushResolverCache(gors: GorsWasm): Promise<number> {
-	cancelScheduledResolverCachePersist();
-	if (resolverCachePersistenceDisabled) return 0;
-	if (resolverCachePersistPromise) {
-		const result = await resolverCachePersistPromise;
-		if (!result.stored) return 0;
-	}
-	if (resolverCacheGeneration === persistedResolverCacheGeneration) {
-		return persistedResolverCacheBytes;
-	}
-
-	resolverCachePersistPromise = persistResolverCacheOnce(gors);
-	let result: ResolverCachePersistResult;
-	try {
-		result = await resolverCachePersistPromise;
-	} finally {
-		resolverCachePersistPromise = null;
-	}
-	if (!result.stored) return 0;
-
-	// A compile may have populated more roots while IndexedDB was writing.
-	if (resolverCacheGeneration !== persistedResolverCacheGeneration) {
-		return flushResolverCache(gors);
-	}
-	return persistedResolverCacheBytes;
-}
-
-function scheduleResolverCachePersist(gors: GorsWasm): void {
-	if (resolverCachePersistenceDisabled) return;
-	resolverCacheGeneration++;
-	cancelScheduledResolverCachePersist();
-	resolverCachePersistTimer = setTimeout(() => {
-		resolverCachePersistTimer = null;
-		void flushResolverCache(gors);
-	}, 1_000);
 }
 
 function normalizeResult(result: GorsBuildResult): WorkerCompileResult {
@@ -398,7 +153,6 @@ function postResult(
 	startedAt: number,
 	timings: CompilerPhaseTiming[],
 	cacheHit: boolean,
-	persistentCache: PersistentCacheInfo,
 ): void {
 	const outgoing = transferableResult(result);
 	worker.postMessage(
@@ -410,7 +164,6 @@ function postResult(
 			workerDurationMs: performance.now() - startedAt,
 			timings,
 			cacheHit,
-			persistentCache,
 		},
 		outgoing.transfer,
 	);
@@ -431,7 +184,7 @@ async function executeCompile(request: CompileRequest): Promise<void> {
 			durationMs: performance.now() - cacheStartedAt,
 		});
 		postStatus(id, "complete", startedAt);
-		postResult(id, cached.result, startedAt, timings, true, resolverCacheInfo);
+		postResult(id, cached.result, startedAt, timings, true);
 		return;
 	}
 
@@ -441,15 +194,6 @@ async function executeCompile(request: CompileRequest): Promise<void> {
 		const gors = await loadGorsWasm();
 		timings.push({
 			phase: "loading-wasm",
-			durationMs: performance.now() - phaseStartedAt,
-		});
-		if (cancelledRequestIds.has(id)) return;
-
-		phaseStartedAt = performance.now();
-		postStatus(id, "loading-cache", startedAt);
-		const persistentCache = await ensureResolverCacheRestored(gors);
-		timings.push({
-			phase: "loading-cache",
 			durationMs: performance.now() - phaseStartedAt,
 		});
 		if (cancelledRequestIds.has(id)) return;
@@ -470,7 +214,6 @@ async function executeCompile(request: CompileRequest): Promise<void> {
 		});
 		if (cancelledRequestIds.has(id)) {
 			buildResult.free();
-			scheduleResolverCachePersist(gors);
 			return;
 		}
 
@@ -487,8 +230,7 @@ async function executeCompile(request: CompileRequest): Promise<void> {
 			bytes: estimateResultBytes(goSource, result),
 		});
 		postStatus(id, "complete", startedAt);
-		postResult(id, result, startedAt, timings, false, persistentCache);
-		scheduleResolverCachePersist(gors);
+		postResult(id, result, startedAt, timings, false);
 	} catch (error) {
 		worker.postMessage({
 			id,
@@ -537,7 +279,6 @@ function scheduleDrain(): void {
 }
 
 function enqueueCompile(request: CompileRequest): void {
-	cancelScheduledResolverCachePersist();
 	postStatus(request.id, "queued", performance.now());
 	if (queuedRequest) {
 		worker.postMessage({
@@ -550,24 +291,7 @@ function enqueueCompile(request: CompileRequest): void {
 	scheduleDrain();
 }
 
-async function flushCache(request: FlushCacheRequest): Promise<void> {
-	let storedBytes = 0;
-	try {
-		const gors = await loadGorsWasm();
-		await ensureResolverCacheRestored(gors);
-		storedBytes = await flushResolverCache(gors);
-	} catch {
-		// Cache persistence is an optimization and never blocks compilation.
-	}
-	worker.postMessage({
-		id: request.id,
-		type: "cache-flushed",
-		storedBytes,
-	});
-}
-
 function cancelRequests(request: CancelRequest): void {
-	cancelScheduledResolverCachePersist();
 	for (const id of request.ids) {
 		if (activeRequestId === id) cancelledRequestIds.add(id);
 		if (queuedRequest?.id === id) {
@@ -583,8 +307,7 @@ function cancelRequests(request: CancelRequest): void {
 
 worker.onmessage = ({ data }) => {
 	if (data.type === "compile") enqueueCompile(data);
-	else if (data.type === "cancel") cancelRequests(data);
-	else void flushCache(data);
+	else cancelRequests(data);
 };
 
-worker.postMessage({ type: "ready", workerId, threaded: usesThreadedRuntime });
+worker.postMessage({ type: "ready", workerId });

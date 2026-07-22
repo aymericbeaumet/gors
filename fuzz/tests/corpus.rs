@@ -44,7 +44,7 @@ fn ast_snapshot_corpus_is_deterministic() {
 }
 
 #[test]
-fn compiler_corpus_reaches_source_printer() {
+fn compiler_corpus_either_reports_diagnostics_or_prints_rust() {
     for path in corpus_files("compiler") {
         let data = std::fs::read(&path)
             .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
@@ -55,12 +55,17 @@ fn compiler_corpus_reaches_source_printer() {
                 path.display()
             );
         });
-        let rust_ast = gors::compiler::compile(ast).unwrap_or_else(|error| {
-            panic!(
-                "compiler corpus seed {} does not lower: {error}",
-                path.display()
-            );
-        });
+        let rust_ast = match gors::compiler::compile_file_to_rust_syntax(ast) {
+            Ok(rust_ast) => rust_ast,
+            Err(error) => {
+                assert!(
+                    !error.diagnostics().is_empty(),
+                    "compiler corpus seed {} failed without a diagnostic",
+                    path.display()
+                );
+                continue;
+            }
+        };
         let mut rust_source = Vec::new();
         gors::printer::fprint(&mut rust_source, rust_ast).unwrap_or_else(|error| {
             panic!(

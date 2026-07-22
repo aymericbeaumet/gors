@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "corpusVersion": "bootstrap-v1",
+  "digest": "1334d198a769363fd0cfdaf2cf263fefe4109bac31efecaa1892c919f32130ae",
+  "workloads": [
+    {
+      "id": "bootstrap_scalar",
+      "baseSource": "bootstrap_scalar/base.go",
+      "leafSource": "bootstrap_scalar/leaf.go",
+      "baseBehavior": {
+        "exitCode": 0,
+        "stdoutUtf8": "",
+        "stderrUtf8": "8\n"
+      },
+      "leafBehavior": {
+        "exitCode": 0,
+        "stdoutUtf8": "",
+        "stderrUtf8": "9\n",
+        "requiredSentinelUtf8": "9\n"
+      }
+    }
+  ],
+  "scenarioSupport": [
+    {
+      "id": "cold",
+      "supported": true
+    },
+    {
+      "id": "no_op",
+      "supported": true
+    },
+    {
+      "id": "leaf_edit",
+      "supported": true
+    },
+    {
+      "id": "dependency_body_edit",
+      "supported": false,
+      "reason": "The authoritative compiler frontier does not support imports yet."
+    },
+    {
+      "id": "dependency_api_edit",
+      "supported": false,
+      "reason": "The authoritative compiler frontier does not support imports yet."
+    }
+  ]
+}

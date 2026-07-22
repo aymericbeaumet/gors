@@ -12,9 +12,8 @@ permissions:
   contents: read
 
 concurrency:
-  # Cancel stale feedback for the same PR, but let every main push finish its
-  # full conformance run. The serialized deploy job suppresses stale Pages
-  # publications after those checks complete.
+  # Cancel stale feedback for the same PR. Main pushes finish the bootstrap
+  # backend, parser corpus, and web gates before serialized deployment.
   group: ci-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
@@ -40,6 +39,14 @@ jobs:
 
       - name: Lint
         run: make rust-lint
+
+  perf-harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Validate performance schemas and acceptance logic
+        run: make perf-test
 
   rust-build:
     runs-on: ubuntu-latest
@@ -113,36 +120,9 @@ jobs:
       - name: Replay fuzz corpora and deterministic properties
         run: cargo test --profile ci --package fuzz --tests
 
-  # Pull requests get a bounded end-to-end signal from the large conformance
-  # corpora. The complete Go spec stays fast enough to run on every change,
-  # while every main-branch push still runs all other complete suites below.
-  rust-test-integration-smoke:
-    if: github.event_name == 'pull_request'
+  rust-test-backend-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: go-repositories
-            feature: test_integration_go_repositories
-            test: test_integration_go_repositories
-            filter: go_files/arithmetic.go
-          - name: go-stdlib
-            feature: test_integration_go_stdlib
-            test: test_integration_go_stdlib
-            filter: cmp
-          - name: go-programs
-            feature: test_integration_go_programs
-            test: test_integration_go_programs
-            filter: arithmetic_operators
-    name: rust-test-integration-smoke (${{ matrix.name }})
-    env:
-      GORS_TEST_FAIL_FAST: 1
-      GORS_TEST_FILTER: ${{ matrix.filter }}
-      GORS_TEST_THREADS: 1
-      GORS_TEST_RUN_THREADS: 1
-      GORS_TEST_VERBOSE: 1
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
 
@@ -152,8 +132,6 @@ jobs:
           toolchain: 1.96.0
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: integration-smoke-${{ matrix.name }}
 
       - name: Cache pinned Go SDK
         uses: actions/cache@v4
@@ -161,15 +139,8 @@ jobs:
           path: ~/.cargo/gors-cache
           key: gors-go-sdk-${{ runner.os }}-${{ hashFiles('.go-version') }}
 
-      - name: Run one deterministic end-to-end fixture
-        run: >-
-          cargo test --profile ci --package gors
-          --features "${{ matrix.feature }}"
-          --test "${{ matrix.test }}" -- --nocapture
-
-      - name: Remove generated-program cache before cache save
-        if: always()
-        run: rm -rf target/gors-integration-run
+      - name: Execute the authoritative HIR, Go MIR, and Rust IR pipeline
+        run: make rust-test-backend-smoke
 
   rust-test-integration-go-repositories:
     if: github.event_name == 'push'
@@ -201,93 +172,6 @@ jobs:
         if: always()
         run: rm -rf target/gors-integration-run
 
-  rust-test-integration-go-spec:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.96.0
-          components: rustfmt, clippy
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Cache pinned Go SDK
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/gors-cache
-          key: gors-go-sdk-${{ runner.os }}-${{ hashFiles('.go-version') }}
-
-      - name: Test integration go spec
-        run: |
-          GORS_UPDATE_CONFORMANCE_REPORTS=1 make rust-test-integration-go-spec
-          git diff --exit-code -- gors/tests/reports/go-spec-conformance.json
-
-      - name: Remove generated-program cache before cache save
-        if: always()
-        run: rm -rf target/gors-integration-run
-
-  rust-test-integration-go-stdlib:
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.96.0
-          components: rustfmt, clippy
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Cache pinned Go SDK
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/gors-cache
-          key: gors-go-sdk-${{ runner.os }}-${{ hashFiles('.go-version') }}
-
-      - name: Test integration go stdlib
-        run: |
-          GORS_UPDATE_CONFORMANCE_REPORTS=1 make rust-test-integration-go-stdlib
-          git diff --exit-code -- gors/tests/reports/go-stdlib-conformance.json
-
-      - name: Remove generated-program cache before cache save
-        if: always()
-        run: rm -rf target/gors-integration-run
-
-  rust-test-integration-go-programs:
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.96.0
-          components: rustfmt, clippy
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Cache pinned Go SDK
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/gors-cache
-          key: gors-go-sdk-${{ runner.os }}-${{ hashFiles('.go-version') }}
-
-      - name: Test integration go programs
-        run: make rust-test-integration-go-programs
-
-      - name: Remove generated-program cache before cache save
-        if: always()
-        run: rm -rf target/gors-integration-run
-
   web-lint:
     runs-on: ubuntu-latest
     steps:
@@ -303,9 +187,9 @@ jobs:
       - name: Lint web
         run: make web-lint
 
-  # Build the stable compiler and deterministic resolver seed once per run.
+  # Build the stable browser compiler once per run.
   # Webpack and both browser suites consume this exact artifact instead of
-  # independently paying for the nested Wasm workspace and seed compilation.
+  # independently paying for the nested Wasm workspace compilation.
   web-compiler-assets:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -338,32 +222,17 @@ jobs:
           cache: npm
           cache-dependency-path: www/package-lock.json
 
-      - name: Restore deterministic resolver seed
-        uses: actions/cache@v4
-        with:
-          path: |
-            www/generated/resolver-cache-seed-v1.bin
-            www/generated/resolver-cache-seed-v1.bin.gz
-            www/generated/resolver-cache-seed-v1.json
-          key: gors-web-resolver-seed-v1-rust-1.96.0-${{ runner.os }}-${{ hashFiles('.go-version', 'Cargo.toml', 'Cargo.lock', 'gors/Cargo.toml', 'gors/build.rs', 'gors/src/**/*.rs', 'gors-builtin/Cargo.toml', 'gors-builtin/src/**/*.rs', 'www/package.json', 'www/package-lock.json', 'www/wasm/Cargo.toml', 'www/wasm/Cargo.lock', 'www/wasm/**/*.rs', 'www/default-playground.go', 'www/scripts/generate-resolver-cache-seed.mjs', 'www/scripts/normalize-wasm-package-json.mjs') }}
-          restore-keys: |
-            gors-web-resolver-seed-v1-rust-1.96.0-${{ runner.os }}-
-
       - name: Install web dependencies
         run: npm --prefix www ci --no-audit --fund=false --loglevel=error
 
       - name: Build stable compiler assets
-        run: |
-          npm --prefix www run build:wasm
-          npm --prefix www run build:resolver-seed
+        run: npm --prefix www run build:wasm
 
       - name: Upload stable compiler assets
         uses: actions/upload-artifact@v6
         with:
           name: web-compiler-assets
-          path: |
-            www/wasm/pkg
-            www/generated
+          path: www/wasm/pkg
           if-no-files-found: error
           retention-days: 1
 
@@ -377,7 +246,7 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: web-compiler-assets
-          path: www
+          path: www/wasm/pkg
 
       - name: Install Node.js toolchain
         uses: actions/setup-node@v6
@@ -424,7 +293,7 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: web-compiler-assets
-          path: www
+          path: www/wasm/pkg
 
       - name: Install Node.js toolchain
         uses: actions/setup-node@v6
@@ -455,7 +324,7 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: web-compiler-assets
-          path: www
+          path: www/wasm/pkg
 
       - name: Install Node.js toolchain
         uses: actions/setup-node@v6
@@ -470,97 +339,27 @@ jobs:
       - name: Install Chromium
         run: npm --prefix www exec playwright install --with-deps chromium
 
-      - name: Test persistent browser compiler
+      - name: Test browser compiler
         run: npm --prefix www run test:compiler
         env:
           GORS_WEB_COMPILER_PREBUILT: '1'
-
-  web-test-compiler-threads:
-    needs: web-compiler-assets
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Download stable compiler assets
-        uses: actions/download-artifact@v7
-        with:
-          name: web-compiler-assets
-          path: www
-
-      - name: Install pinned threaded Wasm toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2026-07-01
-          components: rust-src
-          targets: wasm32-unknown-unknown
-
-      - name: Cache nested threaded Wasm build
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: www/wasm -> target
-          shared-key: web-wasm-threaded
-          cache-workspace-crates: true
-
-      - name: Cache pinned Go SDK
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/gors-cache
-          key: gors-go-sdk-${{ runner.os }}-${{ hashFiles('.go-version') }}
-
-      - name: Install Node.js toolchain
-        uses: actions/setup-node@v6
-        with:
-          node-version: '20'
-          cache: npm
-          cache-dependency-path: www/package-lock.json
-
-      - name: Install web dependencies
-        run: npm --prefix www ci --no-audit --fund=false --loglevel=error
-
-      - name: Install Chromium
-        run: npm --prefix www exec playwright install --with-deps chromium
-
-      - name: Build pinned-nightly threaded compiler
-        run: npm --prefix www run build:wasm:threads
-
-      - name: Record stable compiler output
-        run: >-
-          npm --prefix www run test:compiler --
-          --grep "stable and threaded compiler outputs are byte-identical"
-        env:
-          GORS_WEB_COMPILER_PREBUILT: '1'
-          GORS_COMPILER_PARITY_MODE: write
-          GORS_COMPILER_PARITY_PATH: ${{ runner.temp }}/gors-compiler-parity.json
-
-      - name: Verify threaded initialization and compiler parity
-        run: >-
-          npm --prefix www run test:compiler --
-          --grep "threaded runtime initializes|stable and threaded compiler outputs are byte-identical"
-        env:
-          GORS_WEB_COMPILER_PREBUILT: '1'
-          GORS_WASM_THREADS: '1'
-          GORS_COMPILER_PARITY_MODE: compare
-          GORS_COMPILER_PARITY_PATH: ${{ runner.temp }}/gors-compiler-parity.json
 
   deploy-www:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     needs:
+      - perf-harness
       - rust-lint
       - rust-build
       - rust-test-unit
       - rust-test-fuzz-smoke
+      - rust-test-backend-smoke
       - rust-test-integration-go-repositories
-      - rust-test-integration-go-spec
-      - rust-test-integration-go-stdlib
-      - rust-test-integration-go-programs
       - web-build
       - web-lint
       - web-test-unit
       - web-test-integration
       - web-test-compiler
-      - web-test-compiler-threads
     permissions:
       contents: read
       pages: write

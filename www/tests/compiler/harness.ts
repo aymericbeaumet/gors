@@ -2,11 +2,10 @@ import {
 	CompilerCancelledError,
 	Go2RustCompiler,
 } from "../../go2rust-compiler";
-import { storeResolverCacheSnapshot } from "../../compiler-cache-storage";
 import type {
+	CompilerError,
 	CompilerPhaseTiming,
 	CompilerStatus,
-	PersistentCacheInfo,
 } from "../../go2rust-protocol";
 
 export interface HarnessResult {
@@ -16,7 +15,7 @@ export interface HarnessResult {
 	workerDurationMs: number;
 	timings: CompilerPhaseTiming[];
 	cacheHit: boolean;
-	persistentCache: PersistentCacheInfo;
+	error: CompilerError | null;
 	statuses: CompilerStatus[];
 }
 
@@ -35,23 +34,6 @@ export interface CompilerHarness {
 		delayMs: number,
 		synchronousDelayMs: number,
 	): Promise<HarnessOutcome[]>;
-	preemptWithPendingFlush(
-		activeSource: string,
-		middleSource: string,
-		latestSource: string,
-		synchronousDelayMs: number,
-	): Promise<{
-		requests: HarnessOutcome[];
-		flush: { status: "fulfilled" | "rejected"; name?: string };
-	}>;
-	supersedeWithoutPreemption(
-		activeSource: string,
-		latestSource: string,
-		synchronousDelayMs: number,
-	): Promise<HarnessOutcome[]>;
-	flushPersistentCache(): Promise<number>;
-	restartWorker(): void;
-	replacePersistentCache(value: string): Promise<void>;
 	stats(): ReturnType<Go2RustCompiler["getStats"]>;
 }
 
@@ -61,7 +43,7 @@ declare global {
 	}
 }
 
-let compiler = new Go2RustCompiler();
+const compiler = new Go2RustCompiler();
 
 function settled(promise: Promise<HarnessResult>): Promise<HarnessOutcome> {
 	return promise.then(
@@ -86,7 +68,7 @@ async function compile(source: string): Promise<HarnessResult> {
 		workerDurationMs: result.workerDurationMs,
 		timings: result.timings,
 		cacheHit: result.cacheHit,
-		persistentCache: result.persistentCache,
+		error: result.error,
 		statuses,
 	};
 }
@@ -124,7 +106,7 @@ window.__gorsCompilerHarness = {
 					workerDurationMs: result.workerDurationMs,
 					timings: result.timings,
 					cacheHit: result.cacheHit,
-					persistentCache: result.persistentCache,
+					error: result.error,
 					statuses,
 				})),
 		);
@@ -133,95 +115,6 @@ window.__gorsCompilerHarness = {
 		await new Promise((resolve) => setTimeout(resolve, delayMs));
 		const latest = settled(compile(latestSource));
 		return Promise.all([active, latest]);
-	},
-	async preemptWithPendingFlush(
-		activeSource,
-		middleSource,
-		latestSource,
-		synchronousDelayMs,
-	) {
-		let reportCompilerStarted = () => {};
-		const compilerStarted = new Promise<void>((resolve) => {
-			reportCompilerStarted = resolve;
-		});
-		const active = settled(
-			compiler
-				.compile(
-					activeSource,
-					(status) => {
-						if (status.phase === "compiling") reportCompilerStarted();
-					},
-					synchronousDelayMs,
-				)
-				.then((result) => ({
-					success: result.success,
-					rustCode: result.rustCode,
-					durationMs: result.durationMs,
-					workerDurationMs: result.workerDurationMs,
-					timings: result.timings,
-					cacheHit: result.cacheHit,
-					persistentCache: result.persistentCache,
-					statuses: [],
-				})),
-		);
-		await compilerStarted;
-		const flush = compiler.flushPersistentCache().then(
-			() => ({ status: "fulfilled" as const }),
-			(error: unknown) => ({
-				status: "rejected" as const,
-				name: error instanceof Error ? error.name : undefined,
-			}),
-		);
-		const middle = settled(compile(middleSource));
-		await new Promise((resolve) => setTimeout(resolve, 25));
-		const latest = settled(compile(latestSource));
-		return {
-			requests: await Promise.all([active, middle, latest]),
-			flush: await flush,
-		};
-	},
-	async supersedeWithoutPreemption(
-		activeSource,
-		latestSource,
-		synchronousDelayMs,
-	) {
-		let reportCompilerStarted = () => {};
-		const compilerStarted = new Promise<void>((resolve) => {
-			reportCompilerStarted = resolve;
-		});
-		const active = settled(
-			compiler
-				.compile(
-					activeSource,
-					(status) => {
-						if (status.phase === "compiling") reportCompilerStarted();
-					},
-					synchronousDelayMs,
-				)
-				.then((result) => ({
-					success: result.success,
-					rustCode: result.rustCode,
-					durationMs: result.durationMs,
-					workerDurationMs: result.workerDurationMs,
-					timings: result.timings,
-					cacheHit: result.cacheHit,
-					persistentCache: result.persistentCache,
-					statuses: [],
-				})),
-		);
-		await compilerStarted;
-		const latest = settled(compile(latestSource));
-		return Promise.all([active, latest]);
-	},
-	flushPersistentCache() {
-		return compiler.flushPersistentCache();
-	},
-	restartWorker() {
-		compiler.dispose();
-		compiler = new Go2RustCompiler();
-	},
-	async replacePersistentCache(value) {
-		await storeResolverCacheSnapshot(new TextEncoder().encode(value));
 	},
 	stats() {
 		return compiler.getStats();

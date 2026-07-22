@@ -24,8 +24,6 @@
 		"go2rust-protocol.ts",
 		"go2rust-worker.ts",
 		"gors-wasm-loader.ts",
-		"gors-wasm-threaded-loader.ts",
-		"compiler-cache-storage.ts",
 		"rust-runner.ts"
 	],
 	"exclude": ["dist", "node_modules", "v86", "wasm/pkg", "wasm/target"]

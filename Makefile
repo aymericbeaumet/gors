@@ -14,17 +14,24 @@ rust-format:
 	cargo fmt --all
 
 rust-lint:
+	bash scripts/check-source-layout.sh
+	bash scripts/check-compiler-architecture.sh
 	cargo fmt --all -- --check
 	cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 rust-build:
 	cargo build --workspace
 
-rust-test: rust-test-unit rust-test-integration
+rust-test: rust-test-unit rust-test-backend-smoke
 
 rust-test-unit:
 	GORS_TEST_FAIL_FAST=1 GORS_TEST_VERBOSE=1 cargo test --profile $(RUST_TEST_PARTIAL_PROFILE) --workspace --lib --bins --examples -- --nocapture
 
+rust-test-backend-smoke:
+	@test "$$(cargo run --quiet --package gors-cli -- run fuzz/corpus/compiler/runtime_smoke 2>&1)" = "8"
+
+# Migration backlog. These broad suites intentionally remain opt-in until their
+# language features have native HIR and MIR support.
 rust-test-integration:
 	$(MAKE) rust-test-integration-go-repositories RUST_TEST_INTEGRATION_PROFILE=$(RUST_TEST_FULL_INTEGRATION_PROFILE)
 	$(MAKE) rust-test-integration-go-spec RUST_TEST_INTEGRATION_PROFILE=$(RUST_TEST_FULL_INTEGRATION_PROFILE)
@@ -60,6 +67,38 @@ conformance-check: conformance-report
 
 clean-integration-cache:
 	rm -rf target/gors-integration-run
+
+########
+# perf #
+########
+
+PERF_PYTHON ?= python3
+PERF_SAMPLES ?= 50
+PERF_SESSIONS ?= 3
+PERF_SEED ?= 20260722
+PERF_JOBS ?= $(shell $(PERF_PYTHON) -c 'import os; print(os.cpu_count() or 1)')
+PERF_HARDWARE_CLASS ?= unclassified-local
+PERF_BASELINE_OUTPUT ?= target/perf/baseline.json
+PERF_CERTIFICATION_OUTPUT ?= target/perf/certification.json
+PERF_RESULT ?=
+PERF_ARGS ?=
+
+# Real measurements are opt-in. PERF_ARGS="--smoke" permits small harness
+# exercises, but smoke evidence is permanently ineligible for promotion.
+perf-baseline:
+	PYTHONDONTWRITEBYTECODE=1 $(PERF_PYTHON) perf/run.py baseline --output $(PERF_BASELINE_OUTPUT) --samples $(PERF_SAMPLES) --sessions $(PERF_SESSIONS) --seed $(PERF_SEED) --jobs $(PERF_JOBS) --hardware-class $(PERF_HARDWARE_CLASS) $(PERF_ARGS)
+
+perf-certify:
+	PYTHONDONTWRITEBYTECODE=1 $(PERF_PYTHON) perf/run.py certify --output $(PERF_CERTIFICATION_OUTPUT) --samples $(PERF_SAMPLES) --sessions $(PERF_SESSIONS) --seed $(PERF_SEED) --jobs $(PERF_JOBS) --hardware-class $(PERF_HARDWARE_CLASS) $(PERF_ARGS)
+
+perf-gate:
+	PYTHONDONTWRITEBYTECODE=1 $(PERF_PYTHON) perf/run.py gate $(if $(strip $(PERF_RESULT)),--result $(PERF_RESULT),)
+
+# Safe for ordinary correctness CI: no wall-clock measurements are run here.
+perf-test:
+	PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=perf $(PERF_PYTHON) -m unittest discover -s perf/tests -v
+	PYTHONDONTWRITEBYTECODE=1 $(PERF_PYTHON) perf/run.py validate
+	$(MAKE) perf-gate
 
 #######
 # web #
@@ -126,6 +165,7 @@ fuzz-compiler:
 
 # .phony
 .PHONY: all dev
-.PHONY: rust-all rust-build rust-format rust-lint rust-test rust-test-unit rust-test-integration rust-test-integration-go-repositories rust-test-integration-go-spec rust-test-integration-go-stdlib rust-test-integration-go-programs
+.PHONY: rust-all rust-build rust-format rust-lint rust-test rust-test-unit rust-test-backend-smoke rust-test-integration rust-test-integration-go-repositories rust-test-integration-go-spec rust-test-integration-go-stdlib rust-test-integration-go-programs
+.PHONY: perf-baseline perf-certify perf-gate perf-test
 .PHONY: web-all web-build web-format web-install web-lint web-test web-test-unit web-test-integration
 .PHONY: fuzz-all fuzz-test fuzz-scanner fuzz-parser fuzz-roundtrip fuzz-compiler

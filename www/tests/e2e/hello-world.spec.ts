@@ -1,13 +1,6 @@
 import { expect, test } from "@playwright/test";
-import goSpecReport from "../../../gors/tests/reports/go-spec-conformance.json";
-import goStdlibReport from "../../../gors/tests/reports/go-stdlib-conformance.json";
 
-function coverageMetric(tested: number, total: number): string {
-	if (total === 0) return "0/0 (0%)";
-	return `${tested}/${total} (${((tested / total) * 100).toFixed(1)}%)`;
-}
-
-test.skip("default hello world auto-compiles and runs manually", async ({
+test.skip("default bootstrap program auto-compiles and runs manually", async ({
 	page,
 }) => {
 	const pageErrors: string[] = [];
@@ -37,7 +30,7 @@ test.skip("default hello world auto-compiles and runs manually", async ({
 	await expect(consoleOutput).toContainText("$ ./main", {
 		timeout: 9 * 60 * 1000,
 	});
-	await expect(consoleOutput).toContainText("Hello, World!", {
+	await expect(consoleOutput).toContainText("10", {
 		timeout: 10 * 60 * 1000,
 	});
 	await expect
@@ -56,23 +49,13 @@ test.skip("default hello world auto-compiles and runs manually", async ({
 	await page.locator(".go .monaco-editor .view-lines").click();
 	await page.keyboard.press("ControlOrMeta+A");
 	await page.keyboard.type(
-		[
-			"package main",
-			"",
-			'import "fmt"',
-			"",
-			"func main() {",
-			'\tfmt.Println("Changed")',
-			"}",
-		].join("\n"),
+		["package main", "", "func main() {", "\tprintln(99)", "}"].join("\n"),
 	);
 	await expect(consoleOutput).toContainText("gors transpiled", {
 		timeout: 8 * 60 * 1000,
 	});
 	await expect(consoleOutput).not.toContainText("$ rustc -o main main.rs");
-	await expect(page.locator(".rust .monaco-editor")).not.toContainText(
-		"Hello, World!",
-	);
+	await expect(page.locator(".rust .monaco-editor")).not.toContainText("10");
 	await expect(consoleOutput).not.toContainText("$ ./main", { timeout: 1000 });
 	await expect(consoleOutput).not.toContainText("waiting for VM");
 	await expect(consoleOutput).not.toContainText("VM ready in");
@@ -81,103 +64,16 @@ test.skip("default hello world auto-compiles and runs manually", async ({
 	expect(consoleErrors).toEqual([]);
 });
 
-test.skip("conformance route shows stdlib package and symbol coverage", async ({
+test("conformance route reports the hard-cutover baseline", async ({
 	page,
 }) => {
 	await page.goto("/conformance");
-
 	await expect(
-		page.getByRole("heading", { name: "Go Standard Library Conformance" }),
+		page.getByRole("heading", { name: "Conformance baseline reset" }),
 	).toBeVisible();
-	await expect(
-		page.getByText("Go Language Specification Conformance"),
-	).toBeVisible();
-	await expect(
-		page.getByText(
-			coverageMetric(
-				goSpecReport.summary.passingGroupCount,
-				goSpecReport.summary.groupCount,
-			),
-		),
-	).toBeVisible();
-	await expect(
-		page.getByText(
-			coverageMetric(
-				goSpecReport.summary.passingCaseCount,
-				goSpecReport.summary.caseCount,
-			),
-		),
-	).toBeVisible();
-	await expect(
-		page.getByText("Slice expressions share the original backing array"),
-	).toBeVisible();
-	await expect(page.getByText("Uncovered").first()).toBeVisible();
-	await expect(
-		page.getByText(
-			coverageMetric(
-				goStdlibReport.summary.passingGroupCount,
-				goStdlibReport.summary.groupCount,
-			),
-		),
-	).toBeVisible();
-	await expect(
-		page.getByText(
-			coverageMetric(
-				goStdlibReport.summary.passingCaseCount,
-				goStdlibReport.summary.caseCount,
-			),
-		),
-	).toBeVisible();
-
-	await expect(
-		page.locator(".package-cell > code").filter({ hasText: /^fmt$/ }),
-	).toHaveClass(/(^|\s)partial(\s|$)/);
-	await expect(
-		page.locator(".package-cell span").filter({ hasText: "13/29 covered" }),
-	).toHaveClass(/(^|\s)partial(\s|$)/);
-	await expect(page.locator(".package-cell .fixture-cell")).toHaveCount(0);
-	await expect(page.getByText("Println", { exact: true })).toBeVisible();
-	await expect(
-		page.getByRole("link", { name: "fmt", exact: true }).first(),
-	).toHaveAttribute(
-		"href",
-		"https://github.com/aymericbeaumet/gors/tree/master/gors/tests/fixtures/go_stdlib/fmt",
-	);
-
-	await expect(
-		page.locator(".stdlib-symbol").filter({ hasText: "Header.FileInfo" }),
-	).toHaveClass(/(^|\s)none(\s|$)/);
-	await expect(
-		page.locator(".stdlib-symbol").filter({ hasText: "FileInfoHeader" }),
-	).toHaveClass(/(^|\s)tested(\s|$)/);
-
-	await expect(
-		page
-			.locator(".package-cell > code")
-			.filter({ hasText: /^container\/list$/ }),
-	).toHaveClass(/(^|\s)none(\s|$)/);
-	await expect(
-		page.locator(".package-cell span").filter({ hasText: "0/20 covered" }),
-	).toHaveClass(/(^|\s)none(\s|$)/);
-
-	await expect(
-		page.locator(".package-cell > code").filter({ hasText: /^structs$/ }),
-	).toHaveClass(/(^|\s)tested(\s|$)/);
-	await expect(
-		page.locator(".package-cell span").filter({ hasText: "1/1 covered" }),
-	).toHaveClass(/(^|\s)tested(\s|$)/);
-
-	await expect
-		.poll(() =>
-			page.evaluate(
-				"document.documentElement.scrollWidth <= document.documentElement.clientWidth",
-			),
-		)
-		.toBe(true);
-	await page.evaluate("window.scrollTo(0, document.body.scrollHeight)");
-	await page.getByRole("link", { name: "gors" }).click();
-	await page.getByRole("link", { name: "Learn more." }).click();
-	await expect.poll(() => page.evaluate("window.scrollY")).toBe(0);
+	await expect(page.getByText("No old backend or fallback")).toBeVisible();
+	await expect(page.getByText("Implemented foundation")).toBeVisible();
+	await expect(page.getByText("Migration backlog")).toBeVisible();
 });
 
 test("home page links to playground without rendering the console", async ({

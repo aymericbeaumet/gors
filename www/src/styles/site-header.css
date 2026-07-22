@@ -1,0 +1,103 @@
+.site-header {
+	position: fixed;
+	top: 0;
+	right: 0;
+	left: 0;
+	z-index: 60;
+	display: flex;
+	align-items: center;
+	gap: 14px;
+	padding: 10px 20px;
+	border-bottom: 1px solid #d0d7de;
+	background: rgba(255, 255, 255, 0.94);
+	backdrop-filter: blur(12px);
+}
+
+.brand {
+	color: #1f2328;
+	font-size: 17px;
+	font-weight: 760;
+	text-decoration: none;
+}
+
+.brand:hover {
+	color: #0969da;
+}
+
+.site-nav {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
+
+.site-nav a {
+	min-height: 30px;
+	padding: 6px 10px;
+	border-radius: 6px;
+	color: #57606a;
+	font-size: 13px;
+	font-weight: 650;
+	text-decoration: none;
+}
+
+.site-nav a:hover,
+.site-nav a.active {
+	background: #eaeef2;
+	color: #0969da;
+}
+
+.github-link {
+	display: inline-flex;
+	min-height: 30px;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 10px;
+	border-radius: 6px;
+	color: #57606a;
+	font-size: 13px;
+	font-weight: 650;
+	text-decoration: none;
+}
+
+.github-link svg {
+	width: 16px;
+	height: 16px;
+	flex-shrink: 0;
+	fill: currentColor;
+}
+
+.github-link:hover {
+	background: #eaeef2;
+	color: #0969da;
+}
+
+.spacer {
+	flex: 1;
+}
+
+@media (max-width: 980px) {
+	.site-header {
+		gap: 8px;
+		padding: 10px 12px;
+	}
+
+	.spacer {
+		display: none;
+	}
+
+	.site-nav {
+		min-width: 0;
+		flex: 1;
+		justify-content: center;
+	}
+
+	.site-nav a,
+	.github-link {
+		padding: 6px 7px;
+		font-size: 12px;
+	}
+
+	.github-link span {
+		display: none;
+	}
+}

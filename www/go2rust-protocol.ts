@@ -1,7 +1,6 @@
 export type CompilerPhase =
 	| "queued"
 	| "loading-wasm"
-	| "loading-cache"
 	| "compiling"
 	| "indexing-source-map"
 	| "hydrating-source-map"
@@ -17,12 +16,6 @@ export interface CompilerStatus {
 	requestId: number;
 	phase: CompilerPhase;
 	elapsedMs: number;
-}
-
-export interface PersistentCacheInfo {
-	restored: boolean;
-	importedEntries: number;
-	bytes: number;
 }
 
 export interface PackedSourceMap {
@@ -78,18 +71,12 @@ export interface CancelRequest {
 	ids: number[];
 }
 
-export interface FlushCacheRequest {
-	type: "flush-cache";
-	id: number;
-}
-
-export type WorkerRequest = CompileRequest | CancelRequest | FlushCacheRequest;
+export type WorkerRequest = CompileRequest | CancelRequest;
 
 export type WorkerResponse =
 	| {
 			type: "ready";
 			workerId: string;
-			threaded: boolean;
 	  }
 	| {
 			id: number;
@@ -110,16 +97,10 @@ export type WorkerResponse =
 			workerDurationMs: number;
 			timings: CompilerPhaseTiming[];
 			cacheHit: boolean;
-			persistentCache: PersistentCacheInfo;
 	  }
 	| {
 			id: number;
 			type: "result";
 			ok: false;
 			error: string;
-	  }
-	| {
-			id: number;
-			type: "cache-flushed";
-			storedBytes: number;
 	  };

@@ -71,7 +71,7 @@ pub fn exercise_compiler(data: &[u8]) {
     let Ok(ast) = gors::parser::parse_file("fuzz.go", &source) else {
         return;
     };
-    let Ok(rust_ast) = gors::compiler::compile(ast) else {
+    let Ok(rust_ast) = gors::compiler::compile_file_to_rust_syntax(ast) else {
         return;
     };
     let mut rust_source = Vec::new();

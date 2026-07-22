@@ -1,25 +1,36 @@
 # gors [![GitHub Actions](https://github.com/aymericbeaumet/gors/actions/workflows/ci.yml/badge.svg)](https://github.com/aymericbeaumet/gors/actions/workflows/ci.yml)
 
-[gors](https://github.com/aymericbeaumet/gors) is an experimental Go toolchain
-written in Rust. It scans and parses Go source, lowers the Go AST to a Rust
-`syn` AST, applies compiler passes, and emits formatted Rust source. Try it at
+[gors](https://github.com/aymericbeaumet/gors) is an experimental Go-to-Rust
+compiler written in Rust. It scans and parses Go source, builds typed HIR,
+lowers executable semantics to verified Go MIR, reverifies representation-neutral
+MIR transforms, performs mandatory Rust representation lowering into verified
+Rust IR, and emits formatted Rust source.
+Try it at
 [gors.aymericbeaumet.com](https://gors.aymericbeaumet.com).
 
-The standard-library package graph is resolved and lowered from the pinned Go
-SDK through the generic compiler pipeline. Compatibility work must improve
-generic parsing, typing, lowering, reachability, or language/runtime
-primitives; it must not reimplement a Go stdlib API in Rust or add
-package/function-specific compiler behavior. Existing runtime/ABI and targeted
-host-resource shims remain limited to the boundary documented in
-[`AGENTS.md`](AGENTS.md).
+The compiler has completed a destructive architecture cutover. There is no
+legacy backend or compatibility fallback. The current executable bootstrap
+supports import-free programs with primitive values, free functions, scalar
+expressions, assignments, `if`, and `for`; its current behavior claim is limited
+to non-panicking executions, and unsupported Go constructs return a structured
+diagnostic. Imports, composite types, methods, generics, Go-compatible panic
+process behavior, and the Go stdlib are the active migration backlog. See [the architecture
+audit](COMPILER_AUDIT.md) and [performance acceptance
+contract](COMPILER_PERFORMANCE.md).
 
 ## Components
 
 - Scanner and parser for Go source and AST construction
-- Go AST to Rust `syn` AST compiler
-- Generic embedded Go SDK package resolution and reachability pruning
+- Typed semantic HIR and explicit-order control-flow MIR
+- Mandatory Rust representation lowering; its bootstrap policy copies `Copy`
+  values and conservatively clones owned non-`Copy` values, while later proven
+  move, borrow, ABI, and storage refinements remain owned by the same stage
+- Verified Rust IR consumed by every terminal codegen path
+- Terminal Rust `syn` emitter with no semantic syntax-repair passes
+- Embedded Go SDK source metadata for future generic package compilation
 - Rust source printer with Go-to-Rust source-map support
-- CLI and persistent browser/Wasm compiler surfaces
+- Explicit language-runtime ABI in `gors-runtime`
+- CLI and browser/Wasm compiler surfaces
 
 ## Install
 
@@ -56,8 +67,7 @@ gors tokens main.go
 gors ast main.go
 ```
 
-`run` also accepts multiple files, directories, and module package paths. Values
-after `--` are forwarded to the generated program:
+Values after `--` are forwarded to the generated program:
 
 ```bash
 gors run main.go -- --flag value
@@ -68,16 +78,18 @@ For example:
 ```go
 package main
 
-import "fmt"
-
 func main() {
-    fmt.Println("Hello, World!")
+    total := 0
+    for value := 0; value < 5; value++ {
+        total += value
+    }
+    println(total)
 }
 ```
 
 ```console
-$ gors run hello.go
-Hello, World!
+$ gors run sum.go
+10
 ```
 
 ## Fast feedback
@@ -86,14 +98,10 @@ Hello, World!
 Rust executable. The bounded cache invalidates on source/module, compiler, SDK,
 CLI, toolchain, target, configuration, or output changes.
 
-```bash
-gors build --jobs 8 --timings-json timings.json main.go
-gors run --jobs 8 --timings-json timings.json main.go
-```
-
-The job count resolves from `--jobs`, then `GORS_JOBS`, then available CPU
-parallelism. `--timings-json` records phase durations and cache events after a
-successful command; `GORS_PROFILE=1` prints phase timings to stderr.
+`--timings-json timings.json` records phase durations and cache events after a
+successful `build` or `run`; `GORS_PROFILE=1` prints phase timings to stderr.
+Parallel compilation will return only after deterministic semantic query
+boundaries exist; the CLI does not expose a non-functional worker-count flag.
 
 ## Development
 
@@ -102,8 +110,8 @@ verifies that SDK under `$CARGO_HOME/gors-cache/`; do not substitute a system Go
 toolchain for integration-oracle results.
 
 ```bash
-# Broad build, lint, unit, and integration gate.
-make all
+# Build, lint, and unit gates for the cutover backend.
+make rust-build rust-lint rust-test-unit
 
 # Stable deterministic corpus/property replay.
 make fuzz-test
@@ -118,25 +126,18 @@ For a focused [Go specification](https://go.dev/ref/spec) fixture:
 make rust-test-integration-go-spec-fixture FIXTURE=assignment_two_phase
 ```
 
-The generated-program oracle requires the pinned Go program and generated Rust
-program to succeed, then compares stdout and stderr byte-for-byte. Canonical
-reports are written only by complete, unfiltered runs:
+The generated-program oracle compares the pinned Go program with generated
+Rust. Most integration fixtures currently produce explicit unsupported
+diagnostics and remain the ordered migration backlog. Canonical conformance
+reports are valid only after a complete, unfiltered run:
 
 ```bash
 make conformance-report
 make conformance-check
 ```
 
-Production browser compilation uses a persistent worker and stable
-single-threaded Wasm. An opt-in cross-origin-isolated threaded preview is
-available for local benchmarking:
-
-```bash
-npm --prefix www run serve:compiler-preview:threads
-```
-
-See [the Wasm notes](www/wasm/readme.md),
-[threaded preview contract](www/wasm/threads-preview.md), and
+Browser compilation uses the same backend in a persistent single-threaded Wasm
+worker. See [the Wasm notes](www/wasm/readme.md) and
 [fuzzing guide](fuzz/readme.md) for details.
 
 ## License

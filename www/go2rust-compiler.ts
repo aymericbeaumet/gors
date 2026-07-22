@@ -4,7 +4,6 @@ import type {
 	CompilerPhase,
 	CompilerPhaseTiming,
 	CompilerStatus,
-	PersistentCacheInfo,
 	WorkerResponse,
 } from "./go2rust-protocol";
 
@@ -18,7 +17,6 @@ export type CompileResult =
 			workerDurationMs: number;
 			timings: CompilerPhaseTiming[];
 			cacheHit: boolean;
-			persistentCache: PersistentCacheInfo;
 	  }
 	| {
 			success: false;
@@ -29,7 +27,6 @@ export type CompileResult =
 			workerDurationMs: number;
 			timings: CompilerPhaseTiming[];
 			cacheHit: boolean;
-			persistentCache: PersistentCacheInfo;
 	  };
 
 type PendingRequest = {
@@ -41,19 +38,12 @@ type PendingRequest = {
 	onStatus?: (status: CompilerStatus) => void;
 };
 
-type PendingCacheFlush = {
-	resolve: (storedBytes: number) => void;
-	reject: (error: Error) => void;
-};
-
 export interface CompilerWorkerStats {
 	workerId: string | null;
-	workerUsesThreads: boolean | null;
 	workerPhase: CompilerPhase | null;
 	workerStartCount: number;
 	workerPreemptCount: number;
 	pendingRequestCount: number;
-	pendingCacheFlushCount: number;
 }
 
 const STALE_COMPILE_PREEMPT_MS = 100;
@@ -68,7 +58,6 @@ export class CompilerCancelledError extends Error {
 export class Go2RustCompiler {
 	private worker: Worker | null = null;
 	private workerId: string | null = null;
-	private workerUsesThreads: boolean | null = null;
 	private workerRequestId: number | null = null;
 	private workerPhase: CompilerPhase | null = null;
 	private workerStartCount = 0;
@@ -77,17 +66,14 @@ export class Go2RustCompiler {
 	private disposed = false;
 	private staleCompileTimer: ReturnType<typeof setTimeout> | null = null;
 	private readonly pending = new Map<number, PendingRequest>();
-	private readonly pendingCacheFlushes = new Map<number, PendingCacheFlush>();
 
 	getStats(): CompilerWorkerStats {
 		return {
 			workerId: this.workerId,
-			workerUsesThreads: this.workerUsesThreads,
 			workerPhase: this.workerPhase,
 			workerStartCount: this.workerStartCount,
 			workerPreemptCount: this.workerPreemptCount,
 			pendingRequestCount: this.pending.size,
-			pendingCacheFlushCount: this.pendingCacheFlushes.size,
 		};
 	}
 
@@ -96,14 +82,9 @@ export class Go2RustCompiler {
 		this.disposed = true;
 		this.clearStaleCompileTimer();
 		this.cancelActive("compiler worker disposed");
-		for (const { reject } of this.pendingCacheFlushes.values()) {
-			reject(new CompilerCancelledError("compiler worker disposed"));
-		}
-		this.pendingCacheFlushes.clear();
 		this.worker?.terminate();
 		this.worker = null;
 		this.workerId = null;
-		this.workerUsesThreads = null;
 		this.workerRequestId = null;
 		this.workerPhase = null;
 	}
@@ -111,9 +92,7 @@ export class Go2RustCompiler {
 	cancelActive(reason = "compiler request cancelled"): void {
 		this.clearStaleCompileTimer();
 		const ids = [...this.pending.keys()];
-		// Send even an empty cancellation so editor activity can defer a pending
-		// background resolver-cache write before the next compile is posted.
-		this.worker?.postMessage({ type: "cancel", ids });
+		if (ids.length > 0) this.worker?.postMessage({ type: "cancel", ids });
 		for (const { reject } of this.pending.values()) {
 			reject(new CompilerCancelledError(reason));
 		}
@@ -142,24 +121,14 @@ export class Go2RustCompiler {
 				return;
 			}
 
-			// A synchronous Wasm call cannot receive the cancellation message.
-			// Replace only the stable controller worker; threaded runtimes own
-			// nested Rayon workers and advertise themselves as non-preemptible.
+			// A synchronous Wasm call cannot receive the cancellation message, so
+			// replace the worker when newer editor input is waiting.
 			worker.terminate();
 			this.worker = null;
 			this.workerId = null;
-			this.workerUsesThreads = null;
 			this.workerRequestId = null;
 			this.workerPhase = null;
 			this.workerPreemptCount++;
-			for (const { reject } of this.pendingCacheFlushes.values()) {
-				reject(
-					new CompilerCancelledError(
-						"cache flush interrupted by stale compile preemption",
-					),
-				);
-			}
-			this.pendingCacheFlushes.clear();
 
 			try {
 				this.getWorker().postMessage({
@@ -198,14 +167,9 @@ export class Go2RustCompiler {
 					reject(new Error(event.message || "compiler worker error"));
 				}
 				this.pending.clear();
-				for (const { reject } of this.pendingCacheFlushes.values()) {
-					reject(new Error(event.message || "compiler worker error"));
-				}
-				this.pendingCacheFlushes.clear();
 				worker.terminate();
 				this.worker = null;
 				this.workerId = null;
-				this.workerUsesThreads = null;
 				this.workerRequestId = null;
 				this.workerPhase = null;
 			};
@@ -216,15 +180,6 @@ export class Go2RustCompiler {
 	private handleWorkerMessage(data: WorkerResponse): void {
 		if (data.type === "ready") {
 			this.workerId = data.workerId;
-			this.workerUsesThreads = data.threaded;
-			return;
-		}
-
-		if (data.type === "cache-flushed") {
-			const flush = this.pendingCacheFlushes.get(data.id);
-			if (!flush) return;
-			this.pendingCacheFlushes.delete(data.id);
-			flush.resolve(data.storedBytes);
 			return;
 		}
 
@@ -285,7 +240,6 @@ export class Go2RustCompiler {
 				workerDurationMs: data.workerDurationMs,
 				timings,
 				cacheHit: data.cacheHit,
-				persistentCache: data.persistentCache,
 			});
 			return;
 		}
@@ -307,7 +261,6 @@ export class Go2RustCompiler {
 			workerDurationMs: data.workerDurationMs,
 			timings,
 			cacheHit: data.cacheHit,
-			persistentCache: data.persistentCache,
 		};
 		pending.resolve({
 			...data.result,
@@ -327,12 +280,10 @@ export class Go2RustCompiler {
 
 		// The playground only needs the newest editor state. Reject stale callers
 		// immediately. If stable synchronous Wasm remains unresponsive, restart
-		// its worker after a short grace period and restore the persistent cache.
+		// its worker after a short grace period.
 		const activeWorker = this.worker;
 		const shouldPreempt =
-			activeWorker !== null &&
-			this.workerUsesThreads === false &&
-			this.workerPhase === "compiling";
+			activeWorker !== null && this.workerPhase === "compiling";
 		this.cancelActive("superseded by newer compiler input");
 
 		const id = this.nextRequestId++;
@@ -355,19 +306,6 @@ export class Go2RustCompiler {
 		if (shouldPreempt && worker === activeWorker) {
 			this.preemptStaleCompile(worker, id);
 		}
-		return promise;
-	}
-
-	flushPersistentCache(): Promise<number> {
-		if (this.disposed) {
-			return Promise.reject(new Error("compiler worker disposed"));
-		}
-
-		const id = this.nextRequestId++;
-		const promise = new Promise<number>((resolve, reject) => {
-			this.pendingCacheFlushes.set(id, { resolve, reject });
-		});
-		this.getWorker().postMessage({ type: "flush-cache", id });
 		return promise;
 	}
 }

@@ -34,7 +34,6 @@ struct CacheEvent {
 struct TimingReport<'a> {
     version: u32,
     command: &'a str,
-    jobs: usize,
     total_ms: f64,
     phases: &'a [PhaseTiming],
     cache_events: &'a [CacheEvent],
@@ -72,7 +71,6 @@ impl TimingCollector {
         &self,
         path: Option<&Path>,
         command: &str,
-        jobs: usize,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let Some(path) = path else {
             return Ok(());
@@ -91,9 +89,8 @@ impl TimingCollector {
             .map_err(|_| "timing cache-event storage is unavailable")?
             .clone();
         let report = TimingReport {
-            version: 1,
+            version: 2,
             command,
-            jobs,
             total_ms: duration_ms(self.inner.started.elapsed()),
             phases: &phases,
             cache_events: &cache_events,
@@ -156,14 +153,14 @@ mod tests {
         }
         collector.cache_event("compiler", true);
         collector
-            .write_json(Some(&path), "build", 3)
+            .write_json(Some(&path), "build")
             .expect("timing report");
 
         let value: serde_json::Value =
             serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-        assert_eq!(value.get("version").unwrap(), 1);
+        assert_eq!(value.get("version").unwrap(), 2);
         assert_eq!(value.get("command").unwrap(), "build");
-        assert_eq!(value.get("jobs").unwrap(), 3);
+        assert!(value.get("jobs").is_none());
         let first_phase = value
             .get("phases")
             .and_then(serde_json::Value::as_array)

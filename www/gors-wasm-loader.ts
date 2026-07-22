@@ -23,8 +23,6 @@ export interface GorsBuildResult {
 
 export type GorsWasm = {
 	build_rust(input: string): GorsBuildResult;
-	export_resolver_cache(): Uint8Array;
-	import_resolver_cache(bytes: Uint8Array): number;
 };
 
 type ManualWasmBindings = GorsWasm & {
@@ -37,8 +35,6 @@ type StartableExports = WebAssembly.Exports & {
 
 const wasmBindings = bindings as ManualWasmBindings;
 let initPromise: Promise<GorsWasm> | null = null;
-
-export const usesThreadedRuntime = false;
 
 function importObject(): WebAssembly.Imports {
 	return {

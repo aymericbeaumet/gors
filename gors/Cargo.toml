@@ -17,13 +17,11 @@ path = "src/lib.rs"
 workspace = true
 
 [features]
-default = ["parallel"]
-parallel = ["dep:rayon"]
-wasm-threads = ["parallel"]
-test_integration_go_repositories = ["parallel"]
-test_integration_go_spec = ["parallel"]
-test_integration_go_stdlib = ["parallel"]
-test_integration_go_programs = ["parallel"]
+default = []
+test_integration_go_repositories = []
+test_integration_go_spec = []
+test_integration_go_stdlib = []
+test_integration_go_programs = []
 
 [[test]]
 name = "test_integration_go_repositories"
@@ -56,18 +54,19 @@ proc-macro2 = "1.0"
 quote = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 sourcemap = "9"
-syn = { version = "2.0", features = ["full", "visit", "visit-mut"] }
+syn = { version = "2.0", features = ["full"] }
 unicode-general-category = "1.1"
 
 sha2 = "0.11"
 
 serde_json = "1.0"
-rayon = { version = "1.12", optional = true }
 
 [build-dependencies]
 dirs = "6"
 flate2 = "1"
 reqwest = { version = "0.13", features = ["blocking", "rustls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 sha2 = "0.11"
 tar = "0.4"
 
