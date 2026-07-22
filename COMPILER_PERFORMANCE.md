@@ -446,7 +446,9 @@ architecture described here:
   and reuses that exact snapshot for miss compilation; warm complete-output
   hits therefore still pay honest source admission cost;
 - the bootstrap Rust artifact still recompiles its bundled runtime module for
-  each uncached executable instead of linking a prebuilt versioned runtime ABI;
+  each uncached executable instead of linking a prebuilt versioned runtime ABI.
+  The target-neutral typed contract and separate target-specific artifact
+  identity now exist, but the vertical sidecar/link hard cut is not complete;
 - dynamic divide/remainder-by-zero and negative-shift faults currently unwind
   through Rust `panic_any`, so those executions do not yet have Go-compatible
   process behavior and cannot enter behavior-validated performance evidence;

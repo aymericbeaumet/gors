@@ -50,12 +50,6 @@ mod artifact;
 /// Go SDK version pinned by the repository-level `.go-version` file.
 pub const GO_VERSION: &str = env!("GORS_GO_VERSION");
 
-/// Canonical versioned compiler/runtime ABI cache identity.
-///
-/// The build reads this from `gors-runtime`'s numeric ABI constant so query
-/// keys cannot silently drift from the runtime source packaged with outputs.
-pub const RUNTIME_ABI_ID: &str = env!("GORS_RUNTIME_ABI_ID");
-
 /// Version label for the embedded Go stdlib archive compiled into gors.
 pub const STDLIB_VERSION: &str = env!("GORS_STDLIB_VERSION");
 

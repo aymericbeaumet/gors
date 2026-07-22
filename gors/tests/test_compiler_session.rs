@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-use gors::compiler::db::{BuildConfig, FileAnalysis, QueryKind};
+use gors::compiler::db::{BuildConfig, FileAnalysis, QueryKind, RuntimeAbiId};
 use gors::compiler::fingerprint::Fingerprint;
 use gors::compiler::ids::{DefId, FileId};
 use gors::compiler::input::{
@@ -255,7 +255,7 @@ fn warm_scheduler_skips_comments_and_fans_out_only_changed_root_inputs() {
         .set_build_config(BuildConfig::new(
             "rust-source-warm-scheduler-test",
             gors::GO_VERSION,
-            gors::RUNTIME_ABI_ID,
+            RuntimeAbiId::current(),
         ))
         .unwrap();
     session
@@ -419,14 +419,22 @@ fn canonical_package_root_selects_the_same_error_for_every_worker_count() {
 }
 
 #[test]
-fn production_session_rejects_runtime_abi_without_packaging_support() {
-    let unsupported = BuildConfig::new("rust-source", gors::GO_VERSION, "synthetic-runtime-v99");
+fn production_session_rejects_an_unsupported_runtime_contract() {
+    let unsupported = BuildConfig::new(
+        "rust-source",
+        gors::GO_VERSION,
+        RuntimeAbiId::from_contract_hash([0x99; 32]),
+    );
     let error = CompilerSession::new(unsupported.clone())
         .err()
-        .expect("a production session must reject an unpackaged runtime ABI");
+        .expect("a production session must reject an unsupported runtime contract");
     assert_eq!(error.diagnostics().first().unwrap().code, "GORS2003");
-    assert!(error.to_string().contains("synthetic-runtime-v99"));
-    assert!(error.to_string().contains(gors::RUNTIME_ABI_ID));
+    assert!(error.to_string().contains(&"99".repeat(32)));
+    assert!(
+        error
+            .to_string()
+            .contains(&RuntimeAbiId::current().to_string())
+    );
 
     let mut session = CompilerSession::default();
     let error = session
@@ -435,7 +443,7 @@ fn production_session_rejects_runtime_abi_without_packaging_support() {
     assert_eq!(error.diagnostics().first().unwrap().code, "GORS2003");
     assert_eq!(
         session.database().build_config().unwrap().runtime_abi(),
-        gors::RUNTIME_ABI_ID
+        RuntimeAbiId::current()
     );
 }
 
@@ -582,7 +590,7 @@ fn target_change_invalidates_representation_but_not_go_semantics() {
         .set_build_config(BuildConfig::new(
             "rust-source-test-target",
             gors::GO_VERSION,
-            gors::RUNTIME_ABI_ID,
+            RuntimeAbiId::current(),
         ))
         .unwrap();
     session.database().reset_telemetry();

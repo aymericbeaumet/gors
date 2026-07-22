@@ -12,7 +12,7 @@
   ],
   "properties": {
     "schemaVersion": { "const": 1 },
-    "resultSchemaVersion": { "const": 1 },
+    "resultSchemaVersion": { "const": 2 },
     "corpusDigest": { "$ref": "#/$defs/sha256" },
     "maximumCurrentEvidenceAgeHours": { "type": "number", "exclusiveMinimum": 0 },
     "promotedScenarios": {

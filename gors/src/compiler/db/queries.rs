@@ -13,7 +13,7 @@ use crate::source::SourceCoordinateMap;
 use super::super::ids::{DefId, DefinitionKey, DefinitionKind, FileId, PackageId};
 use super::model::{
     FileAnalysis, FileIssue, FunctionBody, FunctionDescriptor, FunctionSignature, PackageAnalysis,
-    PackageIssue, ParseFailure, PublicApi,
+    PackageIssue, ParseFailure, PublicApi, RuntimeAbiId,
 };
 use super::products::{
     CompilerStage, MirSignatureDependencies, NormalizedMirFunction, RustSignatureDependencies,
@@ -56,8 +56,8 @@ pub(super) struct BuildInput {
     pub(super) target: Arc<str>,
     #[returns(clone)]
     pub(super) go_version: Arc<str>,
-    #[returns(clone)]
-    pub(super) runtime_abi: Arc<str>,
+    #[returns(copy)]
+    pub(super) runtime_abi: RuntimeAbiId,
 }
 
 #[salsa::tracked]

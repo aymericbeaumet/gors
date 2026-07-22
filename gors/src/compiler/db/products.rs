@@ -3,8 +3,10 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use crate::compiler::diagnostic::DiagnosticLocation;
 use crate::compiler::fingerprint::{self, Fingerprint, fingerprint_parts};
 use crate::compiler::ids::{DefId, FileId};
+use crate::compiler::provenance::SourceRef;
 use crate::compiler::{Diagnostic, hir, mir, rust_ir};
 
 /// Authoritative stage at which a tracked compilation failed.
@@ -58,8 +60,13 @@ impl StageFailure {
     pub(super) fn for_definition(
         stage: CompilerStage,
         definition: DefId,
-        diagnostics: Vec<Diagnostic>,
+        mut diagnostics: Vec<Diagnostic>,
     ) -> Self {
+        for diagnostic in &mut diagnostics {
+            if diagnostic.location == DiagnosticLocation::Synthetic {
+                diagnostic.location = SourceRef::definition(definition).into();
+            }
+        }
         let mut failure = Self::new(stage, diagnostics);
         failure.definition = Some(definition);
         failure
@@ -79,7 +86,7 @@ impl StageFailure {
         self.stage
     }
 
-    /// Stable definition owning function-relative diagnostics, when present.
+    /// Stable definition owning source-relative diagnostics, when present.
     #[must_use]
     pub const fn definition(&self) -> Option<DefId> {
         self.definition

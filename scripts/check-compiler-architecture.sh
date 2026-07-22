@@ -236,4 +236,16 @@ fail_on_matches \
   gors/src/compiler \
   gors-runtime/src
 
+fail_on_matches \
+  'runtime ABI identity must come from the typed contract, never source scraping or build-script environment strings:' \
+  'GORS_RUNTIME_ABI_VERSION|GORS_RUNTIME_ABI_ID|RUNTIME_ABI_ID|read_runtime_abi_id|runtimeAbiVersion|runtime_abi_version' \
+  gors/build.rs \
+  gors/src \
+  gors-cli/src \
+  gors-runtime/src \
+  gors-runtime-abi/src \
+  perf \
+  www/wasm \
+  fuzz/src
+
 exit "${failed}"

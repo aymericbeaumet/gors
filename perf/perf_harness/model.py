@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 
-RESULT_SCHEMA_VERSION = 1
+RESULT_SCHEMA_VERSION = 2
 ACCEPTANCE_SCHEMA_VERSION = 1
 CORPUS_SCHEMA_VERSION = 1
 REQUIRED_SCENARIOS = ("cold", "no_op", "leaf_edit")
@@ -260,7 +260,22 @@ def recompute_measurement(measurement: dict[str, Any], *, seed: int) -> dict[str
 def result_id(result: dict[str, Any]) -> str:
     value = copy.deepcopy(result)
     value.pop("resultId", None)
-    return sha256_bytes(b"gors-performance-result-v1\0" + canonical_json(value))
+    return sha256_bytes(b"gors-performance-result-v2\0" + canonical_json(value))
+
+
+def _runtime_contract_identity(result: dict[str, Any]) -> str:
+    toolchains = result.get("toolchains")
+    gors = toolchains.get("gors") if isinstance(toolchains, dict) else None
+    identity = gors.get("runtimeContractIdentity") if isinstance(gors, dict) else None
+    if (
+        not isinstance(identity, str)
+        or len(identity) != 64
+        or any(character not in "0123456789abcdef" for character in identity)
+    ):
+        raise EvidenceError(
+            "result must record a lowercase 64-hex gors runtime contract identity"
+        )
+    return identity
 
 
 def configuration_fingerprint(result: dict[str, Any]) -> str:
@@ -288,13 +303,13 @@ def configuration_fingerprint(result: dict[str, Any]) -> str:
             "target": toolchains.get("rustc", {}).get("target"),
             "sha256": toolchains.get("rustc", {}).get("sha256"),
         },
-        "runtimeAbiVersion": toolchains.get("gors", {}).get("runtimeAbiVersion"),
+        "runtimeContractIdentity": _runtime_contract_identity(result),
         "linker": {
             "version": toolchains.get("linker", {}).get("version"),
             "sha256": toolchains.get("linker", {}).get("sha256"),
         },
     }
-    return sha256_bytes(b"gors-performance-configuration-v1\0" + canonical_json(value))
+    return sha256_bytes(b"gors-performance-configuration-v2\0" + canonical_json(value))
 
 
 def validate_result(result: dict[str, Any]) -> None:
@@ -302,6 +317,7 @@ def validate_result(result: dict[str, Any]) -> None:
         raise EvidenceError("unsupported result schemaVersion")
     if result.get("kind") != "gors.performance.result":
         raise EvidenceError("unexpected result kind")
+    _runtime_contract_identity(result)
     if result.get("resultId") != result_id(result):
         raise EvidenceError("performance resultId does not match its content")
     if result.get("configurationFingerprint") != configuration_fingerprint(result):

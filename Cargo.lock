@@ -647,6 +647,7 @@ version = "0.1.0"
 dependencies = [
  "dirs",
  "flate2",
+ "gors-runtime-abi",
  "log",
  "num-bigint",
  "num-traits",
@@ -684,6 +685,16 @@ dependencies = [
 [[package]]
 name = "gors-runtime"
 version = "0.1.0"
+dependencies = [
+ "gors-runtime-abi",
+]
+
+[[package]]
+name = "gors-runtime-abi"
+version = "0.1.0"
+dependencies = [
+ "sha2",
+]
 
 [[package]]
 name = "h2"

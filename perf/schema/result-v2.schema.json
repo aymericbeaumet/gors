@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://gors.dev/schemas/performance-result-v1.json",
+  "$id": "https://gors.dev/schemas/performance-result-v2.json",
   "title": "gors paired native performance evidence",
   "type": "object",
   "required": [
@@ -22,7 +22,7 @@
     "workloads"
   ],
   "properties": {
-    "schemaVersion": { "const": 1 },
+    "schemaVersion": { "const": 2 },
     "kind": { "const": "gors.performance.result" },
     "resultId": { "$ref": "#/$defs/sha256" },
     "configurationFingerprint": { "$ref": "#/$defs/sha256" },
@@ -103,7 +103,19 @@
       },
       "additionalProperties": false
     },
-    "toolchains": { "type": "object" },
+    "toolchains": {
+      "type": "object",
+      "required": ["gors"],
+      "properties": {
+        "gors": {
+          "type": "object",
+          "required": ["runtimeContractIdentity"],
+          "properties": {
+            "runtimeContractIdentity": { "$ref": "#/$defs/sha256" }
+          }
+        }
+      }
+    },
     "workloads": {
       "type": "array",
       "minItems": 1,

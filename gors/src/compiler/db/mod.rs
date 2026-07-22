@@ -28,7 +28,7 @@ use telemetry::Telemetry;
 pub use super::fingerprint::Fingerprint;
 pub use model::{
     BuildConfig, FileAnalysis, FileIssue, FunctionBody, FunctionDescriptor, FunctionSignature,
-    PackageAnalysis, PackageIssue, ParseFailure, PublicApi,
+    PackageAnalysis, PackageIssue, ParseFailure, PublicApi, RuntimeAbiId,
 };
 pub(in crate::compiler) use mutation::SourceInputMutation;
 pub use products::{
@@ -200,7 +200,7 @@ impl CompilerDatabase {
         let build = BuildInput::builder(
             Arc::from(config.target()),
             Arc::from(config.go_version()),
-            Arc::from(config.runtime_abi()),
+            config.runtime_abi(),
         )
         .target_durability(Durability::HIGH)
         .go_version_durability(Durability::HIGH)
@@ -302,10 +302,8 @@ impl CompilerDatabase {
                 .set_go_version(self)
                 .to(Arc::from(config.go_version()));
         }
-        if build.runtime_abi(self).as_ref() != config.runtime_abi() {
-            build
-                .set_runtime_abi(self)
-                .to(Arc::from(config.runtime_abi()));
+        if build.runtime_abi(self) != config.runtime_abi() {
+            build.set_runtime_abi(self).to(config.runtime_abi());
         }
         Ok(())
     }

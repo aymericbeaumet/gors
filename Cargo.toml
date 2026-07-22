@@ -4,11 +4,13 @@ default-members = [
   "gors",
   "gors-cli",
   "gors-runtime",
+  "gors-runtime-abi",
 ]
 members = [
   "gors",
   "gors-cli",
   "gors-runtime",
+  "gors-runtime-abi",
   "fuzz",
 ]
 exclude = [

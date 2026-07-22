@@ -10,7 +10,7 @@ use std::sync::Arc;
 use self::readiness::RustIrRoot;
 use super::db::{
     BuildConfig, CompilerDatabase, Fingerprint, PackageAnalysis, PackageIssue, ParseFailure,
-    QueryError, SourceInputMutation, StageFailure,
+    QueryError, RuntimeAbiId, SourceInputMutation, StageFailure,
 };
 use super::diagnostic::DiagnosticLocation;
 use super::ids::{FileId, PackageId};
@@ -57,7 +57,7 @@ impl CompilerSession {
         config: BuildConfig,
         host: CompilerHost,
     ) -> Result<Self, CompilerError> {
-        validate_packaged_runtime_abi(&config)?;
+        validate_runtime_contract(&config)?;
         Ok(Self::from_validated_host(config, host))
     }
 
@@ -89,7 +89,7 @@ impl CompilerSession {
 
     /// Change explicit build inputs while preserving target-independent memos.
     pub fn set_build_config(&mut self, config: BuildConfig) -> Result<(), CompilerError> {
-        validate_packaged_runtime_abi(&config)?;
+        validate_runtime_contract(&config)?;
         let changed = self
             .database
             .build_config()
@@ -735,14 +735,15 @@ impl Default for CompilerSession {
     }
 }
 
-fn validate_packaged_runtime_abi(config: &BuildConfig) -> Result<(), CompilerError> {
-    if config.runtime_abi() == crate::RUNTIME_ABI_ID {
+fn validate_runtime_contract(config: &BuildConfig) -> Result<(), CompilerError> {
+    let current = RuntimeAbiId::current();
+    if config.runtime_abi() == current {
         return Ok(());
     }
     Err(CompilerError::backend(format!(
-        "runtime ABI `{}` cannot be packaged by this compiler; expected `{}`",
+        "runtime ABI contract `{}` is not supported by this compiler; expected `{}`",
         config.runtime_abi(),
-        crate::RUNTIME_ABI_ID
+        current
     )))
 }
 

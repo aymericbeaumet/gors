@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use gors::compiler::db::{
-    BuildConfig, CompilerDatabase, FileAnalysis, PackageIssue, QueryError, QueryKind,
+    BuildConfig, CompilerDatabase, FileAnalysis, PackageIssue, QueryError, QueryKind, RuntimeAbiId,
 };
 use gors::compiler::ids::{DefId, FileId};
 use gors::compiler::input::{PackageKey, SourceSnapshot, WorkspaceKey};
@@ -111,9 +111,10 @@ fn function_id(functions: &BTreeMap<String, DefId>, name: &str) -> DefId {
 }
 
 #[test]
-fn default_build_config_uses_the_packaged_runtime_abi() {
-    assert_eq!(BuildConfig::default().runtime_abi(), gors::RUNTIME_ABI_ID);
-    assert_eq!(gors::RUNTIME_ABI_ID, "gors-runtime-abi-v3");
+fn default_build_config_uses_the_current_runtime_contract() {
+    let current = RuntimeAbiId::current();
+    assert_eq!(BuildConfig::default().runtime_abi(), current);
+    assert_eq!(current.as_bytes().len(), 32);
 }
 
 #[test]

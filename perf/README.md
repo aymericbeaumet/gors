@@ -83,6 +83,11 @@ and a deterministic 10,000-resample
 bootstrap confidence interval. Exact byte-I/O counters and semantic-stage
 fingerprints and complete process-tree counts are marked unavailable rather than invented.
 
+Result schema v2 requires the exact lowercase SHA-256 identity of the typed
+target-neutral runtime contract and includes it in the versioned configuration
+fingerprint. Schema-v1 evidence and the deleted numeric runtime-ABI field are
+unsupported; the gate does not reinterpret or migrate legacy evidence.
+
 The acceptance gate succeeds without timing while no scenarios are promoted.
 After promotion it requires fresh certification evidence for the current clean
 commit and exact corpus, hardware, job-budget, runtime/toolchain, linker, cache,

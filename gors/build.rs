@@ -1,4 +1,5 @@
 use flate2::read::GzDecoder;
+use gors_runtime_abi::RuntimeAbiManifest;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
@@ -10,7 +11,6 @@ mod sdk_index;
 use sdk_index::StdlibPackages;
 
 const GO_VERSION_FILE: &str = "../.go-version";
-const RUNTIME_SOURCE_FILE: &str = "../gors-runtime/src/lib.rs";
 const STDLIB_PRELOAD_SCHEMA_SUFFIX: &str = "stdlib-source-metadata-v4";
 const COMPILER_FINGERPRINT_DOMAIN: &[u8] = b"gors-compiler-artifact-v1\0";
 
@@ -32,32 +32,6 @@ fn read_go_version() -> BuildResult<String> {
     Ok(version.to_string())
 }
 
-fn read_runtime_abi_id() -> BuildResult<String> {
-    const PREFIX: &str = "pub const GORS_RUNTIME_ABI_VERSION: u32 = ";
-    let source = std::fs::read_to_string(RUNTIME_SOURCE_FILE)?;
-    let mut versions = source.lines().filter_map(|line| {
-        line.trim()
-            .strip_prefix(PREFIX)
-            .and_then(|value| value.strip_suffix(';'))
-    });
-    let Some(version) = versions.next() else {
-        return Err(build_error(format!(
-            "{RUNTIME_SOURCE_FILE} must define GORS_RUNTIME_ABI_VERSION"
-        ))
-        .into());
-    };
-    if versions.next().is_some()
-        || version.is_empty()
-        || !version.bytes().all(|byte| byte.is_ascii_digit())
-    {
-        return Err(build_error(format!(
-            "{RUNTIME_SOURCE_FILE} must contain exactly one numeric GORS_RUNTIME_ABI_VERSION"
-        ))
-        .into());
-    }
-    Ok(format!("gors-runtime-abi-v{version}"))
-}
-
 fn compiler_source_fingerprint(
     sdk_fingerprint: &str,
     target_goos: &str,
@@ -68,8 +42,12 @@ fn compiler_source_fingerprint(
             let entry = entry?;
             let path = entry.path();
             if path.is_dir() {
-                collect_rust_sources(&path, files)?;
-            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                if path.file_name().is_none_or(|name| name != "tests") {
+                    collect_rust_sources(&path, files)?;
+                }
+            } else if path.extension().is_some_and(|extension| extension == "rs")
+                && path.file_name().is_none_or(|name| name != "tests.rs")
+            {
                 files.push(path);
             }
         }
@@ -79,6 +57,7 @@ fn compiler_source_fingerprint(
     let mut files = Vec::new();
     collect_rust_sources(Path::new("src"), &mut files)?;
     collect_rust_sources(Path::new("../gors-runtime/src"), &mut files)?;
+    collect_rust_sources(Path::new("../gors-runtime-abi/src"), &mut files)?;
     files.extend(
         [
             "build.rs",
@@ -89,6 +68,7 @@ fn compiler_source_fingerprint(
             "../Cargo.lock",
             GO_VERSION_FILE,
             "../gors-runtime/Cargo.toml",
+            "../gors-runtime-abi/Cargo.toml",
         ]
         .into_iter()
         .map(PathBuf::from),
@@ -99,6 +79,8 @@ fn compiler_source_fingerprint(
     hasher.update(COMPILER_FINGERPRINT_DOMAIN);
     hasher.update(b"embedded-go-sdk\0");
     hasher.update(sdk_fingerprint.as_bytes());
+    hasher.update(b"\0runtime-abi-contract\0");
+    hasher.update(RuntimeAbiManifest::current().identity().as_bytes());
     hasher.update(b"\0target-goos\0");
     hasher.update(target_goos.as_bytes());
     hasher.update(b"\0target-goarch\0");
@@ -488,8 +470,10 @@ fn main() -> BuildResult<()> {
     println!("cargo:rerun-if-changed=../Cargo.toml");
     println!("cargo:rerun-if-changed=../Cargo.lock");
     println!("cargo:rerun-if-changed=../gors-runtime/Cargo.toml");
+    println!("cargo:rerun-if-changed=../gors-runtime-abi/Cargo.toml");
     println!("cargo:rerun-if-changed={GO_VERSION_FILE}");
     println!("cargo:rerun-if-changed=../gors-runtime/src");
+    println!("cargo:rerun-if-changed=../gors-runtime-abi/src");
     println!("cargo:rerun-if-env-changed=GORS_GO_SDK_PATH");
     println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_OS");
     println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_ARCH");
@@ -499,7 +483,6 @@ fn main() -> BuildResult<()> {
     }
 
     let go_version = read_go_version()?;
-    let runtime_abi_id = read_runtime_abi_id()?;
     let stdlib_version = stdlib_version(&go_version);
     let sdk_path = ensure_go_sdk(&go_version)?;
     if std::env::var_os("GORS_GO_SDK_PATH").is_some() {
@@ -520,7 +503,6 @@ fn main() -> BuildResult<()> {
     let compiler_fingerprint =
         compiler_source_fingerprint(&sdk_fingerprint, target_goos, target_goarch)?;
     println!("cargo:rustc-env=GORS_GO_VERSION={go_version}");
-    println!("cargo:rustc-env=GORS_RUNTIME_ABI_ID={runtime_abi_id}");
     println!("cargo:rustc-env=GORS_STDLIB_VERSION={stdlib_version}");
     println!("cargo:rustc-env=GORS_COMPILER_FINGERPRINT={compiler_fingerprint}");
     println!(

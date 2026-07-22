@@ -19,6 +19,7 @@ from typing import Any
 
 from .model import (
     REQUIRED_SCENARIOS,
+    RESULT_SCHEMA_VERSION,
     achievement,
     configuration_fingerprint,
     result_id,
@@ -119,12 +120,11 @@ def repository_state(root: Path) -> dict[str, Any]:
     }
 
 
-def runtime_abi_version(root: Path) -> int:
-    source = (root / "gors-runtime" / "src" / "lib.rs").read_text(encoding="utf-8")
-    match = re.search(r"GORS_RUNTIME_ABI_VERSION:\s*u32\s*=\s*(\d+)", source)
+def runtime_contract_identity(gors_version: str) -> str:
+    match = re.search(r"\bruntime-contract=([0-9a-f]{64})\b", gors_version)
     if match is None:
-        raise RuntimeError("cannot determine gors runtime ABI version")
-    return int(match.group(1))
+        raise RuntimeError("gors version does not report a runtime contract identity")
+    return match.group(1)
 
 
 def distribute_samples(samples: int, sessions: int) -> list[int]:
@@ -339,7 +339,7 @@ class PerformanceRun:
     ) -> dict[str, Any]:
         toolchains = self.toolchains
         return {
-            "schemaVersion": 1,
+            "schemaVersion": RESULT_SCHEMA_VERSION,
             "kind": "gors.performance.result",
             "resultId": "",
             "configurationFingerprint": "",
@@ -384,7 +384,9 @@ class PerformanceRun:
                     "path": str(toolchains.gors),
                     "version": toolchains.gors_version,
                     "sha256": hashlib.sha256(toolchains.gors.read_bytes()).hexdigest(),
-                    "runtimeAbiVersion": runtime_abi_version(self.options.repository_root),
+                    "runtimeContractIdentity": runtime_contract_identity(
+                        toolchains.gors_version
+                    ),
                 },
                 "go": {
                     "path": str(toolchains.go),

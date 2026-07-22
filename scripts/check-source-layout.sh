@@ -20,7 +20,7 @@ done < <(
     -g '*.sh' \
     -g '*.svelte' \
     -g '*.ts' \
-    gors gors-cli gors-runtime fuzz perf scripts www \
+    gors gors-cli gors-runtime gors-runtime-abi fuzz perf scripts www \
     | rg -v '(^|/)(fixtures|node_modules|pkg|target|v86)(/|$)' \
     | LC_ALL=C sort -u
 )

@@ -106,6 +106,14 @@ An intrinsic that allocates a Go map, manipulates a slice header, schedules a
 goroutine, or writes raw bytes to a host descriptor is an appropriate runtime
 boundary.
 
+The runtime boundary is now modeled in a dedicated `gors-runtime-abi` crate.
+Its target-neutral manifest assigns typed value and operation identities, exact
+signatures, symbols, and required capabilities to a canonical
+`ContractIdentity`. Target-specific `RuntimeArtifactManifest` values combine
+that contract with target facts, provided capabilities, and an implementation
+hash. Compiler semantic keys therefore do not become red merely because the
+same contract was rebuilt for another target or from another implementation.
+
 ## Canonical stage products
 
 | Stage | Canonical product | Must contain | Must not contain |
@@ -448,11 +456,20 @@ stay inline. This is only the semantic-query slice: it does not yet admit
 parsing, rustc, linking, memory, or foreground cancellation through one global
 scheduler.
 
-Build configuration now derives the compiler's runtime ABI identity from the
-single numeric ABI version in `gors-runtime` instead of carrying a stale
-parallel string. Target, pinned Go version, and runtime ABI are explicit query
-inputs. Configuration granularity still needs evidence: a changed target must
-not invalidate target-independent syntax and semantic facts.
+Build configuration now carries the typed target-neutral runtime
+`ContractIdentity` derived from the canonical manifest; numeric ABI scraping and
+parallel string labels are deleted. Target, pinned Go version, and runtime
+contract are explicit query inputs. Target-specific artifact identity remains
+an artifact-publication concern. Configuration granularity still needs
+evidence: a changed artifact target or implementation must not invalidate
+target-independent syntax, HIR, or Go MIR.
+
+The manifest is not yet the authoritative call boundary. Bootstrap Rust IR and
+the emitter still duplicate runtime selection and effects through local
+`BinaryOp`, `PrintStep`, and symbol matches. The next hard cut must carry typed
+`RuntimeOp` requirements in Rust IR, verify their contract signatures and
+effects, and derive terminal symbols from the manifest before the precompiled
+runtime sidecar replaces source bundling.
 
 The target is one explicitly owned, demand-driven red-green query database.
 Each query records fine-grained dependency edges automatically; public API and

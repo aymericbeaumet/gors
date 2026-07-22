@@ -10,6 +10,7 @@ from pathlib import Path
 
 from perf_harness.cli import repository_root, validate_checked_in_files, validate_protocol_arguments
 from perf_harness.model import (
+    RESULT_SCHEMA_VERSION,
     EvidenceError,
     achievement,
     configuration_fingerprint,
@@ -30,6 +31,7 @@ from perf_harness.native import (
     _validate_gors_timing_evidence,
     pipeline_plan,
 )
+from perf_harness.runner import runtime_contract_identity
 
 
 def synthetic_result(*, commit: str, p50: float = 91.0, p95: float = 96.0) -> dict:
@@ -69,7 +71,7 @@ def synthetic_result(*, commit: str, p50: float = 91.0, p95: float = 96.0) -> di
         "normalized": summarize_pairs(pairs, seed=20260722),
     }
     result = {
-        "schemaVersion": 1,
+        "schemaVersion": RESULT_SCHEMA_VERSION,
         "kind": "gors.performance.result",
         "resultId": "",
         "configurationFingerprint": "",
@@ -109,7 +111,7 @@ def synthetic_result(*, commit: str, p50: float = 91.0, p95: float = 96.0) -> di
             "jobBudget": 4,
         },
         "toolchains": {
-            "gors": {"runtimeAbiVersion": 1},
+            "gors": {"runtimeContractIdentity": "5" * 64},
             "go": {"version": "go1.26.3", "sha256": "2" * 64, "experiment": ""},
             "rustc": {"channel": "1.96.0", "target": "test-target", "sha256": "3" * 64},
             "linker": {"version": "test-linker", "sha256": "4" * 64},
@@ -134,6 +136,45 @@ def synthetic_result(*, commit: str, p50: float = 91.0, p95: float = 96.0) -> di
 def write_json(path: Path, value: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+class RuntimeContractIdentityTests(unittest.TestCase):
+    def test_extracts_typed_contract_hash_from_version_output(self) -> None:
+        identity = "a5" * 32
+        version = f"gors version gors0.1.0 gostdlib1.26.3 darwin/arm64 runtime-contract={identity}"
+
+        self.assertEqual(runtime_contract_identity(version), identity)
+
+    def test_rejects_legacy_version_only_output(self) -> None:
+        with self.assertRaises(RuntimeError):
+            runtime_contract_identity(
+                "gors version gors0.1.0 gostdlib1.26.3 darwin/arm64"
+            )
+
+
+class RuntimeContractEvidenceTests(unittest.TestCase):
+    def test_rejects_missing_runtime_contract_identity(self) -> None:
+        result = synthetic_result(commit="a" * 40)
+        del result["toolchains"]["gors"]["runtimeContractIdentity"]
+
+        with self.assertRaisesRegex(EvidenceError, "runtime contract identity"):
+            validate_result(result)
+
+    def test_rejects_malformed_runtime_contract_identities(self) -> None:
+        for identity in ("5" * 63, "G" * 64, "A" * 64):
+            with self.subTest(identity=identity):
+                result = synthetic_result(commit="a" * 40)
+                result["toolchains"]["gors"]["runtimeContractIdentity"] = identity
+
+                with self.assertRaisesRegex(EvidenceError, "runtime contract identity"):
+                    validate_result(result)
+
+    def test_rejects_legacy_result_schema(self) -> None:
+        result = synthetic_result(commit="a" * 40)
+        result["schemaVersion"] = 1
+
+        with self.assertRaisesRegex(EvidenceError, "unsupported result schemaVersion"):
+            validate_result(result)
 
 
 def gors_timing_report(*, cache_hit: bool, jobs: int = 4) -> dict:
@@ -350,7 +391,7 @@ class AcceptanceGateTests(unittest.TestCase):
         write_json(self.current_path, self.current)
         self.acceptance = {
             "schemaVersion": 1,
-            "resultSchemaVersion": 1,
+            "resultSchemaVersion": RESULT_SCHEMA_VERSION,
             "corpusDigest": "1" * 64,
             "maximumCurrentEvidenceAgeHours": 24,
             "promotedScenarios": [

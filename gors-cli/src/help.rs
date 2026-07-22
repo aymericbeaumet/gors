@@ -20,14 +20,19 @@ pub fn help(cmd: Help) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 pub fn version() -> Result<(), Box<dyn std::error::Error>> {
-    println!(
-        "gors version gors{} {} {}/{}",
+    println!("{}", version_line());
+    Ok(())
+}
+
+fn version_line() -> String {
+    format!(
+        "gors version gors{} {} {}/{} runtime-contract={}",
         env!("CARGO_PKG_VERSION"),
         gors::STDLIB_VERSION,
         go_target_os(),
-        go_target_arch()
-    );
-    Ok(())
+        go_target_arch(),
+        gors::compiler::db::RuntimeAbiId::current(),
+    )
 }
 
 fn go_target_os() -> &'static str {
@@ -45,3 +50,6 @@ fn go_target_arch() -> &'static str {
         arch => arch,
     }
 }
+
+#[cfg(test)]
+mod tests;

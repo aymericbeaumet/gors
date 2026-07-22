@@ -172,10 +172,26 @@ Rust representation lowering selects an exact typed ABI operation in Rust IR.
 Every operation is documented and tested independently. Stdlib packages remain
 Go source compiled through the same frontend as user packages.
 
-The semantic compiler does not parse, inject, or patch runtime source. Terminal
-artifact packaging owns the bootstrap bundled runtime module and copies its
-versioned source directly. Native production artifacts should eventually link a
-precompiled runtime ABI rather than rebuilding the module for every program.
+That Rust-IR selection is the required hard-cut boundary, not yet a claim about
+the bootstrap emitter: its `BinaryOp`/`PrintStep` runtime routing is transitional
+duplication. Remove those hard-coded symbol and effect tables when wiring
+`RuntimeOp` into Rust IR; do not add new runtime entry points through that path.
+
+`gors-runtime-abi` owns the canonical typed boundary. Its target-neutral
+`RuntimeAbiManifest` defines runtime value types, exact operation signatures,
+symbols, semantic contract version, and required capabilities; compiler query
+keys retain its typed `ContractIdentity`, never a scraped version string. A
+separate `RuntimeArtifactManifest` composes that contract with the exact target
+model, provided capabilities, and implementation hash. Target or implementation
+changes select another artifact without pretending the language contract
+changed.
+
+The semantic compiler does not parse, inject, or patch runtime source. The
+remaining source-bundled bootstrap packaging is transitional and must be removed
+in one hard cut: generated Rust will reference typed Rust-IR runtime operations,
+and artifact packaging will select, validate, and link one content-addressed
+precompiled runtime artifact. Do not add a second optional sidecar path beside
+the bundled module.
 
 ### Resolver boundary
 
@@ -513,6 +529,7 @@ weaken parser behavior to fit the bootstrap backend.
         fixtures/
         tools/go_oracle/
     gors-cli/               commands and generated-artifact cache manifests
+    gors-runtime-abi/       typed runtime contract and artifact identities
     gors-runtime/           runtime ABI and Go value representations
     perf/                   native performance evidence schemas, corpus, and gates
     www/                    browser application
