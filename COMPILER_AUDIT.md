@@ -363,6 +363,14 @@ request path. A package-relative filename change remains a semantic identity
 change. Revision-scoped raw Salsa snapshots are scheduler-internal so callers
 cannot retain one and block a later mutation.
 
+Manifest installation now records only actual source mutations. Changed,
+inserted, and stale-removed inputs share one reversible journal; rollback walks
+that journal backward and restores package membership as well as content and
+diagnostic paths. Exact no-op installation performs no Salsa setter or
+cancellation. This removes the former O(all-active-files) snapshot, but every
+manifest package is still materialized eagerly and must become reachable input
+on demand.
+
 The raw input hard cut is complete. `CompilerSession` and the free facade take
 `ProgramInput`; the CLI's raw workspace loader selects and reads command-line
 files without parsing, and Wasm constructs a direct browser manifest. The
@@ -373,7 +381,10 @@ query database and can recover in the retained browser session. The file
 projection publishes decoded import occurrences, structured invalid imports,
 physical comment anchors, and semantic facts from one ephemeral parse. Browser
 comment insertion consumes that query product rather than parsing again. CLI
-timing report schema v4 records raw filesystem admission as `cli.source_load`.
+timing report schema v5 records `cli.source_load` before `cli.cache_lookup` on
+hits and misses. The cache compares its manifest against that supplied immutable
+snapshot instead of rereading filesystem inputs, and a miss compiles the same
+loaded revision.
 
 All packages explicitly supplied by a manifest are installed under their typed
 workspace/package/file identities, but only the entry package is analyzed for
@@ -395,9 +406,13 @@ and comment positions are reconstructed physically from content byte offsets.
 `compiler::source` now supplies checked fixed-width `TextSize`, half-open
 `TextRange`, `FileRange`, one-based physical positions, and an adjusted column
 type that represents Go's hidden column zero explicitly. Source construction
-enforces the u32 byte domain. Typed byte-anchor provenance is still P0: HIR,
-MIR, Rust IR, diagnostics, and source maps must migrate from mixed spans to
-those physical ranges plus a separate virtual-coordinate map.
+enforces the u32 byte domain. Parser errors now preserve an exact physical byte
+offset, and the query-owned parse-failure product stores it as a typed empty
+`TextRange` separately from its legacy adjusted line/column fields. The parser
+does not yet publish the coordinate map or adjusted filename with that product.
+Typed byte-anchor provenance is still P0: HIR, MIR, Rust IR, diagnostics, and
+source maps must migrate from mixed spans to those physical ranges plus a
+separate virtual-coordinate map.
 
 Native sessions can now share an explicit `CompilerHost` with one lazy bounded
 worker pool. A tracked per-definition readiness digest covers provenance-free
@@ -515,9 +530,8 @@ Before broad stdlib work can be considered scalable, finish these foundations:
 - retained-session adoption by editor and build-daemon entry points, plus
   bounded per-definition invalidation beyond the current file-granular
   parse/semantic projection; the browser worker already retains its session;
-- delta-based transactional input installation: journal only actual mutations,
-  include stale deletion in rollback, and avoid eagerly materializing
-  unreachable manifest packages;
+- reachable, lazily materialized manifest/package inputs instead of eagerly
+  retaining every supplied package's source bytes;
 - a checksummed cross-process semantic CAS with canonical schemas and atomic
   publication;
 - one global scheduler and job budget spanning queries, external codegen, and

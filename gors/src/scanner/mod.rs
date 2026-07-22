@@ -11,6 +11,10 @@ mod tests;
 
 pub use error::{Result, ScannerError, ScannerErrorKind};
 
+use std::sync::Arc;
+
+use crate::compiler::source::coordinate_map::SourceCoordinateMapBuilder;
+use crate::compiler::source::{SourceCoordinateMap, SourceCoordinateMapError};
 use crate::token::{Position, SourceOrigin, Token};
 use lexical::{is_hex_digit, is_letter, is_octal_digit};
 
@@ -44,11 +48,15 @@ pub struct Scanner<'a> {
     offset: usize,
     line: usize,
     column: usize,
+    physical_line: usize,
+    physical_column: usize,
     start_offset: usize,
     start_line: usize,
     start_column: usize,
+    start_physical_column: usize,
     //
     hide_column: bool,
+    coordinate_map: SourceCoordinateMapBuilder,
     insert_semi: bool,
     pending_line_info: Option<LineInfo<'a>>,
     pending_semi: bool, // true if a semicolon should be returned immediately on next scan
@@ -57,10 +65,16 @@ pub struct Scanner<'a> {
 
 #[derive(Clone, Copy, Debug)]
 struct LineInfo<'a> {
-    filename: Option<&'a str>,
+    filename: LineFilename<'a>,
     line: usize,
     column: Option<usize>,
-    hide_column: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum LineFilename<'a> {
+    Set(&'a str),
+    Retain,
+    Clear,
 }
 
 impl<'a> Scanner<'a> {
@@ -83,11 +97,15 @@ impl<'a> Scanner<'a> {
             offset: 0,
             line: 1,
             column: 1,
+            physical_line: 1,
+            physical_column: 1,
             start_offset: 0,
             start_line: 1,
             start_column: 1,
+            start_physical_column: 1,
             //
             hide_column: false,
+            coordinate_map: SourceCoordinateMapBuilder::new(filename),
             insert_semi: false,
             pending_line_info: None,
             pending_semi: false,
@@ -98,6 +116,16 @@ impl<'a> Scanner<'a> {
             s.next();
         }
         s
+    }
+
+    /// Build the coordinate map recorded by this scanner's existing pass.
+    ///
+    /// Before EOF this map covers only the consumed prefix through the current
+    /// byte offset. After EOF it covers the complete source, including EOF.
+    pub fn source_coordinate_map(
+        &self,
+    ) -> std::result::Result<SourceCoordinateMap, SourceCoordinateMapError> {
+        self.coordinate_map.build(self.offset)
     }
 
     #[allow(clippy::cognitive_complexity)] // Allow complex scan function
@@ -464,13 +492,24 @@ impl<'a> Scanner<'a> {
 
     fn consume_pending_line_info(&mut self) {
         if let Some(line_info) = self.pending_line_info.take() {
-            if let Some(filename) = line_info.filename {
-                let relative_to = if is_rooted_source_name(filename) {
-                    ""
-                } else {
-                    self.line_directive_base
-                };
-                self.origin = SourceOrigin::line_directive(filename, relative_to);
+            // Match go/token.File.AddLineColumnInfo: a directive transition at
+            // EOF is ignored because alternative offsets must be < file size.
+            if self.offset >= self.buffer.len() {
+                return;
+            }
+            match line_info.filename {
+                LineFilename::Set(filename) => {
+                    let relative_to = if is_rooted_source_name(filename) {
+                        ""
+                    } else {
+                        self.line_directive_base
+                    };
+                    self.origin = SourceOrigin::line_directive(filename, relative_to);
+                }
+                LineFilename::Retain => {}
+                LineFilename::Clear => {
+                    self.origin = SourceOrigin::line_directive("", "");
+                }
             }
 
             self.line = line_info.line;
@@ -479,7 +518,16 @@ impl<'a> Scanner<'a> {
                 self.column = column;
             }
 
-            self.hide_column = line_info.hide_column;
+            self.hide_column = line_info.column.is_none();
+            let adjusted_filename = self.origin.filename();
+            self.coordinate_map.record_directive(
+                self.offset,
+                self.physical_line,
+                self.physical_column,
+                Arc::from(adjusted_filename.as_ref()),
+                line_info.line,
+                line_info.column,
+            );
         }
     }
 
@@ -490,18 +538,20 @@ impl<'a> Scanner<'a> {
     fn next(&mut self) {
         self.offset += self.current_char_len;
         self.column += self.current_char_len;
+        self.physical_column += self.current_char_len;
         let last_char = self.current_char;
 
         self.current_char = self.chars.next();
-        if let Some(c) = self.current_char {
-            self.current_char_len = c.len_utf8();
-            if matches!(last_char, Some('\n')) {
+        self.current_char_len = self.current_char.map_or(0, char::len_utf8);
+        if matches!(last_char, Some('\n')) {
+            if self.offset < self.buffer.len() {
                 self.line += 1;
                 self.column = 1;
-                self.consume_pending_line_info();
+                self.physical_line += 1;
+                self.physical_column = 1;
+                self.coordinate_map.record_line_start(self.offset);
             }
-        } else {
-            self.current_char_len = 0
+            self.consume_pending_line_info();
         }
 
         log::trace!(
@@ -530,6 +580,7 @@ impl<'a> Scanner<'a> {
         self.start_offset = self.offset;
         self.start_line = self.line;
         self.start_column = self.column;
+        self.start_physical_column = self.physical_column;
     }
 
     fn literal(&self) -> &'a str {
@@ -541,7 +592,7 @@ impl<'a> Scanner<'a> {
             kind,
             file: self.origin.filename().into_owned(),
             line: self.line,
-            column: self.column,
+            column: if self.hide_column { 0 } else { self.column },
             offset: self.offset,
         }
     }
@@ -685,6 +736,15 @@ impl<'a> IntoIter<'a> {
             scanner,
             done: false,
         }
+    }
+
+    /// Coordinate map recorded by the owned scanner without rescanning.
+    ///
+    /// After this iterator yields EOF the map covers the complete source.
+    pub fn source_coordinate_map(
+        &self,
+    ) -> std::result::Result<SourceCoordinateMap, SourceCoordinateMapError> {
+        self.scanner.source_coordinate_map()
     }
 }
 

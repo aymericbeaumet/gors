@@ -609,9 +609,12 @@ fn declaration_reorder_preserves_ids_and_every_projection() {
 #[test]
 fn parse_failure_is_recoverable_input_state() {
     let mut db = CompilerDatabase::default();
-    let file = insert(&mut db, "package main\nfunc broken(");
+    let invalid = "package main\nfunc broken(";
+    let file = insert(&mut db, invalid);
     let failed = db.analyze_file(file).unwrap();
-    assert!(failed.failure().is_some());
+    let failure = failed.failure().unwrap();
+    assert_eq!(failure.physical_range().start().to_usize(), invalid.len());
+    assert_eq!(failure.physical_range().end().to_usize(), invalid.len());
     assert!(failed.functions().is_empty());
 
     insert(&mut db, ORIGINAL);
@@ -621,6 +624,38 @@ fn parse_failure_is_recoverable_input_state() {
     assert_eq!(recovered.functions().len(), 2);
     assert_eq!(db.telemetry().executions(QueryKind::FileProjection), 1);
     assert_eq!(db.telemetry().executions(QueryKind::FileAnalysis), 1);
+}
+
+#[test]
+fn parse_failure_separates_physical_anchor_from_line_directive_coordinates() {
+    let invalid = "package main\n//line virtual.go:40\nfunc broken( {";
+    let mut db = CompilerDatabase::default();
+    let file = insert(&mut db, invalid);
+    let failed = db.analyze_file(file).unwrap();
+    let failure = failed.failure().unwrap();
+
+    assert_eq!(
+        failure.physical_range().start().to_usize(),
+        invalid.find('{').unwrap()
+    );
+    assert_eq!(failure.line(), Some(40));
+    assert_eq!(failure.column(), Some(0));
+}
+
+#[test]
+fn scanner_failure_keeps_hidden_column_and_exact_physical_anchor() {
+    let invalid = "package main\n//line virtual.go:40\n@";
+    let mut db = CompilerDatabase::default();
+    let file = insert(&mut db, invalid);
+    let failed = db.analyze_file(file).unwrap();
+    let failure = failed.failure().unwrap();
+
+    assert_eq!(
+        failure.physical_range().start().to_usize(),
+        invalid.find('@').unwrap()
+    );
+    assert_eq!(failure.line(), Some(40));
+    assert_eq!(failure.column(), Some(0));
 }
 
 #[test]

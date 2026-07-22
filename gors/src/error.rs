@@ -48,7 +48,7 @@ impl Diagnostic {
             ParserError::ScannerError(scanner_err) => {
                 Self::from_scanner_error(scanner_err, file, source)
             }
-            ParserError::UnexpectedEndOfFile => {
+            ParserError::UnexpectedEndOfFile { .. } => {
                 // Position at the end of the source
                 let (line, column) = if source.is_empty() {
                     (1, 1)

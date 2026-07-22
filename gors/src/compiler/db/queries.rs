@@ -6,6 +6,7 @@ use std::sync::Arc;
 use crate::ast;
 use crate::compiler::fingerprint::{fingerprint_parts, rust_ir_root_inputs};
 use crate::compiler::input::SourceContent;
+use crate::compiler::source::{TextRange, TextSize};
 use crate::compiler::{Diagnostic, lowering, mir, rust_ir};
 
 use super::super::ids::{DefId, DefinitionKey, DefinitionKind, FileId, PackageId};
@@ -133,6 +134,10 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
         Ok(parsed) => parsed,
         Err(error) => {
             let location = error.location();
+            let physical_offset = error
+                .byte_offset()
+                .and_then(|offset| TextSize::try_from(offset).ok())
+                .unwrap_or_else(|| content.text_len());
             return FileFacts::new(
                 db,
                 file,
@@ -144,6 +149,7 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
                 Vec::new(),
                 Some(ParseFailure::new(
                     error.message(),
+                    TextRange::empty(physical_offset),
                     location.as_ref().map(|(_, line, _)| *line),
                     location.as_ref().map(|(_, _, column)| *column),
                 )),

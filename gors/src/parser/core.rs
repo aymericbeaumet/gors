@@ -277,7 +277,11 @@ impl<'scanner> Parser<'scanner> {
                     break;
                 }
                 Some(Err(e)) => return Err(e.into()),
-                None => return Err(ParserError::UnexpectedEndOfFile),
+                None => {
+                    return Err(ParserError::UnexpectedEndOfFile {
+                        offset: self.buffer.len(),
+                    });
+                }
             }
         }
 

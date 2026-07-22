@@ -33,7 +33,9 @@ impl SourceContent {
                 source
                     .bytes()
                     .enumerate()
-                    .filter(|(_, byte)| *byte == b'\n')
+                    .filter(|(offset, byte)| {
+                        *byte == b'\n' && offset.saturating_add(1) < source.len()
+                    })
                     .map(|(offset, _)| TextSize::try_from(offset.saturating_add(1))),
             )
             .collect::<Result<Vec<_>, _>>()?;

@@ -279,10 +279,20 @@ coordinates. `SourceContent` construction rejects source lengths outside the
 u32 byte-offset domain and stores fixed-width line starts. Adjusted Go display
 coordinates are a separate type whose column is explicitly `Hidden` or
 `Known`, so a two-field `//line file:line` directive cannot conflate hidden
-column zero with a physical byte position. This is still only the source-input
-foundation: HIR, MIR, Rust IR, diagnostics, and source maps retain the old
-mixed provenance and must migrate to physical `FileRange` anchors plus a
-separate virtual-coordinate map. That end-to-end byte-anchor provenance is P0.
+column zero with a physical byte position. The scanner now records a typed
+`SourceCoordinateMap` and ordered `LineDirectiveSegment`s during its existing
+lexical pass while maintaining independent physical and adjusted counters;
+both `Scanner` and its production `IntoIter` expose the consumed map without a
+second scan. Directive transitions at EOF are ignored, matching
+`go/token.File`, and empty two-field filenames clear the adjusted filename
+while empty explicit-column forms retain it. This is still only the
+scanner/source foundation: the parser must publish the completed map, and HIR,
+MIR, Rust IR, diagnostics, and source maps retain the old mixed provenance and
+must migrate to physical `FileRange` anchors plus that separate coordinate
+map. Parser failures already retain an exact physical zero-width `TextRange`
+beside their legacy adjusted line/column fields; do not collapse those domains
+again. Publishing the map and its adjusted filename with parse products remains
+part of the end-to-end P0 provenance migration.
 
 The file projection owns decoded direct-import occurrences, structured invalid
 imports, and owned source comments from its one ephemeral parse. Those products
@@ -296,8 +306,10 @@ command-line files exactly once; Wasm constructs a raw browser manifest without
 a presentation-layer parse. Syntax failures are therefore parse-query outputs
 inside the retained session. The browser also consumes query-owned comments, so
 imports, invalid-import facts, semantic projection, and comment projection share
-the file projection's single ephemeral parse. CLI timing report schema v4 names
-the filesystem admission phase `cli.source_load`, not `cli.parse`.
+the file projection's single ephemeral parse. CLI timing report schema v5
+reports `cli.source_load` before `cli.cache_lookup` on both hits and misses:
+every invocation loads one immutable `LoadedProgram` and `InputSnapshot`, then
+uses that exact revision for cache comparison and, on a miss, compilation.
 
 Workspace and package identities are enum-tagged `WorkspaceKey` and
 `PackageKey` values encoded directly by the collision-checked semantic interner;
@@ -305,6 +317,13 @@ do not flatten them into caller-constructed strings. Every package explicitly
 listed in a manifest is installed as an input, but compilation requests only
 the entry package's semantic root. Unrelated manifest packages must remain
 unparsed and unanalyzed until a query actually depends on them.
+
+Session input installation is one delta transaction. The compiler journals only
+changed, inserted, and removed source inputs, includes stale-file removal in the
+same rollback boundary, and rolls mutations back in reverse application order.
+Exact no-op installs must not call a Salsa setter or synthesize rollback snapshots.
+Do not restore the deleted O(all-active-files) snapshot/rollback path; future
+lazy manifest work should reduce the mutation set further.
 
 The filesystem workspace loader requires an explicit caller-owned
 `WorkspaceKey`; it must never synthesize an ad-hoc identity or derive semantic

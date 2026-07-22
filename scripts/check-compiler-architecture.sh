@@ -84,6 +84,12 @@ fail_on_matches \
   '^[[:space:]]*pub fn snapshot' \
   gors/src/compiler/db/mod.rs
 
+fail_on_matches \
+  'whole-session source snapshot rollback is forbidden; journal input deltas:' \
+  'previous_sources|restore_source_snapshot|rollback_install' \
+  gors/src/compiler/session.rs \
+  gors/src/compiler/db
+
 if ! rg -q \
   '^[[:space:]]*pub\(in crate::compiler\) fn snapshot\(&self\) -> CompilerDatabaseSnapshot' \
   gors/src/compiler/db/mod.rs; then

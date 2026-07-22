@@ -20,60 +20,211 @@ fn raw_program(logical_path: &str, diagnostic_path: &str, source: &str) -> Progr
 }
 
 #[test]
-fn install_rollback_restores_updated_inputs_and_removes_orphans() {
+fn install_transaction_rolls_back_updated_inserted_and_stale_inputs() {
     let mut session = CompilerSession::default();
     let workspace = test_workspace();
     let package = super::super::input::PackageKey::command_line();
     let original = Arc::new(
         SourceSnapshot::from_source("/original/main.go", "package main\nfunc main() {}\n").unwrap(),
     );
-    let file = session
+    session
+        .compile_program(raw_program(
+            "main.go",
+            "/original/main.go",
+            "package main\nfunc main() {}\n",
+        ))
+        .unwrap();
+    let main_file = *session.database.active_files().first().unwrap();
+    let stale = Arc::new(
+        SourceSnapshot::from_source(
+            "/original/stale.go",
+            "package main\nfunc stale() int { return 1 }\n",
+        )
+        .unwrap(),
+    );
+    let stale_file = session
         .database
-        .set_source(&workspace, &package, "main.go", Arc::clone(&original))
+        .set_source(&workspace, &package, "stale.go", Arc::clone(&stale))
         .unwrap()
         .file();
-    let previous = BTreeMap::from([(file, Arc::clone(&original))]);
+    let package_id = session.database.package_for_file(main_file).unwrap();
+    let readiness = session.ready_rust_ir_roots.clone();
+    assert!(!readiness.is_empty());
 
-    session
-        .database
-        .set_source(
-            &workspace,
-            &package,
-            "main.go",
-            Arc::new(
-                SourceSnapshot::from_source(
+    let input = ProgramInput::new(
+        workspace,
+        package.clone(),
+        [PackageInputManifest::new(
+            package,
+            [
+                super::super::input::SourceFileInput::from_source(
+                    "main.go",
                     "/failed/main.go",
                     "package main\nfunc main() { println(1) }\n",
                 )
                 .unwrap(),
-            ),
+                super::super::input::SourceFileInput::from_source(
+                    "inserted.go",
+                    "/failed/inserted.go",
+                    "package main\nfunc inserted() {}\n",
+                )
+                .unwrap(),
+            ],
         )
-        .unwrap();
-    let orphan = session
+        .unwrap()],
+    )
+    .unwrap();
+
+    let error = session
+        .install_program_transaction(&input, |_| {
+            Err(CompilerError::backend(
+                "injected failure after stale-file deletion",
+            ))
+        })
+        .err()
+        .expect("the injected pre-commit failure must abort installation");
+
+    assert!(error.to_string().contains("injected failure"));
+    assert_eq!(
+        session
+            .database
+            .active_files()
+            .into_iter()
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([main_file, stale_file])
+    );
+    assert_eq!(
+        session
+            .database
+            .source_snapshot(main_file)
+            .unwrap()
+            .as_ref(),
+        original.as_ref()
+    );
+    assert_eq!(
+        session
+            .database
+            .source_snapshot(stale_file)
+            .unwrap()
+            .as_ref(),
+        stale.as_ref()
+    );
+    assert_eq!(session.ready_rust_ir_roots, readiness);
+
+    let restored = session.database.analyze_package(package_id).unwrap();
+    assert!(restored.issues().is_empty());
+    assert_eq!(
+        restored
+            .functions()
+            .iter()
+            .map(|function| function.name())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["main", "stale"])
+    );
+}
+
+#[test]
+fn install_rollback_restores_removed_package_and_discards_new_package() {
+    let mut session = CompilerSession::default();
+    let workspace = test_workspace();
+    let old_package = super::super::input::PackageKey::import_path("example/old").unwrap();
+    let old_snapshot = Arc::new(
+        SourceSnapshot::from_source(
+            "/original/old.go",
+            "package old\nfunc Value() int { return 1 }\n",
+        )
+        .unwrap(),
+    );
+    let old_file = session
         .database
         .set_source(
             &workspace,
-            &package,
-            "orphan.go",
-            Arc::new(
-                SourceSnapshot::from_source(
-                    "/failed/orphan.go",
-                    "package main\nfunc orphan() {}\n",
-                )
-                .unwrap(),
-            ),
+            &old_package,
+            "old.go",
+            Arc::clone(&old_snapshot),
         )
         .unwrap()
         .file();
+    let old_package_id = session.database.package_for_file(old_file).unwrap();
+    let new_package = super::super::input::PackageKey::command_line();
+    let input = ProgramInput::new(
+        workspace,
+        new_package.clone(),
+        [PackageInputManifest::new(
+            new_package,
+            [super::super::input::SourceFileInput::from_source(
+                "main.go",
+                "/failed/main.go",
+                "package main\nfunc main() {}\n",
+            )
+            .unwrap()],
+        )
+        .unwrap()],
+    )
+    .unwrap();
+    let new_package_id = std::cell::Cell::new(None);
 
-    session.rollback_install(&previous).unwrap();
+    let error = session
+        .install_program_transaction(&input, |database| {
+            assert!(database.source_snapshot(old_file).is_err());
+            let new_file = database
+                .active_files()
+                .into_iter()
+                .find(|file| *file != old_file)
+                .expect("the new package source must be active before commit");
+            new_package_id.set(Some(database.package_for_file(new_file).unwrap()));
+            Err(CompilerError::backend(
+                "injected failure across package-map boundaries",
+            ))
+        })
+        .err()
+        .expect("the injected pre-commit failure must abort installation");
 
-    assert_eq!(session.database.active_files(), vec![file]);
+    assert!(error.to_string().contains("injected failure"));
+    assert_eq!(session.database.active_files(), vec![old_file]);
     assert_eq!(
-        session.database.source_snapshot(file).unwrap().as_ref(),
-        original.as_ref()
+        session.database.source_snapshot(old_file).unwrap().as_ref(),
+        old_snapshot.as_ref()
     );
-    assert!(session.database.source_snapshot(orphan).is_err());
+    let restored = session.database.analyze_package(old_package_id).unwrap();
+    assert!(restored.issues().is_empty());
+    assert_eq!(
+        restored.functions().first().map(|function| function.name()),
+        Some("Value")
+    );
+    assert_eq!(restored.functions().len(), 1);
+    assert!(
+        session
+            .database
+            .analyze_package(new_package_id.get().unwrap())
+            .is_err()
+    );
+}
+
+#[test]
+fn exact_noop_install_has_no_salsa_mutation_or_readiness_change() {
+    let program = raw_program(
+        "main.go",
+        "/checkout/main.go",
+        "package main\nfunc main() {}\n",
+    );
+    let mut session = CompilerSession::default();
+    session.compile_program(program.clone()).unwrap();
+    let active = session.database.active_files();
+    let retained_bytes = session.database.retained_source_bytes();
+    let readiness = session.ready_rust_ir_roots.clone();
+    session.database.reset_telemetry();
+
+    session.install_program(&program).unwrap();
+
+    assert_eq!(session.database.active_files(), active);
+    assert_eq!(session.database.retained_source_bytes(), retained_bytes);
+    assert_eq!(session.ready_rust_ir_roots, readiness);
+    assert_eq!(session.database.telemetry().total_executions(), 0);
+    assert_eq!(
+        session.database.telemetry().engine().cancellation_requests,
+        0
+    );
 }
 
 #[test]

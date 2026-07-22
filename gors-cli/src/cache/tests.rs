@@ -115,33 +115,7 @@ fn cache_request_tracks_gorspath_identity_without_scanning_root_contents() {
 }
 
 #[test]
-fn input_snapshot_detects_file_edits_and_directory_membership_changes() {
-    let temp = tempfile::tempdir().unwrap();
-    let source = temp.path().join("main.go");
-    std::fs::write(&source, "package main\n").unwrap();
-    let directory = normalized_path(temp.path()).unwrap();
-    let snapshot = InputSnapshot {
-        files: std::iter::once((
-            normalized_path(&source).unwrap(),
-            file_hash(&source).unwrap(),
-        ))
-        .collect(),
-        directories: std::iter::once((directory, vec![normalized_path(&source).unwrap()]))
-            .collect(),
-    };
-    assert!(snapshot.is_current());
-
-    std::fs::write(&source, "package changed\n").unwrap();
-    assert!(!snapshot.is_current());
-    std::fs::write(&source, "package main\n").unwrap();
-    assert!(snapshot.is_current());
-
-    std::fs::write(temp.path().join("added.go"), "package main\n").unwrap();
-    assert!(!snapshot.is_current());
-}
-
-#[test]
-fn input_snapshot_uses_the_loaded_revision_without_rereading_sources() {
+fn input_snapshot_is_the_immutable_loaded_revision() {
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().join("main.go");
     std::fs::write(&source, "package main\n").unwrap();
@@ -156,7 +130,57 @@ fn input_snapshot_uses_the_loaded_revision_without_rereading_sources() {
         snapshot.files.get(&normalized_path(&source).unwrap()),
         Some(&sha2_hash(b"package main\n"))
     );
-    assert!(!snapshot.is_current());
+
+    let reloaded =
+        gors::workspace::load_program(crate::cli_workspace().unwrap(), temp.path()).unwrap();
+    let current = InputSnapshot::capture(&reloaded).unwrap();
+    assert_ne!(snapshot, current);
+}
+
+#[test]
+fn cache_admission_compares_supplied_snapshot_without_rereading_sources() {
+    let temp = tempfile::tempdir().unwrap();
+    let source_directory = temp.path().join("source");
+    let output_directory = temp.path().join("output");
+    std::fs::create_dir_all(&source_directory).unwrap();
+    std::fs::create_dir_all(&output_directory).unwrap();
+    let source = source_directory.join("main.go");
+    std::fs::write(&source, "package main\n").unwrap();
+
+    let loaded =
+        gors::workspace::load_program(crate::cli_workspace().unwrap(), &source_directory).unwrap();
+    let captured = InputSnapshot::capture(&loaded).unwrap();
+    let generated_source = "fn main() {}\n";
+    std::fs::write(output_directory.join("main.rs"), generated_source).unwrap();
+    let generated_files = BTreeMap::from([(
+        "main.rs".to_string(),
+        sha2_hash(generated_source.as_bytes()),
+    )]);
+    let mut output_manifest = GeneratedOutputManifest::new();
+    output_manifest.record(
+        "main.rs".to_string(),
+        generated_files.get("main.rs").unwrap().clone(),
+    );
+    output_manifest.save(&output_directory).unwrap();
+    CliCacheManifest::new(&request(), captured.clone(), generated_files, None)
+        .save(&output_directory)
+        .unwrap();
+
+    std::fs::write(&source, "package changed\n").unwrap();
+    assert!(
+        CliCacheManifest::load_if_generated_valid(&output_directory, &request(), &captured)
+            .is_some(),
+        "cache admission reread source bytes instead of trusting the supplied revision"
+    );
+
+    let reloaded =
+        gors::workspace::load_program(crate::cli_workspace().unwrap(), &source_directory).unwrap();
+    let current = InputSnapshot::capture(&reloaded).unwrap();
+    assert_ne!(captured, current);
+    assert!(
+        CliCacheManifest::load_if_generated_valid(&output_directory, &request(), &current)
+            .is_none()
+    );
 }
 
 #[test]

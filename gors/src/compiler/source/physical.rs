@@ -112,6 +112,12 @@ impl TextRange {
         }
     }
 
+    /// Construct an empty range anchored at one exact byte boundary.
+    #[must_use]
+    pub const fn empty(at: TextSize) -> Self {
+        Self { start: at, end: at }
+    }
+
     #[must_use]
     pub const fn start(self) -> TextSize {
         self.start

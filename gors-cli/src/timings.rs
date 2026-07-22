@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-const TIMING_REPORT_VERSION: u32 = 4;
+const TIMING_REPORT_VERSION: u32 = 5;
 
 #[derive(Clone)]
 pub struct TimingCollector {

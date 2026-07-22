@@ -21,11 +21,14 @@ from typing import Any
 
 ARTIFACT_DRIVER = "bootstrap-generated-rust-v1"
 ARTIFACT_DRIVER_PRODUCTION = False
-GORS_TIMING_REPORT_VERSION = 4
-GORS_BUILD_CACHE_HIT_PHASES = ("cli.cache_lookup",)
-GORS_BUILD_CACHE_MISS_PHASES = (
-    "cli.cache_lookup",
+GORS_TIMING_REPORT_VERSION = 5
+GORS_BUILD_CACHE_HIT_PHASES = (
     "cli.source_load",
+    "cli.cache_lookup",
+)
+GORS_BUILD_CACHE_MISS_PHASES = (
+    "cli.source_load",
+    "cli.cache_lookup",
     "cli.compile",
     "cli.print",
     "cli.file_writes",

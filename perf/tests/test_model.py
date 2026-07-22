@@ -220,14 +220,30 @@ class NativeBoundaryTests(unittest.TestCase):
     def test_scheduler_evidence_accepts_explicit_zero_cache_hit(self) -> None:
         _validate_gors_timing_evidence(gors_timing_report(cache_hit=True), 4)
 
-    def test_scheduler_evidence_accepts_v4_cache_miss_phase_contract(self) -> None:
+    def test_scheduler_evidence_accepts_v5_cache_miss_phase_contract(self) -> None:
         _validate_gors_timing_evidence(gors_timing_report(cache_hit=False), 4)
 
     def test_scheduler_evidence_rejects_stale_timing_schema(self) -> None:
         timings = gors_timing_report(cache_hit=False)
         timings["version"] = GORS_TIMING_REPORT_VERSION - 1
 
-        with self.assertRaisesRegex(RuntimeError, "expected version 4"):
+        with self.assertRaisesRegex(RuntimeError, "expected version 5"):
+            _validate_gors_timing_evidence(timings, 4)
+
+    def test_scheduler_evidence_rejects_cache_hit_without_source_load(self) -> None:
+        timings = gors_timing_report(cache_hit=True)
+        timings["phases"] = [
+            phase for phase in timings["phases"] if phase["name"] != "cli.source_load"
+        ]
+
+        with self.assertRaisesRegex(RuntimeError, "hit timing phases are incompatible"):
+            _validate_gors_timing_evidence(timings, 4)
+
+    def test_scheduler_evidence_rejects_cache_lookup_before_source_load(self) -> None:
+        timings = gors_timing_report(cache_hit=True)
+        timings["phases"].reverse()
+
+        with self.assertRaisesRegex(RuntimeError, "hit timing phases are incompatible"):
             _validate_gors_timing_evidence(timings, 4)
 
     def test_scheduler_evidence_rejects_cache_miss_without_source_load(self) -> None:

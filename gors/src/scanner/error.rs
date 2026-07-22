@@ -49,7 +49,9 @@ impl std::error::Error for ScannerError {}
 
 impl fmt::Display for ScannerError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.file.is_empty() {
+        if self.file.is_empty() && self.column == 0 {
+            write!(formatter, "{}: {}", self.line, self.message())
+        } else if self.file.is_empty() {
             write!(
                 formatter,
                 "{}:{}: {}",
@@ -57,6 +59,8 @@ impl fmt::Display for ScannerError {
                 self.column,
                 self.message()
             )
+        } else if self.column == 0 {
+            write!(formatter, "{}:{}: {}", self.file, self.line, self.message())
         } else {
             write!(
                 formatter,

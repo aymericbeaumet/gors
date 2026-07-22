@@ -83,6 +83,7 @@ pub fn parse_file<'a>(filename: &'a str, buffer: &'a str) -> Result<ast::File<'a
         .map_err(|err| match err {
             ParserError::UnexpectedToken => ParserError::UnexpectedTokenAt {
                 file: parser.current_step.0.filename().into_owned(),
+                offset: parser.current_step.0.offset,
                 line: parser.current_step.0.line,
                 column: parser.current_step.0.column,
                 token: parser.current_step.1,

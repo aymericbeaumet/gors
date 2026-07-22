@@ -1,5 +1,5 @@
 use super::lexical::{KEYWORDS, is_letter, is_newline, is_unicode_digit};
-use super::{LineInfo, Result, Scanner, ScannerErrorKind, Step};
+use super::{LineFilename, LineInfo, Result, Scanner, ScannerErrorKind, Step};
 use crate::token::Token;
 
 impl<'a> Scanner<'a> {
@@ -231,8 +231,8 @@ impl<'a> Scanner<'a> {
         let lit = lit.strip_suffix('\r').unwrap_or(lit);
 
         // look for compiler directives (at the beginning of line)
-        if self.start_column == 1 {
-            self.directive(lit["//".len()..].trim_end(), false)?;
+        if self.start_physical_column == 1 {
+            self.directive(&lit["//".len()..], false)?;
         }
 
         Ok((pos, Token::COMMENT, lit))
@@ -250,40 +250,45 @@ impl<'a> Scanner<'a> {
     }
 
     fn parse_line_directive(&mut self, line_directive: &'a str) -> Result<Option<LineInfo<'a>>> {
-        if let Some((file, line)) = line_directive.rsplit_once(':') {
-            let line = line
-                .parse()
-                .map_err(|_| self.error(ScannerErrorKind::InvalidDirective))?;
+        const MAX_LINE_COLUMN: usize = 1 << 30;
 
-            if let Some((file, l)) = file.rsplit_once(':') {
-                if let Ok(l) = l.parse() {
-                    //line :line:col
-                    //line filename:line:col
-                    /*line :line:col*/
-                    /*line filename:line:col*/
-                    let filename = (!file.is_empty()).then_some(file);
-                    return Ok(Some(LineInfo {
-                        filename,
-                        line: l,
-                        column: Some(line),
-                        hide_column: false,
-                    }));
-                }
+        let Some((file, trailing)) = line_directive.rsplit_once(':') else {
+            return Ok(None);
+        };
+        let trailing = parse_decimal(trailing)
+            .filter(|value| (1..=MAX_LINE_COLUMN).contains(value))
+            .ok_or_else(|| self.error(ScannerErrorKind::InvalidDirective))?;
+
+        if let Some((filename, candidate_line)) = file.rsplit_once(':')
+            && let Some(line) = parse_decimal(candidate_line)
+        {
+            if !(1..=MAX_LINE_COLUMN).contains(&line) {
+                return Err(self.error(ScannerErrorKind::InvalidDirective));
             }
-
-            //line :line
-            //line filename:line
-            /*line :line*/
-            /*line filename:line*/
-            Ok(Some(LineInfo {
-                filename: (!file.is_empty()).then_some(file),
+            // `filename:line:column`: an omitted filename retains the active
+            // filename, unlike the two-field form which clears it.
+            return Ok(Some(LineInfo {
+                filename: if filename.is_empty() {
+                    LineFilename::Retain
+                } else {
+                    LineFilename::Set(filename)
+                },
                 line,
-                column: None,
-                hide_column: true,
-            }))
-        } else {
-            Ok(None)
+                column: Some(trailing),
+            }));
         }
+
+        // `filename:line`: column information is hidden until the next
+        // directive, and an omitted filename is the empty filename.
+        Ok(Some(LineInfo {
+            filename: if file.is_empty() {
+                LineFilename::Clear
+            } else {
+                LineFilename::Set(file)
+            },
+            line: trailing,
+            column: None,
+        }))
     }
 
     pub(super) fn find_line_end(&self) -> bool {
@@ -327,4 +332,10 @@ impl<'a> Scanner<'a> {
 
         !in_comment
     }
+}
+
+fn parse_decimal(input: &str) -> Option<usize> {
+    (!input.is_empty() && input.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| input.parse().ok())
+        .flatten()
 }

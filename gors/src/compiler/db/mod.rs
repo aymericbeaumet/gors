@@ -5,6 +5,7 @@
 //! lifetime crosses this facade.
 
 mod model;
+mod mutation;
 mod products;
 mod provenance;
 mod queries;
@@ -19,7 +20,7 @@ use std::sync::Arc;
 use salsa::{Durability, Setter as _};
 
 use super::ids::{DefId, FileId, IdentityInterner, PackageId};
-use super::input::{PackageKey, SourceContent, SourceSnapshot, WorkspaceKey};
+use super::input::{PackageKey, SourceSnapshot, WorkspaceKey};
 use queries::{BuildInput, FileFacts, FunctionProjection, PackageInput, SourceInput};
 use telemetry::Telemetry;
 
@@ -28,6 +29,7 @@ pub use model::{
     BuildConfig, FileAnalysis, FileIssue, FunctionBody, FunctionDescriptor, FunctionSignature,
     PackageAnalysis, PackageIssue, ParseFailure, PublicApi,
 };
+pub(in crate::compiler) use mutation::SourceInputMutation;
 pub use products::{
     CompilerStage, FunctionProvenance, NormalizedMirFunction, StageFailure, TypedFunctionSignature,
     TypedHirFunction, VerifiedMirFunction, VerifiedRustIrFunction, VerifiedRustIrPackage,
@@ -211,8 +213,8 @@ impl CompilerDatabase {
     ///
     /// `logical_path` is a workspace-relative identity, independent of the
     /// diagnostic path retained by `snapshot`. Salsa tracks only path-independent
-    /// [`SourceContent`], so a diagnostic-path-only update creates no query
-    /// revision or worker cancellation.
+    /// [`crate::compiler::input::SourceContent`], so a diagnostic-path-only
+    /// update creates no query revision or worker cancellation.
     pub fn set_source(
         &mut self,
         workspace: &WorkspaceKey,
@@ -220,35 +222,10 @@ impl CompilerDatabase {
         logical_path: &str,
         snapshot: Arc<SourceSnapshot>,
     ) -> Result<SourceUpdate, QueryError> {
-        let workspace = self
-            .identities
-            .workspace(workspace)
-            .map_err(identity_error)?;
-        let package = self
-            .identities
-            .package(workspace, package)
-            .map_err(identity_error)?;
-        let file = self
-            .identities
-            .file(package, logical_path)
-            .map_err(identity_error)?;
-
-        if self.sources.contains_key(&file) {
-            self.replace_source_revision(file, snapshot)
-        } else {
-            let content = snapshot.content();
-            let input = SourceInput::new(self, package, file, Arc::from(logical_path), content);
-            self.sources.insert(file, input);
-            self.diagnostic_paths
-                .insert(file, snapshot.shared_diagnostic_path());
-            self.add_package_source(package, input);
-            Ok(SourceUpdate {
-                file,
-                semantic_changed: true,
-                diagnostic_path_changed: true,
-                inserted: true,
-            })
-        }
+        let (update, mutation) =
+            self.set_source_transactional(workspace, package, logical_path, snapshot)?;
+        self.commit_source_mutations(mutation);
+        Ok(update)
     }
 
     /// Evict one active source payload from the database facade.
@@ -258,15 +235,8 @@ impl CompilerDatabase {
     /// Parsed ASTs are never retained, so dropping the caller's last `Arc`
     /// releases the old source bytes independently of every other file.
     pub fn remove_source(&mut self, file: FileId) -> Result<(), QueryError> {
-        let input = self
-            .sources
-            .remove(&file)
-            .ok_or(QueryError::UnknownFile(file))?;
-        self.diagnostic_paths.remove(&file);
-        let package = input.package(self);
-        self.remove_package_source(package, file)?;
-        let tombstone = Arc::new(SourceContent::empty());
-        drop(input.set_content(self).to(tombstone));
+        let mutation = self.remove_source_transactional(file)?;
+        self.commit_source_mutations(Some(mutation));
         Ok(())
     }
 
@@ -520,16 +490,6 @@ impl CompilerDatabase {
         )))
     }
 
-    /// Restore an already-registered file payload during session transaction rollback.
-    pub(in crate::compiler) fn restore_source_snapshot(
-        &mut self,
-        file: FileId,
-        snapshot: Arc<SourceSnapshot>,
-    ) -> Result<(), QueryError> {
-        self.replace_source_revision(file, snapshot)?;
-        Ok(())
-    }
-
     /// Snapshot query execution counters and coarse engine events.
     #[must_use]
     pub fn telemetry(&self) -> TelemetrySnapshot {
@@ -568,35 +528,6 @@ impl CompilerDatabase {
             .get(&package)
             .copied()
             .ok_or(QueryError::UnknownPackage(package))
-    }
-
-    fn replace_source_revision(
-        &mut self,
-        file: FileId,
-        snapshot: Arc<SourceSnapshot>,
-    ) -> Result<SourceUpdate, QueryError> {
-        let input = self
-            .sources
-            .get(&file)
-            .copied()
-            .ok_or(QueryError::UnknownFile(file))?;
-        let content = snapshot.content();
-        let semantic_changed = input.content(self).as_ref() != content.as_ref();
-        if semantic_changed {
-            input.set_content(self).to(content);
-        }
-        let diagnostic_path = snapshot.shared_diagnostic_path();
-        let diagnostic_path_changed = self
-            .diagnostic_paths
-            .get(&file)
-            .is_none_or(|current| current.as_ref() != diagnostic_path.as_ref());
-        self.diagnostic_paths.insert(file, diagnostic_path);
-        Ok(SourceUpdate {
-            file,
-            semantic_changed,
-            diagnostic_path_changed,
-            inserted: false,
-        })
     }
 
     fn add_package_source(&mut self, package: PackageId, source: SourceInput) {

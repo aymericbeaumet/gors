@@ -6,14 +6,19 @@
 //! coordinates are a separate display projection used by Go `//line`
 //! directives; they must never be used to address source bytes.
 //!
-//! The eventual coordinate-map boundary will map physical [`FileRange`] values
-//! to an adjusted filename and [`LogicalLineColumn`]. Keeping the two domains
-//! distinct now prevents virtual filenames, one-based lines, and hidden Go
-//! columns from leaking into incremental keys or byte-range arithmetic.
+//! [`SourceCoordinateMap`] maps physical offsets to an adjusted filename and
+//! [`LogicalLineColumn`] using neutral line-directive segments captured by the
+//! scanner's existing pass. Keeping the two domains distinct prevents virtual
+//! filenames, one-based lines, and hidden Go columns from leaking into
+//! incremental keys or byte-range arithmetic.
 
+pub(crate) mod coordinate_map;
 mod logical;
 mod physical;
 
+pub use coordinate_map::{
+    AdjustedSourceCoordinate, LineDirectiveSegment, SourceCoordinateMap, SourceCoordinateMapError,
+};
 pub use logical::{LogicalColumn, LogicalLineColumn};
 pub use physical::{
     FileRange, InvalidTextRange, PhysicalLineColumn, PhysicalLineColumnOverflow, TextRange,

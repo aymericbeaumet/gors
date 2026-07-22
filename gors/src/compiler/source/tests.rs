@@ -135,6 +135,6 @@ fn physical_coordinates_use_utf8_byte_columns_and_include_eof() {
         .physical_line_column(TextSize::new(2))
         .unwrap()
         .unwrap();
-    assert_eq!(eof_after_newline.line().get(), 2);
-    assert_eq!(eof_after_newline.byte_column().get(), 1);
+    assert_eq!(eof_after_newline.line().get(), 1);
+    assert_eq!(eof_after_newline.byte_column().get(), 3);
 }

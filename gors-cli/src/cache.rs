@@ -27,6 +27,10 @@ pub struct CacheRequest {
     fingerprint: String,
 }
 
+/// Immutable source-admission record derived from one `LoadedProgram`.
+///
+/// Cache comparison consumes this value directly and never rereads its source
+/// paths. A cache miss compiles the same loaded revision that produced it.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct InputSnapshot {
     files: BTreeMap<String, String>,
@@ -171,26 +175,6 @@ impl InputSnapshot {
 
         Ok(Self { files, directories })
     }
-
-    pub fn is_current(&self) -> bool {
-        for (path, expected_hash) in &self.files {
-            let Ok(source) = std::fs::read(path) else {
-                return false;
-            };
-            if sha2_hash(&source) != *expected_hash {
-                return false;
-            }
-        }
-        for (path, expected_files) in &self.directories {
-            let Ok(actual_files) = eligible_go_files(Path::new(path)) else {
-                return false;
-            };
-            if actual_files != *expected_files {
-                return false;
-            }
-        }
-        true
-    }
 }
 
 impl FileArtifact {
@@ -224,12 +208,21 @@ impl CliCacheManifest {
         }
     }
 
-    pub fn load_if_generated_valid(output_dir: &Path, request: &CacheRequest) -> Option<Self> {
+    /// Load a complete output only when it belongs to `current_inputs`.
+    ///
+    /// The caller must supply the snapshot captured during this invocation's
+    /// source-load phase; this function validates output artifacts but never
+    /// reopens source inputs.
+    pub fn load_if_generated_valid(
+        output_dir: &Path,
+        request: &CacheRequest,
+        current_inputs: &InputSnapshot,
+    ) -> Option<Self> {
         let content = std::fs::read(output_dir.join(CACHE_MANIFEST_FILENAME)).ok()?;
         let mut manifest: Self = serde_json::from_slice(&content).ok()?;
         if manifest.version != CACHE_MANIFEST_VERSION
             || manifest.request_fingerprint != request.fingerprint
-            || !manifest.inputs.is_current()
+            || &manifest.inputs != current_inputs
             || !generated_files_are_current(output_dir, &manifest.generated_files)
             || manifest
                 .sourcemap
@@ -441,27 +434,6 @@ fn generated_files_are_current(output_dir: &Path, expected: &BTreeMap<String, St
     actual_rust_files == expected_rust_files
 }
 
-fn eligible_go_files(directory: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let mut files = Vec::new();
-    for entry in std::fs::read_dir(directory)? {
-        let entry = entry?;
-        let path = entry.path();
-        let Some(filename) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        if path.is_file()
-            && filename.ends_with(".go")
-            && !filename.ends_with("_test.go")
-            && !filename.starts_with('.')
-            && !filename.starts_with('_')
-        {
-            files.push(normalized_path(&path)?);
-        }
-    }
-    files.sort();
-    Ok(files)
-}
-
 fn module_context(source_path: &Path) -> Result<String, Box<dyn std::error::Error>> {
     let mut directory = if source_path.is_dir() {
         source_path.to_path_buf()
@@ -540,9 +512,10 @@ fn hash_gorspath_root(hasher: &mut Sha256, root: &Path) {
         hash_part(hasher, b"file");
     } else if canonical.is_dir() {
         // GORSPATH config identity belongs in the pre-parse lookup key. Exact
-        // resolved source contents and eligible directory membership are
-        // validated by InputSnapshot. Recursively reading every possible Go
-        // file here would make even a warm cache hit O(the entire search tree).
+        // selected source contents and eligible directory membership come from
+        // the one InputSnapshot captured before cache comparison. Recursively
+        // reading every possible Go file here would make source admission
+        // O(the entire search tree).
         hash_part(hasher, b"directory");
     } else {
         hash_part(hasher, b"unsupported-root-kind");

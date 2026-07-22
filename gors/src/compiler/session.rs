@@ -10,10 +10,10 @@ use std::sync::Arc;
 use self::readiness::RustIrRoot;
 use super::db::{
     BuildConfig, CompilerDatabase, Fingerprint, PackageAnalysis, PackageIssue, QueryError,
-    StageFailure,
+    SourceInputMutation, StageFailure,
 };
 use super::ids::{FileId, PackageId};
-use super::input::{PackageInputManifest, ProgramInput, SourceSnapshot, WorkspaceKey};
+use super::input::{PackageInputManifest, ProgramInput, WorkspaceKey};
 use super::scheduler::{CompilerHost, SchedulerTelemetry};
 use super::{CompiledProgram, CompilerDiagnostic, CompilerError, SourceMapPlan, emit};
 
@@ -172,44 +172,45 @@ impl CompilerSession {
         &mut self,
         program: &ProgramInput,
     ) -> Result<InstalledProgram, CompilerError> {
-        let previous_sources = self
-            .database
-            .active_files()
-            .into_iter()
-            .map(|file| {
-                self.database
-                    .source_snapshot(file)
-                    .map(|snapshot| (file, snapshot))
-            })
-            .collect::<Result<BTreeMap<_, _>, _>>()
-            .map_err(|error| self.query_error(error))?;
-        match self.install_program_inputs(program) {
+        self.install_program_transaction(program, |_| Ok(()))
+    }
+
+    fn install_program_transaction<F>(
+        &mut self,
+        program: &ProgramInput,
+        before_commit: F,
+    ) -> Result<InstalledProgram, CompilerError>
+    where
+        F: FnOnce(&CompilerDatabase) -> Result<(), CompilerError>,
+    {
+        let mut mutations = Vec::new();
+        let result = (|| {
+            let (installed, next_sources) = self.install_program_inputs(program, &mut mutations)?;
+            let stale = self
+                .database
+                .active_files()
+                .into_iter()
+                .filter(|file| !next_sources.contains(file))
+                .collect::<Vec<_>>();
+            for file in stale {
+                let mutation = self
+                    .database
+                    .remove_source_transactional(file)
+                    .map_err(|error| self.query_error(error))?;
+                mutations.push(mutation);
+            }
+            before_commit(&self.database)?;
+            Ok((installed, next_sources))
+        })();
+        match result {
             Ok((installed, next_sources)) => {
-                let stale = previous_sources
-                    .keys()
-                    .filter(|file| !next_sources.contains(file))
-                    .copied()
-                    .collect::<Vec<_>>();
-                for file in stale {
-                    self.database
-                        .remove_source(file)
-                        .map_err(|error| self.query_error(error))?;
-                }
+                self.database.commit_source_mutations(mutations);
                 self.retain_ready_roots_for_files(&next_sources);
                 Ok(installed)
             }
             Err(error) => {
-                if let Err(rollback) = self.rollback_install(&previous_sources) {
-                    let mut diagnostics = error.diagnostics;
-                    diagnostics.push(CompilerDiagnostic {
-                        code: "GORS2003",
-                        message: format!("source transaction rollback failed: {rollback}"),
-                        file: String::new(),
-                        line: 0,
-                        column: 0,
-                    });
-                    return Err(CompilerError { diagnostics });
-                }
+                self.database
+                    .rollback_source_mutations(mutations.into_iter().rev());
                 Err(error)
             }
         }
@@ -218,12 +219,13 @@ impl CompilerSession {
     fn install_program_inputs(
         &mut self,
         program: &ProgramInput,
+        mutations: &mut Vec<SourceInputMutation>,
     ) -> Result<(InstalledProgram, BTreeSet<FileId>), CompilerError> {
         let mut next_sources = BTreeSet::new();
         let mut main = None;
         for package in program.packages() {
             let (files, package_id) =
-                self.install_package(program.workspace(), package, &mut next_sources)?;
+                self.install_package(program.workspace(), package, &mut next_sources, mutations)?;
             if package.key() == program.entry_package().key() {
                 main = Some((files, package_id));
             }
@@ -240,41 +242,28 @@ impl CompilerSession {
         ))
     }
 
-    fn rollback_install(
-        &mut self,
-        previous_sources: &BTreeMap<FileId, std::sync::Arc<SourceSnapshot>>,
-    ) -> Result<(), QueryError> {
-        for file in self.database.active_files() {
-            if let Some(snapshot) = previous_sources.get(&file) {
-                self.database
-                    .restore_source_snapshot(file, std::sync::Arc::clone(snapshot))?;
-            } else {
-                self.database.remove_source(file)?;
-            }
-        }
-        Ok(())
-    }
-
     fn install_package(
         &mut self,
         workspace: &WorkspaceKey,
         package: &PackageInputManifest,
         next_sources: &mut BTreeSet<FileId>,
+        mutations: &mut Vec<SourceInputMutation>,
     ) -> Result<(Vec<InstalledFile>, PackageId), CompilerError> {
         let mut installed = Vec::with_capacity(package.files().len());
         let mut package_id = None;
         for file in package.files() {
             let logical_path = file.logical_path().to_string();
             let snapshot = file.snapshot();
-            let update = self
+            let (update, mutation) = self
                 .database
-                .set_source(
+                .set_source_transactional(
                     workspace,
                     package.key(),
                     &logical_path,
                     Arc::clone(&snapshot),
                 )
                 .map_err(|error| self.query_error(error))?;
+            mutations.extend(mutation);
             let id = update.file();
             let current_package = self
                 .database

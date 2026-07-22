@@ -12,12 +12,96 @@ fn args(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| value.to_string()).collect()
 }
 
+fn timing_phase_names(report: &serde_json::Value) -> Vec<&str> {
+    report
+        .get("phases")
+        .and_then(serde_json::Value::as_array)
+        .unwrap()
+        .iter()
+        .map(|phase| {
+            phase
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap()
+        })
+        .collect()
+}
+
+fn timing_report_version(report: &serde_json::Value) -> u64 {
+    report
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap()
+}
+
+fn compiler_cache_hit(report: &serde_json::Value) -> bool {
+    report
+        .get("cacheEvents")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|events| events.first())
+        .and_then(|event| event.get("hit"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap()
+}
+
 #[test]
 fn command_line_compilation_uses_an_explicit_stable_workspace_identity() {
     assert_eq!(
         cli_workspace().unwrap(),
         WorkspaceKey::AdHoc("gors-cli".into())
     );
+}
+
+#[test]
+fn build_timing_v5_reports_single_load_before_hit_or_miss_cache_lookup() {
+    let temporary = tempfile::tempdir().unwrap();
+    let source = temporary.path().join("main.go");
+    let output = temporary.path().join("output");
+    let cache = temporary.path().join("cache");
+    let miss_timings = temporary.path().join("miss.json");
+    let hit_timings = temporary.path().join("hit.json");
+    std::fs::write(
+        &source,
+        "package main\n\nfunc main() { println(\"timing\") }\n",
+    )
+    .unwrap();
+
+    let command = |timings: &Path| Build {
+        path: source.to_string_lossy().into_owned(),
+        release: false,
+        sourcemap: None,
+        output: Some(output.to_string_lossy().into_owned()),
+        timings_json: Some(timings.to_string_lossy().into_owned()),
+        jobs: NonZeroUsize::MIN,
+    };
+    build_with_cache_base(command(&miss_timings), &cache).unwrap();
+    build_with_cache_base(command(&hit_timings), &cache).unwrap();
+
+    let read_report = |path: &Path| -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    };
+
+    let miss = read_report(&miss_timings);
+    assert_eq!(timing_report_version(&miss), 5);
+    assert_eq!(
+        timing_phase_names(&miss),
+        [
+            "cli.source_load",
+            "cli.cache_lookup",
+            "cli.compile",
+            "cli.print",
+            "cli.file_writes",
+        ]
+    );
+    assert!(!compiler_cache_hit(&miss));
+
+    let hit = read_report(&hit_timings);
+    assert_eq!(timing_report_version(&hit), 5);
+    assert_eq!(
+        timing_phase_names(&hit),
+        ["cli.source_load", "cli.cache_lookup"]
+    );
+    assert!(compiler_cache_hit(&hit));
 }
 
 #[test]
@@ -255,7 +339,13 @@ fn concurrent_output_publications_publish_one_consistent_transaction() {
         sourcemap: Some(&source_map_path),
     })
     .unwrap();
-    let cli_manifest = CliCacheManifest::load_if_generated_valid(&output_dir, &request)
+    let loaded = gors::workspace::load_program(
+        cli_workspace().unwrap(),
+        source_paths.first().expect("published source path"),
+    )
+    .unwrap();
+    let inputs = InputSnapshot::capture(&loaded).unwrap();
+    let cli_manifest = CliCacheManifest::load_if_generated_valid(&output_dir, &request, &inputs)
         .expect("published CLI cache manifest");
     assert!(cli_manifest.executable_is_valid(&executable_path));
 }

@@ -197,9 +197,13 @@ fn ast_output(file: &str) -> Result<Vec<u8>, String> {
 }
 
 fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
+    let cache_base = gors_cache_base()?;
+    build_with_cache_base(cmd, &cache_base)
+}
+
+fn build_with_cache_base(cmd: Build, cache_base: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let timings = TimingCollector::new(cmd.jobs);
     let compiler_host = gors::compiler::CompilerHost::new(cmd.jobs)?;
-    let cache_base = gors_cache_base()?;
     let source_paths = vec![cmd.path.clone()];
     let output_dir = cmd
         .output
@@ -214,13 +218,18 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
         output: Some(&output_dir),
         sourcemap: sourcemap_path.as_deref(),
     })?;
-    maybe_prune_cli_cache(&cache_base, Some(&output_dir))?;
-    let cache_access_lock = CacheAccessLock::acquire_shared(&cache_base)?;
+    maybe_prune_cli_cache(cache_base, Some(&output_dir))?;
+    let cache_access_lock = CacheAccessLock::acquire_shared(cache_base)?;
     let output_lock = OutputDirectoryLock::acquire(&output_dir)?;
+
+    let source_load_timer = timings.phase("cli.source_load");
+    let loaded = gors::workspace::load_program(cli_workspace()?, &cmd.path)?;
+    let inputs = InputSnapshot::capture(&loaded)?;
+    drop(source_load_timer);
 
     let cached_manifest = {
         let _cache_timer = timings.phase("cli.cache_lookup");
-        CliCacheManifest::load_if_generated_valid(&output_dir, &request)
+        CliCacheManifest::load_if_generated_valid(&output_dir, &request, &inputs)
     };
     if let Some(manifest) = cached_manifest {
         timings.cache_event("compiler", true);
@@ -236,10 +245,6 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
     }
     timings.cache_event("compiler", false);
 
-    let source_load_timer = timings.phase("cli.source_load");
-    let loaded = gors::workspace::load_program(cli_workspace()?, &cmd.path)?;
-    drop(source_load_timer);
-    let inputs = InputSnapshot::capture(&loaded)?;
     let primary_file = loaded.primary_diagnostic_path().to_string();
 
     let compile_timer = timings.phase("cli.compile");
@@ -617,19 +622,24 @@ fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
         output: Some(&cache_dir),
         sourcemap: None,
     })?;
+
+    let source_load_timer = timings.phase("cli.source_load");
+    let loaded = gors::workspace::load_program_files(cli_workspace()?, &source_paths)?;
+    let inputs = InputSnapshot::capture(&loaded)?;
+    drop(source_load_timer);
+
     let mut cache_manifest = {
         let _cache_timer = timings.phase("cli.cache_lookup");
-        CliCacheManifest::load_if_generated_valid(&cache_dir, &request)
+        CliCacheManifest::load_if_generated_valid(&cache_dir, &request, &inputs)
     };
 
     if cache_manifest.is_some() {
         timings.cache_event("compiler", true);
+        drop(loaded);
+        drop(inputs);
+        drop(compiler_host);
     } else {
         timings.cache_event("compiler", false);
-        let source_load_timer = timings.phase("cli.source_load");
-        let loaded = gors::workspace::load_program_files(cli_workspace()?, &source_paths)?;
-        drop(source_load_timer);
-        let inputs = InputSnapshot::capture(&loaded)?;
         let primary_file = loaded.primary_diagnostic_path().to_string();
 
         let compile_timer = timings.phase("cli.compile");

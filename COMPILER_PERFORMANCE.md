@@ -393,10 +393,12 @@ architecture described here:
   inputs rather than eagerly installed source sets;
 - compiler-owned source inputs now enforce fixed-width byte lengths and expose
   checked `TextSize`, half-open `TextRange`, `FileRange`, physical positions,
-  and an adjusted column type that can represent Go's hidden column zero.
-  Later stages still mix physical bytes with virtual filename/line/column
-  values, so end-to-end typed anchors and a separate coordinate map remain P0
-  for diagnostics, Rust IR provenance, emission anchors, and source maps;
+  and an adjusted column type that can represent Go's hidden column zero. Parse
+  failures retain a typed physical byte anchor separately from legacy adjusted
+  line/column fields, but do not yet retain the map or its adjusted filename.
+  Later stages still mix physical bytes with virtual filename/line/column values,
+  so end-to-end typed anchors and the scanner-built coordinate map remain P0 for
+  diagnostics, Rust IR provenance, emission anchors, and source maps;
 - workspace, package, file, and definition IDs are stable; node, local, and
   basic-block IDs are still revision-local dense indexes and cannot be
   persistent query or CAS keys;
@@ -418,21 +420,21 @@ architecture described here:
   Wasm/default/free calls stay inline, parallelism requires an explicit host or
   budget, and every revision-scoped snapshot is joined before readiness is
   published or input mutation resumes;
-- program installation still snapshots every active source before applying an
-  update, and stale-file deletion is not inside the same rollback boundary.
-  Replace that O(all-active-files) backup with a mutation journal that records
-  only changed, inserted, and removed inputs and can reverse the complete
-  transaction;
+- program installation journals only changed, inserted, and removed sources,
+  includes stale-file deletion in the same reversible transaction, and gives
+  exact no-op installs no Salsa setter or cancellation. Explicitly supplied
+  unreachable packages are still materialized eagerly, so manifest inputs must
+  become reachable on demand;
 - the browser worker explicitly retains one `CompilerSession` across changed
   edits, consumes query-owned comments, and uses its exact-output cache only
   when that artifact matches the currently installed successful source
   revision; this is a real warm semantic path, but it is not the native artifact
   certification boundary;
 - the CLI manifest validates and reuses a complete generated-output or
-  executable request, but does not reuse semantic queries after an edit. A
-  source-changed cache probe can also read and hash input bytes before the raw
-  loader reads them again; the next timing-schema cut must load one immutable
-  snapshot and use it for both cache comparison and compilation;
+  executable request, but does not reuse semantic queries after an edit. Every
+  invocation now loads one immutable source snapshot before cache comparison
+  and reuses that exact snapshot for miss compilation; warm complete-output
+  hits therefore still pay honest source admission cost;
 - the bootstrap Rust artifact still recompiles its bundled runtime module for
   each uncached executable instead of linking a prebuilt versioned runtime ABI;
 - dynamic divide/remainder-by-zero and negative-shift faults currently unwind
@@ -440,10 +442,10 @@ architecture described here:
   process behavior and cannot enter behavior-validated performance evidence;
 - atomic query counters, Salsa execution and cancellation-request counters,
   scheduler wave evidence, and invalidation tests exist, and CLI/performance
-  timings record the exact compiler job budget. CLI timing report schema v4
-  names raw source admission `cli.source_load`; reports do not yet expose
-  complete dependency traces, retained memory, or a foreground cancellation
-  protocol;
+  timings record the exact compiler job budget. CLI timing report schema v5
+  records `cli.source_load` before `cli.cache_lookup` for hits and misses;
+  reports do not yet expose complete dependency traces, retained memory, or a
+  foreground cancellation protocol;
 - `gors build` currently publishes generated Rust sources rather than a runnable
   executable, so a harness-composed gors-plus-rustc measurement is diagnostic
   only until the default artifact command owns the complete publication path;
