@@ -21,6 +21,7 @@ for obsolete in \
   gors-builtin \
   gors/src/compiler/backend \
   gors/src/compiler/rust_lowering \
+  gors/src/compiler/source \
   gors/src/mapping \
   gors/src/parser/program.rs \
   www/wasm/pkg-threads
@@ -30,6 +31,14 @@ do
     failed=1
   fi
 done
+
+fail_on_matches \
+  'frontend source layers must not depend on the semantic compiler:' \
+  'crate::compiler' \
+  gors/src/source \
+  gors/src/scanner \
+  gors/src/parser \
+  gors/src/token
 
 fail_on_matches \
   'legacy compiler modules or imports are forbidden:' \

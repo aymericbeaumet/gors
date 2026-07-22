@@ -1,4 +1,4 @@
-//! Compiler-owned source coordinates.
+//! Frontend-neutral source coordinates.
 //!
 //! Physical byte offsets are the authoritative coordinates for compiler stage
 //! products. They are fixed-width, path-independent, and safe for slicing only
@@ -21,8 +21,8 @@ pub use coordinate_map::{
 };
 pub use logical::{LogicalColumn, LogicalLineColumn};
 pub use physical::{
-    FileRange, InvalidTextRange, PhysicalLineColumn, PhysicalLineColumnOverflow, TextRange,
-    TextSize, TextSizeOverflow,
+    InvalidTextRange, PhysicalLineColumn, PhysicalLineColumnOverflow, TextRange, TextSize,
+    TextSizeOverflow,
 };
 
 #[cfg(test)]

@@ -403,16 +403,19 @@ Scanner positions now distinguish exact initial origins from explicit `//line`
 origins across Unix, Windows, and URI spellings without host-path
 normalization. Query-owned import diagnostics preserve that virtual filename,
 and comment positions are reconstructed physically from content byte offsets.
-`compiler::source` now supplies checked fixed-width `TextSize`, half-open
-`TextRange`, `FileRange`, one-based physical positions, and an adjusted column
-type that represents Go's hidden column zero explicitly. Source construction
-enforces the u32 byte domain. Parser errors now preserve an exact physical byte
-offset, and the query-owned parse-failure product stores it as a typed empty
-`TextRange` separately from its legacy adjusted line/column fields. The parser
-does not yet publish the coordinate map or adjusted filename with that product.
-Typed byte-anchor provenance is still P0: HIR, MIR, Rust IR, diagnostics, and
-source maps must migrate from mixed spans to those physical ranges plus a
-separate virtual-coordinate map.
+The crate-level `source` module now supplies checked fixed-width `TextSize`,
+half-open `TextRange`, one-based physical positions, an adjusted column type
+that represents Go's hidden column zero explicitly, and presentation-path
+rebasing. It is frontend-neutral: `source`, `scanner`, `parser`, and `token`
+have no dependency on the semantic compiler. The compiler-specific
+`compiler::provenance::FileRange` pairs a stable `FileId` with one physical
+`TextRange`. Source construction enforces the u32 byte domain. `parse_file`
+publishes the scanner-built coordinate map on both success and failure, and
+every parser error carries an exact physical byte anchor plus its separate
+adjusted filename and logical position. The file-projection query retains that
+same map without rescanning. Typed byte-anchor provenance is still P0: HIR,
+MIR, Rust IR, remaining diagnostics, and source maps must migrate from mixed
+spans to `FileRange` anchors plus the separate coordinate map.
 
 Native sessions can now share an explicit `CompilerHost` with one lazy bounded
 worker pool. A tracked per-definition readiness digest covers provenance-free

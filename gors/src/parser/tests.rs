@@ -1,5 +1,5 @@
-use crate::compiler::source::{LogicalColumn, TextSize};
 use crate::scanner::ScannerErrorKind;
+use crate::source::{LogicalColumn, TextSize};
 
 use super::{ParserErrorKind, parse_file};
 

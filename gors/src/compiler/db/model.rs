@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use crate::compiler::source::TextRange;
 use crate::parser::ImportPathIssue;
+use crate::source::TextRange;
 
 use super::super::fingerprint::{Fingerprint, fingerprint_parts};
 use super::super::ids::{DefId, DefinitionKey, FileId, PackageId};

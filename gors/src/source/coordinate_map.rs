@@ -157,8 +157,8 @@ impl SourceCoordinateMap {
     /// Relative line-directive names are resolved lexically against this
     /// filename's directory. Empty, rooted, Windows-absolute, and URI names
     /// remain exact. This lets checkout-independent query maps be presented
-    /// through a moved [`crate::compiler::input::SourceSnapshot`] without
-    /// rerunning the scanner or invalidating semantic queries.
+    /// through a moved presentation path without rerunning the scanner or
+    /// invalidating semantic queries.
     pub fn adjusted_coordinate_for(
         &self,
         byte_offset: TextSize,
@@ -398,7 +398,7 @@ fn project_filename(projection: &FilenameProjection, initial_filename: &str) -> 
 
 /// Return the source directory with its original trailing separator.
 ///
-/// Source names are compiler inputs, not host filesystem paths: recognizing
+/// Source names are lexical inputs, not host filesystem paths: recognizing
 /// both separators keeps Windows paths and browser URIs deterministic on every
 /// Cargo target.
 pub fn source_directory_prefix(filename: &str) -> &str {

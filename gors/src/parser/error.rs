@@ -3,11 +3,11 @@
 use std::fmt;
 use std::sync::Arc;
 
-use crate::compiler::source::{
+use crate::scanner::{ScannerError, ScannerErrorKind};
+use crate::source::{
     LogicalColumn, LogicalLineColumn, SourceCoordinateMap, SourceCoordinateMapError, TextRange,
     TextSize, TextSizeOverflow,
 };
-use crate::scanner::{ScannerError, ScannerErrorKind};
 use crate::token::Token;
 
 /// The semantic reason that parsing stopped.

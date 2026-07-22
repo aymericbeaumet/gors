@@ -1,7 +1,7 @@
 //! Successful parser products.
 
 use crate::ast;
-use crate::compiler::source::SourceCoordinateMap;
+use crate::source::SourceCoordinateMap;
 
 /// One borrowed Go syntax tree paired with its scanner-built coordinate map.
 ///

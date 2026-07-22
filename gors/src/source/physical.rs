@@ -1,8 +1,6 @@
 use std::fmt;
 use std::num::NonZeroU32;
 
-use crate::compiler::ids::FileId;
-
 /// A zero-based byte offset within one source file.
 ///
 /// The fixed-width representation bounds persistent stage products and keeps
@@ -181,30 +179,6 @@ impl fmt::Display for InvalidTextRange {
 }
 
 impl std::error::Error for InvalidTextRange {}
-
-/// A physical byte range paired with its stable logical file identity.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct FileRange {
-    file: FileId,
-    range: TextRange,
-}
-
-impl FileRange {
-    #[must_use]
-    pub const fn new(file: FileId, range: TextRange) -> Self {
-        Self { file, range }
-    }
-
-    #[must_use]
-    pub const fn file(self) -> FileId {
-        self.file
-    }
-
-    #[must_use]
-    pub const fn range(self) -> TextRange {
-        self.range
-    }
-}
 
 /// A one-based physical line and one-based UTF-8 byte column.
 ///

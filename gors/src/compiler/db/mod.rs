@@ -21,7 +21,7 @@ use salsa::{Durability, Setter as _};
 
 use super::ids::{DefId, FileId, IdentityInterner, PackageId};
 use super::input::{PackageKey, SourceSnapshot, WorkspaceKey};
-use super::source::SourceCoordinateMap;
+use crate::source::SourceCoordinateMap;
 use queries::{BuildInput, FileFacts, FunctionProjection, PackageInput, SourceInput};
 use telemetry::Telemetry;
 

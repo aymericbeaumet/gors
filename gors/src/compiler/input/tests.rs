@@ -2,9 +2,11 @@
 
 use std::sync::Arc;
 
+use crate::source::{TextRange, TextSize};
+
 use super::{
-    InputError, LogicalPathIssue, PackageInputManifest, PackageKey, ProgramInput, SourceFileInput,
-    SourceSnapshot, WorkspaceKey,
+    InputError, LogicalPathIssue, PackageInputManifest, PackageKey, ProgramInput, SourceContent,
+    SourceFileInput, SourceSnapshot, WorkspaceKey,
 };
 
 fn workspace() -> WorkspaceKey {
@@ -221,7 +223,7 @@ fn source_file_input_rejects_lengths_outside_fixed_width_coordinates() {
     }
     let byte_len = usize::try_from(u64::from(u32::MAX) + 1).unwrap();
     let logical_path = Arc::<str>::from("large.go");
-    let overflow = crate::compiler::source::TextSize::try_from(byte_len).unwrap_err();
+    let overflow = TextSize::try_from(byte_len).unwrap_err();
     assert_eq!(
         SourceFileInput::source_size_error(&logical_path, overflow),
         InputError::SourceTooLarge {
@@ -229,4 +231,44 @@ fn source_file_input_rejects_lengths_outside_fixed_width_coordinates() {
             byte_len,
         }
     );
+}
+
+#[test]
+fn physical_coordinates_use_utf8_byte_columns_and_include_eof() {
+    let content = SourceContent::from_source("αβ\nz").unwrap();
+    assert_eq!(content.text_len(), TextSize::new(6));
+    assert_eq!(content.text_range(), TextRange::up_to(TextSize::new(6)));
+
+    let middle_of_beta = content
+        .physical_line_column(TextSize::new(3))
+        .unwrap()
+        .unwrap();
+    assert_eq!(middle_of_beta.line().get(), 1);
+    assert_eq!(middle_of_beta.byte_column().get(), 4);
+
+    let second_line = content
+        .physical_line_column(TextSize::new(5))
+        .unwrap()
+        .unwrap();
+    assert_eq!(second_line.line().get(), 2);
+    assert_eq!(second_line.byte_column().get(), 1);
+
+    let eof = content
+        .physical_line_column(TextSize::new(6))
+        .unwrap()
+        .unwrap();
+    assert_eq!(eof.line().get(), 2);
+    assert_eq!(eof.byte_column().get(), 2);
+    assert_eq!(
+        content.physical_line_column(TextSize::new(7)).unwrap(),
+        None
+    );
+
+    let trailing_newline = SourceContent::from_source("x\n").unwrap();
+    let eof_after_newline = trailing_newline
+        .physical_line_column(TextSize::new(2))
+        .unwrap()
+        .unwrap();
+    assert_eq!(eof_after_newline.line().get(), 1);
+    assert_eq!(eof_after_newline.byte_column().get(), 3);
 }

@@ -273,13 +273,18 @@ resolved lexically against the initial source directory without host-platform
 `Path` normalization. Stable file identity still comes from the manifest's
 logical path. Physical comment coordinates are derived from byte offsets and
 `SourceContent`, and query-owned import issues retain explicit virtual origins.
-`compiler::source` now owns checked fixed-width `TextSize`, half-open
-`TextRange`, stable `FileRange`, and one-based physical line/UTF-8-byte-column
-coordinates. `SourceContent` construction rejects source lengths outside the
+The crate-level `source` module owns checked fixed-width `TextSize`, half-open
+`TextRange`, one-based physical line/UTF-8-byte-column coordinates, adjusted
+Go display coordinates, and presentation-path rebasing. Stable semantic file
+identity is deliberately absent from this frontend layer;
+`compiler::provenance::FileRange` is the compiler-owned pairing of `FileId`
+and `TextRange`. The `source`, `scanner`, `parser`, and `token` modules must
+never depend on `compiler`; the semantic compiler consumes their products in
+one direction. `SourceContent` construction rejects source lengths outside the
 u32 byte-offset domain and stores fixed-width line starts. Adjusted Go display
-coordinates are a separate type whose column is explicitly `Hidden` or
-`Known`, so a two-field `//line file:line` directive cannot conflate hidden
-column zero with a physical byte position. The scanner now records a typed
+columns are explicitly `Hidden` or `Known`, so a two-field
+`//line file:line` directive cannot conflate hidden column zero with a physical
+byte position. The scanner now records a typed
 `SourceCoordinateMap` and ordered `LineDirectiveSegment`s during its existing
 lexical pass while maintaining independent physical and adjusted counters;
 both `Scanner` and its production `IntoIter` expose the consumed map without a
@@ -463,13 +468,14 @@ weaken parser behavior to fit the bootstrap backend.
           mir/              explicit-order lowering, data model, and verifier
           rust_ir/          explicit Rust representation and ownership IR
           lowering/         mandatory Go MIR to verified Rust IR lowering
-          source/           checked physical and adjusted source coordinates
+          provenance.rs     stable file identity paired with physical ranges
           emit.rs           terminal Rust syntax emission
           hir.rs            typed high-level IR
           ids.rs            compiler semantic identities
           types.rs          exact Go type model
         resolve/            embedded Go SDK source metadata only
         printer/            syn formatting and file layout
+        source/             frontend-neutral physical and adjusted coordinates
         sourcemap/          Go to Rust source maps
         workspace/          raw filesystem source selection and loading
         token/              Go token definitions

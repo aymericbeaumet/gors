@@ -12,10 +12,10 @@ mod tests;
 
 pub use error::{Result, ScannerError, ScannerErrorKind};
 
-use crate::compiler::source::coordinate_map::{
+use crate::source::coordinate_map::{
     FilenameUpdate, SourceCoordinateMapBuilder, is_rooted_source_name, source_directory_prefix,
 };
-use crate::compiler::source::{SourceCoordinateMap, SourceCoordinateMapError};
+use crate::source::{SourceCoordinateMap, SourceCoordinateMapError};
 use crate::token::{Position, SourceOrigin, Token};
 use lexical::{is_hex_digit, is_octal_digit};
 

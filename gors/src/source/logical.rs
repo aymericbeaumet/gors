@@ -42,8 +42,8 @@ impl LogicalColumn {
 /// A one-based line and adjusted Go display column.
 ///
 /// This value is a coordinate-map result, not a source byte address. The
-/// future Go-like coordinate map will pair it with an adjusted filename while
-/// preserving the physical [`super::FileRange`] as authoritative provenance.
+/// source coordinate map pairs it with an adjusted filename while preserving
+/// a physical byte range as authoritative provenance.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct LogicalLineColumn {
     line: NonZeroU32,

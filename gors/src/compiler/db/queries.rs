@@ -6,8 +6,8 @@ use std::sync::Arc;
 use crate::ast;
 use crate::compiler::fingerprint::{fingerprint_parts, rust_ir_root_inputs};
 use crate::compiler::input::SourceContent;
-use crate::compiler::source::SourceCoordinateMap;
 use crate::compiler::{Diagnostic, lowering, mir, rust_ir};
+use crate::source::SourceCoordinateMap;
 
 use super::super::ids::{DefId, DefinitionKey, DefinitionKind, FileId, PackageId};
 use super::model::{

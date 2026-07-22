@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use super::path::validate_logical_path;
 use super::{InputError, PackageKey, SourceSnapshot, WorkspaceKey};
-use crate::compiler::source::TextSizeOverflow;
+use crate::source::TextSizeOverflow;
 
 /// One stable logical source file paired with an immutable raw source revision.
 ///

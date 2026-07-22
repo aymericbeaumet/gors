@@ -5,9 +5,9 @@ use std::sync::Arc;
 
 use crate::ast;
 use crate::compiler::input::SourceContent;
-use crate::compiler::source::TextSize;
 use crate::parser::decode_import_path_literal;
 use crate::scanner::Scanner;
+use crate::source::TextSize;
 use crate::token::Token;
 
 use super::super::ids::FileId;

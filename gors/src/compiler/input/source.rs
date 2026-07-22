@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 
-use crate::compiler::source::{
+use crate::source::{
     PhysicalLineColumn, PhysicalLineColumnOverflow, TextRange, TextSize, TextSizeOverflow,
 };
 

@@ -8,8 +8,8 @@ use gors::compiler::db::{
 };
 use gors::compiler::ids::{DefId, FileId};
 use gors::compiler::input::{PackageKey, SourceSnapshot, WorkspaceKey};
-use gors::compiler::source::{LogicalColumn, TextSize};
 use gors::parser::ImportPathIssue;
+use gors::source::{LogicalColumn, TextSize};
 
 const ORIGINAL: &str = r#"package main
 

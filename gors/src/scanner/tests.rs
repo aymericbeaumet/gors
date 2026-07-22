@@ -1,10 +1,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 
 use super::{Scanner, Token};
-use crate::compiler::source::{
-    AdjustedSourceCoordinate, LogicalColumn, SourceCoordinateMap, TextSize,
-};
 use crate::parser::parse_file;
+use crate::source::{AdjustedSourceCoordinate, LogicalColumn, SourceCoordinateMap, TextSize};
 use crate::token::{Position, SourceOrigin};
 
 fn position_of_ident<'a>(filename: &'a str, source: &'a str, name: &str) -> Position<'a> {

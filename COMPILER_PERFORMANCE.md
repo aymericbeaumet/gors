@@ -390,14 +390,16 @@ architecture described here:
   no recursive import or module discovery; reachable expansion must be rebuilt
   as query-owned manifest admission from direct-import facts and resolver
   metadata, not as a parser compatibility layer or session-side package graph;
-- compiler-owned source inputs now enforce fixed-width byte lengths and expose
-  checked `TextSize`, half-open `TextRange`, `FileRange`, physical positions,
-  and an adjusted column type that can represent Go's hidden column zero. Parse
-  failures retain a typed physical byte anchor separately from legacy adjusted
-  line/column fields, but do not yet retain the map or its adjusted filename.
-  Later stages still mix physical bytes with virtual filename/line/column values,
-  so end-to-end typed anchors and the scanner-built coordinate map remain P0 for
-  diagnostics, Rust IR provenance, emission anchors, and source maps;
+- the frontend-neutral `source` layer now enforces fixed-width byte lengths and
+  exposes checked `TextSize`, half-open `TextRange`, physical positions,
+  adjusted coordinates, and presentation-path rebasing without depending on
+  the compiler. `compiler::provenance::FileRange` separately pairs those ranges
+  with stable `FileId` values. Parse successes and failures retain the same
+  scanner-built coordinate map, and failures carry both their typed physical
+  byte anchor and adjusted display coordinate. Later stages still mix physical
+  bytes with virtual filename/line/column values, so end-to-end `FileRange`
+  anchors remain P0 for diagnostics, Rust IR provenance, emission anchors, and
+  source maps;
 - workspace, package, file, and definition IDs are stable; node, local, and
   basic-block IDs are still revision-local dense indexes and cannot be
   persistent query or CAS keys;

@@ -110,6 +110,12 @@ pub mod parser;
 /// with position information.
 pub mod scanner;
 
+/// Physical and Go-adjusted source coordinates shared by frontend layers.
+///
+/// Byte offsets and ranges are independent of compiler semantic identities;
+/// compiler-owned file provenance lives in [`compiler::provenance`].
+pub mod source;
+
 /// Source mapping between Go and Rust code.
 ///
 /// Provides data structures for tracking correspondence between

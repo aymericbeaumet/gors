@@ -17,8 +17,8 @@ mod types;
 mod version;
 
 use crate::ast;
-use crate::compiler::source::{SourceCoordinateMap, TextSize};
 use crate::scanner;
+use crate::source::{SourceCoordinateMap, TextSize};
 use crate::token::Position;
 use core::Parser;
 use error::{RawParserError, Result};
