@@ -187,7 +187,8 @@ fn declaration_reorder_preserves_ids_and_every_projection() {
     assert!(Arc::ptr_eq(&original_f_body, &reordered_f_body));
     assert!(Arc::ptr_eq(&original_g_body, &reordered_g_body));
     assert_eq!(db.telemetry().executions(QueryKind::FileProjection), 1);
-    assert_eq!(db.telemetry().total_executions(), 1);
+    assert_eq!(db.telemetry().executions(QueryKind::SemanticFile), 1);
+    assert_eq!(db.telemetry().total_executions(), 2);
 }
 
 #[test]
