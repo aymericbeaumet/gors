@@ -1,7 +1,11 @@
 use super::*;
 
 fn lower(source: &str) -> File {
-    let ast = crate::parser::parse_file("rust-ir.go", source).unwrap();
+    lower_at("rust-ir.go", source)
+}
+
+fn lower_at(filename: &str, source: &str) -> File {
+    let ast = crate::parser::parse_file(filename, source).unwrap();
     let hir = crate::compiler::lower_to_hir(&ast).unwrap();
     let mir = crate::compiler::lower_to_mir(&hir).unwrap();
     crate::compiler::lower_to_rust_ir(mir)
@@ -11,13 +15,35 @@ fn lower(source: &str) -> File {
 }
 
 #[test]
+fn generated_symbols_do_not_embed_checkout_paths() {
+    let source =
+        "package main\nfunc helper() int { return 42 }\nfunc main() { println(helper()) }\n";
+    let symbols = |filename| {
+        lower_at(filename, source)
+            .functions
+            .into_iter()
+            .map(|function| function.artifact.symbol.spelling)
+            .collect::<Vec<_>>()
+    };
+    let portable = symbols("/one/checkout/main.go");
+    assert_eq!(portable, symbols("/different/root/main.go"));
+    assert_eq!(portable, symbols(r"C:\different\root\main.go"));
+}
+
+#[test]
 fn representation_effects_cover_runtime_calls_clones_and_string_allocation() {
     let file = lower(
         r#"
             package main
             func join(left string, right string) string { return left + right }
+            func identity(value string) string { saved := value; return saved }
             func add(left int, right int) int { return left + right }
-            func main() { value := "x"; println(join(value, "y"), add(1, 2)) }
+            func main() {
+                value := "x"
+                saved := value
+                println(join(value, "y"), add(1, 2))
+                println(saved)
+            }
         "#,
     );
 
@@ -60,6 +86,24 @@ fn representation_effects_cover_runtime_calls_clones_and_string_allocation() {
     assert!(clone_read.effects.may_call);
     assert!(clone_read.effects.may_allocate);
     assert!(!clone_read.effects.may_panic);
+
+    let move_read = all_rvalues(&file)
+        .find(|rvalue| {
+            matches!(
+                rvalue.kind,
+                RvalueKind::Use(Operand::Read {
+                    op: ReadOp::ProvenLastUseMove,
+                    ..
+                })
+            )
+        })
+        .unwrap();
+    assert!(move_read.effects.may_read);
+    assert!(move_read.effects.may_write);
+    assert!(!move_read.effects.may_call);
+    assert!(!move_read.effects.may_allocate);
+    assert!(!move_read.effects.may_panic);
+    assert_eq!(move_read.panic, PanicEdge::None);
 }
 
 #[test]
@@ -137,6 +181,36 @@ fn verifier_rejects_a_store_removed_from_one_control_path() {
 
     let error = file.verify().unwrap_err();
     assert!(error.message.contains("before initialization"), "{error:?}");
+}
+
+#[test]
+fn verifier_rejects_noncanonical_moves_and_clones() {
+    let source = r#"
+        package main
+        func twice(value string) {
+            print(value)
+            print(value)
+        }
+    "#;
+
+    let mut premature_move = lower(source);
+    *read_op_mut(&mut premature_move, "twice", ReadOp::ProvenInitializedClone) =
+        ReadOp::ProvenLastUseMove;
+    refresh_test_effects(&mut premature_move);
+    let error = premature_move.verify().unwrap_err();
+    assert!(error.message.contains("CFG liveness requires"), "{error:?}");
+    assert!(
+        error.message.contains("ProvenInitializedClone"),
+        "{error:?}"
+    );
+
+    let mut unnecessary_clone = lower(source);
+    *read_op_mut(&mut unnecessary_clone, "twice", ReadOp::ProvenLastUseMove) =
+        ReadOp::ProvenInitializedClone;
+    refresh_test_effects(&mut unnecessary_clone);
+    let error = unnecessary_clone.verify().unwrap_err();
+    assert!(error.message.contains("CFG liveness requires"), "{error:?}");
+    assert!(error.message.contains("ProvenLastUseMove"), "{error:?}");
 }
 
 #[test]
@@ -270,13 +344,17 @@ fn terminal_emission_uses_the_verified_artifact_plan_not_go_name_text() {
         .find(|function| function.name == "helper")
         .unwrap();
     helper.name = "diagnostic_helper_name".to_owned();
+    let helper_symbol = helper.artifact.symbol.as_str().to_owned();
 
     file.verify().unwrap();
     let syntax = crate::compiler::emit::emit_file(&file).unwrap();
     let rust = prettyplease::unparse(&syntax);
 
     assert!(rust.contains("fn main()"), "{rust}");
-    assert!(rust.contains("pub fn __gors_fn_0()"), "{rust}");
+    assert!(
+        rust.contains(&format!("pub fn {helper_symbol}()")),
+        "{rust}"
+    );
     assert!(!rust.contains("diagnostic_entry_name"), "{rust}");
     assert!(!rust.contains("diagnostic_helper_name"), "{rust}");
 }
@@ -296,11 +374,27 @@ fn lowering_selects_entrypoints_from_package_role_before_emission() {
     let library_main = &library.functions[0];
     assert_eq!(library_main.artifact.entrypoint, EntrypointPlan::None);
     assert_eq!(library_main.artifact.linkage, RustLinkage::Public);
-    assert_eq!(library_main.artifact.symbol.as_str(), "__gors_fn_0");
+    assert!(
+        library_main
+            .artifact
+            .symbol
+            .as_str()
+            .starts_with("__gors_fn_")
+    );
+    assert_eq!(
+        library_main.artifact,
+        FunctionArtifactPlan::public_definition(library_main.id)
+    );
 
     let syntax = crate::compiler::emit::emit_file(&library).unwrap();
     let rust = prettyplease::unparse(&syntax);
-    assert!(rust.contains("pub fn __gors_fn_0()"), "{rust}");
+    assert!(
+        rust.contains(&format!(
+            "pub fn {}()",
+            library_main.artifact.symbol.as_str()
+        )),
+        "{rust}"
+    );
     assert!(!rust.contains("fn main()"), "{rust}");
 }
 
@@ -340,4 +434,67 @@ fn print_steps_mut(file: &mut File) -> &mut Vec<PrintStep> {
             _ => None,
         })
         .unwrap()
+}
+
+fn read_op_mut<'a>(file: &'a mut File, function_name: &str, expected: ReadOp) -> &'a mut ReadOp {
+    let function = file
+        .functions
+        .iter_mut()
+        .find(|function| function.name == function_name)
+        .unwrap();
+    for block in &mut function.blocks {
+        for statement in &mut block.statements {
+            if let Some(op) = rvalue_read_op_mut(&mut statement.value, expected) {
+                return op;
+            }
+        }
+        if let Some(op) = terminator_read_op_mut(&mut block.terminator, expected) {
+            return op;
+        }
+    }
+    panic!("missing {expected:?} read in {function_name}")
+}
+
+fn rvalue_read_op_mut(rvalue: &mut Rvalue, expected: ReadOp) -> Option<&mut ReadOp> {
+    match &mut rvalue.kind {
+        RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => {
+            operand_read_op_mut(operand, expected)
+        }
+        RvalueKind::Binary { left, right, .. } => {
+            operand_read_op_mut(left, expected).or_else(|| operand_read_op_mut(right, expected))
+        }
+    }
+}
+
+fn terminator_read_op_mut(terminator: &mut Terminator, expected: ReadOp) -> Option<&mut ReadOp> {
+    match &mut terminator.kind {
+        TerminatorKind::SwitchBool { condition, .. } => operand_read_op_mut(condition, expected),
+        TerminatorKind::Call { args, .. } | TerminatorKind::Return(args) => args
+            .iter_mut()
+            .find_map(|argument| operand_read_op_mut(argument, expected)),
+        TerminatorKind::Goto(_) | TerminatorKind::Unreachable => None,
+    }
+}
+
+fn operand_read_op_mut(operand: &mut Operand, expected: ReadOp) -> Option<&mut ReadOp> {
+    match operand {
+        Operand::Read { op, .. } if *op == expected => Some(op),
+        Operand::Read { .. } | Operand::Constant(_) | Operand::Unit => None,
+    }
+}
+
+fn refresh_test_effects(file: &mut File) {
+    for function in &mut file.functions {
+        for block in &mut function.blocks {
+            for statement in &mut block.statements {
+                let effects = rvalue_effects(&statement.value.kind);
+                statement.value.effects = effects;
+                statement.value.panic = panic_edge(effects);
+                statement.effects = statement_effects(&statement.value);
+            }
+            let effects = terminator_effects(&block.terminator.kind);
+            block.terminator.effects = effects;
+            block.terminator.panic = panic_edge(effects);
+        }
+    }
 }

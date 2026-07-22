@@ -16,6 +16,7 @@ pub use model::{
 
 use crate::compiler::Diagnostic;
 
+pub(in crate::compiler) use dataflow::select_read_operations;
 pub(in crate::compiler) use effects::{
     panic_edge, rvalue_effects, statement_effects, terminator_effects,
 };
@@ -23,6 +24,13 @@ pub(in crate::compiler) use plans::print_plan;
 
 pub(super) fn verify(file: &File) -> Result<(), Diagnostic> {
     file.verify()
+}
+
+pub(super) fn verify_function(
+    function: &Function,
+    signatures: &std::collections::BTreeMap<DefId, Signature>,
+) -> Result<(), Diagnostic> {
+    verify::verify_function(function, signatures)
 }
 
 #[cfg(test)]

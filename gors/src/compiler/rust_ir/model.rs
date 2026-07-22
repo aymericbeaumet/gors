@@ -2,13 +2,13 @@
 
 use crate::compiler::ids::{BasicBlockId, DefId, LocalId, SourceSpan};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct File {
     pub package: String,
     pub functions: Vec<Function>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Function {
     pub id: DefId,
     pub name: String,
@@ -34,7 +34,7 @@ impl FunctionArtifactPlan {
     pub(in crate::compiler) fn public_definition(id: DefId) -> Self {
         Self {
             symbol: RustSymbol {
-                spelling: format!("__gors_fn_{}", id.0),
+                spelling: format!("__gors_fn_{id}"),
             },
             linkage: RustLinkage::Public,
             entrypoint: EntrypointPlan::None,
@@ -82,7 +82,7 @@ pub struct Signature {
     pub results: Vec<RustType>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalDecl {
     pub id: LocalId,
     pub name: Option<String>,
@@ -107,7 +107,7 @@ pub enum ControlFlowPlan {
     PcDispatchU32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BasicBlock {
     pub id: BasicBlockId,
     pub provenance: Provenance,
@@ -115,7 +115,7 @@ pub struct BasicBlock {
     pub terminator: Terminator,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Statement {
     pub destination: Place,
     pub value: Rvalue,
@@ -134,7 +134,7 @@ pub struct Place {
     pub local: LocalId,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Rvalue {
     pub kind: RvalueKind,
     pub effects: Effects,
@@ -142,7 +142,7 @@ pub struct Rvalue {
     pub provenance: Provenance,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RvalueKind {
     Use(Operand),
     Unary {
@@ -194,7 +194,7 @@ pub enum BinaryOp {
     StringGreaterEqual,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Operand {
     Read { place: Place, op: ReadOp },
     Constant(Constant),
@@ -207,16 +207,18 @@ pub enum ReadOp {
     ProvenInitializedCopy,
     /// Clone from a slot proven initialized by Rust-IR dataflow verification.
     ProvenInitializedClone,
+    /// Move from an initialized owned slot proven dead on every continuation.
+    ProvenLastUseMove,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Constant {
     Bool(bool),
     I64(i64),
     GoString(Vec<u8>),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Terminator {
     pub kind: TerminatorKind,
     pub effects: Effects,
@@ -224,7 +226,7 @@ pub struct Terminator {
     pub provenance: Provenance,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TerminatorKind {
     Goto(BasicBlockId),
     SwitchBool {
@@ -242,7 +244,7 @@ pub enum TerminatorKind {
     Unreachable,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CallTarget {
     Function(DefId),
     RuntimePrint { steps: Vec<PrintStep> },
@@ -268,12 +270,32 @@ pub enum RustType {
 
 impl RustType {
     #[must_use]
-    pub fn read_op(self) -> Option<ReadOp> {
+    pub fn conservative_read_op(self) -> Option<ReadOp> {
         match self {
             Self::Bool | Self::I64 => Some(ReadOp::ProvenInitializedCopy),
             Self::GoString => Some(ReadOp::ProvenInitializedClone),
             Self::Unit => None,
         }
+    }
+
+    pub(super) fn read_op_for_liveness(self, live_after: bool) -> Option<ReadOp> {
+        match self {
+            Self::Bool | Self::I64 => Some(ReadOp::ProvenInitializedCopy),
+            Self::GoString if live_after => Some(ReadOp::ProvenInitializedClone),
+            Self::GoString => Some(ReadOp::ProvenLastUseMove),
+            Self::Unit => None,
+        }
+    }
+
+    pub(super) fn supports_read_op(self, op: ReadOp) -> bool {
+        matches!(
+            (self, op),
+            (Self::Bool | Self::I64, ReadOp::ProvenInitializedCopy)
+                | (
+                    Self::GoString,
+                    ReadOp::ProvenInitializedClone | ReadOp::ProvenLastUseMove
+                )
+        )
     }
 }
 

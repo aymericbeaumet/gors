@@ -1,9 +1,234 @@
 use super::*;
 use num_bigint::BigInt;
+use std::collections::BTreeSet;
 
 fn lower(source: &str) -> Result<hir::File, Vec<Diagnostic>> {
-    let parsed = crate::parser::parse_file("semantic.go", source).expect("valid Go syntax");
+    lower_at("semantic.go", source)
+}
+
+fn lower_at(filename: &str, source: &str) -> Result<hir::File, Vec<Diagnostic>> {
+    let parsed = crate::parser::parse_file(filename, source).expect("valid Go syntax");
     lower_file(&parsed)
+}
+
+fn function<'a>(file: &'a hir::File, name: &str) -> &'a hir::Function {
+    file.functions
+        .iter()
+        .find(|function| function.name == name)
+        .expect("named HIR function")
+}
+
+fn function_node_ids(function: &hir::Function) -> Vec<NodeId> {
+    let mut nodes = vec![function.node];
+    collect_block_nodes(&function.body, &mut nodes);
+    nodes
+}
+
+fn collect_block_nodes(block: &hir::Block, nodes: &mut Vec<NodeId>) {
+    nodes.push(block.node);
+    for statement in &block.stmts {
+        collect_statement_nodes(statement, nodes);
+    }
+}
+
+fn collect_statement_nodes(statement: &hir::Stmt, nodes: &mut Vec<NodeId>) {
+    nodes.push(statement.node);
+    match &statement.kind {
+        hir::StmtKind::Let { values, .. } | hir::StmtKind::Assign { values, .. } => {
+            for expression in values {
+                collect_expression_nodes(expression, nodes);
+            }
+        }
+        hir::StmtKind::Expr(expression) => collect_expression_nodes(expression, nodes),
+        hir::StmtKind::Return(expressions) => {
+            for expression in expressions {
+                collect_expression_nodes(expression, nodes);
+            }
+        }
+        hir::StmtKind::If {
+            init,
+            condition,
+            then_block,
+            else_branch,
+        } => {
+            if let Some(init) = init {
+                collect_statement_nodes(init, nodes);
+            }
+            collect_expression_nodes(condition, nodes);
+            collect_block_nodes(then_block, nodes);
+            if let Some(else_branch) = else_branch {
+                collect_statement_nodes(else_branch, nodes);
+            }
+        }
+        hir::StmtKind::For {
+            init,
+            condition,
+            post,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_statement_nodes(init, nodes);
+            }
+            if let Some(condition) = condition {
+                collect_expression_nodes(condition, nodes);
+            }
+            if let Some(post) = post {
+                collect_statement_nodes(post, nodes);
+            }
+            collect_block_nodes(body, nodes);
+        }
+        hir::StmtKind::Block(block) => collect_block_nodes(block, nodes),
+        hir::StmtKind::Break | hir::StmtKind::Continue => {}
+    }
+}
+
+fn collect_expression_nodes(expression: &hir::Expr, nodes: &mut Vec<NodeId>) {
+    nodes.push(expression.node);
+    match &expression.kind {
+        hir::ExprKind::Binary { left, right, .. } => {
+            collect_expression_nodes(left, nodes);
+            collect_expression_nodes(right, nodes);
+        }
+        hir::ExprKind::Unary { operand, .. } => collect_expression_nodes(operand, nodes),
+        hir::ExprKind::Call { args, .. } => {
+            for argument in args {
+                collect_expression_nodes(argument, nodes);
+            }
+        }
+        hir::ExprKind::Constant(_)
+        | hir::ExprKind::Local(_)
+        | hir::ExprKind::GlobalConstant(_, _) => {}
+    }
+}
+
+#[test]
+fn stable_definitions_and_owner_local_nodes_ignore_unrelated_declaration_order() {
+    let original = lower_at(
+        "main.go",
+        r#"package main
+            const answer = 42
+            func helper(value int) int {
+                println(1)
+                println(1)
+                return value + answer
+            }
+            func main() { println(helper(answer)) }
+        "#,
+    )
+    .expect("original HIR");
+    let reordered = lower_at(
+        "main.go",
+        r#"package main
+            func unrelated() int { return 7 }
+            func main() { println(helper(answer)) }
+            const extra = 9
+            func helper(value int) int {
+                println(1)
+                println(1)
+                return value + answer
+            }
+            const answer = 42
+        "#,
+    )
+    .expect("reordered HIR");
+
+    for name in ["helper", "main"] {
+        let original = function(&original, name);
+        let reordered = function(&reordered, name);
+        assert_eq!(original.id, reordered.id, "unstable DefId for {name}");
+        assert_eq!(
+            function_node_ids(original),
+            function_node_ids(reordered),
+            "another declaration perturbed owner-local nodes for {name}"
+        );
+    }
+    let original_answer = original
+        .constants
+        .iter()
+        .find(|constant| constant.name == "answer")
+        .unwrap();
+    let reordered_answer = reordered
+        .constants
+        .iter()
+        .find(|constant| constant.name == "answer")
+        .unwrap();
+    assert_eq!(original_answer.id, reordered_answer.id);
+}
+
+#[test]
+fn owner_local_node_ids_are_unique_for_identical_source_subtrees() {
+    let file = lower(
+        r#"package main
+            func main() {
+                println(1, 1)
+                println(1, 1)
+            }
+        "#,
+    )
+    .expect("HIR with repeated syntax");
+    let nodes = function_node_ids(function(&file, "main"));
+    let unique = nodes.iter().copied().collect::<BTreeSet<_>>();
+    assert_eq!(nodes.len(), unique.len(), "HIR node occurrences aliased");
+}
+
+#[test]
+fn standalone_ids_do_not_embed_checkout_paths() {
+    let source =
+        "package main\nfunc helper() int { return 42 }\nfunc main() { println(helper()) }\n";
+    let first = crate::parser::parse_file("/one/checkout/main.go", source).unwrap();
+    let second = crate::parser::parse_file("/different/root/main.go", source).unwrap();
+    let windows = crate::parser::parse_file(r"C:\different\root\main.go", source).unwrap();
+    let first_hir = lower_file(&first).unwrap();
+    let second_hir = lower_file(&second).unwrap();
+    let windows_hir = lower_file(&windows).unwrap();
+    assert_eq!(
+        function(&first_hir, "helper").id,
+        function(&second_hir, "helper").id
+    );
+    assert_eq!(
+        function(&first_hir, "helper").id,
+        function(&windows_hir, "helper").id
+    );
+}
+
+#[test]
+fn canonical_import_paths_isolate_definition_ids_and_rust_symbols() {
+    let source =
+        "package shared\nfunc helper() int { return 42 }\nfunc main() { println(helper()) }\n";
+    let parsed = crate::parser::parse_file("main.go", source).unwrap();
+    let first_context = semantic_context("workspace", "import:example/one", "main.go").unwrap();
+    let second_context = semantic_context("workspace", "import:example/two", "main.go").unwrap();
+    let first = lower_file_with_context(&parsed, first_context).unwrap();
+    let second = lower_file_with_context(&parsed, second_context).unwrap();
+    let first_id = function(&first, "helper").id;
+    let second_id = function(&second, "helper").id;
+    assert_ne!(first_id, second_id);
+
+    let first_symbol =
+        crate::compiler::lower_to_rust_ir(crate::compiler::lower_to_mir(&first).unwrap())
+            .unwrap()
+            .as_file()
+            .functions
+            .iter()
+            .find(|function| function.name == "helper")
+            .unwrap()
+            .artifact
+            .symbol
+            .as_str()
+            .to_string();
+    let second_symbol =
+        crate::compiler::lower_to_rust_ir(crate::compiler::lower_to_mir(&second).unwrap())
+            .unwrap()
+            .as_file()
+            .functions
+            .iter()
+            .find(|function| function.name == "helper")
+            .unwrap()
+            .artifact
+            .symbol
+            .as_str()
+            .to_string();
+    assert_ne!(first_symbol, second_symbol);
 }
 
 fn assert_diagnostic(source: &str, code: &str, message: &str) {

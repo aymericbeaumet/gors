@@ -222,12 +222,12 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
     let program = match gors::parser::parse_program(&cmd.path) {
         Ok(result) => result,
         Err(gors::parser::PathParseError::ParserError(err)) => {
-            let (file, buffer) = if let Some((f, b)) = get_file_for_error(&cmd.path) {
-                (f, b)
-            } else {
-                (cmd.path.clone(), String::new())
-            };
-            let diagnostic = Diagnostic::from_parser_error(&err, &file, &buffer);
+            let diagnostic = Diagnostic::from_file_parse_error(&err);
+            print_error(&diagnostic);
+            std::process::exit(1);
+        }
+        Err(gors::parser::PathParseError::InvalidImportPath(err)) => {
+            let diagnostic = Diagnostic::from_invalid_import_path(&err);
             print_error(&diagnostic);
             std::process::exit(1);
         }
@@ -240,10 +240,10 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
     let inputs = InputSnapshot::capture(&program, &source_paths)?;
 
     let primary_file = program
-        .main_package
-        .files
+        .main_package()
+        .files()
         .first()
-        .map(|(f, _)| f.clone())
+        .map(|file| file.path().to_string())
         .unwrap_or_else(|| cmd.path.clone());
 
     let compile_timer = timings.phase("cli.compile");
@@ -621,13 +621,12 @@ fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
         let program = match gors::parser::parse_program_files(&source_paths) {
             Ok(result) => result,
             Err(gors::parser::PathParseError::ParserError(err)) => {
-                let source_path = source_paths.first().cloned().unwrap_or_default();
-                let (file, buffer) = if let Some((f, b)) = get_file_for_error(&source_path) {
-                    (f, b)
-                } else {
-                    (source_path, String::new())
-                };
-                let diagnostic = Diagnostic::from_parser_error(&err, &file, &buffer);
+                let diagnostic = Diagnostic::from_file_parse_error(&err);
+                print_error(&diagnostic);
+                std::process::exit(1);
+            }
+            Err(gors::parser::PathParseError::InvalidImportPath(err)) => {
+                let diagnostic = Diagnostic::from_invalid_import_path(&err);
                 print_error(&diagnostic);
                 std::process::exit(1);
             }
@@ -640,10 +639,10 @@ fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
         let inputs = InputSnapshot::capture(&program, &source_paths)?;
 
         let primary_file = program
-            .main_package
-            .files
+            .main_package()
+            .files()
             .first()
-            .map(|(f, _)| f.clone())
+            .map(|file| file.path().to_string())
             .unwrap_or_else(|| source_paths.first().cloned().unwrap_or_default());
 
         let compile_timer = timings.phase("cli.compile");

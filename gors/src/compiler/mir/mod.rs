@@ -12,6 +12,8 @@ pub use model::{
     RvalueKind, Statement, SyntheticOrigin, Terminator, TerminatorKind,
 };
 
+use std::collections::BTreeMap;
+
 use crate::compiler::Diagnostic;
 use crate::compiler::VerifiedMir;
 use crate::compiler::hir;
@@ -20,12 +22,33 @@ pub(super) fn lower_file(file: &hir::File) -> Result<File, Vec<Diagnostic>> {
     lower::lower_file(file)
 }
 
+pub(super) fn lower_function(function: &hir::Function) -> Result<Function, Diagnostic> {
+    lower::lower_function(function)
+}
+
 pub(super) fn verify(file: &File) -> Result<(), Diagnostic> {
     file.verify()
 }
 
+pub(super) type SignatureIndex =
+    BTreeMap<crate::compiler::ids::DefId, crate::compiler::types::Signature>;
+
+pub(super) fn verify_function(
+    function: &Function,
+    signatures: &SignatureIndex,
+) -> Result<(), Diagnostic> {
+    function.verify_with_signatures(signatures)
+}
+
 pub(super) fn normalize(input: VerifiedMir) -> Result<VerifiedMir, Vec<Diagnostic>> {
     normalize::normalize(input)
+}
+
+pub(super) fn normalize_function(
+    function: Function,
+    signatures: &SignatureIndex,
+) -> Result<Function, Vec<Diagnostic>> {
+    normalize::normalize_function(function, signatures)
 }
 
 #[cfg(test)]

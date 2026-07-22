@@ -52,6 +52,15 @@ pub(super) fn lower_file(file: &hir::File) -> Result<File, Vec<Diagnostic>> {
     }
 }
 
+/// Lower one independently tracked HIR function into explicit-order Go MIR.
+///
+/// Cross-function call validation deliberately remains a separate operation:
+/// callers supply the package signature index to the MIR verifier after this
+/// function-local construction step.
+pub(super) fn lower_function(function: &hir::Function) -> Result<Function, Diagnostic> {
+    FunctionLowerer::lower(function)
+}
+
 impl FunctionLowerer {
     fn lower(hir: &hir::Function) -> Result<Function, Diagnostic> {
         let locals = hir

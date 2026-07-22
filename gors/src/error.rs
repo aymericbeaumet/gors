@@ -1,7 +1,7 @@
 // Error formatting module for nicely displaying lexer/parser/compiler errors
 // with source context, similar to rustc or Go's error output.
 
-use crate::parser::ParserError;
+use crate::parser::{FileParseError, InvalidImportPathError, ParserError};
 use crate::scanner::ScannerError;
 use serde::Serialize;
 use std::fmt;
@@ -82,6 +82,31 @@ impl Diagnostic {
                 .with_source(source)
             }
         }
+    }
+
+    /// Create a diagnostic from an owned parser failure and its exact source
+    /// revision.
+    pub fn from_file_parse_error(err: &FileParseError) -> Self {
+        Self::from_parser_error(err.parser_error(), err.path(), err.source_text())
+    }
+
+    /// Create a diagnostic for a syntactically valid import literal whose
+    /// decoded package path is unsafe or non-canonical.
+    pub fn from_invalid_import_path(err: &InvalidImportPathError) -> Self {
+        let (line, column) = err.line_column();
+        let snapshot = err.snapshot();
+        Self::new(
+            err.path(),
+            line,
+            column,
+            format!(
+                "invalid import path literal {}: {}",
+                err.literal(),
+                err.issue()
+            ),
+            DiagnosticKind::Parser,
+        )
+        .with_source(snapshot.source())
     }
 }
 
@@ -392,5 +417,40 @@ mod tests {
         assert_eq!(bmp.end_column, "éclair".len() + 1);
         assert_eq!(non_bmp.end_column, "𐐀name".len() + 1);
         assert_eq!(offset_to_line_col("é😀x", "é😀".len()), (1, 7));
+    }
+
+    #[test]
+    fn owned_parse_diagnostic_uses_the_exact_failing_snapshot() {
+        let source = "package main\nfunc";
+        let error = crate::parser::ParsedFile::from_source("nested/broken.go", source)
+            .expect_err("source must fail parser validation");
+        let crate::parser::ParsedFileError::Parser(error) = error else {
+            panic!("expected parser error");
+        };
+
+        let diagnostic = Diagnostic::from_file_parse_error(&error);
+
+        assert_eq!(diagnostic.file, "nested/broken.go");
+        assert_eq!(diagnostic.source_line.as_deref(), Some("func"));
+    }
+
+    #[test]
+    fn invalid_import_diagnostic_uses_decoded_path_location_and_source() {
+        let source = "package main\nimport `../escape`\n";
+        let error = crate::parser::ParsedFile::from_source("nested/import.go", source)
+            .expect_err("parent traversal must fail import validation");
+        let crate::parser::ParsedFileError::InvalidImportPath(error) = error else {
+            panic!("expected invalid import path");
+        };
+
+        let diagnostic = Diagnostic::from_invalid_import_path(&error);
+
+        assert_eq!(diagnostic.file, "nested/import.go");
+        assert_eq!(diagnostic.line, 2);
+        assert_eq!(
+            diagnostic.source_line.as_deref(),
+            Some("import `../escape`")
+        );
+        assert!(diagnostic.message.contains("../escape"));
     }
 }

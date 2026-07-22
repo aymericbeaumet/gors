@@ -7,11 +7,13 @@ use crate::ast;
 use super::{ConstantSymbol, FileLowerer, FunctionSymbol};
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
-use crate::compiler::ids::{LocalId, SourceSpan};
+use crate::compiler::ids::{DefId, LocalId, NodeId, SourceSpan};
 use crate::compiler::types::{Signature, Ty};
 
 pub(super) struct FunctionLowerer<'a> {
     pub(super) file: &'a mut FileLowerer,
+    pub(super) owner: DefId,
+    pub(super) next_node: u32,
     pub(super) functions: BTreeMap<String, FunctionSymbol>,
     pub(super) constants: BTreeMap<String, ConstantSymbol>,
     pub(super) signature: Signature,
@@ -22,6 +24,20 @@ pub(super) struct FunctionLowerer<'a> {
 }
 
 impl FunctionLowerer<'_> {
+    /// Allocate a revision-local HIR node index inside this stable owner.
+    ///
+    /// Unlike `DefId`, this is not a query key. Allocation restarts for every
+    /// function rebuild and therefore cannot be perturbed by another
+    /// declaration's insertion or ordering.
+    pub(super) fn alloc_node(&mut self) -> Result<NodeId, Diagnostic> {
+        let local = self.next_node;
+        self.next_node = self
+            .next_node
+            .checked_add(1)
+            .ok_or_else(|| Diagnostic::backend("function exceeds the HIR node ID space"))?;
+        Ok(NodeId::owner_local(self.owner, local))
+    }
+
     pub(super) fn alloc_local(
         &mut self,
         name: Option<String>,
@@ -154,7 +170,7 @@ impl FunctionLowerer<'_> {
             self.pop_scope();
         }
         Ok(hir::Block {
-            node: self.file.alloc_node(),
+            node: self.alloc_node()?,
             stmts,
             span: self.file.span(&block.lbrace),
         })

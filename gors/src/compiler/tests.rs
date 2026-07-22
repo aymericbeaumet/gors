@@ -132,6 +132,35 @@ fn generated_rust_preserves_arbitrary_string_bytes() {
 }
 
 #[test]
+fn generated_rust_executes_verified_last_use_moves() {
+    let run = compile_and_run(
+        r#"
+            package main
+            func forward(value string) string { return value }
+            func choose(flag bool, value string) string {
+                saved := value
+                if flag { println(value) }
+                return saved
+            }
+            func main() {
+                println(forward("move"))
+                println(choose(true, "branch"))
+                println(choose(false, "other"))
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"move\nbranch\nbranch\nother\n");
+    assert!(
+        run.rust
+            .contains(".take().expect(\"compiler move of uninitialized Go local\")"),
+        "{}",
+        run.rust
+    );
+    assert!(run.rust.contains(".clone()"), "{}", run.rust);
+}
+
+#[test]
 fn def_id_function_names_cannot_collide_with_rust_keywords() {
     let run = compile_and_run(
         r#"
@@ -144,9 +173,20 @@ fn def_id_function_names_cannot_collide_with_rust_keywords() {
     );
 
     assert_eq!(run.stderr, b"3\n");
-    assert!(run.rust.contains("fn __gors_fn_0"));
-    assert!(run.rust.contains("fn __gors_fn_1"));
-    assert!(run.rust.contains("fn __gors_fn_2"));
+    let stable_symbols = run
+        .rust
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("pub fn __gors_fn_"))
+        .filter_map(|suffix| suffix.split_once('(').map(|(symbol, _)| symbol))
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(stable_symbols.len(), 3, "{}", run.rust);
+    assert!(
+        stable_symbols
+            .iter()
+            .all(|symbol| symbol.len() == 64 && symbol.bytes().all(|byte| byte.is_ascii_hexdigit())),
+        "{}",
+        run.rust
+    );
     assert!(!run.rust.contains("fn async"));
     assert!(!run.rust.contains("fn gen"));
 }
@@ -171,17 +211,23 @@ fn imports_fail_before_partial_codegen() {
 }
 
 #[test]
-fn program_boundary_rejects_merged_files() {
-    let source = "package main\nfunc main() {}\n";
-    let mut program = crate::parser::parse_program_from_source("main.go", source).unwrap();
-    program
-        .main_package
-        .files
-        .push(("other.go".to_string(), "package main\n".to_string()));
+fn program_boundary_rejects_multiple_independent_files() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(
+        directory.path().join("main.go"),
+        "package main\nfunc main() {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        directory.path().join("other.go"),
+        "package main\nfunc helper() {}\n",
+    )
+    .unwrap();
+    let program = crate::parser::parse_program(&directory.path().to_string_lossy()).unwrap();
 
     let error = compile_program(program)
         .err()
-        .expect("merged package rejected");
+        .expect("multi-file package rejected");
 
     assert_eq!(error.diagnostics().first().unwrap().code, "GORS2001");
     assert!(error.to_string().contains("exactly one"), "{error}");

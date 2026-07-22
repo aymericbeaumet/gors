@@ -1,12 +1,32 @@
-//! Definite-initialization proof for Rust-IR storage slots.
+//! Storage and last-use proofs for Rust-IR slots.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use super::{
-    BasicBlock, BasicBlockId, Function, LocalId, Operand, Rvalue, RvalueKind, SlotInitialization,
-    Terminator, TerminatorKind,
+    BasicBlock, BasicBlockId, Function, LocalId, Operand, ReadOp, RustType, Rvalue, RvalueKind,
+    SlotInitialization, Terminator, TerminatorKind, panic_edge, rvalue_effects, statement_effects,
+    terminator_effects,
 };
 use crate::compiler::Diagnostic;
+
+/// Select the canonical read representation after the complete CFG is available.
+///
+/// Owned values move only when backwards liveness proves that the slot is dead
+/// after that exact operand on every successor path. All other owned reads clone.
+pub(in crate::compiler) fn select_read_operations(
+    function: &mut Function,
+) -> Result<(), Diagnostic> {
+    let reachable = function.reachable_blocks()?;
+    if reachable.len() != function.blocks.len() {
+        return Err(Diagnostic::backend(
+            "Rust IR read planning found a block outside the control-flow graph",
+        ));
+    }
+    let plans = function.expected_read_plans(&reachable)?;
+    function.apply_read_plans(&plans)?;
+    refresh_effects(function);
+    Ok(())
+}
 
 impl Function {
     pub(super) fn verify_storage_dataflow(&self) -> Result<(), Diagnostic> {
@@ -16,6 +36,9 @@ impl Function {
                 "Rust IR contains a block outside the verified control-flow graph",
             ));
         }
+
+        let read_plans = self.expected_read_plans(&reachable)?;
+        self.verify_read_plans(&read_plans)?;
 
         let universe = self
             .locals
@@ -99,6 +122,131 @@ impl Function {
         Ok(())
     }
 
+    fn expected_read_plans(
+        &self,
+        reachable: &BTreeSet<BasicBlockId>,
+    ) -> Result<BTreeMap<BasicBlockId, Vec<ReadOp>>, Diagnostic> {
+        let live_inputs = self.live_inputs(reachable)?;
+        let local_types = self.locals.iter().map(|local| local.ty).collect::<Vec<_>>();
+        let mut plans = BTreeMap::new();
+        for block_id in reachable {
+            let block = self.block(*block_id)?;
+            let mut live = live_output(block, &live_inputs)?;
+            let mut reverse_plan = Vec::new();
+            plan_terminator_backwards(
+                &block.terminator,
+                &mut live,
+                &local_types,
+                &mut reverse_plan,
+            )?;
+            for statement in block.statements.iter().rev() {
+                live.remove(&statement.destination.local);
+                plan_rvalue_backwards(
+                    &statement.value,
+                    &mut live,
+                    &local_types,
+                    &mut reverse_plan,
+                )?;
+            }
+            reverse_plan.reverse();
+            plans.insert(*block_id, reverse_plan);
+        }
+        Ok(plans)
+    }
+
+    fn live_inputs(
+        &self,
+        reachable: &BTreeSet<BasicBlockId>,
+    ) -> Result<BTreeMap<BasicBlockId, BTreeSet<LocalId>>, Diagnostic> {
+        let mut inputs = reachable
+            .iter()
+            .copied()
+            .map(|block| (block, BTreeSet::new()))
+            .collect::<BTreeMap<_, _>>();
+        loop {
+            let mut changed = false;
+            for block_id in reachable.iter().rev() {
+                let block = self.block(*block_id)?;
+                let mut live = live_output(block, &inputs)?;
+                add_terminator_uses_backwards(&block.terminator, &mut live);
+                for statement in block.statements.iter().rev() {
+                    live.remove(&statement.destination.local);
+                    add_rvalue_uses_backwards(&statement.value, &mut live);
+                }
+                let current = inputs.get_mut(block_id).ok_or_else(|| {
+                    Diagnostic::backend(format!(
+                        "missing Rust IR liveness input for block {}",
+                        block_id.0
+                    ))
+                })?;
+                if *current != live {
+                    *current = live;
+                    changed = true;
+                }
+            }
+            if !changed {
+                return Ok(inputs);
+            }
+        }
+    }
+
+    fn apply_read_plans(
+        &mut self,
+        plans: &BTreeMap<BasicBlockId, Vec<ReadOp>>,
+    ) -> Result<(), Diagnostic> {
+        for block in &mut self.blocks {
+            let plan = plans.get(&block.id).ok_or_else(|| {
+                Diagnostic::backend(format!(
+                    "missing Rust IR read plan for block {}",
+                    block.id.0
+                ))
+            })?;
+            let mut cursor = 0;
+            for statement in &mut block.statements {
+                apply_rvalue_plan(&mut statement.value, plan, &mut cursor)?;
+            }
+            apply_terminator_plan(&mut block.terminator, plan, &mut cursor)?;
+            if cursor != plan.len() {
+                return Err(Diagnostic::backend(format!(
+                    "Rust IR read plan for block {} has {} unused operation(s)",
+                    block.id.0,
+                    plan.len() - cursor
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn verify_read_plans(
+        &self,
+        plans: &BTreeMap<BasicBlockId, Vec<ReadOp>>,
+    ) -> Result<(), Diagnostic> {
+        for block in &self.blocks {
+            let expected = plans.get(&block.id).ok_or_else(|| {
+                Diagnostic::backend(format!(
+                    "missing canonical Rust IR read plan for block {}",
+                    block.id.0
+                ))
+            })?;
+            let observed = block_read_operations(block);
+            if observed.len() != expected.len() {
+                return Err(Diagnostic::backend(format!(
+                    "Rust IR read plan length mismatch in block {}",
+                    block.id.0
+                )));
+            }
+            for ((local, observed), expected) in observed.into_iter().zip(expected) {
+                if observed != *expected {
+                    return Err(Diagnostic::backend(format!(
+                        "Rust IR read operation mismatch for local {}: CFG liveness requires {expected:?}, found {observed:?}",
+                        local.0
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn reachable_blocks(&self) -> Result<BTreeSet<BasicBlockId>, Diagnostic> {
         let mut reachable = BTreeSet::new();
         let mut pending = VecDeque::from([self.entry]);
@@ -155,7 +303,7 @@ impl Function {
     fn transfer_rvalue(
         &self,
         rvalue: &Rvalue,
-        state: &BTreeSet<LocalId>,
+        state: &mut BTreeSet<LocalId>,
         check_reads: bool,
     ) -> Result<(), Diagnostic> {
         match &rvalue.kind {
@@ -172,10 +320,10 @@ impl Function {
     fn transfer_operand(
         &self,
         operand: &Operand,
-        state: &BTreeSet<LocalId>,
+        state: &mut BTreeSet<LocalId>,
         check_reads: bool,
     ) -> Result<(), Diagnostic> {
-        let Operand::Read { place, .. } = operand else {
+        let Operand::Read { place, op } = operand else {
             return Ok(());
         };
         if check_reads && !state.contains(&place.local) {
@@ -184,7 +332,239 @@ impl Function {
                 place.local.0, self.name
             )));
         }
+        if *op == ReadOp::ProvenLastUseMove {
+            state.remove(&place.local);
+        }
         Ok(())
+    }
+}
+
+fn live_output(
+    block: &BasicBlock,
+    live_inputs: &BTreeMap<BasicBlockId, BTreeSet<LocalId>>,
+) -> Result<BTreeSet<LocalId>, Diagnostic> {
+    let mut live = BTreeSet::new();
+    for successor in block_successors(&block.terminator) {
+        let successor_live = live_inputs.get(&successor).ok_or_else(|| {
+            Diagnostic::backend(format!(
+                "missing Rust IR liveness for successor {}",
+                successor.0
+            ))
+        })?;
+        live.extend(successor_live);
+    }
+    Ok(live)
+}
+
+fn add_terminator_uses_backwards(terminator: &Terminator, live: &mut BTreeSet<LocalId>) {
+    match &terminator.kind {
+        TerminatorKind::SwitchBool { condition, .. } => add_operand_use(condition, live),
+        TerminatorKind::Call {
+            args, destination, ..
+        } => {
+            if let Some(destination) = destination {
+                live.remove(&destination.local);
+            }
+            for argument in args.iter().rev() {
+                add_operand_use(argument, live);
+            }
+        }
+        TerminatorKind::Return(values) => {
+            for value in values.iter().rev() {
+                add_operand_use(value, live);
+            }
+        }
+        TerminatorKind::Goto(_) | TerminatorKind::Unreachable => {}
+    }
+}
+
+fn add_rvalue_uses_backwards(rvalue: &Rvalue, live: &mut BTreeSet<LocalId>) {
+    match &rvalue.kind {
+        RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => {
+            add_operand_use(operand, live);
+        }
+        RvalueKind::Binary { left, right, .. } => {
+            add_operand_use(right, live);
+            add_operand_use(left, live);
+        }
+    }
+}
+
+fn add_operand_use(operand: &Operand, live: &mut BTreeSet<LocalId>) {
+    if let Operand::Read { place, .. } = operand {
+        live.insert(place.local);
+    }
+}
+
+fn plan_terminator_backwards(
+    terminator: &Terminator,
+    live: &mut BTreeSet<LocalId>,
+    local_types: &[RustType],
+    reverse_plan: &mut Vec<ReadOp>,
+) -> Result<(), Diagnostic> {
+    match &terminator.kind {
+        TerminatorKind::SwitchBool { condition, .. } => {
+            plan_operand_backwards(condition, live, local_types, reverse_plan)
+        }
+        TerminatorKind::Call {
+            args, destination, ..
+        } => {
+            if let Some(destination) = destination {
+                live.remove(&destination.local);
+            }
+            for argument in args.iter().rev() {
+                plan_operand_backwards(argument, live, local_types, reverse_plan)?;
+            }
+            Ok(())
+        }
+        TerminatorKind::Return(values) => {
+            for value in values.iter().rev() {
+                plan_operand_backwards(value, live, local_types, reverse_plan)?;
+            }
+            Ok(())
+        }
+        TerminatorKind::Goto(_) | TerminatorKind::Unreachable => Ok(()),
+    }
+}
+
+fn plan_rvalue_backwards(
+    rvalue: &Rvalue,
+    live: &mut BTreeSet<LocalId>,
+    local_types: &[RustType],
+    reverse_plan: &mut Vec<ReadOp>,
+) -> Result<(), Diagnostic> {
+    match &rvalue.kind {
+        RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => {
+            plan_operand_backwards(operand, live, local_types, reverse_plan)
+        }
+        RvalueKind::Binary { left, right, .. } => {
+            plan_operand_backwards(right, live, local_types, reverse_plan)?;
+            plan_operand_backwards(left, live, local_types, reverse_plan)
+        }
+    }
+}
+
+fn plan_operand_backwards(
+    operand: &Operand,
+    live: &mut BTreeSet<LocalId>,
+    local_types: &[RustType],
+    reverse_plan: &mut Vec<ReadOp>,
+) -> Result<(), Diagnostic> {
+    let Operand::Read { place, .. } = operand else {
+        return Ok(());
+    };
+    let ty = local_types.get(place.local.0 as usize).ok_or_else(|| {
+        Diagnostic::backend(format!(
+            "invalid local during Rust IR read planning: {}",
+            place.local.0
+        ))
+    })?;
+    let op = ty
+        .read_op_for_liveness(live.contains(&place.local))
+        .ok_or_else(|| Diagnostic::backend("Rust IR cannot plan a read from a unit slot"))?;
+    reverse_plan.push(op);
+    live.insert(place.local);
+    Ok(())
+}
+
+fn apply_rvalue_plan(
+    rvalue: &mut Rvalue,
+    plan: &[ReadOp],
+    cursor: &mut usize,
+) -> Result<(), Diagnostic> {
+    match &mut rvalue.kind {
+        RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => {
+            apply_operand_plan(operand, plan, cursor)
+        }
+        RvalueKind::Binary { left, right, .. } => {
+            apply_operand_plan(left, plan, cursor)?;
+            apply_operand_plan(right, plan, cursor)
+        }
+    }
+}
+
+fn apply_terminator_plan(
+    terminator: &mut Terminator,
+    plan: &[ReadOp],
+    cursor: &mut usize,
+) -> Result<(), Diagnostic> {
+    match &mut terminator.kind {
+        TerminatorKind::SwitchBool { condition, .. } => apply_operand_plan(condition, plan, cursor),
+        TerminatorKind::Call { args, .. } | TerminatorKind::Return(args) => {
+            for argument in args {
+                apply_operand_plan(argument, plan, cursor)?;
+            }
+            Ok(())
+        }
+        TerminatorKind::Goto(_) | TerminatorKind::Unreachable => Ok(()),
+    }
+}
+
+fn apply_operand_plan(
+    operand: &mut Operand,
+    plan: &[ReadOp],
+    cursor: &mut usize,
+) -> Result<(), Diagnostic> {
+    let Operand::Read { op, .. } = operand else {
+        return Ok(());
+    };
+    *op = *plan.get(*cursor).ok_or_else(|| {
+        Diagnostic::backend("Rust IR read plan ended before all operands were assigned")
+    })?;
+    *cursor += 1;
+    Ok(())
+}
+
+fn block_read_operations(block: &BasicBlock) -> Vec<(LocalId, ReadOp)> {
+    let mut reads = Vec::new();
+    for statement in &block.statements {
+        collect_rvalue_reads(&statement.value, &mut reads);
+    }
+    collect_terminator_reads(&block.terminator, &mut reads);
+    reads
+}
+
+fn collect_rvalue_reads(rvalue: &Rvalue, reads: &mut Vec<(LocalId, ReadOp)>) {
+    match &rvalue.kind {
+        RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => {
+            collect_operand_read(operand, reads);
+        }
+        RvalueKind::Binary { left, right, .. } => {
+            collect_operand_read(left, reads);
+            collect_operand_read(right, reads);
+        }
+    }
+}
+
+fn collect_terminator_reads(terminator: &Terminator, reads: &mut Vec<(LocalId, ReadOp)>) {
+    match &terminator.kind {
+        TerminatorKind::SwitchBool { condition, .. } => collect_operand_read(condition, reads),
+        TerminatorKind::Call { args, .. } | TerminatorKind::Return(args) => {
+            for argument in args {
+                collect_operand_read(argument, reads);
+            }
+        }
+        TerminatorKind::Goto(_) | TerminatorKind::Unreachable => {}
+    }
+}
+
+fn collect_operand_read(operand: &Operand, reads: &mut Vec<(LocalId, ReadOp)>) {
+    if let Operand::Read { place, op } = operand {
+        reads.push((place.local, *op));
+    }
+}
+
+fn refresh_effects(function: &mut Function) {
+    for block in &mut function.blocks {
+        for statement in &mut block.statements {
+            let effects = rvalue_effects(&statement.value.kind);
+            statement.value.effects = effects;
+            statement.value.panic = panic_edge(effects);
+            statement.effects = statement_effects(&statement.value);
+        }
+        let effects = terminator_effects(&block.terminator.kind);
+        block.terminator.effects = effects;
+        block.terminator.panic = panic_edge(effects);
     }
 }
 

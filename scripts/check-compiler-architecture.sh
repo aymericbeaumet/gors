@@ -51,6 +51,11 @@ fail_on_matches \
   gors/src/compiler gors/src/resolve
 
 fail_on_matches \
+  'high-level parser products must not leak source or publish static ASTs:' \
+  "Box::leak|ast::File<'static>|merge_files" \
+  gors/src/parser
+
+fail_on_matches \
   'deleted compiler/runtime/browser paths must not be referenced:' \
   'gors[_-]builtin|wasm-threads|pkg-threads|compile_program_multi' \
   Cargo.toml gors gors-cli www fuzz
@@ -91,6 +96,19 @@ fail_on_matches \
   gors/src/compiler/lowering \
   gors/src/compiler/rust_ir \
   gors/src/compiler/emit.rs
+
+if [[ -f gors/src/compiler/mod.rs ]]; then
+  production_facade="$({
+    sed -n '/^fn compile_program_impl(/,/^}/p' gors/src/compiler/mod.rs
+  } || true)"
+  if matches="$(rg -n 'semantic::|mir::|lowering::|lower_to_(hir|mir|rust_ir)|compile_file' \
+    <<< "${production_facade}")"; then
+    printf '%s\n%s\n' \
+      'production compile_program_impl must delegate only through CompilerSession:' \
+      "${matches}" >&2
+    failed=1
+  fi
+fi
 
 fail_on_matches \
   'generic or newline-fused runtime print ABI entry points are forbidden:' \

@@ -8,13 +8,19 @@ use super::expressions::*;
 use super::positions::expr_position;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
-use crate::compiler::ids::{LocalId, SourceSpan};
+use crate::compiler::ids::{LocalId, NodeId, SourceSpan};
 use crate::compiler::types::{ConstValue, IntTy, Ty, UntypedTy};
 
 impl FunctionLowerer<'_> {
-    pub(super) fn local_expr(&mut self, local: LocalId, ty: Ty, span: SourceSpan) -> hir::Expr {
+    pub(super) fn local_expr(
+        &self,
+        node: NodeId,
+        local: LocalId,
+        ty: Ty,
+        span: SourceSpan,
+    ) -> hir::Expr {
         hir::Expr {
-            node: self.file.alloc_node(),
+            node,
             kind: hir::ExprKind::Local(local),
             ty,
             category: hir::ValueCategory::Place,
@@ -41,7 +47,7 @@ impl FunctionLowerer<'_> {
         allow_discarded_call_result: bool,
     ) -> Result<hir::Expr, Diagnostic> {
         let span = self.file.span(&expr_position(expr));
-        let node = self.file.alloc_node();
+        let node = self.alloc_node()?;
         let mut lowered = match expr {
             ast::Expr::BasicLit(literal) => {
                 if literal.kind == Token::FLOAT {
@@ -63,7 +69,7 @@ impl FunctionLowerer<'_> {
             ast::Expr::Ident(ident) => {
                 if let Some(local) = self.lookup_local(ident.name) {
                     let ty = self.place_ty(hir::Place::Local(local))?.clone();
-                    self.local_expr(local, ty, span.clone())
+                    self.local_expr(node, local, ty, span.clone())
                 } else if let Some(constant) = self.constants.get(ident.name).cloned() {
                     hir::Expr {
                         node,

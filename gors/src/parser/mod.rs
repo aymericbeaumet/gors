@@ -5,9 +5,11 @@ mod declarations;
 mod error;
 mod expressions;
 mod functions;
+mod import_path;
 mod parameters;
 mod program;
 mod signatures;
+mod snapshot;
 mod statements;
 mod types;
 mod version;
@@ -19,9 +21,13 @@ use core::Parser;
 use version::extract_go_version;
 
 pub use error::{ParserError, Result};
+pub use import_path::ImportPathIssue;
 pub use program::{
     ParsedPackage, ParsedProgram, PathParseError, parse_path, parse_program, parse_program_files,
     parse_program_from_source,
+};
+pub use snapshot::{
+    FileParseError, InvalidImportPathError, ParsedFile, ParsedFileError, SourceSnapshot,
 };
 
 enum TypeParameterParse<'scanner> {

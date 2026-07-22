@@ -22,6 +22,23 @@ pub(super) fn normalize(input: VerifiedMir) -> Result<VerifiedMir, Vec<Diagnosti
     PassManager::new(&passes).run(input)
 }
 
+pub(super) fn normalize_function(
+    function: mir::Function,
+    signatures: &mir::SignatureIndex,
+) -> Result<mir::Function, Vec<Diagnostic>> {
+    let boolean_control_flow = BooleanControlFlow;
+    let unreachable_blocks = UnreachableBlocks;
+    let passes: [&dyn MirPass; 2] = [&boolean_control_flow, &unreachable_blocks];
+    let mut file = mir::File {
+        package: String::new(),
+        functions: vec![function],
+    };
+    PassManager::new(&passes).run_file(&mut file, signatures)?;
+    file.functions
+        .pop()
+        .ok_or_else(|| vec![Diagnostic::backend("MIR normalization lost its function")])
+}
+
 trait MirPass {
     fn name(&self) -> &'static str;
 
@@ -39,18 +56,38 @@ impl<'a> PassManager<'a> {
 
     fn run(&self, input: VerifiedMir) -> Result<VerifiedMir, Vec<Diagnostic>> {
         let mut file = input.into_inner();
-        for pass in self.passes {
-            verify_around_pass(&file, pass.name(), "before")?;
-            pass.run(&mut file)
-                .map_err(|diagnostic| vec![contextualize(diagnostic, pass.name(), "during")])?;
-            verify_around_pass(&file, pass.name(), "after")?;
-        }
+        let signatures = file
+            .functions
+            .iter()
+            .map(|function| (function.id, function.signature.clone()))
+            .collect();
+        self.run_file(&mut file, &signatures)?;
         Ok(VerifiedMir::from_verified(file))
+    }
+
+    fn run_file(
+        &self,
+        file: &mut mir::File,
+        signatures: &mir::SignatureIndex,
+    ) -> Result<(), Vec<Diagnostic>> {
+        for pass in self.passes {
+            verify_around_pass(file, signatures, pass.name(), "before")?;
+            pass.run(file)
+                .map_err(|diagnostic| vec![contextualize(diagnostic, pass.name(), "during")])?;
+            verify_around_pass(file, signatures, pass.name(), "after")?;
+        }
+        Ok(())
     }
 }
 
-fn verify_around_pass(file: &mir::File, pass: &str, phase: &str) -> Result<(), Vec<Diagnostic>> {
-    mir::verify(file).map_err(|diagnostic| vec![contextualize(diagnostic, pass, phase)])
+fn verify_around_pass(
+    file: &mir::File,
+    signatures: &mir::SignatureIndex,
+    pass: &str,
+    phase: &str,
+) -> Result<(), Vec<Diagnostic>> {
+    file.verify_with_signatures(signatures)
+        .map_err(|diagnostic| vec![contextualize(diagnostic, pass, phase)])
 }
 
 fn contextualize(diagnostic: Diagnostic, pass: &str, phase: &str) -> Diagnostic {

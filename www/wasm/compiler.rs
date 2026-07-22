@@ -14,7 +14,10 @@ pub fn build_rust(input: String) -> BuildResult {
         Err(error) => {
             let diagnostic = match error {
                 gors::parser::PathParseError::ParserError(ref error) => {
-                    Diagnostic::from_parser_error(error, "main.go", &input)
+                    Diagnostic::from_file_parse_error(error)
+                }
+                gors::parser::PathParseError::InvalidImportPath(ref error) => {
+                    Diagnostic::from_invalid_import_path(error)
                 }
                 _ => Diagnostic::new("main.go", 0, 0, error.to_string(), DiagnosticKind::Compiler),
             };
@@ -22,7 +25,28 @@ pub fn build_rust(input: String) -> BuildResult {
         }
     };
 
-    let comments = comments::collect(&program.main_package.ast, &input);
+    let comments = {
+        let Some(file) = program.main_package().files().first() else {
+            return BuildResult::error_result(Diagnostic::new(
+                "main.go",
+                0,
+                0,
+                "parsed program contains no entry source file",
+                DiagnosticKind::Compiler,
+            ));
+        };
+        let ast = match file.parse() {
+            Ok(ast) => ast,
+            Err(error) => {
+                return BuildResult::error_result(Diagnostic::from_parser_error(
+                    &error,
+                    file.path(),
+                    file.source(),
+                ));
+            }
+        };
+        comments::collect(&ast, file.source())
+    };
     let (compiled, source_map_plan) = match gors::compiler::compile_program_with_source_map(program)
     {
         Ok(result) => result,

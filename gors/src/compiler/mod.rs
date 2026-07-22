@@ -15,19 +15,23 @@
 //! `syn` is a terminal serialization target. It is never inspected to recover
 //! semantic facts and is never repaired by a post-lowering compatibility pass.
 
+pub mod db;
 mod diagnostic;
 mod emit;
+pub mod fingerprint;
 pub mod hir;
 pub mod ids;
 mod lowering;
 pub mod mir;
 pub mod rust_ir;
 mod semantic;
+mod session;
 pub mod types;
 
 pub use diagnostic::Diagnostic;
 pub use hir::File as HirFile;
 pub use rust_ir::File as RustIrFile;
+pub use session::CompilerSession;
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -89,6 +93,10 @@ impl VerifiedRustIr {
 /// Lower a parsed Go file through every authoritative compiler stage.
 pub fn compile_file(file: &ast::File<'_>) -> Result<syn::File, Vec<Diagnostic>> {
     let hir = lower_to_hir(file)?;
+    compile_hir(hir)
+}
+
+fn compile_hir(hir: HirFile) -> Result<syn::File, Vec<Diagnostic>> {
     let mir = lower_to_mir(&hir)?;
     let rust_ir = lower_to_rust_ir(mir)?;
     emit_rust_ir(&rust_ir)
@@ -153,6 +161,18 @@ impl CompilerError {
         Self {
             diagnostics: vec![CompilerDiagnostic {
                 code: "GORS2001",
+                message: message.into(),
+                file: String::new(),
+                line: 0,
+                column: 0,
+            }],
+        }
+    }
+
+    fn backend(message: impl Into<String>) -> Self {
+        Self {
+            diagnostics: vec![CompilerDiagnostic {
+                code: "GORS2003",
                 message: message.into(),
                 file: String::new(),
                 line: 0,
@@ -244,8 +264,8 @@ pub fn compile_file_to_rust_syntax(file: ast::File<'_>) -> Result<syn::File, Com
 /// Compile a parsed program into deterministic, self-contained Rust units.
 ///
 /// The bootstrap backend deliberately accepts exactly one import-free `main`
-/// source file. The boundary rejects wider parser products before lowering so
-/// a merged package can never masquerade as a correctly modeled single file.
+/// source file. Wider independently parsed package products are rejected before
+/// lowering until package-level semantic indexing is implemented.
 pub fn compile_program(
     program: crate::parser::ParsedProgram,
 ) -> Result<CompiledProgram, CompilerError> {
@@ -266,142 +286,15 @@ fn compile_program_impl(
     program: crate::parser::ParsedProgram,
     with_source_map: bool,
 ) -> Result<(CompiledProgram, Option<SourceMapPlan>), CompilerError> {
-    validate_bootstrap_program(&program)?;
-
-    let source_map = with_source_map.then(|| source_map_plan(&program));
-
-    let file = compile_file_to_rust_syntax(program.main_package.ast);
-    let entry = file?;
-
-    Ok((
-        CompiledProgram {
-            entry,
-            modules: BTreeMap::new(),
-        },
-        source_map,
-    ))
-}
-
-fn source_map_plan(program: &crate::parser::ParsedProgram) -> SourceMapPlan {
-    let mut tracker = crate::sourcemap::SourceMapTracker::new();
-    tracker.start_many(
-        program
-            .main_package
-            .files
-            .iter()
-            .map(|(name, source)| (name.clone(), Some(source.clone())))
-            .collect(),
-        "main.rs",
-    );
-    record_source_landmarks(&mut tracker, &program.main_package.ast);
-    tracker.pause();
-    SourceMapPlan { tracker }
-}
-
-fn validate_bootstrap_program(program: &crate::parser::ParsedProgram) -> Result<(), CompilerError> {
-    if program.main_package.files.len() != 1 {
-        return Err(program_error(
-            program,
-            "the bootstrap backend requires exactly one Go source file",
-        ));
-    }
-    if !program.imports.is_empty() || !program.stdlib_imports.is_empty() {
-        return Err(program_error(
-            program,
-            "imports are not implemented by the HIR/MIR backend",
-        ));
-    }
-    if program.main_package.name != "main" {
-        return Err(program_error(
-            program,
-            "executable compilation requires package main",
-        ));
-    }
-    let main_functions = program
-        .main_package
-        .ast
-        .decls
-        .iter()
-        .filter_map(|decl| match decl {
-            ast::Decl::FuncDecl(function) if function.name.name == "main" => Some(function),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    let [main] = main_functions.as_slice() else {
-        return Err(program_error(
-            program,
-            "package main must declare exactly one main function",
-        ));
-    };
-    if !main.type_.params.list.is_empty()
-        || main
-            .type_
-            .results
-            .as_ref()
-            .is_some_and(|results| !results.list.is_empty())
-    {
-        return Err(program_error(
-            program,
-            "func main must have no parameters or results",
-        ));
-    }
-    Ok(())
-}
-
-fn program_error(
-    program: &crate::parser::ParsedProgram,
-    message: impl Into<String>,
-) -> CompilerError {
-    let position = &program.main_package.ast.package;
-    let file = if position.file.is_empty() {
-        program
-            .main_package
-            .files
-            .first()
-            .map(|(name, _)| name.clone())
-            .unwrap_or_default()
-    } else if position.directory.is_empty() || position.file.starts_with('/') {
-        position.file.to_string()
+    let mut session = CompilerSession::default();
+    if with_source_map {
+        let (compiled, plan) = session.compile_program_with_source_map(program)?;
+        Ok((compiled, Some(plan)))
     } else {
-        format!("{}/{}", position.directory, position.file)
-    };
-    CompilerError {
-        diagnostics: vec![CompilerDiagnostic {
-            code: "GORS2001",
-            message: message.into(),
-            file,
-            line: position.line,
-            column: position.column,
-        }],
+        session
+            .compile_program(program)
+            .map(|compiled| (compiled, None))
     }
-}
-
-fn record_source_landmarks(tracker: &mut crate::sourcemap::SourceMapTracker, file: &ast::File<'_>) {
-    record_mapping(tracker, &file.package, Some("package"));
-    record_mapping(tracker, &file.name.name_pos, Some(file.name.name));
-    for declaration in &file.decls {
-        if let ast::Decl::FuncDecl(function) = declaration {
-            if let Some(position) = &function.type_.func {
-                record_mapping(tracker, position, Some("func"));
-            }
-            record_mapping(tracker, &function.name.name_pos, Some(function.name.name));
-        }
-    }
-}
-
-fn record_mapping(
-    tracker: &mut crate::sourcemap::SourceMapTracker,
-    position: &crate::token::Position<'_>,
-    name: Option<&str>,
-) {
-    let source = if position.file.is_empty() {
-        None
-    } else if position.directory.is_empty() || position.file.starts_with('/') {
-        Some(position.file.to_string())
-    } else {
-        Some(format!("{}/{}", position.directory, position.file))
-    };
-    tracker.record_for_source(source, position.line as u32, position.column as u32, name);
 }
 
 #[cfg(test)]

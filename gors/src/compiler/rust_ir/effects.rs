@@ -102,6 +102,14 @@ fn operand_effects(operand: &Operand) -> Effects {
             may_allocate: true,
             ..Effects::default()
         },
+        Operand::Read {
+            op: ReadOp::ProvenLastUseMove,
+            ..
+        } => Effects {
+            may_read: true,
+            may_write: true,
+            ..Effects::default()
+        },
         Operand::Constant(Constant::GoString(_)) => Effects {
             may_call: true,
             may_allocate: true,

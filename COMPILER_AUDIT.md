@@ -225,6 +225,14 @@ move only if the source has no later observable use, aliases retain Go
 behavior, and destruction order remains irrelevant. Otherwise it is a copy,
 clone, borrow, or runtime-handle operation chosen from semantic facts.
 
+The current Rust IR implements one deliberately narrow proof-backed refinement:
+backwards CFG liveness marks an owned non-`Copy` slot read as
+`ProvenLastUseMove` only when the slot is dead on every successor path. Loop
+backedges and alternate live branches retain conservative clones. The Rust-IR
+verifier recomputes this plan, and terminal emission realizes the move with a
+checked slot take. This is useful foundation, not a claim that general
+no-copy, borrowing, escape analysis, or storage planning is complete.
+
 Later representation refinements can add:
 
 - sparse conditional constant propagation;
@@ -308,12 +316,41 @@ resolver modules. Query keys include source content, build tags, target,
 toolchain, compiler schema, package identity, and semantic dependencies.
 Serialized entries require schema validation and deterministic encoding.
 
-This cannot be layered over the current bootstrap identities. Program parsing
-currently publishes `ast::File<'static>` values constructed with `Box::leak`,
-and the first HIR slice assigns file, definition, and node identities from
-fixed or traversal-order counters. Incremental compilation requires owned,
-evictable per-file parse products and structured cross-revision identities
-before those values become cache keys.
+Program parsing now owns immutable, reference-counted per-file snapshots and
+creates only temporary AST views borrowing one snapshot. Structured,
+collision-checked keys provide stable workspace, package, file, and
+package-owned definition identities; moving a named definition between files
+in the same package does not change its `DefId`. Node, local, and basic-block
+IDs are still dense owner-local indexes, deliberately nonpersistent until an
+incremental syntax layer can provide reusable anchors. They must not become
+independent query or CAS keys.
+
+Canonical stage fingerprint encoders also exist, but their current HIR, MIR,
+and Rust-IR encodings retain source-span provenance and revision-local dense
+indexes. They are deterministic validation and telemetry products, not yet
+provenance-free semantic CAS identities. Separate semantic content from
+diagnostic provenance before cross-process reuse.
+
+The first Salsa-backed `compiler::db` kernel owns explicit source, package, and
+build inputs and keeps Salsa handles behind a compiler-owned facade. Its
+tracked file projection shares one temporary parse between indexing and
+semantic lowering, separates package public API from bodies, builds
+function-relative typed HIR, and reaches per-definition verified MIR plus
+mandatory normalized and reverified MIR, configured verified Rust IR, and
+deterministic package Rust-IR assembly. Production `compile_program` delegates
+to `CompilerSession`; convenience calls create a short-lived session, while
+long-lived callers can retain the same session across edits. Terminal syn
+emission consumes the verified package outside the semantic query graph.
+Parsing and semantic projection remain file-granular, though tracked function
+fields and function-relative provenance allow unchanged sibling products to
+backdate. That is useful incremental reuse, not the final owned incremental
+syntax boundary or a cross-process cache.
+
+Build configuration now derives the compiler's runtime ABI identity from the
+single numeric ABI version in `gors-runtime` instead of carrying a stale
+parallel string. Target, pinned Go version, and runtime ABI are explicit query
+inputs. Configuration granularity still needs evidence: a changed target must
+not invalidate target-independent syntax and semantic facts.
 
 The target is one explicitly owned, demand-driven red-green query database.
 Each query records fine-grained dependency edges automatically; public API and
@@ -371,10 +408,13 @@ Those fixtures are retained as an ordered migration inventory. Pre-cutover
 pass counts and performance measurements are invalid for the new compiler and
 must not appear as current evidence.
 
-The migration frontier also carries two immediate architecture regressions that
-must not survive feature expansion: leaked `'static` program ASTs and
-traversal-ordinal semantic IDs. Fixing them, installing per-stage fingerprints,
-and defining fine-grained query boundaries precede broad compliance work.
+The leaked `'static` program AST regression has been removed: immutable source
+snapshots are reference counted per file and packages never merge their ASTs.
+Stable workspace, package, file, and definition identities are also installed.
+Reusable syntax anchors and persistent node/local identities remain a
+pre-expansion requirement, as does separating semantic fingerprints from
+source provenance. Fine-grained query boundaries must be proven by invalidation
+tests before broad compliance work.
 Incrementality and parallel performance are part of each feature's definition
 of done rather than a post-compliance project.
 
@@ -396,6 +436,27 @@ The Rust `panic_any` realization of dynamic arithmetic faults is a sixth:
 replace it with the versioned runtime's Go panic/process boundary and compare
 observable failure behavior against the pinned Go toolchain before broadening
 the executable compliance claim.
+
+## Foundational P0 backlog
+
+Before broad stdlib work can be considered scalable, finish these foundations:
+
+- reusable owned incremental syntax anchors and provenance-free semantic
+  fingerprints, while retaining diagnostic/source-map provenance separately;
+- retained-session adoption by long-lived Wasm, editor, and build-daemon entry
+  points and
+  bounded per-definition invalidation beyond the current file-granular
+  parse/semantic projection;
+- a checksummed cross-process semantic CAS with canonical schemas and atomic
+  publication;
+- one global scheduler and job budget spanning queries, external codegen, and
+  linking, with revision cancellation and memory backpressure;
+- the precompiled-runtime experiment and terminal rustc feasibility gate, with
+  an aggressive switch to direct codegen from the same Rust IR if it cannot win;
+- content-addressed reachable SDK shards instead of the monolithic embedded
+  source table; and
+- generic language, package, and runtime-ABI breadth sufficient to compile and
+  benchmark representative stdlib dependency graphs without special cases.
 
 A failing fixture must be classified as one of:
 
@@ -519,6 +580,10 @@ to a versioned manifest. That scenario is then a mandatory non-regression gate;
 promotion is not postponed until every language feature is complete. See
 `COMPILER_PERFORMANCE.md` for the exact protocol and migration rules.
 
+No scenario is currently promoted. The performance harness and acceptance
+schema are active infrastructure, but gors has not earned a faster-than-Go
+claim for either cold or warm builds.
+
 ## Phased 2026 roadmap
 
 ### Phase 0 — hard cutover (complete)
@@ -538,13 +603,15 @@ Deliver:
 Exit gate: workspace build and unit checks pass, guard searches find no legacy
 path, and unsupported fixtures cannot execute an alternate backend.
 
-### Phase 1 — semantic foundation
+### Phase 1 — semantic and query foundation (in progress)
 
 Deliver:
 
-- owned and evictable per-file parse products with no leaked source revisions;
-- canonical packages, definitions, scopes, aliases, and stable cross-revision
-  source and semantic IDs that are not traversal ordinals;
+- preserve the completed owned and evictable per-file parse boundary with no
+  leaked source revisions or package-wide AST merge;
+- preserve stable workspace, package, file, and definition keys, then add
+  reusable syntax anchors and stable local/node identities;
+- complete canonical packages, scopes, aliases, and declaration semantics;
 - complete exact constant evaluation and representability;
 - named and composite types, method sets, interfaces, and generics;
 - the first demand-driven red-green query database with exact dependency edges,
@@ -611,7 +678,8 @@ traces demonstrate fine-grained reuse even before they beat Go.
 
 Deliver:
 
-- no-copy and semantic-move planning;
+- expand no-copy and semantic-move planning beyond the current CFG-liveness
+  last-use move slice;
 - scalar replacement, bounds-check elimination, devirtualization, and inlining;
 - runtime representation specialization where Go behavior permits;
 - output stability, rustc-time, clone-count, and runtime performance budgets;

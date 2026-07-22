@@ -4,7 +4,7 @@ use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::mir;
 use crate::compiler::rust_ir as out;
-use crate::compiler::types::{ConstValue, IntTy, Ty};
+use crate::compiler::types::{ConstValue, IntTy, Signature as GoSignature, Ty};
 
 pub(super) fn lower_file(file: mir::File) -> Result<out::File, Diagnostic> {
     let executable_package = file.package == "main";
@@ -18,7 +18,7 @@ pub(super) fn lower_file(file: mir::File) -> Result<out::File, Diagnostic> {
     })
 }
 
-fn lower_function(
+pub(super) fn lower_function(
     function: mir::Function,
     executable_package: bool,
 ) -> Result<out::Function, Diagnostic> {
@@ -27,20 +27,7 @@ fn lower_function(
     } else {
         out::FunctionArtifactPlan::public_definition(function.id)
     };
-    let signature = out::Signature {
-        params: function
-            .signature
-            .params
-            .iter()
-            .map(lower_type)
-            .collect::<Result<Vec<_>, _>>()?,
-        results: function
-            .signature
-            .results
-            .iter()
-            .map(lower_type)
-            .collect::<Result<Vec<_>, _>>()?,
-    };
+    let signature = lower_signature(&function.signature)?;
     let locals = function
         .locals
         .into_iter()
@@ -67,7 +54,7 @@ fn lower_function(
         .into_iter()
         .map(|block| lower_block(block, &locals))
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(out::Function {
+    let mut lowered = out::Function {
         id: function.id,
         name: function.name,
         artifact,
@@ -78,6 +65,23 @@ fn lower_function(
         entry: function.entry,
         control_flow: out::ControlFlowPlan::PcDispatchU32,
         span: function.span,
+    };
+    out::select_read_operations(&mut lowered)?;
+    Ok(lowered)
+}
+
+pub(super) fn lower_signature(signature: &GoSignature) -> Result<out::Signature, Diagnostic> {
+    Ok(out::Signature {
+        params: signature
+            .params
+            .iter()
+            .map(lower_type)
+            .collect::<Result<Vec<_>, _>>()?,
+        results: signature
+            .results
+            .iter()
+            .map(lower_type)
+            .collect::<Result<Vec<_>, _>>()?,
     })
 }
 
@@ -216,7 +220,7 @@ fn lower_operand(
         mir::Operand::Read(place) => {
             let place = lower_place(place);
             let local = local(locals, place.local)?;
-            let op = local.ty.read_op().ok_or_else(|| {
+            let op = local.ty.conservative_read_op().ok_or_else(|| {
                 Diagnostic::backend(format!(
                     "Rust lowering cannot read unit local {}",
                     place.local.0

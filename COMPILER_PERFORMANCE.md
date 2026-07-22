@@ -17,6 +17,10 @@ and the Rust source plus rustc path has not been shown capable of winning an
 equivalent end-to-end comparison. Until the contract below is satisfied, use
 "target" rather than "faster than Go" in project material.
 
+`perf/acceptance-v1.json` currently contains zero promoted scenarios. The
+acceptance gate therefore validates its schema but enforces no earned latency
+budget yet.
+
 Correctness remains a prerequisite. A fast build that rejects a supported
 workload, returns a stale artifact, changes Go-observable behavior, or omits
 work performed by the comparator is a failed sample.
@@ -170,11 +174,12 @@ file owns or reference-counts that snapshot and represents text by byte ranges,
 interned tokens, or another serializable owned form. Dropping the last query
 result must release both syntax and source memory.
 
-The current `ParsedPackage` model stores `ast::File<'static>` and constructs it
-with `Box::leak` in several program-parsing paths. That is bootstrap debt and is
-forbidden in the query database. Do not hide it behind an arena that itself is
-leaked. A parser may use borrowed views while a query is executing, but the
-published parse result must be owned, evictable, cancellation-safe, and free of
+`ParsedFile` now reference-counts exactly such a snapshot, and `ParsedPackage`
+stores immutable independently validated files rather than a merged AST. The
+bootstrap parser creates a temporary AST borrowing one snapshot while a
+consumer is executing and publishes no self-reference or `'static` fiction.
+The red-green database may later cache an owned syntax representation, but it
+must preserve this per-file release boundary and remain free of
 self-referential unsafe code.
 
 Parse one file per query. Package merging belongs in semantic indexing, not in
@@ -194,12 +199,15 @@ vector indexes, byte offsets, or traversal ordinals. At minimum:
 - local and syntax identities derive from a stable owner plus an incrementally
   matched syntax anchor and role.
 
-The current `FileId(0)`, counter-based `DefId`, and
-`NodeId { file, ordinal }` are not persistent identities and must not become
-query keys. New declarations may not renumber unrelated definitions. Reordering
-functions may not invalidate their bodies. Identity interning must collision
-check full structured keys; serialized cache keys retain the full key or a
-schema-versioned digest with collision evidence.
+Stable, collision-checked `WorkspaceId`, `PackageId`, `FileId`, and
+package-owned `DefId` keys now implement the persistent part of this contract.
+A named definition keeps its identity when it moves between files in one
+package, while identical package-clause names at distinct import paths remain
+distinct. `NodeId`, `LocalId`, and `BasicBlockId` are still dense owner-local
+indexes and explicitly nonpersistent. New declarations may not renumber
+unrelated definitions; node/local/block reuse waits for incrementally matched
+syntax anchors. Serialized cache keys must retain a complete structured key or
+a schema-versioned digest with collision evidence.
 
 ## Demand-driven red-green query database
 
@@ -356,10 +364,20 @@ not determine semantics or be counted as the competitive production path.
 The following current mechanisms are useful bootstrap behavior but are not the
 architecture described here:
 
-- program parsing leaks filenames and source buffers to manufacture
-  `ast::File<'static>` values;
-- `FileId`, `DefId`, and `NodeId` allocation is fixed or traversal-ordinal and
-  therefore unstable across revisions;
+- parser snapshots are owned and independently releasable, and the first
+  tracked file projection shares one temporary parse between indexing and
+  semantic lowering, but there is no reusable incremental syntax tree with
+  stable syntax anchors or explicit parse-product memory accounting;
+- workspace, package, file, and definition IDs are stable; node, local, and
+  basic-block IDs are still revision-local dense indexes and cannot be
+  persistent query or CAS keys;
+- canonical HIR, MIR, and Rust-IR fingerprints exist, but still include source
+  provenance and revision-local dense indexes instead of separating portable
+  semantic content from diagnostics;
+- the production `CompilerSession` now reaches function-relative typed HIR,
+  per-definition verified and normalized Go MIR, configured verified Rust IR,
+  and package assembly; parse/semantic projection remains file-granular, and
+  convenience entry points retain no session across calls;
 - the CLI manifest validates and reuses a complete generated-output or
   executable request, but does not reuse semantic queries after an edit;
 - the bootstrap Rust artifact still recompiles its bundled runtime module for
@@ -367,8 +385,9 @@ architecture described here:
 - dynamic divide/remainder-by-zero and negative-shift faults currently unwind
   through Rust `panic_any`, so those executions do not yet have Go-compatible
   process behavior and cannot enter behavior-validated performance evidence;
-- timing reports contain coarse phase durations and cache events, not query
-  dependency, invalidation, memory, or scheduler evidence;
+- initial query counters and invalidation tests exist, but timing reports do
+  not yet expose complete dependency traces, retained memory, cancellation, or
+  scheduler evidence;
 - `gors build` currently publishes generated Rust sources rather than a runnable
   executable, so a harness-composed gors-plus-rustc measurement is diagnostic
   only until the default artifact command owns the complete publication path;
@@ -379,6 +398,12 @@ architecture described here:
   content-addressed reachable package shards;
 - the browser exact-output cache benchmark is valuable UI telemetry, but it is
   not the native cold/warm artifact certification protocol.
+
+These are P0 foundations, not optional tuning: owned incremental syntax and
+provenance-free semantic fingerprints; cross-process semantic CAS; one global
+scheduler with cancellation and memory backpressure; a precompiled-runtime and
+terminal-rustc feasibility decision; reachable content-addressed SDK shards;
+and enough generic language and package support to benchmark real stdlib work.
 
 Some cutover foundations already point in the correct direction: source mapping
 is an explicit `SourceMapPlan`, `CompiledProgram` separates its entry from a
@@ -396,11 +421,12 @@ them at the owning boundary and delete the obsolete path in the same change.
 
 1. Install the machine-readable benchmark schema, stage tracing, hermetic
    corpus, and current losing baseline. Never invent or backfill measurements.
-2. Replace leaking program parse products and traversal-ordinal identities with
-   owned snapshots and stable cross-revision keys.
-3. Put file parsing, package headers, semantic indexing, type checking, HIR, Go
-   MIR, and mandatory Rust representation lowering behind the red-green database
-   before broad language expansion.
+2. Preserve owned per-file snapshots and the stable workspace, package, file,
+   and definition keys; add reusable syntax anchors plus provenance-free
+   semantic fingerprints before treating stage digests as CAS identities.
+3. Harden the production-session route from tracked file/package facts through
+   configured Rust IR, adopt retained sessions in long-lived entry points, and
+   prove bounded invalidation before broad language expansion.
 4. Add the package DAG, API/body fingerprints, global scheduler, cancellation,
    memory budgets, and local semantic CAS while generic language support grows.
 5. Run the terminal Rust feasibility gate as soon as representative package
@@ -418,6 +444,16 @@ competitor.
 
 ## Primary design references
 
+- Salsa's [overview](https://salsa-rs.github.io/salsa/overview.html) and
+  [incremental algorithm](https://salsa-rs.github.io/salsa/reference/algorithm.html)
+  define the in-process red-green kernel now hidden behind `compiler::db`.
+  Salsa is an implementation mechanism, not the public compiler architecture or
+  a substitute for the repository's scheduler, memory, CAS, and artifact
+  contracts.
+- Salsa's [durability](https://salsa-rs.github.io/salsa/reference/durability.html)
+  and [tuning](https://salsa-rs.github.io/salsa/tuning.html) guidance informs
+  explicit high-durability build inputs and future memo-eviction measurements;
+  every optimization still requires gors-specific invalidation evidence.
 - The Rust compiler's documented [red-green incremental query
   algorithm](https://rustc-dev-guide.rust-lang.org/queries/incremental-compilation.html)
   motivates dependency recording, result fingerprints, and green downstream

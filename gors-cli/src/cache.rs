@@ -148,25 +148,25 @@ impl InputSnapshot {
         invocation_sources: &[String],
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut files = BTreeMap::new();
-        for (path, source) in &program.main_package.files {
+        for file in program.main_package().files() {
             files.insert(
-                normalized_path(Path::new(path))?,
-                sha2_hash(source.as_bytes()),
+                normalized_path(Path::new(file.path()))?,
+                sha2_hash(file.source().as_bytes()),
             );
         }
-        for package in &program.imports {
-            for (path, source) in &package.files {
+        for package in program.imports() {
+            for file in package.files() {
                 files.insert(
-                    normalized_path(Path::new(path))?,
-                    sha2_hash(source.as_bytes()),
+                    normalized_path(Path::new(file.path()))?,
+                    sha2_hash(file.source().as_bytes()),
                 );
             }
         }
 
         let mut directory_paths = BTreeSet::new();
-        for package in &program.imports {
-            for (path, _) in &package.files {
-                if let Some(parent) = Path::new(path).parent() {
+        for package in program.imports() {
+            for file in package.files() {
+                if let Some(parent) = Path::new(file.path()).parent() {
                     directory_paths.insert(normalized_path(parent)?);
                 }
             }

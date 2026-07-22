@@ -22,7 +22,7 @@ impl File {
             {
                 return Err(Diagnostic::backend(format!(
                     "duplicate MIR function DefId {}",
-                    function.id.0
+                    function.id
                 )));
             }
             if !names.insert(function.name.as_str()) {
@@ -32,14 +32,72 @@ impl File {
                 )));
             }
         }
+        self.verify_with_signatures(&signatures)
+    }
+
+    pub(super) fn verify_with_signatures(
+        &self,
+        signatures: &BTreeMap<DefId, Signature>,
+    ) -> Result<(), Diagnostic> {
+        let mut names = BTreeSet::new();
+        let mut definitions = BTreeSet::new();
         for function in &self.functions {
-            function.verify(&signatures)?;
+            if !definitions.insert(function.id) {
+                return Err(Diagnostic::backend(format!(
+                    "duplicate MIR function DefId {}",
+                    function.id
+                )));
+            }
+            if !names.insert(function.name.as_str()) {
+                return Err(Diagnostic::backend(format!(
+                    "duplicate MIR function name {}",
+                    function.name
+                )));
+            }
+            match signatures.get(&function.id) {
+                Some(signature) if signature == &function.signature => {}
+                Some(_) => {
+                    return Err(Diagnostic::backend(format!(
+                        "MIR function DefId {} disagrees with the package signature index",
+                        function.id
+                    )));
+                }
+                None => {
+                    return Err(Diagnostic::backend(format!(
+                        "MIR function DefId {} is absent from the package signature index",
+                        function.id
+                    )));
+                }
+            }
+            function.verify(signatures)?;
         }
         Ok(())
     }
 }
 
 impl Function {
+    pub(super) fn verify_with_signatures(
+        &self,
+        signatures: &BTreeMap<DefId, Signature>,
+    ) -> Result<(), Diagnostic> {
+        match signatures.get(&self.id) {
+            Some(signature) if signature == &self.signature => {}
+            Some(_) => {
+                return Err(Diagnostic::backend(format!(
+                    "MIR function DefId {} disagrees with the package signature index",
+                    self.id
+                )));
+            }
+            None => {
+                return Err(Diagnostic::backend(format!(
+                    "MIR function DefId {} is absent from the package signature index",
+                    self.id
+                )));
+            }
+        }
+        self.verify(signatures)
+    }
+
     fn verify(&self, signatures: &BTreeMap<DefId, Signature>) -> Result<(), Diagnostic> {
         for ty in self.signature.params.iter().chain(&self.signature.results) {
             verify_bootstrap_type(ty, "function signature")?;
@@ -180,12 +238,12 @@ impl Function {
                 match callee {
                     hir::Callee::Function(id) => {
                         let signature = signatures.get(id).ok_or_else(|| {
-                            Diagnostic::backend(format!("unknown MIR callee DefId {}", id.0))
+                            Diagnostic::backend(format!("unknown MIR callee DefId {id}"))
                         })?;
                         if argument_types.len() != signature.params.len() {
                             return Err(Diagnostic::backend(format!(
                                 "MIR call to DefId {} has {} arguments but expects {}",
-                                id.0,
+                                id,
                                 argument_types.len(),
                                 signature.params.len()
                             )));

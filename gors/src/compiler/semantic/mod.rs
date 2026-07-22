@@ -23,7 +23,10 @@ use positions::expr_position;
 
 use super::Diagnostic;
 use super::hir;
-use super::ids::{DefId, FileId, NodeId, SourceSpan};
+use super::ids::{
+    DefId, DefinitionKey, DefinitionKind, FileId, IdentityCollision, IdentityInterner, NodeId,
+    PackageId, SourceSpan,
+};
 use super::types::{ConstValue, IntTy, Signature, Ty, UntypedTy};
 
 #[derive(Clone)]
@@ -40,21 +43,76 @@ struct ConstantSymbol {
 }
 
 struct FileLowerer {
-    file_id: FileId,
+    package_id: PackageId,
     file_name: String,
-    next_node: u32,
-    next_def: u32,
+    identities: IdentityInterner,
     functions: BTreeMap<String, FunctionSymbol>,
     constants: BTreeMap<String, ConstantSymbol>,
     diagnostics: Vec<Diagnostic>,
 }
 
+/// Explicit compiler-owned identity context for one semantic file query.
+///
+/// `logical_file` is package-relative and portable. The stable file identity
+/// owns diagnostics and parse inputs; package-level definitions deliberately
+/// derive from `package` instead so moving a declaration does not rename it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct SemanticContext {
+    pub(super) package: PackageId,
+    pub(super) file: FileId,
+    pub(super) logical_file: String,
+}
+
 pub(super) fn lower_file(file: &ast::File<'_>) -> Result<hir::File, Vec<Diagnostic>> {
+    // Public single-file stage helpers have no package graph. Their explicit
+    // command-line fallback is stable across checkout roots, while production
+    // program compilation supplies the parsed package's canonical import path.
+    let logical_file = logical_file_name(&file.file_start);
+    let context = semantic_context(
+        "gors:canonical-workspace",
+        &format!("command-line-package:{}", file.name.name),
+        &logical_file,
+    )?;
+    lower_file_with_context(file, context)
+}
+
+pub(super) fn semantic_context(
+    workspace: &str,
+    package_identity: &str,
+    logical_file: &str,
+) -> Result<SemanticContext, Vec<Diagnostic>> {
+    let mut identities = IdentityInterner::default();
+    let workspace = identities
+        .workspace(workspace)
+        .map_err(identity_diagnostics)?;
+    let package = identities
+        .package(workspace, package_identity)
+        .map_err(identity_diagnostics)?;
+    let file = identities
+        .file(package, logical_file)
+        .map_err(identity_diagnostics)?;
+    Ok(SemanticContext {
+        package,
+        file,
+        logical_file: logical_file.to_string(),
+    })
+}
+
+pub(super) fn lower_file_with_context(
+    file: &ast::File<'_>,
+    context: SemanticContext,
+) -> Result<hir::File, Vec<Diagnostic>> {
+    // Read both stable owners here so callers cannot accidentally pass a
+    // package-only context and recover file identity from source positions.
+    let SemanticContext {
+        package,
+        file: _,
+        logical_file,
+    } = context;
     let mut lowerer = FileLowerer {
-        file_id: FileId(0),
-        file_name: file.file_start.file.to_string(),
-        next_node: 0,
-        next_def: 0,
+        package_id: package,
+        file_name: logical_file,
+        identities: IdentityInterner::default(),
         functions: BTreeMap::new(),
         constants: BTreeMap::new(),
         diagnostics: Vec::new(),
@@ -88,28 +146,15 @@ pub(super) fn lower_file(file: &ast::File<'_>) -> Result<hir::File, Vec<Diagnost
 }
 
 impl FileLowerer {
-    fn alloc_node(&mut self) -> NodeId {
-        let id = NodeId {
-            file: self.file_id,
-            ordinal: self.next_node,
-        };
-        self.next_node += 1;
-        id
-    }
-
-    fn alloc_def(&mut self) -> DefId {
-        let id = DefId(self.next_def);
-        self.next_def += 1;
-        id
+    fn intern_definition(&mut self, kind: DefinitionKind, name: &str) -> Result<DefId, Diagnostic> {
+        self.identities
+            .definition(DefinitionKey::package_named(self.package_id, kind, name))
+            .map_err(identity_diagnostic)
     }
 
     fn span(&self, position: &Position<'_>) -> SourceSpan {
         SourceSpan {
-            file: if position.file.is_empty() {
-                self.file_name.clone()
-            } else {
-                position.file.to_string()
-            },
+            file: self.file_name.clone(),
             start: position.offset,
             end: position.offset,
             line: position.line,
@@ -179,10 +224,14 @@ impl FileLowerer {
                 continue;
             }
             let signature = Signature { params, results };
-            let symbol = FunctionSymbol {
-                id: self.alloc_def(),
-                signature,
+            let id = match self.intern_definition(DefinitionKind::Function, function.name.name) {
+                Ok(id) => id,
+                Err(diagnostic) => {
+                    self.diagnostics.push(diagnostic);
+                    continue;
+                }
             };
+            let symbol = FunctionSymbol { id, signature };
             if self
                 .functions
                 .insert(function.name.name.to_string(), symbol)
@@ -290,7 +339,14 @@ impl FileLowerer {
                             pending.push((name, span, ty, value));
                         }
                         for (name, span, ty, value) in pending {
-                            let id = self.alloc_def();
+                            let id =
+                                match self.intern_definition(DefinitionKind::Constant, name.name) {
+                                    Ok(id) => id,
+                                    Err(diagnostic) => {
+                                        self.diagnostics.push(diagnostic);
+                                        continue;
+                                    }
+                                };
                             let symbol = ConstantSymbol {
                                 id,
                                 ty: ty.clone(),
@@ -527,12 +583,14 @@ impl FileLowerer {
             ));
         };
 
-        let node = self.alloc_node();
+        let node = NodeId::owner_local(symbol.id, 0);
         let span = self.span(&function.name.name_pos);
         let functions = self.functions.clone();
         let constants = self.constants.clone();
         let mut lowerer = FunctionLowerer {
             file: self,
+            owner: symbol.id,
+            next_node: 1,
             functions,
             constants,
             signature: symbol.signature.clone(),
@@ -568,4 +626,26 @@ impl FileLowerer {
             span,
         })
     }
+}
+
+fn logical_file_name(position: &Position<'_>) -> String {
+    // The standalone facade has no workspace-relative path input yet. The
+    // scanner already separates the directory from this basename, so using
+    // only the logical filename keeps query identities and emitted symbols
+    // portable across checkout roots. The query database must replace this
+    // bootstrap rule with its canonical package-relative file key.
+    position
+        .file
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(position.file)
+        .to_string()
+}
+
+fn identity_diagnostic(collision: IdentityCollision) -> Diagnostic {
+    Diagnostic::backend(collision.to_string())
+}
+
+fn identity_diagnostics(collision: IdentityCollision) -> Vec<Diagnostic> {
+    vec![identity_diagnostic(collision)]
 }

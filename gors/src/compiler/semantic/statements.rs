@@ -44,7 +44,7 @@ impl FunctionLowerer<'_> {
                     ));
                 }
                 let one = hir::Expr {
-                    node: self.file.alloc_node(),
+                    node: self.alloc_node()?,
                     kind: hir::ExprKind::Constant(ConstValue::Int("1".into())),
                     ty,
                     category: hir::ValueCategory::Constant,
@@ -82,7 +82,8 @@ impl FunctionLowerer<'_> {
                                 "named result {index} has no signature type"
                             ))
                         })?;
-                        values.push(self.local_expr(local, ty, span.clone()));
+                        let node = self.alloc_node()?;
+                        values.push(self.local_expr(node, local, ty, span.clone()));
                     }
                     values
                 } else {
@@ -188,7 +189,7 @@ impl FunctionLowerer<'_> {
             }
         };
         Ok(Some(hir::Stmt {
-            node: self.file.alloc_node(),
+            node: self.alloc_node()?,
             kind,
             span,
         }))
@@ -248,7 +249,7 @@ impl FunctionLowerer<'_> {
                             )
                         })?;
                         Ok(hir::Expr {
-                            node: self.file.alloc_node(),
+                            node: self.alloc_node()?,
                             kind: hir::ExprKind::Constant(value),
                             ty: ty.clone(),
                             category: hir::ValueCategory::Constant,
@@ -285,7 +286,7 @@ impl FunctionLowerer<'_> {
                 }
             }
             statements.push(hir::Stmt {
-                node: self.file.alloc_node(),
+                node: self.alloc_node()?,
                 kind: hir::StmtKind::Let {
                     destinations,
                     values,
@@ -294,7 +295,7 @@ impl FunctionLowerer<'_> {
             });
         }
         Ok(hir::StmtKind::Block(hir::Block {
-            node: self.file.alloc_node(),
+            node: self.alloc_node()?,
             stmts: statements,
             span: self.file.span(&decl.tok_pos),
         }))

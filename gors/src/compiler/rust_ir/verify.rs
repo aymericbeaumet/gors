@@ -35,7 +35,7 @@ impl File {
             {
                 return Err(Diagnostic::backend(format!(
                     "duplicate Rust IR function DefId {}",
-                    function.id.0
+                    function.id
                 )));
             }
             if !names.insert(function.name.as_str()) {
@@ -52,10 +52,30 @@ impl File {
             }
         }
         for function in &self.functions {
-            function.verify(&signatures)?;
+            verify_function(function, &signatures)?;
         }
         Ok(())
     }
+}
+
+pub(super) fn verify_function(
+    function: &Function,
+    signatures: &BTreeMap<DefId, Signature>,
+) -> Result<(), Diagnostic> {
+    function.verify_artifact_plan()?;
+    let Some(indexed) = signatures.get(&function.id) else {
+        return Err(Diagnostic::backend(format!(
+            "Rust IR signature index is missing function DefId {}",
+            function.id
+        )));
+    };
+    if indexed != &function.signature {
+        return Err(Diagnostic::backend(format!(
+            "Rust IR signature index disagrees with function DefId {}",
+            function.id
+        )));
+    }
+    function.verify(signatures)
 }
 
 impl Function {
@@ -158,13 +178,13 @@ impl Function {
                 if self.artifact.symbol != expected.symbol {
                     return Err(Diagnostic::backend(format!(
                         "Rust IR function DefId {} does not use its canonical symbol",
-                        self.id.0
+                        self.id
                     )));
                 }
                 if self.artifact.linkage != expected.linkage {
                     return Err(Diagnostic::backend(format!(
                         "Rust IR function DefId {} must use public linkage",
-                        self.id.0
+                        self.id
                     )));
                 }
             }
@@ -252,12 +272,12 @@ impl Function {
                 match target {
                     CallTarget::Function(id) => {
                         let signature = signatures.get(id).ok_or_else(|| {
-                            Diagnostic::backend(format!("unknown Rust IR callee DefId {}", id.0))
+                            Diagnostic::backend(format!("unknown Rust IR callee DefId {id}"))
                         })?;
                         if argument_types != signature.params {
                             return Err(Diagnostic::backend(format!(
                                 "Rust IR call arguments do not match DefId {}",
-                                id.0
+                                id
                             )));
                         }
                         self.verify_call_destination(*destination, &signature.results)?;
@@ -332,12 +352,9 @@ impl Function {
         match operand {
             Operand::Read { place, op } => {
                 let ty = self.place_ty(*place)?;
-                let expected = ty
-                    .read_op()
-                    .ok_or_else(|| Diagnostic::backend("Rust IR cannot read a unit slot"))?;
-                if *op != expected {
+                if !ty.supports_read_op(*op) {
                     return Err(Diagnostic::backend(format!(
-                        "Rust IR read operation mismatch: expected {expected:?}, found {op:?}"
+                        "Rust IR read operation {op:?} is invalid for {ty:?}"
                     )));
                 }
                 Ok(ty)

@@ -37,7 +37,7 @@ fn emit_function(
     function_names: &BTreeMap<DefId, syn::Ident>,
 ) -> Result<syn::ItemFn, Diagnostic> {
     let name = function_names.get(&function.id).cloned().ok_or_else(|| {
-        Diagnostic::backend(format!("missing Rust symbol for DefId {}", function.id.0))
+        Diagnostic::backend(format!("missing Rust symbol for DefId {}", function.id))
     })?;
     let parameter_idents = function
         .parameters
@@ -246,7 +246,7 @@ fn emit_call(
         CallTarget::Function(id) => {
             let function = function_names
                 .get(id)
-                .ok_or_else(|| Diagnostic::backend(format!("missing callee DefId {}", id.0)))?;
+                .ok_or_else(|| Diagnostic::backend(format!("missing callee DefId {id}")))?;
             Ok(syn::parse_quote! { #function(#(#args),*) })
         }
         CallTarget::RuntimePrint { steps } => {
@@ -374,6 +374,15 @@ fn emit_operand(operand: &Operand, function: &rust_ir::Function) -> Result<syn::
             let slot = checked_slot(*place, function)?;
             Ok(syn::parse_quote! {
                 #slot.as_ref().expect("compiler read of uninitialized Go local").clone()
+            })
+        }
+        Operand::Read {
+            place,
+            op: ReadOp::ProvenLastUseMove,
+        } => {
+            let slot = checked_slot(*place, function)?;
+            Ok(syn::parse_quote! {
+                #slot.take().expect("compiler move of uninitialized Go local")
             })
         }
         Operand::Constant(value) => emit_constant(value),

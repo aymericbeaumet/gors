@@ -46,12 +46,18 @@ unsupported diagnostic over fallback to an old lowering path.
   self-referential `'static` ASTs are forbidden in the query database.
 - Parse files independently. Multi-file package composition belongs in the
   semantic package index, not an AST merge that invalidates every file.
+- The high-level input boundary is `SourceSnapshot` -> `ParsedFile` ->
+  `ParsedPackage`. `SourceSnapshot::from_source` is deliberately unvalidated so
+  syntax errors remain parse-query outputs. `ParsedFile::parse` creates a
+  temporary AST borrowing only that file's immutable snapshot; do not store that
+  view in `ParsedProgram` or recreate a package-wide AST.
 
 ### Typed HIR
 
 HIR is the canonical semantic representation. It must:
 
-- use stable definition, local, node, and source-file identities;
+- use stable definition and source-file identities, and stable local and node
+  identities once the incremental syntax layer can supply them;
 - retain source spans on diagnosable nodes;
 - resolve names before MIR construction;
 - represent exact Go types and exact untyped constants;
@@ -70,6 +76,12 @@ vector indexes, byte offsets, or traversal ordinals. Inserting or reordering an
 unrelated declaration must not renumber existing definitions or invalidate
 their queries. Persistent keys use structured workspace, package, file, owner,
 and declaration identities with collision-checked interning.
+
+The current identity boundary implements stable `WorkspaceId`, `PackageId`,
+`FileId`, and package-owned `DefId` keys. `NodeId`, `LocalId`, and
+`BasicBlockId` remain owner-local dense indexes and are intentionally
+nonpersistent until reusable syntax anchors exist. They may appear inside one
+revision's HIR or IR, but must not become independent query or CAS keys.
 
 ### Explicit-order MIR
 
@@ -167,7 +179,8 @@ The resolver is source metadata only. It may expose:
 
 The resolver must not type-check packages, emit or patch Rust, recover partial
 declarations, or cache generated Rust or syn trees. Incremental work belongs in
-a future semantic query database keyed by source and compiler inputs.
+the compiler-owned semantic query database keyed by source and explicit build
+inputs, not in resolver-local caches.
 
 Do not ship the entire uncompressed Go SDK as Rust string constants in every
 native and Wasm compiler artifact. The target distribution is a small canonical
@@ -205,6 +218,20 @@ edits do not re-type-check importers.
 - Compiler semantics may not depend on mutable process globals, thread-local
   contexts, the current working directory, or ambient environment reads.
 
+Current checkpoint: the Salsa-backed `compiler::db` facade owns explicit
+source, package, and build inputs. Its tracked path parses each file projection
+once, sharing that temporary AST between indexing and semantic lowering, and
+reaches function-relative typed HIR, per-definition verified MIR, and mandatory
+normalized/reverified MIR, configured verified Rust IR, and deterministic
+package Rust-IR assembly. Production program compilation delegates to
+`CompilerSession`; convenience functions create a short-lived session, while a
+daemon or editor must retain one to get cross-revision reuse. Terminal syn
+emission remains outside the semantic queries. Parsing and semantic projection
+are still file-granular, although tracked function fields and function-relative
+provenance allow unchanged sibling stage products to backdate. Query counters
+are not a memory budget, scheduler, cancellation protocol, or persistent CAS;
+do not claim those target properties from the current kernel.
+
 Source mappings and diagnostics are ordinary explicit outputs. The current
 `SourceMapPlan` follows that rule and is safe to build or consume independently;
 preserve that ownership model when it becomes a query result. Do not reintroduce
@@ -225,6 +252,11 @@ Cold, no-op warm, leaf edit, dependency private-body edit, and dependency API
 edit are distinct scenarios. The exact measurement, promotion, hardware, and
 terminal-backend decision rules live in `COMPILER_PERFORMANCE.md` and are
 architectural requirements.
+
+As of 2026-07-22, `perf/acceptance-v1.json` has zero promoted scenarios. The
+repository therefore makes no faster-than-Go claim and enforces no earned
+latency budget yet; correctness, determinism, and invalidation assertions still
+apply while measurements remain trend evidence.
 
 ## Initial migration frontier
 
@@ -309,6 +341,9 @@ weaken parser behavior to fit the bootstrap backend.
         parser/             Go parsing, imports, and go.mod discovery
         ast/                parser-owned Go AST
         compiler/
+          db/               demand-driven compiler queries and telemetry
+          fingerprint/      canonical stage encoders and fingerprints
+          session.rs        reusable production compilation session
           semantic/         name resolution, typing, and typed HIR construction
           mir/              explicit-order lowering, data model, and verifier
           rust_ir/          explicit Rust representation and ownership IR
@@ -438,10 +473,11 @@ Development order is:
 
 1. Preserve the completed destructive cutover and independent parser contract,
    and install machine-readable stage and performance measurement.
-2. Replace leaking program parse products and traversal-ordinal identities with
-   owned per-file snapshots and stable cross-revision keys, then put parsing,
-   indexing, semantics, HIR, MIR, and Rust representation lowering behind the
-   red-green query database.
+2. Preserve the completed owned per-file snapshot boundary and stable
+   workspace/package/file/definition keys. Add reusable syntax anchors and
+   provenance-free semantic fingerprints, then harden the completed production
+   session route through HIR, MIR, and Rust representation queries with bounded
+   invalidation and retained-session entry points.
 3. Expand exact types, constants, generics, control-flow MIR, places, calls,
    effects, representation facts, both IR verifiers, and runtime ABI through
    fine-grained queries; every feature includes invalidation and cost coverage.

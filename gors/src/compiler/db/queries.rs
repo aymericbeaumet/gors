@@ -1,0 +1,689 @@
+//! Salsa ingredients and the first source-projection query graph.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+
+use crate::ast;
+use crate::compiler::fingerprint::fingerprint_parts;
+use crate::compiler::{Diagnostic, lowering, mir, rust_ir};
+use crate::parser::SourceSnapshot;
+use crate::scanner::Scanner;
+use crate::token::Token;
+
+use super::super::ids::{DefId, DefinitionKey, DefinitionKind, FileId, PackageId};
+use super::model::{
+    FileAnalysis, FileIssue, FunctionBody, FunctionDescriptor, FunctionSignature, PackageAnalysis,
+    PackageIssue, ParseFailure, PublicApi,
+};
+use super::products::{
+    CompilerStage, FunctionProvenance, MirPackageSignatures, NormalizedMirFunction,
+    RustPackageSignatures, StageFailure, StageResult, TypedHirFunction, VerifiedMirFunction,
+    VerifiedRustIrFunction, VerifiedRustIrPackage,
+};
+use super::provenance::make_function_relative;
+use super::telemetry::{QueryKind, Telemetry};
+
+#[salsa::db]
+pub(super) trait Db: salsa::Database {
+    fn query_telemetry(&self) -> &Telemetry;
+    fn query_build_input(&self) -> BuildInput;
+}
+
+#[salsa::input]
+pub(super) struct SourceInput {
+    #[returns(copy)]
+    pub(super) package: PackageId,
+    #[returns(copy)]
+    pub(super) file: FileId,
+    #[returns(clone)]
+    pub(super) logical_path: Arc<str>,
+    #[returns(clone)]
+    pub(super) snapshot: Arc<SourceSnapshot>,
+}
+
+#[salsa::input]
+pub(super) struct PackageInput {
+    #[returns(copy)]
+    pub(super) package: PackageId,
+    #[returns(clone)]
+    pub(super) sources: Arc<[SourceInput]>,
+}
+
+#[salsa::input]
+pub(super) struct BuildInput {
+    #[returns(clone)]
+    pub(super) target: Arc<str>,
+    #[returns(clone)]
+    pub(super) go_version: Arc<str>,
+    #[returns(clone)]
+    pub(super) runtime_abi: Arc<str>,
+}
+
+#[salsa::tracked]
+pub(super) struct FunctionProjection<'db> {
+    #[returns(copy)]
+    pub(super) id: DefId,
+    #[tracked]
+    #[returns(clone)]
+    pub(super) key: DefinitionKey,
+    #[tracked]
+    #[returns(clone)]
+    pub(super) name: Arc<str>,
+    #[tracked]
+    #[returns(clone)]
+    pub(super) signature: Arc<FunctionSignature>,
+    #[tracked]
+    #[returns(clone)]
+    pub(super) body: Arc<FunctionBody>,
+    #[tracked]
+    #[returns(clone)]
+    pub(super) typed_signature: Option<crate::compiler::types::Signature>,
+    #[tracked]
+    #[returns(clone)]
+    pub(super) hir: StageResult<TypedHirFunction>,
+    #[tracked]
+    #[returns(clone)]
+    pub(super) provenance: Arc<FunctionProvenance>,
+}
+
+#[salsa::tracked]
+pub(super) struct FileFacts<'db> {
+    #[returns(copy)]
+    pub(super) file: FileId,
+    #[tracked]
+    #[returns(copy)]
+    pub(super) package_id: PackageId,
+    #[tracked]
+    #[returns(clone)]
+    pub(super) logical_path: Arc<str>,
+    #[tracked]
+    #[returns(clone)]
+    pub(super) package: Arc<str>,
+    #[tracked]
+    #[returns(clone)]
+    pub(super) functions: Vec<FunctionProjection<'db>>,
+    #[tracked]
+    #[returns(clone)]
+    pub(super) failure: Option<ParseFailure>,
+    #[tracked]
+    #[returns(clone)]
+    pub(super) issues: Vec<FileIssue>,
+    #[tracked]
+    #[returns(clone)]
+    pub(super) semantic_failure: Option<Arc<StageFailure>>,
+}
+
+#[salsa::tracked(returns(copy))]
+pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> FileFacts<'db> {
+    db.query_telemetry().record_query(QueryKind::FileProjection);
+    let file = source.file(db);
+    let package_id = source.package(db);
+    let logical_path = source.logical_path(db);
+    let snapshot = source.snapshot(db);
+    let parsed = match snapshot.parse() {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            let location = error.location();
+            return FileFacts::new(
+                db,
+                file,
+                package_id,
+                logical_path,
+                Arc::from(""),
+                Vec::new(),
+                Some(ParseFailure::new(
+                    error.message(),
+                    location.as_ref().map(|(_, line, _)| *line),
+                    location.as_ref().map(|(_, _, column)| *column),
+                )),
+                Vec::new(),
+                None,
+            );
+        }
+    };
+    db.unwind_if_revision_cancelled();
+
+    let mut seen = BTreeSet::new();
+    let mut projected = Vec::new();
+    let mut issues = Vec::new();
+    for declaration in &parsed.decls {
+        let ast::Decl::FuncDecl(function) = declaration else {
+            continue;
+        };
+        let name: Arc<str> = Arc::from(function.name.name);
+        // The identity API can represent repeated `init` declarations, but
+        // this parser has no stable syntax-node anchor from which to derive a
+        // semantic disambiguator yet. Reject every repeated source name at
+        // this indexing frontier instead of inventing an ordinal or offset.
+        if !seen.insert(Arc::clone(&name)) {
+            issues.push(FileIssue::DuplicateFunction(name));
+            continue;
+        }
+        let key =
+            DefinitionKey::package_named(package_id, DefinitionKind::Function, function.name.name);
+        let id = key.id();
+        let signature_source = signature_source(&snapshot, function);
+        let body_source = function
+            .body
+            .as_ref()
+            .map(|body| body_source(&snapshot, body));
+        let signature = Arc::new(FunctionSignature::new(
+            id,
+            Arc::clone(&name),
+            signature_source,
+            !function.type_.params.list.is_empty(),
+            function
+                .type_
+                .results
+                .as_ref()
+                .is_some_and(|results| !results.list.is_empty()),
+        ));
+        projected.push((
+            id,
+            key,
+            name,
+            signature,
+            Arc::new(FunctionBody::new(id, body_source)),
+            Arc::new(FunctionProvenance::new(
+                Arc::clone(&logical_path),
+                function.name.name_pos.offset,
+                function.name.name_pos.line,
+                function.name.name_pos.column,
+            )),
+        ));
+    }
+    projected.sort_by_key(|(id, _, _, _, _, _)| *id);
+    issues.sort();
+
+    db.query_telemetry().record_query(QueryKind::SemanticFile);
+    // The current semantic frontier has no version-conditioned construct yet,
+    // but consuming this field makes the pinned Go language version an
+    // explicit dependency instead of an ambient or forgotten input.
+    let _go_version = db.query_build_input().go_version(db);
+    let context = super::super::semantic::SemanticContext {
+        package: package_id,
+        file,
+        logical_file: logical_path.to_string(),
+    };
+    let semantic = super::super::semantic::lower_file_with_context(&parsed, context);
+    let (mut typed_functions, semantic_failure) = match semantic {
+        Ok(mut file) => {
+            let functions = file
+                .functions
+                .drain(..)
+                .map(|mut function| {
+                    let provenance = make_function_relative(&mut function);
+                    (function.id, (function, provenance))
+                })
+                .collect::<BTreeMap<_, _>>();
+            (functions, None)
+        }
+        Err(diagnostics) => {
+            let failure = Arc::new(StageFailure::new(CompilerStage::Semantic, diagnostics));
+            (BTreeMap::new(), Some(failure))
+        }
+    };
+    let functions = projected
+        .into_iter()
+        .map(|(id, key, name, signature, body, parsed_provenance)| {
+            let (typed_signature, hir, provenance) = match typed_functions.remove(&id) {
+                Some((function, provenance)) => {
+                    let typed_signature = Some(function.signature.clone());
+                    let hir = Ok(Arc::new(TypedHirFunction::new(Arc::new(function))));
+                    (typed_signature, hir, Arc::new(provenance))
+                }
+                None => {
+                    let failure = semantic_failure.clone().unwrap_or_else(|| {
+                        Arc::new(StageFailure::one(
+                            CompilerStage::Semantic,
+                            Diagnostic::backend(format!(
+                                "semantic lowering omitted indexed function DefId {id}"
+                            )),
+                        ))
+                    });
+                    (None, Err(failure), parsed_provenance)
+                }
+            };
+            FunctionProjection::new(
+                db,
+                id,
+                key,
+                name,
+                signature,
+                body,
+                typed_signature,
+                hir,
+                provenance,
+            )
+        })
+        .collect();
+    FileFacts::new(
+        db,
+        file,
+        package_id,
+        logical_path,
+        Arc::from(parsed.name.name),
+        functions,
+        None,
+        issues,
+        semantic_failure,
+    )
+}
+
+#[salsa::tracked(returns(clone))]
+pub(super) fn semantic_status_product(
+    db: &dyn Db,
+    facts: FileFacts<'_>,
+) -> Result<(), Arc<StageFailure>> {
+    facts.semantic_failure(db).map_or(Ok(()), Err)
+}
+
+#[salsa::tracked(returns(clone))]
+pub(super) fn provenance_product(
+    db: &dyn Db,
+    function: FunctionProjection<'_>,
+) -> Arc<FunctionProvenance> {
+    db.query_telemetry()
+        .record_query(QueryKind::FunctionProvenance);
+    function.provenance(db)
+}
+
+#[salsa::tracked(returns(clone))]
+pub(super) fn typed_hir_product(
+    db: &dyn Db,
+    function: FunctionProjection<'_>,
+) -> StageResult<TypedHirFunction> {
+    db.query_telemetry().record_query(QueryKind::TypedHir);
+    function.hir(db)
+}
+
+#[salsa::tracked(returns(clone))]
+pub(super) fn package_signatures_product(
+    db: &dyn Db,
+    input: PackageInput,
+) -> StageResult<MirPackageSignatures> {
+    db.query_telemetry()
+        .record_query(QueryKind::PackageSignatures);
+    let mut signatures = BTreeMap::new();
+    let mut sources = input.sources(db).iter().copied().collect::<Vec<_>>();
+    sources.sort_by_key(|source| source.file(db));
+    for source in sources {
+        let facts = file_projection(db, source);
+        if let Some(failure) = facts.semantic_failure(db) {
+            return Err(failure);
+        }
+        for function in facts.functions(db) {
+            let Some(signature) = function.typed_signature(db) else {
+                return Err(Arc::new(StageFailure::one(
+                    CompilerStage::Semantic,
+                    Diagnostic::backend(format!(
+                        "typed signature is missing for function DefId {}",
+                        function.id(db)
+                    )),
+                )));
+            };
+            signatures.insert(function.id(db), signature);
+        }
+    }
+    Ok(Arc::new(MirPackageSignatures { signatures }))
+}
+
+#[salsa::tracked(returns(clone))]
+pub(super) fn verified_mir_product(
+    db: &dyn Db,
+    input: PackageInput,
+    function: FunctionProjection<'_>,
+) -> StageResult<VerifiedMirFunction> {
+    db.query_telemetry().record_query(QueryKind::VerifiedGoMir);
+    let hir = typed_hir_product(db, function)?;
+    let signatures = package_signatures_product(db, input)?;
+    let definition = function.id(db);
+    let lowered = mir::lower_function(hir.function()).map_err(|diagnostic| {
+        Arc::new(StageFailure::one_for_definition(
+            CompilerStage::GoMir,
+            definition,
+            diagnostic,
+        ))
+    })?;
+    mir::verify_function(&lowered, &signatures.signatures).map_err(|diagnostic| {
+        Arc::new(StageFailure::one_for_definition(
+            CompilerStage::GoMir,
+            definition,
+            diagnostic,
+        ))
+    })?;
+    Ok(Arc::new(VerifiedMirFunction::new(lowered)))
+}
+
+#[salsa::tracked(returns(clone))]
+pub(super) fn normalized_mir_product(
+    db: &dyn Db,
+    input: PackageInput,
+    function: FunctionProjection<'_>,
+) -> StageResult<NormalizedMirFunction> {
+    db.query_telemetry()
+        .record_query(QueryKind::NormalizedGoMir);
+    let mir = verified_mir_product(db, input, function)?;
+    let signatures = package_signatures_product(db, input)?;
+    let definition = function.id(db);
+    let normalized = mir::normalize_function(mir.function().clone(), &signatures.signatures)
+        .map_err(|diagnostics| {
+            Arc::new(StageFailure::for_definition(
+                CompilerStage::GoMirNormalization,
+                definition,
+                diagnostics,
+            ))
+        })?;
+    mir::verify_function(&normalized, &signatures.signatures).map_err(|diagnostic| {
+        Arc::new(StageFailure::one_for_definition(
+            CompilerStage::GoMirNormalization,
+            definition,
+            diagnostic,
+        ))
+    })?;
+    Ok(Arc::new(NormalizedMirFunction::new(normalized)))
+}
+
+#[salsa::tracked(returns(clone))]
+pub(super) fn rust_signatures_product(
+    db: &dyn Db,
+    input: PackageInput,
+) -> StageResult<RustPackageSignatures> {
+    let go_signatures = package_signatures_product(db, input)?;
+    let build = db.query_build_input();
+    let target = build.target(db);
+    let runtime_abi = build.runtime_abi(db);
+    let representation_key = fingerprint_parts(
+        b"rust-representation-config",
+        &[target.as_bytes(), runtime_abi.as_bytes()],
+    );
+    let signatures = go_signatures
+        .signatures
+        .iter()
+        .map(|(id, signature)| {
+            lowering::lower_signature(signature)
+                .map(|signature| (*id, signature))
+                .map_err(|diagnostic| {
+                    Arc::new(StageFailure::one_for_definition(
+                        CompilerStage::RustRepresentation,
+                        *id,
+                        diagnostic,
+                    ))
+                })
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    Ok(Arc::new(RustPackageSignatures {
+        signatures,
+        representation_key,
+    }))
+}
+
+#[salsa::tracked(returns(clone))]
+pub(super) fn verified_rust_ir_product(
+    db: &dyn Db,
+    input: PackageInput,
+    function: FunctionProjection<'_>,
+) -> StageResult<VerifiedRustIrFunction> {
+    db.query_telemetry().record_query(QueryKind::VerifiedRustIr);
+    let normalized = normalized_mir_product(db, input, function)?;
+    let signatures = rust_signatures_product(db, input)?;
+    let executable_package = package_analysis_product(db, input).package_name() == "main";
+    let definition = function.id(db);
+    let lowered = lowering::lower_function(normalized.function().clone(), executable_package)
+        .map_err(|diagnostic| {
+            Arc::new(StageFailure::one_for_definition(
+                CompilerStage::RustRepresentation,
+                definition,
+                diagnostic,
+            ))
+        })?;
+    rust_ir::verify_function(&lowered, &signatures.signatures).map_err(|diagnostic| {
+        Arc::new(StageFailure::one_for_definition(
+            CompilerStage::RustRepresentation,
+            definition,
+            diagnostic,
+        ))
+    })?;
+    Ok(Arc::new(VerifiedRustIrFunction::new(
+        lowered,
+        signatures.representation_key,
+    )))
+}
+
+#[salsa::tracked(returns(clone))]
+pub(super) fn rust_ir_package_product(
+    db: &dyn Db,
+    input: PackageInput,
+) -> StageResult<VerifiedRustIrPackage> {
+    db.query_telemetry().record_query(QueryKind::RustIrPackage);
+    let analysis = package_analysis_product(db, input);
+    let signatures = rust_signatures_product(db, input)?;
+    let mut functions = Vec::new();
+    let mut sources = input.sources(db).iter().copied().collect::<Vec<_>>();
+    sources.sort_by_key(|source| source.file(db));
+    for source in sources {
+        let facts = file_projection(db, source);
+        let mut projected = facts.functions(db);
+        projected.sort_by_key(|function| function.id(db));
+        for function in projected {
+            functions.push(
+                verified_rust_ir_product(db, input, function)?
+                    .function()
+                    .clone(),
+            );
+        }
+    }
+    functions.sort_by_key(|function| function.id);
+    let file = rust_ir::File {
+        package: analysis.package_name().to_string(),
+        functions,
+    };
+    rust_ir::verify(&file).map_err(|diagnostic| {
+        Arc::new(StageFailure::one(
+            CompilerStage::RustRepresentation,
+            diagnostic,
+        ))
+    })?;
+    Ok(Arc::new(VerifiedRustIrPackage::new(
+        file,
+        signatures.representation_key,
+    )))
+}
+
+#[salsa::tracked(returns(clone))]
+pub(super) fn file_analysis_product(db: &dyn Db, facts: FileFacts<'_>) -> Arc<FileAnalysis> {
+    db.query_telemetry().record_query(QueryKind::FileAnalysis);
+    let functions = facts
+        .functions(db)
+        .into_iter()
+        .map(|function| {
+            FunctionDescriptor::new(facts.file(db), function.key(db), function.name(db))
+        })
+        .collect::<Vec<_>>();
+    Arc::new(FileAnalysis::new(
+        facts.file(db),
+        facts.package(db),
+        functions.into(),
+        facts.failure(db),
+        facts.issues(db).into(),
+    ))
+}
+
+#[salsa::tracked(returns(clone))]
+pub(super) fn package_analysis_product(db: &dyn Db, input: PackageInput) -> Arc<PackageAnalysis> {
+    db.query_telemetry()
+        .record_query(QueryKind::PackageAnalysis);
+    let package = input.package(db);
+    let mut sources = input.sources(db).iter().copied().collect::<Vec<_>>();
+    sources.sort_by_key(|source| source.file(db));
+
+    let mut package_name: Option<Arc<str>> = None;
+    let mut files = Vec::with_capacity(sources.len());
+    let mut functions = Vec::new();
+    let mut exported_signatures = Vec::new();
+    let mut issues = Vec::new();
+    let mut definitions_by_digest = BTreeMap::<DefId, (DefinitionKey, FileId)>::new();
+    let mut declarations_by_name = BTreeMap::<Arc<str>, FileId>::new();
+
+    for source in sources {
+        db.unwind_if_revision_cancelled();
+        let facts = file_projection(db, source);
+        let file = facts.file(db);
+        files.push(file);
+
+        if let Some(failure) = facts.failure(db) {
+            issues.push(PackageIssue::FileParseFailure { file, failure });
+            continue;
+        }
+
+        let declared_package = facts.package(db);
+        if let Some(expected) = &package_name {
+            if expected != &declared_package {
+                issues.push(PackageIssue::PackageClauseMismatch {
+                    file,
+                    expected: Arc::clone(expected),
+                    found: declared_package,
+                });
+            }
+        } else {
+            package_name = Some(declared_package);
+        }
+
+        for issue in facts.issues(db) {
+            let FileIssue::DuplicateFunction(name) = issue;
+            issues.push(PackageIssue::DuplicateDefinition {
+                name,
+                first_file: file,
+                second_file: file,
+            });
+        }
+
+        for function in facts.functions(db) {
+            let id = function.id(db);
+            let key = function.key(db);
+            let name = function.name(db);
+
+            if let Some(first_file) = declarations_by_name.insert(Arc::clone(&name), file) {
+                issues.push(PackageIssue::DuplicateDefinition {
+                    name: Arc::clone(&name),
+                    first_file,
+                    second_file: file,
+                });
+            }
+
+            if let Some((existing_key, _)) = definitions_by_digest.get(&id) {
+                if existing_key != &key {
+                    issues.push(PackageIssue::IdentityCollision {
+                        id,
+                        existing_key: Arc::from(format!("{existing_key:?}")),
+                        requested_key: Arc::from(format!("{key:?}")),
+                    });
+                }
+            } else {
+                definitions_by_digest.insert(id, (key.clone(), file));
+            }
+
+            if is_exported(&name) {
+                exported_signatures.push(signature_product(db, function).as_ref().clone());
+            }
+            functions.push(FunctionDescriptor::new(file, key, name));
+        }
+    }
+
+    files.sort();
+    functions.sort_by_key(|function| (function.id(), function.file()));
+    exported_signatures.sort_by_key(FunctionSignature::id);
+    issues.sort();
+    Arc::new(PackageAnalysis::new(
+        package,
+        package_name.unwrap_or_else(|| Arc::from("")),
+        files.into(),
+        functions.into(),
+        issues.into(),
+        &exported_signatures,
+    ))
+}
+
+#[salsa::tracked(returns(clone))]
+pub(super) fn signature_product(
+    db: &dyn Db,
+    function: FunctionProjection<'_>,
+) -> Arc<FunctionSignature> {
+    db.query_telemetry()
+        .record_query(QueryKind::FunctionSignature);
+    function.signature(db)
+}
+
+#[salsa::tracked(returns(clone))]
+pub(super) fn body_product(db: &dyn Db, function: FunctionProjection<'_>) -> Arc<FunctionBody> {
+    db.query_telemetry().record_query(QueryKind::FunctionBody);
+    function.body(db)
+}
+
+#[salsa::tracked(returns(clone))]
+pub(super) fn public_api_product(db: &dyn Db, facts: FileFacts<'_>) -> Arc<PublicApi> {
+    db.query_telemetry().record_query(QueryKind::PublicApi);
+    let signatures = facts
+        .functions(db)
+        .into_iter()
+        .map(|function| signature_product(db, function).as_ref().clone())
+        .collect::<Vec<_>>();
+    Arc::new(PublicApi::new(facts.file(db), signatures.into()))
+}
+
+fn signature_source(snapshot: &SourceSnapshot, function: &ast::FuncDecl<'_>) -> Arc<str> {
+    let start = function
+        .type_
+        .func
+        .as_ref()
+        .map_or(function.name.name_pos.offset, |position| position.offset);
+    let end = function.body.as_ref().map_or_else(
+        || bodyless_signature_end(snapshot, start),
+        |body| body.lbrace.offset,
+    );
+    source_range(snapshot.source(), start, end)
+}
+
+fn body_source(snapshot: &SourceSnapshot, body: &ast::BlockStmt<'_>) -> Arc<str> {
+    source_range(
+        snapshot.source(),
+        body.lbrace.offset,
+        body.rbrace.offset.saturating_add(1),
+    )
+}
+
+fn source_range(source: &str, start: usize, end: usize) -> Arc<str> {
+    source
+        .get(start..end)
+        .map_or_else(|| Arc::from(""), Arc::from)
+}
+
+fn bodyless_signature_end(snapshot: &SourceSnapshot, start: usize) -> usize {
+    let Some(suffix) = snapshot.source().get(start..) else {
+        return snapshot.source().len();
+    };
+    let mut scanner = Scanner::new(snapshot.path(), suffix);
+    let mut nesting = 0_u32;
+    loop {
+        let Ok((position, token, _)) = scanner.scan() else {
+            return snapshot.source().len();
+        };
+        match token {
+            Token::LPAREN | Token::LBRACK | Token::LBRACE => {
+                nesting = nesting.saturating_add(1);
+            }
+            Token::RPAREN | Token::RBRACK | Token::RBRACE => {
+                nesting = nesting.saturating_sub(1);
+            }
+            Token::SEMICOLON if nesting == 0 => {
+                return start.saturating_add(position.offset);
+            }
+            Token::EOF => return snapshot.source().len(),
+            _ => {}
+        }
+    }
+}
+
+fn is_exported(name: &str) -> bool {
+    name.chars().next().is_some_and(char::is_uppercase)
+}

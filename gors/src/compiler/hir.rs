@@ -3,14 +3,14 @@
 use super::ids::{DefId, LocalId, NodeId, SourceSpan};
 use super::types::{ConstValue, Signature, Ty};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct File {
     pub package: String,
     pub constants: Vec<Constant>,
     pub functions: Vec<Function>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Constant {
     pub id: DefId,
     pub name: String,
@@ -19,7 +19,7 @@ pub struct Constant {
     pub span: SourceSpan,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Function {
     pub id: DefId,
     pub node: NodeId,
@@ -32,7 +32,7 @@ pub struct Function {
     pub span: SourceSpan,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Local {
     pub id: LocalId,
     pub name: Option<String>,
@@ -49,21 +49,21 @@ pub enum LocalKind {
     Temporary,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Block {
     pub node: NodeId,
     pub stmts: Vec<Stmt>,
     pub span: SourceSpan,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Stmt {
     pub node: NodeId,
     pub kind: StmtKind,
     pub span: SourceSpan,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StmtKind {
     /// All initializers are evaluated before any destination is written.
     Let {
@@ -116,7 +116,7 @@ pub enum Place {
     Discard,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Expr {
     pub node: NodeId,
     pub kind: ExprKind,
@@ -126,7 +126,7 @@ pub struct Expr {
     pub span: SourceSpan,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExprKind {
     Constant(ConstValue),
     Local(LocalId),

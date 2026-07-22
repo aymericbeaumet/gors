@@ -4,13 +4,13 @@ use crate::compiler::hir;
 use crate::compiler::ids::{BasicBlockId, DefId, LocalId, SourceSpan};
 use crate::compiler::types::{ConstValue, Signature, Ty};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct File {
     pub package: String,
     pub functions: Vec<Function>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Function {
     pub id: DefId,
     pub name: String,
@@ -22,7 +22,7 @@ pub struct Function {
     pub span: SourceSpan,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalDecl {
     pub id: LocalId,
     pub name: Option<String>,
@@ -30,7 +30,7 @@ pub struct LocalDecl {
     pub kind: hir::LocalKind,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BasicBlock {
     pub id: BasicBlockId,
     pub provenance: Provenance,
@@ -38,7 +38,7 @@ pub struct BasicBlock {
     pub terminator: Terminator,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Statement {
     pub destination: Place,
     pub value: Rvalue,
@@ -51,7 +51,7 @@ pub struct Place {
     pub local: LocalId,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Rvalue {
     pub kind: RvalueKind,
     pub effects: hir::Effects,
@@ -59,7 +59,7 @@ pub struct Rvalue {
     pub provenance: Provenance,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RvalueKind {
     Use(Operand),
     Unary {
@@ -75,7 +75,7 @@ pub enum RvalueKind {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Operand {
     /// Read a Go value. Rust ownership behavior is selected only during
     /// mandatory Rust representation lowering.
@@ -84,7 +84,7 @@ pub enum Operand {
     Unit,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Terminator {
     pub kind: TerminatorKind,
     pub effects: hir::Effects,
@@ -92,7 +92,7 @@ pub struct Terminator {
     pub provenance: Provenance,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TerminatorKind {
     Goto(BasicBlockId),
     SwitchBool {
