@@ -82,6 +82,19 @@ fn compute_reachable_stdlib_items(
                 continue;
             };
             keep.insert(idx);
+            if let syn::Item::Impl(item_impl) = item
+                && let Some((_, trait_path, _)) = &item_impl.trait_
+                && let Some(trait_name) = trait_path.segments.last()
+            {
+                for self_name in
+                    super::syn_inspect::self_type_reachability_names(&item_impl.self_ty)
+                {
+                    names.insert(super::item_reachability::trait_impl_reachability_name(
+                        &trait_name.ident.to_string(),
+                        &self_name,
+                    ));
+                }
+            }
 
             let state = if can_expand {
                 reachable_item.to_token_stream().to_string()

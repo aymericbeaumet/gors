@@ -67,6 +67,11 @@ gors-builtin/
 
 `compile_program_multi()` produces a `CompiledProgram` with individual modules:
 - Each Go package → individual `.rs` file
+- Native parallel package, file, type-environment, and local-package compilation
+  pools must be constructed through `compiler::worker_pool`. Its compiler-owned
+  stack policy keeps recursive source lowering independent of whether a package
+  happens to run on Rust's smaller default spawned-thread stack; do not create a
+  production Rayon pool for compiler work directly.
 - Naming: `import_path.replace('/', "__")` + `.rs` (e.g., `example/math` → `example__math.rs`)
 - `lib.rs` declares all modules with `#[path]` attributes
 - `main.rs` includes `lib.rs` through an internal collision-free wrapper module
@@ -82,7 +87,14 @@ gors-builtin/
   function or method. Host-resource helpers that patch generated stdlib modules,
   such as process stdout support, must replace only the targeted host items and
   preserve the rest of the compiled Go stdlib module so unrelated reachable
-  constants, types, and functions remain generic compiler output.
+  constants, types, and functions remain generic compiler output. A post-prune
+  host replacement must also remove a private helper/type implementation
+  closure when it is referenced only by the replaced surface; preservation
+  markers computed before replacement must not keep code that reads removed
+  fields or calls removed methods. Prove that no surviving item references the
+  helper before removing that closure, and preserve independently reachable
+  helpers. When the replacement regenerates an external trait implementation,
+  it owns that exact generated trait ABI and must discard the stale implementation.
 - Runtime/host stdlib helper ownership is intentionally split: post-prune
   runtime primitive dispatch lives in `gors/src/compiler/runtime_primitives.rs`,
   with reflect, os, and sync replacements split under
@@ -95,7 +107,30 @@ gors-builtin/
   writeback lowering lives in
   `gors/src/compiler/reflect_slice_any.rs`;
   resolver-level synthetic `runtime` and `internal/reflectlite` primitive module
-  generation lives in `gors/src/resolve/runtime_primitives.rs`; resolver-injected
+  generation lives in `gors/src/resolve/runtime_primitives.rs`. Every
+  resolver-owned primitive must be emitted when its exact reachability root is
+  requested; generic lifetime barriers such as `runtime.KeepAlive` must not
+  disappear when the synthetic module also serves unrelated runtime roots.
+  A resolver-owned primitive whose Rust representation intentionally differs
+  from its Go declaration must supplement imported `TypeEnv` ABI facts to match
+  that representation. Synthetic reflect type equality must compare the erased
+  payload's dynamic type through `builtin::any_dynamic_type_id`, not the clone/
+  comparable wrapper's Rust `TypeId`; the unit nil sentinel has no dynamic type.
+  Resolver-injected
+  syscall metadata helpers must derive their writes from the generated host
+  struct shape (for example, whichever `Stat_t` fields the active Go SDK
+  exposes) rather than hard-coding one platform layout. Keep public
+  `syscall.Getenv` as generic Go output; exact `Getenv`/`runtime_envs` roots
+  inject only the private bodyless `runtime_envs` host ABI, whose environment
+  snapshot preserves raw host key/value bytes through the Go string runtime
+  representation. Raw host filesystem syscall boundaries such as `Lstat`,
+  `Fstat`, `Unlink`, and `Rmdir` must return the generated `syscall.Errno` dynamic type,
+  preserving `raw_os_error` when available and using a nonzero typed fallback;
+  keep public `os` decision-making and `PathError` construction as compiled Go.
+  Descriptor metadata helpers must borrow or duplicate the supplied raw descriptor
+  without taking ownership, then populate only fields present in the generated
+  `Stat_t` shape.
+  Resolver-injected
   structural helper dispatch lives in `gors/src/resolve/structural_helpers.rs`,
   with noop interface sentinels, mutable-reference forwarding, and fmt flush
   helper injection split under `gors/src/resolve/structural_helpers/`. Keep
@@ -148,7 +183,94 @@ gors-builtin/
   import name when an alias is present. Selectors and type constraints in the
   AST use that local name (`import ord "example/ordered"` →
   `ord.Less`, `ord.Ordered`), while later Rust module rewrites map it to the
-  generated module name.
+  generated module name. These selector aliases are strictly file-scoped:
+  package-wide/cached type facts canonicalize imported references to the stable
+  generated Rust module identity, and package-wide import lookup maps must
+  contain canonical module names rather than aliases collected across files.
+  Merging a package `TypeEnv` must also retain whether each type declaration is
+  a true `=` alias (plus its qualified target), not only its underlying
+  `TypeKind`; otherwise downstream coercion constructs a Rust type alias as if
+  it were a defined Go newtype. Lowering a resolved package must carry its
+  generated Rust module identity separately from its Go package clause; named
+  and anonymous self-package trait paths use `crate::<module>::Trait`, not a
+  source-package path such as `fs::Trait`. Keyed composite literals of true
+  aliases to structs must construct the resolved struct target with the alias
+  target's field facts rather than falling through to an empty default value.
+  Keep stable declared-type identities separate from those true-alias facts:
+  package merges must carry file-local and generated-module spellings of the
+  same declaration, and exact method-signature comparison must normalize those
+  identities recursively without treating structurally identical named types
+  as interchangeable. Resolver-scanned imported package facts must record that
+  stable generated-module identity before they are merged under a source
+  file's local import name; doing this only in the top-level `PackageGraph`
+  makes valid stdlib interface returns fail validation during lazy resolution.
+  External interface implementor records must normalize their Go type identity
+  through the active file's import rewrite before constructing Rust paths or
+  deduplicating records; otherwise the canonical and file-local spellings can
+  emit duplicate impls for the same generated Rust type. An exact program-level
+  implementor record may attest direct methods for an opaque external type when
+  no declaration facts were merged for that type. A pointer implementor can mix
+  value- and pointer-receiver methods, so the program record and its worker wire
+  snapshot must transport the exact pointer-receiver method names; the
+  type-level `include_pointer_receiver_methods` flag alone is not a forwarding
+  ABI. Once concrete declaration facts exist, interface forwarding must
+  distinguish declared methods from promoted embedded methods and must not
+  invent a recursive `T::M` fallback.
+  Program-level assertion candidates come from the locally declared concrete
+  names in the main, local-package, and scanned reachable-stdlib type facts.
+  Include defined maps, slices, and other named types as well as structs, but
+  exclude true aliases, interfaces, type parameters, and qualified facts merely
+  retained from another package; map every candidate to its exact generated
+  Rust module path. Candidate Go identities and whole-program local/stdlib
+  `TypeEnv` merges must use that generated module identity as well, never the
+  source package name: distinct import paths may legally declare the same
+  package name. Assign colliding local packages import-path-derived module names
+  before building the census. Build the cross-package candidate map only for
+  interface assertion/type-switch targets recorded in
+  `TypeEnv::func_interface_assertions`;
+  ordinary interface declarations do not justify a declarations-by-concretes
+  Cartesian product, and direct coercions record their exact obligations while
+  lowering. Generic Go types and generated borrowed-interface storage require
+  explicit Rust generic arguments, so generic fallback emitters must exclude
+  them and leave their impls to emitters that own the declaration generics.
+  A named interface field owns `Box<dyn Trait>` and does not by itself make a
+  struct lifetime-bearing; only anonymous embedded-interface storage, or a
+  recursively contained lifetime-bearing struct, requires the generated Rust
+  lifetime. Each structural assertion candidate branch carries a compiler-owned
+  concrete-type marker. Resolve the conservative census before lowering any
+  local, main, or stdlib package and install the same serialized snapshot on
+  every Rayon worker. Then remove those branches and removable fallbacks from a
+  candidate-blind DCE snapshot; retain in the real program only candidate
+  branches and fallback impls whose base concrete type survived for an ordinary
+  reachability reason. Retained casts must use the exact qualified
+  trait path so they create canonical cross-module impl roots rather than
+  relying on a consumer fallback.
+  Canonical nested import-path interface names such as `io/fs.File` must also
+  resolve to the package-local spelling recorded by resolver type facts (for
+  example `fs.File`). Borrowed interface adapters must take their parameter and
+  result ABI from that resolved interface, never from the concrete method
+  signature fallback.
+  Top-level value inference must be refreshed after imports are merged for
+  constants as well as variables. An untyped local constant initialized from
+  an imported named constant inherits that named type; retaining the pre-import
+  `Unknown` fact degrades later compound assignments to the primitive
+  underlying Rust type.
+  Local `PackageGraph` facts must retain direct imports under those identities
+  and propagate them through the local import graph: a downstream caller must
+  recognize an interface returned through an intermediate package even when it
+  does not import the interface's defining package itself. Consumers enumerating
+  declarations owned by one package must filter out those qualified retained
+  import facts rather than treating names such as `model.Time` as local Rust
+  identifiers. Likewise, retained transitive interfaces are inference facts,
+  not blanket local-impl candidates: admit directly imported or source-required
+  interfaces, then expand only their actual embedded-interface dependencies.
+- Package type environments contain package declarations and signatures, not
+  receiver, parameter, or named-result bindings from arbitrary functions.
+  Consumers that inspect a function body outside normal lowering must use
+  `TypeEnv::scoped_for_func_decl()` to seed that function's lexical bindings
+  and type-parameter constraints. Backend function and method lowering must
+  keep the same boundary through `LocalTypeEnvScopeGuard` so one declaration
+  cannot shadow imports or values in the next declaration.
 - Package-level vars in imported/transpiled packages are emitted as concrete
   `std::sync::LazyLock<T>` statics. Main-package vars are still injected into
   `main()` as startup locals. Imported package-level vars initialized by
@@ -158,7 +280,15 @@ gors-builtin/
   Pointer-typed package-level vars used as method receivers in generated modules
   must be read through the same `LazyLock<T>` value path as ordinary expressions
   before locking a pointer cell; do not emit `Var.lock()` or `pkg::Var.lock()`
-  against the static itself. Non-pointer static receivers should be dereferenced
+  against the static itself. Whether a package static has an outer mutable value
+  cell is a serialized `TypeEnv` representation fact; qualify and propagate it
+  through imports so every consumer emits the same read path as the owner.
+  Because that fact is a set, include it in the resolver cache's canonical
+  `TypeEnv` wire ordering whenever the serialized environment schema changes.
+  Lazy resolver/type-environment scans can publish those facts recursively;
+  materialize any active `RefCell<TypeEnv>` lookup result and drop its borrow
+  before entering resolver fallback code.
+  Non-pointer static receivers should be dereferenced
   for method dispatch instead of eagerly cloned, so non-`Clone` runtime
   primitives such as `sync.Pool` can still be borrowed.
   Host-resource replacements for pointer-typed package vars, such as
@@ -169,7 +299,20 @@ gors-builtin/
   must scope the `MutexGuard` to that single call. Do not emit multiple
   `x.lock().unwrap().M()` temporaries directly into one Rust argument list,
   because Rust can keep the first guard alive until the statement ends and
-  deadlock the next call.
+  deadlock the next call. Use the final generated callee signature to stage
+  lock-bearing by-value arguments left-to-right; borrowed arguments must retain
+  their guards through the call. A mutable slice projected through a pointer
+  owner that the callee can re-lock needs detached call-local storage plus
+  writeback, with the owner and slice range evaluated once in Go order. Evaluate
+  every low/high/max bound before borrowing or locking that owner, because a
+  bound may read a sibling field through the same pointer cell. Interface-field
+  and other receiver-staging method wrappers must consume that same guarded-slice
+  argument plan rather than hiding the projection in an argument temporary. If
+  the callee panics, catch the unwind, write the detached slice back, and then
+  resume the original panic so mutations made before the panic remain visible.
+  When an existing mutable-reference argument wraps a cloned-lvalue block,
+  recover the block's original pointer-backed lvalue instead of mutating the
+  detached clone.
 - Go function values stored in generated data structures and explicit local
   variables of `func(...)` type are reference-counted nil-capable cells:
   `std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<dyn Fn(...) -> ... + Send + Sync>>>>`.
@@ -195,6 +338,11 @@ gors-builtin/
   Do not collapse those arrays to `Vec<T>`, including when they are nested in
   another container or the function value is inferred without an outer Rust
   expected type.
+- `GoType::Array` remains length-erased for ordinary inference, so serialized
+  `TypeEnv` function/interface signature facts must separately retain the exact
+  recursive fixed-array shape. Imported and transitively embedded interface ABI
+  fallback must render `[T; N]` from those facts, never `Vec<T>` or `[T; _]` in
+  an item signature, and interface satisfaction must distinguish array lengths.
 - Generated runtime interfaces provide `Default for Box<dyn Trait>` through
   their no-op sentinel. This is the generic interface zero value used by
   `make([]Interface, n)`, fixed interface arrays, and nested container values;
@@ -209,6 +357,15 @@ gors-builtin/
   arguments or assignments are wrapped as shared function cells by casting the
   inner `Box` to `Box<dyn FnMut(...) -> ... + Send>`; do not cast the outer
   `Arc`, because Rust rejects non-primitive casts between `Arc` instantiations.
+- Go interface results own their dynamic value and must not acquire a Rust
+  lifetime tied to an interface parameter merely because that parameter lowers
+  to `&mut dyn Trait`. Named interface fields clone into owned boxes, while the
+  existing embedded-interface representation materializes a stable owned clone
+  before borrowing it; function and method signatures therefore must not add a
+  blanket `+ '_` bound to boxed interface results. When a non-mutating Go value
+  receiver is represented as Rust `&self`, boxing it into an owned interface or
+  `any` result must clone `*self`; cloning or boxing `self` preserves a Rust
+  reference instead of the Go receiver value.
 - When a mutable trait-object call argument comes from cloning a shared capture,
   materialize the cloned interface in an owned temporary before borrowing it.
   Borrowing through the source lock can both mutate the caller's value and keep
@@ -238,11 +395,22 @@ gors-builtin/
   prepared-target boundary: snapshot any owning pointer cell, evaluate indexes,
   evaluate the RHS, and only then lock the staged owner for the write. This
   prevents an index such as `p.buf[p.i]` from re-locking `p` while the buffer
-  field is already borrowed through its guard. When a staged
+  field is already borrowed through its guard. A selector whose base is an
+  indexed aggregate follows the same rule: fully stage every index expression
+  before locking the aggregate for the final field write, because an index may
+  read through a pointer projected from that same aggregate. When a staged
   direct-identifier write replaces a slice header used by an active range
   snapshot, synchronize and detach that old header immediately before the
   write, after all RHS values have been evaluated. Use the same prepared-target
-  boundary for non-define select receive assignments. Call-valued index bases
+  boundary for non-define select receive assignments. When
+  `take_rhs_lvalue_reads` moves a non-Copy LHS value into its RHS, stage that
+  move as a block-local statement at the original read position and yield the
+  temporary. This drops any projected owner guard before later RHS operands are
+  evaluated without reordering earlier operands. Compiler slice-alias
+  facts are lexical: suspend and later restore facts shadowed by a nested
+  binding, and detach any surviving alias whose backing expression, offset, or
+  capacity depends on a binding leaving scope. Preserve retargeting when both
+  the alias and its backing binding remain live. Call-valued index bases
   need a prepared-place distinction: owned slice results may be staged as
   values, but compiler-emitted borrowed/projected slice views must not keep an
   `&mut` view or `GorsPtrGuard` alive across RHS evaluation. Prepare an
@@ -271,12 +439,24 @@ gors-builtin/
   `GorsPtr::from_ptr_field` for the same aliasing rule. Do not blindly use
   projected field cells for shared-capture pointer cells until receiver locking
   can avoid re-locking the same pointer cell during method calls.
+  Address-of local array and slice indexes must likewise promote the container
+  and construct a projected index cell rather than copying the indexed value.
+  Evaluate the index and perform its bounds check when the Go pointer is created,
+  then retain that index so later index-variable changes do not retarget it.
   Pointer-receiver method calls on non-pointer fields reached through owning
   pointer cells, such as `h.bucket.fill(...)`, must lower the receiver through a
   projected `GorsPtr::from_ptr_field` cell and call the inherent method by UFCS
   so the owner lock is not held while method arguments or body code lock sibling
-  fields. Do not lower ordinary Go pointer parameters to borrowed `&mut T`; the
-  shared pointer model must carry nil and aliasing through calls.
+  fields. Pointer-valued selectors passed to interfaces must likewise copy and
+  borrow the `GorsPtr<T>` handle; do not reborrow the pointee merely because its
+  struct contains interface fields, because that changes the Go dynamic type and
+  pointer method set. Pointer-to-array selector reads must copy the inner pointer
+  handle while its owner guard is alive, then bind that handle before locking the
+  pointee so no guard borrows through a temporary owner. Index and slice-bound
+  arithmetic must lower local selectors through ordinary value/lvalue semantics,
+  not through the type-like qualified-path emitter. Do not lower ordinary Go
+  pointer parameters to borrowed `&mut T`; the shared pointer model must carry nil
+  and aliasing through calls.
 - Nil pointer values must lower to the pointer zero value for assignments,
   fields, returns, and other value construction. Do not emit an immediate panic
   for `nil` itself; the panic belongs to dereference/use.
@@ -326,11 +506,104 @@ gors-builtin/
   generated interface contract. DCE must preserve the hooks on reachable traits
   and trait impls, and any injected structural stdlib helper that implements a
   Go interface, such as `os.File` for `io.Writer`, must implement the hooks too.
+- Named-interface equality and interface-valued map keys share the owned
+  `GorsInterfaceKey` contract. Nil interface sentinels use the nil key, while a
+  typed nil pointer retains its pointer dynamic type. Pointer keys compare
+  identity; comparable concrete keys compare dynamic type plus the retained Go
+  value; non-comparable keys retain a typed marker and panic only when equality
+  or hashing actually uses it. Eligibility for Rust `PartialEq`-backed keys is
+  a generated-representation fact: resolve qualified names through the package
+  type environment, and reject structs containing generated trait-object
+  fields even though Go permits interface fields in comparable struct types.
+  Synthetic reflection type handles must provide their own type-identity
+  equality when their Go source representation is replaced. Interface
+  comparisons must evaluate both
+  operands into owned temporaries before asking either dynamic value for its key
+  so a non-comparable left operand cannot suppress right-operand effects.
+- Multi-file package assembly structurally deduplicates only completely
+  equivalent generated trait impls; differing impls for the same trait and self
+  type remain visible so Rust coherence failures expose compiler disagreements.
+  Compiler-generated embedded-interface forwarders must normalize their
+  parameter bindings package-wide so alpha-equivalent bodies emitted from
+  different Go files remain structurally identical without weakening that
+  strict deduplication rule.
+  At whole-program assembly, a concrete type's defining module owns its
+  canonical interface impl. A consumer-module fallback may be removed in favor
+  of that owner impl only when it carries the dedicated compiler-owned
+  removable-interface-fallback marker; never infer removal permission from a
+  DCE-preservation or external-local reachability marker, and never resolve
+  arbitrary user or generated same-target conflicts by choosing one body.
+  Structural interface obligations whose interface and concrete type belong to
+  different generated packages are canonicalized by
+  `gors/src/compiler/cross_module_interface_impls.rs`. Reachability roots for
+  those obligations must carry the exact generated trait module and exact
+  value, `GorsPtr<T>`, or borrowed-pointer target shape; never fan out from a
+  trait basename or emit every target adapter. Discover them through the same
+  non-mutating cross-module fixed point used by DCE so dead consumers cannot
+  preserve synthesized impls. A reachable local coercion may be the first use
+  of an external interface, so synthesis must also consume exact qualified impl
+  roots from each module's reachable-name closure even when no impl item exists
+  yet. Canonical synthesis must consume the main, local-package, and reachable
+  stdlib type facts; restricting its concrete-owner facts to stdlib modules
+  leaves retained local assertion candidates without an owner impl. Generated
+  module/import-path identity is
+  canonical in interface facts; a Go package-name fallback is valid only when
+  that package name identifies one import path. A matching compiler-marked
+  removable fallback in the concrete owner must be replaced by the canonical
+  impl rather than blocking it. Run equivalent-impl deduplication again after
+  final sibling-path prefixing: relative and crate-qualified fallback spellings
+  can become syntactically identical only at that boundary.
+  Receiver reachability through an associated interface call must use the
+  method's declared return type before following a chained method call. Treating
+  `Trait::Method(receiver).Next()` as though `Next` belonged to `Trait` prunes
+  the actual return type's method even though the generated Rust call remains.
+  Anonymous method interfaces used by type assertions and type-switch cases are
+  represented by deterministic hidden traits. Discover their signatures
+  broadly, but root candidate synthesis only at actual assertion sites,
+  including package-level value initializers. Render their methods through the
+  shared TypeEnv interface ABI path so exact fixed arrays and variadics match
+  named interfaces. Their deterministic identity hash must use those same
+  active TypeEnv shapes after local and imported constants have been resolved;
+  a scratch environment loses array lengths such as `[pkg.Width]byte`.
+  Non-asserted anonymous type expressions must not emit or
+  preserve hidden traits or impls.
+  Rust receiver-method reachability must resolve local generated type aliases
+  (for example an alias of an imported errno type) before rooting the receiver
+  method in a module. Alias facts are inference metadata, not top-level values
+  or synthetic receiver roots.
+  Composite interface
+  impls structurally depend on every transitive embedded-interface impl for the
+  same self type. Keep that dependency explicit through generated impl markers
+  so DCE cannot retain a composite impl while pruning one of its Rust
+  supertrait obligations.
 - Structs with embedded borrowed interface fields, such as `sort.reverse`, must
   emit both the value trait impl and the matching `GorsPtr<T>` trait impl. The
   pointer-cell impl should delegate to an inherent method when the struct
   overrides an embedded method, and otherwise delegate through the embedded
-  interface field.
+  interface field. Borrowed-interface struct facts are package-wide even though
+  Go files are lowered independently; seed them from the package type
+  environment before lowering every file so cross-file composite literals and
+  lifetime-parameterized pointer impls use the declaration's storage shape.
+  Cross-file promoted-method adapters may delegate through an embedded owner's
+  proven interface impl instead of guessing its inherent Rust receiver ABI.
+  Pointer-cell adapters must project or clone the embedded handle before the
+  call so they do not retain the outer owner lock across interface dispatch.
+  Value-wrapper runtime hooks must preserve the wrapper's own dynamic identity:
+  `__gors_as_any` returns the wrapper, `__gors_clone_box` clones the wrapper,
+  and `__gors_interface_key` describes the wrapper rather than delegating any
+  of those hooks through the embedded interface field. Otherwise embedding a
+  narrow interface can make the wrapper acquire unrelated interfaces from the
+  field's concrete dynamic value.
+  Embedded-method discovery must preserve the nominal identity of defined named
+  types, including defined map and slice types, and unwrap only true Go `=`
+  aliases. A synthesized interface adapter may call the concrete receiver by
+  UFCS only when that receiver declares the method; otherwise it must delegate
+  through the resolved embedded owner or reject the candidate instead of
+  emitting a self-recursive fallback.
+- Calls through named interfaces use UFCS on the statically resolved declaring
+  interface. This is required for composite interfaces whose Rust supertraits
+  declare the same Go method or runtime hook; method-call syntax is ambiguous
+  and trait-object upcasting is not a substitute for Go method-set dispatch.
 - Type-declaration facts that drive later interface impl generation live in
   `gors/src/compiler/type_decl_facts.rs`. Type lowering records borrowed
   interface fields and struct clone derivability there; interface impl emitters
@@ -344,7 +617,15 @@ gors-builtin/
 - Values boxed into `any`/`interface{}` must first materialize the Go concrete
   Rust type. In particular, numeric constants need an explicit cast such as
   `42 as isize` before boxing so type assertions and type switches downcast to
-  Go's `int` representation instead of Rust's default literal type.
+  Go's `int` representation instead of Rust's default literal type. Generic
+  erasure helpers must likewise retain an explicit concrete container type for
+  maps, slices, pointers, and channels; otherwise Rust can infer nested literals
+  using its defaults after the Go expected-type context has disappeared.
+- Cloneable concrete values erased into local `any` use local clone/comparable
+  wrappers when their generated representation is not `Send + Sync`; those
+  wrappers must never be upgraded through the send-capable erased APIs. Keep
+  the local and cross-thread wrapper capabilities distinct, and select them
+  from structural Go representation facts rather than type or package names.
 - Generated structs that contain `any` fields may need compiler-emitted
   `Send`/`Sync` impls with item-local `#[allow(unsafe_code)]` so they can
   satisfy generated Go interface traits, which are modeled as thread-safe. Keep
@@ -358,7 +639,15 @@ gors-builtin/
   `Box<dyn crate::builtin::error>`, including in struct fields and named
   returns. Do not treat `error` fields like borrowed structural interfaces.
   Boxing an existing boxed error is tolerated through the runtime delegating
-  `error` impl for `Box<dyn error>`, and variadic `any` arguments should
+  `error` impl for `Box<dyn error>`. Its clone hook must preserve the concrete
+  dynamic error value, and equality must compare owned `GorsInterfaceKey`
+  values rather than display strings so typed errno/path errors survive
+  ordinary by-value calls. Converting an error interface to `any` must erase
+  through `__gors_as_any` so type assertions and reflection observe the
+  concrete dynamic error, while a nil error remains the nil `any` sentinel.
+  Runtime `any` equality must panic when both operands have the same clone-only
+  non-comparable dynamic type; returning false is valid only when their dynamic
+  types differ. Variadic `any` arguments should
   materialize error values through `builtin::error_string` instead of cloning the
   trait object.
 - Backward `goto Label` targeting the immediately labeled statement is still
@@ -368,7 +657,12 @@ gors-builtin/
   generated state loop, including normal blocks and breakable switch/select case
   bodies. IR identifies direct-list locals that cross state segments, and the
   backend hoists typed zero-value bindings before rewriting the original
-  declarations to segment-local assignments. In `fallthrough` switch cases, a
+  declarations to segment-local assignments. Direct local `const` and `type`
+  declarations are compile-time bindings rather than runtime hoist candidates;
+  state lowering carries their generated declarations into each later state arm
+  where Go lexical scope makes them visible. The impossible state-dispatch arm
+  must diverge so an otherwise returning non-void state machine cannot fall
+  through as Rust `()`. In `fallthrough` switch cases, a
   lowered fallthrough inside a goto-state case body must set the fallthrough flag
   and break the generated goto loop before the switch case dispatcher continues.
   Broader forward gotos still require full CFG restructuring in the IR before
@@ -471,6 +765,16 @@ gors-builtin/
   each caller. Shared TypeEnv-backed
   selector facts such as declared selector-base values and qualified
   package-member keys live in `gors/src/compiler/selector_semantics.rs`;
+  backend value-selector classification must also use
+  `selector_base_is_unshadowed_import`, because a receiver, parameter, or local
+  value may shadow a same-named file import for the selector's lexical scope.
+  recursive embedded field and method lookup belongs there too. Its selector
+  resolver preserves the complete projection path, searches breadth-first so
+  shallow members shadow deeper ones, reports same-depth ambiguity, retains
+  instantiated receiver arguments, and terminates cycles per candidate path.
+  Type inference, IR call planning, backend field/method projection, and
+  interface satisfaction must consume that shared result instead of carrying
+  one-hop or first-match promotion walkers.
   method-expression detection, type inference, and IR call/result planning
   should consume those helpers instead of rebuilding selector value-vs-package
   logic locally. Backend lowering still
@@ -511,7 +815,11 @@ gors-builtin/
   require shared package facts, and nested custom Rayon pools must not be
   created from an existing Rayon worker. When stdlib packages are parallelized,
   each package receives a single-file budget; otherwise one package may spend
-  the available budget across safe files.
+  the available budget across safe files. External implementor maps are shared
+  as immutable snapshots and explicitly installed in each pending-package
+  worker's compiler TLS, so their presence does not serialize independent
+  stdlib packages; do not rely on coordinator thread-local state crossing a
+  Rayon boundary.
 - Worker tasks return deterministic formatted Rust `String` values. The
   coordinator reparses those strings into `syn` nodes and installs modules in
   stable order; non-`Send` syntax trees never cross native or Wasm worker
@@ -731,6 +1039,10 @@ Reachability root/name discovery and expansion live in
 share main-module root selection, exported-root collection, item/top-level name discovery, trait
 supertrait/method maps, and top-level receiver-method root expansion through
 that module rather than duplicating name logic.
+Resolver roots that explicitly request a package-boundary receiver method keep
+that receiver's complete declared method set available for later structural
+interface satisfaction. Keep this promotion bounded to requested receiver roots;
+do not recursively promote every receiver discovered through method-body edges.
 Ref-collection traversal and input state live in
 `gors/src/compiler/ref_collection.rs`; token DCE, semantic reachability, and
 external-root discovery should construct `RefCollectionContext` and call
@@ -762,6 +1074,27 @@ recompute reachability, expand `reachable.names` through
 stable before retaining items. This keeps indirect requirements such as
 projected `GorsPtr` helpers and their `lock`/`ptr_id` dependencies without
 keeping unrelated builtin code.
+`GorsMap` is likewise a cohesive language-runtime method family once its
+storage type is reachable. Named Go map types call those methods through Rust
+`Deref`, which hides the builtin receiver from syntactic reference collection;
+expand the `GorsMap::*` roots together rather than adding call-site or stdlib
+package exceptions.
+Capacity-preserving `GorsSliceStorage` and its borrowed `GorsSliceParam` adapter
+form the same kind of cohesive runtime family. Retaining either representation
+must keep both types, their private target state, and their complete inherent
+method dependency closure; trait `Drop` bodies can call private storage methods
+that a call-site-only root scan cannot see after pruning.
+`GorsSliceStorage` keeps every element in its logical capacity fully initialized
+inside owned backing storage while tracking the Go header's start, length, and
+capacity separately; do not replace this with unsafe `Vec::set_len`. Promotion
+from `Vec` initializes spare capacity with `Default`, while generated non-default
+types supply their Go zero value through `with_len_capacity_by`. A borrowed
+`GorsSliceParam` owns a local header copy and writes the entire initialized
+capacity back on drop, so writes above the caller's old length survive a later
+caller reslice without leaking callee header changes.
+Builtin post-pruners must consume that final transitive reachable-name set, not
+the original external root set; a retained generic item can introduce trait or
+method dependencies that are invisible at the initial call boundary.
 Post-reachability item filtering lives in `gors/src/compiler/dce_pruning.rs`;
 the DCE loop should delegate reachable-item retention, unused generated struct
 field pruning, and unused `use` pruning there rather than keeping AST visitors
@@ -1383,7 +1716,12 @@ spread calls, missing/extra arguments, and `nil`, but accepts either a type
 argument or a value expression as specified by Go 1.26;
 `complex`, `real`, and `imag` enforce the spec's complex-number operand shape;
 `min` and `max` require at least one ordered numeric/string argument and reject
-spread calls; zero-result builtins (`clear`, `close`, `delete`, `panic`,
+spread calls. Their result and untyped arguments adopt the first typed
+operand's Go type; when every argument is untyped, inference and lowering use
+the first argument's default Go type. This coercion must happen before emitting
+the shared Rust generic call so
+mixed calls such as `min(uint64Value, untypedLimit)` do not default the limit to
+Rust `isize`. Zero-result builtins (`clear`, `close`, `delete`, `panic`,
 `print`, and `println`) are valid in statement contexts but invalid where a
 value is required; `recover`, `print`, and `println` enforce their fixed
 arity/spread rules. Unshadowed builtin function names are valid only as call
@@ -1628,6 +1966,19 @@ path from crashing inside Syn's type parser.
 Assignment and compound-assignment lowering should also construct `syn`
 assignment/binary expression nodes directly when either side is dynamic; do not
 round-trip generated assignment tokens back through `parse_quote!`.
+Numeric coercion casts around generated binary expressions follow the same AST
+rule: build `syn::ExprCast` directly so Rust precedence cannot attach the cast
+to only the binary expression's right operand.
+Build generated binary operations as `syn::ExprBinary` nodes too. Re-parsing a
+cast left operand next to `<` can make Syn interpret the comparison as generic
+arguments and panic with `expected >`.
+Defined numeric types retain every direct Go underlying layer in their Rust
+storage (`type Base uint32; type Outer Base` becomes `Outer(Base(u32))`). Keep
+that direct storage chain separate from the recursively resolved primitive:
+conversions, index and `make` size operands, and fmt-style variadic-`any`
+lowering must unwrap one generated `From` hop per layer, while coercion into a
+nested defined target wraps those layers in reverse. Do not emit transitive
+`From<Outer> for u32` impls or cast a defined newtype directly to a primitive.
 
 Compiler output should route Go panic-like runtime failures through
 `crate::builtin::panic_value(...)` rather than emitting raw Rust `panic!` or
@@ -1713,15 +2064,28 @@ instead of emitting a `Complex128` initializer.
 Go slice parameters map to `Vec<T>` values unless the compiled body mutates the
 slice's backing storage. The post-compile multi-module pass rewrites parameters
 written through by index, or passed to another mutable slice parameter, to
-`&mut Vec<T>` and rewrites call sites to borrow the caller's buffer. Do not apply
+`&mut [T]` and rewrites call sites to borrow the caller's buffer. Do not apply
 that rewrite to functions returning a slice; those need Go's returned slice
 value semantics.
+Post-prune forwarding-adapter reconciliation may remove an obsolete `to_vec()`
+only when the final borrowed inherent target and the adapter call share the
+exact canonical module-local `Type::method` path. Never reconcile calls by their
+terminal receiver and method identifiers: imported paths and qualified trait
+calls can legitimately end in the same names and must retain their owned bridge.
 Generated borrowed slice views can also have the unsized Rust type `[T]` behind
 `&[T]` or `&mut [T]`. Rust slices do not retain the spare capacity from a Go
 slice header, so the generic `Cap for [T]` runtime implementation reports the
-visible slice length. Preserving a larger Go capacity across that ABI requires
-a richer borrowed slice-header representation; do not encode exceptions for
-individual callers.
+visible slice length. A pre-DCE whole-program pass detects mutable slice
+parameters that reslice beyond the visible length from `len`/`cap` facts and
+gives only those parameters the capacity-carrying
+`builtin::GorsSliceParam<T>` ABI. The wrapper keeps a callee-local Go slice
+header, supports subsequent reslices, and writes mutations in the original
+visible range back when the call ends; ordinary borrowed slice and interface
+ABIs remain `&mut [T]`. Non-string self-reslice assignments must also route
+through `builtin::go_slice` with the original capacity so owned `Vec<T>` values
+can legally extend within capacity and do not discard that capacity. Broaden
+the structural detection or slice representation rather than encoding
+exceptions for individual callers.
 
 Generic receiver methods keep the receiver generic parameters on the generated
 Rust `impl` and currently add `Clone` bounds for those parameters. The method

@@ -115,6 +115,26 @@ pub(super) fn borrowed_pointer_items(
     items_for_target(PointerImplTarget::BorrowedMut, false, false, &context)
 }
 
+pub(super) fn borrowed_pointer_items_in_env(
+    trait_name: &str,
+    struct_name: &str,
+    trait_path: &syn::Path,
+    method_names: &[String],
+    methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
+    pointer_methods: Option<&BTreeSet<String>>,
+    env: &typeinfer::TypeEnv,
+) -> Vec<syn::ImplItem> {
+    let context = PointerImplContext {
+        trait_name,
+        struct_name,
+        trait_path,
+        method_names,
+        methods,
+        pointer_methods,
+    };
+    items_for_target_in_env(PointerImplTarget::BorrowedMut, false, false, &context, env)
+}
+
 pub(super) fn borrowed_pointer_can_delegate(
     trait_name: &str,
     method_names: &[String],
@@ -127,13 +147,21 @@ pub(super) fn borrowed_pointer_can_delegate(
 }
 
 pub(super) fn concrete_can_emit_methods(
+    trait_name: &str,
     struct_name: &str,
     method_names: &[String],
     methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
+    pointer_methods: Option<&BTreeSet<String>>,
 ) -> bool {
-    method_names
-        .iter()
-        .all(|method_name| concrete_can_emit_method(struct_name, method_name, methods))
+    method_names.iter().all(|method_name| {
+        concrete_can_emit_method(
+            trait_name,
+            struct_name,
+            method_name,
+            methods,
+            pointer_methods,
+        )
+    })
 }
 
 pub(super) fn concrete_items(
@@ -142,23 +170,34 @@ pub(super) fn concrete_items(
     struct_name: &str,
     method_names: &[String],
     methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
+    pointer_methods: Option<&BTreeSet<String>>,
     exposes_any: bool,
 ) -> Vec<syn::ImplItem> {
+    let can_clone_self = super::type_decl_facts::struct_can_clone(struct_name);
+    let comparable = can_clone_self
+        && super::go_type_supports_runtime_any_comparable(&typeinfer::GoType::Named(
+            struct_name.to_string(),
+        ));
     let mut impl_items: Vec<syn::ImplItem> = vec![
         concrete_as_any_item(exposes_any),
-        interface_hooks::concrete_interface_key_item(),
+        interface_hooks::concrete_interface_key_item(comparable),
     ];
-    if trait_name != "error" {
-        let can_clone_self = super::type_decl_facts::struct_can_clone(struct_name);
-        impl_items.push(interface_hooks::clone_box_impl_item(
-            trait_path,
-            can_clone_self,
-        ));
-    }
+    impl_items.push(interface_hooks::clone_box_impl_item(
+        trait_path,
+        can_clone_self,
+    ));
     if let Some(method_list) = methods.get(struct_name) {
         for method in method_list {
-            if method_names.contains(&method.sig.ident.to_string()) {
-                impl_items.push(concrete_direct_method_item(trait_name, struct_name, method));
+            let method_name = method.sig.ident.to_string();
+            if method_names.contains(&method_name)
+                && !pointer_methods.is_some_and(|methods| methods.contains(&method_name))
+            {
+                impl_items.push(concrete_direct_method_item(
+                    trait_name,
+                    trait_path,
+                    struct_name,
+                    method,
+                ));
             }
         }
     }
@@ -173,7 +212,9 @@ pub(super) fn concrete_items(
         if emitted_method_names.contains(method_name) {
             continue;
         }
-        if let Some(item) = promoted_concrete_item(struct_name, method_name, methods) {
+        if let Some(item) =
+            promoted_concrete_item(trait_name, trait_path, struct_name, method_name, methods)
+        {
             impl_items.push(item);
         }
     }
@@ -195,6 +236,18 @@ fn items_for_target(
     can_clone_self: bool,
     context: &PointerImplContext<'_>,
 ) -> Vec<syn::ImplItem> {
+    super::TYPE_ENV.with(|env| {
+        items_for_target_in_env(target, exposes_any, can_clone_self, context, &env.borrow())
+    })
+}
+
+fn items_for_target_in_env(
+    target: PointerImplTarget,
+    exposes_any: bool,
+    can_clone_self: bool,
+    context: &PointerImplContext<'_>,
+    env: &typeinfer::TypeEnv,
+) -> Vec<syn::ImplItem> {
     let interface_key_item = match target {
         PointerImplTarget::GorsPtr => interface_hooks::pointer_interface_key_item(),
         PointerImplTarget::BorrowedMut => {
@@ -205,12 +258,10 @@ fn items_for_target(
         pointer_as_any_item(pointer_exposes_any(target, exposes_any)),
         interface_key_item,
     ];
-    if context.trait_name != "error" {
-        impl_items.push(interface_hooks::clone_box_impl_item(
-            context.trait_path,
-            can_clone_self,
-        ));
-    }
+    impl_items.push(interface_hooks::clone_box_impl_item(
+        context.trait_path,
+        can_clone_self,
+    ));
     let mut emitted_method_names = BTreeSet::new();
     if let Some(method_list) = context.methods.get(context.struct_name) {
         for method in method_list {
@@ -218,9 +269,11 @@ fn items_for_target(
             if context.method_names.contains(&method_name) {
                 impl_items.push(target.method_item(
                     context.trait_name,
+                    context.trait_path,
                     context.struct_name,
                     method,
                     context.pointer_methods,
+                    env,
                 ));
                 emitted_method_names.insert(method_name);
             }
@@ -232,9 +285,11 @@ fn items_for_target(
         }
         if let Some(item) = target.promoted_method_item(
             context.trait_name,
+            context.trait_path,
             context.struct_name,
             method_name,
             context.methods,
+            env,
         ) {
             impl_items.push(item);
         }
@@ -250,10 +305,16 @@ struct PromotedMethodStep {
 }
 
 #[derive(Clone)]
-struct PromotedMethodInfo {
+pub(super) struct PromotedMethodInfo {
     owner_type: String,
     steps: Vec<PromotedMethodStep>,
     method_is_pointer_receiver: bool,
+}
+
+impl PromotedMethodInfo {
+    pub(super) fn owner_type(&self) -> &str {
+        &self.owner_type
+    }
 }
 
 fn direct_method_key_for_impl(
@@ -278,14 +339,28 @@ fn promoted_method_info(
 ) -> Option<PromotedMethodInfo> {
     super::TYPE_ENV.with(|env| {
         let env = env.borrow();
-        promoted_method_info_inner(
+        promoted_method_info_in_env(
             &env,
             struct_name,
             method_name,
             include_pointer_receiver_methods,
-            &mut std::collections::HashSet::new(),
         )
     })
+}
+
+pub(super) fn promoted_method_info_in_env(
+    env: &typeinfer::TypeEnv,
+    struct_name: &str,
+    method_name: &str,
+    include_pointer_receiver_methods: bool,
+) -> Option<PromotedMethodInfo> {
+    promoted_method_info_inner(
+        env,
+        struct_name,
+        method_name,
+        include_pointer_receiver_methods,
+        &mut std::collections::HashSet::new(),
+    )
 }
 
 fn promoted_method_info_inner(
@@ -385,19 +460,19 @@ fn promoted_pointer_cell_receiver_expr(steps: &[PromotedMethodStep]) -> syn::Exp
         );
         expr = if step.field_is_pointer {
             syn::parse_quote! {{
-                let __gors_owner = (#expr).lock().unwrap();
+                let __gors_owner_cell = (#expr).clone();
+                let __gors_owner = __gors_owner_cell.lock().unwrap();
                 (__gors_owner.#field_ident).clone()
             }}
         } else {
-            let owner_ident = syn::Ident::new(
-                &super::rust_safe_ident_name(&step.owner_type),
-                Span::mixed_site(),
-            );
+            let owner_ty = super::rust_type_preserving_named_go_type(&typeinfer::GoType::Named(
+                step.owner_type.clone(),
+            ));
             syn::parse_quote! {
                 crate::builtin::GorsPtr::from_ptr_field(
                     (#expr).clone(),
-                    std::mem::offset_of!(#owner_ident, #field_ident),
-                    |__gors_owner: &mut #owner_ident| &mut __gors_owner.#field_ident,
+                    std::mem::offset_of!(#owner_ty, #field_ident),
+                    |__gors_owner: &mut #owner_ty| &mut __gors_owner.#field_ident,
                 )
             }
         };
@@ -405,17 +480,214 @@ fn promoted_pointer_cell_receiver_expr(steps: &[PromotedMethodStep]) -> syn::Exp
     expr
 }
 
+pub(super) fn promoted_external_method_block(
+    promoted: &PromotedMethodInfo,
+    method: &syn::ImplItemFn,
+    owner_ty: &syn::Type,
+    target_is_pointer_cell: bool,
+    sig: &syn::Signature,
+    arg_exprs: &[syn::Expr],
+) -> syn::Block {
+    let method_ident = &method.sig.ident;
+    let receiver_kind = call_receiver(method, promoted.method_is_pointer_receiver);
+    let (receiver, lock_pointer_cell) =
+        if target_is_pointer_cell && matches!(receiver_kind, PointerCallReceiver::PointerCell) {
+            (promoted_pointer_cell_receiver_expr(&promoted.steps), false)
+        } else {
+            let base = if target_is_pointer_cell {
+                syn::parse_quote! { __gors_guard }
+            } else {
+                syn::parse_quote! { self }
+            };
+            (
+                promoted_method_receiver_expr_from_base(&promoted.steps, receiver_kind, base),
+                target_is_pointer_cell,
+            )
+        };
+    let call: syn::Expr = syn::parse_quote! {
+        #owner_ty::#method_ident(#receiver, #(#arg_exprs),*)
+    };
+    if lock_pointer_cell {
+        if matches!(sig.output, syn::ReturnType::Default) {
+            syn::parse_quote!({
+                let mut __gors_guard = self.lock().unwrap();
+                #call;
+            })
+        } else {
+            syn::parse_quote!({
+                let mut __gors_guard = self.lock().unwrap();
+                #call
+            })
+        }
+    } else if matches!(sig.output, syn::ReturnType::Default) {
+        syn::parse_quote!({
+            #call;
+        })
+    } else {
+        syn::parse_quote!({
+            #call
+        })
+    }
+}
+
+fn promoted_trait_delegate_signature(
+    trait_name: &str,
+    method_name: &str,
+) -> Option<syn::Signature> {
+    super::TYPE_ENV.with(|env| {
+        promoted_trait_delegate_signature_in_env(trait_name, method_name, &env.borrow())
+    })
+}
+
+fn promoted_trait_delegate_signature_in_env(
+    trait_name: &str,
+    method_name: &str,
+    env: &typeinfer::TypeEnv,
+) -> Option<syn::Signature> {
+    super::interface_type_env::resolved_interface_method_signature_from_type_env(
+        trait_name,
+        method_name,
+        env,
+    )
+}
+
+fn promoted_owner_can_delegate_trait(trait_name: &str, promoted: &PromotedMethodInfo) -> bool {
+    super::TYPE_ENV
+        .with(|env| promoted_owner_can_delegate_trait_in_env(trait_name, promoted, &env.borrow()))
+}
+
+fn promoted_owner_can_delegate_trait_in_env(
+    trait_name: &str,
+    promoted: &PromotedMethodInfo,
+    env: &typeinfer::TypeEnv,
+) -> bool {
+    let include_pointer_receiver_methods = promoted
+        .steps
+        .last()
+        .is_some_and(|step| step.field_is_pointer);
+    let Some(interface_name) =
+        super::interface_type_env::resolve_interface_env_name(trait_name, env)
+    else {
+        return false;
+    };
+    if env.is_interface(&promoted.owner_type) {
+        return false;
+    }
+    env.named_type_implements_interface(
+        &promoted.owner_type,
+        &interface_name,
+        include_pointer_receiver_methods,
+    )
+}
+
+fn promoted_trait_call_expr(
+    trait_path: &syn::Path,
+    method_ident: &syn::Ident,
+    arg_idents: &[syn::Ident],
+    steps: &[PromotedMethodStep],
+    base: syn::Expr,
+) -> Option<syn::Expr> {
+    let (step, remaining) = steps.split_first()?;
+    let field_ident = syn::Ident::new(
+        &super::rust_safe_ident_name(&step.field_name),
+        Span::mixed_site(),
+    );
+    if remaining.is_empty() {
+        return Some(syn::parse_quote! {
+            #trait_path::#method_ident(&mut (#base).#field_ident, #(#arg_idents),*)
+        });
+    }
+    if step.field_is_pointer {
+        let nested = promoted_trait_call_expr(
+            trait_path,
+            method_ident,
+            arg_idents,
+            remaining,
+            syn::parse_quote! { (*__gors_promoted_owner) },
+        )?;
+        return Some(syn::parse_quote! {{
+            let mut __gors_promoted_owner = ((#base).#field_ident).lock().unwrap();
+            #nested
+        }});
+    }
+    promoted_trait_call_expr(
+        trait_path,
+        method_ident,
+        arg_idents,
+        remaining,
+        syn::parse_quote! { (#base).#field_ident },
+    )
+}
+
+fn promoted_trait_delegate_block(
+    trait_path: &syn::Path,
+    sig: &syn::Signature,
+    steps: &[PromotedMethodStep],
+    base: syn::Expr,
+) -> Option<syn::Block> {
+    let method_ident = &sig.ident;
+    let arg_idents = signature_arg_idents(sig);
+    let call = promoted_trait_call_expr(trait_path, method_ident, &arg_idents, steps, base)?;
+    Some(if matches!(sig.output, syn::ReturnType::Default) {
+        syn::parse_quote!({
+            #call;
+        })
+    } else {
+        syn::parse_quote!({
+            #call
+        })
+    })
+}
+
+fn promoted_pointer_trait_delegate_block(
+    trait_path: &syn::Path,
+    sig: &syn::Signature,
+    steps: &[PromotedMethodStep],
+) -> syn::Block {
+    let method_ident = &sig.ident;
+    let arg_idents = signature_arg_idents(sig);
+    let receiver = promoted_pointer_cell_receiver_expr(steps);
+    if matches!(sig.output, syn::ReturnType::Default) {
+        syn::parse_quote!({
+            let mut __gors_promoted_receiver = #receiver;
+            #trait_path::#method_ident(&mut __gors_promoted_receiver, #(#arg_idents),*);
+        })
+    } else {
+        syn::parse_quote!({
+            let mut __gors_promoted_receiver = #receiver;
+            #trait_path::#method_ident(&mut __gors_promoted_receiver, #(#arg_idents),*)
+        })
+    }
+}
+
 fn promoted_concrete_item(
+    trait_name: &str,
+    trait_path: &syn::Path,
     struct_name: &str,
     method_name: &str,
     methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
 ) -> Option<syn::ImplItem> {
     let promoted = promoted_method_info(struct_name, method_name, false)?;
-    let method = methods
-        .get(&promoted.owner_type)?
-        .iter()
-        .find(|method| method.sig.ident == method_name)?
-        .clone();
+    let method = methods.get(&promoted.owner_type).and_then(|method_list| {
+        method_list
+            .iter()
+            .find(|method| method.sig.ident == method_name)
+            .cloned()
+    });
+    let Some(method) = method else {
+        if !promoted_owner_can_delegate_trait(trait_name, &promoted) {
+            return None;
+        }
+        let mut sig = promoted_trait_delegate_signature(trait_name, method_name)?;
+        set_mut_self_receiver(&mut sig);
+        let block = promoted_trait_delegate_block(
+            trait_path,
+            &sig,
+            &promoted.steps,
+            syn::parse_quote! { self },
+        )?;
+        return Some(impl_item_fn(sig, block));
+    };
     let method_ident = method.sig.ident.clone();
     let method_is_pointer_receiver = promoted.method_is_pointer_receiver;
     let call_receiver_kind = call_receiver(&method, method_is_pointer_receiver);
@@ -423,43 +695,60 @@ fn promoted_concrete_item(
         &super::rust_safe_ident_name(&promoted.owner_type),
         Span::mixed_site(),
     );
-    let arg_idents = signature_arg_idents(&method.sig);
-    let mut sig = method.sig;
+    let target_borrowed_slice_params = borrowed_slice_param_indices_from_signature(&method.sig);
+    let mut sig = interface_method_signature(trait_name, trait_path, method_name, &method.sig);
     set_mut_self_receiver(&mut sig);
+    let arg_idents = signature_arg_idents(&sig);
+    let trait_borrowed_slice_params = borrowed_slice_param_indices_from_signature(&sig);
+    let arg_exprs = interface_forward_arg_exprs(
+        trait_name,
+        &promoted.owner_type,
+        method_name,
+        &arg_idents,
+        &trait_borrowed_slice_params,
+        &target_borrowed_slice_params,
+    );
     let receiver = promoted_method_receiver_expr(&promoted.steps, call_receiver_kind);
     let block = if matches!(sig.output, syn::ReturnType::Default) {
         syn::parse_quote!({
-            #owner_ident::#method_ident(#receiver, #(#arg_idents),*);
+            #owner_ident::#method_ident(#receiver, #(#arg_exprs),*);
         })
     } else {
         syn::parse_quote!({
-            #owner_ident::#method_ident(#receiver, #(#arg_idents),*)
+            #owner_ident::#method_ident(#receiver, #(#arg_exprs),*)
         })
     };
     Some(impl_item_fn(sig, block))
 }
 
 fn concrete_can_emit_method(
+    trait_name: &str,
     struct_name: &str,
     method_name: &str,
     methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
+    pointer_methods: Option<&BTreeSet<String>>,
 ) -> bool {
-    methods.get(struct_name).is_some_and(|method_list| {
-        method_list
-            .iter()
-            .any(|method| method.sig.ident == method_name)
-    }) || promoted_method_info(struct_name, method_name, false).is_some_and(|promoted| {
-        methods
-            .get(&promoted.owner_type)
-            .is_some_and(|method_list| {
-                method_list
-                    .iter()
-                    .any(|method| method.sig.ident == method_name)
-            })
-    })
+    (!pointer_methods.is_some_and(|methods| methods.contains(method_name))
+        && methods.get(struct_name).is_some_and(|method_list| {
+            method_list
+                .iter()
+                .any(|method| method.sig.ident == method_name)
+        }))
+        || promoted_method_info(struct_name, method_name, false).is_some_and(|promoted| {
+            methods
+                .get(&promoted.owner_type)
+                .is_some_and(|method_list| {
+                    method_list
+                        .iter()
+                        .any(|method| method.sig.ident == method_name)
+                })
+                || (promoted_owner_can_delegate_trait(trait_name, &promoted)
+                    && promoted_trait_delegate_signature(trait_name, method_name).is_some())
+        })
 }
 
 pub(super) fn pointer_can_emit_methods(
+    trait_name: &str,
     struct_name: &str,
     method_names: &[String],
     methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
@@ -477,6 +766,8 @@ pub(super) fn pointer_can_emit_methods(
                         .iter()
                         .any(|method| method.sig.ident == method_name)
                 })
+                || (promoted_owner_can_delegate_trait(trait_name, &promoted)
+                    && promoted_trait_delegate_signature(trait_name, method_name).is_some())
         })
     })
 }
@@ -511,14 +802,21 @@ fn pointer_as_any_item(exposes_any: bool) -> syn::ImplItem {
 
 fn concrete_direct_method_item(
     trait_name: &str,
+    trait_path: &syn::Path,
     struct_name: &str,
     method: &syn::ImplItemFn,
 ) -> syn::ImplItem {
-    let mut sig = method.sig.clone();
-    let target_borrowed_slice_params = borrowed_slice_param_indices_from_signature(&sig);
+    let target_borrowed_slice_params = borrowed_slice_param_indices_from_signature(&method.sig);
+    let mut sig = interface_method_signature(
+        trait_name,
+        trait_path,
+        &method.sig.ident.to_string(),
+        &method.sig,
+    );
     let method_ident = sig.ident.clone();
     let immutable_error_method = trait_name == "error" && method_ident == "Error";
-    let original_receiver = sig
+    let original_receiver = method
+        .sig
         .inputs
         .first()
         .and_then(|arg| match arg {
@@ -529,7 +827,7 @@ fn concrete_direct_method_item(
         })
         .unwrap_or((true, false));
     set_interface_receiver(&mut sig, immutable_error_method);
-    set_interface_slice_param_types(&mut sig, trait_name, &method_ident.to_string());
+    set_interface_slice_param_types(&mut sig, trait_name, trait_path, &method_ident.to_string());
     let struct_ident = syn::Ident::new(
         &super::rust_safe_ident_name(struct_name),
         Span::mixed_site(),
@@ -596,9 +894,11 @@ impl PointerImplTarget {
     fn method_item(
         self,
         trait_name: &str,
+        trait_path: &syn::Path,
         struct_name: &str,
         method: &syn::ImplItemFn,
         pointer_methods: Option<&BTreeSet<String>>,
+        env: &typeinfer::TypeEnv,
     ) -> syn::ImplItem {
         let method_ident = method.sig.ident.clone();
         let method_is_pointer_receiver =
@@ -608,20 +908,33 @@ impl PointerImplTarget {
             &super::rust_safe_ident_name(struct_name),
             Span::mixed_site(),
         );
-        let mut sig = method.sig.clone();
-        let target_borrowed_slice_params = borrowed_slice_param_indices_from_signature(&sig);
+        let target_borrowed_slice_params = borrowed_slice_param_indices_from_signature(&method.sig);
+        let mut sig = interface_method_signature_in_env(
+            trait_name,
+            trait_path,
+            &method_ident.to_string(),
+            &method.sig,
+            env,
+        );
         let immutable_error_method = trait_name == "error" && method_ident == "Error";
         set_interface_receiver(&mut sig, immutable_error_method);
-        set_interface_slice_param_types(&mut sig, trait_name, &method_ident.to_string());
+        set_interface_slice_param_types_in_env(
+            &mut sig,
+            trait_name,
+            trait_path,
+            &method_ident.to_string(),
+            env,
+        );
         let arg_idents = signature_arg_idents(&sig);
         let trait_borrowed_slice_params = borrowed_slice_param_indices_from_signature(&sig);
-        let arg_exprs = interface_forward_arg_exprs(
+        let arg_exprs = interface_forward_arg_exprs_in_env(
             trait_name,
             struct_name,
             &method_ident.to_string(),
             &arg_idents,
             &trait_borrowed_slice_params,
             &target_borrowed_slice_params,
+            env,
         );
         let call_receiver = self.call_receiver_expr(call_receiver_kind);
         let call = PointerMethodCall {
@@ -640,16 +953,39 @@ impl PointerImplTarget {
     fn promoted_method_item(
         self,
         trait_name: &str,
+        trait_path: &syn::Path,
         struct_name: &str,
         method_name: &str,
         methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
+        env: &typeinfer::TypeEnv,
     ) -> Option<syn::ImplItem> {
-        let promoted = promoted_method_info(struct_name, method_name, true)?;
-        let method = methods
-            .get(&promoted.owner_type)?
-            .iter()
-            .find(|method| method.sig.ident == method_name)?
-            .clone();
+        let promoted = promoted_method_info_in_env(env, struct_name, method_name, true)?;
+        let method = methods.get(&promoted.owner_type).and_then(|method_list| {
+            method_list
+                .iter()
+                .find(|method| method.sig.ident == method_name)
+                .cloned()
+        });
+        let Some(method) = method else {
+            if !promoted_owner_can_delegate_trait_in_env(trait_name, &promoted, env) {
+                return None;
+            }
+            let mut sig = promoted_trait_delegate_signature_in_env(trait_name, method_name, env)?;
+            let immutable_error_method = trait_name == "error" && method_name == "Error";
+            set_interface_receiver(&mut sig, immutable_error_method);
+            let block = match self {
+                Self::GorsPtr => {
+                    promoted_pointer_trait_delegate_block(trait_path, &sig, &promoted.steps)
+                }
+                Self::BorrowedMut => promoted_trait_delegate_block(
+                    trait_path,
+                    &sig,
+                    &promoted.steps,
+                    syn::parse_quote! { (**self) },
+                )?,
+            };
+            return Some(impl_item_fn(sig, block));
+        };
         let method_ident = method.sig.ident.clone();
         let method_is_pointer_receiver = promoted.method_is_pointer_receiver;
         let call_receiver_kind = call_receiver(&method, method_is_pointer_receiver);
@@ -657,20 +993,33 @@ impl PointerImplTarget {
             &super::rust_safe_ident_name(&promoted.owner_type),
             Span::mixed_site(),
         );
-        let mut sig = method.sig;
-        let target_borrowed_slice_params = borrowed_slice_param_indices_from_signature(&sig);
+        let target_borrowed_slice_params = borrowed_slice_param_indices_from_signature(&method.sig);
+        let mut sig = interface_method_signature_in_env(
+            trait_name,
+            trait_path,
+            &method_ident.to_string(),
+            &method.sig,
+            env,
+        );
         let immutable_error_method = trait_name == "error" && method_ident == "Error";
         set_interface_receiver(&mut sig, immutable_error_method);
-        set_interface_slice_param_types(&mut sig, trait_name, &method_ident.to_string());
+        set_interface_slice_param_types_in_env(
+            &mut sig,
+            trait_name,
+            trait_path,
+            &method_ident.to_string(),
+            env,
+        );
         let arg_idents = signature_arg_idents(&sig);
         let trait_borrowed_slice_params = borrowed_slice_param_indices_from_signature(&sig);
-        let arg_exprs = interface_forward_arg_exprs(
+        let arg_exprs = interface_forward_arg_exprs_in_env(
             trait_name,
             &promoted.owner_type,
             &method_ident.to_string(),
             &arg_idents,
             &trait_borrowed_slice_params,
             &target_borrowed_slice_params,
+            env,
         );
         let call_receiver = self.promoted_call_receiver_expr(&promoted.steps, call_receiver_kind);
         let block = self.promoted_method_block(
@@ -874,27 +1223,123 @@ fn set_interface_receiver(sig: &mut syn::Signature, immutable_error_method: bool
     }
 }
 
-fn set_interface_slice_param_types(sig: &mut syn::Signature, trait_name: &str, method_name: &str) {
+fn interface_method_signature(
+    trait_name: &str,
+    trait_path: &syn::Path,
+    method_name: &str,
+    concrete: &syn::Signature,
+) -> syn::Signature {
     super::TYPE_ENV.with(|env| {
-        let env = env.borrow();
-        let params = env.get_method_params(trait_name, method_name);
-        for (idx, input) in sig.inputs.iter_mut().skip(1).enumerate() {
-            if !method_param_needs_borrowed_slice_for_candidates(&env, trait_name, method_name, idx)
-            {
-                continue;
-            }
-            let Some(typeinfer::GoType::Slice(elem)) =
-                params.get(idx).map(|param| env.resolve_alias(param))
-            else {
-                continue;
-            };
-            let syn::FnArg::Typed(pat_type) = input else {
-                continue;
-            };
-            let elem = super::rust_type_preserving_named_go_type(&elem);
-            *pat_type.ty = syn::parse_quote! { &mut [#elem] };
-        }
+        interface_method_signature_in_env(
+            trait_name,
+            trait_path,
+            method_name,
+            concrete,
+            &env.borrow(),
+        )
+    })
+}
+
+fn interface_method_signature_in_env(
+    trait_name: &str,
+    trait_path: &syn::Path,
+    method_name: &str,
+    concrete: &syn::Signature,
+    env: &typeinfer::TypeEnv,
+) -> syn::Signature {
+    let trait_path_name = trait_path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .filter(|segment| segment != "crate")
+        .collect::<Vec<_>>()
+        .join(".");
+    let Some(mut sig) = [trait_path_name.as_str(), trait_name]
+        .into_iter()
+        .find_map(|candidate| {
+            super::interface_type_env::resolved_interface_method_signature_from_type_env(
+                candidate,
+                method_name,
+                env,
+            )
+        })
+    else {
+        return concrete.clone();
+    };
+
+    // Parameter names are not part of a trait ABI. Retaining the concrete
+    // method's patterns keeps generated adapters readable while the interface
+    // environment remains the sole owner of their types and result shape.
+    for (interface_arg, concrete_arg) in sig.inputs.iter_mut().zip(&concrete.inputs).skip(1) {
+        let (syn::FnArg::Typed(interface_arg), syn::FnArg::Typed(concrete_arg)) =
+            (interface_arg, concrete_arg)
+        else {
+            continue;
+        };
+        interface_arg.pat = concrete_arg.pat.clone();
+    }
+    sig
+}
+
+fn set_interface_slice_param_types(
+    sig: &mut syn::Signature,
+    trait_name: &str,
+    trait_path: &syn::Path,
+    method_name: &str,
+) {
+    super::TYPE_ENV.with(|env| {
+        set_interface_slice_param_types_in_env(
+            sig,
+            trait_name,
+            trait_path,
+            method_name,
+            &env.borrow(),
+        );
     });
+}
+
+fn set_interface_slice_param_types_in_env(
+    sig: &mut syn::Signature,
+    trait_name: &str,
+    trait_path: &syn::Path,
+    method_name: &str,
+    env: &typeinfer::TypeEnv,
+) {
+    let trait_path_name = trait_path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .filter(|segment| segment != "crate")
+        .collect::<Vec<_>>()
+        .join(".");
+    let Some(interface_name) =
+        [trait_path_name.as_str(), trait_name]
+            .into_iter()
+            .find_map(|candidate| {
+                super::interface_type_env::resolve_interface_env_name(candidate, env)
+            })
+    else {
+        return;
+    };
+    let method_key = env
+        .get_method_func_key(&interface_name, method_name)
+        .unwrap_or_else(|| format!("{interface_name}.{method_name}"));
+    let params = env.get_method_params(&interface_name, method_name);
+    for (idx, input) in sig.inputs.iter_mut().skip(1).enumerate() {
+        if env.get_func_variadic_start(&method_key) == Some(idx) {
+            continue;
+        }
+        let Some(typeinfer::GoType::Slice(elem)) =
+            params.get(idx).map(|param| env.resolve_alias(param))
+        else {
+            continue;
+        };
+        let syn::FnArg::Typed(pat_type) = input else {
+            continue;
+        };
+        let elem = super::rust_type_preserving_named_go_type(&elem);
+        *pat_type.ty = syn::parse_quote! { &mut [#elem] };
+    }
 }
 
 fn method_param_needs_borrowed_slice_for_candidates(
@@ -934,7 +1379,7 @@ pub(super) fn borrowed_slice_param_indices_from_signature(sig: &syn::Signature) 
         .collect()
 }
 
-fn type_is_mut_slice_reference(ty: &syn::Type) -> bool {
+pub(super) fn type_is_mut_slice_reference(ty: &syn::Type) -> bool {
     let syn::Type::Reference(reference) = ty else {
         return false;
     };
@@ -950,33 +1395,52 @@ fn interface_forward_arg_exprs(
     target_borrowed_slice_params: &BTreeSet<usize>,
 ) -> Vec<syn::Expr> {
     super::TYPE_ENV.with(|env| {
-        let env = env.borrow();
-        arg_idents
-            .iter()
-            .enumerate()
-            .map(|(idx, ident)| {
-                let trait_borrows = trait_borrowed_slice_params.contains(&idx)
-                    || method_param_needs_borrowed_slice_for_candidates(
-                        &env,
-                        trait_name,
-                        method_name,
-                        idx,
-                    );
-                let target_borrows = target_borrowed_slice_params.contains(&idx)
-                    || method_param_needs_borrowed_slice_for_candidates(
-                        &env,
-                        target_type,
-                        method_name,
-                        idx,
-                    );
-                if trait_borrows && !target_borrows {
-                    syn::parse_quote! { (#ident).to_vec() }
-                } else {
-                    syn::parse_quote! { #ident }
-                }
-            })
-            .collect()
+        interface_forward_arg_exprs_in_env(
+            trait_name,
+            target_type,
+            method_name,
+            arg_idents,
+            trait_borrowed_slice_params,
+            target_borrowed_slice_params,
+            &env.borrow(),
+        )
     })
+}
+
+fn interface_forward_arg_exprs_in_env(
+    trait_name: &str,
+    target_type: &str,
+    method_name: &str,
+    arg_idents: &[syn::Ident],
+    trait_borrowed_slice_params: &BTreeSet<usize>,
+    target_borrowed_slice_params: &BTreeSet<usize>,
+    env: &typeinfer::TypeEnv,
+) -> Vec<syn::Expr> {
+    arg_idents
+        .iter()
+        .enumerate()
+        .map(|(idx, ident)| {
+            let trait_borrows = trait_borrowed_slice_params.contains(&idx)
+                || method_param_needs_borrowed_slice_for_candidates(
+                    env,
+                    trait_name,
+                    method_name,
+                    idx,
+                );
+            let target_borrows = target_borrowed_slice_params.contains(&idx)
+                || method_param_needs_borrowed_slice_for_candidates(
+                    env,
+                    target_type,
+                    method_name,
+                    idx,
+                );
+            if trait_borrows && !target_borrows {
+                super::materialize_owned_slice_from_borrowed_expr(syn::parse_quote! { #ident })
+            } else {
+                syn::parse_quote! { #ident }
+            }
+        })
+        .collect()
 }
 
 fn set_mut_self_receiver(sig: &mut syn::Signature) {

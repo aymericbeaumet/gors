@@ -29,6 +29,8 @@ pub(super) struct SliceAliasTarget {
     pub(super) base_expr: syn::Expr,
     pub(super) offset: syn::Expr,
     pub(super) capacity: syn::Expr,
+    pub(super) element_ty: syn::Type,
+    pub(super) header_shift: Option<syn::Ident>,
 }
 
 pub(super) struct BorrowedPointerParamNamesGuard {
@@ -139,6 +141,12 @@ impl Drop for BorrowedSliceParamNamesGuard {
 
 pub(super) struct SliceAliasTargetsGuard;
 
+pub(super) struct SliceAliasScopeGuard {
+    local_source_names: HashSet<String>,
+    local_rust_names: HashSet<String>,
+    shadowed_targets: BTreeMap<String, SliceAliasTarget>,
+}
+
 impl SliceAliasTargetsGuard {
     pub(super) fn clear() -> Self {
         SLICE_ALIAS_TARGETS.with(|aliases| {
@@ -153,6 +161,55 @@ impl Drop for SliceAliasTargetsGuard {
         SLICE_ALIAS_TARGETS.with(|aliases| {
             aliases.borrow_mut().clear();
         });
+    }
+}
+
+impl SliceAliasScopeGuard {
+    pub(super) fn push(
+        local_source_names: HashSet<String>,
+        local_rust_names: HashSet<String>,
+    ) -> Self {
+        let shadowed_targets = SLICE_ALIAS_TARGETS.with(|aliases| {
+            let mut aliases = aliases.borrow_mut();
+            let shadowed = aliases
+                .iter()
+                .filter(|(name, _)| local_source_names.contains(*name))
+                .map(|(name, target)| (name.clone(), target.clone()))
+                .collect();
+            aliases.retain(|name, _| !local_source_names.contains(name));
+            shadowed
+        });
+        Self {
+            local_source_names,
+            local_rust_names,
+            shadowed_targets,
+        }
+    }
+}
+
+impl Drop for SliceAliasScopeGuard {
+    fn drop(&mut self) {
+        SLICE_ALIAS_TARGETS.with(|aliases| {
+            let mut aliases = aliases.borrow_mut();
+            aliases.retain(|name, target| {
+                !self.local_source_names.contains(name)
+                    && !target.depends_on_bindings(&self.local_source_names, &self.local_rust_names)
+            });
+            aliases.extend(std::mem::take(&mut self.shadowed_targets));
+        });
+    }
+}
+
+impl SliceAliasTarget {
+    fn depends_on_bindings(
+        &self,
+        source_names: &HashSet<String>,
+        rust_names: &HashSet<String>,
+    ) -> bool {
+        source_names.contains(&self.base_name)
+            || super::syn_inspect::expr_contains_any_path_ident(&self.base_expr, rust_names)
+            || super::syn_inspect::expr_contains_any_path_ident(&self.offset, rust_names)
+            || super::syn_inspect::expr_contains_any_path_ident(&self.capacity, rust_names)
     }
 }
 
@@ -288,6 +345,8 @@ mod tests {
                 base_expr: syn::parse_quote! { values },
                 offset: syn::parse_quote! { 1usize },
                 capacity: syn::parse_quote! { 3usize },
+                element_ty: syn::parse_quote! { isize },
+                header_shift: None,
             },
         );
         insert_slice_alias_target(
@@ -297,6 +356,8 @@ mod tests {
                 base_expr: syn::parse_quote! { tail },
                 offset: syn::parse_quote! { 2usize },
                 capacity: syn::parse_quote! { 1usize },
+                element_ty: syn::parse_quote! { isize },
+                header_shift: None,
             },
         );
 
@@ -317,6 +378,8 @@ mod tests {
                 base_expr: syn::parse_quote! { values },
                 offset: syn::parse_quote! { 3usize },
                 capacity: syn::parse_quote! { 5usize },
+                element_ty: syn::parse_quote! { isize },
+                header_shift: None,
             },
         );
 
@@ -335,5 +398,96 @@ mod tests {
         });
         let expected = quote!(5usize).to_string();
         assert_eq!(capacity.as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn slice_alias_scope_detaches_leaving_bindings_and_restores_shadowed_targets() {
+        let _guard = SliceAliasTargetsGuard::clear();
+        insert_slice_alias_target(
+            "shadow".to_string(),
+            SliceAliasTarget {
+                base_name: "outer".to_string(),
+                base_expr: syn::parse_quote! { outer },
+                offset: syn::parse_quote! { 1usize },
+                capacity: syn::parse_quote! { 4usize },
+                element_ty: syn::parse_quote! { isize },
+                header_shift: None,
+            },
+        );
+
+        {
+            let _scope = SliceAliasScopeGuard::push(
+                HashSet::from(["inner".to_string(), "shadow".to_string()]),
+                HashSet::from(["inner".to_string(), "shadow".to_string()]),
+            );
+            assert!(slice_alias_target("shadow").is_none());
+            insert_slice_alias_target(
+                "shadow".to_string(),
+                SliceAliasTarget {
+                    base_name: "inner".to_string(),
+                    base_expr: syn::parse_quote! { inner },
+                    offset: syn::parse_quote! { 0usize },
+                    capacity: syn::parse_quote! { 2usize },
+                    element_ty: syn::parse_quote! { isize },
+                    header_shift: None,
+                },
+            );
+            insert_slice_alias_target(
+                "escaped".to_string(),
+                SliceAliasTarget {
+                    base_name: "inner".to_string(),
+                    base_expr: syn::parse_quote! { inner },
+                    offset: syn::parse_quote! { 0usize },
+                    capacity: syn::parse_quote! { 2usize },
+                    element_ty: syn::parse_quote! { isize },
+                    header_shift: None,
+                },
+            );
+            insert_slice_alias_target(
+                "retargeted".to_string(),
+                SliceAliasTarget {
+                    base_name: "outer".to_string(),
+                    base_expr: syn::parse_quote! { outer },
+                    offset: syn::parse_quote! { 2usize },
+                    capacity: syn::parse_quote! { 3usize },
+                    element_ty: syn::parse_quote! { isize },
+                    header_shift: None,
+                },
+            );
+        }
+
+        assert_eq!(
+            slice_alias_target("shadow").map(|target| target.base_name),
+            Some("outer".to_string())
+        );
+        assert!(slice_alias_target("escaped").is_none());
+        assert_eq!(
+            slice_alias_target("retargeted").map(|target| target.base_name),
+            Some("outer".to_string())
+        );
+    }
+
+    #[test]
+    fn slice_alias_scope_prunes_bounds_that_reference_leaving_bindings() {
+        let _guard = SliceAliasTargetsGuard::clear();
+        {
+            let _scope = SliceAliasScopeGuard::push(
+                HashSet::from(["bound".to_string()]),
+                HashSet::from(["bound__local".to_string()]),
+            );
+            insert_slice_alias_target(
+                "escaped".to_string(),
+                SliceAliasTarget {
+                    base_name: "outer".to_string(),
+                    base_expr: syn::parse_quote! { outer },
+                    offset: syn::parse_quote! { bound__local as usize },
+                    capacity: syn::parse_quote! { 4usize },
+                    element_ty: syn::parse_quote! { isize },
+                    header_shift: None,
+                },
+            );
+        }
+
+        assert!(slice_alias_target("escaped").is_none());
     }
 }

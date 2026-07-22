@@ -9,8 +9,9 @@ use super::reachability_names::{
     item_reachability_names, top_level_item_names, trait_method_names, trait_supertrait_names,
 };
 use super::receiver_type_facts::{
-    ReceiverTypeMap, top_level_collection_element_types, top_level_item_field_types,
-    top_level_item_return_types, top_level_item_tuple_return_types, top_level_item_types,
+    ReceiverTypeMap, is_type_alias_fact_name, top_level_collection_element_types,
+    top_level_item_field_types, top_level_item_return_types, top_level_item_tuple_return_types,
+    top_level_item_types,
 };
 use super::ref_collection::{RefCollectionContext, collect_refs_from_item};
 use super::syn_inspect::{
@@ -333,7 +334,7 @@ fn semantic_synthetic_receiver_method_ids_for_module(
 ) -> BTreeSet<SemanticItemId> {
     let mut ids = BTreeSet::new();
     for (value_name, receiver_type) in top_level_types {
-        if receiver_type.module.is_some() {
+        if is_type_alias_fact_name(value_name) || receiver_type.module.is_some() {
             continue;
         }
         let receiver_prefix = format!("{}::", receiver_type.name);

@@ -9,6 +9,7 @@ thread_local! {
     static SELECT_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static GOTO_STATE_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static SLICE_RANGE_COUNTER: RefCell<usize> = const { RefCell::new(0) };
+    static SLICE_ALIAS_STATE_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static RANGE_FUNCTION_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static NAMED_RETURN_COUNTER: RefCell<usize> = const { RefCell::new(0) };
     static LOOP_COUNTER: RefCell<usize> = const { RefCell::new(0) };
@@ -23,6 +24,7 @@ pub(super) fn reset_lowering_counters() {
     SELECT_COUNTER.with(|counter| *counter.borrow_mut() = 0);
     GOTO_STATE_COUNTER.with(|counter| *counter.borrow_mut() = 0);
     SLICE_RANGE_COUNTER.with(|counter| *counter.borrow_mut() = 0);
+    SLICE_ALIAS_STATE_COUNTER.with(|counter| *counter.borrow_mut() = 0);
     RANGE_FUNCTION_COUNTER.with(|counter| *counter.borrow_mut() = 0);
     NAMED_RETURN_COUNTER.with(|counter| *counter.borrow_mut() = 0);
     LOOP_COUNTER.with(|counter| *counter.borrow_mut() = 0);
@@ -110,6 +112,25 @@ pub(super) fn multi_value_temp_ident(index: usize) -> syn::Ident {
     syn::Ident::new(&format!("__gors_multi_{index}"), Span::mixed_site())
 }
 
+pub(super) fn call_arg_temp_ident(index: usize) -> syn::Ident {
+    syn::Ident::new(&format!("__gors_call_arg_{index}"), Span::mixed_site())
+}
+
+pub(super) fn call_arg_owner_ident(index: usize) -> syn::Ident {
+    syn::Ident::new(&format!("__gors_call_owner_{index}"), Span::mixed_site())
+}
+
+pub(super) fn call_arg_owner_guard_ident(index: usize) -> syn::Ident {
+    syn::Ident::new(
+        &format!("__gors_call_owner_guard_{index}"),
+        Span::mixed_site(),
+    )
+}
+
+pub(super) fn call_arg_range_ident(index: usize) -> syn::Ident {
+    syn::Ident::new(&format!("__gors_call_range_{index}"), Span::mixed_site())
+}
+
 pub(super) fn assignment_temp_ident(index: usize) -> syn::Ident {
     syn::Ident::new(&format!("__gors_assign_{index}"), Span::mixed_site())
 }
@@ -122,8 +143,32 @@ pub(super) fn assignment_base_temp_ident(index: usize) -> syn::Ident {
     syn::Ident::new(&format!("__gors_assign_base_{index}"), Span::mixed_site())
 }
 
+pub(super) fn assignment_nested_place_temp_ident(
+    assignment_index: usize,
+    component_index: usize,
+) -> syn::Ident {
+    syn::Ident::new(
+        &format!("__gors_assign_place_{assignment_index}_{component_index}"),
+        Span::mixed_site(),
+    )
+}
+
+pub(super) fn assignment_nested_base_temp_ident(
+    assignment_index: usize,
+    component_index: usize,
+) -> syn::Ident {
+    syn::Ident::new(
+        &format!("__gors_assign_base_{assignment_index}_{component_index}"),
+        Span::mixed_site(),
+    )
+}
+
 pub(super) fn shared_value_ident() -> syn::Ident {
     syn::Ident::new("__gors_shared_value", Span::mixed_site())
+}
+
+pub(super) fn taken_rhs_value_ident() -> syn::Ident {
+    syn::Ident::new("__gors_taken_rhs_value", Span::mixed_site())
 }
 
 pub(super) fn string_const_bytes_fn_ident(name: &str) -> syn::Ident {
@@ -173,6 +218,18 @@ pub(super) fn slice_alias_index_ident() -> syn::Ident {
 
 pub(super) fn slice_alias_value_ident() -> syn::Ident {
     syn::Ident::new("__gors_slice_alias_value", Span::mixed_site())
+}
+
+pub(super) fn next_slice_alias_header_shift_ident() -> syn::Ident {
+    let n = next_id(&SLICE_ALIAS_STATE_COUNTER);
+    syn::Ident::new(
+        &format!("__gors_slice_alias_header_shift_{n}"),
+        Span::mixed_site(),
+    )
+}
+
+pub(super) fn slice_reslice_limit_ident() -> syn::Ident {
+    syn::Ident::new("__gors_slice_reslice_limit", Span::mixed_site())
 }
 
 pub(super) fn range_index_ident() -> syn::Ident {
@@ -332,6 +389,17 @@ pub(super) fn function_adapter_arg_idents(count: usize) -> Vec<syn::Ident> {
         .collect()
 }
 
+pub(super) fn function_adapter_result_idents(count: usize) -> Vec<syn::Ident> {
+    (0..count)
+        .map(|index| {
+            syn::Ident::new(
+                &format!("__gors_function_adapter_result_{index}"),
+                Span::mixed_site(),
+            )
+        })
+        .collect()
+}
+
 pub(super) fn next_named_return_label() -> syn::Lifetime {
     let n = next_named_return_id();
     syn::Lifetime::new(&format!("'__gors_named_return_{n}"), Span::mixed_site())
@@ -411,8 +479,13 @@ mod tests {
         assert_eq!(comma_ok_value_ident().to_string(), "__gors_comma_ok_value");
         assert_eq!(comma_ok_ok_ident().to_string(), "__gors_comma_ok_ok");
         assert_eq!(multi_value_temp_ident(4).to_string(), "__gors_multi_4");
+        assert_eq!(call_arg_temp_ident(5).to_string(), "__gors_call_arg_5");
         assert_eq!(assignment_temp_ident(5).to_string(), "__gors_assign_5");
         assert_eq!(shared_value_ident().to_string(), "__gors_shared_value");
+        assert_eq!(
+            taken_rhs_value_ident().to_string(),
+            "__gors_taken_rhs_value"
+        );
         assert_eq!(
             string_const_bytes_fn_ident("type").to_string(),
             "__gors_string_const_bytes_type_"

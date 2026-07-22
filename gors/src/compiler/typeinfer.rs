@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::ast;
 use crate::token;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use super::constant_int::ExactInt;
 
@@ -409,8 +410,14 @@ impl GoType {
                             "max" | "min" => call
                                 .args
                                 .as_ref()
-                                .and_then(|a| a.first())
-                                .map(|e| GoType::infer_expr(e, env))
+                                .and_then(|args| {
+                                    args.iter()
+                                        .find(|arg| {
+                                            !expr_is_untyped_constant_for_inference(arg, env)
+                                        })
+                                        .or_else(|| args.first())
+                                })
+                                .map(|expr| GoType::infer_expr(expr, env))
                                 .unwrap_or(GoType::Unknown),
                             "string" => GoType::String,
                             "int" | "int8" | "int16" | "int32" | "int64" | "uint" | "uint8"
@@ -515,7 +522,7 @@ impl GoType {
             }
             ast::Expr::TypeAssertExpr(ta) => {
                 if let Some(type_expr) = &ta.type_ {
-                    GoType::from_expr(type_expr)
+                    go_type_from_asserted_type_expr(type_expr, env)
                 } else {
                     GoType::Unknown
                 }
@@ -528,7 +535,15 @@ impl GoType {
                 }
             }
             ast::Expr::SliceExpr(slice) => {
-                let base = GoType::infer_expr(&slice.x, env);
+                let base = resolve_true_aliases_preserving_defined_type(
+                    GoType::infer_expr(&slice.x, env),
+                    env,
+                );
+                if matches!(base, GoType::Named(_) | GoType::Instantiated { .. })
+                    && matches!(env.resolve_alias(&base), GoType::String | GoType::Slice(_))
+                {
+                    return base;
+                }
                 match env.resolve_alias(&base) {
                     GoType::String => GoType::String,
                     GoType::Slice(elem) => GoType::Slice(elem),
@@ -555,6 +570,26 @@ impl GoType {
     }
 }
 
+pub(super) fn resolve_true_aliases_preserving_defined_type(
+    mut ty: GoType,
+    env: &TypeEnv,
+) -> GoType {
+    loop {
+        let name = match &ty {
+            GoType::Named(name) | GoType::Instantiated { name, .. } => name,
+            _ => return ty,
+        };
+        if !env.is_type_alias(name) {
+            return ty;
+        }
+        let resolved = env.resolve_alias_outer(&ty);
+        if resolved == ty {
+            return ty;
+        }
+        ty = resolved;
+    }
+}
+
 fn func_call_result_from_callee_type(ty: GoType, env: &TypeEnv) -> Option<GoType> {
     let GoType::Func { results, .. } = env.resolve_alias(&ty) else {
         return None;
@@ -562,7 +597,7 @@ fn func_call_result_from_callee_type(ty: GoType, env: &TypeEnv) -> Option<GoType
     Some(results.first().cloned().unwrap_or(GoType::Unknown))
 }
 
-fn expr_is_untyped_constant_for_inference(expr: &ast::Expr<'_>, env: &TypeEnv) -> bool {
+pub(super) fn expr_is_untyped_constant_for_inference(expr: &ast::Expr<'_>, env: &TypeEnv) -> bool {
     match unparen_expr(expr) {
         ast::Expr::BasicLit(_) => true,
         ast::Expr::Ident(ident) if matches!(ident.name, "true" | "false" | "iota") => true,
@@ -599,7 +634,7 @@ fn const_name_has_named_type(name: &str, env: &TypeEnv) -> bool {
     )
 }
 
-fn const_integer_value_exact(
+pub(super) fn const_integer_value_exact(
     expr: &ast::Expr<'_>,
     env: &TypeEnv,
     iota_value: Option<i64>,
@@ -789,207 +824,70 @@ fn substitute_receiver_type_param_vec(
 }
 
 fn field_type_from_receiver_type(receiver_type: GoType, field: &str, env: &TypeEnv) -> GoType {
-    match env.resolve_alias(&receiver_type) {
-        GoType::Named(name) => {
-            let direct = env.get_field_type(&name, field);
-            if !matches!(direct, GoType::Unknown) {
-                return direct;
-            }
-            promoted_field_type_from_struct(&name, field, env, &mut HashSet::new())
-        }
-        GoType::Instantiated { name, args } => {
-            let direct = env
-                .get_struct_fields_with_type_args(&name, &args)
-                .into_iter()
-                .find_map(|(field_name, ty)| (field_name == field).then_some(ty))
-                .unwrap_or(GoType::Unknown);
-            if !matches!(direct, GoType::Unknown) {
-                return direct;
-            }
-            promoted_field_type_from_struct(&name, field, env, &mut HashSet::new())
-        }
-        GoType::Pointer(inner) => field_type_from_receiver_type(*inner, field, env),
+    match super::selector_semantics::resolve_selector(&receiver_type, field, false, env) {
+        super::selector_semantics::SelectorResolution::Found(
+            super::selector_semantics::ResolvedSelector {
+                member: super::selector_semantics::SelectorMember::Field(field),
+                ..
+            },
+        ) => field.ty,
         _ => GoType::Unknown,
     }
 }
 
-fn promoted_field_type_from_struct(
-    struct_name: &str,
-    field: &str,
-    env: &TypeEnv,
-    visiting: &mut HashSet<std::string::String>,
-) -> GoType {
-    if !visiting.insert(struct_name.to_string()) {
-        return GoType::Unknown;
-    }
-    for (embedded_field, embedded_ty) in env.get_struct_fields(struct_name) {
-        if !env.is_struct_embedded_field(struct_name, &embedded_field) {
-            continue;
-        }
-        let target_name = match env.resolve_alias(&embedded_ty) {
-            GoType::Named(name) => Some(name),
-            GoType::Pointer(inner) => match env.resolve_alias(&inner) {
-                GoType::Named(name) => Some(name),
-                _ => None,
-            },
-            _ => None,
-        };
-        let Some(target_name) = target_name else {
-            continue;
-        };
-        let direct = env.get_field_type(&target_name, field);
-        if !matches!(direct, GoType::Unknown) {
-            return direct;
-        }
-        let promoted = promoted_field_type_from_struct(&target_name, field, env, visiting);
-        if !matches!(promoted, GoType::Unknown) {
-            return promoted;
-        }
-    }
-    GoType::Unknown
-}
-
 fn method_return_from_receiver_type(receiver_type: GoType, method: &str, env: &TypeEnv) -> GoType {
-    match receiver_type {
-        GoType::Named(name) | GoType::Interface(name) => {
-            let direct = env.get_method_return(&name, method);
-            if !matches!(direct, GoType::Unknown) {
-                return direct;
-            }
-            match env.resolve_alias(&GoType::Named(name)) {
-                GoType::Named(alias_name) | GoType::Interface(alias_name) => {
-                    env.get_method_return(&alias_name, method)
-                }
-                _ => GoType::Unknown,
-            }
-        }
-        GoType::Instantiated { name, args } => {
-            let direct = env.get_method_return(&name, method);
-            if !matches!(direct, GoType::Unknown) {
-                return substitute_receiver_type_params(env, &name, &args, direct);
-            }
-            match env.resolve_alias(&GoType::Named(name)) {
-                GoType::Named(alias_name) | GoType::Interface(alias_name) => {
-                    let aliased = env.get_method_return(&alias_name, method);
-                    substitute_receiver_type_params(env, &alias_name, &args, aliased)
-                }
-                _ => GoType::Unknown,
-            }
-        }
-        GoType::Pointer(inner) => method_return_from_receiver_type(*inner, method, env),
-        other => match env.resolve_alias(&other) {
-            GoType::Named(name) | GoType::Interface(name) => env.get_method_return(&name, method),
-            GoType::Instantiated { name, args } => {
-                let result = env.get_method_return(&name, method);
-                substitute_receiver_type_params(env, &name, &args, result)
-            }
-            GoType::Pointer(inner) => method_return_from_receiver_type(*inner, method, env),
-            _ => GoType::Unknown,
-        },
-    }
+    let Some(method) = resolved_selector_method(&receiver_type, method, true, env) else {
+        return GoType::Unknown;
+    };
+    resolved_method_signature_types(&method, env.get_func_returns(&method.key), env)
+        .into_iter()
+        .next()
+        .unwrap_or(GoType::Unknown)
 }
 
 fn method_func_from_receiver_type(receiver_type: GoType, method: &str, env: &TypeEnv) -> GoType {
-    match receiver_type {
-        GoType::Named(name) | GoType::Interface(name) => {
-            if env.has_method_func(&name, method) {
-                return GoType::Func {
-                    params: env.get_method_params(&name, method),
-                    results: env.get_method_returns(&name, method),
-                    variadic_start: env.get_method_variadic_start(&name, method),
-                };
-            }
-            match env.resolve_alias(&GoType::Named(name)) {
-                GoType::Named(alias_name) | GoType::Interface(alias_name)
-                    if env.has_method_func(&alias_name, method) =>
-                {
-                    GoType::Func {
-                        params: env.get_method_params(&alias_name, method),
-                        results: env.get_method_returns(&alias_name, method),
-                        variadic_start: env.get_method_variadic_start(&alias_name, method),
-                    }
-                }
-                _ => GoType::Unknown,
-            }
-        }
+    let Some(method) = resolved_selector_method(&receiver_type, method, true, env) else {
+        return GoType::Unknown;
+    };
+    GoType::Func {
+        params: resolved_method_signature_types(&method, env.get_func_params(&method.key), env),
+        results: resolved_method_signature_types(&method, env.get_func_returns(&method.key), env),
+        variadic_start: env.get_func_variadic_start(&method.key),
+    }
+}
+
+fn resolved_selector_method(
+    receiver_type: &GoType,
+    method_name: &str,
+    include_pointer_receiver_methods: bool,
+    env: &TypeEnv,
+) -> Option<super::selector_semantics::SelectorMethod> {
+    match super::selector_semantics::resolve_selector(
+        receiver_type,
+        method_name,
+        include_pointer_receiver_methods,
+        env,
+    ) {
+        super::selector_semantics::SelectorResolution::Found(
+            super::selector_semantics::ResolvedSelector {
+                member: super::selector_semantics::SelectorMember::Method(method),
+                ..
+            },
+        ) => Some(method),
+        _ => None,
+    }
+}
+
+fn resolved_method_signature_types(
+    method: &super::selector_semantics::SelectorMethod,
+    types: Vec<GoType>,
+    env: &TypeEnv,
+) -> Vec<GoType> {
+    match &method.receiver {
         GoType::Instantiated { name, args } => {
-            if env.has_method_func(&name, method) {
-                return GoType::Func {
-                    params: substitute_receiver_type_param_vec(
-                        env,
-                        &name,
-                        &args,
-                        env.get_method_params(&name, method),
-                    ),
-                    results: substitute_receiver_type_param_vec(
-                        env,
-                        &name,
-                        &args,
-                        env.get_method_returns(&name, method),
-                    ),
-                    variadic_start: env.get_method_variadic_start(&name, method),
-                };
-            }
-            match env.resolve_alias(&GoType::Named(name)) {
-                GoType::Named(alias_name) | GoType::Interface(alias_name)
-                    if env.has_method_func(&alias_name, method) =>
-                {
-                    GoType::Func {
-                        params: substitute_receiver_type_param_vec(
-                            env,
-                            &alias_name,
-                            &args,
-                            env.get_method_params(&alias_name, method),
-                        ),
-                        results: substitute_receiver_type_param_vec(
-                            env,
-                            &alias_name,
-                            &args,
-                            env.get_method_returns(&alias_name, method),
-                        ),
-                        variadic_start: env.get_method_variadic_start(&alias_name, method),
-                    }
-                }
-                _ => GoType::Unknown,
-            }
+            substitute_receiver_type_param_vec(env, name, args, types)
         }
-        GoType::Pointer(inner) => method_func_from_receiver_type(*inner, method, env),
-        other => match env.resolve_alias(&other) {
-            GoType::Named(name) | GoType::Interface(name) => {
-                if env.has_method_func(&name, method) {
-                    GoType::Func {
-                        params: env.get_method_params(&name, method),
-                        results: env.get_method_returns(&name, method),
-                        variadic_start: env.get_method_variadic_start(&name, method),
-                    }
-                } else {
-                    GoType::Unknown
-                }
-            }
-            GoType::Instantiated { name, args } => {
-                if env.has_method_func(&name, method) {
-                    GoType::Func {
-                        params: substitute_receiver_type_param_vec(
-                            env,
-                            &name,
-                            &args,
-                            env.get_method_params(&name, method),
-                        ),
-                        results: substitute_receiver_type_param_vec(
-                            env,
-                            &name,
-                            &args,
-                            env.get_method_returns(&name, method),
-                        ),
-                        variadic_start: env.get_method_variadic_start(&name, method),
-                    }
-                } else {
-                    GoType::Unknown
-                }
-            }
-            GoType::Pointer(inner) => method_func_from_receiver_type(*inner, method, env),
-            _ => GoType::Unknown,
-        },
+        _ => types,
     }
 }
 
@@ -1024,8 +922,19 @@ pub struct TypeEnv {
     scoped_type_param_constraints: HashMap<std::string::String, Vec<GoType>>,
     /// Function/method name → index where a variadic parameter starts
     func_variadic_start: HashMap<std::string::String, usize>,
+    /// Function/method name → exact container shapes retained from the Go AST.
+    ///
+    /// `GoType::Array` intentionally erases fixed-array lengths for ordinary
+    /// inference. Interface ABI reconstruction cannot: `[2]byte` and
+    /// `[3]byte` are different method signatures, including after package
+    /// facts are serialized or merged under an import name.
+    #[serde(default)]
+    func_signature_shapes: HashMap<std::string::String, FunctionSignatureShapes>,
     /// Function/method name → named interfaces asserted in the function body.
     func_interface_assertions: HashMap<std::string::String, Vec<std::string::String>>,
+    /// Package-level variable name → interfaces asserted while initializing it.
+    #[serde(default)]
+    top_level_interface_assertions: HashMap<std::string::String, Vec<std::string::String>>,
     /// Type name → kind (struct, interface, alias)
     type_kinds: HashMap<std::string::String, TypeKind>,
     /// Type name → declared type parameter count
@@ -1034,6 +943,13 @@ pub struct TypeEnv {
     type_param_names: HashMap<std::string::String, Vec<std::string::String>>,
     /// Type names declared with alias syntax.
     type_aliases: HashSet<std::string::String>,
+    /// Alternate qualified spellings of a declared type → its stable package identity.
+    ///
+    /// This is deliberately separate from `type_aliases`: `fs.File` and
+    /// `io__fs.File` denote the same Go declaration after import-path module
+    /// rewriting, but neither is a Go type alias for the other.
+    #[serde(default)]
+    canonical_declared_type_identities: HashMap<std::string::String, std::string::String>,
     /// Alias declarations whose right side is an instantiated generic type.
     instantiated_type_aliases: HashSet<std::string::String>,
     /// Alias name → direct alias target after ignoring pointer indirections.
@@ -1054,6 +970,15 @@ pub struct TypeEnv {
     string_consts: HashSet<std::string::String>,
     top_level_vars: HashSet<std::string::String>,
     top_level_var_types: HashMap<std::string::String, GoType>,
+    /// Package-level variables whose generated static includes an outer
+    /// `Arc<Mutex<_>>` value cell.
+    ///
+    /// This is a representation fact, not merely a lowering-local mutation
+    /// hint: downstream packages must use the same read path as the package
+    /// that owns the static. Keep it serialized and qualify it through package
+    /// merges alongside `top_level_var_types`.
+    #[serde(default)]
+    mutable_top_level_vars: HashSet<std::string::String>,
     consts: HashSet<std::string::String>,
     const_types: HashMap<std::string::String, GoType>,
     const_integer_values: HashMap<std::string::String, i128>,
@@ -1073,7 +998,164 @@ pub enum TypeKind {
     Alias(GoType),
 }
 
-type InterfaceMethodSignature = (std::string::String, Vec<GoType>, Vec<GoType>, Option<usize>);
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) enum SignatureTypeShape {
+    Other,
+    Pointer(Box<SignatureTypeShape>),
+    Slice(Box<SignatureTypeShape>),
+    Array {
+        length: Option<std::string::String>,
+        elem: Box<SignatureTypeShape>,
+    },
+    Map {
+        key: Box<SignatureTypeShape>,
+        value: Box<SignatureTypeShape>,
+    },
+    Chan(Box<SignatureTypeShape>),
+    Func {
+        params: Vec<SignatureTypeShape>,
+        results: Vec<SignatureTypeShape>,
+    },
+    Instantiated(Vec<SignatureTypeShape>),
+}
+
+impl SignatureTypeShape {
+    fn from_expr(expr: &ast::Expr<'_>, env: &TypeEnv) -> Self {
+        match expr {
+            ast::Expr::ParenExpr(paren) => Self::from_expr(&paren.x, env),
+            ast::Expr::StarExpr(star) => Self::Pointer(Box::new(Self::from_expr(&star.x, env))),
+            ast::Expr::ArrayType(array) => {
+                let elem = Box::new(Self::from_expr(&array.elt, env));
+                match array.len.as_deref() {
+                    Some(length) => Self::Array {
+                        length: const_integer_value_exact(length, env, None)
+                            .map(|length| length.decimal_string()),
+                        elem,
+                    },
+                    None => Self::Slice(elem),
+                }
+            }
+            ast::Expr::MapType(map) => Self::Map {
+                key: Box::new(Self::from_expr(&map.key, env)),
+                value: Box::new(Self::from_expr(&map.value, env)),
+            },
+            ast::Expr::ChanType(chan) => Self::Chan(Box::new(Self::from_expr(&chan.value, env))),
+            ast::Expr::FuncType(func) => {
+                let shapes = function_signature_shapes(func, env);
+                Self::Func {
+                    params: shapes.params,
+                    results: shapes.results,
+                }
+            }
+            ast::Expr::Ellipsis(ellipsis) => Self::Slice(Box::new(
+                ellipsis
+                    .elt
+                    .as_ref()
+                    .map(|elem| Self::from_expr(elem, env))
+                    .unwrap_or(Self::Other),
+            )),
+            ast::Expr::IndexExpr(index) => {
+                Self::Instantiated(vec![Self::from_expr(&index.index, env)])
+            }
+            ast::Expr::IndexListExpr(index) => Self::Instantiated(
+                index
+                    .indices
+                    .iter()
+                    .map(|arg| Self::from_expr(arg, env))
+                    .collect(),
+            ),
+            _ => Self::Other,
+        }
+    }
+
+    fn contains_fixed_array(&self) -> bool {
+        match self {
+            Self::Array { .. } => true,
+            Self::Pointer(inner) | Self::Slice(inner) | Self::Chan(inner) => {
+                inner.contains_fixed_array()
+            }
+            Self::Map { key, value } => key.contains_fixed_array() || value.contains_fixed_array(),
+            Self::Func { params, results } => {
+                params.iter().chain(results).any(Self::contains_fixed_array)
+            }
+            Self::Instantiated(args) => args.iter().any(Self::contains_fixed_array),
+            Self::Other => false,
+        }
+    }
+
+    fn has_exact_fixed_array_lengths(&self) -> bool {
+        match self {
+            Self::Array { length, elem } => {
+                length.is_some() && elem.has_exact_fixed_array_lengths()
+            }
+            Self::Pointer(inner) | Self::Slice(inner) | Self::Chan(inner) => {
+                inner.has_exact_fixed_array_lengths()
+            }
+            Self::Map { key, value } => {
+                key.has_exact_fixed_array_lengths() && value.has_exact_fixed_array_lengths()
+            }
+            Self::Func { params, results } => params
+                .iter()
+                .chain(results)
+                .all(Self::has_exact_fixed_array_lengths),
+            Self::Instantiated(args) => args.iter().all(Self::has_exact_fixed_array_lengths),
+            Self::Other => true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct FunctionSignatureShapes {
+    pub(crate) params: Vec<SignatureTypeShape>,
+    pub(crate) results: Vec<SignatureTypeShape>,
+}
+
+#[derive(Debug, Clone)]
+struct InterfaceMethodSignature {
+    name: std::string::String,
+    params: Vec<GoType>,
+    results: Vec<GoType>,
+    variadic_start: Option<usize>,
+    shapes: FunctionSignatureShapes,
+}
+
+#[derive(Debug, Clone)]
+struct AnonymousInterfaceFacts {
+    name: std::string::String,
+    methods: Vec<InterfaceMethodSignature>,
+    embedded: Vec<std::string::String>,
+}
+
+const ANONYMOUS_INTERFACE_PREFIX: &str = "__gors_anonymous_interface_";
+
+#[derive(Debug, Clone, PartialEq)]
+struct MethodSignature {
+    params: Vec<GoType>,
+    results: Vec<GoType>,
+    variadic_start: Option<usize>,
+    shapes: Option<FunctionSignatureShapes>,
+    owned_interface_params: HashSet<usize>,
+    borrowed_slice_params: HashSet<usize>,
+}
+
+fn go_type_contains_fixed_array(ty: &GoType) -> bool {
+    match ty {
+        GoType::Array(_) => true,
+        GoType::Pointer(inner) | GoType::Slice(inner) => go_type_contains_fixed_array(inner),
+        GoType::Map(key, value) => {
+            go_type_contains_fixed_array(key) || go_type_contains_fixed_array(value)
+        }
+        GoType::Chan { elem, .. } => go_type_contains_fixed_array(elem),
+        GoType::Func {
+            params, results, ..
+        } => params
+            .iter()
+            .chain(results)
+            .any(go_type_contains_fixed_array),
+        GoType::Instantiated { args, .. } => args.iter().any(go_type_contains_fixed_array),
+        _ => false,
+    }
+}
 
 fn borrowed_slice_indices_from_params(params: &[GoType]) -> HashSet<usize> {
     params
@@ -1101,10 +1183,49 @@ fn interface_method_names(expr: &ast::Expr) -> Vec<std::string::String> {
         .unwrap_or_default()
 }
 
-fn interface_method_signatures(expr: &ast::Expr) -> Vec<InterfaceMethodSignature> {
+fn field_list_signature_shapes(
+    fields: &ast::FieldList<'_>,
+    env: &TypeEnv,
+) -> Vec<SignatureTypeShape> {
+    fields
+        .list
+        .iter()
+        .flat_map(|field| {
+            let shape = field
+                .type_
+                .as_ref()
+                .map(|ty| SignatureTypeShape::from_expr(ty, env))
+                .unwrap_or(SignatureTypeShape::Other);
+            std::iter::repeat_n(shape, field.names.as_ref().map_or(1, Vec::len))
+        })
+        .collect()
+}
+
+fn function_signature_shapes(
+    func_type: &ast::FuncType<'_>,
+    env: &TypeEnv,
+) -> FunctionSignatureShapes {
+    FunctionSignatureShapes {
+        params: field_list_signature_shapes(&func_type.params, env),
+        results: func_type
+            .results
+            .as_ref()
+            .map(|results| field_list_signature_shapes(results, env))
+            .unwrap_or_default(),
+    }
+}
+
+fn interface_method_signatures(expr: &ast::Expr, env: &TypeEnv) -> Vec<InterfaceMethodSignature> {
     let ast::Expr::InterfaceType(interface) = expr else {
         return Vec::new();
     };
+    interface_method_signatures_from_interface(interface, env)
+}
+
+fn interface_method_signatures_from_interface(
+    interface: &ast::InterfaceType<'_>,
+    env: &TypeEnv,
+) -> Vec<InterfaceMethodSignature> {
     interface
         .methods
         .as_ref()
@@ -1125,13 +1246,13 @@ fn interface_method_signatures(expr: &ast::Expr) -> Vec<InterfaceMethodSignature
                     else {
                         return None;
                     };
-                    Some(names.iter().map(move |name| {
-                        (
-                            name.name.to_string(),
-                            params.clone(),
-                            results.clone(),
-                            variadic_start,
-                        )
+                    let shapes = function_signature_shapes(func_type, env);
+                    Some(names.iter().map(move |name| InterfaceMethodSignature {
+                        name: name.name.to_string(),
+                        params: params.clone(),
+                        results: results.clone(),
+                        variadic_start,
+                        shapes: shapes.clone(),
                     }))
                 })
                 .flatten()
@@ -1140,17 +1261,245 @@ fn interface_method_signatures(expr: &ast::Expr) -> Vec<InterfaceMethodSignature
         .unwrap_or_default()
 }
 
-fn interface_assertion_names_in_block(block: &ast::BlockStmt<'_>) -> Vec<std::string::String> {
-    let mut names = Vec::new();
-    collect_interface_assertion_names_from_block(block, &mut names);
+fn anonymous_interface_facts(
+    interface: &ast::InterfaceType<'_>,
+    env: &TypeEnv,
+) -> Option<AnonymousInterfaceFacts> {
+    let mut methods = interface_method_signatures_from_interface(interface, env);
+    methods.sort_by_cached_key(|method| {
+        format!(
+            "{}:{:?}:{:?}:{:?}:{:?}",
+            method.name, method.params, method.results, method.variadic_start, method.shapes,
+        )
+    });
+    let mut embedded = interface
+        .methods
+        .as_ref()
+        .into_iter()
+        .flat_map(|methods| &methods.list)
+        .filter(|field| field.names.as_ref().is_none_or(Vec::is_empty))
+        .filter_map(|field| field.type_.as_ref())
+        .filter_map(embedded_interface_name)
+        .collect::<Vec<_>>();
+    if methods.is_empty() && embedded.is_empty() {
+        return None;
+    }
+
+    let mut signature_parts = methods
+        .iter()
+        .map(|method| {
+            format!(
+                "method:{}:{:?}:{:?}:{:?}:{:?}",
+                method.name, method.params, method.results, method.variadic_start, method.shapes,
+            )
+        })
+        .collect::<Vec<_>>();
+    embedded.sort();
+    signature_parts.extend(
+        embedded
+            .iter()
+            .map(|embedded| format!("embedded:{embedded}")),
+    );
+    signature_parts.sort();
+
+    let mut hash = Sha256::new();
+    for part in signature_parts {
+        hash.update(part.as_bytes());
+        hash.update([0]);
+    }
+    let digest = hash.finalize();
+    let suffix = digest[..12]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<std::string::String>();
+    Some(AnonymousInterfaceFacts {
+        name: format!("{ANONYMOUS_INTERFACE_PREFIX}{suffix}"),
+        methods,
+        embedded,
+    })
+}
+
+pub(crate) fn anonymous_interface_name(
+    interface: &ast::InterfaceType<'_>,
+    env: &TypeEnv,
+) -> Option<std::string::String> {
+    anonymous_interface_facts(interface, env).map(|facts| facts.name)
+}
+
+fn go_type_from_asserted_type_expr(type_expr: &ast::Expr<'_>, env: &TypeEnv) -> GoType {
+    match type_expr {
+        ast::Expr::ParenExpr(paren) => go_type_from_asserted_type_expr(&paren.x, env),
+        ast::Expr::InterfaceType(interface) => anonymous_interface_name(interface, env)
+            .map(GoType::Interface)
+            .unwrap_or(GoType::Any),
+        other => GoType::from_expr(other),
+    }
+}
+
+pub(crate) fn is_anonymous_interface_name(name: &str) -> bool {
+    name.starts_with(ANONYMOUS_INTERFACE_PREFIX)
+}
+
+pub(crate) fn anonymous_interface_assertion_names_in_file(
+    file: &ast::File<'_>,
+    env: &TypeEnv,
+) -> Vec<std::string::String> {
+    let facts = interface_assertion_facts_in_file(file, env);
+    let mut names = facts
+        .sorted_names()
+        .into_iter()
+        .filter(|name| is_anonymous_interface_name(name))
+        .collect::<Vec<_>>();
     names.sort();
     names.dedup();
     names
 }
 
+fn interface_assertion_facts_in_file(
+    file: &ast::File<'_>,
+    env: &TypeEnv,
+) -> InterfaceAssertionFacts {
+    let mut facts = InterfaceAssertionFacts::new(env);
+    for decl in &file.decls {
+        match decl {
+            ast::Decl::FuncDecl(func) => {
+                if let Some(body) = &func.body {
+                    collect_interface_assertion_names_from_block(body, &mut facts);
+                }
+            }
+            ast::Decl::GenDecl(general) => {
+                for spec in &general.specs {
+                    let ast::Spec::ValueSpec(value) = spec else {
+                        continue;
+                    };
+                    collect_interface_assertion_facts_from_value_spec(value, &mut facts);
+                }
+            }
+        }
+    }
+    facts
+}
+
+fn signature_shape_updates(
+    files: &[&ast::File<'_>],
+    env: &TypeEnv,
+) -> Vec<(std::string::String, FunctionSignatureShapes)> {
+    let mut updates = Vec::new();
+    for file in files {
+        for decl in &file.decls {
+            match decl {
+                ast::Decl::FuncDecl(func) => {
+                    let key = func
+                        .recv
+                        .as_ref()
+                        .and_then(|receiver| receiver.list.first())
+                        .and_then(|field| field.type_.as_ref())
+                        .map(|receiver| {
+                            format!("{}.{}", extract_type_name(receiver), func.name.name)
+                        })
+                        .unwrap_or_else(|| func.name.name.to_string());
+                    updates.push((key, function_signature_shapes(&func.type_, env)));
+                }
+                ast::Decl::GenDecl(general) => {
+                    for spec in &general.specs {
+                        let ast::Spec::TypeSpec(type_spec) = spec else {
+                            continue;
+                        };
+                        let Some(type_name) = type_spec.name.as_ref() else {
+                            continue;
+                        };
+                        updates.extend(
+                            interface_method_signatures(&type_spec.type_, env)
+                                .into_iter()
+                                .map(|signature| {
+                                    (
+                                        format!("{}.{}", type_name.name, signature.name),
+                                        signature.shapes,
+                                    )
+                                }),
+                        );
+                    }
+                }
+            }
+        }
+    }
+    updates
+}
+
+struct InterfaceAssertionFacts {
+    env: TypeEnv,
+    names: Vec<std::string::String>,
+    anonymous: HashMap<std::string::String, AnonymousInterfaceFacts>,
+}
+
+impl InterfaceAssertionFacts {
+    fn new(env: &TypeEnv) -> Self {
+        Self {
+            env: env.clone(),
+            names: Vec::new(),
+            anonymous: HashMap::new(),
+        }
+    }
+
+    fn discover_anonymous(&mut self, interface: &ast::InterfaceType<'_>) -> Option<String> {
+        let Some(facts) = anonymous_interface_facts(interface, &self.env) else {
+            return None;
+        };
+        let name = facts.name.clone();
+        self.anonymous.entry(name.clone()).or_insert(facts);
+        Some(name)
+    }
+
+    fn record_asserted_type(&mut self, type_expr: &ast::Expr<'_>) {
+        match type_expr {
+            ast::Expr::ParenExpr(paren) => self.record_asserted_type(&paren.x),
+            ast::Expr::InterfaceType(interface) => {
+                if let Some(name) = self.discover_anonymous(interface) {
+                    self.names.push(name);
+                }
+            }
+            other => {
+                if let Some(name) = named_assertion_type(other) {
+                    self.names.push(name);
+                }
+            }
+        }
+    }
+
+    fn sorted_names(&self) -> Vec<std::string::String> {
+        let mut names = self.names.clone();
+        names.sort();
+        names.dedup();
+        names
+    }
+}
+
+fn collect_interface_assertion_facts_from_value_spec(
+    value: &ast::ValueSpec<'_>,
+    out: &mut InterfaceAssertionFacts,
+) {
+    if let Some(type_) = &value.type_ {
+        collect_interface_assertion_names_from_expr(type_, out);
+    }
+    if let Some(values) = &value.values {
+        for expr in values {
+            collect_interface_assertion_names_from_expr(expr, out);
+        }
+    }
+}
+
+fn interface_assertion_facts_in_block(
+    block: &ast::BlockStmt<'_>,
+    env: &TypeEnv,
+) -> InterfaceAssertionFacts {
+    let mut facts = InterfaceAssertionFacts::new(env);
+    collect_interface_assertion_names_from_block(block, &mut facts);
+    facts
+}
+
 fn collect_interface_assertion_names_from_block(
     block: &ast::BlockStmt<'_>,
-    out: &mut Vec<std::string::String>,
+    out: &mut InterfaceAssertionFacts,
 ) {
     for stmt in &block.list {
         collect_interface_assertion_names_from_stmt(stmt, out);
@@ -1159,7 +1508,7 @@ fn collect_interface_assertion_names_from_block(
 
 fn collect_interface_assertion_names_from_stmt(
     stmt: &ast::Stmt<'_>,
-    out: &mut Vec<std::string::String>,
+    out: &mut InterfaceAssertionFacts,
 ) {
     match stmt {
         ast::Stmt::AssignStmt(assign) => {
@@ -1284,7 +1633,19 @@ fn collect_interface_assertion_names_from_stmt(
             }
             collect_interface_assertion_names_from_stmt(&type_switch.assign, out);
             for stmt in &type_switch.body.list {
-                collect_interface_assertion_names_from_stmt(stmt, out);
+                let ast::Stmt::CaseClause(case) = stmt else {
+                    collect_interface_assertion_names_from_stmt(stmt, out);
+                    continue;
+                };
+                if let Some(types) = &case.list {
+                    for type_expr in types {
+                        out.record_asserted_type(type_expr);
+                        collect_interface_assertion_names_from_expr(type_expr, out);
+                    }
+                }
+                for stmt in &case.body {
+                    collect_interface_assertion_names_from_stmt(stmt, out);
+                }
             }
         }
     }
@@ -1292,7 +1653,7 @@ fn collect_interface_assertion_names_from_stmt(
 
 fn collect_interface_assertion_names_from_expr(
     expr: &ast::Expr<'_>,
-    out: &mut Vec<std::string::String>,
+    out: &mut InterfaceAssertionFacts,
 ) {
     match expr {
         ast::Expr::ArrayType(array) => {
@@ -1358,6 +1719,7 @@ fn collect_interface_assertion_names_from_expr(
             }
         }
         ast::Expr::InterfaceType(interface) => {
+            out.discover_anonymous(interface);
             if let Some(methods) = &interface.methods {
                 for field in &methods.list {
                     if let Some(type_) = &field.type_ {
@@ -1407,9 +1769,7 @@ fn collect_interface_assertion_names_from_expr(
         ast::Expr::TypeAssertExpr(assert) => {
             collect_interface_assertion_names_from_expr(&assert.x, out);
             if let Some(type_) = &assert.type_ {
-                if let Some(name) = named_assertion_type(type_) {
-                    out.push(name);
-                }
+                out.record_asserted_type(type_);
                 collect_interface_assertion_names_from_expr(type_, out);
             }
         }
@@ -2211,6 +2571,25 @@ fn substitute_type_params(
     }
 }
 
+fn go_type_contains_unknown(ty: &GoType) -> bool {
+    match ty {
+        GoType::Unknown => true,
+        GoType::Slice(inner) | GoType::Pointer(inner) | GoType::Array(inner) => {
+            go_type_contains_unknown(inner)
+        }
+        GoType::Map(key, value) => go_type_contains_unknown(key) || go_type_contains_unknown(value),
+        GoType::Chan { elem, .. } => go_type_contains_unknown(elem),
+        GoType::Func {
+            params, results, ..
+        } => {
+            params.iter().any(go_type_contains_unknown)
+                || results.iter().any(go_type_contains_unknown)
+        }
+        GoType::Instantiated { args, .. } => args.iter().any(go_type_contains_unknown),
+        _ => false,
+    }
+}
+
 fn constraint_type_terms(expr: &ast::Expr<'_>) -> Vec<GoType> {
     match expr {
         ast::Expr::BinaryExpr(binary) if binary.op == token::Token::OR => {
@@ -2443,6 +2822,18 @@ fn qualify_package_member_name(
     format!("{package_name}.{name}")
 }
 
+fn qualify_package_declared_type_name(
+    package_name: &str,
+    name: &str,
+    package_env: &TypeEnv,
+) -> std::string::String {
+    if name.contains('.') || package_env.get_type_kind(name).is_none() {
+        name.to_string()
+    } else {
+        format!("{package_name}.{name}")
+    }
+}
+
 fn qualify_package_types(
     package_name: &str,
     types: &[GoType],
@@ -2467,6 +2858,76 @@ fn qualify_package_type_kind(
     match kind {
         TypeKind::Alias(ty) => TypeKind::Alias(qualify_package_type(package_name, ty, package_env)),
         _ => kind.clone(),
+    }
+}
+
+fn canonical_import_qualified_name(
+    name: &str,
+    canonical_imports: &HashMap<std::string::String, std::string::String>,
+) -> std::string::String {
+    let Some((qualifier, member)) = name.split_once('.') else {
+        return name.to_string();
+    };
+    canonical_imports
+        .get(qualifier)
+        .map(|canonical| format!("{canonical}.{member}"))
+        .unwrap_or_else(|| name.to_string())
+}
+
+fn canonical_import_qualified_type(
+    ty: &GoType,
+    canonical_imports: &HashMap<std::string::String, std::string::String>,
+) -> GoType {
+    match ty {
+        GoType::Named(name) => {
+            GoType::Named(canonical_import_qualified_name(name, canonical_imports))
+        }
+        GoType::Interface(name) => {
+            GoType::Interface(canonical_import_qualified_name(name, canonical_imports))
+        }
+        GoType::Instantiated { name, args } => GoType::Instantiated {
+            name: canonical_import_qualified_name(name, canonical_imports),
+            args: args
+                .iter()
+                .map(|arg| canonical_import_qualified_type(arg, canonical_imports))
+                .collect(),
+        },
+        GoType::Pointer(inner) => GoType::Pointer(Box::new(canonical_import_qualified_type(
+            inner,
+            canonical_imports,
+        ))),
+        GoType::Slice(inner) => GoType::Slice(Box::new(canonical_import_qualified_type(
+            inner,
+            canonical_imports,
+        ))),
+        GoType::Array(inner) => GoType::Array(Box::new(canonical_import_qualified_type(
+            inner,
+            canonical_imports,
+        ))),
+        GoType::Map(key, value) => GoType::Map(
+            Box::new(canonical_import_qualified_type(key, canonical_imports)),
+            Box::new(canonical_import_qualified_type(value, canonical_imports)),
+        ),
+        GoType::Chan { elem, direction } => GoType::Chan {
+            elem: Box::new(canonical_import_qualified_type(elem, canonical_imports)),
+            direction: *direction,
+        },
+        GoType::Func {
+            params,
+            results,
+            variadic_start,
+        } => GoType::Func {
+            params: params
+                .iter()
+                .map(|param| canonical_import_qualified_type(param, canonical_imports))
+                .collect(),
+            results: results
+                .iter()
+                .map(|result| canonical_import_qualified_type(result, canonical_imports))
+                .collect(),
+            variadic_start: *variadic_start,
+        },
+        _ => ty.clone(),
     }
 }
 
@@ -2913,6 +3374,19 @@ impl TypeEnv {
         self.top_level_var_types.get(name).cloned()
     }
 
+    pub(crate) fn set_package_mutable_top_level_vars(
+        &mut self,
+        names: HashSet<std::string::String>,
+    ) {
+        self.mutable_top_level_vars
+            .retain(|name| name.contains('.'));
+        self.mutable_top_level_vars.extend(names);
+    }
+
+    pub(crate) fn is_mutable_top_level_var(&self, name: &str) -> bool {
+        self.mutable_top_level_vars.contains(name)
+    }
+
     pub fn top_level_var_types_snapshot(&self) -> Vec<(std::string::String, GoType)> {
         let mut snapshot = self
             .top_level_var_types
@@ -2921,6 +3395,17 @@ impl TypeEnv {
             .collect::<Vec<_>>();
         snapshot.sort_by(|(left, _), (right, _)| left.cmp(right));
         snapshot
+    }
+
+    pub(super) fn top_level_rust_item_names(&self) -> HashSet<std::string::String> {
+        self.top_level_vars
+            .iter()
+            .chain(self.consts.iter())
+            .chain(self.funcs.keys())
+            .chain(self.type_kinds.keys())
+            .filter(|name| !name.contains('.'))
+            .cloned()
+            .collect()
     }
 
     pub fn get_var(&self, name: &str) -> Option<GoType> {
@@ -2976,6 +3461,18 @@ impl TypeEnv {
         self.func_variadic_start.get(name).copied()
     }
 
+    pub(crate) fn set_func_signature_shapes(
+        &mut self,
+        name: &str,
+        shapes: FunctionSignatureShapes,
+    ) {
+        self.func_signature_shapes.insert(name.to_string(), shapes);
+    }
+
+    pub(crate) fn get_func_signature_shapes(&self, name: &str) -> Option<FunctionSignatureShapes> {
+        self.func_signature_shapes.get(name).cloned()
+    }
+
     pub fn set_func_interface_assertions(
         &mut self,
         name: &str,
@@ -2996,6 +3493,34 @@ impl TypeEnv {
             .get(name)
             .cloned()
             .unwrap_or_default()
+    }
+
+    fn set_top_level_interface_assertions(
+        &mut self,
+        name: &str,
+        mut assertions: Vec<std::string::String>,
+    ) {
+        assertions.sort();
+        assertions.dedup();
+        if assertions.is_empty() {
+            self.top_level_interface_assertions.remove(name);
+        } else {
+            self.top_level_interface_assertions
+                .insert(name.to_string(), assertions);
+        }
+    }
+
+    pub fn interface_assertion_names(&self) -> Vec<std::string::String> {
+        let mut names = self
+            .func_interface_assertions
+            .values()
+            .chain(self.top_level_interface_assertions.values())
+            .flatten()
+            .cloned()
+            .collect::<Vec<_>>();
+        names.sort();
+        names.dedup();
+        names
     }
 
     pub fn get_func_params(&self, name: &str) -> Vec<GoType> {
@@ -3110,6 +3635,22 @@ impl TypeEnv {
         self.type_kinds.insert(name.to_string(), kind);
     }
 
+    /// Replace a source interface declaration with a concrete generated
+    /// representation.
+    ///
+    /// Runtime primitives can intentionally expose a concrete Rust handle for
+    /// a Go interface. Updating only `type_kinds` is insufficient because
+    /// `is_interface` also consults the recorded method-set tables. Clear the
+    /// interface-only declaration facts while retaining the ordinary method
+    /// signatures that describe the concrete handle's ABI.
+    pub(crate) fn replace_interface_with_concrete_type(&mut self, name: &str, kind: TypeKind) {
+        debug_assert!(!matches!(kind, TypeKind::Interface));
+        self.set_type_kind(name, kind);
+        self.interface_methods.remove(name);
+        self.interface_embedded.remove(name);
+        self.interface_type_terms.remove(name);
+    }
+
     pub fn remove_type_kind(&mut self, name: &str) {
         self.type_kinds.remove(name);
     }
@@ -3124,6 +3665,33 @@ impl TypeEnv {
             .iter()
             .filter_map(|(name, kind)| matches!(kind, TypeKind::Struct).then_some(name.clone()))
             .collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+
+    /// Names introduced by defined-type declarations that can carry methods.
+    ///
+    /// `TypeKind::Alias` describes the underlying shape of both Go defined
+    /// types such as `type Bytes []byte` and true aliases such as
+    /// `type Bytes = []byte`. The separate `type_aliases` set distinguishes
+    /// those declarations. Interface implementor discovery must consider the
+    /// former, while excluding aliases, interfaces, and type parameters.
+    pub fn concrete_named_type_names(&self) -> Vec<std::string::String> {
+        let mut names = self
+            .type_kinds
+            .iter()
+            .filter_map(|(name, kind)| {
+                (!matches!(kind, TypeKind::Interface | TypeKind::TypeParam)
+                    && !self.is_type_alias(name))
+                .then_some(name.clone())
+            })
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+
+    pub(super) fn declared_type_names(&self) -> Vec<std::string::String> {
+        let mut names = self.type_kinds.keys().cloned().collect::<Vec<_>>();
         names.sort();
         names
     }
@@ -3167,6 +3735,27 @@ impl TypeEnv {
 
     pub fn is_type_alias(&self, name: &str) -> bool {
         self.type_aliases.contains(name)
+    }
+
+    /// Record the stable generated-module identity of this package's declared types.
+    ///
+    /// Package facts keep their own declarations unqualified. When those facts
+    /// are merged under a file-local import name, `merge_package` carries this
+    /// identity along so method signatures can compare exact Go declarations
+    /// even when one side has already been canonicalized for Rust module output.
+    pub(crate) fn record_canonical_package_identity(&mut self, module_name: &str) {
+        let identities = self
+            .type_kinds
+            .keys()
+            .filter(|name| !name.contains('.') && !self.type_aliases.contains(*name))
+            .map(|name| (name.clone(), format!("{module_name}.{name}")))
+            .collect::<Vec<_>>();
+        for (name, canonical) in identities {
+            if name != canonical {
+                self.canonical_declared_type_identities
+                    .insert(name, canonical);
+            }
+        }
     }
 
     pub fn alias_denotes_instantiated_generic(&self, name: &str) -> bool {
@@ -3286,16 +3875,9 @@ impl TypeEnv {
             return Vec::new();
         }
         let mut implementors: Vec<_> = self
-            .type_kinds
-            .iter()
-            .filter_map(|(type_name, kind)| {
-                matches!(kind, TypeKind::Struct)
-                    .then_some(type_name)
-                    .filter(|type_name| {
-                        self.named_type_implements_interface(type_name, name, false)
-                    })
-                    .cloned()
-            })
+            .concrete_named_type_names()
+            .into_iter()
+            .filter(|type_name| self.named_type_implements_interface(type_name, name, false))
             .collect();
         implementors.sort();
         implementors
@@ -3309,14 +3891,9 @@ impl TypeEnv {
             return Vec::new();
         }
         let mut implementors: Vec<_> = self
-            .type_kinds
-            .iter()
-            .filter_map(|(type_name, kind)| {
-                matches!(kind, TypeKind::Struct)
-                    .then_some(type_name)
-                    .filter(|type_name| self.named_type_implements_interface(type_name, name, true))
-                    .cloned()
-            })
+            .concrete_named_type_names()
+            .into_iter()
+            .filter(|type_name| self.named_type_implements_interface(type_name, name, true))
             .collect();
         implementors.sort();
         implementors
@@ -3330,11 +3907,42 @@ impl TypeEnv {
     ) -> bool {
         self.get_interface_methods(interface_name)
             .is_some_and(|methods| {
-                self.named_type_implements_methods(
-                    type_name,
-                    &methods,
-                    include_pointer_receiver_methods,
-                )
+                methods.iter().all(|method| {
+                    self.named_type_method_satisfies_interface_method(
+                        type_name,
+                        interface_name,
+                        method,
+                        include_pointer_receiver_methods,
+                    )
+                })
+            })
+    }
+
+    /// Reports whether every method required by `expected_interface` is present
+    /// on `source_interface` with the same Go signature and generated interface
+    /// ABI. Interface-to-interface bridges must use this method rather than
+    /// comparing method names: Rust trait adapters cannot repair a disagreement
+    /// in parameters, results, variadics, fixed-array lengths, or ownership.
+    pub fn interface_implements_interface(
+        &self,
+        source_interface: &str,
+        expected_interface: &str,
+    ) -> bool {
+        if !self.is_interface(source_interface) || !self.is_interface(expected_interface) {
+            return false;
+        }
+        if source_interface == expected_interface {
+            return true;
+        }
+        self.get_interface_methods(expected_interface)
+            .is_some_and(|methods| {
+                methods.iter().all(|method| {
+                    self.interface_method_satisfies_interface_method(
+                        source_interface,
+                        expected_interface,
+                        method,
+                    )
+                })
             })
     }
 
@@ -3345,13 +3953,23 @@ impl TypeEnv {
         include_pointer_receiver_methods: bool,
     ) -> bool {
         methods.iter().all(|method| {
-            self.named_type_has_method(
-                type_name,
-                method,
-                include_pointer_receiver_methods,
-                &mut HashSet::new(),
-            )
+            self.named_type_has_method(type_name, method, include_pointer_receiver_methods)
         })
+    }
+
+    pub fn resolved_named_method_key(
+        &self,
+        type_name: &str,
+        method: &str,
+        include_pointer_receiver_methods: bool,
+    ) -> Option<std::string::String> {
+        resolved_selector_method(
+            &GoType::Named(type_name.to_string()),
+            method,
+            include_pointer_receiver_methods,
+            self,
+        )
+        .map(|resolved| resolved.key)
     }
 
     fn named_type_has_method(
@@ -3359,68 +3977,337 @@ impl TypeEnv {
         type_name: &str,
         method: &str,
         include_pointer_receiver_methods: bool,
-        visiting: &mut HashSet<std::string::String>,
     ) -> bool {
-        let method_key = format!("{type_name}.{method}");
-        if if include_pointer_receiver_methods {
-            self.has_func(&method_key)
-        } else {
-            self.has_value_method(&method_key)
-        } {
-            return true;
-        }
-        if !visiting.insert(type_name.to_string()) {
-            return false;
-        }
-        let promoted = self
-            .get_struct_fields(type_name)
-            .iter()
-            .any(|(field_name, field_ty)| {
-                self.is_struct_embedded_field(type_name, field_name)
-                    && self.embedded_type_has_method(
-                        field_ty,
-                        method,
-                        include_pointer_receiver_methods,
-                        visiting,
-                    )
-            });
-        visiting.remove(type_name);
-        promoted
+        resolved_selector_method(
+            &GoType::Named(type_name.to_string()),
+            method,
+            include_pointer_receiver_methods,
+            self,
+        )
+        .is_some()
     }
 
-    fn embedded_type_has_method(
+    pub(super) fn named_type_method_satisfies_interface_method(
         &self,
-        field_ty: &GoType,
+        type_name: &str,
+        interface_name: &str,
         method: &str,
         include_pointer_receiver_methods: bool,
-        visiting: &mut HashSet<std::string::String>,
     ) -> bool {
-        match self.resolve_alias(field_ty) {
-            GoType::Named(name) if self.is_interface(&name) => self
-                .get_interface_methods(&name)
-                .is_some_and(|methods| methods.iter().any(|candidate| candidate == method)),
-            GoType::Instantiated { name, .. } if self.is_interface(&name) => self
-                .get_interface_methods(&name)
-                .is_some_and(|methods| methods.iter().any(|candidate| candidate == method)),
-            GoType::Named(name) => self.named_type_has_method(
-                &name,
-                method,
-                include_pointer_receiver_methods,
-                visiting,
-            ),
-            GoType::Instantiated { name, .. } => self.named_type_has_method(
-                &name,
-                method,
-                include_pointer_receiver_methods,
-                visiting,
-            ),
-            GoType::Pointer(inner) => match *inner {
-                GoType::Named(name) | GoType::Instantiated { name, .. } => {
-                    self.named_type_has_method(&name, method, true, visiting)
-                }
-                _ => false,
+        let Some(concrete_method) = resolved_selector_method(
+            &GoType::Named(type_name.to_string()),
+            method,
+            include_pointer_receiver_methods,
+            self,
+        ) else {
+            return false;
+        };
+        let Some(interface_key) = self.get_method_func_key(interface_name, method) else {
+            return true;
+        };
+        let Some(interface_signature) = self.method_signature_for_key(&interface_key) else {
+            return true;
+        };
+        let Some(concrete_signature) = self.method_signature_for_selector_method(&concrete_method)
+        else {
+            return true;
+        };
+        self.method_signatures_match(&interface_signature, &concrete_signature)
+    }
+
+    fn interface_method_satisfies_interface_method(
+        &self,
+        source_interface: &str,
+        expected_interface: &str,
+        method: &str,
+    ) -> bool {
+        let Some(expected_key) = self.get_method_func_key(expected_interface, method) else {
+            return false;
+        };
+        let Some(source_key) = self.get_method_func_key(source_interface, method) else {
+            return false;
+        };
+        let Some(expected_signature) = self.method_signature_for_key(&expected_key) else {
+            return false;
+        };
+        let Some(source_signature) = self.method_signature_for_key(&source_key) else {
+            return false;
+        };
+        self.method_signatures_match(&expected_signature, &source_signature)
+            && self.method_interface_abis_match(&expected_signature, &source_signature)
+    }
+
+    fn method_signature_for_key(&self, key: &str) -> Option<MethodSignature> {
+        if !self.func_params.contains_key(key) || !self.funcs.contains_key(key) {
+            return None;
+        }
+        Some(MethodSignature {
+            params: self.get_func_params(key),
+            results: self.get_func_returns(key),
+            variadic_start: self.get_func_variadic_start(key),
+            shapes: self.get_func_signature_shapes(key),
+            owned_interface_params: self
+                .owned_interface_params
+                .get(key)
+                .cloned()
+                .unwrap_or_default(),
+            borrowed_slice_params: self
+                .borrowed_slice_params
+                .get(key)
+                .cloned()
+                .unwrap_or_default(),
+        })
+    }
+
+    fn method_signature_for_selector_method(
+        &self,
+        method: &super::selector_semantics::SelectorMethod,
+    ) -> Option<MethodSignature> {
+        let signature = self.method_signature_for_key(&method.key)?;
+        Some(MethodSignature {
+            params: resolved_method_signature_types(method, signature.params, self),
+            results: resolved_method_signature_types(method, signature.results, self),
+            variadic_start: signature.variadic_start,
+            shapes: signature.shapes,
+            owned_interface_params: signature.owned_interface_params,
+            borrowed_slice_params: signature.borrowed_slice_params,
+        })
+    }
+
+    fn method_signatures_match(
+        &self,
+        expected: &MethodSignature,
+        actual: &MethodSignature,
+    ) -> bool {
+        expected.variadic_start == actual.variadic_start
+            && self.signature_type_lists_match(&expected.params, &actual.params)
+            && self.signature_type_lists_match(&expected.results, &actual.results)
+            && self.signature_shapes_match(
+                expected.shapes.as_ref(),
+                actual.shapes.as_ref(),
+                expected
+                    .params
+                    .iter()
+                    .chain(&expected.results)
+                    .chain(&actual.params)
+                    .chain(&actual.results)
+                    .any(go_type_contains_fixed_array),
+            )
+    }
+
+    fn method_interface_abis_match(
+        &self,
+        expected: &MethodSignature,
+        actual: &MethodSignature,
+    ) -> bool {
+        expected.owned_interface_params == actual.owned_interface_params
+            && expected.borrowed_slice_params == actual.borrowed_slice_params
+    }
+
+    fn signature_shapes_match(
+        &self,
+        expected: Option<&FunctionSignatureShapes>,
+        actual: Option<&FunctionSignatureShapes>,
+        exact_fixed_arrays_required: bool,
+    ) -> bool {
+        let contains_fixed_array = |shapes: &FunctionSignatureShapes| {
+            shapes
+                .params
+                .iter()
+                .chain(&shapes.results)
+                .any(SignatureTypeShape::contains_fixed_array)
+        };
+        match (expected, actual) {
+            (Some(expected), Some(actual)) if exact_fixed_arrays_required => {
+                expected == actual
+                    && expected
+                        .params
+                        .iter()
+                        .chain(&expected.results)
+                        .all(SignatureTypeShape::has_exact_fixed_array_lengths)
+                    && actual
+                        .params
+                        .iter()
+                        .chain(&actual.results)
+                        .all(SignatureTypeShape::has_exact_fixed_array_lengths)
+            }
+            _ if exact_fixed_arrays_required => false,
+            (Some(expected), Some(actual))
+                if contains_fixed_array(expected) || contains_fixed_array(actual) =>
+            {
+                expected == actual
+            }
+            (Some(expected), None) => !contains_fixed_array(expected),
+            (None, Some(actual)) => !contains_fixed_array(actual),
+            _ => true,
+        }
+    }
+
+    fn signature_type_lists_match(&self, expected: &[GoType], actual: &[GoType]) -> bool {
+        expected.len() == actual.len()
+            && expected
+                .iter()
+                .zip(actual)
+                .all(|(expected, actual)| self.signature_types_match(expected, actual))
+    }
+
+    fn signature_types_match(&self, expected: &GoType, actual: &GoType) -> bool {
+        if go_type_contains_unknown(expected) || go_type_contains_unknown(actual) {
+            return true;
+        }
+        let expected = self.resolve_signature_aliases(expected, &mut HashSet::new());
+        let actual = self.resolve_signature_aliases(actual, &mut HashSet::new());
+        self.canonicalize_declared_type_identities(&expected)
+            == self.canonicalize_declared_type_identities(&actual)
+    }
+
+    fn canonicalize_declared_type_identities(&self, ty: &GoType) -> GoType {
+        match ty {
+            GoType::Named(name) => GoType::Named(self.canonical_declared_type_name(name)),
+            GoType::Interface(name) => GoType::Interface(self.canonical_declared_type_name(name)),
+            GoType::Instantiated { name, args } => GoType::Instantiated {
+                name: self.canonical_declared_type_name(name),
+                args: args
+                    .iter()
+                    .map(|arg| self.canonicalize_declared_type_identities(arg))
+                    .collect(),
             },
-            _ => false,
+            GoType::Pointer(inner) => {
+                GoType::Pointer(Box::new(self.canonicalize_declared_type_identities(inner)))
+            }
+            GoType::Slice(inner) => {
+                GoType::Slice(Box::new(self.canonicalize_declared_type_identities(inner)))
+            }
+            GoType::Array(inner) => {
+                GoType::Array(Box::new(self.canonicalize_declared_type_identities(inner)))
+            }
+            GoType::Map(key, value) => GoType::Map(
+                Box::new(self.canonicalize_declared_type_identities(key)),
+                Box::new(self.canonicalize_declared_type_identities(value)),
+            ),
+            GoType::Chan { elem, direction } => GoType::Chan {
+                elem: Box::new(self.canonicalize_declared_type_identities(elem)),
+                direction: *direction,
+            },
+            GoType::Func {
+                params,
+                results,
+                variadic_start,
+            } => GoType::Func {
+                params: params
+                    .iter()
+                    .map(|param| self.canonicalize_declared_type_identities(param))
+                    .collect(),
+                results: results
+                    .iter()
+                    .map(|result| self.canonicalize_declared_type_identities(result))
+                    .collect(),
+                variadic_start: *variadic_start,
+            },
+            _ => ty.clone(),
+        }
+    }
+
+    pub(crate) fn canonical_declared_type_name(&self, name: &str) -> std::string::String {
+        let mut canonical = name.to_string();
+        let mut visiting = HashSet::new();
+        while visiting.insert(canonical.clone()) {
+            let Some(next) = self.canonical_declared_type_identities.get(&canonical) else {
+                break;
+            };
+            canonical.clone_from(next);
+        }
+        canonical
+    }
+
+    fn resolve_signature_aliases(
+        &self,
+        ty: &GoType,
+        visiting: &mut HashSet<std::string::String>,
+    ) -> GoType {
+        match ty {
+            GoType::Named(name) if self.is_type_alias(name) => {
+                if !visiting.insert(name.clone()) {
+                    return ty.clone();
+                }
+                let resolved = match self.type_kinds.get(name) {
+                    Some(TypeKind::Alias(inner)) => self.resolve_signature_aliases(inner, visiting),
+                    _ => ty.clone(),
+                };
+                visiting.remove(name);
+                resolved
+            }
+            GoType::Instantiated { name, args } if self.is_type_alias(name) => {
+                if !visiting.insert(name.clone()) {
+                    return ty.clone();
+                }
+                let resolved_args = args
+                    .iter()
+                    .map(|arg| self.resolve_signature_aliases(arg, visiting))
+                    .collect::<Vec<_>>();
+                let resolved = match self.type_kinds.get(name) {
+                    Some(TypeKind::Alias(inner)) => {
+                        let type_params = self.get_type_param_names(name);
+                        let substituted = if type_params.len() == resolved_args.len() {
+                            let substitutions = type_params
+                                .into_iter()
+                                .zip(resolved_args)
+                                .collect::<HashMap<_, _>>();
+                            substitute_type_params(inner.clone(), &substitutions)
+                        } else {
+                            inner.clone()
+                        };
+                        self.resolve_signature_aliases(&substituted, visiting)
+                    }
+                    _ => GoType::Instantiated {
+                        name: name.clone(),
+                        args: resolved_args,
+                    },
+                };
+                visiting.remove(name);
+                resolved
+            }
+            GoType::Instantiated { name, args } => GoType::Instantiated {
+                name: name.clone(),
+                args: args
+                    .iter()
+                    .map(|arg| self.resolve_signature_aliases(arg, visiting))
+                    .collect(),
+            },
+            GoType::Pointer(inner) => {
+                GoType::Pointer(Box::new(self.resolve_signature_aliases(inner, visiting)))
+            }
+            GoType::Slice(inner) => {
+                GoType::Slice(Box::new(self.resolve_signature_aliases(inner, visiting)))
+            }
+            GoType::Array(inner) => {
+                GoType::Array(Box::new(self.resolve_signature_aliases(inner, visiting)))
+            }
+            GoType::Map(key, value) => GoType::Map(
+                Box::new(self.resolve_signature_aliases(key, visiting)),
+                Box::new(self.resolve_signature_aliases(value, visiting)),
+            ),
+            GoType::Chan { elem, direction } => GoType::Chan {
+                elem: Box::new(self.resolve_signature_aliases(elem, visiting)),
+                direction: *direction,
+            },
+            GoType::Func {
+                params,
+                results,
+                variadic_start,
+            } => GoType::Func {
+                params: params
+                    .iter()
+                    .map(|param| self.resolve_signature_aliases(param, visiting))
+                    .collect(),
+                results: results
+                    .iter()
+                    .map(|result| self.resolve_signature_aliases(result, visiting))
+                    .collect(),
+                variadic_start: *variadic_start,
+            },
+            GoType::Interface(name) => GoType::Named(name.clone()),
+            _ => ty.clone(),
         }
     }
 
@@ -3876,8 +4763,20 @@ impl TypeEnv {
                 *start,
             );
         }
+        for (name, shapes) in &package_env.func_signature_shapes {
+            self.set_func_signature_shapes(
+                &qualify_package_member_name(package_name, name, package_env),
+                shapes.clone(),
+            );
+        }
         for (name, assertions) in &package_env.func_interface_assertions {
             self.set_func_interface_assertions(
+                &qualify_package_member_name(package_name, name, package_env),
+                qualify_package_interface_names(package_name, assertions, package_env),
+            );
+        }
+        for (name, assertions) in &package_env.top_level_interface_assertions {
+            self.set_top_level_interface_assertions(
                 &qualify_package_member_name(package_name, name, package_env),
                 qualify_package_interface_names(package_name, assertions, package_env),
             );
@@ -3888,6 +4787,15 @@ impl TypeEnv {
                 &qualified_name,
                 qualify_package_type_kind(package_name, kind, package_env),
             );
+            if package_env.type_aliases.contains(name) {
+                self.set_type_alias(
+                    &qualified_name,
+                    package_env.type_alias_targets.get(name).map(|target| {
+                        qualify_package_interface_name(package_name, target, package_env)
+                    }),
+                    package_env.instantiated_type_aliases.contains(name),
+                );
+            }
         }
         for (name, count) in &package_env.type_param_counts {
             self.set_type_param_count(
@@ -3968,6 +4876,10 @@ impl TypeEnv {
                 );
             }
         }
+        for name in &package_env.mutable_top_level_vars {
+            self.mutable_top_level_vars
+                .insert(qualify_package_member_name(package_name, name, package_env));
+        }
         for name in &package_env.consts {
             self.set_const(&qualify_package_member_name(
                 package_name,
@@ -4004,6 +4916,7 @@ impl TypeEnv {
                 package_env,
             ));
         }
+        self.merge_canonical_declared_type_identities(package_name, package_env);
     }
 
     pub fn merge_package_receiver_facts(
@@ -4079,6 +4992,15 @@ impl TypeEnv {
                 self.set_func_variadic_start(
                     &qualify_package_member_name(package_name, name, package_env),
                     *start,
+                );
+            }
+        }
+        for (name, shapes) in &package_env.func_signature_shapes {
+            if method_receiver_name(name).is_some_and(|receiver| receiver_names.contains(receiver))
+            {
+                self.set_func_signature_shapes(
+                    &qualify_package_member_name(package_name, name, package_env),
+                    shapes.clone(),
                 );
             }
         }
@@ -4160,6 +5082,24 @@ impl TypeEnv {
                 }
             }
         }
+        self.merge_canonical_declared_type_identities(package_name, package_env);
+    }
+
+    fn merge_canonical_declared_type_identities(
+        &mut self,
+        package_name: &str,
+        package_env: &TypeEnv,
+    ) {
+        for (name, canonical) in &package_env.canonical_declared_type_identities {
+            let qualified_name =
+                qualify_package_declared_type_name(package_name, name, package_env);
+            let qualified_canonical =
+                qualify_package_declared_type_name(package_name, canonical, package_env);
+            if qualified_name != qualified_canonical {
+                self.canonical_declared_type_identities
+                    .insert(qualified_name, qualified_canonical);
+            }
+        }
     }
 
     /// Pre-scan a Go AST file to populate type declarations and function signatures.
@@ -4168,8 +5108,12 @@ impl TypeEnv {
             match decl {
                 ast::Decl::GenDecl(gd) => {
                     for spec in &gd.specs {
-                        if let ast::Spec::TypeSpec(ts) = spec {
-                            self.scan_type_spec(ts);
+                        match spec {
+                            ast::Spec::TypeSpec(ts) => self.scan_type_spec(ts),
+                            ast::Spec::ValueSpec(value) => {
+                                self.scan_top_level_value_interface_assertions(value);
+                            }
+                            ast::Spec::ImportSpec(_) => {}
                         }
                     }
                 }
@@ -4215,34 +5159,76 @@ impl TypeEnv {
                 }
             }
         }
+        for (key, shapes) in signature_shape_updates(&[file], self) {
+            self.set_func_signature_shapes(&key, shapes);
+        }
+        let inference_env = self.clone();
+        self.refresh_interface_assertions_from_env(file, &inference_env);
     }
 
-    pub fn rescan_file_top_level_vars(&mut self, file: &ast::File, inference_env: &TypeEnv) {
+    pub fn rescan_file_top_level_values(&mut self, file: &ast::File, inference_env: &TypeEnv) {
+        let mut inference_env = inference_env.clone();
         for decl in &file.decls {
             let ast::Decl::GenDecl(gd) = decl else {
                 continue;
             };
-            if gd.tok == token::Token::CONST {
-                continue;
-            }
-            for spec in &gd.specs {
+            let mut inherited_const_type = None;
+            let mut inherited_const_values: Option<&[ast::Expr<'_>]> = None;
+            for (iota_value, spec) in gd.specs.iter().enumerate() {
                 let ast::Spec::ValueSpec(vs) = spec else {
                     continue;
                 };
-                let explicit_type = value_spec_explicit_go_type(vs);
-                let values = vs.values.as_ref();
+                let explicit_type = value_spec_explicit_go_type(vs).or_else(|| {
+                    (gd.tok == token::Token::CONST && vs.values.is_none())
+                        .then(|| inherited_const_type.clone())
+                        .flatten()
+                });
+                let values = if gd.tok == token::Token::CONST {
+                    vs.values.as_deref().or(inherited_const_values)
+                } else {
+                    vs.values.as_deref()
+                };
                 for (i, name) in vs.names.iter().enumerate() {
                     let ty = if let Some(ref explicit_type) = explicit_type {
                         explicit_type.clone()
                     } else {
                         values
                             .and_then(|values| values.get(i))
-                            .map(|expr| GoType::infer_expr(expr, inference_env))
+                            .map(|expr| GoType::infer_expr(expr, &inference_env))
                             .unwrap_or(GoType::Unknown)
                     };
                     if !matches!(ty, GoType::Unknown) {
-                        self.set_var(name.name, ty.clone());
-                        self.set_top_level_var(name.name, ty);
+                        if gd.tok == token::Token::CONST {
+                            self.set_const_type(name.name, ty.clone());
+                            self.set_var(name.name, ty.clone());
+                            inference_env.set_const_type(name.name, ty.clone());
+                            inference_env.set_var(name.name, ty);
+                            if let Some(value_expr) = values.and_then(|values| values.get(i))
+                                && let Some(value) = const_integer_value_exact(
+                                    value_expr,
+                                    &inference_env,
+                                    Some(iota_value as i64),
+                                )
+                            {
+                                self.set_const_integer_exact_value(name.name, &value);
+                                inference_env.set_const_integer_exact_value(name.name, &value);
+                            }
+                        } else {
+                            self.set_var(name.name, ty.clone());
+                            self.set_top_level_var(name.name, ty.clone());
+                            inference_env.set_var(name.name, ty.clone());
+                            inference_env.set_top_level_var(name.name, ty);
+                        }
+                    }
+                }
+                if gd.tok == token::Token::CONST {
+                    if let Some(spec_values) = vs.values.as_deref() {
+                        inherited_const_values = Some(spec_values);
+                    }
+                    if let Some(type_expr) = &vs.type_ {
+                        inherited_const_type = Some(GoType::from_expr(type_expr));
+                    } else if let Some(first) = values.and_then(|values| values.first()) {
+                        inherited_const_type = Some(GoType::infer_expr(first, &inference_env));
                     }
                 }
             }
@@ -4263,6 +5249,189 @@ impl TypeEnv {
             self.scan_file(file);
         }
         self.refresh_borrowed_slice_params(files);
+        for (key, shapes) in signature_shape_updates(files, self) {
+            self.set_func_signature_shapes(&key, shapes);
+        }
+    }
+
+    /// Replace file-local import qualifiers in package facts with stable
+    /// package identities before those facts are shared with other files or
+    /// downstream packages.
+    ///
+    /// Go import names are scoped to one file. The declarations recorded in a
+    /// package `TypeEnv`, however, outlive that file, so retaining a source
+    /// qualifier such as `x.Common` would let another file's unrelated `x`
+    /// import change the declaration's meaning.
+    pub(crate) fn canonicalize_file_import_qualifiers(
+        &mut self,
+        file: &ast::File<'_>,
+        canonical_imports: &HashMap<std::string::String, std::string::String>,
+    ) {
+        if canonical_imports.is_empty() {
+            return;
+        }
+
+        for decl in &file.decls {
+            match decl {
+                ast::Decl::FuncDecl(func) => {
+                    let key = func
+                        .recv
+                        .as_ref()
+                        .and_then(|receiver| receiver.list.first())
+                        .and_then(|field| field.type_.as_ref())
+                        .map(|receiver| {
+                            format!("{}.{}", extract_type_name(receiver), func.name.name)
+                        })
+                        .unwrap_or_else(|| func.name.name.to_string());
+                    self.canonicalize_func_import_qualifiers(&key, canonical_imports);
+                }
+                ast::Decl::GenDecl(general) => {
+                    for spec in &general.specs {
+                        match spec {
+                            ast::Spec::TypeSpec(type_spec) => {
+                                let Some(name) = type_spec.name.as_ref().map(|name| name.name)
+                                else {
+                                    continue;
+                                };
+                                if let Some(kind) = self.type_kinds.get_mut(name)
+                                    && let TypeKind::Alias(ty) = kind
+                                {
+                                    *ty = canonical_import_qualified_type(ty, canonical_imports);
+                                }
+                                if let Some(target) = self.type_alias_targets.get_mut(name) {
+                                    *target =
+                                        canonical_import_qualified_name(target, canonical_imports);
+                                }
+                                if let Some(embedded) = self.interface_embedded.get_mut(name) {
+                                    for embedded_name in embedded {
+                                        *embedded_name = canonical_import_qualified_name(
+                                            embedded_name,
+                                            canonical_imports,
+                                        );
+                                    }
+                                }
+                                if let Some(terms) = self.interface_type_terms.get_mut(name) {
+                                    for term in terms {
+                                        *term = canonical_import_qualified_type(
+                                            term,
+                                            canonical_imports,
+                                        );
+                                    }
+                                }
+                                if let Some(fields) = self.struct_fields.get_mut(name) {
+                                    for (_, field_type) in fields {
+                                        *field_type = canonical_import_qualified_type(
+                                            field_type,
+                                            canonical_imports,
+                                        );
+                                    }
+                                }
+                                for method in self
+                                    .interface_methods
+                                    .get(name)
+                                    .cloned()
+                                    .unwrap_or_default()
+                                {
+                                    self.canonicalize_func_import_qualifiers(
+                                        &format!("{name}.{method}"),
+                                        canonical_imports,
+                                    );
+                                }
+                            }
+                            ast::Spec::ValueSpec(value_spec) => {
+                                for name in &value_spec.names {
+                                    self.canonicalize_value_import_qualifiers(
+                                        name.name,
+                                        canonical_imports,
+                                    );
+                                    if let Some(assertions) =
+                                        self.top_level_interface_assertions.get_mut(name.name)
+                                    {
+                                        for interface_name in assertions {
+                                            *interface_name = canonical_import_qualified_name(
+                                                interface_name,
+                                                canonical_imports,
+                                            );
+                                        }
+                                    }
+                                }
+                                if let Some((type_name, _)) =
+                                    anonymous_value_spec_struct_type(value_spec)
+                                    && let Some(fields) = self.struct_fields.get_mut(&type_name)
+                                {
+                                    for (_, field_type) in fields {
+                                        *field_type = canonical_import_qualified_type(
+                                            field_type,
+                                            canonical_imports,
+                                        );
+                                    }
+                                }
+                            }
+                            ast::Spec::ImportSpec(_) => {}
+                        }
+                    }
+                }
+            }
+        }
+        for (interface_name, facts) in interface_assertion_facts_in_file(file, self).anonymous {
+            if let Some(embedded) = self.interface_embedded.get_mut(&interface_name) {
+                for embedded_name in embedded {
+                    *embedded_name =
+                        canonical_import_qualified_name(embedded_name, canonical_imports);
+                }
+            }
+            for method in facts.methods {
+                self.canonicalize_func_import_qualifiers(
+                    &format!("{interface_name}.{}", method.name),
+                    canonical_imports,
+                );
+            }
+        }
+    }
+
+    fn canonicalize_func_import_qualifiers(
+        &mut self,
+        key: &str,
+        canonical_imports: &HashMap<std::string::String, std::string::String>,
+    ) {
+        for types in [self.func_params.get_mut(key), self.funcs.get_mut(key)]
+            .into_iter()
+            .flatten()
+        {
+            for ty in types {
+                *ty = canonical_import_qualified_type(ty, canonical_imports);
+            }
+        }
+        if let Some(constraints) = self.func_type_param_constraints.get_mut(key) {
+            for terms in constraints.values_mut() {
+                for term in terms {
+                    *term = canonical_import_qualified_type(term, canonical_imports);
+                }
+            }
+        }
+        if let Some(assertions) = self.func_interface_assertions.get_mut(key) {
+            for interface_name in assertions {
+                *interface_name =
+                    canonical_import_qualified_name(interface_name, canonical_imports);
+            }
+        }
+    }
+
+    fn canonicalize_value_import_qualifiers(
+        &mut self,
+        name: &str,
+        canonical_imports: &HashMap<std::string::String, std::string::String>,
+    ) {
+        for ty in [
+            self.vars.get_mut(name),
+            self.top_level_var_types.get_mut(name),
+            self.const_types.get_mut(name),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            *ty = canonical_import_qualified_type(ty, canonical_imports);
+        }
     }
 
     pub fn refresh_borrowed_slice_params(&mut self, files: &[&ast::File<'_>]) {
@@ -4292,9 +5461,18 @@ impl TypeEnv {
         changed
     }
 
+    pub(crate) fn refresh_signature_shapes_from_env(
+        &mut self,
+        files: &[&ast::File<'_>],
+        inference_env: &TypeEnv,
+    ) {
+        for (key, shapes) in signature_shape_updates(files, inference_env) {
+            self.set_func_signature_shapes(&key, shapes);
+        }
+    }
+
     pub fn borrowed_slice_param_indices_for_func_decl(&self, fd: &ast::FuncDecl) -> HashSet<usize> {
-        let mut local_env = self.clone();
-        self.seed_func_decl_vars(&mut local_env, fd);
+        let local_env = self.scoped_for_func_decl(fd);
         borrowed_slice_param_indices_for_func(fd, &local_env)
     }
 
@@ -4303,8 +5481,7 @@ impl TypeEnv {
         fd: &ast::FuncDecl,
         inference_env: &TypeEnv,
     ) -> bool {
-        let mut local_env = inference_env.clone();
-        self.seed_func_decl_vars(&mut local_env, fd);
+        let local_env = inference_env.scoped_for_func_decl(fd);
         let params = borrowed_slice_param_indices_for_func(fd, &local_env);
         let mut changed = false;
         if let Some(ref recv) = fd.recv
@@ -4320,7 +5497,10 @@ impl TypeEnv {
         changed
     }
 
-    fn seed_func_decl_vars(&self, env: &mut TypeEnv, fd: &ast::FuncDecl) {
+    pub(crate) fn scoped_for_func_decl(&self, fd: &ast::FuncDecl<'_>) -> TypeEnv {
+        let mut env = self.clone();
+        env.retain_package_value_bindings();
+        env.extend_scoped_type_param_constraints_from_fields(fd.type_.type_params.as_ref());
         if let Some(recv) = &fd.recv {
             for field in &recv.list {
                 let Some(recv_type) = field.type_.as_ref() else {
@@ -4334,18 +5514,11 @@ impl TypeEnv {
                 }
             }
         }
-        for field in &fd.type_.params.list {
-            let ty = field
-                .type_
-                .as_ref()
-                .map(GoType::from_expr)
-                .unwrap_or(GoType::Unknown);
-            if let Some(names) = &field.names {
-                for name in names {
-                    env.set_var(name.name, ty.clone());
-                }
-            }
+        seed_field_list_bindings(&mut env, &fd.type_.params);
+        if let Some(results) = &fd.type_.results {
+            seed_field_list_bindings(&mut env, results);
         }
+        env
     }
 
     fn replace_borrowed_slice_params_if_changed(
@@ -4375,6 +5548,117 @@ impl TypeEnv {
         }
     }
 
+    fn scan_anonymous_interface_facts(&mut self, facts: AnonymousInterfaceFacts) {
+        let AnonymousInterfaceFacts {
+            name,
+            methods,
+            embedded,
+        } = facts;
+        self.set_type_kind(&name, TypeKind::Interface);
+        self.set_interface_methods(
+            &name,
+            methods
+                .iter()
+                .map(|signature| signature.name.clone())
+                .collect(),
+        );
+        self.set_interface_embedded(&name, embedded);
+        for signature in methods {
+            let method_key = format!("{name}.{}", signature.name);
+            let mut borrowed_slice_params = borrowed_slice_indices_from_params(&signature.params);
+            if let Some(start) = signature.variadic_start {
+                borrowed_slice_params.remove(&start);
+            }
+            self.set_func_params(&method_key, signature.params);
+            self.set_func(&method_key, signature.results);
+            self.set_func_signature_shapes(&method_key, signature.shapes);
+            self.set_borrowed_slice_params(&method_key, borrowed_slice_params);
+            if let Some(start) = signature.variadic_start {
+                self.set_func_variadic_start(&method_key, start);
+            }
+        }
+    }
+
+    fn scan_interface_assertions_in_block(
+        &mut self,
+        block: &ast::BlockStmt<'_>,
+    ) -> Vec<std::string::String> {
+        let inference_env = self.clone();
+        self.scan_interface_assertions_in_block_from_env(block, &inference_env)
+    }
+
+    fn scan_interface_assertions_in_block_from_env(
+        &mut self,
+        block: &ast::BlockStmt<'_>,
+        inference_env: &TypeEnv,
+    ) -> Vec<std::string::String> {
+        let facts = interface_assertion_facts_in_block(block, inference_env);
+        let names = facts.sorted_names();
+        for anonymous in facts.anonymous.into_values() {
+            self.scan_anonymous_interface_facts(anonymous);
+        }
+        names
+    }
+
+    fn scan_top_level_value_interface_assertions(&mut self, value: &ast::ValueSpec<'_>) {
+        let inference_env = self.clone();
+        self.scan_top_level_value_interface_assertions_from_env(value, &inference_env);
+    }
+
+    fn scan_top_level_value_interface_assertions_from_env(
+        &mut self,
+        value: &ast::ValueSpec<'_>,
+        inference_env: &TypeEnv,
+    ) {
+        let mut facts = InterfaceAssertionFacts::new(inference_env);
+        collect_interface_assertion_facts_from_value_spec(value, &mut facts);
+        let names = facts.sorted_names();
+        for anonymous in facts.anonymous.into_values() {
+            self.scan_anonymous_interface_facts(anonymous);
+        }
+        for name in &value.names {
+            self.set_top_level_interface_assertions(name.name, names.clone());
+        }
+    }
+
+    pub(crate) fn refresh_interface_assertions_from_env(
+        &mut self,
+        file: &ast::File<'_>,
+        inference_env: &TypeEnv,
+    ) {
+        for decl in &file.decls {
+            match decl {
+                ast::Decl::FuncDecl(func) => {
+                    let Some(body) = &func.body else {
+                        continue;
+                    };
+                    let assertions =
+                        self.scan_interface_assertions_in_block_from_env(body, inference_env);
+                    let key = func
+                        .recv
+                        .as_ref()
+                        .and_then(|receiver| receiver.list.first())
+                        .and_then(|field| field.type_.as_ref())
+                        .map(|receiver| {
+                            format!("{}.{}", extract_type_name(receiver), func.name.name)
+                        })
+                        .unwrap_or_else(|| func.name.name.to_string());
+                    self.set_func_interface_assertions(&key, assertions);
+                }
+                ast::Decl::GenDecl(general) => {
+                    for spec in &general.specs {
+                        if let ast::Spec::ValueSpec(value) = spec {
+                            self.scan_top_level_value_interface_assertions_from_env(
+                                value,
+                                inference_env,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn scan_type_spec(&mut self, ts: &ast::TypeSpec) {
         let Some(ref name) = ts.name else { return };
         let type_param_names = type_parameter_names(ts.type_params.as_ref());
@@ -4396,17 +5680,16 @@ impl TypeEnv {
                 self.set_interface_methods(name.name, interface_method_names(&ts.type_));
                 self.set_interface_embedded(name.name, interface_embedded_names(&ts.type_));
                 self.set_interface_type_terms(name.name, interface_constraint_terms(&ts.type_));
-                for (method_name, params, returns, variadic_start) in
-                    interface_method_signatures(&ts.type_)
-                {
-                    let method_key = format!("{}.{}", name.name, method_name);
-                    self.set_func_params(&method_key, params);
-                    self.set_func(&method_key, returns);
+                for signature in interface_method_signatures(&ts.type_, self) {
+                    let method_key = format!("{}.{}", name.name, signature.name);
+                    self.set_func_params(&method_key, signature.params);
+                    self.set_func(&method_key, signature.results);
+                    self.set_func_signature_shapes(&method_key, signature.shapes);
                     self.set_borrowed_slice_params(
                         &method_key,
                         borrowed_slice_indices_from_params(&self.get_func_params(&method_key)),
                     );
-                    if let Some(start) = variadic_start {
+                    if let Some(start) = signature.variadic_start {
                         self.set_func_variadic_start(&method_key, start);
                     }
                 }
@@ -4475,6 +5758,7 @@ impl TypeEnv {
 
     fn scan_func_decl(&mut self, fd: &ast::FuncDecl) {
         let name = fd.name.name;
+        let signature_shapes = function_signature_shapes(&fd.type_, self);
 
         let mut variadic_start = None;
         let mut param_count = 0;
@@ -4529,6 +5813,7 @@ impl TypeEnv {
                     let method_key = format!("{}.{}", recv_name, name);
                     self.set_func_params(&method_key, params.clone());
                     self.set_func(&method_key, returns.clone());
+                    self.set_func_signature_shapes(&method_key, signature_shapes.clone());
                     self.set_func_type_param_constraints(
                         &method_key,
                         type_param_constraints.clone(),
@@ -4540,10 +5825,8 @@ impl TypeEnv {
                         self.set_func_variadic_start(&method_key, start);
                     }
                     if let Some(body) = &fd.body {
-                        self.set_func_interface_assertions(
-                            &method_key,
-                            interface_assertion_names_in_block(body),
-                        );
+                        let assertions = self.scan_interface_assertions_in_block(body);
+                        self.set_func_interface_assertions(&method_key, assertions);
                         let owned = owned_interface_param_indices(
                             &params,
                             &fd.type_.params,
@@ -4558,12 +5841,14 @@ impl TypeEnv {
         if !is_method {
             self.set_func_params(name, params.clone());
             self.set_func(name, returns);
+            self.set_func_signature_shapes(name, signature_shapes);
             self.set_func_type_param_constraints(name, type_param_constraints);
             if let Some(start) = variadic_start {
                 self.set_func_variadic_start(name, start);
             }
             if let Some(body) = &fd.body {
-                self.set_func_interface_assertions(name, interface_assertion_names_in_block(body));
+                let assertions = self.scan_interface_assertions_in_block(body);
+                self.set_func_interface_assertions(name, assertions);
                 let owned =
                     owned_interface_param_indices(&params, &fd.type_.params, body, |name| {
                         self.is_interface(name)
@@ -4571,34 +5856,19 @@ impl TypeEnv {
                 self.set_owned_interface_params(name, owned);
             }
         }
+    }
+}
 
-        // Register parameter types
-        for param in &fd.type_.params.list {
-            let ty = param
-                .type_
-                .as_ref()
-                .map(GoType::from_expr)
-                .unwrap_or(GoType::Unknown);
-            if let Some(ref names) = param.names {
-                for n in names {
-                    self.set_var(n.name, ty.clone());
-                }
-            }
-        }
-
-        // Register named return value types
-        if let Some(ref results) = fd.type_.results {
-            for field in &results.list {
-                let ty = field
-                    .type_
-                    .as_ref()
-                    .map(GoType::from_expr)
-                    .unwrap_or(GoType::Unknown);
-                if let Some(ref names) = field.names {
-                    for n in names {
-                        self.set_var(n.name, ty.clone());
-                    }
-                }
+fn seed_field_list_bindings(env: &mut TypeEnv, fields: &ast::FieldList<'_>) {
+    for field in &fields.list {
+        let ty = field
+            .type_
+            .as_ref()
+            .map(GoType::from_expr)
+            .unwrap_or(GoType::Unknown);
+        if let Some(names) = &field.names {
+            for name in names {
+                env.set_var(name.name, ty.clone());
             }
         }
     }
@@ -4688,6 +5958,174 @@ mod tests {
     use crate::parser::parse_file;
 
     #[test]
+    fn scan_file_records_structural_method_interfaces_used_by_assertions() {
+        let file = parse_file(
+            "test.go",
+            r#"
+package p
+
+func inspect(err error, target error) bool {
+	if x, ok := err.(interface{ Is(error) bool }); ok && x.Is(target) {
+		return true
+	}
+	switch x := err.(type) {
+	case interface{ Unwrap() error }:
+		return x.Unwrap() != nil
+	case interface{ Unwrap() []error }:
+		return len(x.Unwrap()) != 0
+	}
+	return false
+}
+"#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+
+        env.scan_file(&file);
+
+        let names = env.interface_assertion_names();
+        assert_eq!(names.len(), 3, "{names:?}");
+        assert!(names.iter().all(|name| env.is_interface(name)));
+        assert!(names.iter().all(|name| {
+            name.starts_with(ANONYMOUS_INTERFACE_PREFIX)
+                && env
+                    .get_interface_direct_methods(name)
+                    .is_some_and(|methods| methods.len() == 1)
+        }));
+        assert!(names.iter().any(|name| {
+            env.get_interface_direct_methods(name) == Some(vec!["Is".to_string()])
+                && env.get_method_params(name, "Is") == vec![GoType::Error]
+                && env.get_method_returns(name, "Is") == vec![GoType::Bool]
+        }));
+        assert!(names.iter().any(|name| {
+            env.get_interface_direct_methods(name) == Some(vec!["Unwrap".to_string()])
+                && env.get_method_returns(name, "Unwrap") == vec![GoType::Error]
+        }));
+        assert!(names.iter().any(|name| {
+            env.get_interface_direct_methods(name) == Some(vec!["Unwrap".to_string()])
+                && env.get_method_returns(name, "Unwrap")
+                    == vec![GoType::Slice(Box::new(GoType::Error))]
+        }));
+    }
+
+    #[test]
+    fn anonymous_interface_hash_and_shape_resolve_imported_array_constants() {
+        let sizes = parse_file(
+            "sizes.go",
+            r#"
+package sizes
+
+const Width = 3
+"#,
+        )
+        .unwrap();
+        let mut sizes_env = TypeEnv::new();
+        sizes_env.scan_file(&sizes);
+
+        let consumer = parse_file(
+            "consumer.go",
+            r#"
+package consumer
+
+import "example/sizes"
+
+func inspect(value any) {
+	_, _ = value.(interface{ Fixed([sizes.Width]byte) [sizes.Width]byte })
+}
+"#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.merge_package("sizes", &sizes_env);
+        env.scan_file(&consumer);
+
+        let assertions = env.get_func_interface_assertions("inspect");
+        let [interface_name] = assertions.as_slice() else {
+            panic!("expected one structural assertion")
+        };
+        let shapes = env
+            .get_func_signature_shapes(&format!("{interface_name}.Fixed"))
+            .unwrap();
+        let exact = SignatureTypeShape::Array {
+            length: Some("3".to_string()),
+            elem: Box::new(SignatureTypeShape::Other),
+        };
+        assert_eq!(shapes.params, vec![exact.clone()]);
+        assert_eq!(shapes.results, vec![exact]);
+
+        let literal = parse_file(
+            "literal.go",
+            r#"
+package consumer
+
+func inspect(value any) {
+	_, _ = value.(interface{ Fixed([3]byte) [3]byte })
+}
+"#,
+        )
+        .unwrap();
+        let mut literal_env = TypeEnv::new();
+        literal_env.scan_file(&literal);
+        assert_eq!(
+            env.get_func_interface_assertions("inspect"),
+            literal_env.get_func_interface_assertions("inspect"),
+            "equivalent constant and literal array signatures must share one structural identity"
+        );
+    }
+
+    #[test]
+    fn scan_file_separates_structural_interface_discovery_from_assertion_roots() {
+        let file = parse_file(
+            "test.go",
+            r#"
+package p
+
+func allocate() {
+	_ = make([]interface{ Ghost() }, 1)
+}
+"#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+
+        env.scan_file(&file);
+
+        assert!(env.interface_assertion_names().is_empty());
+        assert!(env.interface_names().iter().any(|name| {
+            name.starts_with(ANONYMOUS_INTERFACE_PREFIX)
+                && env.get_interface_direct_methods(name) == Some(vec!["Ghost".to_string()])
+        }));
+    }
+
+    #[test]
+    fn scan_file_records_package_initializer_structural_assertions() {
+        let file = parse_file(
+            "test.go",
+            r#"
+package p
+
+var source error
+var unwrapped, ok = source.(interface{ Unwrap() error })
+"#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+
+        env.scan_file(&file);
+
+        let names = env.interface_assertion_names();
+        assert_eq!(names.len(), 1, "{names:?}");
+        assert_eq!(
+            env.get_interface_direct_methods(&names[0]),
+            Some(vec!["Unwrap".to_string()])
+        );
+        assert_eq!(
+            env.get_method_returns(&names[0], "Unwrap"),
+            vec![GoType::Error]
+        );
+    }
+
+    #[test]
     fn merge_package_qualifies_local_types_in_signatures() {
         let mut io_env = TypeEnv::new();
         io_env.set_type_kind("Reader", TypeKind::Interface);
@@ -4713,6 +6151,120 @@ mod tests {
             GoType::Pointer(Box::new(GoType::Named("bytes.Reader".to_string())))
         );
         assert!(env.named_type_implements_interface("bytes.Reader", "io.Reader", true));
+    }
+
+    #[test]
+    fn merge_package_qualifies_mutable_top_level_var_representation() {
+        let mut dependency_env = TypeEnv::new();
+        dependency_env.set_top_level_var("Shared", GoType::Int);
+        dependency_env.set_package_mutable_top_level_vars(HashSet::from(["Shared".to_string()]));
+
+        let mut package_env = TypeEnv::new();
+        package_env.set_top_level_var(
+            "Default",
+            GoType::Pointer(Box::new(GoType::Named("Config".to_string()))),
+        );
+        package_env.merge_package("dependency", &dependency_env);
+        package_env.set_package_mutable_top_level_vars(HashSet::from(["Default".to_string()]));
+
+        let mut env = TypeEnv::new();
+        env.merge_package("settings", &package_env);
+
+        assert!(env.is_mutable_top_level_var("settings.Default"));
+        assert!(env.is_mutable_top_level_var("dependency.Shared"));
+        assert!(!env.is_mutable_top_level_var("Default"));
+    }
+
+    #[test]
+    fn merge_package_preserves_canonical_declared_type_identity_in_method_signatures() {
+        let mut fs_env = TypeEnv::new();
+        fs_env.set_type_kind("File", TypeKind::Interface);
+        fs_env.set_type_kind("FS", TypeKind::Interface);
+        fs_env.set_interface_methods("FS", vec!["Open".to_string()]);
+        fs_env.set_func_params("FS.Open", vec![GoType::String]);
+        fs_env.set_func(
+            "FS.Open",
+            vec![GoType::Named("File".to_string()), GoType::Error],
+        );
+        fs_env.record_canonical_package_identity("io__fs");
+
+        let mut fstest_env = TypeEnv::new();
+        fstest_env.set_type_kind(
+            "MapFS",
+            TypeKind::Alias(GoType::Map(Box::new(GoType::String), Box::new(GoType::Int))),
+        );
+        fstest_env.set_func_params("MapFS.Open", vec![GoType::String]);
+        fstest_env.set_func(
+            "MapFS.Open",
+            vec![GoType::Named("io__fs.File".to_string()), GoType::Error],
+        );
+        fstest_env.set_type_kind(
+            "WrongMapFS",
+            TypeKind::Alias(GoType::Map(Box::new(GoType::String), Box::new(GoType::Int))),
+        );
+        fstest_env.set_func_params("WrongMapFS.Open", vec![GoType::String]);
+        fstest_env.set_func(
+            "WrongMapFS.Open",
+            vec![GoType::Named("other.File".to_string()), GoType::Error],
+        );
+        fstest_env.record_canonical_package_identity("testing__fstest");
+
+        let mut env = TypeEnv::new();
+        env.merge_package("fs", &fs_env);
+        env.merge_package("fstest", &fstest_env);
+
+        assert_eq!(env.canonical_declared_type_name("fs.File"), "io__fs.File");
+        assert!(env.named_type_implements_interface("fstest.MapFS", "fs.FS", false));
+        assert!(!env.named_type_implements_interface("fstest.WrongMapFS", "fs.FS", false));
+    }
+
+    #[test]
+    fn interface_implementor_discovery_includes_defined_non_struct_types() {
+        let mut env = TypeEnv::new();
+        env.set_type_kind("Reader", TypeKind::Interface);
+        env.set_interface_methods("Reader", vec!["Read".to_string()]);
+        env.set_func_params("Reader.Read", vec![GoType::Slice(Box::new(GoType::Uint8))]);
+        env.set_func("Reader.Read", vec![GoType::Int]);
+
+        let map_type = GoType::Map(Box::new(GoType::String), Box::new(GoType::Int));
+        env.set_type_kind("NamedMap", TypeKind::Alias(map_type.clone()));
+        env.set_func_params(
+            "NamedMap.Read",
+            vec![GoType::Slice(Box::new(GoType::Uint8))],
+        );
+        env.set_func("NamedMap.Read", vec![GoType::Int]);
+
+        env.set_type_kind("MapAlias", TypeKind::Alias(map_type));
+        env.set_type_alias("MapAlias", Some("NamedMap".to_string()), false);
+        env.set_func_params(
+            "MapAlias.Read",
+            vec![GoType::Slice(Box::new(GoType::Uint8))],
+        );
+        env.set_func("MapAlias.Read", vec![GoType::Int]);
+
+        env.set_type_kind(
+            "NamedSlice",
+            TypeKind::Alias(GoType::Slice(Box::new(GoType::Uint8))),
+        );
+        env.set_func_params(
+            "NamedSlice.Read",
+            vec![GoType::Slice(Box::new(GoType::Uint8))],
+        );
+        env.set_func("NamedSlice.Read", vec![GoType::Int]);
+        env.set_pointer_receiver_method("NamedSlice.Read");
+
+        assert_eq!(
+            env.interface_implementors("Reader"),
+            vec!["NamedMap".to_string()]
+        );
+        assert_eq!(
+            env.interface_pointer_implementors("Reader"),
+            vec!["NamedMap".to_string(), "NamedSlice".to_string()]
+        );
+        assert!(
+            !env.concrete_named_type_names()
+                .contains(&"MapAlias".to_string())
+        );
     }
 
     #[test]
@@ -4742,7 +6294,7 @@ mod tests {
         let mut inference_env = env.clone();
         inference_env.merge_package("debugpkg", &debug_env);
 
-        env.rescan_file_top_level_vars(&file, &inference_env);
+        env.rescan_file_top_level_values(&file, &inference_env);
 
         assert_eq!(
             env.get_top_level_var("Debug"),
@@ -4750,6 +6302,50 @@ mod tests {
                 "debugpkg.Setting".to_string()
             ))))
         );
+    }
+
+    #[test]
+    fn scan_file_keeps_function_bindings_lexical() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package p
+
+                var packageValue string
+
+                func first(route string) (result string) {
+                    return route
+                }
+
+                func second(path int) {}
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+
+        env.scan_file(&file);
+
+        assert_eq!(env.get_var("packageValue"), Some(GoType::String));
+        for local in ["route", "result", "path"] {
+            assert_eq!(
+                env.get_var(local),
+                None,
+                "function-local binding {local} leaked into package facts",
+            );
+        }
+
+        let first = file
+            .decls
+            .iter()
+            .find_map(|decl| match decl {
+                ast::Decl::FuncDecl(func) if func.name.name == "first" => Some(func),
+                _ => None,
+            })
+            .expect("first function");
+        let local_env = env.scoped_for_func_decl(first);
+        assert_eq!(local_env.get_var("route"), Some(GoType::String));
+        assert_eq!(local_env.get_var("result"), Some(GoType::String));
+        assert_eq!(local_env.get_var("path"), None);
     }
 
     #[test]
@@ -4980,21 +6576,26 @@ type Reader interface {
         assert_eq!(env.get_func_params("Heap.Push"), vec![GoType::Any]);
         assert_eq!(env.get_func_return("Heap.Pop"), GoType::Any);
 
-        let ret = file
+        let (func, ret) = file
             .decls
             .iter()
             .find_map(|decl| match decl {
-                ast::Decl::FuncDecl(func) if func.name.name == "Use" => func.body.as_ref(),
+                ast::Decl::FuncDecl(func) if func.name.name == "Use" => {
+                    func.body.as_ref().map(|body| (func, body))
+                }
                 _ => None,
             })
-            .and_then(|body| body.list.first())
+            .and_then(|(func, body)| body.list.first().map(|stmt| (func, stmt)))
             .and_then(|stmt| match stmt {
-                ast::Stmt::ReturnStmt(ret) => ret.results.first(),
+                (func, ast::Stmt::ReturnStmt(ret)) => {
+                    ret.results.first().map(|result| (func, result))
+                }
                 _ => None,
             })
             .expect("return expression");
+        let local_env = env.scoped_for_func_decl(func);
 
-        assert_eq!(GoType::infer_expr(ret, &env), GoType::Any);
+        assert_eq!(GoType::infer_expr(ret, &local_env), GoType::Any);
     }
 
     #[test]
@@ -5077,6 +6678,261 @@ type Reader interface {
 
         assert!(!env.named_type_implements_interface("NamedField", "Closer", false));
         assert!(env.named_type_implements_interface("EmbeddedField", "Closer", false));
+    }
+
+    #[test]
+    fn named_type_implements_interface_requires_matching_method_signatures() {
+        let mut env = TypeEnv::new();
+        env.set_type_kind("FS", TypeKind::Interface);
+        env.set_interface_methods("FS", vec!["Open".to_string()]);
+        env.set_func_params("FS.Open", vec![GoType::String]);
+        env.set_func("FS.Open", vec![GoType::Int]);
+
+        env.set_type_kind("ArchiveFile", TypeKind::Struct);
+        env.set_func_params("ArchiveFile.Open", vec![]);
+        env.set_func("ArchiveFile.Open", vec![GoType::Int]);
+
+        env.set_type_kind("Directory", TypeKind::Struct);
+        env.set_func_params("Directory.Open", vec![GoType::String]);
+        env.set_func("Directory.Open", vec![GoType::Int]);
+
+        assert!(!env.named_type_implements_interface("ArchiveFile", "FS", false));
+        assert!(env.named_type_implements_interface("Directory", "FS", false));
+    }
+
+    #[test]
+    fn fixed_array_lengths_distinguish_interface_method_signatures() {
+        let file = parse_file(
+            "arrays.go",
+            r#"
+                package arrays
+
+                type Two interface {
+                    RoundTrip([2]byte) [2]byte
+                }
+
+                type Three interface {
+                    RoundTrip([3]byte) [3]byte
+                }
+
+                type pair struct{}
+                func (pair) RoundTrip(value [2]byte) [2]byte { return value }
+
+                type triple struct{}
+                func (triple) RoundTrip(value [3]byte) [3]byte { return value }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+
+        assert!(env.named_type_implements_interface("pair", "Two", false));
+        assert!(!env.named_type_implements_interface("pair", "Three", false));
+        assert!(env.named_type_implements_interface("triple", "Three", false));
+        assert!(!env.named_type_implements_interface("triple", "Two", false));
+
+        let two = env.get_func_signature_shapes("Two.RoundTrip").unwrap();
+        let three = env.get_func_signature_shapes("Three.RoundTrip").unwrap();
+        assert_ne!(two, three);
+    }
+
+    #[test]
+    fn interface_compatibility_requires_full_signature_and_abi_match() {
+        let file = parse_file(
+            "interfaces.go",
+            r#"
+                package interfaces
+
+                type Reader interface { Read([]byte) int }
+
+                type Target interface {
+                    Transform(Reader, [2]byte, ...string) [2]byte
+                }
+                type Compatible interface {
+                    Transform(Reader, [2]byte, ...string) [2]byte
+                }
+                type WrongParam interface {
+                    Transform(Reader, [2]string, ...string) [2]byte
+                }
+                type WrongResult interface {
+                    Transform(Reader, [2]byte, ...string) [2]string
+                }
+                type WrongVariadic interface {
+                    Transform(Reader, [2]byte, []string) [2]byte
+                }
+                type WrongArrayLength interface {
+                    Transform(Reader, [3]byte, ...string) [2]byte
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+
+        assert!(env.interface_implements_interface("Compatible", "Target"));
+        assert!(!env.interface_implements_interface("WrongParam", "Target"));
+        assert!(!env.interface_implements_interface("WrongResult", "Target"));
+        assert!(!env.interface_implements_interface("WrongVariadic", "Target"));
+        assert!(!env.interface_implements_interface("WrongArrayLength", "Target"));
+
+        env.set_owned_interface_params("Compatible.Transform", HashSet::from([0]));
+        assert!(!env.interface_implements_interface("Compatible", "Target"));
+        env.set_owned_interface_params("Compatible.Transform", HashSet::new());
+        assert!(env.interface_implements_interface("Compatible", "Target"));
+
+        env.set_borrowed_slice_params("Compatible.Transform", HashSet::new());
+        assert!(!env.interface_implements_interface("Compatible", "Target"));
+        env.set_borrowed_slice_params("Compatible.Transform", HashSet::from([2]));
+        assert!(env.interface_implements_interface("Compatible", "Target"));
+
+        env.func_signature_shapes.remove("Compatible.Transform");
+        assert!(!env.interface_implements_interface("Compatible", "Target"));
+    }
+
+    #[test]
+    fn named_type_implements_interface_checks_promoted_method_signatures() {
+        let mut env = TypeEnv::new();
+        env.set_type_kind("ReaderFrom", TypeKind::Interface);
+        env.set_interface_methods("ReaderFrom", vec!["ReadFrom".to_string()]);
+        env.set_func_params(
+            "ReaderFrom.ReadFrom",
+            vec![GoType::Named("Reader".to_string())],
+        );
+        env.set_func("ReaderFrom.ReadFrom", vec![GoType::Int64, GoType::Error]);
+
+        env.set_type_kind("Socket", TypeKind::Struct);
+        env.set_func_params(
+            "Socket.ReadFrom",
+            vec![GoType::Slice(Box::new(GoType::Uint8))],
+        );
+        env.set_func(
+            "Socket.ReadFrom",
+            vec![
+                GoType::Int,
+                GoType::Named("Sockaddr".to_string()),
+                GoType::Error,
+            ],
+        );
+        env.set_type_kind("FD", TypeKind::Struct);
+        env.set_struct_fields(
+            "FD",
+            vec![("Socket".to_string(), GoType::Named("Socket".to_string()))],
+        );
+        env.set_struct_embedded_fields(
+            "FD",
+            std::collections::HashSet::from(["Socket".to_string()]),
+        );
+
+        env.set_type_kind("CopyReader", TypeKind::Struct);
+        env.set_func_params(
+            "CopyReader.ReadFrom",
+            vec![GoType::Named("Reader".to_string())],
+        );
+        env.set_func("CopyReader.ReadFrom", vec![GoType::Int64, GoType::Error]);
+        env.set_type_kind("BufferedCopyReader", TypeKind::Struct);
+        env.set_struct_fields(
+            "BufferedCopyReader",
+            vec![(
+                "CopyReader".to_string(),
+                GoType::Named("CopyReader".to_string()),
+            )],
+        );
+        env.set_struct_embedded_fields(
+            "BufferedCopyReader",
+            std::collections::HashSet::from(["CopyReader".to_string()]),
+        );
+
+        assert!(!env.named_type_implements_interface("FD", "ReaderFrom", false));
+        assert!(env.named_type_implements_interface("BufferedCopyReader", "ReaderFrom", false,));
+    }
+
+    #[test]
+    fn field_and_method_inference_follow_deep_instantiated_embeddings() {
+        let mut env = TypeEnv::new();
+        env.set_type_kind("Leaf", TypeKind::Struct);
+        env.set_type_param_names("Leaf", vec!["T".to_string()]);
+        env.set_struct_fields(
+            "Leaf",
+            vec![("value".to_string(), GoType::Named("T".to_string()))],
+        );
+        env.set_func_params("Leaf.take", vec![GoType::Named("T".to_string())]);
+        env.set_func("Leaf.take", vec![GoType::Named("T".to_string())]);
+        env.set_pointer_receiver_method("Leaf.take");
+
+        env.set_type_kind("Middle", TypeKind::Struct);
+        env.set_type_param_names("Middle", vec!["U".to_string()]);
+        env.set_struct_fields(
+            "Middle",
+            vec![(
+                "Leaf".to_string(),
+                GoType::Pointer(Box::new(GoType::Instantiated {
+                    name: "Leaf".to_string(),
+                    args: vec![GoType::Named("U".to_string())],
+                })),
+            )],
+        );
+        env.set_struct_embedded_fields("Middle", HashSet::from(["Leaf".to_string()]));
+
+        env.set_type_kind("Outer", TypeKind::Struct);
+        env.set_struct_fields(
+            "Outer",
+            vec![(
+                "Middle".to_string(),
+                GoType::Instantiated {
+                    name: "Middle".to_string(),
+                    args: vec![GoType::Int],
+                },
+            )],
+        );
+        env.set_struct_embedded_fields("Outer", HashSet::from(["Middle".to_string()]));
+
+        let outer = GoType::Named("Outer".to_string());
+        assert_eq!(
+            field_type_from_receiver_type(outer.clone(), "value", &env),
+            GoType::Int
+        );
+        assert_eq!(
+            method_return_from_receiver_type(outer.clone(), "take", &env),
+            GoType::Int
+        );
+        assert_eq!(
+            method_func_from_receiver_type(outer, "take", &env),
+            GoType::Func {
+                params: vec![GoType::Int],
+                results: vec![GoType::Int],
+                variadic_start: None,
+            }
+        );
+    }
+
+    #[test]
+    fn interface_satisfaction_rejects_ambiguous_promoted_methods() {
+        let mut env = TypeEnv::new();
+        env.set_type_kind("Reader", TypeKind::Interface);
+        env.set_interface_methods("Reader", vec!["Read".to_string()]);
+        env.set_func("Reader.Read", vec![GoType::Int]);
+
+        for name in ["Left", "Right"] {
+            env.set_type_kind(name, TypeKind::Struct);
+            env.set_func(&format!("{name}.Read"), vec![GoType::Int]);
+        }
+        env.set_type_kind("Outer", TypeKind::Struct);
+        env.set_struct_fields(
+            "Outer",
+            vec![
+                ("Left".to_string(), GoType::Named("Left".to_string())),
+                ("Right".to_string(), GoType::Named("Right".to_string())),
+            ],
+        );
+        env.set_struct_embedded_fields(
+            "Outer",
+            HashSet::from(["Left".to_string(), "Right".to_string()]),
+        );
+
+        assert!(!env.named_type_implements_interface("Outer", "Reader", false));
+
+        env.set_func("Outer.Read", vec![GoType::Int]);
+        assert!(env.named_type_implements_interface("Outer", "Reader", false));
     }
 
     #[test]
@@ -5280,6 +7136,88 @@ type Reader interface {
         assert_eq!(
             GoType::infer_expr(centurydays.rhs.first().expect("expected rhs"), &env),
             GoType::Uint64
+        );
+    }
+
+    #[test]
+    fn infer_ordered_builtin_result_uses_the_first_typed_operand() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package p
+
+                type Count uint64
+
+                func floor(value Count) Count {
+                    return max(1, value)
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        env.set_var("value", GoType::Named("Count".to_string()));
+
+        let ast::Decl::FuncDecl(func) = file.decls.get(1).expect("expected function") else {
+            panic!("expected function declaration");
+        };
+        let ast::Stmt::ReturnStmt(return_stmt) = func
+            .body
+            .as_ref()
+            .and_then(|body| body.list.first())
+            .expect("expected return")
+        else {
+            panic!("expected return statement");
+        };
+
+        assert_eq!(
+            GoType::infer_expr(return_stmt.results.first().expect("expected result"), &env),
+            GoType::Named("Count".to_string())
+        );
+    }
+
+    #[test]
+    fn infer_slice_expr_preserves_defined_slice_identity_but_resolves_true_aliases() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package p
+
+                type Buffer []byte
+                type Alias = Buffer
+
+                func named(b Buffer) Buffer { return b[1:] }
+                func aliased(b Alias) Alias { return b[1:] }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+
+        let slice_result = |decl_index: usize, binding: &str, binding_ty: GoType| {
+            let ast::Decl::FuncDecl(func) = file.decls.get(decl_index).unwrap() else {
+                panic!("expected function declaration");
+            };
+            let ast::Stmt::ReturnStmt(return_stmt) = func
+                .body
+                .as_ref()
+                .and_then(|body| body.list.first())
+                .expect("expected return statement")
+            else {
+                panic!("expected return statement");
+            };
+            let mut scoped = env.clone();
+            scoped.set_var(binding, binding_ty);
+            GoType::infer_expr(return_stmt.results.first().unwrap(), &scoped)
+        };
+
+        assert_eq!(
+            slice_result(2, "b", GoType::Named("Buffer".to_string())),
+            GoType::Named("Buffer".to_string())
+        );
+        assert_eq!(
+            slice_result(3, "b", GoType::Named("Alias".to_string())),
+            GoType::Named("Buffer".to_string())
         );
     }
 

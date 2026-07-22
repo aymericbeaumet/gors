@@ -72,15 +72,16 @@ impl FieldFacts {
             || contains_func
             || field_is_error
             || has_borrowed_interface_trait_path;
-        let contains_direct_interface =
-            !field_is_error && super::interface_trait_path_from_expr(field_type).is_some();
+        let contains_interface = !field_is_error && super::contains_interface_type(field_type);
         let contains_nonclone_named = go_type_contains_nonclone_named(field_go_type);
         let cannot_derive_clone = contains_any
-            || (!field_is_error && super::contains_interface_type(field_type))
+            || contains_interface
             || (!field_is_error && has_interface_trait_path)
             || contains_nonclone_named;
-        let cannot_derive_partial_eq =
-            field_is_error || !super::expr_supports_derived_partial_eq(field_type);
+        let cannot_derive_partial_eq = field_is_error
+            || contains_interface
+            || has_interface_trait_path
+            || !super::expr_supports_derived_partial_eq(field_type);
         let cannot_default = false;
         let can_derive_copy =
             !contains_func && !has_interface_trait_path && super::go_type_is_copy(field_go_type);
@@ -93,7 +94,7 @@ impl FieldFacts {
             can_derive_copy,
             contains_any,
             can_manual_clone: contains_any
-                || contains_direct_interface
+                || contains_interface
                 || has_borrowed_interface_trait_path,
         }
     }
@@ -200,6 +201,44 @@ mod tests {
     }
 
     #[test]
+    fn error_fields_do_not_derive_partial_eq_for_trait_object_boxes() {
+        let field_type = ast::Expr::Ident(ast::Ident {
+            name_pos: crate::token::Position::default(),
+            name: "error",
+            obj: None,
+        });
+
+        let facts = FieldFacts::collect(&field_type, &typeinfer::GoType::Error, true, true, false);
+        let mut state = State::new();
+        state.record_field(facts);
+
+        assert!(state.cannot_derive_partial_eq);
+    }
+
+    #[test]
+    fn containers_of_interfaces_are_manually_cloneable() {
+        let field_type = ast::Expr::ArrayType(ast::ArrayType {
+            lbrack: crate::token::Position::default(),
+            len: None,
+            elt: Box::new(ast::Expr::InterfaceType(ast::InterfaceType {
+                interface: crate::token::Position::default(),
+                methods: None,
+                incomplete: false,
+            })),
+        });
+        let field_go_type =
+            typeinfer::GoType::Slice(Box::new(typeinfer::GoType::Interface("Reader".to_string())));
+
+        let facts = FieldFacts::collect(&field_type, &field_go_type, false, false, false);
+        let mut state = State::new();
+        state.record_field(facts);
+
+        assert!(state.cannot_derive_clone);
+        assert!(state.needs_manual_clone);
+        assert!(!state.cannot_manual_clone);
+    }
+
+    #[test]
     fn borrowed_interface_fields_are_manual_cloneable() {
         let field_type = ast::Expr::Ident(ast::Ident {
             name_pos: crate::token::Position::default(),
@@ -216,6 +255,7 @@ mod tests {
         );
 
         assert!(facts.cannot_derive_clone);
+        assert!(facts.cannot_derive_partial_eq);
         assert!(facts.can_manual_clone);
     }
 

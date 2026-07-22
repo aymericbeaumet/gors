@@ -1,5 +1,5 @@
 {
-  "expectedProgramCount": 121,
+  "expectedProgramCount": 124,
   "fixtures": {
     "_generic_type_method": {
       "status": "unsupported",

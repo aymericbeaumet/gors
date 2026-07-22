@@ -727,6 +727,10 @@ pub(super) fn vec_type_inner(ty: &syn::Type) -> Option<syn::Type> {
     first_type_arg_if_path_last_ident(ty, "Vec").cloned()
 }
 
+pub(super) fn owned_slice_storage_type_inner(ty: &syn::Type) -> Option<syn::Type> {
+    first_type_arg_if_path_last_ident(ty, "GorsSliceStorage").cloned()
+}
+
 pub(super) fn slice_type_inner(ty: &syn::Type) -> Option<syn::Type> {
     let syn::Type::Slice(slice) = ty else {
         return None;

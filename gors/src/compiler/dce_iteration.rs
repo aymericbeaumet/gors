@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use super::CompiledModule;
+use super::builtin_roots;
 use super::external_roots::ExternalRootCollector;
+use super::required_module_roots::RequiredModuleRoots;
 use super::semantic_reachability::{
     SemanticReachabilityGraph, semantic_reachability_graph_enabled,
 };
@@ -52,4 +54,57 @@ impl DceIterationContext {
             self.semantic_graph.as_ref(),
         )
     }
+}
+
+/// Discover the cross-module root closure without mutating generated items.
+///
+/// Both pre-DCE synthesis and DCE itself use this fixed point so dead source
+/// items cannot create obligations and builtin expansion cannot drift between
+/// planning and pruning.
+pub(super) fn discover_required_module_roots(
+    modules: &BTreeMap<String, CompiledModule>,
+    has_main: bool,
+) -> RequiredModuleRoots {
+    let context = DceIterationContext::new(modules, has_main);
+    let collector = context.external_root_collector();
+    let mut required = RequiredModuleRoots::default();
+
+    if let Some(main_module) = modules.get("__main__") {
+        let roots = super::reachability_names::main_module_root_names(main_module, has_main);
+        required.merge(collector.refs_from_reachable_module_roots(main_module, &roots));
+    }
+
+    let mut processed_roots = HashMap::new();
+    loop {
+        let mut changed = false;
+        for module in modules.values().filter(|module| !module.is_main) {
+            let Some(roots) = required.get(&module.mod_name) else {
+                continue;
+            };
+            if roots.is_empty() {
+                continue;
+            }
+            let expanded_roots;
+            let roots = if module.mod_name == "builtin" {
+                expanded_roots = builtin_roots::expand(roots);
+                &expanded_roots
+            } else {
+                roots
+            };
+            if processed_roots
+                .get(&module.import_path)
+                .is_some_and(|processed| processed == roots)
+            {
+                continue;
+            }
+            let refs = collector.refs_from_reachable_module_roots(module, roots);
+            processed_roots.insert(module.import_path.clone(), roots.clone());
+            changed |= required.merge(refs);
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    required
 }

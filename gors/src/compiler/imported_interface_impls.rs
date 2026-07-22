@@ -18,23 +18,33 @@ struct ImportedImplEmitState<'a> {
     items: &'a mut Vec<syn::Item>,
 }
 
-pub(super) fn impls_for_local_structs(
-    struct_methods: &BTreeMap<String, Vec<String>>,
-    struct_pointer_methods: &BTreeMap<String, BTreeSet<String>>,
-    methods: &BTreeMap<String, Vec<syn::ImplItemFn>>,
-    method_generics: &BTreeMap<String, Vec<syn::Ident>>,
-    preserve_concrete_impls: bool,
-    emitted_interface_impls: &mut BTreeSet<(String, String, bool)>,
-    emitted_borrowed_pointer_interface_impls: &mut BTreeSet<(String, String)>,
-) -> Vec<syn::Item> {
+pub(super) struct LocalStructImplInputs<'a> {
+    pub(super) struct_methods: &'a BTreeMap<String, Vec<String>>,
+    pub(super) struct_pointer_methods: &'a BTreeMap<String, BTreeSet<String>>,
+    pub(super) methods: &'a BTreeMap<String, Vec<syn::ImplItemFn>>,
+    pub(super) method_generics: &'a BTreeMap<String, Vec<syn::Ident>>,
+    pub(super) required_interfaces: &'a BTreeSet<String>,
+    pub(super) preserve_concrete_impls: bool,
+    pub(super) emitted_interface_impls: &'a mut BTreeSet<(String, String, bool)>,
+    pub(super) emitted_borrowed_pointer_interface_impls: &'a mut BTreeSet<(String, String)>,
+}
+
+pub(super) fn impls_for_local_structs(inputs: LocalStructImplInputs<'_>) -> Vec<syn::Item> {
+    let LocalStructImplInputs {
+        struct_methods,
+        struct_pointer_methods,
+        methods,
+        method_generics,
+        required_interfaces,
+        preserve_concrete_impls,
+        emitted_interface_impls,
+        emitted_borrowed_pointer_interface_impls,
+    } = inputs;
     super::TYPE_ENV.with(|env| {
         let env = env.borrow();
         let mut items = Vec::new();
         for interface_name in env.interface_names() {
-            if !interface_name.contains('.') {
-                continue;
-            }
-            if !has_direct_import_qualifier(&interface_name) {
+            if !interface_is_direct_or_required(&interface_name, required_interfaces) {
                 continue;
             }
             let Some(required_methods) = env.get_interface_methods(&interface_name) else {
@@ -52,16 +62,14 @@ pub(super) fn impls_for_local_structs(
                     struct_method_list,
                     pointer_methods,
                     &method_set.required_methods,
-                ) || interface_method_sets::value_method_list_satisfies(
-                    struct_method_list,
-                    pointer_methods,
-                    &method_set.required_methods,
                 );
                 if value_satisfies
                     && interface_impls::concrete_can_emit_methods(
+                        &interface_name,
                         struct_name,
                         &method_set.direct_methods,
                         methods,
+                        pointer_methods,
                     )
                 {
                     let mut emit_state = ImportedImplEmitState {
@@ -72,7 +80,13 @@ pub(super) fn impls_for_local_structs(
                         emitted_borrowed_pointer_interface_impls,
                         items: &mut items,
                     };
-                    push_concrete_impl(&interface_name, struct_name, &method_set, &mut emit_state);
+                    push_concrete_impl(
+                        &interface_name,
+                        struct_name,
+                        &method_set,
+                        pointer_methods,
+                        &mut emit_state,
+                    );
                     for embedded_name in &method_set.embedded_interfaces {
                         push_embedded_concrete_impl(
                             embedded_name,
@@ -83,8 +97,9 @@ pub(super) fn impls_for_local_structs(
                         );
                     }
                 }
-                if super::type_decl_facts::has_borrowed_interface_struct(struct_name)
-                    || method_generics
+                let has_borrowed_interface_field =
+                    super::type_decl_facts::has_borrowed_interface_struct(struct_name);
+                if method_generics
                         .get(struct_name)
                         .is_some_and(|type_args| !type_args.is_empty())
                 {
@@ -96,6 +111,7 @@ pub(super) fn impls_for_local_structs(
                     struct_method_list,
                     &method_set.required_methods,
                 ) && interface_impls::pointer_can_emit_methods(
+                    &interface_name,
                     struct_name,
                     &method_set.direct_methods,
                     methods,
@@ -113,21 +129,43 @@ pub(super) fn impls_for_local_structs(
                         &super::rust_safe_ident_name(struct_name),
                         Span::mixed_site(),
                     );
-                    let impl_items = interface_impls::pointer_items(
-                        &interface_name,
-                        struct_name,
-                        &trait_path,
-                        &method_set.direct_methods,
-                        methods,
-                        pointer_methods,
-                    );
-                    items.push(syn::parse_quote! {
-                        impl #trait_path for crate::builtin::GorsPtr<#struct_ident> {
-                            #(#impl_items)*
-                        }
-                    });
+                    let impl_items = if has_borrowed_interface_field {
+                        interface_impls::non_static_pointer_items(
+                            &interface_name,
+                            struct_name,
+                            &trait_path,
+                            &method_set.direct_methods,
+                            methods,
+                            pointer_methods,
+                        )
+                    } else {
+                        interface_impls::pointer_items(
+                            &interface_name,
+                            struct_name,
+                            &trait_path,
+                            &method_set.direct_methods,
+                            methods,
+                            pointer_methods,
+                        )
+                    };
+                    if has_borrowed_interface_field {
+                        let lifetime = synthetic_names::borrowed_interface_lifetime();
+                        let generics = synthetic_names::borrowed_interface_generics();
+                        items.push(syn::parse_quote! {
+                            impl #generics #trait_path for crate::builtin::GorsPtr<#struct_ident<#lifetime>> {
+                                #(#impl_items)*
+                            }
+                        });
+                    } else {
+                        items.push(syn::parse_quote! {
+                            impl #trait_path for crate::builtin::GorsPtr<#struct_ident> {
+                                #(#impl_items)*
+                            }
+                        });
+                    }
                 }
-                if !value_satisfies
+                if !has_borrowed_interface_field
+                    && !value_satisfies
                     && interface_impls::borrowed_pointer_can_delegate(
                         &interface_name,
                         &method_set.direct_methods,
@@ -182,10 +220,21 @@ pub(super) fn impls_for_local_structs(
     })
 }
 
+fn interface_is_direct_or_required(
+    interface_name: &str,
+    required_interfaces: &BTreeSet<String>,
+) -> bool {
+    required_interfaces.contains(interface_name)
+        || interface_name
+            .split_once('.')
+            .is_some_and(|(qualifier, _)| super::import_context::is_import_local_name(qualifier))
+}
+
 fn push_concrete_impl(
     interface_name: &str,
     struct_name: &str,
     method_set: &interface_method_sets::MethodSet,
+    pointer_methods: Option<&BTreeSet<String>>,
     state: &mut ImportedImplEmitState<'_>,
 ) {
     if !state.emitted_interface_impls.insert((
@@ -213,6 +262,7 @@ fn push_concrete_impl(
         struct_name,
         &method_set.direct_methods,
         state.methods,
+        pointer_methods,
         exposes_any,
     );
     let lifetime = synthetic_names::borrowed_interface_lifetime();
@@ -258,13 +308,21 @@ fn push_embedded_concrete_impl(
         pointer_methods,
         &embedded_method_set.required_methods,
     ) && interface_impls::concrete_can_emit_methods(
+        embedded_name,
         struct_name,
         &embedded_method_set.direct_methods,
         state.methods,
+        pointer_methods,
     )) {
         return;
     }
-    push_concrete_impl(embedded_name, struct_name, &embedded_method_set, state);
+    push_concrete_impl(
+        embedded_name,
+        struct_name,
+        &embedded_method_set,
+        pointer_methods,
+        state,
+    );
 }
 
 fn push_embedded_pointer_impls(
@@ -278,6 +336,7 @@ fn push_embedded_pointer_impls(
         embedded.struct_method_list,
         &embedded_method_set.required_methods,
     ) && interface_impls::pointer_can_emit_methods(
+        embedded.name,
         embedded.struct_name,
         &embedded_method_set.direct_methods,
         state.methods,
@@ -296,26 +355,51 @@ fn push_embedded_pointer_impls(
         &super::rust_safe_ident_name(embedded.struct_name),
         Span::mixed_site(),
     );
-    let impl_items = interface_impls::pointer_items(
-        embedded.name,
-        embedded.struct_name,
-        &trait_path,
-        &embedded_method_set.direct_methods,
-        state.methods,
-        embedded.pointer_methods,
-    );
-    state.items.push(syn::parse_quote! {
-        impl #trait_path for crate::builtin::GorsPtr<#struct_ident> {
-            #(#impl_items)*
-        }
-    });
-    if interface_impls::borrowed_pointer_can_delegate(
-        embedded.name,
-        &embedded_method_set.direct_methods,
-        embedded.pointer_methods,
-    ) && state
-        .emitted_borrowed_pointer_interface_impls
-        .insert((embedded.name.to_string(), embedded.struct_name.to_string()))
+    let has_borrowed_interface_field =
+        super::type_decl_facts::has_borrowed_interface_struct(embedded.struct_name);
+    let impl_items = if has_borrowed_interface_field {
+        interface_impls::non_static_pointer_items(
+            embedded.name,
+            embedded.struct_name,
+            &trait_path,
+            &embedded_method_set.direct_methods,
+            state.methods,
+            embedded.pointer_methods,
+        )
+    } else {
+        interface_impls::pointer_items(
+            embedded.name,
+            embedded.struct_name,
+            &trait_path,
+            &embedded_method_set.direct_methods,
+            state.methods,
+            embedded.pointer_methods,
+        )
+    };
+    if has_borrowed_interface_field {
+        let lifetime = synthetic_names::borrowed_interface_lifetime();
+        let generics = synthetic_names::borrowed_interface_generics();
+        state.items.push(syn::parse_quote! {
+            impl #generics #trait_path for crate::builtin::GorsPtr<#struct_ident<#lifetime>> {
+                #(#impl_items)*
+            }
+        });
+    } else {
+        state.items.push(syn::parse_quote! {
+            impl #trait_path for crate::builtin::GorsPtr<#struct_ident> {
+                #(#impl_items)*
+            }
+        });
+    }
+    if !has_borrowed_interface_field
+        && interface_impls::borrowed_pointer_can_delegate(
+            embedded.name,
+            &embedded_method_set.direct_methods,
+            embedded.pointer_methods,
+        )
+        && state
+            .emitted_borrowed_pointer_interface_impls
+            .insert((embedded.name.to_string(), embedded.struct_name.to_string()))
     {
         let trait_path = super::interface_trait_path_from_name(embedded.name);
         let impl_items = interface_impls::borrowed_pointer_items(
@@ -333,11 +417,4 @@ fn push_embedded_pointer_impls(
             }
         });
     }
-}
-
-fn has_direct_import_qualifier(interface_name: &str) -> bool {
-    let Some((qualifier, _)) = interface_name.split_once('.') else {
-        return false;
-    };
-    super::import_context::is_import_local_name(qualifier)
 }

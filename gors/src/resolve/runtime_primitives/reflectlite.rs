@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use crate::compiler::typeinfer::{GoType, TypeEnv, TypeKind};
 use crate::reflect_names::{
     INVALID_CONST, KIND_TYPE, REFLECTLITE_IMPORT_PATH, RTYPE_TYPE, SLICE_CONST, SWAPPER_FUNC,
     TYPE_COMPARABLE_ROOT, TYPE_OF_FUNC, TYPE_STRING_ROOT, TYPE_TYPE, VALUE_KIND_ROOT,
@@ -7,6 +8,22 @@ use crate::reflect_names::{
 };
 
 pub(super) const IMPORT_PATH: &str = REFLECTLITE_IMPORT_PATH;
+
+pub(super) fn supplement_type_env(env: &mut TypeEnv) {
+    // The host primitive represents reflectlite.Type as an owned concrete
+    // handle, even though the Go source declares it as an interface. Keep the
+    // imported ABI facts aligned with that generated representation so callers
+    // use ordinary value-method dispatch rather than interface dereferencing.
+    env.replace_interface_with_concrete_type(TYPE_TYPE, TypeKind::Struct);
+    env.set_func(TYPE_OF_FUNC, vec![GoType::Named(TYPE_TYPE.to_string())]);
+    env.set_func_params(TYPE_OF_FUNC, vec![GoType::Any]);
+    let comparable_method = TYPE_COMPARABLE_ROOT.replace("::", ".");
+    env.set_func(&comparable_method, vec![GoType::Bool]);
+    env.set_func_params(&comparable_method, Vec::new());
+    let string_method = TYPE_STRING_ROOT.replace("::", ".");
+    env.set_func(&string_method, vec![GoType::String]);
+    env.set_func_params(&string_method, Vec::new());
+}
 
 pub(super) fn module(import_path: &str, roots: Option<&HashSet<String>>) -> Option<syn::ItemMod> {
     let roots = roots?;
@@ -116,6 +133,17 @@ pub(super) fn module(import_path: &str, roots: Option<&HashSet<String>>) -> Opti
                         }
                     }
                 }
+            },
+            syn::parse_quote! {
+                impl PartialEq for Type {
+                    fn eq(&self, other: &Self) -> bool {
+                        crate::builtin::any_dynamic_type_id(self.value.as_ref())
+                            == crate::builtin::any_dynamic_type_id(other.value.as_ref())
+                    }
+                }
+            },
+            syn::parse_quote! {
+                impl Eq for Type {}
             },
             syn::parse_quote! {
                 impl Type {

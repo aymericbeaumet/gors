@@ -24,6 +24,51 @@ pub(super) fn mark_external_local_interface_impl(attrs: &mut Vec<syn::Attribute>
     }
 }
 
+/// Mark a compiler-synthesized interface impl that may be removed when the
+/// concrete type's defining module already emitted the canonical impl.
+///
+/// This is deliberately independent from DCE preservation and from the
+/// external-local reachability marker: neither of those facts grants an
+/// ownership-reconciliation pass permission to delete an impl.
+pub(super) fn mark_removable_interface_fallback(attrs: &mut Vec<syn::Attribute>) {
+    if !attrs
+        .iter()
+        .any(attribute_marks_removable_interface_fallback)
+    {
+        let marker = crate::generated_names::REMOVABLE_INTERFACE_FALLBACK_DOC;
+        attrs.push(syn::parse_quote!(#[doc = #marker]));
+    }
+}
+
+pub(super) fn mark_interface_impl_required_by(attrs: &mut Vec<syn::Attribute>, interface: &str) {
+    let marker = crate::generated_names::interface_impl_required_by_doc(interface);
+    if attrs.iter().any(|attr| {
+        crate::generated_names::doc_attr_value(attr).as_deref() == Some(marker.as_str())
+    }) {
+        return;
+    }
+    attrs.push(syn::parse_quote!(#[doc = #marker]));
+}
+
+pub(super) fn mark_interface_assertion_candidate(
+    attrs: &mut Vec<syn::Attribute>,
+    concrete: &syn::Type,
+) {
+    let marker = crate::generated_names::interface_assertion_candidate_doc(concrete);
+    if attrs.iter().any(|attr| {
+        crate::generated_names::doc_attr_value(attr).as_deref() == Some(marker.as_str())
+    }) {
+        return;
+    }
+    attrs.push(syn::parse_quote!(#[doc = #marker]));
+}
+
+pub(super) fn interface_assertion_candidate_type(attrs: &[syn::Attribute]) -> Option<syn::Type> {
+    attrs
+        .iter()
+        .find_map(crate::generated_names::interface_assertion_candidate_from_attr)
+}
+
 pub(super) fn allow_dead_code_on_item(item: &mut syn::Item) {
     if let Some(attrs) = item_attrs_mut(item) {
         allow_dead_code(attrs);
@@ -103,4 +148,15 @@ pub(super) fn attrs_mark_external_local_interface_impl(attrs: &[syn::Attribute])
     attrs
         .iter()
         .any(attribute_marks_external_local_interface_impl)
+}
+
+pub(super) fn attribute_marks_removable_interface_fallback(attr: &syn::Attribute) -> bool {
+    crate::generated_names::doc_attr_value(attr)
+        .is_some_and(|doc| doc == crate::generated_names::REMOVABLE_INTERFACE_FALLBACK_DOC)
+}
+
+pub(super) fn attrs_mark_removable_interface_fallback(attrs: &[syn::Attribute]) -> bool {
+    attrs
+        .iter()
+        .any(attribute_marks_removable_interface_fallback)
 }

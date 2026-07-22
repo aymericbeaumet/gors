@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use super::CompiledModule;
 use super::item_reachability::impl_method_reachability_name;
-use super::receiver_type_facts::ReceiverTypeMap;
+use super::receiver_type_facts::{ReceiverTypeMap, is_type_alias_fact_name};
 use super::syn_inspect::{
     item_name, macro_declared_item_names, named_self_type, self_type_reachability_names,
 };
@@ -242,7 +242,10 @@ pub(super) fn expand_top_level_receiver_method_names(
         .collect::<Vec<_>>();
     let mut changed = false;
     for (value_name, receiver_type) in top_level_types {
-        if receiver_type.module.is_some() || !names.contains(value_name) {
+        if is_type_alias_fact_name(value_name)
+            || receiver_type.module.is_some()
+            || !names.contains(value_name)
+        {
             continue;
         }
         for (root_value_name, method_name) in &roots {

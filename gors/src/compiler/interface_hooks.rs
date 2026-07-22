@@ -75,11 +75,19 @@ pub(super) fn borrowed_pointer_interface_key_item(struct_name: &str) -> syn::Imp
     }
 }
 
-pub(super) fn concrete_interface_key_item() -> syn::ImplItem {
+pub(super) fn concrete_interface_key_item(comparable: bool) -> syn::ImplItem {
     let interface_key = interface_key_method_ident();
-    syn::parse_quote! {
-        fn #interface_key(&self) -> crate::builtin::GorsInterfaceKey {
-            crate::builtin::GorsInterfaceKey::non_comparable()
+    if comparable {
+        syn::parse_quote! {
+            fn #interface_key(&self) -> crate::builtin::GorsInterfaceKey {
+                crate::builtin::GorsInterfaceKey::for_comparable(self)
+            }
+        }
+    } else {
+        syn::parse_quote! {
+            fn #interface_key(&self) -> crate::builtin::GorsInterfaceKey {
+                crate::builtin::GorsInterfaceKey::non_comparable::<Self>()
+            }
         }
     }
 }
@@ -175,7 +183,7 @@ pub(super) fn add_missing_clone_hooks(items: &mut [syn::Item]) {
             } else {
                 syn::parse_quote! {
                     fn #interface_key(&self) -> crate::builtin::GorsInterfaceKey {
-                        crate::builtin::GorsInterfaceKey::non_comparable()
+                        crate::builtin::GorsInterfaceKey::non_comparable::<Self>()
                     }
                 }
             };

@@ -9,6 +9,7 @@ const GOMAXPROCS_FUNC: &str = "GOMAXPROCS";
 const GOARCH_FUNC: &str = "GOARCH";
 const GOROOT_FUNC: &str = "GOROOT";
 const GOOS_FUNC: &str = "GOOS";
+const KEEP_ALIVE_FUNC: &str = "KeepAlive";
 const STRINGER_TRAIT: &str = "stringer";
 
 pub(super) fn module(import_path: &str, roots: Option<&HashSet<String>>) -> Option<syn::ItemMod> {
@@ -65,6 +66,13 @@ pub(super) fn module(import_path: &str, roots: Option<&HashSet<String>>) -> Opti
             }
         });
     }
+    if roots.contains(KEEP_ALIVE_FUNC) {
+        items.push(syn::parse_quote! {
+            pub fn KeepAlive<T>(value: T) {
+                let _ = std::hint::black_box(value);
+            }
+        });
+    }
     if roots.contains(STRINGER_TRAIT) {
         items.push(syn::parse_quote! {
             pub trait stringer: Send + Sync {
@@ -111,14 +119,16 @@ fn frames_items() -> Vec<syn::Item> {
             #[derive(Clone, Default)]
             #[repr(C)]
             pub struct Frames {
-                frames: Vec<Frame>,
+                frames: crate::builtin::GorsSliceStorage<Frame>,
                 next: isize,
             }
         },
         syn::parse_quote! {
-            pub fn CallersFrames(mut callers: Vec<usize>) -> crate::builtin::GorsPtr<Frames> {
+            pub fn CallersFrames(
+                mut callers: crate::builtin::GorsSliceStorage<usize>,
+            ) -> crate::builtin::GorsPtr<Frames> {
                 crate::builtin::GorsPtr::new(Frames {
-                    frames: Vec::new(),
+                    frames: crate::builtin::GorsSliceStorage::default(),
                     next: 0,
                 })
             }

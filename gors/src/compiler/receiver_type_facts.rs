@@ -1,7 +1,6 @@
 use super::{
     TYPE_ENV, go_package_rust_module_name, interface_type_env,
     item_reachability::impl_method_reachability_name,
-    resolved_go_type,
     syn_inspect::{
         first_type_arg_for_path_last_ident_any, is_path_call_expr, is_transparent_receiver_method,
         named_self_type,
@@ -9,11 +8,20 @@ use super::{
     typeinfer,
 };
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum TraitImplTargetRef {
+    #[default]
+    Value,
+    Pointer,
+    BorrowedPointer,
+}
+
 #[derive(Clone)]
 pub(super) struct ReceiverTypeRef {
     pub(super) module: Option<String>,
     pub(super) name: String,
     pub(super) type_arg: Option<Box<ReceiverTypeRef>>,
+    pub(super) trait_impl_target: TraitImplTargetRef,
 }
 
 impl ReceiverTypeRef {
@@ -22,6 +30,7 @@ impl ReceiverTypeRef {
             module,
             name,
             type_arg: None,
+            trait_impl_target: TraitImplTargetRef::Value,
         }
     }
 
@@ -29,12 +38,37 @@ impl ReceiverTypeRef {
         self.type_arg = type_arg.map(Box::new);
         self
     }
+
+    fn with_trait_impl_target(mut self, target: TraitImplTargetRef) -> Self {
+        self.trait_impl_target = target;
+        self
+    }
+
+    pub(super) fn trait_impl_target_name(&self) -> String {
+        match self.trait_impl_target {
+            TraitImplTargetRef::Value => self.name.clone(),
+            TraitImplTargetRef::Pointer => format!("GorsPtr<{}>", self.name),
+            TraitImplTargetRef::BorrowedPointer => format!("&mut {}", self.name),
+        }
+    }
 }
 
 pub(super) type ReceiverTypeMap = std::collections::HashMap<String, ReceiverTypeRef>;
 pub(super) type ReceiverFieldTypeMap = std::collections::HashMap<String, ReceiverTypeMap>;
 pub(super) type ReceiverTupleTypes = Vec<Option<ReceiverTypeRef>>;
 pub(super) type ReceiverTupleReturnMap = std::collections::HashMap<String, ReceiverTupleTypes>;
+
+const TYPE_ALIAS_KEY_PREFIX: &str = "\0type-alias:";
+
+pub(super) fn is_type_alias_fact_name(name: &str) -> bool {
+    name.starts_with(TYPE_ALIAS_KEY_PREFIX)
+}
+
+pub(super) fn top_level_type_alias(types: &ReceiverTypeMap, name: &str) -> Option<ReceiverTypeRef> {
+    types
+        .get(&format!("{TYPE_ALIAS_KEY_PREFIX}{name}"))
+        .cloned()
+}
 
 pub(super) struct ReceiverTypeContext<'a> {
     pub(super) module_names: &'a std::collections::HashSet<String>,
@@ -60,6 +94,11 @@ pub(super) fn top_level_item_types(
             syn::Item::Static(item_static) => {
                 if let Some(ty) = receiver_type_from_type(&item_static.ty, module_names) {
                     types.insert(item_static.ident.to_string(), ty);
+                }
+            }
+            syn::Item::Type(item_type) => {
+                if let Some(ty) = receiver_type_from_type(&item_type.ty, module_names) {
+                    types.insert(format!("{TYPE_ALIAS_KEY_PREFIX}{}", item_type.ident), ty);
                 }
             }
             _ => {}
@@ -135,7 +174,7 @@ fn collection_element_receiver_type_from_type(
         }
         syn::Type::Path(path) => {
             let segment = path.path.segments.last()?;
-            if segment.ident != "Vec" {
+            if segment.ident != "Vec" && segment.ident != "GorsSliceStorage" {
                 return None;
             }
             let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
@@ -292,14 +331,16 @@ pub(super) fn method_receiver_type_from_expr(
     match expr {
         syn::Expr::Call(call) => {
             if let Some(arg) = transparent_receiver_constructor_arg(call) {
-                return method_receiver_type_from_expr(arg, context).or_else(|| {
-                    receiver_type_from_init_expr(
-                        arg,
-                        context.module_names,
-                        context.item_names,
-                        context.top_level_return_types,
-                    )
-                });
+                return method_receiver_type_from_expr(arg, context)
+                    .or_else(|| {
+                        receiver_type_from_init_expr(
+                            arg,
+                            context.module_names,
+                            context.item_names,
+                            context.top_level_return_types,
+                        )
+                    })
+                    .map(|receiver| transparent_constructor_receiver_type(call, receiver));
             }
             receiver_type_from_init_expr(
                 expr,
@@ -394,9 +435,31 @@ pub(super) fn receiver_type_from_type(
             })
         }
         syn::Type::Paren(paren) => receiver_type_from_type(&paren.elem, module_names),
-        syn::Type::Path(path) => receiver_type_from_path(&path.path, module_names),
-        syn::Type::Reference(reference) => receiver_type_from_type(&reference.elem, module_names),
-        syn::Type::Ptr(ptr) => receiver_type_from_type(&ptr.elem, module_names),
+        syn::Type::Path(path) => {
+            let receiver = receiver_type_from_path(&path.path, module_names)?;
+            let target = if path
+                .path
+                .segments
+                .last()
+                .is_some_and(|segment| segment.ident == "GorsPtr")
+            {
+                TraitImplTargetRef::Pointer
+            } else {
+                receiver.trait_impl_target
+            };
+            Some(receiver.with_trait_impl_target(target))
+        }
+        syn::Type::Reference(reference) => {
+            let receiver = receiver_type_from_type(&reference.elem, module_names)?;
+            let target = if receiver.trait_impl_target == TraitImplTargetRef::Value {
+                TraitImplTargetRef::BorrowedPointer
+            } else {
+                receiver.trait_impl_target
+            };
+            Some(receiver.with_trait_impl_target(target))
+        }
+        syn::Type::Ptr(ptr) => receiver_type_from_type(&ptr.elem, module_names)
+            .map(|receiver| receiver.with_trait_impl_target(TraitImplTargetRef::Pointer)),
         syn::Type::TraitObject(trait_object) => trait_object.bounds.iter().find_map(|bound| {
             if let syn::TypeParamBound::Trait(trait_bound) = bound {
                 receiver_type_from_path(&trait_bound.path, module_names)
@@ -408,15 +471,12 @@ pub(super) fn receiver_type_from_type(
     }
 }
 
-fn receiver_type_ref_from_go_type(go_type: typeinfer::GoType) -> Option<ReceiverTypeRef> {
-    receiver_type_ref_from_go_type_with_default_module(go_type, None)
-}
-
-fn receiver_type_ref_from_go_type_with_default_module(
+fn receiver_type_ref_from_go_type_in_env(
     go_type: typeinfer::GoType,
+    env: &typeinfer::TypeEnv,
     default_module: Option<&str>,
 ) -> Option<ReceiverTypeRef> {
-    match resolved_go_type(&go_type) {
+    match typeinfer::resolve_true_aliases_preserving_defined_type(go_type, env) {
         typeinfer::GoType::Named(name) | typeinfer::GoType::Interface(name) => {
             if let Some((package, ty)) = name.rsplit_once('.') {
                 Some(ReceiverTypeRef::new(
@@ -430,7 +490,8 @@ fn receiver_type_ref_from_go_type_with_default_module(
             }
         }
         typeinfer::GoType::Pointer(inner) => {
-            receiver_type_ref_from_go_type_with_default_module(*inner, default_module)
+            receiver_type_ref_from_go_type_in_env(*inner, env, default_module)
+                .map(|receiver| receiver.with_trait_impl_target(TraitImplTargetRef::Pointer))
         }
         _ => None,
     }
@@ -453,7 +514,7 @@ pub(super) fn external_receiver_method_return_type(
                 if matches!(ret, typeinfer::GoType::Unknown) {
                     None
                 } else {
-                    receiver_type_ref_from_go_type(ret)
+                    receiver_type_ref_from_go_type_in_env(ret, &env, None)
                         .map(|ret| specialize_receiver_return_type(receiver_type, ret))
                 }
             })
@@ -465,10 +526,83 @@ pub(super) fn external_receiver_method_return_type(
             if matches!(ret, typeinfer::GoType::Unknown) {
                 None
             } else {
-                receiver_type_ref_from_go_type_with_default_module(ret, Some(module))
+                receiver_type_ref_from_go_type_in_env(ret, &package_env, Some(module))
                     .map(|ret| specialize_receiver_return_type(receiver_type, ret))
             }
         })
+}
+
+pub(super) fn external_receiver_method_tuple_return_types(
+    receiver_type: &ReceiverTypeRef,
+    method: &str,
+) -> Option<ReceiverTupleTypes> {
+    fn collect(
+        returns: Vec<typeinfer::GoType>,
+        receiver_type: &ReceiverTypeRef,
+        env: &typeinfer::TypeEnv,
+        default_module: Option<&str>,
+    ) -> Option<ReceiverTupleTypes> {
+        if returns.len() < 2 {
+            return None;
+        }
+        let types = returns
+            .into_iter()
+            .map(|return_type| {
+                receiver_type_ref_from_go_type_in_env(return_type, env, default_module)
+                    .map(|return_type| specialize_receiver_return_type(receiver_type, return_type))
+            })
+            .collect::<Vec<_>>();
+        types.iter().any(Option::is_some).then_some(types)
+    }
+
+    let module = receiver_type.module.as_ref()?;
+    TYPE_ENV
+        .with(|env| {
+            let env = env.borrow();
+            let receiver_names = interface_type_env::rust_path_name_candidates(&format!(
+                "{module}.{}",
+                receiver_type.name
+            ));
+            receiver_names.into_iter().find_map(|receiver_name| {
+                collect(
+                    env.get_method_returns(&receiver_name, method),
+                    receiver_type,
+                    &env,
+                    None,
+                )
+            })
+        })
+        .or_else(|| {
+            let import_path = module.replace("__", "/");
+            let (_, package_env) = crate::resolve::scan_type_env(&import_path)?;
+            collect(
+                package_env.get_method_returns(&receiver_type.name, method),
+                receiver_type,
+                &package_env,
+                Some(module),
+            )
+        })
+}
+
+pub(super) fn associated_call_tuple_return_types(
+    path: &syn::ExprPath,
+    module_names: &std::collections::HashSet<String>,
+    item_names: &std::collections::HashSet<String>,
+    top_level_tuple_return_types: &ReceiverTupleReturnMap,
+) -> Option<ReceiverTupleTypes> {
+    let receiver_type = if let Some(qself) = &path.qself {
+        receiver_type_from_type(&qself.ty, module_names)?
+    } else {
+        receiver_type_from_associated_call_path(&path.path, module_names, item_names)?
+    };
+    let method = path.path.segments.last()?.ident.to_string();
+    if receiver_type.module.is_some() {
+        external_receiver_method_tuple_return_types(&receiver_type, &method)
+    } else {
+        top_level_tuple_return_types
+            .get(&impl_method_reachability_name(&receiver_type.name, &method))
+            .cloned()
+    }
 }
 
 fn specialize_receiver_return_type(
@@ -495,7 +629,7 @@ fn external_function_return_type(module: &str, function: &str) -> Option<Receive
                 if matches!(ret, typeinfer::GoType::Unknown) {
                     None
                 } else {
-                    receiver_type_ref_from_go_type(ret)
+                    receiver_type_ref_from_go_type_in_env(ret, &env, None)
                 }
             })
         })
@@ -506,7 +640,7 @@ fn external_function_return_type(module: &str, function: &str) -> Option<Receive
             if matches!(ret, typeinfer::GoType::Unknown) {
                 None
             } else {
-                receiver_type_ref_from_go_type_with_default_module(ret, Some(module))
+                receiver_type_ref_from_go_type_in_env(ret, &package_env, Some(module))
             }
         })
 }
@@ -525,7 +659,8 @@ pub(super) fn receiver_type_from_init_expr(
                     module_names,
                     item_names,
                     top_level_return_types,
-                );
+                )
+                .map(|receiver| transparent_constructor_receiver_type(call, receiver));
             }
             if let syn::Expr::Path(path) = &*call.func
                 && let Some(first) = path.path.segments.first()
@@ -555,6 +690,15 @@ pub(super) fn receiver_type_from_init_expr(
                 if let Some(receiver_type) =
                     receiver_type_from_associated_call_path(&path.path, module_names, item_names)
                 {
+                    if let Some(method) = path.path.segments.last()
+                        && let Some(return_type) = qself_method_return_type(
+                            &receiver_type,
+                            &method.ident.to_string(),
+                            top_level_return_types,
+                        )
+                    {
+                        return Some(return_type);
+                    }
                     return Some(receiver_type);
                 }
                 let name = first.ident.to_string();
@@ -628,6 +772,19 @@ pub(super) fn transparent_receiver_constructor_arg(call: &syn::ExprCall) -> Opti
         || is_path_call_expr(&call.func, &["crate", "builtin", "GorsPtr", "new"])
         || is_path_call_expr(&call.func, &["crate", "builtin", "GorsPtr", "from_arc"]);
     is_transparent.then(|| call.args.first()).flatten()
+}
+
+pub(super) fn transparent_constructor_receiver_type(
+    call: &syn::ExprCall,
+    receiver: ReceiverTypeRef,
+) -> ReceiverTypeRef {
+    let is_gors_ptr = is_path_call_expr(&call.func, &["crate", "builtin", "GorsPtr", "new"])
+        || is_path_call_expr(&call.func, &["crate", "builtin", "GorsPtr", "from_arc"]);
+    if is_gors_ptr {
+        receiver.with_trait_impl_target(TraitImplTargetRef::Pointer)
+    } else {
+        receiver
+    }
 }
 
 fn qself_method_return_type(
@@ -812,6 +969,27 @@ fn first_receiver_type_arg(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn collection_element_receiver_type_accepts_owned_go_slice_storage() {
+        let module_names = std::collections::HashSet::new();
+        let vec_ty: syn::Type = syn::parse_quote! { Vec<Element> };
+        let storage_ty: syn::Type = syn::parse_quote! { crate::builtin::GorsSliceStorage<Element> };
+        let unrelated_ty: syn::Type = syn::parse_quote! { Option<Element> };
+
+        for ty in [&vec_ty, &storage_ty] {
+            let element = super::collection_element_receiver_type_from_type(ty, &module_names);
+            assert!(element.is_some(), "expected owned slice element type");
+            assert_eq!(
+                element.map(|element| element.name),
+                Some("Element".to_string())
+            );
+        }
+        assert!(
+            super::collection_element_receiver_type_from_type(&unrelated_ty, &module_names)
+                .is_none()
+        );
+    }
+
     #[test]
     fn receiver_type_from_path_preserves_first_external_type_arg() {
         let module_names = std::collections::HashSet::from(["sync__atomic".to_string()]);

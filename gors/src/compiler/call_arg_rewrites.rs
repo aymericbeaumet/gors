@@ -4,13 +4,13 @@ use proc_macro2::Span;
 
 use super::{
     CompiledModule, receiver_method_targets,
-    receiver_type_facts::{ReceiverTypeRef, receiver_type_from_path},
+    receiver_type_facts::{ReceiverTypeRef, TraitImplTargetRef, receiver_type_from_path},
     receiver_type_scopes,
     syn_inspect::{
         call_target_key, clone_call_receiver_expr, expr_path_ident, expr_path_ident_or_clone,
         is_box_dyn_any_type, is_box_leak_expr, is_lock_guard_wrapper_method, is_path_call_expr,
-        is_slice_range_index_expr, named_self_type, pat_ident_name, slice_type_inner,
-        strip_paren_or_group, vec_type_inner, zero_arg_method_call_receiver_expr,
+        is_slice_range_index_expr, named_self_type, owned_slice_storage_type_inner, pat_ident_name,
+        slice_type_inner, strip_paren_or_group, vec_type_inner, zero_arg_method_call_receiver_expr,
     },
     synthetic_names,
 };
@@ -20,11 +20,13 @@ enum CloneValueParamKind {
     Clone,
     Take,
     Vec,
+    OwnedSlice,
 }
 
 #[derive(Clone, PartialEq, Eq)]
 enum MutRefParamKind {
     Plain,
+    Slice,
     TraitObject { trait_name: String },
 }
 
@@ -38,6 +40,15 @@ type ReceiverTraitSupertraits = receiver_method_targets::Supertraits;
 type ReceiverMethodCloneValueTargets =
     receiver_method_targets::Targets<BTreeMap<usize, CloneValueParamKind>>;
 type ReceiverMethodMutSliceReturnTargets = receiver_method_targets::Targets<()>;
+type OwnedValueParamTargets = BTreeMap<String, BTreeSet<usize>>;
+
+#[derive(Clone, Default)]
+struct OwnedValueMethodArgIndices {
+    qself: BTreeSet<usize>,
+    method: BTreeSet<usize>,
+}
+
+type ReceiverMethodOwnedValueTargets = receiver_method_targets::Targets<OwnedValueMethodArgIndices>;
 
 trait ReceiverScopedCallArgRewrite {
     fn rewrite_expr_call(
@@ -53,6 +64,14 @@ trait ReceiverScopedCallArgRewrite {
         _call: &mut syn::ExprMethodCall,
     ) {
     }
+
+    fn wrap_expr_call(
+        &mut self,
+        _receiver_types: &receiver_type_scopes::Tracker<'_>,
+        _call: &syn::ExprCall,
+    ) -> Option<syn::Expr> {
+        None
+    }
 }
 
 struct ReceiverScopedCallArgVisitor<'a, R> {
@@ -64,6 +83,17 @@ impl<R> syn::visit_mut::VisitMut for ReceiverScopedCallArgVisitor<'_, R>
 where
     R: ReceiverScopedCallArgRewrite,
 {
+    fn visit_expr_mut(&mut self, expr: &mut syn::Expr) {
+        syn::visit_mut::visit_expr_mut(self, expr);
+        let replacement = match expr {
+            syn::Expr::Call(call) => self.rewrite.wrap_expr_call(&self.receiver_types, call),
+            _ => None,
+        };
+        if let Some(replacement) = replacement {
+            *expr = replacement;
+        }
+    }
+
     fn visit_item_fn_mut(&mut self, func: &mut syn::ItemFn) {
         self.receiver_types.push_scope();
         syn::visit_mut::visit_item_fn_mut(self, func);
@@ -117,10 +147,555 @@ fn qself_receiver_method_call(
     let syn::Expr::Path(path) = call.func.as_ref() else {
         return None;
     };
-    let qself = path.qself.as_ref()?;
     let method = path.path.segments.last()?.ident.to_string();
-    let receiver_type = receiver_types.receiver_type_for_type(&qself.ty)?;
+    let receiver_type = if let Some(qself) = &path.qself {
+        receiver_types.receiver_type_for_type(&qself.ty)?
+    } else {
+        if path.path.segments.len() < 2 {
+            return None;
+        }
+        let mut receiver_path = path.path.clone();
+        receiver_path.segments.pop();
+        let receiver_type = syn::Type::Path(syn::TypePath {
+            qself: None,
+            path: receiver_path,
+        });
+        receiver_types.receiver_type_for_type(&receiver_type)?
+    };
     Some((receiver_type, method))
+}
+
+pub(super) fn scope_owned_locking_call_args(modules: &mut BTreeMap<String, CompiledModule>) {
+    let receiver_facts = receiver_type_scopes::ProgramFacts::collect(modules);
+    let (targets, method_targets) =
+        collect_owned_value_param_targets(modules, receiver_facts.module_names());
+    let mut_slice_targets = collect_mut_ref_vec_targets(modules);
+    let mut_slice_method_targets = collect_mut_ref_vec_method_targets(modules);
+    if targets.is_empty()
+        && method_targets.is_empty()
+        && mut_slice_targets.is_empty()
+        && mut_slice_method_targets.is_empty()
+    {
+        return;
+    }
+
+    for module in modules.values_mut() {
+        syn::visit_mut::VisitMut::visit_file_mut(
+            &mut ReceiverScopedCallArgVisitor {
+                receiver_types: receiver_facts.tracker(module.mod_name.clone()),
+                rewrite: ScopeOwnedLockingCallArgs {
+                    targets: &targets,
+                    method_targets: &method_targets,
+                    mut_slice_targets: &mut_slice_targets,
+                    mut_slice_method_targets: &mut_slice_method_targets,
+                },
+            },
+            &mut module.file,
+        );
+    }
+}
+
+fn collect_owned_value_param_targets(
+    modules: &BTreeMap<String, CompiledModule>,
+    module_names: &std::collections::HashSet<String>,
+) -> (OwnedValueParamTargets, ReceiverMethodOwnedValueTargets) {
+    let mut targets = BTreeMap::new();
+    let mut method_targets = ReceiverMethodOwnedValueTargets::default();
+    let mut supertraits = ReceiverTraitSupertraits::new();
+
+    for module in modules.values() {
+        for item in &module.file.items {
+            match item {
+                syn::Item::Fn(item_fn) => {
+                    let indices = owned_value_param_indices(&item_fn.sig);
+                    targets.insert(
+                        format!("{}::{}", module.mod_name, item_fn.sig.ident),
+                        indices,
+                    );
+                }
+                syn::Item::Impl(item_impl) => {
+                    method_targets.record_methods_seen(&module.mod_name, item_impl);
+                    if item_impl.trait_.is_some() {
+                        continue;
+                    }
+                    let Some(self_name) = named_self_type(&item_impl.self_ty) else {
+                        continue;
+                    };
+                    for impl_item in &item_impl.items {
+                        let syn::ImplItem::Fn(method) = impl_item else {
+                            continue;
+                        };
+                        record_owned_value_method_params(
+                            &mut method_targets,
+                            &module.mod_name,
+                            &self_name,
+                            &method.sig,
+                        );
+                    }
+                }
+                syn::Item::Trait(item_trait) => {
+                    let self_name = item_trait.ident.to_string();
+                    record_direct_supertraits(
+                        &mut supertraits,
+                        &module.mod_name,
+                        &self_name,
+                        item_trait,
+                        module_names,
+                    );
+                    for trait_item in &item_trait.items {
+                        let syn::TraitItem::Fn(method) = trait_item else {
+                            continue;
+                        };
+                        method_targets.record_method_seen(
+                            &module.mod_name,
+                            &self_name,
+                            &method.sig.ident.to_string(),
+                        );
+                        record_owned_value_method_params(
+                            &mut method_targets,
+                            &module.mod_name,
+                            &self_name,
+                            &method.sig,
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    method_targets.inherit_supertrait_methods(&supertraits);
+    method_targets.finalize_unambiguous_names();
+    (targets, method_targets)
+}
+
+fn record_owned_value_method_params(
+    targets: &mut ReceiverMethodOwnedValueTargets,
+    module_name: &str,
+    self_name: &str,
+    sig: &syn::Signature,
+) {
+    let qself = owned_value_param_indices(sig);
+    let method = qself
+        .iter()
+        .filter_map(|index| index.checked_sub(1))
+        .collect();
+    targets.insert_receiver(
+        module_name,
+        self_name,
+        &sig.ident.to_string(),
+        OwnedValueMethodArgIndices { qself, method },
+    );
+}
+
+fn owned_value_param_indices(sig: &syn::Signature) -> BTreeSet<usize> {
+    sig.inputs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, input)| match input {
+            syn::FnArg::Receiver(receiver) => receiver.reference.is_none().then_some(index),
+            syn::FnArg::Typed(pat_type) => (!type_is_reference(&pat_type.ty)).then_some(index),
+        })
+        .collect()
+}
+
+fn type_is_reference(ty: &syn::Type) -> bool {
+    match ty {
+        syn::Type::Group(group) => type_is_reference(&group.elem),
+        syn::Type::Paren(paren) => type_is_reference(&paren.elem),
+        syn::Type::Reference(_) => true,
+        _ => false,
+    }
+}
+
+struct ScopeOwnedLockingCallArgs<'a> {
+    targets: &'a OwnedValueParamTargets,
+    method_targets: &'a ReceiverMethodOwnedValueTargets,
+    mut_slice_targets: &'a BTreeMap<String, std::collections::HashSet<usize>>,
+    mut_slice_method_targets: &'a ReceiverMethodArgTargets,
+}
+
+impl ReceiverScopedCallArgRewrite for ScopeOwnedLockingCallArgs<'_> {
+    fn rewrite_expr_call(
+        &mut self,
+        receiver_types: &receiver_type_scopes::Tracker<'_>,
+        call: &mut syn::ExprCall,
+    ) {
+        if let Some((receiver_type, method)) = qself_receiver_method_call(receiver_types, call)
+            && let Some(indices) = self.method_targets.target_for_call(
+                receiver_types.module_name(),
+                &method,
+                Some(&receiver_type),
+            )
+        {
+            scope_owned_locking_args(&mut call.args, &indices.qself);
+            return;
+        }
+
+        let Some(key) = call_target_key(&call.func, receiver_types.module_name()) else {
+            return;
+        };
+        let Some(indices) = self.targets.get(&key) else {
+            return;
+        };
+        scope_owned_locking_args(&mut call.args, indices);
+    }
+
+    fn rewrite_expr_method_call(
+        &mut self,
+        receiver_types: &receiver_type_scopes::Tracker<'_>,
+        call: &mut syn::ExprMethodCall,
+    ) {
+        let receiver_type = receiver_types.receiver_type_for_expr(&call.receiver);
+        let Some(indices) = self.method_targets.target_for_call(
+            receiver_types.module_name(),
+            &call.method.to_string(),
+            receiver_type.as_ref(),
+        ) else {
+            return;
+        };
+        scope_owned_locking_args(&mut call.args, &indices.method);
+    }
+
+    fn wrap_expr_call(
+        &mut self,
+        receiver_types: &receiver_type_scopes::Tracker<'_>,
+        call: &syn::ExprCall,
+    ) -> Option<syn::Expr> {
+        if let Some((receiver_type, method)) = qself_receiver_method_call(receiver_types, call) {
+            let owned = self.method_targets.target_for_call(
+                receiver_types.module_name(),
+                &method,
+                Some(&receiver_type),
+            )?;
+            let mut_slices = self.mut_slice_method_targets.target_for_call(
+                receiver_types.module_name(),
+                &method,
+                Some(&receiver_type),
+            )?;
+            let qself_mut_slices = mut_slices
+                .iter()
+                .map(|index| index + 1)
+                .collect::<BTreeSet<_>>();
+            return wrap_guarded_mut_slice_call(call, &owned.qself, &qself_mut_slices);
+        }
+
+        let key = call_target_key(&call.func, receiver_types.module_name())?;
+        let owned = self.targets.get(&key)?;
+        let mut_slices = self.mut_slice_targets.get(&key)?;
+        let mut_slices = mut_slices.iter().copied().collect::<BTreeSet<_>>();
+        wrap_guarded_mut_slice_call(call, owned, &mut_slices)
+    }
+}
+
+fn wrap_guarded_mut_slice_call(
+    call: &syn::ExprCall,
+    owned_indices: &BTreeSet<usize>,
+    mut_slice_indices: &BTreeSet<usize>,
+) -> Option<syn::Expr> {
+    if !matches!(call.func.as_ref(), syn::Expr::Path(_)) {
+        return None;
+    }
+
+    let plans = call
+        .args
+        .iter()
+        .enumerate()
+        .map(|(index, arg)| {
+            mut_slice_indices
+                .contains(&index)
+                .then(|| guarded_mut_slice_arg_plan(arg, index))
+                .flatten()
+        })
+        .collect::<Vec<_>>();
+    let last_guarded = plans.iter().rposition(Option::is_some)?;
+    let mut rewritten = call.clone();
+    let mut setup = Vec::new();
+    let mut writebacks = Vec::new();
+
+    for (index, (arg, plan)) in rewritten.args.iter_mut().zip(plans).enumerate() {
+        if index > last_guarded {
+            break;
+        }
+        if let Some(plan) = plan {
+            setup.extend(plan.setup);
+            *arg = plan.call_arg;
+            writebacks.push(plan.writeback);
+            continue;
+        }
+        if !owned_indices.contains(&index) && expr_contains_unscoped_lock_guard(arg) {
+            return None;
+        }
+        let value = arg.clone();
+        let temp = synthetic_names::call_arg_temp_ident(index);
+        setup.push(syn::parse_quote! {
+            let #temp = #value;
+        });
+        *arg = syn::parse_quote! { #temp };
+    }
+
+    let result = synthetic_names::call_result_ident();
+    Some(syn::parse_quote! {{
+        #(#setup)*
+        let __gors_call_outcome = std::panic::catch_unwind(
+            std::panic::AssertUnwindSafe(|| #rewritten),
+        );
+        #(#writebacks)*
+        match __gors_call_outcome {
+            Ok(#result) => #result,
+            Err(__gors_call_panic) => std::panic::resume_unwind(__gors_call_panic),
+        }
+    }})
+}
+
+pub(super) struct GuardedMutSliceArgPlan {
+    pub(super) setup: Vec<syn::Stmt>,
+    pub(super) call_arg: syn::Expr,
+    pub(super) writeback: syn::Stmt,
+}
+
+pub(super) fn guarded_mut_slice_arg_plan(
+    arg: &syn::Expr,
+    index: usize,
+) -> Option<GuardedMutSliceArgPlan> {
+    let (prelude, target) = mutable_reference_target(arg)?;
+    if !projection_is_slice_place(target) {
+        return None;
+    }
+    let owner = projection_lock_owner(target)?;
+    let owner_temp = synthetic_names::call_arg_owner_ident(index);
+    let owner_guard = synthetic_names::call_arg_owner_guard_ident(index);
+    let value_temp = synthetic_names::call_arg_temp_ident(index);
+    let range_temp = synthetic_names::call_arg_range_ident(index);
+    let mut projection = target.clone();
+    if !replace_projection_lock_guard(&mut projection, &owner_guard) {
+        return None;
+    }
+    let range = replace_projection_range(&mut projection, &range_temp, &prelude)?;
+
+    let mut setup = vec![syn::parse_quote! {
+        let #owner_temp = (#owner).clone();
+    }];
+    if let Some(range) = range {
+        setup.push(syn::parse_quote! {
+            let #range_temp = #range;
+        });
+    }
+    setup.push(syn::parse_quote! {
+        let mut #value_temp = {
+            let mut #owner_guard = #owner_temp.lock().unwrap();
+            (#projection).to_vec()
+        };
+    });
+
+    let call_arg = syn::parse_quote! { &mut #value_temp };
+    let writeback = syn::parse_quote! {{
+        let mut #owner_guard = #owner_temp.lock().unwrap();
+        (#projection).clone_from_slice(&#value_temp);
+    }};
+    Some(GuardedMutSliceArgPlan {
+        setup,
+        call_arg,
+        writeback,
+    })
+}
+
+fn mutable_reference_target(expr: &syn::Expr) -> Option<(Vec<syn::Stmt>, &syn::Expr)> {
+    match strip_paren_or_group(expr) {
+        syn::Expr::Reference(reference) if reference.mutability.is_some() => {
+            let target = strip_paren_or_group(&reference.expr);
+            if let syn::Expr::Block(block) = target {
+                return owned_slice_full_range_block_target(block);
+            }
+            Some((Vec::new(), target))
+        }
+        syn::Expr::Block(block) => owned_slice_full_range_block_target(block),
+        _ => None,
+    }
+}
+
+fn owned_slice_full_range_block_target(
+    block: &syn::ExprBlock,
+) -> Option<(Vec<syn::Stmt>, &syn::Expr)> {
+    let (tail, prelude) = block.block.stmts.split_last()?;
+    let syn::Stmt::Expr(tail, None) = tail else {
+        return None;
+    };
+    let syn::Expr::Reference(reference) = strip_paren_or_group(tail) else {
+        return None;
+    };
+    reference.mutability.as_ref()?;
+    let target = strip_paren_or_group(&reference.expr);
+    owned_slice_full_range_mut_call(target)?;
+    Some((prelude.to_vec(), target))
+}
+
+fn projection_is_slice_place(expr: &syn::Expr) -> bool {
+    if owned_slice_full_range_mut_call(expr).is_some() {
+        return true;
+    }
+    match expr {
+        syn::Expr::Field(_) | syn::Expr::Index(_) => true,
+        syn::Expr::Group(group) => projection_is_slice_place(&group.expr),
+        syn::Expr::Paren(paren) => projection_is_slice_place(&paren.expr),
+        _ => false,
+    }
+}
+
+fn projection_lock_owner(expr: &syn::Expr) -> Option<syn::Expr> {
+    if let Some(owner) = generated_lock_guard_receiver(expr) {
+        return Some(owner.clone());
+    }
+    match expr {
+        syn::Expr::Field(field) => projection_lock_owner(&field.base),
+        syn::Expr::Group(group) => projection_lock_owner(&group.expr),
+        syn::Expr::Index(index) => projection_lock_owner(&index.expr),
+        syn::Expr::MethodCall(call) => projection_lock_owner(&call.receiver),
+        syn::Expr::Paren(paren) => projection_lock_owner(&paren.expr),
+        syn::Expr::Unary(unary) => projection_lock_owner(&unary.expr),
+        _ => None,
+    }
+}
+
+fn replace_projection_lock_guard(expr: &mut syn::Expr, guard: &syn::Ident) -> bool {
+    if generated_lock_guard_receiver(expr).is_some() {
+        *expr = syn::parse_quote! { #guard };
+        return true;
+    }
+    match expr {
+        syn::Expr::Field(field) => replace_projection_lock_guard(&mut field.base, guard),
+        syn::Expr::Group(group) => replace_projection_lock_guard(&mut group.expr, guard),
+        syn::Expr::Index(index) => replace_projection_lock_guard(&mut index.expr, guard),
+        syn::Expr::MethodCall(call) => replace_projection_lock_guard(&mut call.receiver, guard),
+        syn::Expr::Paren(paren) => replace_projection_lock_guard(&mut paren.expr, guard),
+        syn::Expr::Unary(unary) => replace_projection_lock_guard(&mut unary.expr, guard),
+        _ => false,
+    }
+}
+
+fn replace_projection_range(
+    expr: &mut syn::Expr,
+    range_temp: &syn::Ident,
+    prelude: &[syn::Stmt],
+) -> Option<Option<syn::Expr>> {
+    if let Some(call) = owned_slice_full_range_mut_call_mut(expr) {
+        let original = call.args.iter().cloned().collect::<Vec<_>>();
+        let [low, high, max] = original.as_slice() else {
+            return None;
+        };
+        call.args = syn::parse_quote! {
+            (#range_temp).0,
+            (#range_temp).1,
+            (#range_temp).2
+        };
+        // The prelude may read a sibling field through the same pointer cell.
+        // Evaluate all three Go slice bounds together before acquiring the
+        // projection guard, and retain them for the post-call writeback.
+        let range: syn::Expr = syn::parse_quote! {{
+            #(#prelude)*
+            (#low, #high, #max)
+        }};
+        return Some(Some(range));
+    }
+    if !prelude.is_empty() {
+        return None;
+    }
+    Some(replace_outer_projection_index(expr, range_temp))
+}
+
+fn owned_slice_full_range_mut_call(expr: &syn::Expr) -> Option<&syn::ExprMethodCall> {
+    let expr = strip_paren_or_group(expr);
+    let expr = match expr {
+        syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Deref(_)) => {
+            strip_paren_or_group(&unary.expr)
+        }
+        _ => expr,
+    };
+    let syn::Expr::MethodCall(call) = expr else {
+        return None;
+    };
+    (call.method == "full_range_mut" && call.args.len() == 3).then_some(call)
+}
+
+fn owned_slice_full_range_mut_call_mut(expr: &mut syn::Expr) -> Option<&mut syn::ExprMethodCall> {
+    match expr {
+        syn::Expr::Group(group) => return owned_slice_full_range_mut_call_mut(&mut group.expr),
+        syn::Expr::Paren(paren) => return owned_slice_full_range_mut_call_mut(&mut paren.expr),
+        syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Deref(_)) => {
+            owned_slice_full_range_mut_call_mut(&mut unary.expr)
+        }
+        syn::Expr::MethodCall(call) if call.method == "full_range_mut" && call.args.len() == 3 => {
+            Some(call)
+        }
+        _ => None,
+    }
+}
+
+fn replace_outer_projection_index(
+    expr: &mut syn::Expr,
+    range_temp: &syn::Ident,
+) -> Option<syn::Expr> {
+    match expr {
+        syn::Expr::Group(group) => replace_outer_projection_index(&mut group.expr, range_temp),
+        syn::Expr::Index(index) => {
+            let range = (*index.index).clone();
+            *index.index = syn::parse_quote! { (#range_temp).clone() };
+            Some(range)
+        }
+        syn::Expr::Paren(paren) => replace_outer_projection_index(&mut paren.expr, range_temp),
+        _ => None,
+    }
+}
+
+fn scope_owned_locking_args(
+    args: &mut syn::punctuated::Punctuated<syn::Expr, syn::Token![,]>,
+    owned_indices: &BTreeSet<usize>,
+) {
+    for (index, arg) in args.iter_mut().enumerate() {
+        if owned_indices.contains(&index) && expr_contains_unscoped_lock_guard(arg) {
+            let value = arg.clone();
+            let temp = synthetic_names::call_arg_temp_ident(index);
+            *arg = syn::parse_quote! {{
+                let #temp = #value;
+                #temp
+            }};
+        }
+    }
+}
+
+fn expr_contains_unscoped_lock_guard(expr: &syn::Expr) -> bool {
+    if matches!(strip_paren_or_group(expr), syn::Expr::Block(_)) {
+        return false;
+    }
+
+    struct Finder {
+        found: bool,
+    }
+
+    impl syn::visit::Visit<'_> for Finder {
+        fn visit_expr(&mut self, expr: &syn::Expr) {
+            if generated_lock_guard_receiver(expr).is_some() {
+                self.found = true;
+                return;
+            }
+            syn::visit::visit_expr(self, expr);
+        }
+
+        fn visit_expr_async(&mut self, _expr: &syn::ExprAsync) {}
+
+        fn visit_expr_block(&mut self, _expr: &syn::ExprBlock) {}
+
+        fn visit_expr_closure(&mut self, _expr: &syn::ExprClosure) {}
+    }
+
+    let mut finder = Finder { found: false };
+    syn::visit::Visit::visit_expr(&mut finder, expr);
+    finder.found
+}
+
+fn generated_lock_guard_receiver(expr: &syn::Expr) -> Option<&syn::Expr> {
+    let lock_result = zero_arg_method_call_receiver_expr(strip_paren_or_group(expr), "unwrap")?;
+    zero_arg_method_call_receiver_expr(strip_paren_or_group(lock_result), "lock")
 }
 
 pub(super) fn borrow_mutated_vec_params(modules: &mut BTreeMap<String, CompiledModule>) {
@@ -244,38 +819,79 @@ fn collect_mut_ref_vec_method_targets(
     modules: &BTreeMap<String, CompiledModule>,
 ) -> ReceiverMethodArgTargets {
     let mut targets = ReceiverMethodArgTargets::default();
+    let mut supertraits = ReceiverTraitSupertraits::new();
+    let module_names = modules
+        .values()
+        .map(|module| module.mod_name.clone())
+        .collect::<std::collections::HashSet<_>>();
     for module in modules.values() {
         for item in &module.file.items {
-            let syn::Item::Impl(item_impl) = item else {
-                continue;
-            };
-            targets.record_methods_seen(&module.mod_name, item_impl);
-            if item_impl.trait_.is_some() {
-                continue;
-            }
-            let Some(self_name) = named_self_type(&item_impl.self_ty) else {
-                continue;
-            };
-            for impl_item in &item_impl.items {
-                let syn::ImplItem::Fn(method) = impl_item else {
-                    continue;
-                };
-                let indices = mut_ref_vec_param_indices(&method.sig)
-                    .into_iter()
-                    .filter_map(|index| index.checked_sub(1))
-                    .collect::<std::collections::HashSet<_>>();
-                if indices.is_empty() {
-                    continue;
+            match item {
+                syn::Item::Impl(item_impl) => {
+                    targets.record_methods_seen(&module.mod_name, item_impl);
+                    if item_impl.trait_.is_some() {
+                        continue;
+                    }
+                    let Some(self_name) = named_self_type(&item_impl.self_ty) else {
+                        continue;
+                    };
+                    for impl_item in &item_impl.items {
+                        let syn::ImplItem::Fn(method) = impl_item else {
+                            continue;
+                        };
+                        let indices = mut_ref_vec_param_indices(&method.sig)
+                            .into_iter()
+                            .filter_map(|index| index.checked_sub(1))
+                            .collect::<std::collections::HashSet<_>>();
+                        if indices.is_empty() {
+                            continue;
+                        }
+                        targets.insert_receiver(
+                            &module.mod_name,
+                            &self_name,
+                            &method.sig.ident.to_string(),
+                            indices,
+                        );
+                    }
                 }
-                targets.insert_receiver(
-                    &module.mod_name,
-                    &self_name,
-                    &method.sig.ident.to_string(),
-                    indices,
-                );
+                syn::Item::Trait(item_trait) => {
+                    let self_name = item_trait.ident.to_string();
+                    record_direct_supertraits(
+                        &mut supertraits,
+                        &module.mod_name,
+                        &self_name,
+                        item_trait,
+                        &module_names,
+                    );
+                    for trait_item in &item_trait.items {
+                        let syn::TraitItem::Fn(method) = trait_item else {
+                            continue;
+                        };
+                        targets.record_method_seen(
+                            &module.mod_name,
+                            &self_name,
+                            &method.sig.ident.to_string(),
+                        );
+                        let indices = mut_ref_vec_param_indices(&method.sig)
+                            .into_iter()
+                            .filter_map(|index| index.checked_sub(1))
+                            .collect::<std::collections::HashSet<_>>();
+                        if indices.is_empty() {
+                            continue;
+                        }
+                        targets.insert_receiver(
+                            &module.mod_name,
+                            &self_name,
+                            &method.sig.ident.to_string(),
+                            indices,
+                        );
+                    }
+                }
+                _ => {}
             }
         }
     }
+    targets.inherit_supertrait_methods(&supertraits);
     targets.finalize_unambiguous_names();
     targets
 }
@@ -298,14 +914,16 @@ fn mut_ref_vec_inner(ty: &syn::Type) -> Option<syn::Type> {
         return None;
     };
     reference.mutability.as_ref()?;
-    vec_type_inner(&reference.elem).or_else(|| slice_type_inner(&reference.elem))
+    owned_slice_storage_type_inner(&reference.elem)
+        .or_else(|| vec_type_inner(&reference.elem))
+        .or_else(|| slice_type_inner(&reference.elem))
 }
 
 fn return_type_is_vec(output: &syn::ReturnType) -> bool {
     let syn::ReturnType::Type(_, ty) = output else {
         return false;
     };
-    vec_type_inner(ty).is_some()
+    vec_type_inner(ty).is_some() || owned_slice_storage_type_inner(ty).is_some()
 }
 
 fn return_type_is_mut_slice(output: &syn::ReturnType) -> bool {
@@ -329,7 +947,9 @@ fn mutated_vec_param_indices(
             let syn::Pat::Ident(pat_ident) = &*pat_type.pat else {
                 return None;
             };
-            let inner = vec_type_inner(&pat_type.ty).or_else(|| mut_ref_vec_inner(&pat_type.ty))?;
+            let inner = owned_slice_storage_type_inner(&pat_type.ty)
+                .or_else(|| vec_type_inner(&pat_type.ty))
+                .or_else(|| mut_ref_vec_inner(&pat_type.ty))?;
             (body_mutates_vec_param(block, &pat_ident.ident)
                 && !body_reassigns_param(block, &pat_ident.ident))
             .then(|| (index, pat_ident.ident.clone(), inner))
@@ -337,7 +957,7 @@ fn mutated_vec_param_indices(
         .collect()
 }
 
-fn body_reassigns_param(block: &syn::Block, ident: &syn::Ident) -> bool {
+pub(super) fn body_reassigns_param(block: &syn::Block, ident: &syn::Ident) -> bool {
     struct Finder<'a> {
         ident: &'a syn::Ident,
         found: bool,
@@ -361,7 +981,7 @@ fn body_reassigns_param(block: &syn::Block, ident: &syn::Ident) -> bool {
     finder.found
 }
 
-fn body_mutates_vec_param(block: &syn::Block, ident: &syn::Ident) -> bool {
+pub(super) fn body_mutates_vec_param(block: &syn::Block, ident: &syn::Ident) -> bool {
     struct Finder<'a> {
         ident: &'a syn::Ident,
         found: bool,
@@ -599,7 +1219,8 @@ fn expr_yields_mut_ref(expr: &syn::Expr) -> bool {
 fn borrow_mut_slice_call_arg(arg: &mut syn::Expr) {
     if let syn::Expr::Reference(reference) = arg {
         if reference.mutability.is_some() {
-            *reference.expr = strip_cloned_lvalue_slice_source((*reference.expr).clone());
+            *reference.expr = cloned_lvalue_block_source(&reference.expr)
+                .unwrap_or_else(|| strip_cloned_lvalue_slice_source((*reference.expr).clone()));
         }
         return;
     }
@@ -607,6 +1228,12 @@ fn borrow_mut_slice_call_arg(arg: &mut syn::Expr) {
         return;
     }
     if let Some(receiver) = to_vec_receiver_expr(arg) {
+        let receiver = strip_paren_or_group(&receiver).clone();
+        if let Some(name) = expr_path_ident(&receiver) {
+            let ident = syn::Ident::new(&name, Span::mixed_site());
+            *arg = syn::parse_quote! { &mut *#ident };
+            return;
+        }
         *arg = syn::parse_quote! { &mut #receiver };
         return;
     }
@@ -635,12 +1262,12 @@ fn borrow_mut_slice_call_arg(arg: &mut syn::Expr) {
     *arg = syn::parse_quote! { &mut #inner };
 }
 
-fn cloned_lvalue_source(expr: &syn::Expr) -> Option<syn::Expr> {
+pub(super) fn cloned_lvalue_source(expr: &syn::Expr) -> Option<syn::Expr> {
     let source = clone_call_receiver_expr(expr)?;
     expr_can_be_mutably_borrowed(&source).then_some(source)
 }
 
-fn cloned_lvalue_block_source(expr: &syn::Expr) -> Option<syn::Expr> {
+pub(super) fn cloned_lvalue_block_source(expr: &syn::Expr) -> Option<syn::Expr> {
     let block = match expr {
         syn::Expr::Block(block) => block,
         syn::Expr::Group(group) => return cloned_lvalue_block_source(&group.expr),
@@ -997,6 +1624,13 @@ fn cloneable_value_param_kind(
             CloneValueParamKind::Vec
         });
     }
+    if let Some(inner) = owned_slice_storage_type_inner(ty) {
+        return Some(if is_box_dyn_any_type(&inner) {
+            CloneValueParamKind::Take
+        } else {
+            CloneValueParamKind::OwnedSlice
+        });
+    }
     let syn::Type::Path(type_path) = ty else {
         return None;
     };
@@ -1107,6 +1741,12 @@ fn normalize_vec_value_arg_with_context(
         *arg = syn::parse_quote! { (#inner).to_vec() };
         return;
     }
+    if matches!(kind, CloneValueParamKind::OwnedSlice)
+        && expr_is_mut_slice_return_call(arg, receiver_types, mut_slice_return_methods)
+    {
+        materialize_owned_slice_expr(arg);
+        return;
+    }
 
     normalize_vec_value_arg(arg, kind);
 }
@@ -1167,7 +1807,28 @@ fn normalize_vec_value_arg(arg: &mut syn::Expr, kind: CloneValueParamKind) {
             return;
         }
     }
+    if matches!(kind, CloneValueParamKind::OwnedSlice) {
+        if is_slice_range_index_expr(arg) {
+            materialize_owned_slice_expr(arg);
+            return;
+        }
+        if take_deref_value_arg(arg) {
+            return;
+        }
+    }
     clone_value_arg(arg);
+}
+
+fn materialize_owned_slice_expr(arg: &mut syn::Expr) {
+    let inner = arg.clone();
+    *arg = syn::parse_quote! {{
+        let __gors_owned_slice_backing = (#inner).to_vec();
+        let __gors_owned_slice_len = __gors_owned_slice_backing.len();
+        crate::builtin::GorsSliceStorage::from_initialized_backing(
+            __gors_owned_slice_backing,
+            __gors_owned_slice_len,
+        )
+    }};
 }
 
 fn materialize_vec_lvalue_arg(arg: &mut syn::Expr) -> bool {
@@ -1368,6 +2029,7 @@ fn mut_ref_param_kinds(sig: &syn::Signature) -> BTreeMap<usize, MutRefParamKind>
                 index,
                 trait_object_name(&reference.elem)
                     .map(|trait_name| MutRefParamKind::TraitObject { trait_name })
+                    .or_else(|| slice_type_inner(&reference.elem).map(|_| MutRefParamKind::Slice))
                     .unwrap_or(MutRefParamKind::Plain),
             ))
         })
@@ -1474,6 +2136,25 @@ fn borrow_mut_ref_call_arg(
                 __gors_owned_interface
             }
         };
+        return;
+    }
+
+    if let MutRefParamKind::TraitObject { trait_name } = kind
+        && let Some(name) = expr_path_ident(arg)
+        && receiver_types
+            .receiver_type_for_expr(arg)
+            .is_some_and(|receiver_type| {
+                receiver_type.name == *trait_name
+                    && receiver_type.trait_impl_target == TraitImplTargetRef::BorrowedPointer
+            })
+    {
+        let ident = syn::Ident::new(&name, Span::mixed_site());
+        *arg = syn::parse_quote! { &mut *#ident };
+        return;
+    }
+
+    if matches!(kind, MutRefParamKind::Slice) {
+        borrow_mut_slice_call_arg(arg);
         return;
     }
 
@@ -1620,7 +2301,9 @@ fn collect_vec_newtypes(
             let Some(field) = fields.unnamed.first() else {
                 continue;
             };
-            if vec_type_inner(&field.ty).is_some() {
+            if vec_type_inner(&field.ty).is_some()
+                || owned_slice_storage_type_inner(&field.ty).is_some()
+            {
                 out.insert(format!("{}::{}", module.mod_name, item_struct.ident));
             }
         }
@@ -1664,7 +2347,7 @@ impl RestoreVecNewtypeMethodReceivers<'_> {
         let expr: syn::Expr = syn::parse_quote! {{
             let mut #temp = #from_func(std::mem::take(&mut #source));
             #temp.#method(#(#args),*);
-            #source = Vec::from(#temp);
+            #source = (#temp).into();
         }};
         Some(syn::Stmt::Expr(expr, *semi))
     }
@@ -1704,7 +2387,7 @@ impl RestoreVecNewtypeMethodReceivers<'_> {
                 let temp = &binding.temp;
                 let source = &binding.source;
                 syn::parse_quote! {
-                    #source = Vec::from(#temp);
+                    #source = (#temp).into();
                 }
             })
             .collect::<Vec<syn::Stmt>>();
@@ -1839,6 +2522,46 @@ mod tests {
         Ok(main_module.file)
     }
 
+    fn rewrite_owned_locking_args(main_file: syn::File) -> TestResult<syn::File> {
+        let mut modules = std::collections::BTreeMap::from([(
+            "__main__".to_string(),
+            super::CompiledModule {
+                mod_name: "main".to_string(),
+                import_path: String::new(),
+                file: main_file,
+                filename: "main.rs".to_string(),
+                content_hash: String::new(),
+                is_main: true,
+                is_stdlib: false,
+            },
+        )]);
+        super::scope_owned_locking_call_args(&mut modules);
+        let main_module = modules.remove("__main__").ok_or_else(|| {
+            std::io::Error::other("missing main module after locking argument rewrite")
+        })?;
+        Ok(main_module.file)
+    }
+
+    fn rewrite_mutated_vec_args(main_file: syn::File) -> TestResult<syn::File> {
+        let mut modules = std::collections::BTreeMap::from([(
+            "__main__".to_string(),
+            super::CompiledModule {
+                mod_name: "main".to_string(),
+                import_path: String::new(),
+                file: main_file,
+                filename: "main.rs".to_string(),
+                content_hash: String::new(),
+                is_main: true,
+                is_stdlib: false,
+            },
+        )]);
+        super::borrow_mutated_vec_params(&mut modules);
+        let main_module = modules.remove("__main__").ok_or_else(|| {
+            std::io::Error::other("missing main module after mutable Vec argument rewrite")
+        })?;
+        Ok(main_module.file)
+    }
+
     fn assert_rust_file_runs(file: &syn::File) -> TestResult {
         let build = tempfile::tempdir()?;
         let source_path = build.path().join("main.rs");
@@ -1862,6 +2585,276 @@ mod tests {
             String::from_utf8_lossy(&run.stderr)
         );
         Ok(())
+    }
+
+    #[test]
+    fn scope_owned_locking_call_args_drops_sibling_field_guards_left_to_right() -> TestResult {
+        let main_file: syn::File = rust! {
+            #[derive(Clone)]
+            struct Part(i32);
+
+            struct Holder {
+                first: std::sync::Arc<std::sync::Mutex<Part>>,
+                second: Part,
+            }
+
+            impl Part {
+                fn combine(
+                    first: std::sync::Arc<std::sync::Mutex<Self>>,
+                    second: Self,
+                ) -> i32 {
+                    first.lock().unwrap().0 + second.0
+                }
+            }
+
+            fn main() {
+                let holder = std::sync::Arc::new(std::sync::Mutex::new(Holder {
+                    first: std::sync::Arc::new(std::sync::Mutex::new(Part(20))),
+                    second: Part(22),
+                }));
+                let got = <Part>::combine(
+                    (holder.lock().unwrap().first).clone(),
+                    (holder.lock().unwrap().second).clone(),
+                );
+                assert_eq!(got, 42);
+            }
+        };
+
+        let main_file = rewrite_owned_locking_args(main_file)?;
+        let output = quote! { #main_file }.to_string();
+        assert!(
+            output.contains("let __gors_call_arg_0 =")
+                && output.contains("let __gors_call_arg_1 ="),
+            "expected each owned sibling-field read to have an independent guard scope: {output}"
+        );
+        assert_rust_file_runs(&main_file)
+    }
+
+    #[test]
+    fn scope_owned_locking_call_args_preserves_borrowed_guard_arguments() -> TestResult {
+        let main_file: syn::File = rust! {
+            struct Part(i32);
+
+            fn inspect(part: &Part) -> i32 {
+                part.0
+            }
+
+            fn main() {
+                let part = std::sync::Arc::new(std::sync::Mutex::new(Part(42)));
+                assert_eq!(inspect(&*part.lock().unwrap()), 42);
+            }
+        };
+
+        let main_file = rewrite_owned_locking_args(main_file)?;
+        let output = quote! { #main_file }.to_string();
+        assert!(
+            !output.contains("__gors_call_arg_0"),
+            "expected the guard-backed reference to remain alive through the call: {output}"
+        );
+        assert_rust_file_runs(&main_file)
+    }
+
+    #[test]
+    fn scope_owned_locking_call_args_writes_guarded_slice_mutations_back() -> TestResult {
+        let main_file: syn::File = rust! {
+            struct Writer {
+                bytes: Vec<u8>,
+                calls: usize,
+            }
+
+            impl Writer {
+                fn write(
+                    writer: std::sync::Arc<std::sync::Mutex<Self>>,
+                    bytes: &mut [u8],
+                ) {
+                    writer.lock().unwrap().calls += 1;
+                    bytes[0] = 42;
+                }
+            }
+
+            fn main() {
+                let writer = std::sync::Arc::new(std::sync::Mutex::new(Writer {
+                    bytes: vec![0, 0],
+                    calls: 0,
+                }));
+                <Writer>::write(
+                    writer.clone(),
+                    &mut writer.lock().unwrap().bytes[..1],
+                );
+                let writer = writer.lock().unwrap();
+                assert_eq!(writer.calls, 1);
+                assert_eq!(writer.bytes, vec![42, 0]);
+            }
+        };
+
+        let main_file = rewrite_owned_locking_args(main_file)?;
+        let output = quote! { #main_file }.to_string();
+        assert!(
+            output.contains("let __gors_call_owner_1 =")
+                && output.contains("let mut __gors_call_arg_1 =")
+                && output.contains("clone_from_slice (& __gors_call_arg_1)"),
+            "expected guarded mutable slice storage to detach and write back: {output}"
+        );
+        assert_rust_file_runs(&main_file)
+    }
+
+    #[test]
+    fn scope_owned_locking_call_args_wraps_trait_full_range_projections() -> TestResult {
+        let main_file: syn::File = rust! {
+            struct Storage(Vec<u8>);
+
+            impl Storage {
+                fn full_range_mut(
+                    &mut self,
+                    low: usize,
+                    high: usize,
+                    _max: Option<usize>,
+                ) -> &mut [u8] {
+                    &mut self.0[low..high]
+                }
+            }
+
+            struct Holder {
+                bytes: Storage,
+            }
+
+            trait Reader {
+                fn read(&mut self, bytes: &mut [u8]);
+            }
+
+            fn forward(
+                reader: &mut dyn Reader,
+                holder: std::sync::Arc<std::sync::Mutex<Holder>>,
+            ) {
+                Reader::read(
+                    &mut *reader,
+                    {
+                        let __gors_slice_borrow_low = 1usize;
+                        let __gors_slice_borrow_high = 4usize;
+                        &mut *(holder.lock().unwrap().bytes).full_range_mut(
+                            __gors_slice_borrow_low,
+                            __gors_slice_borrow_high,
+                            None,
+                        )
+                    },
+                );
+            }
+        };
+
+        let main_file = rewrite_owned_locking_args(main_file)?;
+        let output = quote! { #main_file }.to_string();
+        assert!(
+            output.contains("let __gors_call_owner_1 =")
+                && output.contains("let __gors_call_range_1 =")
+                && output.contains("let mut __gors_call_arg_1 =")
+                && output.contains("full_range_mut")
+                && output.contains("clone_from_slice (& __gors_call_arg_1)")
+                && output.contains("std :: panic :: resume_unwind"),
+            "expected the trait UFCS slice argument to detach and write back: {output}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn scope_owned_locking_call_args_peels_reborrowed_full_range_blocks() -> TestResult {
+        let main_file: syn::File = rust! {
+            struct Storage(Vec<u8>);
+
+            impl Storage {
+                fn full_range_mut(
+                    &mut self,
+                    low: usize,
+                    high: usize,
+                    _max: Option<usize>,
+                ) -> &mut [u8] {
+                    &mut self.0[low..high]
+                }
+            }
+
+            struct Holder {
+                bytes: Storage,
+            }
+
+            fn format(bytes: &mut [u8], value: u64) -> u8 {
+                bytes[0] = value as u8;
+                bytes[0]
+            }
+
+            fn forward(holder: std::sync::Arc<std::sync::Mutex<Holder>>) -> u8 {
+                format(
+                    &mut {
+                        let __gors_slice_borrow_low = 0usize;
+                        let __gors_slice_borrow_high = 1usize;
+                        &mut *(holder.lock().unwrap().bytes).full_range_mut(
+                            __gors_slice_borrow_low,
+                            __gors_slice_borrow_high,
+                            None,
+                        )
+                    },
+                    42,
+                )
+            }
+        };
+
+        let main_file = rewrite_owned_locking_args(main_file)?;
+        let output = quote! { #main_file }.to_string();
+        assert!(
+            output.contains("let __gors_call_owner_0 =")
+                && output.contains("let __gors_call_range_0 =")
+                && output.contains("let mut __gors_call_arg_0 =")
+                && output.contains("format (& mut __gors_call_arg_0")
+                && output.contains("clone_from_slice (& __gors_call_arg_0)"),
+            "expected the outer mutable reborrow to preserve the full-range transaction: {output}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn borrow_mutated_vec_params_recovers_pointer_named_slice_lvalue_from_clone_block() -> TestResult
+    {
+        let main_file: syn::File = rust! {
+            #[derive(Clone)]
+            struct NamedBytes(Vec<u8>);
+
+            impl std::ops::Deref for NamedBytes {
+                type Target = [u8];
+
+                fn deref(&self) -> &[u8] {
+                    &self.0
+                }
+            }
+
+            impl std::ops::DerefMut for NamedBytes {
+                fn deref_mut(&mut self) -> &mut [u8] {
+                    &mut self.0
+                }
+            }
+
+            fn put(bytes: &mut [u8]) {
+                bytes[0] = 42;
+            }
+
+            fn main() {
+                let bytes = std::sync::Arc::new(std::sync::Mutex::new(NamedBytes(vec![0])));
+                put(&mut {
+                    let pointer_value = bytes.lock().unwrap().clone();
+                    pointer_value
+                });
+                assert_eq!(bytes.lock().unwrap().0[0], 42);
+            }
+        };
+
+        let main_file = rewrite_mutated_vec_args(main_file)?;
+        let output = quote! { #main_file }.to_string();
+        assert!(
+            output.contains("put (& mut bytes . lock () . unwrap ())"),
+            "expected the mutable borrow to target the pointer-backed named slice: {output}"
+        );
+        assert!(
+            !output.contains("put (& mut { let pointer_value"),
+            "expected no mutation of a detached named-slice clone: {output}"
+        );
+        assert_rust_file_runs(&main_file)
     }
 
     #[test]
@@ -2569,8 +3562,119 @@ mod tests {
         let main_file = compiled_main_file(&modules);
         let output = quote! { #main_file }.to_string();
         assert!(
-            output.contains("crate :: helper :: sort (& mut values)"),
+            output.contains("crate :: helper :: sort (& mut * values)"),
             "expected mutable borrow to follow callee signature: {output}"
+        );
+    }
+
+    #[test]
+    fn qualified_ufcs_calls_follow_the_final_method_slice_abi() {
+        let helper_file: syn::File = rust! {
+            pub struct Borrowed;
+            impl Borrowed {
+                pub fn Write(mut receiver: &mut Self, mut bytes: &mut [u8]) {}
+            }
+
+            pub struct Owned;
+            impl Owned {
+                pub fn Read(mut receiver: &mut Self, mut bytes: Vec<u8>) {}
+            }
+        };
+        let main_file: syn::File = rust! {
+            pub fn forward_borrowed(
+                mut receiver: &mut crate::helper::Borrowed,
+                mut bytes: &mut [u8],
+            ) {
+                crate::helper::Borrowed::Write(receiver, (bytes).to_vec());
+            }
+
+            pub fn forward_owned(
+                mut receiver: &mut crate::helper::Owned,
+                mut bytes: &mut [u8],
+            ) {
+                crate::helper::Owned::Read(receiver, bytes);
+            }
+        };
+        let mut modules = std::collections::BTreeMap::from([
+            (
+                "helper".to_string(),
+                super::CompiledModule {
+                    mod_name: "helper".to_string(),
+                    import_path: "helper".to_string(),
+                    file: helper_file,
+                    filename: "helper.rs".to_string(),
+                    content_hash: String::new(),
+                    is_main: false,
+                    is_stdlib: false,
+                },
+            ),
+            (
+                "__main__".to_string(),
+                super::CompiledModule {
+                    mod_name: "main".to_string(),
+                    import_path: String::new(),
+                    file: main_file,
+                    filename: "main.rs".to_string(),
+                    content_hash: String::new(),
+                    is_main: true,
+                    is_stdlib: false,
+                },
+            ),
+        ]);
+
+        super::borrow_mut_ref_call_args(&mut modules);
+        super::clone_vec_value_call_args(&mut modules);
+
+        let main_file = compiled_main_file(&modules);
+        let output = quote! { #main_file }.to_string();
+        assert!(
+            output.contains("crate :: helper :: Borrowed :: Write (receiver , & mut * bytes)"),
+            "expected the qualified borrowed target to discard a stale to_vec adapter: {output}"
+        );
+        assert!(
+            output.contains("crate :: helper :: Owned :: Read (receiver , (bytes) . to_vec ())"),
+            "expected the qualified owned target to materialize its borrowed caller argument: {output}"
+        );
+    }
+
+    #[test]
+    fn qualified_ufcs_calls_reborrow_mutable_trait_object_arguments() {
+        let main_file: syn::File = rust! {
+            pub trait Writer {}
+
+            pub struct Reader;
+            impl Reader {
+                pub fn WriteTo(mut receiver: &mut Self, mut writer: &mut dyn Writer) {}
+            }
+
+            pub fn forward(mut receiver: &mut Reader, mut writer: &mut dyn Writer) {
+                Reader::WriteTo(receiver, writer);
+            }
+        };
+        let mut modules = std::collections::BTreeMap::from([(
+            "__main__".to_string(),
+            super::CompiledModule {
+                mod_name: "main".to_string(),
+                import_path: String::new(),
+                file: main_file,
+                filename: "main.rs".to_string(),
+                content_hash: String::new(),
+                is_main: true,
+                is_stdlib: false,
+            },
+        )]);
+
+        super::borrow_mut_ref_call_args(&mut modules);
+
+        let main_file = compiled_main_file(&modules);
+        let output = quote! { #main_file }.to_string();
+        assert!(
+            output.contains("Reader :: WriteTo (receiver , & mut * writer)"),
+            "expected an existing mutable trait-object reference to be reborrowed, not double-referenced: {output}"
+        );
+        assert!(
+            !output.contains("Reader :: WriteTo (receiver , & mut writer)"),
+            "expected no &mut &mut dyn Trait adapter: {output}"
         );
     }
 
@@ -2749,7 +3853,7 @@ mod tests {
         let main_file = compiled_main_file(&modules);
         let output = quote! { #main_file }.to_string();
         assert!(
-            output.contains("needs . fill (& mut values)"),
+            output.contains("needs . fill (& mut * values)"),
             "expected receiver-specific mutable borrow for NeedsMut::fill: {output}"
         );
         assert!(
@@ -2802,7 +3906,7 @@ mod tests {
         let main_file = compiled_main_file(&modules);
         let output = quote! { #main_file }.to_string();
         assert!(
-            output.contains("target . fill (& mut values)"),
+            output.contains("target . fill (& mut * values)"),
             "expected inner receiver fact to borrow the matching argument: {output}"
         );
         assert!(
@@ -2974,7 +4078,7 @@ mod tests {
         let main_file = compiled_main_file(&modules);
         let output = quote! { #main_file }.to_string();
         assert!(
-            output.contains("rw . write (& mut values)"),
+            output.contains("rw . write (& mut * values)"),
             "expected mutable borrow to follow inherited Writer::write signature: {output}"
         );
     }

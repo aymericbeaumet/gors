@@ -1,4 +1,5 @@
 use super::{CompiledModule, module_has_item, module_has_struct, prune_replaced_items};
+use proc_macro2::Span;
 use std::collections::HashSet;
 
 pub(super) const MODULE: &str = "sync__atomic";
@@ -6,27 +7,189 @@ const INT32_TYPE: &str = "Int32";
 const POINTER_TYPE: &str = "Pointer";
 const VALUE_TYPE: &str = "Value";
 
+const SCALAR_ATOMIC_FUNCTIONS: &[&str] = &[
+    "SwapInt32",
+    "SwapInt64",
+    "SwapUint32",
+    "SwapUint64",
+    "SwapUintptr",
+    "CompareAndSwapInt32",
+    "CompareAndSwapInt64",
+    "CompareAndSwapUint32",
+    "CompareAndSwapUint64",
+    "CompareAndSwapUintptr",
+    "AddInt32",
+    "AddInt64",
+    "AddUint32",
+    "AddUint64",
+    "AddUintptr",
+    "AndInt32",
+    "AndInt64",
+    "AndUint32",
+    "AndUint64",
+    "AndUintptr",
+    "OrInt32",
+    "OrInt64",
+    "OrUint32",
+    "OrUint64",
+    "OrUintptr",
+    "LoadInt32",
+    "LoadInt64",
+    "LoadUint32",
+    "LoadUint64",
+    "LoadUintptr",
+    "StoreInt32",
+    "StoreInt64",
+    "StoreUint32",
+    "StoreUint64",
+    "StoreUintptr",
+];
+
+pub(super) const OWNED_SYMBOLS: &[&str] = &[
+    "SwapInt32",
+    "SwapInt64",
+    "SwapUint32",
+    "SwapUint64",
+    "SwapUintptr",
+    "CompareAndSwapInt32",
+    "CompareAndSwapInt64",
+    "CompareAndSwapUint32",
+    "CompareAndSwapUint64",
+    "CompareAndSwapUintptr",
+    "AddInt32",
+    "AddInt64",
+    "AddUint32",
+    "AddUint64",
+    "AddUintptr",
+    "AndInt32",
+    "AndInt64",
+    "AndUint32",
+    "AndUint64",
+    "AndUintptr",
+    "OrInt32",
+    "OrInt64",
+    "OrUint32",
+    "OrUint64",
+    "OrUintptr",
+    "LoadInt32",
+    "LoadInt64",
+    "LoadUint32",
+    "LoadUint64",
+    "LoadUintptr",
+    "StoreInt32",
+    "StoreInt64",
+    "StoreUint32",
+    "StoreUint64",
+    "StoreUintptr",
+    "Int32",
+    "Int32::*",
+    "Pointer",
+    "Pointer::*",
+    "Value",
+    "Value::*",
+];
+
+fn scalar_atomic_items(requested: &HashSet<String>) -> Vec<syn::Item> {
+    let families: [(&str, syn::Type); 5] = [
+        ("Int32", syn::parse_quote! { i32 }),
+        ("Int64", syn::parse_quote! { i64 }),
+        ("Uint32", syn::parse_quote! { u32 }),
+        ("Uint64", syn::parse_quote! { u64 }),
+        ("Uintptr", syn::parse_quote! { usize }),
+    ];
+    let mut items = Vec::with_capacity(SCALAR_ATOMIC_FUNCTIONS.len());
+    for (suffix, ty) in families {
+        let swap = syn::Ident::new(&format!("Swap{suffix}"), Span::mixed_site());
+        let compare_and_swap =
+            syn::Ident::new(&format!("CompareAndSwap{suffix}"), Span::mixed_site());
+        let add = syn::Ident::new(&format!("Add{suffix}"), Span::mixed_site());
+        let and = syn::Ident::new(&format!("And{suffix}"), Span::mixed_site());
+        let or = syn::Ident::new(&format!("Or{suffix}"), Span::mixed_site());
+        let load = syn::Ident::new(&format!("Load{suffix}"), Span::mixed_site());
+        let store = syn::Ident::new(&format!("Store{suffix}"), Span::mixed_site());
+        items.extend([
+            syn::parse_quote! {
+                pub fn #swap(mut addr: crate::builtin::GorsPtr<#ty>, new: #ty) -> #ty {
+                    let mut value = addr.lock().unwrap();
+                    std::mem::replace(&mut *value, new)
+                }
+            },
+            syn::parse_quote! {
+                pub fn #compare_and_swap(
+                    mut addr: crate::builtin::GorsPtr<#ty>,
+                    old: #ty,
+                    new: #ty,
+                ) -> bool {
+                    let mut value = addr.lock().unwrap();
+                    if *value == old {
+                        *value = new;
+                        true
+                    } else {
+                        false
+                    }
+                }
+            },
+            syn::parse_quote! {
+                pub fn #add(mut addr: crate::builtin::GorsPtr<#ty>, delta: #ty) -> #ty {
+                    let mut value = addr.lock().unwrap();
+                    *value = (*value).wrapping_add(delta);
+                    *value
+                }
+            },
+            syn::parse_quote! {
+                pub fn #and(mut addr: crate::builtin::GorsPtr<#ty>, mask: #ty) -> #ty {
+                    let mut value = addr.lock().unwrap();
+                    let old = *value;
+                    *value = old & mask;
+                    old
+                }
+            },
+            syn::parse_quote! {
+                pub fn #or(mut addr: crate::builtin::GorsPtr<#ty>, mask: #ty) -> #ty {
+                    let mut value = addr.lock().unwrap();
+                    let old = *value;
+                    *value = old | mask;
+                    old
+                }
+            },
+            syn::parse_quote! {
+                pub fn #load(mut addr: crate::builtin::GorsPtr<#ty>) -> #ty {
+                    let value = addr.lock().unwrap();
+                    *value
+                }
+            },
+            syn::parse_quote! {
+                pub fn #store(mut addr: crate::builtin::GorsPtr<#ty>, val: #ty) {
+                    let mut value = addr.lock().unwrap();
+                    *value = val;
+                }
+            },
+        ]);
+    }
+    items.retain(|item| {
+        crate::compiler::syn_inspect::item_name(item).is_some_and(|name| requested.contains(&name))
+    });
+    items
+}
+
 pub(super) fn replace_module(module: &mut CompiledModule) -> bool {
+    let requested_scalar_functions = SCALAR_ATOMIC_FUNCTIONS
+        .iter()
+        .filter(|name| module_has_item(module, name))
+        .map(|name| (*name).to_string())
+        .collect::<HashSet<_>>();
     if !module_has_struct(module, INT32_TYPE)
         && !module_has_struct(module, POINTER_TYPE)
         && !module_has_struct(module, VALUE_TYPE)
-        && !module_has_item(module, "AddInt32")
-        && !module_has_item(module, "CompareAndSwapInt32")
-        && !module_has_item(module, "LoadUint32")
-        && !module_has_item(module, "StoreUint32")
+        && requested_scalar_functions.is_empty()
     {
         return false;
     }
 
-    let item_names = HashSet::from([
-        "AddInt32".to_string(),
-        "CompareAndSwapInt32".to_string(),
-        "LoadUint32".to_string(),
-        "StoreUint32".to_string(),
-        INT32_TYPE.to_string(),
-        POINTER_TYPE.to_string(),
-        VALUE_TYPE.to_string(),
-    ]);
+    let item_names = OWNED_SYMBOLS
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect::<HashSet<_>>();
     let impl_self_type_names = HashSet::from([
         INT32_TYPE.to_string(),
         POINTER_TYPE.to_string(),
@@ -34,41 +197,11 @@ pub(super) fn replace_module(module: &mut CompiledModule) -> bool {
     ]);
     prune_replaced_items(module, &item_names, &impl_self_type_names);
 
+    module
+        .file
+        .items
+        .extend(scalar_atomic_items(&requested_scalar_functions));
     module.file.items.extend([
-        syn::parse_quote! {
-            pub fn AddInt32(mut addr: crate::builtin::GorsPtr<i32>, delta: i32) -> i32 {
-                let mut value = addr.lock().unwrap();
-                *value += delta;
-                *value
-            }
-        },
-        syn::parse_quote! {
-            pub fn CompareAndSwapInt32(
-                mut addr: crate::builtin::GorsPtr<i32>,
-                old: i32,
-                new: i32,
-            ) -> bool {
-                let mut value = addr.lock().unwrap();
-                if *value == old {
-                    *value = new;
-                    true
-                } else {
-                    false
-                }
-            }
-        },
-        syn::parse_quote! {
-            pub fn LoadUint32(mut addr: crate::builtin::GorsPtr<u32>) -> u32 {
-                let value = addr.lock().unwrap();
-                *value
-            }
-        },
-        syn::parse_quote! {
-            pub fn StoreUint32(mut addr: crate::builtin::GorsPtr<u32>, val: u32) {
-                let mut value = addr.lock().unwrap();
-                *value = val;
-            }
-        },
         syn::parse_quote! {
             #[derive(Clone, Default, PartialEq)]
             pub struct Int32 {
@@ -77,10 +210,51 @@ pub(super) fn replace_module(module: &mut CompiledModule) -> bool {
         },
         syn::parse_quote! {
             impl Int32 {
+                pub fn Load(mut x: crate::builtin::GorsPtr<Self>) -> i32 {
+                    x.lock().unwrap().v
+                }
+
+                pub fn Store(mut x: crate::builtin::GorsPtr<Self>, val: i32) {
+                    x.lock().unwrap().v = val;
+                }
+
+                pub fn Swap(mut x: crate::builtin::GorsPtr<Self>, new: i32) -> i32 {
+                    let mut value = x.lock().unwrap();
+                    std::mem::replace(&mut value.v, new)
+                }
+
+                pub fn CompareAndSwap(
+                    mut x: crate::builtin::GorsPtr<Self>,
+                    old: i32,
+                    new: i32,
+                ) -> bool {
+                    let mut value = x.lock().unwrap();
+                    if value.v == old {
+                        value.v = new;
+                        true
+                    } else {
+                        false
+                    }
+                }
+
                 pub fn Add(mut x: crate::builtin::GorsPtr<Self>, delta: i32) -> i32 {
                     let mut value = x.lock().unwrap();
-                    value.v += delta;
+                    value.v = value.v.wrapping_add(delta);
                     value.v
+                }
+
+                pub fn And(mut x: crate::builtin::GorsPtr<Self>, mask: i32) -> i32 {
+                    let mut value = x.lock().unwrap();
+                    let old = value.v;
+                    value.v = old & mask;
+                    old
+                }
+
+                pub fn Or(mut x: crate::builtin::GorsPtr<Self>, mask: i32) -> i32 {
+                    let mut value = x.lock().unwrap();
+                    let old = value.v;
+                    value.v = old | mask;
+                    old
                 }
             }
         },
@@ -229,4 +403,53 @@ pub(super) fn replace_module(module: &mut CompiledModule) -> bool {
         },
     ]);
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn generated_names(items: &[syn::Item]) -> HashSet<String> {
+        items
+            .iter()
+            .filter_map(crate::compiler::syn_inspect::item_name)
+            .collect()
+    }
+
+    #[test]
+    fn scalar_integer_generation_and_ownership_cover_the_same_abi() {
+        let requested = SCALAR_ATOMIC_FUNCTIONS
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect::<HashSet<_>>();
+        let items = scalar_atomic_items(&requested);
+        let generated = generated_names(&items);
+        let owned = OWNED_SYMBOLS
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect::<HashSet<_>>();
+
+        assert_eq!(generated, requested);
+        assert!(generated.is_subset(&owned));
+
+        let source = prettyplease::unparse(&syn::File {
+            attrs: Vec::new(),
+            items,
+            shebang: None,
+        });
+        assert!(source.contains("pub fn CompareAndSwapUint64"), "{source}");
+        assert!(source.contains("pub fn LoadUint64"), "{source}");
+        assert_eq!(source.matches("wrapping_add").count(), 5, "{source}");
+    }
+
+    #[test]
+    fn scalar_integer_generation_is_reachability_driven() {
+        let requested =
+            HashSet::from(["CompareAndSwapUint64".to_string(), "LoadUint64".to_string()]);
+        let generated = generated_names(&scalar_atomic_items(&requested));
+
+        assert_eq!(generated, requested);
+        assert!(!generated.contains("AddUint64"));
+        assert!(!generated.contains("CompareAndSwapInt32"));
+    }
 }

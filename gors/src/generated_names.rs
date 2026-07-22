@@ -9,6 +9,9 @@ pub const FMT_FLUSH_SOURCE_DOC_PREFIX: &str = "gors:fmt-flush-source=";
 pub const NOOP_INTERFACE: &str = "__GorsNoopInterface";
 pub const EXTERNAL_LOCAL_INTERFACE_IMPL_DOC: &str = "gors:external-local-interface-impl";
 pub const PRESERVE_IMPORTED_INTERFACE_IMPL_DOC: &str = "gors:preserve-imported-interface-impl";
+pub const REMOVABLE_INTERFACE_FALLBACK_DOC: &str = "gors:removable-interface-fallback";
+pub const INTERFACE_IMPL_REQUIRED_BY_DOC_PREFIX: &str = "gors:interface-impl-required-by=";
+pub const INTERFACE_ASSERTION_CANDIDATE_DOC_PREFIX: &str = "gors:interface-assertion-candidate=";
 
 fn ident(name: &str) -> syn::Ident {
     syn::Ident::new(name, proc_macro2::Span::mixed_site())
@@ -64,6 +67,38 @@ pub fn fmt_flush_source_from_attr(attr: &syn::Attribute) -> Option<String> {
     doc_attr_value(attr).and_then(|doc| fmt_flush_source_from_doc(&doc).map(str::to_owned))
 }
 
+pub fn interface_impl_required_by_doc(interface: &str) -> String {
+    format!("{INTERFACE_IMPL_REQUIRED_BY_DOC_PREFIX}{interface}")
+}
+
+pub fn interface_impl_required_by_from_doc(doc: &str) -> Option<&str> {
+    doc.strip_prefix(INTERFACE_IMPL_REQUIRED_BY_DOC_PREFIX)
+        .filter(|interface| !interface.is_empty())
+}
+
+pub fn interface_impl_required_by_from_attr(attr: &syn::Attribute) -> Option<String> {
+    doc_attr_value(attr)
+        .and_then(|doc| interface_impl_required_by_from_doc(&doc).map(str::to_owned))
+}
+
+pub fn interface_assertion_candidate_doc(concrete: &syn::Type) -> String {
+    format!(
+        "{INTERFACE_ASSERTION_CANDIDATE_DOC_PREFIX}{}",
+        quote::quote! { #concrete }
+    )
+}
+
+pub fn interface_assertion_candidate_from_doc(doc: &str) -> Option<syn::Type> {
+    let concrete = doc
+        .strip_prefix(INTERFACE_ASSERTION_CANDIDATE_DOC_PREFIX)
+        .filter(|concrete| !concrete.is_empty())?;
+    syn::parse_str(concrete).ok()
+}
+
+pub fn interface_assertion_candidate_from_attr(attr: &syn::Attribute) -> Option<syn::Type> {
+    doc_attr_value(attr).and_then(|doc| interface_assertion_candidate_from_doc(&doc))
+}
+
 pub fn doc_attr_value(attr: &syn::Attribute) -> Option<String> {
     let syn::Meta::NameValue(meta) = &attr.meta else {
         return None;
@@ -103,6 +138,29 @@ mod tests {
     }
 
     #[test]
+    fn interface_impl_dependency_doc_round_trips_interface_name() {
+        let doc = interface_impl_required_by_doc("ReadCloser");
+
+        assert_eq!(
+            interface_impl_required_by_from_doc(&doc),
+            Some("ReadCloser")
+        );
+    }
+
+    #[test]
+    fn interface_assertion_candidate_doc_round_trips_concrete_type() {
+        let concrete: syn::Type =
+            syn::parse_quote! { crate::builtin::GorsPtr<crate::bufio::Reader> };
+        let doc = interface_assertion_candidate_doc(&concrete);
+        let parsed = interface_assertion_candidate_from_doc(&doc).unwrap();
+
+        assert_eq!(
+            quote::quote! { #parsed }.to_string(),
+            quote::quote! { #concrete }.to_string()
+        );
+    }
+
+    #[test]
     fn fmt_flush_marker_attrs_read_doc_attributes() {
         let method: syn::Attribute = syn::parse_quote! {
             #[doc = "gors:fmt-flush-method=emit"]
@@ -110,11 +168,26 @@ mod tests {
         let source: syn::Attribute = syn::parse_quote! {
             #[doc = "gors:fmt-flush-source=scratch"]
         };
+        let dependency: syn::Attribute = syn::parse_quote! {
+            #[doc = "gors:interface-impl-required-by=ReadCloser"]
+        };
+        let candidate: syn::Attribute = syn::parse_quote! {
+            #[doc = "gors:interface-assertion-candidate=crate::model::Reader"]
+        };
 
         assert_eq!(fmt_flush_method_from_attr(&method).as_deref(), Some("emit"));
         assert_eq!(
             fmt_flush_source_from_attr(&source).as_deref(),
             Some("scratch")
+        );
+        assert_eq!(
+            interface_impl_required_by_from_attr(&dependency).as_deref(),
+            Some("ReadCloser")
+        );
+        let candidate = interface_assertion_candidate_from_attr(&candidate).unwrap();
+        assert_eq!(
+            quote::quote! { #candidate }.to_string(),
+            "crate :: model :: Reader"
         );
     }
 
@@ -124,6 +197,16 @@ mod tests {
         assert_eq!(fmt_flush_method_from_doc("gors:other"), None);
         assert_eq!(fmt_flush_source_from_doc(FMT_FLUSH_SOURCE_DOC_PREFIX), None);
         assert_eq!(fmt_flush_source_from_doc("gors:other"), None);
+        assert_eq!(
+            interface_impl_required_by_from_doc(INTERFACE_IMPL_REQUIRED_BY_DOC_PREFIX),
+            None
+        );
+        assert_eq!(interface_impl_required_by_from_doc("gors:other"), None);
+        assert!(
+            interface_assertion_candidate_from_doc(INTERFACE_ASSERTION_CANDIDATE_DOC_PREFIX)
+                .is_none()
+        );
+        assert!(interface_assertion_candidate_from_doc("gors:other").is_none());
     }
 
     #[test]

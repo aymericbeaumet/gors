@@ -3,6 +3,7 @@ use std::cell::RefCell;
 thread_local! {
     static MAIN_PACKAGE_TOP_LEVEL_VARS_ARE_LOCALS: RefCell<bool> = const { RefCell::new(false) };
     static CURRENT_GO_PACKAGE_NAME: RefCell<Option<String>> = const { RefCell::new(None) };
+    static CURRENT_RUST_MODULE_NAME: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 pub(super) struct MainPackageVarModeGuard {
@@ -10,6 +11,10 @@ pub(super) struct MainPackageVarModeGuard {
 }
 
 pub(super) struct CurrentGoPackageNameGuard {
+    previous: Option<String>,
+}
+
+pub(super) struct CurrentRustModuleNameGuard {
     previous: Option<String>,
 }
 
@@ -51,44 +56,74 @@ impl Drop for CurrentGoPackageNameGuard {
     }
 }
 
+impl CurrentRustModuleNameGuard {
+    pub(super) fn set(current: String) -> Self {
+        let previous = CURRENT_RUST_MODULE_NAME.with(|name| {
+            let previous = name.borrow().clone();
+            *name.borrow_mut() = Some(current);
+            previous
+        });
+        Self { previous }
+    }
+}
+
+impl Drop for CurrentRustModuleNameGuard {
+    fn drop(&mut self) {
+        CURRENT_RUST_MODULE_NAME.with(|name| {
+            *name.borrow_mut() = self.previous.clone();
+        });
+    }
+}
+
 pub(super) fn main_package_vars_are_locals() -> bool {
     MAIN_PACKAGE_TOP_LEVEL_VARS_ARE_LOCALS.with(|value| *value.borrow())
 }
 
 pub(super) fn qualify_interface_name(interface_name: &str) -> String {
     if interface_name == "error" || interface_name.contains('.') {
-        return interface_name.to_string();
+        return canonicalize_current_package_qualified_name(interface_name);
     }
-    CURRENT_GO_PACKAGE_NAME.with(|package| {
-        package
-            .borrow()
-            .as_ref()
-            .map(|package| format!("{package}.{interface_name}"))
-            .unwrap_or_else(|| interface_name.to_string())
-    })
+    current_package_identity()
+        .map(|package| format!("{package}.{interface_name}"))
+        .unwrap_or_else(|| interface_name.to_string())
 }
 
 pub(super) fn local_name_from_current_package_qualified(name: &str) -> Option<String> {
     let (package_name, local_name) = name.rsplit_once('.')?;
-    CURRENT_GO_PACKAGE_NAME.with(|package| {
-        package
-            .borrow()
-            .as_ref()
-            .is_some_and(|current| current == package_name)
-            .then(|| local_name.to_string())
-    })
+    is_current_package_qualifier(package_name).then(|| local_name.to_string())
 }
 
 pub(super) fn current_package_qualified_name(name: &str) -> Option<String> {
     if name.contains('.') {
         return None;
     }
-    CURRENT_GO_PACKAGE_NAME.with(|package| {
-        package
-            .borrow()
-            .as_ref()
-            .map(|package_name| format!("{package_name}.{name}"))
-    })
+    current_package_identity().map(|package_name| format!("{package_name}.{name}"))
+}
+
+pub(super) fn current_rust_module_name() -> Option<String> {
+    CURRENT_RUST_MODULE_NAME.with(|name| name.borrow().clone())
+}
+
+pub(super) fn canonicalize_current_package_qualified_name(name: &str) -> String {
+    let Some((qualifier, local_name)) = name.rsplit_once('.') else {
+        return name.to_string();
+    };
+    if !is_current_package_qualifier(qualifier) {
+        return name.to_string();
+    }
+    current_rust_module_name()
+        .map(|module| format!("{module}.{local_name}"))
+        .unwrap_or_else(|| local_name.to_string())
+}
+
+fn current_package_identity() -> Option<String> {
+    current_rust_module_name()
+        .or_else(|| CURRENT_GO_PACKAGE_NAME.with(|package| package.borrow().clone()))
+}
+
+fn is_current_package_qualifier(qualifier: &str) -> bool {
+    current_rust_module_name().as_deref() == Some(qualifier)
+        || CURRENT_GO_PACKAGE_NAME.with(|package| package.borrow().as_deref() == Some(qualifier))
 }
 
 #[cfg(test)]
@@ -150,5 +185,24 @@ mod tests {
             None
         );
         assert_eq!(current_package_qualified_name("Reader"), None);
+    }
+
+    #[test]
+    fn generated_module_guard_canonicalizes_both_self_package_spellings() {
+        let _package = CurrentGoPackageNameGuard::set("fs".to_string());
+        let _module = CurrentRustModuleNameGuard::set("io__fs".to_string());
+
+        assert_eq!(qualify_interface_name("Reader"), "io__fs.Reader");
+        assert_eq!(qualify_interface_name("fs.Reader"), "io__fs.Reader");
+        assert_eq!(qualify_interface_name("io__fs.Reader"), "io__fs.Reader");
+        assert_eq!(qualify_interface_name("other.Reader"), "other.Reader");
+        assert_eq!(
+            local_name_from_current_package_qualified("fs.Reader").as_deref(),
+            Some("Reader")
+        );
+        assert_eq!(
+            local_name_from_current_package_qualified("io__fs.Reader").as_deref(),
+            Some("Reader")
+        );
     }
 }

@@ -1,5 +1,5 @@
 use super::syn_helpers::{
-    has_method, is_self_expr, type_is_vec_u8, type_path_ident_name,
+    has_method, is_self_expr, type_is_owned_byte_slice_storage, type_path_ident_name,
     type_path_pointer_cell_inner_name,
 };
 use crate::generated_names::{FMT_FLUSH_HOOK, fmt_flush_hook_ident};
@@ -349,7 +349,7 @@ fn is_byte_buffer_struct(item_struct: &syn::ItemStruct) -> bool {
     let Some(field) = fields.next() else {
         return false;
     };
-    fields.next().is_none() && type_is_vec_u8(&field.ty)
+    fields.next().is_none() && type_is_owned_byte_slice_storage(&field.ty)
 }
 
 fn fmt_flush_impl(plan: &FmtFlushPlan) -> syn::Item {

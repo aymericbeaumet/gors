@@ -124,8 +124,8 @@ fn value_method_items(module: &CompiledModule) -> Vec<syn::Item> {
                 false
             }
 
-            pub fn Bytes(&self) -> Vec<u8> {
-                Vec::new()
+            pub fn Bytes(&self) -> crate::builtin::GorsSliceStorage<u8> {
+                Default::default()
             }
 
             pub fn CanAddr(&self) -> bool {

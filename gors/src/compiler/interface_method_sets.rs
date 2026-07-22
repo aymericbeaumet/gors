@@ -29,6 +29,16 @@ pub(super) fn for_impl(trait_name: &str, fallback_required_methods: &[String]) -
     }
 }
 
+pub(super) fn dispatch_owner(trait_name: &str, method_name: &str) -> Option<String> {
+    std::iter::once(trait_name.to_string())
+        .chain(embedded_interfaces_for_impl(trait_name))
+        .find(|candidate| {
+            direct_methods_for_impl(candidate, &[])
+                .iter()
+                .any(|method| method == method_name)
+        })
+}
+
 pub(super) fn pointer_satisfies(
     struct_method_list: &[String],
     required_methods: &[String],
@@ -47,8 +57,13 @@ pub(super) fn pointer_type_satisfies(
     super::TYPE_ENV.with(|env| {
         let env = env.borrow();
         if env.is_interface(trait_name) {
-            let methods = satisfaction_methods(&env, trait_name, required_methods);
-            env.named_type_implements_methods(struct_name, &methods, true)
+            type_satisfies_interface_and_fallback(
+                &env,
+                struct_name,
+                trait_name,
+                required_methods,
+                true,
+            )
         } else {
             pointer_satisfies(struct_method_list, required_methods)
         }
@@ -65,26 +80,44 @@ pub(super) fn value_type_satisfies(
     super::TYPE_ENV.with(|env| {
         let env = env.borrow();
         if env.is_interface(trait_name) {
-            let methods = satisfaction_methods(&env, trait_name, required_methods);
-            env.named_type_implements_methods(struct_name, &methods, false)
+            type_satisfies_interface_and_fallback(
+                &env,
+                struct_name,
+                trait_name,
+                required_methods,
+                false,
+            )
         } else {
             value_method_list_satisfies(struct_method_list, pointer_methods, required_methods)
         }
     })
 }
 
-fn satisfaction_methods(
+fn type_satisfies_interface_and_fallback(
     env: &typeinfer::TypeEnv,
+    struct_name: &str,
     trait_name: &str,
     fallback_required_methods: &[String],
-) -> Vec<String> {
-    let mut methods = env.get_interface_methods(trait_name).unwrap_or_default();
-    for method in fallback_required_methods {
-        if !methods.contains(method) {
-            methods.push(method.clone());
-        }
+    include_pointer_receiver_methods: bool,
+) -> bool {
+    if !env.named_type_implements_interface(
+        struct_name,
+        trait_name,
+        include_pointer_receiver_methods,
+    ) {
+        return false;
     }
-    methods
+    let interface_methods = env.get_interface_methods(trait_name).unwrap_or_default();
+    let fallback_only = fallback_required_methods
+        .iter()
+        .filter(|method| !interface_methods.contains(method))
+        .cloned()
+        .collect::<Vec<_>>();
+    env.named_type_implements_methods(
+        struct_name,
+        &fallback_only,
+        include_pointer_receiver_methods,
+    )
 }
 
 pub(super) fn needed_imports<'src>(decls: &[ast::Decl<'src>]) -> BTreeMap<String, Vec<String>> {
@@ -482,12 +515,13 @@ fn collect_interface_param_needed_import(
 }
 
 fn direct_methods_for_impl(trait_name: &str, fallback: &[String]) -> Vec<String> {
-    super::TYPE_ENV.with(|env| {
-        env.borrow()
-            .get_interface_direct_methods(trait_name)
-            .or_else(|| direct_methods_from_import(trait_name))
-            .unwrap_or_else(|| fallback.to_vec())
-    })
+    // Import resolution can recursively scan and publish package facts. Drop
+    // the active lowering environment borrow before entering the resolver so
+    // those scans can temporarily install their own type environment.
+    let local = super::TYPE_ENV.with(|env| env.borrow().get_interface_direct_methods(trait_name));
+    local
+        .or_else(|| direct_methods_from_import(trait_name))
+        .unwrap_or_else(|| fallback.to_vec())
 }
 
 fn direct_methods_from_import(trait_name: &str) -> Option<Vec<String>> {

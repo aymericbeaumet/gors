@@ -56,17 +56,6 @@ impl<'a> ExternalRootCollector<'a> {
         self.refs_from_items(items).into_keys().collect()
     }
 
-    pub(super) fn refs_from_items_with_roots(
-        &self,
-        module: &str,
-        roots: &HashSet<String>,
-        items: &[syn::Item],
-    ) -> HashMap<String, HashSet<String>> {
-        let refs = self.refs_from_items(items);
-        debug_assert_semantic_external_refs(self.semantic_graph, module, roots, &refs);
-        refs
-    }
-
     pub(super) fn refs_from_reachable_module_roots(
         &self,
         module: &CompiledModule,

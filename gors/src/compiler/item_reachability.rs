@@ -69,7 +69,9 @@ pub(super) fn reachable_item_for_names(
     let syn::Item::Impl(item_impl) = item else {
         return None;
     };
-    if super::generated_attrs::attrs_preserve_for_dce(&item_impl.attrs) {
+    if super::generated_attrs::attrs_preserve_for_dce(&item_impl.attrs)
+        && !super::generated_attrs::attrs_mark_removable_interface_fallback(&item_impl.attrs)
+    {
         return Some(item.clone());
     }
 
@@ -92,11 +94,20 @@ pub(super) fn reachable_item_for_names(
         let Some(trait_name) = trait_name else {
             return self_reachable.then(|| syn::Item::Impl(item_impl.clone()));
         };
+        let trait_reachability_name = if trait_path_requires_qualified_impl_root(path) {
+            trait_path_reachability_name(path).unwrap_or_else(|| trait_name.clone())
+        } else {
+            trait_name.clone()
+        };
+        let impl_target_names = impl_target_reachability_names(&item_impl.self_ty);
         let trait_reachable = (names.contains(&trait_name) && !is_ambient_trait_name(&trait_name))
             || path_mentions_name(path, names);
-        let explicit_impl_reachable = self_names
-            .iter()
-            .any(|self_name| names.contains(&trait_impl_reachability_name(&trait_name, self_name)));
+        let explicit_impl_reachable = impl_target_names.iter().any(|self_name| {
+            names.contains(&trait_impl_reachability_name(
+                &trait_reachability_name,
+                self_name,
+            ))
+        });
         let impl_member_reachable = item_impl.items.iter().any(|impl_item| {
             impl_item_member_name(impl_item).is_some_and(|member_name| {
                 impl_item_name_reachable(&self_names, &member_name, names)
@@ -119,10 +130,20 @@ pub(super) fn reachable_item_for_names(
             super::generated_attrs::attrs_mark_external_local_interface_impl(&item_impl.attrs)
                 && trait_reachable
                 && self_reachable;
+        let required_supertrait_impl_reachable = item_impl
+            .attrs
+            .iter()
+            .filter_map(crate::generated_names::interface_impl_required_by_from_attr)
+            .any(|composite_trait| {
+                impl_target_names.iter().any(|self_name| {
+                    names.contains(&trait_impl_reachability_name(&composite_trait, self_name))
+                })
+            });
         let keep_impl = explicit_impl_reachable
             || impl_member_reachable
             || follows_self_reachability
             || external_local_impl_reachable
+            || required_supertrait_impl_reachable
             || (trait_reachable && is_ambient_trait_name(&trait_name))
             || (trait_reachable && item_impl.items.is_empty())
             || (trait_reachable && self_reachable && hook_only_impl)
@@ -306,6 +327,63 @@ pub(super) fn trait_impl_reachability_name(trait_name: &str, self_name: &str) ->
     format!("impl {trait_name} for {self_name}")
 }
 
+pub(super) fn qualified_trait_impl_reachability_name(
+    trait_module: &str,
+    trait_name: &str,
+    self_name: &str,
+) -> String {
+    format!("impl {trait_module}::{trait_name} for {self_name}")
+}
+
+pub(super) fn trait_path_reachability_name(path: &syn::Path) -> Option<String> {
+    let segments = path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .filter(|segment| segment != "crate")
+        .collect::<Vec<_>>();
+    (!segments.is_empty()).then(|| segments.join("::"))
+}
+
+fn trait_path_requires_qualified_impl_root(path: &syn::Path) -> bool {
+    let segments = path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .filter(|segment| segment != "crate")
+        .collect::<Vec<_>>();
+    segments.len() > 1
+        && !matches!(
+            segments.first().map(String::as_str),
+            Some("std" | "core" | "alloc")
+        )
+}
+
+fn impl_target_reachability_names(ty: &syn::Type) -> Vec<String> {
+    let Some(name) = named_self_type(ty) else {
+        return Vec::new();
+    };
+    let mut direct = ty;
+    let mut borrowed_mutably = false;
+    while let syn::Type::Reference(reference) = direct {
+        borrowed_mutably |= reference.mutability.is_some();
+        direct = &reference.elem;
+    }
+    if let syn::Type::Path(path) = direct
+        && path
+            .path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "GorsPtr")
+    {
+        return vec![format!("GorsPtr<{name}>")];
+    }
+    if borrowed_mutably {
+        return vec![format!("&mut {name}")];
+    }
+    vec![name]
+}
+
 fn is_ambient_trait_name(name: &str) -> bool {
     matches!(
         name,
@@ -340,6 +418,83 @@ fn is_ambient_trait_name(name: &str) -> bool {
 fn is_runtime_support_trait_name(name: &str) -> bool {
     matches!(
         name,
-        "error" | "GorsReflectOps" | "ProjectedCell" | "ProjectedGuard"
+        "error" | "GorsOwnedSliceStorage" | "GorsReflectOps" | "ProjectedCell" | "ProjectedGuard"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exact_external_impl_root_does_not_retain_same_basename_other_module() {
+        let first: syn::Item = syn::parse_quote! {
+            impl crate::first_io::Reader for Source {}
+        };
+        let second: syn::Item = syn::parse_quote! {
+            impl crate::second_io::Reader for Source {}
+        };
+        let names = std::collections::HashSet::from([
+            "Source".to_string(),
+            qualified_trait_impl_reachability_name("first_io", "Reader", "Source"),
+        ]);
+        let item_names = std::collections::HashSet::from(["Source".to_string()]);
+        let top_level_names = item_names.clone();
+
+        assert!(
+            reachable_item_for_names(&first, &names, &item_names, &top_level_names, &names)
+                .is_some()
+        );
+        assert!(
+            reachable_item_for_names(&second, &names, &item_names, &top_level_names, &names)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn qualified_impl_roots_preserve_exact_pointer_target_shape() {
+        let value: syn::Item = syn::parse_quote! {
+            impl crate::io::Reader for Source {}
+        };
+        let pointer: syn::Item = syn::parse_quote! {
+            impl crate::io::Reader for crate::builtin::GorsPtr<Source> {}
+        };
+        let names = std::collections::HashSet::from([
+            "Source".to_string(),
+            qualified_trait_impl_reachability_name("io", "Reader", "GorsPtr<Source>"),
+        ]);
+        let item_names = std::collections::HashSet::from(["Source".to_string()]);
+        let top_level_names = item_names.clone();
+
+        assert!(
+            reachable_item_for_names(&value, &names, &item_names, &top_level_names, &names)
+                .is_none()
+        );
+        assert!(
+            reachable_item_for_names(&pointer, &names, &item_names, &top_level_names, &names)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn standard_library_trait_impls_keep_unqualified_runtime_roots() {
+        let display: syn::Item = syn::parse_quote! {
+            impl std::fmt::Display for GorsNilPointer {
+                fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    Ok(())
+                }
+            }
+        };
+        let names = std::collections::HashSet::from([
+            "GorsNilPointer".to_string(),
+            trait_impl_reachability_name("Display", "GorsNilPointer"),
+        ]);
+        let item_names = std::collections::HashSet::from(["GorsNilPointer".to_string()]);
+        let top_level_names = item_names.clone();
+
+        assert!(
+            reachable_item_for_names(&display, &names, &item_names, &top_level_names, &names)
+                .is_some()
+        );
+    }
 }

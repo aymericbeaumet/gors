@@ -507,20 +507,19 @@ pub fn call_func_key(fun: &ast::Expr<'_>, env: &TypeEnv) -> Option<String> {
     match fun {
         ast::Expr::Ident(id) => Some(id.name.to_string()),
         ast::Expr::SelectorExpr(sel) => {
-            if let ast::Expr::Ident(pkg_or_recv) = &*sel.x {
-                let package_key = format!("{}.{}", pkg_or_recv.name, sel.sel.name);
-                if !env.get_func_params(&package_key).is_empty()
-                    || env.get_func_variadic_start(&package_key).is_some()
-                {
-                    return Some(package_key);
-                }
-
-                if let Some(name) = env
-                    .get_var(pkg_or_recv.name)
-                    .and_then(|ty| super::method_expressions::method_receiver_name(&ty, env))
-                {
-                    return Some(format!("{}.{}", name, sel.sel.name));
-                }
+            if let Some(method) = resolved_selector_method_for_call(sel, env) {
+                return Some(method.key);
+            }
+            if selector_base_value_type(sel, env).is_some() {
+                return None;
+            }
+            if let Some(method) = super::method_expressions::for_selector(sel, env) {
+                return Some(method.method_key);
+            }
+            if let Some(package_key) = super::selector_semantics::qualified_member_key(sel)
+                && env.has_func(&package_key)
+            {
+                return Some(package_key);
             }
             None
         }
@@ -545,14 +544,7 @@ pub fn call_abi(call: &ast::CallExpr<'_>, env: &TypeEnv) -> CallAbi {
         .unwrap_or_default();
     let results = signature
         .as_ref()
-        .map(|signature| {
-            let inferred = env.resolve_alias(&GoType::infer_expr(&call.fun, env));
-            if let GoType::Func { results, .. } = inferred {
-                results
-            } else {
-                env.get_func_returns(&signature.target)
-            }
-        })
+        .map(|signature| signature.results.clone())
         .unwrap_or_default();
     let variadic_start = signature
         .as_ref()
@@ -654,10 +646,11 @@ fn classify_call_callee(call: &ast::CallExpr<'_>, env: &TypeEnv) -> CalleeKind {
 }
 
 fn classify_selector_call_callee(selector: &ast::SelectorExpr<'_>, env: &TypeEnv) -> CalleeKind {
-    if let Some(method_key) = selector_receiver_method_key(selector, env)
-        && env.has_func(&method_key)
-    {
+    if resolved_selector_method_for_call(selector, env).is_some() {
         return CalleeKind::Method;
+    }
+    if selector_base_value_type(selector, env).is_some() {
+        return CalleeKind::Unknown;
     }
     if let Some(package_key) = super::selector_semantics::qualified_member_key(selector) {
         if env.has_func(&package_key) {
@@ -972,8 +965,7 @@ fn lower_decl(decl: &ast::Decl<'_>, env: &TypeEnv) -> Option<Item> {
 }
 
 fn lower_func_decl(func: &ast::FuncDecl<'_>, env: &TypeEnv) -> Func {
-    let mut body_env = env.clone();
-    seed_func_bindings(func.recv.as_ref(), &func.type_, &mut body_env);
+    let mut body_env = env.scoped_for_func_decl(func);
     Func {
         name: Some(func.name.name.to_string()),
         receiver: func
@@ -1160,27 +1152,45 @@ fn lower_block_with_env(block: &ast::BlockStmt<'_>, env: &mut TypeEnv) -> Block 
 }
 
 fn record_decl_bindings(gen_decl: &ast::GenDecl<'_>, env: &mut TypeEnv) {
-    for spec in &gen_decl.specs {
+    let mut inherited_const_values: Option<&[ast::Expr<'_>]> = None;
+    for (iota_value, spec) in gen_decl.specs.iter().enumerate() {
         let ast::Spec::ValueSpec(value_spec) = spec else {
             continue;
         };
         let explicit_type = value_spec.type_.as_ref().map(GoType::from_expr);
+        let values = if gen_decl.tok == token::Token::CONST {
+            value_spec.values.as_deref().or(inherited_const_values)
+        } else {
+            value_spec.values.as_deref()
+        };
         for (idx, name) in value_spec.names.iter().enumerate() {
             if name.name == "_" {
                 continue;
             }
             let ty = explicit_type.clone().unwrap_or_else(|| {
-                value_spec
-                    .values
-                    .as_ref()
+                values
                     .and_then(|values| values.get(idx))
                     .map(|expr| GoType::infer_expr(expr, env))
                     .unwrap_or(GoType::Unknown)
             });
             if gen_decl.tok == token::Token::CONST {
                 env.set_const_type(name.name, ty.clone());
+                if let Some(value_expr) = values.and_then(|values| values.get(idx))
+                    && let Some(value) = super::typeinfer::const_integer_value_exact(
+                        value_expr,
+                        env,
+                        Some(iota_value as i64),
+                    )
+                {
+                    env.set_const_integer_exact_value(name.name, &value);
+                }
             }
             env.set_var(name.name, ty);
+        }
+        if gen_decl.tok == token::Token::CONST
+            && let Some(values) = value_spec.values.as_deref()
+        {
+            inherited_const_values = Some(values);
         }
     }
 }
@@ -1808,7 +1818,7 @@ fn invalid_forward_goto_in_stmt_list(stmts: &[ast::Stmt<'_>]) -> Option<InvalidG
             }
             let mut skipped_names = BTreeSet::new();
             for skipped in stmts.iter().take(target_idx).skip(idx + 1) {
-                collect_direct_declared_names_in_stmt(skipped, &mut skipped_names);
+                collect_direct_variable_names_in_stmt(skipped, &mut skipped_names);
             }
             if !skipped_names.is_empty() {
                 return Some(InvalidGoto::SkipsDeclarations {
@@ -6785,7 +6795,7 @@ fn invalid_compound_assignment(
             if shift_count_is_negative_constant(rhs, env) {
                 return Some(InvalidAssignmentReason::CompoundNegativeShiftCount { op });
             }
-            if binary_operand_is_integer(&rhs_ty, rhs) {
+            if binary_operand_is_integer(&rhs_ty, rhs, env) {
                 None
             } else {
                 Some(invalid_compound_operand(&op, "right", &rhs_ty))
@@ -6953,7 +6963,7 @@ fn named_interface_assignment_for_validation(
     Some(match actual {
         GoType::Unknown | GoType::Any | GoType::Interface(_) | GoType::Error => true,
         GoType::Named(type_name) if env.is_interface(type_name) => {
-            named_interface_includes_methods_for_validation(type_name, interface_name, env)
+            env.interface_implements_interface(type_name, interface_name)
         }
         GoType::Named(type_name) => {
             env.named_type_implements_interface(type_name, interface_name, false)
@@ -6967,22 +6977,6 @@ fn named_interface_assignment_for_validation(
         },
         _ => false,
     })
-}
-
-fn named_interface_includes_methods_for_validation(
-    actual_interface: &str,
-    expected_interface: &str,
-    env: &TypeEnv,
-) -> bool {
-    env.get_interface_methods(expected_interface)
-        .is_none_or(|expected_methods| {
-            let actual_methods = env
-                .get_interface_methods(actual_interface)
-                .unwrap_or_default();
-            expected_methods
-                .iter()
-                .all(|method| actual_methods.contains(method))
-        })
 }
 
 fn go_type_is_numeric(ty: &GoType) -> bool {
@@ -7283,24 +7277,29 @@ fn call_result_count_for_fun(fun: &ast::Expr<'_>, env: &TypeEnv) -> Option<usize
             }
         }
         ast::Expr::SelectorExpr(sel) => {
-            if let Some(package_key) = super::selector_semantics::qualified_member_key(sel) {
-                if let Some(method_key) = selector_receiver_method_key(sel, env)
-                    && env.has_func(&method_key)
-                {
-                    return Some(env.get_func_returns(&method_key).len());
-                }
-                if selector_base_value_type(sel, env).is_some() {
-                    return match GoType::infer_expr(fun, env) {
-                        GoType::Func { results, .. } => Some(results.len()),
-                        _ => None,
-                    };
-                }
-                if env.has_func(&package_key) {
-                    return Some(env.get_func_returns(&package_key).len());
-                }
+            if let Some(method) = resolved_selector_method_for_call(sel, env) {
+                return Some(
+                    resolved_selector_method_signature_types(
+                        &method,
+                        env.get_func_returns(&method.key),
+                        env,
+                    )
+                    .len(),
+                );
+            }
+            if selector_base_value_type(sel, env).is_some() {
+                return match GoType::infer_expr(fun, env) {
+                    GoType::Func { results, .. } => Some(results.len()),
+                    _ => None,
+                };
             }
             if let Some(returns) = type_method_expression_result_types(sel, env) {
                 return Some(returns.len());
+            }
+            if let Some(package_key) = super::selector_semantics::qualified_member_key(sel)
+                && env.has_func(&package_key)
+            {
+                return Some(env.get_func_returns(&package_key).len());
             }
 
             match GoType::infer_expr(fun, env) {
@@ -7342,24 +7341,26 @@ fn call_result_types_for_fun(fun: &ast::Expr<'_>, env: &TypeEnv) -> Option<Vec<G
             }
         }
         ast::Expr::SelectorExpr(sel) => {
-            if let Some(package_key) = super::selector_semantics::qualified_member_key(sel) {
-                if let Some(method_key) = selector_receiver_method_key(sel, env)
-                    && env.has_func(&method_key)
-                {
-                    return Some(env.get_func_returns(&method_key));
-                }
-                if selector_base_value_type(sel, env).is_some() {
-                    return match GoType::infer_expr(fun, env) {
-                        GoType::Func { results, .. } => Some(results),
-                        _ => None,
-                    };
-                }
-                if env.has_func(&package_key) {
-                    return Some(env.get_func_returns(&package_key));
-                }
+            if let Some(method) = resolved_selector_method_for_call(sel, env) {
+                return Some(resolved_selector_method_signature_types(
+                    &method,
+                    env.get_func_returns(&method.key),
+                    env,
+                ));
+            }
+            if selector_base_value_type(sel, env).is_some() {
+                return match GoType::infer_expr(fun, env) {
+                    GoType::Func { results, .. } => Some(results),
+                    _ => None,
+                };
             }
             if let Some(returns) = type_method_expression_result_types(sel, env) {
                 return Some(returns);
+            }
+            if let Some(package_key) = super::selector_semantics::qualified_member_key(sel)
+                && env.has_func(&package_key)
+            {
+                return Some(env.get_func_returns(&package_key));
             }
 
             match GoType::infer_expr(fun, env) {
@@ -10399,6 +10400,7 @@ fn invalid_builtin_call_statement(
 struct CallSignature {
     target: String,
     params: Vec<GoType>,
+    results: Vec<GoType>,
     variadic_start: Option<usize>,
 }
 
@@ -10437,7 +10439,9 @@ fn invalid_index_expr(index: &ast::IndexExpr<'_>, env: &TypeEnv) -> Option<Inval
 
 fn invalid_integer_index(index: &ast::Expr<'_>, env: &TypeEnv) -> Option<InvalidStatementReason> {
     let ty = env.resolve_alias(&GoType::infer_expr(index, env));
-    if matches!(ty, GoType::Unknown | GoType::Named(_)) || binary_operand_is_integer(&ty, index) {
+    if matches!(ty, GoType::Unknown | GoType::Named(_))
+        || binary_operand_is_integer(&ty, index, env)
+    {
         return None;
     }
     Some(invalid_index_reason(format!(
@@ -10488,7 +10492,7 @@ fn invalid_unary_expr(unary: &ast::UnaryExpr<'_>, env: &TypeEnv) -> Option<Inval
     match unary.op {
         token::Token::ADD | token::Token::SUB => invalid_unary_numeric_operand(unary.op, &operand),
         token::Token::NOT => invalid_unary_bool_operand(&operand),
-        token::Token::XOR => invalid_unary_integer_operand(unary, &operand),
+        token::Token::XOR => invalid_unary_integer_operand(unary, &operand, env),
         token::Token::AND => invalid_unary_address_operand(unary, env),
         token::Token::ARROW => invalid_unary_receive_operand(&operand),
         _ => None,
@@ -10527,9 +10531,10 @@ fn invalid_unary_bool_operand(operand: &GoType) -> Option<InvalidStatementReason
 fn invalid_unary_integer_operand(
     unary: &ast::UnaryExpr<'_>,
     operand: &GoType,
+    env: &TypeEnv,
 ) -> Option<InvalidStatementReason> {
     if matches!(operand, GoType::Unknown | GoType::Named(_))
-        || binary_operand_is_integer(operand, &unary.x)
+        || binary_operand_is_integer(operand, &unary.x, env)
     {
         return None;
     }
@@ -10738,7 +10743,9 @@ fn binary_integer_operands(
     binary: &ast::BinaryExpr<'_>,
     env: &TypeEnv,
 ) -> Option<InvalidStatementReason> {
-    if binary_operand_is_integer(left, &binary.x) && binary_operand_is_integer(right, &binary.y) {
+    if binary_operand_is_integer(left, &binary.x, env)
+        && binary_operand_is_integer(right, &binary.y, env)
+    {
         if binary_operator_operands_are_compatible(binary, left, right, env) {
             return None;
         }
@@ -10806,7 +10813,7 @@ fn binary_shift_operands(
         ));
     }
     if binary_shift_left_operand_is_integer(left, &binary.x, &binary.y, env)
-        && binary_operand_is_integer(right, &binary.y)
+        && binary_operand_is_integer(right, &binary.y, env)
     {
         return None;
     }
@@ -10837,8 +10844,8 @@ fn shift_count_is_negative_constant(expr: &ast::Expr<'_>, env: &TypeEnv) -> bool
         && integer_constant_value_exact_with_env(expr, env).is_some_and(|value| value.is_negative())
 }
 
-fn binary_operand_is_integer(ty: &GoType, expr: &ast::Expr<'_>) -> bool {
-    ty.is_integer() || (ty.is_float() && expr_is_integer_constant(expr))
+fn binary_operand_is_integer(ty: &GoType, expr: &ast::Expr<'_>, env: &TypeEnv) -> bool {
+    ty.is_integer() || (ty.is_float() && expr_is_untyped_integer_constant_for_comparison(expr, env))
 }
 
 fn expr_is_integer_constant(expr: &ast::Expr<'_>) -> bool {
@@ -11238,20 +11245,7 @@ fn numeric_literal_is_finite_for_float_type(value: &str, expected: &GoType) -> O
 
 fn expr_is_untyped_integer_constant_for_comparison(expr: &ast::Expr<'_>, env: &TypeEnv) -> bool {
     expr_is_untyped_numeric_constant_for_comparison(expr, env)
-        && matches!(
-            env.resolve_alias(&GoType::infer_expr(expr, env)),
-            GoType::Int
-                | GoType::Int8
-                | GoType::Int16
-                | GoType::Int32
-                | GoType::Int64
-                | GoType::Uint
-                | GoType::Uint8
-                | GoType::Uint16
-                | GoType::Uint32
-                | GoType::Uint64
-                | GoType::Uintptr
-        )
+        && integer_constant_value_exact_with_env(expr, env).is_some()
 }
 
 fn expr_is_untyped_numeric_constant_for_comparison(expr: &ast::Expr<'_>, env: &TypeEnv) -> bool {
@@ -11518,7 +11512,9 @@ fn invalid_slice_bounds(
 
 fn invalid_integer_bound(bound: &ast::Expr<'_>, env: &TypeEnv) -> Option<InvalidStatementReason> {
     let ty = env.resolve_alias(&GoType::infer_expr(bound, env));
-    if matches!(ty, GoType::Unknown | GoType::Named(_)) || binary_operand_is_integer(&ty, bound) {
+    if matches!(ty, GoType::Unknown | GoType::Named(_))
+        || binary_operand_is_integer(&ty, bound, env)
+    {
         return None;
     }
     Some(invalid_slice_reason(format!(
@@ -12496,17 +12492,19 @@ fn call_signature_for_ident(name: &str, env: &TypeEnv) -> Option<CallSignature> 
         return Some(CallSignature {
             target: name.to_string(),
             params: env.get_func_params(name),
+            results: env.get_func_returns(name),
             variadic_start: env.get_func_variadic_start(name),
         });
     }
     match env.get_var(name) {
         Some(GoType::Func {
             params,
+            results,
             variadic_start,
-            ..
         }) => Some(CallSignature {
             target: name.to_string(),
             params,
+            results,
             variadic_start,
         }),
         _ => None,
@@ -12517,13 +12515,20 @@ fn call_signature_for_selector(
     selector: &ast::SelectorExpr<'_>,
     env: &TypeEnv,
 ) -> Option<CallSignature> {
-    if let Some(method_key) = selector_receiver_method_key(selector, env)
-        && env.has_func(&method_key)
-    {
+    if let Some(method) = resolved_selector_method_for_call(selector, env) {
         return Some(CallSignature {
-            target: method_key.clone(),
-            params: env.get_func_params(&method_key),
-            variadic_start: env.get_func_variadic_start(&method_key),
+            target: method.key.clone(),
+            params: resolved_selector_method_signature_types(
+                &method,
+                env.get_func_params(&method.key),
+                env,
+            ),
+            results: resolved_selector_method_signature_types(
+                &method,
+                env.get_func_returns(&method.key),
+                env,
+            ),
+            variadic_start: env.get_func_variadic_start(&method.key),
         });
     }
     if selector_base_value_type(selector, env).is_some() {
@@ -12537,16 +12542,113 @@ fn call_signature_for_selector(
         return Some(CallSignature {
             target: package_key.clone(),
             params: env.get_func_params(&package_key),
+            results: env.get_func_returns(&package_key),
             variadic_start: env.get_func_variadic_start(&package_key),
         });
     }
     None
 }
 
-fn selector_receiver_method_key(selector: &ast::SelectorExpr<'_>, env: &TypeEnv) -> Option<String> {
-    let receiver_name = selector_base_value_type(selector, env)
-        .and_then(|ty| super::method_expressions::method_receiver_name(&ty, env))?;
-    env.get_method_func_key(&receiver_name, selector.sel.name)
+fn resolved_selector_method_for_call(
+    selector: &ast::SelectorExpr<'_>,
+    env: &TypeEnv,
+) -> Option<super::selector_semantics::SelectorMethod> {
+    let receiver = selector_base_value_type(selector, env)?;
+    let include_pointer_receiver_methods =
+        expr_addressability(&selector.x, env) == Addressability::Addressable;
+    match super::selector_semantics::resolve_selector(
+        &receiver,
+        selector.sel.name,
+        include_pointer_receiver_methods,
+        env,
+    ) {
+        super::selector_semantics::SelectorResolution::Found(
+            super::selector_semantics::ResolvedSelector {
+                member: super::selector_semantics::SelectorMember::Method(method),
+                ..
+            },
+        ) => Some(method),
+        super::selector_semantics::SelectorResolution::Found(_)
+        | super::selector_semantics::SelectorResolution::Missing
+        | super::selector_semantics::SelectorResolution::Ambiguous { .. } => None,
+    }
+}
+
+fn resolved_selector_method_signature_types(
+    method: &super::selector_semantics::SelectorMethod,
+    types: Vec<GoType>,
+    env: &TypeEnv,
+) -> Vec<GoType> {
+    let GoType::Instantiated { name, args } = &method.receiver else {
+        return types;
+    };
+    let type_params = env.get_type_param_names(name);
+    if type_params.len() != args.len() {
+        return types;
+    }
+    let substitutions = type_params
+        .into_iter()
+        .zip(args.iter().cloned())
+        .collect::<BTreeMap<_, _>>();
+    types
+        .into_iter()
+        .map(|ty| substitute_call_signature_type_params(ty, &substitutions))
+        .collect()
+}
+
+fn substitute_call_signature_type_params(
+    ty: GoType,
+    substitutions: &BTreeMap<String, GoType>,
+) -> GoType {
+    match ty {
+        GoType::Named(name) => substitutions
+            .get(&name)
+            .cloned()
+            .unwrap_or(GoType::Named(name)),
+        GoType::Instantiated { name, args } => GoType::Instantiated {
+            name,
+            args: args
+                .into_iter()
+                .map(|ty| substitute_call_signature_type_params(ty, substitutions))
+                .collect(),
+        },
+        GoType::Slice(elem) => GoType::Slice(Box::new(substitute_call_signature_type_params(
+            *elem,
+            substitutions,
+        ))),
+        GoType::Pointer(elem) => GoType::Pointer(Box::new(substitute_call_signature_type_params(
+            *elem,
+            substitutions,
+        ))),
+        GoType::Array(elem) => GoType::Array(Box::new(substitute_call_signature_type_params(
+            *elem,
+            substitutions,
+        ))),
+        GoType::Map(key, value) => GoType::Map(
+            Box::new(substitute_call_signature_type_params(*key, substitutions)),
+            Box::new(substitute_call_signature_type_params(*value, substitutions)),
+        ),
+        GoType::Chan { elem, direction } => GoType::Chan {
+            elem: Box::new(substitute_call_signature_type_params(*elem, substitutions)),
+            direction,
+        },
+        GoType::Func {
+            params,
+            results,
+            variadic_start,
+        } => GoType::Func {
+            params: params
+                .into_iter()
+                .map(|ty| substitute_call_signature_type_params(ty, substitutions))
+                .collect(),
+            results: results
+                .into_iter()
+                .map(|ty| substitute_call_signature_type_params(ty, substitutions))
+                .collect(),
+            variadic_start,
+        },
+        other => other,
+    }
 }
 
 fn selector_base_value_type(selector: &ast::SelectorExpr<'_>, env: &TypeEnv) -> Option<GoType> {
@@ -12568,6 +12670,7 @@ fn call_signature_for_type_method_expression(
     Some(CallSignature {
         target: method.method_key.clone(),
         params: method.params_with_receiver(env),
+        results: method.returns(env),
         variadic_start: method.variadic_start_with_receiver(env),
     })
 }
@@ -12580,11 +12683,12 @@ fn call_signature_from_inferred_type(
     match env.resolve_alias(&GoType::infer_expr(fun, env)) {
         GoType::Func {
             params,
+            results,
             variadic_start,
-            ..
         } => Some(CallSignature {
             target: target.to_string(),
             params,
+            results,
             variadic_start,
         }),
         _ => None,
@@ -12595,6 +12699,7 @@ fn call_signature_from_func_type(target: String, func_type: &ast::FuncType<'_>) 
     CallSignature {
         target,
         params: field_list_types(Some(&func_type.params)),
+        results: field_list_types(func_type.results.as_ref()),
         variadic_start: func_type_variadic_start(func_type),
     }
 }
@@ -14769,7 +14874,7 @@ fn goto_state_hoisted_names_in_stmt_list(stmts: &[ast::Stmt<'_>]) -> Vec<String>
             referenced_by_segment.push(BTreeSet::new());
         }
         if let Some(declared) = declared_by_segment.last_mut() {
-            collect_direct_declared_names_in_stmt(stmt, declared);
+            collect_direct_variable_names_in_stmt(stmt, declared);
         }
         if let Some(referenced) = referenced_by_segment.last_mut() {
             collect_referenced_names_in_stmt(stmt, referenced);
@@ -14795,19 +14900,21 @@ fn goto_state_hoisted_names_in_stmt_list(stmts: &[ast::Stmt<'_>]) -> Vec<String>
     hoisted_names.into_iter().collect()
 }
 
-fn collect_direct_declared_names_in_stmt(stmt: &ast::Stmt<'_>, names: &mut BTreeSet<String>) {
+fn collect_direct_variable_names_in_stmt(stmt: &ast::Stmt<'_>, names: &mut BTreeSet<String>) {
     match stmt {
         ast::Stmt::AssignStmt(assign) if assign.tok == token::Token::DEFINE => {
             names.extend(assign.lhs.iter().filter_map(ident_name));
         }
-        ast::Stmt::DeclStmt(decl) => {
+        ast::Stmt::DeclStmt(decl) if decl.decl.tok == token::Token::VAR => {
             for spec in &decl.decl.specs {
                 if let ast::Spec::ValueSpec(value) = spec {
                     names.extend(value.names.iter().map(|name| name.name.to_string()));
                 }
             }
         }
-        ast::Stmt::LabeledStmt(label) => collect_direct_declared_names_in_stmt(&label.stmt, names),
+        ast::Stmt::LabeledStmt(label) => {
+            collect_direct_variable_names_in_stmt(&label.stmt, names);
+        }
         _ => {}
     }
 }
@@ -15558,22 +15665,26 @@ fn receiver_uses_pointer_method(receiver: &str, method: &str, env: &TypeEnv) -> 
 }
 
 fn go_type_has_pointer_method(ty: &GoType, method: &str, env: &TypeEnv) -> bool {
-    match ty {
-        GoType::Named(name) | GoType::Interface(name) => {
-            if env.method_has_pointer_receiver(&format!("{name}.{method}")) {
-                return true;
+    if matches!(env.resolve_alias(ty), GoType::Pointer(_)) {
+        return false;
+    }
+    let super::selector_semantics::SelectorResolution::Found(
+        super::selector_semantics::ResolvedSelector { embedded, member },
+    ) = super::selector_semantics::resolve_selector(ty, method, true, env)
+    else {
+        return false;
+    };
+    matches!(
+        member,
+        super::selector_semantics::SelectorMember::Method(
+            super::selector_semantics::SelectorMethod {
+                pointer_receiver: true,
+                ..
             }
-        }
-        GoType::Pointer(inner) => return go_type_has_pointer_method(inner, method, env),
-        _ => {}
-    }
-    match env.resolve_alias(ty) {
-        GoType::Named(name) | GoType::Interface(name) => {
-            env.method_has_pointer_receiver(&format!("{name}.{method}"))
-        }
-        GoType::Pointer(inner) => go_type_has_pointer_method(&inner, method, env),
-        _ => false,
-    }
+        )
+    ) && embedded.iter().all(|step| {
+        step.indirection == super::selector_semantics::EmbeddedSelectorIndirection::Value
+    })
 }
 
 fn collect_free_name_uses_in_stmt_list(
@@ -15981,14 +16092,7 @@ fn collect_free_name_uses_in_expr(
             collect_free_name_uses_in_expr(&chan.value, scopes, uses, env);
         }
         ast::Expr::CompositeLit(comp) => {
-            if let Some(ty) = &comp.type_ {
-                collect_free_name_uses_in_expr(ty, scopes, uses, env);
-            }
-            if let Some(elts) = &comp.elts {
-                for elt in elts {
-                    collect_free_name_uses_in_expr(elt, scopes, uses, env);
-                }
-            }
+            collect_free_name_uses_in_composite_lit(comp, None, scopes, uses, env)
         }
         ast::Expr::Ellipsis(ellipsis) => {
             if let Some(elt) = &ellipsis.elt {
@@ -16060,6 +16164,125 @@ fn collect_free_name_uses_in_expr(
         | ast::Expr::FuncType(_)
         | ast::Expr::InterfaceType(_)
         | ast::Expr::StructType(_) => {}
+    }
+}
+
+fn collect_free_name_uses_in_composite_value(
+    expr: &ast::Expr<'_>,
+    expected: Option<&GoType>,
+    scopes: &mut Vec<BTreeSet<String>>,
+    uses: &mut ScopedNameUses,
+    env: &TypeEnv,
+) {
+    if let ast::Expr::CompositeLit(comp) = expr {
+        collect_free_name_uses_in_composite_lit(comp, expected, scopes, uses, env);
+    } else {
+        collect_free_name_uses_in_expr(expr, scopes, uses, env);
+    }
+}
+
+fn composite_literal_kind_from_expected_type(
+    expected: Option<&GoType>,
+    env: &TypeEnv,
+) -> CompositeLiteralKind {
+    let Some(expected) = expected else {
+        return CompositeLiteralKind::Unknown;
+    };
+    match env.resolve_alias(expected) {
+        GoType::Array(elem) => CompositeLiteralKind::Array {
+            elem: *elem,
+            len: None,
+        },
+        GoType::Slice(elem) => CompositeLiteralKind::Slice { elem: *elem },
+        GoType::Map(key, value) => CompositeLiteralKind::Map {
+            key: *key,
+            value: *value,
+        },
+        GoType::Named(name) => named_struct_composite_kind(&name, env),
+        _ => CompositeLiteralKind::Unknown,
+    }
+}
+
+fn collect_free_name_uses_in_composite_lit(
+    comp: &ast::CompositeLit<'_>,
+    expected: Option<&GoType>,
+    scopes: &mut Vec<BTreeSet<String>>,
+    uses: &mut ScopedNameUses,
+    env: &TypeEnv,
+) {
+    let kind = comp
+        .type_
+        .as_deref()
+        .map(|ty| composite_literal_kind(ty, env))
+        .unwrap_or_else(|| composite_literal_kind_from_expected_type(expected, env));
+    let Some(elts) = &comp.elts else {
+        return;
+    };
+
+    match kind {
+        CompositeLiteralKind::Struct { fields, .. } => {
+            let mut positional_index = 0usize;
+            for elt in elts {
+                if let ast::Expr::KeyValueExpr(kv) = elt
+                    && let ast::Expr::Ident(field) = kv.key.as_ref()
+                {
+                    let field_type = fields
+                        .iter()
+                        .find(|(name, _)| name == field.name)
+                        .map(|(_, ty)| ty);
+                    collect_free_name_uses_in_composite_value(
+                        &kv.value, field_type, scopes, uses, env,
+                    );
+                } else {
+                    let field_type = fields.get(positional_index).map(|(_, ty)| ty);
+                    collect_free_name_uses_in_composite_value(elt, field_type, scopes, uses, env);
+                    positional_index = positional_index.saturating_add(1);
+                }
+            }
+        }
+        CompositeLiteralKind::Array { elem, .. } | CompositeLiteralKind::Slice { elem } => {
+            for elt in elts {
+                if let ast::Expr::KeyValueExpr(kv) = elt {
+                    collect_free_name_uses_in_expr(&kv.key, scopes, uses, env);
+                    collect_free_name_uses_in_composite_value(
+                        &kv.value,
+                        Some(&elem),
+                        scopes,
+                        uses,
+                        env,
+                    );
+                } else {
+                    collect_free_name_uses_in_composite_value(elt, Some(&elem), scopes, uses, env);
+                }
+            }
+        }
+        CompositeLiteralKind::Map { key, value } => {
+            for elt in elts {
+                if let ast::Expr::KeyValueExpr(kv) = elt {
+                    collect_free_name_uses_in_composite_value(
+                        &kv.key,
+                        Some(&key),
+                        scopes,
+                        uses,
+                        env,
+                    );
+                    collect_free_name_uses_in_composite_value(
+                        &kv.value,
+                        Some(&value),
+                        scopes,
+                        uses,
+                        env,
+                    );
+                } else {
+                    collect_free_name_uses_in_expr(elt, scopes, uses, env);
+                }
+            }
+        }
+        CompositeLiteralKind::Unknown => {
+            for elt in elts {
+                collect_free_name_uses_in_expr(elt, scopes, uses, env);
+            }
+        }
     }
 }
 
@@ -16856,6 +17079,12 @@ fn collect_address_taken_target_names(
             names.insert(ident.name.to_string());
         }
         ast::Expr::ParenExpr(paren) => collect_address_taken_target_names(&paren.x, env, names),
+        ast::Expr::IndexExpr(index) => {
+            let base_ty = env.resolve_alias(&GoType::infer_expr(&index.x, env));
+            if matches!(base_ty, GoType::Array(_) | GoType::Slice(_)) {
+                collect_address_taken_target_names(&index.x, env, names);
+            }
+        }
         ast::Expr::SelectorExpr(selector) => {
             let base_ty = env.resolve_alias(&GoType::infer_expr(&selector.x, env));
             if !matches!(base_ty, GoType::Pointer(_)) {
@@ -20300,6 +20529,112 @@ mod tests {
     }
 
     #[test]
+    fn call_abi_resolves_deep_promoted_generic_method_signatures() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Leaf[T any] struct{}
+                func (l *Leaf[T]) Apply(value T, rest ...T) T { return value }
+
+                type Middle struct { Leaf[int] }
+                type Outer struct { Middle }
+
+                func main() {
+                    var outer Outer
+                    _ = outer.Apply(1, 2)
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        env.set_var("outer", GoType::Named("Outer".to_string()));
+        let Some(ast::Decl::FuncDecl(main)) = file
+            .decls
+            .iter()
+            .find(|decl| matches!(decl, ast::Decl::FuncDecl(func) if func.name.name == "main"))
+        else {
+            panic!("expected main function");
+        };
+        let body = main.body.as_ref().expect("expected main body");
+        let Some(ast::Stmt::AssignStmt(assign)) = body.list.get(1) else {
+            panic!("expected call assignment");
+        };
+        let Some(ast::Expr::CallExpr(call)) = assign.rhs.first() else {
+            panic!("expected promoted method call");
+        };
+
+        let abi = super::call_abi(call, &env);
+
+        assert_eq!(abi.callee, CalleeKind::Method);
+        assert_eq!(abi.signature_target.as_deref(), Some("Leaf.Apply"));
+        assert_eq!(
+            abi.signature_params,
+            vec![GoType::Int, GoType::Slice(Box::new(GoType::Int)),]
+        );
+        assert_eq!(abi.results, vec![GoType::Int]);
+        assert_eq!(abi.variadic_start, Some(1));
+        assert_eq!(
+            super::call_func_key(&call.fun, &env).as_deref(),
+            Some("Leaf.Apply")
+        );
+        assert!(
+            super::address_taken_names_in_block(body, &env).contains("outer"),
+            "a promoted pointer method through value embeddings requires an addressable root"
+        );
+    }
+
+    #[test]
+    fn call_abi_leaves_ambiguous_promoted_methods_unresolved() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Left struct{}
+                type Right struct{}
+                func (Left) Run() {}
+                func (Right) Run() {}
+                type Outer struct {
+                    Left
+                    Right
+                }
+
+                func main() {
+                    var outer Outer
+                    outer.Run()
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        env.set_var("outer", GoType::Named("Outer".to_string()));
+        let Some(ast::Decl::FuncDecl(main)) = file
+            .decls
+            .iter()
+            .find(|decl| matches!(decl, ast::Decl::FuncDecl(func) if func.name.name == "main"))
+        else {
+            panic!("expected main function");
+        };
+        let body = main.body.as_ref().expect("expected main body");
+        let Some(ast::Stmt::ExprStmt(stmt)) = body.list.get(1) else {
+            panic!("expected call statement");
+        };
+        let ast::Expr::CallExpr(call) = &stmt.x else {
+            panic!("expected ambiguous promoted method call");
+        };
+
+        let abi = super::call_abi(call, &env);
+
+        assert_eq!(abi.callee, CalleeKind::Unknown);
+        assert_eq!(abi.signature_target, None);
+        assert_eq!(super::call_func_key(&call.fun, &env), None);
+    }
+
+    #[test]
     fn call_abi_uses_embedded_interface_method_owner_for_selector_receivers() {
         let ir = lower(
             r#"
@@ -20471,8 +20806,12 @@ mod tests {
                 _ => None,
             })
             .expect("expected range statement");
+        let local_env = env.scoped_for_func_decl(func);
 
-        assert_eq!(super::range_kind(&range.x, &env), super::RangeKind::Indexed);
+        assert_eq!(
+            super::range_kind(&range.x, &local_env),
+            super::RangeKind::Indexed,
+        );
     }
 
     #[test]
@@ -20837,6 +21176,59 @@ mod tests {
         };
         assert_eq!(capture.name, "base");
         assert_eq!(capture.mode, CaptureMode::Borrow);
+    }
+
+    #[test]
+    fn lower_func_lit_distinguishes_struct_labels_from_map_key_captures() {
+        let ir = lower(
+            r#"
+                package main
+
+                type entry struct {
+                    label string
+                }
+
+                func main() {
+                    key := "key"
+                    value := "value"
+                    build := func() {
+                        _ = []entry{{label: value}}
+                        _ = map[string]string{key: value}
+                    }
+                    _ = build
+                }
+            "#,
+        );
+        let Some(Item::Func(main)) = ir.items.iter().find(|item| match item {
+            Item::Func(func) => func.name.as_deref() == Some("main"),
+            Item::GenDecl(_) => false,
+        }) else {
+            panic!("expected main function item");
+        };
+        let Some(func_lit) = main.body.as_ref().and_then(|body| {
+            body.stmts.iter().find_map(|stmt| {
+                let Stmt::Assign(assign) = stmt else {
+                    return None;
+                };
+                assign.rhs.iter().find_map(|expr| match &expr.kind {
+                    ExprKind::FuncLit(func_lit) => Some(func_lit.as_ref()),
+                    _ => None,
+                })
+            })
+        }) else {
+            panic!("expected function literal");
+        };
+        let capture_names = func_lit
+            .captures
+            .iter()
+            .map(|capture| capture.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(capture_names, vec!["key", "value"]);
+        assert!(
+            !capture_names.contains(&"label") && !capture_names.contains(&"entry"),
+            "struct field labels and literal type names are not runtime captures"
+        );
     }
 
     #[test]
@@ -21298,6 +21690,41 @@ mod tests {
         };
         assert_eq!(plan.labels, vec!["Done"]);
         assert_eq!(plan.hoisted_names, vec!["x"]);
+    }
+
+    #[test]
+    fn excludes_local_const_groups_from_forward_goto_runtime_hoists() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func choose(skip bool) int {
+                    const (
+                        first = iota + 20
+                        second
+                    )
+                    if skip {
+                        goto Done
+                    }
+                    return first
+                Done:
+                    return second
+                }
+            "#,
+        )
+        .unwrap();
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) => Some(func),
+            crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected function");
+        };
+        let Some(plan) = super::goto_state_plan_for_block(func.body.as_ref().expect("body")) else {
+            panic!("expected forward goto plan");
+        };
+        assert_eq!(plan.labels, vec!["Done"]);
+        assert!(plan.hoisted_names.is_empty());
     }
 
     #[test]
@@ -24385,6 +24812,37 @@ mod tests {
     }
 
     #[test]
+    fn local_exact_exponent_constants_coerce_to_typed_binary_operands() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                func scale(ts int64) {
+                    const ticksPerSecond = 1e7
+                    secs := ts / ticksPerSecond
+                    nsecs := (1e9 / ticksPerSecond) * (ts % ticksPerSecond)
+                    _, _ = secs, nsecs
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let Some(func) = file.decls.iter().find_map(|decl| match decl {
+            crate::ast::Decl::FuncDecl(func) if func.name.name == "scale" => Some(func),
+            crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+        }) else {
+            panic!("expected scale function");
+        };
+
+        assert_eq!(
+            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            None
+        );
+    }
+
+    #[test]
     fn accepts_method_receiver_bindings_in_typed_validation() {
         let file = parse_file(
             "test.go",
@@ -25293,7 +25751,12 @@ mod tests {
             panic!("expected function");
         };
         assert_eq!(
-            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            super::invalid_statement_in_func_with_recv_and_type(
+                func.recv.as_ref(),
+                &func.type_,
+                func.body.as_ref().expect("body"),
+                &env,
+            ),
             Some(super::InvalidStatement::Send {
                 reason: super::InvalidSendReason::ReceiveOnlyChannel,
             })
@@ -25545,7 +26008,12 @@ mod tests {
             panic!("expected function");
         };
         assert_eq!(
-            super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            super::invalid_statement_in_func_with_recv_and_type(
+                func.recv.as_ref(),
+                &func.type_,
+                func.body.as_ref().expect("body"),
+                &env,
+            ),
             Some(super::InvalidStatement::Receive {
                 reason: super::InvalidReceiveReason::SendOnlyChannel,
             })
@@ -26288,7 +26756,12 @@ mod tests {
                 panic!("expected function");
             };
             assert_eq!(
-                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                super::invalid_statement_in_func_with_recv_and_type(
+                    func.recv.as_ref(),
+                    &func.type_,
+                    func.body.as_ref().expect("body"),
+                    &env,
+                ),
                 Some(super::InvalidStatement::TypeSwitch { reason })
             );
         }
@@ -26390,7 +26863,12 @@ mod tests {
                 panic!("expected function");
             };
             assert_eq!(
-                super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+                super::invalid_statement_in_func_with_recv_and_type(
+                    func.recv.as_ref(),
+                    &func.type_,
+                    func.body.as_ref().expect("body"),
+                    &env,
+                ),
                 Some(super::InvalidStatement::Expression {
                     reason: super::InvalidStatementReason::InvalidTypeAssert {
                         reason: reason.to_string(),
@@ -27250,6 +27728,107 @@ mod tests {
         };
         assert_eq!(
             super::invalid_statement_in_func(func.body.as_ref().expect("body"), &env),
+            None
+        );
+    }
+
+    #[test]
+    fn interface_assignment_validation_requires_compatible_method_signatures() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type Target interface {
+                    Transform([2]byte, ...string) [2]byte
+                }
+                type Compatible interface {
+                    Transform([2]byte, ...string) [2]byte
+                }
+                type Incompatible interface {
+                    Transform([3]byte, ...string) [2]byte
+                }
+
+                func accepts(target Target, value Compatible) {
+                    target = value
+                }
+
+                func rejects(target Target, value Incompatible) {
+                    target = value
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let function = |name| {
+            file.decls.iter().find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) if func.name.name == name => Some(func),
+                crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+            })
+        };
+        let accepts = function("accepts").expect("accepts function");
+        let rejects = function("rejects").expect("rejects function");
+
+        assert_eq!(
+            super::invalid_statement_in_func_with_type(
+                &accepts.type_,
+                accepts.body.as_ref().expect("accepts body"),
+                &env,
+            ),
+            None
+        );
+        assert!(matches!(
+            super::invalid_statement_in_func_with_type(
+                &rejects.type_,
+                rejects.body.as_ref().expect("rejects body"),
+                &env,
+            ),
+            Some(super::InvalidStatement::Assignment {
+                reason: super::InvalidAssignmentReason::TypeMismatch { .. }
+            })
+        ));
+    }
+
+    #[test]
+    fn defined_map_value_with_methods_satisfies_interface_validation() {
+        let file = parse_file(
+            "test.go",
+            r#"
+                package main
+
+                type FS interface {
+                    Open(string) (int, error)
+                }
+                type MapFS map[string]int
+
+                func (MapFS) Open(string) (int, error) { return 0, nil }
+
+                func main() {
+                    var files MapFS
+                    var filesystem FS = files
+                    _, _ = filesystem.Open("missing")
+                }
+            "#,
+        )
+        .unwrap();
+        let mut env = TypeEnv::new();
+        env.scan_file(&file);
+        let main = file
+            .decls
+            .iter()
+            .find_map(|decl| match decl {
+                crate::ast::Decl::FuncDecl(func) if func.name.name == "main" => Some(func),
+                crate::ast::Decl::FuncDecl(_) | crate::ast::Decl::GenDecl(_) => None,
+            })
+            .expect("main function");
+
+        assert_eq!(
+            super::invalid_statement_in_func_with_type(
+                &main.type_,
+                main.body.as_ref().expect("main body"),
+                &env,
+            ),
             None
         );
     }

@@ -891,6 +891,7 @@ fn canonicalize_type_env_value(value: &mut serde_json::Value) -> Result<(), Stri
         "instantiated_type_aliases",
         "string_consts",
         "top_level_vars",
+        "mutable_top_level_vars",
         "consts",
     ] {
         if let Some(value) = object.get_mut(field) {
@@ -1139,6 +1140,21 @@ fn resolve_uncached(
         &parsed_file_refs,
         &imported_type_envs,
     );
+    refresh_signature_shapes_with_imports(
+        &mut package_type_env,
+        &parsed_file_refs,
+        &imported_type_envs,
+    );
+    refresh_interface_assertions_with_imports(
+        &mut package_type_env,
+        &parsed_file_refs,
+        &imported_type_envs,
+    );
+    retain_canonical_import_type_envs(
+        &mut package_type_env,
+        &parsed_file_refs,
+        &imported_type_envs,
+    );
     let package_mutable_top_level_vars =
         crate::compiler::mutable_top_level_var_names_for_files_with_type_env(
             parsed_file_refs.iter().copied(),
@@ -1150,7 +1166,6 @@ fn resolve_uncached(
     drop(type_env_timer);
 
     let import_timer = ProfileTimer::start(format!("resolve.{import_path}.imports"));
-    let import_renames = package_import_renames(&parsed_files);
     let import_path_by_module = package_import_path_by_module(&parsed_files);
     drop(import_timer);
     let mut all_items: Vec<syn::Item> = Vec::new();
@@ -1158,7 +1173,6 @@ fn resolve_uncached(
         import_path,
         package_type_env: &package_type_env,
         imported_type_envs: &imported_type_envs,
-        import_renames: &import_renames,
         package_mutable_top_level_vars: &package_mutable_top_level_vars,
         view_method_seed: &view_method_seed,
     };
@@ -1237,10 +1251,10 @@ fn resolve_uncached(
 }
 
 fn compile_resolved_file(
+    import_path: &str,
     ast: crate::ast::File<'_>,
     package_type_env: &TypeEnv,
     imported_type_envs: &BTreeMap<String, crate::compiler::PackageFacts>,
-    import_renames: &BTreeMap<String, String>,
     package_mutable_top_level_vars: &HashSet<String>,
     view_method_seed: &crate::compiler::BorrowedViewMethodSeed,
 ) -> Result<syn::File, crate::compiler::CompilerError> {
@@ -1251,12 +1265,14 @@ fn compile_resolved_file(
         &BTreeMap::new(),
         imported_type_envs,
     );
-    crate::compiler::compile_with_type_env_import_renames_mutable_vars_and_view_seed(
+    let import_renames = file_import_renames(&ast);
+    crate::compiler::compile_with_type_env_import_renames_mutable_vars_view_seed_and_module(
         ast,
         type_env,
-        import_renames.clone(),
+        import_renames,
         Some(package_mutable_top_level_vars.clone()),
         Some(view_method_seed),
+        Some(module_name(import_path)),
     )
 }
 
@@ -1292,7 +1308,6 @@ struct ParallelResolvedCompileContext<'a> {
     import_path: &'a str,
     package_type_env: &'a TypeEnv,
     imported_type_envs: &'a BTreeMap<String, crate::compiler::PackageFacts>,
-    import_renames: &'a BTreeMap<String, String>,
     package_mutable_top_level_vars: &'a HashSet<String>,
     view_method_seed: &'a crate::compiler::BorrowedViewMethodSeedSnapshot,
 }
@@ -1309,17 +1324,12 @@ fn compile_resolved_files<'a>(
     #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
     if can_parallelize && rayon::current_thread_index().is_none() {
         let thread_count = jobs.min(parsed_files.len());
-        if let Ok(pool) = rayon::ThreadPoolBuilder::new()
-            .num_threads(thread_count)
-            .thread_name(|index| format!("gors-file-{index}"))
-            .build()
-        {
+        if let Ok(pool) = crate::compiler::worker_pool::builder(thread_count, "file").build() {
             let view_method_seed = context.view_method_seed.snapshot();
             let parallel_context = ParallelResolvedCompileContext {
                 import_path: context.import_path,
                 package_type_env: context.package_type_env,
                 imported_type_envs: context.imported_type_envs,
-                import_renames: context.import_renames,
                 package_mutable_top_level_vars: context.package_mutable_top_level_vars,
                 view_method_seed: &view_method_seed,
             };
@@ -1339,7 +1349,6 @@ fn compile_resolved_files<'a>(
             import_path: context.import_path,
             package_type_env: context.package_type_env,
             imported_type_envs: context.imported_type_envs,
-            import_renames: context.import_renames,
             package_mutable_top_level_vars: context.package_mutable_top_level_vars,
             view_method_seed: &view_method_seed,
         };
@@ -1404,10 +1413,10 @@ fn compile_one_parallel_resolved_file(
         context.import_path
     ));
     let compiled = compile_resolved_file(
+        context.import_path,
         ast,
         context.package_type_env,
         context.imported_type_envs,
-        context.import_renames,
         context.package_mutable_top_level_vars,
         view_method_seed,
     )
@@ -1445,10 +1454,10 @@ fn compile_one_resolved_file(
         context.import_path
     ));
     let compiled = compile_resolved_file(
+        context.import_path,
         ast,
         context.package_type_env,
         context.imported_type_envs,
-        context.import_renames,
         context.package_mutable_top_level_vars,
         context.view_method_seed,
     )
@@ -1468,7 +1477,8 @@ fn scan_imported_type_envs(
             if imported_path == import_path {
                 continue;
             }
-            if let Some((package_name, env)) = scan_type_env(imported_path) {
+            if let Some((package_name, mut env)) = scan_type_env(imported_path) {
+                env.record_canonical_package_identity(&module_name(imported_path));
                 imported_type_envs.insert(
                     imported_path.to_string(),
                     crate::compiler::PackageFacts::new(package_name, env),
@@ -1477,6 +1487,36 @@ fn scan_imported_type_envs(
         }
     }
     imported_type_envs
+}
+
+fn retain_canonical_import_type_envs(
+    package_type_env: &mut TypeEnv,
+    files: &[&crate::ast::File<'_>],
+    imported_type_envs: &BTreeMap<String, crate::compiler::PackageFacts>,
+) {
+    for ast in files {
+        let mut canonical_imports = HashMap::new();
+        for import in ast.imports() {
+            let import_path = import.path.value.trim_matches('"');
+            let Some(package_facts) = imported_type_envs.get(import_path) else {
+                continue;
+            };
+            let local_name = match import.name.as_ref().map(|name| name.name) {
+                Some("." | "_") => continue,
+                Some(name) => name.to_string(),
+                None => package_facts.package_name().to_string(),
+            };
+            canonical_imports.insert(local_name, module_name(import_path));
+        }
+        package_type_env.canonicalize_file_import_qualifiers(ast, &canonical_imports);
+    }
+
+    // Published package facts use the same stable module identity as generated
+    // Rust paths. Source aliases are merged only into the file currently being
+    // lowered and can therefore never overwrite another file's import facts.
+    for (import_path, package_facts) in imported_type_envs {
+        package_type_env.merge_package(&module_name(import_path), package_facts.type_env());
+    }
 }
 
 fn refresh_borrowed_slice_params_with_imports(
@@ -1516,9 +1556,43 @@ fn refresh_top_level_vars_with_imports(
             &BTreeMap::new(),
             imported_type_envs,
         );
-        package_type_env.rescan_file_top_level_vars(ast, &inference_env);
+        package_type_env.rescan_file_top_level_values(ast, &inference_env);
     }
     merge_imported_receiver_facts_for_top_level_vars(package_type_env, files, imported_type_envs);
+}
+
+fn refresh_signature_shapes_with_imports(
+    package_type_env: &mut TypeEnv,
+    files: &[&crate::ast::File<'_>],
+    imported_type_envs: &BTreeMap<String, crate::compiler::PackageFacts>,
+) {
+    for ast in files {
+        let mut inference_env = package_type_env.clone();
+        crate::compiler::merge_import_type_envs(
+            &mut inference_env,
+            ast,
+            &BTreeMap::new(),
+            imported_type_envs,
+        );
+        package_type_env.refresh_signature_shapes_from_env(&[*ast], &inference_env);
+    }
+}
+
+fn refresh_interface_assertions_with_imports(
+    package_type_env: &mut TypeEnv,
+    files: &[&crate::ast::File<'_>],
+    imported_type_envs: &BTreeMap<String, crate::compiler::PackageFacts>,
+) {
+    for ast in files {
+        let mut inference_env = package_type_env.clone();
+        crate::compiler::merge_import_type_envs(
+            &mut inference_env,
+            ast,
+            &BTreeMap::new(),
+            imported_type_envs,
+        );
+        package_type_env.refresh_interface_assertions_from_env(ast, &inference_env);
+    }
 }
 
 fn merge_imported_receiver_facts_for_top_level_vars(
@@ -1659,7 +1733,6 @@ struct ResolvedRecoveryContext<'a> {
     import_path: &'a str,
     package_type_env: &'a TypeEnv,
     imported_type_envs: &'a BTreeMap<String, crate::compiler::PackageFacts>,
-    import_renames: &'a BTreeMap<String, String>,
     package_mutable_top_level_vars: &'a HashSet<String>,
     view_method_seed: &'a crate::compiler::BorrowedViewMethodSeed,
 }
@@ -1684,10 +1757,10 @@ fn recover_resolved_file_items<'a>(
             continue;
         };
         match compile_resolved_file(
+            context.import_path,
             shard,
             context.package_type_env,
             context.imported_type_envs,
-            context.import_renames,
             context.package_mutable_top_level_vars,
             context.view_method_seed,
         ) {
@@ -1717,10 +1790,10 @@ fn recover_resolved_file_items<'a>(
             let label = spec_label_for_shard(&shard)
                 .unwrap_or_else(|| format!("{} spec {}", plan.label, spec_index.saturating_add(1)));
             match compile_resolved_file(
+                context.import_path,
                 shard,
                 context.package_type_env,
                 context.imported_type_envs,
-                context.import_renames,
                 context.package_mutable_top_level_vars,
                 context.view_method_seed,
             ) {
@@ -1746,10 +1819,10 @@ fn recover_resolved_file_items<'a>(
         return fallback_items;
     };
     match compile_resolved_file(
+        context.import_path,
         combined,
         context.package_type_env,
         context.imported_type_envs,
-        context.import_renames,
         context.package_mutable_top_level_vars,
         context.view_method_seed,
     ) {
@@ -2115,6 +2188,16 @@ fn scan_type_env_uncached(import_path: &str) -> Option<(String, TypeEnv)> {
     let imported_type_envs = scan_imported_type_envs(import_path, &parsed_file_refs);
     refresh_borrowed_slice_params_with_imports(&mut env, &parsed_file_refs, &imported_type_envs);
     refresh_top_level_vars_with_imports(&mut env, &parsed_file_refs, &imported_type_envs);
+    refresh_signature_shapes_with_imports(&mut env, &parsed_file_refs, &imported_type_envs);
+    refresh_interface_assertions_with_imports(&mut env, &parsed_file_refs, &imported_type_envs);
+    retain_canonical_import_type_envs(&mut env, &parsed_file_refs, &imported_type_envs);
+    let mutable_top_level_vars =
+        crate::compiler::mutable_top_level_var_names_for_files_with_type_env(
+            parsed_file_refs.iter().copied(),
+            false,
+            &env,
+        );
+    env.set_package_mutable_top_level_vars(mutable_top_level_vars);
 
     package_name.map(|name| (name, env))
 }
@@ -2191,22 +2274,31 @@ fn reachable_package_names_with_imports(
         .collect::<Vec<_>>();
     env.scan_files(&file_refs);
     refresh_top_level_vars_with_imports(&mut env, &file_refs, imported_type_envs);
-    for (_, file) in parsed_files {
-        crate::compiler::merge_import_type_envs(
-            &mut env,
-            file,
-            &BTreeMap::new(),
-            imported_type_envs,
-        );
-    }
+    refresh_signature_shapes_with_imports(&mut env, &file_refs, imported_type_envs);
+    refresh_interface_assertions_with_imports(&mut env, &file_refs, imported_type_envs);
+    retain_canonical_import_type_envs(&mut env, &file_refs, imported_type_envs);
+    let file_envs = parsed_files
+        .iter()
+        .map(|(_, file)| {
+            let mut file_env = env.clone();
+            crate::compiler::merge_import_type_envs(
+                &mut file_env,
+                file,
+                &BTreeMap::new(),
+                imported_type_envs,
+            );
+            file_env
+        })
+        .collect::<Vec<_>>();
     let interface_method_roots = interface_method_roots(roots, &top_names, &env);
     let decls = parsed_files
         .iter()
-        .flat_map(|(_, file)| file.decls.iter())
+        .zip(&file_envs)
+        .flat_map(|((_, file), file_env)| file.decls.iter().map(move |decl| (decl, file_env)))
         .collect::<Vec<_>>();
     let mut decls_by_name: HashMap<String, Vec<usize>> = HashMap::new();
     let mut receiver_methods: HashMap<String, Vec<String>> = HashMap::new();
-    for (index, decl) in decls.iter().enumerate() {
+    for (index, (decl, _)) in decls.iter().enumerate() {
         for name in decl_names(decl) {
             decls_by_name.entry(name).or_default().push(index);
         }
@@ -2226,7 +2318,22 @@ fn reachable_package_names_with_imports(
         .iter()
         .filter(|name| top_names.contains(name.as_str()))
         .cloned()
+        .collect::<HashSet<_>>();
+    expand_package_value_method_roots(roots, &top_names, &env, &mut initial_roots);
+    // A receiver method requested at the package boundary makes its receiver
+    // type semantically live. Go interface satisfaction depends on that
+    // receiver's complete method set, so route the receiver through the value
+    // queue below. Keep this expansion at the requested-root boundary: method
+    // calls discovered inside a reachable body are ordinary call edges and do
+    // not by themselves require every sibling method of their receivers.
+    let rooted_receivers = initial_roots
+        .iter()
+        .filter_map(|root| root.split_once("::").map(|(receiver, _)| receiver))
+        .filter(|receiver| top_names.contains(*receiver))
+        .map(str::to_string)
         .collect::<Vec<_>>();
+    initial_roots.extend(rooted_receivers);
+    let mut initial_roots = initial_roots.into_iter().collect::<Vec<_>>();
     initial_roots.sort();
     for root in initial_roots {
         enqueue_reachable(&mut reachable, &mut reachable_queue, root.clone());
@@ -2262,7 +2369,7 @@ fn reachable_package_names_with_imports(
             let concrete_only = HashSet::from([concrete.clone()]);
             if let Some(indices) = decls_by_name.get(&concrete) {
                 for index in indices {
-                    let Some(decl) = decls.get(*index).copied() else {
+                    let Some((decl, _)) = decls.get(*index).copied() else {
                         continue;
                     };
                     value_field_refs_from_decl(decl, &concrete_only, &mut field_refs);
@@ -2288,7 +2395,7 @@ fn reachable_package_names_with_imports(
             if !processed_decls.insert(*index) {
                 continue;
             }
-            let Some(decl) = decls.get(*index).copied() else {
+            let Some((decl, decl_env)) = decls.get(*index).copied() else {
                 continue;
             };
             for name in decl_names(decl) {
@@ -2298,7 +2405,7 @@ fn reachable_package_names_with_imports(
             let mut refs = HashSet::new();
             refs_from_decl(decl, &mut refs);
             let mut method_refs = HashSet::new();
-            method_refs_from_decl(decl, &env, &mut method_refs);
+            method_refs_from_decl(decl, decl_env, &mut method_refs);
             refs.extend(method_refs);
             for reference in refs {
                 if top_names.contains(reference.as_str()) {
@@ -2322,7 +2429,7 @@ fn reachable_package_names_with_imports(
                 &mut type_switch_refs,
                 &top_names,
                 decl,
-                &env,
+                decl_env,
             );
             for reference in type_switch_refs {
                 enqueue_reachable(&mut reachable, &mut reachable_queue, reference);
@@ -2378,6 +2485,35 @@ fn interface_method_roots(
     method_roots
 }
 
+fn expand_package_value_method_roots(
+    roots: &HashSet<String>,
+    top_names: &HashSet<String>,
+    env: &TypeEnv,
+    expanded: &mut HashSet<String>,
+) {
+    for root in roots {
+        let Some((value_name, method_name)) = root.split_once("::") else {
+            continue;
+        };
+        if !top_names.contains(value_name) {
+            continue;
+        }
+        let Some(value_type) = env.get_top_level_var(value_name) else {
+            continue;
+        };
+        let value_type = env.resolve_alias(&value_type);
+        let Some(receiver_name) = receiver_name_from_go_type_preserving_package(&value_type, env)
+        else {
+            continue;
+        };
+        let concrete_method = format!("{receiver_name}::{method_name}");
+        if top_names.contains(&concrete_method) {
+            expanded.insert(value_name.to_string());
+            expanded.insert(concrete_method);
+        }
+    }
+}
+
 fn expand_type_switch_case_interface_methods(
     reachable: &mut HashSet<String>,
     top_names: &HashSet<String>,
@@ -2404,8 +2540,9 @@ fn type_switch_case_interface_methods_from_decl<'a>(
 ) {
     match decl {
         crate::ast::Decl::FuncDecl(func) => {
+            let env = env.scoped_for_func_decl(func);
             if let Some(body) = &func.body {
-                type_switch_case_interface_methods_from_block(body, env, on_case);
+                type_switch_case_interface_methods_from_block(body, &env, on_case);
             }
         }
         crate::ast::Decl::GenDecl(gen_decl) => {
@@ -3080,16 +3217,16 @@ fn refs_from_expr(expr: &crate::ast::Expr<'_>, refs: &mut HashSet<String>) {
 }
 
 fn method_refs_from_decl(decl: &crate::ast::Decl<'_>, env: &TypeEnv, refs: &mut HashSet<String>) {
-    let mut env = env.clone();
     match decl {
         crate::ast::Decl::FuncDecl(func) => {
-            seed_func_decl_method_ref_bindings(func, &mut env);
+            let mut env = env.scoped_for_func_decl(func);
             let return_types = func_result_types_for_method_refs(func);
             if let Some(body) = &func.body {
                 method_refs_from_block(body, &mut env, refs, &return_types);
             }
         }
         crate::ast::Decl::GenDecl(gen_decl) => {
+            let mut env = env.clone();
             method_refs_from_gen_decl(gen_decl, &mut env, refs);
         }
     }
@@ -3120,12 +3257,6 @@ fn field_list_types_for_method_refs(
                 .collect()
         })
         .unwrap_or_default()
-}
-
-fn seed_func_decl_method_ref_bindings(func: &crate::ast::FuncDecl<'_>, env: &mut TypeEnv) {
-    seed_field_list_method_ref_bindings(func.recv.as_ref(), env);
-    seed_field_list_method_ref_bindings(Some(&func.type_.params), env);
-    seed_field_list_method_ref_bindings(func.type_.results.as_ref(), env);
 }
 
 fn seed_field_list_method_ref_bindings(
@@ -3372,9 +3503,9 @@ fn seed_range_method_ref_bindings(
     range_env: &mut TypeEnv,
     outer_env: &TypeEnv,
 ) {
-    let container_ty = outer_env.resolve_alias(&crate::compiler::typeinfer::GoType::infer_expr(
-        &range.x, outer_env,
-    ));
+    let container_ty = outer_env.resolve_alias_outer(
+        &crate::compiler::typeinfer::GoType::infer_expr(&range.x, outer_env),
+    );
     let (key_ty, value_ty) = match container_ty {
         crate::compiler::typeinfer::GoType::Slice(elem)
         | crate::compiler::typeinfer::GoType::Array(elem) => {
@@ -3473,17 +3604,18 @@ fn receiver_names_for_method_lookup(
     }
 }
 
-fn interface_methods_for_method_refs(
+fn interface_method_requirement_for_method_refs(
     ty: &crate::compiler::typeinfer::GoType,
     env: &TypeEnv,
-) -> Option<Vec<String>> {
+) -> Option<(Option<String>, Vec<String>)> {
     match env.resolve_alias(ty) {
-        crate::compiler::typeinfer::GoType::Error => Some(vec!["Error".to_string()]),
+        crate::compiler::typeinfer::GoType::Error => Some((None, vec!["Error".to_string()])),
         crate::compiler::typeinfer::GoType::Named(name)
         | crate::compiler::typeinfer::GoType::Interface(name)
             if env.is_interface(&name) =>
         {
             env.get_interface_methods(&name)
+                .map(|methods| (Some(name), methods))
         }
         _ => None,
     }
@@ -3494,30 +3626,29 @@ fn concrete_receiver_name_for_interface_arg(
     env: &TypeEnv,
 ) -> Option<(String, bool)> {
     match ty {
+        crate::compiler::typeinfer::GoType::Named(name) if env.is_type_alias(name) => {
+            let resolved = env.resolve_alias_outer(ty);
+            (resolved != *ty)
+                .then(|| concrete_receiver_name_for_interface_arg(&resolved, env))
+                .flatten()
+        }
+        crate::compiler::typeinfer::GoType::Instantiated { name, .. }
+            if env.is_type_alias(name) =>
+        {
+            let resolved = env.resolve_alias_outer(ty);
+            (resolved != *ty)
+                .then(|| concrete_receiver_name_for_interface_arg(&resolved, env))
+                .flatten()
+        }
         crate::compiler::typeinfer::GoType::Named(name)
         | crate::compiler::typeinfer::GoType::Instantiated { name, .. } => {
             concrete_receiver_name_if_not_interface(name, false, env)
         }
-        crate::compiler::typeinfer::GoType::Pointer(inner) => match inner.as_ref() {
-            crate::compiler::typeinfer::GoType::Named(name)
-            | crate::compiler::typeinfer::GoType::Instantiated { name, .. } => {
-                concrete_receiver_name_if_not_interface(name, true, env)
-            }
-            other => match env.resolve_alias(other) {
-                crate::compiler::typeinfer::GoType::Named(name)
-                | crate::compiler::typeinfer::GoType::Instantiated { name, .. } => {
-                    concrete_receiver_name_if_not_interface(&name, true, env)
-                }
-                _ => None,
-            },
-        },
-        other => match env.resolve_alias(other) {
-            crate::compiler::typeinfer::GoType::Named(name)
-            | crate::compiler::typeinfer::GoType::Instantiated { name, .. } => {
-                concrete_receiver_name_if_not_interface(&name, false, env)
-            }
-            _ => None,
-        },
+        crate::compiler::typeinfer::GoType::Pointer(inner) => {
+            let (name, inner_is_pointer) = concrete_receiver_name_for_interface_arg(inner, env)?;
+            (!inner_is_pointer).then_some((name, true))
+        }
+        _ => None,
     }
 }
 
@@ -3539,7 +3670,9 @@ fn method_refs_from_interface_value(
     env: &TypeEnv,
     refs: &mut HashSet<String>,
 ) {
-    let Some(methods) = interface_methods_for_method_refs(expected, env) else {
+    let Some((interface_name, methods)) =
+        interface_method_requirement_for_method_refs(expected, env)
+    else {
         return;
     };
     if methods.is_empty() {
@@ -3554,11 +3687,145 @@ fn method_refs_from_interface_value(
     if type_name.contains('.') {
         return;
     }
-    if !env.named_type_implements_methods(&type_name, &methods, include_pointer_receiver_methods) {
+    if !concrete_satisfies_interface_requirement(
+        &type_name,
+        include_pointer_receiver_methods,
+        interface_name.as_deref(),
+        &methods,
+        env,
+    ) {
         return;
     }
+    insert_concrete_interface_method_refs(
+        &type_name,
+        include_pointer_receiver_methods,
+        &methods,
+        env,
+        refs,
+    );
+}
+
+fn method_refs_from_type_assertion_target(
+    type_assert: &crate::ast::TypeAssertExpr<'_>,
+    env: &TypeEnv,
+    refs: &mut HashSet<String>,
+) {
+    let Some(target_type) = type_assert.type_.as_deref() else {
+        return;
+    };
+    let source_type = crate::compiler::typeinfer::GoType::infer_expr(&type_assert.x, env);
+    let Some((interface_name, methods)) =
+        interface_method_requirement_for_method_refs(&source_type, env)
+    else {
+        return;
+    };
+    if methods.is_empty() {
+        return;
+    }
+    let target_type = crate::compiler::typeinfer::GoType::from_expr(target_type);
+    if let Some((target_interface_name, target_methods)) =
+        interface_method_requirement_for_method_refs(&target_type, env)
+    {
+        let Some(target_interface_name) = target_interface_name else {
+            return;
+        };
+        let mut implementors = env
+            .interface_implementors(&target_interface_name)
+            .into_iter()
+            .map(|name| (name, false))
+            .chain(
+                env.interface_pointer_implementors(&target_interface_name)
+                    .into_iter()
+                    .map(|name| (name, true)),
+            )
+            .collect::<Vec<_>>();
+        implementors.sort();
+        implementors.dedup();
+        for (type_name, include_pointer_receiver_methods) in implementors {
+            if type_name.contains('.')
+                || !concrete_satisfies_interface_requirement(
+                    &type_name,
+                    include_pointer_receiver_methods,
+                    interface_name.as_deref(),
+                    &methods,
+                    env,
+                )
+            {
+                continue;
+            }
+            refs.insert(type_name.clone());
+            insert_concrete_interface_method_refs(
+                &type_name,
+                include_pointer_receiver_methods,
+                &target_methods,
+                env,
+                refs,
+            );
+        }
+        return;
+    }
+    let Some((type_name, include_pointer_receiver_methods)) =
+        concrete_receiver_name_for_interface_arg(&target_type, env)
+    else {
+        return;
+    };
+    if type_name.contains('.') {
+        return;
+    }
+    if !concrete_satisfies_interface_requirement(
+        &type_name,
+        include_pointer_receiver_methods,
+        interface_name.as_deref(),
+        &methods,
+        env,
+    ) {
+        return;
+    }
+    insert_concrete_interface_method_refs(
+        &type_name,
+        include_pointer_receiver_methods,
+        &methods,
+        env,
+        refs,
+    );
+}
+
+fn concrete_satisfies_interface_requirement(
+    type_name: &str,
+    include_pointer_receiver_methods: bool,
+    interface_name: Option<&str>,
+    methods: &[String],
+    env: &TypeEnv,
+) -> bool {
+    interface_name.map_or_else(
+        || env.named_type_implements_methods(type_name, methods, include_pointer_receiver_methods),
+        |interface_name| {
+            env.named_type_implements_interface(
+                type_name,
+                interface_name,
+                include_pointer_receiver_methods,
+            )
+        },
+    )
+}
+
+fn insert_concrete_interface_method_refs(
+    type_name: &str,
+    include_pointer_receiver_methods: bool,
+    methods: &[String],
+    env: &TypeEnv,
+    refs: &mut HashSet<String>,
+) {
     for method in methods {
-        refs.insert(format!("{type_name}::{method}"));
+        let Some(method_key) =
+            env.resolved_named_method_key(type_name, method, include_pointer_receiver_methods)
+        else {
+            continue;
+        };
+        let Some((receiver, method)) = method_key.rsplit_once('.') else {
+            continue;
+        };
+        refs.insert(format!("{receiver}::{method}"));
     }
 }
 
@@ -3652,6 +3919,7 @@ fn method_refs_from_expr(
             }
         }
         crate::ast::Expr::TypeAssertExpr(type_assert) => {
+            method_refs_from_type_assertion_target(type_assert, env, refs);
             method_refs_from_expr(&type_assert.x, env, refs);
             if let Some(type_expr) = type_assert.type_.as_deref() {
                 method_refs_from_expr(type_expr, env, refs);
@@ -4004,23 +4272,19 @@ fn value_refs_from_expr(expr: &crate::ast::Expr<'_>, refs: &mut HashSet<String>)
     }
 }
 
-fn package_import_renames(
-    parsed_files: &[(&str, crate::ast::File<'_>)],
-) -> BTreeMap<String, String> {
+fn file_import_renames(ast: &crate::ast::File<'_>) -> BTreeMap<String, String> {
     let mut rewrites = BTreeMap::new();
-    for (_, ast) in parsed_files {
-        for import in ast.imports() {
-            let import_path = import.path.value.trim_matches('"');
-            if !is_known(import_path) {
-                continue;
-            }
-            let mod_name = module_name(import_path);
-            let Some(local_name) = import_local_name(import) else {
-                continue;
-            };
-            if local_name != mod_name {
-                rewrites.insert(local_name, mod_name);
-            }
+    for import in ast.imports() {
+        let import_path = import.path.value.trim_matches('"');
+        if !is_known(import_path) {
+            continue;
+        }
+        let mod_name = module_name(import_path);
+        let Some(local_name) = import_local_name(import) else {
+            continue;
+        };
+        if local_name != mod_name {
+            rewrites.insert(local_name, mod_name);
         }
     }
     rewrites
@@ -4035,9 +4299,6 @@ fn package_import_path_by_module(
             let import_path = import.path.value.trim_matches('"');
             if is_known(import_path) {
                 imports.insert(module_name(import_path), import_path.to_string());
-                if let Some(local_name) = import_local_name(import) {
-                    imports.insert(local_name, import_path.to_string());
-                }
             }
         }
     }
@@ -4513,6 +4774,452 @@ mod tests {
     }
 
     #[test]
+    fn type_env_wire_canonicalizes_mutable_top_level_var_facts() {
+        let mut env = TypeEnv::new();
+        env.set_top_level_var("Zeta", GoType::Int);
+        env.set_top_level_var("Alpha", GoType::Int);
+        env.set_package_mutable_top_level_vars(HashSet::from([
+            "Zeta".to_string(),
+            "Alpha".to_string(),
+        ]));
+
+        let canonical = canonical_type_env_value(&env).unwrap();
+        assert_eq!(
+            canonical.get("mutable_top_level_vars"),
+            Some(&serde_json::json!(["Alpha", "Zeta"]))
+        );
+
+        let decoded: TypeEnv = serde_json::from_value(canonical.clone()).unwrap();
+        assert_eq!(canonical_type_env_value(&decoded).unwrap(), canonical);
+    }
+
+    #[test]
+    fn package_type_env_keeps_same_file_alias_bound_to_distinct_import_identities() {
+        let a_file = crate::parser::parse_file(
+            "a.go",
+            r#"
+                package p
+
+                import x "archive/tar"
+
+                type IA interface {
+                    x.Common
+                    Use(x.Value)
+                }
+            "#,
+        )
+        .unwrap();
+        let b_file = crate::parser::parse_file(
+            "b.go",
+            r#"
+                package p
+
+                import x "archive/zip"
+
+                type IB interface {
+                    x.Common
+                    Use(x.Value)
+                }
+            "#,
+        )
+        .unwrap();
+
+        let mut a_env = TypeEnv::new();
+        a_env.set_type_kind("Common", TypeKind::Interface);
+        a_env.set_interface_methods("Common", vec!["Write".to_string()]);
+        a_env.set_func_params("Common.Write", vec![GoType::Slice(Box::new(GoType::Uint8))]);
+        a_env.set_func("Common.Write", vec![GoType::Int]);
+        a_env.set_borrowed_slice_params("Common.Write", HashSet::from([0]));
+        a_env.set_type_kind("Value", TypeKind::Struct);
+
+        let mut b_env = TypeEnv::new();
+        b_env.set_type_kind("Common", TypeKind::Interface);
+        b_env.set_interface_methods("Common", vec!["Write".to_string()]);
+        b_env.set_func_params("Common.Write", vec![GoType::String]);
+        b_env.set_func("Common.Write", vec![GoType::String]);
+        b_env.set_type_kind("Value", TypeKind::Struct);
+
+        let imported = BTreeMap::from([
+            (
+                "archive/tar".to_string(),
+                crate::compiler::PackageFacts::new("tar".to_string(), a_env),
+            ),
+            (
+                "archive/zip".to_string(),
+                crate::compiler::PackageFacts::new("zip".to_string(), b_env),
+            ),
+        ]);
+        let mut package_env = TypeEnv::new();
+        let files = [&a_file, &b_file];
+        package_env.scan_files(&files);
+        retain_canonical_import_type_envs(&mut package_env, &files, &imported);
+
+        assert_eq!(
+            package_env.get_interface_direct_embedded_interfaces("IA"),
+            vec!["archive__tar.Common".to_string()]
+        );
+        assert_eq!(
+            package_env.get_interface_direct_embedded_interfaces("IB"),
+            vec!["archive__zip.Common".to_string()]
+        );
+        assert_eq!(
+            package_env.get_method_func_key("IA", "Write").as_deref(),
+            Some("archive__tar.Common.Write")
+        );
+        assert_eq!(
+            package_env.get_method_func_key("IB", "Write").as_deref(),
+            Some("archive__zip.Common.Write")
+        );
+        assert_eq!(
+            package_env.get_method_params("IA", "Write"),
+            vec![GoType::Slice(Box::new(GoType::Uint8))]
+        );
+        assert_eq!(
+            package_env.get_method_params("IB", "Write"),
+            vec![GoType::String]
+        );
+        assert_eq!(
+            package_env.get_method_params("IA", "Use"),
+            vec![GoType::Named("archive__tar.Value".to_string())]
+        );
+        assert_eq!(
+            package_env.get_method_params("IB", "Use"),
+            vec![GoType::Named("archive__zip.Value".to_string())]
+        );
+        assert!(package_env.func_param_needs_borrowed_slice("archive__tar.Common.Write", 0));
+        assert!(!package_env.func_param_needs_borrowed_slice("archive__zip.Common.Write", 0));
+        assert!(!package_env.is_interface("x.Common"));
+        assert_eq!(
+            file_import_renames(&a_file).get("x").map(String::as_str),
+            Some("archive__tar")
+        );
+        assert_eq!(
+            file_import_renames(&b_file).get("x").map(String::as_str),
+            Some("archive__zip")
+        );
+        let mut a_file_env = package_env.clone();
+        crate::compiler::merge_import_type_envs(
+            &mut a_file_env,
+            &a_file,
+            &BTreeMap::new(),
+            &imported,
+        );
+        let mut b_file_env = package_env.clone();
+        crate::compiler::merge_import_type_envs(
+            &mut b_file_env,
+            &b_file,
+            &BTreeMap::new(),
+            &imported,
+        );
+        assert_eq!(
+            a_file_env.get_method_params("x.Common", "Write"),
+            vec![GoType::Slice(Box::new(GoType::Uint8))]
+        );
+        assert_eq!(
+            b_file_env.get_method_params("x.Common", "Write"),
+            vec![GoType::String]
+        );
+
+        let parsed_files = vec![("a.go", a_file), ("b.go", b_file)];
+        let imports_by_module = package_import_path_by_module(&parsed_files);
+        assert_eq!(
+            imports_by_module.get("archive__tar").map(String::as_str),
+            Some("archive/tar")
+        );
+        assert_eq!(
+            imports_by_module.get("archive__zip").map(String::as_str),
+            Some("archive/zip")
+        );
+        assert!(!imports_by_module.contains_key("x"));
+    }
+
+    #[test]
+    fn external_local_interface_impl_uses_canonical_import_module_identity() {
+        let interface_file = crate::parser::parse_file(
+            "interface.go",
+            r#"
+                package formatting
+
+                import gd "internal/godebug"
+
+                type Stringer interface {
+                    String() string
+                }
+
+                func setting() *gd.Setting {
+                    return &gd.Setting{}
+                }
+            "#,
+        )
+        .unwrap();
+        let render_file = crate::parser::parse_file(
+            "render.go",
+            r#"
+                package formatting
+
+                func Render(value Stringer) string {
+                    return value.String()
+                }
+            "#,
+        )
+        .unwrap();
+        let dependency_file = crate::parser::parse_file(
+            "setting.go",
+            r#"
+                package godebug
+
+                type Setting struct{}
+
+                func (*Setting) String() string { return "setting" }
+            "#,
+        )
+        .unwrap();
+        let mut dependency_env = TypeEnv::new();
+        dependency_env.scan_file(&dependency_file);
+        let imported = BTreeMap::from([(
+            "internal/godebug".to_string(),
+            crate::compiler::PackageFacts::new("godebug".to_string(), dependency_env),
+        )]);
+        let files = [&interface_file, &render_file];
+        let mut package_env = TypeEnv::new();
+        package_env.scan_files(&files);
+        retain_canonical_import_type_envs(&mut package_env, &files, &imported);
+        let package_mutable_top_level_vars =
+            crate::compiler::mutable_top_level_var_names_for_files_with_type_env(
+                files.iter().copied(),
+                false,
+                &package_env,
+            );
+        let view_method_seed =
+            crate::compiler::borrowed_view_method_seed_for_files(&files, &package_env);
+
+        let compiled = compile_resolved_file(
+            "example/format",
+            interface_file,
+            &package_env,
+            &imported,
+            &package_mutable_top_level_vars,
+            &view_method_seed,
+        )
+        .unwrap();
+        let output = prettyplease::unparse(&compiled);
+        let compact = output
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+
+        assert!(
+            compact.contains("implStringerforcrate::builtin::GorsPtr<internal__godebug::Setting>"),
+            "{output}"
+        );
+        assert!(!compact.contains("GorsPtr<gd::Setting>"), "{output}");
+        assert_eq!(
+            compact
+                .matches("implStringerforcrate::builtin::GorsPtr<internal__godebug::Setting>")
+                .count(),
+            1,
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn resolved_self_package_trait_paths_use_generated_module_identity() {
+        let file = crate::parser::parse_file(
+            "fs.go",
+            r#"
+package fs
+
+type ReadFS interface {
+	Read() bool
+}
+
+func Probe(value any) bool {
+	_, named := value.(ReadFS)
+	timeout, anonymous := value.(interface{ Timeout() bool })
+	return named && anonymous && timeout.Timeout()
+}
+"#,
+        )
+        .unwrap();
+        let mut package_env = TypeEnv::new();
+        package_env.scan_file(&file);
+        let files = [&file];
+        let package_mutable_top_level_vars =
+            crate::compiler::mutable_top_level_var_names_for_files_with_type_env(
+                files.iter().copied(),
+                false,
+                &package_env,
+            );
+        let view_method_seed =
+            crate::compiler::borrowed_view_method_seed_for_files(&files, &package_env);
+
+        let compiled = compile_resolved_file(
+            "io/fs",
+            file,
+            &package_env,
+            &BTreeMap::new(),
+            &package_mutable_top_level_vars,
+            &view_method_seed,
+        )
+        .unwrap();
+        let output = prettyplease::unparse(&compiled);
+        let compact = output.split_whitespace().collect::<String>();
+
+        assert!(compact.contains("crate::io__fs::ReadFS"), "{output}");
+        assert!(
+            compact.contains("crate::io__fs::__gors_anonymous_interface_"),
+            "{output}"
+        );
+        assert!(!compact.contains("dynfs::ReadFS"), "{output}");
+        assert!(
+            !compact.contains("dynfs::__gors_anonymous_interface_"),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn fixed_array_interface_shapes_survive_imported_and_transitive_type_env_merges() {
+        let contract_file = crate::parser::parse_file(
+            "contract.go",
+            r#"
+                package contract
+
+                type Two interface {
+                    RoundTrip([2]byte) [2]byte
+                }
+
+                type Three interface {
+                    RoundTrip([3]byte) [3]byte
+                }
+            "#,
+        )
+        .unwrap();
+        let mut contract_env = TypeEnv::new();
+        contract_env.scan_file(&contract_file);
+
+        let wrapper_file = crate::parser::parse_file(
+            "wrapper.go",
+            r#"
+                package wrapper
+
+                import c "archive/tar"
+
+                type WrappedTwo interface { c.Two }
+                type WrappedThree interface { c.Three }
+            "#,
+        )
+        .unwrap();
+        let imported = BTreeMap::from([(
+            "archive/tar".to_string(),
+            crate::compiler::PackageFacts::new("contract".to_string(), contract_env),
+        )]);
+        let mut wrapper_env = TypeEnv::new();
+        wrapper_env.scan_file(&wrapper_file);
+        retain_canonical_import_type_envs(&mut wrapper_env, &[&wrapper_file], &imported);
+
+        assert_eq!(
+            wrapper_env
+                .get_method_func_key("WrappedTwo", "RoundTrip")
+                .as_deref(),
+            Some("archive__tar.Two.RoundTrip")
+        );
+        assert_eq!(
+            wrapper_env
+                .get_method_func_key("WrappedThree", "RoundTrip")
+                .as_deref(),
+            Some("archive__tar.Three.RoundTrip")
+        );
+        assert_ne!(
+            wrapper_env
+                .get_func_signature_shapes("archive__tar.Two.RoundTrip")
+                .unwrap(),
+            wrapper_env
+                .get_func_signature_shapes("archive__tar.Three.RoundTrip")
+                .unwrap()
+        );
+
+        let implementors = crate::parser::parse_file(
+            "implementors.go",
+            r#"
+                package consumer
+
+                type pair struct{}
+                func (pair) RoundTrip(value [2]byte) [2]byte { return value }
+
+                type triple struct{}
+                func (triple) RoundTrip(value [3]byte) [3]byte { return value }
+            "#,
+        )
+        .unwrap();
+        let mut consumer_env = TypeEnv::new();
+        consumer_env.scan_file(&implementors);
+        consumer_env.merge_package("wrapper", &wrapper_env);
+
+        assert!(consumer_env.named_type_implements_interface("pair", "wrapper.WrappedTwo", false));
+        assert!(!consumer_env.named_type_implements_interface(
+            "pair",
+            "wrapper.WrappedThree",
+            false
+        ));
+        assert!(consumer_env.named_type_implements_interface(
+            "triple",
+            "wrapper.WrappedThree",
+            false
+        ));
+        assert!(!consumer_env.named_type_implements_interface(
+            "triple",
+            "wrapper.WrappedTwo",
+            false
+        ));
+    }
+
+    #[test]
+    fn scanned_type_env_retains_transitive_embedded_interface_slice_abi() {
+        let (_, hash_env) = scan_type_env_uncached("hash").unwrap();
+        assert!(hash_env.is_interface("io.Writer"));
+        assert_eq!(
+            hash_env.get_method_params("io.Writer", "Write"),
+            vec![GoType::Slice(Box::new(GoType::Uint8))]
+        );
+        assert!(hash_env.func_param_needs_borrowed_slice("io.Writer.Write", 0));
+
+        let (_, crc32_env) = scan_type_env_uncached("hash/crc32").unwrap();
+        assert!(crc32_env.is_interface("io.Writer"));
+        assert_eq!(
+            crc32_env.get_method_params("io.Writer", "Write"),
+            vec![GoType::Slice(Box::new(GoType::Uint8))]
+        );
+        assert!(crc32_env.func_param_needs_borrowed_slice("io.Writer.Write", 0));
+    }
+
+    #[test]
+    fn rooted_interface_forwarder_uses_transitive_borrowed_slice_abi() {
+        let roots = HashSet::from(["NewIEEE".to_string()]);
+        let module = resolve_uncached(
+            "hash/crc32",
+            Some(&roots),
+            crate::compiler::CompileOptions::default(),
+        )
+        .module
+        .unwrap();
+        let output = module.to_token_stream().to_string();
+        let compact = output
+            .chars()
+            .filter(|ch| !ch.is_whitespace())
+            .collect::<String>();
+
+        assert!(
+            compact.contains("implio::Writerforcrate::builtin::GorsPtr<digest>")
+                && compact.contains("fnWrite(&mutself,mutp:&mut[u8])"),
+            "expected the embedded io.Writer forwarder to preserve its borrowed slice ABI: {output}"
+        );
+        assert!(
+            !compact.contains("fnWrite(&mutself,mutp:Vec<u8>)"),
+            "interface forwarders must not fall back to the concrete method's owned slice ABI: {output}"
+        );
+    }
+
+    #[test]
     fn resolved_cache_eviction_is_bounded_and_keeps_records_paired() {
         fn initialized_slot(entry: ResolvedModuleEntry, last_used: u64) -> Arc<ResolvedModuleSlot> {
             let slot = initialized_resolved_slot(entry);
@@ -4672,7 +5379,6 @@ func Fill(b *block) {
             let mut package_type_env = TypeEnv::new();
             package_type_env.scan_files(&parsed_file_refs);
             let imported_type_envs = BTreeMap::new();
-            let import_renames = BTreeMap::new();
             let package_mutable_top_level_vars =
                 crate::compiler::mutable_top_level_var_names_for_files_with_type_env(
                     parsed_file_refs.iter().copied(),
@@ -4687,7 +5393,6 @@ func Fill(b *block) {
                 import_path: "views",
                 package_type_env: &package_type_env,
                 imported_type_envs: &imported_type_envs,
-                import_renames: &import_renames,
                 package_mutable_top_level_vars: &package_mutable_top_level_vars,
                 view_method_seed: &view_method_seed,
             };
@@ -4813,6 +5518,240 @@ func root(s sparseArray) {
 
         assert!(reachable.contains("parser::parseString"), "{reachable:?}");
         assert!(reachable.contains("sparseArray::entry"), "{reachable:?}");
+    }
+
+    #[test]
+    fn reachable_receiver_method_keeps_sibling_methods_for_interface_satisfaction() {
+        let file = crate::parser::parse_file(
+            "pkg.go",
+            r#"
+package pkg
+
+type StringWriter interface {
+	Write([]byte) (int, error)
+	WriteString(string) (int, error)
+}
+
+type Builder struct{}
+
+func (*Builder) Write([]byte) (int, error) {
+	return 0, nil
+}
+
+func (*Builder) WriteString(string) (int, error) {
+	return 0, nil
+}
+"#,
+        )
+        .unwrap();
+        let parsed = vec![("pkg.go", file)];
+        let roots = HashSet::from(["Builder::Write".to_string(), "StringWriter".to_string()]);
+
+        let reachable = reachable_package_names(&parsed, &roots);
+
+        assert!(reachable.contains("Builder"), "{reachable:?}");
+        assert!(reachable.contains("Builder::Write"), "{reachable:?}");
+        assert!(reachable.contains("Builder::WriteString"), "{reachable:?}");
+    }
+
+    #[test]
+    fn reachable_names_translate_requested_package_value_methods_to_concrete_receivers() {
+        let file = crate::parser::parse_file(
+            "pkg.go",
+            r#"
+package pkg
+
+type order struct{}
+type orderAlias = *order
+
+var Current orderAlias
+
+func (*order) Read([]byte) uint32 {
+	return 0
+}
+
+func (*order) Unrequested() uint32 {
+	return 0
+}
+"#,
+        )
+        .unwrap();
+        let parsed = vec![("pkg.go", file)];
+        let roots = HashSet::from(["Current::Read".to_string()]);
+
+        let reachable = reachable_package_names(&parsed, &roots);
+
+        assert!(reachable.contains("Current"), "{reachable:?}");
+        assert!(reachable.contains("order"), "{reachable:?}");
+        assert!(reachable.contains("order::Read"), "{reachable:?}");
+        assert!(reachable.contains("order::Unrequested"), "{reachable:?}");
+    }
+
+    #[test]
+    fn reachable_names_keep_signature_matching_pointer_type_assertion_methods() {
+        let file = crate::parser::parse_file(
+            "pkg.go",
+            r#"
+package pkg
+
+type Reader interface {
+	Read([]byte) (int, error)
+}
+
+type good struct{}
+type goodAlias = good
+
+func (*good) Read([]byte) (int, error) {
+	return 0, nil
+}
+
+func (*good) Unrequested() {}
+
+type bad struct{}
+
+func (*bad) Read(string) (int, error) {
+	return 0, nil
+}
+
+func use(r Reader) {
+	_, _ = r.(*goodAlias)
+	_, _ = r.(*bad)
+}
+"#,
+        )
+        .unwrap();
+        let parsed = vec![("pkg.go", file)];
+        let roots = HashSet::from(["use".to_string()]);
+
+        let reachable = reachable_package_names(&parsed, &roots);
+
+        assert!(reachable.contains("Reader"), "{reachable:?}");
+        assert!(reachable.contains("good"), "{reachable:?}");
+        assert!(reachable.contains("good::Read"), "{reachable:?}");
+        assert!(!reachable.contains("good::Unrequested"), "{reachable:?}");
+        assert!(reachable.contains("bad"), "{reachable:?}");
+        assert!(!reachable.contains("bad::Read"), "{reachable:?}");
+    }
+
+    #[test]
+    fn reachable_names_keep_methods_called_on_named_range_elements() {
+        let file = crate::parser::parse_file(
+            "pkg.go",
+            r#"
+package pkg
+
+type token uint32
+
+func (t token) literal() bool {
+	return t != 0
+}
+
+func (t token) unrequested() bool {
+	return false
+}
+
+func root(tokens []token) {
+	for _, t := range tokens {
+		_ = t.literal()
+	}
+}
+"#,
+        )
+        .unwrap();
+        let parsed = vec![("pkg.go", file)];
+        let roots = HashSet::from(["root".to_string()]);
+
+        let reachable = reachable_package_names(&parsed, &roots);
+
+        assert!(reachable.contains("token"), "{reachable:?}");
+        assert!(reachable.contains("token::literal"), "{reachable:?}");
+        assert!(!reachable.contains("token::unrequested"), "{reachable:?}");
+    }
+
+    #[test]
+    fn reachable_names_keep_implementors_for_interface_type_assertions() {
+        let file = crate::parser::parse_file(
+            "pkg.go",
+            r#"
+package pkg
+
+type Reader interface {
+	Read([]byte) (int, error)
+}
+
+type Closer interface {
+	Close() error
+}
+
+type ReadCloser interface {
+	Reader
+	Closer
+}
+
+type pipe struct{}
+
+func (*pipe) Read([]byte) (int, error) {
+	return 0, nil
+}
+
+func (*pipe) Close() error {
+	return nil
+}
+
+func (*pipe) unrequested() {}
+
+func use(r Reader) {
+	_, _ = r.(ReadCloser)
+}
+"#,
+        )
+        .unwrap();
+        let parsed = vec![("pkg.go", file)];
+        let roots = HashSet::from(["use".to_string()]);
+
+        let reachable = reachable_package_names(&parsed, &roots);
+
+        assert!(reachable.contains("pipe"), "{reachable:?}");
+        assert!(reachable.contains("pipe::Read"), "{reachable:?}");
+        assert!(reachable.contains("pipe::Close"), "{reachable:?}");
+        assert!(!reachable.contains("pipe::unrequested"), "{reachable:?}");
+    }
+
+    #[test]
+    fn reachable_names_resolve_promoted_interface_methods_to_their_owner() {
+        let file = crate::parser::parse_file(
+            "pkg.go",
+            r#"
+package pkg
+
+type FS interface {
+	Open(string) int
+}
+
+type base struct{}
+
+func (base) Open(string) int {
+	return 0
+}
+
+type wrapper struct {
+	base
+}
+
+func root() FS {
+	return wrapper{}
+}
+"#,
+        )
+        .unwrap();
+        let parsed = vec![("pkg.go", file)];
+        let roots = HashSet::from(["root".to_string()]);
+
+        let reachable = reachable_package_names(&parsed, &roots);
+
+        assert!(reachable.contains("wrapper"), "{reachable:?}");
+        assert!(reachable.contains("base::Open"), "{reachable:?}");
+        assert!(!reachable.contains("wrapper::Open"), "{reachable:?}");
     }
 
     #[test]
@@ -5047,6 +5986,22 @@ func (Timespec) Unix() (int64, int64) {
     }
 
     #[test]
+    fn resolve_receiver_impl_root_keeps_complete_sdk_method_set()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let roots = HashSet::from([
+            "Builder".to_string(),
+            "Builder::Write".to_string(),
+            "impl StringWriter for Builder".to_string(),
+        ]);
+        let module = resolve_with_roots("strings", &roots)
+            .ok_or_else(|| std::io::Error::other("resolve strings"))?;
+        let tokens = module.to_token_stream().to_string();
+
+        assert!(tokens.contains("pub fn WriteString"), "{tokens}");
+        Ok(())
+    }
+
+    #[test]
     fn reachable_names_include_instantiated_field_type_arguments()
     -> Result<(), Box<dyn std::error::Error>> {
         let file = crate::parser::parse_file(
@@ -5186,6 +6141,81 @@ func deadHelper() int {
         assert!(reachable.contains("MapIter::Key"), "{reachable:?}");
         assert!(reachable.contains("copyVal"), "{reachable:?}");
         assert!(!reachable.contains("deadHelper"), "{reachable:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn requested_pointer_receiver_methods_survive_rooted_stdlib_resolution()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let roots = HashSet::from([
+            "FileHeader".to_string(),
+            "FileHeader::FileInfo".to_string(),
+            "Reader".to_string(),
+            "Reader::Open".to_string(),
+        ]);
+        let files = package_files("archive/zip")
+            .ok_or_else(|| std::io::Error::other("archive/zip files"))?;
+        let mut parsed_files = Vec::new();
+        for (filename, content) in files.iter() {
+            parsed_files.push((*filename, crate::parser::parse_file(filename, content)?));
+        }
+        let reachable = reachable_package_names(&parsed_files, &roots);
+        assert!(reachable.contains("FileHeader::FileInfo"), "{reachable:?}");
+        assert!(reachable.contains("Reader::Open"), "{reachable:?}");
+        let file_refs = parsed_files
+            .iter()
+            .map(|(_, file)| file)
+            .collect::<Vec<_>>();
+        let imported = scan_imported_type_envs("archive/zip", &file_refs);
+        let mut env = TypeEnv::new();
+        env.scan_files(&file_refs);
+        refresh_borrowed_slice_params_with_imports(&mut env, &file_refs, &imported);
+        refresh_top_level_vars_with_imports(&mut env, &file_refs, &imported);
+        refresh_signature_shapes_with_imports(&mut env, &file_refs, &imported);
+        retain_canonical_import_type_envs(&mut env, &file_refs, &imported);
+        let struct_file = parsed_files
+            .iter()
+            .find(|(filename, _)| *filename == "struct.go")
+            .map(|(_, file)| file)
+            .ok_or_else(|| std::io::Error::other("archive/zip struct.go"))?;
+        crate::compiler::merge_import_type_envs(&mut env, struct_file, &BTreeMap::new(), &imported);
+        let interface_name = "io__fs.FileInfo";
+        let signature_facts = env
+            .get_interface_methods(interface_name)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|method| {
+                let interface_key = env.get_method_func_key(interface_name, &method);
+                let concrete_key = env.resolved_named_method_key("headerFileInfo", &method, false);
+                let interface_signature = interface_key
+                    .as_ref()
+                    .map(|key| (env.get_func_params(key), env.get_func_returns(key)));
+                let concrete_signature = concrete_key
+                    .as_ref()
+                    .map(|key| (env.get_func_params(key), env.get_func_returns(key)));
+                (
+                    method,
+                    interface_key,
+                    concrete_key,
+                    interface_signature,
+                    concrete_signature,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            env.named_type_implements_interface("headerFileInfo", interface_name, false),
+            "{signature_facts:#?}"
+        );
+        assert!(
+            env.named_type_implements_interface("headerFileInfo", "fs.FileInfo", false),
+            "file-local interface identity diverged: {signature_facts:#?}"
+        );
+        let module = resolve_with_roots("archive/zip", &roots)
+            .ok_or_else(|| std::io::Error::other("resolve archive/zip"))?;
+        let tokens = module.to_token_stream().to_string();
+
+        assert!(tokens.contains("fn FileInfo"), "{tokens}");
+        assert!(tokens.contains("fn Open"), "{tokens}");
         Ok(())
     }
 
@@ -5332,6 +6362,58 @@ func deadHelper() {}
         assert!(!tokens.contains("sched"));
         assert!(collect_resolved_imports("runtime", &roots).is_empty());
         Ok(())
+    }
+
+    #[test]
+    fn syscall_getenv_keeps_generic_surface_and_injects_runtime_envs_abi()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let roots = HashSet::from(["Getenv".to_string()]);
+        let module = resolve_uncached(
+            "syscall",
+            Some(&roots),
+            crate::compiler::CompileOptions::default(),
+        )
+        .module
+        .ok_or_else(|| std::io::Error::other("resolve syscall.Getenv"))?;
+        let tokens = module.to_token_stream().to_string();
+
+        assert!(tokens.contains("pub fn Getenv"), "{tokens}");
+        assert!(tokens.contains("copyenv"), "{tokens}");
+        assert!(tokens.contains("fn runtime_envs"), "{tokens}");
+        assert!(tokens.contains("std :: env :: vars_os"), "{tokens}");
+        assert!(tokens.contains("as_encoded_bytes"), "{tokens}");
+        assert!(
+            tokens.contains("crate :: builtin :: go_string_from_bytes"),
+            "{tokens}"
+        );
+
+        let unrelated_roots = HashSet::from(["Getuid".to_string()]);
+        let unrelated = resolve_uncached(
+            "syscall",
+            Some(&unrelated_roots),
+            crate::compiler::CompileOptions::default(),
+        )
+        .module
+        .ok_or_else(|| std::io::Error::other("resolve syscall.Getuid"))?;
+        let unrelated = unrelated.to_token_stream().to_string();
+        assert!(!unrelated.contains("std :: env :: vars_os"), "{unrelated}");
+        Ok(())
+    }
+
+    #[test]
+    fn scanned_syscall_type_env_has_getenv_and_runtime_envs_signatures() {
+        let (_, env) = scan_type_env_uncached("syscall").unwrap();
+
+        assert_eq!(
+            env.get_func_returns("Getenv"),
+            vec![GoType::String, GoType::Bool]
+        );
+        assert_eq!(env.get_func_params("Getenv"), vec![GoType::String]);
+        assert_eq!(
+            env.get_func_returns("runtime_envs"),
+            vec![GoType::Slice(Box::new(GoType::String))]
+        );
+        assert_eq!(env.get_func_params("runtime_envs"), Vec::<GoType>::new());
     }
 
     #[test]
@@ -5536,6 +6618,25 @@ func Wrap(info Info) Entry {
         let tokens = module.to_token_stream().to_string();
 
         assert!(tokens.contains("impl DirEntry for dirInfo"), "{tokens}");
+        Ok(())
+    }
+
+    #[test]
+    fn rooted_sdk_package_packs_transitively_imported_variadic_calls()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let roots = HashSet::from(["Glob".to_string()]);
+        let module = resolve_with_roots("io/fs", &roots)
+            .ok_or_else(|| std::io::Error::other("resolve io/fs"))?;
+        let tokens = module.to_token_stream().to_string();
+
+        assert!(
+            tokens.contains("crate :: path :: Join (Vec :: from (["),
+            "expected imported variadic arguments to use the packed slice ABI: {tokens}",
+        );
+        assert!(
+            !tokens.contains("crate :: path :: Join ((dir) . to_vec (), n)"),
+            "variadic strings must not be treated as a fixed []string parameter: {tokens}",
+        );
         Ok(())
     }
 }

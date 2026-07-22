@@ -116,7 +116,15 @@ pub(super) fn shared_capture_read_expr(name: &str) -> Option<syn::Expr> {
             .unwrap_or(typeinfer::GoType::Unknown)
     });
     let value_ident = synthetic_names::shared_value_ident();
-    if go_type_is_copy(&go_type) {
+    if matches!(
+        TYPE_ENV.with(|env| env.borrow().resolve_alias(&go_type)),
+        typeinfer::GoType::Any
+    ) {
+        Some(syn::parse_quote! {{
+            let #value_ident = crate::builtin::clone_any(&**#ident.lock().unwrap());
+            #value_ident
+        }})
+    } else if go_type_is_copy(&go_type) {
         Some(syn::parse_quote! {{
             let #value_ident = *#ident.lock().unwrap();
             #value_ident

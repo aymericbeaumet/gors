@@ -90,7 +90,7 @@ pub(super) fn type_path_pointer_cell_inner_name(ty: &syn::Type) -> Option<String
     type_path_ident_name(inner)
 }
 
-pub(super) fn type_is_vec_u8(ty: &syn::Type) -> bool {
+pub(super) fn type_is_owned_byte_slice_storage(ty: &syn::Type) -> bool {
     let syn::Type::Path(path) = ty else {
         return false;
     };
@@ -100,7 +100,7 @@ pub(super) fn type_is_vec_u8(ty: &syn::Type) -> bool {
     let Some(segment) = path.path.segments.last() else {
         return false;
     };
-    if segment.ident != "Vec" {
+    if segment.ident != "Vec" && segment.ident != "GorsSliceStorage" {
         return false;
     }
     let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
@@ -188,15 +188,20 @@ mod tests {
     }
 
     #[test]
-    fn vec_u8_type_matches_single_vec_byte_type() {
-        let direct: syn::Type = syn::parse_quote! { Vec<u8> };
-        let qualified: syn::Type = syn::parse_quote! { std::vec::Vec<u8> };
+    fn owned_byte_slice_storage_matches_vec_and_gors_storage() {
+        let direct_vec: syn::Type = syn::parse_quote! { Vec<u8> };
+        let qualified_vec: syn::Type = syn::parse_quote! { std::vec::Vec<u8> };
+        let direct_storage: syn::Type = syn::parse_quote! { GorsSliceStorage<u8> };
+        let qualified_storage: syn::Type =
+            syn::parse_quote! { crate::builtin::GorsSliceStorage<u8> };
         let wrong_inner: syn::Type = syn::parse_quote! { Vec<usize> };
-        let extra_arg: syn::Type = syn::parse_quote! { Vec<u8, usize> };
+        let extra_arg: syn::Type = syn::parse_quote! { GorsSliceStorage<u8, usize> };
 
-        assert!(type_is_vec_u8(&direct));
-        assert!(type_is_vec_u8(&qualified));
-        assert!(!type_is_vec_u8(&wrong_inner));
-        assert!(!type_is_vec_u8(&extra_arg));
+        assert!(type_is_owned_byte_slice_storage(&direct_vec));
+        assert!(type_is_owned_byte_slice_storage(&qualified_vec));
+        assert!(type_is_owned_byte_slice_storage(&direct_storage));
+        assert!(type_is_owned_byte_slice_storage(&qualified_storage));
+        assert!(!type_is_owned_byte_slice_storage(&wrong_inner));
+        assert!(!type_is_owned_byte_slice_storage(&extra_arg));
     }
 }

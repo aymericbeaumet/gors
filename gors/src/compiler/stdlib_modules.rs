@@ -9,15 +9,16 @@ use rayon::prelude::*;
 
 use super::{
     CompiledModule, dce_pruning, dce_reachability::reachable_stdlib_items,
-    external_roots::ExternalRootCollector, required_module_roots::RequiredModuleRoots,
+    external_interface_implementors, external_roots::ExternalRootCollector,
+    required_module_roots::RequiredModuleRoots,
 };
 
 pub(super) fn resolve_required_stdlib_modules(
     modules: &mut BTreeMap<String, CompiledModule>,
     roots: &[String],
     jobs: usize,
-    can_parallelize: bool,
 ) {
+    let external_implementors = external_interface_implementors::snapshot();
     let init_root_mod_names = init_root_module_names(roots);
     let mut import_path_by_module: HashMap<String, String> = crate::resolve::list_packages()
         .into_iter()
@@ -81,7 +82,7 @@ pub(super) fn resolve_required_stdlib_modules(
         }
 
         let mut loaded_any = false;
-        for resolved in resolve_pending_modules(pending, jobs, can_parallelize) {
+        for resolved in resolve_pending_modules(pending, jobs, &external_implementors) {
             let ResolvedPendingModule {
                 module_name,
                 import_path,
@@ -271,16 +272,21 @@ fn resolve_pending_module(
 fn resolve_pending_modules(
     pending: Vec<(String, String, HashSet<String>)>,
     jobs: usize,
-    can_parallelize: bool,
+    external_implementors: &external_interface_implementors::ExternalInterfaceImplementorsSnapshot,
 ) -> Vec<ResolvedPendingModule> {
-    let uncached_tasks = if can_parallelize && jobs > 1 {
+    let external_implementors_active =
+        external_interface_implementors::snapshot_has_any(external_implementors);
+    let uncached_tasks = if jobs > 1 {
         pending
             .iter()
             .enumerate()
             .filter_map(|(index, task)| {
                 let (_, import_path, roots) = task;
-                (!crate::resolve::has_initialized_resolved_module(import_path, roots))
-                    .then_some((index, task))
+                pending_module_needs_uncached_dispatch(
+                    external_implementors_active,
+                    crate::resolve::has_initialized_resolved_module(import_path, roots),
+                )
+                .then_some((index, task))
             })
             .collect::<Vec<_>>()
     } else {
@@ -290,36 +296,89 @@ fn resolve_pending_modules(
     #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
     if uncached_tasks.len() > 1 && rayon::current_thread_index().is_none() {
         let thread_count = jobs.min(uncached_tasks.len());
-        if let Ok(pool) = rayon::ThreadPoolBuilder::new()
-            .num_threads(thread_count)
-            .thread_name(|index| format!("gors-package-{index}"))
-            .build()
-        {
+        if let Ok(pool) = super::worker_pool::builder(thread_count, "package").build() {
+            let external_implementors = external_implementors.clone();
             let resolved = pool.install(|| {
                 uncached_tasks
                     .par_iter()
-                    .map(|&(index, task)| (index, resolve_pending_module(task, 1)))
+                    .map(|&(index, task)| {
+                        (
+                            index,
+                            resolve_pending_module_with_external_implementors(
+                                task,
+                                1,
+                                &external_implementors,
+                            ),
+                        )
+                    })
                     .collect()
             });
-            return merge_parallel_resolved_modules(&pending, resolved, jobs);
+            return merge_parallel_resolved_modules(
+                &pending,
+                resolved,
+                jobs,
+                external_implementors,
+            );
         }
     }
 
     #[cfg(all(feature = "wasm-threads", target_family = "wasm"))]
     if uncached_tasks.len() > 1 {
+        let external_implementors = external_implementors.clone();
         let resolved = uncached_tasks
             .par_iter()
-            .map(|&(index, task)| (index, resolve_pending_module(task, 1)))
+            .map(|&(index, task)| {
+                (
+                    index,
+                    resolve_pending_module_with_external_implementors(
+                        task,
+                        1,
+                        &external_implementors,
+                    ),
+                )
+            })
             .collect();
-        return merge_parallel_resolved_modules(&pending, resolved, jobs);
+        return merge_parallel_resolved_modules(&pending, resolved, jobs, external_implementors);
     }
 
     let _ = uncached_tasks;
-    let file_jobs = if can_parallelize { jobs } else { 1 };
+    // Resolver file compilation also uses Rayon. Until all compiler TLS is
+    // explicitly propagated at that inner boundary, keep one package on one
+    // thread whenever assertion-candidate facts are active.
+    let file_jobs = if external_implementors_active {
+        1
+    } else {
+        jobs
+    };
     pending
         .iter()
-        .map(|task| resolve_pending_module(task, file_jobs))
+        .map(|task| {
+            resolve_pending_module_with_external_implementors(
+                task,
+                file_jobs,
+                external_implementors,
+            )
+        })
         .collect()
+}
+
+fn pending_module_needs_uncached_dispatch(
+    external_implementors_active: bool,
+    cache_initialized: bool,
+) -> bool {
+    external_implementors_active || !cache_initialized
+}
+
+fn resolve_pending_module_with_external_implementors(
+    task: &(String, String, HashSet<String>),
+    file_jobs: usize,
+    external_implementors: &external_interface_implementors::ExternalInterfaceImplementorsSnapshot,
+) -> ResolvedPendingModule {
+    let _external_implementors =
+        external_interface_implementors::ExternalInterfaceImplementorsGuard::set_snapshot(
+            external_implementors.clone(),
+        );
+    resolve_pending_module(task, file_jobs)
 }
 
 #[cfg(any(
@@ -330,6 +389,7 @@ fn merge_parallel_resolved_modules(
     pending: &[(String, String, HashSet<String>)],
     parallel: Vec<(usize, ResolvedPendingModule)>,
     jobs: usize,
+    external_implementors: external_interface_implementors::ExternalInterfaceImplementorsSnapshot,
 ) -> Vec<ResolvedPendingModule> {
     let mut parallel = parallel.into_iter().peekable();
     pending
@@ -343,7 +403,15 @@ fn merge_parallel_resolved_modules(
             {
                 return result;
             }
-            resolve_pending_module(task, jobs)
+            resolve_pending_module_with_external_implementors(
+                task,
+                if external_interface_implementors::snapshot_has_any(&external_implementors) {
+                    1
+                } else {
+                    jobs
+                },
+                &external_implementors,
+            )
         })
         .collect()
 }
@@ -562,6 +630,14 @@ pub(super) fn prune_unreferenced_stdlib_modules(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn external_implementor_snapshot_forces_fresh_parallel_dispatch() {
+        assert!(pending_module_needs_uncached_dispatch(true, true));
+        assert!(pending_module_needs_uncached_dispatch(true, false));
+        assert!(!pending_module_needs_uncached_dispatch(false, true));
+        assert!(pending_module_needs_uncached_dispatch(false, false));
+    }
 
     #[test]
     fn wider_resolved_source_invalidates_roots_processed_against_prior_source()

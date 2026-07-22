@@ -116,7 +116,9 @@ fn type_is_pointer_cell_iterable(ty: &syn::Type) -> bool {
     match ty {
         syn::Type::Reference(reference) => type_is_pointer_cell_iterable(&reference.elem),
         syn::Type::Slice(slice) => type_is_pointer_cell(&slice.elem),
-        _ => first_type_arg_if_path_last_ident(ty, "Vec").is_some_and(type_is_pointer_cell),
+        _ => ["Vec", "GorsSliceStorage"].into_iter().any(|container| {
+            first_type_arg_if_path_last_ident(ty, container).is_some_and(type_is_pointer_cell)
+        }),
     }
 }
 
@@ -258,4 +260,26 @@ fn lazylock_contains_arc_mutex(ty: &syn::Type) -> bool {
         return false;
     };
     first_type_arg_if_path_last_ident(mutex, "Mutex").is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::type_is_pointer_cell_iterable;
+
+    #[test]
+    fn pointer_cell_iterable_accepts_owned_go_slice_storage() {
+        let vec_ty: syn::Type = syn::parse_quote! {
+            Vec<std::sync::Arc<std::sync::Mutex<Value>>>
+        };
+        let storage_ty: syn::Type = syn::parse_quote! {
+            crate::builtin::GorsSliceStorage<std::sync::Arc<std::sync::Mutex<Value>>>
+        };
+        let non_cell_storage_ty: syn::Type = syn::parse_quote! {
+            crate::builtin::GorsSliceStorage<Value>
+        };
+
+        assert!(type_is_pointer_cell_iterable(&vec_ty));
+        assert!(type_is_pointer_cell_iterable(&storage_ty));
+        assert!(!type_is_pointer_cell_iterable(&non_cell_storage_ty));
+    }
 }

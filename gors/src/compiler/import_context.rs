@@ -111,6 +111,27 @@ pub(super) fn import_rust_name(name: &str) -> String {
     super::rust_safe_ident_name(&renamed)
 }
 
+/// Canonicalize the package qualifier in a Go type identity using the same
+/// file-local import rewrite that generated Rust paths consume.
+///
+/// Type facts retained across files use stable generated-module qualifiers,
+/// while inference at a source selector can still carry that file's local Go
+/// import name. Comparing those spellings directly makes one defined type look
+/// like two different types.
+pub(super) fn canonical_import_qualified_name(name: &str) -> String {
+    let Some((qualifier, member)) = name.split_once('.') else {
+        return name.to_string();
+    };
+    let qualifier = IMPORT_RENAMES.with(|renames| {
+        renames
+            .borrow()
+            .get(qualifier)
+            .cloned()
+            .unwrap_or_else(|| qualifier.to_string())
+    });
+    format!("{qualifier}.{member}")
+}
+
 pub(super) fn local_names_for_rust_module(module: &str) -> Vec<String> {
     IMPORT_RENAMES.with(|renames| {
         renames
@@ -190,6 +211,14 @@ import (
 
         assert_eq!(import_rust_name("ord"), "example__ordered");
         assert_eq!(import_rust_name("type"), "type_");
+        assert_eq!(
+            canonical_import_qualified_name("ord.Value"),
+            "example__ordered.Value"
+        );
+        assert_eq!(
+            canonical_import_qualified_name("example__ordered.Value"),
+            "example__ordered.Value"
+        );
         assert_eq!(
             local_names_for_rust_module("example__ordered"),
             vec!["ord".to_string()]

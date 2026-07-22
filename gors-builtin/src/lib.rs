@@ -8,7 +8,7 @@
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
-use std::hash::Hash;
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Once};
 
 pub type any = dyn Any;
@@ -36,11 +36,162 @@ pub trait comparable {}
 
 impl<T: Eq> comparable for T {}
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+#[derive(Clone)]
+enum GorsInterfaceKeyKind {
+    Nil,
+    Pointer {
+        type_name: &'static str,
+        data: usize,
+        field_key: usize,
+    },
+    Comparable {
+        type_name: &'static str,
+        value: Arc<dyn Any + Send + Sync>,
+        equals: fn(&dyn Any, &dyn Any) -> bool,
+    },
+    NonComparable {
+        type_name: &'static str,
+    },
+}
+
+/// An owned key for the dynamic value stored in a Go interface.
+///
+/// Comparable values retain their concrete value for equality. Their hash is
+/// deliberately coarse (dynamic type only): equal values still hash equally,
+/// and Go comparability does not require the concrete Rust type to implement
+/// [`Hash`]. Non-comparable values are represented without panicking so both Go
+/// comparison operands can finish evaluating before equality raises the panic.
+#[derive(Clone)]
 pub struct GorsInterfaceKey {
-    type_name: &'static str,
-    data: usize,
-    field_key: usize,
+    kind: GorsInterfaceKeyKind,
+}
+
+impl Default for GorsInterfaceKey {
+    fn default() -> Self {
+        Self {
+            kind: GorsInterfaceKeyKind::Nil,
+        }
+    }
+}
+
+impl std::fmt::Debug for GorsInterfaceKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.kind {
+            GorsInterfaceKeyKind::Nil => formatter.write_str("GorsInterfaceKey::Nil"),
+            GorsInterfaceKeyKind::Pointer {
+                type_name,
+                data,
+                field_key,
+            } => formatter
+                .debug_struct("GorsInterfaceKey::Pointer")
+                .field("type_name", type_name)
+                .field("data", data)
+                .field("field_key", field_key)
+                .finish(),
+            GorsInterfaceKeyKind::Comparable { type_name, .. } => formatter
+                .debug_struct("GorsInterfaceKey::Comparable")
+                .field("type_name", type_name)
+                .finish_non_exhaustive(),
+            GorsInterfaceKeyKind::NonComparable { type_name } => formatter
+                .debug_struct("GorsInterfaceKey::NonComparable")
+                .field("type_name", type_name)
+                .finish(),
+        }
+    }
+}
+
+impl PartialEq for GorsInterfaceKey {
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.kind, &other.kind) {
+            (GorsInterfaceKeyKind::Nil, GorsInterfaceKeyKind::Nil) => true,
+            (
+                GorsInterfaceKeyKind::Pointer {
+                    type_name: left_type,
+                    data: left_data,
+                    field_key: left_field_key,
+                },
+                GorsInterfaceKeyKind::Pointer {
+                    type_name: right_type,
+                    data: right_data,
+                    field_key: right_field_key,
+                },
+            ) => {
+                left_type == right_type
+                    && left_data == right_data
+                    && left_field_key == right_field_key
+            }
+            (
+                GorsInterfaceKeyKind::Comparable {
+                    type_name: left_type,
+                    value: left_value,
+                    equals: left_equals,
+                },
+                GorsInterfaceKeyKind::Comparable {
+                    type_name: right_type,
+                    value: right_value,
+                    ..
+                },
+            ) => left_type == right_type && left_equals(left_value.as_ref(), right_value.as_ref()),
+            (
+                GorsInterfaceKeyKind::NonComparable {
+                    type_name: left_type,
+                },
+                GorsInterfaceKeyKind::NonComparable {
+                    type_name: right_type,
+                },
+            ) if left_type == right_type => {
+                panic_value(format!("comparing uncomparable type {left_type}"))
+            }
+            (
+                GorsInterfaceKeyKind::NonComparable {
+                    type_name: left_type,
+                },
+                GorsInterfaceKeyKind::Comparable {
+                    type_name: right_type,
+                    ..
+                },
+            )
+            | (
+                GorsInterfaceKeyKind::Comparable {
+                    type_name: left_type,
+                    ..
+                },
+                GorsInterfaceKeyKind::NonComparable {
+                    type_name: right_type,
+                },
+            ) if left_type == right_type => {
+                panic_value(format!("comparing uncomparable type {left_type}"))
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Eq for GorsInterfaceKey {}
+
+impl Hash for GorsInterfaceKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match &self.kind {
+            GorsInterfaceKeyKind::Nil => 0_u8.hash(state),
+            GorsInterfaceKeyKind::Pointer {
+                type_name,
+                data,
+                field_key,
+            } => {
+                1_u8.hash(state);
+                type_name.hash(state);
+                data.hash(state);
+                field_key.hash(state);
+            }
+            GorsInterfaceKeyKind::Comparable { type_name, .. } => {
+                2_u8.hash(state);
+                type_name.hash(state);
+            }
+            GorsInterfaceKeyKind::NonComparable { type_name } => {
+                panic_value(format!("hash of unhashable type {type_name}"))
+            }
+        }
+    }
 }
 
 impl GorsInterfaceKey {
@@ -50,22 +201,53 @@ impl GorsInterfaceKey {
 
     pub fn for_ptr<T>(ptr: *const ()) -> Self {
         Self {
-            type_name: std::any::type_name::<T>(),
-            data: ptr as usize,
-            field_key: 0,
+            kind: GorsInterfaceKeyKind::Pointer {
+                type_name: std::any::type_name::<T>(),
+                data: ptr as usize,
+                field_key: 0,
+            },
         }
     }
 
     pub fn for_projected_ptr<T>(owner: *const (), field_key: usize) -> Self {
         Self {
-            type_name: std::any::type_name::<T>(),
-            data: owner as usize,
-            field_key,
+            kind: GorsInterfaceKeyKind::Pointer {
+                type_name: std::any::type_name::<T>(),
+                data: owner as usize,
+                field_key,
+            },
         }
     }
 
-    pub fn non_comparable() -> Self {
-        panic_value("hash of unhashable type")
+    pub fn for_comparable<T>(value: &T) -> Self
+    where
+        T: Any + Clone + PartialEq + Send + Sync,
+    {
+        fn equal_values<T: Any + PartialEq>(left: &dyn Any, right: &dyn Any) -> bool {
+            left.downcast_ref::<T>()
+                .zip(right.downcast_ref::<T>())
+                .is_some_and(|(left, right)| left == right)
+        }
+
+        Self {
+            kind: GorsInterfaceKeyKind::Comparable {
+                type_name: std::any::type_name::<T>(),
+                value: Arc::new(value.clone()),
+                equals: equal_values::<T>,
+            },
+        }
+    }
+
+    pub fn non_comparable<T: ?Sized>() -> Self {
+        Self {
+            kind: GorsInterfaceKeyKind::NonComparable {
+                type_name: std::any::type_name::<T>(),
+            },
+        }
+    }
+
+    fn is_comparable(&self) -> bool {
+        !matches!(self.kind, GorsInterfaceKeyKind::NonComparable { .. })
     }
 }
 
@@ -297,8 +479,8 @@ where
     }
 
     fn eq_any(&self, other: &dyn Any) -> bool {
-        comparable_any_payload(other)
-            .and_then(|other| other.downcast_ref::<T>())
+        erased_any_payload(other)
+            .downcast_ref::<T>()
             .is_some_and(|other| self.0 == *other)
     }
 }
@@ -318,29 +500,204 @@ where
         as Box<dyn Any + Send + Sync>
 }
 
+pub trait GorsAnyLocalComparable {
+    fn as_any(&self) -> &dyn Any;
+    fn clone_comparable_any(&self) -> Box<dyn Any>;
+    fn eq_any(&self, other: &dyn Any) -> bool;
+}
+
+#[derive(Clone)]
+pub struct GorsLocalComparableAny<T: Any + Clone + PartialEq>(pub T);
+
+impl<T> GorsAnyLocalComparable for GorsLocalComparableAny<T>
+where
+    T: Any + Clone + PartialEq,
+{
+    fn as_any(&self) -> &dyn Any {
+        &self.0
+    }
+
+    fn clone_comparable_any(&self) -> Box<dyn Any> {
+        Box::new(Box::new(Self(self.0.clone())) as Box<dyn GorsAnyLocalComparable>) as Box<dyn Any>
+    }
+
+    fn eq_any(&self, other: &dyn Any) -> bool {
+        erased_any_payload(other)
+            .downcast_ref::<T>()
+            .is_some_and(|other| self.0 == *other)
+    }
+}
+
+pub fn box_any_local_comparable<T>(value: T) -> Box<dyn Any>
+where
+    T: Any + Clone + PartialEq,
+{
+    Box::new(Box::new(GorsLocalComparableAny(value)) as Box<dyn GorsAnyLocalComparable>)
+        as Box<dyn Any>
+}
+
+pub trait GorsAnyClone: Send + Sync {
+    fn as_any(&self) -> &dyn Any;
+    fn clone_erased_any(&self) -> Box<dyn Any>;
+    fn clone_erased_any_send(&self) -> Box<dyn Any + Send>;
+    fn clone_erased_any_send_sync(&self) -> Box<dyn Any + Send + Sync>;
+}
+
+#[derive(Clone)]
+pub struct GorsCloneAny<T: Any + Clone + Send + Sync>(pub T);
+
+impl<T> GorsAnyClone for GorsCloneAny<T>
+where
+    T: Any + Clone + Send + Sync,
+{
+    fn as_any(&self) -> &dyn Any {
+        &self.0
+    }
+
+    fn clone_erased_any(&self) -> Box<dyn Any> {
+        Box::new(Box::new(Self(self.0.clone())) as Box<dyn GorsAnyClone>) as Box<dyn Any>
+    }
+
+    fn clone_erased_any_send(&self) -> Box<dyn Any + Send> {
+        Box::new(Box::new(Self(self.0.clone())) as Box<dyn GorsAnyClone>) as Box<dyn Any + Send>
+    }
+
+    fn clone_erased_any_send_sync(&self) -> Box<dyn Any + Send + Sync> {
+        Box::new(Box::new(Self(self.0.clone())) as Box<dyn GorsAnyClone>)
+            as Box<dyn Any + Send + Sync>
+    }
+}
+
+pub fn box_any_clone<T>(value: T) -> Box<dyn Any>
+where
+    T: Any + Clone + Send + Sync,
+{
+    Box::new(Box::new(GorsCloneAny(value)) as Box<dyn GorsAnyClone>) as Box<dyn Any>
+}
+
+pub fn box_any_clone_send_sync<T>(value: T) -> Box<dyn Any + Send + Sync>
+where
+    T: Any + Clone + Send + Sync,
+{
+    Box::new(Box::new(GorsCloneAny(value)) as Box<dyn GorsAnyClone>) as Box<dyn Any + Send + Sync>
+}
+
+pub trait GorsAnyLocalClone {
+    fn as_any(&self) -> &dyn Any;
+    fn clone_erased_any(&self) -> Box<dyn Any>;
+}
+
+#[derive(Clone)]
+pub struct GorsLocalCloneAny<T: Any + Clone>(pub T);
+
+impl<T> GorsAnyLocalClone for GorsLocalCloneAny<T>
+where
+    T: Any + Clone,
+{
+    fn as_any(&self) -> &dyn Any {
+        &self.0
+    }
+
+    fn clone_erased_any(&self) -> Box<dyn Any> {
+        Box::new(Box::new(Self(self.0.clone())) as Box<dyn GorsAnyLocalClone>) as Box<dyn Any>
+    }
+}
+
+pub fn box_any_local_clone<T>(value: T) -> Box<dyn Any>
+where
+    T: Any + Clone,
+{
+    Box::new(Box::new(GorsLocalCloneAny(value)) as Box<dyn GorsAnyLocalClone>) as Box<dyn Any>
+}
+
 fn comparable_any(value: &dyn Any) -> Option<&dyn GorsAnyComparable> {
     value
         .downcast_ref::<Box<dyn GorsAnyComparable>>()
         .map(|value| &**value)
 }
 
-fn comparable_any_payload(value: &dyn Any) -> Option<&dyn Any> {
-    comparable_any(value)
-        .map(GorsAnyComparable::as_any)
-        .or(Some(value))
+fn local_comparable_any(value: &dyn Any) -> Option<&dyn GorsAnyLocalComparable> {
+    value
+        .downcast_ref::<Box<dyn GorsAnyLocalComparable>>()
+        .map(|value| &**value)
+}
+
+fn clone_only_any(value: &dyn Any) -> Option<&dyn GorsAnyClone> {
+    value
+        .downcast_ref::<Box<dyn GorsAnyClone>>()
+        .map(|value| &**value)
+}
+
+fn local_clone_only_any(value: &dyn Any) -> Option<&dyn GorsAnyLocalClone> {
+    value
+        .downcast_ref::<Box<dyn GorsAnyLocalClone>>()
+        .map(|value| &**value)
+}
+
+fn erased_any_payload(mut value: &dyn Any) -> &dyn Any {
+    loop {
+        if let Some(wrapper) = comparable_any(value) {
+            value = wrapper.as_any();
+            continue;
+        }
+        if let Some(wrapper) = local_comparable_any(value) {
+            value = wrapper.as_any();
+            continue;
+        }
+        if let Some(wrapper) = clone_only_any(value) {
+            value = wrapper.as_any();
+            continue;
+        }
+        if let Some(wrapper) = local_clone_only_any(value) {
+            value = wrapper.as_any();
+            continue;
+        }
+        if let Some(boxed) = value.downcast_ref::<Box<dyn Any>>() {
+            value = boxed.as_ref();
+            continue;
+        }
+        if let Some(boxed) = value.downcast_ref::<Box<dyn Any + Send>>() {
+            value = boxed.as_ref();
+            continue;
+        }
+        if let Some(boxed) = value.downcast_ref::<Box<dyn Any + Send + Sync>>() {
+            value = boxed.as_ref();
+            continue;
+        }
+        if let Some(error) = value.downcast_ref::<Box<dyn error>>() {
+            if let Some(payload) = error.__gors_as_any() {
+                value = payload;
+                continue;
+            }
+            return &();
+        }
+        return value;
+    }
 }
 
 pub fn any_is<T: Any>(value: &dyn Any) -> bool {
-    comparable_any_payload(value).is_some_and(|value| value.is::<T>())
+    erased_any_payload(value).is::<T>()
 }
 
 pub fn any_downcast_ref<T: Any>(value: &dyn Any) -> Option<&T> {
-    comparable_any_payload(value).and_then(|value| value.downcast_ref::<T>())
+    erased_any_payload(value).downcast_ref::<T>()
+}
+
+/// Return the dynamic Go value identity carried by an erased runtime value.
+///
+/// Compiler-generated `any` values may be wrapped to retain clone or
+/// comparability capabilities. Reflection observes the wrapped payload type,
+/// never the implementation wrapper. The unit payload is the runtime's nil
+/// interface sentinel and therefore has no dynamic type.
+pub fn any_dynamic_type_id(value: &dyn Any) -> Option<TypeId> {
+    let payload = erased_any_payload(value);
+    (!payload.is::<()>()).then(|| payload.type_id())
 }
 
 pub trait error: Send + Sync {
     fn __gors_as_any(&self) -> Option<&dyn Any>;
     fn __gors_interface_key(&self) -> GorsInterfaceKey;
+    fn __gors_clone_box(&self) -> Box<dyn error>;
     fn Error(&self) -> std::string::String;
 }
 
@@ -356,12 +713,16 @@ impl error for __GorsNooperror {
         GorsInterfaceKey::nil()
     }
 
+    fn __gors_clone_box(&self) -> Box<dyn error> {
+        Box::new(Self)
+    }
+
     fn Error(&self) -> std::string::String {
         std::string::String::new()
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Eq, PartialEq)]
 pub struct __GorsStringError(pub std::string::String);
 
 impl error for __GorsStringError {
@@ -370,7 +731,11 @@ impl error for __GorsStringError {
     }
 
     fn __gors_interface_key(&self) -> GorsInterfaceKey {
-        GorsInterfaceKey::non_comparable()
+        GorsInterfaceKey::for_comparable(self)
+    }
+
+    fn __gors_clone_box(&self) -> Box<dyn error> {
+        Box::new(self.clone())
     }
 
     fn Error(&self) -> std::string::String {
@@ -386,24 +751,13 @@ impl Default for Box<dyn error> {
 
 impl Clone for Box<dyn error> {
     fn clone(&self) -> Self {
-        if self.__gors_as_any().is_none() {
-            Box::new(__GorsNooperror)
-        } else {
-            Box::new(__GorsStringError(self.Error()))
-        }
+        error::__gors_clone_box(&**self)
     }
 }
 
 impl PartialEq for Box<dyn error> {
     fn eq(&self, other: &Self) -> bool {
-        match (
-            self.__gors_as_any().is_none(),
-            other.__gors_as_any().is_none(),
-        ) {
-            (true, true) => true,
-            (true, false) | (false, true) => false,
-            (false, false) => self.Error() == other.Error(),
-        }
+        self.__gors_interface_key() == other.__gors_interface_key()
     }
 }
 
@@ -414,6 +768,10 @@ impl error for Box<dyn error> {
 
     fn __gors_interface_key(&self) -> GorsInterfaceKey {
         (**self).__gors_interface_key()
+    }
+
+    fn __gors_clone_box(&self) -> Box<dyn error> {
+        (**self).__gors_clone_box()
     }
 
     fn Error(&self) -> std::string::String {
@@ -436,6 +794,15 @@ pub fn clone_any(value: &dyn Any) -> Box<dyn Any> {
 pub fn clone_any_ref(value: &dyn Any) -> Box<dyn Any> {
     if let Some(value) = comparable_any(value) {
         return value.clone_comparable_any();
+    }
+    if let Some(value) = local_comparable_any(value) {
+        return value.clone_comparable_any();
+    }
+    if let Some(value) = clone_only_any(value) {
+        return value.clone_erased_any();
+    }
+    if let Some(value) = local_clone_only_any(value) {
+        return value.clone_erased_any();
     }
     if let Some(v) = value.downcast_ref::<Box<dyn Any>>() {
         return clone_any_ref(v.as_ref());
@@ -482,6 +849,9 @@ pub fn clone_any_send_ref(value: &dyn Any) -> Box<dyn Any + Send> {
     if let Some(value) = comparable_any(value) {
         return value.clone_comparable_any_send();
     }
+    if let Some(value) = clone_only_any(value) {
+        return value.clone_erased_any_send();
+    }
     if let Some(v) = value.downcast_ref::<Box<dyn Any>>() {
         return clone_any_send_ref(v.as_ref());
     }
@@ -526,6 +896,9 @@ pub fn clone_any_send_ref(value: &dyn Any) -> Box<dyn Any + Send> {
 pub fn clone_any_send_sync(value: &dyn Any) -> Box<dyn Any + Send + Sync> {
     if let Some(value) = comparable_any(value) {
         return value.clone_comparable_any_send_sync();
+    }
+    if let Some(value) = clone_only_any(value) {
+        return value.clone_erased_any_send_sync();
     }
     if let Some(v) = value.downcast_ref::<Box<dyn Any>>() {
         return clone_any_send_sync(v.as_ref());
@@ -582,7 +955,7 @@ pub struct GorsReflectValue {
 pub type GorsReflectSwapper = Arc<Mutex<Option<Arc<dyn Fn(isize, isize) + Send + Sync>>>>;
 
 impl GorsReflectValue {
-    pub fn slice<T: 'static + Send>(slice: Arc<Mutex<Vec<T>>>) -> Self {
+    pub fn slice<S: GorsReflectSliceTarget + 'static>(slice: Arc<Mutex<S>>) -> Self {
         Self {
             ops: Arc::new(Mutex::new(Box::new(GorsReflectSlice { slice }))),
         }
@@ -605,11 +978,36 @@ impl GorsReflectValue {
     }
 }
 
-struct GorsReflectSlice<T> {
-    slice: Arc<Mutex<Vec<T>>>,
+pub trait GorsReflectSliceTarget: Send {
+    fn __gors_slice_len(&self) -> usize;
+    fn __gors_slice_swap(&mut self, i: usize, j: usize);
 }
 
-impl<T: 'static + Send> GorsReflectOps for GorsReflectSlice<T> {
+impl<T: Send> GorsReflectSliceTarget for Vec<T> {
+    fn __gors_slice_len(&self) -> usize {
+        self.len()
+    }
+
+    fn __gors_slice_swap(&mut self, i: usize, j: usize) {
+        self.swap(i, j);
+    }
+}
+
+impl<T: Send> GorsReflectSliceTarget for GorsSliceStorage<T> {
+    fn __gors_slice_len(&self) -> usize {
+        self.len()
+    }
+
+    fn __gors_slice_swap(&mut self, i: usize, j: usize) {
+        self.visible_mut().swap(i, j);
+    }
+}
+
+struct GorsReflectSlice<S> {
+    slice: Arc<Mutex<S>>,
+}
+
+impl<S: GorsReflectSliceTarget + 'static> GorsReflectOps for GorsReflectSlice<S> {
     fn kind(&self) -> __GorsReflectKind {
         __GorsReflectKind::Slice
     }
@@ -618,7 +1016,7 @@ impl<T: 'static + Send> GorsReflectOps for GorsReflectSlice<T> {
         self.slice
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .len() as isize
+            .__gors_slice_len() as isize
     }
 
     fn swap(&mut self, i: isize, j: isize) {
@@ -630,10 +1028,10 @@ impl<T: 'static + Send> GorsReflectOps for GorsReflectSlice<T> {
             .slice
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if i >= slice.len() || j >= slice.len() {
+        if i >= slice.__gors_slice_len() || j >= slice.__gors_slice_len() {
             panic_value("reflect: slice index out of range");
         }
-        slice.swap(i, j);
+        slice.__gors_slice_swap(i, j);
     }
 }
 
@@ -643,11 +1041,14 @@ fn lock_reflect_ops(
     ops.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-pub fn reflect_slice_any<T: 'static + Send>(slice: Arc<Mutex<Vec<T>>>) -> Box<dyn Any> {
+pub fn reflect_slice_any<S: GorsReflectSliceTarget + 'static>(
+    slice: Arc<Mutex<S>>,
+) -> Box<dyn Any> {
     Box::new(GorsReflectValue::slice(slice)) as Box<dyn Any>
 }
 
 pub fn reflect_value_kind(value: &dyn Any) -> __GorsReflectKind {
+    let value = erased_any_payload(value);
     if let Some(value) = value.downcast_ref::<GorsReflectValue>() {
         return value.kind();
     }
@@ -655,34 +1056,39 @@ pub fn reflect_value_kind(value: &dyn Any) -> __GorsReflectKind {
 }
 
 pub fn reflect_value_len(value: &dyn Any) -> isize {
+    let value = erased_any_payload(value);
     if let Some(value) = value.downcast_ref::<GorsReflectValue>() {
         return value.len();
     }
-    macro_rules! len_if_vec {
+    macro_rules! len_if_slice_storage {
         ($ty:ty) => {
             if let Some(value) = value.downcast_ref::<Vec<$ty>>() {
                 return value.len() as isize;
             }
+            if let Some(value) = value.downcast_ref::<GorsSliceStorage<$ty>>() {
+                return value.len() as isize;
+            }
         };
     }
-    len_if_vec!(std::string::String);
-    len_if_vec!(bool);
-    len_if_vec!(isize);
-    len_if_vec!(i8);
-    len_if_vec!(i16);
-    len_if_vec!(i32);
-    len_if_vec!(i64);
-    len_if_vec!(usize);
-    len_if_vec!(u8);
-    len_if_vec!(u16);
-    len_if_vec!(u32);
-    len_if_vec!(u64);
-    len_if_vec!(f32);
-    len_if_vec!(f64);
+    len_if_slice_storage!(std::string::String);
+    len_if_slice_storage!(bool);
+    len_if_slice_storage!(isize);
+    len_if_slice_storage!(i8);
+    len_if_slice_storage!(i16);
+    len_if_slice_storage!(i32);
+    len_if_slice_storage!(i64);
+    len_if_slice_storage!(usize);
+    len_if_slice_storage!(u8);
+    len_if_slice_storage!(u16);
+    len_if_slice_storage!(u32);
+    len_if_slice_storage!(u64);
+    len_if_slice_storage!(f32);
+    len_if_slice_storage!(f64);
     panic_value("reflect: Len of non-slice value");
 }
 
 pub fn reflect_value_swapper(value: &dyn Any) -> GorsReflectSwapper {
+    let value = erased_any_payload(value);
     let Some(value) = value.downcast_ref::<GorsReflectValue>() else {
         panic_value("reflect: Swapper of non-slice value");
     };
@@ -693,6 +1099,12 @@ pub fn reflect_value_swapper(value: &dyn Any) -> GorsReflectSwapper {
 }
 
 pub fn reflect_type_comparable(value: &dyn Any) -> bool {
+    if comparable_any(value).is_some() || local_comparable_any(value).is_some() {
+        return true;
+    }
+    if clone_only_any(value).is_some() || local_clone_only_any(value).is_some() {
+        return false;
+    }
     if let Some(value) = value.downcast_ref::<Box<dyn Any>>() {
         return reflect_type_comparable(value.as_ref());
     }
@@ -702,6 +1114,9 @@ pub fn reflect_type_comparable(value: &dyn Any) -> bool {
     if let Some(value) = value.downcast_ref::<Box<dyn Any + Send + Sync>>() {
         return reflect_type_comparable(value.as_ref());
     }
+    if let Some(error) = value.downcast_ref::<Box<dyn error>>() {
+        return error.__gors_interface_key().is_comparable();
+    }
     if interface_is_nil(value) {
         return false;
     }
@@ -709,6 +1124,9 @@ pub fn reflect_type_comparable(value: &dyn Any) -> bool {
         || value.is::<Vec<u8>>()
         || value.is::<Vec<std::string::String>>()
         || value.is::<Vec<Box<dyn Any>>>()
+        || value.is::<GorsSliceStorage<u8>>()
+        || value.is::<GorsSliceStorage<std::string::String>>()
+        || value.is::<GorsSliceStorage<Box<dyn Any>>>()
     {
         return false;
     }
@@ -724,6 +1142,28 @@ pub fn any_eq(left: &dyn Any, right: &dyn Any) -> bool {
     }
     if let Some(right) = comparable_any(right) {
         return right.eq_any(left);
+    }
+    if let Some(left) = local_comparable_any(left) {
+        return left.eq_any(right);
+    }
+    if let Some(right) = local_comparable_any(right) {
+        return right.eq_any(left);
+    }
+
+    if let (Some(left), Some(right)) = (
+        left.downcast_ref::<Box<dyn error>>(),
+        right.downcast_ref::<Box<dyn error>>(),
+    ) {
+        return left.__gors_interface_key() == right.__gors_interface_key();
+    }
+
+    let left_type = any_dynamic_type_id(left);
+    let right_type = any_dynamic_type_id(right);
+    if left_type != right_type {
+        return false;
+    }
+    if left_type.is_some() && (!reflect_type_comparable(left) || !reflect_type_comparable(right)) {
+        panic_value("comparing uncomparable dynamic interface value");
     }
 
     macro_rules! eq_if {
@@ -1184,7 +1624,7 @@ impl<T> GorsPtr<T> {
 
     pub fn interface_key(&self) -> GorsInterfaceKey {
         match &self.inner {
-            None => GorsInterfaceKey::nil(),
+            None => GorsInterfaceKey::for_ptr::<T>(std::ptr::null()),
             Some(GorsPtrInner::Direct(inner)) => {
                 GorsInterfaceKey::for_ptr::<T>(Arc::as_ptr(inner).cast::<()>())
             }
@@ -1210,6 +1650,129 @@ impl<T> PartialEq for GorsPtr<T> {
 }
 
 impl<T> Eq for GorsPtr<T> {}
+
+struct GorsSliceAliasResliceErased {
+    values: Box<dyn Any>,
+    start: usize,
+    result_capacity: usize,
+    detached: bool,
+}
+
+thread_local! {
+    static GORS_SLICE_ALIAS_RESLICE_STACKS: RefCell<HashMap<usize, Vec<Vec<GorsSliceAliasResliceErased>>>> = RefCell::new(HashMap::new());
+}
+
+pub struct GorsSliceAliasReslice<T> {
+    pub values: Vec<T>,
+    pub start: usize,
+    pub result_capacity: usize,
+    pub detached: bool,
+}
+
+pub struct GorsSliceAliasTransaction {
+    pointer_id: usize,
+    active: bool,
+}
+
+pub fn begin_gors_slice_alias_transaction(pointer_id: *const ()) -> GorsSliceAliasTransaction {
+    let pointer_id = pointer_id as usize;
+    GORS_SLICE_ALIAS_RESLICE_STACKS.with(|stacks| {
+        stacks
+            .borrow_mut()
+            .entry(pointer_id)
+            .or_default()
+            .push(Vec::new());
+    });
+    GorsSliceAliasTransaction {
+        pointer_id,
+        active: true,
+    }
+}
+
+pub fn record_gors_slice_alias_reslice<T: Clone + 'static>(
+    pointer_id: *const (),
+    values: &[T],
+    start: usize,
+    result_capacity: usize,
+) {
+    GORS_SLICE_ALIAS_RESLICE_STACKS.with(|stacks| {
+        let mut stacks = stacks.borrow_mut();
+        let Some(events) = stacks
+            .get_mut(&(pointer_id as usize))
+            .and_then(|stack| stack.last_mut())
+        else {
+            return;
+        };
+        events.push(GorsSliceAliasResliceErased {
+            values: Box::new(values.to_vec()),
+            start,
+            result_capacity,
+            detached: false,
+        });
+    });
+}
+
+pub fn record_gors_slice_alias_detach<T: Clone + 'static>(pointer_id: *const (), values: &[T]) {
+    GORS_SLICE_ALIAS_RESLICE_STACKS.with(|stacks| {
+        let mut stacks = stacks.borrow_mut();
+        let Some(events) = stacks
+            .get_mut(&(pointer_id as usize))
+            .and_then(|stack| stack.last_mut())
+        else {
+            return;
+        };
+        events.push(GorsSliceAliasResliceErased {
+            values: Box::new(values.to_vec()),
+            start: 0,
+            result_capacity: 0,
+            detached: true,
+        });
+    });
+}
+
+impl GorsSliceAliasTransaction {
+    fn take_events(&mut self) -> Vec<GorsSliceAliasResliceErased> {
+        if !self.active {
+            return Vec::new();
+        }
+        self.active = false;
+        GORS_SLICE_ALIAS_RESLICE_STACKS.with(|stacks| {
+            let mut stacks = stacks.borrow_mut();
+            let Some(stack) = stacks.get_mut(&self.pointer_id) else {
+                return Vec::new();
+            };
+            let events = stack.pop().unwrap_or_default();
+            if stack.is_empty() {
+                stacks.remove(&self.pointer_id);
+            }
+            events
+        })
+    }
+
+    pub fn finish<T: 'static>(mut self) -> Vec<GorsSliceAliasReslice<T>> {
+        self.take_events()
+            .into_iter()
+            .map(|event| {
+                let values = match event.values.downcast::<Vec<T>>() {
+                    Ok(values) => *values,
+                    Err(_) => panic_value("slice alias transaction type mismatch"),
+                };
+                GorsSliceAliasReslice {
+                    values,
+                    start: event.start,
+                    result_capacity: event.result_capacity,
+                    detached: event.detached,
+                }
+            })
+            .collect()
+    }
+}
+
+impl Drop for GorsSliceAliasTransaction {
+    fn drop(&mut self) {
+        let _ = self.take_events();
+    }
+}
 
 thread_local! {
     static RECOVER_PAYLOAD: RefCell<Option<Box<dyn Any + Send>>> = const { RefCell::new(None) };
@@ -1399,6 +1962,12 @@ impl<T> __GorsReflectKindValue for Vec<T> {
     }
 }
 
+impl<T> __GorsReflectKindValue for GorsSliceStorage<T> {
+    fn __gors_reflect_kind(&self) -> __GorsReflectKind {
+        __GorsReflectKind::Slice
+    }
+}
+
 impl<T, const N: usize> __GorsReflectKindValue for [T; N] {
     fn __gors_reflect_kind(&self) -> __GorsReflectKind {
         __GorsReflectKind::Array
@@ -1432,6 +2001,7 @@ pub fn reflect_kind_is<T: __GorsReflectKindValue + ?Sized>(
 }
 
 fn reflect_kind_of_any(value: &dyn Any) -> __GorsReflectKind {
+    let value = erased_any_payload(value);
     if value.is::<r#bool>() {
         __GorsReflectKind::Bool
     } else if value.is::<int>() {
@@ -1910,6 +2480,598 @@ pub fn go_slice<T: Clone + Default>(
     result
 }
 
+/// Owned backing storage for a Go slice header whose capacity can be exposed.
+///
+/// Rust's `Vec<T>` cannot safely retain initialized values beyond `len()`: if
+/// its length is shortened those values are dropped, and changing the length
+/// with `set_len` would make later reallocation and destruction unsound. This
+/// representation instead keeps the entire Go capacity initialized in
+/// `backing` while tracking the visible header separately. Reslicing therefore
+/// changes only `start`, `len`, and `capacity`; writes made through the capacity
+/// range remain alive until a later header makes them visible.
+pub struct GorsSliceStorage<T> {
+    backing: Vec<T>,
+    start: usize,
+    len: usize,
+    capacity: usize,
+}
+
+impl<T> GorsSliceStorage<T> {
+    /// Build storage from a fully initialized backing array.
+    ///
+    /// The backing vector's current length, rather than its allocation
+    /// capacity, is the Go capacity because only initialized elements may be
+    /// exposed safely.
+    pub fn from_initialized_backing(backing: Vec<T>, visible_len: usize) -> Self {
+        let capacity = backing.len();
+        if visible_len > capacity {
+            panic_value("slice bounds out of range");
+        }
+        Self {
+            backing,
+            start: 0,
+            len: visible_len,
+            capacity,
+        }
+    }
+
+    /// Construct a Go slice header with a caller-provided element zero value.
+    ///
+    /// Compiler-generated interface and other runtime-owned element types do
+    /// not necessarily implement Rust's `Default`, even though the compiler
+    /// can still emit their Go zero value explicitly.
+    pub fn with_len_capacity_by(len: usize, capacity: usize, zero: impl FnMut() -> T) -> Self {
+        if len > capacity {
+            panic_value("slice bounds out of range");
+        }
+        let mut backing = Vec::with_capacity(capacity);
+        backing.resize_with(capacity, zero);
+        Self {
+            backing,
+            start: 0,
+            len,
+            capacity,
+        }
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    #[inline]
+    pub fn visible(&self) -> &[T] {
+        self.backing
+            .get(self.absolute_range(0, self.len, self.len))
+            .unwrap_or_else(|| panic_value("slice bounds out of range"))
+    }
+
+    #[inline]
+    pub fn visible_mut(&mut self) -> &mut [T] {
+        let range = self.absolute_range(0, self.len, self.len);
+        self.backing
+            .get_mut(range)
+            .unwrap_or_else(|| panic_value("slice bounds out of range"))
+    }
+
+    /// Return the fully initialized portion of the backing array reachable
+    /// through this header's capacity.
+    #[inline]
+    pub fn full(&self) -> &[T] {
+        self.backing
+            .get(self.absolute_range(0, self.capacity, self.capacity))
+            .unwrap_or_else(|| panic_value("slice bounds out of range"))
+    }
+
+    #[inline]
+    pub fn full_mut(&mut self) -> &mut [T] {
+        let range = self.absolute_range(0, self.capacity, self.capacity);
+        self.backing
+            .get_mut(range)
+            .unwrap_or_else(|| panic_value("slice bounds out of range"))
+    }
+
+    /// Checked range within the current visible length.
+    #[inline]
+    pub fn visible_range(&self, low: usize, high: usize) -> &[T] {
+        let range = self.absolute_range(low, high, self.len);
+        self.backing
+            .get(range)
+            .unwrap_or_else(|| panic_value("slice bounds out of range"))
+    }
+
+    #[inline]
+    pub fn visible_range_mut(&mut self, low: usize, high: usize) -> &mut [T] {
+        let range = self.absolute_range(low, high, self.len);
+        self.backing
+            .get_mut(range)
+            .unwrap_or_else(|| panic_value("slice bounds out of range"))
+    }
+
+    /// Checked range within the current capacity.
+    ///
+    /// `max` models the third index of a Go full-slice expression. Omitting it
+    /// permits the range to use the header's whole capacity.
+    #[inline]
+    pub fn full_range(&self, low: usize, high: usize, max: Option<usize>) -> &[T] {
+        let limit = self.checked_full_limit(low, high, max);
+        let range = self.absolute_range(low, high, limit);
+        self.backing
+            .get(range)
+            .unwrap_or_else(|| panic_value("slice bounds out of range"))
+    }
+
+    #[inline]
+    pub fn full_range_mut(&mut self, low: usize, high: usize, max: Option<usize>) -> &mut [T] {
+        let limit = self.checked_full_limit(low, high, max);
+        let range = self.absolute_range(low, high, limit);
+        self.backing
+            .get_mut(range)
+            .unwrap_or_else(|| panic_value("slice bounds out of range"))
+    }
+
+    /// Apply a Go slice expression to this owned header.
+    pub fn reslice(&mut self, start: usize, end: usize, max: usize) {
+        self.check_bounds(start, end, max, self.capacity);
+        self.start = self
+            .start
+            .checked_add(start)
+            .unwrap_or_else(|| panic_value("slice bounds out of range"));
+        self.len = end - start;
+        self.capacity = max - start;
+    }
+
+    #[must_use]
+    pub fn resliced(mut self, start: usize, end: usize, max: usize) -> Self {
+        self.reslice(start, end, max);
+        self
+    }
+
+    pub fn push_visible(&mut self, value: T) {
+        self.extend_visible(std::iter::once(value));
+    }
+
+    pub fn extend_visible<I>(&mut self, values: I)
+    where
+        I: IntoIterator<Item = T>,
+    {
+        let values: Vec<T> = values.into_iter().collect();
+        if values.is_empty() {
+            return;
+        }
+
+        let required = self
+            .len
+            .checked_add(values.len())
+            .unwrap_or_else(|| panic_value("slice bounds out of range"));
+        if required <= self.capacity {
+            for value in values {
+                let index = self
+                    .start
+                    .checked_add(self.len)
+                    .unwrap_or_else(|| panic_value("slice bounds out of range"));
+                let Some(slot) = self.backing.get_mut(index) else {
+                    panic_value("slice bounds out of range");
+                };
+                *slot = value;
+                self.len += 1;
+            }
+            return;
+        }
+
+        // A type without a zero-value factory cannot safely expose spare
+        // allocation as Go capacity. Move only the visible values, append the
+        // new values, and make the fully initialized length the logical cap.
+        let old_backing = std::mem::take(&mut self.backing);
+        let mut grown = Vec::with_capacity(required);
+        grown.extend(old_backing.into_iter().skip(self.start).take(self.len));
+        grown.extend(values);
+        self.backing = grown;
+        self.start = 0;
+        self.len = required;
+        self.capacity = required;
+    }
+
+    /// Consume the storage as an ordinary visible `Vec<T>`.
+    ///
+    /// Hidden initialized elements are dropped exactly once. The resulting
+    /// vector reserves at least the Go header's remaining capacity, but callers
+    /// that need hidden-tail values must retain `GorsSliceStorage` instead.
+    pub fn into_visible_vec(mut self) -> Vec<T> {
+        if self.start == 0 && self.capacity == self.backing.len() {
+            self.backing.truncate(self.len);
+            return self.backing;
+        }
+
+        let end = self
+            .start
+            .checked_add(self.len)
+            .unwrap_or_else(|| panic_value("slice bounds out of range"));
+        if end > self.backing.len() {
+            panic_value("slice bounds out of range");
+        }
+        let mut visible = Vec::with_capacity(self.capacity);
+        visible.extend(self.backing.drain(self.start..end));
+        visible
+    }
+
+    fn checked_full_limit(&self, low: usize, high: usize, max: Option<usize>) -> usize {
+        let limit = max.unwrap_or(self.capacity);
+        self.check_bounds(low, high, limit, self.capacity);
+        limit
+    }
+
+    fn absolute_range(
+        &self,
+        low: usize,
+        high: usize,
+        relative_limit: usize,
+    ) -> std::ops::Range<usize> {
+        self.check_bounds(low, high, relative_limit, self.capacity);
+        let start = self
+            .start
+            .checked_add(low)
+            .unwrap_or_else(|| panic_value("slice bounds out of range"));
+        let end = self
+            .start
+            .checked_add(high)
+            .unwrap_or_else(|| panic_value("slice bounds out of range"));
+        start..end
+    }
+
+    fn check_bounds(&self, low: usize, high: usize, max: usize, capacity: usize) {
+        if low > high || high > max || max > capacity {
+            panic_value("slice bounds out of range");
+        }
+    }
+}
+
+impl<T: Default> GorsSliceStorage<T> {
+    /// Promote an ordinary visible vector into initialized Go slice storage.
+    pub fn from_vec(mut visible: Vec<T>) -> Self {
+        let len = visible.len();
+        let capacity = visible.capacity();
+        visible.resize_with(capacity, T::default);
+        Self {
+            backing: visible,
+            start: 0,
+            len,
+            capacity,
+        }
+    }
+
+    /// Take an ordinary vector into capacity-preserving storage.
+    ///
+    /// Paired with [`Self::into_visible_vec`], this gives compiler-generated
+    /// transactions a safe way to expose initialized `len..cap` storage and
+    /// restore the original visible header without moving or double-dropping
+    /// any element.
+    pub fn take_vec(source: &mut Vec<T>) -> Self {
+        Self::from_vec(std::mem::take(source))
+    }
+
+    pub fn with_len_capacity(len: usize, capacity: usize) -> Self {
+        Self::with_len_capacity_by(len, capacity, T::default)
+    }
+}
+
+impl<T> Default for GorsSliceStorage<T> {
+    fn default() -> Self {
+        Self {
+            backing: Vec::new(),
+            start: 0,
+            len: 0,
+            capacity: 0,
+        }
+    }
+}
+
+impl<T: Clone> Clone for GorsSliceStorage<T> {
+    fn clone(&self) -> Self {
+        Self {
+            backing: self.backing.clone(),
+            start: self.start,
+            len: self.len,
+            capacity: self.capacity,
+        }
+    }
+}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for GorsSliceStorage<T> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GorsSliceStorage")
+            .field("visible", &self.visible())
+            .field("capacity", &self.capacity)
+            .finish()
+    }
+}
+
+impl<T: PartialEq> PartialEq for GorsSliceStorage<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.visible() == other.visible()
+    }
+}
+
+impl<T: Eq> Eq for GorsSliceStorage<T> {}
+
+impl<T> std::ops::Deref for GorsSliceStorage<T> {
+    type Target = [T];
+
+    fn deref(&self) -> &Self::Target {
+        self.visible()
+    }
+}
+
+impl<T> std::ops::DerefMut for GorsSliceStorage<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.visible_mut()
+    }
+}
+
+impl<T> AsRef<[T]> for GorsSliceStorage<T> {
+    fn as_ref(&self) -> &[T] {
+        self.visible()
+    }
+}
+
+impl<T> AsMut<[T]> for GorsSliceStorage<T> {
+    fn as_mut(&mut self) -> &mut [T] {
+        self.visible_mut()
+    }
+}
+
+impl<T> Len for GorsSliceStorage<T> {
+    fn len_value(&self) -> usize {
+        self.len
+    }
+}
+
+impl<T> Cap for GorsSliceStorage<T> {
+    fn cap_value(&self) -> usize {
+        self.capacity
+    }
+}
+
+impl ByteSeq for GorsSliceStorage<u8> {
+    fn byte_at(&self, index: usize) -> u8 {
+        byte_at_or_panic(self.visible(), index)
+    }
+
+    fn byte_slice(&self, start: usize, end: usize) -> Vec<u8> {
+        byte_slice_or_panic(self.visible(), start, end)
+    }
+}
+
+impl<T: Default> From<Vec<T>> for GorsSliceStorage<T> {
+    fn from(value: Vec<T>) -> Self {
+        Self::from_vec(value)
+    }
+}
+
+impl<T> From<GorsSliceStorage<T>> for Vec<T> {
+    fn from(value: GorsSliceStorage<T>) -> Self {
+        value.into_visible_vec()
+    }
+}
+
+impl<T> IntoIterator for GorsSliceStorage<T> {
+    type Item = T;
+    type IntoIter = std::vec::IntoIter<T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.into_visible_vec().into_iter()
+    }
+}
+
+impl<'a, T> IntoIterator for &'a GorsSliceStorage<T> {
+    type Item = &'a T;
+    type IntoIter = std::slice::Iter<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.visible().iter()
+    }
+}
+
+impl<'a, T> IntoIterator for &'a mut GorsSliceStorage<T> {
+    type Item = &'a mut T;
+    type IntoIter = std::slice::IterMut<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.visible_mut().iter_mut()
+    }
+}
+
+impl<T> Extend<T> for GorsSliceStorage<T> {
+    fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+        self.extend_visible(iter);
+    }
+}
+
+impl<T> FromIterator<T> for GorsSliceStorage<T> {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        let backing: Vec<T> = iter.into_iter().collect();
+        let len = backing.len();
+        Self::from_initialized_backing(backing, len)
+    }
+}
+
+pub trait GorsOwnedSliceStorage<T> {
+    fn gors_owned_slice_storage_mut(&mut self) -> &mut GorsSliceStorage<T>;
+}
+
+impl<T> GorsOwnedSliceStorage<T> for GorsSliceStorage<T> {
+    fn gors_owned_slice_storage_mut(&mut self) -> &mut GorsSliceStorage<T> {
+        self
+    }
+}
+
+/// A borrowed Go slice header for callees that reslice beyond the argument's
+/// visible length.
+///
+/// Ordinary mutable slice parameters can use `&mut [T]`, but Rust slices erase
+/// the backing capacity that Go retains in a copied slice header. This wrapper
+/// keeps a private header over a cloned view of the caller's backing storage and
+/// writes mutations to the caller-visible range back when the call completes.
+enum GorsSliceParamTarget<'a, T> {
+    Visible(&'a mut [T]),
+    Backing(&'a mut Vec<T>),
+    Owned(&'a mut GorsSliceStorage<T>),
+}
+
+pub struct GorsSliceParam<'a, T: Clone + Default> {
+    target: GorsSliceParamTarget<'a, T>,
+    backing: Vec<T>,
+    start: usize,
+    len: usize,
+    capacity: usize,
+}
+
+impl<'a, T: Clone + Default> GorsSliceParam<'a, T> {
+    pub fn from_storage<S>(source: &'a mut S) -> Self
+    where
+        S: AsMut<[T]> + Cap + ?Sized,
+    {
+        let capacity = source.cap_value();
+        let target = source.as_mut();
+        let len = target.len();
+        let mut backing = Vec::with_capacity(capacity);
+        backing.extend_from_slice(target);
+        backing.resize_with(capacity, Default::default);
+        Self {
+            target: GorsSliceParamTarget::Visible(target),
+            backing,
+            start: 0,
+            len,
+            capacity,
+        }
+    }
+
+    pub fn from_param(source: &'a mut GorsSliceParam<'_, T>) -> Self {
+        let backing = source.backing.clone();
+        let start = source.start;
+        let len = source.len;
+        let capacity = source.capacity;
+        Self {
+            target: GorsSliceParamTarget::Backing(&mut source.backing),
+            backing,
+            start,
+            len,
+            capacity,
+        }
+    }
+
+    /// Copy a parameter header over owned capacity-preserving storage.
+    ///
+    /// Header changes remain local to the parameter, while Drop writes the
+    /// entire initialized capacity back to the owned storage so later caller
+    /// reslices can reveal mutations beyond the old visible length.
+    pub fn from_owned_storage<S>(source: &'a mut S) -> Self
+    where
+        S: GorsOwnedSliceStorage<T> + ?Sized,
+    {
+        let source = source.gors_owned_slice_storage_mut();
+        let backing = source.full().to_vec();
+        let len = source.len;
+        let capacity = source.capacity;
+        Self {
+            target: GorsSliceParamTarget::Owned(source),
+            backing,
+            start: 0,
+            len,
+            capacity,
+        }
+    }
+
+    pub fn reslice(&mut self, start: usize, end: usize, max: usize) {
+        if start > end || end > max || max > self.capacity {
+            panic_value("slice bounds out of range");
+        }
+        self.start += start;
+        self.len = end - start;
+        self.capacity = max - start;
+    }
+
+    #[must_use]
+    #[allow(clippy::should_implement_trait)]
+    pub fn clone(&self) -> Vec<T> {
+        std::ops::Deref::deref(self).to_vec()
+    }
+}
+
+impl<T: Clone + Default> std::ops::Deref for GorsSliceParam<'_, T> {
+    type Target = [T];
+
+    fn deref(&self) -> &Self::Target {
+        self.backing
+            .get(self.start..self.start + self.len)
+            .unwrap_or_else(|| panic_value("slice bounds out of range"))
+    }
+}
+
+impl<T: Clone + Default> std::ops::DerefMut for GorsSliceParam<'_, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.backing
+            .get_mut(self.start..self.start + self.len)
+            .unwrap_or_else(|| panic_value("slice bounds out of range"))
+    }
+}
+
+impl<T: Clone + Default> AsRef<[T]> for GorsSliceParam<'_, T> {
+    fn as_ref(&self) -> &[T] {
+        std::ops::Deref::deref(self)
+    }
+}
+
+impl<T: Clone + Default> AsMut<[T]> for GorsSliceParam<'_, T> {
+    fn as_mut(&mut self) -> &mut [T] {
+        std::ops::DerefMut::deref_mut(self)
+    }
+}
+
+impl<T: Clone + Default> Len for GorsSliceParam<'_, T> {
+    fn len_value(&self) -> usize {
+        self.len
+    }
+}
+
+impl<T: Clone + Default> Cap for GorsSliceParam<'_, T> {
+    fn cap_value(&self) -> usize {
+        self.capacity
+    }
+}
+
+impl<T: Clone + Default> Drop for GorsSliceParam<'_, T> {
+    fn drop(&mut self) {
+        match &mut self.target {
+            GorsSliceParamTarget::Visible(target) => {
+                let target_len = target.len();
+                let source = self
+                    .backing
+                    .get(..target_len)
+                    .unwrap_or_else(|| panic_value("slice bounds out of range"));
+                target.clone_from_slice(source);
+            }
+            GorsSliceParamTarget::Backing(target) => {
+                target.clone_from_slice(&self.backing);
+            }
+            GorsSliceParamTarget::Owned(target) => {
+                target.full_mut().clone_from_slice(&self.backing);
+            }
+        }
+    }
+}
+
 pub trait Append<E> {
     fn append_value(self, elem: E) -> Self;
 }
@@ -1942,6 +3104,41 @@ impl Append<&str> for Vec<u8> {
     }
 }
 
+impl<T> Append<T> for GorsSliceStorage<T> {
+    fn append_value(mut self, elem: T) -> Self {
+        self.push_visible(elem);
+        self
+    }
+}
+
+impl<T> Append<Vec<T>> for GorsSliceStorage<T> {
+    fn append_value(mut self, elem: Vec<T>) -> Self {
+        self.extend_visible(elem);
+        self
+    }
+}
+
+impl<T> Append<GorsSliceStorage<T>> for GorsSliceStorage<T> {
+    fn append_value(mut self, elem: GorsSliceStorage<T>) -> Self {
+        self.extend_visible(elem);
+        self
+    }
+}
+
+impl Append<std::string::String> for GorsSliceStorage<u8> {
+    fn append_value(mut self, elem: std::string::String) -> Self {
+        self.extend_visible(go_string_bytes(&elem));
+        self
+    }
+}
+
+impl Append<&str> for GorsSliceStorage<u8> {
+    fn append_value(mut self, elem: &str) -> Self {
+        self.extend_visible(go_string_bytes(elem));
+        self
+    }
+}
+
 #[inline]
 pub fn append<C, E>(v: C, elem: E) -> C
 where
@@ -1951,8 +3148,12 @@ where
 }
 
 #[inline]
-pub fn append_slice<T: Clone>(mut v: Vec<T>, elems: &[T]) -> Vec<T> {
-    v.extend_from_slice(elems);
+pub fn append_slice<C, T>(mut v: C, elems: &[T]) -> C
+where
+    C: Extend<T>,
+    T: Clone,
+{
+    v.extend(elems.iter().cloned());
     v
 }
 
@@ -1969,6 +3170,18 @@ impl StringValue for Vec<u8> {
 impl StringValue for &Vec<u8> {
     fn string_value(self) -> std::string::String {
         go_string_from_bytes(self)
+    }
+}
+
+impl StringValue for GorsSliceStorage<u8> {
+    fn string_value(self) -> std::string::String {
+        go_string_from_bytes(self.visible())
+    }
+}
+
+impl StringValue for &GorsSliceStorage<u8> {
+    fn string_value(self) -> std::string::String {
+        go_string_from_bytes(self.visible())
     }
 }
 
@@ -1991,6 +3204,18 @@ impl StringValue for Vec<i32> {
 impl StringValue for &Vec<i32> {
     fn string_value(self) -> std::string::String {
         go_string_from_runes(self.iter().copied())
+    }
+}
+
+impl StringValue for GorsSliceStorage<i32> {
+    fn string_value(self) -> std::string::String {
+        go_string_from_runes(self.visible().iter().copied())
+    }
+}
+
+impl StringValue for &GorsSliceStorage<i32> {
+    fn string_value(self) -> std::string::String {
+        go_string_from_runes(self.visible().iter().copied())
     }
 }
 
@@ -2045,6 +3270,15 @@ where
 }
 
 #[inline]
+pub fn snapshot_slice<S, T>(src: &S) -> Vec<T>
+where
+    S: AsRef<[T]> + ?Sized,
+    T: Clone,
+{
+    src.as_ref().to_vec()
+}
+
+#[inline]
 pub fn copy<D, S, T>(dst: &mut D, src: &S) -> usize
 where
     D: AsMut<[T]> + ?Sized,
@@ -2095,6 +3329,14 @@ impl<T: Default> Clear for [T] {
     }
 }
 
+impl<T: Default> Clear for GorsSliceStorage<T> {
+    fn clear_value(&mut self) {
+        for elem in self.visible_mut() {
+            *elem = T::default();
+        }
+    }
+}
+
 impl<K, V> Clear for HashMap<K, V> {
     fn clear_value(&mut self) {
         self.clear();
@@ -2110,6 +3352,20 @@ impl<K, V> Clear for GorsMap<K, V> {
 #[inline]
 pub fn clear<T: Clear + ?Sized>(v: &mut T) {
     v.clear_value();
+}
+
+#[inline]
+pub fn clear_vec_range<T: Default>(
+    (values, low, high, max): (&mut Vec<T>, usize, usize, Option<usize>),
+) {
+    let capacity = values.capacity();
+    if low > high || high > capacity || max.is_some_and(|max| high > max || max > capacity) {
+        panic_value("slice bounds out of range");
+    }
+    let initialized_high = high.min(values.len());
+    if low < initialized_high {
+        clear(&mut values[low..initialized_high]);
+    }
 }
 
 #[inline]
@@ -2834,7 +4090,7 @@ pub fn recover_func<F: FnOnce() + std::panic::UnwindSafe>(f: F) -> Option<std::s
 
 #[inline]
 pub fn interface_is_nil(value: &dyn Any) -> bool {
-    value.type_id() == TypeId::of::<()>()
+    erased_any_payload(value).type_id() == TypeId::of::<()>()
 }
 
 #[inline]
@@ -3275,6 +4531,197 @@ mod tests {
     }
 
     #[test]
+    fn borrowed_slice_headers_can_extend_and_write_back_visible_elements() {
+        let mut values = Vec::with_capacity(4);
+        values.extend([1, 2]);
+
+        {
+            let mut header = GorsSliceParam::from_storage(&mut values);
+            header.reslice(0, 3, 4);
+            *header.get_mut(0).unwrap() = 7;
+            *header.get_mut(2).unwrap() = 9;
+            assert_eq!(&*header, &[7, 2, 9]);
+            assert_eq!(cap(&header), 4);
+        }
+
+        assert_eq!(values, vec![7, 2]);
+        assert_eq!(values.capacity(), 4);
+    }
+
+    #[test]
+    fn borrowed_slice_headers_forward_full_backing_without_sharing_header_changes() {
+        let mut values = Vec::with_capacity(4);
+        values.extend([1, 2]);
+
+        {
+            let mut outer = GorsSliceParam::from_storage(&mut values);
+            {
+                let mut inner = GorsSliceParam::from_param(&mut outer);
+                inner.reslice(0, 3, 4);
+                *inner.get_mut(2).unwrap() = 9;
+            }
+
+            assert_eq!(len(&outer), 2);
+            outer.reslice(0, 3, 4);
+            assert_eq!(outer.get(2), Some(&9));
+        }
+
+        assert_eq!(values, vec![1, 2]);
+        assert_eq!(values.capacity(), 4);
+    }
+
+    #[test]
+    fn owned_slice_storage_preserves_capacity_writes_after_reslice() {
+        let mut values = Vec::with_capacity(4);
+        values.extend([1, 2]);
+        let original_capacity = values.capacity();
+        let mut storage = GorsSliceStorage::take_vec(&mut values);
+
+        assert!(values.is_empty());
+        assert_eq!(storage.len(), 2);
+        assert_eq!(storage.capacity(), original_capacity);
+        storage
+            .full_range_mut(2, 4, Some(4))
+            .copy_from_slice(&[7, 8]);
+        assert_eq!(storage.visible(), &[1, 2]);
+
+        storage.reslice(0, 4, 4);
+        assert_eq!(storage.visible(), &[1, 2, 7, 8]);
+
+        values = storage.into_visible_vec();
+        assert_eq!(values, [1, 2, 7, 8]);
+        assert_eq!(values.capacity(), original_capacity);
+    }
+
+    #[test]
+    fn owned_slice_parameter_writes_back_hidden_capacity_without_changing_header() {
+        let mut values = Vec::with_capacity(4);
+        values.extend([1, 2]);
+        let mut storage = GorsSliceStorage::from_vec(values);
+
+        {
+            let mut parameter = GorsSliceParam::from_owned_storage(&mut storage);
+            parameter.reslice(2, 4, 4);
+            parameter.copy_from_slice(&[7, 8]);
+        }
+
+        assert_eq!(storage.visible(), &[1, 2]);
+        assert_eq!(storage.full(), &[1, 2, 7, 8]);
+        storage.reslice(0, 4, 4);
+        assert_eq!(storage.visible(), &[1, 2, 7, 8]);
+    }
+
+    #[test]
+    fn owned_slice_storage_checks_visible_and_full_slice_bounds() {
+        let storage = GorsSliceStorage::from_initialized_backing(vec![1, 2, 3, 4], 2);
+
+        assert_eq!(storage.visible_range(0, 2), &[1, 2]);
+        assert_eq!(storage.full_range(2, 4, Some(4)), &[3, 4]);
+        assert!(
+            std::panic::catch_unwind(|| storage.visible_range(0, 3)).is_err(),
+            "visible ranges must not extend to capacity"
+        );
+        assert!(
+            std::panic::catch_unwind(|| storage.full_range(2, 4, Some(3))).is_err(),
+            "the full-slice max must bound the high index"
+        );
+        assert!(
+            std::panic::catch_unwind(|| storage.full_range(0, 2, Some(5))).is_err(),
+            "the full-slice max must not exceed capacity"
+        );
+    }
+
+    #[test]
+    fn owned_slice_storage_drops_each_noncopy_backing_value_exactly_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct DropProbe {
+            id: usize,
+            drops: Arc<AtomicUsize>,
+        }
+
+        impl Drop for DropProbe {
+            fn drop(&mut self) {
+                self.drops.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let drops = Arc::new(AtomicUsize::new(0));
+        let backing = (0..4)
+            .map(|id| DropProbe {
+                id,
+                drops: drops.clone(),
+            })
+            .collect();
+        let mut storage = GorsSliceStorage::from_initialized_backing(backing, 2);
+        storage.reslice(1, 3, 4);
+
+        let visible = storage.into_visible_vec();
+        assert_eq!(
+            visible.iter().map(|probe| probe.id).collect::<Vec<_>>(),
+            [1, 2]
+        );
+        assert_eq!(drops.load(Ordering::SeqCst), 2);
+
+        drop(visible);
+        assert_eq!(drops.load(Ordering::SeqCst), 4);
+    }
+
+    #[test]
+    fn owned_slice_storage_appends_elements_without_default() {
+        struct NonDefault(&'static str);
+
+        let mut storage = GorsSliceStorage::from_initialized_backing(
+            vec![NonDefault("visible"), NonDefault("hidden")],
+            1,
+        );
+        storage.push_visible(NonDefault("replaced"));
+        assert_eq!(storage.capacity(), 2);
+        assert_eq!(
+            storage
+                .visible()
+                .iter()
+                .map(|value| value.0)
+                .collect::<Vec<_>>(),
+            ["visible", "replaced"]
+        );
+
+        storage.extend_visible([NonDefault("grown-a"), NonDefault("grown-b")]);
+        assert_eq!(storage.len(), 4);
+        assert_eq!(storage.capacity(), 4);
+        assert_eq!(
+            storage
+                .visible()
+                .iter()
+                .map(|value| value.0)
+                .collect::<Vec<_>>(),
+            ["visible", "replaced", "grown-a", "grown-b"]
+        );
+    }
+
+    #[test]
+    fn owned_slice_storage_accepts_compiler_supplied_zero_values() {
+        let mut next = 0_usize;
+        let storage = GorsSliceStorage::with_len_capacity_by(2, 4, || {
+            let value = next;
+            next += 1;
+            Box::new(value) as Box<dyn Any>
+        });
+
+        assert_eq!(storage.len(), 2);
+        assert_eq!(storage.capacity(), 4);
+        assert_eq!(next, 4);
+        assert_eq!(
+            storage
+                .full()
+                .iter()
+                .filter_map(|value| value.as_ref().downcast_ref::<usize>().copied())
+                .collect::<Vec<_>>(),
+            [0, 1, 2, 3]
+        );
+    }
+
+    #[test]
     fn make_new_max_min_and_string_conversion_work() {
         let boxed: Box<i32> = r#new();
         assert_eq!(*boxed, 0);
@@ -3469,6 +4916,9 @@ mod tests {
         assert!(!reflect_type_comparable(
             (Box::new(vec![1_u8, 2]) as Box<dyn Any>).as_ref()
         ));
+        let storage = GorsSliceStorage::from_initialized_backing(vec![1_u8, 2, 3], 2);
+        assert_eq!(reflect_value_len(&storage), 2);
+        assert!(!reflect_type_comparable(&storage));
         assert!(!reflect_type_comparable(
             (Box::new(()) as Box<dyn Any>).as_ref()
         ));
@@ -3489,6 +4939,60 @@ mod tests {
         let cloned = clone_any(left.as_ref());
         assert!(any_downcast_ref::<NamedString>(cloned.as_ref()).is_some());
         assert!(any_eq(cloned.as_ref(), same.as_ref()));
+    }
+
+    #[derive(Clone, PartialEq)]
+    struct OtherNamedString(String);
+
+    #[test]
+    fn interface_keys_compare_owned_values_by_dynamic_type_and_value() {
+        let left = GorsInterfaceKey::for_comparable(&NamedString("name".to_string()));
+        let same = GorsInterfaceKey::for_comparable(&NamedString("name".to_string()));
+        let unequal = GorsInterfaceKey::for_comparable(&NamedString("other".to_string()));
+        let other_type = GorsInterfaceKey::for_comparable(&OtherNamedString("name".to_string()));
+
+        assert_eq!(left, same);
+        assert_ne!(left, unequal);
+        assert_ne!(left, other_type);
+    }
+
+    #[test]
+    fn interface_pointer_keys_preserve_type_identity_and_typed_nil() {
+        let value = 7_isize;
+        let pointer = std::ptr::from_ref(&value).cast::<()>();
+        let same = GorsInterfaceKey::for_ptr::<isize>(pointer);
+        let different_dynamic_type = GorsInterfaceKey::for_ptr::<usize>(pointer);
+        let typed_nil = GorsInterfaceKey::for_ptr::<isize>(std::ptr::null());
+
+        assert_eq!(GorsInterfaceKey::for_ptr::<isize>(pointer), same);
+        assert_ne!(same, different_dynamic_type);
+        assert_ne!(typed_nil, GorsInterfaceKey::nil());
+        assert_eq!(
+            typed_nil,
+            GorsInterfaceKey::for_ptr::<isize>(std::ptr::null())
+        );
+    }
+
+    #[test]
+    fn non_comparable_interface_keys_defer_panics_until_use() {
+        let left = GorsInterfaceKey::non_comparable::<Vec<isize>>();
+        let right = GorsInterfaceKey::non_comparable::<Vec<isize>>();
+        let other_type = GorsInterfaceKey::non_comparable::<Vec<usize>>();
+
+        assert_ne!(left, other_type);
+        let compare = catch_go_unwind(|| left == right);
+        assert!(compare.is_err());
+
+        let conservative = GorsInterfaceKey::non_comparable::<String>();
+        let comparable = GorsInterfaceKey::for_comparable(&String::from("value"));
+        assert!(catch_go_unwind(|| conservative == comparable).is_err());
+
+        let key = GorsInterfaceKey::non_comparable::<Vec<isize>>();
+        let hash = catch_go_unwind(|| {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            key.hash(&mut hasher);
+        });
+        assert!(hash.is_err());
     }
 
     #[test]
@@ -3519,6 +5023,222 @@ mod tests {
         let stored_again = clone_any_send_sync(stored.as_ref());
         let second_read = clone_any(stored_again.as_ref());
         assert!(any_eq(second_read.as_ref(), lookup.as_ref()));
+    }
+
+    #[derive(Clone)]
+    struct NamedCallback(Arc<dyn Fn(isize) -> isize + Send + Sync>);
+
+    #[test]
+    fn erased_clone_traits_keep_local_and_send_sync_capabilities_distinct() {
+        fn assert_send_sync<T: Send + Sync>() {}
+
+        trait AmbiguousIfSend<A> {
+            fn marker() {}
+        }
+        impl<T: ?Sized> AmbiguousIfSend<()> for T {}
+        impl<T: ?Sized + Send> AmbiguousIfSend<u8> for T {}
+
+        trait AmbiguousIfSync<A> {
+            fn marker() {}
+        }
+        impl<T: ?Sized> AmbiguousIfSync<()> for T {}
+        impl<T: ?Sized + Sync> AmbiguousIfSync<u8> for T {}
+
+        assert_send_sync::<Box<dyn GorsAnyClone>>();
+        assert_send_sync::<Box<dyn GorsAnyComparable>>();
+        let _ = <Box<dyn GorsAnyLocalClone> as AmbiguousIfSend<_>>::marker;
+        let _ = <Box<dyn GorsAnyLocalClone> as AmbiguousIfSync<_>>::marker;
+        let _ = <Box<dyn GorsAnyLocalComparable> as AmbiguousIfSend<_>>::marker;
+        let _ = <Box<dyn GorsAnyLocalComparable> as AmbiguousIfSync<_>>::marker;
+    }
+
+    #[test]
+    fn local_erased_values_clone_without_crossing_send_boundaries() {
+        #[derive(Clone, PartialEq)]
+        struct LocalValue(std::rc::Rc<isize>);
+
+        let clone_only = box_any_local_clone(LocalValue(std::rc::Rc::new(41)));
+        let cloned = clone_any(clone_only.as_ref());
+        assert_eq!(
+            any_downcast_ref::<LocalValue>(cloned.as_ref()).map(|value| *value.0),
+            Some(41)
+        );
+        assert!(clone_any_send_sync(clone_only.as_ref()).is::<()>());
+
+        let comparable = box_any_local_comparable(LocalValue(std::rc::Rc::new(42)));
+        let lookup = box_any_local_comparable(LocalValue(std::rc::Rc::new(42)));
+        let cloned = clone_any(comparable.as_ref());
+        assert!(any_eq(cloned.as_ref(), lookup.as_ref()));
+        assert!(reflect_type_comparable(cloned.as_ref()));
+        assert!(clone_any_send_sync(comparable.as_ref()).is::<()>());
+    }
+
+    #[test]
+    fn clone_only_any_values_survive_erased_send_sync_round_trips() {
+        let original = box_any_clone(NamedCallback(Arc::new(|value| value + 1)));
+        assert!(any_is::<NamedCallback>(original.as_ref()));
+        assert!(!reflect_type_comparable(original.as_ref()));
+
+        let stored = clone_any_send_sync(original.as_ref());
+        let sent = clone_any_send_ref(stored.as_ref());
+        let loaded = clone_any(sent.as_ref());
+        let callback = any_downcast_ref::<NamedCallback>(loaded.as_ref());
+
+        assert!(callback.is_some());
+        assert_eq!(callback.map(|callback| (callback.0)(41)), Some(42));
+        assert!(!reflect_type_comparable(loaded.as_ref()));
+
+        let stored_again = clone_any_send_sync(loaded.as_ref());
+        let loaded_again = clone_any(stored_again.as_ref());
+        assert_eq!(
+            any_downcast_ref::<NamedCallback>(loaded_again.as_ref())
+                .map(|callback| (callback.0)(1)),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn erased_any_payload_unwraps_nested_clone_only_boxes() {
+        let wrapped = box_any_clone(NamedCallback(Arc::new(|value| value * 2)));
+        let nested = Box::new(wrapped) as Box<dyn Any>;
+
+        assert_eq!(
+            any_downcast_ref::<NamedCallback>(nested.as_ref()).map(|callback| (callback.0)(21)),
+            Some(42)
+        );
+    }
+
+    #[test]
+    fn erased_dynamic_type_identity_uses_payload_and_preserves_nil() {
+        #[derive(Clone)]
+        struct CloneOnlyA;
+        #[derive(Clone)]
+        struct CloneOnlyB;
+        #[derive(Clone, PartialEq)]
+        struct ComparableA;
+
+        let clone_a = box_any_clone(CloneOnlyA);
+        let clone_b = box_any_clone(CloneOnlyB);
+        let comparable_a = box_any_comparable(ComparableA);
+        let nested = Box::new(clone_a) as Box<dyn Any>;
+
+        assert_eq!(
+            any_dynamic_type_id(nested.as_ref()),
+            Some(TypeId::of::<CloneOnlyA>())
+        );
+        assert_eq!(
+            any_dynamic_type_id(clone_b.as_ref()),
+            Some(TypeId::of::<CloneOnlyB>())
+        );
+        assert_eq!(
+            any_dynamic_type_id(comparable_a.as_ref()),
+            Some(TypeId::of::<ComparableA>())
+        );
+        assert_ne!(
+            any_dynamic_type_id(nested.as_ref()),
+            any_dynamic_type_id(clone_b.as_ref())
+        );
+        assert_eq!(any_dynamic_type_id(&() as &dyn Any), None);
+    }
+
+    #[test]
+    fn errors_erased_as_any_expose_their_concrete_dynamic_value_and_nil() {
+        #[derive(Clone, PartialEq)]
+        struct ConcreteError(&'static str);
+
+        impl error for ConcreteError {
+            fn __gors_as_any(&self) -> Option<&dyn Any> {
+                Some(self)
+            }
+
+            fn __gors_interface_key(&self) -> GorsInterfaceKey {
+                GorsInterfaceKey::for_comparable(self)
+            }
+
+            fn __gors_clone_box(&self) -> Box<dyn error> {
+                Box::new(self.clone())
+            }
+
+            fn Error(&self) -> String {
+                self.0.to_string()
+            }
+        }
+
+        let concrete =
+            Box::new(Box::new(ConcreteError("concrete")) as Box<dyn error>) as Box<dyn Any>;
+        let nil_any = Box::new(Box::new(__GorsNooperror) as Box<dyn error>) as Box<dyn Any>;
+
+        assert!(any_is::<ConcreteError>(concrete.as_ref()));
+        assert_eq!(
+            any_downcast_ref::<ConcreteError>(concrete.as_ref()).map(|error| error.0),
+            Some("concrete")
+        );
+        assert_eq!(
+            any_dynamic_type_id(concrete.as_ref()),
+            Some(TypeId::of::<ConcreteError>())
+        );
+        assert!(interface_is_nil(nil_any.as_ref()));
+        assert_eq!(any_dynamic_type_id(nil_any.as_ref()), None);
+    }
+
+    #[test]
+    fn equal_dynamic_clone_only_any_values_panic_as_non_comparable() {
+        #[derive(Clone)]
+        struct CloneOnly(Vec<isize>);
+        #[derive(Clone)]
+        struct OtherCloneOnly(Vec<isize>);
+
+        let left = box_any_clone(CloneOnly(vec![1]));
+        let right = box_any_clone(CloneOnly(vec![1]));
+        let other = box_any_clone(OtherCloneOnly(vec![1]));
+
+        assert!(!any_eq(left.as_ref(), other.as_ref()));
+        assert!(catch_go_unwind(|| any_eq(left.as_ref(), right.as_ref())).is_err());
+    }
+
+    #[test]
+    fn cloned_errors_preserve_concrete_dynamic_identity() {
+        #[derive(Clone, PartialEq)]
+        struct WrappedError(&'static str);
+
+        impl error for WrappedError {
+            fn __gors_as_any(&self) -> Option<&dyn Any> {
+                Some(self)
+            }
+
+            fn __gors_interface_key(&self) -> GorsInterfaceKey {
+                GorsInterfaceKey::for_comparable(self)
+            }
+
+            fn __gors_clone_box(&self) -> Box<dyn error> {
+                Box::new(self.clone())
+            }
+
+            fn Error(&self) -> String {
+                self.0.to_string()
+            }
+        }
+
+        let original = Box::new(WrappedError("wrapped")) as Box<dyn error>;
+        let cloned = original.clone();
+        let cloned_again = cloned.clone();
+        let same_message_other_type =
+            Box::new(__GorsStringError("wrapped".to_string())) as Box<dyn error>;
+
+        assert!(PartialEq::eq(&original, &cloned));
+        assert!(PartialEq::eq(&cloned, &cloned_again));
+        assert!(!PartialEq::eq(&original, &same_message_other_type));
+        assert!(
+            cloned
+                .__gors_as_any()
+                .is_some_and(|value| value.is::<WrappedError>())
+        );
+        assert!(
+            cloned_again
+                .__gors_as_any()
+                .is_some_and(|value| value.is::<WrappedError>())
+        );
+        assert_eq!(cloned_again.Error(), "wrapped");
     }
 
     #[test]

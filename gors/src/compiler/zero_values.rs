@@ -61,6 +61,13 @@ pub(super) fn expr_for_go_type(go_type: &typeinfer::GoType) -> Option<syn::Expr>
         typeinfer::GoType::Bool => Some(expr_for_type_name(Some("bool"))),
         typeinfer::GoType::String => Some(expr_for_type_name(Some("string"))),
         typeinfer::GoType::Unit => Some(syn::parse_quote! { () }),
+        typeinfer::GoType::Array(elem) => {
+            let elem_default =
+                expr_for_go_type(&elem).unwrap_or_else(|| syn::parse_quote! { Default::default() });
+            Some(syn::parse_quote! {
+                std::array::from_fn(|_| #elem_default)
+            })
+        }
         typeinfer::GoType::Interface(_) => None,
         _ => Some(syn::parse_quote! { Default::default() }),
     }
@@ -114,6 +121,7 @@ pub(super) fn expr_for_array_type(array_type: &ast::ArrayType) -> syn::Expr {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use quote::ToTokens;
@@ -192,6 +200,19 @@ mod tests {
 
         assert_eq!(string_zero.as_deref(), Some("String :: new ()"));
         assert!(interface_zero.is_none());
+    }
+
+    #[test]
+    fn inferred_fixed_array_zero_value_does_not_require_array_default() {
+        let zero = expr_for_go_type(&typeinfer::GoType::Array(Box::new(
+            typeinfer::GoType::String,
+        )))
+        .unwrap()
+        .to_token_stream()
+        .to_string();
+
+        assert!(zero.contains("std :: array :: from_fn"), "{zero}");
+        assert!(zero.contains("String :: new"), "{zero}");
     }
 
     #[test]
