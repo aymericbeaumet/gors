@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::ast;
 use crate::compiler::fingerprint::fingerprint_parts;
 use crate::compiler::{Diagnostic, lowering, mir, rust_ir};
-use crate::parser::SourceSnapshot;
+use crate::parser::SourceContent;
 use crate::scanner::Scanner;
 use crate::token::Token;
 
@@ -38,7 +38,7 @@ pub(super) struct SourceInput {
     #[returns(clone)]
     pub(super) logical_path: Arc<str>,
     #[returns(clone)]
-    pub(super) snapshot: Arc<SourceSnapshot>,
+    pub(super) content: Arc<SourceContent>,
 }
 
 #[salsa::input]
@@ -122,8 +122,8 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
     let file = source.file(db);
     let package_id = source.package(db);
     let logical_path = source.logical_path(db);
-    let snapshot = source.snapshot(db);
-    let parsed = match snapshot.parse() {
+    let content = source.content(db);
+    let parsed = match content.parse(&logical_path) {
         Ok(parsed) => parsed,
         Err(error) => {
             let location = error.location();
@@ -166,11 +166,11 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
         let key =
             DefinitionKey::package_named(package_id, DefinitionKind::Function, function.name.name);
         let id = key.id();
-        let signature_source = signature_source(&snapshot, function);
+        let signature_source = signature_source(&content, &logical_path, function);
         let body_source = function
             .body
             .as_ref()
-            .map(|body| body_source(&snapshot, body));
+            .map(|body| body_source(&content, body));
         let signature = Arc::new(FunctionSignature::new(
             id,
             Arc::clone(&name),
@@ -705,22 +705,26 @@ pub(super) fn public_api_product(db: &dyn Db, facts: FileFacts<'_>) -> Arc<Publi
     Arc::new(PublicApi::new(facts.file(db), signatures.into()))
 }
 
-fn signature_source(snapshot: &SourceSnapshot, function: &ast::FuncDecl<'_>) -> Arc<str> {
+fn signature_source(
+    content: &SourceContent,
+    logical_path: &str,
+    function: &ast::FuncDecl<'_>,
+) -> Arc<str> {
     let start = function
         .type_
         .func
         .as_ref()
         .map_or(function.name.name_pos.offset, |position| position.offset);
     let end = function.body.as_ref().map_or_else(
-        || bodyless_signature_end(snapshot, start),
+        || bodyless_signature_end(content, logical_path, start),
         |body| body.lbrace.offset,
     );
-    source_range(snapshot.source(), start, end)
+    source_range(content.source(), start, end)
 }
 
-fn body_source(snapshot: &SourceSnapshot, body: &ast::BlockStmt<'_>) -> Arc<str> {
+fn body_source(content: &SourceContent, body: &ast::BlockStmt<'_>) -> Arc<str> {
     source_range(
-        snapshot.source(),
+        content.source(),
         body.lbrace.offset,
         body.rbrace.offset.saturating_add(1),
     )
@@ -732,15 +736,15 @@ fn source_range(source: &str, start: usize, end: usize) -> Arc<str> {
         .map_or_else(|| Arc::from(""), Arc::from)
 }
 
-fn bodyless_signature_end(snapshot: &SourceSnapshot, start: usize) -> usize {
-    let Some(suffix) = snapshot.source().get(start..) else {
-        return snapshot.source().len();
+fn bodyless_signature_end(content: &SourceContent, logical_path: &str, start: usize) -> usize {
+    let Some(suffix) = content.source().get(start..) else {
+        return content.source().len();
     };
-    let mut scanner = Scanner::new(snapshot.path(), suffix);
+    let mut scanner = Scanner::new(logical_path, suffix);
     let mut nesting = 0_u32;
     loop {
         let Ok((position, token, _)) = scanner.scan() else {
-            return snapshot.source().len();
+            return content.source().len();
         };
         match token {
             Token::LPAREN | Token::LBRACK | Token::LBRACE => {
@@ -752,7 +756,7 @@ fn bodyless_signature_end(snapshot: &SourceSnapshot, start: usize) -> usize {
             Token::SEMICOLON if nesting == 0 => {
                 return start.saturating_add(position.offset);
             }
-            Token::EOF => return snapshot.source().len(),
+            Token::EOF => return content.source().len(),
             _ => {}
         }
     }

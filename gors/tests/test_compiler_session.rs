@@ -184,6 +184,94 @@ fn exact_noop_skips_fanout_and_changed_revision_reuses_the_pool() {
 }
 
 #[test]
+fn checkout_root_move_reuses_semantics_and_republishes_source_location() {
+    let host = CompilerHost::new(NonZeroUsize::new(4).unwrap()).unwrap();
+    let mut session = host.session(BuildConfig::default()).unwrap();
+    let (first_compiled, first_plan) = session
+        .compile_program_with_source_map(program("/checkout/one/main.go", PARALLEL_PROGRAM))
+        .unwrap();
+    let first_rust = gors::printer::generate_single(first_compiled).unwrap();
+    let first_scheduler = host.telemetry();
+    session.database().reset_telemetry();
+
+    let (second_compiled, second_plan) = session
+        .compile_program_with_source_map(program("/checkout/two/main.go", PARALLEL_PROGRAM))
+        .unwrap();
+    let second_rust = gors::printer::generate_single(second_compiled).unwrap();
+    let first_map = first_plan.build(&first_rust);
+    let second_map = second_plan.build(&second_rust);
+
+    assert_eq!(second_rust, first_rust);
+    assert_eq!(first_map.get_source(0), Some("/checkout/one/main.go"));
+    assert_eq!(second_map.get_source(0), Some("/checkout/two/main.go"));
+    assert_eq!(session.database().telemetry().total_executions(), 0);
+    assert_eq!(session.database().telemetry().engine().will_execute, 0);
+    assert_eq!(
+        session
+            .database()
+            .telemetry()
+            .engine()
+            .cancellation_requests,
+        0
+    );
+    assert_eq!(host.telemetry(), first_scheduler);
+    let file = only_file(&session);
+    assert_eq!(
+        session
+            .database()
+            .source_snapshot(file)
+            .unwrap()
+            .diagnostic_path(),
+        "/checkout/two/main.go"
+    );
+}
+
+#[test]
+fn checkout_root_move_reuses_failed_roots_but_repaints_the_error_path() {
+    let host = CompilerHost::new(NonZeroUsize::new(4).unwrap()).unwrap();
+    let mut session = host.session(BuildConfig::default()).unwrap();
+    let first_error = session
+        .compile_program(program("/checkout/one/main.go", PARALLEL_STAGE_FAILURES))
+        .err()
+        .expect("missing returns must fail MIR construction");
+    let first_scheduler = host.telemetry();
+    session.database().reset_telemetry();
+
+    let second_error = session
+        .compile_program(program("/checkout/two/main.go", PARALLEL_STAGE_FAILURES))
+        .err()
+        .expect("the unchanged invalid program must still fail");
+
+    assert_eq!(
+        second_error.diagnostics().len(),
+        first_error.diagnostics().len()
+    );
+    for (first, second) in first_error
+        .diagnostics()
+        .iter()
+        .zip(second_error.diagnostics())
+    {
+        assert_eq!(second.code, first.code);
+        assert_eq!(second.message, first.message);
+        assert_eq!(second.line, first.line);
+        assert_eq!(second.column, first.column);
+        assert_eq!(first.file, "/checkout/one/main.go");
+        assert_eq!(second.file, "/checkout/two/main.go");
+    }
+    assert_eq!(session.database().telemetry().total_executions(), 0);
+    assert_eq!(session.database().telemetry().engine().will_execute, 0);
+    assert_eq!(
+        session
+            .database()
+            .telemetry()
+            .engine()
+            .cancellation_requests,
+        0
+    );
+    assert_eq!(host.telemetry(), first_scheduler);
+}
+
+#[test]
 fn canonical_package_root_selects_the_same_error_for_every_worker_count() {
     let compile = |jobs| {
         let host = CompilerHost::new(NonZeroUsize::new(jobs).unwrap()).unwrap();
@@ -418,26 +506,6 @@ fn checkout_path_does_not_change_ids_or_generated_output() {
 }
 
 #[test]
-fn stateful_snapshots_query_verified_products_in_parallel() {
-    let mut session = CompilerSession::default();
-    session
-        .compile_program(program("main.go", ORIGINAL))
-        .unwrap();
-    let file = only_file(&session);
-    let g = *functions(&session.database().analyze_file(file).unwrap())
-        .get("g")
-        .unwrap();
-    let first = session.database().snapshot();
-    let second = session.database().snapshot();
-    let first_worker = std::thread::spawn(move || first.verified_rust_ir(file, g).unwrap());
-    let second_worker = std::thread::spawn(move || second.verified_rust_ir(file, g).unwrap());
-    let first = first_worker.join().unwrap();
-    let second = second_worker.join().unwrap();
-    assert_eq!(first, second);
-    assert!(Arc::ptr_eq(&first, &second));
-}
-
-#[test]
 fn production_package_index_rejects_cross_file_issues_before_codegen() {
     let directory = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -507,7 +575,7 @@ fn failed_revision_does_not_leave_orphan_inputs_and_next_revision_recovers() {
             .database()
             .source_snapshot(active_file)
             .unwrap()
-            .path(),
+            .diagnostic_path(),
         "/recovered/current.go"
     );
 }

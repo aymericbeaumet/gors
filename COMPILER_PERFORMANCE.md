@@ -168,18 +168,21 @@ do not wait for a speed threshold.
 
 ### Owned, non-leaking parse products
 
-Each input revision is an immutable, reference-counted `SourceSnapshot` that
-owns its path identity, source bytes, line index, and content digest. A parsed
-file owns or reference-counts that snapshot and represents text by byte ranges,
-interned tokens, or another serializable owned form. Dropping the last query
-result must release both syntax and source memory.
+Each semantic input revision is an immutable, reference-counted
+`SourceContent` containing source text, a line index, and a content digest.
+`SourceSnapshot` pairs that allocation with one user-facing diagnostic path;
+the compiler stores that presentation path outside Salsa. A parsed file may
+reference-count the paired snapshot and represents text by byte ranges,
+interned tokens, or another serializable owned form. Dropping the last semantic
+owner must release syntax and content memory independently of presentation
+state.
 
-`ParsedFile` now reference-counts exactly such a snapshot, and `ParsedPackage`
-stores immutable independently validated files rather than a merged AST. The
-bootstrap parser creates a temporary AST borrowing one snapshot while a
-consumer is executing and publishes no self-reference or `'static` fiction.
-The red-green database may later cache an owned syntax representation, but it
-must preserve this per-file release boundary and remain free of
+`ParsedFile` now reference-counts one such presentation snapshot, and
+`ParsedPackage` stores immutable independently validated files rather than a
+merged AST. The bootstrap parser creates a temporary AST borrowing one snapshot
+while a consumer is executing and publishes no self-reference or `'static`
+fiction. The red-green database may later cache an owned syntax representation,
+but it must preserve this per-file release boundary and remain free of
 self-referential unsafe code.
 
 Parse one file per query. Package merging belongs in semantic indexing, not in
@@ -364,10 +367,16 @@ not determine semantics or be counted as the competitive production path.
 The following current mechanisms are useful bootstrap behavior but are not the
 architecture described here:
 
-- parser snapshots are owned and independently releasable, and the first
-  tracked file projection shares one temporary parse between indexing and
-  semantic lowering, but there is no reusable incremental syntax tree with
-  stable syntax anchors or explicit parse-product memory accounting;
+- parser storage now separates canonical semantic `SourceContent` from
+  user-facing physical paths. An unchanged checkout-root move preserves all
+  semantic products, executes no query, requests no Salsa cancellation, and
+  schedules no worker wave while repackaging terminal maps and diagnostics with
+  the current request path. The production CLI still parses at least twice and
+  the browser path at least three times, however: callers validate a
+  `ParsedProgram` before session installation and projections parse again, while
+  browser comments parse separately. Syntax-invalid revisions therefore remain
+  outside the retained session. There is still no reusable incremental syntax
+  tree with stable syntax anchors or explicit parse-product memory accounting;
 - workspace, package, file, and definition IDs are stable; node, local, and
   basic-block IDs are still revision-local dense indexes and cannot be
   persistent query or CAS keys;
@@ -395,9 +404,11 @@ architecture described here:
 - dynamic divide/remainder-by-zero and negative-shift faults currently unwind
   through Rust `panic_any`, so those executions do not yet have Go-compatible
   process behavior and cannot enter behavior-validated performance evidence;
-- atomic query counters, scheduler wave evidence, and invalidation tests exist,
-  and CLI/performance timings record the exact compiler job budget; reports do
-  not yet expose complete dependency traces, retained memory, or cancellation;
+- atomic query counters, Salsa execution and cancellation-request counters,
+  scheduler wave evidence, and invalidation tests exist, and CLI/performance
+  timings record the exact compiler job budget; reports do not yet expose
+  complete dependency traces, retained memory, or a foreground cancellation
+  protocol;
 - `gors build` currently publishes generated Rust sources rather than a runnable
   executable, so a harness-composed gors-plus-rustc measurement is diagnostic
   only until the default artifact command owns the complete publication path;

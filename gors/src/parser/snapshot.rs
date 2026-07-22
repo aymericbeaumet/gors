@@ -9,26 +9,17 @@ use sha2::{Digest, Sha256};
 use super::import_path::{ImportPathIssue, decode_and_validate};
 use super::{Result, ast, parse_file};
 
-/// Immutable source text and indexing metadata for one Go file revision.
-///
-/// A snapshot is reference counted by [`ParsedFile`]. It never borrows the
-/// caller's input and can therefore be retained by a query result or released
-/// independently when that file revision is evicted.
+/// Path-independent source bytes and indexing metadata for one Go file revision.
 #[derive(Eq, PartialEq)]
-pub struct SourceSnapshot {
-    path: Arc<str>,
+pub struct SourceContent {
     source: Arc<str>,
     line_starts: Arc<[usize]>,
     content_digest: [u8; 32],
 }
 
-impl SourceSnapshot {
-    /// Own an input revision without parsing or validating it.
-    ///
-    /// Syntax failure is an output of the parse query, not a failure to create
-    /// an immutable source input.
-    pub fn from_source(path: impl Into<Arc<str>>, source: impl Into<Arc<str>>) -> Self {
-        let path = path.into();
+impl SourceContent {
+    /// Own exact UTF-8 source bytes without parsing or validating them.
+    pub fn from_source(source: impl Into<Arc<str>>) -> Self {
         let source = source.into();
         let mut line_starts = Vec::with_capacity(source.lines().count().saturating_add(1));
         line_starts.push(0);
@@ -39,17 +30,10 @@ impl SourceSnapshot {
                 .filter_map(|(offset, byte)| (byte == b'\n').then_some(offset + 1)),
         );
         Self {
-            path,
             content_digest: Sha256::digest(source.as_bytes()).into(),
             source,
             line_starts: line_starts.into(),
         }
-    }
-
-    /// Logical filename supplied to the parser.
-    #[must_use]
-    pub fn path(&self) -> &str {
-        &self.path
     }
 
     /// Complete immutable UTF-8 source text.
@@ -80,9 +64,8 @@ impl SourceSnapshot {
     /// Approximate retained bytes for query-cache accounting.
     #[must_use]
     pub fn retained_bytes(&self) -> usize {
-        self.path
+        self.source
             .len()
-            .saturating_add(self.source.len())
             .saturating_add(
                 self.line_starts
                     .len()
@@ -91,9 +74,114 @@ impl SourceSnapshot {
             .saturating_add(self.content_digest.len())
     }
 
+    /// Parse this content under an explicit logical or diagnostic filename.
+    ///
+    /// The returned AST borrows both this content and `path`; callers must keep
+    /// both alive for the complete AST inspection scope.
+    pub fn parse<'content>(&'content self, path: &'content str) -> Result<ast::File<'content>> {
+        parse_file(path, self.source())
+    }
+}
+
+impl fmt::Debug for SourceContent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SourceContent")
+            .field("source_bytes", &self.source.len())
+            .field("line_count", &self.line_starts.len())
+            .field("content_digest", &self.content_digest)
+            .finish()
+    }
+}
+
+/// One diagnostic location paired with immutable source content.
+///
+/// A snapshot is reference counted by [`ParsedFile`]. It never borrows the
+/// caller's input and can therefore be retained by a query result or released
+/// independently when that file revision is evicted. Compiler semantic inputs
+/// track [`SourceContent`] separately so moving a file does not invalidate it.
+#[derive(Eq, PartialEq)]
+pub struct SourceSnapshot {
+    path: Arc<str>,
+    content: Arc<SourceContent>,
+}
+
+impl SourceSnapshot {
+    /// Own an input revision without parsing or validating it.
+    ///
+    /// Syntax failure is an output of the parse query, not a failure to create
+    /// an immutable source input.
+    pub fn from_source(path: impl Into<Arc<str>>, source: impl Into<Arc<str>>) -> Self {
+        Self::from_content(path, Arc::new(SourceContent::from_source(source)))
+    }
+
+    /// Attach a diagnostic filename to already-owned source content.
+    pub fn from_content(path: impl Into<Arc<str>>, content: Arc<SourceContent>) -> Self {
+        Self {
+            path: path.into(),
+            content,
+        }
+    }
+
+    /// User-visible physical path or URI for diagnostics and source maps.
+    #[must_use]
+    pub fn diagnostic_path(&self) -> &str {
+        &self.path
+    }
+
+    /// Shared user-visible diagnostic path without copying its bytes.
+    #[must_use]
+    pub fn shared_diagnostic_path(&self) -> Arc<str> {
+        Arc::clone(&self.path)
+    }
+
+    /// Shared path-independent source content.
+    #[must_use]
+    pub fn content(&self) -> Arc<SourceContent> {
+        Arc::clone(&self.content)
+    }
+
+    /// Whether two snapshots contain exactly the same source bytes and index.
+    #[must_use]
+    pub fn has_same_content(&self, other: &Self) -> bool {
+        self.content == other.content
+    }
+
+    /// Complete immutable UTF-8 source text.
+    #[must_use]
+    pub fn source(&self) -> &str {
+        self.content.source()
+    }
+
+    /// SHA-256 of the exact source bytes.
+    #[must_use]
+    pub fn content_digest(&self) -> [u8; 32] {
+        self.content.content_digest()
+    }
+
+    /// Byte offset at which a one-based source line starts.
+    #[must_use]
+    pub fn line_start(&self, line: usize) -> Option<usize> {
+        self.content.line_start(line)
+    }
+
+    /// Number of source lines represented by the line index.
+    #[must_use]
+    pub fn line_count(&self) -> usize {
+        self.content.line_count()
+    }
+
+    /// Approximate retained bytes for query-cache accounting.
+    #[must_use]
+    pub fn retained_bytes(&self) -> usize {
+        self.path
+            .len()
+            .saturating_add(self.content.retained_bytes())
+    }
+
     /// Parse an ephemeral AST borrowing this snapshot.
     pub fn parse(&self) -> Result<ast::File<'_>> {
-        parse_file(self.path(), self.source())
+        self.content.parse(self.diagnostic_path())
     }
 }
 
@@ -102,9 +190,7 @@ impl fmt::Debug for SourceSnapshot {
         formatter
             .debug_struct("SourceSnapshot")
             .field("path", &self.path)
-            .field("source_bytes", &self.source.len())
-            .field("line_count", &self.line_starts.len())
-            .field("content_digest", &self.content_digest)
+            .field("content", &self.content)
             .finish()
     }
 }
@@ -131,10 +217,10 @@ impl FileParseError {
         Arc::clone(&self.snapshot)
     }
 
-    /// Logical path of the failing source revision.
+    /// User-facing path or URI of the failing source revision.
     #[must_use]
     pub fn path(&self) -> &str {
-        self.snapshot.path()
+        self.snapshot.diagnostic_path()
     }
 
     /// Exact source text that produced this failure.
@@ -232,10 +318,10 @@ impl InvalidImportPathError {
         Arc::clone(&self.snapshot)
     }
 
-    /// Logical path of the source file containing the invalid import.
+    /// User-facing path or URI of the source file containing the invalid import.
     #[must_use]
     pub fn path(&self) -> &str {
-        self.snapshot.path()
+        self.snapshot.diagnostic_path()
     }
 
     /// Original quoted Go literal.
@@ -359,10 +445,10 @@ impl ParsedFile {
         self.snapshot.parse()
     }
 
-    /// Logical filename supplied to the parser.
+    /// User-facing filename or URI supplied to the parser.
     #[must_use]
     pub fn path(&self) -> &str {
-        self.snapshot.path()
+        self.snapshot.diagnostic_path()
     }
 
     /// Exact source text retained by this file revision.
@@ -383,7 +469,7 @@ impl ParsedFile {
         &self.imports
     }
 
-    /// Shared immutable source snapshot for query ownership.
+    /// Shared immutable source snapshot retained by parsed-file consumers.
     #[must_use]
     pub fn snapshot(&self) -> Arc<SourceSnapshot> {
         Arc::clone(&self.snapshot)

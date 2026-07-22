@@ -21,7 +21,8 @@ fn install_rollback_restores_updated_inputs_and_removes_orphans() {
             "main.go",
             Arc::clone(&original),
         )
-        .unwrap();
+        .unwrap()
+        .file();
     let previous = BTreeMap::from([(file, Arc::clone(&original))]);
 
     session
@@ -47,9 +48,10 @@ fn install_rollback_restores_updated_inputs_and_removes_orphans() {
                 "package main\nfunc orphan() {}\n",
             )),
         )
-        .unwrap();
+        .unwrap()
+        .file();
 
-    session.rollback_install(&previous);
+    session.rollback_install(&previous).unwrap();
 
     assert_eq!(session.database.active_files(), vec![file]);
     assert_eq!(

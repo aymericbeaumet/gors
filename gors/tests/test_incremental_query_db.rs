@@ -31,6 +31,12 @@ func g(x int) int { return x + 2 }
 func f(x int) int { return x + 1 }
 "#;
 
+const COMPLETE_PROGRAM: &str = r#"package main
+
+func f(x int) int { return x + 1 }
+func main() { println(f(1)) }
+"#;
+
 fn source(text: &str) -> Arc<SourceSnapshot> {
     Arc::new(SourceSnapshot::from_source("main.go", text))
 }
@@ -38,6 +44,7 @@ fn source(text: &str) -> Arc<SourceSnapshot> {
 fn insert(db: &mut CompilerDatabase, text: &str) -> FileId {
     db.set_source("workspace", "example/main", "main.go", source(text))
         .unwrap()
+        .file()
 }
 
 fn insert_file(
@@ -53,6 +60,7 @@ fn insert_file(
         Arc::new(SourceSnapshot::from_source(logical_path, text)),
     )
     .unwrap()
+    .file()
 }
 
 fn functions(analysis: &FileAnalysis) -> BTreeMap<String, DefId> {
@@ -103,6 +111,129 @@ fn equal_source_update_executes_no_query_bodies() {
     let telemetry = db.telemetry();
     assert_eq!(telemetry.total_executions(), 0);
     assert_eq!(telemetry.engine().will_execute, 0);
+    assert_eq!(telemetry.engine().cancellation_requests, 0);
+}
+
+#[test]
+fn diagnostic_path_update_reuses_the_complete_semantic_pipeline() {
+    let mut db = CompilerDatabase::default();
+    let file = db
+        .set_source(
+            "workspace",
+            "example/main",
+            "main.go",
+            Arc::new(SourceSnapshot::from_source(
+                "/checkout/one/main.go",
+                COMPLETE_PROGRAM,
+            )),
+        )
+        .unwrap()
+        .file();
+    let analysis = db.analyze_file(file).unwrap();
+    let functions = functions(&analysis);
+    let function = function_id(&functions, "f");
+    let package = db.package_for_file(file).unwrap();
+    let public_api = db.public_api(file).unwrap();
+    let provenance = db.function_provenance(file, function).unwrap();
+    let typed_hir = db.typed_hir(file, function).unwrap();
+    let typed_signature = db.typed_signature(file, function).unwrap();
+    let verified_mir = db.verified_mir(file, function).unwrap();
+    let normalized_mir = db.normalized_mir(file, function).unwrap();
+    let verified_rust_ir = db.verified_rust_ir(file, function).unwrap();
+    let verified_package = db.verified_rust_ir_package(package).unwrap();
+    let canonical_content = db.source_snapshot(file).unwrap().content();
+    db.reset_telemetry();
+
+    let moved_snapshot = Arc::new(SourceSnapshot::from_source(
+        "/checkout/two/main.go",
+        COMPLETE_PROGRAM,
+    ));
+    let duplicate_content = moved_snapshot.content();
+    let duplicate_content_weak = Arc::downgrade(&duplicate_content);
+    let update = db
+        .set_source("workspace", "example/main", "main.go", moved_snapshot)
+        .unwrap();
+    drop(duplicate_content);
+    assert_eq!(update.file(), file);
+    assert!(!update.semantic_changed());
+    assert!(update.diagnostic_path_changed());
+    assert!(!update.inserted());
+    let current_snapshot = db.source_snapshot(file).unwrap();
+    assert_eq!(current_snapshot.diagnostic_path(), "/checkout/two/main.go");
+    assert!(Arc::ptr_eq(&canonical_content, &current_snapshot.content()));
+    assert!(duplicate_content_weak.upgrade().is_none());
+    assert!(Arc::ptr_eq(&analysis, &db.analyze_file(file).unwrap()));
+    assert!(Arc::ptr_eq(&public_api, &db.public_api(file).unwrap()));
+    assert!(Arc::ptr_eq(
+        &provenance,
+        &db.function_provenance(file, function).unwrap()
+    ));
+    assert!(Arc::ptr_eq(
+        &typed_hir,
+        &db.typed_hir(file, function).unwrap()
+    ));
+    assert!(Arc::ptr_eq(
+        &typed_signature,
+        &db.typed_signature(file, function).unwrap()
+    ));
+    assert!(Arc::ptr_eq(
+        &verified_mir,
+        &db.verified_mir(file, function).unwrap()
+    ));
+    assert!(Arc::ptr_eq(
+        &normalized_mir,
+        &db.normalized_mir(file, function).unwrap()
+    ));
+    assert!(Arc::ptr_eq(
+        &verified_rust_ir,
+        &db.verified_rust_ir(file, function).unwrap()
+    ));
+    assert!(Arc::ptr_eq(
+        &verified_package,
+        &db.verified_rust_ir_package(package).unwrap()
+    ));
+    let telemetry = db.telemetry();
+    assert_eq!(telemetry.total_executions(), 0);
+    assert_eq!(telemetry.engine().will_execute, 0);
+    assert_eq!(telemetry.engine().cancellation_requests, 0);
+}
+
+#[test]
+fn diagnostic_path_update_reuses_a_cached_parse_failure() {
+    let invalid = "package main\nfunc broken(";
+    let mut db = CompilerDatabase::default();
+    let file = db
+        .set_source(
+            "workspace",
+            "example/main",
+            "main.go",
+            Arc::new(SourceSnapshot::from_source("/old/main.go", invalid)),
+        )
+        .unwrap()
+        .file();
+    let failure = db.analyze_file(file).unwrap();
+    assert!(failure.failure().is_some());
+    db.reset_telemetry();
+
+    let update = db
+        .set_source(
+            "workspace",
+            "example/main",
+            "main.go",
+            Arc::new(SourceSnapshot::from_source("/new/main.go", invalid)),
+        )
+        .unwrap();
+    assert!(!update.semantic_changed());
+    assert!(update.diagnostic_path_changed());
+
+    assert!(Arc::ptr_eq(&failure, &db.analyze_file(file).unwrap()));
+    assert_eq!(
+        db.source_snapshot(file).unwrap().diagnostic_path(),
+        "/new/main.go"
+    );
+    assert_eq!(db.telemetry().total_executions(), 0);
+    assert_eq!(db.telemetry().engine().will_execute, 0);
+    assert_eq!(db.telemetry().engine().cancellation_requests, 0);
 }
 
 #[test]
@@ -223,7 +354,8 @@ fn parse_failure_products_ignore_checkout_paths() {
                 invalid,
             )),
         )
-        .unwrap();
+        .unwrap()
+        .file();
     let second_file = second
         .set_source(
             "workspace",
@@ -234,7 +366,8 @@ fn parse_failure_products_ignore_checkout_paths() {
                 invalid,
             )),
         )
-        .unwrap();
+        .unwrap()
+        .file();
 
     assert_eq!(first_file, second_file);
     assert_eq!(
@@ -274,7 +407,8 @@ fn source_payloads_are_costed_and_released_per_file() {
             "first.go",
             Arc::clone(&first_source),
         )
-        .unwrap();
+        .unwrap()
+        .file();
     let second_source = Arc::new(SourceSnapshot::from_source(
         "second.go",
         "package main\nfunc h() {}\n",
@@ -287,7 +421,8 @@ fn source_payloads_are_costed_and_released_per_file() {
             "second.go",
             Arc::clone(&second_source),
         )
-        .unwrap();
+        .unwrap()
+        .file();
     let _ = db.analyze_file(first_file).unwrap();
     let _ = db.analyze_file(second_file).unwrap();
     assert_eq!(
@@ -301,33 +436,6 @@ fn source_payloads_are_costed_and_released_per_file() {
     assert_eq!(db.retained_source_bytes(), second_bytes);
     assert!(db.analyze_file(first_file).is_err());
     assert!(db.analyze_file(second_file).is_ok());
-}
-
-#[test]
-fn read_only_snapshots_produce_deterministic_parallel_results() {
-    let mut db = CompilerDatabase::default();
-    let file = insert(&mut db, ORIGINAL);
-    let functions = functions(&db.analyze_file(file).unwrap());
-    let f = function_id(&functions, "f");
-    let first = db.snapshot();
-    let second = db.snapshot();
-
-    let first_worker = std::thread::spawn(move || {
-        (
-            first.public_api(file).unwrap(),
-            first.function_signature(file, f).unwrap(),
-            first.function_body(file, f).unwrap(),
-        )
-    });
-    let second_worker = std::thread::spawn(move || {
-        (
-            second.public_api(file).unwrap(),
-            second.function_signature(file, f).unwrap(),
-            second.function_body(file, f).unwrap(),
-        )
-    });
-
-    assert_eq!(first_worker.join().unwrap(), second_worker.join().unwrap());
 }
 
 #[test]
@@ -489,29 +597,4 @@ fn moving_a_named_declaration_between_package_files_preserves_its_id() {
 
     assert_eq!(after.functions().first().unwrap().id(), before_id);
     assert_eq!(after.public_api_fingerprint(), before_api);
-}
-
-#[test]
-fn package_analysis_is_deterministic_across_worker_snapshots() {
-    let mut db = CompilerDatabase::default();
-    let first = insert_file(
-        &mut db,
-        "example/sample",
-        "a.go",
-        "package sample\nfunc First() int { return 1 }\n",
-    );
-    insert_file(
-        &mut db,
-        "example/sample",
-        "b.go",
-        "package sample\nfunc Second() int { return 2 }\n",
-    );
-    let package = db.package_for_file(first).unwrap();
-    let first = db.snapshot();
-    let second = db.snapshot();
-
-    let first_worker = std::thread::spawn(move || first.analyze_package(package).unwrap());
-    let second_worker = std::thread::spawn(move || second.analyze_package(package).unwrap());
-
-    assert_eq!(first_worker.join().unwrap(), second_worker.join().unwrap());
 }

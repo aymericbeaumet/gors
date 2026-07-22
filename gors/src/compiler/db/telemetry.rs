@@ -81,6 +81,8 @@ pub struct EngineEventCounts {
     pub did_discard: u64,
     /// Cancellation checks reached by active work.
     pub cancellation_checks: u64,
+    /// Input mutations that requested cancellation of older revisions.
+    pub cancellation_requests: u64,
 }
 
 /// Immutable telemetry observation.
@@ -119,6 +121,7 @@ pub(super) struct Telemetry {
     did_validate: AtomicU64,
     did_discard: AtomicU64,
     cancellation_checks: AtomicU64,
+    cancellation_requests: AtomicU64,
 }
 
 impl Default for Telemetry {
@@ -129,6 +132,7 @@ impl Default for Telemetry {
             did_validate: AtomicU64::new(0),
             did_discard: AtomicU64::new(0),
             cancellation_checks: AtomicU64::new(0),
+            cancellation_requests: AtomicU64::new(0),
         }
     }
 }
@@ -146,6 +150,7 @@ impl Telemetry {
             salsa::EventKind::DidValidateMemoizedValue { .. } => Some(&self.did_validate),
             salsa::EventKind::DidDiscard { .. } => Some(&self.did_discard),
             salsa::EventKind::WillCheckCancellation => Some(&self.cancellation_checks),
+            salsa::EventKind::DidSetCancellationFlag => Some(&self.cancellation_requests),
             _ => None,
         };
         if let Some(counter) = counter {
@@ -171,6 +176,7 @@ impl Telemetry {
                 did_validate: self.did_validate.load(Ordering::Relaxed),
                 did_discard: self.did_discard.load(Ordering::Relaxed),
                 cancellation_checks: self.cancellation_checks.load(Ordering::Relaxed),
+                cancellation_requests: self.cancellation_requests.load(Ordering::Relaxed),
             },
         }
     }
@@ -183,5 +189,6 @@ impl Telemetry {
         self.did_validate.store(0, Ordering::Relaxed);
         self.did_discard.store(0, Ordering::Relaxed);
         self.cancellation_checks.store(0, Ordering::Relaxed);
+        self.cancellation_requests.store(0, Ordering::Relaxed);
     }
 }

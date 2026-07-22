@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use salsa::{Durability, Setter as _};
 
-use crate::parser::SourceSnapshot;
+use crate::parser::{SourceContent, SourceSnapshot};
 
 use super::ids::{DefId, FileId, IdentityInterner, PackageId};
 use queries::{BuildInput, FileFacts, FunctionProjection, PackageInput, SourceInput};
@@ -86,17 +86,55 @@ impl fmt::Display for QueryError {
 
 impl std::error::Error for QueryError {}
 
+/// Exact classification of one source installation request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SourceUpdate {
+    file: FileId,
+    semantic_changed: bool,
+    diagnostic_path_changed: bool,
+    inserted: bool,
+}
+
+impl SourceUpdate {
+    /// Stable identity of the installed logical source file.
+    #[must_use]
+    pub const fn file(self) -> FileId {
+        self.file
+    }
+
+    /// Whether source bytes or logical membership changed.
+    #[must_use]
+    pub const fn semantic_changed(self) -> bool {
+        self.semantic_changed
+    }
+
+    /// Whether the user-visible physical path or URI changed.
+    #[must_use]
+    pub const fn diagnostic_path_changed(self) -> bool {
+        self.diagnostic_path_changed
+    }
+
+    /// Whether this request introduced a new logical file identity.
+    #[must_use]
+    pub const fn inserted(self) -> bool {
+        self.inserted
+    }
+}
+
 /// One explicitly owned red-green compiler database.
 ///
-/// This first slice caches parse/index projections and separates public
-/// function headers from bodies. It does not yet claim that HIR, MIR, or Rust
-/// representation lowering are incremental.
+/// Stable logical identities and immutable source content are semantic inputs;
+/// user-facing source locations remain owner-side presentation state. The
+/// tracked pipeline reaches function-relative typed HIR, verified and
+/// normalized MIR, mandatory Rust representation lowering, and deterministic
+/// package assembly.
 #[salsa::db]
 pub struct CompilerDatabase {
     storage: salsa::Storage<Self>,
     telemetry: Arc<Telemetry>,
     identities: IdentityInterner,
     sources: BTreeMap<FileId, SourceInput>,
+    diagnostic_paths: BTreeMap<FileId, Arc<str>>,
     packages: BTreeMap<PackageId, PackageInput>,
     build: Option<BuildInput>,
 }
@@ -106,7 +144,7 @@ pub struct CompilerDatabase {
 /// Each handle owns Salsa's thread-local runtime state and shares the memo
 /// store with its originating [`CompilerDatabase`]. No input mutation API is
 /// exposed through this wrapper.
-pub struct CompilerDatabaseSnapshot {
+pub(in crate::compiler) struct CompilerDatabaseSnapshot {
     database: CompilerDatabase,
 }
 
@@ -149,6 +187,7 @@ impl CompilerDatabase {
             telemetry,
             identities: IdentityInterner::default(),
             sources: BTreeMap::new(),
+            diagnostic_paths: BTreeMap::new(),
             packages: BTreeMap::new(),
             build: None,
         };
@@ -165,18 +204,19 @@ impl CompilerDatabase {
         database
     }
 
-    /// Insert or update one immutable source snapshot.
+    /// Insert or update one immutable source revision.
     ///
     /// `logical_path` is a workspace-relative identity, independent of the
-    /// diagnostic path retained by `snapshot`. Setting an equal snapshot is a
-    /// true no-op and creates no query revision.
+    /// diagnostic path retained by `snapshot`. Salsa tracks only path-independent
+    /// [`SourceContent`], so a diagnostic-path-only update creates no query
+    /// revision or worker cancellation.
     pub fn set_source(
         &mut self,
         workspace: &str,
         package: &str,
         logical_path: &str,
         snapshot: Arc<SourceSnapshot>,
-    ) -> Result<FileId, QueryError> {
+    ) -> Result<SourceUpdate, QueryError> {
         let workspace = self
             .identities
             .workspace(workspace)
@@ -190,16 +230,22 @@ impl CompilerDatabase {
             .file(package, logical_path)
             .map_err(identity_error)?;
 
-        if let Some(source) = self.sources.get(&file).copied() {
-            if source.snapshot(self).as_ref() != snapshot.as_ref() {
-                source.set_snapshot(self).to(snapshot);
-            }
+        if self.sources.contains_key(&file) {
+            self.replace_source_revision(file, snapshot)
         } else {
-            let source = SourceInput::new(self, package, file, Arc::from(logical_path), snapshot);
-            self.sources.insert(file, source);
-            self.add_package_source(package, source);
+            let content = snapshot.content();
+            let input = SourceInput::new(self, package, file, Arc::from(logical_path), content);
+            self.sources.insert(file, input);
+            self.diagnostic_paths
+                .insert(file, snapshot.shared_diagnostic_path());
+            self.add_package_source(package, input);
+            Ok(SourceUpdate {
+                file,
+                semantic_changed: true,
+                diagnostic_path_changed: true,
+                inserted: true,
+            })
         }
-        Ok(file)
     }
 
     /// Evict one active source payload from the database facade.
@@ -209,22 +255,25 @@ impl CompilerDatabase {
     /// Parsed ASTs are never retained, so dropping the caller's last `Arc`
     /// releases the old source bytes independently of every other file.
     pub fn remove_source(&mut self, file: FileId) -> Result<(), QueryError> {
-        let source = self
+        let input = self
             .sources
             .remove(&file)
             .ok_or(QueryError::UnknownFile(file))?;
-        let package = source.package(self);
+        self.diagnostic_paths.remove(&file);
+        let package = input.package(self);
         self.remove_package_source(package, file)?;
-        let tombstone = Arc::new(SourceSnapshot::from_source("", ""));
-        drop(source.set_snapshot(self).to(tombstone));
+        let tombstone = Arc::new(SourceContent::from_source(""));
+        drop(input.set_content(self).to(tombstone));
         Ok(())
     }
 
     /// Retained bytes in active immutable source snapshots.
     #[must_use]
     pub fn retained_source_bytes(&self) -> usize {
-        self.sources.values().fold(0_usize, |total, source| {
-            total.saturating_add(source.snapshot(self).retained_bytes())
+        self.sources.iter().fold(0_usize, |total, (file, input)| {
+            total
+                .saturating_add(input.content(self).retained_bytes())
+                .saturating_add(self.diagnostic_paths.get(file).map_or(0, |path| path.len()))
         })
     }
 
@@ -239,13 +288,14 @@ impl CompilerDatabase {
     /// IDs and input handles are copied deterministically; immutable snapshots
     /// and query memos remain reference counted by Salsa.
     #[must_use]
-    pub fn snapshot(&self) -> CompilerDatabaseSnapshot {
+    pub(in crate::compiler) fn snapshot(&self) -> CompilerDatabaseSnapshot {
         CompilerDatabaseSnapshot {
             database: CompilerDatabase {
                 storage: self.storage.clone(),
                 telemetry: Arc::clone(&self.telemetry),
                 identities: IdentityInterner::default(),
                 sources: self.sources.clone(),
+                diagnostic_paths: BTreeMap::new(),
                 packages: self.packages.clone(),
                 build: self.build,
             },
@@ -427,11 +477,20 @@ impl CompilerDatabase {
 
     /// Shared immutable source input for terminal provenance publication.
     pub fn source_snapshot(&self, file: FileId) -> Result<Arc<SourceSnapshot>, QueryError> {
-        self.sources
+        let input = self
+            .sources
             .get(&file)
             .copied()
-            .map(|source| source.snapshot(self))
-            .ok_or(QueryError::UnknownFile(file))
+            .ok_or(QueryError::UnknownFile(file))?;
+        let path = self
+            .diagnostic_paths
+            .get(&file)
+            .cloned()
+            .ok_or(QueryError::UnknownFile(file))?;
+        Ok(Arc::new(SourceSnapshot::from_content(
+            path,
+            input.content(self),
+        )))
     }
 
     /// Restore an already-registered file payload during session transaction rollback.
@@ -440,24 +499,8 @@ impl CompilerDatabase {
         file: FileId,
         snapshot: Arc<SourceSnapshot>,
     ) -> Result<(), QueryError> {
-        let source = self
-            .sources
-            .get(&file)
-            .copied()
-            .ok_or(QueryError::UnknownFile(file))?;
-        if source.snapshot(self).as_ref() != snapshot.as_ref() {
-            source.set_snapshot(self).to(snapshot);
-        }
+        self.replace_source_revision(file, snapshot)?;
         Ok(())
-    }
-
-    /// Portable package-relative logical filename for one source input.
-    pub fn logical_path(&self, file: FileId) -> Result<Arc<str>, QueryError> {
-        self.sources
-            .get(&file)
-            .copied()
-            .map(|source| source.logical_path(self))
-            .ok_or(QueryError::UnknownFile(file))
     }
 
     /// Snapshot query execution counters and coarse engine events.
@@ -500,6 +543,35 @@ impl CompilerDatabase {
             .ok_or(QueryError::UnknownPackage(package))
     }
 
+    fn replace_source_revision(
+        &mut self,
+        file: FileId,
+        snapshot: Arc<SourceSnapshot>,
+    ) -> Result<SourceUpdate, QueryError> {
+        let input = self
+            .sources
+            .get(&file)
+            .copied()
+            .ok_or(QueryError::UnknownFile(file))?;
+        let content = snapshot.content();
+        let semantic_changed = input.content(self).as_ref() != content.as_ref();
+        if semantic_changed {
+            input.set_content(self).to(content);
+        }
+        let diagnostic_path = snapshot.shared_diagnostic_path();
+        let diagnostic_path_changed = self
+            .diagnostic_paths
+            .get(&file)
+            .is_none_or(|current| current.as_ref() != diagnostic_path.as_ref());
+        self.diagnostic_paths.insert(file, diagnostic_path);
+        Ok(SourceUpdate {
+            file,
+            semantic_changed,
+            diagnostic_path_changed,
+            inserted: false,
+        })
+    }
+
     fn add_package_source(&mut self, package: PackageId, source: SourceInput) {
         if let Some(input) = self.packages.get(&package).copied() {
             let mut sources = input.sources(self).iter().copied().collect::<Vec<_>>();
@@ -539,89 +611,12 @@ impl CompilerDatabase {
 }
 
 impl CompilerDatabaseSnapshot {
-    /// Demand the deterministic body-independent file index.
-    pub fn analyze_file(&self, file: FileId) -> Result<Arc<FileAnalysis>, QueryError> {
-        self.database.analyze_file(file)
-    }
-
-    /// Stable package owning an active source file.
-    pub fn package_for_file(&self, file: FileId) -> Result<PackageId, QueryError> {
-        self.database.package_for_file(file)
-    }
-
-    /// Demand the deterministic body-independent package index.
-    pub fn analyze_package(&self, package: PackageId) -> Result<Arc<PackageAnalysis>, QueryError> {
-        self.database.analyze_package(package)
-    }
-
-    /// Demand the public-header aggregate for one file.
-    pub fn public_api(&self, file: FileId) -> Result<Arc<PublicApi>, QueryError> {
-        self.database.public_api(file)
-    }
-
-    /// Demand one stable function's structural header projection.
-    pub fn function_signature(
-        &self,
-        file: FileId,
-        function: DefId,
-    ) -> Result<Arc<FunctionSignature>, QueryError> {
-        self.database.function_signature(file, function)
-    }
-
-    /// Demand one stable function's structural body projection.
-    pub fn function_body(
-        &self,
-        file: FileId,
-        function: DefId,
-    ) -> Result<Arc<FunctionBody>, QueryError> {
-        self.database.function_body(file, function)
-    }
-
-    pub fn typed_hir(
-        &self,
-        file: FileId,
-        function: DefId,
-    ) -> Result<Arc<TypedHirFunction>, QueryError> {
-        self.database.typed_hir(file, function)
-    }
-
-    pub fn typed_signature(
-        &self,
-        file: FileId,
-        function: DefId,
-    ) -> Result<Arc<TypedFunctionSignature>, QueryError> {
-        self.database.typed_signature(file, function)
-    }
-
-    pub fn verified_mir(
-        &self,
-        file: FileId,
-        function: DefId,
-    ) -> Result<Arc<VerifiedMirFunction>, QueryError> {
-        self.database.verified_mir(file, function)
-    }
-
-    pub fn normalized_mir(
-        &self,
-        file: FileId,
-        function: DefId,
-    ) -> Result<Arc<NormalizedMirFunction>, QueryError> {
-        self.database.normalized_mir(file, function)
-    }
-
-    pub fn verified_rust_ir(
+    pub(in crate::compiler) fn verified_rust_ir(
         &self,
         file: FileId,
         function: DefId,
     ) -> Result<Arc<VerifiedRustIrFunction>, QueryError> {
         self.database.verified_rust_ir(file, function)
-    }
-
-    pub fn verified_rust_ir_package(
-        &self,
-        package: PackageId,
-    ) -> Result<Arc<VerifiedRustIrPackage>, QueryError> {
-        self.database.verified_rust_ir_package(package)
     }
 }
 

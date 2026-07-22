@@ -247,6 +247,23 @@ allow unchanged sibling stage products to backdate. Query and scheduler counters
 are not a memory budget, complete cancellation protocol, global scheduler, or
 persistent CAS; do not claim those target properties from the current kernel.
 
+Semantic source inputs are immutable `SourceContent` values containing text,
+line indexes, and a content digest under a stable logical file identity. Exact
+physical paths and browser URIs are presentation state outside Salsa. Moving an
+unchanged checkout while preserving package identity and package-relative
+logical filenames must execute zero semantic queries, request no Salsa
+cancellation, and schedule no new worker wave; terminal diagnostics and source
+maps still use the path snapshot installed for that request. A package-relative
+filename change creates a new `FileId` and remains semantic, because filenames
+can affect Go build selection. Raw Salsa snapshots are scheduler-internal and
+must never escape to callers that could retain them across an input mutation.
+
+Production callers still construct a validated `ParsedProgram` before entering
+`CompilerSession`, so CLI and browser paths repeat parsing and syntax-invalid
+revisions cannot yet participate in retained-session recovery. Replacing that
+boundary with an unvalidated source/package manifest owned by the query system
+is P0; do not mistake content/path separation for owned incremental syntax.
+
 Source mappings and diagnostics are ordinary explicit outputs. The current
 `SourceMapPlan` follows that rule and is safe to build or consume independently;
 preserve that ownership model when it becomes a query result. Do not reintroduce

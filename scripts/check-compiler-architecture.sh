@@ -69,6 +69,39 @@ fail_on_matches \
   gors/src/compiler/db
 
 fail_on_matches \
+  'semantic queries must consume path-independent SourceContent only:' \
+  'SourceSnapshot|diagnostic_snapshot|source_snapshot' \
+  gors/src/compiler/db/queries.rs
+
+fail_on_matches \
+  'raw Salsa storage snapshots must remain compiler-scheduler-internal:' \
+  '^[[:space:]]*pub fn snapshot' \
+  gors/src/compiler/db/mod.rs
+
+if ! rg -q \
+  '^[[:space:]]*pub\(in crate::compiler\) fn snapshot\(&self\) -> CompilerDatabaseSnapshot' \
+  gors/src/compiler/db/mod.rs; then
+  printf '%s\n' \
+    'raw Salsa snapshot constructor visibility drifted outside the compiler scheduler boundary' \
+    >&2
+  failed=1
+fi
+
+snapshot_callers="$(rg -l 'database\.snapshot\(\)' \
+  gors/src/compiler --glob '*.rs' || true)"
+while IFS= read -r source; do
+  [[ -z "${source}" ]] && continue
+  case "${source}" in
+    gors/src/compiler/session/prewarm.rs) ;;
+    *)
+      printf 'raw Salsa snapshots may only be created by the prewarm scheduler: %s\n' \
+        "${source}" >&2
+      failed=1
+      ;;
+  esac
+done <<< "${snapshot_callers}"
+
+fail_on_matches \
   'high-level parser products must not leak source or publish static ASTs:' \
   "Box::leak|ast::File<'static>|merge_files" \
   gors/src/parser

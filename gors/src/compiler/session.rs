@@ -152,14 +152,18 @@ impl CompilerSession {
                 .semantic_status(file.id)
                 .map_err(|error| self.query_error(error))?;
         }
-        if !self.ready_package_roots.contains(&installed.main_package) {
-            self.prewarm_rust_ir(main_analysis)?;
+        // A completed wave marks every per-definition root ready even when
+        // canonical package assembly will select a cached stage failure below.
+        if self.ready_package_roots.insert(installed.main_package)
+            && let Err(error) = self.prewarm_rust_ir(main_analysis)
+        {
+            self.ready_package_roots.remove(&installed.main_package);
+            return Err(error);
         }
         let rust_ir = self
             .database
             .verified_rust_ir_package(installed.main_package)
             .map_err(|error| self.query_error(error))?;
-        self.ready_package_roots.insert(installed.main_package);
         let source_map = with_source_map
             .then(|| self.source_map_plan(&installed, main_analysis, rust_ir.file()))
             .transpose()?;
@@ -191,15 +195,10 @@ impl CompilerSession {
             .map_err(|error| self.query_error(error))?;
         match self.install_program_inputs(program) {
             Ok((mut installed, next_sources)) => {
-                installed.inputs_changed = previous_sources.len() != next_sources.len()
-                    || next_sources.iter().any(|file| {
-                        let Ok(current) = self.database.source_snapshot(*file) else {
-                            return true;
-                        };
-                        previous_sources
-                            .get(file)
-                            .is_none_or(|previous| previous.as_ref() != current.as_ref())
-                    });
+                installed.inputs_changed |= previous_sources.len() != next_sources.len()
+                    || previous_sources
+                        .keys()
+                        .any(|file| !next_sources.contains(file));
                 let stale = previous_sources
                     .keys()
                     .filter(|file| !next_sources.contains(file))
@@ -213,7 +212,17 @@ impl CompilerSession {
                 Ok(installed)
             }
             Err(error) => {
-                self.rollback_install(&previous_sources);
+                if let Err(rollback) = self.rollback_install(&previous_sources) {
+                    let mut diagnostics = error.diagnostics;
+                    diagnostics.push(CompilerDiagnostic {
+                        code: "GORS2003",
+                        message: format!("source transaction rollback failed: {rollback}"),
+                        file: String::new(),
+                        line: 0,
+                        column: 0,
+                    });
+                    return Err(CompilerError { diagnostics });
+                }
                 Err(error)
             }
         }
@@ -225,12 +234,17 @@ impl CompilerSession {
     ) -> Result<(InstalledProgram, BTreeSet<FileId>), CompilerError> {
         let mut next_sources = BTreeSet::new();
         let mut packages = Vec::new();
+        let mut inputs_changed = false;
         for package in program.imports() {
-            let (_, package_id) = self.install_package(package, &mut next_sources)?;
+            let (_, package_id) =
+                self.install_package(package, &mut next_sources, &mut inputs_changed)?;
             packages.push(package_id);
         }
-        let (main_files, main_package) =
-            self.install_package(program.main_package(), &mut next_sources)?;
+        let (main_files, main_package) = self.install_package(
+            program.main_package(),
+            &mut next_sources,
+            &mut inputs_changed,
+        )?;
         packages.push(main_package);
         packages.sort();
         packages.dedup();
@@ -239,7 +253,7 @@ impl CompilerSession {
                 main_package,
                 main_files,
                 packages,
-                inputs_changed: false,
+                inputs_changed,
             },
             next_sources,
         ))
@@ -248,29 +262,30 @@ impl CompilerSession {
     fn rollback_install(
         &mut self,
         previous_sources: &BTreeMap<FileId, std::sync::Arc<crate::parser::SourceSnapshot>>,
-    ) {
+    ) -> Result<(), QueryError> {
         for file in self.database.active_files() {
             if let Some(snapshot) = previous_sources.get(&file) {
-                let _ = self
-                    .database
-                    .restore_source_snapshot(file, std::sync::Arc::clone(snapshot));
+                self.database
+                    .restore_source_snapshot(file, std::sync::Arc::clone(snapshot))?;
             } else {
-                let _ = self.database.remove_source(file);
+                self.database.remove_source(file)?;
             }
         }
+        Ok(())
     }
 
     fn install_package(
         &mut self,
         package: &ParsedPackage,
         next_sources: &mut BTreeSet<FileId>,
+        inputs_changed: &mut bool,
     ) -> Result<(Vec<InstalledFile>, PackageId), CompilerError> {
         let package_identity = canonical_package_identity(package);
         let mut installed = Vec::with_capacity(package.files().len());
         let mut package_id = None;
         for file in package.files() {
             let logical_path = portable_logical_filename(file.path());
-            let id = self
+            let update = self
                 .database
                 .set_source(
                     WORKSPACE_IDENTITY,
@@ -279,6 +294,8 @@ impl CompilerSession {
                     file.snapshot(),
                 )
                 .map_err(|error| self.query_error(error))?;
+            *inputs_changed |= update.semantic_changed();
+            let id = update.file();
             let current_package = self
                 .database
                 .package_for_file(id)
@@ -441,15 +458,7 @@ impl CompilerSession {
             && let Ok(snapshot) = self.database.source_snapshot(source_file)
         {
             for diagnostic in &mut diagnostics {
-                if !diagnostic.span.file.is_empty() {
-                    diagnostic.span.file = snapshot.path().to_string();
-                }
-            }
-        } else {
-            for diagnostic in &mut diagnostics {
-                if let Some(path) = self.original_path_for_logical(&diagnostic.span.file) {
-                    diagnostic.span.file = path;
-                }
+                diagnostic.span.file = snapshot.diagnostic_path().to_string();
             }
         }
         CompilerError::from(diagnostics)
@@ -473,25 +482,6 @@ impl CompilerSession {
                     .function_provenance(file, definition)
                     .ok()
                     .map(|provenance| (file, provenance));
-            }
-        }
-        None
-    }
-
-    fn original_path_for_logical(&self, logical: &str) -> Option<String> {
-        if logical.is_empty() {
-            return None;
-        }
-        for file in self.database.active_files() {
-            let Ok(logical_path) = self.database.logical_path(file) else {
-                continue;
-            };
-            if logical_path.as_ref() == logical {
-                return self
-                    .database
-                    .source_snapshot(file)
-                    .ok()
-                    .map(|snapshot| snapshot.path().to_string());
             }
         }
         None
@@ -563,9 +553,10 @@ impl CompilerSession {
     }
 
     fn source_path_or_empty(&self, file: FileId) -> String {
-        self.database
-            .source_snapshot(file)
-            .map_or_else(|_| String::new(), |snapshot| snapshot.path().to_string())
+        self.database.source_snapshot(file).map_or_else(
+            |_| String::new(),
+            |snapshot| snapshot.diagnostic_path().to_string(),
+        )
     }
 }
 

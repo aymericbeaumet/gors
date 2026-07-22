@@ -349,6 +349,24 @@ fields and function-relative provenance allow unchanged sibling products to
 backdate. That is useful incremental reuse, not the final owned incremental
 syntax boundary or a cross-process cache.
 
+Tracked source state is now split at the semantic boundary. Salsa owns one
+canonical immutable `SourceContent` allocation per active logical file: source
+text, line indexes, and digest. The latest physical path or browser URI stays in
+the database owner as presentation state. An unchanged checkout-root move
+therefore performs no Salsa setter, cancellation, query execution, or parallel
+prewarm wave, while newly published diagnostics and source maps use the new
+request path. A package-relative filename change remains a semantic identity
+change. Revision-scoped raw Salsa snapshots are scheduler-internal so callers
+cannot retain one and block a later mutation.
+
+This split does not yet give the compiler ownership of syntax installation.
+Production entry points validate into `ParsedProgram` before the session, which
+duplicates parser work in CLI and browser flows and prevents a syntax-invalid
+edit from entering the retained database. The next input boundary must be an
+unvalidated manifest of package identities, logical filenames, display paths,
+and `SourceContent`; parsing and parse failures then become query-owned products.
+`//line` virtual origins must remain distinct from physical presentation paths.
+
 Native sessions can now share an explicit `CompilerHost` with one lazy bounded
 worker pool. Cold or changed revisions prewarm stable per-definition Rust-IR
 roots through revision-scoped Salsa snapshots, join every worker before later

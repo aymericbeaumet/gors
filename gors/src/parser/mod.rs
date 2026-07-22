@@ -27,7 +27,8 @@ pub use program::{
     parse_program_from_source,
 };
 pub use snapshot::{
-    FileParseError, InvalidImportPathError, ParsedFile, ParsedFileError, SourceSnapshot,
+    FileParseError, InvalidImportPathError, ParsedFile, ParsedFileError, SourceContent,
+    SourceSnapshot,
 };
 
 enum TypeParameterParse<'scanner> {

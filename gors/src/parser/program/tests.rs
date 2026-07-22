@@ -10,8 +10,26 @@ use crate::parser::{ImportPathIssue, SourceSnapshot};
 fn source_snapshot_creation_does_not_hide_parse_errors() {
     let snapshot = SourceSnapshot::from_source("broken.go", "package");
 
-    assert_eq!(snapshot.path(), "broken.go");
+    assert_eq!(snapshot.diagnostic_path(), "broken.go");
     assert!(snapshot.parse().is_err());
+}
+
+#[test]
+fn source_content_is_independent_of_diagnostic_location() {
+    let original =
+        SourceSnapshot::from_source("/checkout/one/main.go", "package main\nfunc main() {}\n");
+    let moved = SourceSnapshot::from_content("/checkout/two/main.go", original.content());
+    let changed = SourceSnapshot::from_source(
+        "/checkout/two/main.go",
+        "package main\nfunc main() { println(1) }\n",
+    );
+
+    assert_ne!(original, moved);
+    assert!(original.has_same_content(&moved));
+    assert_eq!(original.content_digest(), moved.content_digest());
+    assert_eq!(original.line_start(2), moved.line_start(2));
+    assert!(!original.has_same_content(&changed));
+    assert_eq!(moved.parse().unwrap().name.name, "main");
 }
 
 #[test]
@@ -37,7 +55,7 @@ fn parsed_file_owns_and_releases_its_source_revision() {
     let snapshot = file.snapshot();
     let weak_snapshot = Arc::downgrade(&snapshot);
 
-    assert_eq!(snapshot.path(), "memory.go");
+    assert_eq!(snapshot.diagnostic_path(), "memory.go");
     assert_eq!(snapshot.line_start(1), Some(0));
     assert_eq!(snapshot.line_start(2), Some(15));
     assert_eq!(snapshot.line_count(), 3);
