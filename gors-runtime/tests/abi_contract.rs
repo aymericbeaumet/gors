@@ -1,7 +1,6 @@
 use gors_runtime::{
-    GoInt, GoString, concat_go_strings, go_string_from_bytes, go_string_from_static, int_add,
-    int_div, int_mul, int_neg, int_rem, int_shl, int_shr, int_sub, print_bool, print_empty,
-    print_go_string, print_i64, print_newline, print_space,
+    GoInt, GoString, concat_go_strings, go_string_from_bytes, go_string_from_static, int_div,
+    int_rem, int_shl, int_shr, print_bool, print_go_string, print_i64, print_newline, print_space,
 };
 use gors_runtime_abi::{RuntimeOp, RuntimeType};
 
@@ -40,26 +39,6 @@ fn implementation_surface(operation: RuntimeOp) -> RuntimeSurface {
             fn(GoString, GoString) -> GoString,
             [RuntimeType::GoString, RuntimeType::GoString] -> RuntimeType::GoString
         ),
-        RuntimeOp::IntAdd => runtime_surface!(
-            int_add,
-            fn(GoInt, GoInt) -> GoInt,
-            [RuntimeType::I64, RuntimeType::I64] -> RuntimeType::I64
-        ),
-        RuntimeOp::IntSub => runtime_surface!(
-            int_sub,
-            fn(GoInt, GoInt) -> GoInt,
-            [RuntimeType::I64, RuntimeType::I64] -> RuntimeType::I64
-        ),
-        RuntimeOp::IntMul => runtime_surface!(
-            int_mul,
-            fn(GoInt, GoInt) -> GoInt,
-            [RuntimeType::I64, RuntimeType::I64] -> RuntimeType::I64
-        ),
-        RuntimeOp::IntNeg => runtime_surface!(
-            int_neg,
-            fn(GoInt) -> GoInt,
-            [RuntimeType::I64] -> RuntimeType::I64
-        ),
         RuntimeOp::IntDiv => runtime_surface!(
             int_div,
             fn(GoInt, GoInt) -> GoInt,
@@ -79,11 +58,6 @@ fn implementation_surface(operation: RuntimeOp) -> RuntimeSurface {
             int_shr,
             fn(GoInt, GoInt) -> GoInt,
             [RuntimeType::I64, RuntimeType::I64] -> RuntimeType::I64
-        ),
-        RuntimeOp::PrintEmpty => runtime_surface!(
-            print_empty,
-            fn(),
-            [] -> RuntimeType::Unit
         ),
         RuntimeOp::PrintBool => runtime_surface!(
             print_bool,

@@ -172,10 +172,20 @@ Rust representation lowering selects an exact typed ABI operation in Rust IR.
 Every operation is documented and tested independently. Stdlib packages remain
 Go source compiled through the same frontend as user packages.
 
-That Rust-IR selection is the required hard-cut boundary, not yet a claim about
-the bootstrap emitter: its `BinaryOp`/`PrintStep` runtime routing is transitional
-duplication. Remove those hard-coded symbol and effect tables when wiring
-`RuntimeOp` into Rust IR; do not add new runtime entry points through that path.
+That Rust-IR selection is the hard-cut boundary. Rust IR carries canonical
+`PrimitiveOp` and `RuntimeOp` values from `gors-runtime-abi`; do not add
+compiler-local operation shadows, print plans, signature tables, effect tables,
+or runtime-symbol matches. Print intrinsics expand into ordered single-operation
+runtime-call blocks during representation lowering. Wrapping integer arithmetic
+is a typed primitive emitted directly as Rust wrapping operations, while only
+operations that need a versioned runtime symbol remain `RuntimeOp` values.
+
+Verification derives each function's canonical `RuntimeRequirement` from its
+explicit operations and constants. Verified function products retain that set,
+and package products union the cached function sets in stable operation-ID
+order. Runtime value representations such as `GoString` are not yet separately
+sliceable requirements, so artifact packaging must link the runtime
+unconditionally rather than incorrectly omitting it for a type-only use.
 
 `gors-runtime-abi` owns the canonical typed boundary. Its target-neutral
 `RuntimeAbiManifest` defines runtime value types, exact operation signatures,
@@ -184,7 +194,9 @@ keys retain its typed `ContractIdentity`, never a scraped version string. A
 separate `RuntimeArtifactManifest` composes that contract with the exact target
 model, provided capabilities, and implementation hash. Target or implementation
 changes select another artifact without pretending the language contract
-changed.
+changed. `RuntimeType` names semantic ABI categories, not generated Rust path
+spellings; runtime crate paths belong to artifact selection and terminal
+emission so changing packaging does not pretend the language contract changed.
 
 The semantic compiler does not parse, inject, or patch runtime source. The
 remaining source-bundled bootstrap packaging is transitional and must be removed

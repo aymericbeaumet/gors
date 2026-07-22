@@ -156,30 +156,6 @@ fn concat_growth_capacity(required: usize) -> usize {
         .saturating_add(usize::from(required != 0))
 }
 
-/// Go `int` addition wraps modulo 2^64.
-#[must_use]
-pub fn int_add(left: GoInt, right: GoInt) -> GoInt {
-    left.wrapping_add(right)
-}
-
-/// Go `int` subtraction wraps modulo 2^64.
-#[must_use]
-pub fn int_sub(left: GoInt, right: GoInt) -> GoInt {
-    left.wrapping_sub(right)
-}
-
-/// Go `int` multiplication wraps modulo 2^64.
-#[must_use]
-pub fn int_mul(left: GoInt, right: GoInt) -> GoInt {
-    left.wrapping_mul(right)
-}
-
-/// Go `int` negation wraps, including `-MIN == MIN`.
-#[must_use]
-pub fn int_neg(value: GoInt) -> GoInt {
-    value.wrapping_neg()
-}
-
 /// Go signed division, including the specified `MIN / -1 == MIN` case.
 ///
 /// Division by zero is a language-level runtime panic.
@@ -259,9 +235,6 @@ fn integer_divide_by_zero() -> ! {
 fn negative_shift_amount() -> ! {
     std::panic::panic_any("runtime error: negative shift amount")
 }
-
-/// Emit no bytes for `print()` with no arguments.
-pub fn print_empty() {}
 
 /// Print an exact Go boolean representation.
 pub fn print_bool(value: bool) {

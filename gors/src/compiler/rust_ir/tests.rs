@@ -53,28 +53,29 @@ fn representation_effects_cover_runtime_calls_clones_and_string_allocation() {
         "#,
     );
 
-    let concat = binary_rvalue(&file, BinaryOp::StringConcat);
+    let concat = binary_rvalue(&file, ValueOp::Runtime(RuntimeOp::ConcatGoStrings));
     assert!(concat.effects.may_read);
     assert!(concat.effects.may_call);
     assert!(concat.effects.may_allocate);
+    assert!(concat.effects.may_write);
     assert!(!concat.effects.may_panic);
     assert_eq!(concat.panic, PanicEdge::None);
 
-    let add = binary_rvalue(&file, BinaryOp::IntAdd);
+    let add = binary_rvalue(&file, ValueOp::Primitive(PrimitiveOp::IntWrappingAdd));
     assert!(add.effects.may_read);
-    assert!(add.effects.may_call);
+    assert!(!add.effects.may_call);
     assert!(!add.effects.may_allocate);
     assert!(!add.effects.may_panic);
 
     for operation in [
-        BinaryOp::StringEqual,
-        BinaryOp::StringNotEqual,
-        BinaryOp::StringLess,
-        BinaryOp::StringLessEqual,
-        BinaryOp::StringGreater,
-        BinaryOp::StringGreaterEqual,
+        PrimitiveOp::StringEqual,
+        PrimitiveOp::StringNotEqual,
+        PrimitiveOp::StringLess,
+        PrimitiveOp::StringLessEqual,
+        PrimitiveOp::StringGreater,
+        PrimitiveOp::StringGreaterEqual,
     ] {
-        let comparison = binary_rvalue(&file, operation);
+        let comparison = binary_rvalue(&file, ValueOp::Primitive(operation));
         assert!(comparison.effects.may_read);
         assert!(comparison.effects.may_call);
         assert!(!comparison.effects.may_allocate);
@@ -85,7 +86,10 @@ fn representation_effects_cover_runtime_calls_clones_and_string_allocation() {
         .find(|rvalue| {
             matches!(
                 rvalue.kind,
-                RvalueKind::Use(Operand::Constant(Constant::GoString(_)))
+                RvalueKind::Use(Operand::Constant(Constant::RuntimeStaticBytes {
+                    op: RuntimeOp::GoStringFromStatic,
+                    ..
+                }))
             )
         })
         .unwrap();
@@ -128,40 +132,147 @@ fn representation_effects_cover_runtime_calls_clones_and_string_allocation() {
 }
 
 #[test]
-fn verifier_rejects_noncanonical_print_plans() {
-    let file = lower("package main\nfunc main() { println(1, 2) }\n");
+fn verifier_checks_runtime_calls_against_the_typed_abi() {
+    let mut file = lower("package main\nfunc main() { print(1) }\n");
+    *runtime_call_target_mut(&mut file, RuntimeOp::PrintI64) = RuntimeOp::PrintBool;
+    refresh_test_effects(&mut file);
 
-    let mut reordered = file.clone();
-    let steps = print_steps_mut(&mut reordered);
-    steps.swap(0, 1);
+    let error = file.verify().unwrap_err();
     assert!(
-        reordered
-            .verify()
-            .unwrap_err()
+        error
             .message
-            .contains("exact canonical")
+            .contains("runtime call argument 0 type mismatch"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn runtime_call_destination_writes_are_explicit_and_verified() {
+    let mut file = lower(
+        r#"
+            package main
+            func helper(left int, right int) int { return left + right }
+            func main() { value := helper(4, 2); print(value) }
+        "#,
+    );
+    let terminator = first_function_call_terminator_mut(&mut file);
+    if let TerminatorKind::Call { target, .. } = &mut terminator.kind {
+        *target = CallTarget::Runtime(RuntimeOp::IntDiv);
+    }
+    refresh_test_effects(&mut file);
+
+    assert!(
+        runtime_call_terminator_mut(&mut file, RuntimeOp::IntDiv)
+            .effects
+            .may_write
+    );
+    file.verify().unwrap();
+
+    runtime_call_terminator_mut(&mut file, RuntimeOp::IntDiv)
+        .effects
+        .may_write = false;
+    let error = file.verify().unwrap_err();
+    assert!(
+        error.message.contains("terminator effect mismatch"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn verifier_checks_value_operations_against_the_typed_abi() {
+    let mut file = lower(
+        "package main\nfunc add(left int, right int) int { return left + right }\nfunc main() {}\n",
+    );
+    *binary_value_op_mut(&mut file, ValueOp::Primitive(PrimitiveOp::IntWrappingAdd)) =
+        ValueOp::Primitive(PrimitiveOp::BoolEqual);
+    refresh_test_effects(&mut file);
+
+    let error = file.verify().unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("binary operation argument 0 type mismatch"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn verifier_rejects_static_bytes_with_an_incompatible_runtime_constructor() {
+    let mut file = lower("package main\nfunc main() { print(\"value\") }\n");
+    *static_bytes_runtime_op_mut(&mut file) = RuntimeOp::IntDiv;
+
+    let error = file.verify().unwrap_err();
+    assert!(
+        error.message.contains("static bytes use runtime operation"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn verifier_returns_the_canonical_runtime_requirement() {
+    let file = lower(
+        r#"
+            package main
+            func join(left string, right string) string { return left + right }
+            func main() { println(join("a", "b")) }
+        "#,
     );
 
-    let mut no_final_newline = file;
-    let steps = print_steps_mut(&mut no_final_newline);
-    assert_eq!(steps.pop(), Some(PrintStep::PrintNewline));
-    assert!(
-        no_final_newline
-            .verify()
-            .unwrap_err()
-            .message
-            .contains("exact canonical")
+    let requirement = file.verify().unwrap();
+    assert_eq!(
+        requirement,
+        RuntimeRequirement::new([
+            RuntimeOp::GoStringFromStatic,
+            RuntimeOp::ConcatGoStrings,
+            RuntimeOp::PrintGoString,
+            RuntimeOp::PrintNewline,
+        ])
+    );
+}
+
+#[test]
+fn zero_argument_print_requires_no_runtime_operation() {
+    let file = lower("package main\nfunc main() { print() }\n");
+
+    assert!(file.verify().unwrap().is_empty());
+    assert!(runtime_operations_in_execution_order(&file, "main").is_empty());
+}
+
+#[test]
+fn zero_argument_println_requires_only_newline() {
+    let file = lower("package main\nfunc main() { println() }\n");
+
+    assert_eq!(
+        file.verify().unwrap(),
+        RuntimeRequirement::new([RuntimeOp::PrintNewline])
+    );
+    assert_eq!(
+        runtime_operations_in_execution_order(&file, "main"),
+        [RuntimeOp::PrintNewline]
+    );
+}
+
+#[test]
+fn println_expands_to_ordered_single_operation_runtime_calls() {
+    let file = lower(
+        r#"
+            package main
+            func main() { println(1, true, "x") }
+        "#,
     );
 
-    let mut wrong_typed_abi = lower("package main\nfunc main() { print(1) }\n");
-    print_steps_mut(&mut wrong_typed_abi)[0] = PrintStep::PrintBool { argument: 0 };
-    assert!(
-        wrong_typed_abi
-            .verify()
-            .unwrap_err()
-            .message
-            .contains("exact canonical")
+    assert_eq!(
+        runtime_operations_in_execution_order(&file, "main"),
+        [
+            RuntimeOp::PrintI64,
+            RuntimeOp::PrintSpace,
+            RuntimeOp::PrintBool,
+            RuntimeOp::PrintSpace,
+            RuntimeOp::PrintGoString,
+            RuntimeOp::PrintNewline,
+        ]
     );
+    file.verify().unwrap();
 }
 
 #[test]
@@ -245,9 +356,12 @@ fn verifier_rejects_mutated_representation_effects_and_panic_edges() {
     let file = lower(source);
 
     let mut bad_allocation = file.clone();
-    binary_rvalue_mut(&mut bad_allocation, BinaryOp::StringConcat)
-        .effects
-        .may_allocate = false;
+    binary_rvalue_mut(
+        &mut bad_allocation,
+        ValueOp::Runtime(RuntimeOp::ConcatGoStrings),
+    )
+    .effects
+    .may_allocate = false;
     assert!(
         bad_allocation
             .verify()
@@ -257,7 +371,8 @@ fn verifier_rejects_mutated_representation_effects_and_panic_edges() {
     );
 
     let mut bad_panic_edge = file.clone();
-    binary_rvalue_mut(&mut bad_panic_edge, BinaryOp::IntDiv).panic = PanicEdge::None;
+    binary_rvalue_mut(&mut bad_panic_edge, ValueOp::Runtime(RuntimeOp::IntDiv)).panic =
+        PanicEdge::None;
     assert!(
         bad_panic_edge
             .verify()
@@ -273,7 +388,7 @@ fn verifier_rejects_mutated_representation_effects_and_panic_edges() {
         .unwrap()
         .source;
     let mut bad_provenance = file.clone();
-    binary_rvalue_mut(&mut bad_provenance, BinaryOp::IntDiv).provenance =
+    binary_rvalue_mut(&mut bad_provenance, ValueOp::Runtime(RuntimeOp::IntDiv)).provenance =
         Provenance::Source(unrelated_source);
     assert!(
         bad_provenance
@@ -449,13 +564,51 @@ fn all_rvalues(file: &File) -> impl Iterator<Item = &Rvalue> {
         .map(|statement| &statement.value)
 }
 
-fn binary_rvalue(file: &File, expected: BinaryOp) -> &Rvalue {
+fn runtime_operations_in_execution_order(file: &File, function_name: &str) -> Vec<RuntimeOp> {
+    let function = file
+        .functions
+        .iter()
+        .find(|function| function.name == function_name)
+        .unwrap();
+    let mut block = function.entry;
+    let mut operations = Vec::new();
+    let mut visited = 0usize;
+    loop {
+        visited = visited.saturating_add(1);
+        assert!(
+            visited <= function.blocks.len().saturating_add(1),
+            "unexpected cycle while following lowered runtime calls"
+        );
+        let terminator = &function.blocks[block.0 as usize].terminator.kind;
+        match terminator {
+            TerminatorKind::Goto(next) => block = *next,
+            TerminatorKind::Call {
+                target: CallTarget::Runtime(operation),
+                next,
+                ..
+            } => {
+                operations.push(*operation);
+                block = *next;
+            }
+            TerminatorKind::Return(_) => return operations,
+            other => {
+                assert!(
+                    matches!(other, TerminatorKind::Return(_)),
+                    "unexpected terminator while following lowered runtime calls: {other:?}"
+                );
+                return operations;
+            }
+        }
+    }
+}
+
+fn binary_rvalue(file: &File, expected: ValueOp) -> &Rvalue {
     all_rvalues(file)
         .find(|rvalue| matches!(rvalue.kind, RvalueKind::Binary { op, .. } if op == expected))
         .unwrap()
 }
 
-fn binary_rvalue_mut(file: &mut File, expected: BinaryOp) -> &mut Rvalue {
+fn binary_rvalue_mut(file: &mut File, expected: ValueOp) -> &mut Rvalue {
     file.functions
         .iter_mut()
         .flat_map(|function| &mut function.blocks)
@@ -465,15 +618,73 @@ fn binary_rvalue_mut(file: &mut File, expected: BinaryOp) -> &mut Rvalue {
         .unwrap()
 }
 
-fn print_steps_mut(file: &mut File) -> &mut Vec<PrintStep> {
+fn binary_value_op_mut(file: &mut File, expected: ValueOp) -> &mut ValueOp {
+    file.functions
+        .iter_mut()
+        .flat_map(|function| &mut function.blocks)
+        .flat_map(|block| &mut block.statements)
+        .find_map(|statement| match &mut statement.value.kind {
+            RvalueKind::Binary { op, .. } if *op == expected => Some(op),
+            _ => None,
+        })
+        .unwrap()
+}
+
+fn runtime_call_target_mut(file: &mut File, expected: RuntimeOp) -> &mut RuntimeOp {
     file.functions
         .iter_mut()
         .flat_map(|function| &mut function.blocks)
         .find_map(|block| match &mut block.terminator.kind {
             TerminatorKind::Call {
-                target: CallTarget::RuntimePrint { steps },
+                target: CallTarget::Runtime(operation),
                 ..
-            } => Some(steps),
+            } if *operation == expected => Some(operation),
+            _ => None,
+        })
+        .unwrap()
+}
+
+fn first_function_call_terminator_mut(file: &mut File) -> &mut Terminator {
+    file.functions
+        .iter_mut()
+        .flat_map(|function| &mut function.blocks)
+        .find_map(|block| {
+            matches!(
+                &block.terminator.kind,
+                TerminatorKind::Call {
+                    target: CallTarget::Function(_),
+                    ..
+                }
+            )
+            .then_some(&mut block.terminator)
+        })
+        .unwrap()
+}
+
+fn runtime_call_terminator_mut(file: &mut File, expected: RuntimeOp) -> &mut Terminator {
+    file.functions
+        .iter_mut()
+        .flat_map(|function| &mut function.blocks)
+        .find_map(|block| {
+            matches!(
+                &block.terminator.kind,
+                TerminatorKind::Call {
+                    target: CallTarget::Runtime(operation),
+                    ..
+                } if *operation == expected
+            )
+            .then_some(&mut block.terminator)
+        })
+        .unwrap()
+}
+
+fn static_bytes_runtime_op_mut(file: &mut File) -> &mut RuntimeOp {
+    file.functions
+        .iter_mut()
+        .flat_map(|function| &mut function.blocks)
+        .flat_map(|block| &mut block.statements)
+        .find_map(|statement| match &mut statement.value.kind {
+            RvalueKind::Use(Operand::Constant(Constant::RuntimeStaticBytes { op, .. })) => Some(op),
             _ => None,
         })
         .unwrap()

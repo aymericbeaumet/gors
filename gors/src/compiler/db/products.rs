@@ -220,19 +220,30 @@ pub struct VerifiedRustIrFunction {
     function: Arc<rust_ir::Function>,
     fingerprint: Fingerprint,
     representation_key: Fingerprint,
+    runtime_requirement: rust_ir::RuntimeRequirement,
 }
 
 impl VerifiedRustIrFunction {
-    pub(super) fn new(function: rust_ir::Function, representation_key: Fingerprint) -> Self {
+    pub(super) fn new(
+        function: rust_ir::Function,
+        representation_key: Fingerprint,
+        runtime_requirement: rust_ir::RuntimeRequirement,
+    ) -> Self {
         let semantic = fingerprint::rust_ir_function(&function);
+        let runtime = fingerprint::runtime_requirement(&runtime_requirement);
         let fingerprint = fingerprint_parts(
             b"configured-rust-ir-function",
-            &[semantic.as_bytes(), representation_key.as_bytes()],
+            &[
+                semantic.as_bytes(),
+                representation_key.as_bytes(),
+                runtime.as_bytes(),
+            ],
         );
         Self {
             function: Arc::new(function),
             fingerprint,
             representation_key,
+            runtime_requirement,
         }
     }
 
@@ -250,6 +261,11 @@ impl VerifiedRustIrFunction {
     pub const fn representation_key(&self) -> Fingerprint {
         self.representation_key
     }
+
+    #[must_use]
+    pub const fn runtime_requirement(&self) -> &rust_ir::RuntimeRequirement {
+        &self.runtime_requirement
+    }
 }
 
 /// Complete verified Rust IR package assembled in stable definition order.
@@ -257,17 +273,28 @@ impl VerifiedRustIrFunction {
 pub struct VerifiedRustIrPackage {
     file: Arc<rust_ir::File>,
     fingerprint: Fingerprint,
+    runtime_requirement: rust_ir::RuntimeRequirement,
 }
 
 impl VerifiedRustIrPackage {
-    pub(super) fn new(file: rust_ir::File, representation_key: Fingerprint) -> Self {
+    pub(super) fn new(
+        file: rust_ir::File,
+        representation_key: Fingerprint,
+        runtime_requirement: rust_ir::RuntimeRequirement,
+    ) -> Self {
         let semantic = fingerprint::rust_ir_file(&file);
+        let runtime = fingerprint::runtime_requirement(&runtime_requirement);
         Self {
             file: Arc::new(file),
             fingerprint: fingerprint_parts(
                 b"configured-rust-ir-package",
-                &[semantic.as_bytes(), representation_key.as_bytes()],
+                &[
+                    semantic.as_bytes(),
+                    representation_key.as_bytes(),
+                    runtime.as_bytes(),
+                ],
             ),
+            runtime_requirement,
         }
     }
 
@@ -279,6 +306,11 @@ impl VerifiedRustIrPackage {
     #[must_use]
     pub const fn fingerprint(&self) -> Fingerprint {
         self.fingerprint
+    }
+
+    #[must_use]
+    pub const fn runtime_requirement(&self) -> &rust_ir::RuntimeRequirement {
+        &self.runtime_requirement
     }
 }
 

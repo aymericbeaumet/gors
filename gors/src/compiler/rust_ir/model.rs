@@ -2,6 +2,7 @@
 
 use crate::compiler::ids::{BasicBlockId, DefId, LocalId};
 use crate::compiler::provenance::SourceRef;
+use gors_runtime_abi::{PrimitiveOp, RuntimeOp};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct File {
@@ -147,52 +148,20 @@ pub struct Rvalue {
 pub enum RvalueKind {
     Use(Operand),
     Unary {
-        op: UnaryOp,
+        op: ValueOp,
         operand: Operand,
     },
     Binary {
-        op: BinaryOp,
+        op: ValueOp,
         left: Operand,
         right: Operand,
     },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum UnaryOp {
-    Identity,
-    IntNeg,
-    BoolNot,
-    IntBitNot,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BinaryOp {
-    IntAdd,
-    IntSub,
-    IntMul,
-    IntDiv,
-    IntRem,
-    IntBitAnd,
-    IntBitOr,
-    IntBitXor,
-    IntShl,
-    IntShr,
-    IntAndNot,
-    BoolEqual,
-    BoolNotEqual,
-    IntEqual,
-    IntNotEqual,
-    IntLess,
-    IntLessEqual,
-    IntGreater,
-    IntGreaterEqual,
-    StringConcat,
-    StringEqual,
-    StringNotEqual,
-    StringLess,
-    StringLessEqual,
-    StringGreater,
-    StringGreaterEqual,
+pub enum ValueOp {
+    Primitive(PrimitiveOp),
+    Runtime(RuntimeOp),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -216,7 +185,7 @@ pub enum ReadOp {
 pub enum Constant {
     Bool(bool),
     I64(i64),
-    GoString(Vec<u8>),
+    RuntimeStaticBytes { op: RuntimeOp, bytes: Vec<u8> },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -248,17 +217,7 @@ pub enum TerminatorKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CallTarget {
     Function(DefId),
-    RuntimePrint { steps: Vec<PrintStep> },
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PrintStep {
-    PrintEmpty,
-    PrintSpace,
-    PrintNewline,
-    PrintBool { argument: usize },
-    PrintI64 { argument: usize },
-    PrintGoString { argument: usize },
+    Runtime(RuntimeOp),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

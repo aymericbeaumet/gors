@@ -5,9 +5,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::*;
 use crate::compiler::Diagnostic;
 use crate::compiler::provenance::SourceRef;
+use gors_runtime_abi::{RuntimeSignature, RuntimeType};
 
 impl File {
-    pub(super) fn verify(&self) -> Result<(), Diagnostic> {
+    pub(super) fn verify(&self) -> Result<RuntimeRequirement, Diagnostic> {
         let entrypoints = self
             .functions
             .iter()
@@ -51,17 +52,18 @@ impl File {
                 )));
             }
         }
+        let mut requirement = RuntimeRequirement::default();
         for function in &self.functions {
-            verify_function(function, &signatures)?;
+            requirement = requirement.union(&verify_function(function, &signatures)?);
         }
-        Ok(())
+        Ok(requirement)
     }
 }
 
 pub(super) fn verify_function(
     function: &Function,
     signatures: &BTreeMap<DefId, Signature>,
-) -> Result<(), Diagnostic> {
+) -> Result<RuntimeRequirement, Diagnostic> {
     function.verify_artifact_plan()?;
     let Some(indexed) = signatures.get(&function.id) else {
         return Err(Diagnostic::backend(format!(
@@ -79,7 +81,10 @@ pub(super) fn verify_function(
 }
 
 impl Function {
-    fn verify(&self, signatures: &BTreeMap<DefId, Signature>) -> Result<(), Diagnostic> {
+    fn verify(
+        &self,
+        signatures: &BTreeMap<DefId, Signature>,
+    ) -> Result<RuntimeRequirement, Diagnostic> {
         verify_source_ref(self.source, self.id, "function")?;
         if self.control_flow != ControlFlowPlan::PcDispatchU32 {
             return Err(Diagnostic::backend("unsupported Rust IR control-flow plan"));
@@ -151,7 +156,8 @@ impl Function {
             }
             self.verify_terminator(&block.terminator, signatures)?;
         }
-        self.verify_storage_dataflow()
+        self.verify_storage_dataflow()?;
+        Ok(runtime_requirement(self))
     }
 
     fn verify_artifact_plan(&self) -> Result<(), Diagnostic> {
@@ -214,21 +220,12 @@ impl Function {
             RvalueKind::Use(operand) => self.operand_ty(operand)?,
             RvalueKind::Unary { op, operand } => {
                 let operand = self.operand_ty(operand)?;
-                match op {
-                    UnaryOp::Identity | UnaryOp::IntNeg | UnaryOp::IntBitNot => {
-                        verify_same(operand, RustType::I64, "unary operand")?;
-                        RustType::I64
-                    }
-                    UnaryOp::BoolNot => {
-                        verify_same(operand, RustType::Bool, "unary operand")?;
-                        RustType::Bool
-                    }
-                }
+                verify_value_operation(*op, &[operand], "unary operation")?
             }
             RvalueKind::Binary { op, left, right } => {
                 let left = self.operand_ty(left)?;
                 let right = self.operand_ty(right)?;
-                verify_binary(*op, left, right)?
+                verify_value_operation(*op, &[left, right], "binary operation")?
             }
         };
         verify_effects(rvalue.effects, rvalue_effects(&rvalue.kind), "rvalue")?;
@@ -283,9 +280,18 @@ impl Function {
                         }
                         self.verify_call_destination(*destination, &signature.results)?;
                     }
-                    CallTarget::RuntimePrint { steps } => {
-                        verify_print_plan(steps, &argument_types)?;
-                        self.verify_call_destination(*destination, &[])?;
+                    CallTarget::Runtime(operation) => {
+                        let result = verify_operation_signature(
+                            operation.signature(),
+                            &argument_types,
+                            "runtime call",
+                        )?;
+                        let results = if result == RustType::Unit {
+                            Vec::new()
+                        } else {
+                            vec![result]
+                        };
+                        self.verify_call_destination(*destination, &results)?;
                     }
                 }
             }
@@ -360,52 +366,138 @@ impl Function {
                 }
                 Ok(ty)
             }
-            Operand::Constant(constant) => Ok(constant_type(constant)),
+            Operand::Constant(constant) => constant_type(constant),
             Operand::Unit => Ok(RustType::Unit),
         }
     }
 }
 
-fn verify_binary(op: BinaryOp, left: RustType, right: RustType) -> Result<RustType, Diagnostic> {
-    use BinaryOp::*;
-    let expected = match op {
-        IntAdd | IntSub | IntMul | IntDiv | IntRem | IntBitAnd | IntBitOr | IntBitXor | IntShl
-        | IntShr | IntAndNot => (RustType::I64, RustType::I64, RustType::I64),
-        BoolEqual | BoolNotEqual => (RustType::Bool, RustType::Bool, RustType::Bool),
-        IntEqual | IntNotEqual | IntLess | IntLessEqual | IntGreater | IntGreaterEqual => {
-            (RustType::I64, RustType::I64, RustType::Bool)
-        }
-        StringConcat => (RustType::GoString, RustType::GoString, RustType::GoString),
-        StringEqual | StringNotEqual | StringLess | StringLessEqual | StringGreater
-        | StringGreaterEqual => (RustType::GoString, RustType::GoString, RustType::Bool),
+fn verify_value_operation(
+    operation: ValueOp,
+    arguments: &[RustType],
+    context: &str,
+) -> Result<RustType, Diagnostic> {
+    let signature = match operation {
+        ValueOp::Primitive(operation) => operation.signature(),
+        ValueOp::Runtime(operation) => operation.signature(),
     };
-    if left == expected.0 && right == expected.1 {
-        Ok(expected.2)
-    } else {
-        Err(Diagnostic::backend(format!(
-            "invalid Rust IR binary operands for {op:?}: {left:?}, {right:?}"
-        )))
+    verify_operation_signature(signature, arguments, context)
+}
+
+fn verify_operation_signature(
+    signature: RuntimeSignature,
+    arguments: &[RustType],
+    context: &str,
+) -> Result<RustType, Diagnostic> {
+    if arguments.len() != signature.parameters().len() {
+        return Err(Diagnostic::backend(format!(
+            "Rust IR {context} has {} arguments but its ABI signature requires {}",
+            arguments.len(),
+            signature.parameters().len()
+        )));
+    }
+    for (position, (actual, expected)) in arguments
+        .iter()
+        .copied()
+        .zip(signature.parameters().iter().copied())
+        .enumerate()
+    {
+        let expected = rust_type_from_runtime(expected, context)?;
+        verify_same(actual, expected, &format!("{context} argument {position}"))?;
+    }
+    rust_type_from_runtime(signature.result(), context)
+}
+
+fn rust_type_from_runtime(ty: RuntimeType, context: &str) -> Result<RustType, Diagnostic> {
+    match ty {
+        RuntimeType::Unit => Ok(RustType::Unit),
+        RuntimeType::Bool => Ok(RustType::Bool),
+        RuntimeType::I64 => Ok(RustType::I64),
+        RuntimeType::GoString => Ok(RustType::GoString),
+        RuntimeType::ByteSlice | RuntimeType::StaticByteSlice => Err(Diagnostic::backend(format!(
+            "Rust IR {context} requires ABI-only operand type {ty:?}"
+        ))),
     }
 }
 
-fn verify_print_plan(steps: &[PrintStep], types: &[RustType]) -> Result<(), Diagnostic> {
-    let print = print_plan(types, false)
-        .ok_or_else(|| Diagnostic::backend("Rust IR print plan contains a unit argument"))?;
-    let println = print_plan(types, true)
-        .ok_or_else(|| Diagnostic::backend("Rust IR print plan contains a unit argument"))?;
-    if steps != print && steps != println {
-        return Err(Diagnostic::backend(
-            "Rust IR print plan is not an exact canonical print or println plan",
-        ));
-    }
-    Ok(())
-}
-
-fn constant_type(constant: &Constant) -> RustType {
+fn constant_type(constant: &Constant) -> Result<RustType, Diagnostic> {
     match constant {
-        Constant::Bool(_) => RustType::Bool,
-        Constant::I64(_) => RustType::I64,
-        Constant::GoString(_) => RustType::GoString,
+        Constant::Bool(_) => Ok(RustType::Bool),
+        Constant::I64(_) => Ok(RustType::I64),
+        Constant::RuntimeStaticBytes { op, .. } => {
+            let signature = op.signature();
+            if signature.parameters() == [RuntimeType::StaticByteSlice]
+                && signature.result() == RuntimeType::GoString
+            {
+                Ok(RustType::GoString)
+            } else {
+                Err(Diagnostic::backend(format!(
+                    "Rust IR static bytes use runtime operation {op:?} with incompatible signature {:?} -> {:?}",
+                    signature.parameters(),
+                    signature.result()
+                )))
+            }
+        }
+    }
+}
+
+fn runtime_requirement(function: &Function) -> RuntimeRequirement {
+    let mut operations = Vec::new();
+    for block in &function.blocks {
+        for statement in &block.statements {
+            collect_rvalue_runtime_operations(&statement.value, &mut operations);
+        }
+        collect_terminator_runtime_operations(&block.terminator, &mut operations);
+    }
+    RuntimeRequirement::new(operations)
+}
+
+fn collect_rvalue_runtime_operations(rvalue: &Rvalue, operations: &mut Vec<RuntimeOp>) {
+    match &rvalue.kind {
+        RvalueKind::Use(operand) => collect_operand_runtime_operations(operand, operations),
+        RvalueKind::Unary { op, operand } => {
+            collect_value_runtime_operation(*op, operations);
+            collect_operand_runtime_operations(operand, operations);
+        }
+        RvalueKind::Binary { op, left, right } => {
+            collect_value_runtime_operation(*op, operations);
+            collect_operand_runtime_operations(left, operations);
+            collect_operand_runtime_operations(right, operations);
+        }
+    }
+}
+
+fn collect_terminator_runtime_operations(terminator: &Terminator, operations: &mut Vec<RuntimeOp>) {
+    match &terminator.kind {
+        TerminatorKind::Goto(_) | TerminatorKind::Unreachable => {}
+        TerminatorKind::SwitchBool { condition, .. } => {
+            collect_operand_runtime_operations(condition, operations);
+        }
+        TerminatorKind::Call { target, args, .. } => {
+            if let CallTarget::Runtime(operation) = target {
+                operations.push(*operation);
+            }
+            for argument in args {
+                collect_operand_runtime_operations(argument, operations);
+            }
+        }
+        TerminatorKind::Return(values) => {
+            for value in values {
+                collect_operand_runtime_operations(value, operations);
+            }
+        }
+    }
+}
+
+fn collect_value_runtime_operation(operation: ValueOp, operations: &mut Vec<RuntimeOp>) {
+    if let ValueOp::Runtime(operation) = operation {
+        operations.push(operation);
+    }
+}
+
+fn collect_operand_runtime_operations(operand: &Operand, operations: &mut Vec<RuntimeOp>) {
+    if let Operand::Constant(Constant::RuntimeStaticBytes { op, .. }) = operand {
+        operations.push(*op);
     }
 }
 

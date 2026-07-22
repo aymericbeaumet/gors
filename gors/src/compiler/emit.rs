@@ -10,9 +10,9 @@ use proc_macro2::Span;
 
 use super::Diagnostic;
 use super::rust_ir::{
-    self, BinaryOp, CallTarget, Constant, ControlFlowPlan, DefId, LocalId, Operand, Place,
-    PrintStep, ReadOp, RustLinkage, RustSymbol, RustType, Rvalue, RvalueKind, SlotInitialization,
-    Statement, StorageClass, StoreOp, Terminator, TerminatorKind, UnaryOp,
+    self, CallTarget, Constant, ControlFlowPlan, DefId, LocalId, Operand, Place, PrimitiveOp,
+    ReadOp, RuntimeOp, RustLinkage, RustSymbol, RustType, Rvalue, RvalueKind, SlotInitialization,
+    Statement, StorageClass, StoreOp, Terminator, TerminatorKind, ValueOp,
 };
 
 pub(super) fn emit_file(file: &rust_ir::File) -> Result<syn::File, Diagnostic> {
@@ -249,43 +249,8 @@ fn emit_call(
                 .ok_or_else(|| Diagnostic::backend(format!("missing callee DefId {id}")))?;
             Ok(syn::parse_quote! { #function(#(#args),*) })
         }
-        CallTarget::RuntimePrint { steps } => {
-            let mut calls = Vec::<syn::Stmt>::new();
-            for step in steps {
-                let call = match step {
-                    PrintStep::PrintEmpty => {
-                        syn::parse_quote! { crate::__gors_runtime::print_empty(); }
-                    }
-                    PrintStep::PrintSpace => {
-                        syn::parse_quote! { crate::__gors_runtime::print_space(); }
-                    }
-                    PrintStep::PrintNewline => {
-                        syn::parse_quote! { crate::__gors_runtime::print_newline(); }
-                    }
-                    PrintStep::PrintBool { argument } => {
-                        let argument = emitted_argument(&args, *argument)?;
-                        syn::parse_quote! { crate::__gors_runtime::print_bool(#argument); }
-                    }
-                    PrintStep::PrintI64 { argument } => {
-                        let argument = emitted_argument(&args, *argument)?;
-                        syn::parse_quote! { crate::__gors_runtime::print_i64(#argument); }
-                    }
-                    PrintStep::PrintGoString { argument } => {
-                        let argument = emitted_argument(&args, *argument)?;
-                        syn::parse_quote! { crate::__gors_runtime::print_go_string(#argument); }
-                    }
-                };
-                calls.push(call);
-            }
-            Ok(syn::parse_quote! {{ #(#calls)* }})
-        }
+        CallTarget::Runtime(operation) => Ok(emit_runtime_call(*operation, args)),
     }
-}
-
-fn emitted_argument(args: &[syn::Expr], index: usize) -> Result<syn::Expr, Diagnostic> {
-    args.get(index)
-        .cloned()
-        .ok_or_else(|| Diagnostic::backend(format!("invalid verified print argument {index}")))
 }
 
 fn emit_rvalue(rvalue: &Rvalue, function: &rust_ir::Function) -> Result<syn::Expr, Diagnostic> {
@@ -293,67 +258,69 @@ fn emit_rvalue(rvalue: &Rvalue, function: &rust_ir::Function) -> Result<syn::Exp
         RvalueKind::Use(operand) => emit_operand(operand, function),
         RvalueKind::Unary { op, operand } => {
             let operand = emit_operand(operand, function)?;
-            Ok(match op {
-                UnaryOp::Identity => operand,
-                UnaryOp::IntNeg => {
-                    syn::parse_quote! { crate::__gors_runtime::int_neg(#operand) }
-                }
-                UnaryOp::BoolNot | UnaryOp::IntBitNot => syn::parse_quote! { !(#operand) },
-            })
+            emit_value_op(*op, vec![operand])
         }
         RvalueKind::Binary { op, left, right } => {
             let left = emit_operand(left, function)?;
             let right = emit_operand(right, function)?;
-            Ok(match op {
-                BinaryOp::IntAdd => {
-                    syn::parse_quote! { crate::__gors_runtime::int_add(#left, #right) }
-                }
-                BinaryOp::IntSub => {
-                    syn::parse_quote! { crate::__gors_runtime::int_sub(#left, #right) }
-                }
-                BinaryOp::IntMul => {
-                    syn::parse_quote! { crate::__gors_runtime::int_mul(#left, #right) }
-                }
-                BinaryOp::IntDiv => {
-                    syn::parse_quote! { crate::__gors_runtime::int_div(#left, #right) }
-                }
-                BinaryOp::IntRem => {
-                    syn::parse_quote! { crate::__gors_runtime::int_rem(#left, #right) }
-                }
-                BinaryOp::IntBitAnd => syn::parse_quote! { (#left) & (#right) },
-                BinaryOp::IntBitOr => syn::parse_quote! { (#left) | (#right) },
-                BinaryOp::IntBitXor => syn::parse_quote! { (#left) ^ (#right) },
-                BinaryOp::IntShl => {
-                    syn::parse_quote! { crate::__gors_runtime::int_shl(#left, #right) }
-                }
-                BinaryOp::IntShr => {
-                    syn::parse_quote! { crate::__gors_runtime::int_shr(#left, #right) }
-                }
-                BinaryOp::IntAndNot => syn::parse_quote! { (#left) & !(#right) },
-                BinaryOp::BoolEqual | BinaryOp::IntEqual | BinaryOp::StringEqual => {
-                    syn::parse_quote! { (#left) == (#right) }
-                }
-                BinaryOp::BoolNotEqual | BinaryOp::IntNotEqual | BinaryOp::StringNotEqual => {
-                    syn::parse_quote! { (#left) != (#right) }
-                }
-                BinaryOp::IntLess | BinaryOp::StringLess => {
-                    syn::parse_quote! { (#left) < (#right) }
-                }
-                BinaryOp::IntLessEqual | BinaryOp::StringLessEqual => {
-                    syn::parse_quote! { (#left) <= (#right) }
-                }
-                BinaryOp::IntGreater | BinaryOp::StringGreater => {
-                    syn::parse_quote! { (#left) > (#right) }
-                }
-                BinaryOp::IntGreaterEqual | BinaryOp::StringGreaterEqual => {
-                    syn::parse_quote! { (#left) >= (#right) }
-                }
-                BinaryOp::StringConcat => syn::parse_quote! {
-                    crate::__gors_runtime::concat_go_strings(#left, #right)
-                },
-            })
+            emit_value_op(*op, vec![left, right])
         }
     }
+}
+
+fn emit_value_op(operation: ValueOp, args: Vec<syn::Expr>) -> Result<syn::Expr, Diagnostic> {
+    match operation {
+        ValueOp::Primitive(operation) => emit_primitive_op(operation, &args),
+        ValueOp::Runtime(operation) => Ok(emit_runtime_call(operation, args)),
+    }
+}
+
+fn emit_primitive_op(operation: PrimitiveOp, args: &[syn::Expr]) -> Result<syn::Expr, Diagnostic> {
+    use PrimitiveOp::*;
+    let expression = match (operation, args) {
+        (BoolNot | IntBitNot, [value]) => syn::parse_quote! { !(#value) },
+        (IntWrappingNeg, [value]) => syn::parse_quote! { (#value).wrapping_neg() },
+        (IntBitAnd, [left, right]) => syn::parse_quote! { (#left) & (#right) },
+        (IntBitOr, [left, right]) => syn::parse_quote! { (#left) | (#right) },
+        (IntBitXor, [left, right]) => syn::parse_quote! { (#left) ^ (#right) },
+        (IntAndNot, [left, right]) => syn::parse_quote! { (#left) & !(#right) },
+        (IntWrappingAdd, [left, right]) => {
+            syn::parse_quote! { (#left).wrapping_add(#right) }
+        }
+        (IntWrappingSub, [left, right]) => {
+            syn::parse_quote! { (#left).wrapping_sub(#right) }
+        }
+        (IntWrappingMul, [left, right]) => {
+            syn::parse_quote! { (#left).wrapping_mul(#right) }
+        }
+        (BoolEqual | IntEqual | StringEqual, [left, right]) => {
+            syn::parse_quote! { (#left) == (#right) }
+        }
+        (BoolNotEqual | IntNotEqual | StringNotEqual, [left, right]) => {
+            syn::parse_quote! { (#left) != (#right) }
+        }
+        (IntLess | StringLess, [left, right]) => syn::parse_quote! { (#left) < (#right) },
+        (IntLessEqual | StringLessEqual, [left, right]) => {
+            syn::parse_quote! { (#left) <= (#right) }
+        }
+        (IntGreater | StringGreater, [left, right]) => {
+            syn::parse_quote! { (#left) > (#right) }
+        }
+        (IntGreaterEqual | StringGreaterEqual, [left, right]) => {
+            syn::parse_quote! { (#left) >= (#right) }
+        }
+        (operation, _) => {
+            return Err(Diagnostic::backend(format!(
+                "invalid verified primitive operation arity for {operation:?}"
+            )));
+        }
+    };
+    Ok(expression)
+}
+
+fn emit_runtime_call(operation: RuntimeOp, args: Vec<syn::Expr>) -> syn::Expr {
+    let symbol = syn::Ident::new(operation.symbol(), Span::mixed_site());
+    syn::parse_quote! { crate::__gors_runtime::#symbol(#(#args),*) }
 }
 
 fn emit_operand(operand: &Operand, function: &rust_ir::Function) -> Result<syn::Expr, Diagnostic> {
@@ -418,11 +385,9 @@ fn emit_constant(value: &Constant) -> Result<syn::Expr, Diagnostic> {
                 })
             }
         }
-        Constant::GoString(value) => {
-            let value = syn::LitByteStr::new(value, Span::mixed_site());
-            Ok(syn::parse_quote! {
-                crate::__gors_runtime::go_string_from_static(#value)
-            })
+        Constant::RuntimeStaticBytes { op, bytes } => {
+            let bytes = syn::LitByteStr::new(bytes, Span::mixed_site());
+            Ok(emit_runtime_call(*op, vec![syn::parse_quote! { #bytes }]))
         }
     }
 }

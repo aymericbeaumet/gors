@@ -563,16 +563,18 @@ pub(super) fn verified_rust_ir_product(
             ))
         })?;
     db.unwind_if_revision_cancelled();
-    rust_ir::verify_function(&lowered, &signatures.signatures).map_err(|diagnostic| {
-        Arc::new(StageFailure::one_for_definition(
-            CompilerStage::RustRepresentation,
-            definition,
-            diagnostic,
-        ))
-    })?;
+    let runtime_requirement =
+        rust_ir::verify_function(&lowered, &signatures.signatures).map_err(|diagnostic| {
+            Arc::new(StageFailure::one_for_definition(
+                CompilerStage::RustRepresentation,
+                definition,
+                diagnostic,
+            ))
+        })?;
     Ok(Arc::new(VerifiedRustIrFunction::new(
         lowered,
         signatures.representation_key,
+        runtime_requirement,
     )))
 }
 
@@ -584,6 +586,7 @@ pub(super) fn rust_ir_package_product(
     db.query_telemetry().record_query(QueryKind::RustIrPackage);
     let analysis = package_analysis_product(db, input);
     let mut functions = Vec::new();
+    let mut runtime_requirement = rust_ir::RuntimeRequirement::default();
     let mut sources = input.sources(db).iter().copied().collect::<Vec<_>>();
     sources.sort_by_key(|source| source.file(db));
     for source in sources {
@@ -592,11 +595,9 @@ pub(super) fn rust_ir_package_product(
         projected.sort_by_key(|function| function.id(db));
         for function in projected {
             db.unwind_if_revision_cancelled();
-            functions.push(
-                verified_rust_ir_product(db, input, function)?
-                    .function()
-                    .clone(),
-            );
+            let verified = verified_rust_ir_product(db, input, function)?;
+            runtime_requirement = runtime_requirement.union(verified.runtime_requirement());
+            functions.push(verified.function().clone());
         }
     }
     functions.sort_by_key(|function| function.id);
@@ -604,16 +605,25 @@ pub(super) fn rust_ir_package_product(
         package: analysis.package_name().to_string(),
         functions,
     };
-    rust_ir::verify(&file).map_err(|diagnostic| {
+    let verified_runtime_requirement = rust_ir::verify(&file).map_err(|diagnostic| {
         Arc::new(StageFailure::one(
             CompilerStage::RustRepresentation,
             diagnostic,
         ))
     })?;
+    if verified_runtime_requirement != runtime_requirement {
+        return Err(Arc::new(StageFailure::one(
+            CompilerStage::RustRepresentation,
+            Diagnostic::backend(format!(
+                "Rust IR package runtime requirement mismatch: function products derived {runtime_requirement:?}, package verification derived {verified_runtime_requirement:?}"
+            )),
+        )));
+    }
     let representation_key = representation_key(db)?;
     Ok(Arc::new(VerifiedRustIrPackage::new(
         file,
         representation_key,
+        runtime_requirement,
     )))
 }
 

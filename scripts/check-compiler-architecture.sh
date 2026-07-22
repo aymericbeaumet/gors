@@ -237,6 +237,26 @@ fail_on_matches \
   gors-runtime/src
 
 fail_on_matches \
+  'legacy Rust-IR operation shadows and bundled print plans are forbidden:' \
+  'RuntimePrint|PrintStep|print_plan|enum[[:space:]]+(BinaryOp|UnaryOp)' \
+  gors/src/compiler/rust_ir \
+  gors/src/compiler/emit.rs \
+  gors/src/compiler/lowering
+
+fail_on_matches \
+  'runtime symbols outside the ABI catalog are forbidden in Rust-IR consumers:' \
+  'go_string_from_(bytes|static)|concat_go_strings|int_(div|rem|shl|shr)|print_(bool|i64|space|newline|go_string)' \
+  gors/src/compiler/emit.rs \
+  gors/src/compiler/rust_ir/effects.rs \
+  gors/src/compiler/fingerprint/rust_ir.rs
+
+fail_on_matches \
+  'obsolete runtime arithmetic and empty-print helpers are forbidden:' \
+  'fn[[:space:]]+(int_add|int_sub|int_mul|int_neg|print_empty)' \
+  gors-runtime/src \
+  gors/src/compiler/emit.rs
+
+fail_on_matches \
   'runtime ABI identity must come from the typed contract, never source scraping or build-script environment strings:' \
   'GORS_RUNTIME_ABI_VERSION|GORS_RUNTIME_ABI_ID|RUNTIME_ABI_ID|read_runtime_abi_id|runtimeAbiVersion|runtime_abi_version' \
   gors/build.rs \

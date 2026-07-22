@@ -5,6 +5,7 @@ use crate::compiler::hir;
 use crate::compiler::mir;
 use crate::compiler::rust_ir as out;
 use crate::compiler::types::{ConstValue, IntTy, Signature as GoSignature, Ty};
+use gors_runtime_abi::{PrimitiveOp, RuntimeOp};
 
 #[cfg(test)]
 pub(super) fn lower_file(file: mir::File) -> Result<out::File, Diagnostic> {
@@ -50,11 +51,14 @@ pub(super) fn lower_function(
             })
         })
         .collect::<Result<Vec<_>, Diagnostic>>()?;
-    let blocks = function
+    let original_block_count = function.blocks.len();
+    let mut extra_blocks = Vec::new();
+    let mut blocks = function
         .blocks
         .into_iter()
-        .map(|block| lower_block(block, &locals))
+        .map(|block| lower_block(block, &locals, original_block_count, &mut extra_blocks))
         .collect::<Result<Vec<_>, _>>()?;
+    blocks.append(&mut extra_blocks);
     let mut lowered = out::Function {
         id: function.id,
         name: function.name,
@@ -89,6 +93,8 @@ pub(super) fn lower_signature(signature: &GoSignature) -> Result<out::Signature,
 fn lower_block(
     block: mir::BasicBlock,
     locals: &[out::LocalDecl],
+    original_block_count: usize,
+    extra_blocks: &mut Vec<out::BasicBlock>,
 ) -> Result<out::BasicBlock, Diagnostic> {
     Ok(out::BasicBlock {
         id: block.id,
@@ -98,7 +104,7 @@ fn lower_block(
             .into_iter()
             .map(|statement| lower_statement(statement, locals))
             .collect::<Result<Vec<_>, _>>()?,
-        terminator: lower_terminator(block.terminator, locals)?,
+        terminator: lower_terminator(block.terminator, locals, original_block_count, extra_blocks)?,
     })
 }
 
@@ -121,9 +127,10 @@ fn lower_rvalue(rvalue: mir::Rvalue, locals: &[out::LocalDecl]) -> Result<out::R
         mir::RvalueKind::Use(operand) => out::RvalueKind::Use(lower_operand(operand, locals)?),
         mir::RvalueKind::Unary { op, operand, ty } => {
             let operand_ty = mir_operand_type(&operand, locals)?;
-            out::RvalueKind::Unary {
-                op: lower_unary_op(op, operand_ty, lower_type(&ty)?)?,
-                operand: lower_operand(operand, locals)?,
+            let operand = lower_operand(operand, locals)?;
+            match lower_unary_op(op, operand_ty, lower_type(&ty)?)? {
+                Some(op) => out::RvalueKind::Unary { op, operand },
+                None => out::RvalueKind::Use(operand),
             }
         }
         mir::RvalueKind::Binary {
@@ -153,7 +160,10 @@ fn lower_rvalue(rvalue: mir::Rvalue, locals: &[out::LocalDecl]) -> Result<out::R
 fn lower_terminator(
     terminator: mir::Terminator,
     locals: &[out::LocalDecl],
+    original_block_count: usize,
+    extra_blocks: &mut Vec<out::BasicBlock>,
 ) -> Result<out::Terminator, Diagnostic> {
+    let provenance = lower_provenance(terminator.provenance);
     let kind = match terminator.kind {
         mir::TerminatorKind::Goto(target) => out::TerminatorKind::Goto(target),
         mir::TerminatorKind::SwitchBool {
@@ -170,32 +180,29 @@ fn lower_terminator(
             args,
             destination,
             target: next,
-        } => {
-            let argument_types = args
-                .iter()
-                .map(|argument| mir_operand_type(argument, locals))
-                .collect::<Result<Vec<_>, _>>()?;
-            let call_target = match callee {
-                hir::Callee::Function(id) => out::CallTarget::Function(id),
-                hir::Callee::Builtin(builtin) => out::CallTarget::RuntimePrint {
-                    steps: out::print_plan(&argument_types, builtin == hir::Builtin::Println)
-                        .ok_or_else(|| {
-                            Diagnostic::backend(
-                                "unit value reached Rust print representation lowering",
-                            )
-                        })?,
-                },
-            };
-            out::TerminatorKind::Call {
-                target: call_target,
+        } => match callee {
+            hir::Callee::Function(id) => out::TerminatorKind::Call {
+                target: out::CallTarget::Function(id),
                 args: args
                     .into_iter()
                     .map(|argument| lower_operand(argument, locals))
                     .collect::<Result<Vec<_>, _>>()?,
                 destination: destination.map(lower_place),
                 next,
+            },
+            hir::Callee::Builtin(builtin) => {
+                return lower_print_call(
+                    builtin,
+                    args,
+                    destination,
+                    next,
+                    provenance,
+                    locals,
+                    original_block_count,
+                    extra_blocks,
+                );
             }
-        }
+        },
         mir::TerminatorKind::Return(values) => out::TerminatorKind::Return(
             values
                 .into_iter()
@@ -204,13 +211,120 @@ fn lower_terminator(
         ),
         mir::TerminatorKind::Unreachable => out::TerminatorKind::Unreachable,
     };
+    Ok(finish_terminator(kind, provenance))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lower_print_call(
+    builtin: hir::Builtin,
+    args: Vec<mir::Operand>,
+    destination: Option<mir::Place>,
+    next: out::BasicBlockId,
+    provenance: out::Provenance,
+    locals: &[out::LocalDecl],
+    original_block_count: usize,
+    extra_blocks: &mut Vec<out::BasicBlock>,
+) -> Result<out::Terminator, Diagnostic> {
+    if destination.is_some() {
+        return Err(Diagnostic::backend(
+            "Go print builtin unexpectedly has a result destination",
+        ));
+    }
+
+    let argument_types = args
+        .iter()
+        .map(|argument| mir_operand_type(argument, locals))
+        .collect::<Result<Vec<_>, _>>()?;
+    let newline = builtin == hir::Builtin::Println;
+    let mut calls = Vec::with_capacity(
+        args.len()
+            .saturating_mul(usize::from(newline).saturating_add(1))
+            .saturating_add(usize::from(newline)),
+    );
+    let mut arguments = args.into_iter().zip(argument_types).peekable();
+    while let Some((argument, ty)) = arguments.next() {
+        let operation = match ty {
+            out::RustType::Bool => RuntimeOp::PrintBool,
+            out::RustType::I64 => RuntimeOp::PrintI64,
+            out::RustType::GoString => RuntimeOp::PrintGoString,
+            out::RustType::Unit => {
+                return Err(Diagnostic::backend(
+                    "unit value reached Rust print representation lowering",
+                ));
+            }
+        };
+        calls.push((operation, vec![lower_operand(argument, locals)?]));
+        if newline && arguments.peek().is_some() {
+            calls.push((RuntimeOp::PrintSpace, Vec::new()));
+        }
+    }
+    if newline {
+        calls.push((RuntimeOp::PrintNewline, Vec::new()));
+    }
+    if calls.is_empty() {
+        return Ok(finish_terminator(
+            out::TerminatorKind::Goto(next),
+            provenance,
+        ));
+    }
+
+    let tail_count = calls.len().saturating_sub(1);
+    let mut tail_ids = Vec::with_capacity(tail_count);
+    for offset in 0..tail_count {
+        let index = original_block_count
+            .checked_add(extra_blocks.len())
+            .and_then(|index| index.checked_add(offset))
+            .ok_or_else(|| Diagnostic::backend("Rust IR block count overflow"))?;
+        let index = u32::try_from(index)
+            .map_err(|_| Diagnostic::backend("Rust IR block count exceeds u32"))?;
+        tail_ids.push(out::BasicBlockId(index));
+    }
+
+    let mut calls = calls.into_iter();
+    let (first_operation, first_args) = calls
+        .next()
+        .ok_or_else(|| Diagnostic::backend("missing lowered Rust runtime call"))?;
+    let first_next = tail_ids.first().copied().unwrap_or(next);
+    for (index, ((operation, args), id)) in calls.zip(tail_ids.iter().copied()).enumerate() {
+        let call_next = tail_ids
+            .get(index.saturating_add(1))
+            .copied()
+            .unwrap_or(next);
+        extra_blocks.push(out::BasicBlock {
+            id,
+            provenance: provenance.clone(),
+            statements: Vec::new(),
+            terminator: finish_terminator(
+                out::TerminatorKind::Call {
+                    target: out::CallTarget::Runtime(operation),
+                    args,
+                    destination: None,
+                    next: call_next,
+                },
+                provenance.clone(),
+            ),
+        });
+    }
+
+    Ok(finish_terminator(
+        out::TerminatorKind::Call {
+            target: out::CallTarget::Runtime(first_operation),
+            args: first_args,
+            destination: None,
+            next: first_next,
+        },
+        provenance,
+    ))
+}
+
+fn finish_terminator(kind: out::TerminatorKind, provenance: out::Provenance) -> out::Terminator {
     let effects = out::terminator_effects(&kind);
-    Ok(out::Terminator {
+    out::Terminator {
         kind,
         effects,
         panic: out::panic_edge(effects),
-        provenance: lower_provenance(terminator.provenance),
-    })
+        provenance,
+    }
 }
 
 fn lower_operand(
@@ -243,7 +357,10 @@ fn lower_constant(value: ConstValue, ty: &Ty) -> Result<out::Constant, Diagnosti
             .parse::<i64>()
             .map(out::Constant::I64)
             .map_err(|_| Diagnostic::backend(format!("Go int is outside Rust IR i64: {value}"))),
-        (ConstValue::String(value), Ty::String) => Ok(out::Constant::GoString(value)),
+        (ConstValue::String(bytes), Ty::String) => Ok(out::Constant::RuntimeStaticBytes {
+            op: RuntimeOp::GoStringFromStatic,
+            bytes,
+        }),
         (value, ty) => Err(Diagnostic::backend(format!(
             "invalid constant reached Rust lowering: {value:?} as {ty:?}"
         ))),
@@ -254,12 +371,18 @@ fn lower_unary_op(
     op: hir::UnaryOp,
     operand: out::RustType,
     result: out::RustType,
-) -> Result<out::UnaryOp, Diagnostic> {
+) -> Result<Option<out::ValueOp>, Diagnostic> {
     let lowered = match (op, operand, result) {
-        (hir::UnaryOp::Positive, out::RustType::I64, out::RustType::I64) => out::UnaryOp::Identity,
-        (hir::UnaryOp::Negative, out::RustType::I64, out::RustType::I64) => out::UnaryOp::IntNeg,
-        (hir::UnaryOp::Not, out::RustType::Bool, out::RustType::Bool) => out::UnaryOp::BoolNot,
-        (hir::UnaryOp::BitNot, out::RustType::I64, out::RustType::I64) => out::UnaryOp::IntBitNot,
+        (hir::UnaryOp::Positive, out::RustType::I64, out::RustType::I64) => None,
+        (hir::UnaryOp::Negative, out::RustType::I64, out::RustType::I64) => {
+            Some(out::ValueOp::Primitive(PrimitiveOp::IntWrappingNeg))
+        }
+        (hir::UnaryOp::Not, out::RustType::Bool, out::RustType::Bool) => {
+            Some(out::ValueOp::Primitive(PrimitiveOp::BoolNot))
+        }
+        (hir::UnaryOp::BitNot, out::RustType::I64, out::RustType::I64) => {
+            Some(out::ValueOp::Primitive(PrimitiveOp::IntBitNot))
+        }
         invalid => {
             return Err(Diagnostic::backend(format!(
                 "invalid unary representation lowering: {invalid:?}"
@@ -274,37 +397,37 @@ fn lower_binary_op(
     left: out::RustType,
     right: out::RustType,
     result: out::RustType,
-) -> Result<out::BinaryOp, Diagnostic> {
+) -> Result<out::ValueOp, Diagnostic> {
     use hir::BinaryOp as Go;
-    use out::BinaryOp as Rust;
     use out::RustType::{Bool, GoString, I64};
+    use out::ValueOp::{Primitive, Runtime};
     let lowered = match (op, left, right, result) {
-        (Go::Add, I64, I64, I64) => Rust::IntAdd,
-        (Go::Sub, I64, I64, I64) => Rust::IntSub,
-        (Go::Mul, I64, I64, I64) => Rust::IntMul,
-        (Go::Div, I64, I64, I64) => Rust::IntDiv,
-        (Go::Rem, I64, I64, I64) => Rust::IntRem,
-        (Go::BitAnd, I64, I64, I64) => Rust::IntBitAnd,
-        (Go::BitOr, I64, I64, I64) => Rust::IntBitOr,
-        (Go::BitXor, I64, I64, I64) => Rust::IntBitXor,
-        (Go::Shl, I64, I64, I64) => Rust::IntShl,
-        (Go::Shr, I64, I64, I64) => Rust::IntShr,
-        (Go::AndNot, I64, I64, I64) => Rust::IntAndNot,
-        (Go::Equal, Bool, Bool, Bool) => Rust::BoolEqual,
-        (Go::NotEqual, Bool, Bool, Bool) => Rust::BoolNotEqual,
-        (Go::Equal, I64, I64, Bool) => Rust::IntEqual,
-        (Go::NotEqual, I64, I64, Bool) => Rust::IntNotEqual,
-        (Go::Less, I64, I64, Bool) => Rust::IntLess,
-        (Go::LessEqual, I64, I64, Bool) => Rust::IntLessEqual,
-        (Go::Greater, I64, I64, Bool) => Rust::IntGreater,
-        (Go::GreaterEqual, I64, I64, Bool) => Rust::IntGreaterEqual,
-        (Go::Add, GoString, GoString, GoString) => Rust::StringConcat,
-        (Go::Equal, GoString, GoString, Bool) => Rust::StringEqual,
-        (Go::NotEqual, GoString, GoString, Bool) => Rust::StringNotEqual,
-        (Go::Less, GoString, GoString, Bool) => Rust::StringLess,
-        (Go::LessEqual, GoString, GoString, Bool) => Rust::StringLessEqual,
-        (Go::Greater, GoString, GoString, Bool) => Rust::StringGreater,
-        (Go::GreaterEqual, GoString, GoString, Bool) => Rust::StringGreaterEqual,
+        (Go::Add, I64, I64, I64) => Primitive(PrimitiveOp::IntWrappingAdd),
+        (Go::Sub, I64, I64, I64) => Primitive(PrimitiveOp::IntWrappingSub),
+        (Go::Mul, I64, I64, I64) => Primitive(PrimitiveOp::IntWrappingMul),
+        (Go::Div, I64, I64, I64) => Runtime(RuntimeOp::IntDiv),
+        (Go::Rem, I64, I64, I64) => Runtime(RuntimeOp::IntRem),
+        (Go::BitAnd, I64, I64, I64) => Primitive(PrimitiveOp::IntBitAnd),
+        (Go::BitOr, I64, I64, I64) => Primitive(PrimitiveOp::IntBitOr),
+        (Go::BitXor, I64, I64, I64) => Primitive(PrimitiveOp::IntBitXor),
+        (Go::Shl, I64, I64, I64) => Runtime(RuntimeOp::IntShl),
+        (Go::Shr, I64, I64, I64) => Runtime(RuntimeOp::IntShr),
+        (Go::AndNot, I64, I64, I64) => Primitive(PrimitiveOp::IntAndNot),
+        (Go::Equal, Bool, Bool, Bool) => Primitive(PrimitiveOp::BoolEqual),
+        (Go::NotEqual, Bool, Bool, Bool) => Primitive(PrimitiveOp::BoolNotEqual),
+        (Go::Equal, I64, I64, Bool) => Primitive(PrimitiveOp::IntEqual),
+        (Go::NotEqual, I64, I64, Bool) => Primitive(PrimitiveOp::IntNotEqual),
+        (Go::Less, I64, I64, Bool) => Primitive(PrimitiveOp::IntLess),
+        (Go::LessEqual, I64, I64, Bool) => Primitive(PrimitiveOp::IntLessEqual),
+        (Go::Greater, I64, I64, Bool) => Primitive(PrimitiveOp::IntGreater),
+        (Go::GreaterEqual, I64, I64, Bool) => Primitive(PrimitiveOp::IntGreaterEqual),
+        (Go::Add, GoString, GoString, GoString) => Runtime(RuntimeOp::ConcatGoStrings),
+        (Go::Equal, GoString, GoString, Bool) => Primitive(PrimitiveOp::StringEqual),
+        (Go::NotEqual, GoString, GoString, Bool) => Primitive(PrimitiveOp::StringNotEqual),
+        (Go::Less, GoString, GoString, Bool) => Primitive(PrimitiveOp::StringLess),
+        (Go::LessEqual, GoString, GoString, Bool) => Primitive(PrimitiveOp::StringLessEqual),
+        (Go::Greater, GoString, GoString, Bool) => Primitive(PrimitiveOp::StringGreater),
+        (Go::GreaterEqual, GoString, GoString, Bool) => Primitive(PrimitiveOp::StringGreaterEqual),
         invalid => {
             return Err(Diagnostic::backend(format!(
                 "invalid binary representation lowering: {invalid:?}"

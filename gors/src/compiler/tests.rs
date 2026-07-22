@@ -117,10 +117,25 @@ fn generated_rust_executes_go_int_edge_semantics() {
         run.stderr,
         b"-9223372036854775808\n9223372036854775807\n-2\n-9223372036854775808\n-9223372036854775808\n0\n0\n-1\n"
     );
-    for helper in [
-        "int_add", "int_sub", "int_mul", "int_neg", "int_div", "int_rem", "int_shl", "int_shr",
+    for primitive in [
+        ".wrapping_add(",
+        ".wrapping_sub(",
+        ".wrapping_mul(",
+        ".wrapping_neg()",
     ] {
+        assert!(
+            run.rust.contains(primitive),
+            "missing direct Rust primitive {primitive}"
+        );
+    }
+    for helper in ["int_div", "int_rem", "int_shl", "int_shr"] {
         assert!(run.rust.contains(helper), "missing runtime helper {helper}");
+    }
+    for removed in ["int_add", "int_sub", "int_mul", "int_neg"] {
+        assert!(
+            !run.rust.contains(removed),
+            "obsolete runtime helper survived: {removed}"
+        );
     }
 }
 

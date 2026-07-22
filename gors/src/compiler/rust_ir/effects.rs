@@ -1,9 +1,10 @@
 //! Canonical effect derivation for the selected Rust representation.
 
 use super::{
-    BinaryOp, Constant, Effects, Operand, PanicEdge, ReadOp, Rvalue, RvalueKind, TerminatorKind,
-    UnaryOp,
+    CallTarget, Constant, Effects, Operand, PanicEdge, PrimitiveOp, ReadOp, RuntimeOp, Rvalue,
+    RvalueKind, TerminatorKind, ValueOp,
 };
+use gors_runtime_abi::{AllocationEffect, ArgumentMutationEffect, HostIoEffect, RuntimeType};
 
 pub(in crate::compiler) fn statement_effects(value: &Rvalue) -> Effects {
     let mut effects = value.effects;
@@ -14,8 +15,7 @@ pub(in crate::compiler) fn statement_effects(value: &Rvalue) -> Effects {
 pub(in crate::compiler) fn rvalue_effects(kind: &RvalueKind) -> Effects {
     let intrinsic = match kind {
         RvalueKind::Use(_) => Effects::default(),
-        RvalueKind::Unary { op, .. } => unary_effects(*op),
-        RvalueKind::Binary { op, .. } => binary_effects(*op),
+        RvalueKind::Unary { op, .. } | RvalueKind::Binary { op, .. } => value_op_effects(*op),
     };
     let operands = match kind {
         RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => operand_effects(operand),
@@ -28,7 +28,10 @@ pub(in crate::compiler) fn rvalue_effects(kind: &RvalueKind) -> Effects {
 
 pub(in crate::compiler) fn terminator_effects(kind: &TerminatorKind) -> Effects {
     let intrinsic = match kind {
-        TerminatorKind::Call { .. } => call_effects(),
+        TerminatorKind::Call { target, .. } => match target {
+            CallTarget::Function(_) => user_call_effects(),
+            CallTarget::Runtime(operation) => runtime_effects(*operation),
+        },
         TerminatorKind::Goto(_)
         | TerminatorKind::SwitchBool { .. }
         | TerminatorKind::Return(_)
@@ -43,7 +46,17 @@ pub(in crate::compiler) fn terminator_effects(kind: &TerminatorKind) -> Effects 
         }
         TerminatorKind::Goto(_) | TerminatorKind::Unreachable => Effects::default(),
     };
-    union(intrinsic, operands)
+    let mut effects = union(intrinsic, operands);
+    if matches!(
+        kind,
+        TerminatorKind::Call {
+            destination: Some(_),
+            ..
+        }
+    ) {
+        effects.may_write = true;
+    }
+    effects
 }
 
 pub(in crate::compiler) fn panic_edge(effects: Effects) -> PanicEdge {
@@ -54,38 +67,37 @@ pub(in crate::compiler) fn panic_edge(effects: Effects) -> PanicEdge {
     }
 }
 
-fn unary_effects(op: UnaryOp) -> Effects {
+fn value_op_effects(op: ValueOp) -> Effects {
+    match op {
+        ValueOp::Primitive(operation) => primitive_effects(operation),
+        ValueOp::Runtime(operation) => runtime_effects(operation),
+    }
+}
+
+fn primitive_effects(operation: PrimitiveOp) -> Effects {
+    let signature = operation.signature();
+    let may_call = signature
+        .parameters()
+        .iter()
+        .copied()
+        .chain(std::iter::once(signature.result()))
+        .any(|ty| ty == RuntimeType::GoString);
     Effects {
-        may_call: matches!(op, UnaryOp::IntNeg),
+        may_call,
         ..Effects::default()
     }
 }
 
-fn binary_effects(op: BinaryOp) -> Effects {
-    let runtime_call = matches!(
-        op,
-        BinaryOp::IntAdd
-            | BinaryOp::IntSub
-            | BinaryOp::IntMul
-            | BinaryOp::IntDiv
-            | BinaryOp::IntRem
-            | BinaryOp::IntShl
-            | BinaryOp::IntShr
-            | BinaryOp::StringConcat
-            | BinaryOp::StringEqual
-            | BinaryOp::StringNotEqual
-            | BinaryOp::StringLess
-            | BinaryOp::StringLessEqual
-            | BinaryOp::StringGreater
-            | BinaryOp::StringGreaterEqual
-    );
+fn runtime_effects(operation: RuntimeOp) -> Effects {
+    let effects = operation.effects();
+    let host_io = effects.host_io() != HostIoEffect::None;
     Effects {
-        may_call: runtime_call,
-        may_allocate: matches!(op, BinaryOp::StringConcat),
-        may_panic: matches!(
-            op,
-            BinaryOp::IntDiv | BinaryOp::IntRem | BinaryOp::IntShl | BinaryOp::IntShr
-        ),
+        may_call: true,
+        may_allocate: effects.allocation() == AllocationEffect::MayAllocate,
+        may_write: effects.argument_mutation() == ArgumentMutationEffect::MayMutateOwnedArgument
+            || host_io,
+        may_block: host_io,
+        may_panic: !effects.go_panics().is_empty(),
         ..Effects::default()
     }
 }
@@ -115,17 +127,14 @@ fn operand_effects(operand: &Operand) -> Effects {
             may_write: true,
             ..Effects::default()
         },
-        Operand::Constant(Constant::GoString(_)) => Effects {
-            may_call: true,
-            ..Effects::default()
-        },
+        Operand::Constant(Constant::RuntimeStaticBytes { op, .. }) => runtime_effects(*op),
         Operand::Constant(Constant::Bool(_) | Constant::I64(_)) | Operand::Unit => {
             Effects::default()
         }
     }
 }
 
-fn call_effects() -> Effects {
+fn user_call_effects() -> Effects {
     Effects {
         may_call: true,
         may_allocate: true,

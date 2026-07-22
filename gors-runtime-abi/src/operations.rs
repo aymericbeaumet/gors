@@ -1,5 +1,8 @@
 //! Stable native and runtime operation catalogs.
 
+use crate::effects::{
+    AllocationEffect, ArgumentMutationEffect, GoPanicCondition, HostIoEffect, RuntimeEffects,
+};
 use crate::encoding::CanonicalEncoder;
 use crate::target::{TargetCapability, TargetCapability::StandardIo};
 
@@ -26,6 +29,22 @@ pub enum PrimitiveOp {
     StringLessEqual,
     StringGreater,
     StringGreaterEqual,
+    IntWrappingAdd,
+    IntWrappingSub,
+    IntWrappingMul,
+    IntWrappingNeg,
+}
+
+/// Stable compact identity of one directly emitted operation.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct PrimitiveOpId(u16);
+
+impl PrimitiveOpId {
+    /// Canonical numeric value used by fingerprints and manifest encodings.
+    #[must_use]
+    pub const fn get(self) -> u16 {
+        self.0
+    }
 }
 
 impl PrimitiveOp {
@@ -51,10 +70,82 @@ impl PrimitiveOp {
         Self::StringLessEqual,
         Self::StringGreater,
         Self::StringGreaterEqual,
+        Self::IntWrappingAdd,
+        Self::IntWrappingSub,
+        Self::IntWrappingMul,
+        Self::IntWrappingNeg,
     ];
 
-    pub(crate) const fn canonical_tag(self) -> u16 {
+    /// Exact typed signature for this directly emitted operation.
+    #[must_use]
+    pub const fn signature(self) -> RuntimeSignature {
         match self {
+            Self::BoolNot => RuntimeSignature::new(BOOL_PARAMETER, RuntimeType::Bool),
+            Self::BoolEqual | Self::BoolNotEqual => {
+                RuntimeSignature::new(TWO_BOOL_PARAMETERS, RuntimeType::Bool)
+            }
+            Self::IntBitNot => RuntimeSignature::new(I64_PARAMETER, RuntimeType::I64),
+            Self::IntBitAnd | Self::IntBitOr | Self::IntBitXor | Self::IntAndNot => {
+                RuntimeSignature::new(TWO_I64_PARAMETERS, RuntimeType::I64)
+            }
+            Self::IntWrappingAdd | Self::IntWrappingSub | Self::IntWrappingMul => {
+                RuntimeSignature::new(TWO_I64_PARAMETERS, RuntimeType::I64)
+            }
+            Self::IntWrappingNeg => RuntimeSignature::new(I64_PARAMETER, RuntimeType::I64),
+            Self::IntEqual
+            | Self::IntNotEqual
+            | Self::IntLess
+            | Self::IntLessEqual
+            | Self::IntGreater
+            | Self::IntGreaterEqual => RuntimeSignature::new(TWO_I64_PARAMETERS, RuntimeType::Bool),
+            Self::StringEqual
+            | Self::StringNotEqual
+            | Self::StringLess
+            | Self::StringLessEqual
+            | Self::StringGreater
+            | Self::StringGreaterEqual => {
+                RuntimeSignature::new(TWO_GO_STRING_PARAMETERS, RuntimeType::Bool)
+            }
+        }
+    }
+
+    /// Stable semantic name protected by the canonical contract identity.
+    ///
+    /// This is not a runtime symbol: primitive operations are emitted directly.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::BoolNot => "bool-not",
+            Self::BoolEqual => "bool-equal",
+            Self::BoolNotEqual => "bool-not-equal",
+            Self::IntBitNot => "int-bit-not",
+            Self::IntBitAnd => "int-bit-and",
+            Self::IntBitOr => "int-bit-or",
+            Self::IntBitXor => "int-bit-xor",
+            Self::IntAndNot => "int-and-not",
+            Self::IntEqual => "int-equal",
+            Self::IntNotEqual => "int-not-equal",
+            Self::IntLess => "int-less",
+            Self::IntLessEqual => "int-less-equal",
+            Self::IntGreater => "int-greater",
+            Self::IntGreaterEqual => "int-greater-equal",
+            Self::StringEqual => "string-equal",
+            Self::StringNotEqual => "string-not-equal",
+            Self::StringLess => "string-less",
+            Self::StringLessEqual => "string-less-equal",
+            Self::StringGreater => "string-greater",
+            Self::StringGreaterEqual => "string-greater-equal",
+            Self::IntWrappingAdd => "int-wrapping-add",
+            Self::IntWrappingSub => "int-wrapping-sub",
+            Self::IntWrappingMul => "int-wrapping-mul",
+            Self::IntWrappingNeg => "int-wrapping-neg",
+        }
+    }
+
+    /// Stable compact identity for canonical encodings and fingerprints.
+    #[must_use]
+    pub const fn id(self) -> PrimitiveOpId {
+        PrimitiveOpId(match self {
             Self::BoolNot => 1,
             Self::BoolEqual => 2,
             Self::BoolNotEqual => 3,
@@ -63,6 +154,10 @@ impl PrimitiveOp {
             Self::IntBitOr => 6,
             Self::IntBitXor => 7,
             Self::IntAndNot => 8,
+            Self::IntWrappingAdd => 21,
+            Self::IntWrappingSub => 22,
+            Self::IntWrappingMul => 23,
+            Self::IntWrappingNeg => 24,
             Self::IntEqual => 9,
             Self::IntNotEqual => 10,
             Self::IntLess => 11,
@@ -75,7 +170,13 @@ impl PrimitiveOp {
             Self::StringLessEqual => 18,
             Self::StringGreater => 19,
             Self::StringGreaterEqual => 20,
-        }
+        })
+    }
+
+    pub(crate) fn encode(self, encoder: &mut CanonicalEncoder) {
+        encoder.u16(self.id().get());
+        encoder.text(self.name());
+        self.signature().encode(encoder);
     }
 }
 
@@ -100,6 +201,10 @@ impl RuntimeType {
             Self::ByteSlice => 5,
             Self::StaticByteSlice => 6,
         }
+    }
+
+    fn encode(self, encoder: &mut CanonicalEncoder) {
+        encoder.u8(self.canonical_tag());
     }
 }
 
@@ -128,9 +233,9 @@ impl RuntimeSignature {
     fn encode(self, encoder: &mut CanonicalEncoder) {
         encoder.count(self.parameters.len());
         for parameter in self.parameters {
-            encoder.u8(parameter.canonical_tag());
+            parameter.encode(encoder);
         }
-        encoder.u8(self.result.canonical_tag());
+        self.result.encode(encoder);
     }
 }
 
@@ -138,12 +243,16 @@ const NO_PARAMETERS: &[RuntimeType] = &[];
 const BYTES_PARAMETER: &[RuntimeType] = &[RuntimeType::ByteSlice];
 const STATIC_BYTES_PARAMETER: &[RuntimeType] = &[RuntimeType::StaticByteSlice];
 const BOOL_PARAMETER: &[RuntimeType] = &[RuntimeType::Bool];
+const TWO_BOOL_PARAMETERS: &[RuntimeType] = &[RuntimeType::Bool, RuntimeType::Bool];
 const I64_PARAMETER: &[RuntimeType] = &[RuntimeType::I64];
 const TWO_I64_PARAMETERS: &[RuntimeType] = &[RuntimeType::I64, RuntimeType::I64];
 const GO_STRING_PARAMETER: &[RuntimeType] = &[RuntimeType::GoString];
 const TWO_GO_STRING_PARAMETERS: &[RuntimeType] = &[RuntimeType::GoString, RuntimeType::GoString];
 const NO_CAPABILITIES: &[TargetCapability] = &[];
 const STANDARD_IO_CAPABILITY: &[TargetCapability] = &[StandardIo];
+const NO_GO_PANICS: &[GoPanicCondition] = &[];
+const INTEGER_DIVIDE_BY_ZERO: &[GoPanicCondition] = &[GoPanicCondition::IntegerDivideByZero];
+const NEGATIVE_SHIFT_AMOUNT: &[GoPanicCondition] = &[GoPanicCondition::NegativeShiftAmount];
 
 /// Operations that require an exact symbol from the versioned runtime ABI.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -151,20 +260,27 @@ pub enum RuntimeOp {
     GoStringFromBytes,
     GoStringFromStatic,
     ConcatGoStrings,
-    IntAdd,
-    IntSub,
-    IntMul,
-    IntNeg,
     IntDiv,
     IntRem,
     IntShl,
     IntShr,
-    PrintEmpty,
     PrintBool,
     PrintI64,
     PrintSpace,
     PrintNewline,
     PrintGoString,
+}
+
+/// Stable compact identity of one runtime ABI operation.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct RuntimeOpId(u16);
+
+impl RuntimeOpId {
+    /// Canonical numeric value used by fingerprints and manifest encodings.
+    #[must_use]
+    pub const fn get(self) -> u16 {
+        self.0
+    }
 }
 
 impl RuntimeOp {
@@ -173,15 +289,10 @@ impl RuntimeOp {
         Self::GoStringFromBytes,
         Self::GoStringFromStatic,
         Self::ConcatGoStrings,
-        Self::IntAdd,
-        Self::IntSub,
-        Self::IntMul,
-        Self::IntNeg,
         Self::IntDiv,
         Self::IntRem,
         Self::IntShl,
         Self::IntShr,
-        Self::PrintEmpty,
         Self::PrintBool,
         Self::PrintI64,
         Self::PrintSpace,
@@ -196,15 +307,10 @@ impl RuntimeOp {
             Self::GoStringFromBytes => "go_string_from_bytes",
             Self::GoStringFromStatic => "go_string_from_static",
             Self::ConcatGoStrings => "concat_go_strings",
-            Self::IntAdd => "int_add",
-            Self::IntSub => "int_sub",
-            Self::IntMul => "int_mul",
-            Self::IntNeg => "int_neg",
             Self::IntDiv => "int_div",
             Self::IntRem => "int_rem",
             Self::IntShl => "int_shl",
             Self::IntShr => "int_shr",
-            Self::PrintEmpty => "print_empty",
             Self::PrintBool => "print_bool",
             Self::PrintI64 => "print_i64",
             Self::PrintSpace => "print_space",
@@ -226,15 +332,10 @@ impl RuntimeOp {
             Self::ConcatGoStrings => {
                 RuntimeSignature::new(TWO_GO_STRING_PARAMETERS, RuntimeType::GoString)
             }
-            Self::IntAdd
-            | Self::IntSub
-            | Self::IntMul
-            | Self::IntDiv
-            | Self::IntRem
-            | Self::IntShl
-            | Self::IntShr => RuntimeSignature::new(TWO_I64_PARAMETERS, RuntimeType::I64),
-            Self::IntNeg => RuntimeSignature::new(I64_PARAMETER, RuntimeType::I64),
-            Self::PrintEmpty | Self::PrintSpace | Self::PrintNewline => {
+            Self::IntDiv | Self::IntRem | Self::IntShl | Self::IntShr => {
+                RuntimeSignature::new(TWO_I64_PARAMETERS, RuntimeType::I64)
+            }
+            Self::PrintSpace | Self::PrintNewline => {
                 RuntimeSignature::new(NO_PARAMETERS, RuntimeType::Unit)
             }
             Self::PrintBool => RuntimeSignature::new(BOOL_PARAMETER, RuntimeType::Unit),
@@ -255,44 +356,84 @@ impl RuntimeOp {
             Self::GoStringFromBytes
             | Self::GoStringFromStatic
             | Self::ConcatGoStrings
-            | Self::IntAdd
-            | Self::IntSub
-            | Self::IntMul
-            | Self::IntNeg
             | Self::IntDiv
             | Self::IntRem
             | Self::IntShl
-            | Self::IntShr
-            | Self::PrintEmpty => NO_CAPABILITIES,
+            | Self::IntShr => NO_CAPABILITIES,
         }
     }
 
-    pub(crate) const fn canonical_tag(self) -> u16 {
+    /// Allocation, host-I/O, and Go-panic behavior of this operation.
+    #[must_use]
+    pub const fn effects(self) -> RuntimeEffects {
         match self {
+            Self::GoStringFromBytes => RuntimeEffects::new(
+                AllocationEffect::MayAllocate,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                NO_GO_PANICS,
+            ),
+            Self::ConcatGoStrings => RuntimeEffects::new(
+                AllocationEffect::MayAllocate,
+                ArgumentMutationEffect::MayMutateOwnedArgument,
+                HostIoEffect::None,
+                NO_GO_PANICS,
+            ),
+            Self::IntDiv | Self::IntRem => RuntimeEffects::new(
+                AllocationEffect::None,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                INTEGER_DIVIDE_BY_ZERO,
+            ),
+            Self::IntShl | Self::IntShr => RuntimeEffects::new(
+                AllocationEffect::None,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                NEGATIVE_SHIFT_AMOUNT,
+            ),
+            Self::PrintBool
+            | Self::PrintI64
+            | Self::PrintSpace
+            | Self::PrintNewline
+            | Self::PrintGoString => RuntimeEffects::new(
+                AllocationEffect::None,
+                ArgumentMutationEffect::None,
+                HostIoEffect::StandardError,
+                NO_GO_PANICS,
+            ),
+            Self::GoStringFromStatic => RuntimeEffects::new(
+                AllocationEffect::None,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                NO_GO_PANICS,
+            ),
+        }
+    }
+
+    /// Stable compact identity for canonical encodings and fingerprints.
+    #[must_use]
+    pub const fn id(self) -> RuntimeOpId {
+        RuntimeOpId(match self {
             Self::GoStringFromBytes => 1,
             Self::GoStringFromStatic => 2,
             Self::ConcatGoStrings => 3,
-            Self::IntAdd => 4,
-            Self::IntSub => 5,
-            Self::IntMul => 6,
-            Self::IntNeg => 7,
             Self::IntDiv => 8,
             Self::IntRem => 9,
             Self::IntShl => 10,
             Self::IntShr => 11,
-            Self::PrintEmpty => 12,
             Self::PrintBool => 13,
             Self::PrintI64 => 14,
             Self::PrintSpace => 15,
             Self::PrintNewline => 16,
             Self::PrintGoString => 17,
-        }
+        })
     }
 
     pub(crate) fn encode(self, encoder: &mut CanonicalEncoder) {
-        encoder.u16(self.canonical_tag());
+        encoder.u16(self.id().get());
         encoder.text(self.symbol());
         self.signature().encode(encoder);
+        self.effects().encode(encoder);
         let requirements = self.required_capabilities();
         encoder.count(requirements.len());
         for requirement in requirements {

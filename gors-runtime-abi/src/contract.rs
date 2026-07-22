@@ -5,10 +5,10 @@ use crate::identity::ContractIdentity;
 use crate::operations::{PrimitiveOp, RuntimeOp};
 
 /// Schema used by the canonical contract and artifact encodings.
-pub const CURRENT_MANIFEST_SCHEMA: ManifestSchemaVersion = ManifestSchemaVersion::new(1);
+pub const CURRENT_MANIFEST_SCHEMA: ManifestSchemaVersion = ManifestSchemaVersion::new(2);
 
 /// Current semantic compiler/runtime operation contract.
-pub const CURRENT_CONTRACT_VERSION: ContractVersion = ContractVersion::new(1, 0, 0);
+pub const CURRENT_CONTRACT_VERSION: ContractVersion = ContractVersion::new(2, 0, 0);
 
 /// Version of the canonical manifest encoding itself.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -141,8 +141,8 @@ impl RuntimeAbiManifest {
             schema,
             contract,
             semantics,
-            primitive_ops: sorted_unique_by_key(primitive_ops, |op| op.canonical_tag()),
-            runtime_ops: sorted_unique_by_key(runtime_ops, |op| op.canonical_tag()),
+            primitive_ops: sorted_unique_by_key(primitive_ops, |op| op.id()),
+            runtime_ops: sorted_unique_by_key(runtime_ops, |op| op.id()),
         }
     }
 
@@ -182,7 +182,7 @@ impl RuntimeAbiManifest {
         self.semantics.encode(&mut encoder);
         encoder.count(self.primitive_ops.len());
         for op in &self.primitive_ops {
-            encoder.u16(op.canonical_tag());
+            op.encode(&mut encoder);
         }
         encoder.count(self.runtime_ops.len());
         for op in &self.runtime_ops {

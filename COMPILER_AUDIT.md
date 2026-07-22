@@ -464,12 +464,19 @@ an artifact-publication concern. Configuration granularity still needs
 evidence: a changed artifact target or implementation must not invalidate
 target-independent syntax, HIR, or Go MIR.
 
-The manifest is not yet the authoritative call boundary. Bootstrap Rust IR and
-the emitter still duplicate runtime selection and effects through local
-`BinaryOp`, `PrintStep`, and symbol matches. The next hard cut must carry typed
-`RuntimeOp` requirements in Rust IR, verify their contract signatures and
-effects, and derive terminal symbols from the manifest before the precompiled
-runtime sidecar replaces source bundling.
+The typed manifest is now authoritative at the Rust-representation boundary.
+Rust IR carries canonical `PrimitiveOp` and `RuntimeOp` values, verifies their
+manifest signatures and effects generically, derives stable per-function and
+package runtime requirements, fingerprints exact operation IDs, and derives
+terminal runtime symbols mechanically from the ABI catalog. Print plans and
+compiler-local unary/binary runtime tables are deleted. Wrapping arithmetic is
+emitted directly as Rust primitives; versioned runtime calls remain explicit.
+Runtime types remain semantic categories rather than embedding generated Rust
+crate paths in the target-neutral contract; those paths belong to artifact
+selection and terminal emission.
+The remaining bootstrap debt is packaging only: replace source bundling with a
+single validated precompiled runtime artifact, without adding an optional
+second path.
 
 The target is one explicitly owned, demand-driven red-green query database.
 Each query records fine-grained dependency edges automatically; public API and

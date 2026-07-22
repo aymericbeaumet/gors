@@ -102,11 +102,7 @@ fn raw_output_does_not_require_utf8() {
 }
 
 #[test]
-fn int_arithmetic_matches_go_overflow_rules() {
-    assert_eq!(int_add(GoInt::MAX, 1), GoInt::MIN);
-    assert_eq!(int_sub(GoInt::MIN, 1), GoInt::MAX);
-    assert_eq!(int_mul(GoInt::MAX, 2), -2);
-    assert_eq!(int_neg(GoInt::MIN), GoInt::MIN);
+fn runtime_integer_operations_match_go_edge_rules() {
     assert_eq!(int_div(GoInt::MIN, -1), GoInt::MIN);
     assert_eq!(int_rem(GoInt::MIN, -1), 0);
 }

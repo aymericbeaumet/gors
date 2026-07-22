@@ -3,6 +3,7 @@
 use super::Fingerprint;
 use super::encoder::{Encoder, block_id, def_id, local_id, source_ref};
 use crate::compiler::rust_ir;
+use gors_runtime_abi::{PrimitiveOp, RuntimeOp, RuntimeRequirement};
 
 /// Fingerprint a complete Rust IR file, including artifact publication order.
 #[must_use]
@@ -17,6 +18,18 @@ pub fn rust_ir_file(file: &rust_ir::File) -> Fingerprint {
 pub fn rust_ir_function(function: &rust_ir::Function) -> Fingerprint {
     let mut encoder = Encoder::root(b"rust-ir-function");
     encode_function(&mut encoder, function);
+    encoder.finish()
+}
+
+/// Fingerprint one canonical set of runtime operations selected by verified
+/// Rust representation lowering.
+pub(in crate::compiler) fn runtime_requirement(requirement: &RuntimeRequirement) -> Fingerprint {
+    let mut encoder = Encoder::root(b"rust-runtime-requirement");
+    encoder.field(b"operations", |encoder| {
+        encoder.sequence(requirement.as_slice(), |encoder, operation| {
+            encode_runtime_op(encoder, *operation);
+        });
+    });
     encoder.finish()
 }
 
@@ -180,13 +193,13 @@ fn encode_rvalue_kind(encoder: &mut Encoder, kind: &rust_ir::RvalueKind) {
         }
         rust_ir::RvalueKind::Unary { op, operand } => {
             encoder.variant(b"unary", |encoder| {
-                encoder.field(b"operation", |encoder| encode_unary_op(encoder, *op));
+                encoder.field(b"operation", |encoder| encode_value_op(encoder, *op));
                 encoder.field(b"operand", |encoder| encode_operand(encoder, operand));
             });
         }
         rust_ir::RvalueKind::Binary { op, left, right } => {
             encoder.variant(b"binary", |encoder| {
-                encoder.field(b"operation", |encoder| encode_binary_op(encoder, *op));
+                encoder.field(b"operation", |encoder| encode_value_op(encoder, *op));
                 encoder.field(b"left", |encoder| encode_operand(encoder, left));
                 encoder.field(b"right", |encoder| encode_operand(encoder, right));
             });
@@ -226,8 +239,11 @@ fn encode_constant(encoder: &mut Encoder, constant: &rust_ir::Constant) {
         rust_ir::Constant::I64(value) => {
             encoder.variant(b"i64", |encoder| encoder.i64(*value));
         }
-        rust_ir::Constant::GoString(value) => {
-            encoder.variant(b"go-string-bytes", |encoder| encoder.blob(value));
+        rust_ir::Constant::RuntimeStaticBytes { op, bytes } => {
+            encoder.variant(b"runtime-static-bytes", |encoder| {
+                encoder.field(b"operation", |encoder| encode_runtime_op(encoder, *op));
+                encoder.field(b"bytes", |encoder| encoder.blob(bytes));
+            });
         }
     }
 }
@@ -290,77 +306,31 @@ fn encode_call_target(encoder: &mut Encoder, target: &rust_ir::CallTarget) {
         rust_ir::CallTarget::Function(id) => {
             encoder.variant(b"function", |encoder| def_id(encoder, *id));
         }
-        rust_ir::CallTarget::RuntimePrint { steps } => {
-            encoder.variant(b"runtime-print", |encoder| {
-                encoder.field(b"steps", |encoder| {
-                    encoder.sequence(steps, |encoder, step| encode_print_step(encoder, *step));
-                });
+        rust_ir::CallTarget::Runtime(operation) => {
+            encoder.variant(b"runtime", |encoder| {
+                encode_runtime_op(encoder, *operation);
             });
         }
     }
 }
 
-fn encode_print_step(encoder: &mut Encoder, step: rust_ir::PrintStep) {
-    match step {
-        rust_ir::PrintStep::PrintEmpty => encoder.variant(b"print-empty", |_| {}),
-        rust_ir::PrintStep::PrintSpace => encoder.variant(b"print-space", |_| {}),
-        rust_ir::PrintStep::PrintNewline => encoder.variant(b"print-newline", |_| {}),
-        rust_ir::PrintStep::PrintBool { argument } => {
-            encoder.variant(b"print-bool", |encoder| encoder.usize(argument));
-        }
-        rust_ir::PrintStep::PrintI64 { argument } => {
-            encoder.variant(b"print-i64", |encoder| encoder.usize(argument));
-        }
-        rust_ir::PrintStep::PrintGoString { argument } => {
-            encoder.variant(b"print-go-string", |encoder| encoder.usize(argument));
-        }
+fn encode_value_op(encoder: &mut Encoder, operation: rust_ir::ValueOp) {
+    match operation {
+        rust_ir::ValueOp::Primitive(operation) => encoder.variant(b"primitive", |encoder| {
+            encode_primitive_op(encoder, operation);
+        }),
+        rust_ir::ValueOp::Runtime(operation) => encoder.variant(b"runtime", |encoder| {
+            encode_runtime_op(encoder, operation);
+        }),
     }
 }
 
-fn encode_unary_op(encoder: &mut Encoder, op: rust_ir::UnaryOp) {
-    encoder.variant(
-        match op {
-            rust_ir::UnaryOp::Identity => b"identity",
-            rust_ir::UnaryOp::IntNeg => b"int-negate",
-            rust_ir::UnaryOp::BoolNot => b"bool-not",
-            rust_ir::UnaryOp::IntBitNot => b"int-bit-not",
-        },
-        |_| {},
-    );
+fn encode_primitive_op(encoder: &mut Encoder, operation: PrimitiveOp) {
+    encoder.u32(u32::from(operation.id().get()));
 }
 
-fn encode_binary_op(encoder: &mut Encoder, op: rust_ir::BinaryOp) {
-    encoder.variant(
-        match op {
-            rust_ir::BinaryOp::IntAdd => b"int-add",
-            rust_ir::BinaryOp::IntSub => b"int-subtract",
-            rust_ir::BinaryOp::IntMul => b"int-multiply",
-            rust_ir::BinaryOp::IntDiv => b"int-divide",
-            rust_ir::BinaryOp::IntRem => b"int-remainder",
-            rust_ir::BinaryOp::IntBitAnd => b"int-bit-and",
-            rust_ir::BinaryOp::IntBitOr => b"int-bit-or",
-            rust_ir::BinaryOp::IntBitXor => b"int-bit-xor",
-            rust_ir::BinaryOp::IntShl => b"int-shift-left",
-            rust_ir::BinaryOp::IntShr => b"int-shift-right",
-            rust_ir::BinaryOp::IntAndNot => b"int-and-not",
-            rust_ir::BinaryOp::BoolEqual => b"bool-equal",
-            rust_ir::BinaryOp::BoolNotEqual => b"bool-not-equal",
-            rust_ir::BinaryOp::IntEqual => b"int-equal",
-            rust_ir::BinaryOp::IntNotEqual => b"int-not-equal",
-            rust_ir::BinaryOp::IntLess => b"int-less",
-            rust_ir::BinaryOp::IntLessEqual => b"int-less-equal",
-            rust_ir::BinaryOp::IntGreater => b"int-greater",
-            rust_ir::BinaryOp::IntGreaterEqual => b"int-greater-equal",
-            rust_ir::BinaryOp::StringConcat => b"string-concatenate",
-            rust_ir::BinaryOp::StringEqual => b"string-equal",
-            rust_ir::BinaryOp::StringNotEqual => b"string-not-equal",
-            rust_ir::BinaryOp::StringLess => b"string-less",
-            rust_ir::BinaryOp::StringLessEqual => b"string-less-equal",
-            rust_ir::BinaryOp::StringGreater => b"string-greater",
-            rust_ir::BinaryOp::StringGreaterEqual => b"string-greater-equal",
-        },
-        |_| {},
-    );
+fn encode_runtime_op(encoder: &mut Encoder, operation: RuntimeOp) {
+    encoder.u32(u32::from(operation.id().get()));
 }
 
 fn encode_type(encoder: &mut Encoder, ty: rust_ir::RustType) {

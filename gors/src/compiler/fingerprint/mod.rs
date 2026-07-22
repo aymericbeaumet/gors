@@ -77,6 +77,7 @@ impl fmt::Display for Fingerprint {
 
 pub use hir::{hir_file, hir_function};
 pub use mir::{mir_file, mir_function};
+pub(in crate::compiler) use rust_ir::runtime_requirement;
 pub use rust_ir::{rust_ir_file, rust_ir_function};
 
 pub(in crate::compiler) use root::rust_ir_root_inputs;

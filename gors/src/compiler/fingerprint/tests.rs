@@ -1,5 +1,7 @@
+use super::rust_ir::runtime_requirement as runtime_requirement_fingerprint;
 use super::*;
 use crate::compiler::{self, hir, mir, rust_ir};
+use gors_runtime_abi::{PrimitiveOp, RuntimeOp, RuntimeRequirement};
 
 fn lower_stages(source: &str) -> (hir::File, mir::File, rust_ir::File) {
     lower_stages_at("fingerprint.go", source)
@@ -130,6 +132,122 @@ fn rust_ir_fingerprints_distinguish_clone_and_move_read_plans() {
 }
 
 #[test]
+fn rust_ir_fingerprints_encode_exact_stable_operation_identities() {
+    let (_, _, original) = lower_stages(
+        r#"package main
+func primitive(left int, right int) int { return left + right }
+func runtime(left int, right int) int { return left / right }
+func collision(left int, right int) int { return left &^ right }
+func stable(left int, right int) int { return left | right }
+"#,
+    );
+    let stable = rust_ir_function(rust_ir_named(&original, "stable"));
+
+    let mut changed_primitive = original.clone();
+    *value_op_mut(
+        &mut changed_primitive,
+        "primitive",
+        rust_ir::ValueOp::Primitive(PrimitiveOp::IntWrappingAdd),
+    ) = rust_ir::ValueOp::Primitive(PrimitiveOp::IntWrappingSub);
+    assert_ne!(
+        rust_ir_function(rust_ir_named(&original, "primitive")),
+        rust_ir_function(rust_ir_named(&changed_primitive, "primitive"))
+    );
+    assert_ne!(rust_ir_file(&original), rust_ir_file(&changed_primitive));
+    assert_eq!(
+        stable,
+        rust_ir_function(rust_ir_named(&changed_primitive, "stable"))
+    );
+
+    let mut changed_runtime = original.clone();
+    *value_op_mut(
+        &mut changed_runtime,
+        "runtime",
+        rust_ir::ValueOp::Runtime(RuntimeOp::IntDiv),
+    ) = rust_ir::ValueOp::Runtime(RuntimeOp::IntRem);
+    assert_ne!(
+        rust_ir_function(rust_ir_named(&original, "runtime")),
+        rust_ir_function(rust_ir_named(&changed_runtime, "runtime"))
+    );
+    assert_ne!(rust_ir_file(&original), rust_ir_file(&changed_runtime));
+    assert_eq!(
+        stable,
+        rust_ir_function(rust_ir_named(&changed_runtime, "stable"))
+    );
+
+    assert_eq!(
+        PrimitiveOp::IntAndNot.id().get(),
+        RuntimeOp::IntDiv.id().get(),
+        "the adversarial pair must collide numerically across operation domains"
+    );
+    let mut changed_domain = original.clone();
+    *value_op_mut(
+        &mut changed_domain,
+        "collision",
+        rust_ir::ValueOp::Primitive(PrimitiveOp::IntAndNot),
+    ) = rust_ir::ValueOp::Runtime(RuntimeOp::IntDiv);
+    assert_ne!(
+        rust_ir_function(rust_ir_named(&original, "collision")),
+        rust_ir_function(rust_ir_named(&changed_domain, "collision"))
+    );
+    assert_eq!(
+        stable,
+        rust_ir_function(rust_ir_named(&changed_domain, "stable"))
+    );
+}
+
+#[test]
+fn rust_ir_fingerprints_encode_hidden_and_terminal_runtime_operations() {
+    let (_, _, original) = lower_stages(
+        "package main\nfunc literal() string { return \"value\" }\nfunc main() { println(1) }\n",
+    );
+
+    let mut changed_constant = original.clone();
+    *runtime_static_op_mut(
+        &mut changed_constant,
+        "literal",
+        RuntimeOp::GoStringFromStatic,
+    ) = RuntimeOp::GoStringFromBytes;
+    assert_ne!(
+        rust_ir_function(rust_ir_named(&original, "literal")),
+        rust_ir_function(rust_ir_named(&changed_constant, "literal"))
+    );
+    assert_ne!(rust_ir_file(&original), rust_ir_file(&changed_constant));
+
+    let mut changed_call = original.clone();
+    *runtime_call_op_mut(&mut changed_call, "main", RuntimeOp::PrintNewline) =
+        RuntimeOp::PrintSpace;
+    assert_ne!(
+        rust_ir_function(rust_ir_named(&original, "main")),
+        rust_ir_function(rust_ir_named(&changed_call, "main"))
+    );
+    assert_ne!(rust_ir_file(&original), rust_ir_file(&changed_call));
+}
+
+#[test]
+fn runtime_requirement_fingerprints_are_canonical_and_exact() {
+    let left =
+        RuntimeRequirement::new([RuntimeOp::PrintI64, RuntimeOp::IntDiv, RuntimeOp::PrintI64]);
+    let reordered = RuntimeRequirement::new([RuntimeOp::IntDiv, RuntimeOp::PrintI64]);
+    let changed = RuntimeRequirement::new([RuntimeOp::IntRem, RuntimeOp::PrintI64]);
+    let missing = RuntimeRequirement::new([RuntimeOp::IntDiv]);
+
+    assert_eq!(left, reordered);
+    assert_eq!(
+        runtime_requirement_fingerprint(&left),
+        runtime_requirement_fingerprint(&reordered)
+    );
+    assert_ne!(
+        runtime_requirement_fingerprint(&left),
+        runtime_requirement_fingerprint(&changed)
+    );
+    assert_ne!(
+        runtime_requirement_fingerprint(&left),
+        runtime_requirement_fingerprint(&missing)
+    );
+}
+
+#[test]
 fn function_fingerprints_ignore_unrelated_sibling_order() {
     let first = lower_stages(
         "package main\nfunc stable(x int) int { return x + 1 }\nfunc alpha() int { return 2 }\nfunc beta() int { return 3 }\nfunc main() { println(stable(4)) }\n",
@@ -215,4 +333,128 @@ fn stage_domains_separate_analogous_file_payloads() {
     assert_ne!(hir, mir);
     assert_ne!(hir, rust_ir);
     assert_ne!(mir, rust_ir);
+}
+
+fn value_op_mut<'a>(
+    file: &'a mut rust_ir::File,
+    function_name: &str,
+    expected: rust_ir::ValueOp,
+) -> &'a mut rust_ir::ValueOp {
+    let function = file
+        .functions
+        .iter_mut()
+        .find(|function| function.name == function_name)
+        .expect("named Rust IR function");
+    for block in &mut function.blocks {
+        for statement in &mut block.statements {
+            match &mut statement.value.kind {
+                rust_ir::RvalueKind::Unary { op, .. } | rust_ir::RvalueKind::Binary { op, .. }
+                    if *op == expected =>
+                {
+                    return op;
+                }
+                rust_ir::RvalueKind::Use(_)
+                | rust_ir::RvalueKind::Unary { .. }
+                | rust_ir::RvalueKind::Binary { .. } => {}
+            }
+        }
+    }
+    panic!("expected Rust IR value operation {expected:?}");
+}
+
+fn runtime_static_op_mut<'a>(
+    file: &'a mut rust_ir::File,
+    function_name: &str,
+    expected: RuntimeOp,
+) -> &'a mut RuntimeOp {
+    let function = file
+        .functions
+        .iter_mut()
+        .find(|function| function.name == function_name)
+        .expect("named Rust IR function");
+    for block in &mut function.blocks {
+        for statement in &mut block.statements {
+            if let Some(operation) = rvalue_runtime_static_op_mut(&mut statement.value, expected) {
+                return operation;
+            }
+        }
+        if let Some(operation) = terminator_runtime_static_op_mut(&mut block.terminator, expected) {
+            return operation;
+        }
+    }
+    panic!("expected Rust IR runtime static-byte operation {expected:?}");
+}
+
+fn rvalue_runtime_static_op_mut(
+    rvalue: &mut rust_ir::Rvalue,
+    expected: RuntimeOp,
+) -> Option<&mut RuntimeOp> {
+    match &mut rvalue.kind {
+        rust_ir::RvalueKind::Use(operand) | rust_ir::RvalueKind::Unary { operand, .. } => {
+            operand_runtime_static_op_mut(operand, expected)
+        }
+        rust_ir::RvalueKind::Binary { left, right, .. } => {
+            if let Some(operation) = operand_runtime_static_op_mut(left, expected) {
+                Some(operation)
+            } else {
+                operand_runtime_static_op_mut(right, expected)
+            }
+        }
+    }
+}
+
+fn terminator_runtime_static_op_mut(
+    terminator: &mut rust_ir::Terminator,
+    expected: RuntimeOp,
+) -> Option<&mut RuntimeOp> {
+    match &mut terminator.kind {
+        rust_ir::TerminatorKind::SwitchBool { condition, .. } => {
+            operand_runtime_static_op_mut(condition, expected)
+        }
+        rust_ir::TerminatorKind::Call { args, .. } | rust_ir::TerminatorKind::Return(args) => args
+            .iter_mut()
+            .find_map(|operand| operand_runtime_static_op_mut(operand, expected)),
+        rust_ir::TerminatorKind::Goto(_) | rust_ir::TerminatorKind::Unreachable => None,
+    }
+}
+
+fn operand_runtime_static_op_mut(
+    operand: &mut rust_ir::Operand,
+    expected: RuntimeOp,
+) -> Option<&mut RuntimeOp> {
+    match operand {
+        rust_ir::Operand::Constant(rust_ir::Constant::RuntimeStaticBytes { op, .. })
+            if *op == expected =>
+        {
+            Some(op)
+        }
+        rust_ir::Operand::Read { .. } | rust_ir::Operand::Constant(_) | rust_ir::Operand::Unit => {
+            None
+        }
+    }
+}
+
+fn runtime_call_op_mut<'a>(
+    file: &'a mut rust_ir::File,
+    function_name: &str,
+    expected: RuntimeOp,
+) -> &'a mut RuntimeOp {
+    file.functions
+        .iter_mut()
+        .find(|function| function.name == function_name)
+        .expect("named Rust IR function")
+        .blocks
+        .iter_mut()
+        .find_map(|block| match &mut block.terminator.kind {
+            rust_ir::TerminatorKind::Call {
+                target: rust_ir::CallTarget::Runtime(operation),
+                ..
+            } if *operation == expected => Some(operation),
+            rust_ir::TerminatorKind::Goto(_)
+            | rust_ir::TerminatorKind::SwitchBool { .. }
+            | rust_ir::TerminatorKind::Call { .. }
+            | rust_ir::TerminatorKind::Return(_)
+            | rust_ir::TerminatorKind::Unreachable => None,
+        })
+        .unwrap_or_else(|| panic!("expected Rust IR runtime call {expected:?}"))
 }
