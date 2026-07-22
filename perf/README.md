@@ -67,7 +67,11 @@ default is 50 pairs per scenario split across three independent sessions:
 
 `PERF_JOBS` is passed to both the gors semantic compiler host and Go's
 `-p`/`GOMAXPROCS` boundary. The harness rejects missing, malformed, or
-out-of-budget gors scheduler evidence. The separately launched rustc/link step
+out-of-budget gors scheduler evidence. It accepts only timing schema v4: a
+compiler-cache miss must report `cli.cache_lookup`, `cli.source_load`,
+`cli.compile`, `cli.print`, and `cli.file_writes` in order; a proven cache hit
+must report only `cli.cache_lookup` and an all-zero scheduler. Missing or
+contradictory cache events fail closed. The separately launched rustc/link step
 is not yet admitted through that host, so end-to-end job-budget symmetry remains
 a promotion blocker rather than a property of the current harness.
 

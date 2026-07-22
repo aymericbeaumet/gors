@@ -6,6 +6,7 @@ use crate::compiler::mir;
 use crate::compiler::rust_ir as out;
 use crate::compiler::types::{ConstValue, IntTy, Signature as GoSignature, Ty};
 
+#[cfg(test)]
 pub(super) fn lower_file(file: mir::File) -> Result<out::File, Diagnostic> {
     let executable_package = file.package == "main";
     Ok(out::File {

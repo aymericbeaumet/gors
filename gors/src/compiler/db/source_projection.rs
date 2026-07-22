@@ -4,7 +4,8 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use crate::ast;
-use crate::parser::{SourceContent, decode_import_path_literal};
+use crate::compiler::input::SourceContent;
+use crate::parser::decode_import_path_literal;
 use crate::scanner::Scanner;
 use crate::token::Token;
 

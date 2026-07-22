@@ -8,11 +8,13 @@ mod error;
 mod keys;
 mod manifest;
 mod path;
+mod source;
 
 pub use error::InputError;
 pub use keys::{PackageKey, WorkspaceKey};
 pub use manifest::{PackageInputManifest, ProgramInput, SourceFileInput};
 pub use path::LogicalPathIssue;
+pub use source::{SourceContent, SourceSnapshot};
 
 #[cfg(test)]
 mod tests;

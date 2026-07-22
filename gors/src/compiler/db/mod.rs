@@ -18,10 +18,8 @@ use std::sync::Arc;
 
 use salsa::{Durability, Setter as _};
 
-use crate::parser::{SourceContent, SourceSnapshot};
-
 use super::ids::{DefId, FileId, IdentityInterner, PackageId};
-use super::input::{PackageKey, WorkspaceKey};
+use super::input::{PackageKey, SourceContent, SourceSnapshot, WorkspaceKey};
 use queries::{BuildInput, FileFacts, FunctionProjection, PackageInput, SourceInput};
 use telemetry::Telemetry;
 

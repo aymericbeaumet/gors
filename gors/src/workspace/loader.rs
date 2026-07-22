@@ -3,9 +3,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::compiler::input::{
-    PackageInputManifest, PackageKey, ProgramInput, SourceFileInput, WorkspaceKey,
+    PackageInputManifest, PackageKey, ProgramInput, SourceFileInput, SourceSnapshot, WorkspaceKey,
 };
-use crate::parser::SourceSnapshot;
 
 use super::{LoadError, LoadedProgram, PathExpectation};
 

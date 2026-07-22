@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::compiler::ids::SourceSpan;
-use crate::parser::SourceSnapshot;
+use crate::compiler::input::SourceSnapshot;
 
 use super::*;
 
@@ -136,6 +136,31 @@ fn syntax_invalid_input_is_query_owned_and_repeated_revision_is_green() {
         .expect("the unchanged invalid revision must remain invalid");
     assert_eq!(second, first);
     assert_eq!(session.database().telemetry().total_executions(), 0);
+}
+
+#[test]
+fn source_map_plan_owns_entry_comments_across_session_revisions() {
+    let mut session = CompilerSession::default();
+    let (_, first_plan) = session
+        .compile_program_with_source_map(raw_program(
+            "main.go",
+            "/checkout/first/main.go",
+            "package main\nfunc main() {\n// first revision\n}\n",
+        ))
+        .unwrap();
+
+    session
+        .compile_program(raw_program(
+            "main.go",
+            "/checkout/second/main.go",
+            "package main\nfunc main() {\n// second revision\n}\n",
+        ))
+        .unwrap();
+
+    assert_eq!(first_plan.entry_source_name(), "/checkout/first/main.go");
+    let comments = first_plan.entry_comments().comments();
+    assert_eq!(comments.len(), 1);
+    assert_eq!(comments.first().unwrap().text(), "// first revision");
 }
 
 #[test]

@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use crate::ast;
 use crate::compiler::fingerprint::fingerprint_parts;
+use crate::compiler::input::SourceContent;
 use crate::compiler::{Diagnostic, lowering, mir, rust_ir};
-use crate::parser::SourceContent;
 
 use super::super::ids::{DefId, DefinitionKey, DefinitionKind, FileId, PackageId};
 use super::model::{
@@ -129,7 +129,7 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
     let package_id = source.package(db);
     let logical_path = source.logical_path(db);
     let content = source.content(db);
-    let parsed = match content.parse(&logical_path) {
+    let parsed = match crate::parser::parse_file(&logical_path, content.source()) {
         Ok(parsed) => parsed,
         Err(error) => {
             let location = error.location();

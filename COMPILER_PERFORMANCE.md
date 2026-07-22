@@ -171,11 +171,12 @@ do not wait for a speed threshold.
 Each semantic input revision is an immutable, reference-counted
 `SourceContent` containing source text, a line index, and a content digest.
 `SourceSnapshot` pairs that allocation with one user-facing diagnostic path;
-the compiler stores that presentation path outside Salsa. A parsed file may
-reference-count the paired snapshot and represents text by byte ranges,
-interned tokens, or another serializable owned form. Dropping the last semantic
-owner must release syntax and content memory independently of presentation
-state.
+both types belong to `compiler::input` and expose no parser convenience
+methods. The compiler stores that presentation path outside Salsa. A future
+owned incremental syntax product may reference-count source content and
+represent text by byte ranges, interned tokens, or another serializable owned
+form. Dropping the last semantic owner must release syntax and content memory
+independently of presentation state.
 
 `ProgramInput` is the production syntax-unvalidated manifest. Each
 `SourceFileInput` owns a reference-counted snapshot; the tracked file projection
@@ -371,7 +372,7 @@ not determine semantics or be counted as the competitive production path.
 The following current mechanisms are useful bootstrap behavior but are not the
 architecture described here:
 
-- parser storage separates canonical semantic `SourceContent` from user-facing
+- compiler input storage separates canonical semantic `SourceContent` from user-facing
   physical paths. An unchanged checkout-root move preserves all semantic
   products, executes no query, requests no Salsa cancellation, and schedules no
   worker wave while repackaging terminal maps and diagnostics with the current

@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import multiprocessing
 import os
 import platform
@@ -20,6 +21,15 @@ from typing import Any
 
 ARTIFACT_DRIVER = "bootstrap-generated-rust-v1"
 ARTIFACT_DRIVER_PRODUCTION = False
+GORS_TIMING_REPORT_VERSION = 4
+GORS_BUILD_CACHE_HIT_PHASES = ("cli.cache_lookup",)
+GORS_BUILD_CACHE_MISS_PHASES = (
+    "cli.cache_lookup",
+    "cli.source_load",
+    "cli.compile",
+    "cli.print",
+    "cli.file_writes",
+)
 
 
 @dataclass(frozen=True)
@@ -199,6 +209,59 @@ def _rss_bytes(value: int) -> int:
 def _validate_gors_timing_evidence(timings: Any, expected_jobs: int) -> None:
     if not isinstance(timings, dict):
         raise RuntimeError("gors did not publish compiler timing evidence")
+    version = timings.get("version")
+    if type(version) is not int or version != GORS_TIMING_REPORT_VERSION:
+        raise RuntimeError(
+            "gors timing report schema is incompatible: "
+            f"expected version {GORS_TIMING_REPORT_VERSION}, got {version!r}"
+        )
+    if timings.get("command") != "build":
+        raise RuntimeError(
+            "gors timing report command is incompatible with native evidence: "
+            f"expected 'build', got {timings.get('command')!r}"
+        )
+    phases = timings.get("phases")
+    if not isinstance(phases, list):
+        raise RuntimeError("gors timing report does not contain a phase list")
+    phase_names: list[str] = []
+    for phase in phases:
+        if not isinstance(phase, dict) or not isinstance(phase.get("name"), str):
+            raise RuntimeError("gors timing phase evidence is malformed")
+        duration_ms = phase.get("durationMs")
+        if (
+            isinstance(duration_ms, bool)
+            or not isinstance(duration_ms, (int, float))
+            or not math.isfinite(duration_ms)
+            or duration_ms < 0
+        ):
+            raise RuntimeError(
+                f"gors timing phase {phase['name']!r} has a malformed duration"
+            )
+        phase_names.append(phase["name"])
+    cache_events = timings.get("cacheEvents")
+    if not isinstance(cache_events, list):
+        raise RuntimeError("gors timing report does not contain cache-event evidence")
+    compiler_cache_events = [
+        event
+        for event in cache_events
+        if isinstance(event, dict) and event.get("layer") == "compiler"
+    ]
+    if len(compiler_cache_events) != 1 or len(cache_events) != 1:
+        raise RuntimeError(
+            "gors timing report must contain exactly one unambiguous compiler cache event"
+        )
+    cache_hit = compiler_cache_events[0].get("hit")
+    if type(cache_hit) is not bool:
+        raise RuntimeError("gors compiler cache-event evidence is malformed")
+    expected_phases = (
+        GORS_BUILD_CACHE_HIT_PHASES if cache_hit else GORS_BUILD_CACHE_MISS_PHASES
+    )
+    if tuple(phase_names) != expected_phases:
+        cache_state = "hit" if cache_hit else "miss"
+        raise RuntimeError(
+            f"gors {cache_state} timing phases are incompatible: "
+            f"expected {list(expected_phases)!r}, got {phase_names!r}"
+        )
     if timings.get("jobs") != expected_jobs:
         raise RuntimeError(
             "gors timing job budget does not match the certified plan: "
@@ -220,6 +283,8 @@ def _validate_gors_timing_evidence(timings: Any, expected_jobs: int) -> None:
         for field in scheduler_fields
     ):
         raise RuntimeError("gors scheduler timing evidence is malformed")
+    if cache_hit and any(scheduler[field] != 0 for field in scheduler_fields):
+        raise RuntimeError("gors cache-hit scheduler evidence must be all zero")
     if scheduler["peakWorkers"] > expected_jobs:
         raise RuntimeError(
             "gors scheduler exceeded the certified job budget: "

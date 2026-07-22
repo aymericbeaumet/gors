@@ -1,4 +1,5 @@
 use gors::error::{Diagnostic, DiagnosticKind};
+use gors::sourcemap::SourceMap;
 
 use crate::GorsCompiler;
 use crate::build_result::{BuildResult, extract_rust_token_at, utf16_column_to_byte_offset};
@@ -75,6 +76,85 @@ func main() {
             .matches("// preserved by the browser presentation layer")
             .count(),
         1
+    );
+}
+
+#[test]
+fn multiline_block_comment_shifts_downstream_function_mappings_by_physical_lines() {
+    let baseline = r#"package main
+
+func first() int {
+	println(1)
+	return 1
+}
+
+func downstream() int {
+	return 2
+}
+
+func main() {
+	println(first() + downstream())
+}
+"#;
+    let commented = r#"package main
+
+func first() int {
+	println(1)
+	/* first block line
+	second block line
+	third block line */
+	return 1
+}
+
+func downstream() int {
+	return 2
+}
+
+func main() {
+	println(first() + downstream())
+}
+"#;
+
+    let baseline = GorsCompiler::new().build_rust(baseline.to_string());
+    let commented = GorsCompiler::new().build_rust(commented.to_string());
+
+    assert!(baseline.success());
+    assert!(commented.success());
+    assert_eq!(
+        last_destination_line(&commented, "downstream"),
+        last_destination_line(&baseline, "downstream") + 3
+    );
+    assert_eq!(
+        commented
+            .output()
+            .matches("/* first block line\n\tsecond block line\n\tthird block line */")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn leading_comment_separator_shifts_downstream_function_mappings() {
+    let padding = "\n".repeat(21);
+    let program = |prefix: &str| {
+        format!(
+            "{prefix}package main\n{padding}func downstream() int {{\n\treturn 2\n}}\n\nfunc main() {{\n\tprintln(downstream())\n}}\n"
+        )
+    };
+
+    let baseline = GorsCompiler::new().build_rust(program(""));
+    let commented = GorsCompiler::new().build_rust(program("// leading browser comment\n"));
+
+    assert!(baseline.success());
+    assert!(commented.success());
+    assert!(
+        commented
+            .output()
+            .starts_with("// leading browser comment\n\n")
+    );
+    assert_eq!(
+        last_destination_line(&commented, "downstream"),
+        last_destination_line(&baseline, "downstream") + 2
     );
 }
 
@@ -210,4 +290,15 @@ fn retained_browser_session_recovers_after_a_syntax_invalid_revision() {
     let recovered =
         compiler.build_rust("package main\n\nfunc main() {\n\tprintln(1)\n}\n".to_string());
     assert!(recovered.success());
+}
+
+fn last_destination_line(result: &BuildResult, name: &str) -> u32 {
+    let json = result.get_source_map_json();
+    let source_map = SourceMap::from_reader(json.as_bytes()).unwrap();
+    source_map
+        .tokens()
+        .filter(|token| token.get_name() == Some(name))
+        .map(|token| token.get_dst_line())
+        .max()
+        .unwrap()
 }

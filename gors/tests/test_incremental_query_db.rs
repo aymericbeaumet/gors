@@ -7,8 +7,8 @@ use gors::compiler::db::{
     BuildConfig, CompilerDatabase, FileAnalysis, PackageIssue, QueryError, QueryKind,
 };
 use gors::compiler::ids::{DefId, FileId};
-use gors::compiler::input::{PackageKey, WorkspaceKey};
-use gors::parser::{ImportPathIssue, SourceSnapshot};
+use gors::compiler::input::{PackageKey, SourceSnapshot, WorkspaceKey};
+use gors::parser::ImportPathIssue;
 
 const ORIGINAL: &str = r#"package main
 
@@ -686,7 +686,6 @@ fn source_payloads_are_costed_and_released_per_file() {
     let mut db = CompilerDatabase::default();
     let first_source = source(ORIGINAL);
     let first_weak = Arc::downgrade(&first_source);
-    let first_bytes = first_source.retained_bytes();
     let first_file = db
         .set_source(
             &workspace(),
@@ -696,11 +695,11 @@ fn source_payloads_are_costed_and_released_per_file() {
         )
         .unwrap()
         .file();
+    let first_bytes = db.retained_source_bytes();
     let second_source = Arc::new(SourceSnapshot::from_source(
         "second.go",
         "package main\nfunc h() {}\n",
     ));
-    let second_bytes = second_source.retained_bytes();
     let second_file = db
         .set_source(
             &workspace(),
@@ -710,12 +709,11 @@ fn source_payloads_are_costed_and_released_per_file() {
         )
         .unwrap()
         .file();
+    let both_bytes = db.retained_source_bytes();
+    let second_bytes = both_bytes.saturating_sub(first_bytes);
     let _ = db.analyze_file(first_file).unwrap();
     let _ = db.analyze_file(second_file).unwrap();
-    assert_eq!(
-        db.retained_source_bytes(),
-        first_bytes.saturating_add(second_bytes)
-    );
+    assert_eq!(db.retained_source_bytes(), both_bytes);
 
     drop(first_source);
     db.remove_source(first_file).unwrap();

@@ -68,14 +68,27 @@ pub fn exercise_compiler(data: &[u8]) {
     let Some(source) = source_from_bytes(data) else {
         return;
     };
-    let Ok(ast) = gors::parser::parse_file("fuzz.go", &source) else {
+    let package = gors::compiler::input::PackageKey::command_line();
+    let Ok(file) =
+        gors::compiler::input::SourceFileInput::from_source("fuzz.go", "fuzz.go", source.as_ref())
+    else {
         return;
     };
-    let Ok(rust_ast) = gors::compiler::compile_file_to_rust_syntax(ast) else {
+    let Ok(manifest) = gors::compiler::input::PackageInputManifest::new(package.clone(), [file])
+    else {
         return;
     };
-    let mut rust_source = Vec::new();
-    if let Err(error) = gors::printer::fprint(&mut rust_source, rust_ast) {
+    let Ok(program) = gors::compiler::input::ProgramInput::new(
+        gors::compiler::input::WorkspaceKey::ad_hoc("fuzz-compiler").expect("stable fuzz key"),
+        package,
+        [manifest],
+    ) else {
+        return;
+    };
+    let Ok(compiled) = gors::compiler::compile_program(program) else {
+        return;
+    };
+    if let Err(error) = gors::printer::generate_single(compiled) {
         panic!("Rust source printing failed after successful lowering: {error}");
     }
 }

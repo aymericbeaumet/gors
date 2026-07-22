@@ -12,6 +12,7 @@ use crate::compiler::ids::{BasicBlockId, DefId, LocalId, SourceSpan};
 use crate::compiler::types::{ConstValue, IntTy, Signature, Ty};
 
 impl File {
+    #[cfg(test)]
     pub(super) fn verify(&self) -> Result<(), Diagnostic> {
         let mut signatures = BTreeMap::new();
         let mut names = BTreeSet::new();

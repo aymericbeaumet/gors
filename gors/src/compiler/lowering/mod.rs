@@ -3,6 +3,7 @@
 mod lower;
 
 use crate::compiler::Diagnostic;
+#[cfg(test)]
 use crate::compiler::VerifiedMir;
 use crate::compiler::mir;
 use crate::compiler::rust_ir;
@@ -21,6 +22,7 @@ pub(super) fn lower_function(
     lower::lower_function(function, executable_package)
 }
 
+#[cfg(test)]
 pub(super) fn lower(input: VerifiedMir) -> Result<rust_ir::File, Vec<Diagnostic>> {
     let normalized = crate::compiler::mir::normalize(input)?;
     lower::lower_file(normalized.into_inner()).map_err(|diagnostic| vec![diagnostic])

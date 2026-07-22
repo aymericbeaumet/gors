@@ -2,7 +2,10 @@ use std::collections::HashMap;
 
 use gors::sourcemap::{SourceMap, SourceMapBuilder};
 
-pub(crate) struct Comments(Vec<Comment>);
+pub(crate) struct Comments {
+    source_name: String,
+    comments: Vec<Comment>,
+}
 
 struct Comment {
     go_line: u32,
@@ -16,13 +19,28 @@ struct CommentMapping {
     go_column: u32,
     output_line: u32,
     output_column: u32,
-    inserted_before_output_line: u32,
     text: String,
 }
 
-pub(crate) fn collect(comments: &gors::compiler::db::FileComments, source: &str) -> Comments {
-    Comments(
-        comments
+struct RenderedComments {
+    output: String,
+    mappings: Vec<CommentMapping>,
+    /// Exact destination-line displacement for every original Rust line.
+    ///
+    /// This is measured while rendering instead of reconstructed from the
+    /// number of comments: one block comment can contain multiple physical
+    /// lines, and leading comments add a separate blank-line separator.
+    line_shifts: Vec<u32>,
+}
+
+pub(crate) fn collect(
+    comments: &gors::compiler::db::FileComments,
+    source_name: &str,
+    source: &str,
+) -> Comments {
+    Comments {
+        source_name: source_name.to_string(),
+        comments: comments
             .comments()
             .iter()
             .map(|comment| {
@@ -42,7 +60,7 @@ pub(crate) fn collect(comments: &gors::compiler::db::FileComments, source: &str)
                 }
             })
             .collect(),
-    )
+    }
 }
 
 pub(crate) fn insert_and_remap(
@@ -50,59 +68,85 @@ pub(crate) fn insert_and_remap(
     comments: &Comments,
     initial_source_map: &SourceMap,
 ) -> (String, SourceMap) {
-    let (output, comment_mappings) = insert_comments(rust_source, &comments.0, initial_source_map);
-    let source_map = remap(&output, initial_source_map, &comment_mappings);
-    (output, source_map)
+    let rendered = insert_comments(rust_source, &comments.comments, initial_source_map);
+    let source_map = remap(
+        initial_source_map,
+        &rendered.mappings,
+        &rendered.line_shifts,
+        &comments.source_name,
+    );
+    (rendered.output, source_map)
 }
 
 fn remap(
-    _rust_source: &str,
     initial_source_map: &SourceMap,
     comment_mappings: &[CommentMapping],
+    line_shifts: &[u32],
+    comment_source_name: &str,
 ) -> SourceMap {
-    let mut builder = SourceMapBuilder::new(Some("output.rs"));
-    let source_index = builder.add_source("main.go");
-    if let Some(content) = initial_source_map.get_source_contents(0) {
-        builder.set_source_contents(source_index, Some(content));
+    let mut builder = SourceMapBuilder::new(initial_source_map.get_file());
+    builder.set_debug_id(initial_source_map.get_debug_id());
+    // Register every source slot independently before restoring its exact
+    // spelling. SourceMapBuilder normally deduplicates equal source strings,
+    // which would change source indices in an otherwise lossless remap.
+    let mut source_indices = Vec::with_capacity(initial_source_map.get_source_count() as usize);
+    for source_id in 0..initial_source_map.get_source_count() {
+        let placeholder = format!("\0gors-source-slot-{source_id}");
+        let source_index = builder.add_source(&placeholder);
+        if let Some(source) = initial_source_map.get_source(source_id) {
+            builder.set_source(source_index, source);
+        }
+        if let Some(content) = initial_source_map.get_source_contents(source_id) {
+            builder.set_source_contents(source_index, Some(content));
+        }
+        source_indices.push(source_index);
     }
 
-    let mut comments_before_line = HashMap::<u32, u32>::new();
-    for mapping in comment_mappings {
-        *comments_before_line
-            .entry(mapping.inserted_before_output_line)
-            .or_default() += 1;
+    for source_id in initial_source_map.ignore_list() {
+        if let Some(source_index) = source_indices.get(*source_id as usize) {
+            builder.add_to_ignore_list(*source_index);
+        }
     }
 
-    let maximum_output_line = initial_source_map
-        .tokens()
-        .map(|token| token.get_dst_line())
-        .max()
-        .unwrap_or(0);
-    let mut cumulative_shift = vec![0u32; (maximum_output_line + 2) as usize];
-    let mut running_shift = 0u32;
-    for line in 0..=maximum_output_line + 1 {
-        running_shift += comments_before_line.get(&line).copied().unwrap_or(0);
-        cumulative_shift[line as usize] = running_shift;
+    // Add the complete original name table first so existing name IDs remain
+    // stable; inserted comment names are appended afterwards.
+    let mut name_indices = Vec::with_capacity(initial_source_map.get_name_count() as usize);
+    for name_id in 0..initial_source_map.get_name_count() {
+        if let Some(name) = initial_source_map.get_name(name_id) {
+            name_indices.push(builder.add_name(name));
+        }
     }
+
+    let comment_source_index = (0..initial_source_map.get_source_count())
+        .find(|source_id| initial_source_map.get_source(*source_id) == Some(comment_source_name))
+        .and_then(|source_id| source_indices.get(source_id as usize))
+        .copied();
 
     for index in 0..initial_source_map.get_token_count() {
         let Some(token) = initial_source_map.get_token(index as usize) else {
             continue;
         };
         let original_output_line = token.get_dst_line();
-        let shift = cumulative_shift
+        let shift = line_shifts
             .get(original_output_line as usize)
             .copied()
-            .unwrap_or_else(|| *cumulative_shift.last().unwrap_or(&0));
-        let name_index = token.get_name().map(|name| builder.add_name(name));
+            .unwrap_or_else(|| *line_shifts.last().unwrap_or(&0));
+        let source_index = token
+            .has_source()
+            .then(|| source_indices.get(token.get_src_id() as usize).copied())
+            .flatten();
+        let name_index = token
+            .has_name()
+            .then(|| name_indices.get(token.get_name_id() as usize).copied())
+            .flatten();
         builder.add_raw(
             original_output_line + shift,
             token.get_dst_col(),
             token.get_src_line(),
             token.get_src_col(),
-            Some(source_index),
+            source_index,
             name_index,
-            false,
+            token.is_range(),
         );
     }
 
@@ -113,7 +157,7 @@ fn remap(
             mapping.output_column,
             mapping.go_line,
             mapping.go_column,
-            Some(source_index),
+            comment_source_index,
             Some(name_index),
             false,
         );
@@ -125,7 +169,7 @@ fn insert_comments(
     rust_source: &str,
     comments: &[Comment],
     source_map: &SourceMap,
-) -> (String, Vec<CommentMapping>) {
+) -> RenderedComments {
     let rust_lines = rust_source.lines().collect::<Vec<_>>();
     let mut go_to_output_line = HashMap::<u32, u32>::new();
     for index in 0..source_map.get_token_count() {
@@ -188,9 +232,10 @@ fn render(
     rust_lines: &[&str],
     leading_comments: &[&Comment],
     comments_by_output_line: &HashMap<u32, Vec<&Comment>>,
-) -> (String, Vec<CommentMapping>) {
+) -> RenderedComments {
     let mut output = String::new();
     let mut mappings = Vec::new();
+    let mut line_shifts = Vec::with_capacity(rust_lines.len());
     let mut current_output_line = 0u32;
 
     for comment in leading_comments {
@@ -199,12 +244,12 @@ fn render(
             go_column: comment.go_column,
             output_line: current_output_line,
             output_column: 0,
-            inserted_before_output_line: 0,
             text: comment.text.clone(),
         });
         output.push_str(&comment.text);
         output.push('\n');
-        current_output_line += 1;
+        current_output_line =
+            current_output_line.saturating_add(physical_lines_inserted(&comment.text));
     }
     if !leading_comments.is_empty() && !rust_lines.is_empty() {
         output.push('\n');
@@ -226,19 +271,38 @@ fn render(
                     go_column: comment.go_column,
                     output_line: current_output_line,
                     output_column: indent as u32,
-                    inserted_before_output_line: original_output_line,
                     text: comment.text.clone(),
                 });
                 output.push_str(&indent_text);
                 output.push_str(&comment.text);
                 output.push('\n');
-                current_output_line += 1;
+                current_output_line =
+                    current_output_line.saturating_add(physical_lines_inserted(&comment.text));
             }
         }
+        line_shifts.push(current_output_line.saturating_sub(original_output_line));
         output.push_str(line);
         output.push('\n');
         current_output_line += 1;
     }
 
-    (output, mappings)
+    RenderedComments {
+        output,
+        mappings,
+        line_shifts,
+    }
 }
+
+fn physical_lines_inserted(text: &str) -> u32 {
+    let embedded_line_breaks = text
+        .as_bytes()
+        .iter()
+        .filter(|byte| **byte == b'\n')
+        .count();
+    u32::try_from(embedded_line_breaks)
+        .unwrap_or(u32::MAX)
+        .saturating_add(1)
+}
+
+#[cfg(test)]
+mod tests;

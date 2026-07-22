@@ -10,7 +10,7 @@ use super::db::{
     BuildConfig, CompilerDatabase, PackageAnalysis, PackageIssue, QueryError, StageFailure,
 };
 use super::ids::{FileId, PackageId};
-use super::input::{PackageInputManifest, ProgramInput, WorkspaceKey};
+use super::input::{PackageInputManifest, ProgramInput, SourceSnapshot, WorkspaceKey};
 use super::scheduler::{CompilerHost, SchedulerTelemetry};
 use super::{CompiledProgram, CompilerDiagnostic, CompilerError, SourceMapPlan, emit};
 
@@ -253,7 +253,7 @@ impl CompilerSession {
 
     fn rollback_install(
         &mut self,
-        previous_sources: &BTreeMap<FileId, std::sync::Arc<crate::parser::SourceSnapshot>>,
+        previous_sources: &BTreeMap<FileId, std::sync::Arc<SourceSnapshot>>,
     ) -> Result<(), QueryError> {
         for file in self.database.active_files() {
             if let Some(snapshot) = previous_sources.get(&file) {
@@ -375,6 +375,14 @@ impl CompilerSession {
         analysis: &PackageAnalysis,
         rust_ir: &super::rust_ir::File,
     ) -> Result<SourceMapPlan, CompilerError> {
+        let entry_file = installed.main_files.first().ok_or_else(|| {
+            CompilerError::backend("source-map plan requires one installed entry source")
+        })?;
+        let entry_comments = self
+            .database
+            .file_comments(entry_file.id)
+            .map_err(|error| self.query_error(error))?;
+        let entry_source_name: Arc<str> = Arc::from(entry_file.original_path.as_str());
         let mut tracker = crate::sourcemap::SourceMapTracker::new();
         let sources = installed
             .main_files
@@ -423,7 +431,11 @@ impl CompilerSession {
             );
         }
         tracker.pause();
-        Ok(SourceMapPlan { tracker })
+        Ok(SourceMapPlan {
+            tracker,
+            entry_source_name,
+            entry_comments,
+        })
     }
 
     fn query_error(&self, error: QueryError) -> CompilerError {

@@ -23,6 +23,9 @@ from perf_harness.model import (
 )
 from perf_harness.native import (
     ARTIFACT_DRIVER_PRODUCTION,
+    GORS_BUILD_CACHE_HIT_PHASES,
+    GORS_BUILD_CACHE_MISS_PHASES,
+    GORS_TIMING_REPORT_VERSION,
     Toolchains,
     _validate_gors_timing_evidence,
     pipeline_plan,
@@ -133,6 +136,25 @@ def write_json(path: Path, value: dict) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def gors_timing_report(*, cache_hit: bool, jobs: int = 4) -> dict:
+    phase_names = GORS_BUILD_CACHE_HIT_PHASES if cache_hit else GORS_BUILD_CACHE_MISS_PHASES
+    return {
+        "version": GORS_TIMING_REPORT_VERSION,
+        "command": "build",
+        "jobs": jobs,
+        "phases": [{"name": name, "durationMs": 1.0} for name in phase_names],
+        "cacheEvents": [{"layer": "compiler", "hit": cache_hit}],
+        "scheduler": {
+            "serialWaves": 0,
+            "parallelWaves": 0,
+            "scheduledRoots": 0,
+            "snapshotsCreated": 0,
+            "poolStarts": 0,
+            "peakWorkers": 0,
+        },
+    }
+
+
 class StatisticsTests(unittest.TestCase):
     def test_percentile_interpolates_small_samples(self) -> None:
         self.assertEqual(percentile([10.0, 20.0], 0.50), 15.0)
@@ -196,37 +218,70 @@ class CheckedInDataTests(unittest.TestCase):
 
 class NativeBoundaryTests(unittest.TestCase):
     def test_scheduler_evidence_accepts_explicit_zero_cache_hit(self) -> None:
-        _validate_gors_timing_evidence(
-            {
-                "jobs": 4,
-                "scheduler": {
-                    "serialWaves": 0,
-                    "parallelWaves": 0,
-                    "scheduledRoots": 0,
-                    "snapshotsCreated": 0,
-                    "poolStarts": 0,
-                    "peakWorkers": 0,
-                },
-            },
-            4,
-        )
+        _validate_gors_timing_evidence(gors_timing_report(cache_hit=True), 4)
+
+    def test_scheduler_evidence_accepts_v4_cache_miss_phase_contract(self) -> None:
+        _validate_gors_timing_evidence(gors_timing_report(cache_hit=False), 4)
+
+    def test_scheduler_evidence_rejects_stale_timing_schema(self) -> None:
+        timings = gors_timing_report(cache_hit=False)
+        timings["version"] = GORS_TIMING_REPORT_VERSION - 1
+
+        with self.assertRaisesRegex(RuntimeError, "expected version 4"):
+            _validate_gors_timing_evidence(timings, 4)
+
+    def test_scheduler_evidence_rejects_cache_miss_without_source_load(self) -> None:
+        timings = gors_timing_report(cache_hit=False)
+        timings["phases"] = [
+            phase for phase in timings["phases"] if phase["name"] != "cli.source_load"
+        ]
+
+        with self.assertRaisesRegex(RuntimeError, "miss timing phases are incompatible"):
+            _validate_gors_timing_evidence(timings, 4)
+
+    def test_scheduler_evidence_rejects_ambiguous_cache_events(self) -> None:
+        timings = gors_timing_report(cache_hit=True)
+        timings["cacheEvents"].append({"layer": "compiler", "hit": False})
+
+        with self.assertRaisesRegex(RuntimeError, "exactly one unambiguous"):
+            _validate_gors_timing_evidence(timings, 4)
+
+    def test_scheduler_evidence_rejects_missing_cache_event(self) -> None:
+        timings = gors_timing_report(cache_hit=True)
+        timings["cacheEvents"] = []
+
+        with self.assertRaisesRegex(RuntimeError, "exactly one unambiguous"):
+            _validate_gors_timing_evidence(timings, 4)
+
+    def test_scheduler_evidence_rejects_cache_hit_with_compile_phases(self) -> None:
+        timings = gors_timing_report(cache_hit=True)
+        timings["phases"] = [
+            {"name": name, "durationMs": 1.0} for name in GORS_BUILD_CACHE_MISS_PHASES
+        ]
+
+        with self.assertRaisesRegex(RuntimeError, "hit timing phases are incompatible"):
+            _validate_gors_timing_evidence(timings, 4)
+
+    def test_scheduler_evidence_rejects_cache_hit_with_worker_activity(self) -> None:
+        timings = gors_timing_report(cache_hit=True)
+        timings["scheduler"]["serialWaves"] = 1
+        timings["scheduler"]["scheduledRoots"] = 1
+
+        with self.assertRaisesRegex(RuntimeError, "must be all zero"):
+            _validate_gors_timing_evidence(timings, 4)
 
     def test_scheduler_evidence_rejects_budget_overrun(self) -> None:
+        timings = gors_timing_report(cache_hit=False, jobs=2)
+        timings["scheduler"] = {
+            "serialWaves": 0,
+            "parallelWaves": 1,
+            "scheduledRoots": 8,
+            "snapshotsCreated": 3,
+            "poolStarts": 1,
+            "peakWorkers": 3,
+        }
         with self.assertRaisesRegex(RuntimeError, "exceeded the certified job budget"):
-            _validate_gors_timing_evidence(
-                {
-                    "jobs": 2,
-                    "scheduler": {
-                        "serialWaves": 0,
-                        "parallelWaves": 1,
-                        "scheduledRoots": 8,
-                        "snapshotsCreated": 3,
-                        "poolStarts": 1,
-                        "peakWorkers": 3,
-                    },
-                },
-                2,
-            )
+            _validate_gors_timing_evidence(timings, 2)
 
     def test_bootstrap_artifact_lane_includes_external_rustc_and_link(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

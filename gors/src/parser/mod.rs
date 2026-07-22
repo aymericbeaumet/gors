@@ -8,7 +8,6 @@ mod functions;
 mod import_path;
 mod parameters;
 mod signatures;
-mod snapshot;
 mod statements;
 mod types;
 mod version;
@@ -22,10 +21,6 @@ use version::extract_go_version;
 pub use error::{ParserError, Result};
 pub use import_path::ImportPathIssue;
 pub(crate) use import_path::decode_and_validate as decode_import_path_literal;
-pub use snapshot::{
-    FileParseError, InvalidImportPathError, ParsedFile, ParsedFileError, SourceContent,
-    SourceSnapshot,
-};
 
 enum TypeParameterParse<'scanner> {
     None,

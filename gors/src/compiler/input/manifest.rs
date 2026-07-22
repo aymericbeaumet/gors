@@ -1,9 +1,7 @@
 use std::sync::Arc;
 
-use crate::parser::SourceSnapshot;
-
 use super::path::validate_logical_path;
-use super::{InputError, PackageKey, WorkspaceKey};
+use super::{InputError, PackageKey, SourceSnapshot, WorkspaceKey};
 
 /// One stable logical source file paired with an immutable raw source revision.
 ///

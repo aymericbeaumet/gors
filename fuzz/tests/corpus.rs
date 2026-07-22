@@ -49,14 +49,23 @@ fn compiler_corpus_either_reports_diagnostics_or_prints_rust() {
         let data = std::fs::read(&path)
             .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
         let source = String::from_utf8_lossy(&data);
-        let ast = gors::parser::parse_file("fuzz.go", &source).unwrap_or_else(|error| {
-            panic!(
-                "compiler corpus seed {} does not parse: {error}",
-                path.display()
-            );
-        });
-        let rust_ast = match gors::compiler::compile_file_to_rust_syntax(ast) {
-            Ok(rust_ast) => rust_ast,
+        let package = gors::compiler::input::PackageKey::command_line();
+        let file = gors::compiler::input::SourceFileInput::from_source(
+            "fuzz.go",
+            "fuzz.go",
+            source.as_ref(),
+        )
+        .unwrap();
+        let manifest =
+            gors::compiler::input::PackageInputManifest::new(package.clone(), [file]).unwrap();
+        let program = gors::compiler::input::ProgramInput::new(
+            gors::compiler::input::WorkspaceKey::ad_hoc("fuzz-corpus").unwrap(),
+            package,
+            [manifest],
+        )
+        .unwrap();
+        let compiled = match gors::compiler::compile_program(program) {
+            Ok(compiled) => compiled,
             Err(error) => {
                 assert!(
                     !error.diagnostics().is_empty(),
@@ -66,8 +75,7 @@ fn compiler_corpus_either_reports_diagnostics_or_prints_rust() {
                 continue;
             }
         };
-        let mut rust_source = Vec::new();
-        gors::printer::fprint(&mut rust_source, rust_ast).unwrap_or_else(|error| {
+        let rust_source = gors::printer::generate_single(compiled).unwrap_or_else(|error| {
             panic!(
                 "compiler corpus seed {} does not print: {error}",
                 path.display()

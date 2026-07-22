@@ -63,10 +63,11 @@ fn build_rust_with_session(
             return BuildResult::error_result(compiler_diagnostic(&error, "main.go", &input));
         }
     };
-    let comments = match browser_comments(session, &input) {
-        Ok(comments) => comments,
-        Err(error) => return BuildResult::error_result(error),
-    };
+    let comments = comments::collect(
+        source_map_plan.entry_comments(),
+        source_map_plan.entry_source_name(),
+        &input,
+    );
     let rust_source = match gors::printer::generate_single(compiled) {
         Ok(output) => output,
         Err(error) => {
@@ -101,32 +102,6 @@ fn browser_program_input(
         package_key,
         [package],
     )
-}
-
-fn browser_comments(
-    session: &gors::compiler::CompilerSession,
-    source: &str,
-) -> Result<comments::Comments, Diagnostic> {
-    let files = session.database().active_files();
-    let [file] = files.as_slice() else {
-        return Err(Diagnostic::new(
-            "main.go",
-            0,
-            0,
-            "browser compiler expected exactly one active source file",
-            DiagnosticKind::Compiler,
-        ));
-    };
-    let projected = session.database().file_comments(*file).map_err(|error| {
-        Diagnostic::new(
-            "main.go",
-            0,
-            0,
-            format!("cannot project source comments: {error}"),
-            DiagnosticKind::Compiler,
-        )
-    })?;
-    Ok(comments::collect(&projected, source))
 }
 
 #[cfg(test)]

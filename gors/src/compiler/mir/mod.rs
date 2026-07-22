@@ -15,9 +15,11 @@ pub use model::{
 use std::collections::BTreeMap;
 
 use crate::compiler::Diagnostic;
+#[cfg(test)]
 use crate::compiler::VerifiedMir;
 use crate::compiler::hir;
 
+#[cfg(test)]
 pub(super) fn lower_file(file: &hir::File) -> Result<File, Vec<Diagnostic>> {
     lower::lower_file(file)
 }
@@ -26,6 +28,7 @@ pub(super) fn lower_function(function: &hir::Function) -> Result<Function, Diagn
     lower::lower_function(function)
 }
 
+#[cfg(test)]
 pub(super) fn verify(file: &File) -> Result<(), Diagnostic> {
     file.verify()
 }
@@ -40,6 +43,7 @@ pub(super) fn verify_function(
     function.verify_with_signatures(signatures)
 }
 
+#[cfg(test)]
 pub(super) fn normalize(input: VerifiedMir) -> Result<VerifiedMir, Vec<Diagnostic>> {
     normalize::normalize(input)
 }

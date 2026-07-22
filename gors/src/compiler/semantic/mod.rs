@@ -27,6 +27,7 @@ use super::ids::{
     DefId, DefinitionKey, DefinitionKind, FileId, IdentityCollision, IdentityInterner, NodeId,
     PackageId, SourceSpan,
 };
+#[cfg(test)]
 use super::input::{PackageKey, WorkspaceKey};
 use super::types::{ConstValue, IntTy, Signature, Ty, UntypedTy};
 
@@ -64,6 +65,7 @@ pub(super) struct SemanticContext {
     pub(super) logical_file: String,
 }
 
+#[cfg(test)]
 pub(super) fn lower_file(file: &ast::File<'_>) -> Result<hir::File, Vec<Diagnostic>> {
     // Public single-file stage helpers have no package graph. Their explicit
     // command-line fallback is stable across checkout roots, while production
@@ -75,6 +77,7 @@ pub(super) fn lower_file(file: &ast::File<'_>) -> Result<hir::File, Vec<Diagnost
     lower_file_with_context(file, context)
 }
 
+#[cfg(test)]
 pub(super) fn semantic_context(
     workspace: &WorkspaceKey,
     package_identity: &PackageKey,
@@ -631,6 +634,7 @@ impl FileLowerer {
     }
 }
 
+#[cfg(test)]
 fn logical_file_name(position: &Position<'_>) -> String {
     // The standalone facade has no workspace-relative path input yet. The
     // scanner already separates the directory from this basename, so using
@@ -649,6 +653,7 @@ fn identity_diagnostic(collision: IdentityCollision) -> Diagnostic {
     Diagnostic::backend(collision.to_string())
 }
 
+#[cfg(test)]
 fn identity_diagnostics(collision: IdentityCollision) -> Vec<Diagnostic> {
     vec![identity_diagnostic(collision)]
 }

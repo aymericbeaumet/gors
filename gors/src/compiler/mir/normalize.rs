@@ -7,6 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::compiler::Diagnostic;
+#[cfg(test)]
 use crate::compiler::VerifiedMir;
 use crate::compiler::hir;
 use crate::compiler::ids::{BasicBlockId, LocalId};
@@ -15,6 +16,7 @@ use crate::compiler::mir::{
 };
 use crate::compiler::types::{ConstValue, Ty};
 
+#[cfg(test)]
 pub(super) fn normalize(input: VerifiedMir) -> Result<VerifiedMir, Vec<Diagnostic>> {
     let boolean_control_flow = BooleanControlFlow;
     let unreachable_blocks = UnreachableBlocks;
@@ -54,6 +56,7 @@ impl<'a> PassManager<'a> {
         Self { passes }
     }
 
+    #[cfg(test)]
     fn run(&self, input: VerifiedMir) -> Result<VerifiedMir, Vec<Diagnostic>> {
         let mut file = input.into_inner();
         let signatures = file

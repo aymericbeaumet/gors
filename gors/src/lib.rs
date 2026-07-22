@@ -18,7 +18,10 @@
 //! ## Example
 //!
 //! ```
-//! use gors::{parser, compiler, printer};
+//! use gors::{compiler, printer};
+//! use gors::compiler::input::{
+//!     PackageInputManifest, PackageKey, ProgramInput, SourceFileInput, WorkspaceKey,
+//! };
 //!
 //! let go_source = r#"
 //!     package main
@@ -28,14 +31,16 @@
 //!     }
 //! "#;
 //!
-//! // Parse Go source into AST
-//! let go_ast = parser::parse_file("example.go", go_source).unwrap();
-//!
-//! // Compile Go AST to Rust AST
-//! let rust_ast = compiler::compile_file_to_rust_syntax(go_ast).unwrap();
-//!
-//! // Generate Rust source code
-//! let rust_source = printer::generate(rust_ast).unwrap();
+//! let package = PackageKey::command_line();
+//! let file = SourceFileInput::from_source("example.go", "example.go", go_source).unwrap();
+//! let manifest = PackageInputManifest::new(package.clone(), [file]).unwrap();
+//! let input = ProgramInput::new(
+//!     WorkspaceKey::ad_hoc("example").unwrap(),
+//!     package,
+//!     [manifest],
+//! ).unwrap();
+//! let compiled = compiler::compile_program(input).unwrap();
+//! let rust_source = printer::generate_single(compiled).unwrap();
 //! ```
 
 // Lints are configured at workspace level in the root Cargo.toml.

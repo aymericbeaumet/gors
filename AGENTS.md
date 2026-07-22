@@ -44,6 +44,10 @@ unsupported diagnostic over fallback to an old lowering path.
 - Incremental parse products must own or reference-count their source snapshot
   and must be independently evictable per file. `Box::leak`, leaked arenas, and
   self-referential `'static` ASTs are forbidden in the query database.
+- Raw source ownership lives in `compiler::input`. `SourceContent` and
+  `SourceSnapshot` expose immutable bytes and indexing metadata, never parse
+  methods; the compiler file-projection query alone calls
+  `parser::parse_file` to create an ephemeral borrowed AST.
 - Parse files independently. Multi-file package composition belongs in the
   semantic package index, not an AST merge that invalidates every file.
 - The production input boundary is `ProgramInput` -> `SourceFileInput` ->

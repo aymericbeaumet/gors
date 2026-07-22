@@ -47,6 +47,11 @@ fail_on_matches \
   gors/src
 
 fail_on_matches \
+  'authoritative compiler stages must not expose a second public orchestration API:' \
+  '^[[:space:]]*pub fn (compile_file|lower_to_hir|lower_to_mir|lower_to_rust_ir|emit_rust_ir)' \
+  gors/src/compiler
+
+fail_on_matches \
   'compiler semantic thread-local state is forbidden:' \
   'thread_local!' \
   gors/src/compiler gors/src/resolve
@@ -174,7 +179,8 @@ fail_on_matches \
   'CLI and Wasm production callers must not bypass CompilerSession/facade compilation:' \
   'compile_file_to_rust_syntax|lower_to_(hir|mir|rust_ir)|compiler::db::CompilerDatabase|CompilerDatabase::' \
   gors-cli/src \
-  www/wasm
+  www/wasm \
+  fuzz/src
 
 fail_on_matches \
   'stateless Wasm build_rust exports are forbidden; retain GorsCompiler::build_rust only:' \

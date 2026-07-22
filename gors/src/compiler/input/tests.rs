@@ -2,11 +2,9 @@
 
 use std::sync::Arc;
 
-use crate::parser::SourceSnapshot;
-
 use super::{
     InputError, LogicalPathIssue, PackageInputManifest, PackageKey, ProgramInput, SourceFileInput,
-    WorkspaceKey,
+    SourceSnapshot, WorkspaceKey,
 };
 
 fn workspace() -> WorkspaceKey {
@@ -204,7 +202,8 @@ fn accepts_syntax_invalid_source_without_parsing_it() {
         "browser://workspace/main.go",
         "package main\nfunc {",
     );
-    assert!(file.snapshot().parse().is_err());
+    let snapshot = file.snapshot();
+    assert!(crate::parser::parse_file(snapshot.diagnostic_path(), snapshot.source()).is_err());
 
     let input = ProgramInput::new(
         workspace(),

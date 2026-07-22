@@ -31,14 +31,13 @@ mod session;
 pub mod types;
 
 pub use diagnostic::Diagnostic;
-pub use hir::File as HirFile;
-pub use rust_ir::File as RustIrFile;
 pub use scheduler::{CompilerHost, SchedulerTelemetry};
 pub use session::CompilerSession;
 
 use std::collections::BTreeMap;
 use std::fmt;
 
+#[cfg(test)]
 use crate::ast;
 
 /// MIR that has passed whole-file structural, type, call-ABI, and dataflow
@@ -49,8 +48,10 @@ use crate::ast;
 /// lowering. Consumers get read-only access so mutating MIR always requires a
 /// fresh verification boundary.
 #[derive(Clone, Debug)]
-pub struct VerifiedMir(mir::File);
+#[cfg(test)]
+pub(crate) struct VerifiedMir(mir::File);
 
+#[cfg(test)]
 impl VerifiedMir {
     /// Inspect the verified stage product without making it mutable.
     #[must_use]
@@ -78,8 +79,10 @@ impl VerifiedMir {
 /// This mandatory stage separates Go semantics from Rust ownership and ABI
 /// choices. Terminal syntax emission accepts no earlier stage product.
 #[derive(Clone, Debug)]
-pub struct VerifiedRustIr(rust_ir::File);
+#[cfg(test)]
+pub(crate) struct VerifiedRustIr(rust_ir::File);
 
+#[cfg(test)]
 impl VerifiedRustIr {
     /// Inspect the verified Rust representation IR without making it mutable.
     #[must_use]
@@ -94,12 +97,17 @@ impl VerifiedRustIr {
 }
 
 /// Lower a parsed Go file through every authoritative compiler stage.
-pub fn compile_file(file: &ast::File<'_>) -> Result<syn::File, Vec<Diagnostic>> {
+///
+/// This is an internal stage-test helper. Production and fuzz callers enter
+/// through [`ProgramInput`](input::ProgramInput) and [`CompilerSession`].
+#[cfg(test)]
+pub(crate) fn compile_file(file: &ast::File<'_>) -> Result<syn::File, Vec<Diagnostic>> {
     let hir = lower_to_hir(file)?;
     compile_hir(hir)
 }
 
-fn compile_hir(hir: HirFile) -> Result<syn::File, Vec<Diagnostic>> {
+#[cfg(test)]
+fn compile_hir(hir: hir::File) -> Result<syn::File, Vec<Diagnostic>> {
     let mir = lower_to_mir(&hir)?;
     let rust_ir = lower_to_rust_ir(mir)?;
     emit_rust_ir(&rust_ir)
@@ -107,12 +115,14 @@ fn compile_hir(hir: HirFile) -> Result<syn::File, Vec<Diagnostic>> {
 
 /// Produce typed, name-resolved HIR without committing to a Rust
 /// representation.
-pub fn lower_to_hir(file: &ast::File<'_>) -> Result<HirFile, Vec<Diagnostic>> {
+#[cfg(test)]
+pub(crate) fn lower_to_hir(file: &ast::File<'_>) -> Result<hir::File, Vec<Diagnostic>> {
     semantic::lower_file(file)
 }
 
 /// Produce evaluation-order-explicit Go MIR.
-pub fn lower_to_mir(file: &HirFile) -> Result<VerifiedMir, Vec<Diagnostic>> {
+#[cfg(test)]
+pub(crate) fn lower_to_mir(file: &hir::File) -> Result<VerifiedMir, Vec<Diagnostic>> {
     VerifiedMir::verify(mir::lower_file(file)?)
 }
 
@@ -120,12 +130,14 @@ pub fn lower_to_mir(file: &HirFile) -> Result<VerifiedMir, Vec<Diagnostic>> {
 ///
 /// MIR normalization is mandatory inside this function; there is no bypass or
 /// alternate emitter entry point.
-pub fn lower_to_rust_ir(file: VerifiedMir) -> Result<VerifiedRustIr, Vec<Diagnostic>> {
+#[cfg(test)]
+pub(crate) fn lower_to_rust_ir(file: VerifiedMir) -> Result<VerifiedRustIr, Vec<Diagnostic>> {
     VerifiedRustIr::verify(lowering::lower(file)?)
 }
 
 /// Emit verified Rust representation IR into terminal Rust syntax.
-pub fn emit_rust_ir(file: &VerifiedRustIr) -> Result<syn::File, Vec<Diagnostic>> {
+#[cfg(test)]
+pub(crate) fn emit_rust_ir(file: &VerifiedRustIr) -> Result<syn::File, Vec<Diagnostic>> {
     emit::emit_file(file.as_file()).map_err(|diagnostic| vec![diagnostic])
 }
 
@@ -246,6 +258,8 @@ pub struct CompiledProgram {
 /// build on another thread, or use concurrently with another compilation.
 pub struct SourceMapPlan {
     tracker: crate::sourcemap::SourceMapTracker,
+    entry_source_name: std::sync::Arc<str>,
+    entry_comments: std::sync::Arc<db::FileComments>,
 }
 
 impl SourceMapPlan {
@@ -254,14 +268,23 @@ impl SourceMapPlan {
     pub fn build(&self, rust_source: &str) -> sourcemap::SourceMap {
         self.tracker.build_source_map(rust_source)
     }
-}
 
-/// Compile one parsed Go file to terminal Rust syntax.
-///
-/// This does not package the runtime. The API exists for compiler-stage tests
-/// and tooling; use [`compile_program`] for a self-contained generated program.
-pub fn compile_file_to_rust_syntax(file: ast::File<'_>) -> Result<syn::File, CompilerError> {
-    compile_file(&file).map_err(CompilerError::from)
+    /// Presentation name of the entry source represented by
+    /// [`Self::entry_comments`].
+    #[must_use]
+    pub fn entry_source_name(&self) -> &str {
+        &self.entry_source_name
+    }
+
+    /// Query-owned comments for the entry source revision compiled into this
+    /// plan.
+    ///
+    /// The comments remain tied to this immutable plan even after its
+    /// originating [`CompilerSession`] installs a later source revision.
+    #[must_use]
+    pub fn entry_comments(&self) -> &db::FileComments {
+        self.entry_comments.as_ref()
+    }
 }
 
 /// Compile raw program inputs into deterministic, self-contained Rust units.

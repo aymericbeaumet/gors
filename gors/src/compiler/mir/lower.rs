@@ -1,11 +1,13 @@
 //! Evaluation-order-explicit lowering from typed HIR to MIR.
 
+#[cfg(test)]
+use super::File;
 use super::construct::{
     assignment_binary_op, binary_effects, call_effects, make_rvalue, make_statement,
     make_terminator, operand_ty,
 };
 use super::{
-    BasicBlock, File, Function, LocalDecl, Operand, Place, Provenance, RvalueKind, Statement,
+    BasicBlock, Function, LocalDecl, Operand, Place, Provenance, RvalueKind, Statement,
     SyntheticOrigin, Terminator, TerminatorKind,
 };
 use crate::compiler::Diagnostic;
@@ -33,6 +35,7 @@ struct LoopTargets {
     break_used: bool,
 }
 
+#[cfg(test)]
 pub(super) fn lower_file(file: &hir::File) -> Result<File, Vec<Diagnostic>> {
     let mut functions = Vec::new();
     let mut diagnostics = Vec::new();

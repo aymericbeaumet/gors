@@ -117,7 +117,7 @@ fn syntax_invalid_source_is_a_successful_raw_load() {
         .snapshot();
 
     assert_eq!(source.source(), "package main\nfunc {");
-    assert!(source.parse().is_err());
+    assert!(crate::parser::parse_file(source.diagnostic_path(), source.source()).is_err());
 }
 
 #[test]
