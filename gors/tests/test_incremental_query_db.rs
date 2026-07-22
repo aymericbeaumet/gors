@@ -453,7 +453,10 @@ fn package_identity_isolates_identical_clauses_and_names() {
     let second = db.analyze_package(second_package).unwrap();
 
     assert_ne!(first_package, second_package);
-    assert_ne!(first.functions()[0].id(), second.functions()[0].id());
+    assert_ne!(
+        first.functions().first().unwrap().id(),
+        second.functions().first().unwrap().id()
+    );
     assert_ne!(
         first.public_api_fingerprint(),
         second.public_api_fingerprint()
@@ -472,7 +475,7 @@ fn moving_a_named_declaration_between_package_files_preserves_its_id() {
     insert_file(&mut db, "example/sample", "b.go", "package sample\n");
     let package = db.package_for_file(first).unwrap();
     let before = db.analyze_package(package).unwrap();
-    let before_id = before.functions()[0].id();
+    let before_id = before.functions().first().unwrap().id();
     let before_api = before.public_api_fingerprint();
 
     insert_file(&mut db, "example/sample", "a.go", "package sample\n");
@@ -484,7 +487,7 @@ fn moving_a_named_declaration_between_package_files_preserves_its_id() {
     );
     let after = db.analyze_package(package).unwrap();
 
-    assert_eq!(after.functions()[0].id(), before_id);
+    assert_eq!(after.functions().first().unwrap().id(), before_id);
     assert_eq!(after.public_api_fingerprint(), before_api);
 }
 

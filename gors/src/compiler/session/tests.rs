@@ -66,7 +66,7 @@ fn function_relative_diagnostic_rebases_to_current_anchor() {
     session
         .compile_program(crate::parser::parse_program_from_source("main.go", source).unwrap())
         .unwrap();
-    let file = session.database.active_files()[0];
+    let file = session.database.active_files().first().copied().unwrap();
     let analysis = session.database.analyze_file(file).unwrap();
     let target = analysis
         .functions()

@@ -291,9 +291,12 @@ fn normalize_explicit_source_paths(
     canonical_paths.sort();
 
     for duplicate in canonical_paths.windows(2) {
-        if duplicate[0] == duplicate[1] {
+        let [first, second] = duplicate else {
+            continue;
+        };
+        if first == second {
             return Err(PathParseError::DuplicateSourceFile {
-                file: display_path(&duplicate[0]),
+                file: display_path(first),
             });
         }
     }
@@ -327,7 +330,7 @@ fn normalize_explicit_source_paths(
 
     let paths = canonical_paths
         .into_iter()
-        .map(|path| path_to_utf8(path))
+        .map(path_to_utf8)
         .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(ExplicitSourcePaths { paths, directory })
 }
@@ -491,7 +494,7 @@ fn resolve_imports_recursive(
             continue;
         };
         if let Some(cycle_start) = active.iter().position(|package| package == &import_path) {
-            let mut cycle = active[cycle_start..].to_vec();
+            let mut cycle = active.iter().skip(cycle_start).cloned().collect::<Vec<_>>();
             cycle.push(import_path);
             return Err(PathParseError::ImportCycle { cycle });
         }

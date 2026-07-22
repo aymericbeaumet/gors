@@ -286,11 +286,14 @@ fn escaped_local_import_resolves_the_decoded_path() {
     let program = parse_program(&directory.path().to_string_lossy()).unwrap();
 
     assert_eq!(program.imports().len(), 1);
-    assert_eq!(program.imports()[0].import_path(), "example.test/root/dep");
+    assert_eq!(
+        program.imports().first().unwrap().import_path(),
+        "example.test/root/dep"
+    );
 }
 
 #[test]
-fn invalid_decoded_import_paths_are_structured_and_file_scoped() {
+fn invalid_decoded_import_paths_are_structured_and_file_scoped() -> Result<(), String> {
     let cases = [
         (
             r#""example.test/root/\x2e\x2e/outside""#,
@@ -304,8 +307,13 @@ fn invalid_decoded_import_paths_are_structured_and_file_scoped() {
     for (literal, expected_reason) in cases {
         let source = format!("package sample\nimport {literal}\n");
         let error = parse_program_from_source("invalid.go", &source).unwrap_err();
-        let PathParseError::InvalidImportPath(error) = error else {
-            panic!("expected invalid import path for {literal}");
+        let error = match error {
+            PathParseError::InvalidImportPath(error) => error,
+            unexpected => {
+                return Err(format!(
+                    "expected invalid import path for {literal}, got {unexpected}"
+                ));
+            }
         };
         assert_eq!(error.path(), "invalid.go");
         assert_eq!(error.snapshot().source(), source);
@@ -316,10 +324,11 @@ fn invalid_decoded_import_paths_are_structured_and_file_scoped() {
             error.issue()
         );
     }
+    Ok(())
 }
 
 #[test]
-fn decoded_import_paths_reject_non_utf8_and_nul() {
+fn decoded_import_paths_reject_non_utf8_and_nul() -> Result<(), String> {
     let cases = [
         (r#""\xff""#, ImportPathIssue::InvalidUtf8),
         (r#""bad\000path""#, ImportPathIssue::ContainsNul),
@@ -328,11 +337,17 @@ fn decoded_import_paths_reject_non_utf8_and_nul() {
     for (literal, expected_issue) in cases {
         let source = format!("package sample\nimport {literal}\n");
         let error = parse_program_from_source("invalid.go", &source).unwrap_err();
-        let PathParseError::InvalidImportPath(error) = error else {
-            panic!("expected invalid import path for {literal}");
+        let error = match error {
+            PathParseError::InvalidImportPath(error) => error,
+            unexpected => {
+                return Err(format!(
+                    "expected invalid import path for {literal}, got {unexpected}"
+                ));
+            }
         };
         assert_eq!(error.issue(), &expected_issue);
     }
+    Ok(())
 }
 
 #[test]
@@ -353,7 +368,7 @@ fn explicit_file_order_is_normalized_before_package_and_module_discovery() {
         alpha.to_string_lossy().into_owned(),
         beta.to_string_lossy().into_owned(),
     ];
-    let reverse = vec![forward[1].clone(), forward[0].clone()];
+    let reverse = forward.iter().rev().cloned().collect::<Vec<_>>();
 
     let first = parse_program_files(&forward).unwrap();
     let second = parse_program_files(&reverse).unwrap();
@@ -372,10 +387,16 @@ fn explicit_file_order_is_normalized_before_package_and_module_discovery() {
 
     assert_eq!(first_files, second_files);
     assert_eq!(first_files.len(), 2);
-    assert!(first_files[0].ends_with("alpha.go"));
-    assert!(first_files[1].ends_with("beta.go"));
-    assert_eq!(first.imports()[0].import_path(), "example.test/root/dep");
-    assert_eq!(second.imports()[0].import_path(), "example.test/root/dep");
+    assert!(first_files.first().unwrap().ends_with("alpha.go"));
+    assert!(first_files.get(1).unwrap().ends_with("beta.go"));
+    assert_eq!(
+        first.imports().first().unwrap().import_path(),
+        "example.test/root/dep"
+    );
+    assert_eq!(
+        second.imports().first().unwrap().import_path(),
+        "example.test/root/dep"
+    );
 }
 
 #[test]
@@ -412,7 +433,7 @@ fn explicit_files_reject_cross_directory_packages() {
 }
 
 #[test]
-fn high_level_parse_errors_retain_the_exact_failing_file_revision() {
+fn high_level_parse_errors_retain_the_exact_failing_file_revision() -> Result<(), String> {
     let directory = tempfile::tempdir().unwrap();
     let valid = directory.path().join("alpha.go");
     let broken = directory.path().join("broken.go");
@@ -425,14 +446,16 @@ fn high_level_parse_errors_retain_the_exact_failing_file_revision() {
         valid.to_string_lossy().into_owned(),
     ])
     .unwrap_err();
-    let PathParseError::ParserError(error) = error else {
-        panic!("expected a parser error");
+    let error = match error {
+        PathParseError::ParserError(error) => error,
+        unexpected => return Err(format!("expected a parser error, got {unexpected}")),
     };
 
     assert!(error.path().ends_with("broken.go"));
     assert_eq!(error.source_text(), broken_source);
     assert!(error.line_column().is_some());
     assert!(Arc::ptr_eq(&error.snapshot(), &error.snapshot()));
+    Ok(())
 }
 
 #[cfg(unix)]

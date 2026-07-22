@@ -46,7 +46,7 @@ fn program(path: &str, source: &str) -> gors::parser::ParsedProgram {
 fn only_file(session: &CompilerSession) -> FileId {
     let files = session.database().active_files();
     assert_eq!(files.len(), 1);
-    files[0]
+    *files.first().unwrap()
 }
 
 fn functions(analysis: &FileAnalysis) -> BTreeMap<String, DefId> {
@@ -63,7 +63,7 @@ fn production_session_rejects_runtime_abi_without_packaging_support() {
     let error = CompilerSession::new(unsupported.clone())
         .err()
         .expect("a production session must reject an unpackaged runtime ABI");
-    assert_eq!(error.diagnostics()[0].code, "GORS2003");
+    assert_eq!(error.diagnostics().first().unwrap().code, "GORS2003");
     assert!(error.to_string().contains("synthetic-runtime-v99"));
     assert!(error.to_string().contains(gors::RUNTIME_ABI_ID));
 
@@ -71,7 +71,7 @@ fn production_session_rejects_runtime_abi_without_packaging_support() {
     let error = session
         .set_build_config(unsupported)
         .expect_err("reconfiguration must enforce the same packaging invariant");
-    assert_eq!(error.diagnostics()[0].code, "GORS2003");
+    assert_eq!(error.diagnostics().first().unwrap().code, "GORS2003");
     assert_eq!(
         session.database().build_config().unwrap().runtime_abi(),
         gors::RUNTIME_ABI_ID
@@ -116,7 +116,7 @@ fn different_length_private_body_edit_keeps_unrelated_products_green() {
     let file = only_file(&session);
     let package = session.database().package_for_file(file).unwrap();
     let ids = functions(&session.database().analyze_file(file).unwrap());
-    let g = ids["g"];
+    let g = *ids.get("g").unwrap();
     let before_package = session.database().analyze_package(package).unwrap();
     let before_public = session.database().public_api(file).unwrap();
     let before_hir = session.database().typed_hir(file, g).unwrap();
@@ -170,7 +170,9 @@ fn assert_unrelated_edit_keeps_g_green(edited: &str, inserts_declaration: bool) 
         .compile_program(program("main.go", ORIGINAL))
         .unwrap();
     let file = only_file(&session);
-    let g = functions(&session.database().analyze_file(file).unwrap())["g"];
+    let g = *functions(&session.database().analyze_file(file).unwrap())
+        .get("g")
+        .unwrap();
     let before_signature = session.database().typed_signature(file, g).unwrap();
     let before_hir = session.database().typed_hir(file, g).unwrap();
     let before_mir = session.database().verified_mir(file, g).unwrap();
@@ -207,7 +209,7 @@ fn target_change_invalidates_representation_but_not_go_semantics() {
         .unwrap();
     let file = only_file(&session);
     let ids = functions(&session.database().analyze_file(file).unwrap());
-    let g = ids["g"];
+    let g = *ids.get("g").unwrap();
     let before_hir = session.database().typed_hir(file, g).unwrap();
     let before_mir = session.database().verified_mir(file, g).unwrap();
     let before_normalized = session.database().normalized_mir(file, g).unwrap();
@@ -273,7 +275,9 @@ fn stateful_snapshots_query_verified_products_in_parallel() {
         .compile_program(program("main.go", ORIGINAL))
         .unwrap();
     let file = only_file(&session);
-    let g = functions(&session.database().analyze_file(file).unwrap())["g"];
+    let g = *functions(&session.database().analyze_file(file).unwrap())
+        .get("g")
+        .unwrap();
     let first = session.database().snapshot();
     let second = session.database().snapshot();
     let first_worker = std::thread::spawn(move || first.verified_rust_ir(file, g).unwrap());
@@ -303,7 +307,7 @@ fn production_package_index_rejects_cross_file_issues_before_codegen() {
         .compile_program(parsed)
         .err()
         .expect("duplicate package definitions should fail compilation");
-    assert_eq!(error.diagnostics()[0].code, "GORS2002");
+    assert_eq!(error.diagnostics().first().unwrap().code, "GORS2002");
     assert!(error.to_string().contains("duplicate package definition"));
     assert_eq!(
         session
@@ -337,7 +341,7 @@ fn failed_revision_does_not_leave_orphan_inputs_and_next_revision_recovers() {
         .compile_program(invalid)
         .err()
         .expect("unsupported revision must fail");
-    assert_eq!(error.diagnostics()[0].file, "/failed/bad.go");
+    assert_eq!(error.diagnostics().first().unwrap().file, "/failed/bad.go");
     assert_eq!(session.database().active_files().len(), 1);
 
     session
@@ -348,10 +352,11 @@ fn failed_revision_does_not_leave_orphan_inputs_and_next_revision_recovers() {
         .unwrap();
     let active = session.database().active_files();
     assert_eq!(active.len(), 1);
+    let active_file = *active.first().unwrap();
     assert_eq!(
         session
             .database()
-            .source_snapshot(active[0])
+            .source_snapshot(active_file)
             .unwrap()
             .path(),
         "/recovered/current.go"
@@ -377,7 +382,7 @@ func main() {}
         .compile_program(program("/checkout/current/main.go", source))
         .err()
         .expect("switch is outside the bootstrap frontier");
-    let diagnostic = &error.diagnostics()[0];
+    let diagnostic = error.diagnostics().first().unwrap();
     assert_eq!(diagnostic.file, "/checkout/current/main.go");
     assert_eq!(diagnostic.line, 8);
     assert_eq!(diagnostic.column, 5);

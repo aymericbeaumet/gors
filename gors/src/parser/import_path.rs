@@ -102,12 +102,18 @@ pub(super) fn validate(path: &str) -> Result<(), ImportPathIssue> {
 
 fn decode_go_string_literal(literal: &str) -> Result<Vec<u8>, ImportPathIssue> {
     let bytes = literal.as_bytes();
-    if bytes.len() < 2 || bytes.first() != bytes.last() {
+    let Some((&delimiter, trailing)) = bytes.split_first() else {
+        return Err(ImportPathIssue::MalformedLiteral);
+    };
+    let Some((&closing_delimiter, contents)) = trailing.split_last() else {
+        return Err(ImportPathIssue::MalformedLiteral);
+    };
+    if delimiter != closing_delimiter {
         return Err(ImportPathIssue::MalformedLiteral);
     }
 
-    match bytes[0] {
-        b'`' => Ok(bytes[1..bytes.len() - 1]
+    match delimiter {
+        b'`' => Ok(contents
             .iter()
             .copied()
             .filter(|byte| *byte != b'\r')
@@ -122,7 +128,9 @@ fn decode_interpreted_string(literal: &[u8]) -> Result<Vec<u8>, ImportPathIssue>
     let mut output = Vec::with_capacity(end.saturating_sub(1));
     let mut cursor = 1;
     while cursor < end {
-        let byte = literal[cursor];
+        let byte = *literal
+            .get(cursor)
+            .ok_or(ImportPathIssue::MalformedLiteral)?;
         if byte == b'"' || byte == b'\n' || byte == b'\r' {
             return Err(ImportPathIssue::MalformedLiteral);
         }
@@ -239,11 +247,10 @@ fn validate_element(element: &str) -> Result<(), ImportPathIssue> {
 }
 
 fn is_windows_absolute(path: &str) -> bool {
-    let bytes = path.as_bytes();
-    bytes.len() >= 3
-        && bytes[0].is_ascii_alphabetic()
-        && bytes[1] == b':'
-        && matches!(bytes[2], b'/' | b'\\')
+    let [drive, b':', separator, ..] = path.as_bytes() else {
+        return false;
+    };
+    drive.is_ascii_alphabetic() && matches!(separator, b'/' | b'\\')
 }
 
 fn is_reserved_windows_name(element: &str) -> bool {

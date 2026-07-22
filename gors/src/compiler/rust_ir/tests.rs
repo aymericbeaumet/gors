@@ -215,7 +215,7 @@ fn verifier_rejects_noncanonical_moves_and_clones() {
     "#;
 
     let mut premature_move = lower(source);
-    *read_op_mut(&mut premature_move, "twice", ReadOp::ProvenInitializedClone) =
+    *read_op_mut(&mut premature_move, "twice", ReadOp::ProvenInitializedClone).unwrap() =
         ReadOp::ProvenLastUseMove;
     refresh_test_effects(&mut premature_move);
     let error = premature_move.verify().unwrap_err();
@@ -226,7 +226,7 @@ fn verifier_rejects_noncanonical_moves_and_clones() {
     );
 
     let mut unnecessary_clone = lower(source);
-    *read_op_mut(&mut unnecessary_clone, "twice", ReadOp::ProvenLastUseMove) =
+    *read_op_mut(&mut unnecessary_clone, "twice", ReadOp::ProvenLastUseMove).unwrap() =
         ReadOp::ProvenInitializedClone;
     refresh_test_effects(&mut unnecessary_clone);
     let error = unnecessary_clone.verify().unwrap_err();
@@ -457,23 +457,26 @@ fn print_steps_mut(file: &mut File) -> &mut Vec<PrintStep> {
         .unwrap()
 }
 
-fn read_op_mut<'a>(file: &'a mut File, function_name: &str, expected: ReadOp) -> &'a mut ReadOp {
+fn read_op_mut<'a>(
+    file: &'a mut File,
+    function_name: &str,
+    expected: ReadOp,
+) -> Option<&'a mut ReadOp> {
     let function = file
         .functions
         .iter_mut()
-        .find(|function| function.name == function_name)
-        .unwrap();
+        .find(|function| function.name == function_name)?;
     for block in &mut function.blocks {
         for statement in &mut block.statements {
             if let Some(op) = rvalue_read_op_mut(&mut statement.value, expected) {
-                return op;
+                return Some(op);
             }
         }
         if let Some(op) = terminator_read_op_mut(&mut block.terminator, expected) {
-            return op;
+            return Some(op);
         }
     }
-    panic!("missing {expected:?} read in {function_name}")
+    None
 }
 
 fn rvalue_read_op_mut(rvalue: &mut Rvalue, expected: ReadOp) -> Option<&mut ReadOp> {
