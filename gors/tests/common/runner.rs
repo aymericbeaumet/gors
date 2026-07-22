@@ -97,7 +97,7 @@ impl ProgramFixtureRun {
 #[derive(Default)]
 struct RunMetrics {
     go: AtomicU64,
-    parse: AtomicU64,
+    source_load: AtomicU64,
     compile: AtomicU64,
     print: AtomicU64,
     write: AtomicU64,
@@ -119,9 +119,9 @@ impl RunMetrics {
 
     fn print(&self) {
         eprintln!(
-            "Timings: go={:?}, parse={:?}, compile={:?}, print={:?}, write={:?}, rustc={:?}, run={:?}, fixture-cache={} hits/{} misses",
+            "Timings: go={:?}, source-load={:?}, compile={:?}, print={:?}, write={:?}, rustc={:?}, run={:?}, fixture-cache={} hits/{} misses",
             Self::duration(&self.go),
-            Self::duration(&self.parse),
+            Self::duration(&self.source_load),
             Self::duration(&self.compile),
             Self::duration(&self.print),
             Self::duration(&self.write),
@@ -331,11 +331,11 @@ fn compile_and_run_generated_rust(
     }
     metrics.cache_misses.fetch_add(1, Ordering::Relaxed);
 
-    let source_path = dir.to_string_lossy().into_owned();
     let before = Instant::now();
-    let program = gors::parser::parse_program_files(&[source_path])
-        .map_err(|e| format!("parse failed: {e}"))?;
-    RunMetrics::add_duration(&metrics.parse, before.elapsed());
+    let program = gors::workspace::load_program(dir)
+        .map_err(|e| format!("source load failed: {e}"))?
+        .into_input();
+    RunMetrics::add_duration(&metrics.source_load, before.elapsed());
 
     let before = Instant::now();
     let compiled =

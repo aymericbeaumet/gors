@@ -22,6 +22,7 @@ for obsolete in \
   gors/src/compiler/backend \
   gors/src/compiler/rust_lowering \
   gors/src/mapping \
+  gors/src/parser/program.rs \
   www/wasm/pkg-threads
 do
   if [[ -e "${obsolete}" ]]; then
@@ -105,6 +106,14 @@ fail_on_matches \
   'high-level parser products must not leak source or publish static ASTs:' \
   "Box::leak|ast::File<'static>|merge_files" \
   gors/src/parser
+
+fail_on_matches \
+  'parser-owned program/package graphs and pre-compiler parsing are forbidden:' \
+  'ParsedProgram|ParsedPackage|PathParseError|parse_program(_files|_from_source)?' \
+  gors/src \
+  gors-cli/src \
+  www/wasm \
+  gors/tests
 
 fail_on_matches \
   'deleted compiler/runtime/browser paths must not be referenced:' \

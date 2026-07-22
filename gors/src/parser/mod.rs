@@ -7,7 +7,6 @@ mod expressions;
 mod functions;
 mod import_path;
 mod parameters;
-mod program;
 mod signatures;
 mod snapshot;
 mod statements;
@@ -23,10 +22,6 @@ use version::extract_go_version;
 pub use error::{ParserError, Result};
 pub use import_path::ImportPathIssue;
 pub(crate) use import_path::decode_and_validate as decode_import_path_literal;
-pub use program::{
-    ParsedPackage, ParsedProgram, PathParseError, parse_path, parse_program, parse_program_files,
-    parse_program_from_source,
-};
 pub use snapshot::{
     FileParseError, InvalidImportPathError, ParsedFile, ParsedFileError, SourceContent,
     SourceSnapshot,

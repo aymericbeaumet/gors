@@ -264,20 +264,18 @@ pub fn compile_file_to_rust_syntax(file: ast::File<'_>) -> Result<syn::File, Com
     compile_file(&file).map_err(CompilerError::from)
 }
 
-/// Compile a parsed program into deterministic, self-contained Rust units.
+/// Compile raw program inputs into deterministic, self-contained Rust units.
 ///
 /// The bootstrap backend deliberately accepts exactly one import-free `main`
-/// source file. Wider independently parsed package products are rejected before
-/// lowering until package-level semantic indexing is implemented.
-pub fn compile_program(
-    program: crate::parser::ParsedProgram,
-) -> Result<CompiledProgram, CompilerError> {
+/// source file. Wider package manifests are rejected before lowering until
+/// cross-package semantic indexing is implemented.
+pub fn compile_program(program: input::ProgramInput) -> Result<CompiledProgram, CompilerError> {
     compile_program_impl(program, false).map(|(compiled, _)| compiled)
 }
 
 /// Compile a program and return its explicit source-map plan.
 pub fn compile_program_with_source_map(
-    program: crate::parser::ParsedProgram,
+    program: input::ProgramInput,
 ) -> Result<(CompiledProgram, SourceMapPlan), CompilerError> {
     compile_program_impl(program, true).and_then(|(compiled, plan)| {
         plan.map(|plan| (compiled, plan))
@@ -286,7 +284,7 @@ pub fn compile_program_with_source_map(
 }
 
 fn compile_program_impl(
-    program: crate::parser::ParsedProgram,
+    program: input::ProgramInput,
     with_source_map: bool,
 ) -> Result<(CompiledProgram, Option<SourceMapPlan>), CompilerError> {
     // The free facade is intentionally one-shot. Avoid constructing native

@@ -230,36 +230,18 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
     }
     timings.cache_event("compiler", false);
 
-    let parse_timer = timings.phase("cli.parse");
-    let program = match gors::parser::parse_program(&cmd.path) {
-        Ok(result) => result,
-        Err(gors::parser::PathParseError::ParserError(err)) => {
-            let diagnostic = Diagnostic::from_file_parse_error(&err);
-            print_error(&diagnostic);
-            std::process::exit(1);
-        }
-        Err(gors::parser::PathParseError::InvalidImportPath(err)) => {
-            let diagnostic = Diagnostic::from_invalid_import_path(&err);
-            print_error(&diagnostic);
-            std::process::exit(1);
-        }
-        Err(err) => {
-            eprintln!("error: {}", err);
-            std::process::exit(1);
-        }
-    };
-    drop(parse_timer);
-    let inputs = InputSnapshot::capture(&program, &source_paths)?;
-
-    let primary_file = program
-        .main_package()
-        .files()
-        .first()
-        .map(|file| file.path().to_string())
-        .unwrap_or_else(|| cmd.path.clone());
+    let source_load_timer = timings.phase("cli.source_load");
+    let loaded = gors::workspace::load_program(&cmd.path)?;
+    drop(source_load_timer);
+    let inputs = InputSnapshot::capture(&loaded)?;
+    let primary_file = loaded.primary_diagnostic_path().to_string();
 
     let compile_timer = timings.phase("cli.compile");
-    let compilation = compile_program(program, sourcemap_path.is_some(), &compiler_host);
+    let compilation = compile_program(
+        loaded.into_input(),
+        sourcemap_path.is_some(),
+        &compiler_host,
+    );
     timings.scheduler_telemetry(compiler_host.telemetry());
     drop(compiler_host);
     let (compiled, source_map_plan) = match compilation {
@@ -506,7 +488,7 @@ fn gors_cache_base() -> Result<PathBuf, Box<dyn std::error::Error>> {
 }
 
 fn compile_program(
-    program: gors::parser::ParsedProgram,
+    program: gors::compiler::input::ProgramInput,
     source_maps: bool,
     host: &gors::compiler::CompilerHost,
 ) -> Result<
@@ -638,36 +620,14 @@ fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
         timings.cache_event("compiler", true);
     } else {
         timings.cache_event("compiler", false);
-        let parse_timer = timings.phase("cli.parse");
-        let program = match gors::parser::parse_program_files(&source_paths) {
-            Ok(result) => result,
-            Err(gors::parser::PathParseError::ParserError(err)) => {
-                let diagnostic = Diagnostic::from_file_parse_error(&err);
-                print_error(&diagnostic);
-                std::process::exit(1);
-            }
-            Err(gors::parser::PathParseError::InvalidImportPath(err)) => {
-                let diagnostic = Diagnostic::from_invalid_import_path(&err);
-                print_error(&diagnostic);
-                std::process::exit(1);
-            }
-            Err(err) => {
-                eprintln!("error: {}", err);
-                std::process::exit(1);
-            }
-        };
-        drop(parse_timer);
-        let inputs = InputSnapshot::capture(&program, &source_paths)?;
-
-        let primary_file = program
-            .main_package()
-            .files()
-            .first()
-            .map(|file| file.path().to_string())
-            .unwrap_or_else(|| source_paths.first().cloned().unwrap_or_default());
+        let source_load_timer = timings.phase("cli.source_load");
+        let loaded = gors::workspace::load_program_files(&source_paths)?;
+        drop(source_load_timer);
+        let inputs = InputSnapshot::capture(&loaded)?;
+        let primary_file = loaded.primary_diagnostic_path().to_string();
 
         let compile_timer = timings.phase("cli.compile");
-        let compilation = compile_program(program, false, &compiler_host);
+        let compilation = compile_program(loaded.into_input(), false, &compiler_host);
         timings.scheduler_telemetry(compiler_host.telemetry());
         drop(compiler_host);
         let compiled = match compilation {

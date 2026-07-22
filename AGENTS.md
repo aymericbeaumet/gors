@@ -46,11 +46,13 @@ unsupported diagnostic over fallback to an old lowering path.
   self-referential `'static` ASTs are forbidden in the query database.
 - Parse files independently. Multi-file package composition belongs in the
   semantic package index, not an AST merge that invalidates every file.
-- The high-level input boundary is `SourceSnapshot` -> `ParsedFile` ->
-  `ParsedPackage`. `SourceSnapshot::from_source` is deliberately unvalidated so
-  syntax errors remain parse-query outputs. `ParsedFile::parse` creates a
-  temporary AST borrowing only that file's immutable snapshot; do not store that
-  view in `ParsedProgram` or recreate a package-wide AST.
+- The production input boundary is `ProgramInput` -> `SourceFileInput` ->
+  `SourceSnapshot` -> query-owned file projection. `SourceSnapshot::from_source`
+  is deliberately syntax-unvalidated so syntax errors remain parse-query
+  outputs. A projection creates one temporary AST borrowing only that file's
+  immutable snapshot and publishes owned semantic products. The parser-owned
+  `ParsedProgram` and package-graph layer were deleted; do not recreate either
+  a package-wide AST or a parser-side program model.
 
 ### Typed HIR
 
@@ -263,9 +265,11 @@ paths, and URIs are retained byte-for-byte; explicit `//line` filenames are
 resolved lexically against the initial source directory without host-platform
 `Path` normalization. Stable file identity still comes from the manifest's
 logical path. Physical comment coordinates are derived from byte offsets and
-`SourceContent`. Query-owned import issues and semantic spans retain explicit
-virtual origins; later diagnostic and source-map publication must preserve that
-typed distinction instead of repainting every string filename.
+`SourceContent`, and query-owned import issues retain explicit virtual origins.
+This is only the scanner/query foundation: typed physical byte anchors plus a
+separate virtual-coordinate map must still replace mixed string/line/column
+provenance throughout HIR, MIR, Rust IR, diagnostics, and source maps. That
+end-to-end byte-anchor provenance is P0.
 
 The file projection owns decoded direct-import occurrences, structured invalid
 imports, and owned source comments from its one ephemeral parse. Those products
@@ -273,16 +277,27 @@ contain `FileId` and content-relative provenance, never checkout paths. Import
 paths are sorted and deduplicated only at the package-analysis boundary;
 occurrence products preserve source order and duplicates.
 
-Production callers still construct a validated `ParsedProgram` before entering
-`CompilerSession`, so CLI and browser paths repeat parsing and syntax-invalid
-revisions cannot yet participate in retained-session recovery. Replacing that
-boundary with an unvalidated source/package manifest owned by the query system
-is P0; do not mistake content/path separation for owned incremental syntax.
-`compiler::input` now provides the syntax-unvalidated, enum-tagged
-`ProgramInput` model, and `workspace` can select and read a command-line package
-exactly once without parsing or recursive import discovery. These foundations
-are not the production boundary until `CompilerSession`, CLI, and Wasm accept
-them directly and production references to `ParsedProgram` are removed.
+`CompilerSession` and the free compiler facade now accept the syntax-unvalidated
+`ProgramInput` model directly. The CLI uses `workspace` to select and read raw
+command-line files exactly once; Wasm constructs a raw browser manifest without
+a presentation-layer parse. Syntax failures are therefore parse-query outputs
+inside the retained session. The browser also consumes query-owned comments, so
+imports, invalid-import facts, semantic projection, and comment projection share
+the file projection's single ephemeral parse. CLI timing report schema v4 names
+the filesystem admission phase `cli.source_load`, not `cli.parse`.
+
+Workspace and package identities are enum-tagged `WorkspaceKey` and
+`PackageKey` values encoded directly by the collision-checked semantic interner;
+do not flatten them into caller-constructed strings. Every package explicitly
+listed in a manifest is installed as an input, but compilation requests only
+the entry package's semantic root. Unrelated manifest packages must remain
+unparsed and unanalyzed until a query actually depends on them.
+
+The raw workspace loader deliberately performs no recursive module or import
+discovery. The deleted parser package graph has no compatibility shim. Rebuild
+module resolution as query-owned manifest expansion from decoded direct-import
+facts and resolver source metadata; never reintroduce parser recursion or a
+second pre-query parse.
 
 Source mappings and diagnostics are ordinary explicit outputs. The current
 `SourceMapPlan` follows that rule and is safe to build or consume independently;
@@ -391,7 +406,7 @@ weaken parser behavior to fit the bootstrap backend.
       src/
         artifact/           terminal runtime and artifact packaging inputs
         scanner/            Go tokenization
-        parser/             Go parsing, imports, and go.mod discovery
+        parser/             independent Go file parsing
         ast/                parser-owned Go AST
         compiler/
           db/               demand-driven compiler queries and telemetry

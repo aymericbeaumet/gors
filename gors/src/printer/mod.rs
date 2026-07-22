@@ -192,12 +192,28 @@ mod tests {
     use std::collections::BTreeMap;
     use std::process::Command;
 
+    use crate::compiler::input::{
+        PackageInputManifest, PackageKey, ProgramInput, SourceFileInput, WorkspaceKey,
+    };
+
+    fn program(filename: &str, source: &str) -> ProgramInput {
+        let package = PackageKey::command_line();
+        let file = SourceFileInput::from_source(filename, filename, source).unwrap();
+        let manifest = PackageInputManifest::new(package.clone(), [file]).unwrap();
+        ProgramInput::new(
+            WorkspaceKey::ad_hoc("printer-tests").unwrap(),
+            package,
+            [manifest],
+        )
+        .unwrap()
+    }
+
     #[test]
     fn source_map_plan_maps_terminal_output() {
         let go_source = "package main\n\nfunc main() {}\n";
-        let parsed = crate::parser::parse_program_from_source("test.go", go_source).unwrap();
         let (compiled, source_map_plan) =
-            crate::compiler::compile_program_with_source_map(parsed).unwrap();
+            crate::compiler::compile_program_with_source_map(program("test.go", go_source))
+                .unwrap();
         let rust_source = super::generate_single(compiled).unwrap();
         let source_map = source_map_plan.build(&rust_source);
 
@@ -297,8 +313,7 @@ mod tests {
     #[test]
     fn runtime_program_compiles_in_multi_and_single_layouts() {
         let source = "package main\nfunc join(left string, right string) string { return left + right }\nfunc main() { println(join(\"\\xff\", \"\\x00\")) }\n";
-        let program = crate::parser::parse_program_from_source("main.go", source).unwrap();
-        let compiled = crate::compiler::compile_program(program).unwrap();
+        let compiled = crate::compiler::compile_program(program("main.go", source)).unwrap();
         let temporary = tempfile::tempdir().unwrap();
         let expected = [0xff, 0, b'\n'];
 

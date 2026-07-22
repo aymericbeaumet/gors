@@ -27,6 +27,7 @@ use super::ids::{
     DefId, DefinitionKey, DefinitionKind, FileId, IdentityCollision, IdentityInterner, NodeId,
     PackageId, SourceSpan,
 };
+use super::input::{PackageKey, WorkspaceKey};
 use super::types::{ConstValue, IntTy, Signature, Ty, UntypedTy};
 
 #[derive(Clone)]
@@ -68,17 +69,15 @@ pub(super) fn lower_file(file: &ast::File<'_>) -> Result<hir::File, Vec<Diagnost
     // command-line fallback is stable across checkout roots, while production
     // program compilation supplies the parsed package's canonical import path.
     let logical_file = logical_file_name(&file.file_start);
-    let context = semantic_context(
-        "gors:canonical-workspace",
-        &format!("command-line-package:{}", file.name.name),
-        &logical_file,
-    )?;
+    let workspace = WorkspaceKey::AdHoc("gors:canonical-workspace".into());
+    let package = PackageKey::CommandLine;
+    let context = semantic_context(&workspace, &package, &logical_file)?;
     lower_file_with_context(file, context)
 }
 
 pub(super) fn semantic_context(
-    workspace: &str,
-    package_identity: &str,
+    workspace: &WorkspaceKey,
+    package_identity: &PackageKey,
     logical_file: &str,
 ) -> Result<SemanticContext, Vec<Diagnostic>> {
     let mut identities = IdentityInterner::default();

@@ -4,6 +4,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+const TIMING_REPORT_VERSION: u32 = 4;
+
 #[derive(Clone)]
 pub struct TimingCollector {
     inner: Arc<TimingCollectorInner>,
@@ -135,7 +137,7 @@ impl TimingCollector {
             .lock()
             .map_err(|_| "scheduler timing storage is unavailable")?;
         let report = TimingReport {
-            version: 3,
+            version: TIMING_REPORT_VERSION,
             command,
             jobs: self.inner.jobs.get(),
             total_ms: duration_ms(self.inner.started.elapsed()),
@@ -197,7 +199,7 @@ mod tests {
         let path = temp.path().join("nested").join("timings.json");
         let collector = TimingCollector::new(NonZeroUsize::new(2).unwrap());
         {
-            let _phase = collector.phase("cli.test");
+            let _phase = collector.phase("cli.source_load");
         }
         collector.cache_event("compiler", true);
         collector
@@ -206,7 +208,7 @@ mod tests {
 
         let value: serde_json::Value =
             serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-        assert_eq!(value.get("version").unwrap(), 3);
+        assert_eq!(value.get("version").unwrap(), TIMING_REPORT_VERSION);
         assert_eq!(value.get("command").unwrap(), "build");
         assert_eq!(value.get("jobs").unwrap(), 2);
         let scheduler = value
@@ -224,7 +226,7 @@ mod tests {
             .and_then(serde_json::Value::as_array)
             .and_then(|phases| phases.first())
             .unwrap();
-        assert_eq!(first_phase.get("name").unwrap(), "cli.test");
+        assert_eq!(first_phase.get("name").unwrap(), "cli.source_load");
         let first_cache_event = value
             .get("cacheEvents")
             .and_then(serde_json::Value::as_array)

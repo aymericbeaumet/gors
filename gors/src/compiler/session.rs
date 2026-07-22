@@ -4,17 +4,15 @@ mod prewarm;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
-
-use crate::parser::{ParsedPackage, ParsedProgram};
+use std::sync::Arc;
 
 use super::db::{
     BuildConfig, CompilerDatabase, PackageAnalysis, PackageIssue, QueryError, StageFailure,
 };
 use super::ids::{FileId, PackageId};
+use super::input::{PackageInputManifest, ProgramInput, WorkspaceKey};
 use super::scheduler::{CompilerHost, SchedulerTelemetry};
 use super::{CompiledProgram, CompilerDiagnostic, CompilerError, SourceMapPlan, emit};
-
-const WORKSPACE_IDENTITY: &str = "gors:canonical-workspace";
 
 /// One reusable production compiler context.
 ///
@@ -105,7 +103,7 @@ impl CompilerSession {
     /// Compile through the complete tracked semantic and representation spine.
     pub fn compile_program(
         &mut self,
-        program: ParsedProgram,
+        program: ProgramInput,
     ) -> Result<CompiledProgram, CompilerError> {
         self.compile(program, false).map(|(compiled, _)| compiled)
     }
@@ -113,7 +111,7 @@ impl CompilerSession {
     /// Compile and retain independently owned source-map inputs.
     pub fn compile_program_with_source_map(
         &mut self,
-        program: ParsedProgram,
+        program: ProgramInput,
     ) -> Result<(CompiledProgram, SourceMapPlan), CompilerError> {
         self.compile(program, true).and_then(|(compiled, plan)| {
             plan.map(|plan| (compiled, plan)).ok_or_else(|| {
@@ -124,28 +122,18 @@ impl CompilerSession {
 
     fn compile(
         &mut self,
-        program: ParsedProgram,
+        program: ProgramInput,
         with_source_map: bool,
     ) -> Result<(CompiledProgram, Option<SourceMapPlan>), CompilerError> {
         let installed = self.install_program(&program)?;
-        if installed.inputs_changed {
-            self.ready_package_roots.clear();
+        let main_analysis = self
+            .database
+            .analyze_package(installed.main_package)
+            .map_err(|error| self.query_error(error))?;
+        if !main_analysis.issues().is_empty() {
+            return Err(self.package_issues(installed.main_package, main_analysis.issues()));
         }
-        let mut analyses = BTreeMap::new();
-        for package in &installed.packages {
-            let analysis = self
-                .database
-                .analyze_package(*package)
-                .map_err(|error| self.query_error(error))?;
-            if !analysis.issues().is_empty() {
-                return Err(self.package_issues(*package, analysis.issues()));
-            }
-            analyses.insert(*package, analysis);
-        }
-        let main_analysis = analyses.get(&installed.main_package).ok_or_else(|| {
-            CompilerError::backend("installed entry package has no semantic package index")
-        })?;
-        self.validate_bootstrap_boundary(&program, &installed, main_analysis)?;
+        self.validate_bootstrap_boundary(&installed, &main_analysis)?;
 
         for file in &installed.main_files {
             self.database
@@ -155,7 +143,7 @@ impl CompilerSession {
         // A completed wave marks every per-definition root ready even when
         // canonical package assembly will select a cached stage failure below.
         if self.ready_package_roots.insert(installed.main_package)
-            && let Err(error) = self.prewarm_rust_ir(main_analysis)
+            && let Err(error) = self.prewarm_rust_ir(&main_analysis)
         {
             self.ready_package_roots.remove(&installed.main_package);
             return Err(error);
@@ -165,7 +153,7 @@ impl CompilerSession {
             .verified_rust_ir_package(installed.main_package)
             .map_err(|error| self.query_error(error))?;
         let source_map = with_source_map
-            .then(|| self.source_map_plan(&installed, main_analysis, rust_ir.file()))
+            .then(|| self.source_map_plan(&installed, &main_analysis, rust_ir.file()))
             .transpose()?;
         let entry = emit::emit_file(rust_ir.file())
             .map_err(|diagnostic| CompilerError::from(vec![diagnostic]))?;
@@ -180,7 +168,7 @@ impl CompilerSession {
 
     fn install_program(
         &mut self,
-        program: &ParsedProgram,
+        program: &ProgramInput,
     ) -> Result<InstalledProgram, CompilerError> {
         let previous_sources = self
             .database
@@ -194,20 +182,24 @@ impl CompilerSession {
             .collect::<Result<BTreeMap<_, _>, _>>()
             .map_err(|error| self.query_error(error))?;
         match self.install_program_inputs(program) {
-            Ok((mut installed, next_sources)) => {
-                installed.inputs_changed |= previous_sources.len() != next_sources.len()
-                    || previous_sources
-                        .keys()
-                        .any(|file| !next_sources.contains(file));
+            Ok((installed, next_sources, mut changed_packages)) => {
                 let stale = previous_sources
                     .keys()
                     .filter(|file| !next_sources.contains(file))
                     .copied()
                     .collect::<Vec<_>>();
                 for file in stale {
+                    let package = self
+                        .database
+                        .package_for_file(file)
+                        .map_err(|error| self.query_error(error))?;
+                    changed_packages.insert(package);
                     self.database
                         .remove_source(file)
                         .map_err(|error| self.query_error(error))?;
+                }
+                for package in changed_packages {
+                    self.ready_package_roots.remove(&package);
                 }
                 Ok(installed)
             }
@@ -230,32 +222,32 @@ impl CompilerSession {
 
     fn install_program_inputs(
         &mut self,
-        program: &ParsedProgram,
-    ) -> Result<(InstalledProgram, BTreeSet<FileId>), CompilerError> {
+        program: &ProgramInput,
+    ) -> Result<(InstalledProgram, BTreeSet<FileId>, BTreeSet<PackageId>), CompilerError> {
         let mut next_sources = BTreeSet::new();
-        let mut packages = Vec::new();
-        let mut inputs_changed = false;
-        for package in program.imports() {
-            let (_, package_id) =
-                self.install_package(package, &mut next_sources, &mut inputs_changed)?;
-            packages.push(package_id);
+        let mut changed_packages = BTreeSet::new();
+        let mut main = None;
+        for package in program.packages() {
+            let (files, package_id) = self.install_package(
+                program.workspace(),
+                package,
+                &mut next_sources,
+                &mut changed_packages,
+            )?;
+            if package.key() == program.entry_package().key() {
+                main = Some((files, package_id));
+            }
         }
-        let (main_files, main_package) = self.install_package(
-            program.main_package(),
-            &mut next_sources,
-            &mut inputs_changed,
-        )?;
-        packages.push(main_package);
-        packages.sort();
-        packages.dedup();
+        let (main_files, main_package) = main.ok_or_else(|| {
+            CompilerError::backend("validated program input omitted its entry package")
+        })?;
         Ok((
             InstalledProgram {
                 main_package,
                 main_files,
-                packages,
-                inputs_changed,
             },
             next_sources,
+            changed_packages,
         ))
     }
 
@@ -276,47 +268,50 @@ impl CompilerSession {
 
     fn install_package(
         &mut self,
-        package: &ParsedPackage,
+        workspace: &WorkspaceKey,
+        package: &PackageInputManifest,
         next_sources: &mut BTreeSet<FileId>,
-        inputs_changed: &mut bool,
+        changed_packages: &mut BTreeSet<PackageId>,
     ) -> Result<(Vec<InstalledFile>, PackageId), CompilerError> {
-        let package_identity = canonical_package_identity(package);
         let mut installed = Vec::with_capacity(package.files().len());
         let mut package_id = None;
         for file in package.files() {
-            let logical_path = portable_logical_filename(file.path());
+            let logical_path = file.logical_path().to_string();
+            let snapshot = file.snapshot();
             let update = self
                 .database
                 .set_source(
-                    WORKSPACE_IDENTITY,
-                    &package_identity,
+                    workspace,
+                    package.key(),
                     &logical_path,
-                    file.snapshot(),
+                    Arc::clone(&snapshot),
                 )
                 .map_err(|error| self.query_error(error))?;
-            *inputs_changed |= update.semantic_changed();
             let id = update.file();
             let current_package = self
                 .database
                 .package_for_file(id)
                 .map_err(|error| self.query_error(error))?;
+            if update.semantic_changed() {
+                changed_packages.insert(current_package);
+            }
             if package_id
                 .replace(current_package)
                 .is_some_and(|old| old != current_package)
             {
                 return Err(CompilerError::backend(
-                    "one parsed package produced multiple stable package identities",
+                    "one package input produced multiple stable package identities",
                 ));
             }
             next_sources.insert(id);
             installed.push(InstalledFile {
                 id,
                 logical_path,
-                original_path: file.path().to_string(),
+                original_path: snapshot.diagnostic_path().to_string(),
             });
         }
         let package_id = package_id.ok_or_else(|| {
-            CompilerError::unsupported("the parsed entry package contains no Go source files")
+            CompilerError::backend("validated package input contains no Go source files")
         })?;
         installed.sort_by(|left, right| left.logical_path.cmp(&right.logical_path));
         Ok((installed, package_id))
@@ -324,7 +319,6 @@ impl CompilerSession {
 
     fn validate_bootstrap_boundary(
         &self,
-        program: &ParsedProgram,
         installed: &InstalledProgram,
         analysis: &PackageAnalysis,
     ) -> Result<(), CompilerError> {
@@ -339,7 +333,7 @@ impl CompilerSession {
                 "the bootstrap backend requires exactly one Go source file",
             ));
         }
-        if !program.imports().is_empty() || !program.stdlib_imports().is_empty() {
+        if !analysis.direct_imports().is_empty() {
             return Err(boundary_error(
                 file,
                 "imports are not implemented by the HIR/MIR backend",
@@ -596,30 +590,12 @@ fn validate_packaged_runtime_abi(config: &BuildConfig) -> Result<(), CompilerErr
 struct InstalledProgram {
     main_package: PackageId,
     main_files: Vec<InstalledFile>,
-    packages: Vec<PackageId>,
-    inputs_changed: bool,
 }
 
 struct InstalledFile {
     id: FileId,
     logical_path: String,
     original_path: String,
-}
-
-fn canonical_package_identity(package: &ParsedPackage) -> String {
-    if package.import_path().is_empty() {
-        format!("command-line-package:{}", package.name())
-    } else {
-        format!("import:{}", package.import_path())
-    }
-}
-
-fn portable_logical_filename(path: &str) -> String {
-    path.rsplit(['/', '\\'])
-        .next()
-        .filter(|name| !name.is_empty())
-        .unwrap_or(path)
-        .to_string()
 }
 
 fn boundary_error(file: String, message: impl Into<String>) -> CompilerError {

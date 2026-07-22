@@ -9,8 +9,9 @@ fn forced_collision(_: &[u8]) -> StableFingerprint {
 #[test]
 fn identical_full_keys_reuse_an_identity() -> TestResult {
     let mut interner = IdentityInterner::default();
-    let first = interner.workspace("workspace")?;
-    let second = interner.workspace("workspace")?;
+    let key = WorkspaceKey::ad_hoc("workspace")?;
+    let first = interner.workspace(&key)?;
+    let second = interner.workspace(&key)?;
     assert_eq!(first, second);
     Ok(())
 }
@@ -18,9 +19,24 @@ fn identical_full_keys_reuse_an_identity() -> TestResult {
 fn package(
     interner: &mut IdentityInterner,
     import_path: &str,
-) -> Result<PackageId, IdentityCollision> {
-    let workspace = interner.workspace("workspace")?;
-    interner.package(workspace, import_path)
+) -> Result<PackageId, Box<dyn std::error::Error>> {
+    let workspace_key = WorkspaceKey::ad_hoc("workspace")?;
+    let workspace = interner.workspace(&workspace_key)?;
+    let package_key = PackageKey::import_path(import_path)?;
+    Ok(interner.package(workspace, &package_key)?)
+}
+
+#[test]
+fn structured_key_variants_have_distinct_identities() -> TestResult {
+    let mut interner = IdentityInterner::default();
+    let module = interner.workspace(&WorkspaceKey::module("example/workspace")?)?;
+    let ad_hoc = interner.workspace(&WorkspaceKey::ad_hoc("example/workspace")?)?;
+    assert_ne!(module, ad_hoc);
+
+    let import = interner.package(module, &PackageKey::import_path("command-line")?)?;
+    let command_line = interner.package(module, &PackageKey::command_line())?;
+    assert_ne!(import, command_line);
+    Ok(())
 }
 
 #[test]
@@ -96,8 +112,8 @@ fn repeated_init_definitions_require_stable_semantic_disambiguators() -> TestRes
 #[test]
 fn digest_collisions_compare_and_report_both_full_keys() -> TestResult {
     let mut interner = IdentityInterner::with_fingerprint(forced_collision);
-    interner.workspace("first")?;
-    let collision = match interner.workspace("second") {
+    interner.workspace(&WorkspaceKey::ad_hoc("first")?)?;
+    let collision = match interner.workspace(&WorkspaceKey::ad_hoc("second")?) {
         Ok(_) => return Err("expected a workspace identity collision".into()),
         Err(collision) => collision,
     };

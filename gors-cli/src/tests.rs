@@ -149,10 +149,11 @@ fn concurrent_output_publications_publish_one_consistent_transaction() {
                 )
                 .unwrap();
                 let source_paths = vec![source_path.to_string_lossy().into_owned()];
-                let program =
-                    gors::parser::parse_program(source_paths.first().expect("single source path"))
-                        .unwrap();
-                let inputs = InputSnapshot::capture(&program, &source_paths).unwrap();
+                let loaded = gors::workspace::load_program(
+                    source_paths.first().expect("single source path"),
+                )
+                .unwrap();
+                let inputs = InputSnapshot::capture(&loaded).unwrap();
                 let request = CacheRequest::new(CacheRequestOptions {
                     command: "run",
                     source_paths: &source_paths,

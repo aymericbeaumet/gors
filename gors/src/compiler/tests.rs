@@ -5,6 +5,18 @@ struct GeneratedRun {
     stderr: Vec<u8>,
 }
 
+fn raw_program(logical_path: &str, diagnostic_path: &str, source: &str) -> input::ProgramInput {
+    let package = input::PackageKey::command_line();
+    let file = input::SourceFileInput::from_source(logical_path, diagnostic_path, source).unwrap();
+    let manifest = input::PackageInputManifest::new(package.clone(), [file]).unwrap();
+    input::ProgramInput::new(
+        input::WorkspaceKey::ad_hoc("compiler-tests").unwrap(),
+        package,
+        [manifest],
+    )
+    .unwrap()
+}
+
 fn compile_and_run(source: &str) -> GeneratedRun {
     let ast = crate::parser::parse_file("generated.go", source).unwrap();
     let rust_file = compile_file(&ast).expect("compile Go through verified MIR");
@@ -243,18 +255,31 @@ fn imports_fail_before_partial_codegen() {
 
 #[test]
 fn program_boundary_rejects_multiple_independent_files() {
-    let directory = tempfile::tempdir().unwrap();
-    std::fs::write(
-        directory.path().join("main.go"),
-        "package main\nfunc main() {}\n",
+    let package = input::PackageKey::command_line();
+    let manifest = input::PackageInputManifest::new(
+        package.clone(),
+        [
+            input::SourceFileInput::from_source(
+                "main.go",
+                "/checkout/main.go",
+                "package main\nfunc main() {}\n",
+            )
+            .unwrap(),
+            input::SourceFileInput::from_source(
+                "other.go",
+                "/checkout/other.go",
+                "package main\nfunc helper() {}\n",
+            )
+            .unwrap(),
+        ],
     )
     .unwrap();
-    std::fs::write(
-        directory.path().join("other.go"),
-        "package main\nfunc helper() {}\n",
+    let program = input::ProgramInput::new(
+        input::WorkspaceKey::ad_hoc("compiler-tests").unwrap(),
+        package,
+        [manifest],
     )
     .unwrap();
-    let program = crate::parser::parse_program(&directory.path().to_string_lossy()).unwrap();
 
     let error = compile_program(program)
         .err()
@@ -272,7 +297,7 @@ fn program_boundary_requires_executable_main_signature() {
         "package main\nfunc main(value int) {}\n",
         "package main\nfunc main() int { return 0 }\n",
     ] {
-        let program = crate::parser::parse_program_from_source("main.go", source).unwrap();
+        let program = raw_program("main.go", "main.go", source);
         let error = compile_program(program)
             .err()
             .expect("invalid executable boundary rejected");
@@ -291,14 +316,12 @@ fn program_boundary_requires_executable_main_signature() {
 
 #[test]
 fn source_map_plans_are_independent_products() {
-    let first =
-        crate::parser::parse_program_from_source("first.go", "package main\nfunc main() {}\n")
-            .unwrap();
-    let second = crate::parser::parse_program_from_source(
+    let first = raw_program("first.go", "first.go", "package main\nfunc main() {}\n");
+    let second = raw_program(
+        "second.go",
         "second.go",
         "package main\nfunc main() { println(1) }\n",
-    )
-    .unwrap();
+    );
     let (first, first_plan) = compile_program_with_source_map(first).unwrap();
     let (second, second_plan) = compile_program_with_source_map(second).unwrap();
     let first_rust = crate::printer::generate_single(first).unwrap();

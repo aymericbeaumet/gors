@@ -199,3 +199,15 @@ func main() {
     assert!(source_map.contains("second revision has a longer comment"));
     assert!(!source_map.contains("first revision"));
 }
+
+#[test]
+fn retained_browser_session_recovers_after_a_syntax_invalid_revision() {
+    let mut compiler = GorsCompiler::new();
+
+    let invalid = compiler.build_rust("package main\nfunc main( {\n".to_string());
+    assert!(!invalid.success());
+
+    let recovered =
+        compiler.build_rust("package main\n\nfunc main() {\n\tprintln(1)\n}\n".to_string());
+    assert!(recovered.success());
+}

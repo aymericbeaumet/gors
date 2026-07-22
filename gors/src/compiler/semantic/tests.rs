@@ -196,8 +196,11 @@ fn canonical_import_paths_isolate_definition_ids_and_rust_symbols() {
     let source =
         "package shared\nfunc helper() int { return 42 }\nfunc main() { println(helper()) }\n";
     let parsed = crate::parser::parse_file("main.go", source).unwrap();
-    let first_context = semantic_context("workspace", "import:example/one", "main.go").unwrap();
-    let second_context = semantic_context("workspace", "import:example/two", "main.go").unwrap();
+    let workspace = WorkspaceKey::AdHoc("workspace".into());
+    let first_package = PackageKey::ImportPath("example/one".into());
+    let second_package = PackageKey::ImportPath("example/two".into());
+    let first_context = semantic_context(&workspace, &first_package, "main.go").unwrap();
+    let second_context = semantic_context(&workspace, &second_package, "main.go").unwrap();
     let first = lower_file_with_context(&parsed, first_context).unwrap();
     let second = lower_file_with_context(&parsed, second_context).unwrap();
     let first_id = function(&first, "helper").id;

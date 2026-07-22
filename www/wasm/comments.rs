@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use gors::sourcemap::{SourceMap, SourceMapBuilder};
 
@@ -20,39 +20,29 @@ struct CommentMapping {
     text: String,
 }
 
-pub(crate) fn collect(ast: &gors::ast::File<'_>, source: &str) -> Comments {
-    let mut doc_comment_lines = HashSet::new();
-    for declaration in &ast.decls {
-        if let gors::ast::Decl::FuncDecl(function) = declaration
-            && let Some(ref doc) = function.doc
-        {
-            for comment in &doc.list {
-                doc_comment_lines.insert(comment.slash.line as u32);
-            }
-        }
-    }
-
-    let mut comments = Vec::new();
-    for group in &ast.comments {
-        for comment in &group.list {
-            let go_line = comment.slash.line as u32;
-            let go_column = source
-                .lines()
-                .nth(comment.slash.line.saturating_sub(1))
-                .map(|line| {
-                    gors::sourcemap::utf8_byte_column_to_utf16(line, comment.slash.column as u32)
-                })
-                .unwrap_or(comment.slash.column as u32)
-                .saturating_sub(1);
-            comments.push(Comment {
-                go_line,
-                go_column,
-                text: comment.text.to_string(),
-                is_doc: doc_comment_lines.contains(&go_line),
-            });
-        }
-    }
-    Comments(comments)
+pub(crate) fn collect(comments: &gors::compiler::db::FileComments, source: &str) -> Comments {
+    Comments(
+        comments
+            .comments()
+            .iter()
+            .map(|comment| {
+                let go_line = u32::try_from(comment.line()).unwrap_or(u32::MAX);
+                let byte_column = u32::try_from(comment.column()).unwrap_or(u32::MAX);
+                let go_column = source
+                    .lines()
+                    .nth(comment.line().saturating_sub(1))
+                    .map(|line| gors::sourcemap::utf8_byte_column_to_utf16(line, byte_column))
+                    .unwrap_or(byte_column)
+                    .saturating_sub(1);
+                Comment {
+                    go_line,
+                    go_column,
+                    text: comment.text().to_string(),
+                    is_doc: comment.is_doc(),
+                }
+            })
+            .collect(),
+    )
 }
 
 pub(crate) fn insert_and_remap(

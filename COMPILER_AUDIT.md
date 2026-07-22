@@ -319,12 +319,16 @@ resolver modules. Query keys include source content, build tags, target,
 toolchain, compiler schema, package identity, and semantic dependencies.
 Serialized entries require schema validation and deterministic encoding.
 
-Program parsing now owns immutable, reference-counted per-file snapshots and
-creates only temporary AST views borrowing one snapshot. Structured,
-collision-checked keys provide stable workspace, package, file, and
-package-owned definition identities; moving a named definition between files
-in the same package does not change its `DefId`. Node, local, and basic-block
-IDs are still dense owner-local indexes, deliberately nonpersistent until an
+The production facade now accepts syntax-unvalidated `ProgramInput` manifests
+whose files own immutable, reference-counted snapshots. A tracked file
+projection creates only a temporary AST view borrowing one snapshot and
+publishes owned query products. The parser-owned program/package graph was
+deleted with no compatibility shim. Enum-tagged `WorkspaceKey` and `PackageKey`
+values are encoded directly into collision-checked semantic identities rather
+than flattened through string conventions. Stable workspace, package, file,
+and package-owned definition identities preserve a named definition's `DefId`
+when it moves between files in the same package. Node, local, and basic-block
+IDs remain dense owner-local indexes, deliberately nonpersistent until an
 incremental syntax layer can provide reusable anchors. They must not become
 independent query or CAS keys.
 
@@ -359,24 +363,37 @@ request path. A package-relative filename change remains a semantic identity
 change. Revision-scoped raw Salsa snapshots are scheduler-internal so callers
 cannot retain one and block a later mutation.
 
-This split does not yet give the production compiler ownership of syntax
-installation. Enum-tagged `ProgramInput`, package and file manifests now model
-unvalidated package identities, logical filenames, display paths, and
-`SourceContent`; the raw workspace loader selects and reads a command-line
-package exactly once without parsing or recursively discovering imports. The
-file projection also publishes owned imports, structured invalid imports, and
-physical comment anchors from its one ephemeral parse. Production entry points
-still validate into `ParsedProgram` before the session, however, so CLI and
-browser flows duplicate parser work and syntax-invalid edits cannot yet enter
-the retained database. The hard cut must wire the raw manifest through the
-session and remove every production `ParsedProgram` reference.
+The raw input hard cut is complete. `CompilerSession` and the free facade take
+`ProgramInput`; the CLI's raw workspace loader selects and reads command-line
+files exactly once, and Wasm constructs a direct browser manifest. Neither path
+performs a presentation-layer parse, so syntax-invalid revisions enter the
+query database and can recover in the retained browser session. The file
+projection publishes decoded import occurrences, structured invalid imports,
+physical comment anchors, and semantic facts from one ephemeral parse. Browser
+comment insertion consumes that query product rather than parsing again. CLI
+timing report schema v4 records raw filesystem admission as `cli.source_load`.
+
+All packages explicitly supplied by a manifest are installed under their typed
+workspace/package/file identities, but only the entry package is analyzed for
+the current compilation root. An unrelated package's syntax or semantic error
+must not fail the entry build until a query requests that package. This is
+demand-driven installation, not package support: the bootstrap backend still
+rejects imports and multi-file entry packages.
+
+The raw loader intentionally does not recurse through imports or discover a Go
+module. That former parser package-graph path was deleted rather than adapted.
+Canonical module/import discovery remains P0 and must be rebuilt as query-owned
+manifest expansion from file-projection direct-import facts plus resolver source
+metadata, without a parser-side graph or a second parse.
 
 Scanner positions now distinguish exact initial origins from explicit `//line`
 origins across Unix, Windows, and URI spellings without host-path
 normalization. Query-owned import diagnostics preserve that virtual filename,
 and comment positions are reconstructed physically from content byte offsets.
-The broader diagnostic and source-map provenance model still needs to carry
-that typed origin through every later stage rather than repainting string paths.
+Typed byte-anchor provenance is still P0: HIR, MIR, Rust IR, diagnostics, and
+source maps must carry stable `FileId` plus physical byte ranges and resolve
+virtual coordinates separately. Mixed filename/line/column spans are not an
+end-to-end provenance model.
 
 Native sessions can now share an explicit `CompilerHost` with one lazy bounded
 worker pool. Cold or changed revisions prewarm stable per-definition Rust-IR
@@ -487,10 +504,13 @@ Before broad stdlib work can be considered scalable, finish these foundations:
 
 - reusable owned incremental syntax anchors and provenance-free semantic
   fingerprints, while retaining diagnostic/source-map provenance separately;
-- retained-session adoption by long-lived Wasm, editor, and build-daemon entry
-  points and
+- query-owned module/import discovery and manifest expansion from direct-import
+  facts and resolver metadata, followed by the canonical package DAG;
+- typed physical byte-anchor provenance with separately resolved virtual
+  coordinates through diagnostics, Rust IR, emission, and source maps;
+- retained-session adoption by editor and build-daemon entry points, plus
   bounded per-definition invalidation beyond the current file-granular
-  parse/semantic projection;
+  parse/semantic projection; the browser worker already retains its session;
 - a checksummed cross-process semantic CAS with canonical schemas and atomic
   publication;
 - one global scheduler and job budget spanning queries, external codegen, and
@@ -653,6 +673,8 @@ Deliver:
 
 - preserve the completed owned and evictable per-file parse boundary with no
   leaked source revisions or package-wide AST merge;
+- preserve the syntax-unvalidated `ProgramInput` production boundary and the
+  deletion of the parser-owned program/package graph;
 - preserve stable workspace, package, file, and definition keys, then add
   reusable syntax anchors and stable local/node identities;
 - complete canonical packages, scopes, aliases, and declaration semantics;

@@ -21,6 +21,7 @@ use salsa::{Durability, Setter as _};
 use crate::parser::{SourceContent, SourceSnapshot};
 
 use super::ids::{DefId, FileId, IdentityInterner, PackageId};
+use super::input::{PackageKey, WorkspaceKey};
 use queries::{BuildInput, FileFacts, FunctionProjection, PackageInput, SourceInput};
 use telemetry::Telemetry;
 
@@ -215,8 +216,8 @@ impl CompilerDatabase {
     /// revision or worker cancellation.
     pub fn set_source(
         &mut self,
-        workspace: &str,
-        package: &str,
+        workspace: &WorkspaceKey,
+        package: &PackageKey,
         logical_path: &str,
         snapshot: Arc<SourceSnapshot>,
     ) -> Result<SourceUpdate, QueryError> {

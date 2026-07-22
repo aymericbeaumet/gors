@@ -144,48 +144,29 @@ impl CacheAccessLock {
 
 impl InputSnapshot {
     pub fn capture(
-        program: &gors::parser::ParsedProgram,
-        invocation_sources: &[String],
+        loaded: &gors::workspace::LoadedProgram,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut files = BTreeMap::new();
-        for file in program.main_package().files() {
-            files.insert(
-                normalized_path(Path::new(file.path()))?,
-                sha2_hash(file.source().as_bytes()),
-            );
-        }
-        for package in program.imports() {
+        for package in loaded.input().packages() {
             for file in package.files() {
+                let snapshot = file.snapshot();
                 files.insert(
-                    normalized_path(Path::new(file.path()))?,
-                    sha2_hash(file.source().as_bytes()),
+                    normalized_path(Path::new(snapshot.diagnostic_path()))?,
+                    hex_digest(snapshot.content_digest()),
                 );
             }
         }
 
-        let mut directory_paths = BTreeSet::new();
-        for package in program.imports() {
-            for file in package.files() {
-                if let Some(parent) = Path::new(file.path()).parent() {
-                    directory_paths.insert(normalized_path(parent)?);
-                }
-            }
-        }
-        if invocation_sources.len() == 1 {
-            let path = Path::new(
-                invocation_sources
-                    .first()
-                    .map(String::as_str)
-                    .unwrap_or_default(),
-            );
-            if path.is_dir() {
-                directory_paths.insert(normalized_path(path)?);
-            }
-        }
-
         let mut directories = BTreeMap::new();
-        for directory in directory_paths {
-            directories.insert(directory.clone(), eligible_go_files(Path::new(&directory))?);
+        for directory in loaded.watched_directories() {
+            let directory = normalized_path(directory)?;
+            let mut selected = files
+                .keys()
+                .filter(|path| Path::new(path).parent() == Some(Path::new(&directory)))
+                .cloned()
+                .collect::<Vec<_>>();
+            selected.sort();
+            directories.insert(directory, selected);
         }
 
         Ok(Self { files, directories })

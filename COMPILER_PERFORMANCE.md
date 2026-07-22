@@ -177,13 +177,13 @@ interned tokens, or another serializable owned form. Dropping the last semantic
 owner must release syntax and content memory independently of presentation
 state.
 
-`ParsedFile` now reference-counts one such presentation snapshot, and
-`ParsedPackage` stores immutable independently validated files rather than a
-merged AST. The bootstrap parser creates a temporary AST borrowing one snapshot
-while a consumer is executing and publishes no self-reference or `'static`
-fiction. The red-green database may later cache an owned syntax representation,
-but it must preserve this per-file release boundary and remain free of
-self-referential unsafe code.
+`ProgramInput` is the production syntax-unvalidated manifest. Each
+`SourceFileInput` owns a reference-counted snapshot; the tracked file projection
+creates a temporary AST borrowing one snapshot while the query executes and
+publishes no self-reference or `'static` fiction. The parser-owned program and
+package graph were deleted with no compatibility shim. The red-green database
+may later cache an owned syntax representation, but it must preserve this
+per-file release boundary and remain free of self-referential unsafe code.
 
 Parse one file per query. Package merging belongs in semantic indexing, not in
 an AST concatenation step, so a one-file edit cannot invalidate every parse
@@ -204,6 +204,10 @@ vector indexes, byte offsets, or traversal ordinals. At minimum:
 
 Stable, collision-checked `WorkspaceId`, `PackageId`, `FileId`, and
 package-owned `DefId` keys now implement the persistent part of this contract.
+A schema-tagged canonical encoder consumes enum-tagged `WorkspaceKey` and
+`PackageKey` values directly; callers do not manufacture flattened string
+identities. Every manifest package is installed under those identities, while
+semantic analysis remains demand-driven from the selected entry package.
 A named definition keeps its identity when it moves between files in one
 package, while identical package-clause names at distinct import paths remain
 distinct. `NodeId`, `LocalId`, and `BasicBlockId` are still dense owner-local
@@ -367,19 +371,26 @@ not determine semantics or be counted as the competitive production path.
 The following current mechanisms are useful bootstrap behavior but are not the
 architecture described here:
 
-- parser storage now separates canonical semantic `SourceContent` from
-  user-facing physical paths. An unchanged checkout-root move preserves all
-  semantic products, executes no query, requests no Salsa cancellation, and
-  schedules no worker wave while repackaging terminal maps and diagnostics with
-  the current request path. The production CLI still parses at least twice and
-  the browser path at least three times, however: callers validate a
-  `ParsedProgram` before session installation and projections parse again, while
-  browser comments parse separately. Syntax-invalid revisions therefore remain
-  outside the retained session. There is still no reusable incremental syntax
-  tree with stable syntax anchors or explicit parse-product memory accounting.
-  A syntax-unvalidated `ProgramInput` model and parse-free raw workspace loader
-  now exist, and the tracked file projection owns imports and comments from one
-  parse, but production callers have not yet cut over to those inputs;
+- parser storage separates canonical semantic `SourceContent` from user-facing
+  physical paths. An unchanged checkout-root move preserves all semantic
+  products, executes no query, requests no Salsa cancellation, and schedules no
+  worker wave while repackaging terminal maps and diagnostics with the current
+  request path. `CompilerSession` and the free facade now accept
+  syntax-unvalidated `ProgramInput`; the CLI raw loader reads each selected file
+  once, and Wasm builds a direct manifest. Syntax-invalid revisions therefore
+  enter the retained query session. Imports, structured invalid-import facts,
+  semantic projection, and browser comments share one query-owned ephemeral
+  parse. There is still no reusable incremental syntax tree with stable syntax
+  anchors or explicit parse-product memory accounting;
+- all explicitly supplied manifest packages are installed, but only the entry
+  package is analyzed until another query requests a package root. The raw
+  loader intentionally performs no recursive import or module discovery; that
+  graph must be rebuilt as query-owned manifest expansion from direct-import
+  facts and resolver metadata, not as a parser compatibility layer;
+- token and import products have typed origin foundations, but later stages
+  still mix physical byte positions with virtual filename/line/column values.
+  Stable typed byte anchors with separately resolved virtual coordinates remain
+  P0 for diagnostics, Rust IR provenance, emission anchors, and source maps;
 - workspace, package, file, and definition IDs are stable; node, local, and
   basic-block IDs are still revision-local dense indexes and cannot be
   persistent query or CAS keys;
@@ -397,9 +408,10 @@ architecture described here:
   host or budget, and every revision-scoped snapshot is joined before input
   mutation;
 - the browser worker explicitly retains one `CompilerSession` across changed
-  edits and uses its exact-output cache only when that artifact matches the
-  currently installed successful source revision; this is a real warm semantic
-  path, but it is not the native artifact certification boundary;
+  edits, consumes query-owned comments, and uses its exact-output cache only
+  when that artifact matches the currently installed successful source
+  revision; this is a real warm semantic path, but it is not the native artifact
+  certification boundary;
 - the CLI manifest validates and reuses a complete generated-output or
   executable request, but does not reuse semantic queries after an edit;
 - the bootstrap Rust artifact still recompiles its bundled runtime module for
@@ -409,7 +421,8 @@ architecture described here:
   process behavior and cannot enter behavior-validated performance evidence;
 - atomic query counters, Salsa execution and cancellation-request counters,
   scheduler wave evidence, and invalidation tests exist, and CLI/performance
-  timings record the exact compiler job budget; reports do not yet expose
+  timings record the exact compiler job budget. CLI timing report schema v4
+  names raw source admission `cli.source_load`; reports do not yet expose
   complete dependency traces, retained memory, or a foreground cancellation
   protocol;
 - `gors build` currently publishes generated Rust sources rather than a runnable
@@ -424,8 +437,9 @@ architecture described here:
   the native cold/warm artifact certification protocol.
 
 These are P0 foundations, not optional tuning: owned incremental syntax and
-provenance-free semantic fingerprints; cross-process semantic CAS; one global
-scheduler with cancellation and memory backpressure; a precompiled-runtime and
+provenance-free semantic fingerprints; query-owned module/import discovery;
+typed byte-anchor provenance; cross-process semantic CAS; one global scheduler
+with cancellation and memory backpressure; a precompiled-runtime and
 terminal-rustc feasibility decision; reachable content-addressed SDK shards;
 and enough generic language and package support to benchmark real stdlib work.
 
@@ -449,8 +463,9 @@ them at the owning boundary and delete the obsolete path in the same change.
    and definition keys; add reusable syntax anchors plus provenance-free
    semantic fingerprints before treating stage digests as CAS identities.
 3. Harden the production-session route from tracked file/package facts through
-   configured Rust IR, adopt retained sessions in long-lived entry points, and
-   prove bounded invalidation before broad language expansion.
+   configured Rust IR, extend retained sessions beyond the browser to native
+   editor/build-daemon owners, and prove bounded invalidation before broad
+   language expansion.
 4. Add the package DAG, API/body fingerprints, global scheduler, cancellation,
    memory budgets, and local semantic CAS while generic language support grows.
 5. Run the terminal Rust feasibility gate as soon as representative package

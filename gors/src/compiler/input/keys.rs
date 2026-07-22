@@ -3,8 +3,6 @@ use std::sync::Arc;
 
 use super::InputError;
 
-const IDENTITY_SCHEMA: &str = "gors-compiler-input-key-v1";
-
 /// Stable caller-selected identity of one compiler workspace.
 ///
 /// The identity is logical rather than physical. Callers must preserve it when
@@ -37,20 +35,6 @@ impl WorkspaceKey {
     pub fn logical_name(&self) -> &str {
         match self {
             Self::Module(name) | Self::AdHoc(name) => name,
-        }
-    }
-
-    /// Collision-free versioned identity for the semantic ID interner.
-    ///
-    /// Every component is byte-length-prefixed, so user text cannot collide
-    /// with a variant tag or another component boundary.
-    #[must_use]
-    pub fn stable_identity(&self) -> String {
-        match self {
-            Self::Module(module_path) => {
-                encode_stable_identity("workspace", "module", Some(module_path))
-            }
-            Self::AdHoc(name) => encode_stable_identity("workspace", "ad-hoc", Some(name)),
         }
     }
 
@@ -115,17 +99,6 @@ impl PackageKey {
         matches!(self, Self::CommandLine)
     }
 
-    /// Collision-free versioned identity for the semantic ID interner.
-    #[must_use]
-    pub fn stable_identity(&self) -> String {
-        match self {
-            Self::ImportPath(import_path) => {
-                encode_stable_identity("package", "import-path", Some(import_path))
-            }
-            Self::CommandLine => encode_stable_identity("package", "command-line", None),
-        }
-    }
-
     pub(super) fn validate(&self) -> Result<(), InputError> {
         if matches!(self, Self::ImportPath(path) if path.is_empty()) {
             return Err(InputError::EmptyPackageKey);
@@ -141,18 +114,4 @@ impl fmt::Display for PackageKey {
             Self::CommandLine => formatter.write_str("command-line package"),
         }
     }
-}
-
-fn encode_stable_identity(domain: &str, variant: &str, payload: Option<&str>) -> String {
-    let mut encoded = String::new();
-    for component in [Some(IDENTITY_SCHEMA), Some(domain), Some(variant), payload]
-        .into_iter()
-        .flatten()
-    {
-        encoded.push_str(&component.len().to_string());
-        encoded.push(':');
-        encoded.push_str(component);
-        encoded.push('|');
-    }
-    encoded
 }

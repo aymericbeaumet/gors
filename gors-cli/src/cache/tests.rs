@@ -141,6 +141,24 @@ fn input_snapshot_detects_file_edits_and_directory_membership_changes() {
 }
 
 #[test]
+fn input_snapshot_uses_the_loaded_revision_without_rereading_sources() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("main.go");
+    std::fs::write(&source, "package main\n").unwrap();
+    let loaded = gors::workspace::load_program(temp.path()).unwrap();
+
+    std::fs::write(&source, "package changed\n").unwrap();
+    std::fs::write(temp.path().join("added.go"), "package main\n").unwrap();
+    let snapshot = InputSnapshot::capture(&loaded).unwrap();
+
+    assert_eq!(
+        snapshot.files.get(&normalized_path(&source).unwrap()),
+        Some(&sha2_hash(b"package main\n"))
+    );
+    assert!(!snapshot.is_current());
+}
+
+#[test]
 fn normalization_is_stable_before_and_after_output_creation() {
     let temp = tempfile::tempdir().unwrap();
     let output = temp.path().join("missing").join("output");

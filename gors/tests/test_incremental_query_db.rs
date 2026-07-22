@@ -7,6 +7,7 @@ use gors::compiler::db::{
     BuildConfig, CompilerDatabase, FileAnalysis, PackageIssue, QueryError, QueryKind,
 };
 use gors::compiler::ids::{DefId, FileId};
+use gors::compiler::input::{PackageKey, WorkspaceKey};
 use gors::parser::{ImportPathIssue, SourceSnapshot};
 
 const ORIGINAL: &str = r#"package main
@@ -50,10 +51,23 @@ fn source(text: &str) -> Arc<SourceSnapshot> {
     Arc::new(SourceSnapshot::from_source("main.go", text))
 }
 
+fn workspace() -> WorkspaceKey {
+    WorkspaceKey::AdHoc("workspace".into())
+}
+
+fn package_key(import_path: &str) -> PackageKey {
+    PackageKey::ImportPath(import_path.into())
+}
+
 fn insert(db: &mut CompilerDatabase, text: &str) -> FileId {
-    db.set_source("workspace", "example/main", "main.go", source(text))
-        .unwrap()
-        .file()
+    db.set_source(
+        &workspace(),
+        &package_key("example/main"),
+        "main.go",
+        source(text),
+    )
+    .unwrap()
+    .file()
 }
 
 fn insert_file(
@@ -63,8 +77,8 @@ fn insert_file(
     text: &str,
 ) -> FileId {
     db.set_source(
-        "workspace",
-        import_path,
+        &workspace(),
+        &package_key(import_path),
         logical_path,
         Arc::new(SourceSnapshot::from_source(logical_path, text)),
     )
@@ -128,8 +142,8 @@ fn diagnostic_path_update_reuses_the_complete_semantic_pipeline() {
     let mut db = CompilerDatabase::default();
     let file = db
         .set_source(
-            "workspace",
-            "example/main",
+            &workspace(),
+            &package_key("example/main"),
             "main.go",
             Arc::new(SourceSnapshot::from_source(
                 "/checkout/one/main.go",
@@ -160,7 +174,12 @@ fn diagnostic_path_update_reuses_the_complete_semantic_pipeline() {
     let duplicate_content = moved_snapshot.content();
     let duplicate_content_weak = Arc::downgrade(&duplicate_content);
     let update = db
-        .set_source("workspace", "example/main", "main.go", moved_snapshot)
+        .set_source(
+            &workspace(),
+            &package_key("example/main"),
+            "main.go",
+            moved_snapshot,
+        )
         .unwrap();
     drop(duplicate_content);
     assert_eq!(update.file(), file);
@@ -213,8 +232,8 @@ fn diagnostic_path_update_reuses_a_cached_parse_failure() {
     let mut db = CompilerDatabase::default();
     let file = db
         .set_source(
-            "workspace",
-            "example/main",
+            &workspace(),
+            &package_key("example/main"),
             "main.go",
             Arc::new(SourceSnapshot::from_source("/old/main.go", invalid)),
         )
@@ -226,8 +245,8 @@ fn diagnostic_path_update_reuses_a_cached_parse_failure() {
 
     let update = db
         .set_source(
-            "workspace",
-            "example/main",
+            &workspace(),
+            &package_key("example/main"),
             "main.go",
             Arc::new(SourceSnapshot::from_source("/new/main.go", invalid)),
         )
@@ -402,8 +421,8 @@ fn import_line_directive_origin_is_retained_without_a_display_path() {
     let mut first = CompilerDatabase::default();
     let first_file = first
         .set_source(
-            "workspace",
-            "example/sample",
+            &workspace(),
+            &package_key("example/sample"),
             "src/main.go",
             Arc::new(SourceSnapshot::from_source("/checkout/one/main.go", source)),
         )
@@ -412,8 +431,8 @@ fn import_line_directive_origin_is_retained_without_a_display_path() {
     let mut second = CompilerDatabase::default();
     let second_file = second
         .set_source(
-            "workspace",
-            "example/sample",
+            &workspace(),
+            &package_key("example/sample"),
             "src/main.go",
             Arc::new(SourceSnapshot::from_source("/checkout/two/main.go", source)),
         )
@@ -614,8 +633,8 @@ fn parse_failure_products_ignore_checkout_paths() {
     let mut second = CompilerDatabase::default();
     let first_file = first
         .set_source(
-            "workspace",
-            "example/main",
+            &workspace(),
+            &package_key("example/main"),
             "main.go",
             Arc::new(SourceSnapshot::from_source(
                 "/checkout/one/main.go",
@@ -626,8 +645,8 @@ fn parse_failure_products_ignore_checkout_paths() {
         .file();
     let second_file = second
         .set_source(
-            "workspace",
-            "example/main",
+            &workspace(),
+            &package_key("example/main"),
             "main.go",
             Arc::new(SourceSnapshot::from_source(
                 "/checkout/two/main.go",
@@ -670,8 +689,8 @@ fn source_payloads_are_costed_and_released_per_file() {
     let first_bytes = first_source.retained_bytes();
     let first_file = db
         .set_source(
-            "workspace",
-            "example/main",
+            &workspace(),
+            &package_key("example/main"),
             "first.go",
             Arc::clone(&first_source),
         )
@@ -684,8 +703,8 @@ fn source_payloads_are_costed_and_released_per_file() {
     let second_bytes = second_source.retained_bytes();
     let second_file = db
         .set_source(
-            "workspace",
-            "example/main",
+            &workspace(),
+            &package_key("example/main"),
             "second.go",
             Arc::clone(&second_source),
         )

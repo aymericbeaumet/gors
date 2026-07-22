@@ -10,7 +10,9 @@ use std::fmt;
 
 use sha2::{Digest, Sha256};
 
-const IDENTITY_SCHEMA: &[u8] = b"gors-semantic-identity-v1";
+use super::input::{PackageKey, WorkspaceKey};
+
+const IDENTITY_SCHEMA: &[u8] = b"gors-semantic-identity-v2";
 
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
 struct StableFingerprint([u8; 32]);
@@ -309,11 +311,11 @@ impl DefinitionKey {
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum IdentityKey {
     Workspace {
-        logical_name: String,
+        key: WorkspaceKey,
     },
     Package {
         workspace: WorkspaceId,
-        import_path: String,
+        key: PackageKey,
     },
     File {
         package: PackageId,
@@ -336,17 +338,14 @@ impl IdentityKey {
         let mut encoded = CanonicalKey::default();
         encoded.bytes(IDENTITY_SCHEMA);
         match self {
-            Self::Workspace { logical_name } => {
+            Self::Workspace { key } => {
                 encoded.bytes(b"workspace");
-                encoded.string(logical_name);
+                encoded.workspace_key(key);
             }
-            Self::Package {
-                workspace,
-                import_path,
-            } => {
+            Self::Package { workspace, key } => {
                 encoded.bytes(b"package");
                 encoded.fingerprint(workspace.0);
-                encoded.string(import_path);
+                encoded.package_key(key);
             }
             Self::File {
                 package,
@@ -390,6 +389,29 @@ impl CanonicalKey {
         self.bytes(&value.0);
     }
 
+    fn workspace_key(&mut self, key: &WorkspaceKey) {
+        match key {
+            WorkspaceKey::Module(module_path) => {
+                self.bytes(b"module");
+                self.string(module_path);
+            }
+            WorkspaceKey::AdHoc(name) => {
+                self.bytes(b"ad-hoc");
+                self.string(name);
+            }
+        }
+    }
+
+    fn package_key(&mut self, key: &PackageKey) {
+        match key {
+            PackageKey::ImportPath(import_path) => {
+                self.bytes(b"import-path");
+                self.string(import_path);
+            }
+            PackageKey::CommandLine => self.bytes(b"command-line"),
+        }
+    }
+
     fn finish(self) -> Vec<u8> {
         self.bytes
     }
@@ -415,22 +437,20 @@ impl Default for IdentityInterner {
 impl IdentityInterner {
     pub(crate) fn workspace(
         &mut self,
-        logical_name: impl Into<String>,
+        key: &WorkspaceKey,
     ) -> Result<WorkspaceId, IdentityCollision> {
-        self.intern(IdentityKey::Workspace {
-            logical_name: logical_name.into(),
-        })
-        .map(WorkspaceId)
+        self.intern(IdentityKey::Workspace { key: key.clone() })
+            .map(WorkspaceId)
     }
 
     pub(crate) fn package(
         &mut self,
         workspace: WorkspaceId,
-        import_path: impl Into<String>,
+        key: &PackageKey,
     ) -> Result<PackageId, IdentityCollision> {
         self.intern(IdentityKey::Package {
             workspace,
-            import_path: import_path.into(),
+            key: key.clone(),
         })
         .map(PackageId)
     }

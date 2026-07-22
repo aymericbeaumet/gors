@@ -7,6 +7,9 @@ use std::sync::Arc;
 use gors::compiler::db::{BuildConfig, FileAnalysis, QueryKind};
 use gors::compiler::fingerprint::Fingerprint;
 use gors::compiler::ids::{DefId, FileId};
+use gors::compiler::input::{
+    PackageInputManifest, PackageKey, ProgramInput, SourceFileInput, WorkspaceKey,
+};
 use gors::compiler::{CompilerHost, CompilerSession, SchedulerTelemetry};
 
 const ORIGINAL: &str = r#"package main
@@ -77,8 +80,23 @@ func g() int { return 7 }
 func main() { println(g()) }
 "#;
 
-fn program(path: &str, source: &str) -> gors::parser::ParsedProgram {
-    gors::parser::parse_program_from_source(path, source).unwrap()
+fn program(path: &str, source: &str) -> ProgramInput {
+    program_file("main.go", path, source)
+}
+
+fn program_file(logical_path: &str, diagnostic_path: &str, source: &str) -> ProgramInput {
+    let package = PackageKey::command_line();
+    let manifest = PackageInputManifest::new(
+        package.clone(),
+        [SourceFileInput::from_source(logical_path, diagnostic_path, source).unwrap()],
+    )
+    .unwrap();
+    ProgramInput::new(
+        WorkspaceKey::ad_hoc("compiler-session-integration-tests").unwrap(),
+        package,
+        [manifest],
+    )
+    .unwrap()
 }
 
 fn only_file(session: &CompilerSession) -> FileId {
@@ -507,21 +525,34 @@ fn checkout_path_does_not_change_ids_or_generated_output() {
 
 #[test]
 fn production_package_index_rejects_cross_file_issues_before_codegen() {
-    let directory = tempfile::tempdir().unwrap();
-    std::fs::write(
-        directory.path().join("a.go"),
-        "package main\nfunc duplicate() {}\nfunc main() {}\n",
+    let package = PackageKey::command_line();
+    let manifest = PackageInputManifest::new(
+        package.clone(),
+        [
+            SourceFileInput::from_source(
+                "a.go",
+                "/checkout/a.go",
+                "package main\nfunc duplicate() {}\nfunc main() {}\n",
+            )
+            .unwrap(),
+            SourceFileInput::from_source(
+                "b.go",
+                "/checkout/b.go",
+                "package main\nfunc duplicate() {}\n",
+            )
+            .unwrap(),
+        ],
     )
     .unwrap();
-    std::fs::write(
-        directory.path().join("b.go"),
-        "package main\nfunc duplicate() {}\n",
+    let input = ProgramInput::new(
+        WorkspaceKey::ad_hoc("compiler-session-integration-tests").unwrap(),
+        package,
+        [manifest],
     )
     .unwrap();
-    let parsed = gors::parser::parse_program(&directory.path().to_string_lossy()).unwrap();
     let mut session = CompilerSession::default();
     let error = session
-        .compile_program(parsed)
+        .compile_program(input)
         .err()
         .expect("duplicate package definitions should fail compilation");
     assert_eq!(error.diagnostics().first().unwrap().code, "GORS2002");
@@ -546,11 +577,16 @@ fn production_package_index_rejects_cross_file_issues_before_codegen() {
 fn failed_revision_does_not_leave_orphan_inputs_and_next_revision_recovers() {
     let mut session = CompilerSession::default();
     session
-        .compile_program(program("/first/old.go", "package main\nfunc main() {}\n"))
+        .compile_program(program_file(
+            "old.go",
+            "/first/old.go",
+            "package main\nfunc main() {}\n",
+        ))
         .unwrap();
     assert_eq!(session.database().active_files().len(), 1);
 
-    let invalid = program(
+    let invalid = program_file(
+        "bad.go",
         "/failed/bad.go",
         "package main\nfunc broken() { switch {} }\nfunc main() {}\n",
     );
@@ -562,7 +598,8 @@ fn failed_revision_does_not_leave_orphan_inputs_and_next_revision_recovers() {
     assert_eq!(session.database().active_files().len(), 1);
 
     session
-        .compile_program(program(
+        .compile_program(program_file(
+            "current.go",
             "/recovered/current.go",
             "package main\nfunc main() { println(1) }\n",
         ))

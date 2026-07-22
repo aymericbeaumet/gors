@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use gors::error::{Diagnostic, DiagnosticKind};
 use wasm_bindgen::prelude::*;
 
@@ -6,10 +8,9 @@ use crate::comments;
 
 /// Explicitly owned browser compiler state.
 ///
-/// Retaining this value across edits retains the compiler query database. The
-/// browser presentation layer still parses once to validate the complete
-/// program and once to collect comments before the tracked compiler parse; the
-/// session removes neither of those temporary frontend parses yet.
+/// Retaining this value across edits retains the compiler query database. Raw
+/// browser source enters that database without a presentation-layer parse;
+/// syntax validation and owned comment projection are query results.
 #[wasm_bindgen]
 pub struct GorsCompiler {
     session: gors::compiler::CompilerSession,
@@ -43,49 +44,28 @@ fn build_rust_with_session(
     session: &mut gors::compiler::CompilerSession,
     input: String,
 ) -> BuildResult {
-    let program = match gors::parser::parse_program_from_source("main.go", &input) {
+    let input: Arc<str> = input.into();
+    let program = match browser_program_input(Arc::clone(&input)) {
         Ok(program) => program,
         Err(error) => {
-            let diagnostic = match error {
-                gors::parser::PathParseError::ParserError(ref error) => {
-                    Diagnostic::from_file_parse_error(error)
-                }
-                gors::parser::PathParseError::InvalidImportPath(ref error) => {
-                    Diagnostic::from_invalid_import_path(error)
-                }
-                _ => Diagnostic::new("main.go", 0, 0, error.to_string(), DiagnosticKind::Compiler),
-            };
-            return BuildResult::error_result(diagnostic);
-        }
-    };
-
-    let comments = {
-        let Some(file) = program.main_package().files().first() else {
             return BuildResult::error_result(Diagnostic::new(
                 "main.go",
                 0,
                 0,
-                "parsed program contains no entry source file",
+                error.to_string(),
                 DiagnosticKind::Compiler,
             ));
-        };
-        let ast = match file.parse() {
-            Ok(ast) => ast,
-            Err(error) => {
-                return BuildResult::error_result(Diagnostic::from_parser_error(
-                    &error,
-                    file.path(),
-                    file.source(),
-                ));
-            }
-        };
-        comments::collect(&ast, file.source())
+        }
     };
     let (compiled, source_map_plan) = match session.compile_program_with_source_map(program) {
         Ok(result) => result,
         Err(error) => {
             return BuildResult::error_result(compiler_diagnostic(&error, "main.go", &input));
         }
+    };
+    let comments = match browser_comments(session, &input) {
+        Ok(comments) => comments,
+        Err(error) => return BuildResult::error_result(error),
     };
     let rust_source = match gors::printer::generate_single(compiled) {
         Ok(output) => output,
@@ -104,6 +84,49 @@ fn build_rust_with_session(
     let (output, source_map) =
         comments::insert_and_remap(&rust_source, &comments, &initial_source_map);
     BuildResult::success_rust(output, source_map)
+}
+
+fn browser_program_input(
+    source: Arc<str>,
+) -> Result<gors::compiler::input::ProgramInput, gors::compiler::input::InputError> {
+    use gors::compiler::input::{
+        PackageInputManifest, PackageKey, ProgramInput, SourceFileInput, WorkspaceKey,
+    };
+
+    let package_key = PackageKey::command_line();
+    let file = SourceFileInput::from_source("main.go", "main.go", source)?;
+    let package = PackageInputManifest::new(package_key.clone(), [file])?;
+    ProgramInput::new(
+        WorkspaceKey::ad_hoc("browser-worker")?,
+        package_key,
+        [package],
+    )
+}
+
+fn browser_comments(
+    session: &gors::compiler::CompilerSession,
+    source: &str,
+) -> Result<comments::Comments, Diagnostic> {
+    let files = session.database().active_files();
+    let [file] = files.as_slice() else {
+        return Err(Diagnostic::new(
+            "main.go",
+            0,
+            0,
+            "browser compiler expected exactly one active source file",
+            DiagnosticKind::Compiler,
+        ));
+    };
+    let projected = session.database().file_comments(*file).map_err(|error| {
+        Diagnostic::new(
+            "main.go",
+            0,
+            0,
+            format!("cannot project source comments: {error}"),
+            DiagnosticKind::Compiler,
+        )
+    })?;
+    Ok(comments::collect(&projected, source))
 }
 
 #[cfg(test)]

@@ -214,19 +214,3 @@ fn accepts_syntax_invalid_source_without_parsing_it() {
     .unwrap();
     assert!(input.entry_package().key().is_command_line());
 }
-
-#[test]
-fn stable_identities_are_variant_tagged_and_boundary_safe() {
-    let module = WorkspaceKey::module("a|1:b").unwrap();
-    let ad_hoc = WorkspaceKey::ad_hoc("a|1:b").unwrap();
-    let package = PackageKey::import_path("a|1:b").unwrap();
-    let adjacent = PackageKey::import_path("a|1:b|").unwrap();
-
-    assert_ne!(module.stable_identity(), ad_hoc.stable_identity());
-    assert_ne!(module.stable_identity(), package.stable_identity());
-    assert_ne!(package.stable_identity(), adjacent.stable_identity());
-    assert_eq!(
-        package.stable_identity(),
-        PackageKey::import_path("a|1:b").unwrap().stable_identity()
-    );
-}
