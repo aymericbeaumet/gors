@@ -24,8 +24,14 @@ pub enum QueryKind {
     FunctionProvenance,
     /// Publish one stable definition's typed HIR.
     TypedHir,
-    /// Build the package's body-independent exact typed signature index.
-    PackageSignatures,
+    /// Publish one stable definition's exact typed signature.
+    TypedSignature,
+    /// Resolve one stable callee identity through the package index.
+    PackageFunctionLookup,
+    /// Build one function's self and direct-callee signature dependency set.
+    SignatureDependencies,
+    /// Classify one function's package as executable or library code.
+    ExecutableRole,
     /// Lower and verify one stable definition's explicit-order Go MIR.
     VerifiedGoMir,
     /// Normalize and reverify one stable definition's Go MIR.

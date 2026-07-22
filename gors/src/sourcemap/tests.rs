@@ -47,6 +47,86 @@ fn source_map_tracker_multiple_sources() {
 }
 
 #[test]
+fn generated_token_lookup_preserves_the_original_go_name() {
+    let mut tracker = SourceMapTracker::new();
+    tracker.start("main.go", "main.rs", Some("package main\n\nfunc f() {}"));
+    tracker.record_for_source_with_generated_token(
+        Some("main.go".to_string()),
+        3,
+        6,
+        "f",
+        "__gors_fn_0123456789abcdef",
+    );
+
+    // Unrelated occurrences of the original name must not consume the exact
+    // generated-symbol match selected by Rust representation lowering.
+    let rust_source =
+        "fn unrelated(f: i64) { let f = f; }\npub fn __gors_fn_0123456789abcdef() {}\n";
+    let source_map = tracker.build_source_map(rust_source);
+    let token = source_map
+        .tokens()
+        .find(|token| token.get_name() == Some("f"))
+        .unwrap();
+
+    assert_eq!(token.get_name(), Some("f"));
+    assert_eq!(token.get_src_line(), 2);
+    assert_eq!(token.get_src_col(), 5);
+    assert_eq!(token.get_dst_line(), 1);
+    assert_eq!(
+        token.get_dst_col(),
+        rust_source
+            .lines()
+            .nth(1)
+            .unwrap()
+            .find("__gors_fn_0123456789abcdef")
+            .unwrap() as u32
+    );
+}
+
+#[test]
+fn repeated_generated_tokens_are_matched_in_stable_occurrence_order() {
+    let mut tracker = SourceMapTracker::new();
+    tracker.start(
+        "main.go",
+        "main.rs",
+        Some("package main\n\nfunc first() {}\nfunc second() {}"),
+    );
+    tracker.record_for_source_with_generated_token(
+        Some("main.go".to_string()),
+        3,
+        6,
+        "first",
+        "__gors_fn_shared",
+    );
+    tracker.record_for_source_with_generated_token(
+        Some("main.go".to_string()),
+        4,
+        6,
+        "second",
+        "__gors_fn_shared",
+    );
+
+    let source_map = tracker.build_source_map("__gors_fn_shared();\n__gors_fn_shared();\n");
+    let mappings = source_map
+        .tokens()
+        .map(|token| {
+            (
+                token.get_name().map(ToString::to_string),
+                token.get_dst_line(),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        mappings,
+        vec![
+            (Some("first".to_string()), 0),
+            (Some("second".to_string()), 1)
+        ]
+    );
+}
+
+#[test]
 fn source_map_tracker_inactive() {
     let mut tracker = SourceMapTracker::new();
     assert!(!tracker.is_active());

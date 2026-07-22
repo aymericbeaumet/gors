@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::compiler::fingerprint::{self, Fingerprint, fingerprint_parts};
-use crate::compiler::ids::DefId;
+use crate::compiler::ids::{DefId, FileId};
 use crate::compiler::{Diagnostic, hir, mir, rust_ir};
 
 /// Authoritative stage at which a tracked compilation failed.
@@ -21,6 +21,7 @@ pub enum CompilerStage {
 pub struct StageFailure {
     stage: CompilerStage,
     definition: Option<DefId>,
+    source_file: Option<FileId>,
     diagnostics: Arc<[Diagnostic]>,
 }
 
@@ -37,12 +38,23 @@ impl StageFailure {
         Self {
             stage,
             definition: None,
+            source_file: None,
             diagnostics: diagnostics.into(),
         }
     }
 
     pub(super) fn one(stage: CompilerStage, diagnostic: Diagnostic) -> Self {
         Self::new(stage, vec![diagnostic])
+    }
+
+    pub(super) fn for_file(
+        stage: CompilerStage,
+        source_file: FileId,
+        diagnostics: Vec<Diagnostic>,
+    ) -> Self {
+        let mut failure = Self::new(stage, diagnostics);
+        failure.source_file = Some(source_file);
+        failure
     }
 
     pub(super) fn for_definition(
@@ -73,6 +85,12 @@ impl StageFailure {
     #[must_use]
     pub const fn definition(&self) -> Option<DefId> {
         self.definition
+    }
+
+    /// Stable input file owning file-relative diagnostics, when present.
+    #[must_use]
+    pub const fn source_file(&self) -> Option<FileId> {
+        self.source_file
     }
 
     /// Diagnostics in deterministic source order.
@@ -139,6 +157,32 @@ impl FunctionProvenance {
 pub struct TypedHirFunction {
     function: Arc<hir::Function>,
     fingerprint: Fingerprint,
+}
+
+/// One exact typed function signature published independently of its body.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TypedFunctionSignature {
+    definition: DefId,
+    signature: crate::compiler::types::Signature,
+}
+
+impl TypedFunctionSignature {
+    pub(super) fn new(definition: DefId, signature: crate::compiler::types::Signature) -> Self {
+        Self {
+            definition,
+            signature,
+        }
+    }
+
+    #[must_use]
+    pub const fn definition(&self) -> DefId {
+        self.definition
+    }
+
+    #[must_use]
+    pub const fn signature(&self) -> &crate::compiler::types::Signature {
+        &self.signature
+    }
 }
 
 impl TypedHirFunction {
@@ -284,12 +328,12 @@ impl VerifiedRustIrPackage {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(super) struct MirPackageSignatures {
+pub(super) struct MirSignatureDependencies {
     pub(super) signatures: BTreeMap<DefId, crate::compiler::types::Signature>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct RustPackageSignatures {
+pub(super) struct RustSignatureDependencies {
     pub(super) signatures: BTreeMap<DefId, rust_ir::Signature>,
     pub(super) representation_key: Fingerprint,
 }

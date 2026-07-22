@@ -376,8 +376,13 @@ architecture described here:
   semantic content from diagnostics;
 - the production `CompilerSession` now reaches function-relative typed HIR,
   per-definition verified and normalized Go MIR, configured verified Rust IR,
-  and package assembly; parse/semantic projection remains file-granular, and
-  convenience entry points retain no session across calls;
+  and package assembly with exact self/direct-callee signature dependencies;
+  parse/semantic projection remains file-granular, convenience entry points
+  retain no session across calls, and no native daemon/watch owner exists;
+- the browser worker explicitly retains one `CompilerSession` across changed
+  edits and uses its exact-output cache only when that artifact matches the
+  currently installed successful source revision; this is a real warm semantic
+  path, but it is not the native artifact certification boundary;
 - the CLI manifest validates and reuses a complete generated-output or
   executable request, but does not reuse semantic queries after an edit;
 - the bootstrap Rust artifact still recompiles its bundled runtime module for
@@ -396,8 +401,8 @@ architecture described here:
 - the build embeds roughly 17 MB of raw selected SDK source into each compiler
   artifact behind one coarse global SDK fingerprint instead of loading
   content-addressed reachable package shards;
-- the browser exact-output cache benchmark is valuable UI telemetry, but it is
-  not the native cold/warm artifact certification protocol.
+- browser worker timings are valuable warm-query UI telemetry, but they are not
+  the native cold/warm artifact certification protocol.
 
 These are P0 foundations, not optional tuning: owned incremental syntax and
 provenance-free semantic fingerprints; cross-process semantic CAS; one global

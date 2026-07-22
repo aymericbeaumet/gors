@@ -207,8 +207,7 @@ mod tests {
         let names = (0..source_map.get_name_count())
             .filter_map(|idx| source_map.get_name(idx))
             .collect::<Vec<_>>();
-        assert!(names.contains(&"func"), "{names:?}");
-        assert!(names.contains(&"main"), "{names:?}");
+        assert_eq!(names, vec!["main"]);
     }
 
     #[test]

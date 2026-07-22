@@ -129,6 +129,37 @@ fn generated_rust_preserves_arbitrary_string_bytes() {
         run.stderr,
         [0xff, 0, b'A', b'\n', b'f', b'a', b'l', b's', b'e', b'\n']
     );
+    assert!(run.rust.contains("go_string_from_static(b"), "{}", run.rust);
+}
+
+#[test]
+fn generated_string_concatenation_preserves_aliases_and_empty_values() {
+    let run = compile_and_run(
+        r#"
+            package main
+            func twice(value string) string { return value + value }
+            func grow(value string) string {
+                value = value + "b"
+                value = value + "c"
+                return value
+            }
+            func main() {
+                value := "\xff"
+                copy := value
+                println("" + "")
+                println(twice(value))
+                println(copy)
+                println(grow("a"))
+            }
+        "#,
+    );
+
+    assert_eq!(
+        run.stderr,
+        [
+            b'\n', 0xff, 0xff, b'\n', 0xff, b'\n', b'a', b'b', b'c', b'\n'
+        ]
+    );
 }
 
 #[test]

@@ -4,11 +4,45 @@ use wasm_bindgen::prelude::*;
 use crate::build_result::BuildResult;
 use crate::comments;
 
-/// Build Go source with the authoritative HIR, Go MIR, and Rust IR pipeline.
+/// Explicitly owned browser compiler state.
+///
+/// Retaining this value across edits retains the compiler query database. The
+/// browser presentation layer still parses once to validate the complete
+/// program and once to collect comments before the tracked compiler parse; the
+/// session removes neither of those temporary frontend parses yet.
 #[wasm_bindgen]
-pub fn build_rust(input: String) -> BuildResult {
-    console_error_panic_hook::set_once();
+pub struct GorsCompiler {
+    session: gors::compiler::CompilerSession,
+}
 
+#[wasm_bindgen]
+impl GorsCompiler {
+    /// Construct one compiler session for the lifetime of a browser worker.
+    #[wasm_bindgen(constructor)]
+    #[must_use]
+    pub fn new() -> Self {
+        console_error_panic_hook::set_once();
+        Self {
+            session: gors::compiler::CompilerSession::default(),
+        }
+    }
+
+    /// Build Go source while preserving query products from earlier edits.
+    pub fn build_rust(&mut self, input: String) -> BuildResult {
+        build_rust_with_session(&mut self.session, input)
+    }
+}
+
+impl Default for GorsCompiler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn build_rust_with_session(
+    session: &mut gors::compiler::CompilerSession,
+    input: String,
+) -> BuildResult {
     let program = match gors::parser::parse_program_from_source("main.go", &input) {
         Ok(program) => program,
         Err(error) => {
@@ -47,8 +81,7 @@ pub fn build_rust(input: String) -> BuildResult {
         };
         comments::collect(&ast, file.source())
     };
-    let (compiled, source_map_plan) = match gors::compiler::compile_program_with_source_map(program)
-    {
+    let (compiled, source_map_plan) = match session.compile_program_with_source_map(program) {
         Ok(result) => result,
         Err(error) => {
             return BuildResult::error_result(compiler_diagnostic(&error, "main.go", &input));
@@ -71,6 +104,13 @@ pub fn build_rust(input: String) -> BuildResult {
     let (output, source_map) =
         comments::insert_and_remap(&rust_source, &comments, &initial_source_map);
     BuildResult::success_rust(output, source_map)
+}
+
+#[cfg(test)]
+impl GorsCompiler {
+    pub(crate) fn session(&self) -> &gors::compiler::CompilerSession {
+        &self.session
+    }
 }
 
 fn compiler_diagnostic(

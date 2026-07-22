@@ -81,7 +81,7 @@ fn function_id(functions: &BTreeMap<String, DefId>, name: &str) -> DefId {
 #[test]
 fn default_build_config_uses_the_packaged_runtime_abi() {
     assert_eq!(BuildConfig::default().runtime_abi(), gors::RUNTIME_ABI_ID);
-    assert_eq!(gors::RUNTIME_ABI_ID, "gors-runtime-abi-v2");
+    assert_eq!(gors::RUNTIME_ABI_ID, "gors-runtime-abi-v3");
 }
 
 #[test]

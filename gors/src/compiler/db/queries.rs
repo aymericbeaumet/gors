@@ -16,9 +16,9 @@ use super::model::{
     PackageIssue, ParseFailure, PublicApi,
 };
 use super::products::{
-    CompilerStage, FunctionProvenance, MirPackageSignatures, NormalizedMirFunction,
-    RustPackageSignatures, StageFailure, StageResult, TypedHirFunction, VerifiedMirFunction,
-    VerifiedRustIrFunction, VerifiedRustIrPackage,
+    CompilerStage, FunctionProvenance, MirSignatureDependencies, NormalizedMirFunction,
+    RustSignatureDependencies, StageFailure, StageResult, TypedFunctionSignature, TypedHirFunction,
+    VerifiedMirFunction, VerifiedRustIrFunction, VerifiedRustIrPackage,
 };
 use super::provenance::make_function_relative;
 use super::telemetry::{QueryKind, Telemetry};
@@ -26,7 +26,7 @@ use super::telemetry::{QueryKind, Telemetry};
 #[salsa::db]
 pub(super) trait Db: salsa::Database {
     fn query_telemetry(&self) -> &Telemetry;
-    fn query_build_input(&self) -> BuildInput;
+    fn query_build_input(&self) -> Option<BuildInput>;
 }
 
 #[salsa::input]
@@ -69,6 +69,9 @@ pub(super) struct FunctionProjection<'db> {
     #[tracked]
     #[returns(clone)]
     pub(super) name: Arc<str>,
+    #[tracked]
+    #[returns(clone)]
+    pub(super) package_name: Arc<str>,
     #[tracked]
     #[returns(clone)]
     pub(super) signature: Arc<FunctionSignature>,
@@ -142,6 +145,7 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
         }
     };
     db.unwind_if_revision_cancelled();
+    let declared_package: Arc<str> = Arc::from(parsed.name.name);
 
     let mut seen = BTreeSet::new();
     let mut projected = Vec::new();
@@ -199,13 +203,19 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
     // The current semantic frontier has no version-conditioned construct yet,
     // but consuming this field makes the pinned Go language version an
     // explicit dependency instead of an ambient or forgotten input.
-    let _go_version = db.query_build_input().go_version(db);
     let context = super::super::semantic::SemanticContext {
         package: package_id,
         file,
         logical_file: logical_path.to_string(),
     };
-    let semantic = super::super::semantic::lower_file_with_context(&parsed, context);
+    let semantic = if let Some(build) = db.query_build_input() {
+        let _go_version = build.go_version(db);
+        super::super::semantic::lower_file_with_context(&parsed, context)
+    } else {
+        Err(vec![Diagnostic::backend(
+            "compiler build config is missing from the semantic query database",
+        )])
+    };
     let (mut typed_functions, semantic_failure) = match semantic {
         Ok(mut file) => {
             let functions = file
@@ -219,7 +229,11 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
             (functions, None)
         }
         Err(diagnostics) => {
-            let failure = Arc::new(StageFailure::new(CompilerStage::Semantic, diagnostics));
+            let failure = Arc::new(StageFailure::for_file(
+                CompilerStage::Semantic,
+                file,
+                diagnostics,
+            ));
             (BTreeMap::new(), Some(failure))
         }
     };
@@ -234,8 +248,9 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
                 }
                 None => {
                     let failure = semantic_failure.clone().unwrap_or_else(|| {
-                        Arc::new(StageFailure::one(
+                        Arc::new(StageFailure::one_for_definition(
                             CompilerStage::Semantic,
+                            id,
                             Diagnostic::backend(format!(
                                 "semantic lowering omitted indexed function DefId {id}"
                             )),
@@ -249,6 +264,7 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
                 id,
                 key,
                 name,
+                Arc::clone(&declared_package),
                 signature,
                 body,
                 typed_signature,
@@ -262,7 +278,7 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
         file,
         package_id,
         logical_path,
-        Arc::from(parsed.name.name),
+        declared_package,
         functions,
         None,
         issues,
@@ -298,34 +314,80 @@ pub(super) fn typed_hir_product(
 }
 
 #[salsa::tracked(returns(clone))]
-pub(super) fn package_signatures_product(
+pub(super) fn typed_signature_product(
     db: &dyn Db,
+    function: FunctionProjection<'_>,
+) -> StageResult<TypedFunctionSignature> {
+    db.query_telemetry().record_query(QueryKind::TypedSignature);
+    let definition = function.id(db);
+    function
+        .typed_signature(db)
+        .map(|signature| Arc::new(TypedFunctionSignature::new(definition, signature)))
+        .ok_or_else(|| {
+            Arc::new(StageFailure::one_for_definition(
+                CompilerStage::Semantic,
+                definition,
+                Diagnostic::backend(format!(
+                    "typed signature is missing for function DefId {definition}"
+                )),
+            ))
+        })
+}
+
+#[salsa::tracked(returns(copy))]
+pub(super) fn package_function_product<'db>(
+    db: &'db dyn Db,
     input: PackageInput,
-) -> StageResult<MirPackageSignatures> {
+    definition: DefId,
+) -> Option<FunctionProjection<'db>> {
     db.query_telemetry()
-        .record_query(QueryKind::PackageSignatures);
-    let mut signatures = BTreeMap::new();
+        .record_query(QueryKind::PackageFunctionLookup);
     let mut sources = input.sources(db).iter().copied().collect::<Vec<_>>();
     sources.sort_by_key(|source| source.file(db));
     for source in sources {
         let facts = file_projection(db, source);
-        if let Some(failure) = facts.semantic_failure(db) {
-            return Err(failure);
-        }
-        for function in facts.functions(db) {
-            let Some(signature) = function.typed_signature(db) else {
-                return Err(Arc::new(StageFailure::one(
-                    CompilerStage::Semantic,
-                    Diagnostic::backend(format!(
-                        "typed signature is missing for function DefId {}",
-                        function.id(db)
-                    )),
-                )));
-            };
-            signatures.insert(function.id(db), signature);
+        if let Some(function) = facts
+            .functions(db)
+            .into_iter()
+            .find(|function| function.id(db) == definition)
+        {
+            return Some(function);
         }
     }
-    Ok(Arc::new(MirPackageSignatures { signatures }))
+    None
+}
+
+#[salsa::tracked(returns(clone))]
+pub(super) fn mir_signature_dependencies_product(
+    db: &dyn Db,
+    input: PackageInput,
+    function: FunctionProjection<'_>,
+) -> StageResult<MirSignatureDependencies> {
+    db.query_telemetry()
+        .record_query(QueryKind::SignatureDependencies);
+    let hir = typed_hir_product(db, function)?;
+    let caller = function.id(db);
+    let mut definitions = direct_callees(hir.function());
+    definitions.insert(caller);
+    let mut signatures = BTreeMap::new();
+    for definition in definitions {
+        let projection = if definition == caller {
+            function
+        } else {
+            package_function_product(db, input, definition).ok_or_else(|| {
+                Arc::new(StageFailure::one_for_definition(
+                    CompilerStage::GoMir,
+                    caller,
+                    Diagnostic::backend(format!(
+                        "callee DefId {definition} is absent from the package index"
+                    )),
+                ))
+            })?
+        };
+        let signature = typed_signature_product(db, projection)?;
+        signatures.insert(definition, signature.signature().clone());
+    }
+    Ok(Arc::new(MirSignatureDependencies { signatures }))
 }
 
 #[salsa::tracked(returns(clone))]
@@ -336,7 +398,7 @@ pub(super) fn verified_mir_product(
 ) -> StageResult<VerifiedMirFunction> {
     db.query_telemetry().record_query(QueryKind::VerifiedGoMir);
     let hir = typed_hir_product(db, function)?;
-    let signatures = package_signatures_product(db, input)?;
+    let signatures = mir_signature_dependencies_product(db, input, function)?;
     let definition = function.id(db);
     let lowered = mir::lower_function(hir.function()).map_err(|diagnostic| {
         Arc::new(StageFailure::one_for_definition(
@@ -364,7 +426,7 @@ pub(super) fn normalized_mir_product(
     db.query_telemetry()
         .record_query(QueryKind::NormalizedGoMir);
     let mir = verified_mir_product(db, input, function)?;
-    let signatures = package_signatures_product(db, input)?;
+    let signatures = mir_signature_dependencies_product(db, input, function)?;
     let definition = function.id(db);
     let normalized = mir::normalize_function(mir.function().clone(), &signatures.signatures)
         .map_err(|diagnostics| {
@@ -385,18 +447,13 @@ pub(super) fn normalized_mir_product(
 }
 
 #[salsa::tracked(returns(clone))]
-pub(super) fn rust_signatures_product(
+pub(super) fn rust_signature_dependencies_product(
     db: &dyn Db,
     input: PackageInput,
-) -> StageResult<RustPackageSignatures> {
-    let go_signatures = package_signatures_product(db, input)?;
-    let build = db.query_build_input();
-    let target = build.target(db);
-    let runtime_abi = build.runtime_abi(db);
-    let representation_key = fingerprint_parts(
-        b"rust-representation-config",
-        &[target.as_bytes(), runtime_abi.as_bytes()],
-    );
+    function: FunctionProjection<'_>,
+) -> StageResult<RustSignatureDependencies> {
+    let go_signatures = mir_signature_dependencies_product(db, input, function)?;
+    let representation_key = representation_key(db)?;
     let signatures = go_signatures
         .signatures
         .iter()
@@ -412,10 +469,16 @@ pub(super) fn rust_signatures_product(
                 })
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
-    Ok(Arc::new(RustPackageSignatures {
+    Ok(Arc::new(RustSignatureDependencies {
         signatures,
         representation_key,
     }))
+}
+
+#[salsa::tracked(returns(copy))]
+pub(super) fn executable_role_product(db: &dyn Db, function: FunctionProjection<'_>) -> bool {
+    db.query_telemetry().record_query(QueryKind::ExecutableRole);
+    function.package_name(db).as_ref() == "main"
 }
 
 #[salsa::tracked(returns(clone))]
@@ -426,8 +489,8 @@ pub(super) fn verified_rust_ir_product(
 ) -> StageResult<VerifiedRustIrFunction> {
     db.query_telemetry().record_query(QueryKind::VerifiedRustIr);
     let normalized = normalized_mir_product(db, input, function)?;
-    let signatures = rust_signatures_product(db, input)?;
-    let executable_package = package_analysis_product(db, input).package_name() == "main";
+    let signatures = rust_signature_dependencies_product(db, input, function)?;
+    let executable_package = executable_role_product(db, function);
     let definition = function.id(db);
     let lowered = lowering::lower_function(normalized.function().clone(), executable_package)
         .map_err(|diagnostic| {
@@ -457,7 +520,6 @@ pub(super) fn rust_ir_package_product(
 ) -> StageResult<VerifiedRustIrPackage> {
     db.query_telemetry().record_query(QueryKind::RustIrPackage);
     let analysis = package_analysis_product(db, input);
-    let signatures = rust_signatures_product(db, input)?;
     let mut functions = Vec::new();
     let mut sources = input.sources(db).iter().copied().collect::<Vec<_>>();
     sources.sort_by_key(|source| source.file(db));
@@ -484,9 +546,10 @@ pub(super) fn rust_ir_package_product(
             diagnostic,
         ))
     })?;
+    let representation_key = representation_key(db)?;
     Ok(Arc::new(VerifiedRustIrPackage::new(
         file,
-        signatures.representation_key,
+        representation_key,
     )))
 }
 
@@ -686,4 +749,109 @@ fn bodyless_signature_end(snapshot: &SourceSnapshot, start: usize) -> usize {
 
 fn is_exported(name: &str) -> bool {
     name.chars().next().is_some_and(char::is_uppercase)
+}
+
+fn representation_key(
+    db: &dyn Db,
+) -> Result<super::super::fingerprint::Fingerprint, Arc<StageFailure>> {
+    let build = db.query_build_input().ok_or_else(|| {
+        Arc::new(StageFailure::one(
+            CompilerStage::RustRepresentation,
+            Diagnostic::backend(
+                "compiler build config is missing from Rust representation lowering",
+            ),
+        ))
+    })?;
+    let target = build.target(db);
+    let runtime_abi = build.runtime_abi(db);
+    Ok(fingerprint_parts(
+        b"rust-representation-config",
+        &[target.as_bytes(), runtime_abi.as_bytes()],
+    ))
+}
+
+fn direct_callees(function: &crate::compiler::hir::Function) -> BTreeSet<DefId> {
+    let mut callees = BTreeSet::new();
+    collect_block_callees(&function.body, &mut callees);
+    callees
+}
+
+fn collect_block_callees(block: &crate::compiler::hir::Block, callees: &mut BTreeSet<DefId>) {
+    for statement in &block.stmts {
+        collect_statement_callees(statement, callees);
+    }
+}
+
+fn collect_statement_callees(
+    statement: &crate::compiler::hir::Stmt,
+    callees: &mut BTreeSet<DefId>,
+) {
+    use crate::compiler::hir::StmtKind;
+    match &statement.kind {
+        StmtKind::Let { values, .. }
+        | StmtKind::Assign { values, .. }
+        | StmtKind::Return(values) => {
+            for value in values {
+                collect_expression_callees(value, callees);
+            }
+        }
+        StmtKind::Expr(expression) => collect_expression_callees(expression, callees),
+        StmtKind::If {
+            init,
+            condition,
+            then_block,
+            else_branch,
+        } => {
+            if let Some(init) = init {
+                collect_statement_callees(init, callees);
+            }
+            collect_expression_callees(condition, callees);
+            collect_block_callees(then_block, callees);
+            if let Some(branch) = else_branch {
+                collect_statement_callees(branch, callees);
+            }
+        }
+        StmtKind::For {
+            init,
+            condition,
+            post,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_statement_callees(init, callees);
+            }
+            if let Some(condition) = condition {
+                collect_expression_callees(condition, callees);
+            }
+            if let Some(post) = post {
+                collect_statement_callees(post, callees);
+            }
+            collect_block_callees(body, callees);
+        }
+        StmtKind::Block(block) => collect_block_callees(block, callees),
+        StmtKind::Break | StmtKind::Continue => {}
+    }
+}
+
+fn collect_expression_callees(
+    expression: &crate::compiler::hir::Expr,
+    callees: &mut BTreeSet<DefId>,
+) {
+    use crate::compiler::hir::{Callee, ExprKind};
+    match &expression.kind {
+        ExprKind::Binary { left, right, .. } => {
+            collect_expression_callees(left, callees);
+            collect_expression_callees(right, callees);
+        }
+        ExprKind::Unary { operand, .. } => collect_expression_callees(operand, callees),
+        ExprKind::Call { callee, args } => {
+            if let Callee::Function(definition) = callee {
+                callees.insert(*definition);
+            }
+            for argument in args {
+                collect_expression_callees(argument, callees);
+            }
+        }
+        ExprKind::Constant(_) | ExprKind::Local(_) | ExprKind::GlobalConstant(..) => {}
+    }
 }

@@ -111,6 +111,18 @@ if [[ -f gors/src/compiler/mod.rs ]]; then
 fi
 
 fail_on_matches \
+  'CLI and Wasm production callers must not bypass CompilerSession/facade compilation:' \
+  'compile_file_to_rust_syntax|lower_to_(hir|mir|rust_ir)|compiler::db::CompilerDatabase|CompilerDatabase::' \
+  gors-cli/src \
+  www/wasm
+
+fail_on_matches \
+  'stateless Wasm build_rust exports are forbidden; retain GorsCompiler::build_rust only:' \
+  '^pub[[:space:]]+fn[[:space:]]+build_rust|^export[[:space:]].*build_rust|^[[:space:]]*build_rust\??:[[:space:]]*\(' \
+  www/wasm \
+  www/gors-wasm-loader.ts
+
+fail_on_matches \
   'generic or newline-fused runtime print ABI entry points are forbidden:' \
   'PrintlnEmpty|PrintValue|PrintlnValue|PrintlnGoString|print_value|println_value|println_empty|println_go_string' \
   gors/src/compiler \

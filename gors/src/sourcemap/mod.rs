@@ -6,7 +6,7 @@
 
 pub use sourcemap::{SourceMap, SourceMapBuilder};
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// Convert a 1-based UTF-8 byte column from the Go scanner into a 1-based
 /// UTF-16 code-unit column for Source Map v3 and Monaco.
@@ -42,6 +42,12 @@ pub struct PendingMapping {
     pub orig_col: u32,
     /// Optional identifier name
     pub name: Option<String>,
+    /// Exact generated Rust token used by the transitional token matcher.
+    ///
+    /// This is deliberately separate from `name`: Source Map v3 stores the
+    /// original Go name, while representation lowering may select a canonical
+    /// Rust symbol with a different spelling.
+    pub generated_token: Option<String>,
 }
 
 /// Tracker for collecting source mappings during compilation.
@@ -104,6 +110,41 @@ impl SourceMapTracker {
         orig_col: u32,
         name: Option<&str>,
     ) {
+        let generated_token = name.map(go_name_to_rust_name);
+        self.record_mapping(source, orig_line, orig_col, name, generated_token);
+    }
+
+    /// Record an original Go name that is emitted under an exact Rust token.
+    ///
+    /// `original_name` is stored in Source Map v3. `generated_token` is used
+    /// only to locate the corresponding token in the formatted Rust output.
+    /// This is a transitional boundary until terminal emission returns exact
+    /// stable anchors instead of requiring formatted-token matching.
+    pub fn record_for_source_with_generated_token(
+        &mut self,
+        source: Option<String>,
+        orig_line: u32,
+        orig_col: u32,
+        original_name: &str,
+        generated_token: &str,
+    ) {
+        self.record_mapping(
+            source,
+            orig_line,
+            orig_col,
+            Some(original_name),
+            Some(generated_token),
+        );
+    }
+
+    fn record_mapping(
+        &mut self,
+        source: Option<String>,
+        orig_line: u32,
+        orig_col: u32,
+        name: Option<&str>,
+        generated_token: Option<&str>,
+    ) {
         if self.sources.is_empty() || !self.recording {
             return;
         }
@@ -112,6 +153,7 @@ impl SourceMapTracker {
             orig_line,
             orig_col,
             name: name.map(|s| s.to_string()),
+            generated_token: generated_token.map(ToString::to_string),
         });
     }
 
@@ -153,23 +195,25 @@ impl SourceMapTracker {
         let tokens = extract_tokens(rust_source);
 
         // Build a map of name -> tokens for matching
-        let mut name_to_tokens: HashMap<&str, Vec<&TokenInfo>> = HashMap::new();
+        let mut name_to_tokens: BTreeMap<&str, Vec<&TokenInfo>> = BTreeMap::new();
         for token in &tokens {
             name_to_tokens.entry(&token.text).or_default().push(token);
         }
 
         // Track which token index we've used for each Rust token name
-        let mut name_indices: HashMap<String, usize> = HashMap::new();
+        let mut name_indices: BTreeMap<&str, usize> = BTreeMap::new();
 
         // Match pending mappings to Rust tokens
-        // Go names are stored in pending.name, but we need to find the corresponding Rust token
+        // Original Go names are stored in pending.name, while generated_token
+        // is the exact formatted Rust token selected by lowering. Both pending
+        // entries and extracted tokens retain source order, so repeated tokens
+        // are matched deterministically by occurrence.
         for pending in &self.pending {
-            if let Some(ref go_name) = pending.name {
-                // Get the Rust token name to search for
-                let rust_name = go_name_to_rust_name(go_name);
-
+            if let (Some(go_name), Some(rust_name)) =
+                (&pending.name, pending.generated_token.as_deref())
+            {
                 if let Some(matching_tokens) = name_to_tokens.get(rust_name) {
-                    let idx = name_indices.entry(rust_name.to_string()).or_insert(0);
+                    let idx = name_indices.entry(rust_name).or_insert(0);
                     if let Some(token) = matching_tokens.get(*idx) {
                         // Store the Go name in the source map (not the Rust name)
                         let name_idx = builder.add_name(go_name);

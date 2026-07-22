@@ -120,9 +120,6 @@ module.exports = () => {
 				fs: false,
 				path: false,
 			},
-			alias: {
-				"gors-wasm-runtime$": path.resolve(__dirname, "gors-wasm-loader.ts"),
-			},
 		},
 		module: {
 			rules: [

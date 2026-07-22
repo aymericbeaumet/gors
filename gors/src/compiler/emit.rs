@@ -421,7 +421,7 @@ fn emit_constant(value: &Constant) -> Result<syn::Expr, Diagnostic> {
         Constant::GoString(value) => {
             let value = syn::LitByteStr::new(value, Span::mixed_site());
             Ok(syn::parse_quote! {
-                crate::__gors_runtime::go_string_from_bytes(#value)
+                crate::__gors_runtime::go_string_from_static(#value)
             })
         }
     }

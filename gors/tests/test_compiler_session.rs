@@ -16,7 +16,25 @@ func main() { println(g()) }
 
 const DIFFERENT_LENGTH_BODY: &str = r#"package main
 
-func f() string { return "a much longer replacement" }
+func f() string {
+    // A new line before every unchanged sibling must not poison its semantic key.
+    return "a much longer replacement"
+}
+func g() int { return 7 }
+func main() { println(g()) }
+"#;
+
+const UNRELATED_DECLARATION_INSERTION: &str = r#"package main
+
+func f() string { return "a" }
+func h() bool { return true }
+func g() int { return 7 }
+func main() { println(g()) }
+"#;
+
+const UNRELATED_SIGNATURE_EDIT: &str = r#"package main
+
+func f(unused int) string { return "a" }
 func g() int { return 7 }
 func main() { println(g()) }
 "#;
@@ -37,6 +55,27 @@ fn functions(analysis: &FileAnalysis) -> BTreeMap<String, DefId> {
         .iter()
         .map(|function| (function.name().to_string(), function.id()))
         .collect()
+}
+
+#[test]
+fn production_session_rejects_runtime_abi_without_packaging_support() {
+    let unsupported = BuildConfig::new("rust-source", gors::GO_VERSION, "synthetic-runtime-v99");
+    let error = CompilerSession::new(unsupported.clone())
+        .err()
+        .expect("a production session must reject an unpackaged runtime ABI");
+    assert_eq!(error.diagnostics()[0].code, "GORS2003");
+    assert!(error.to_string().contains("synthetic-runtime-v99"));
+    assert!(error.to_string().contains(gors::RUNTIME_ABI_ID));
+
+    let mut session = CompilerSession::default();
+    let error = session
+        .set_build_config(unsupported)
+        .expect_err("reconfiguration must enforce the same packaging invariant");
+    assert_eq!(error.diagnostics()[0].code, "GORS2003");
+    assert_eq!(
+        session.database().build_config().unwrap().runtime_abi(),
+        gors::RUNTIME_ABI_ID
+    );
 }
 
 #[test]
@@ -81,6 +120,7 @@ fn different_length_private_body_edit_keeps_unrelated_products_green() {
     let before_package = session.database().analyze_package(package).unwrap();
     let before_public = session.database().public_api(file).unwrap();
     let before_hir = session.database().typed_hir(file, g).unwrap();
+    let before_provenance = session.database().function_provenance(file, g).unwrap();
     let before_mir = session.database().verified_mir(file, g).unwrap();
     let before_normalized = session.database().normalized_mir(file, g).unwrap();
     let before_rust = session.database().verified_rust_ir(file, g).unwrap();
@@ -93,6 +133,7 @@ fn different_length_private_body_edit_keeps_unrelated_products_green() {
     let after_package = session.database().analyze_package(package).unwrap();
     let after_public = session.database().public_api(file).unwrap();
     let after_hir = session.database().typed_hir(file, g).unwrap();
+    let after_provenance = session.database().function_provenance(file, g).unwrap();
     let after_mir = session.database().verified_mir(file, g).unwrap();
     let after_normalized = session.database().normalized_mir(file, g).unwrap();
     let after_rust = session.database().verified_rust_ir(file, g).unwrap();
@@ -102,12 +143,60 @@ fn different_length_private_body_edit_keeps_unrelated_products_green() {
     assert!(Arc::ptr_eq(&before_mir, &after_mir));
     assert!(Arc::ptr_eq(&before_normalized, &after_normalized));
     assert!(Arc::ptr_eq(&before_rust, &after_rust));
+    assert!(!Arc::ptr_eq(&before_provenance, &after_provenance));
+    assert!(after_provenance.byte_offset() > before_provenance.byte_offset());
+    assert!(after_provenance.line() > before_provenance.line());
 
     let telemetry = session.database().telemetry();
     assert_eq!(telemetry.executions(QueryKind::FileProjection), 1);
     assert_eq!(telemetry.executions(QueryKind::SemanticFile), 1);
     assert_eq!(telemetry.executions(QueryKind::PackageAnalysis), 0);
-    assert_eq!(telemetry.executions(QueryKind::PackageSignatures), 0);
+    assert_eq!(telemetry.executions(QueryKind::PackageFunctionLookup), 0);
+}
+
+#[test]
+fn unrelated_declaration_insertion_keeps_existing_leaf_products_green() {
+    assert_unrelated_edit_keeps_g_green(UNRELATED_DECLARATION_INSERTION, true);
+}
+
+#[test]
+fn unrelated_signature_edit_keeps_existing_leaf_products_green() {
+    assert_unrelated_edit_keeps_g_green(UNRELATED_SIGNATURE_EDIT, false);
+}
+
+fn assert_unrelated_edit_keeps_g_green(edited: &str, inserts_declaration: bool) {
+    let mut session = CompilerSession::default();
+    session
+        .compile_program(program("main.go", ORIGINAL))
+        .unwrap();
+    let file = only_file(&session);
+    let g = functions(&session.database().analyze_file(file).unwrap())["g"];
+    let before_signature = session.database().typed_signature(file, g).unwrap();
+    let before_hir = session.database().typed_hir(file, g).unwrap();
+    let before_mir = session.database().verified_mir(file, g).unwrap();
+    let before_normalized = session.database().normalized_mir(file, g).unwrap();
+    let before_rust = session.database().verified_rust_ir(file, g).unwrap();
+
+    session.database().reset_telemetry();
+    session.compile_program(program("main.go", edited)).unwrap();
+    let after_signature = session.database().typed_signature(file, g).unwrap();
+    let after_hir = session.database().typed_hir(file, g).unwrap();
+    let after_mir = session.database().verified_mir(file, g).unwrap();
+    let after_normalized = session.database().normalized_mir(file, g).unwrap();
+    let after_rust = session.database().verified_rust_ir(file, g).unwrap();
+    assert!(Arc::ptr_eq(&before_signature, &after_signature));
+    assert!(Arc::ptr_eq(&before_hir, &after_hir));
+    assert!(Arc::ptr_eq(&before_mir, &after_mir));
+    assert!(Arc::ptr_eq(&before_normalized, &after_normalized));
+    assert!(Arc::ptr_eq(&before_rust, &after_rust));
+
+    let telemetry = session.database().telemetry();
+    assert_eq!(telemetry.executions(QueryKind::VerifiedGoMir), 1);
+    assert_eq!(telemetry.executions(QueryKind::NormalizedGoMir), 1);
+    assert_eq!(telemetry.executions(QueryKind::VerifiedRustIr), 1);
+    if inserts_declaration {
+        assert!(telemetry.executions(QueryKind::PackageFunctionLookup) > 0);
+    }
 }
 
 #[test]
@@ -230,4 +319,83 @@ fn production_package_index_rejects_cross_file_issues_before_codegen() {
             .executions(QueryKind::VerifiedRustIr),
         0
     );
+}
+
+#[test]
+fn failed_revision_does_not_leave_orphan_inputs_and_next_revision_recovers() {
+    let mut session = CompilerSession::default();
+    session
+        .compile_program(program("/first/old.go", "package main\nfunc main() {}\n"))
+        .unwrap();
+    assert_eq!(session.database().active_files().len(), 1);
+
+    let invalid = program(
+        "/failed/bad.go",
+        "package main\nfunc broken() { switch {} }\nfunc main() {}\n",
+    );
+    let error = session
+        .compile_program(invalid)
+        .err()
+        .expect("unsupported revision must fail");
+    assert_eq!(error.diagnostics()[0].file, "/failed/bad.go");
+    assert_eq!(session.database().active_files().len(), 1);
+
+    session
+        .compile_program(program(
+            "/recovered/current.go",
+            "package main\nfunc main() { println(1) }\n",
+        ))
+        .unwrap();
+    let active = session.database().active_files();
+    assert_eq!(active.len(), 1);
+    assert_eq!(
+        session
+            .database()
+            .source_snapshot(active[0])
+            .unwrap()
+            .path(),
+        "/recovered/current.go"
+    );
+}
+
+#[test]
+fn semantic_diagnostics_publish_current_original_path_and_position() {
+    let source = r#"package main
+
+func prefix() {
+    println(1)
+}
+
+func broken() {
+    switch {}
+}
+
+func main() {}
+"#;
+    let mut session = CompilerSession::default();
+    let error = session
+        .compile_program(program("/checkout/current/main.go", source))
+        .err()
+        .expect("switch is outside the bootstrap frontier");
+    let diagnostic = &error.diagnostics()[0];
+    assert_eq!(diagnostic.file, "/checkout/current/main.go");
+    assert_eq!(diagnostic.line, 8);
+    assert_eq!(diagnostic.column, 5);
+}
+
+#[test]
+fn source_map_tracks_non_main_function_through_its_generated_symbol() {
+    let mut session = CompilerSession::default();
+    let (compiled, plan) = session
+        .compile_program_with_source_map(program("main.go", ORIGINAL))
+        .unwrap();
+    let rust = gors::printer::generate_single(compiled).unwrap();
+    let source_map = plan.build(&rust);
+    let token = source_map
+        .tokens()
+        .find(|token| token.get_name() == Some("f"))
+        .expect("non-main generated symbol must retain the Go display name");
+    assert_eq!(token.get_src_line(), 2);
+    assert_eq!(token.get_src_col(), 5);
+    assert!(rust.lines().nth(token.get_dst_line() as usize).is_some());
 }

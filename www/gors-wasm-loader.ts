@@ -21,8 +21,13 @@ export interface GorsBuildResult {
 	free(): void;
 }
 
-export type GorsWasm = {
+export interface GorsCompiler {
 	build_rust(input: string): GorsBuildResult;
+	free(): void;
+}
+
+export type GorsWasm = {
+	GorsCompiler: new () => GorsCompiler;
 };
 
 type ManualWasmBindings = GorsWasm & {

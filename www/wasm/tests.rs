@@ -1,7 +1,7 @@
 use gors::error::{Diagnostic, DiagnosticKind};
 
+use crate::GorsCompiler;
 use crate::build_result::{BuildResult, extract_rust_token_at, utf16_column_to_byte_offset};
-use crate::build_rust;
 
 #[test]
 fn browser_diagnostics_convert_go_byte_columns_to_utf16() {
@@ -46,7 +46,7 @@ func main() {
 }
 "#;
 
-    let result = build_rust(input.to_string());
+    let result = GorsCompiler::new().build_rust(input.to_string());
 
     assert!(result.success());
     assert!(result.output().contains("fn main()"));
@@ -66,7 +66,7 @@ func main() {
 }
 "#;
 
-    let result = build_rust(input.to_string());
+    let result = GorsCompiler::new().build_rust(input.to_string());
 
     assert!(result.success());
     assert_eq!(
@@ -89,7 +89,7 @@ func main() {
 }
 "#;
 
-    let result = build_rust(input.to_string());
+    let result = GorsCompiler::new().build_rust(input.to_string());
 
     assert!(!result.success());
     assert_eq!(result.error_kind(), "compiler");
@@ -113,7 +113,7 @@ func main() {
 }
 "#;
 
-    let result = build_rust(input.to_string());
+    let result = GorsCompiler::new().build_rust(input.to_string());
 
     assert!(!result.success());
     assert_eq!(result.error_kind(), "compiler");
@@ -127,4 +127,75 @@ func main() {
             .contains("undefined identifier missing")
     );
     assert_eq!(result.error_source_line(), "\tprintln(missing)");
+}
+
+#[test]
+fn retained_browser_session_reuses_an_unchanged_function_across_edits() {
+    use gors::compiler::db::QueryKind;
+
+    let initial = r#"package main
+
+func stable() int {
+	return 40
+}
+
+func main() {
+	println(stable())
+}
+"#;
+    let changed = r#"package main
+
+func stable() int {
+	return 40
+}
+
+func main() {
+	println(stable() + 2)
+}
+"#;
+    let mut compiler = GorsCompiler::new();
+
+    assert!(compiler.build_rust(initial.to_string()).success());
+    compiler.session().database().reset_telemetry();
+    assert!(compiler.build_rust(changed.to_string()).success());
+
+    let telemetry = compiler.session().database().telemetry();
+    assert_eq!(telemetry.executions(QueryKind::FileProjection), 1);
+    assert_eq!(telemetry.executions(QueryKind::TypedHir), 1);
+    assert_eq!(telemetry.executions(QueryKind::VerifiedGoMir), 1);
+    assert_eq!(telemetry.executions(QueryKind::NormalizedGoMir), 1);
+    assert_eq!(telemetry.executions(QueryKind::VerifiedRustIr), 1);
+}
+
+#[test]
+fn retained_browser_session_does_not_leak_comments_or_source_map_provenance() {
+    let initial = r#"package main
+
+func main() {
+	// first revision
+	println(1)
+}
+"#;
+    let changed = r#"package main
+
+func main() {
+	// second revision has a longer comment
+	println(2)
+}
+"#;
+    let mut compiler = GorsCompiler::new();
+
+    assert!(compiler.build_rust(initial.to_string()).success());
+    let result = compiler.build_rust(changed.to_string());
+
+    assert!(result.success());
+    assert!(
+        result
+            .output()
+            .contains("// second revision has a longer comment")
+    );
+    assert!(!result.output().contains("// first revision"));
+    let source_map = result.get_source_map_json();
+    assert!(source_map.contains("second revision has a longer comment"));
+    assert!(!source_map.contains("first revision"));
 }

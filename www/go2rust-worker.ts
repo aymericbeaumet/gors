@@ -1,5 +1,9 @@
 import { MAX_SOURCE_MAP_INDEX_MAPPINGS } from "./src/source-map-index";
-import { loadGorsWasm, type GorsBuildResult } from "gors-wasm-runtime";
+import type { GorsBuildResult } from "./gors-wasm-loader";
+import {
+	CompilerSourceRevision,
+	createCompilerSessionLoader,
+} from "./gors-compiler-session";
 import type {
 	CancelRequest,
 	CompileRequest,
@@ -38,6 +42,8 @@ let activeRequestId: number | null = null;
 let drainScheduled = false;
 let draining = false;
 const cancelledRequestIds = new Set<number>();
+const loadCompiler = createCompilerSessionLoader();
+const compilerSourceRevision = new CompilerSourceRevision();
 
 function postStatus(id: number, phase: CompilerPhase, startedAt: number): void {
 	worker.postMessage({
@@ -175,7 +181,9 @@ async function executeCompile(request: CompileRequest): Promise<void> {
 	const timings: CompilerPhaseTiming[] = [];
 
 	const cached = cache.get(goSource);
-	if (cached) {
+	// An older artifact cannot bypass reinstalling its source in the retained
+	// compiler; otherwise the following edit would fork from a stale revision.
+	if (cached && compilerSourceRevision.canReuseCachedResult(goSource)) {
 		const cacheStartedAt = performance.now();
 		postStatus(id, "cache-hit", startedAt);
 		touchCache(goSource, cached);
@@ -191,7 +199,7 @@ async function executeCompile(request: CompileRequest): Promise<void> {
 	try {
 		let phaseStartedAt = performance.now();
 		postStatus(id, "loading-wasm", startedAt);
-		const gors = await loadGorsWasm();
+		const compiler = await loadCompiler();
 		timings.push({
 			phase: "loading-wasm",
 			durationMs: performance.now() - phaseStartedAt,
@@ -207,7 +215,9 @@ async function executeCompile(request: CompileRequest): Promise<void> {
 			while (performance.now() < deadline) spinCount++;
 			void spinCount;
 		}
-		const buildResult = gors.build_rust(goSource);
+		compilerSourceRevision.beginCompile();
+		const buildResult = compiler.build_rust(goSource);
+		compilerSourceRevision.completeCompile(goSource, buildResult.success);
 		timings.push({
 			phase: "compiling",
 			durationMs: performance.now() - phaseStartedAt,
@@ -225,10 +235,12 @@ async function executeCompile(request: CompileRequest): Promise<void> {
 			durationMs: performance.now() - phaseStartedAt,
 		});
 
-		touchCache(goSource, {
-			result,
-			bytes: estimateResultBytes(goSource, result),
-		});
+		if (result.success) {
+			touchCache(goSource, {
+				result,
+				bytes: estimateResultBytes(goSource, result),
+			});
+		}
 		postStatus(id, "complete", startedAt);
 		postResult(id, result, startedAt, timings, false);
 	} catch (error) {

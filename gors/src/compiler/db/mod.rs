@@ -28,8 +28,8 @@ pub use model::{
     PackageAnalysis, PackageIssue, ParseFailure, PublicApi,
 };
 pub use products::{
-    CompilerStage, FunctionProvenance, NormalizedMirFunction, StageFailure, TypedHirFunction,
-    VerifiedMirFunction, VerifiedRustIrFunction, VerifiedRustIrPackage,
+    CompilerStage, FunctionProvenance, NormalizedMirFunction, StageFailure, TypedFunctionSignature,
+    TypedHirFunction, VerifiedMirFunction, VerifiedRustIrFunction, VerifiedRustIrPackage,
 };
 pub use telemetry::{EngineEventCounts, QueryKind, TelemetrySnapshot};
 
@@ -129,10 +129,13 @@ impl CompilerDatabase {
             .ingredient::<queries::semantic_status_product>()
             .ingredient::<queries::provenance_product>()
             .ingredient::<queries::typed_hir_product>()
-            .ingredient::<queries::package_signatures_product>()
+            .ingredient::<queries::typed_signature_product>()
+            .ingredient::<queries::package_function_product>()
+            .ingredient::<queries::mir_signature_dependencies_product>()
             .ingredient::<queries::verified_mir_product>()
             .ingredient::<queries::normalized_mir_product>()
-            .ingredient::<queries::rust_signatures_product>()
+            .ingredient::<queries::rust_signature_dependencies_product>()
+            .ingredient::<queries::executable_role_product>()
             .ingredient::<queries::verified_rust_ir_product>()
             .ingredient::<queries::rust_ir_package_product>()
             .ingredient::<SourceInput>()
@@ -360,6 +363,16 @@ impl CompilerDatabase {
         queries::typed_hir_product(self, function).map_err(QueryError::StageFailure)
     }
 
+    /// Demand one stable definition's exact typed signature independently of its body.
+    pub fn typed_signature(
+        &self,
+        file: FileId,
+        function: DefId,
+    ) -> Result<Arc<TypedFunctionSignature>, QueryError> {
+        let function = self.function_projection(file, function)?;
+        queries::typed_signature_product(self, function).map_err(QueryError::StageFailure)
+    }
+
     /// Demand one stable definition's verified explicit-order Go MIR.
     pub fn verified_mir(
         &self,
@@ -419,6 +432,23 @@ impl CompilerDatabase {
             .copied()
             .map(|source| source.snapshot(self))
             .ok_or(QueryError::UnknownFile(file))
+    }
+
+    /// Restore an already-registered file payload during session transaction rollback.
+    pub(in crate::compiler) fn restore_source_snapshot(
+        &mut self,
+        file: FileId,
+        snapshot: Arc<SourceSnapshot>,
+    ) -> Result<(), QueryError> {
+        let source = self
+            .sources
+            .get(&file)
+            .copied()
+            .ok_or(QueryError::UnknownFile(file))?;
+        if source.snapshot(self).as_ref() != snapshot.as_ref() {
+            source.set_snapshot(self).to(snapshot);
+        }
+        Ok(())
     }
 
     /// Portable package-relative logical filename for one source input.
@@ -555,6 +585,14 @@ impl CompilerDatabaseSnapshot {
         self.database.typed_hir(file, function)
     }
 
+    pub fn typed_signature(
+        &self,
+        file: FileId,
+        function: DefId,
+    ) -> Result<Arc<TypedFunctionSignature>, QueryError> {
+        self.database.typed_signature(file, function)
+    }
+
     pub fn verified_mir(
         &self,
         file: FileId,
@@ -602,8 +640,8 @@ impl queries::Db for CompilerDatabase {
         &self.telemetry
     }
 
-    fn query_build_input(&self) -> BuildInput {
-        self.build.expect("compiler build input is installed")
+    fn query_build_input(&self) -> Option<BuildInput> {
+        self.build
     }
 }
 

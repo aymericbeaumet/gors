@@ -65,6 +65,13 @@ test("persistent compiler worker handles cold, cached, edited, and coalesced inp
 	expect(firstStats.workerStartCount).toBe(1);
 	expect(firstStats.workerId).not.toBeNull();
 
+	const restoredAfterError = await compile(page, sourceWith(1001));
+	expect(restoredAfterError.success).toBe(true);
+	expect(restoredAfterError.cacheHit).toBe(false);
+	expect(restoredAfterError.timings.map(({ phase }) => phase)).toContain(
+		"compiling",
+	);
+
 	const repeated = await compile(page, sourceWith(1001));
 	expect(repeated.success).toBe(true);
 	expect(repeated.cacheHit).toBe(true);
@@ -74,6 +81,11 @@ test("persistent compiler worker handles cold, cached, edited, and coalesced inp
 	expect(edited.success).toBe(true);
 	expect(edited.cacheHit).toBe(false);
 	expect(edited.rustCode).toContain("1002");
+
+	const restoredOlderArtifact = await compile(page, sourceWith(1001));
+	expect(restoredOlderArtifact.success).toBe(true);
+	expect(restoredOlderArtifact.cacheHit).toBe(false);
+	expect(restoredOlderArtifact.rustCode).toContain("1001");
 
 	const rapidOutcomes = await page.evaluate(
 		(sources) => {

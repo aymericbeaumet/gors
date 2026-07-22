@@ -19,17 +19,20 @@ const WORKSPACE_IDENTITY: &str = "gors:canonical-workspace";
 /// build daemons, and performance harnesses should retain this value.
 pub struct CompilerSession {
     database: CompilerDatabase,
-    active_sources: BTreeSet<FileId>,
 }
 
 impl CompilerSession {
     /// Create a session from explicit, ambient-environment-free build inputs.
-    #[must_use]
-    pub fn new(config: BuildConfig) -> Self {
-        Self {
+    ///
+    /// The production source packager embeds exactly one runtime ABI. Synthetic
+    /// multi-ABI query tests may construct [`CompilerDatabase`] directly, but a
+    /// production session must never label generated Rust with an ABI that its
+    /// terminal artifact cannot package.
+    pub fn new(config: BuildConfig) -> Result<Self, CompilerError> {
+        validate_packaged_runtime_abi(&config)?;
+        Ok(Self {
             database: CompilerDatabase::new(config),
-            active_sources: BTreeSet::new(),
-        }
+        })
     }
 
     /// Read the owned database for telemetry and immutable stage inspection.
@@ -40,6 +43,7 @@ impl CompilerSession {
 
     /// Change explicit build inputs while preserving target-independent memos.
     pub fn set_build_config(&mut self, config: BuildConfig) -> Result<(), CompilerError> {
+        validate_packaged_runtime_abi(&config)?;
         self.database
             .set_build_config(config)
             .map_err(|error| self.query_error(error))
@@ -97,7 +101,7 @@ impl CompilerSession {
             .verified_rust_ir_package(installed.main_package)
             .map_err(|error| self.query_error(error))?;
         let source_map = with_source_map
-            .then(|| self.source_map_plan(&installed, main_analysis))
+            .then(|| self.source_map_plan(&installed, main_analysis, rust_ir.file()))
             .transpose()?;
         let entry = emit::emit_file(rust_ir.file())
             .map_err(|diagnostic| CompilerError::from(vec![diagnostic]))?;
@@ -114,6 +118,42 @@ impl CompilerSession {
         &mut self,
         program: &ParsedProgram,
     ) -> Result<InstalledProgram, CompilerError> {
+        let previous_sources = self
+            .database
+            .active_files()
+            .into_iter()
+            .map(|file| {
+                self.database
+                    .source_snapshot(file)
+                    .map(|snapshot| (file, snapshot))
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()
+            .map_err(|error| self.query_error(error))?;
+        match self.install_program_inputs(program) {
+            Ok((installed, next_sources)) => {
+                let stale = previous_sources
+                    .keys()
+                    .filter(|file| !next_sources.contains(file))
+                    .copied()
+                    .collect::<Vec<_>>();
+                for file in stale {
+                    self.database
+                        .remove_source(file)
+                        .map_err(|error| self.query_error(error))?;
+                }
+                Ok(installed)
+            }
+            Err(error) => {
+                self.rollback_install(&previous_sources);
+                Err(error)
+            }
+        }
+    }
+
+    fn install_program_inputs(
+        &mut self,
+        program: &ParsedProgram,
+    ) -> Result<(InstalledProgram, BTreeSet<FileId>), CompilerError> {
         let mut next_sources = BTreeSet::new();
         let mut packages = Vec::new();
         for package in program.imports() {
@@ -125,22 +165,29 @@ impl CompilerSession {
         packages.push(main_package);
         packages.sort();
         packages.dedup();
-        let stale = self
-            .active_sources
-            .difference(&next_sources)
-            .copied()
-            .collect::<Vec<_>>();
-        for file in stale {
-            self.database
-                .remove_source(file)
-                .map_err(|error| self.query_error(error))?;
+        Ok((
+            InstalledProgram {
+                main_package,
+                main_files,
+                packages,
+            },
+            next_sources,
+        ))
+    }
+
+    fn rollback_install(
+        &mut self,
+        previous_sources: &BTreeMap<FileId, std::sync::Arc<crate::parser::SourceSnapshot>>,
+    ) {
+        for file in self.database.active_files() {
+            if let Some(snapshot) = previous_sources.get(&file) {
+                let _ = self
+                    .database
+                    .restore_source_snapshot(file, std::sync::Arc::clone(snapshot));
+            } else {
+                let _ = self.database.remove_source(file);
+            }
         }
-        self.active_sources = next_sources;
-        Ok(InstalledProgram {
-            main_package,
-            main_files,
-            packages,
-        })
     }
 
     fn install_package(
@@ -245,6 +292,7 @@ impl CompilerSession {
         &self,
         installed: &InstalledProgram,
         analysis: &PackageAnalysis,
+        rust_ir: &super::rust_ir::File,
     ) -> Result<SourceMapPlan, CompilerError> {
         let mut tracker = crate::sourcemap::SourceMapTracker::new();
         let sources = installed
@@ -266,6 +314,11 @@ impl CompilerSession {
             .iter()
             .map(|file| (file.logical_path.as_str(), file.original_path.as_str()))
             .collect::<BTreeMap<_, _>>();
+        let emitted_functions = rust_ir
+            .functions
+            .iter()
+            .map(|function| (function.id, function))
+            .collect::<BTreeMap<_, _>>();
         for function in analysis.functions() {
             let provenance = self
                 .database
@@ -274,11 +327,18 @@ impl CompilerSession {
             let source = original_paths
                 .get(provenance.logical_file())
                 .map(|path| (*path).to_string());
-            tracker.record_for_source(
+            let emitted = emitted_functions.get(&function.id()).ok_or_else(|| {
+                CompilerError::backend(format!(
+                    "verified Rust IR omitted source function DefId {}",
+                    function.id()
+                ))
+            })?;
+            tracker.record_for_source_with_generated_token(
                 source,
                 provenance.line() as u32,
                 provenance.column() as u32,
-                Some(function.name()),
+                function.name(),
+                emitted.artifact.symbol.as_str(),
             );
         }
         tracker.pause();
@@ -295,25 +355,31 @@ impl CompilerSession {
 
     fn stage_failure(&self, failure: &StageFailure) -> CompilerError {
         let mut diagnostics = failure.diagnostics().to_vec();
-        if let Some(definition) = failure.definition()
-            && let Some(provenance) = self.definition_provenance(definition)
+        let definition_location = failure
+            .definition()
+            .and_then(|definition| self.definition_provenance(definition));
+        if let Some((_, provenance)) = &definition_location {
+            for diagnostic in &mut diagnostics {
+                rebase_function_diagnostic(diagnostic, provenance);
+            }
+        }
+        let source_file = definition_location
+            .as_ref()
+            .map(|(file, _)| *file)
+            .or_else(|| failure.source_file());
+        if let Some(source_file) = source_file
+            && let Ok(snapshot) = self.database.source_snapshot(source_file)
         {
             for diagnostic in &mut diagnostics {
-                let span = &mut diagnostic.span;
-                if span.file.is_empty() || span.line == 0 || span.column == 0 {
-                    continue;
+                if !diagnostic.span.file.is_empty() {
+                    diagnostic.span.file = snapshot.path().to_string();
                 }
-                span.start = span.start.saturating_add(provenance.byte_offset());
-                span.end = span.end.saturating_add(provenance.byte_offset());
-                if span.line == 1 {
-                    span.column = span
-                        .column
-                        .saturating_add(provenance.column().saturating_sub(1));
+            }
+        } else {
+            for diagnostic in &mut diagnostics {
+                if let Some(path) = self.original_path_for_logical(&diagnostic.span.file) {
+                    diagnostic.span.file = path;
                 }
-                span.line = span
-                    .line
-                    .saturating_add(provenance.line().saturating_sub(1));
-                span.file = provenance.logical_file().to_string();
             }
         }
         CompilerError::from(diagnostics)
@@ -322,15 +388,40 @@ impl CompilerSession {
     fn definition_provenance(
         &self,
         definition: super::ids::DefId,
-    ) -> Option<std::sync::Arc<super::db::FunctionProvenance>> {
+    ) -> Option<(FileId, std::sync::Arc<super::db::FunctionProvenance>)> {
         for file in self.database.active_files() {
-            let analysis = self.database.analyze_file(file).ok()?;
+            let Ok(analysis) = self.database.analyze_file(file) else {
+                continue;
+            };
             if analysis
                 .functions()
                 .iter()
                 .any(|function| function.id() == definition)
             {
-                return self.database.function_provenance(file, definition).ok();
+                return self
+                    .database
+                    .function_provenance(file, definition)
+                    .ok()
+                    .map(|provenance| (file, provenance));
+            }
+        }
+        None
+    }
+
+    fn original_path_for_logical(&self, logical: &str) -> Option<String> {
+        if logical.is_empty() {
+            return None;
+        }
+        for file in self.database.active_files() {
+            let Ok(logical_path) = self.database.logical_path(file) else {
+                continue;
+            };
+            if logical_path.as_ref() == logical {
+                return self
+                    .database
+                    .source_snapshot(file)
+                    .ok()
+                    .map(|snapshot| snapshot.path().to_string());
             }
         }
         None
@@ -343,7 +434,7 @@ impl CompilerSession {
                 PackageIssue::FileParseFailure { file, failure } => CompilerDiagnostic {
                     code: "GORS2002",
                     message: failure.message().to_string(),
-                    file: self.logical_file_or_empty(*file),
+                    file: self.source_path_or_empty(*file),
                     line: failure.line().unwrap_or(0),
                     column: failure.column().unwrap_or(0),
                 },
@@ -356,7 +447,7 @@ impl CompilerSession {
                     message: format!(
                         "package clause {found:?} does not match expected {expected:?}"
                     ),
-                    file: self.logical_file_or_empty(*file),
+                    file: self.source_path_or_empty(*file),
                     line: 0,
                     column: 0,
                 },
@@ -368,10 +459,10 @@ impl CompilerSession {
                     code: "GORS2002",
                     message: format!(
                         "duplicate package definition {name:?} in {} and {}",
-                        self.logical_file_or_empty(*first_file),
-                        self.logical_file_or_empty(*second_file)
+                        self.source_path_or_empty(*first_file),
+                        self.source_path_or_empty(*second_file)
                     ),
-                    file: self.logical_file_or_empty(*second_file),
+                    file: self.source_path_or_empty(*second_file),
                     line: 0,
                     column: 0,
                 },
@@ -401,17 +492,30 @@ impl CompilerSession {
         CompilerError { diagnostics }
     }
 
-    fn logical_file_or_empty(&self, file: FileId) -> String {
+    fn source_path_or_empty(&self, file: FileId) -> String {
         self.database
-            .logical_path(file)
-            .map_or_else(|_| String::new(), |path| path.to_string())
+            .source_snapshot(file)
+            .map_or_else(|_| String::new(), |snapshot| snapshot.path().to_string())
     }
 }
 
 impl Default for CompilerSession {
     fn default() -> Self {
-        Self::new(BuildConfig::default())
+        Self {
+            database: CompilerDatabase::new(BuildConfig::default()),
+        }
     }
+}
+
+fn validate_packaged_runtime_abi(config: &BuildConfig) -> Result<(), CompilerError> {
+    if config.runtime_abi() == crate::RUNTIME_ABI_ID {
+        return Ok(());
+    }
+    Err(CompilerError::backend(format!(
+        "runtime ABI `{}` cannot be packaged by this compiler; expected `{}`",
+        config.runtime_abi(),
+        crate::RUNTIME_ABI_ID
+    )))
 }
 
 struct InstalledProgram {
@@ -453,3 +557,27 @@ fn boundary_error(file: String, message: impl Into<String>) -> CompilerError {
         }],
     }
 }
+
+fn rebase_function_diagnostic(
+    diagnostic: &mut super::Diagnostic,
+    provenance: &super::db::FunctionProvenance,
+) {
+    let span = &mut diagnostic.span;
+    if span.file.is_empty() || span.line == 0 || span.column == 0 {
+        return;
+    }
+    span.start = span.start.saturating_add(provenance.byte_offset());
+    span.end = span.end.saturating_add(provenance.byte_offset());
+    if span.line == 1 {
+        span.column = span
+            .column
+            .saturating_add(provenance.column().saturating_sub(1));
+    }
+    span.line = span
+        .line
+        .saturating_add(provenance.line().saturating_sub(1));
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests;

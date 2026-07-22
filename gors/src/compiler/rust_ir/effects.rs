@@ -72,6 +72,12 @@ fn binary_effects(op: BinaryOp) -> Effects {
             | BinaryOp::IntShl
             | BinaryOp::IntShr
             | BinaryOp::StringConcat
+            | BinaryOp::StringEqual
+            | BinaryOp::StringNotEqual
+            | BinaryOp::StringLess
+            | BinaryOp::StringLessEqual
+            | BinaryOp::StringGreater
+            | BinaryOp::StringGreaterEqual
     );
     Effects {
         may_call: runtime_call,
@@ -99,7 +105,6 @@ fn operand_effects(operand: &Operand) -> Effects {
         } => Effects {
             may_read: true,
             may_call: true,
-            may_allocate: true,
             ..Effects::default()
         },
         Operand::Read {
@@ -112,7 +117,6 @@ fn operand_effects(operand: &Operand) -> Effects {
         },
         Operand::Constant(Constant::GoString(_)) => Effects {
             may_call: true,
-            may_allocate: true,
             ..Effects::default()
         },
         Operand::Constant(Constant::Bool(_) | Constant::I64(_)) | Operand::Unit => {
