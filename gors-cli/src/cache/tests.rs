@@ -145,7 +145,8 @@ fn input_snapshot_uses_the_loaded_revision_without_rereading_sources() {
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().join("main.go");
     std::fs::write(&source, "package main\n").unwrap();
-    let loaded = gors::workspace::load_program(temp.path()).unwrap();
+    let loaded =
+        gors::workspace::load_program(crate::cli_workspace().unwrap(), temp.path()).unwrap();
 
     std::fs::write(&source, "package changed\n").unwrap();
     std::fs::write(temp.path().join("added.go"), "package main\n").unwrap();

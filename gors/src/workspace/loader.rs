@@ -3,12 +3,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::compiler::input::{
-    PackageInputManifest, PackageKey, ProgramInput, SourceFileInput, SourceSnapshot, WorkspaceKey,
+    PackageInputManifest, PackageKey, ProgramInput, SourceFileInput, WorkspaceKey,
 };
 
 use super::{LoadError, LoadedProgram, PathExpectation};
-
-const COMMAND_LINE_WORKSPACE: &str = "command-line";
 
 struct SelectedFile {
     canonical_path: PathBuf,
@@ -18,8 +16,12 @@ struct SelectedFile {
 /// Discover one source file or a directory's immediate eligible Go files.
 ///
 /// Filesystem discovery never scans or parses Go text and does not resolve
-/// imports. Directory selection is non-recursive.
-pub fn load_program(path: impl AsRef<Path>) -> Result<LoadedProgram, LoadError> {
+/// imports. Directory selection is non-recursive. `workspace` is a stable
+/// logical identity selected by the caller; it is never derived from `path`.
+pub fn load_program(
+    workspace: WorkspaceKey,
+    path: impl AsRef<Path>,
+) -> Result<LoadedProgram, LoadError> {
     let invocation_path = path.as_ref();
     ensure_utf8(invocation_path)?;
     let canonical = canonicalize(invocation_path)?;
@@ -28,11 +30,11 @@ pub fn load_program(path: impl AsRef<Path>) -> Result<LoadedProgram, LoadError> 
         .map_err(|error| LoadError::io("inspect source path", canonical.clone(), error))?;
     if metadata.is_file() {
         let selected = select_explicit_files([canonical])?;
-        return load_selected(selected, Arc::from([]));
+        return load_selected(workspace, selected, Arc::from([]));
     }
     if metadata.is_dir() {
         let selected = select_directory(&canonical)?;
-        return load_selected(selected, Arc::from([canonical]));
+        return load_selected(workspace, selected, Arc::from([canonical]));
     }
     Err(LoadError::InvalidPathKind {
         path: canonical,
@@ -44,12 +46,16 @@ pub fn load_program(path: impl AsRef<Path>) -> Result<LoadedProgram, LoadError> 
 ///
 /// A single argument keeps [`load_program`] semantics and may name a
 /// directory. Two or more arguments must be eligible files in one directory.
-pub fn load_program_files<P: AsRef<Path>>(paths: &[P]) -> Result<LoadedProgram, LoadError> {
+/// `workspace` is caller-owned and independent of the files' physical paths.
+pub fn load_program_files<P: AsRef<Path>>(
+    workspace: WorkspaceKey,
+    paths: &[P],
+) -> Result<LoadedProgram, LoadError> {
     let Some(first) = paths.first() else {
         return Err(LoadError::NoInputPaths);
     };
     if paths.len() == 1 {
-        return load_program(first);
+        return load_program(workspace, first);
     }
 
     let mut canonical = Vec::with_capacity(paths.len());
@@ -61,7 +67,7 @@ pub fn load_program_files<P: AsRef<Path>>(paths: &[P]) -> Result<LoadedProgram, 
         canonical.push(path);
     }
     let selected = select_explicit_files(canonical)?;
-    load_selected(selected, Arc::from([]))
+    load_selected(workspace, selected, Arc::from([]))
 }
 
 fn select_directory(directory: &Path) -> Result<Vec<SelectedFile>, LoadError> {
@@ -161,6 +167,7 @@ fn require_shared_directory(selected: &[SelectedFile]) -> Result<(), LoadError> 
 }
 
 fn load_selected(
+    workspace: WorkspaceKey,
     selected: Vec<SelectedFile>,
     watched_directories: Arc<[PathBuf]>,
 ) -> Result<LoadedProgram, LoadError> {
@@ -179,8 +186,11 @@ fn load_selected(
             path: selected_file.canonical_path.clone(),
         })?;
         primary_diagnostic_path.get_or_insert_with(|| Arc::clone(&display_path));
-        let snapshot = Arc::new(SourceSnapshot::from_source(display_path, source));
-        files.push(SourceFileInput::new(selected_file.logical_path, snapshot)?);
+        files.push(SourceFileInput::from_source(
+            selected_file.logical_path,
+            display_path,
+            source,
+        )?);
     }
 
     let Some(primary_diagnostic_path) = primary_diagnostic_path else {
@@ -188,11 +198,7 @@ fn load_selected(
     };
     let package_key = PackageKey::command_line();
     let package = PackageInputManifest::new(package_key.clone(), files)?;
-    let input = ProgramInput::new(
-        WorkspaceKey::ad_hoc(COMMAND_LINE_WORKSPACE)?,
-        package_key,
-        [package],
-    )?;
+    let input = ProgramInput::new(workspace, package_key, [package])?;
     Ok(LoadedProgram::new(
         input,
         watched_directories,

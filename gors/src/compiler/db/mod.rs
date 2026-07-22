@@ -176,6 +176,7 @@ impl CompilerDatabase {
             .ingredient::<queries::normalized_mir_product>()
             .ingredient::<queries::rust_signature_dependencies_product>()
             .ingredient::<queries::executable_role_product>()
+            .ingredient::<queries::rust_ir_root_inputs_product>()
             .ingredient::<queries::verified_rust_ir_product>()
             .ingredient::<queries::rust_ir_package_product>()
             .ingredient::<SourceInput>()
@@ -264,7 +265,7 @@ impl CompilerDatabase {
         self.diagnostic_paths.remove(&file);
         let package = input.package(self);
         self.remove_package_source(package, file)?;
-        let tombstone = Arc::new(SourceContent::from_source(""));
+        let tombstone = Arc::new(SourceContent::empty());
         drop(input.set_content(self).to(tombstone));
         Ok(())
     }
@@ -469,6 +470,20 @@ impl CompilerDatabase {
         let input = self.package_input(package)?;
         let function = self.function_projection(file, function)?;
         queries::verified_rust_ir_product(self, input, function).map_err(QueryError::StageFailure)
+    }
+
+    /// Canonical invalidation inputs for one stable Rust-IR function root.
+    pub(in crate::compiler) fn rust_ir_root_inputs(
+        &self,
+        file: FileId,
+        function: DefId,
+    ) -> Result<Fingerprint, QueryError> {
+        let package = self.package_for_file(file)?;
+        let input = self.package_input(package)?;
+        let function = self.function_projection(file, function)?;
+        queries::rust_ir_root_inputs_product(self, input, function)
+            .map(|fingerprint| *fingerprint)
+            .map_err(QueryError::StageFailure)
     }
 
     /// Assemble a complete verified Rust IR package from tracked definitions.

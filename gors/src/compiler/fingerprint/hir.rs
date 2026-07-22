@@ -22,6 +22,17 @@ pub fn hir_function(function: &hir::Function) -> Fingerprint {
     encoder.finish()
 }
 
+/// Fingerprint one typed HIR function without diagnostic source provenance.
+///
+/// Scheduler invalidation uses this digest because changing only comments or
+/// whitespace can move relative source spans without changing any executable
+/// input to Go MIR or Rust representation lowering.
+pub(super) fn hir_function_semantics(function: &hir::Function) -> Fingerprint {
+    let mut encoder = Encoder::root(b"hir-function-semantics");
+    encode_function_with_spans(&mut encoder, function, false);
+    encoder.finish()
+}
+
 fn encode_file(encoder: &mut Encoder, file: &hir::File) {
     encoder.field(b"package", |encoder| encoder.string(&file.package));
     encoder.field(b"constants", |encoder| {
@@ -41,6 +52,14 @@ fn encode_constant(encoder: &mut Encoder, constant: &hir::Constant) {
 }
 
 fn encode_function(encoder: &mut Encoder, function: &hir::Function) {
+    encode_function_with_spans(encoder, function, true);
+}
+
+fn encode_function_with_spans(
+    encoder: &mut Encoder,
+    function: &hir::Function,
+    include_spans: bool,
+) {
     encoder.field(b"id", |encoder| def_id(encoder, function.id));
     encoder.field(b"node", |encoder| node_id(encoder, function.node));
     encoder.field(b"name", |encoder| encoder.string(&function.name));
@@ -56,20 +75,28 @@ fn encode_function(encoder: &mut Encoder, function: &hir::Function) {
         });
     });
     encoder.field(b"locals", |encoder| {
-        encoder.sequence(&function.locals, encode_local);
+        encoder.sequence(&function.locals, |encoder, local| {
+            encode_local(encoder, local, include_spans);
+        });
     });
-    encoder.field(b"body", |encoder| encode_block(encoder, &function.body));
-    encoder.field(b"span", |encoder| source_span(encoder, &function.span));
+    encoder.field(b"body", |encoder| {
+        encode_block(encoder, &function.body, include_spans);
+    });
+    if include_spans {
+        encoder.field(b"span", |encoder| source_span(encoder, &function.span));
+    }
 }
 
-fn encode_local(encoder: &mut Encoder, local: &hir::Local) {
+fn encode_local(encoder: &mut Encoder, local: &hir::Local, include_spans: bool) {
     encoder.field(b"id", |encoder| local_id(encoder, local.id));
     encoder.field(b"name", |encoder| {
         encoder.option(local.name.as_ref(), |encoder, name| encoder.string(name));
     });
     encoder.field(b"type", |encoder| ty(encoder, &local.ty));
     encoder.field(b"kind", |encoder| encode_local_kind(encoder, local.kind));
-    encoder.field(b"span", |encoder| source_span(encoder, &local.span));
+    if include_spans {
+        encoder.field(b"span", |encoder| source_span(encoder, &local.span));
+    }
 }
 
 fn encode_local_kind(encoder: &mut Encoder, kind: hir::LocalKind) {
@@ -84,29 +111,35 @@ fn encode_local_kind(encoder: &mut Encoder, kind: hir::LocalKind) {
     );
 }
 
-fn encode_block(encoder: &mut Encoder, block: &hir::Block) {
+fn encode_block(encoder: &mut Encoder, block: &hir::Block, include_spans: bool) {
     encoder.field(b"node", |encoder| node_id(encoder, block.node));
     encoder.field(b"statements", |encoder| {
-        encoder.sequence(&block.stmts, encode_statement);
+        encoder.sequence(&block.stmts, |encoder, statement| {
+            encode_statement(encoder, statement, include_spans);
+        });
     });
-    encoder.field(b"span", |encoder| source_span(encoder, &block.span));
+    if include_spans {
+        encoder.field(b"span", |encoder| source_span(encoder, &block.span));
+    }
 }
 
-fn encode_statement(encoder: &mut Encoder, statement: &hir::Stmt) {
+fn encode_statement(encoder: &mut Encoder, statement: &hir::Stmt, include_spans: bool) {
     encoder.field(b"node", |encoder| node_id(encoder, statement.node));
     encoder.field(b"kind", |encoder| {
-        encode_statement_kind(encoder, &statement.kind);
+        encode_statement_kind(encoder, &statement.kind, include_spans);
     });
-    encoder.field(b"span", |encoder| source_span(encoder, &statement.span));
+    if include_spans {
+        encoder.field(b"span", |encoder| source_span(encoder, &statement.span));
+    }
 }
 
-fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
+fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind, include_spans: bool) {
     match kind {
         hir::StmtKind::Let {
             destinations,
             values,
         } => encoder.variant(b"let", |encoder| {
-            encode_places_and_values(encoder, destinations, values);
+            encode_places_and_values(encoder, destinations, values, include_spans);
         }),
         hir::StmtKind::Assign {
             destinations,
@@ -118,16 +151,20 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
             });
             encoder.field(b"operation", |encoder| encode_assign_op(encoder, *op));
             encoder.field(b"values", |encoder| {
-                encoder.sequence(values, encode_expression);
+                encoder.sequence(values, |encoder, expression| {
+                    encode_expression(encoder, expression, include_spans);
+                });
             });
         }),
         hir::StmtKind::Expr(expression) => {
             encoder.variant(b"expression", |encoder| {
-                encode_expression(encoder, expression)
+                encode_expression(encoder, expression, include_spans)
             });
         }
         hir::StmtKind::Return(values) => encoder.variant(b"return", |encoder| {
-            encoder.sequence(values, encode_expression);
+            encoder.sequence(values, |encoder, expression| {
+                encode_expression(encoder, expression, include_spans);
+            });
         }),
         hir::StmtKind::If {
             init,
@@ -136,14 +173,20 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
             else_branch,
         } => encoder.variant(b"if", |encoder| {
             encoder.field(b"init", |encoder| {
-                encoder.option(init.as_deref(), encode_statement);
+                encoder.option(init.as_deref(), |encoder, statement| {
+                    encode_statement(encoder, statement, include_spans);
+                });
             });
             encoder.field(b"condition", |encoder| {
-                encode_expression(encoder, condition);
+                encode_expression(encoder, condition, include_spans);
             });
-            encoder.field(b"then", |encoder| encode_block(encoder, then_block));
+            encoder.field(b"then", |encoder| {
+                encode_block(encoder, then_block, include_spans);
+            });
             encoder.field(b"else", |encoder| {
-                encoder.option(else_branch.as_deref(), encode_statement);
+                encoder.option(else_branch.as_deref(), |encoder, statement| {
+                    encode_statement(encoder, statement, include_spans);
+                });
             });
         }),
         hir::StmtKind::For {
@@ -153,18 +196,28 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
             body,
         } => encoder.variant(b"for", |encoder| {
             encoder.field(b"init", |encoder| {
-                encoder.option(init.as_deref(), encode_statement);
+                encoder.option(init.as_deref(), |encoder, statement| {
+                    encode_statement(encoder, statement, include_spans);
+                });
             });
             encoder.field(b"condition", |encoder| {
-                encoder.option(condition.as_ref(), encode_expression);
+                encoder.option(condition.as_ref(), |encoder, expression| {
+                    encode_expression(encoder, expression, include_spans);
+                });
             });
             encoder.field(b"post", |encoder| {
-                encoder.option(post.as_deref(), encode_statement);
+                encoder.option(post.as_deref(), |encoder, statement| {
+                    encode_statement(encoder, statement, include_spans);
+                });
             });
-            encoder.field(b"body", |encoder| encode_block(encoder, body));
+            encoder.field(b"body", |encoder| {
+                encode_block(encoder, body, include_spans);
+            });
         }),
         hir::StmtKind::Block(block) => {
-            encoder.variant(b"block", |encoder| encode_block(encoder, block));
+            encoder.variant(b"block", |encoder| {
+                encode_block(encoder, block, include_spans);
+            });
         }
         hir::StmtKind::Break => encoder.variant(b"break", |_| {}),
         hir::StmtKind::Continue => encoder.variant(b"continue", |_| {}),
@@ -175,12 +228,15 @@ fn encode_places_and_values(
     encoder: &mut Encoder,
     destinations: &[hir::Place],
     values: &[hir::Expr],
+    include_spans: bool,
 ) {
     encoder.field(b"destinations", |encoder| {
         encoder.sequence(destinations, |encoder, place| encode_place(encoder, *place));
     });
     encoder.field(b"values", |encoder| {
-        encoder.sequence(values, encode_expression);
+        encoder.sequence(values, |encoder, expression| {
+            encode_expression(encoder, expression, include_spans);
+        });
     });
 }
 
@@ -213,10 +269,10 @@ fn encode_assign_op(encoder: &mut Encoder, op: hir::AssignOp) {
     );
 }
 
-fn encode_expression(encoder: &mut Encoder, expression: &hir::Expr) {
+fn encode_expression(encoder: &mut Encoder, expression: &hir::Expr, include_spans: bool) {
     encoder.field(b"node", |encoder| node_id(encoder, expression.node));
     encoder.field(b"kind", |encoder| {
-        encode_expression_kind(encoder, &expression.kind);
+        encode_expression_kind(encoder, &expression.kind, include_spans);
     });
     encoder.field(b"type", |encoder| ty(encoder, &expression.ty));
     encoder.field(b"category", |encoder| {
@@ -225,10 +281,12 @@ fn encode_expression(encoder: &mut Encoder, expression: &hir::Expr) {
     encoder.field(b"effects", |encoder| {
         hir_effects(encoder, expression.effects);
     });
-    encoder.field(b"span", |encoder| source_span(encoder, &expression.span));
+    if include_spans {
+        encoder.field(b"span", |encoder| source_span(encoder, &expression.span));
+    }
 }
 
-fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
+fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind, include_spans: bool) {
     match kind {
         hir::ExprKind::Constant(value) => {
             encoder.variant(b"constant", |encoder| const_value(encoder, value));
@@ -245,18 +303,26 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
         hir::ExprKind::Binary { op, left, right } => {
             encoder.variant(b"binary", |encoder| {
                 encoder.field(b"operation", |encoder| encode_binary_op(encoder, *op));
-                encoder.field(b"left", |encoder| encode_expression(encoder, left));
-                encoder.field(b"right", |encoder| encode_expression(encoder, right));
+                encoder.field(b"left", |encoder| {
+                    encode_expression(encoder, left, include_spans);
+                });
+                encoder.field(b"right", |encoder| {
+                    encode_expression(encoder, right, include_spans);
+                });
             });
         }
         hir::ExprKind::Unary { op, operand } => encoder.variant(b"unary", |encoder| {
             encoder.field(b"operation", |encoder| encode_unary_op(encoder, *op));
-            encoder.field(b"operand", |encoder| encode_expression(encoder, operand));
+            encoder.field(b"operand", |encoder| {
+                encode_expression(encoder, operand, include_spans);
+            });
         }),
         hir::ExprKind::Call { callee, args } => encoder.variant(b"call", |encoder| {
             encoder.field(b"callee", |encoder| encode_callee(encoder, *callee));
             encoder.field(b"arguments", |encoder| {
-                encoder.sequence(args, encode_expression);
+                encoder.sequence(args, |encoder, expression| {
+                    encode_expression(encoder, expression, include_spans);
+                });
             });
         }),
     }

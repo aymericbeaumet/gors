@@ -1,3 +1,4 @@
+use super::hir::hir_function_semantics;
 use super::*;
 use crate::compiler::{self, hir, mir, rust_ir};
 
@@ -145,6 +146,30 @@ fn function_fingerprints_ignore_unrelated_sibling_order() {
     assert_eq!(
         rust_ir_function(rust_ir_named(&first.2, "stable")),
         rust_ir_function(rust_ir_named(&reordered.2, "stable"))
+    );
+}
+
+#[test]
+fn semantic_hir_fingerprint_ignores_only_source_provenance() {
+    let first =
+        lower_stages("package main\nfunc stable(x int) int {\nreturn x + 1\n}\nfunc main() {}\n");
+    let commented = lower_stages(
+        "package main\nfunc stable(x int) int {\n// move the return anchor only\nreturn x + 1\n}\nfunc main() {}\n",
+    );
+    let changed =
+        lower_stages("package main\nfunc stable(x int) int {\nreturn x + 2\n}\nfunc main() {}\n");
+    let first = hir_named(&first.0, "stable");
+    let commented = hir_named(&commented.0, "stable");
+    let changed = hir_named(&changed.0, "stable");
+
+    assert_ne!(hir_function(first), hir_function(commented));
+    assert_eq!(
+        hir_function_semantics(first),
+        hir_function_semantics(commented)
+    );
+    assert_ne!(
+        hir_function_semantics(first),
+        hir_function_semantics(changed)
     );
 }
 

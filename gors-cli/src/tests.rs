@@ -13,6 +13,14 @@ fn args(values: &[&str]) -> Vec<String> {
 }
 
 #[test]
+fn command_line_compilation_uses_an_explicit_stable_workspace_identity() {
+    assert_eq!(
+        cli_workspace().unwrap(),
+        WorkspaceKey::AdHoc("gors-cli".into())
+    );
+}
+
+#[test]
 fn split_run_args_keeps_single_file_as_source() {
     let (sources, program_args) = split_run_args(&args(&["main.go", "--", "arg"]));
     assert_eq!(sources, args(&["main.go"]));
@@ -150,6 +158,7 @@ fn concurrent_output_publications_publish_one_consistent_transaction() {
                 .unwrap();
                 let source_paths = vec![source_path.to_string_lossy().into_owned()];
                 let loaded = gors::workspace::load_program(
+                    cli_workspace().unwrap(),
                     source_paths.first().expect("single source path"),
                 )
                 .unwrap();

@@ -365,7 +365,9 @@ cannot retain one and block a later mutation.
 
 The raw input hard cut is complete. `CompilerSession` and the free facade take
 `ProgramInput`; the CLI's raw workspace loader selects and reads command-line
-files exactly once, and Wasm constructs a direct browser manifest. Neither path
+files without parsing, and Wasm constructs a direct browser manifest. The
+loader now requires a caller-owned `WorkspaceKey`; physical checkout paths
+cannot silently become semantic workspace identity. Neither production path
 performs a presentation-layer parse, so syntax-invalid revisions enter the
 query database and can recover in the retained browser session. The file
 projection publishes decoded import occurrences, structured invalid imports,
@@ -390,22 +392,24 @@ Scanner positions now distinguish exact initial origins from explicit `//line`
 origins across Unix, Windows, and URI spellings without host-path
 normalization. Query-owned import diagnostics preserve that virtual filename,
 and comment positions are reconstructed physically from content byte offsets.
-Typed byte-anchor provenance is still P0: HIR, MIR, Rust IR, diagnostics, and
-source maps must carry stable `FileId` plus physical byte ranges and resolve
-virtual coordinates separately. Mixed filename/line/column spans are not an
-end-to-end provenance model.
+`compiler::source` now supplies checked fixed-width `TextSize`, half-open
+`TextRange`, `FileRange`, one-based physical positions, and an adjusted column
+type that represents Go's hidden column zero explicitly. Source construction
+enforces the u32 byte domain. Typed byte-anchor provenance is still P0: HIR,
+MIR, Rust IR, diagnostics, and source maps must migrate from mixed spans to
+those physical ranges plus a separate virtual-coordinate map.
 
 Native sessions can now share an explicit `CompilerHost` with one lazy bounded
-worker pool. Cold or changed revisions prewarm stable per-definition Rust-IR
-roots through revision-scoped Salsa snapshots, join every worker before later
-input mutation, and leave canonical package assembly as the only error/output
-publication boundary. Exact no-op revisions bypass the wave; Wasm, default
-sessions, and free one-shot calls stay inline, so creating multiple ordinary
-sessions cannot silently multiply hardware-sized pools. Parallel sessions must
-use an explicit host or budget. The CLI and performance harness carry that
-explicit positive job budget and record bounded scheduler evidence. This is
-only the semantic-query slice: it does not yet admit parsing, rustc, linking,
-memory, or foreground cancellation through one global scheduler.
+worker pool. A tracked per-definition readiness digest covers provenance-free
+typed HIR, self and direct-callee signatures, representation configuration, and
+executable role. Cold builds fan out every root; exact and comment-only edits
+fan out none; one body edit fans out one; and a callee API edit fans out the
+callee plus actual callers. Removed roots are pruned, build configuration
+invalidates all roots, and readiness is published only after every
+revision-scoped snapshot joins. Wasm, default sessions, and free one-shot calls
+stay inline. This is only the semantic-query slice: it does not yet admit
+parsing, rustc, linking, memory, or foreground cancellation through one global
+scheduler.
 
 Build configuration now derives the compiler's runtime ABI identity from the
 single numeric ABI version in `gors-runtime` instead of carrying a stale
@@ -511,6 +515,9 @@ Before broad stdlib work can be considered scalable, finish these foundations:
 - retained-session adoption by editor and build-daemon entry points, plus
   bounded per-definition invalidation beyond the current file-granular
   parse/semantic projection; the browser worker already retains its session;
+- delta-based transactional input installation: journal only actual mutations,
+  include stale deletion in rollback, and avoid eagerly materializing
+  unreachable manifest packages;
 - a checksummed cross-process semantic CAS with canonical schemas and atomic
   publication;
 - one global scheduler and job budget spanning queries, external codegen, and

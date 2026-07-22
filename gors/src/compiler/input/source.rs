@@ -5,6 +5,10 @@ use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 
+use crate::compiler::source::{
+    PhysicalLineColumn, PhysicalLineColumnOverflow, TextRange, TextSize, TextSizeOverflow,
+};
+
 /// Path-independent source bytes and indexing metadata for one Go file revision.
 ///
 /// This type deliberately exposes no parsing operation. Parsing belongs to the
@@ -13,27 +17,60 @@ use sha2::{Digest, Sha256};
 #[derive(Eq, PartialEq)]
 pub struct SourceContent {
     source: Arc<str>,
-    line_starts: Arc<[usize]>,
+    text_len: TextSize,
+    line_starts: Arc<[TextSize]>,
     content_digest: [u8; 32],
 }
 
 impl SourceContent {
-    /// Own exact UTF-8 source bytes without parsing or validating them.
-    pub fn from_source(source: impl Into<Arc<str>>) -> Self {
+    /// Own exact UTF-8 source bytes after enforcing the compiler coordinate
+    /// width.
+    pub fn from_source(source: impl Into<Arc<str>>) -> Result<Self, TextSizeOverflow> {
         let source = source.into();
-        let mut line_starts = Vec::with_capacity(source.lines().count().saturating_add(1));
-        line_starts.push(0);
-        line_starts.extend(
-            source
-                .bytes()
-                .enumerate()
-                .filter_map(|(offset, byte)| (byte == b'\n').then_some(offset + 1)),
-        );
+        let text_len = TextSize::try_from(source.len())?;
+        let line_starts = std::iter::once(Ok(TextSize::ZERO))
+            .chain(
+                source
+                    .bytes()
+                    .enumerate()
+                    .filter(|(_, byte)| *byte == b'\n')
+                    .map(|(offset, _)| TextSize::try_from(offset.saturating_add(1))),
+            )
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self::from_checked_parts(
+            source,
+            text_len,
+            line_starts.into(),
+        ))
+    }
+
+    pub(crate) fn empty() -> Self {
+        Self::from_checked_parts(Arc::from(""), TextSize::ZERO, Arc::from([TextSize::ZERO]))
+    }
+
+    fn from_checked_parts(
+        source: Arc<str>,
+        text_len: TextSize,
+        line_starts: Arc<[TextSize]>,
+    ) -> Self {
         Self {
             content_digest: Sha256::digest(source.as_bytes()).into(),
             source,
-            line_starts: line_starts.into(),
+            text_len,
+            line_starts,
         }
+    }
+
+    /// Fixed-width byte length of this source revision.
+    #[must_use]
+    pub const fn text_len(&self) -> TextSize {
+        self.text_len
+    }
+
+    /// Complete half-open byte range of this source revision.
+    #[must_use]
+    pub const fn text_range(&self) -> TextRange {
+        TextRange::up_to(self.text_len)
     }
 
     /// Complete immutable UTF-8 source text.
@@ -48,24 +85,32 @@ impl SourceContent {
         self.content_digest
     }
 
-    /// Physical one-based line and byte column for a source byte offset.
+    /// Physical one-based line and UTF-8 byte column for a checked byte offset.
     ///
-    /// This deliberately ignores virtual `//line` coordinates. Consumers
-    /// that place source text, such as browser comment reinsertion, need the
-    /// exact physical content position instead.
-    #[must_use]
-    pub fn line_column(&self, byte_offset: usize) -> Option<(usize, usize)> {
-        if byte_offset > self.source.len() {
-            return None;
+    /// `Ok(None)` means that the offset is past EOF. A coordinate overflow is
+    /// reported separately instead of wrapping at the pathological end of a
+    /// maximally sized source file.
+    pub fn physical_line_column(
+        &self,
+        byte_offset: TextSize,
+    ) -> Result<Option<PhysicalLineColumn>, PhysicalLineColumnOverflow> {
+        if byte_offset > self.text_len {
+            return Ok(None);
         }
         let line = self
             .line_starts
             .partition_point(|line_start| *line_start <= byte_offset);
-        let line_start = self.line_starts.get(line.saturating_sub(1)).copied()?;
-        Some((
+        let Some(line_start) = self.line_starts.get(line.saturating_sub(1)).copied() else {
+            return Ok(None);
+        };
+        PhysicalLineColumn::try_from_usize(
             line,
-            byte_offset.saturating_sub(line_start).saturating_add(1),
-        ))
+            byte_offset
+                .to_usize()
+                .saturating_sub(line_start.to_usize())
+                .saturating_add(1),
+        )
+        .map(Some)
     }
 
     /// Approximate retained bytes for query-cache accounting.
@@ -76,7 +121,7 @@ impl SourceContent {
             .saturating_add(
                 self.line_starts
                     .len()
-                    .saturating_mul(std::mem::size_of::<usize>()),
+                    .saturating_mul(std::mem::size_of::<TextSize>()),
             )
             .saturating_add(self.content_digest.len())
     }
@@ -105,15 +150,21 @@ pub struct SourceSnapshot {
 }
 
 impl SourceSnapshot {
-    /// Own an input revision without parsing or validating it.
+    /// Own an input revision after validating its fixed-width byte domain.
     ///
-    /// Syntax failure is an output of the parse query, not a failure to create
-    /// an immutable source input.
-    pub fn from_source(path: impl Into<Arc<str>>, source: impl Into<Arc<str>>) -> Self {
-        Self::from_content(path, Arc::new(SourceContent::from_source(source)))
+    /// This does not scan or parse Go syntax. Syntax failure remains an output
+    /// of the parse query, not a failure to create an immutable source input.
+    pub fn from_source(
+        path: impl Into<Arc<str>>,
+        source: impl Into<Arc<str>>,
+    ) -> Result<Self, TextSizeOverflow> {
+        SourceContent::from_source(source)
+            .map(Arc::new)
+            .map(|content| Self::from_content(path, content))
     }
 
     /// Attach a diagnostic filename to already-owned source content.
+    #[must_use]
     pub fn from_content(path: impl Into<Arc<str>>, content: Arc<SourceContent>) -> Self {
         Self {
             path: path.into(),

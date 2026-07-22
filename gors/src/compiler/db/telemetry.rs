@@ -33,6 +33,8 @@ pub enum QueryKind {
     SignatureDependencies,
     /// Classify one function's package as executable or library code.
     ExecutableRole,
+    /// Canonicalize one Rust-IR root's complete semantic invalidation inputs.
+    RustIrRootInputs,
     /// Lower and verify one stable definition's explicit-order Go MIR.
     VerifiedGoMir,
     /// Normalize and reverify one stable definition's Go MIR.
@@ -59,6 +61,7 @@ impl QueryKind {
         Self::PackageFunctionLookup,
         Self::SignatureDependencies,
         Self::ExecutableRole,
+        Self::RustIrRootInputs,
         Self::VerifiedGoMir,
         Self::NormalizedGoMir,
         Self::VerifiedRustIr,

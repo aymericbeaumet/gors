@@ -2,7 +2,8 @@
 //!
 //! This boundary selects and reads source files. It deliberately performs no
 //! scanning, parsing, import discovery, package-clause validation, or semantic
-//! work.
+//! work. Callers supply the stable logical workspace identity explicitly;
+//! physical source paths are presentation and filesystem state only.
 
 mod error;
 mod loader;

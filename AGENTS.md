@@ -52,11 +52,12 @@ unsupported diagnostic over fallback to an old lowering path.
   semantic package index, not an AST merge that invalidates every file.
 - The production input boundary is `ProgramInput` -> `SourceFileInput` ->
   `SourceSnapshot` -> query-owned file projection. `SourceSnapshot::from_source`
-  is deliberately syntax-unvalidated so syntax errors remain parse-query
-  outputs. A projection creates one temporary AST borrowing only that file's
-  immutable snapshot and publishes owned semantic products. The parser-owned
-  `ParsedProgram` and package-graph layer were deleted; do not recreate either
-  a package-wide AST or a parser-side program model.
+  validates the fixed-width physical byte domain but deliberately does not
+  validate Go syntax, so syntax errors remain parse-query outputs. A projection
+  creates one temporary AST borrowing only that file's immutable snapshot and
+  publishes owned semantic products. The parser-owned `ParsedProgram` and
+  package-graph layer were deleted; do not recreate either a package-wide AST
+  or a parser-side program model.
 
 ### Typed HIR
 
@@ -238,15 +239,17 @@ function's HIR, MIR, normalized MIR, and Rust IR green. Production program
 compilation delegates to `CompilerSession`; convenience functions create a
 short-lived session, while the browser worker retains one explicitly across
 edits. Native retained sessions may share one explicit `CompilerHost`: it owns
-one lazy fixed-capacity job pool, fans cold or changed per-definition Rust-IR
-roots across revision-scoped database snapshots, joins and drops every snapshot
-before later input mutation, and leaves exact no-op revisions on the green
-package-root path. Free convenience calls, default sessions, and Wasm remain
+one lazy fixed-capacity job pool. A tracked per-definition root-input digest
+covers provenance-free typed HIR, self and direct-callee signatures, Rust
+representation config, and executable role. Retained sessions fan out only
+roots whose digest changed, prune removed or renamed roots, publish readiness
+only after every revision snapshot joins, and bypass the wave for exact and
+comment-only edits. Free convenience calls, default sessions, and Wasm remain
 inline; parallel sessions require an explicit host or job budget, and the CLI
 owns an explicit positive job budget. Queries must not create nested pools or
-submit scheduler work. This is not yet the global scheduler for parsing, external
-codegen, linking, cancellation, or memory admission, and a native daemon or
-watch mode still does not exist. Terminal syn emission
+submit scheduler work. This is not yet the global scheduler for parsing,
+external codegen, linking, cancellation, or memory admission, and a native
+daemon or watch mode still does not exist. Terminal syn emission
 remains outside the semantic queries. Parsing and semantic projection are still
 file-granular, although tracked function fields and function-relative provenance
 allow unchanged sibling stage products to backdate. Query and scheduler counters
@@ -270,10 +273,16 @@ resolved lexically against the initial source directory without host-platform
 `Path` normalization. Stable file identity still comes from the manifest's
 logical path. Physical comment coordinates are derived from byte offsets and
 `SourceContent`, and query-owned import issues retain explicit virtual origins.
-This is only the scanner/query foundation: typed physical byte anchors plus a
-separate virtual-coordinate map must still replace mixed string/line/column
-provenance throughout HIR, MIR, Rust IR, diagnostics, and source maps. That
-end-to-end byte-anchor provenance is P0.
+`compiler::source` now owns checked fixed-width `TextSize`, half-open
+`TextRange`, stable `FileRange`, and one-based physical line/UTF-8-byte-column
+coordinates. `SourceContent` construction rejects source lengths outside the
+u32 byte-offset domain and stores fixed-width line starts. Adjusted Go display
+coordinates are a separate type whose column is explicitly `Hidden` or
+`Known`, so a two-field `//line file:line` directive cannot conflate hidden
+column zero with a physical byte position. This is still only the source-input
+foundation: HIR, MIR, Rust IR, diagnostics, and source maps retain the old
+mixed provenance and must migrate to physical `FileRange` anchors plus a
+separate virtual-coordinate map. That end-to-end byte-anchor provenance is P0.
 
 The file projection owns decoded direct-import occurrences, structured invalid
 imports, and owned source comments from its one ephemeral parse. Those products
@@ -296,6 +305,11 @@ do not flatten them into caller-constructed strings. Every package explicitly
 listed in a manifest is installed as an input, but compilation requests only
 the entry package's semantic root. Unrelated manifest packages must remain
 unparsed and unanalyzed until a query actually depends on them.
+
+The filesystem workspace loader requires an explicit caller-owned
+`WorkspaceKey`; it must never synthesize an ad-hoc identity or derive semantic
+identity from a checkout path. The CLI boundary owns the stable `gors-cli`
+workspace key used for command-line builds and runs.
 
 The raw workspace loader deliberately performs no recursive module or import
 discovery. The deleted parser package graph has no compatibility shim. Rebuild
@@ -421,6 +435,7 @@ weaken parser behavior to fit the bootstrap backend.
           mir/              explicit-order lowering, data model, and verifier
           rust_ir/          explicit Rust representation and ownership IR
           lowering/         mandatory Go MIR to verified Rust IR lowering
+          source/           checked physical and adjusted source coordinates
           emit.rs           terminal Rust syntax emission
           hir.rs            typed high-level IR
           ids.rs            compiler semantic identities

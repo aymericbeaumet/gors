@@ -377,44 +377,62 @@ architecture described here:
   products, executes no query, requests no Salsa cancellation, and schedules no
   worker wave while repackaging terminal maps and diagnostics with the current
   request path. `CompilerSession` and the free facade now accept
-  syntax-unvalidated `ProgramInput`; the CLI raw loader reads each selected file
-  once, and Wasm builds a direct manifest. Syntax-invalid revisions therefore
-  enter the retained query session. Imports, structured invalid-import facts,
-  semantic projection, and browser comments share one query-owned ephemeral
-  parse. There is still no reusable incremental syntax tree with stable syntax
-  anchors or explicit parse-product memory accounting;
+  syntax-unvalidated `ProgramInput`; one raw-loader invocation reads each
+  selected file once, and Wasm builds a direct manifest. Syntax-invalid
+  revisions therefore enter the retained query session. Imports, structured
+  invalid-import facts, semantic projection, and browser comments share one
+  query-owned ephemeral parse. There is still no reusable incremental syntax
+  tree with stable syntax anchors or explicit parse-product memory accounting;
 - all explicitly supplied manifest packages are installed, but only the entry
   package is analyzed until another query requests a package root. The raw
   loader intentionally performs no recursive import or module discovery; that
   graph must be rebuilt as query-owned manifest expansion from direct-import
-  facts and resolver metadata, not as a parser compatibility layer;
-- token and import products have typed origin foundations, but later stages
-  still mix physical byte positions with virtual filename/line/column values.
-  Stable typed byte anchors with separately resolved virtual coordinates remain
-  P0 for diagnostics, Rust IR provenance, emission anchors, and source maps;
+  facts and resolver metadata, not as a parser compatibility layer. Installing
+  unreachable package payloads still retains their bytes and can advance the
+  Salsa revision, so package manifests must become lazily materialized query
+  inputs rather than eagerly installed source sets;
+- compiler-owned source inputs now enforce fixed-width byte lengths and expose
+  checked `TextSize`, half-open `TextRange`, `FileRange`, physical positions,
+  and an adjusted column type that can represent Go's hidden column zero.
+  Later stages still mix physical bytes with virtual filename/line/column
+  values, so end-to-end typed anchors and a separate coordinate map remain P0
+  for diagnostics, Rust IR provenance, emission anchors, and source maps;
 - workspace, package, file, and definition IDs are stable; node, local, and
   basic-block IDs are still revision-local dense indexes and cannot be
   persistent query or CAS keys;
 - canonical HIR, MIR, and Rust-IR fingerprints exist, but still include source
   provenance and revision-local dense indexes instead of separating portable
-  semantic content from diagnostics;
+  semantic content from diagnostics; the narrower scheduler root-input digest
+  deliberately excludes only HIR source spans while retaining semantic node
+  and local identities, exact direct-callee signatures, representation config,
+  and executable role;
 - the production `CompilerSession` now reaches function-relative typed HIR,
   per-definition verified and normalized Go MIR, configured verified Rust IR,
   and package assembly with exact self/direct-callee signature dependencies;
   parse/semantic projection remains file-granular, convenience entry points
   retain no session across calls, and no native daemon/watch owner exists. An
   explicit shareable `CompilerHost` now owns one lazy bounded native pool for
-  cold/changed per-definition Rust-IR roots; exact no-op revisions bypass the
-  wave, Wasm/default/free calls stay inline, parallelism requires an explicit
-  host or budget, and every revision-scoped snapshot is joined before input
-  mutation;
+  cold/changed per-definition Rust-IR roots; exact no-op and comment-only
+  revisions bypass the wave, one body edit offers only that definition, API
+  edits also offer actual callers whose signature dependencies changed,
+  Wasm/default/free calls stay inline, parallelism requires an explicit host or
+  budget, and every revision-scoped snapshot is joined before readiness is
+  published or input mutation resumes;
+- program installation still snapshots every active source before applying an
+  update, and stale-file deletion is not inside the same rollback boundary.
+  Replace that O(all-active-files) backup with a mutation journal that records
+  only changed, inserted, and removed inputs and can reverse the complete
+  transaction;
 - the browser worker explicitly retains one `CompilerSession` across changed
   edits, consumes query-owned comments, and uses its exact-output cache only
   when that artifact matches the currently installed successful source
   revision; this is a real warm semantic path, but it is not the native artifact
   certification boundary;
 - the CLI manifest validates and reuses a complete generated-output or
-  executable request, but does not reuse semantic queries after an edit;
+  executable request, but does not reuse semantic queries after an edit. A
+  source-changed cache probe can also read and hash input bytes before the raw
+  loader reads them again; the next timing-schema cut must load one immutable
+  snapshot and use it for both cache comparison and compilation;
 - the bootstrap Rust artifact still recompiles its bundled runtime module for
   each uncached executable instead of linking a prebuilt versioned runtime ABI;
 - dynamic divide/remainder-by-zero and negative-shift faults currently unwind

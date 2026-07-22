@@ -6,6 +6,10 @@ use crate::compiler::input::{PackageKey, WorkspaceKey};
 
 use super::{LoadError, PathExpectation, load_program, load_program_files};
 
+fn test_workspace() -> WorkspaceKey {
+    WorkspaceKey::ad_hoc("workspace-loader-tests").unwrap()
+}
+
 fn write(path: &Path, source: &str) {
     std::fs::write(path, source).unwrap();
 }
@@ -32,7 +36,8 @@ fn directory_load_is_filtered_ordered_and_watched() {
     write(&directory.join("notes.txt"), "not Go\n");
     std::fs::create_dir(directory.join("nested.go")).unwrap();
 
-    let loaded = load_program(directory).unwrap();
+    let workspace = test_workspace();
+    let loaded = load_program(workspace.clone(), directory).unwrap();
     let canonical_directory = std::fs::canonicalize(directory).unwrap();
     let canonical_a = std::fs::canonicalize(directory.join("a.go")).unwrap();
 
@@ -42,10 +47,7 @@ fn directory_load_is_filtered_ordered_and_watched() {
         loaded.primary_diagnostic_path(),
         canonical_a.to_str().unwrap()
     );
-    assert_eq!(
-        loaded.input().workspace(),
-        &WorkspaceKey::AdHoc("command-line".into())
-    );
+    assert_eq!(loaded.input().workspace(), &workspace);
     assert!(loaded.input().entry_package().key().is_command_line());
     assert_eq!(loaded.input().packages().len(), 1);
 }
@@ -56,7 +58,7 @@ fn a_single_explicit_file_has_no_directory_membership_watch() {
     let file = temporary.path().join("main.go");
     write(&file, "package main\n");
 
-    let loaded = load_program(&file).unwrap();
+    let loaded = load_program(test_workspace(), &file).unwrap();
     let canonical_file = std::fs::canonicalize(file).unwrap();
 
     assert_eq!(logical_paths(&loaded), ["main.go"]);
@@ -75,8 +77,8 @@ fn explicit_files_are_canonicalized_and_order_independent() {
     write(&first, "package main\n");
     write(&second, "package main\n");
 
-    let reverse = load_program_files(&[second.clone(), first.clone()]).unwrap();
-    let forward = load_program_files(&[first, second]).unwrap();
+    let reverse = load_program_files(test_workspace(), &[second.clone(), first.clone()]).unwrap();
+    let forward = load_program_files(test_workspace(), &[first, second]).unwrap();
 
     assert_eq!(logical_paths(&reverse), ["a.go", "b.go"]);
     assert_eq!(logical_paths(&reverse), logical_paths(&forward));
@@ -92,7 +94,7 @@ fn a_single_directory_argument_keeps_directory_semantics() {
     let temporary = tempfile::tempdir().unwrap();
     write(&temporary.path().join("main.go"), "package main\n");
 
-    let loaded = load_program_files(&[temporary.path().to_path_buf()]).unwrap();
+    let loaded = load_program_files(test_workspace(), &[temporary.path().to_path_buf()]).unwrap();
 
     assert_eq!(logical_paths(&loaded), ["main.go"]);
     assert_eq!(
@@ -107,7 +109,7 @@ fn syntax_invalid_source_is_a_successful_raw_load() {
     let file = temporary.path().join("main.go");
     write(&file, "package main\nfunc {");
 
-    let loaded = load_program(&file).unwrap();
+    let loaded = load_program(test_workspace(), &file).unwrap();
     let source = loaded
         .input()
         .entry_package()
@@ -124,7 +126,7 @@ fn syntax_invalid_source_is_a_successful_raw_load() {
 fn rejects_empty_and_duplicate_explicit_inputs() {
     let empty: [PathBuf; 0] = [];
     assert!(matches!(
-        load_program_files(&empty),
+        load_program_files(test_workspace(), &empty),
         Err(LoadError::NoInputPaths)
     ));
 
@@ -132,7 +134,7 @@ fn rejects_empty_and_duplicate_explicit_inputs() {
     let file = temporary.path().join("main.go");
     write(&file, "package main\n");
     let canonical = std::fs::canonicalize(&file).unwrap();
-    let error = load_program_files(&[file.clone(), file]).unwrap_err();
+    let error = load_program_files(test_workspace(), &[file.clone(), file]).unwrap_err();
     assert!(matches!(
         error,
         LoadError::DuplicateSourceFile { path } if path == canonical
@@ -148,7 +150,7 @@ fn rejects_explicit_files_from_different_directories() {
     write(&first, "package main\n");
     write(&second, "package main\n");
 
-    let error = load_program_files(&[first, second]).unwrap_err();
+    let error = load_program_files(test_workspace(), &[first, second]).unwrap_err();
     assert!(matches!(
         error,
         LoadError::SourceFilesFromDifferentDirectories { .. }
@@ -162,7 +164,7 @@ fn rejects_ineligible_explicit_sources_and_multiple_directories() {
         let path = temporary.path().join(filename);
         write(&path, "package main\n");
         assert!(matches!(
-            load_program(&path),
+            load_program(test_workspace(), &path),
             Err(LoadError::InvalidPathKind {
                 expected: PathExpectation::EligibleGoSource,
                 ..
@@ -173,7 +175,10 @@ fn rejects_ineligible_explicit_sources_and_multiple_directories() {
     let other = tempfile::tempdir().unwrap();
     write(&other.path().join("main.go"), "package main\n");
     assert!(matches!(
-        load_program_files(&[temporary.path().to_path_buf(), other.path().to_path_buf(),]),
+        load_program_files(
+            test_workspace(),
+            &[temporary.path().to_path_buf(), other.path().to_path_buf(),],
+        ),
         Err(LoadError::InvalidPathKind {
             expected: PathExpectation::SourceFile,
             ..
@@ -188,7 +193,7 @@ fn reports_directory_without_eligible_sources() {
     write(&temporary.path().join("notes.txt"), "not Go\n");
     let canonical = std::fs::canonicalize(temporary.path()).unwrap();
 
-    let error = load_program(temporary.path()).unwrap_err();
+    let error = load_program(test_workspace(), temporary.path()).unwrap_err();
     assert!(matches!(
         error,
         LoadError::NoGoFiles { directory } if directory == canonical
@@ -202,7 +207,7 @@ fn rejects_non_utf8_source_bytes() {
     std::fs::write(&file, [0xff, 0xfe]).unwrap();
     let canonical = std::fs::canonicalize(&file).unwrap();
 
-    let error = load_program(&file).unwrap_err();
+    let error = load_program(test_workspace(), &file).unwrap_err();
     assert!(matches!(
         error,
         LoadError::NonUtf8Source { path } if path == canonical
@@ -219,7 +224,7 @@ fn rejects_non_utf8_go_filenames() {
     let file = PathBuf::from(filename);
 
     assert!(matches!(
-        load_program(file),
+        load_program(test_workspace(), file),
         Err(LoadError::NonUtf8Path { .. })
     ));
 }
@@ -230,7 +235,7 @@ fn entry_identity_does_not_depend_on_source_package_clause() {
     let file = temporary.path().join("main.go");
     write(&file, "package deliberately_different\n");
 
-    let loaded = load_program(&file).unwrap();
+    let loaded = load_program(test_workspace(), &file).unwrap();
 
     assert_eq!(
         loaded.input().entry_package().key(),

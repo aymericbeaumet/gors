@@ -184,7 +184,7 @@ fn rejects_noncanonical_logical_paths() {
         ),
     ];
     for (path, issue) in cases {
-        let snapshot = Arc::new(SourceSnapshot::from_source(path, "package main"));
+        let snapshot = Arc::new(SourceSnapshot::from_source(path, "package main").unwrap());
         assert_eq!(
             SourceFileInput::new(path, snapshot).unwrap_err(),
             InputError::InvalidLogicalPath {
@@ -212,4 +212,21 @@ fn accepts_syntax_invalid_source_without_parsing_it() {
     )
     .unwrap();
     assert!(input.entry_package().key().is_command_line());
+}
+
+#[test]
+fn source_file_input_rejects_lengths_outside_fixed_width_coordinates() {
+    if usize::BITS <= u32::BITS {
+        return;
+    }
+    let byte_len = usize::try_from(u64::from(u32::MAX) + 1).unwrap();
+    let logical_path = Arc::<str>::from("large.go");
+    let overflow = crate::compiler::source::TextSize::try_from(byte_len).unwrap_err();
+    assert_eq!(
+        SourceFileInput::source_size_error(&logical_path, overflow),
+        InputError::SourceTooLarge {
+            path: logical_path,
+            byte_len,
+        }
+    );
 }

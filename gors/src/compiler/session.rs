@@ -1,13 +1,16 @@
 //! Stateful production compiler session backed by the red-green query graph.
 
 mod prewarm;
+mod readiness;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
+use self::readiness::RustIrRoot;
 use super::db::{
-    BuildConfig, CompilerDatabase, PackageAnalysis, PackageIssue, QueryError, StageFailure,
+    BuildConfig, CompilerDatabase, Fingerprint, PackageAnalysis, PackageIssue, QueryError,
+    StageFailure,
 };
 use super::ids::{FileId, PackageId};
 use super::input::{PackageInputManifest, ProgramInput, SourceSnapshot, WorkspaceKey};
@@ -22,7 +25,7 @@ use super::{CompiledProgram, CompilerDiagnostic, CompilerError, SourceMapPlan, e
 pub struct CompilerSession {
     database: CompilerDatabase,
     host: CompilerHost,
-    ready_package_roots: BTreeSet<PackageId>,
+    ready_rust_ir_roots: BTreeMap<RustIrRoot, Fingerprint>,
 }
 
 impl CompilerSession {
@@ -60,7 +63,7 @@ impl CompilerSession {
         Self {
             database: CompilerDatabase::new(config),
             host,
-            ready_package_roots: BTreeSet::new(),
+            ready_rust_ir_roots: BTreeMap::new(),
         }
     }
 
@@ -95,7 +98,7 @@ impl CompilerSession {
             .set_build_config(config)
             .map_err(|error| self.query_error(error))?;
         if changed {
-            self.ready_package_roots.clear();
+            self.ready_rust_ir_roots.clear();
         }
         Ok(())
     }
@@ -130,6 +133,7 @@ impl CompilerSession {
             .database
             .analyze_package(installed.main_package)
             .map_err(|error| self.query_error(error))?;
+        self.reconcile_ready_roots(&main_analysis);
         if !main_analysis.issues().is_empty() {
             return Err(self.package_issues(installed.main_package, main_analysis.issues()));
         }
@@ -140,14 +144,12 @@ impl CompilerSession {
                 .semantic_status(file.id)
                 .map_err(|error| self.query_error(error))?;
         }
-        // A completed wave marks every per-definition root ready even when
-        // canonical package assembly will select a cached stage failure below.
-        if self.ready_package_roots.insert(installed.main_package)
-            && let Err(error) = self.prewarm_rust_ir(&main_analysis)
-        {
-            self.ready_package_roots.remove(&installed.main_package);
-            return Err(error);
-        }
+        let current_root_inputs = self.current_root_inputs(&main_analysis)?;
+        let roots = self.roots_requiring_prewarm(&current_root_inputs);
+        self.prewarm_rust_ir(&roots)?;
+        // A completed wave marks each input-equivalent root ready even when
+        // canonical package assembly selects a cached stage failure below.
+        self.publish_ready_roots(current_root_inputs);
         let rust_ir = self
             .database
             .verified_rust_ir_package(installed.main_package)
@@ -182,25 +184,18 @@ impl CompilerSession {
             .collect::<Result<BTreeMap<_, _>, _>>()
             .map_err(|error| self.query_error(error))?;
         match self.install_program_inputs(program) {
-            Ok((installed, next_sources, mut changed_packages)) => {
+            Ok((installed, next_sources)) => {
                 let stale = previous_sources
                     .keys()
                     .filter(|file| !next_sources.contains(file))
                     .copied()
                     .collect::<Vec<_>>();
                 for file in stale {
-                    let package = self
-                        .database
-                        .package_for_file(file)
-                        .map_err(|error| self.query_error(error))?;
-                    changed_packages.insert(package);
                     self.database
                         .remove_source(file)
                         .map_err(|error| self.query_error(error))?;
                 }
-                for package in changed_packages {
-                    self.ready_package_roots.remove(&package);
-                }
+                self.retain_ready_roots_for_files(&next_sources);
                 Ok(installed)
             }
             Err(error) => {
@@ -223,17 +218,12 @@ impl CompilerSession {
     fn install_program_inputs(
         &mut self,
         program: &ProgramInput,
-    ) -> Result<(InstalledProgram, BTreeSet<FileId>, BTreeSet<PackageId>), CompilerError> {
+    ) -> Result<(InstalledProgram, BTreeSet<FileId>), CompilerError> {
         let mut next_sources = BTreeSet::new();
-        let mut changed_packages = BTreeSet::new();
         let mut main = None;
         for package in program.packages() {
-            let (files, package_id) = self.install_package(
-                program.workspace(),
-                package,
-                &mut next_sources,
-                &mut changed_packages,
-            )?;
+            let (files, package_id) =
+                self.install_package(program.workspace(), package, &mut next_sources)?;
             if package.key() == program.entry_package().key() {
                 main = Some((files, package_id));
             }
@@ -247,7 +237,6 @@ impl CompilerSession {
                 main_files,
             },
             next_sources,
-            changed_packages,
         ))
     }
 
@@ -271,7 +260,6 @@ impl CompilerSession {
         workspace: &WorkspaceKey,
         package: &PackageInputManifest,
         next_sources: &mut BTreeSet<FileId>,
-        changed_packages: &mut BTreeSet<PackageId>,
     ) -> Result<(Vec<InstalledFile>, PackageId), CompilerError> {
         let mut installed = Vec::with_capacity(package.files().len());
         let mut package_id = None;
@@ -292,9 +280,6 @@ impl CompilerSession {
                 .database
                 .package_for_file(id)
                 .map_err(|error| self.query_error(error))?;
-            if update.semantic_changed() {
-                changed_packages.insert(current_package);
-            }
             if package_id
                 .replace(current_package)
                 .is_some_and(|old| old != current_package)

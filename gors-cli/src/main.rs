@@ -8,6 +8,7 @@ use cache::{
     GeneratedOutputManifest, InputSnapshot, generated_file_hashes, maybe_prune_cli_cache,
 };
 use clap::{CommandFactory, Parser};
+use gors::compiler::input::{InputError, WorkspaceKey};
 use gors::error::{Diagnostic, DiagnosticKind};
 use std::io::Write;
 use std::num::NonZeroUsize;
@@ -17,6 +18,11 @@ use timings::TimingCollector;
 
 const RUST_TOOLCHAIN: &str = "1.96.0";
 const RUST_EDITION: &str = "2024";
+const CLI_WORKSPACE_KEY: &str = "gors-cli";
+
+fn cli_workspace() -> Result<WorkspaceKey, InputError> {
+    WorkspaceKey::ad_hoc(CLI_WORKSPACE_KEY)
+}
 
 fn default_job_budget() -> NonZeroUsize {
     std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN)
@@ -231,7 +237,7 @@ fn build(cmd: Build) -> Result<(), Box<dyn std::error::Error>> {
     timings.cache_event("compiler", false);
 
     let source_load_timer = timings.phase("cli.source_load");
-    let loaded = gors::workspace::load_program(&cmd.path)?;
+    let loaded = gors::workspace::load_program(cli_workspace()?, &cmd.path)?;
     drop(source_load_timer);
     let inputs = InputSnapshot::capture(&loaded)?;
     let primary_file = loaded.primary_diagnostic_path().to_string();
@@ -621,7 +627,7 @@ fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         timings.cache_event("compiler", false);
         let source_load_timer = timings.phase("cli.source_load");
-        let loaded = gors::workspace::load_program_files(&source_paths)?;
+        let loaded = gors::workspace::load_program_files(cli_workspace()?, &source_paths)?;
         drop(source_load_timer);
         let inputs = InputSnapshot::capture(&loaded)?;
         let primary_file = loaded.primary_diagnostic_path().to_string();

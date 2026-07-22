@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use crate::ast;
 use crate::compiler::input::SourceContent;
+use crate::compiler::source::TextSize;
 use crate::parser::decode_import_path_literal;
 use crate::scanner::Scanner;
 use crate::token::Token;
@@ -68,9 +69,16 @@ pub(super) fn project_comments(
         .flat_map(|group| &group.list)
         .map(|comment| {
             let byte_start = comment.slash.offset;
-            let (line, column) = content
-                .line_column(byte_start)
-                .unwrap_or((comment.slash.line, comment.slash.column));
+            let physical = TextSize::try_from(byte_start)
+                .ok()
+                .and_then(|offset| content.physical_line_column(offset).ok().flatten())
+                .and_then(|position| {
+                    Some((
+                        usize::try_from(position.line().get()).ok()?,
+                        usize::try_from(position.byte_column().get()).ok()?,
+                    ))
+                });
+            let (line, column) = physical.unwrap_or((comment.slash.line, comment.slash.column));
             SourceComment::new(
                 file,
                 Arc::from(comment.text),

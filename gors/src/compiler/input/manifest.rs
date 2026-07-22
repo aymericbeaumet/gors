@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use super::path::validate_logical_path;
 use super::{InputError, PackageKey, SourceSnapshot, WorkspaceKey};
+use crate::compiler::source::TextSizeOverflow;
 
 /// One stable logical source file paired with an immutable raw source revision.
 ///
@@ -31,16 +32,26 @@ impl SourceFileInput {
         })
     }
 
+    pub(super) fn source_size_error(
+        logical_path: &Arc<str>,
+        error: TextSizeOverflow,
+    ) -> InputError {
+        InputError::SourceTooLarge {
+            path: Arc::clone(logical_path),
+            byte_len: error.value(),
+        }
+    }
+
     /// Construct an owned snapshot and pair it with a stable logical path.
     pub fn from_source(
         logical_path: impl Into<Arc<str>>,
         diagnostic_path: impl Into<Arc<str>>,
         source: impl Into<Arc<str>>,
     ) -> Result<Self, InputError> {
-        Self::new(
-            logical_path,
-            Arc::new(SourceSnapshot::from_source(diagnostic_path, source)),
-        )
+        let logical_path = logical_path.into();
+        let snapshot = SourceSnapshot::from_source(diagnostic_path, source)
+            .map_err(|error| Self::source_size_error(&logical_path, error))?;
+        Self::new(logical_path, Arc::new(snapshot))
     }
 
     /// Slash-normalized package-relative identity path.

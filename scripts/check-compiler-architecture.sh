@@ -121,6 +121,11 @@ fail_on_matches \
   gors/tests
 
 fail_on_matches \
+  'workspace loading must consume caller-owned identity, never synthesize it:' \
+  'WorkspaceKey::|COMMAND_LINE_WORKSPACE|"command-line"' \
+  gors/src/workspace/loader.rs
+
+fail_on_matches \
   'deleted compiler/runtime/browser paths must not be referenced:' \
   'gors[_-]builtin|wasm-threads|pkg-threads|compile_program_multi' \
   Cargo.toml gors gors-cli www fuzz

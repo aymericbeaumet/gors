@@ -6,15 +6,14 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use super::CompilerSession;
 use crate::compiler::CompilerError;
-use crate::compiler::db::PackageAnalysis;
 use crate::compiler::ids::{DefId, FileId};
+use crate::compiler::session::readiness::RustIrRoot;
 
 impl CompilerSession {
-    pub(super) fn prewarm_rust_ir(&self, analysis: &PackageAnalysis) -> Result<(), CompilerError> {
-        let mut roots = analysis
-            .functions()
+    pub(super) fn prewarm_rust_ir(&self, roots: &[RustIrRoot]) -> Result<(), CompilerError> {
+        let mut roots = roots
             .iter()
-            .map(|function| (function.file(), function.id()))
+            .map(|root| (root.file(), root.definition()))
             .collect::<Vec<_>>();
         roots.sort();
         if roots.is_empty() {

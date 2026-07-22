@@ -24,10 +24,9 @@ fn install_rollback_restores_updated_inputs_and_removes_orphans() {
     let mut session = CompilerSession::default();
     let workspace = test_workspace();
     let package = super::super::input::PackageKey::command_line();
-    let original = Arc::new(SourceSnapshot::from_source(
-        "/original/main.go",
-        "package main\nfunc main() {}\n",
-    ));
+    let original = Arc::new(
+        SourceSnapshot::from_source("/original/main.go", "package main\nfunc main() {}\n").unwrap(),
+    );
     let file = session
         .database
         .set_source(&workspace, &package, "main.go", Arc::clone(&original))
@@ -41,10 +40,13 @@ fn install_rollback_restores_updated_inputs_and_removes_orphans() {
             &workspace,
             &package,
             "main.go",
-            Arc::new(SourceSnapshot::from_source(
-                "/failed/main.go",
-                "package main\nfunc main() { println(1) }\n",
-            )),
+            Arc::new(
+                SourceSnapshot::from_source(
+                    "/failed/main.go",
+                    "package main\nfunc main() { println(1) }\n",
+                )
+                .unwrap(),
+            ),
         )
         .unwrap();
     let orphan = session
@@ -53,10 +55,13 @@ fn install_rollback_restores_updated_inputs_and_removes_orphans() {
             &workspace,
             &package,
             "orphan.go",
-            Arc::new(SourceSnapshot::from_source(
-                "/failed/orphan.go",
-                "package main\nfunc orphan() {}\n",
-            )),
+            Arc::new(
+                SourceSnapshot::from_source(
+                    "/failed/orphan.go",
+                    "package main\nfunc orphan() {}\n",
+                )
+                .unwrap(),
+            ),
         )
         .unwrap()
         .file();

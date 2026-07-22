@@ -12,6 +12,10 @@ pub enum InputError {
         path: Arc<str>,
         issue: LogicalPathIssue,
     },
+    SourceTooLarge {
+        path: Arc<str>,
+        byte_len: usize,
+    },
     DuplicateLogicalPath {
         package: PackageKey,
         path: Arc<str>,
@@ -35,6 +39,11 @@ impl fmt::Display for InputError {
             Self::InvalidLogicalPath { path, issue } => {
                 write!(formatter, "invalid logical source path {path:?}: {issue}")
             }
+            Self::SourceTooLarge { path, byte_len } => write!(
+                formatter,
+                "logical source {path:?} contains {byte_len} bytes; the compiler limit is {}",
+                u32::MAX
+            ),
             Self::DuplicateLogicalPath { package, path } => write!(
                 formatter,
                 "{package} contains duplicate logical source path {path:?}"

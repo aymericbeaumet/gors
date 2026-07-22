@@ -48,7 +48,7 @@ func main() { println(f(1)) }
 "#;
 
 fn source(text: &str) -> Arc<SourceSnapshot> {
-    Arc::new(SourceSnapshot::from_source("main.go", text))
+    Arc::new(SourceSnapshot::from_source("main.go", text).unwrap())
 }
 
 fn workspace() -> WorkspaceKey {
@@ -80,7 +80,7 @@ fn insert_file(
         &workspace(),
         &package_key(import_path),
         logical_path,
-        Arc::new(SourceSnapshot::from_source(logical_path, text)),
+        Arc::new(SourceSnapshot::from_source(logical_path, text).unwrap()),
     )
     .unwrap()
     .file()
@@ -145,10 +145,9 @@ fn diagnostic_path_update_reuses_the_complete_semantic_pipeline() {
             &workspace(),
             &package_key("example/main"),
             "main.go",
-            Arc::new(SourceSnapshot::from_source(
-                "/checkout/one/main.go",
-                COMPLETE_PROGRAM,
-            )),
+            Arc::new(
+                SourceSnapshot::from_source("/checkout/one/main.go", COMPLETE_PROGRAM).unwrap(),
+            ),
         )
         .unwrap()
         .file();
@@ -167,10 +166,8 @@ fn diagnostic_path_update_reuses_the_complete_semantic_pipeline() {
     let canonical_content = db.source_snapshot(file).unwrap().content();
     db.reset_telemetry();
 
-    let moved_snapshot = Arc::new(SourceSnapshot::from_source(
-        "/checkout/two/main.go",
-        COMPLETE_PROGRAM,
-    ));
+    let moved_snapshot =
+        Arc::new(SourceSnapshot::from_source("/checkout/two/main.go", COMPLETE_PROGRAM).unwrap());
     let duplicate_content = moved_snapshot.content();
     let duplicate_content_weak = Arc::downgrade(&duplicate_content);
     let update = db
@@ -235,7 +232,7 @@ fn diagnostic_path_update_reuses_a_cached_parse_failure() {
             &workspace(),
             &package_key("example/main"),
             "main.go",
-            Arc::new(SourceSnapshot::from_source("/old/main.go", invalid)),
+            Arc::new(SourceSnapshot::from_source("/old/main.go", invalid).unwrap()),
         )
         .unwrap()
         .file();
@@ -248,7 +245,7 @@ fn diagnostic_path_update_reuses_a_cached_parse_failure() {
             &workspace(),
             &package_key("example/main"),
             "main.go",
-            Arc::new(SourceSnapshot::from_source("/new/main.go", invalid)),
+            Arc::new(SourceSnapshot::from_source("/new/main.go", invalid).unwrap()),
         )
         .unwrap();
     assert!(!update.semantic_changed());
@@ -424,7 +421,7 @@ fn import_line_directive_origin_is_retained_without_a_display_path() {
             &workspace(),
             &package_key("example/sample"),
             "src/main.go",
-            Arc::new(SourceSnapshot::from_source("/checkout/one/main.go", source)),
+            Arc::new(SourceSnapshot::from_source("/checkout/one/main.go", source).unwrap()),
         )
         .unwrap()
         .file();
@@ -434,7 +431,7 @@ fn import_line_directive_origin_is_retained_without_a_display_path() {
             &workspace(),
             &package_key("example/sample"),
             "src/main.go",
-            Arc::new(SourceSnapshot::from_source("/checkout/two/main.go", source)),
+            Arc::new(SourceSnapshot::from_source("/checkout/two/main.go", source).unwrap()),
         )
         .unwrap()
         .file();
@@ -636,10 +633,7 @@ fn parse_failure_products_ignore_checkout_paths() {
             &workspace(),
             &package_key("example/main"),
             "main.go",
-            Arc::new(SourceSnapshot::from_source(
-                "/checkout/one/main.go",
-                invalid,
-            )),
+            Arc::new(SourceSnapshot::from_source("/checkout/one/main.go", invalid).unwrap()),
         )
         .unwrap()
         .file();
@@ -648,10 +642,7 @@ fn parse_failure_products_ignore_checkout_paths() {
             &workspace(),
             &package_key("example/main"),
             "main.go",
-            Arc::new(SourceSnapshot::from_source(
-                "/checkout/two/main.go",
-                invalid,
-            )),
+            Arc::new(SourceSnapshot::from_source("/checkout/two/main.go", invalid).unwrap()),
         )
         .unwrap()
         .file();
@@ -696,10 +687,8 @@ fn source_payloads_are_costed_and_released_per_file() {
         .unwrap()
         .file();
     let first_bytes = db.retained_source_bytes();
-    let second_source = Arc::new(SourceSnapshot::from_source(
-        "second.go",
-        "package main\nfunc h() {}\n",
-    ));
+    let second_source =
+        Arc::new(SourceSnapshot::from_source("second.go", "package main\nfunc h() {}\n").unwrap());
     let second_file = db
         .set_source(
             &workspace(),

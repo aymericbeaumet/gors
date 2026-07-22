@@ -27,6 +27,7 @@ use std::time::{Duration, Instant};
 const PROGRAM_TEST_STACK_SIZE: usize = 16 * 1024 * 1024;
 const DEFAULT_GO_RUN_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_GENERATED_RUN_TIMEOUT: Duration = Duration::from_secs(10);
+const GENERATED_FIXTURE_WORKSPACE: &str = "gors-generated-fixtures";
 
 pub fn command_output_with_timeout(command: Command, timeout: Duration) -> Result<Output, String> {
     process::command_output_with_timeout(command, timeout)
@@ -332,7 +333,9 @@ fn compile_and_run_generated_rust(
     metrics.cache_misses.fetch_add(1, Ordering::Relaxed);
 
     let before = Instant::now();
-    let program = gors::workspace::load_program(dir)
+    let workspace = gors::compiler::input::WorkspaceKey::ad_hoc(GENERATED_FIXTURE_WORKSPACE)
+        .map_err(|error| format!("invalid fixture workspace identity: {error}"))?;
+    let program = gors::workspace::load_program(workspace, dir)
         .map_err(|e| format!("source load failed: {e}"))?
         .into_input();
     RunMetrics::add_duration(&metrics.source_load, before.elapsed());

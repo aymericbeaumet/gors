@@ -9,6 +9,7 @@
 mod encoder;
 mod hir;
 mod mir;
+mod root;
 mod rust_ir;
 
 use std::fmt;
@@ -77,6 +78,8 @@ impl fmt::Display for Fingerprint {
 pub use hir::{hir_file, hir_function};
 pub use mir::{mir_file, mir_function};
 pub use rust_ir::{rust_ir_file, rust_ir_function};
+
+pub(in crate::compiler) use root::rust_ir_root_inputs;
 
 /// Fingerprint an ordered list of already-canonical byte parts.
 ///

@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::ast;
-use crate::compiler::fingerprint::fingerprint_parts;
+use crate::compiler::fingerprint::{fingerprint_parts, rust_ir_root_inputs};
 use crate::compiler::input::SourceContent;
 use crate::compiler::{Diagnostic, lowering, mir, rust_ir};
 
@@ -498,6 +498,34 @@ pub(super) fn rust_signature_dependencies_product(
 pub(super) fn executable_role_product(db: &dyn Db, function: FunctionProjection<'_>) -> bool {
     db.query_telemetry().record_query(QueryKind::ExecutableRole);
     function.package_name(db).as_ref() == "main"
+}
+
+/// Complete provenance-free invalidation inputs for one Rust-IR function root.
+///
+/// Keeping this as a tracked query lets the retained session decide which
+/// independent roots need a worker without first evaluating those Rust-IR
+/// roots serially. Direct-callee ABI changes and representation changes are
+/// part of the digest even when this function's own HIR stays unchanged.
+#[salsa::tracked(returns(clone))]
+pub(super) fn rust_ir_root_inputs_product(
+    db: &dyn Db,
+    input: PackageInput,
+    function: FunctionProjection<'_>,
+) -> StageResult<super::super::fingerprint::Fingerprint> {
+    db.query_telemetry()
+        .record_query(QueryKind::RustIrRootInputs);
+    let hir = typed_hir_product(db, function)?;
+    db.unwind_if_revision_cancelled();
+    let signatures = mir_signature_dependencies_product(db, input, function)?;
+    db.unwind_if_revision_cancelled();
+    let representation_key = representation_key(db)?;
+    let executable_package = executable_role_product(db, function);
+    Ok(Arc::new(rust_ir_root_inputs(
+        hir.function(),
+        &signatures.signatures,
+        representation_key,
+        executable_package,
+    )))
 }
 
 #[salsa::tracked(returns(clone))]

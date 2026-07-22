@@ -247,9 +247,9 @@ fn basic_program_uses_the_hir_mir_pipeline() {
 fn imports_fail_before_partial_codegen() {
     let source = "package main\nimport \"fmt\"\nfunc main() { fmt.Println(1) }\n";
     let ast = crate::parser::parse_file("main.go", source).unwrap();
-    let Err(errors) = compile_file(&ast) else {
-        panic!("imports must be a semantic diagnostic");
-    };
+    let result = compile_file(&ast);
+    assert!(result.is_err(), "imports must be a semantic diagnostic");
+    let errors = result.err().unwrap();
     assert!(
         errors.iter().any(|error| error.message.contains("imports")),
         "{errors:?}"

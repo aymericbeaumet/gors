@@ -56,15 +56,59 @@ func g() int { return 7 }
 func main() { println(g()) }
 "#;
 
+const PARALLEL_PROGRAM_COMMENT_EDIT: &str = r#"package main
+
+// a remains semantically identical.
+func a() int { return 1 }
+func b() int { return 2 }
+func c() int { return 3 }
+func d() int { return 4 }
+func e() int { return 5 }
+func f() int {
+    // Moving the return anchor must not dirty the Rust-IR root.
+    return 6
+}
+func g() int { return 7 }
+func main() { println(g()) }
+"#;
+
 const PARALLEL_PROGRAM_EDIT: &str = r#"package main
+
+// a remains semantically identical.
+func a() int { return 1 }
+func b() int { return 2 }
+func c() int { return 3 }
+func d() int { return 4 }
+func e() int { return 5 }
+func f() int {
+    // Moving the return anchor must not dirty the Rust-IR root.
+    return 60
+}
+func g() int { return 7 }
+func main() { println(g()) }
+"#;
+
+const PARALLEL_PROGRAM_RENAMED: &str = r#"package main
 
 func a() int { return 1 }
 func b() int { return 2 }
 func c() int { return 3 }
 func d() int { return 4 }
 func e() int { return 5 }
-func f() int { return 60 }
+func z() int { return 6 }
 func g() int { return 7 }
+func main() { println(g()) }
+"#;
+
+const PARALLEL_PROGRAM_API_EDIT: &str = r#"package main
+
+func a() int { return 1 }
+func b() int { return 2 }
+func c() int { return 3 }
+func d() int { return 4 }
+func e() int { return 5 }
+func f() int { return 6 }
+func g() string { return "seven" }
 func main() { println(g()) }
 "#;
 
@@ -169,7 +213,7 @@ fn worker_counts_preserve_output_source_map_and_stage_fingerprint() {
 }
 
 #[test]
-fn exact_noop_skips_fanout_and_changed_revision_reuses_the_pool() {
+fn warm_scheduler_skips_comments_and_fans_out_only_changed_root_inputs() {
     let host = CompilerHost::new(NonZeroUsize::new(4).unwrap()).unwrap();
     let mut session = host.session(BuildConfig::default()).unwrap();
     session
@@ -188,17 +232,78 @@ fn exact_noop_skips_fanout_and_changed_revision_reuses_the_pool() {
     assert_eq!(host.telemetry(), cold);
 
     session
+        .compile_program(program("main.go", PARALLEL_PROGRAM_COMMENT_EDIT))
+        .unwrap();
+    assert_eq!(host.telemetry(), cold);
+
+    session
         .compile_program(program("main.go", PARALLEL_PROGRAM_EDIT))
         .unwrap();
     let edited = host.telemetry();
-    assert_eq!(edited.scheduled_roots, 16);
-    assert_eq!(edited.parallel_waves, 2);
+    assert_eq!(edited.scheduled_roots, 9);
+    assert_eq!(edited.parallel_waves, 1);
+    assert_eq!(edited.serial_waves, 1);
     assert_eq!(edited.pool_starts, 1);
 
     session
         .compile_program(program("main.go", PARALLEL_PROGRAM_EDIT))
         .unwrap();
     assert_eq!(host.telemetry(), edited);
+
+    session
+        .set_build_config(BuildConfig::new(
+            "rust-source-warm-scheduler-test",
+            gors::GO_VERSION,
+            gors::RUNTIME_ABI_ID,
+        ))
+        .unwrap();
+    session
+        .compile_program(program("main.go", PARALLEL_PROGRAM_EDIT))
+        .unwrap();
+    let reconfigured = host.telemetry();
+    assert_eq!(reconfigured.scheduled_roots, 17);
+    assert_eq!(reconfigured.parallel_waves, 2);
+    assert_eq!(reconfigured.serial_waves, 1);
+    assert_eq!(reconfigured.pool_starts, 1);
+}
+
+#[test]
+fn renamed_roots_are_pruned_instead_of_reusing_stale_readiness() {
+    let host = CompilerHost::new(NonZeroUsize::new(4).unwrap()).unwrap();
+    let mut session = host.session(BuildConfig::default()).unwrap();
+    session
+        .compile_program(program("main.go", PARALLEL_PROGRAM))
+        .unwrap();
+
+    session
+        .compile_program(program("main.go", PARALLEL_PROGRAM_RENAMED))
+        .unwrap();
+    assert_eq!(host.telemetry().scheduled_roots, 9);
+
+    session
+        .compile_program(program("main.go", PARALLEL_PROGRAM))
+        .unwrap();
+    let restored = host.telemetry();
+    assert_eq!(restored.scheduled_roots, 10);
+    assert_eq!(restored.serial_waves, 2);
+}
+
+#[test]
+fn direct_callee_api_edits_schedule_the_callee_and_its_caller() {
+    let host = CompilerHost::new(NonZeroUsize::new(4).unwrap()).unwrap();
+    let mut session = host.session(BuildConfig::default()).unwrap();
+    session
+        .compile_program(program("main.go", PARALLEL_PROGRAM))
+        .unwrap();
+
+    session
+        .compile_program(program("main.go", PARALLEL_PROGRAM_API_EDIT))
+        .unwrap();
+
+    let edited = host.telemetry();
+    assert_eq!(edited.scheduled_roots, 10);
+    assert_eq!(edited.parallel_waves, 1);
+    assert_eq!(edited.serial_waves, 1);
 }
 
 #[test]
