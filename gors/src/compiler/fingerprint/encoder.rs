@@ -4,11 +4,12 @@ use sha2::{Digest, Sha256};
 
 use super::Fingerprint;
 use crate::compiler::hir;
-use crate::compiler::ids::{BasicBlockId, DefId, LocalId, NodeId, SourceSpan};
+use crate::compiler::ids::{BasicBlockId, DefId, LocalId, NodeId};
+use crate::compiler::provenance::{SourceRef, SourceRefKind};
 use crate::compiler::types::{ConstValue, FloatTy, IntTy, Signature, Ty, UintTy, UntypedTy};
 
 const FORMAT_MAGIC: &[u8] = b"gors-stage-product";
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 
 /// An encoder for one root product or one length-delimited nested field.
 pub(super) struct Encoder {
@@ -123,12 +124,19 @@ pub(super) fn block_id(encoder: &mut Encoder, value: BasicBlockId) {
     encoder.u32(value.index());
 }
 
-pub(super) fn source_span(encoder: &mut Encoder, span: &SourceSpan) {
-    encoder.field(b"file", |encoder| encoder.string(&span.file));
-    encoder.field(b"start", |encoder| encoder.usize(span.start));
-    encoder.field(b"end", |encoder| encoder.usize(span.end));
-    encoder.field(b"line", |encoder| encoder.usize(span.line));
-    encoder.field(b"column", |encoder| encoder.usize(span.column));
+pub(super) fn source_ref(encoder: &mut Encoder, source: SourceRef) {
+    match source.kind() {
+        SourceRefKind::Definition => {
+            encoder.variant(b"definition", |encoder| def_id(encoder, source.owner()));
+        }
+        SourceRefKind::Node(node) => {
+            encoder.variant(b"node", |encoder| node_id(encoder, node));
+        }
+        SourceRefKind::Local(local) => encoder.variant(b"local", |encoder| {
+            encoder.field(b"owner", |encoder| def_id(encoder, source.owner()));
+            encoder.field(b"local", |encoder| local_id(encoder, local));
+        }),
+    }
 }
 
 pub(super) fn signature(encoder: &mut Encoder, value: &Signature) {

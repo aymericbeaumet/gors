@@ -12,7 +12,8 @@ use super::{
 };
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
-use crate::compiler::ids::{BasicBlockId, LocalId, SourceSpan};
+use crate::compiler::ids::{BasicBlockId, LocalId};
+use crate::compiler::provenance::SourceRef;
 use crate::compiler::types::{ConstValue, Ty};
 
 struct BlockBuilder {
@@ -79,7 +80,7 @@ impl FunctionLowerer {
         let mut lowerer = Self {
             locals,
             blocks: vec![BlockBuilder {
-                provenance: Provenance::Source(hir.body.span.clone()),
+                provenance: Provenance::Source(hir.body.source),
                 statements: Vec::new(),
                 terminator: None,
             }],
@@ -146,7 +147,7 @@ impl FunctionLowerer {
             locals: lowerer.locals,
             blocks,
             entry: BasicBlockId(0),
-            span: hir.span.clone(),
+            source: hir.source,
         })
     }
 
@@ -258,12 +259,12 @@ impl FunctionLowerer {
                     operands.push(self.materialize(
                         operand,
                         value.ty.clone(),
-                        Provenance::Source(value.span.clone()),
+                        Provenance::Source(value.source),
                     )?);
                 }
                 for (destination, operand) in destinations.iter().zip(operands) {
                     if let hir::Place::Local(local) = destination {
-                        let provenance = Provenance::Source(statement.span.clone());
+                        let provenance = Provenance::Source(statement.source);
                         let value = make_rvalue(
                             RvalueKind::Use(operand),
                             hir::Effects::default(),
@@ -301,17 +302,14 @@ impl FunctionLowerer {
                         local: *destination,
                     }),
                     ty.clone(),
-                    Provenance::Source(statement.span.clone()),
+                    Provenance::Source(statement.source),
                 )?;
                 let rhs = self.lower_expr(value)?;
-                let rhs = self.materialize(
-                    rhs,
-                    value.ty.clone(),
-                    Provenance::Source(value.span.clone()),
-                )?;
+                let rhs =
+                    self.materialize(rhs, value.ty.clone(), Provenance::Source(value.source))?;
                 let op = assignment_binary_op(*op);
                 let effects = binary_effects(op, &ty);
-                let provenance = Provenance::Source(statement.span.clone());
+                let provenance = Provenance::Source(statement.source);
                 let value = make_rvalue(
                     RvalueKind::Binary {
                         op,
@@ -340,13 +338,13 @@ impl FunctionLowerer {
                     operands.push(self.materialize(
                         operand,
                         value.ty.clone(),
-                        Provenance::Source(value.span.clone()),
+                        Provenance::Source(value.source),
                     )?);
                 }
                 self.terminate(make_terminator(
                     TerminatorKind::Return(operands),
                     hir::Effects::default(),
-                    Provenance::Source(statement.span.clone()),
+                    Provenance::Source(statement.source),
                 ))?;
             }
             hir::StmtKind::Block(block) => self.lower_block(block)?,
@@ -359,10 +357,10 @@ impl FunctionLowerer {
                 if let Some(init) = init {
                     self.lower_statement(init)?;
                 }
-                let condition_provenance = Provenance::Source(condition.span.clone());
+                let condition_provenance = Provenance::Source(condition.source);
                 let condition = self.lower_expr(condition)?;
                 let condition = self.materialize(condition, Ty::Bool, condition_provenance)?;
-                let provenance = Provenance::Source(statement.span.clone());
+                let provenance = Provenance::Source(statement.source);
                 let then_target = self.new_block(provenance.clone());
                 let else_target = self.new_block(provenance.clone());
                 let join_target = self.new_block(provenance.clone());
@@ -417,7 +415,7 @@ impl FunctionLowerer {
                 if let Some(init) = init {
                     self.lower_statement(init)?;
                 }
-                let provenance = Provenance::Source(statement.span.clone());
+                let provenance = Provenance::Source(statement.source);
                 let header = self.new_block(provenance.clone());
                 let body_target = self.new_block(provenance.clone());
                 let post_target = self.new_block(provenance.clone());
@@ -430,7 +428,7 @@ impl FunctionLowerer {
 
                 self.current = header;
                 if let Some(condition) = condition {
-                    let condition_provenance = Provenance::Source(condition.span.clone());
+                    let condition_provenance = Provenance::Source(condition.source);
                     let condition = self.lower_expr(condition)?;
                     let condition = self.materialize(condition, Ty::Bool, condition_provenance)?;
                     self.terminate(make_terminator(
@@ -496,7 +494,7 @@ impl FunctionLowerer {
                 self.terminate(make_terminator(
                     TerminatorKind::Goto(target),
                     hir::Effects::default(),
-                    Provenance::Source(statement.span.clone()),
+                    Provenance::Source(statement.source),
                 ))?;
             }
             hir::StmtKind::Continue => {
@@ -508,7 +506,7 @@ impl FunctionLowerer {
                 self.terminate(make_terminator(
                     TerminatorKind::Goto(target),
                     hir::Effects::default(),
-                    Provenance::Source(statement.span.clone()),
+                    Provenance::Source(statement.source),
                 ))?;
             }
         }
@@ -522,13 +520,13 @@ impl FunctionLowerer {
             }
             hir::ExprKind::Local(local) => Ok(Operand::Read(Place { local: *local })),
             hir::ExprKind::Unary { op, operand } => {
-                let operand_provenance = Provenance::Source(operand.span.clone());
+                let operand_provenance = Provenance::Source(operand.source);
                 let operand = self.lower_expr(operand)?;
                 let ty = operand_ty(&operand, &self.locals)?;
                 let operand = self.materialize(operand, ty, operand_provenance)?;
                 let result = self.new_temp(expr.ty.clone());
                 let place = Place { local: result };
-                let provenance = Provenance::Source(expr.span.clone());
+                let provenance = Provenance::Source(expr.source);
                 let value = make_rvalue(
                     RvalueKind::Unary {
                         op: *op,
@@ -544,7 +542,7 @@ impl FunctionLowerer {
             hir::ExprKind::Binary { op, left, right }
                 if matches!(op, hir::BinaryOp::LogicalAnd | hir::BinaryOp::LogicalOr) =>
             {
-                self.lower_short_circuit(*op, left, right, &expr.span)
+                self.lower_short_circuit(*op, left, right, expr.source)
             }
             hir::ExprKind::Binary { op, left, right } => {
                 // Each operand is frozen immediately after its evaluation;
@@ -554,17 +552,17 @@ impl FunctionLowerer {
                 let left_operand = self.materialize(
                     left_operand,
                     left.ty.clone(),
-                    Provenance::Source(left.span.clone()),
+                    Provenance::Source(left.source),
                 )?;
                 let right_operand = self.lower_expr(right)?;
                 let right_operand = self.materialize(
                     right_operand,
                     right.ty.clone(),
-                    Provenance::Source(right.span.clone()),
+                    Provenance::Source(right.source),
                 )?;
                 let result = self.new_temp(expr.ty.clone());
                 let place = Place { local: result };
-                let provenance = Provenance::Source(expr.span.clone());
+                let provenance = Provenance::Source(expr.source);
                 let value = make_rvalue(
                     RvalueKind::Binary {
                         op: *op,
@@ -585,10 +583,10 @@ impl FunctionLowerer {
                     operands.push(self.materialize(
                         operand,
                         arg.ty.clone(),
-                        Provenance::Source(arg.span.clone()),
+                        Provenance::Source(arg.source),
                     )?);
                 }
-                let provenance = Provenance::Source(expr.span.clone());
+                let provenance = Provenance::Source(expr.source);
                 let target = self.new_block(provenance.clone());
                 let destination = (expr.ty != Ty::Unit).then(|| Place {
                     local: self.new_temp(expr.ty.clone()),
@@ -614,11 +612,11 @@ impl FunctionLowerer {
         op: hir::BinaryOp,
         left: &hir::Expr,
         right: &hir::Expr,
-        span: &SourceSpan,
+        source: SourceRef,
     ) -> Result<Operand, Diagnostic> {
         let left = self.lower_expr(left)?;
-        let left = self.materialize(left, Ty::Bool, Provenance::Source(span.clone()))?;
-        let provenance = Provenance::Source(span.clone());
+        let left = self.materialize(left, Ty::Bool, Provenance::Source(source))?;
+        let provenance = Provenance::Source(source);
         let evaluate_right = self.new_block(provenance.clone());
         let short_value = self.new_block(provenance.clone());
         let join = self.new_block(provenance.clone());
@@ -658,7 +656,7 @@ impl FunctionLowerer {
 
         self.current = evaluate_right;
         let right = self.lower_expr(right)?;
-        let right = self.materialize(right, Ty::Bool, Provenance::Source(span.clone()))?;
+        let right = self.materialize(right, Ty::Bool, Provenance::Source(source))?;
         let value = make_rvalue(
             RvalueKind::Use(right),
             hir::Effects::default(),

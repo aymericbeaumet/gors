@@ -6,6 +6,7 @@ use std::sync::Arc;
 use crate::ast;
 use crate::compiler::fingerprint::{fingerprint_parts, rust_ir_root_inputs};
 use crate::compiler::input::SourceContent;
+use crate::compiler::provenance::DefinitionSourceTable;
 use crate::compiler::{Diagnostic, lowering, mir, rust_ir};
 use crate::source::SourceCoordinateMap;
 
@@ -15,11 +16,10 @@ use super::model::{
     PackageIssue, ParseFailure, PublicApi,
 };
 use super::products::{
-    CompilerStage, FunctionProvenance, MirSignatureDependencies, NormalizedMirFunction,
-    RustSignatureDependencies, StageFailure, StageResult, TypedFunctionSignature, TypedHirFunction,
-    VerifiedMirFunction, VerifiedRustIrFunction, VerifiedRustIrPackage,
+    CompilerStage, MirSignatureDependencies, NormalizedMirFunction, RustSignatureDependencies,
+    StageFailure, StageResult, TypedFunctionSignature, TypedHirFunction, VerifiedMirFunction,
+    VerifiedRustIrFunction, VerifiedRustIrPackage,
 };
-use super::provenance::make_function_relative;
 use super::source_metadata::{FileComments, FileImports};
 use super::source_projection::{body_source, project_comments, project_imports, signature_source};
 use super::telemetry::{QueryKind, Telemetry};
@@ -87,7 +87,7 @@ pub(super) struct FunctionProjection<'db> {
     pub(super) hir: StageResult<TypedHirFunction>,
     #[tracked]
     #[returns(clone)]
-    pub(super) provenance: Arc<FunctionProvenance>,
+    pub(super) source_table: StageResult<DefinitionSourceTable>,
 }
 
 #[salsa::tracked]
@@ -201,15 +201,9 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
             name,
             signature,
             Arc::new(FunctionBody::new(id, body_source)),
-            Arc::new(FunctionProvenance::new(
-                Arc::clone(&logical_path),
-                function.name.name_pos.offset,
-                function.name.name_pos.line,
-                function.name.name_pos.column,
-            )),
         ));
     }
-    projected.sort_by_key(|(id, _, _, _, _, _)| *id);
+    projected.sort_by_key(|(id, _, _, _, _)| *id);
     issues.sort();
 
     db.query_telemetry().record_query(QueryKind::SemanticFile);
@@ -230,13 +224,14 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
         )])
     };
     let (mut typed_functions, semantic_failure) = match semantic {
-        Ok(mut file) => {
-            let functions = file
+        Ok(mut semantic) => {
+            let functions = semantic
+                .file
                 .functions
                 .drain(..)
-                .map(|mut function| {
-                    let provenance = make_function_relative(&mut function);
-                    (function.id, (function, provenance))
+                .map(|function| {
+                    let source_table = semantic.source_tables.remove(&function.id);
+                    (function.id, (function, source_table))
                 })
                 .collect::<BTreeMap<_, _>>();
             (functions, None)
@@ -252,12 +247,26 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
     };
     let functions = projected
         .into_iter()
-        .map(|(id, key, name, signature, body, parsed_provenance)| {
-            let (typed_signature, hir, provenance) = match typed_functions.remove(&id) {
-                Some((function, provenance)) => {
+        .map(|(id, key, name, signature, body)| {
+            let (typed_signature, hir, source_table) = match typed_functions.remove(&id) {
+                Some((function, Some(source_table))) => {
                     let typed_signature = Some(function.signature.clone());
                     let hir = Ok(Arc::new(TypedHirFunction::new(Arc::new(function))));
-                    (typed_signature, hir, Arc::new(provenance))
+                    (typed_signature, hir, Ok(Arc::new(source_table)))
+                }
+                Some((function, None)) => {
+                    let failure = Arc::new(StageFailure::one_for_definition(
+                        CompilerStage::Semantic,
+                        id,
+                        Diagnostic::backend(format!(
+                            "semantic lowering omitted source table for DefId {id}"
+                        )),
+                    ));
+                    (
+                        Some(function.signature),
+                        Err(Arc::clone(&failure)),
+                        Err(failure),
+                    )
                 }
                 None => {
                     let failure = semantic_failure.clone().unwrap_or_else(|| {
@@ -269,7 +278,7 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
                             )),
                         ))
                     });
-                    (None, Err(failure), parsed_provenance)
+                    (None, Err(Arc::clone(&failure)), Err(failure))
                 }
             };
             FunctionProjection::new(
@@ -282,7 +291,7 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
                 body,
                 typed_signature,
                 hir,
-                provenance,
+                source_table,
             )
         })
         .collect();
@@ -311,13 +320,13 @@ pub(super) fn semantic_status_product(
 }
 
 #[salsa::tracked(returns(clone))]
-pub(super) fn provenance_product(
+pub(super) fn definition_source_table_product(
     db: &dyn Db,
     function: FunctionProjection<'_>,
-) -> Arc<FunctionProvenance> {
+) -> StageResult<DefinitionSourceTable> {
     db.query_telemetry()
-        .record_query(QueryKind::FunctionProvenance);
-    function.provenance(db)
+        .record_query(QueryKind::DefinitionSourceTable);
+    function.source_table(db)
 }
 
 #[salsa::tracked(returns(clone))]

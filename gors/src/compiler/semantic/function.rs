@@ -4,10 +4,12 @@ use std::collections::BTreeMap;
 
 use crate::ast;
 
+use super::positions::expr_position;
 use super::{ConstantSymbol, FileLowerer, FunctionSymbol};
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
-use crate::compiler::ids::{DefId, LocalId, NodeId, SourceSpan};
+use crate::compiler::ids::{DefId, LocalId, NodeId};
+use crate::compiler::provenance::{FileRange, SourceRef};
 use crate::compiler::types::{Signature, Ty};
 
 pub(super) struct FunctionLowerer<'a> {
@@ -21,6 +23,7 @@ pub(super) struct FunctionLowerer<'a> {
     pub(super) scopes: Vec<BTreeMap<String, LocalId>>,
     pub(super) named_results: Vec<Option<LocalId>>,
     pub(super) loop_depth: usize,
+    pub(super) source_mappings: Vec<(SourceRef, FileRange)>,
 }
 
 impl FunctionLowerer<'_> {
@@ -29,13 +32,15 @@ impl FunctionLowerer<'_> {
     /// Unlike `DefId`, this is not a query key. Allocation restarts for every
     /// function rebuild and therefore cannot be perturbed by another
     /// declaration's insertion or ordering.
-    pub(super) fn alloc_node(&mut self) -> Result<NodeId, Diagnostic> {
+    pub(super) fn alloc_node(&mut self, range: FileRange) -> Result<NodeId, Diagnostic> {
         let local = self.next_node;
         self.next_node = self
             .next_node
             .checked_add(1)
             .ok_or_else(|| Diagnostic::backend("function exceeds the HIR node ID space"))?;
-        Ok(NodeId::owner_local(self.owner, local))
+        let node = NodeId::owner_local(self.owner, local);
+        self.source_mappings.push((SourceRef::node(node), range));
+        Ok(node)
     }
 
     pub(super) fn alloc_local(
@@ -43,7 +48,7 @@ impl FunctionLowerer<'_> {
         name: Option<String>,
         ty: Ty,
         kind: hir::LocalKind,
-        span: SourceSpan,
+        range: FileRange,
     ) -> Result<LocalId, Diagnostic> {
         let id = LocalId(self.locals.len() as u32);
         if let Some(name) = name.as_ref().filter(|name| name.as_str() != "_") {
@@ -54,7 +59,7 @@ impl FunctionLowerer<'_> {
             if scope.insert(name.clone(), id).is_some() {
                 return Err(Diagnostic::semantic(
                     format!("{} redeclared in this block", name),
-                    span,
+                    range,
                 ));
             }
         }
@@ -63,8 +68,10 @@ impl FunctionLowerer<'_> {
             name,
             ty,
             kind,
-            span,
+            source: SourceRef::local(self.owner, id),
         });
+        self.source_mappings
+            .push((SourceRef::local(self.owner, id), range));
         Ok(id)
     }
 
@@ -83,15 +90,22 @@ impl FunctionLowerer<'_> {
                 .map(|names| names.iter().map(Some).collect::<Vec<_>>())
                 .unwrap_or_else(|| vec![None]);
             for name in names {
-                let ty = types.get(type_index).cloned().ok_or_else(|| {
-                    Diagnostic::semantic("signature field mismatch", SourceSpan::synthetic())
-                })?;
+                let ty = types
+                    .get(type_index)
+                    .cloned()
+                    .ok_or_else(|| Diagnostic::backend("signature field mismatch"))?;
                 type_index += 1;
-                let span = name
-                    .map(|name| self.file.span(&name.name_pos))
-                    .unwrap_or_else(SourceSpan::synthetic);
+                let range = match name {
+                    Some(name) => self.file.range(&name.name_pos)?,
+                    None => {
+                        let type_expression = field.type_.as_ref().ok_or_else(|| {
+                            Diagnostic::backend("unnamed signature field has no type")
+                        })?;
+                        self.file.range(&expr_position(type_expression))?
+                    }
+                };
                 let source_name = name.map(|name| name.name.to_string());
-                result.push(self.alloc_local(source_name, ty, kind, span)?);
+                result.push(self.alloc_local(source_name, ty, kind, range)?);
             }
         }
         Ok(result)
@@ -111,9 +125,10 @@ impl FunctionLowerer<'_> {
                 .map(|names| names.iter().map(Some).collect::<Vec<_>>())
                 .unwrap_or_else(|| vec![None]);
             for name in names {
-                let ty = types.get(type_index).cloned().ok_or_else(|| {
-                    Diagnostic::semantic("result field mismatch", SourceSpan::synthetic())
-                })?;
+                let ty = types
+                    .get(type_index)
+                    .cloned()
+                    .ok_or_else(|| Diagnostic::backend("result field mismatch"))?;
                 type_index += 1;
                 let Some(name) = name else {
                     result.push(None);
@@ -123,7 +138,7 @@ impl FunctionLowerer<'_> {
                     Some(name.name.to_string()),
                     ty,
                     hir::LocalKind::NamedResult,
-                    self.file.span(&name.name_pos),
+                    self.file.range(&name.name_pos)?,
                 )?;
                 result.push(Some(id));
             }
@@ -169,10 +184,12 @@ impl FunctionLowerer<'_> {
         if introduce_scope {
             self.pop_scope();
         }
+        let range = self.file.range(&block.lbrace)?;
+        let node = self.alloc_node(range)?;
         Ok(hir::Block {
-            node: self.alloc_node()?,
+            node,
             stmts,
-            span: self.file.span(&block.lbrace),
+            source: SourceRef::node(node),
         })
     }
 }

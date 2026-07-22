@@ -65,7 +65,7 @@ pub(super) fn lower_function(
         blocks,
         entry: function.entry,
         control_flow: out::ControlFlowPlan::PcDispatchU32,
-        span: function.span,
+        source: function.source,
     };
     out::select_read_operations(&mut lowered)?;
     Ok(lowered)
@@ -349,7 +349,7 @@ fn lower_place(place: mir::Place) -> out::Place {
 
 fn lower_provenance(provenance: mir::Provenance) -> out::Provenance {
     match provenance {
-        mir::Provenance::Source(span) => out::Provenance::Source(span),
+        mir::Provenance::Source(source) => out::Provenance::Source(source),
         mir::Provenance::Synthetic(mir::SyntheticOrigin::NamedResultInitialization) => {
             out::Provenance::Synthetic(out::SyntheticOrigin::NamedResultInitialization)
         }

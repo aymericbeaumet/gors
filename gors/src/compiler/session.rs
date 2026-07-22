@@ -12,8 +12,10 @@ use super::db::{
     BuildConfig, CompilerDatabase, Fingerprint, PackageAnalysis, PackageIssue, ParseFailure,
     QueryError, SourceInputMutation, StageFailure,
 };
+use super::diagnostic::DiagnosticLocation;
 use super::ids::{FileId, PackageId};
 use super::input::{PackageInputManifest, ProgramInput, WorkspaceKey};
+use super::provenance::{DefinitionSourceTable, FileRange, SourceRef};
 use super::scheduler::{CompilerHost, SchedulerTelemetry};
 use super::{CompiledProgram, CompilerDiagnostic, CompilerError, SourceMapPlan, emit};
 
@@ -157,8 +159,7 @@ impl CompilerSession {
         let source_map = with_source_map
             .then(|| self.source_map_plan(&installed, &main_analysis, rust_ir.file()))
             .transpose()?;
-        let entry = emit::emit_file(rust_ir.file())
-            .map_err(|diagnostic| CompilerError::from(vec![diagnostic]))?;
+        let entry = emit::emit_file(rust_ir.file()).map_err(CompilerError::terminal)?;
         Ok((
             CompiledProgram {
                 entry,
@@ -370,7 +371,7 @@ impl CompilerSession {
         let original_paths = installed
             .main_files
             .iter()
-            .map(|file| (file.logical_path.as_str(), file.original_path.as_str()))
+            .map(|file| (file.id, file.original_path.as_str()))
             .collect::<BTreeMap<_, _>>();
         let emitted_functions = rust_ir
             .functions
@@ -378,13 +379,29 @@ impl CompilerSession {
             .map(|function| (function.id, function))
             .collect::<BTreeMap<_, _>>();
         for function in analysis.functions() {
-            let provenance = self
+            let source_table = self
                 .database
-                .function_provenance(function.file(), function.id())
+                .definition_source_table(function.file(), function.id())
                 .map_err(|error| self.query_error(error))?;
             let source = original_paths
-                .get(provenance.logical_file())
+                .get(&source_table.file())
                 .map(|path| (*path).to_string());
+            let definition_range = source_table
+                .resolve(SourceRef::definition(function.id()))
+                .map_err(|error| CompilerError::backend(error.to_string()))?;
+            let coordinate_map = self
+                .database
+                .source_coordinate_map(definition_range.file())
+                .map_err(|error| self.query_error(error))?;
+            let physical = coordinate_map
+                .physical_coordinate(definition_range.range().start())
+                .map_err(|error| CompilerError::backend(error.to_string()))?
+                .ok_or_else(|| {
+                    CompilerError::backend(format!(
+                        "definition source anchor for {} is outside its source map",
+                        function.id()
+                    ))
+                })?;
             let emitted = emitted_functions.get(&function.id()).ok_or_else(|| {
                 CompilerError::backend(format!(
                     "verified Rust IR omitted source function DefId {}",
@@ -393,8 +410,8 @@ impl CompilerSession {
             })?;
             tracker.record_for_source_with_generated_token(
                 source,
-                provenance.line() as u32,
-                provenance.column() as u32,
+                physical.line().get(),
+                physical.byte_column().get(),
                 function.name(),
                 emitted.artifact.symbol.as_str(),
             );
@@ -416,33 +433,144 @@ impl CompilerSession {
     }
 
     fn stage_failure(&self, failure: &StageFailure) -> CompilerError {
-        let mut diagnostics = failure.diagnostics().to_vec();
-        let definition_location = failure
-            .definition()
-            .and_then(|definition| self.definition_provenance(definition));
-        if let Some((_, provenance)) = &definition_location {
-            for diagnostic in &mut diagnostics {
-                rebase_function_diagnostic(diagnostic, provenance);
-            }
-        }
-        let source_file = definition_location
-            .as_ref()
-            .map(|(file, _)| *file)
-            .or_else(|| failure.source_file());
-        if let Some(source_file) = source_file
-            && let Ok(snapshot) = self.database.source_snapshot(source_file)
-        {
-            for diagnostic in &mut diagnostics {
-                diagnostic.span.file = snapshot.diagnostic_path().to_string();
-            }
-        }
-        CompilerError::from(diagnostics)
+        let mut diagnostics = failure
+            .diagnostics()
+            .iter()
+            .map(|diagnostic| {
+                match self.resolve_diagnostic_location(failure, diagnostic.location) {
+                    Ok(Some(range)) => self.project_stage_diagnostic(diagnostic, range),
+                    Ok(None) => CompilerDiagnostic {
+                        code: diagnostic.code,
+                        message: diagnostic.message.clone(),
+                        file: String::new(),
+                        line: 0,
+                        column: 0,
+                    },
+                    Err(detail) => CompilerDiagnostic {
+                        code: "GORS2003",
+                        message: format!("{} ({detail})", diagnostic.message),
+                        file: String::new(),
+                        line: 0,
+                        column: 0,
+                    },
+                }
+            })
+            .collect::<Vec<_>>();
+        diagnostics.sort_by(|left, right| {
+            left.file
+                .cmp(&right.file)
+                .then_with(|| left.line.cmp(&right.line))
+                .then_with(|| left.column.cmp(&right.column))
+                .then_with(|| left.code.cmp(right.code))
+                .then_with(|| left.message.cmp(&right.message))
+        });
+        CompilerError { diagnostics }
     }
 
-    fn definition_provenance(
+    fn resolve_diagnostic_location(
+        &self,
+        failure: &StageFailure,
+        location: DiagnosticLocation,
+    ) -> Result<Option<FileRange>, String> {
+        match location {
+            DiagnosticLocation::Synthetic => Ok(None),
+            DiagnosticLocation::Physical(range) => Ok(Some(range)),
+            DiagnosticLocation::Source(source) => {
+                if failure.definition() != Some(source.owner()) {
+                    return Err(format!(
+                        "diagnostic source owner {} does not match stage definition {:?}",
+                        source.owner(),
+                        failure.definition()
+                    ));
+                }
+                let source_table =
+                    self.definition_source_table(source.owner())
+                        .ok_or_else(|| {
+                            format!(
+                                "current source table for diagnostic owner {} is unavailable",
+                                source.owner()
+                            )
+                        })?;
+                source_table
+                    .resolve(source)
+                    .map(Some)
+                    .map_err(|error| error.to_string())
+            }
+        }
+    }
+
+    fn project_stage_diagnostic(
+        &self,
+        diagnostic: &super::Diagnostic,
+        range: FileRange,
+    ) -> CompilerDiagnostic {
+        let snapshot = match self.database.source_snapshot(range.file()) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                return CompilerDiagnostic {
+                    code: "GORS2003",
+                    message: format!(
+                        "{} (source snapshot is unavailable: {error})",
+                        diagnostic.message
+                    ),
+                    file: String::new(),
+                    line: 0,
+                    column: 0,
+                };
+            }
+        };
+        let coordinate_map = match self.database.source_coordinate_map(range.file()) {
+            Ok(map) => map,
+            Err(error) => {
+                return CompilerDiagnostic {
+                    code: "GORS2003",
+                    message: format!(
+                        "{} (source coordinate map is unavailable: {error})",
+                        diagnostic.message
+                    ),
+                    file: snapshot.diagnostic_path().to_string(),
+                    line: 0,
+                    column: 0,
+                };
+            }
+        };
+        match coordinate_map
+            .adjusted_coordinate_for(range.range().start(), snapshot.diagnostic_path())
+        {
+            Ok(Some(coordinate)) => CompilerDiagnostic {
+                code: diagnostic.code,
+                message: diagnostic.message.clone(),
+                file: coordinate.filename().to_string(),
+                line: coordinate_component(coordinate.position().line().get()),
+                column: coordinate_component(coordinate.position().column().to_go_column()),
+            },
+            Ok(None) => CompilerDiagnostic {
+                code: "GORS2003",
+                message: format!(
+                    "{} (source coordinate map does not cover the diagnostic anchor)",
+                    diagnostic.message
+                ),
+                file: snapshot.diagnostic_path().to_string(),
+                line: 0,
+                column: 0,
+            },
+            Err(error) => CompilerDiagnostic {
+                code: "GORS2003",
+                message: format!(
+                    "{} (source coordinate projection failed: {error})",
+                    diagnostic.message
+                ),
+                file: snapshot.diagnostic_path().to_string(),
+                line: 0,
+                column: 0,
+            },
+        }
+    }
+
+    fn definition_source_table(
         &self,
         definition: super::ids::DefId,
-    ) -> Option<(FileId, std::sync::Arc<super::db::FunctionProvenance>)> {
+    ) -> Option<Arc<DefinitionSourceTable>> {
         for file in self.database.active_files() {
             let Ok(analysis) = self.database.analyze_file(file) else {
                 continue;
@@ -452,11 +580,7 @@ impl CompilerSession {
                 .iter()
                 .any(|function| function.id() == definition)
             {
-                return self
-                    .database
-                    .function_provenance(file, definition)
-                    .ok()
-                    .map(|provenance| (file, provenance));
+                return self.database.definition_source_table(file, definition).ok();
             }
         }
         None
@@ -643,26 +767,6 @@ fn boundary_error(file: String, message: impl Into<String>) -> CompilerError {
             column: 1,
         }],
     }
-}
-
-fn rebase_function_diagnostic(
-    diagnostic: &mut super::Diagnostic,
-    provenance: &super::db::FunctionProvenance,
-) {
-    let span = &mut diagnostic.span;
-    if span.file.is_empty() || span.line == 0 || span.column == 0 {
-        return;
-    }
-    span.start = span.start.saturating_add(provenance.byte_offset());
-    span.end = span.end.saturating_add(provenance.byte_offset());
-    if span.line == 1 {
-        span.column = span
-            .column
-            .saturating_add(provenance.column().saturating_sub(1));
-    }
-    span.line = span
-        .line
-        .saturating_add(provenance.line().saturating_sub(1));
 }
 
 #[cfg(test)]

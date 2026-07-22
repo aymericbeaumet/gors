@@ -111,7 +111,7 @@ boundary.
 | Stage | Canonical product | Must contain | Must not contain |
 | --- | --- | --- | --- |
 | Scanner and parser | Go AST | source spelling, syntax, comments, positions | Rust representation or inferred semantics |
-| Semantic analysis | semantic index plus typed HIR | stable identities, scopes, exact types and constants, resolved calls, source spans | syn, generated Rust paths, Unknown recovery |
+| Semantic analysis | semantic index plus typed HIR | stable identities, scopes, exact types and constants, resolved calls, compact `SourceRef` provenance | syn, generated Rust paths, physical ranges, adjusted coordinates, Unknown recovery |
 | Go MIR construction | verified explicit-order Go MIR | blocks, terminators, places, temporaries, effects, panic edges, and Go call facts | Go AST references, parser ambiguity, or Rust move/clone choices |
 | Go MIR transforms | reverified Go MIR | representation-neutral exact-Go canonicalization and proofs | Rust ownership, ABI, syntax, or unverified graph rewrites |
 | Rust representation lowering | verified Rust IR | concrete representations, runtime ABI, storage, copy/clone/move/borrow uses, drop points, and Rust control-flow plan | syn nodes, syntax heuristics, or semantic repair |
@@ -332,11 +332,14 @@ IDs remain dense owner-local indexes, deliberately nonpersistent until an
 incremental syntax layer can provide reusable anchors. They must not become
 independent query or CAS keys.
 
-Canonical stage fingerprint encoders also exist, but their current HIR, MIR,
-and Rust-IR encodings retain source-span provenance and revision-local dense
-indexes. They are deterministic validation and telemetry products, not yet
-provenance-free semantic CAS identities. Separate semantic content from
-diagnostic provenance before cross-process reuse.
+Canonical stage fingerprint schema v2 now encodes compact `SourceRef` values
+for source provenance and excludes physical `FileRange` values, presentation
+paths, adjusted coordinates, and revision-local definition source tables.
+Whitespace and comment relocation can therefore replace the physical mapping
+while leaving an unchanged semantic stage product green. Node and local
+references still contain revision-local dense indexes, however, so these are
+deterministic validation and telemetry products rather than persistent semantic
+CAS identities until reusable syntax anchors exist.
 
 The first Salsa-backed `compiler::db` kernel owns explicit source, package, and
 build inputs and keeps Salsa handles behind a compiler-owned facade. Its
@@ -349,9 +352,9 @@ to `CompilerSession`; convenience calls create a short-lived session, while
 long-lived callers can retain the same session across edits. Terminal syn
 emission consumes the verified package outside the semantic query graph.
 Parsing and semantic projection remain file-granular, though tracked function
-fields and function-relative provenance allow unchanged sibling products to
-backdate. That is useful incremental reuse, not the final owned incremental
-syntax boundary or a cross-process cache.
+fields, compact `SourceRef` values, and separate definition source tables allow
+unchanged sibling products to backdate. That is useful incremental reuse, not
+the final owned incremental syntax boundary or a cross-process cache.
 
 Tracked source state is now split at the semantic boundary. Salsa owns one
 canonical immutable `SourceContent` allocation per active logical file: source
@@ -413,14 +416,30 @@ have no dependency on the semantic compiler. The compiler-specific
 publishes the scanner-built coordinate map on both success and failure, and
 every parser error carries an exact physical byte anchor plus its separate
 adjusted filename and logical position. The file-projection query retains that
-same map without rescanning. Typed byte-anchor provenance is still P0: HIR,
-MIR, Rust IR, remaining diagnostics, and source maps must migrate from mixed
-spans to `FileRange` anchors plus the separate coordinate map.
+same map without rescanning.
+
+The semantic provenance hard cut is complete. HIR, Go MIR, and Rust IR retain
+only compact owner-scoped `SourceRef` values. A separate tracked,
+revision-local `DefinitionSourceTable` maps those references to current
+physical `FileRange` values without becoming part of the semantic products.
+`DiagnosticLocation` distinguishes direct frontend `Physical(FileRange)`
+anchors, retained semantic `Source(SourceRef)` anchors, and `Synthetic`
+diagnostics. Publication resolves a source reference through the current table,
+then applies the coordinate map, including `//line`, and current presentation
+path. Source maps consume the physical range and physical line/byte-column
+instead; adjusted display coordinates do not change source-map origins.
+
+The mixed `SourceSpan`, `FunctionProvenance`, `compiler::db::provenance`, and
+arithmetic `make_function_relative`/`rebase_function_diagnostic` model was
+deleted rather than adapted. Exact emitter anchors are still P0: the current
+source-map plan maps only physical function landmarks and still discovers their
+generated ranges by formatted-token matching.
 
 Native sessions can now share an explicit `CompilerHost` with one lazy bounded
-worker pool. A tracked per-definition readiness digest covers provenance-free
-typed HIR, self and direct-callee signatures, representation configuration, and
-executable role. Cold builds fan out every root; exact and comment-only edits
+worker pool. A tracked per-definition readiness digest covers
+physical-location-free typed HIR fingerprints, self and direct-callee
+signatures, representation configuration, and executable role. Cold builds fan
+out every root; exact and comment-only edits
 fan out none; one body edit fans out one; and a callee API edit fans out the
 callee plus actual callers. Removed roots are pruned, build configuration
 invalidates all roots, and readiness is published only after every
@@ -495,15 +514,17 @@ The leaked `'static` program AST regression has been removed: immutable source
 snapshots are reference counted per file and packages never merge their ASTs.
 Stable workspace, package, file, and definition identities are also installed.
 Reusable syntax anchors and persistent node/local identities remain a
-pre-expansion requirement, as does separating semantic fingerprints from
-source provenance. Fine-grained query boundaries must be proven by invalidation
+pre-expansion requirement before schema-v2 stage fingerprints can become
+persistent CAS identities. Physical source mappings are already separate from
+semantic products. Fine-grained query boundaries must be proven by invalidation
 tests before broad compliance work.
 Incrementality and parallel performance are part of each feature's definition
 of done rather than a post-compliance project.
 
 The token-guessing bootstrap source mapper is a third pre-expansion replacement:
-instruction provenance must flow through Rust IR to exact emitted anchors rather
-than being rediscovered from formatted identifier text.
+Rust-IR `SourceRef` provenance must flow to exact emitted anchors and resolve
+through the current physical source table rather than being rediscovered from
+formatted identifier text.
 
 The monolithic embedded SDK source table is a fourth: replace it before imports
 become a hot path so SDK contents are lazy, bounded, target-correct, and keyed at
@@ -524,12 +545,13 @@ the executable compliance claim.
 
 Before broad stdlib work can be considered scalable, finish these foundations:
 
-- reusable owned incremental syntax anchors and provenance-free semantic
-  fingerprints, while retaining diagnostic/source-map provenance separately;
+- reusable owned incremental syntax anchors and CAS-ready semantic fingerprints,
+  while keeping revision-local physical source tables separate;
 - query-owned module/import discovery and manifest expansion from direct-import
   facts and resolver metadata, followed by the canonical package DAG;
-- typed physical byte-anchor provenance with separately resolved virtual
-  coordinates through diagnostics, Rust IR, emission, and source maps;
+- exact terminal emission anchors that carry Rust-IR `SourceRef` provenance to
+  generated byte ranges, with physical source-map origins and publication-only
+  virtual diagnostic coordinates;
 - retained-session adoption by editor and build-daemon entry points, plus
   bounded per-definition invalidation beyond the current file-granular
   parse/semantic projection; the browser worker already retains its session;
@@ -569,6 +591,8 @@ The cutover is not complete while any of these remain:
 - resolver compilation, partial declaration recovery, or syn generation;
 - generated Rust and serialized TypeEnv resolver caches;
 - browser cache seed archives for generated resolver output;
+- mixed `SourceSpan`/`FunctionProvenance` products or arithmetic coordinate
+  rebasing after semantic lowering;
 - compatibility flags, per-node fallback, or dormant legacy modules;
 - documentation or tests that present old conformance reports as current.
 
@@ -577,6 +601,7 @@ Guard searches:
     rg -n 'compiler::(ir|typeinfer|passes)|mod (ir|typeinfer|passes)' gors gors-cli www
     rg -ni 'resolver.?cache|partial.?declaration|type.?environment.?cache' gors gors-cli www
     rg -ni 'post.?syn|rust.?ast.?pass|ast.?to.?syn|fallback.?lower' gors/src
+    rg -n 'SourceSpan|FunctionProvenance|make_function_relative|rebase_function_diagnostic' gors/src/compiler
     rg -n 'syn::|quote!|parse_quote!' gors/src/compiler
 
 Matches in the final search are permitted only in the terminal emitter and
@@ -608,9 +633,10 @@ entrypoint.
 
 `scripts/check-compiler-architecture.sh`, also invoked by `make rust-lint`,
 rejects legacy compiler imports and directories, resolver codegen/cache terms,
-semantic thread-local state, post-syn/fallback lowering, syn dependencies
-outside the terminal boundary, and emitter dependencies on HIR, Go MIR, or the
-lowering implementation.
+semantic thread-local state, mixed or arithmetic-rebased provenance, `span`
+fields in HIR/MIR/Rust IR, post-syn/fallback lowering, syn dependencies outside
+the terminal boundary, and emitter dependencies on HIR, Go MIR, or the lowering
+implementation.
 
 The limit is a backstop, not a design technique. Splits follow semantic
 responsibility and keep internals private; numbered fragments or arbitrary
@@ -621,7 +647,8 @@ line-range shards do not satisfy the architecture.
 ### Per-stage tests
 
 - parser oracle tests remain independent and should not regress;
-- semantic tests assert identity, typing, constants, diagnostics, and spans;
+- semantic tests assert identity, typing, constants, `SourceRef` assignment,
+  definition-source-table resolution, and diagnostics;
 - HIR snapshots cover resolved meaning, not formatting;
 - MIR snapshots cover order, places, effects, and control flow;
 - verifier tests deliberately construct invalid MIR;

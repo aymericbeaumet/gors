@@ -238,6 +238,7 @@ fn verifier_rejects_noncanonical_moves_and_clones() {
 fn verifier_rejects_mutated_representation_effects_and_panic_edges() {
     let source = r#"
         package main
+        func unrelated() {}
         func calculate(left int, right int) int { return left / right }
         func join(left string, right string) string { return left + right }
     "#;
@@ -265,15 +266,36 @@ fn verifier_rejects_mutated_representation_effects_and_panic_edges() {
             .contains("panic edge mismatch")
     );
 
-    let mut bad_provenance = file;
+    let unrelated_source = file
+        .functions
+        .iter()
+        .find(|function| function.name == "unrelated")
+        .unwrap()
+        .source;
+    let mut bad_provenance = file.clone();
     binary_rvalue_mut(&mut bad_provenance, BinaryOp::IntDiv).provenance =
-        Provenance::Source(crate::compiler::ids::SourceSpan::synthetic());
+        Provenance::Source(unrelated_source);
     assert!(
         bad_provenance
             .verify()
             .unwrap_err()
             .message
-            .contains("source provenance")
+            .contains("source reference is owned by")
+    );
+
+    let mut bad_function_source = file;
+    bad_function_source
+        .functions
+        .iter_mut()
+        .find(|function| function.name == "calculate")
+        .unwrap()
+        .source = unrelated_source;
+    assert!(
+        bad_function_source
+            .verify()
+            .unwrap_err()
+            .message
+            .contains("function source reference is owned by")
     );
 }
 

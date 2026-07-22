@@ -25,11 +25,13 @@ use super::Diagnostic;
 use super::hir;
 use super::ids::{
     DefId, DefinitionKey, DefinitionKind, FileId, IdentityCollision, IdentityInterner, NodeId,
-    PackageId, SourceSpan,
+    PackageId,
 };
 #[cfg(test)]
 use super::input::{PackageKey, WorkspaceKey};
+use super::provenance::{DefinitionSourceTable, FileRange, SourceRef};
 use super::types::{ConstValue, IntTy, Signature, Ty, UntypedTy};
+use crate::source::{TextRange, TextSize};
 
 #[derive(Clone)]
 struct FunctionSymbol {
@@ -46,11 +48,17 @@ struct ConstantSymbol {
 
 struct FileLowerer {
     package_id: PackageId,
-    file_name: String,
+    file_id: FileId,
+    source_len: TextSize,
     identities: IdentityInterner,
     functions: BTreeMap<String, FunctionSymbol>,
     constants: BTreeMap<String, ConstantSymbol>,
     diagnostics: Vec<Diagnostic>,
+}
+
+pub(super) struct LoweredSemanticFile {
+    pub(super) file: hir::File,
+    pub(super) source_tables: BTreeMap<DefId, DefinitionSourceTable>,
 }
 
 /// Explicit compiler-owned identity context for one semantic file query.
@@ -74,7 +82,7 @@ pub(super) fn lower_file(file: &ast::File<'_>) -> Result<hir::File, Vec<Diagnost
     let workspace = WorkspaceKey::AdHoc("gors:canonical-workspace".into());
     let package = PackageKey::CommandLine;
     let context = semantic_context(&workspace, &package, &logical_file)?;
-    lower_file_with_context(file, context)
+    lower_file_with_context(file, context).map(|lowered| lowered.file)
 }
 
 #[cfg(test)]
@@ -103,17 +111,20 @@ pub(super) fn semantic_context(
 pub(super) fn lower_file_with_context(
     file: &ast::File<'_>,
     context: SemanticContext,
-) -> Result<hir::File, Vec<Diagnostic>> {
+) -> Result<LoweredSemanticFile, Vec<Diagnostic>> {
     // Read both stable owners here so callers cannot accidentally pass a
     // package-only context and recover file identity from source positions.
     let SemanticContext {
         package,
-        file: _,
-        logical_file,
+        file: file_id,
+        logical_file: _,
     } = context;
+    let source_len = TextSize::try_from(file.file_end.offset)
+        .map_err(|error| vec![Diagnostic::backend(error.to_string())])?;
     let mut lowerer = FileLowerer {
         package_id: package,
-        file_name: logical_file,
+        file_id,
+        source_len,
         identities: IdentityInterner::default(),
         functions: BTreeMap::new(),
         constants: BTreeMap::new(),
@@ -127,20 +138,27 @@ pub(super) fn lower_file_with_context(
     }
 
     let mut functions = Vec::new();
+    let mut source_tables = BTreeMap::new();
     for decl in &file.decls {
         if let ast::Decl::FuncDecl(function) = decl {
             match lowerer.lower_function(function) {
-                Ok(function) => functions.push(function),
+                Ok((function, source_table)) => {
+                    source_tables.insert(function.id, source_table);
+                    functions.push(function);
+                }
                 Err(diagnostic) => lowerer.diagnostics.push(diagnostic),
             }
         }
     }
 
     if lowerer.diagnostics.is_empty() {
-        Ok(hir::File {
-            package: file.name.name.to_string(),
-            constants,
-            functions,
+        Ok(LoweredSemanticFile {
+            file: hir::File {
+                package: file.name.name.to_string(),
+                constants,
+                functions,
+            },
+            source_tables,
         })
     } else {
         Err(lowerer.diagnostics)
@@ -154,18 +172,17 @@ impl FileLowerer {
             .map_err(identity_diagnostic)
     }
 
-    fn span(&self, position: &Position<'_>) -> SourceSpan {
-        SourceSpan {
-            file: if position.origin.is_line_directive() {
-                position.filename().into_owned()
-            } else {
-                self.file_name.clone()
-            },
-            start: position.offset,
-            end: position.offset,
-            line: position.line,
-            column: position.column,
+    fn range(&self, position: &Position<'_>) -> Result<FileRange, Diagnostic> {
+        let offset = TextSize::try_from(position.offset)
+            .map_err(|error| Diagnostic::backend(error.to_string()))?;
+        if offset > self.source_len {
+            return Err(Diagnostic::backend(format!(
+                "parser source offset {} exceeds semantic source length {}",
+                offset.get(),
+                self.source_len.get()
+            )));
         }
+        Ok(FileRange::new(self.file_id, TextRange::empty(offset)))
     }
 
     fn collect_function_headers(&mut self, file: &ast::File<'_>) {
@@ -173,18 +190,24 @@ impl FileLowerer {
             let ast::Decl::FuncDecl(function) = decl else {
                 continue;
             };
-            let span = self.span(&function.name.name_pos);
+            let range = match self.range(&function.name.name_pos) {
+                Ok(range) => range,
+                Err(diagnostic) => {
+                    self.diagnostics.push(diagnostic);
+                    continue;
+                }
+            };
             if function.recv.is_some() {
                 self.diagnostics.push(Diagnostic::unsupported(
                     "methods are not implemented by the HIR/MIR backend",
-                    span,
+                    range,
                 ));
                 continue;
             }
             if function.type_.type_params.is_some() {
                 self.diagnostics.push(Diagnostic::unsupported(
                     "generic functions are not implemented by the HIR/MIR backend",
-                    span,
+                    range,
                 ));
                 continue;
             }
@@ -211,21 +234,21 @@ impl FileLowerer {
             if results.len() > 1 {
                 self.diagnostics.push(Diagnostic::unsupported(
                     "multiple-result functions require explicit expression-arity HIR and are not implemented",
-                    span,
+                    range,
                 ));
                 continue;
             }
             if function.name.name == "init" {
                 self.diagnostics.push(Diagnostic::unsupported(
                     "package init functions are not implemented by the HIR/MIR backend",
-                    span,
+                    range,
                 ));
                 continue;
             }
             if function.name.name == "main" && (!params.is_empty() || !results.is_empty()) {
                 self.diagnostics.push(Diagnostic::semantic(
                     "func main must have no parameters and no results",
-                    span,
+                    range,
                 ));
                 continue;
             }
@@ -245,7 +268,7 @@ impl FileLowerer {
             {
                 self.diagnostics.push(Diagnostic::semantic(
                     format!("duplicate function {}", function.name.name),
-                    self.span(&function.name.name_pos),
+                    range,
                 ));
             }
         }
@@ -257,17 +280,24 @@ impl FileLowerer {
             let ast::Decl::GenDecl(decl) = decl else {
                 continue;
             };
+            let declaration_range = match self.range(&decl.tok_pos) {
+                Ok(range) => range,
+                Err(diagnostic) => {
+                    self.diagnostics.push(diagnostic);
+                    continue;
+                }
+            };
             match decl.tok {
                 Token::IMPORT => {
                     self.diagnostics.push(Diagnostic::unsupported(
                         "imports are not implemented by the HIR/MIR backend",
-                        self.span(&decl.tok_pos),
+                        declaration_range,
                     ));
                 }
                 Token::TYPE | Token::VAR => {
                     self.diagnostics.push(Diagnostic::unsupported(
                         "top-level type and variable declarations are not implemented by the HIR/MIR backend",
-                        self.span(&decl.tok_pos),
+                        declaration_range,
                     ));
                 }
                 Token::CONST => {
@@ -275,21 +305,21 @@ impl FileLowerer {
                         let ast::Spec::ValueSpec(spec) = spec else {
                             self.diagnostics.push(Diagnostic::semantic(
                                 "const declaration contains a non-value specification",
-                                self.span(&decl.tok_pos),
+                                declaration_range,
                             ));
                             continue;
                         };
                         let Some(values) = spec.values.as_ref() else {
                             self.diagnostics.push(Diagnostic::unsupported(
                                 "implicit repeated const expressions and iota are not implemented",
-                                self.span(&decl.tok_pos),
+                                declaration_range,
                             ));
                             continue;
                         };
                         if values.len() != spec.names.len() {
                             self.diagnostics.push(Diagnostic::unsupported(
                                 "multi-valued const expressions are not implemented",
-                                self.span(&decl.tok_pos),
+                                declaration_range,
                             ));
                             continue;
                         }
@@ -310,7 +340,13 @@ impl FileLowerer {
                         // remain visible through `self.constants`.
                         let mut pending = Vec::with_capacity(spec.names.len());
                         for (name, value) in spec.names.iter().zip(values) {
-                            let span = self.span(&name.name_pos);
+                            let range = match self.range(&name.name_pos) {
+                                Ok(range) => range,
+                                Err(diagnostic) => {
+                                    self.diagnostics.push(diagnostic);
+                                    continue;
+                                }
+                            };
                             let (raw_ty, value) = match self.eval_constant(value) {
                                 Ok(value) => value,
                                 Err(diagnostic) => {
@@ -321,14 +357,14 @@ impl FileLowerer {
                             let ty = explicit_ty
                                 .clone()
                                 .unwrap_or_else(|| raw_ty.default_typed());
-                            if let Err(diagnostic) = ensure_bootstrap_value_type(&ty, &span) {
+                            if let Err(diagnostic) = ensure_bootstrap_value_type(&ty, range) {
                                 self.diagnostics.push(diagnostic);
                                 continue;
                             }
                             if !is_assignable(&raw_ty, &ty) {
                                 self.diagnostics.push(Diagnostic::semantic(
                                     format!("constant {} is not assignable to {ty:?}", name.name),
-                                    span,
+                                    range,
                                 ));
                                 continue;
                             }
@@ -338,13 +374,13 @@ impl FileLowerer {
                                         "constant {} is not representable as {ty:?}",
                                         name.name
                                     ),
-                                    span,
+                                    range,
                                 ));
                                 continue;
                             }
-                            pending.push((name, span, ty, value));
+                            pending.push((name, range, ty, value));
                         }
-                        for (name, span, ty, value) in pending {
+                        for (name, range, ty, value) in pending {
                             let id =
                                 match self.intern_definition(DefinitionKind::Constant, name.name) {
                                     Ok(id) => id,
@@ -366,7 +402,7 @@ impl FileLowerer {
                             {
                                 self.diagnostics.push(Diagnostic::semantic(
                                     format!("duplicate top-level declaration {}", name.name),
-                                    span,
+                                    range,
                                 ));
                                 continue;
                             }
@@ -375,14 +411,14 @@ impl FileLowerer {
                                 name: name.name.to_string(),
                                 ty,
                                 value,
-                                span,
+                                source: SourceRef::definition(id),
                             });
                         }
                     }
                 }
                 _ => self.diagnostics.push(Diagnostic::semantic(
                     "invalid top-level declaration token",
-                    self.span(&decl.tok_pos),
+                    declaration_range,
                 )),
             }
         }
@@ -393,10 +429,7 @@ impl FileLowerer {
         let mut result = Vec::new();
         for field in &fields.list {
             let Some(type_expr) = field.type_.as_ref() else {
-                return Err(Diagnostic::semantic(
-                    "field has no type",
-                    SourceSpan::synthetic(),
-                ));
+                return Err(Diagnostic::backend("signature field has no type"));
             };
             let ty = self.lower_type(type_expr)?;
             let count = field.names.as_ref().map_or(1, Vec::len);
@@ -406,10 +439,11 @@ impl FileLowerer {
     }
 
     fn lower_type(&self, expr: &ast::Expr<'_>) -> Result<Ty, Diagnostic> {
+        let range = self.range(&expr_position(expr))?;
         let ast::Expr::Ident(ident) = expr else {
             return Err(Diagnostic::unsupported(
                 "only primitive types are implemented by the HIR/MIR backend",
-                self.span(&expr_position(expr)),
+                range,
             ));
         };
         let ty = match ident.name {
@@ -423,13 +457,13 @@ impl FileLowerer {
                         "type {} is outside the bootstrap bool/int/string runtime frontier",
                         ident.name
                     ),
-                    self.span(&ident.name_pos),
+                    range,
                 ));
             }
             other => {
                 return Err(Diagnostic::unsupported(
                     format!("type {other} is not implemented by the HIR/MIR backend"),
-                    self.span(&ident.name_pos),
+                    range,
                 ));
             }
         };
@@ -438,42 +472,38 @@ impl FileLowerer {
 
     fn eval_constant(&self, expr: &ast::Expr<'_>) -> Result<(Ty, ConstValue), Diagnostic> {
         match expr {
-            ast::Expr::BasicLit(literal) => match literal.kind {
-                Token::INT => parse_go_integer(literal.value)
-                    .map(|value| (Ty::Untyped(UntypedTy::Int), ConstValue::Int(value)))
-                    .ok_or_else(|| {
-                        Diagnostic::semantic(
-                            format!("invalid integer literal {}", literal.value),
-                            self.span(&literal.value_pos),
-                        )
-                    }),
-                Token::FLOAT => Ok((
-                    Ty::Untyped(UntypedTy::Float),
-                    ConstValue::Float(literal.value.replace('_', "")),
-                )),
-                Token::STRING => parse_go_string(literal.value)
-                    .map(|value| (Ty::Untyped(UntypedTy::String), ConstValue::String(value)))
-                    .ok_or_else(|| {
-                        Diagnostic::semantic(
-                            "invalid string literal",
-                            self.span(&literal.value_pos),
-                        )
-                    }),
-                Token::CHAR => parse_go_rune(literal.value)
-                    .map(|value| {
-                        (
-                            Ty::Untyped(UntypedTy::Int),
-                            ConstValue::Int(value.to_string()),
-                        )
-                    })
-                    .ok_or_else(|| {
-                        Diagnostic::semantic("invalid rune literal", self.span(&literal.value_pos))
-                    }),
-                _ => Err(Diagnostic::unsupported(
-                    format!("literal kind {:?} is not implemented", literal.kind),
-                    self.span(&literal.value_pos),
-                )),
-            },
+            ast::Expr::BasicLit(literal) => {
+                let range = self.range(&literal.value_pos)?;
+                match literal.kind {
+                    Token::INT => parse_go_integer(literal.value)
+                        .map(|value| (Ty::Untyped(UntypedTy::Int), ConstValue::Int(value)))
+                        .ok_or_else(|| {
+                            Diagnostic::semantic(
+                                format!("invalid integer literal {}", literal.value),
+                                range,
+                            )
+                        }),
+                    Token::FLOAT => Ok((
+                        Ty::Untyped(UntypedTy::Float),
+                        ConstValue::Float(literal.value.replace('_', "")),
+                    )),
+                    Token::STRING => parse_go_string(literal.value)
+                        .map(|value| (Ty::Untyped(UntypedTy::String), ConstValue::String(value)))
+                        .ok_or_else(|| Diagnostic::semantic("invalid string literal", range)),
+                    Token::CHAR => parse_go_rune(literal.value)
+                        .map(|value| {
+                            (
+                                Ty::Untyped(UntypedTy::Int),
+                                ConstValue::Int(value.to_string()),
+                            )
+                        })
+                        .ok_or_else(|| Diagnostic::semantic("invalid rune literal", range)),
+                    _ => Err(Diagnostic::unsupported(
+                        format!("literal kind {:?} is not implemented", literal.kind),
+                        range,
+                    )),
+                }
+            }
             ast::Expr::Ident(ident) => {
                 if let Some(constant) = self.constants.get(ident.name) {
                     Ok((constant.ty.clone(), constant.value.clone()))
@@ -485,36 +515,36 @@ impl FileLowerer {
                 } else {
                     Err(Diagnostic::semantic(
                         format!("{} is not a constant", ident.name),
-                        self.span(&ident.name_pos),
+                        self.range(&ident.name_pos)?,
                     ))
                 }
             }
             ast::Expr::BinaryExpr(binary) => {
                 let (left_ty, left) = self.eval_constant(&binary.x)?;
                 let (right_ty, right) = self.eval_constant(&binary.y)?;
+                let range = self.range(&binary.op_pos)?;
                 let op = lower_binary_op(binary.op).ok_or_else(|| {
                     Diagnostic::unsupported(
                         format!("constant operator {:?} is not implemented", binary.op),
-                        self.span(&binary.op_pos),
+                        range,
                     )
                 })?;
                 let operand_ty =
                     exact_common_operand_type(&left_ty, &right_ty).ok_or_else(|| {
                         Diagnostic::semantic(
                             format!("incompatible constant operands {left_ty:?} and {right_ty:?}"),
-                            self.span(&binary.op_pos),
+                            range,
                         )
                     })?;
                 let runtime_ty = operand_ty.default_typed();
-                ensure_bootstrap_value_type(&runtime_ty, &self.span(&binary.op_pos))?;
-                validate_binary_operator(op, &runtime_ty, &self.span(&binary.op_pos))?;
-                let value = fold_constant_binary(op, &left, &right, &self.span(&binary.op_pos))?
-                    .ok_or_else(|| {
-                        Diagnostic::unsupported(
-                            "constant operation is not implemented by the bootstrap evaluator",
-                            self.span(&binary.op_pos),
-                        )
-                    })?;
+                ensure_bootstrap_value_type(&runtime_ty, range)?;
+                validate_binary_operator(op, &runtime_ty, range)?;
+                let value = fold_constant_binary(op, &left, &right, range)?.ok_or_else(|| {
+                    Diagnostic::unsupported(
+                        "constant operation is not implemented by the bootstrap evaluator",
+                        range,
+                    )
+                })?;
                 let result_ty = if matches!(
                     op,
                     hir::BinaryOp::Equal
@@ -535,17 +565,13 @@ impl FileLowerer {
             ast::Expr::ParenExpr(paren) => self.eval_constant(&paren.x),
             ast::Expr::UnaryExpr(unary) => {
                 let (ty, value) = self.eval_constant(&unary.x)?;
+                let range = self.range(&unary.op_pos)?;
                 match (unary.op, value) {
                     (Token::ADD, value) => Ok((ty, value)),
                     (Token::SUB, ConstValue::Int(value)) => {
                         let value = BigInt::parse_bytes(value.as_bytes(), 10)
                             .map(|value| (-value).to_string())
-                            .ok_or_else(|| {
-                                Diagnostic::semantic(
-                                    "invalid exact integer",
-                                    self.span(&unary.op_pos),
-                                )
-                            })?;
+                            .ok_or_else(|| Diagnostic::semantic("invalid exact integer", range))?;
                         Ok((ty, ConstValue::Int(value)))
                     }
                     (Token::SUB, ConstValue::Float(value)) => {
@@ -557,13 +583,13 @@ impl FileLowerer {
                     (Token::NOT, ConstValue::Bool(value)) => Ok((ty, ConstValue::Bool(!value))),
                     _ => Err(Diagnostic::unsupported(
                         "constant unary operation is not implemented",
-                        self.span(&unary.op_pos),
+                        range,
                     )),
                 }
             }
             _ => Err(Diagnostic::unsupported(
                 "constant expression is not implemented by the HIR/MIR backend",
-                self.span(&expr_position(expr)),
+                self.range(&expr_position(expr))?,
             )),
         }
     }
@@ -571,7 +597,8 @@ impl FileLowerer {
     fn lower_function(
         &mut self,
         function: &ast::FuncDecl<'_>,
-    ) -> Result<hir::Function, Diagnostic> {
+    ) -> Result<(hir::Function, DefinitionSourceTable), Diagnostic> {
+        let declaration_range = self.range(&function.name.name_pos)?;
         let symbol = self
             .functions
             .get(function.name.name)
@@ -579,18 +606,17 @@ impl FileLowerer {
             .ok_or_else(|| {
                 Diagnostic::semantic(
                     format!("missing collected signature for {}", function.name.name),
-                    self.span(&function.name.name_pos),
+                    declaration_range,
                 )
             })?;
         let Some(body) = function.body.as_ref() else {
             return Err(Diagnostic::unsupported(
                 "bodyless declarations require an explicit runtime intrinsic",
-                self.span(&function.name.name_pos),
+                declaration_range,
             ));
         };
 
         let node = NodeId::owner_local(symbol.id, 0);
-        let span = self.span(&function.name.name_pos);
         let functions = self.functions.clone();
         let constants = self.constants.clone();
         let mut lowerer = FunctionLowerer {
@@ -604,6 +630,10 @@ impl FileLowerer {
             scopes: vec![BTreeMap::new()],
             named_results: Vec::new(),
             loop_depth: 0,
+            source_mappings: vec![
+                (SourceRef::definition(symbol.id), declaration_range),
+                (SourceRef::node(node), declaration_range),
+            ],
         };
         let params = lowerer.declare_field_bindings(
             &function.type_.params,
@@ -619,18 +649,29 @@ impl FileLowerer {
         let body = lowerer.lower_block(body, false)?;
         let named_results = lowerer.named_results.clone();
         let locals = std::mem::take(&mut lowerer.locals);
+        let source_mappings = std::mem::take(&mut lowerer.source_mappings);
+        let source_table = DefinitionSourceTable::try_new(
+            symbol.id,
+            lowerer.file.file_id,
+            lowerer.file.source_len,
+            source_mappings,
+        )
+        .map_err(|error| Diagnostic::backend(error.to_string()))?;
 
-        Ok(hir::Function {
-            id: symbol.id,
-            node,
-            name: function.name.name.to_string(),
-            signature: symbol.signature,
-            params,
-            named_results,
-            locals,
-            body,
-            span,
-        })
+        Ok((
+            hir::Function {
+                id: symbol.id,
+                node,
+                name: function.name.name.to_string(),
+                signature: symbol.signature,
+                params,
+                named_results,
+                locals,
+                body,
+                source: SourceRef::definition(symbol.id),
+            },
+            source_table,
+        ))
     }
 }
 

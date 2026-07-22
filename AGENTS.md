@@ -65,7 +65,8 @@ HIR is the canonical semantic representation. It must:
 
 - use stable definition and source-file identities, and stable local and node
   identities once the incremental syntax layer can supply them;
-- retain source spans on diagnosable nodes;
+- retain compact compiler-owned `SourceRef` values on diagnosable nodes, never
+  byte ranges, paths, or adjusted coordinates;
 - resolve names before MIR construction;
 - represent exact Go types and exact untyped constants;
 - distinguish definitions, aliases, instantiations, values, places, and
@@ -104,7 +105,7 @@ generated:
 
 Go MIR contains Go executable meaning, not Rust ownership operations. Reads do
 not become Rust moves or clones here. Every MIR transform must preserve types,
-source provenance, panic order, and effects and must be checkable by a verifier.
+`SourceRef` provenance, panic order, and effects and must be checkable by a verifier.
 The transform set may begin empty; exact-Go constant folding, CFG
 simplification, and DCE belong here when introduced, never inside target
 representation lowering.
@@ -127,12 +128,12 @@ structured form has not been proven. As analyses improve, this same mandatory
 stage makes output more idiomatic without changing Go behavior or adding a
 post-syntax repair pass.
 
-Rust IR is semantic and syntax-independent. It must retain source provenance,
-make every ownership and representation decision explicit, and pass its own
-verifier before emission. Both Rust syntax emission and any future direct
-object backend consume this same product; Rust IR must not contain syn nodes or
-require reparsing generated Rust. Representation lowering must reject invalid
-MIR; it must never repair it.
+Rust IR is semantic and syntax-independent. It must retain `SourceRef`
+provenance, make every ownership and representation decision explicit, and pass
+its own verifier before emission. Both Rust syntax emission and any future
+direct object backend consume this same product; Rust IR must not contain syn
+nodes or require reparsing generated Rust. Representation lowering must reject
+invalid MIR; it must never repair it.
 
 Rust-IR effect summaries include both preserved Go-observable effects and
 effects introduced by the selected representation. Go strings use immutable
@@ -240,8 +241,8 @@ compilation delegates to `CompilerSession`; convenience functions create a
 short-lived session, while the browser worker retains one explicitly across
 edits. Native retained sessions may share one explicit `CompilerHost`: it owns
 one lazy fixed-capacity job pool. A tracked per-definition root-input digest
-covers provenance-free typed HIR, self and direct-callee signatures, Rust
-representation config, and executable role. Retained sessions fan out only
+covers physical-location-free typed HIR fingerprints, self and direct-callee
+signatures, Rust representation config, and executable role. Retained sessions fan out only
 roots whose digest changed, prune removed or renamed roots, publish readiness
 only after every revision snapshot joins, and bypass the wave for exact and
 comment-only edits. Free convenience calls, default sessions, and Wasm remain
@@ -251,8 +252,9 @@ submit scheduler work. This is not yet the global scheduler for parsing,
 external codegen, linking, cancellation, or memory admission, and a native
 daemon or watch mode still does not exist. Terminal syn emission
 remains outside the semantic queries. Parsing and semantic projection are still
-file-granular, although tracked function fields and function-relative provenance
-allow unchanged sibling stage products to backdate. Query and scheduler counters
+file-granular, although tracked function fields, compact per-definition
+`SourceRef` values, and separate definition source tables allow unchanged
+sibling stage products to backdate. Query and scheduler counters
 are not a memory budget, complete cancellation protocol, global scheduler, or
 persistent CAS; do not claim those target properties from the current kernel.
 
@@ -296,10 +298,30 @@ scanner-built map; every public `ParserError` owns the consumed map, an exact
 physical zero-width `TextRange`, and a separate adjusted filename plus typed
 `LogicalLineColumn`. The file-projection query retains the same map on both
 success and failure and exposes it as an ordinary query output; it never
-rescans or reconstructs line directives. HIR, MIR, Rust IR, remaining
-diagnostics, and source maps still retain mixed provenance and must migrate to
-physical `FileRange` anchors plus that separate coordinate map. Do not collapse
-those domains again or restore an AST-only parse compatibility entry point.
+rescans or reconstructs line directives.
+
+Semantic provenance has completed its hard cut. HIR, Go MIR, and Rust IR retain
+only compact, owner-scoped `SourceRef` values. A separately tracked,
+revision-local `DefinitionSourceTable` maps those references to physical
+`FileRange` values for the current source revision; it is not embedded in a
+semantic stage product. Moving tokens with whitespace or comments may replace
+the table while leaving unchanged semantic products green. Stage fingerprint
+schema v2 encodes only `SourceRef` for source provenance, never a physical
+range, filename, adjusted coordinate, or definition source table. Dense node
+and local references are still revision-local and therefore are not persistent
+CAS identities until reusable syntax anchors exist.
+
+`DiagnosticLocation` keeps the three ownership cases explicit:
+`Physical(FileRange)` for a frontend byte anchor, `Source(SourceRef)` for a
+diagnostic retained by semantic or IR products, and `Synthetic` when no source
+exists. The session resolves a `SourceRef` through the current definition source
+table and applies the `//line` coordinate map and current presentation path only
+when publishing a user-facing diagnostic. Source maps instead consume physical
+source ranges and physical line/byte-column coordinates; `//line` projection is
+display-only and must never rewrite source-map origins. `SourceSpan`,
+`FunctionProvenance`, the old `compiler::db::provenance` module, and arithmetic
+function-relative rebasing were deleted. Do not recreate them, collapse these
+domains again, or restore an AST-only parse compatibility entry point.
 
 The file projection owns decoded direct-import occurrences, structured invalid
 imports, and owned source comments from its one ephemeral parse. Those products
@@ -348,9 +370,10 @@ second pre-query parse.
 
 Source mappings and diagnostics are ordinary explicit outputs. The current
 `SourceMapPlan` follows that rule and is safe to build or consume independently;
-preserve that ownership model when it becomes a query result. Do not reintroduce
-a thread-local source-map context or create another exception to the
-no-global-state rule.
+its Go origins come from physical definition-source-table ranges, not adjusted
+`//line` display coordinates. Preserve that ownership model when it becomes a
+query result. Do not reintroduce a thread-local source-map context or create
+another exception to the no-global-state rule.
 
 The bootstrap mapper now separates original Go names from generated Rust lookup
 tokens, but formatted-token matching is not the target source-map architecture.
@@ -468,7 +491,7 @@ weaken parser behavior to fit the bootstrap backend.
           mir/              explicit-order lowering, data model, and verifier
           rust_ir/          explicit Rust representation and ownership IR
           lowering/         mandatory Go MIR to verified Rust IR lowering
-          provenance.rs     stable file identity paired with physical ranges
+          provenance.rs     SourceRef and revision-local physical source tables
           emit.rs           terminal Rust syntax emission
           hir.rs            typed high-level IR
           ids.rs            compiler semantic identities
@@ -561,6 +584,10 @@ The old model must not reappear under a new name:
 
     rg -ni 'post.?syn|rust.?ast.?pass|ast.?to.?syn|fallback.?lower' gors/src
 
+Mixed or arithmetically rebased semantic provenance must remain deleted:
+
+    rg -n 'SourceSpan|FunctionProvenance|make_function_relative|rebase_function_diagnostic' gors/src/compiler
+
 Also inspect all unsupported diagnostics before claiming support:
 
     rg -n 'GORS2001|unsupported' gors/src/compiler
@@ -596,11 +623,12 @@ Development order is:
 
 1. Preserve the completed destructive cutover and independent parser contract,
    and install machine-readable stage and performance measurement.
-2. Preserve the completed owned per-file snapshot boundary and stable
-   workspace/package/file/definition keys. Add reusable syntax anchors and
-   provenance-free semantic fingerprints, then harden the completed production
-   session route through HIR, MIR, and Rust representation queries with bounded
-   invalidation and retained-session entry points.
+2. Preserve the completed owned per-file snapshot boundary, stable
+   workspace/package/file/definition keys, and `SourceRef`/source-table split.
+   Add reusable syntax anchors so schema-v2 physical-location-free stage
+   fingerprints can become persistent CAS identities, then harden the completed
+   production session route through HIR, MIR, and Rust representation queries
+   with bounded invalidation and retained-session entry points.
 3. Expand exact types, constants, generics, control-flow MIR, places, calls,
    effects, representation facts, both IR verifiers, and runtime ABI through
    fine-grained queries; every feature includes invalidation and cost coverage.

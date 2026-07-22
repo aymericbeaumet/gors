@@ -10,6 +10,7 @@ use gors::compiler::ids::{DefId, FileId};
 use gors::compiler::input::{
     PackageInputManifest, PackageKey, ProgramInput, SourceFileInput, WorkspaceKey,
 };
+use gors::compiler::provenance::SourceRef;
 use gors::compiler::{CompilerHost, CompilerSession, SchedulerTelemetry};
 
 const ORIGINAL: &str = r#"package main
@@ -480,7 +481,9 @@ fn different_length_private_body_edit_keeps_unrelated_products_green() {
     let before_package = session.database().analyze_package(package).unwrap();
     let before_public = session.database().public_api(file).unwrap();
     let before_hir = session.database().typed_hir(file, g).unwrap();
-    let before_provenance = session.database().function_provenance(file, g).unwrap();
+    let source_ref = SourceRef::definition(g);
+    let before_source_table = session.database().definition_source_table(file, g).unwrap();
+    let before_range = before_source_table.resolve(source_ref).unwrap();
     let before_mir = session.database().verified_mir(file, g).unwrap();
     let before_normalized = session.database().normalized_mir(file, g).unwrap();
     let before_rust = session.database().verified_rust_ir(file, g).unwrap();
@@ -493,7 +496,8 @@ fn different_length_private_body_edit_keeps_unrelated_products_green() {
     let after_package = session.database().analyze_package(package).unwrap();
     let after_public = session.database().public_api(file).unwrap();
     let after_hir = session.database().typed_hir(file, g).unwrap();
-    let after_provenance = session.database().function_provenance(file, g).unwrap();
+    let after_source_table = session.database().definition_source_table(file, g).unwrap();
+    let after_range = after_source_table.resolve(source_ref).unwrap();
     let after_mir = session.database().verified_mir(file, g).unwrap();
     let after_normalized = session.database().normalized_mir(file, g).unwrap();
     let after_rust = session.database().verified_rust_ir(file, g).unwrap();
@@ -503,9 +507,8 @@ fn different_length_private_body_edit_keeps_unrelated_products_green() {
     assert!(Arc::ptr_eq(&before_mir, &after_mir));
     assert!(Arc::ptr_eq(&before_normalized, &after_normalized));
     assert!(Arc::ptr_eq(&before_rust, &after_rust));
-    assert!(!Arc::ptr_eq(&before_provenance, &after_provenance));
-    assert!(after_provenance.byte_offset() > before_provenance.byte_offset());
-    assert!(after_provenance.line() > before_provenance.line());
+    assert!(!Arc::ptr_eq(&before_source_table, &after_source_table));
+    assert!(after_range.range().start() > before_range.range().start());
 
     let telemetry = session.database().telemetry();
     assert_eq!(telemetry.executions(QueryKind::FileProjection), 1);
@@ -748,6 +751,26 @@ func main() {}
 }
 
 #[test]
+fn semantic_diagnostics_project_line_directives_only_at_publication() {
+    let source =
+        "package main\n//line generated.go:40\nfunc (value int) method() {}\nfunc main() {}\n";
+    let mut session = CompilerSession::default();
+    let error = session
+        .compile_program(program("/checkout/current/main.go", source))
+        .err()
+        .expect("methods are outside the bootstrap frontier");
+    let diagnostic = error
+        .diagnostics()
+        .iter()
+        .find(|diagnostic| diagnostic.message.contains("methods are not implemented"))
+        .expect("method diagnostic");
+
+    assert_eq!(diagnostic.file, "/checkout/current/generated.go");
+    assert_eq!(diagnostic.line, 40);
+    assert_eq!(diagnostic.column, 0);
+}
+
+#[test]
 fn source_map_tracks_non_main_function_through_its_generated_symbol() {
     let mut session = CompilerSession::default();
     let (compiled, plan) = session
@@ -762,4 +785,23 @@ fn source_map_tracks_non_main_function_through_its_generated_symbol() {
     assert_eq!(token.get_src_line(), 2);
     assert_eq!(token.get_src_col(), 5);
     assert!(rust.lines().nth(token.get_dst_line() as usize).is_some());
+}
+
+#[test]
+fn source_maps_use_physical_sources_even_with_line_directives() {
+    let source = "package main\n//line virtual.go:400\nfunc helper() int { return 1 }\nfunc main() { println(helper()) }\n";
+    let mut session = CompilerSession::default();
+    let (compiled, plan) = session
+        .compile_program_with_source_map(program("/checkout/main.go", source))
+        .unwrap();
+    let rust = gors::printer::generate_single(compiled).unwrap();
+    let source_map = plan.build(&rust);
+    let token = source_map
+        .tokens()
+        .find(|token| token.get_name() == Some("helper"))
+        .expect("helper mapping");
+
+    assert_eq!(source_map.get_source(0), Some("/checkout/main.go"));
+    assert_eq!(token.get_src_line(), 2);
+    assert_eq!(token.get_src_col(), 5);
 }

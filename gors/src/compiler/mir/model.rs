@@ -1,7 +1,8 @@
 //! Typed MIR data model.
 
 use crate::compiler::hir;
-use crate::compiler::ids::{BasicBlockId, DefId, LocalId, SourceSpan};
+use crate::compiler::ids::{BasicBlockId, DefId, LocalId};
+use crate::compiler::provenance::SourceRef;
 use crate::compiler::types::{ConstValue, Signature, Ty};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -19,7 +20,7 @@ pub struct Function {
     pub locals: Vec<LocalDecl>,
     pub blocks: Vec<BasicBlock>,
     pub entry: BasicBlockId,
-    pub span: SourceSpan,
+    pub source: SourceRef,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -113,7 +114,7 @@ pub enum TerminatorKind {
 /// Source ownership for every executable MIR node.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Provenance {
-    Source(SourceSpan),
+    Source(SourceRef),
     Synthetic(SyntheticOrigin),
 }
 

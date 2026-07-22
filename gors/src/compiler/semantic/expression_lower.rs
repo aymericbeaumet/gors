@@ -8,17 +8,12 @@ use super::expressions::*;
 use super::positions::expr_position;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
-use crate::compiler::ids::{LocalId, NodeId, SourceSpan};
+use crate::compiler::ids::{LocalId, NodeId};
+use crate::compiler::provenance::SourceRef;
 use crate::compiler::types::{ConstValue, IntTy, Ty, UntypedTy};
 
 impl FunctionLowerer<'_> {
-    pub(super) fn local_expr(
-        &self,
-        node: NodeId,
-        local: LocalId,
-        ty: Ty,
-        span: SourceSpan,
-    ) -> hir::Expr {
+    pub(super) fn local_expr(&self, node: NodeId, local: LocalId, ty: Ty) -> hir::Expr {
         hir::Expr {
             node,
             kind: hir::ExprKind::Local(local),
@@ -28,7 +23,7 @@ impl FunctionLowerer<'_> {
                 may_read: true,
                 ..hir::Effects::default()
             },
-            span,
+            source: SourceRef::node(node),
         }
     }
 
@@ -46,14 +41,14 @@ impl FunctionLowerer<'_> {
         expected: Option<&Ty>,
         allow_discarded_call_result: bool,
     ) -> Result<hir::Expr, Diagnostic> {
-        let span = self.file.span(&expr_position(expr));
-        let node = self.alloc_node()?;
+        let range = self.file.range(&expr_position(expr))?;
+        let node = self.alloc_node(range)?;
         let mut lowered = match expr {
             ast::Expr::BasicLit(literal) => {
                 if literal.kind == Token::FLOAT {
                     return Err(Diagnostic::unsupported(
                         "floating-point literals are outside the bootstrap bool/int/string runtime frontier",
-                        span,
+                        range,
                     ));
                 }
                 let (ty, value) = self.file.eval_constant(expr)?;
@@ -63,13 +58,13 @@ impl FunctionLowerer<'_> {
                     ty,
                     category: hir::ValueCategory::Constant,
                     effects: hir::Effects::default(),
-                    span: span.clone(),
+                    source: SourceRef::node(node),
                 }
             }
             ast::Expr::Ident(ident) => {
                 if let Some(local) = self.lookup_local(ident.name) {
                     let ty = self.place_ty(hir::Place::Local(local))?.clone();
-                    self.local_expr(node, local, ty, span.clone())
+                    self.local_expr(node, local, ty)
                 } else if let Some(constant) = self.constants.get(ident.name).cloned() {
                     hir::Expr {
                         node,
@@ -77,7 +72,7 @@ impl FunctionLowerer<'_> {
                         ty: constant.ty,
                         category: hir::ValueCategory::Constant,
                         effects: hir::Effects::default(),
-                        span: span.clone(),
+                        source: SourceRef::node(node),
                     }
                 } else if self.functions.contains_key(ident.name) {
                     return Err(Diagnostic::unsupported(
@@ -85,7 +80,7 @@ impl FunctionLowerer<'_> {
                             "function value {} is not implemented by the HIR/MIR backend",
                             ident.name
                         ),
-                        span,
+                        range,
                     ));
                 } else if ident.name == "true" || ident.name == "false" {
                     hir::Expr {
@@ -94,17 +89,17 @@ impl FunctionLowerer<'_> {
                         ty: Ty::Untyped(UntypedTy::Bool),
                         category: hir::ValueCategory::Constant,
                         effects: hir::Effects::default(),
-                        span: span.clone(),
+                        source: SourceRef::node(node),
                     }
                 } else if ident.name == "print" || ident.name == "println" {
                     return Err(Diagnostic::unsupported(
                         format!("builtin value {} is not implemented", ident.name),
-                        span,
+                        range,
                     ));
                 } else {
                     return Err(Diagnostic::semantic(
                         format!("undefined identifier {}", ident.name),
-                        span,
+                        range,
                     ));
                 }
             }
@@ -114,7 +109,7 @@ impl FunctionLowerer<'_> {
             ast::Expr::UnaryExpr(unary) => {
                 let mut operand = self.lower_expr(&unary.x, expected)?;
                 let operand_ty = operand.ty.default_typed();
-                ensure_bootstrap_value_type(&operand_ty, &span)?;
+                ensure_bootstrap_value_type(&operand_ty, range)?;
                 let op = match unary.op {
                     Token::ADD if operand_ty == Ty::Int(IntTy::Int) => hir::UnaryOp::Positive,
                     Token::SUB if operand_ty == Ty::Int(IntTy::Int) => hir::UnaryOp::Negative,
@@ -123,12 +118,12 @@ impl FunctionLowerer<'_> {
                     _ => {
                         return Err(Diagnostic::semantic(
                             format!("invalid unary {:?} operand {:?}", unary.op, operand.ty),
-                            span,
+                            range,
                         ));
                     }
                 };
                 if let Some(value) = expr_constant(&operand)
-                    .map(|value| fold_constant_unary(op, value, &span))
+                    .map(|value| fold_constant_unary(op, value, range))
                     .transpose()?
                     .flatten()
                 {
@@ -138,10 +133,10 @@ impl FunctionLowerer<'_> {
                         ty: operand.ty,
                         category: hir::ValueCategory::Constant,
                         effects: hir::Effects::default(),
-                        span: span.clone(),
+                        source: SourceRef::node(node),
                     }
                 } else {
-                    coerce_expr(&mut operand, &operand_ty, &span)?;
+                    coerce_expr(&mut operand, &operand_ty, range)?;
                     let effects = operand.effects;
                     hir::Expr {
                         node,
@@ -152,7 +147,7 @@ impl FunctionLowerer<'_> {
                         ty: operand_ty,
                         category: hir::ValueCategory::Value,
                         effects,
-                        span: span.clone(),
+                        source: SourceRef::node(node),
                     }
                 }
             }
@@ -162,7 +157,7 @@ impl FunctionLowerer<'_> {
                 let op = lower_binary_op(binary.op).ok_or_else(|| {
                     Diagnostic::unsupported(
                         format!("binary operator {:?} is not implemented", binary.op),
-                        span.clone(),
+                        range,
                     )
                 })?;
                 let comparison = matches!(
@@ -181,12 +176,12 @@ impl FunctionLowerer<'_> {
                             "incompatible binary operands {:?} and {:?}",
                             left.ty, right.ty
                         ),
-                        span.clone(),
+                        range,
                     )
                 })?;
-                coerce_expr(&mut left, &operand_ty, &span)?;
-                coerce_expr(&mut right, &operand_ty, &span)?;
-                validate_binary_operator(op, &operand_ty, &span)?;
+                coerce_expr(&mut left, &operand_ty, range)?;
+                coerce_expr(&mut right, &operand_ty, range)?;
+                validate_binary_operator(op, &operand_ty, range)?;
                 let mut effects = left.effects.union(right.effects);
                 if matches!(
                     op,
@@ -210,7 +205,7 @@ impl FunctionLowerer<'_> {
                 };
                 let folded = expr_constant(&left)
                     .zip(expr_constant(&right))
-                    .map(|(left, right)| fold_constant_binary(op, left, right, &span))
+                    .map(|(left, right)| fold_constant_binary(op, left, right, range))
                     .transpose()?
                     .flatten();
                 if let Some(value) = folded {
@@ -220,7 +215,7 @@ impl FunctionLowerer<'_> {
                         ty: result_ty,
                         category: hir::ValueCategory::Constant,
                         effects: hir::Effects::default(),
-                        span: span.clone(),
+                        source: SourceRef::node(node),
                     }
                 } else {
                     hir::Expr {
@@ -233,7 +228,7 @@ impl FunctionLowerer<'_> {
                         ty: result_ty,
                         category: hir::ValueCategory::Value,
                         effects,
-                        span: span.clone(),
+                        source: SourceRef::node(node),
                     }
                 }
             }
@@ -241,18 +236,18 @@ impl FunctionLowerer<'_> {
                 let ast::Expr::Ident(callee_ident) = call.fun.as_ref() else {
                     return Err(Diagnostic::unsupported(
                         "only direct calls are implemented by the HIR/MIR backend",
-                        span,
+                        range,
                     ));
                 };
                 let raw_args = call.args.as_deref().unwrap_or_default();
-                let callee_span = self.file.span(&callee_ident.name_pos);
+                let callee_range = self.file.range(&callee_ident.name_pos)?;
                 let (callee, params, results) = if self.lookup_local(callee_ident.name).is_some() {
                     return Err(Diagnostic::unsupported(
                         format!(
                             "calling local value {} requires function-value HIR and is not implemented",
                             callee_ident.name
                         ),
-                        callee_span,
+                        callee_range,
                     ));
                 } else if let Some(symbol) = self.functions.get(callee_ident.name).cloned() {
                     (
@@ -263,7 +258,7 @@ impl FunctionLowerer<'_> {
                 } else if self.constants.contains_key(callee_ident.name) {
                     return Err(Diagnostic::semantic(
                         format!("constant {} is not callable", callee_ident.name),
-                        callee_span,
+                        callee_range,
                     ));
                 } else {
                     match callee_ident.name {
@@ -272,7 +267,7 @@ impl FunctionLowerer<'_> {
                         name => {
                             return Err(Diagnostic::semantic(
                                 format!("undefined function {name}"),
-                                callee_span,
+                                callee_range,
                             ));
                         }
                     }
@@ -284,13 +279,18 @@ impl FunctionLowerer<'_> {
                             raw_args.len(),
                             params.len()
                         ),
-                        span,
+                        range,
                     ));
                 }
                 let args = if matches!(callee, hir::Callee::Builtin(_)) {
                     raw_args
                         .iter()
-                        .map(|arg| self.lower_expr(arg, None).and_then(default_expr_type))
+                        .map(|arg| {
+                            let argument_range = self.file.range(&expr_position(arg))?;
+                            self.lower_expr(arg, None).and_then(|expression| {
+                                default_expr_type(expression, argument_range)
+                            })
+                        })
                         .collect::<Result<Vec<_>, _>>()?
                 } else {
                     raw_args
@@ -305,14 +305,14 @@ impl FunctionLowerer<'_> {
                     _ => {
                         return Err(Diagnostic::unsupported(
                             "multiple-result calls require explicit expression-arity HIR",
-                            span,
+                            range,
                         ));
                     }
                 };
                 if ty == Ty::Unit && !allow_discarded_call_result {
                     return Err(Diagnostic::unsupported(
                         "a no-result call cannot be used as a value",
-                        span,
+                        range,
                     ));
                 }
                 let effects = args.iter().fold(
@@ -332,18 +332,18 @@ impl FunctionLowerer<'_> {
                     ty,
                     category: hir::ValueCategory::Value,
                     effects,
-                    span: span.clone(),
+                    source: SourceRef::node(node),
                 }
             }
             _ => {
                 return Err(Diagnostic::unsupported(
                     format!("expression {expr:?} is not implemented by the HIR/MIR backend"),
-                    span,
+                    range,
                 ));
             }
         };
         if let Some(expected) = expected {
-            coerce_expr(&mut lowered, expected, &span)?;
+            coerce_expr(&mut lowered, expected, range)?;
         }
         Ok(lowered)
     }

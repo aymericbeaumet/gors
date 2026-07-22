@@ -1,9 +1,12 @@
-use super::hir::hir_function_semantics;
 use super::*;
 use crate::compiler::{self, hir, mir, rust_ir};
 
 fn lower_stages(source: &str) -> (hir::File, mir::File, rust_ir::File) {
-    let parsed = crate::parser::parse_file("fingerprint.go", source).expect("valid test source");
+    lower_stages_at("fingerprint.go", source)
+}
+
+fn lower_stages_at(filename: &str, source: &str) -> (hir::File, mir::File, rust_ir::File) {
+    let parsed = crate::parser::parse_file(filename, source).expect("valid test source");
     let hir = compiler::lower_to_hir(parsed.ast()).expect("typed HIR");
     let verified_mir = compiler::lower_to_mir(&hir).expect("verified Go MIR");
     let mir = verified_mir.as_file().clone();
@@ -150,7 +153,7 @@ fn function_fingerprints_ignore_unrelated_sibling_order() {
 }
 
 #[test]
-fn semantic_hir_fingerprint_ignores_only_source_provenance() {
+fn source_refs_keep_stage_fingerprints_stable_across_whitespace_relocation() {
     let first =
         lower_stages("package main\nfunc stable(x int) int {\nreturn x + 1\n}\nfunc main() {}\n");
     let commented = lower_stages(
@@ -158,19 +161,36 @@ fn semantic_hir_fingerprint_ignores_only_source_provenance() {
     );
     let changed =
         lower_stages("package main\nfunc stable(x int) int {\nreturn x + 2\n}\nfunc main() {}\n");
-    let first = hir_named(&first.0, "stable");
-    let commented = hir_named(&commented.0, "stable");
-    let changed = hir_named(&changed.0, "stable");
+    let first_hir = hir_named(&first.0, "stable");
+    let commented_hir = hir_named(&commented.0, "stable");
+    let changed_hir = hir_named(&changed.0, "stable");
+    let first_mir = mir_named(&first.1, "stable");
+    let commented_mir = mir_named(&commented.1, "stable");
+    let first_rust_ir = rust_ir_named(&first.2, "stable");
+    let commented_rust_ir = rust_ir_named(&commented.2, "stable");
 
-    assert_ne!(hir_function(first), hir_function(commented));
+    assert_eq!(first_hir.source, commented_hir.source);
+    assert_eq!(first_hir, commented_hir);
+    assert_eq!(first_mir, commented_mir);
+    assert_eq!(first_rust_ir, commented_rust_ir);
+    assert_eq!(hir_function(first_hir), hir_function(commented_hir));
+    assert_eq!(mir_function(first_mir), mir_function(commented_mir));
     assert_eq!(
-        hir_function_semantics(first),
-        hir_function_semantics(commented)
+        rust_ir_function(first_rust_ir),
+        rust_ir_function(commented_rust_ir)
     );
-    assert_ne!(
-        hir_function_semantics(first),
-        hir_function_semantics(changed)
-    );
+    assert_ne!(hir_function(first_hir), hir_function(changed_hir));
+}
+
+#[test]
+fn stage_fingerprints_exclude_presentation_paths() {
+    let source = "package main\nfunc stable(x int) int { return x + 1 }\n";
+    let first = lower_stages_at("/one/checkout/main.go", source);
+    let moved = lower_stages_at(r"C:\different\checkout\main.go", source);
+
+    assert_eq!(hir_file(&first.0), hir_file(&moved.0));
+    assert_eq!(mir_file(&first.1), mir_file(&moved.1));
+    assert_eq!(rust_ir_file(&first.2), rust_ir_file(&moved.2));
 }
 
 #[test]

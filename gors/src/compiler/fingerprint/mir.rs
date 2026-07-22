@@ -2,7 +2,7 @@
 
 use super::Fingerprint;
 use super::encoder::{
-    Encoder, block_id, const_value, def_id, hir_effects, local_id, signature, source_span, ty,
+    Encoder, block_id, const_value, def_id, hir_effects, local_id, signature, source_ref, ty,
 };
 use crate::compiler::{hir, mir};
 
@@ -45,7 +45,7 @@ fn encode_function(encoder: &mut Encoder, function: &mir::Function) {
         encoder.sequence(&function.blocks, encode_block);
     });
     encoder.field(b"entry", |encoder| block_id(encoder, function.entry));
-    encoder.field(b"span", |encoder| source_span(encoder, &function.span));
+    encoder.field(b"source", |encoder| source_ref(encoder, function.source));
 }
 
 fn encode_local(encoder: &mut Encoder, local: &mir::LocalDecl) {
@@ -274,8 +274,8 @@ fn encode_panic(encoder: &mut Encoder, panic: mir::PanicEdge) {
 
 fn encode_provenance(encoder: &mut Encoder, provenance: &mir::Provenance) {
     match provenance {
-        mir::Provenance::Source(span) => {
-            encoder.variant(b"source", |encoder| source_span(encoder, span));
+        mir::Provenance::Source(source) => {
+            encoder.variant(b"source", |encoder| source_ref(encoder, *source));
         }
         mir::Provenance::Synthetic(origin) => {
             encoder.variant(b"synthetic", |encoder| {

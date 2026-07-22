@@ -157,7 +157,7 @@ fn diagnostic_path_update_reuses_the_complete_semantic_pipeline() {
     let function = function_id(&functions, "f");
     let package = db.package_for_file(file).unwrap();
     let public_api = db.public_api(file).unwrap();
-    let provenance = db.function_provenance(file, function).unwrap();
+    let source_table = db.definition_source_table(file, function).unwrap();
     let typed_hir = db.typed_hir(file, function).unwrap();
     let typed_signature = db.typed_signature(file, function).unwrap();
     let verified_mir = db.verified_mir(file, function).unwrap();
@@ -191,8 +191,8 @@ fn diagnostic_path_update_reuses_the_complete_semantic_pipeline() {
     assert!(Arc::ptr_eq(&analysis, &db.analyze_file(file).unwrap()));
     assert!(Arc::ptr_eq(&public_api, &db.public_api(file).unwrap()));
     assert!(Arc::ptr_eq(
-        &provenance,
-        &db.function_provenance(file, function).unwrap()
+        &source_table,
+        &db.definition_source_table(file, function).unwrap()
     ));
     assert!(Arc::ptr_eq(
         &typed_hir,
@@ -270,7 +270,7 @@ fn comment_only_edit_preserves_function_semantics_and_rust_ir() {
     let function = function_id(&functions, "f");
     let package = db.package_for_file(file).unwrap();
     let old_comments = db.file_comments(file).unwrap();
-    let old_provenance = db.function_provenance(file, function).unwrap();
+    let old_source_table = db.definition_source_table(file, function).unwrap();
     let old_hir = db.typed_hir(file, function).unwrap();
     let old_mir = db.verified_mir(file, function).unwrap();
     let old_normalized = db.normalized_mir(file, function).unwrap();
@@ -298,8 +298,8 @@ fn comment_only_edit_preserves_function_semantics_and_rust_ir() {
         comment.byte_start() + comment.text().len()
     );
     assert!(!Arc::ptr_eq(
-        &old_provenance,
-        &db.function_provenance(file, function).unwrap()
+        &old_source_table,
+        &db.definition_source_table(file, function).unwrap()
     ));
     assert!(Arc::ptr_eq(
         &old_hir,

@@ -28,7 +28,7 @@ rust-test-unit:
 	GORS_TEST_FAIL_FAST=1 GORS_TEST_VERBOSE=1 cargo test --profile $(RUST_TEST_PARTIAL_PROFILE) --workspace --lib --bins --examples -- --nocapture
 
 rust-test-backend-smoke:
-	@test "$$(cargo run --quiet --package gors-cli -- run fuzz/corpus/compiler/runtime_smoke 2>&1)" = "8"
+	@test "$$(cargo run --quiet --package gors-cli -- run fuzz/corpus/compiler/runtime_smoke.go 2>&1)" = "8"
 
 # Migration backlog. These broad suites intentionally remain opt-in until their
 # language features have native HIR and MIR support.

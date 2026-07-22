@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use super::Fingerprint;
 use super::encoder::{Encoder, def_id, signature};
-use super::hir::hir_function_semantics;
+use super::hir::hir_function;
 use crate::compiler::hir;
 use crate::compiler::ids::DefId;
 use crate::compiler::types::Signature;
@@ -15,10 +15,10 @@ pub(in crate::compiler) fn rust_ir_root_inputs(
     representation_key: Fingerprint,
     executable_package: bool,
 ) -> Fingerprint {
-    let semantic_hir = hir_function_semantics(function);
+    let hir = hir_function(function);
     let mut encoder = Encoder::root(b"rust-ir-root-inputs");
-    encoder.field(b"semantic-hir", |encoder| {
-        encoder.blob(semantic_hir.as_bytes());
+    encoder.field(b"hir", |encoder| {
+        encoder.blob(hir.as_bytes());
     });
     encoder.field(b"signatures", |encoder| {
         let signatures = signatures.iter().collect::<Vec<_>>();

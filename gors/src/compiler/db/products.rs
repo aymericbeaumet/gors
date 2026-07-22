@@ -28,10 +28,8 @@ pub struct StageFailure {
 impl StageFailure {
     pub(super) fn new(stage: CompilerStage, mut diagnostics: Vec<Diagnostic>) -> Self {
         diagnostics.sort_by(|left, right| {
-            left.span
-                .file
-                .cmp(&right.span.file)
-                .then_with(|| left.span.start.cmp(&right.span.start))
+            left.location
+                .cmp(&right.location)
                 .then_with(|| left.code.cmp(right.code))
                 .then_with(|| left.message.cmp(&right.message))
         });
@@ -102,57 +100,7 @@ impl StageFailure {
 
 pub(super) type StageResult<T> = Result<Arc<T>, Arc<StageFailure>>;
 
-/// Current file location of a stable function definition.
-///
-/// Semantic stage products store function-relative provenance so an unrelated
-/// edit before the declaration cannot turn its executable query products red.
-/// This independently tracked anchor restores the current source location for
-/// diagnostics and source-map publication.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FunctionProvenance {
-    logical_file: Arc<str>,
-    byte_offset: usize,
-    line: usize,
-    column: usize,
-}
-
-impl FunctionProvenance {
-    pub(super) fn new(
-        logical_file: Arc<str>,
-        byte_offset: usize,
-        line: usize,
-        column: usize,
-    ) -> Self {
-        Self {
-            logical_file,
-            byte_offset,
-            line,
-            column,
-        }
-    }
-
-    #[must_use]
-    pub fn logical_file(&self) -> &str {
-        &self.logical_file
-    }
-
-    #[must_use]
-    pub const fn byte_offset(&self) -> usize {
-        self.byte_offset
-    }
-
-    #[must_use]
-    pub const fn line(&self) -> usize {
-        self.line
-    }
-
-    #[must_use]
-    pub const fn column(&self) -> usize {
-        self.column
-    }
-}
-
-/// One type-checked HIR function with function-relative source provenance.
+/// One type-checked HIR function with owner-local source references.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TypedHirFunction {
     function: Arc<hir::Function>,

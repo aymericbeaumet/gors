@@ -1,7 +1,7 @@
 //! Canonical encoding of explicit Rust representation IR.
 
 use super::Fingerprint;
-use super::encoder::{Encoder, block_id, def_id, local_id, source_span};
+use super::encoder::{Encoder, block_id, def_id, local_id, source_ref};
 use crate::compiler::rust_ir;
 
 /// Fingerprint a complete Rust IR file, including artifact publication order.
@@ -49,7 +49,7 @@ fn encode_function(encoder: &mut Encoder, function: &rust_ir::Function) {
     encoder.field(b"control-flow", |encoder| {
         encode_control_flow(encoder, function.control_flow);
     });
-    encoder.field(b"span", |encoder| source_span(encoder, &function.span));
+    encoder.field(b"source", |encoder| source_ref(encoder, function.source));
 }
 
 fn encode_artifact(encoder: &mut Encoder, artifact: &rust_ir::FunctionArtifactPlan) {
@@ -398,8 +398,8 @@ fn encode_panic(encoder: &mut Encoder, panic: rust_ir::PanicEdge) {
 
 fn encode_provenance(encoder: &mut Encoder, provenance: &rust_ir::Provenance) {
     match provenance {
-        rust_ir::Provenance::Source(span) => {
-            encoder.variant(b"source", |encoder| source_span(encoder, span));
+        rust_ir::Provenance::Source(source) => {
+            encoder.variant(b"source", |encoder| source_ref(encoder, *source));
         }
         rust_ir::Provenance::Synthetic(origin) => {
             encoder.variant(b"synthetic", |encoder| {

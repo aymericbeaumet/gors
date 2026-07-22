@@ -10,7 +10,7 @@ use super::expressions::*;
 use super::positions::{expr_position, stmt_position};
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
-use crate::compiler::ids::SourceSpan;
+use crate::compiler::provenance::SourceRef;
 use crate::compiler::types::{ConstValue, IntTy, Ty};
 
 impl FunctionLowerer<'_> {
@@ -18,7 +18,7 @@ impl FunctionLowerer<'_> {
         &mut self,
         stmt: &ast::Stmt<'_>,
     ) -> Result<Option<hir::Stmt>, Diagnostic> {
-        let span = self.file.span(&stmt_position(stmt));
+        let range = self.file.range(&stmt_position(stmt))?;
         let kind = match stmt {
             ast::Stmt::EmptyStmt(_) => return Ok(None),
             ast::Stmt::BlockStmt(block) => hir::StmtKind::Block(self.lower_block(block, true)?),
@@ -27,7 +27,7 @@ impl FunctionLowerer<'_> {
                 if !matches!(expr.kind, hir::ExprKind::Call { .. }) {
                     return Err(Diagnostic::semantic(
                         "expression statement must be a call",
-                        span,
+                        range,
                     ));
                 }
                 hir::StmtKind::Expr(expr)
@@ -40,16 +40,17 @@ impl FunctionLowerer<'_> {
                 if ty != Ty::Int(IntTy::Int) {
                     return Err(Diagnostic::semantic(
                         "increment and decrement require an int operand in the bootstrap backend",
-                        span,
+                        range,
                     ));
                 }
+                let one_node = self.alloc_node(range)?;
                 let one = hir::Expr {
-                    node: self.alloc_node()?,
+                    node: one_node,
                     kind: hir::ExprKind::Constant(ConstValue::Int("1".into())),
                     ty,
                     category: hir::ValueCategory::Constant,
                     effects: hir::Effects::default(),
-                    span: span.clone(),
+                    source: SourceRef::node(one_node),
                 };
                 hir::StmtKind::Assign {
                     destinations: vec![destination],
@@ -59,7 +60,7 @@ impl FunctionLowerer<'_> {
                         _ => {
                             return Err(Diagnostic::semantic(
                                 "invalid increment/decrement token",
-                                span,
+                                range,
                             ));
                         }
                     },
@@ -74,7 +75,7 @@ impl FunctionLowerer<'_> {
                         let Some(local) = result else {
                             return Err(Diagnostic::semantic(
                                 "bare return requires every result to be named",
-                                span,
+                                range,
                             ));
                         };
                         let ty = self.signature.results.get(index).cloned().ok_or_else(|| {
@@ -82,8 +83,8 @@ impl FunctionLowerer<'_> {
                                 "named result {index} has no signature type"
                             ))
                         })?;
-                        let node = self.alloc_node()?;
-                        values.push(self.local_expr(node, local, ty, span.clone()));
+                        let node = self.alloc_node(range)?;
+                        values.push(self.local_expr(node, local, ty));
                     }
                     values
                 } else {
@@ -94,7 +95,7 @@ impl FunctionLowerer<'_> {
                                 return_stmt.results.len(),
                                 self.signature.results.len()
                             ),
-                            span,
+                            range,
                         ));
                     }
                     let result_types = self.signature.results.clone();
@@ -177,35 +178,37 @@ impl FunctionLowerer<'_> {
                 _ => {
                     return Err(Diagnostic::unsupported(
                         "only unlabeled break and continue in loops are implemented",
-                        span,
+                        range,
                     ));
                 }
             },
             _ => {
                 return Err(Diagnostic::unsupported(
                     format!("statement {stmt:?} is not implemented by the HIR/MIR backend"),
-                    span,
+                    range,
                 ));
             }
         };
+        let node = self.alloc_node(range)?;
         Ok(Some(hir::Stmt {
-            node: self.alloc_node()?,
+            node,
             kind,
-            span,
+            source: SourceRef::node(node),
         }))
     }
 
     fn lower_local_decl(&mut self, decl: &ast::GenDecl<'_>) -> Result<hir::StmtKind, Diagnostic> {
+        let declaration_range = self.file.range(&decl.tok_pos)?;
         if decl.tok == Token::CONST {
             return Err(Diagnostic::unsupported(
                 "local const declarations require immutable HIR bindings and are not implemented",
-                self.file.span(&decl.tok_pos),
+                declaration_range,
             ));
         }
         if decl.tok != Token::VAR {
             return Err(Diagnostic::unsupported(
                 "local type and import declarations are not implemented",
-                self.file.span(&decl.tok_pos),
+                declaration_range,
             ));
         }
         let mut statements = Vec::new();
@@ -213,7 +216,7 @@ impl FunctionLowerer<'_> {
             let ast::Spec::ValueSpec(spec) = spec else {
                 return Err(Diagnostic::semantic(
                     "value declaration contains a non-value specification",
-                    self.file.span(&decl.tok_pos),
+                    declaration_range,
                 ));
             };
             let explicit_ty = spec
@@ -225,7 +228,7 @@ impl FunctionLowerer<'_> {
             if !raw_values.is_empty() && raw_values.len() != spec.names.len() {
                 return Err(Diagnostic::unsupported(
                     "multi-valued declarations are not implemented",
-                    self.file.span(&decl.tok_pos),
+                    declaration_range,
                 ));
             }
             // Go evaluates every RHS in one ValueSpec before any of that
@@ -235,26 +238,27 @@ impl FunctionLowerer<'_> {
                 let ty = explicit_ty.clone().ok_or_else(|| {
                     Diagnostic::semantic(
                         "declaration without initializer requires a type",
-                        self.file.span(&decl.tok_pos),
+                        declaration_range,
                     )
                 })?;
                 spec.names
                     .iter()
                     .map(|name| {
-                        let span = self.file.span(&name.name_pos);
+                        let range = self.file.range(&name.name_pos)?;
                         let value = ty.zero().ok_or_else(|| {
                             Diagnostic::unsupported(
                                 format!("zero value for {ty:?} is not implemented"),
-                                span.clone(),
+                                range,
                             )
                         })?;
+                        let node = self.alloc_node(range)?;
                         Ok(hir::Expr {
-                            node: self.alloc_node()?,
+                            node,
                             kind: hir::ExprKind::Constant(value),
                             ty: ty.clone(),
                             category: hir::ValueCategory::Constant,
                             effects: hir::Effects::default(),
-                            span,
+                            source: SourceRef::node(node),
                         })
                     })
                     .collect::<Result<Vec<_>, Diagnostic>>()?
@@ -267,12 +271,12 @@ impl FunctionLowerer<'_> {
 
             let mut destinations = Vec::with_capacity(spec.names.len());
             for (name, value) in spec.names.iter().zip(&mut values) {
-                let span = self.file.span(&name.name_pos);
+                let range = self.file.range(&name.name_pos)?;
                 let ty = explicit_ty
                     .clone()
                     .unwrap_or_else(|| value.ty.default_typed());
-                ensure_bootstrap_value_type(&ty, &span)?;
-                coerce_expr(value, &ty, &span)?;
+                ensure_bootstrap_value_type(&ty, range)?;
+                coerce_expr(value, &ty, range)?;
                 if name.name == "_" {
                     destinations.push(hir::Place::Discard);
                 } else {
@@ -280,24 +284,26 @@ impl FunctionLowerer<'_> {
                         Some(name.name.to_string()),
                         ty,
                         hir::LocalKind::Variable,
-                        span,
+                        range,
                     )?;
                     destinations.push(hir::Place::Local(id));
                 }
             }
+            let node = self.alloc_node(declaration_range)?;
             statements.push(hir::Stmt {
-                node: self.alloc_node()?,
+                node,
                 kind: hir::StmtKind::Let {
                     destinations,
                     values,
                 },
-                span: self.file.span(&decl.tok_pos),
+                source: SourceRef::node(node),
             });
         }
+        let node = self.alloc_node(declaration_range)?;
         Ok(hir::StmtKind::Block(hir::Block {
-            node: self.alloc_node()?,
+            node,
             stmts: statements,
-            span: self.file.span(&decl.tok_pos),
+            source: SourceRef::node(node),
         }))
     }
 
@@ -305,10 +311,11 @@ impl FunctionLowerer<'_> {
         &mut self,
         assign: &ast::AssignStmt<'_>,
     ) -> Result<hir::StmtKind, Diagnostic> {
+        let assignment_range = self.file.range(&assign.tok_pos)?;
         if assign.lhs.len() != assign.rhs.len() {
             return Err(Diagnostic::unsupported(
                 "multi-result assignment is not implemented by the HIR/MIR backend",
-                self.file.span(&assign.tok_pos),
+                assignment_range,
             ));
         }
         if assign.tok == Token::DEFINE {
@@ -317,13 +324,13 @@ impl FunctionLowerer<'_> {
                 let ast::Expr::Ident(name) = lhs else {
                     return Err(Diagnostic::semantic(
                         "short declaration target must be an identifier",
-                        self.file.span(&expr_position(lhs)),
+                        self.file.range(&expr_position(lhs))?,
                     ));
                 };
                 if name.name != "_" && !names.insert(name.name) {
                     return Err(Diagnostic::semantic(
                         format!("{} appears more than once on the left of :=", name.name),
-                        self.file.span(&name.name_pos),
+                        self.file.range(&name.name_pos)?,
                     ));
                 }
             }
@@ -339,7 +346,7 @@ impl FunctionLowerer<'_> {
                 let ast::Expr::Ident(name) = lhs else {
                     return Err(Diagnostic::semantic(
                         "short declaration target must be an identifier",
-                        self.file.span(&expr_position(lhs)),
+                        self.file.range(&expr_position(lhs))?,
                     ));
                 };
                 if name.name == "_" {
@@ -348,18 +355,19 @@ impl FunctionLowerer<'_> {
                 }
                 if let Some(local) = self.lookup_current_local(name.name) {
                     let ty = self.place_ty(hir::Place::Local(local))?.clone();
-                    coerce_expr(value, &ty, &self.file.span(&name.name_pos))?;
+                    coerce_expr(value, &ty, self.file.range(&name.name_pos)?)?;
                     destinations.push(hir::Place::Local(local));
                 } else {
                     introduced = true;
                     let ty = value.ty.default_typed();
-                    ensure_bootstrap_value_type(&ty, &self.file.span(&name.name_pos))?;
-                    coerce_expr(value, &ty, &self.file.span(&name.name_pos))?;
+                    let range = self.file.range(&name.name_pos)?;
+                    ensure_bootstrap_value_type(&ty, range)?;
+                    coerce_expr(value, &ty, range)?;
                     let local = self.alloc_local(
                         Some(name.name.to_string()),
                         ty,
                         hir::LocalKind::Variable,
-                        self.file.span(&name.name_pos),
+                        range,
                     )?;
                     destinations.push(hir::Place::Local(local));
                 }
@@ -367,7 +375,7 @@ impl FunctionLowerer<'_> {
             if !introduced {
                 return Err(Diagnostic::semantic(
                     "short declaration introduces no new variables",
-                    self.file.span(&assign.tok_pos),
+                    assignment_range,
                 ));
             }
             return Ok(hir::StmtKind::Let {
@@ -394,7 +402,11 @@ impl FunctionLowerer<'_> {
             .zip(&destination_types)
             .map(|(expr, expected)| match expected {
                 Some(expected) => self.lower_expr(expr, Some(expected)),
-                None => self.lower_expr(expr, None).and_then(default_expr_type),
+                None => {
+                    let range = self.file.range(&expr_position(expr))?;
+                    self.lower_expr(expr, None)
+                        .and_then(|expression| default_expr_type(expression, range))
+                }
             })
             .collect::<Result<Vec<_>, _>>()?;
         let op = match assign.tok {
@@ -413,14 +425,14 @@ impl FunctionLowerer<'_> {
             _ => {
                 return Err(Diagnostic::semantic(
                     format!("invalid assignment operator {:?}", assign.tok),
-                    self.file.span(&assign.tok_pos),
+                    assignment_range,
                 ));
             }
         };
         if op != hir::AssignOp::Set && destinations.len() != 1 {
             return Err(Diagnostic::semantic(
                 "compound assignment requires one destination and one value",
-                self.file.span(&assign.tok_pos),
+                assignment_range,
             ));
         }
         if op != hir::AssignOp::Set {
@@ -430,14 +442,10 @@ impl FunctionLowerer<'_> {
                 .ok_or_else(|| {
                     Diagnostic::semantic(
                         "compound assignment requires a non-blank destination",
-                        self.file.span(&assign.tok_pos),
+                        assignment_range,
                     )
                 })?;
-            validate_binary_operator(
-                assignment_binary_op(op),
-                ty,
-                &self.file.span(&assign.tok_pos),
-            )?;
+            validate_binary_operator(assignment_binary_op(op), ty, assignment_range)?;
         }
         Ok(hir::StmtKind::Assign {
             destinations,
@@ -450,19 +458,17 @@ impl FunctionLowerer<'_> {
         let ast::Expr::Ident(ident) = expr else {
             return Err(Diagnostic::unsupported(
                 "only local identifier assignment targets are implemented",
-                self.file.span(&expr_position(expr)),
+                self.file.range(&expr_position(expr))?,
             ));
         };
         if ident.name == "_" {
             return Ok(hir::Place::Discard);
         }
+        let range = self.file.range(&ident.name_pos)?;
         self.lookup_local(ident.name)
             .map(hir::Place::Local)
             .ok_or_else(|| {
-                Diagnostic::semantic(
-                    format!("undefined variable {}", ident.name),
-                    self.file.span(&ident.name_pos),
-                )
+                Diagnostic::semantic(format!("undefined variable {}", ident.name), range)
             })
     }
 
@@ -473,9 +479,8 @@ impl FunctionLowerer<'_> {
                 .get(id.0 as usize)
                 .map(|local| &local.ty)
                 .ok_or_else(|| Diagnostic::backend(format!("invalid local id {}", id.0))),
-            hir::Place::Discard => Err(Diagnostic::semantic(
-                "blank identifier has no expected type",
-                SourceSpan::synthetic(),
+            hir::Place::Discard => Err(Diagnostic::backend(
+                "blank identifier unexpectedly required an inferred type",
             )),
         }
     }

@@ -1,6 +1,7 @@
 //! Typed, source-shaped high-level IR.
 
-use super::ids::{DefId, LocalId, NodeId, SourceSpan};
+use super::ids::{DefId, LocalId, NodeId};
+use super::provenance::SourceRef;
 use super::types::{ConstValue, Signature, Ty};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -16,7 +17,7 @@ pub struct Constant {
     pub name: String,
     pub ty: Ty,
     pub value: ConstValue,
-    pub span: SourceSpan,
+    pub source: SourceRef,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -29,7 +30,7 @@ pub struct Function {
     pub named_results: Vec<Option<LocalId>>,
     pub locals: Vec<Local>,
     pub body: Block,
-    pub span: SourceSpan,
+    pub source: SourceRef,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -38,7 +39,7 @@ pub struct Local {
     pub name: Option<String>,
     pub ty: Ty,
     pub kind: LocalKind,
-    pub span: SourceSpan,
+    pub source: SourceRef,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -53,14 +54,14 @@ pub enum LocalKind {
 pub struct Block {
     pub node: NodeId,
     pub stmts: Vec<Stmt>,
-    pub span: SourceSpan,
+    pub source: SourceRef,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Stmt {
     pub node: NodeId,
     pub kind: StmtKind,
-    pub span: SourceSpan,
+    pub source: SourceRef,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -123,7 +124,7 @@ pub struct Expr {
     pub ty: Ty,
     pub category: ValueCategory,
     pub effects: Effects,
-    pub span: SourceSpan,
+    pub source: SourceRef,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -1,6 +1,7 @@
 use super::*;
 use crate::compiler::rust_ir::{
-    ControlFlowPlan, Operand, ReadOp, RvalueKind, SlotInitialization, StorageClass, TerminatorKind,
+    ControlFlowPlan, Operand, Provenance, ReadOp, RvalueKind, SlotInitialization, StorageClass,
+    SyntheticOrigin, TerminatorKind,
 };
 
 fn lower_source(source: &str) -> rust_ir::File {
@@ -126,6 +127,34 @@ fn loop_backedges_keep_owned_reads_live() {
         local_reads(named_function(&file, "repeat"), "value"),
         vec![ReadOp::ProvenInitializedClone]
     );
+}
+
+#[test]
+fn mandatory_lowering_preserves_explicit_synthetic_origins() {
+    let file =
+        lower_source("package main\nfunc named() (result int) { return }\nfunc implicit() {}\n");
+    crate::compiler::rust_ir::verify(&file).unwrap();
+
+    let named = named_function(&file, "named");
+    assert!(
+        named
+            .blocks
+            .iter()
+            .flat_map(|block| &block.statements)
+            .any(|statement| matches!(
+                statement.provenance,
+                Provenance::Synthetic(SyntheticOrigin::NamedResultInitialization)
+            ) && matches!(
+                statement.value.provenance,
+                Provenance::Synthetic(SyntheticOrigin::NamedResultInitialization)
+            ))
+    );
+
+    let implicit = named_function(&file, "implicit");
+    assert!(implicit.blocks.iter().any(|block| matches!(
+        block.terminator.provenance,
+        Provenance::Synthetic(SyntheticOrigin::ImplicitReturn)
+    )));
 }
 
 fn rvalue_operands(kind: &RvalueKind) -> Vec<&Operand> {

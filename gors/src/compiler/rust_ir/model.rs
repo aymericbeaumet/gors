@@ -1,6 +1,7 @@
 //! Explicit Rust representation IR consumed mechanically by syntax emission.
 
-use crate::compiler::ids::{BasicBlockId, DefId, LocalId, SourceSpan};
+use crate::compiler::ids::{BasicBlockId, DefId, LocalId};
+use crate::compiler::provenance::SourceRef;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct File {
@@ -19,7 +20,7 @@ pub struct Function {
     pub blocks: Vec<BasicBlock>,
     pub entry: BasicBlockId,
     pub control_flow: ControlFlowPlan,
-    pub span: SourceSpan,
+    pub source: SourceRef,
 }
 
 /// Final Rust artifact decisions selected before terminal syntax emission.
@@ -317,7 +318,7 @@ pub enum PanicEdge {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Provenance {
-    Source(SourceSpan),
+    Source(SourceRef),
     Synthetic(SyntheticOrigin),
 }
 

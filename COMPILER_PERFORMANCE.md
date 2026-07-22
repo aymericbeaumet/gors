@@ -316,6 +316,13 @@ green state, cache tier, execution duration, result size, peak live bytes, and
 cancellation. Source paths in dumps use canonical logical identities so
 different checkout roots do not perturb the result.
 
+Current HIR, Go-MIR, and Rust-IR fingerprint schema v2 encodes only compact
+`SourceRef` values for source provenance. Physical ranges, presentation paths,
+adjusted `//line` coordinates, and revision-local definition source tables are
+excluded, so relocating unchanged tokens with whitespace or comments does not
+by itself perturb the stage digest. These digests are not persistent CAS keys
+yet because node and local references still use revision-local dense indexes.
+
 Required invalidation assertions include:
 
 | Change | Must become red | Must remain green |
@@ -394,21 +401,24 @@ architecture described here:
   exposes checked `TextSize`, half-open `TextRange`, physical positions,
   adjusted coordinates, and presentation-path rebasing without depending on
   the compiler. `compiler::provenance::FileRange` separately pairs those ranges
-  with stable `FileId` values. Parse successes and failures retain the same
-  scanner-built coordinate map, and failures carry both their typed physical
-  byte anchor and adjusted display coordinate. Later stages still mix physical
-  bytes with virtual filename/line/column values, so end-to-end `FileRange`
-  anchors remain P0 for diagnostics, Rust IR provenance, emission anchors, and
-  source maps;
+  with stable `FileId` values. HIR, Go MIR, and Rust IR retain only compact
+  owner-scoped `SourceRef` values; a separately tracked revision-local
+  `DefinitionSourceTable` maps them to current physical ranges.
+  `DiagnosticLocation` distinguishes direct physical, retained source-reference,
+  and synthetic anchors. The session resolves and applies `//line` plus the
+  current presentation path only when publishing diagnostics, while source maps
+  use physical source positions. The remaining provenance gap is terminal exact
+  emission anchors: the bootstrap source map still covers function landmarks
+  through formatted-token matching;
 - workspace, package, file, and definition IDs are stable; node, local, and
   basic-block IDs are still revision-local dense indexes and cannot be
   persistent query or CAS keys;
-- canonical HIR, MIR, and Rust-IR fingerprints exist, but still include source
-  provenance and revision-local dense indexes instead of separating portable
-  semantic content from diagnostics; the narrower scheduler root-input digest
-  deliberately excludes only HIR source spans while retaining semantic node
-  and local identities, exact direct-callee signatures, representation config,
-  and executable role;
+- canonical HIR, MIR, and Rust-IR fingerprint schema v2 includes symbolic
+  `SourceRef` provenance but excludes its physical source table and all
+  presentation coordinates. The scheduler root-input digest consumes that same
+  physical-location-free HIR fingerprint plus exact direct-callee signatures,
+  representation config, and executable role. Revision-local dense node and
+  local identities still prevent treating either digest as a persistent CAS key;
 - the production `CompilerSession` now reaches function-relative typed HIR,
   per-definition verified and normalized Go MIR, configured verified Rust IR,
   and package assembly with exact self/direct-callee signature dependencies;
@@ -458,11 +468,12 @@ architecture described here:
   the native cold/warm artifact certification protocol.
 
 These are P0 foundations, not optional tuning: owned incremental syntax and
-provenance-free semantic fingerprints; query-owned module/import discovery;
-typed byte-anchor provenance; cross-process semantic CAS; one global scheduler
-with cancellation and memory backpressure; a precompiled-runtime and
-terminal-rustc feasibility decision; reachable content-addressed SDK shards;
-and enough generic language and package support to benchmark real stdlib work.
+CAS-ready semantic fingerprints; query-owned module/import discovery; exact
+emitter anchors from Rust-IR source references; cross-process semantic CAS; one
+global scheduler with cancellation and memory backpressure; a precompiled
+runtime and terminal-rustc feasibility decision; reachable content-addressed
+SDK shards; and enough generic language and package support to benchmark real
+stdlib work.
 
 Some cutover foundations already point in the correct direction: source mapping
 is an explicit `SourceMapPlan`, `CompiledProgram` separates its entry from a
@@ -480,9 +491,10 @@ them at the owning boundary and delete the obsolete path in the same change.
 
 1. Install the machine-readable benchmark schema, stage tracing, hermetic
    corpus, and current losing baseline. Never invent or backfill measurements.
-2. Preserve owned per-file snapshots and the stable workspace, package, file,
-   and definition keys; add reusable syntax anchors plus provenance-free
-   semantic fingerprints before treating stage digests as CAS identities.
+2. Preserve owned per-file snapshots, stable workspace/package/file/definition
+   keys, and the completed `SourceRef`/definition-source-table split; add
+   reusable syntax anchors before treating schema-v2 stage digests as CAS
+   identities.
 3. Harden the production-session route from tracked file/package facts through
    configured Rust IR, extend retained sessions beyond the browser to native
    editor/build-daemon owners, and prove bounded invalidation before broad

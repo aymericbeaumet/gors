@@ -7,7 +7,6 @@
 mod model;
 mod mutation;
 mod products;
-mod provenance;
 mod queries;
 mod source_metadata;
 mod source_projection;
@@ -21,6 +20,7 @@ use salsa::{Durability, Setter as _};
 
 use super::ids::{DefId, FileId, IdentityInterner, PackageId};
 use super::input::{PackageKey, SourceSnapshot, WorkspaceKey};
+use super::provenance::DefinitionSourceTable;
 use crate::source::SourceCoordinateMap;
 use queries::{BuildInput, FileFacts, FunctionProjection, PackageInput, SourceInput};
 use telemetry::Telemetry;
@@ -32,8 +32,8 @@ pub use model::{
 };
 pub(in crate::compiler) use mutation::SourceInputMutation;
 pub use products::{
-    CompilerStage, FunctionProvenance, NormalizedMirFunction, StageFailure, TypedFunctionSignature,
-    TypedHirFunction, VerifiedMirFunction, VerifiedRustIrFunction, VerifiedRustIrPackage,
+    CompilerStage, NormalizedMirFunction, StageFailure, TypedFunctionSignature, TypedHirFunction,
+    VerifiedMirFunction, VerifiedRustIrFunction, VerifiedRustIrPackage,
 };
 pub use source_metadata::{DirectImport, FileComments, FileImports, InvalidImport, SourceComment};
 pub use telemetry::{EngineEventCounts, QueryKind, TelemetrySnapshot};
@@ -170,7 +170,7 @@ impl CompilerDatabase {
             .ingredient::<queries::public_api_product>()
             .ingredient::<queries::package_analysis_product>()
             .ingredient::<queries::semantic_status_product>()
-            .ingredient::<queries::provenance_product>()
+            .ingredient::<queries::definition_source_table_product>()
             .ingredient::<queries::typed_hir_product>()
             .ingredient::<queries::typed_signature_product>()
             .ingredient::<queries::package_function_product>()
@@ -385,14 +385,14 @@ impl CompilerDatabase {
         queries::semantic_status_product(self, facts).map_err(QueryError::StageFailure)
     }
 
-    /// Current source anchor for one stable function definition.
-    pub fn function_provenance(
+    /// Current physical source table for one stable function definition.
+    pub fn definition_source_table(
         &self,
         file: FileId,
         function: DefId,
-    ) -> Result<Arc<FunctionProvenance>, QueryError> {
+    ) -> Result<Arc<DefinitionSourceTable>, QueryError> {
         let function = self.function_projection(file, function)?;
-        Ok(queries::provenance_product(self, function))
+        queries::definition_source_table_product(self, function).map_err(QueryError::StageFailure)
     }
 
     /// Demand one stable definition's typed HIR product.

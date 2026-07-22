@@ -521,26 +521,5 @@ fn sha256_fingerprint(bytes: &[u8]) -> StableFingerprint {
     StableFingerprint(Sha256::digest(bytes).into())
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SourceSpan {
-    pub file: String,
-    pub start: usize,
-    pub end: usize,
-    pub line: usize,
-    pub column: usize,
-}
-
-impl SourceSpan {
-    pub fn synthetic() -> Self {
-        Self {
-            file: String::new(),
-            start: 0,
-            end: 0,
-            line: 0,
-            column: 0,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests;

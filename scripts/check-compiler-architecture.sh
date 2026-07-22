@@ -20,6 +20,7 @@ fail_on_matches() {
 for obsolete in \
   gors-builtin \
   gors/src/compiler/backend \
+  gors/src/compiler/db/provenance.rs \
   gors/src/compiler/rust_lowering \
   gors/src/compiler/source \
   gors/src/mapping \
@@ -39,6 +40,22 @@ fail_on_matches \
   gors/src/scanner \
   gors/src/parser \
   gors/src/token
+
+fail_on_matches \
+  'legacy mixed or arithmetic-rebased compiler provenance is forbidden:' \
+  'SourceSpan|FunctionProvenance|make_function_relative|rebase_function_diagnostic' \
+  gors/src/compiler \
+  gors/tests \
+  gors-cli/src \
+  www/wasm \
+  fuzz/src
+
+fail_on_matches \
+  'HIR, Go MIR, and Rust IR fields must carry SourceRef through `source`, not `span`:' \
+  '^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?span[[:space:]]*:' \
+  gors/src/compiler/hir.rs \
+  gors/src/compiler/mir \
+  gors/src/compiler/rust_ir
 
 fail_on_matches \
   'legacy compiler modules or imports are forbidden:' \

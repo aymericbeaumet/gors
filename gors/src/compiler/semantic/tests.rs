@@ -201,8 +201,12 @@ fn canonical_import_paths_isolate_definition_ids_and_rust_symbols() {
     let second_package = PackageKey::ImportPath("example/two".into());
     let first_context = semantic_context(&workspace, &first_package, "main.go").unwrap();
     let second_context = semantic_context(&workspace, &second_package, "main.go").unwrap();
-    let first = lower_file_with_context(parsed.ast(), first_context).unwrap();
-    let second = lower_file_with_context(parsed.ast(), second_context).unwrap();
+    let first = lower_file_with_context(parsed.ast(), first_context)
+        .unwrap()
+        .file;
+    let second = lower_file_with_context(parsed.ast(), second_context)
+        .unwrap()
+        .file;
     let first_id = function(&first, "helper").id;
     let second_id = function(&second, "helper").id;
     assert_ne!(first_id, second_id);
@@ -467,17 +471,20 @@ fn validates_special_function_boundaries() {
 }
 
 #[test]
-fn explicit_line_origin_flows_into_semantic_diagnostics() {
-    let diagnostics = lower_at(
-        "/workspace/main.go",
-        "package main\n//line generated.go:40\nfunc (value int) method() {}\n",
-    )
-    .unwrap_err();
+fn semantic_diagnostics_retain_physical_anchors_across_line_directives() {
+    let source = "package main\n//line generated.go:40\nfunc (value int) method() {}\n";
+    let diagnostics = lower_at("/workspace/main.go", source).unwrap_err();
     let diagnostic = diagnostics
         .iter()
         .find(|diagnostic| diagnostic.message.contains("methods are not implemented"))
         .expect("unsupported method diagnostic");
 
-    assert_eq!(diagnostic.span.file, "/workspace/generated.go");
-    assert_eq!(diagnostic.span.line, 40);
+    let crate::compiler::diagnostic::DiagnosticLocation::Physical(range) = diagnostic.location
+    else {
+        panic!("semantic diagnostic must own a physical file range");
+    };
+    assert_eq!(
+        range.range().start().to_usize(),
+        source.find("method").unwrap()
+    );
 }

@@ -8,7 +8,8 @@ use super::{
 };
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
-use crate::compiler::ids::{BasicBlockId, DefId, LocalId, SourceSpan};
+use crate::compiler::ids::{BasicBlockId, DefId, LocalId};
+use crate::compiler::provenance::SourceRef;
 use crate::compiler::types::{ConstValue, IntTy, Signature, Ty};
 
 impl File {
@@ -100,6 +101,7 @@ impl Function {
     }
 
     fn verify(&self, signatures: &BTreeMap<DefId, Signature>) -> Result<(), Diagnostic> {
+        verify_source_ref(self.source, self.id, "function")?;
         for ty in self.signature.params.iter().chain(&self.signature.results) {
             verify_bootstrap_type(ty, "function signature")?;
         }
@@ -149,7 +151,7 @@ impl Function {
                     block.id.0
                 )));
             }
-            verify_source_provenance(&block.provenance, "basic block")?;
+            verify_source_provenance(&block.provenance, self.id, "basic block")?;
             for statement in &block.statements {
                 self.verify_statement(statement)?;
             }
@@ -159,7 +161,7 @@ impl Function {
     }
 
     fn verify_statement(&self, statement: &Statement) -> Result<(), Diagnostic> {
-        verify_statement_provenance(&statement.provenance)?;
+        verify_statement_provenance(&statement.provenance, self.id)?;
         let destination_ty = self.place_ty(statement.destination)?;
         let value_ty = self.verify_rvalue(&statement.value)?;
         verify_same_type(destination_ty, &value_ty, "assignment")?;
@@ -171,7 +173,7 @@ impl Function {
     }
 
     fn verify_rvalue(&self, rvalue: &Rvalue) -> Result<Ty, Diagnostic> {
-        verify_rvalue_provenance(&rvalue.provenance)?;
+        verify_rvalue_provenance(&rvalue.provenance, self.id)?;
         let (ty, intrinsic) = match &rvalue.kind {
             RvalueKind::Use(operand) => (self.operand_ty(operand)?, hir::Effects::default()),
             RvalueKind::Unary { op, operand, ty } => {
@@ -209,7 +211,7 @@ impl Function {
         terminator: &Terminator,
         signatures: &BTreeMap<DefId, Signature>,
     ) -> Result<(), Diagnostic> {
-        verify_terminator_provenance(&terminator.provenance)?;
+        verify_terminator_provenance(&terminator.provenance, self.id)?;
         let intrinsic = match &terminator.kind {
             TerminatorKind::Goto(target) => {
                 self.verify_target(*target)?;
@@ -341,18 +343,22 @@ impl Function {
     }
 }
 
-fn verify_source_provenance(provenance: &Provenance, context: &str) -> Result<(), Diagnostic> {
+fn verify_source_provenance(
+    provenance: &Provenance,
+    owner: DefId,
+    context: &str,
+) -> Result<(), Diagnostic> {
     match provenance {
-        Provenance::Source(span) => verify_span(span, context),
+        Provenance::Source(source) => verify_source_ref(*source, owner, context),
         Provenance::Synthetic(origin) => Err(Diagnostic::backend(format!(
             "synthetic provenance {origin:?} is invalid for {context}"
         ))),
     }
 }
 
-fn verify_statement_provenance(provenance: &Provenance) -> Result<(), Diagnostic> {
+fn verify_statement_provenance(provenance: &Provenance, owner: DefId) -> Result<(), Diagnostic> {
     match provenance {
-        Provenance::Source(span) => verify_span(span, "statement"),
+        Provenance::Source(source) => verify_source_ref(*source, owner, "statement"),
         Provenance::Synthetic(SyntheticOrigin::NamedResultInitialization) => Ok(()),
         Provenance::Synthetic(other) => Err(Diagnostic::backend(format!(
             "synthetic provenance {other:?} is invalid for a statement"
@@ -360,9 +366,9 @@ fn verify_statement_provenance(provenance: &Provenance) -> Result<(), Diagnostic
     }
 }
 
-fn verify_rvalue_provenance(provenance: &Provenance) -> Result<(), Diagnostic> {
+fn verify_rvalue_provenance(provenance: &Provenance, owner: DefId) -> Result<(), Diagnostic> {
     match provenance {
-        Provenance::Source(span) => verify_span(span, "rvalue"),
+        Provenance::Source(source) => verify_source_ref(*source, owner, "rvalue"),
         Provenance::Synthetic(SyntheticOrigin::NamedResultInitialization) => Ok(()),
         Provenance::Synthetic(other) => Err(Diagnostic::backend(format!(
             "synthetic provenance {other:?} is invalid for an rvalue"
@@ -370,9 +376,9 @@ fn verify_rvalue_provenance(provenance: &Provenance) -> Result<(), Diagnostic> {
     }
 }
 
-fn verify_terminator_provenance(provenance: &Provenance) -> Result<(), Diagnostic> {
+fn verify_terminator_provenance(provenance: &Provenance, owner: DefId) -> Result<(), Diagnostic> {
     match provenance {
-        Provenance::Source(span) => verify_span(span, "terminator"),
+        Provenance::Source(source) => verify_source_ref(*source, owner, "terminator"),
         Provenance::Synthetic(SyntheticOrigin::ImplicitReturn) => Ok(()),
         Provenance::Synthetic(other) => Err(Diagnostic::backend(format!(
             "synthetic provenance {other:?} is invalid for a terminator"
@@ -380,14 +386,13 @@ fn verify_terminator_provenance(provenance: &Provenance) -> Result<(), Diagnosti
     }
 }
 
-fn verify_span(span: &SourceSpan, context: &str) -> Result<(), Diagnostic> {
-    if span.file.is_empty() || span.line == 0 || span.column == 0 || span.end < span.start {
-        Err(Diagnostic::backend(format!(
-            "missing or invalid source provenance for MIR {context}"
-        )))
-    } else {
-        Ok(())
-    }
+fn verify_source_ref(source: SourceRef, owner: DefId, context: &str) -> Result<(), Diagnostic> {
+    (source.owner() == owner).then_some(()).ok_or_else(|| {
+        Diagnostic::backend(format!(
+            "MIR {context} source reference is owned by DefId {}, expected {owner}",
+            source.owner()
+        ))
+    })
 }
 
 fn verify_effects(

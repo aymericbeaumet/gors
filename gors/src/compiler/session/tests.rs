@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use crate::compiler::ids::SourceSpan;
 use crate::compiler::input::SourceSnapshot;
+use crate::compiler::provenance::SourceRef;
 
 use super::*;
 
@@ -228,7 +228,7 @@ fn exact_noop_install_has_no_salsa_mutation_or_readiness_change() {
 }
 
 #[test]
-fn function_relative_diagnostic_rebases_to_current_anchor() {
+fn definition_source_table_rebinds_stable_reference_to_current_anchor() {
     let source = "package main\n\nfunc prefix() {}\n\nfunc target() {}\nfunc main() {}\n";
     let mut session = CompilerSession::default();
     session
@@ -240,29 +240,36 @@ fn function_relative_diagnostic_rebases_to_current_anchor() {
         .functions()
         .iter()
         .find(|function| function.name() == "target")
-        .unwrap();
-    let provenance = session
+        .unwrap()
+        .id();
+    let source_ref = SourceRef::definition(target);
+    let before = session
         .database
-        .function_provenance(file, target.id())
+        .definition_source_table(file, target)
         .unwrap();
-    let mut diagnostic = super::super::Diagnostic {
-        code: "GORS2003",
-        message: "test diagnostic".to_string(),
-        span: SourceSpan {
-            file: "main.go".to_string(),
-            start: 2,
-            end: 4,
-            line: 2,
-            column: 3,
-        },
-    };
+    let before_range = before.resolve(source_ref).unwrap();
+    assert_eq!(
+        before_range.range().start().to_usize(),
+        source.find("target").unwrap()
+    );
 
-    rebase_function_diagnostic(&mut diagnostic, &provenance);
+    let edited =
+        "package main\n\nfunc prefix() {}\n\n// relocated\nfunc target() {}\nfunc main() {}\n";
+    session
+        .compile_program(raw_program("main.go", "main.go", edited))
+        .unwrap();
+    let after = session
+        .database
+        .definition_source_table(file, target)
+        .unwrap();
+    let after_range = after.resolve(source_ref).unwrap();
 
-    assert_eq!(diagnostic.span.start, provenance.byte_offset() + 2);
-    assert_eq!(diagnostic.span.end, provenance.byte_offset() + 4);
-    assert_eq!(diagnostic.span.line, provenance.line() + 1);
-    assert_eq!(diagnostic.span.column, 3);
+    assert!(!Arc::ptr_eq(&before, &after));
+    assert_eq!(
+        after_range.range().start().to_usize(),
+        edited.find("target").unwrap()
+    );
+    assert!(after_range.range().start() > before_range.range().start());
 }
 
 #[test]

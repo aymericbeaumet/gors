@@ -197,6 +197,28 @@ impl CompilerError {
         }
     }
 
+    fn terminal(diagnostic: Diagnostic) -> Self {
+        let (code, message) = match diagnostic.location {
+            diagnostic::DiagnosticLocation::Synthetic => (diagnostic.code, diagnostic.message),
+            location => (
+                "GORS2003",
+                format!(
+                    "terminal emission returned unresolved source location {location:?}: {}",
+                    diagnostic.message
+                ),
+            ),
+        };
+        Self {
+            diagnostics: vec![CompilerDiagnostic {
+                code,
+                message,
+                file: String::new(),
+                line: 0,
+                column: 0,
+            }],
+        }
+    }
+
     /// Structured diagnostics in deterministic source order.
     #[must_use]
     pub fn diagnostics(&self) -> &[CompilerDiagnostic] {
@@ -217,31 +239,6 @@ impl fmt::Display for CompilerError {
 }
 
 impl std::error::Error for CompilerError {}
-
-impl From<Vec<Diagnostic>> for CompilerError {
-    fn from(mut diagnostics: Vec<Diagnostic>) -> Self {
-        diagnostics.sort_by(|left, right| {
-            left.span
-                .file
-                .cmp(&right.span.file)
-                .then_with(|| left.span.start.cmp(&right.span.start))
-                .then_with(|| left.code.cmp(right.code))
-                .then_with(|| left.message.cmp(&right.message))
-        });
-        Self {
-            diagnostics: diagnostics
-                .into_iter()
-                .map(|diagnostic| CompilerDiagnostic {
-                    code: diagnostic.code,
-                    message: diagnostic.message,
-                    file: diagnostic.span.file,
-                    line: diagnostic.span.line,
-                    column: diagnostic.span.column,
-                })
-                .collect(),
-        }
-    }
-}
 
 /// Complete output of one compiler invocation.
 ///
