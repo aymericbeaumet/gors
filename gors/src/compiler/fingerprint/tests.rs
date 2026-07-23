@@ -8,8 +8,7 @@ fn lower_stages(source: &str) -> (hir::File, mir::File, rust_ir::File) {
 }
 
 fn lower_stages_at(filename: &str, source: &str) -> (hir::File, mir::File, rust_ir::File) {
-    let parsed = crate::parser::parse_file(filename, source).expect("valid test source");
-    let hir = compiler::lower_to_hir(parsed.ast()).expect("typed HIR");
+    let hir = compiler::lower_to_hir(filename, source).expect("typed HIR");
     let verified_mir = compiler::lower_to_mir(&hir).expect("verified Go MIR");
     let mir = verified_mir.as_file().clone();
     let rust_ir = compiler::lower_to_rust_ir(verified_mir)

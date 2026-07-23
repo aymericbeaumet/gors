@@ -5,6 +5,7 @@ use gors_runtime_abi::{
 };
 
 use crate::runtime_descriptor::RuntimeLinkDescriptor;
+use crate::rustc::TerminalToolchain;
 
 mod compatibility_cache;
 
@@ -17,8 +18,7 @@ thread_local! {
 pub struct ResolvedRuntime {
     descriptor: RuntimeLinkDescriptor,
     artifact_path: PathBuf,
-    rustc_path: PathBuf,
-    rustc_snapshot_identity: String,
+    terminal_toolchain: TerminalToolchain,
 }
 
 impl ResolvedRuntime {
@@ -33,13 +33,8 @@ impl ResolvedRuntime {
     }
 
     #[must_use]
-    pub fn rustc_path(&self) -> &Path {
-        &self.rustc_path
-    }
-
-    #[must_use]
-    pub fn rustc_snapshot_identity(&self) -> &str {
-        &self.rustc_snapshot_identity
+    pub const fn terminal_toolchain(&self) -> &TerminalToolchain {
+        &self.terminal_toolchain
     }
 }
 
@@ -94,11 +89,17 @@ pub fn resolve_runtime(
         .into());
     }
 
+    let terminal_toolchain = TerminalToolchain::admit_live(
+        resolved_rustc.rustc_path(),
+        resolved_rustc.rustc_snapshot_identity(),
+        resolved_rustc.target_libdir(),
+        resolved_rustc.target_libdir_snapshot_identity(),
+        provider.manifest().target().triple(),
+    )?;
     Ok(ResolvedRuntime {
         descriptor: RuntimeLinkDescriptor::from_plan(&plan, provider.producer().identity()),
         artifact_path,
-        rustc_path: resolved_rustc.rustc_path().to_path_buf(),
-        rustc_snapshot_identity: resolved_rustc.rustc_snapshot_identity().to_string(),
+        terminal_toolchain,
     })
 }
 
@@ -109,4 +110,9 @@ pub fn resolution_count() -> u64 {
 
 pub fn rustc_snapshot_identity(path: &Path) -> Result<String, String> {
     compatibility_cache::current_rustc_snapshot_identity(path).map_err(|error| error.to_string())
+}
+
+pub fn target_libdir_snapshot_identity(path: &Path) -> Result<String, String> {
+    compatibility_cache::current_target_libdir_snapshot_identity(path)
+        .map_err(|error| error.to_string())
 }

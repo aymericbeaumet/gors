@@ -7,6 +7,7 @@ use crate::compiler::diagnostic::DiagnosticLocation;
 use crate::compiler::fingerprint::{self, Fingerprint, fingerprint_parts};
 use crate::compiler::ids::{DefId, FileId};
 use crate::compiler::provenance::SourceRef;
+use crate::compiler::syntax::SyntaxSource;
 use crate::compiler::{Diagnostic, hir, mir, rust_ir};
 
 /// Authoritative stage at which a tracked compilation failed.
@@ -45,16 +46,6 @@ impl StageFailure {
 
     pub(super) fn one(stage: CompilerStage, diagnostic: Diagnostic) -> Self {
         Self::new(stage, vec![diagnostic])
-    }
-
-    pub(super) fn for_file(
-        stage: CompilerStage,
-        source_file: FileId,
-        diagnostics: Vec<Diagnostic>,
-    ) -> Self {
-        let mut failure = Self::new(stage, diagnostics);
-        failure.source_file = Some(source_file);
-        failure
     }
 
     pub(super) fn for_definition(
@@ -107,10 +98,38 @@ impl StageFailure {
 
 pub(super) type StageResult<T> = Result<Arc<T>, Arc<StageFailure>>;
 
+/// Physical-free semantic lowering result and its always-available source plan.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct SemanticFunctionProduct {
+    result: StageResult<crate::compiler::semantic::LoweredFunction>,
+    source_plan: Arc<[(SourceRef, SyntaxSource)]>,
+}
+
+impl SemanticFunctionProduct {
+    pub(super) fn new(
+        result: StageResult<crate::compiler::semantic::LoweredFunction>,
+        source_plan: Arc<[(SourceRef, SyntaxSource)]>,
+    ) -> Self {
+        Self {
+            result,
+            source_plan,
+        }
+    }
+
+    pub(super) fn result(&self) -> &StageResult<crate::compiler::semantic::LoweredFunction> {
+        &self.result
+    }
+
+    pub(super) fn source_plan(&self) -> &[(SourceRef, SyntaxSource)] {
+        &self.source_plan
+    }
+}
+
 /// One type-checked HIR function with owner-local source references.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TypedHirFunction {
     function: Arc<hir::Function>,
+    source_plan: Arc<[(SourceRef, SyntaxSource)]>,
     fingerprint: Fingerprint,
 }
 
@@ -141,10 +160,14 @@ impl TypedFunctionSignature {
 }
 
 impl TypedHirFunction {
-    pub(super) fn new(function: Arc<hir::Function>) -> Self {
+    pub(super) fn new(
+        function: Arc<hir::Function>,
+        source_plan: Arc<[(SourceRef, SyntaxSource)]>,
+    ) -> Self {
         let fingerprint = fingerprint::hir_function(&function);
         Self {
             function,
+            source_plan,
             fingerprint,
         }
     }
@@ -152,6 +175,12 @@ impl TypedHirFunction {
     #[must_use]
     pub fn function(&self) -> &hir::Function {
         &self.function
+    }
+
+    /// Physical-free mapping from HIR provenance to owned syntax sites.
+    #[must_use]
+    pub fn source_plan(&self) -> &[(SourceRef, SyntaxSource)] {
+        &self.source_plan
     }
 
     #[must_use]

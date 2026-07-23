@@ -2,18 +2,15 @@
 
 use std::collections::BTreeMap;
 
-use crate::ast;
-
-use super::positions::expr_position;
-use super::{ConstantSymbol, FileLowerer, FunctionSymbol};
+use super::{ConstantSymbol, FunctionSymbol};
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::{DefId, LocalId, NodeId};
-use crate::compiler::provenance::{FileRange, SourceRef};
+use crate::compiler::provenance::SourceRef;
+use crate::compiler::syntax::{BlockSyntax, FieldListSyntax, SyntaxSource};
 use crate::compiler::types::{Signature, Ty};
 
-pub(super) struct FunctionLowerer<'a> {
-    pub(super) file: &'a mut FileLowerer,
+pub(super) struct FunctionLowerer {
     pub(super) owner: DefId,
     pub(super) next_node: u32,
     pub(super) functions: BTreeMap<String, FunctionSymbol>,
@@ -23,23 +20,23 @@ pub(super) struct FunctionLowerer<'a> {
     pub(super) scopes: Vec<BTreeMap<String, LocalId>>,
     pub(super) named_results: Vec<Option<LocalId>>,
     pub(super) loop_depth: usize,
-    pub(super) source_mappings: Vec<(SourceRef, FileRange)>,
+    pub(super) source_plan: Vec<(SourceRef, SyntaxSource)>,
 }
 
-impl FunctionLowerer<'_> {
+impl FunctionLowerer {
     /// Allocate a revision-local HIR node index inside this stable owner.
     ///
     /// Unlike `DefId`, this is not a query key. Allocation restarts for every
     /// function rebuild and therefore cannot be perturbed by another
     /// declaration's insertion or ordering.
-    pub(super) fn alloc_node(&mut self, range: FileRange) -> Result<NodeId, Diagnostic> {
+    pub(super) fn alloc_node(&mut self, source: SyntaxSource) -> Result<NodeId, Diagnostic> {
         let local = self.next_node;
         self.next_node = self
             .next_node
             .checked_add(1)
             .ok_or_else(|| Diagnostic::backend("function exceeds the HIR node ID space"))?;
         let node = NodeId::owner_local(self.owner, local);
-        self.source_mappings.push((SourceRef::node(node), range));
+        self.source_plan.push((SourceRef::node(node), source));
         Ok(node)
     }
 
@@ -48,9 +45,12 @@ impl FunctionLowerer<'_> {
         name: Option<String>,
         ty: Ty,
         kind: hir::LocalKind,
-        range: FileRange,
+        syntax_source: SyntaxSource,
     ) -> Result<LocalId, Diagnostic> {
-        let id = LocalId(self.locals.len() as u32);
+        let index = u32::try_from(self.locals.len())
+            .map_err(|_| Diagnostic::backend("function exceeds the HIR local ID space"))?;
+        let id = LocalId(index);
+        let source = SourceRef::local(self.owner, id);
         if let Some(name) = name.as_ref().filter(|name| name.as_str() != "_") {
             let scope = self
                 .scopes
@@ -58,8 +58,8 @@ impl FunctionLowerer<'_> {
                 .ok_or_else(|| Diagnostic::backend("function has no lexical scope"))?;
             if scope.insert(name.clone(), id).is_some() {
                 return Err(Diagnostic::semantic(
-                    format!("{} redeclared in this block", name),
-                    range,
+                    format!("{name} redeclared in this block"),
+                    source,
                 ));
             }
         }
@@ -68,44 +68,47 @@ impl FunctionLowerer<'_> {
             name,
             ty,
             kind,
-            source: SourceRef::local(self.owner, id),
+            source,
         });
-        self.source_mappings
-            .push((SourceRef::local(self.owner, id), range));
+        self.source_plan.push((source, syntax_source));
         Ok(id)
     }
 
     pub(super) fn declare_field_bindings(
         &mut self,
-        fields: &ast::FieldList<'_>,
+        fields: &FieldListSyntax,
         types: &[Ty],
         kind: hir::LocalKind,
     ) -> Result<Vec<LocalId>, Diagnostic> {
         let mut result = Vec::new();
         let mut type_index = 0;
-        for field in &fields.list {
-            let names = field
-                .names
-                .as_ref()
-                .map(|names| names.iter().map(Some).collect::<Vec<_>>())
-                .unwrap_or_else(|| vec![None]);
-            for name in names {
+        for field in &*fields.fields {
+            if let Some(names) = &field.names {
+                for name in &**names {
+                    let ty = types
+                        .get(type_index)
+                        .cloned()
+                        .ok_or_else(|| Diagnostic::backend("signature field mismatch"))?;
+                    type_index += 1;
+                    result.push(self.alloc_local(
+                        Some(name.name.to_string()),
+                        ty,
+                        kind,
+                        name.source,
+                    )?);
+                }
+            } else {
                 let ty = types
                     .get(type_index)
                     .cloned()
                     .ok_or_else(|| Diagnostic::backend("signature field mismatch"))?;
                 type_index += 1;
-                let range = match name {
-                    Some(name) => self.file.range(&name.name_pos)?,
-                    None => {
-                        let type_expression = field.type_.as_ref().ok_or_else(|| {
-                            Diagnostic::backend("unnamed signature field has no type")
-                        })?;
-                        self.file.range(&expr_position(type_expression))?
-                    }
-                };
-                let source_name = name.map(|name| name.name.to_string());
-                result.push(self.alloc_local(source_name, ty, kind, range)?);
+                let syntax_source = field
+                    .ty
+                    .as_ref()
+                    .ok_or_else(|| Diagnostic::backend("unnamed signature field has no type"))?
+                    .source;
+                result.push(self.alloc_local(None, ty, kind, syntax_source)?);
             }
         }
         Ok(result)
@@ -113,34 +116,32 @@ impl FunctionLowerer<'_> {
 
     pub(super) fn declare_result_bindings(
         &mut self,
-        fields: &ast::FieldList<'_>,
+        fields: &FieldListSyntax,
         types: &[Ty],
     ) -> Result<Vec<Option<LocalId>>, Diagnostic> {
         let mut result = Vec::new();
         let mut type_index = 0;
-        for field in &fields.list {
-            let names = field
-                .names
-                .as_ref()
-                .map(|names| names.iter().map(Some).collect::<Vec<_>>())
-                .unwrap_or_else(|| vec![None]);
-            for name in names {
-                let ty = types
+        for field in &*fields.fields {
+            if let Some(names) = &field.names {
+                for name in &**names {
+                    let ty = types
+                        .get(type_index)
+                        .cloned()
+                        .ok_or_else(|| Diagnostic::backend("result field mismatch"))?;
+                    type_index += 1;
+                    result.push(Some(self.alloc_local(
+                        Some(name.name.to_string()),
+                        ty,
+                        hir::LocalKind::NamedResult,
+                        name.source,
+                    )?));
+                }
+            } else {
+                types
                     .get(type_index)
-                    .cloned()
                     .ok_or_else(|| Diagnostic::backend("result field mismatch"))?;
                 type_index += 1;
-                let Some(name) = name else {
-                    result.push(None);
-                    continue;
-                };
-                let id = self.alloc_local(
-                    Some(name.name.to_string()),
-                    ty,
-                    hir::LocalKind::NamedResult,
-                    self.file.range(&name.name_pos)?,
-                )?;
-                result.push(Some(id));
+                result.push(None);
             }
         }
         Ok(result)
@@ -169,14 +170,14 @@ impl FunctionLowerer<'_> {
 
     pub(super) fn lower_block(
         &mut self,
-        block: &ast::BlockStmt<'_>,
+        block: &BlockSyntax,
         introduce_scope: bool,
     ) -> Result<hir::Block, Diagnostic> {
         if introduce_scope {
             self.push_scope();
         }
         let mut stmts = Vec::new();
-        for stmt in &block.list {
+        for stmt in &*block.statements {
             if let Some(stmt) = self.lower_stmt(stmt)? {
                 stmts.push(stmt);
             }
@@ -184,8 +185,7 @@ impl FunctionLowerer<'_> {
         if introduce_scope {
             self.pop_scope();
         }
-        let range = self.file.range(&block.lbrace)?;
-        let node = self.alloc_node(range)?;
+        let node = self.alloc_node(block.source)?;
         Ok(hir::Block {
             node,
             stmts,

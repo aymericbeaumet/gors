@@ -145,7 +145,6 @@ fn trivia_reexecutes_file_work_but_backdates_owned_syntax_and_pipeline() {
 
     let telemetry = db.telemetry();
     assert_eq!(telemetry.executions(QueryKind::FileProjection), 1);
-    assert_eq!(telemetry.executions(QueryKind::SemanticFile), 1);
     assert_eq!(telemetry.executions(QueryKind::FunctionLayout), 1);
     assert_eq!(telemetry.executions(QueryKind::DefinitionSourceTable), 1);
     assert_eq!(telemetry.executions(QueryKind::FunctionSignature), 0);
@@ -180,7 +179,6 @@ fn body_edit_invalidates_only_body_and_changed_function_pipeline() {
 
     let telemetry = db.telemetry();
     assert_eq!(telemetry.executions(QueryKind::FileProjection), 1);
-    assert_eq!(telemetry.executions(QueryKind::SemanticFile), 1);
     assert_eq!(telemetry.executions(QueryKind::FunctionSignature), 0);
     assert_eq!(telemetry.executions(QueryKind::FunctionBody), 1);
     assert_eq!(telemetry.executions(QueryKind::TypedHir), 1);
@@ -216,7 +214,6 @@ fn header_edit_invalidates_only_signature_and_changed_function_pipeline() {
 
     let telemetry = db.telemetry();
     assert_eq!(telemetry.executions(QueryKind::FileProjection), 1);
-    assert_eq!(telemetry.executions(QueryKind::SemanticFile), 1);
     assert_eq!(telemetry.executions(QueryKind::PublicApi), 1);
     assert_eq!(telemetry.executions(QueryKind::FunctionSignature), 1);
     assert_eq!(telemetry.executions(QueryKind::FunctionBody), 0);

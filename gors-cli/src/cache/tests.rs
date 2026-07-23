@@ -16,10 +16,10 @@ fn identity() -> GeneratedRustIdentity {
     GeneratedRustIdentity::for_test("generated")
 }
 
-fn rustc_selection() -> (PathBuf, String) {
+fn terminal_toolchain() -> crate::rustc::TerminalToolchain {
     let path = std::env::current_exe().unwrap();
-    let identity = crate::runtime_link::rustc_snapshot_identity(&path).unwrap();
-    (path, identity)
+    let target_libdir = path.parent().unwrap();
+    crate::rustc::TerminalToolchain::for_test(&path, &path, target_libdir, "test-target").unwrap()
 }
 
 fn write_expired_manifest(path: &Path) {
@@ -170,14 +170,9 @@ fn cache_manifest_round_trips_and_validates_executable_content() {
     );
     let runtime = crate::runtime_descriptor::test_runtime_link_descriptor();
     let runtime_artifact = temp.path().join("runtime.rlib");
-    let (rustc_path, rustc_snapshot_identity) = rustc_selection();
+    let toolchain = terminal_toolchain();
     manifest
-        .refresh_runtime(
-            &runtime,
-            &runtime_artifact,
-            &rustc_path,
-            &rustc_snapshot_identity,
-        )
+        .refresh_runtime(&runtime, &runtime_artifact, &toolchain)
         .unwrap();
     std::fs::write(temp.path().join("main.rs"), generated_source).unwrap();
     let action = crate::rustc::RustcAction::for_generated_binary(
@@ -185,7 +180,7 @@ fn cache_manifest_round_trips_and_validates_executable_content() {
         &executable,
         &runtime_artifact,
         &runtime,
-        crate::rustc::AdmittedRustc::new(&rustc_path, &rustc_snapshot_identity),
+        &toolchain,
         &generated_files,
         crate::rustc::RustcProfile::Development,
     )
@@ -284,14 +279,41 @@ fn corrupt_terminal_state_does_not_invalidate_generated_rust() {
 
     let runtime = crate::runtime_descriptor::test_runtime_link_descriptor();
     let artifact = temp.path().join("runtime.rlib");
-    let (rustc_path, rustc_snapshot_identity) = rustc_selection();
+    let toolchain = terminal_toolchain();
     loaded
-        .refresh_runtime(&runtime, &artifact, &rustc_path, &rustc_snapshot_identity)
+        .refresh_runtime(&runtime, &artifact, &toolchain)
         .unwrap();
     loaded.save_terminal(temp.path()).unwrap();
     let terminal_path = temp.path().join(TERMINAL_MANIFEST_FILENAME);
-    let mut malformed: serde_json::Value =
+    let valid: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&terminal_path).unwrap()).unwrap();
+
+    let mut stale = valid.clone();
+    stale
+        .as_object_mut()
+        .unwrap()
+        .insert("version".to_string(), serde_json::json!(4));
+    std::fs::write(&terminal_path, serde_json::to_vec(&stale).unwrap()).unwrap();
+    let stale_loaded = CliCacheManifest::load_if_generated_valid(temp.path(), &identity(), &inputs)
+        .expect("stale terminal schema must remain a generated-Rust hit");
+    assert!(stale_loaded.selected_runtime().is_none());
+
+    let mut unknown_nested = valid.clone();
+    unknown_nested
+        .get_mut("toolchain")
+        .and_then(serde_json::Value::as_object_mut)
+        .unwrap()
+        .get_mut("rustc")
+        .and_then(serde_json::Value::as_object_mut)
+        .unwrap()
+        .insert("future".to_string(), serde_json::json!(true));
+    std::fs::write(&terminal_path, serde_json::to_vec(&unknown_nested).unwrap()).unwrap();
+    let unknown_loaded =
+        CliCacheManifest::load_if_generated_valid(temp.path(), &identity(), &inputs)
+            .expect("unknown terminal fields must remain a generated-Rust hit");
+    assert!(unknown_loaded.selected_runtime().is_none());
+
+    let mut malformed = valid;
     malformed
         .get_mut("runtime")
         .and_then(serde_json::Value::as_object_mut)
@@ -407,14 +429,9 @@ fn executable_reuse_requires_the_exact_runtime_link_plan() {
         &crate::runtime_descriptor::test_runtime_dependency(),
     );
     let runtime_artifact = temp.path().join("runtime.rlib");
-    let (rustc_path, rustc_snapshot_identity) = rustc_selection();
+    let toolchain = terminal_toolchain();
     manifest
-        .refresh_runtime(
-            &selected,
-            &runtime_artifact,
-            &rustc_path,
-            &rustc_snapshot_identity,
-        )
+        .refresh_runtime(&selected, &runtime_artifact, &toolchain)
         .unwrap();
     std::fs::write(temp.path().join("main.rs"), generated_source).unwrap();
     let selected_action = crate::rustc::RustcAction::for_generated_binary(
@@ -422,7 +439,7 @@ fn executable_reuse_requires_the_exact_runtime_link_plan() {
         &executable,
         &runtime_artifact,
         &selected,
-        crate::rustc::AdmittedRustc::new(&rustc_path, &rustc_snapshot_identity),
+        &toolchain,
         &generated_files,
         crate::rustc::RustcProfile::Production,
     )
@@ -432,7 +449,7 @@ fn executable_reuse_requires_the_exact_runtime_link_plan() {
         &executable,
         &runtime_artifact,
         &changed,
-        crate::rustc::AdmittedRustc::new(&rustc_path, &rustc_snapshot_identity),
+        &toolchain,
         &generated_files,
         crate::rustc::RustcProfile::Production,
     )

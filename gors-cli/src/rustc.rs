@@ -9,14 +9,17 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 
 mod product;
+mod toolchain;
 
 pub use product::ExecutableProduct;
+pub use toolchain::{TerminalToolchain, TerminalToolchainError};
 
 pub const RUST_EDITION: &str = gors_runtime_abi::RUST_RUNTIME_EDITION;
 
-const RUSTC_ACTION_SCHEMA: &[u8] = b"gors-cli-rustc-action-v5";
+const RUSTC_ACTION_SCHEMA: &[u8] = b"gors-cli-rustc-action-v7";
 const GENERATED_SOURCE_FILENAME: &str = "main.rs";
 const PENDING_BINARY_FILENAME: &str = ".main.pending";
+const SCRATCH_DIRECTORY_NAME: &str = ".gors-rustc-scratch";
 const TARGET_CPU: &str = "generic";
 const REQUESTED_TARGET_FEATURES: &[&str] = &[];
 
@@ -24,16 +27,16 @@ const REQUESTED_TARGET_FEATURES: &[&str] = &[];
 ///
 /// Construction consumes the already-admitted hash of every generated Rust
 /// file and every semantic input that is not already spelled in `argv`.
-/// `program` is the exact absolute rustc path admitted by the compatibility
-/// probe, never a rustup selector.
-/// The same owned `program`, `cwd`, and `argv` values are used for action-key
-/// construction and process execution, so cache admission cannot describe a
-/// different command from the one that is run.
+/// The terminal toolchain content-admits absolute rustc and linker paths and
+/// owns the ordered process environment. The same toolchain, working
+/// directory, scratch path, and argv are used for action-key construction and
+/// execution, so cache admission cannot describe a different command from the
+/// one that is run.
 #[derive(Clone)]
 pub struct RustcAction {
-    program: OsString,
-    rustc_snapshot_identity: String,
+    toolchain: TerminalToolchain,
     cwd: PathBuf,
+    scratch_path: PathBuf,
     argv: Vec<OsString>,
     generated_sources: Vec<GeneratedSource>,
     runtime_artifact_path: PathBuf,
@@ -46,12 +49,6 @@ pub struct RustcAction {
     target: String,
     target_cpu: String,
     requested_target_features: Vec<String>,
-}
-
-#[derive(Clone, Copy)]
-pub struct AdmittedRustc<'a> {
-    path: &'a Path,
-    snapshot_identity: &'a str,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -73,18 +70,8 @@ pub struct RustcActionIdentity([u8; 32]);
 #[derive(Debug)]
 pub enum RustcActionError {
     Io(std::io::Error),
-    RustcPathNotAbsolute {
-        path: PathBuf,
-    },
-    RustcSnapshotInspection {
-        path: PathBuf,
-        detail: String,
-    },
-    RustcSnapshotChanged {
-        path: PathBuf,
-        expected: String,
-        actual: String,
-    },
+    InvalidToolchain(&'static str),
+    ToolchainChanged(TerminalToolchainError),
     InvalidGeneratedSource {
         filename: String,
         detail: &'static str,
@@ -122,23 +109,25 @@ impl RustcAction {
     /// deliberately portable (`generic`) and the requested target-feature set
     /// is explicitly empty; host-native feature discovery is never part of the
     /// command or its cache identity. Construction deliberately does not inspect
-    /// `rustc_path`, allowing a verified warm executable to be admitted after
-    /// its historical compiler has been removed. Execution revalidates it.
+    /// the recorded tools, allowing a verified warm executable to be admitted
+    /// after its historical toolchain has been removed. Execution revalidates
+    /// every recorded tool input.
     pub fn for_generated_binary(
         output_directory: &Path,
         output_path: &Path,
         runtime_artifact_path: &Path,
         runtime: &RuntimeLinkDescriptor,
-        rustc: AdmittedRustc<'_>,
+        toolchain: &TerminalToolchain,
         generated_file_hashes: &BTreeMap<String, String>,
         profile: RustcProfile,
     ) -> Result<Self, RustcActionError> {
-        if !rustc.path.is_absolute() {
-            return Err(RustcActionError::RustcPathNotAbsolute {
-                path: rustc.path.to_path_buf(),
-            });
+        if !toolchain.is_canonical() {
+            return Err(RustcActionError::InvalidToolchain(
+                "descriptor is not canonical",
+            ));
         }
         let cwd = absolute_path(output_directory)?;
+        let scratch_path = cwd.join(SCRATCH_DIRECTORY_NAME);
         let output_path = absolute_path(output_path)?;
         let runtime_artifact_path = absolute_path(runtime_artifact_path)?;
         let pending_path = cwd.join(PENDING_BINARY_FILENAME);
@@ -150,6 +139,11 @@ impl RustcAction {
                 }
             })?;
         let target = runtime.target_triple().to_string();
+        if toolchain.target() != target {
+            return Err(RustcActionError::InvalidToolchain(
+                "toolchain target does not match the runtime target",
+            ));
+        }
         let target_cpu = TARGET_CPU.to_string();
         let requested_target_features = REQUESTED_TARGET_FEATURES
             .iter()
@@ -157,6 +151,7 @@ impl RustcAction {
             .collect::<Vec<_>>();
         let argv = rustc_argv(
             &runtime_artifact_path,
+            toolchain.linker_path(),
             profile,
             &target,
             &target_cpu,
@@ -164,9 +159,9 @@ impl RustcAction {
         );
 
         Ok(Self {
-            program: rustc.path.as_os_str().to_owned(),
-            rustc_snapshot_identity: rustc.snapshot_identity.to_string(),
+            toolchain: toolchain.clone(),
             cwd,
+            scratch_path,
             argv,
             generated_sources,
             runtime_artifact_path,
@@ -190,7 +185,7 @@ impl RustcAction {
     #[cfg(test)]
     #[must_use]
     pub fn program(&self) -> &OsStr {
-        &self.program
+        self.toolchain.rustc_path().as_os_str()
     }
 
     #[cfg(test)]
@@ -248,25 +243,22 @@ impl RustcAction {
                 path: self.runtime_artifact_path.clone(),
             });
         }
-        let rustc_path = Path::new(&self.program);
-        let actual_rustc_snapshot = crate::runtime_link::rustc_snapshot_identity(rustc_path)
-            .map_err(|detail| RustcActionError::RustcSnapshotInspection {
-                path: rustc_path.to_path_buf(),
-                detail,
-            })?;
-        if actual_rustc_snapshot != self.rustc_snapshot_identity {
-            return Err(RustcActionError::RustcSnapshotChanged {
-                path: rustc_path.to_path_buf(),
-                expected: self.rustc_snapshot_identity.clone(),
-                actual: actual_rustc_snapshot,
-            });
-        }
+        self.toolchain
+            .verify_live()
+            .map_err(RustcActionError::ToolchainChanged)?;
+        prepare_scratch_directory(&self.scratch_path)?;
 
         remove_file_if_present(&self.pending_path)?;
-        let status = Command::new(&self.program)
-            .current_dir(&self.cwd)
-            .args(&self.argv)
-            .status()?;
+        let mut command = Command::new(self.toolchain.rustc_path());
+        command
+            .env_clear()
+            .envs(self.toolchain.environment())
+            .env("TMPDIR", &self.scratch_path);
+        #[cfg(windows)]
+        command
+            .env("TEMP", &self.scratch_path)
+            .env("TMP", &self.scratch_path);
+        let status = command.current_dir(&self.cwd).args(&self.argv).status()?;
         if !status.success() {
             remove_file_if_present(&self.pending_path)?;
             return Err(RustcActionError::CompilerFailed { status });
@@ -283,13 +275,24 @@ impl RustcAction {
     fn calculate_identity(&self) -> RustcActionIdentity {
         let mut hasher = Sha256::new();
         hash_bytes(&mut hasher, b"schema", RUSTC_ACTION_SCHEMA);
-        hash_os_str(&mut hasher, b"program", &self.program);
-        hash_bytes(
-            &mut hasher,
-            b"rustc-snapshot-identity",
-            self.rustc_snapshot_identity.as_bytes(),
-        );
+        match self.toolchain.identity() {
+            Ok(identity) => hash_bytes(
+                &mut hasher,
+                b"terminal-toolchain-identity",
+                identity.as_bytes(),
+            ),
+            Err(_) => hash_bytes(
+                &mut hasher,
+                b"terminal-toolchain-invalid",
+                b"serialization-failed",
+            ),
+        }
         hash_os_str(&mut hasher, b"cwd", self.cwd.as_os_str());
+        hash_os_str(
+            &mut hasher,
+            b"scratch-directory",
+            self.scratch_path.as_os_str(),
+        );
         hash_count(
             &mut hasher,
             b"generated-source-count",
@@ -365,16 +368,6 @@ impl RustcAction {
     }
 }
 
-impl<'a> AdmittedRustc<'a> {
-    #[must_use]
-    pub const fn new(path: &'a Path, snapshot_identity: &'a str) -> Self {
-        Self {
-            path,
-            snapshot_identity,
-        }
-    }
-}
-
 impl RustcProfile {
     #[must_use]
     pub const fn from_release_flag(release: bool) -> Self {
@@ -421,25 +414,10 @@ impl Display for RustcActionError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Io(error) => Display::fmt(error, formatter),
-            Self::RustcPathNotAbsolute { path } => write!(
-                formatter,
-                "terminal rustc path is not absolute: {}",
-                path.display()
-            ),
-            Self::RustcSnapshotInspection { path, detail } => write!(
-                formatter,
-                "failed to revalidate terminal rustc {}: {detail}",
-                path.display()
-            ),
-            Self::RustcSnapshotChanged {
-                path,
-                expected,
-                actual,
-            } => write!(
-                formatter,
-                "terminal rustc {} changed after compatibility selection: expected snapshot {expected}, found {actual}",
-                path.display()
-            ),
+            Self::InvalidToolchain(detail) => {
+                write!(formatter, "invalid terminal toolchain: {detail}")
+            }
+            Self::ToolchainChanged(error) => Display::fmt(error, formatter),
             Self::InvalidGeneratedSource { filename, detail } => write!(
                 formatter,
                 "generated Rust input {filename:?} is invalid: {detail}"
@@ -485,9 +463,8 @@ impl std::error::Error for RustcActionError {
             Self::Io(error) => Some(error),
             Self::GeneratedSourceInspection { source, .. }
             | Self::RuntimeArtifactInspection { source, .. } => Some(source),
-            Self::RustcPathNotAbsolute { .. }
-            | Self::RustcSnapshotInspection { .. }
-            | Self::RustcSnapshotChanged { .. }
+            Self::ToolchainChanged(error) => Some(error),
+            Self::InvalidToolchain(_)
             | Self::InvalidGeneratedSource { .. }
             | Self::MissingGeneratedSource { .. }
             | Self::InvalidRuntimeImplementationHash { .. }
@@ -529,6 +506,7 @@ pub fn compilation_count() -> u64 {
 
 fn rustc_argv(
     runtime_artifact_path: &Path,
+    linker_path: &Path,
     profile: RustcProfile,
     target: &str,
     target_cpu: &str,
@@ -551,6 +529,7 @@ fn rustc_argv(
         OsString::from("unused_macros"),
         OsString::from("-C"),
         OsString::from("overflow-checks=off"),
+        OsString::from(format!("-Clinker={}", linker_path.display())),
         OsString::from(format!("-Ctarget-cpu={target_cpu}")),
         OsString::from(format!("-Ctarget-feature={target_features}")),
         OsString::from("-o"),
@@ -654,6 +633,20 @@ fn remove_file_if_present(path: &Path) -> Result<(), std::io::Error> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn prepare_scratch_directory(path: &Path) -> Result<(), std::io::Error> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
+            Ok(())
+        }
+        Ok(_) => Err(std::io::Error::other(format!(
+            "terminal scratch path is not a real directory: {}",
+            path.display()
+        ))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => std::fs::create_dir(path),
         Err(error) => Err(error),
     }
 }

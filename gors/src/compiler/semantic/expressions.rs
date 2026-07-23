@@ -7,16 +7,16 @@ use crate::token::Token;
 
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
-use crate::compiler::provenance::FileRange;
+use crate::compiler::provenance::SourceRef;
 use crate::compiler::types::{ConstValue, IntTy, Ty, UntypedTy};
 
 pub(super) fn default_expr_type(
     mut expr: hir::Expr,
-    range: FileRange,
+    source: SourceRef,
 ) -> Result<hir::Expr, Diagnostic> {
     let ty = expr.ty.default_typed();
-    ensure_bootstrap_value_type(&ty, range)?;
-    coerce_expr(&mut expr, &ty, range)?;
+    ensure_bootstrap_value_type(&ty, source)?;
+    coerce_expr(&mut expr, &ty, source)?;
     Ok(expr)
 }
 
@@ -30,19 +30,19 @@ pub(super) fn expr_constant(expr: &hir::Expr) -> Option<&ConstValue> {
 pub(super) fn fold_constant_unary(
     op: hir::UnaryOp,
     value: &ConstValue,
-    range: FileRange,
+    source: SourceRef,
 ) -> Result<Option<ConstValue>, Diagnostic> {
     let folded = match (op, value) {
         (hir::UnaryOp::Positive, ConstValue::Int(_)) => value.clone(),
         (hir::UnaryOp::Negative, ConstValue::Int(value)) => {
             let value = BigInt::parse_bytes(value.as_bytes(), 10)
-                .ok_or_else(|| Diagnostic::semantic("invalid exact integer constant", range))?;
+                .ok_or_else(|| Diagnostic::semantic("invalid exact integer constant", source))?;
             ConstValue::Int((-value).to_string())
         }
         (hir::UnaryOp::Not, ConstValue::Bool(value)) => ConstValue::Bool(!value),
         (hir::UnaryOp::BitNot, ConstValue::Int(value)) => {
             let value = BigInt::parse_bytes(value.as_bytes(), 10)
-                .ok_or_else(|| Diagnostic::semantic("invalid exact integer constant", range))?;
+                .ok_or_else(|| Diagnostic::semantic("invalid exact integer constant", source))?;
             ConstValue::Int((!value).to_string())
         }
         _ => return Ok(None),
@@ -54,20 +54,20 @@ pub(super) fn fold_constant_binary(
     op: hir::BinaryOp,
     left: &ConstValue,
     right: &ConstValue,
-    range: FileRange,
+    source: SourceRef,
 ) -> Result<Option<ConstValue>, Diagnostic> {
     let folded = match (left, right) {
         (ConstValue::Int(left), ConstValue::Int(right)) => {
             let left = BigInt::parse_bytes(left.as_bytes(), 10)
-                .ok_or_else(|| Diagnostic::semantic("invalid exact integer constant", range))?;
+                .ok_or_else(|| Diagnostic::semantic("invalid exact integer constant", source))?;
             let right = BigInt::parse_bytes(right.as_bytes(), 10)
-                .ok_or_else(|| Diagnostic::semantic("invalid exact integer constant", range))?;
+                .ok_or_else(|| Diagnostic::semantic("invalid exact integer constant", source))?;
             match op {
                 hir::BinaryOp::Add => ConstValue::Int((left + right).to_string()),
                 hir::BinaryOp::Sub => ConstValue::Int((left - right).to_string()),
                 hir::BinaryOp::Mul => ConstValue::Int((left * right).to_string()),
                 hir::BinaryOp::Div | hir::BinaryOp::Rem if right.is_zero() => {
-                    return Err(Diagnostic::semantic("division by zero", range));
+                    return Err(Diagnostic::semantic("division by zero", source));
                 }
                 hir::BinaryOp::Div => ConstValue::Int((left / right).to_string()),
                 hir::BinaryOp::Rem => ConstValue::Int((left % right).to_string()),
@@ -77,12 +77,12 @@ pub(super) fn fold_constant_binary(
                 hir::BinaryOp::AndNot => ConstValue::Int((left & !right).to_string()),
                 hir::BinaryOp::Shl | hir::BinaryOp::Shr => {
                     let shift = right.to_usize().ok_or_else(|| {
-                        Diagnostic::semantic("shift count must be a non-negative integer", range)
+                        Diagnostic::semantic("shift count must be a non-negative integer", source)
                     })?;
                     if shift > 4096 {
                         return Err(Diagnostic::unsupported(
                             "constant shifts larger than 4096 bits are not implemented",
-                            range,
+                            source,
                         ));
                     }
                     let value = if op == hir::BinaryOp::Shl {
@@ -130,12 +130,12 @@ pub(super) fn fold_constant_binary(
 pub(super) fn coerce_expr(
     expr: &mut hir::Expr,
     expected: &Ty,
-    range: FileRange,
+    source: SourceRef,
 ) -> Result<(), Diagnostic> {
     if !is_assignable(&expr.ty, expected) {
         return Err(Diagnostic::semantic(
             format!("cannot use {:?} as {expected:?}", expr.ty),
-            range,
+            source,
         ));
     }
     if let hir::ExprKind::Constant(value) | hir::ExprKind::GlobalConstant(_, value) = &expr.kind
@@ -143,7 +143,7 @@ pub(super) fn coerce_expr(
     {
         return Err(Diagnostic::semantic(
             format!("constant is not representable as {expected:?}"),
-            range,
+            source,
         ));
     }
     expr.ty = expected.clone();
@@ -196,13 +196,13 @@ pub(super) fn is_bool(ty: &Ty) -> bool {
     matches!(ty, Ty::Bool | Ty::Untyped(UntypedTy::Bool))
 }
 
-pub(super) fn ensure_bootstrap_value_type(ty: &Ty, range: FileRange) -> Result<(), Diagnostic> {
+pub(super) fn ensure_bootstrap_value_type(ty: &Ty, source: SourceRef) -> Result<(), Diagnostic> {
     if ty.is_bootstrap_value() {
         Ok(())
     } else {
         Err(Diagnostic::unsupported(
             format!("type {ty:?} is outside the bootstrap bool/int/string runtime frontier"),
-            range,
+            source,
         ))
     }
 }
@@ -210,7 +210,7 @@ pub(super) fn ensure_bootstrap_value_type(ty: &Ty, range: FileRange) -> Result<(
 pub(super) fn validate_binary_operator(
     op: hir::BinaryOp,
     ty: &Ty,
-    range: FileRange,
+    source: SourceRef,
 ) -> Result<(), Diagnostic> {
     let valid = match op {
         hir::BinaryOp::LogicalAnd | hir::BinaryOp::LogicalOr => *ty == Ty::Bool,
@@ -238,7 +238,7 @@ pub(super) fn validate_binary_operator(
     } else {
         Err(Diagnostic::semantic(
             format!("operator {op:?} is invalid for {ty:?}"),
-            range,
+            source,
         ))
     }
 }

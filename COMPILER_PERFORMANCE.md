@@ -184,23 +184,24 @@ both types belong to `compiler::input` and expose no parser convenience
 methods. The compiler stores that presentation path outside Salsa. During its
 single scanner pass, the parser publishes ephemeral non-comment token
 observations alongside the borrowed AST. The file projection partitions them
-into compact owned header/body token streams, normalizes explicit and inserted
-semicolons, and excludes trivia and physical coordinates from their
-fingerprints. Revision-local declaration ranges live in a separate
-`FunctionLayout`. Dropping the last semantic owner releases those streams and
-source content independently of presentation state.
+into compact owned header/body token streams and constructs smaller owned
+structural function/constant syntax during that same ephemeral projection. It
+normalizes explicit and inserted semicolons and excludes trivia and physical
+coordinates from semantic fingerprints. Revision-local declaration and node
+ranges live in separate layouts. Dropping the last semantic owner releases
+those products and source content independently of presentation state.
 
 `ProgramInput` is the production syntax-unvalidated manifest. Each
 `SourceFileInput` owns a reference-counted snapshot; the tracked file projection
 creates a temporary AST borrowing one snapshot while the query executes and
 publishes no self-reference or `'static` fiction. The parser-owned program and
 package graph were deleted with no compatibility shim. The red-green database
-tracks the owned per-definition streams, but parsing and semantic lowering
-remain file-granular. A trivia edit still executes both queries; unchanged
-signature/body products and downstream HIR, MIR, and Rust IR backdate. This is
-not incremental parsing. The next boundary is semantic lowering over the owned
-per-definition syntax, while preserving the per-file release boundary and
-remaining free of self-referential unsafe code.
+tracks the owned per-definition structure. Parsing/projection remains
+file-granular, but typed signatures, constants, HIR, MIR, and Rust IR are
+demanded per definition. A trivia edit executes `FileProjection` and may
+replace physical layouts/source tables while semantic and IR query bodies stay
+green. This is not incremental parsing, but semantic lowering no longer has a
+whole-file query.
 
 Parse one file per query. Package merging belongs in semantic indexing, not in
 an AST concatenation step, so a one-file edit cannot invalidate every parse
@@ -366,25 +367,34 @@ CPU, target features, or an executable action.
 
 Terminal state is separately replaceable and bound to the admitted
 generated-Rust identity and `RuntimeDependency`. Provider selection lives here.
-A `RustcAction` currently owns an ordered command snapshot; its
-`RustcActionIdentity` includes its program, working directory, complete argv,
-every generated-Rust filename and content hash, runtime artifact path and
-implementation hash, runtime link-plan and compatibility identities, the exact
-recorded rustc metadata snapshot, profile, target, explicit portable CPU and
-feature policy, and output/publication paths. Debug and release actions
+A `RustcAction` owns an ordered command snapshot; its `RustcActionIdentity`
+includes the `TerminalToolchain` semantic projection, working and
+compiler-owned scratch directories, complete argv, every generated-Rust
+filename and content hash,
+runtime artifact path and implementation hash, runtime link-plan and
+compatibility identities, profile, target, explicit portable CPU and feature
+policy, and output/publication paths. `TerminalToolchain` content-admits the
+absolute rustc and linker executables, owns a deterministic ordered environment,
+records the selected target-libdir metadata identity, and records Apple SDK
+selection/settings. A terminal miss revalidates that target-libdir snapshot
+immediately before execution. Compatibility inventory schema v2 hashes every
+target-libdir file, including hash-suffixed rustlibs. Revision and target-libdir
+snapshot facts are execution-admission guards rather than action-key inputs;
+the runtime compatibility identity owns target-libdir content. Rustc receives
+the absolute linker and runs after `env_clear()`. Debug and release actions
 intentionally diverge while consuming the same generated source.
 
-This is not yet a hermetic terminal action. Direct `rustc` execution inherits
-ambient environment, chooses the linker and platform SDK/system inputs
-implicitly, and the rustc snapshot is a metadata identity rather than a content
-identity. The same current action key can therefore produce different bytes.
-Before any scenario promotion, replace this with an immutable terminal
-toolchain/environment product that content-identifies rustc, its codegen/sysroot
-inputs, the exact linker and platform SDK inputs, passes an absolute linker,
-owns scratch policy, and uses `env_clear()` plus an ordered explicit
-environment. Preserve the cheaper exact-warm path: stored action facts can be
-reconstructed without touching a historical toolchain, while terminal misses
-perform live admission.
+This is not yet a completely hermetic terminal action. The rustc launcher can
+load host driver/codegen libraries outside the current descriptor, hosted
+linkers can consume transitive helper executables and system libraries, and the
+Apple platform record identifies SDK selection/settings rather than every
+linkable stub. The target-libdir guard is a cheap revision recheck of the exact
+compatibility inventory. Tool verification and path-based process spawn also
+have a replacement race. Before any scenario promotion, content-address the
+host compiler-driver and entire platform link closure, make their cached
+admission cheap, and execute admitted handles or immutable CAS paths. Preserve
+the exact-warm path: stored action facts are reconstructed without touching a
+historical toolchain, while terminal misses perform live admission.
 
 Warm executable admission checks the current source snapshot, generated
 manifest, terminal record, action identity, executable content, and executable
@@ -478,9 +488,10 @@ architecture described here:
   local identities still prevent treating either digest as a persistent CAS key;
 - the production `CompilerSession` now reaches function-relative typed HIR,
   per-definition verified and normalized Go MIR, configured verified Rust IR,
-  and package assembly with exact self/direct-callee signature dependencies;
-  parse/semantic projection remains file-granular, convenience entry points
-  retain no session across calls, and no native daemon/watch owner exists. An
+  and package assembly with exact lexical package-name and direct-callee
+  dependencies; parsing/owned projection remains file-granular while semantic
+  work is per definition. Convenience entry points retain no session across
+  calls, and no native daemon/watch owner exists. An
   explicit shareable `CompilerHost` now owns one lazy bounded native pool for
   cold/changed per-definition Rust-IR roots; exact no-op and comment-only
   revisions bypass the wave, one body edit offers only that definition, API

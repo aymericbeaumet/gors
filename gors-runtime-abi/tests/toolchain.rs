@@ -59,8 +59,7 @@ fn producer_host_is_not_a_target_rlib_compatibility_fact() -> Result<(), Box<dyn
 }
 
 #[test]
-fn recursive_inventory_tracks_crate_metadata_and_unhashed_native_payloads()
--> Result<(), Box<dyn Error>> {
+fn recursive_inventory_tracks_exact_file_payloads() -> Result<(), Box<dyn Error>> {
     let directory = tempfile::tempdir()?;
     let nested = directory.path().join("self-contained");
     std::fs::create_dir(&nested)?;
@@ -75,9 +74,16 @@ fn recursive_inventory_tracks_crate_metadata_and_unhashed_native_payloads()
     let same = canonical_target_libdir_record(directory.path())?;
     assert_eq!(baseline, same);
 
+    std::fs::write(
+        directory.path().join("libcore-0123456789abcdef.rmeta"),
+        b"metadatz",
+    )?;
+    let changed_same_size_metadata = canonical_target_libdir_record(directory.path())?;
+    assert_ne!(baseline, changed_same_size_metadata);
+
     std::fs::write(&native, b"native-b")?;
     let changed_native = canonical_target_libdir_record(directory.path())?;
-    assert_ne!(baseline, changed_native);
+    assert_ne!(changed_same_size_metadata, changed_native);
 
     std::fs::write(
         directory.path().join("libcore-0123456789abcdef.rmeta"),

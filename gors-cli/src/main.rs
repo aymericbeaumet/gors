@@ -65,7 +65,7 @@ use output::{
     write_generated_output_locked,
 };
 #[cfg(test)]
-use rustc::{AdmittedRustc, ExecutableProduct, RustcAction, RustcProfile};
+use rustc::{ExecutableProduct, RustcAction, RustcProfile, TerminalToolchain};
 #[cfg(test)]
 use std::num::NonZeroUsize;
 #[cfg(test)]

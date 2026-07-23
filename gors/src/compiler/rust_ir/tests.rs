@@ -5,8 +5,7 @@ fn lower(source: &str) -> File {
 }
 
 fn lower_at(filename: &str, source: &str) -> File {
-    let ast = crate::parser::parse_file(filename, source).unwrap();
-    let hir = crate::compiler::lower_to_hir(ast.ast()).unwrap();
+    let hir = crate::compiler::lower_to_hir(filename, source).unwrap();
     let mir = crate::compiler::lower_to_mir(&hir).unwrap();
     crate::compiler::lower_to_rust_ir(mir)
         .unwrap()

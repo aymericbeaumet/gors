@@ -8,7 +8,7 @@ use gors::compiler::db::{
 };
 use gors::compiler::ids::{DefId, FileId};
 use gors::compiler::input::{PackageKey, SourceSnapshot, WorkspaceKey};
-use gors::parser::ImportPathIssue;
+use gors::import_path::ImportPathIssue;
 use gors::source::{LogicalColumn, TextSize};
 
 const ORIGINAL: &str = r#"package main
@@ -161,7 +161,6 @@ fn runtime_contract_change_invalidates_only_rust_representation() {
 
     let telemetry = db.telemetry();
     assert_eq!(telemetry.executions(QueryKind::FileProjection), 0);
-    assert_eq!(telemetry.executions(QueryKind::SemanticFile), 0);
     assert_eq!(telemetry.executions(QueryKind::TypedHir), 0);
     assert_eq!(telemetry.executions(QueryKind::VerifiedGoMir), 0);
     assert_eq!(telemetry.executions(QueryKind::NormalizedGoMir), 0);
@@ -377,7 +376,6 @@ fn comment_only_edit_preserves_function_semantics_and_rust_ir() {
 
     let telemetry = db.telemetry();
     assert_eq!(telemetry.executions(QueryKind::FileProjection), 1);
-    assert_eq!(telemetry.executions(QueryKind::SemanticFile), 1);
     assert_eq!(telemetry.executions(QueryKind::TypedHir), 0);
     assert_eq!(telemetry.executions(QueryKind::VerifiedGoMir), 0);
     assert_eq!(telemetry.executions(QueryKind::NormalizedGoMir), 0);
@@ -566,7 +564,6 @@ fn import_edit_invalidates_import_facts_without_rebuilding_function_products() {
 
     let telemetry = db.telemetry();
     assert_eq!(telemetry.executions(QueryKind::FileProjection), 1);
-    assert_eq!(telemetry.executions(QueryKind::SemanticFile), 1);
     assert_eq!(telemetry.executions(QueryKind::FileAnalysis), 0);
     assert_eq!(telemetry.executions(QueryKind::PackageAnalysis), 1);
     assert_eq!(telemetry.executions(QueryKind::FunctionSignature), 0);
@@ -656,8 +653,7 @@ fn declaration_reorder_preserves_ids_and_every_projection() {
     assert!(Arc::ptr_eq(&original_f_body, &reordered_f_body));
     assert!(Arc::ptr_eq(&original_g_body, &reordered_g_body));
     assert_eq!(db.telemetry().executions(QueryKind::FileProjection), 1);
-    assert_eq!(db.telemetry().executions(QueryKind::SemanticFile), 1);
-    assert_eq!(db.telemetry().total_executions(), 2);
+    assert_eq!(db.telemetry().total_executions(), 1);
 }
 
 #[test]

@@ -1,19 +1,20 @@
 //! Canonical producer recipe and target sysroot ABI for Rust rlib artifacts.
 
 use std::fmt::{Display, Formatter};
+use std::io::{BufReader, Read as _};
 use std::path::{Component, Path, PathBuf};
 
 use crate::encoding::CanonicalEncoder;
-use crate::encoding::sha256;
 use crate::identity::{CompatibilityIdentity, ProducerIdentity};
 use crate::target::TargetModel;
+use sha2::{Digest as _, Sha256};
 
 /// Current canonical encoding schema for immutable rlib producer provenance.
 pub const CURRENT_RUST_RLIB_PRODUCER_SCHEMA: u32 = 1;
 /// Current canonical encoding schema for consumer rlib compatibility.
 pub const CURRENT_RUST_RLIB_COMPATIBILITY_SCHEMA: u32 = 2;
 /// Current canonical encoding schema for a target rustlib inventory.
-pub const CURRENT_RUST_TARGET_LIBDIR_SCHEMA: u32 = 1;
+pub const CURRENT_RUST_TARGET_LIBDIR_SCHEMA: u32 = 2;
 
 /// Fixed external crate name referenced by generated Rust.
 pub const RUST_RUNTIME_CRATE_NAME: &str = "__gors_runtime";
@@ -282,6 +283,9 @@ impl RustRlibCompatibility {
 
 /// Build the canonical, path-independent ABI inventory for a rustc target
 /// library directory returned by `rustc --target ... --print target-libdir`.
+///
+/// Every regular file contributes its exact SHA-256 digest, even when rustc
+/// already placed a metadata-looking hash in the filename.
 pub fn canonical_target_libdir_record(root: &Path) -> Result<Vec<u8>, RustTargetLibdirError> {
     let mut entries = Vec::new();
     collect_target_libdir(root, root, &mut entries)?;
@@ -391,13 +395,7 @@ fn collect_target_libdir(
             });
             collect_target_libdir(root, &path, entries)?;
         } else if file_type.is_file() {
-            let content_hash = if has_hash_suffixed_filename(&relative) {
-                None
-            } else {
-                Some(sha256(&std::fs::read(&path).map_err(|source| {
-                    RustTargetLibdirError::io("hash target rustlib entry", &path, source)
-                })?))
-            };
+            let content_hash = Some(sha256_file(&path)?);
             entries.push(TargetLibdirEntry {
                 relative,
                 kind: b'f',
@@ -426,15 +424,29 @@ fn collect_target_libdir(
     Ok(())
 }
 
-fn has_hash_suffixed_filename(relative: &str) -> bool {
-    let filename = relative.rsplit('/').next().unwrap_or(relative);
-    let stem = filename.rsplit_once('.').map_or(filename, |(stem, _)| stem);
-    stem.rsplit_once('-').is_some_and(|(_, suffix)| {
-        suffix.len() == 16
-            && suffix
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    })
+fn sha256_file(path: &Path) -> Result<[u8; 32], RustTargetLibdirError> {
+    let file = std::fs::File::open(path)
+        .map_err(|source| RustTargetLibdirError::io("open target rustlib entry", path, source))?;
+    let mut reader = BufReader::new(file);
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = reader.read(&mut buffer).map_err(|source| {
+            RustTargetLibdirError::io("hash target rustlib entry", path, source)
+        })?;
+        if read == 0 {
+            break;
+        }
+        let chunk = buffer.get(..read).ok_or_else(|| {
+            RustTargetLibdirError::io(
+                "hash target rustlib entry",
+                path,
+                std::io::Error::other("target rustlib read exceeded the hashing buffer"),
+            )
+        })?;
+        hasher.update(chunk);
+    }
+    Ok(hasher.finalize().into())
 }
 
 fn canonical_relative_path(path: &Path) -> Result<String, RustTargetLibdirError> {

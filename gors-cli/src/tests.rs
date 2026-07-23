@@ -12,10 +12,10 @@ fn args(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| value.to_string()).collect()
 }
 
-fn rustc_selection() -> (PathBuf, String) {
+fn terminal_toolchain() -> TerminalToolchain {
     let path = std::env::current_exe().unwrap();
-    let identity = runtime_link::rustc_snapshot_identity(&path).unwrap();
-    (path, identity)
+    let target_libdir = path.parent().unwrap();
+    TerminalToolchain::for_test(&path, &path, target_libdir, "test-target").unwrap()
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -291,13 +291,13 @@ fn rustc_arguments_do_not_create_per_invocation_incremental_state() {
     )]);
     std::fs::write(directory.path().join("main.rs"), generated_source).unwrap();
     let runtime = directory.path().join("lib__gors_runtime.rlib");
-    let (rustc_path, rustc_snapshot_identity) = rustc_selection();
+    let toolchain = terminal_toolchain();
     let action = RustcAction::for_generated_binary(
         directory.path(),
         &directory.path().join("main"),
         &runtime,
         &runtime_descriptor::test_runtime_link_descriptor(),
-        AdmittedRustc::new(&rustc_path, &rustc_snapshot_identity),
+        &toolchain,
         &generated_files,
         RustcProfile::Development,
     )
@@ -481,7 +481,7 @@ fn concurrent_output_publications_publish_one_consistent_transaction() {
                 files.insert(format!("{module}.rs"), body.to_string());
                 let runtime = runtime_descriptor::test_runtime_link_descriptor();
                 let runtime_artifact = output_dir.join("runtime.rlib");
-                let (rustc_path, rustc_snapshot_identity) = rustc_selection();
+                let toolchain = terminal_toolchain();
                 let output = gors::printer::GeneratedOutput {
                     files,
                     runtime: runtime_descriptor::test_runtime_dependency(),
@@ -510,12 +510,7 @@ fn concurrent_output_publications_publish_one_consistent_transaction() {
                     &output.runtime,
                 );
                 manifest
-                    .refresh_runtime(
-                        &runtime,
-                        &runtime_artifact,
-                        &rustc_path,
-                        &rustc_snapshot_identity,
-                    )
+                    .refresh_runtime(&runtime, &runtime_artifact, &toolchain)
                     .unwrap();
                 manifest.save(&output_dir).unwrap();
                 prepare_atomic_write(&executable_path, &format!("{module}-executable\n"))
@@ -536,7 +531,7 @@ fn concurrent_output_publications_publish_one_consistent_transaction() {
                     &executable_path,
                     &runtime_artifact,
                     &runtime,
-                    AdmittedRustc::new(&rustc_path, &rustc_snapshot_identity),
+                    &toolchain,
                     manifest.generated_files(),
                     RustcProfile::Development,
                 )
@@ -606,18 +601,15 @@ fn concurrent_output_publications_publish_one_consistent_transaction() {
     let artifact_path = cli_manifest
         .selected_artifact_path()
         .expect("published runtime artifact");
-    let rustc_path = cli_manifest
-        .selected_rustc_path()
-        .expect("published rustc path");
-    let rustc_snapshot_identity = cli_manifest
-        .selected_rustc_snapshot_identity()
-        .expect("published rustc snapshot identity");
+    let toolchain = cli_manifest
+        .selected_terminal_toolchain()
+        .expect("published terminal toolchain");
     let action = RustcAction::for_generated_binary(
         &output_dir,
         &executable_path,
         artifact_path,
         &runtime,
-        AdmittedRustc::new(rustc_path, rustc_snapshot_identity),
+        toolchain,
         cli_manifest.generated_files(),
         RustcProfile::Development,
     )

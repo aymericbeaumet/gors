@@ -1,700 +1,383 @@
-//! Name resolution and type checking for the authoritative compiler.
+//! Definition-demanded name resolution and type checking over owned syntax.
 
 mod expression_lower;
 mod expressions;
 mod function;
-mod positions;
 mod statements;
-
-#[cfg(test)]
-#[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
-mod tests;
 
 use std::collections::BTreeMap;
 
 use num_bigint::BigInt;
 
-use crate::ast;
-use crate::token::{Position, Token};
-
 use expressions::*;
 use function::FunctionLowerer;
-use positions::expr_position;
 
 use super::Diagnostic;
 use super::hir;
-use super::ids::{
-    DefId, DefinitionKey, DefinitionKind, FileId, IdentityCollision, IdentityInterner, NodeId,
-    PackageId,
+use super::ids::{DefId, NodeId};
+use super::provenance::SourceRef;
+use super::syntax::{
+    ConstantSyntax, ConstantValueSyntax, ExprSyntax, ExprSyntaxKind, FieldListSyntax,
+    FunctionBodySyntax, FunctionHeaderSyntax, SyntaxSource,
 };
-#[cfg(test)]
-use super::input::{PackageKey, WorkspaceKey};
-use super::provenance::{DefinitionSourceTable, FileRange, SourceRef};
 use super::types::{ConstValue, IntTy, Signature, Ty, UntypedTy};
-use crate::source::{TextRange, TextSize};
 
 #[derive(Clone)]
-struct FunctionSymbol {
-    id: DefId,
-    signature: Signature,
+pub(super) struct FunctionSymbol {
+    pub(super) id: DefId,
+    pub(super) signature: Signature,
 }
 
 #[derive(Clone)]
-struct ConstantSymbol {
-    id: DefId,
-    ty: Ty,
-    value: ConstValue,
+pub(super) struct ConstantSymbol {
+    pub(super) id: DefId,
+    pub(super) ty: Ty,
+    pub(super) value: ConstValue,
 }
 
-struct FileLowerer {
-    package_id: PackageId,
-    file_id: FileId,
-    source_len: TextSize,
-    identities: IdentityInterner,
-    functions: BTreeMap<String, FunctionSymbol>,
-    constants: BTreeMap<String, ConstantSymbol>,
-    diagnostics: Vec<Diagnostic>,
-}
-
-pub(super) struct LoweredSemanticFile {
-    pub(super) file: hir::File,
-    pub(super) source_tables: BTreeMap<DefId, DefinitionSourceTable>,
-}
-
-/// Explicit compiler-owned identity context for one semantic file query.
-///
-/// `logical_file` is package-relative and portable. The stable file identity
-/// owns diagnostics and parse inputs; package-level definitions deliberately
-/// derive from `package` instead so moving a declaration does not rename it.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct SemanticContext {
-    pub(super) package: PackageId,
-    pub(super) file: FileId,
-    pub(super) logical_file: String,
+pub(super) struct TypedConstant {
+    pub(super) id: DefId,
+    pub(super) name: String,
+    pub(super) ty: Ty,
+    pub(super) value: ConstValue,
 }
 
-#[cfg(test)]
-pub(super) fn lower_file(file: &ast::File<'_>) -> Result<hir::File, Vec<Diagnostic>> {
-    // Public single-file stage helpers have no package graph. Their explicit
-    // command-line fallback is stable across checkout roots, while production
-    // program compilation supplies the parsed package's canonical import path.
-    let logical_file = logical_file_name(&file.file_start);
-    let workspace = WorkspaceKey::AdHoc("gors:canonical-workspace".into());
-    let package = PackageKey::CommandLine;
-    let context = semantic_context(&workspace, &package, &logical_file)?;
-    lower_file_with_context(file, context).map(|lowered| lowered.file)
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct LoweredFunction {
+    pub(super) function: hir::Function,
+    pub(super) source_plan: Vec<(SourceRef, SyntaxSource)>,
 }
 
-#[cfg(test)]
-pub(super) fn semantic_context(
-    workspace: &WorkspaceKey,
-    package_identity: &PackageKey,
-    logical_file: &str,
-) -> Result<SemanticContext, Vec<Diagnostic>> {
-    let mut identities = IdentityInterner::default();
-    let workspace = identities
-        .workspace(workspace)
-        .map_err(identity_diagnostics)?;
-    let package = identities
-        .package(workspace, package_identity)
-        .map_err(identity_diagnostics)?;
-    let file = identities
-        .file(package, logical_file)
-        .map_err(identity_diagnostics)?;
-    Ok(SemanticContext {
-        package,
-        file,
-        logical_file: logical_file.to_string(),
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct FunctionLoweringFailure {
+    pub(super) diagnostic: Diagnostic,
+    pub(super) source_plan: Vec<(SourceRef, SyntaxSource)>,
+}
+
+pub(super) fn lower_signature(
+    definition: DefId,
+    header: &FunctionHeaderSyntax,
+) -> Result<Signature, Diagnostic> {
+    let source = SourceRef::definition(definition);
+    if header.has_receiver {
+        return Err(Diagnostic::unsupported(
+            "methods are not implemented by the HIR/MIR backend",
+            source,
+        ));
+    }
+    if header.has_type_parameters {
+        return Err(Diagnostic::unsupported(
+            "generic functions are not implemented by the HIR/MIR backend",
+            source,
+        ));
+    }
+    let params = field_types(&header.params, source)?;
+    let results = header
+        .results
+        .as_ref()
+        .map(|fields| field_types(fields, source))
+        .transpose()?
+        .unwrap_or_default();
+    if results.len() > 1 {
+        return Err(Diagnostic::unsupported(
+            "multiple-result functions require explicit expression-arity HIR and are not implemented",
+            source,
+        ));
+    }
+    if header.name.name.as_ref() == "init" {
+        return Err(Diagnostic::unsupported(
+            "package init functions are not implemented by the HIR/MIR backend",
+            source,
+        ));
+    }
+    if header.name.name.as_ref() == "main" && (!params.is_empty() || !results.is_empty()) {
+        return Err(Diagnostic::semantic(
+            "func main must have no parameters and no results",
+            source,
+        ));
+    }
+    Ok(Signature { params, results })
+}
+
+pub(super) fn lower_constant(
+    definition: DefId,
+    syntax: &ConstantSyntax,
+    constants: &BTreeMap<String, ConstantSymbol>,
+) -> Result<TypedConstant, Diagnostic> {
+    let source = SourceRef::definition(definition);
+    let expression = match &syntax.value {
+        ConstantValueSyntax::Expression(expression) => expression,
+        ConstantValueSyntax::ImplicitOrIota => {
+            return Err(Diagnostic::unsupported(
+                "implicit repeated const expressions and iota are not implemented",
+                source,
+            ));
+        }
+        ConstantValueSyntax::ArityMismatch => {
+            return Err(Diagnostic::unsupported(
+                "multi-valued const expressions are not implemented",
+                source,
+            ));
+        }
+    };
+    let (raw_ty, value) = eval_constant(expression, constants, source)?;
+    let ty = syntax
+        .explicit_type
+        .as_ref()
+        .map(|ty| lower_type(ty, source))
+        .transpose()?
+        .unwrap_or_else(|| raw_ty.default_typed());
+    ensure_bootstrap_value_type(&ty, source)?;
+    if !is_assignable(&raw_ty, &ty) {
+        return Err(Diagnostic::semantic(
+            format!("constant {} is not assignable to {ty:?}", syntax.name.name),
+            source,
+        ));
+    }
+    if !value.is_representable_as(&ty) {
+        return Err(Diagnostic::semantic(
+            format!(
+                "constant {} is not representable as {ty:?}",
+                syntax.name.name
+            ),
+            source,
+        ));
+    }
+    Ok(TypedConstant {
+        id: definition,
+        name: syntax.name.name.to_string(),
+        ty,
+        value,
     })
 }
 
-pub(super) fn lower_file_with_context(
-    file: &ast::File<'_>,
-    context: SemanticContext,
-) -> Result<LoweredSemanticFile, Vec<Diagnostic>> {
-    // Read both stable owners here so callers cannot accidentally pass a
-    // package-only context and recover file identity from source positions.
-    let SemanticContext {
-        package,
-        file: file_id,
-        logical_file: _,
-    } = context;
-    let source_len = TextSize::try_from(file.file_end.offset)
-        .map_err(|error| vec![Diagnostic::backend(error.to_string())])?;
-    let mut lowerer = FileLowerer {
-        package_id: package,
-        file_id,
-        source_len,
-        identities: IdentityInterner::default(),
-        functions: BTreeMap::new(),
-        constants: BTreeMap::new(),
-        diagnostics: Vec::new(),
+pub(super) fn lower_function(
+    definition: DefId,
+    header: &FunctionHeaderSyntax,
+    body: &FunctionBodySyntax,
+    signature: Signature,
+    functions: BTreeMap<String, FunctionSymbol>,
+    constants: BTreeMap<String, ConstantSymbol>,
+) -> Result<LoweredFunction, FunctionLoweringFailure> {
+    let node = NodeId::owner_local(definition, 0);
+    let initial_source_plan = vec![
+        (SourceRef::definition(definition), header.name.source),
+        (SourceRef::node(node), header.name.source),
+    ];
+    let Some(body) = body.block.as_ref() else {
+        return Err(FunctionLoweringFailure {
+            diagnostic: Diagnostic::unsupported(
+                "bodyless declarations require an explicit runtime intrinsic",
+                SourceRef::definition(definition),
+            ),
+            source_plan: initial_source_plan,
+        });
     };
-
-    lowerer.collect_function_headers(file);
-    let constants = lowerer.collect_constants(file);
-    if !lowerer.diagnostics.is_empty() {
-        return Err(lowerer.diagnostics);
-    }
-
-    let mut functions = Vec::new();
-    let mut source_tables = BTreeMap::new();
-    for decl in &file.decls {
-        if let ast::Decl::FuncDecl(function) = decl {
-            match lowerer.lower_function(function) {
-                Ok((function, source_table)) => {
-                    source_tables.insert(function.id, source_table);
-                    functions.push(function);
-                }
-                Err(diagnostic) => lowerer.diagnostics.push(diagnostic),
-            }
-        }
-    }
-
-    if lowerer.diagnostics.is_empty() {
-        Ok(LoweredSemanticFile {
-            file: hir::File {
-                package: file.name.name.to_string(),
-                constants,
-                functions,
+    let mut lowerer = FunctionLowerer {
+        owner: definition,
+        next_node: 1,
+        functions,
+        constants,
+        signature: signature.clone(),
+        locals: Vec::new(),
+        scopes: vec![BTreeMap::new()],
+        named_results: Vec::new(),
+        loop_depth: 0,
+        source_plan: initial_source_plan,
+    };
+    let lowered = (|| {
+        let params = lowerer.declare_field_bindings(
+            &header.params,
+            &signature.params,
+            hir::LocalKind::Parameter,
+        )?;
+        lowerer.named_results = header.results.as_ref().map_or_else(
+            || Ok(Vec::new()),
+            |results| lowerer.declare_result_bindings(results, &signature.results),
+        )?;
+        lowerer.lower_block(body, false).map(|body| (params, body))
+    })();
+    match lowered {
+        Ok((params, body)) => Ok(LoweredFunction {
+            function: hir::Function {
+                id: definition,
+                node,
+                name: header.name.name.to_string(),
+                signature,
+                params,
+                named_results: lowerer.named_results,
+                locals: lowerer.locals,
+                body,
+                source: SourceRef::definition(definition),
             },
-            source_tables,
-        })
-    } else {
-        Err(lowerer.diagnostics)
+            source_plan: lowerer.source_plan,
+        }),
+        Err(diagnostic) => Err(FunctionLoweringFailure {
+            diagnostic,
+            source_plan: lowerer.source_plan,
+        }),
     }
 }
 
-impl FileLowerer {
-    fn intern_definition(&mut self, kind: DefinitionKind, name: &str) -> Result<DefId, Diagnostic> {
-        self.identities
-            .definition(DefinitionKey::package_named(self.package_id, kind, name))
-            .map_err(identity_diagnostic)
+fn field_types(fields: &FieldListSyntax, source: SourceRef) -> Result<Vec<Ty>, Diagnostic> {
+    let mut result = Vec::new();
+    for field in &*fields.fields {
+        let type_expression = field
+            .ty
+            .as_ref()
+            .ok_or_else(|| Diagnostic::backend("signature field has no type"))?;
+        let ty = lower_type(type_expression, source)?;
+        let count = field.names.as_ref().map_or(1, |names| names.len());
+        result.extend(std::iter::repeat_n(ty, count));
     }
+    Ok(result)
+}
 
-    fn range(&self, position: &Position<'_>) -> Result<FileRange, Diagnostic> {
-        let offset = TextSize::try_from(position.offset)
-            .map_err(|error| Diagnostic::backend(error.to_string()))?;
-        if offset > self.source_len {
-            return Err(Diagnostic::backend(format!(
-                "parser source offset {} exceeds semantic source length {}",
-                offset.get(),
-                self.source_len.get()
-            )));
-        }
-        Ok(FileRange::new(self.file_id, TextRange::empty(offset)))
+fn lower_type(expression: &ExprSyntax, source: SourceRef) -> Result<Ty, Diagnostic> {
+    let ExprSyntaxKind::Ident(ident) = &expression.kind else {
+        return Err(Diagnostic::unsupported(
+            "only primitive types are implemented by the HIR/MIR backend",
+            source,
+        ));
+    };
+    match ident.name.as_ref() {
+        "bool" => Ok(Ty::Bool),
+        "string" => Ok(Ty::String),
+        "int" => Ok(Ty::Int(IntTy::Int)),
+        "int8" | "int16" | "int32" | "rune" | "int64" | "uint" | "uint8" | "byte" | "uint16"
+        | "uint32" | "uint64" | "uintptr" | "float32" | "float64" => Err(Diagnostic::unsupported(
+            format!(
+                "type {} is outside the bootstrap bool/int/string runtime frontier",
+                ident.name
+            ),
+            source,
+        )),
+        other => Err(Diagnostic::unsupported(
+            format!("type {other} is not implemented by the HIR/MIR backend"),
+            source,
+        )),
     }
+}
 
-    fn collect_function_headers(&mut self, file: &ast::File<'_>) {
-        for decl in &file.decls {
-            let ast::Decl::FuncDecl(function) = decl else {
-                continue;
-            };
-            let range = match self.range(&function.name.name_pos) {
-                Ok(range) => range,
-                Err(diagnostic) => {
-                    self.diagnostics.push(diagnostic);
-                    continue;
-                }
-            };
-            if function.recv.is_some() {
-                self.diagnostics.push(Diagnostic::unsupported(
-                    "methods are not implemented by the HIR/MIR backend",
-                    range,
-                ));
-                continue;
-            }
-            if function.type_.type_params.is_some() {
-                self.diagnostics.push(Diagnostic::unsupported(
-                    "generic functions are not implemented by the HIR/MIR backend",
-                    range,
-                ));
-                continue;
-            }
-            let params = match self.field_types(&function.type_.params) {
-                Ok(params) => params,
-                Err(diagnostic) => {
-                    self.diagnostics.push(diagnostic);
-                    continue;
-                }
-            };
-            let results = match function
-                .type_
-                .results
-                .as_ref()
-                .map(|fields| self.field_types(fields))
-                .transpose()
-            {
-                Ok(results) => results.unwrap_or_default(),
-                Err(diagnostic) => {
-                    self.diagnostics.push(diagnostic);
-                    continue;
-                }
-            };
-            if results.len() > 1 {
-                self.diagnostics.push(Diagnostic::unsupported(
-                    "multiple-result functions require explicit expression-arity HIR and are not implemented",
-                    range,
-                ));
-                continue;
-            }
-            if function.name.name == "init" {
-                self.diagnostics.push(Diagnostic::unsupported(
-                    "package init functions are not implemented by the HIR/MIR backend",
-                    range,
-                ));
-                continue;
-            }
-            if function.name.name == "main" && (!params.is_empty() || !results.is_empty()) {
-                self.diagnostics.push(Diagnostic::semantic(
-                    "func main must have no parameters and no results",
-                    range,
-                ));
-                continue;
-            }
-            let signature = Signature { params, results };
-            let id = match self.intern_definition(DefinitionKind::Function, function.name.name) {
-                Ok(id) => id,
-                Err(diagnostic) => {
-                    self.diagnostics.push(diagnostic);
-                    continue;
-                }
-            };
-            let symbol = FunctionSymbol { id, signature };
-            if self
-                .functions
-                .insert(function.name.name.to_string(), symbol)
-                .is_some()
-            {
-                self.diagnostics.push(Diagnostic::semantic(
-                    format!("duplicate function {}", function.name.name),
-                    range,
-                ));
+pub(super) fn eval_constant(
+    expression: &ExprSyntax,
+    constants: &BTreeMap<String, ConstantSymbol>,
+    source: SourceRef,
+) -> Result<(Ty, ConstValue), Diagnostic> {
+    match &expression.kind {
+        ExprSyntaxKind::Literal { token, spelling } => match *token {
+            crate::token::Token::INT => parse_go_integer(spelling)
+                .map(|value| (Ty::Untyped(UntypedTy::Int), ConstValue::Int(value)))
+                .ok_or_else(|| {
+                    Diagnostic::semantic(format!("invalid integer literal {spelling}"), source)
+                }),
+            crate::token::Token::FLOAT => Ok((
+                Ty::Untyped(UntypedTy::Float),
+                ConstValue::Float(spelling.replace('_', "")),
+            )),
+            crate::token::Token::STRING => parse_go_string(spelling)
+                .map(|value| (Ty::Untyped(UntypedTy::String), ConstValue::String(value)))
+                .ok_or_else(|| Diagnostic::semantic("invalid string literal", source)),
+            crate::token::Token::CHAR => parse_go_rune(spelling)
+                .map(|value| {
+                    (
+                        Ty::Untyped(UntypedTy::Int),
+                        ConstValue::Int(value.to_string()),
+                    )
+                })
+                .ok_or_else(|| Diagnostic::semantic("invalid rune literal", source)),
+            token => Err(Diagnostic::unsupported(
+                format!("literal kind {token:?} is not implemented"),
+                source,
+            )),
+        },
+        ExprSyntaxKind::Ident(ident) => {
+            if let Some(constant) = constants.get(ident.name.as_ref()) {
+                Ok((constant.ty.clone(), constant.value.clone()))
+            } else if matches!(ident.name.as_ref(), "true" | "false") {
+                Ok((
+                    Ty::Untyped(UntypedTy::Bool),
+                    ConstValue::Bool(ident.name.as_ref() == "true"),
+                ))
+            } else {
+                Err(Diagnostic::semantic(
+                    format!("{} is not a constant", ident.name),
+                    source,
+                ))
             }
         }
-    }
-
-    fn collect_constants(&mut self, file: &ast::File<'_>) -> Vec<hir::Constant> {
-        let mut result = Vec::new();
-        for decl in &file.decls {
-            let ast::Decl::GenDecl(decl) = decl else {
-                continue;
+        ExprSyntaxKind::Binary { left, token, right } => {
+            let (left_ty, left) = eval_constant(left, constants, source)?;
+            let (right_ty, right) = eval_constant(right, constants, source)?;
+            let op = lower_binary_op(*token).ok_or_else(|| {
+                Diagnostic::unsupported(
+                    format!("constant operator {token:?} is not implemented"),
+                    source,
+                )
+            })?;
+            let operand_ty = exact_common_operand_type(&left_ty, &right_ty).ok_or_else(|| {
+                Diagnostic::semantic(
+                    format!("incompatible constant operands {left_ty:?} and {right_ty:?}"),
+                    source,
+                )
+            })?;
+            ensure_bootstrap_value_type(&operand_ty.default_typed(), source)?;
+            validate_binary_operator(op, &operand_ty.default_typed(), source)?;
+            let value = fold_constant_binary(op, &left, &right, source)?.ok_or_else(|| {
+                Diagnostic::unsupported(
+                    "constant operation is not implemented by the bootstrap evaluator",
+                    source,
+                )
+            })?;
+            let result_ty = if matches!(
+                op,
+                hir::BinaryOp::Equal
+                    | hir::BinaryOp::NotEqual
+                    | hir::BinaryOp::Less
+                    | hir::BinaryOp::LessEqual
+                    | hir::BinaryOp::Greater
+                    | hir::BinaryOp::GreaterEqual
+                    | hir::BinaryOp::LogicalAnd
+                    | hir::BinaryOp::LogicalOr
+            ) {
+                Ty::Untyped(UntypedTy::Bool)
+            } else {
+                operand_ty
             };
-            let declaration_range = match self.range(&decl.tok_pos) {
-                Ok(range) => range,
-                Err(diagnostic) => {
-                    self.diagnostics.push(diagnostic);
-                    continue;
+            Ok((result_ty, value))
+        }
+        ExprSyntaxKind::Paren(expression) => eval_constant(expression, constants, source),
+        ExprSyntaxKind::Unary { token, expression } => {
+            let (ty, value) = eval_constant(expression, constants, source)?;
+            match (*token, value) {
+                (crate::token::Token::ADD, value) => Ok((ty, value)),
+                (crate::token::Token::SUB, ConstValue::Int(value)) => {
+                    let value = BigInt::parse_bytes(value.as_bytes(), 10)
+                        .map(|value| (-value).to_string())
+                        .ok_or_else(|| Diagnostic::semantic("invalid exact integer", source))?;
+                    Ok((ty, ConstValue::Int(value)))
                 }
-            };
-            match decl.tok {
-                Token::IMPORT => {
-                    self.diagnostics.push(Diagnostic::unsupported(
-                        "imports are not implemented by the HIR/MIR backend",
-                        declaration_range,
-                    ));
+                (crate::token::Token::SUB, ConstValue::Float(value)) => {
+                    let value = value
+                        .strip_prefix('-')
+                        .map_or_else(|| format!("-{value}"), str::to_string);
+                    Ok((ty, ConstValue::Float(value)))
                 }
-                Token::TYPE | Token::VAR => {
-                    self.diagnostics.push(Diagnostic::unsupported(
-                        "top-level type and variable declarations are not implemented by the HIR/MIR backend",
-                        declaration_range,
-                    ));
+                (crate::token::Token::NOT, ConstValue::Bool(value)) => {
+                    Ok((ty, ConstValue::Bool(!value)))
                 }
-                Token::CONST => {
-                    for spec in &decl.specs {
-                        let ast::Spec::ValueSpec(spec) = spec else {
-                            self.diagnostics.push(Diagnostic::semantic(
-                                "const declaration contains a non-value specification",
-                                declaration_range,
-                            ));
-                            continue;
-                        };
-                        let Some(values) = spec.values.as_ref() else {
-                            self.diagnostics.push(Diagnostic::unsupported(
-                                "implicit repeated const expressions and iota are not implemented",
-                                declaration_range,
-                            ));
-                            continue;
-                        };
-                        if values.len() != spec.names.len() {
-                            self.diagnostics.push(Diagnostic::unsupported(
-                                "multi-valued const expressions are not implemented",
-                                declaration_range,
-                            ));
-                            continue;
-                        }
-                        let explicit_ty = match spec
-                            .type_
-                            .as_ref()
-                            .map(|ty| self.lower_type(ty))
-                            .transpose()
-                        {
-                            Ok(ty) => ty,
-                            Err(diagnostic) => {
-                                self.diagnostics.push(diagnostic);
-                                continue;
-                            }
-                        };
-                        // A ConstSpec's names enter scope only after every RHS
-                        // has been evaluated. Earlier ConstSpecs in the group
-                        // remain visible through `self.constants`.
-                        let mut pending = Vec::with_capacity(spec.names.len());
-                        for (name, value) in spec.names.iter().zip(values) {
-                            let range = match self.range(&name.name_pos) {
-                                Ok(range) => range,
-                                Err(diagnostic) => {
-                                    self.diagnostics.push(diagnostic);
-                                    continue;
-                                }
-                            };
-                            let (raw_ty, value) = match self.eval_constant(value) {
-                                Ok(value) => value,
-                                Err(diagnostic) => {
-                                    self.diagnostics.push(diagnostic);
-                                    continue;
-                                }
-                            };
-                            let ty = explicit_ty
-                                .clone()
-                                .unwrap_or_else(|| raw_ty.default_typed());
-                            if let Err(diagnostic) = ensure_bootstrap_value_type(&ty, range) {
-                                self.diagnostics.push(diagnostic);
-                                continue;
-                            }
-                            if !is_assignable(&raw_ty, &ty) {
-                                self.diagnostics.push(Diagnostic::semantic(
-                                    format!("constant {} is not assignable to {ty:?}", name.name),
-                                    range,
-                                ));
-                                continue;
-                            }
-                            if !value.is_representable_as(&ty) {
-                                self.diagnostics.push(Diagnostic::semantic(
-                                    format!(
-                                        "constant {} is not representable as {ty:?}",
-                                        name.name
-                                    ),
-                                    range,
-                                ));
-                                continue;
-                            }
-                            pending.push((name, range, ty, value));
-                        }
-                        for (name, range, ty, value) in pending {
-                            let id =
-                                match self.intern_definition(DefinitionKind::Constant, name.name) {
-                                    Ok(id) => id,
-                                    Err(diagnostic) => {
-                                        self.diagnostics.push(diagnostic);
-                                        continue;
-                                    }
-                                };
-                            let symbol = ConstantSymbol {
-                                id,
-                                ty: ty.clone(),
-                                value: value.clone(),
-                            };
-                            if self
-                                .constants
-                                .insert(name.name.to_string(), symbol)
-                                .is_some()
-                                || self.functions.contains_key(name.name)
-                            {
-                                self.diagnostics.push(Diagnostic::semantic(
-                                    format!("duplicate top-level declaration {}", name.name),
-                                    range,
-                                ));
-                                continue;
-                            }
-                            result.push(hir::Constant {
-                                id,
-                                name: name.name.to_string(),
-                                ty,
-                                value,
-                                source: SourceRef::definition(id),
-                            });
-                        }
-                    }
-                }
-                _ => self.diagnostics.push(Diagnostic::semantic(
-                    "invalid top-level declaration token",
-                    declaration_range,
+                _ => Err(Diagnostic::unsupported(
+                    "constant unary operation is not implemented",
+                    source,
                 )),
             }
         }
-        result
-    }
-
-    fn field_types(&self, fields: &ast::FieldList<'_>) -> Result<Vec<Ty>, Diagnostic> {
-        let mut result = Vec::new();
-        for field in &fields.list {
-            let Some(type_expr) = field.type_.as_ref() else {
-                return Err(Diagnostic::backend("signature field has no type"));
-            };
-            let ty = self.lower_type(type_expr)?;
-            let count = field.names.as_ref().map_or(1, Vec::len);
-            result.extend(std::iter::repeat_n(ty, count));
-        }
-        Ok(result)
-    }
-
-    fn lower_type(&self, expr: &ast::Expr<'_>) -> Result<Ty, Diagnostic> {
-        let range = self.range(&expr_position(expr))?;
-        let ast::Expr::Ident(ident) = expr else {
-            return Err(Diagnostic::unsupported(
-                "only primitive types are implemented by the HIR/MIR backend",
-                range,
-            ));
-        };
-        let ty = match ident.name {
-            "bool" => Ty::Bool,
-            "string" => Ty::String,
-            "int" => Ty::Int(IntTy::Int),
-            "int8" | "int16" | "int32" | "rune" | "int64" | "uint" | "uint8" | "byte"
-            | "uint16" | "uint32" | "uint64" | "uintptr" | "float32" | "float64" => {
-                return Err(Diagnostic::unsupported(
-                    format!(
-                        "type {} is outside the bootstrap bool/int/string runtime frontier",
-                        ident.name
-                    ),
-                    range,
-                ));
-            }
-            other => {
-                return Err(Diagnostic::unsupported(
-                    format!("type {other} is not implemented by the HIR/MIR backend"),
-                    range,
-                ));
-            }
-        };
-        Ok(ty)
-    }
-
-    fn eval_constant(&self, expr: &ast::Expr<'_>) -> Result<(Ty, ConstValue), Diagnostic> {
-        match expr {
-            ast::Expr::BasicLit(literal) => {
-                let range = self.range(&literal.value_pos)?;
-                match literal.kind {
-                    Token::INT => parse_go_integer(literal.value)
-                        .map(|value| (Ty::Untyped(UntypedTy::Int), ConstValue::Int(value)))
-                        .ok_or_else(|| {
-                            Diagnostic::semantic(
-                                format!("invalid integer literal {}", literal.value),
-                                range,
-                            )
-                        }),
-                    Token::FLOAT => Ok((
-                        Ty::Untyped(UntypedTy::Float),
-                        ConstValue::Float(literal.value.replace('_', "")),
-                    )),
-                    Token::STRING => parse_go_string(literal.value)
-                        .map(|value| (Ty::Untyped(UntypedTy::String), ConstValue::String(value)))
-                        .ok_or_else(|| Diagnostic::semantic("invalid string literal", range)),
-                    Token::CHAR => parse_go_rune(literal.value)
-                        .map(|value| {
-                            (
-                                Ty::Untyped(UntypedTy::Int),
-                                ConstValue::Int(value.to_string()),
-                            )
-                        })
-                        .ok_or_else(|| Diagnostic::semantic("invalid rune literal", range)),
-                    _ => Err(Diagnostic::unsupported(
-                        format!("literal kind {:?} is not implemented", literal.kind),
-                        range,
-                    )),
-                }
-            }
-            ast::Expr::Ident(ident) => {
-                if let Some(constant) = self.constants.get(ident.name) {
-                    Ok((constant.ty.clone(), constant.value.clone()))
-                } else if ident.name == "true" || ident.name == "false" {
-                    Ok((
-                        Ty::Untyped(UntypedTy::Bool),
-                        ConstValue::Bool(ident.name == "true"),
-                    ))
-                } else {
-                    Err(Diagnostic::semantic(
-                        format!("{} is not a constant", ident.name),
-                        self.range(&ident.name_pos)?,
-                    ))
-                }
-            }
-            ast::Expr::BinaryExpr(binary) => {
-                let (left_ty, left) = self.eval_constant(&binary.x)?;
-                let (right_ty, right) = self.eval_constant(&binary.y)?;
-                let range = self.range(&binary.op_pos)?;
-                let op = lower_binary_op(binary.op).ok_or_else(|| {
-                    Diagnostic::unsupported(
-                        format!("constant operator {:?} is not implemented", binary.op),
-                        range,
-                    )
-                })?;
-                let operand_ty =
-                    exact_common_operand_type(&left_ty, &right_ty).ok_or_else(|| {
-                        Diagnostic::semantic(
-                            format!("incompatible constant operands {left_ty:?} and {right_ty:?}"),
-                            range,
-                        )
-                    })?;
-                let runtime_ty = operand_ty.default_typed();
-                ensure_bootstrap_value_type(&runtime_ty, range)?;
-                validate_binary_operator(op, &runtime_ty, range)?;
-                let value = fold_constant_binary(op, &left, &right, range)?.ok_or_else(|| {
-                    Diagnostic::unsupported(
-                        "constant operation is not implemented by the bootstrap evaluator",
-                        range,
-                    )
-                })?;
-                let result_ty = if matches!(
-                    op,
-                    hir::BinaryOp::Equal
-                        | hir::BinaryOp::NotEqual
-                        | hir::BinaryOp::Less
-                        | hir::BinaryOp::LessEqual
-                        | hir::BinaryOp::Greater
-                        | hir::BinaryOp::GreaterEqual
-                        | hir::BinaryOp::LogicalAnd
-                        | hir::BinaryOp::LogicalOr
-                ) {
-                    Ty::Untyped(UntypedTy::Bool)
-                } else {
-                    operand_ty
-                };
-                Ok((result_ty, value))
-            }
-            ast::Expr::ParenExpr(paren) => self.eval_constant(&paren.x),
-            ast::Expr::UnaryExpr(unary) => {
-                let (ty, value) = self.eval_constant(&unary.x)?;
-                let range = self.range(&unary.op_pos)?;
-                match (unary.op, value) {
-                    (Token::ADD, value) => Ok((ty, value)),
-                    (Token::SUB, ConstValue::Int(value)) => {
-                        let value = BigInt::parse_bytes(value.as_bytes(), 10)
-                            .map(|value| (-value).to_string())
-                            .ok_or_else(|| Diagnostic::semantic("invalid exact integer", range))?;
-                        Ok((ty, ConstValue::Int(value)))
-                    }
-                    (Token::SUB, ConstValue::Float(value)) => {
-                        let value = value
-                            .strip_prefix('-')
-                            .map_or_else(|| format!("-{value}"), str::to_string);
-                        Ok((ty, ConstValue::Float(value)))
-                    }
-                    (Token::NOT, ConstValue::Bool(value)) => Ok((ty, ConstValue::Bool(!value))),
-                    _ => Err(Diagnostic::unsupported(
-                        "constant unary operation is not implemented",
-                        range,
-                    )),
-                }
-            }
-            _ => Err(Diagnostic::unsupported(
+        ExprSyntaxKind::Call { .. } | ExprSyntaxKind::Unsupported(_) => {
+            Err(Diagnostic::unsupported(
                 "constant expression is not implemented by the HIR/MIR backend",
-                self.range(&expr_position(expr))?,
-            )),
+                source,
+            ))
         }
     }
-
-    fn lower_function(
-        &mut self,
-        function: &ast::FuncDecl<'_>,
-    ) -> Result<(hir::Function, DefinitionSourceTable), Diagnostic> {
-        let declaration_range = self.range(&function.name.name_pos)?;
-        let symbol = self
-            .functions
-            .get(function.name.name)
-            .cloned()
-            .ok_or_else(|| {
-                Diagnostic::semantic(
-                    format!("missing collected signature for {}", function.name.name),
-                    declaration_range,
-                )
-            })?;
-        let Some(body) = function.body.as_ref() else {
-            return Err(Diagnostic::unsupported(
-                "bodyless declarations require an explicit runtime intrinsic",
-                declaration_range,
-            ));
-        };
-
-        let node = NodeId::owner_local(symbol.id, 0);
-        let functions = self.functions.clone();
-        let constants = self.constants.clone();
-        let mut lowerer = FunctionLowerer {
-            file: self,
-            owner: symbol.id,
-            next_node: 1,
-            functions,
-            constants,
-            signature: symbol.signature.clone(),
-            locals: Vec::new(),
-            scopes: vec![BTreeMap::new()],
-            named_results: Vec::new(),
-            loop_depth: 0,
-            source_mappings: vec![
-                (SourceRef::definition(symbol.id), declaration_range),
-                (SourceRef::node(node), declaration_range),
-            ],
-        };
-        let params = lowerer.declare_field_bindings(
-            &function.type_.params,
-            &symbol.signature.params,
-            hir::LocalKind::Parameter,
-        )?;
-        if let Some(results) = function.type_.results.as_ref() {
-            lowerer.named_results =
-                lowerer.declare_result_bindings(results, &symbol.signature.results)?;
-        } else {
-            lowerer.named_results = vec![];
-        }
-        let body = lowerer.lower_block(body, false)?;
-        let named_results = lowerer.named_results.clone();
-        let locals = std::mem::take(&mut lowerer.locals);
-        let source_mappings = std::mem::take(&mut lowerer.source_mappings);
-        let source_table = DefinitionSourceTable::try_new(
-            symbol.id,
-            lowerer.file.file_id,
-            lowerer.file.source_len,
-            source_mappings,
-        )
-        .map_err(|error| Diagnostic::backend(error.to_string()))?;
-
-        Ok((
-            hir::Function {
-                id: symbol.id,
-                node,
-                name: function.name.name.to_string(),
-                signature: symbol.signature,
-                params,
-                named_results,
-                locals,
-                body,
-                source: SourceRef::definition(symbol.id),
-            },
-            source_table,
-        ))
-    }
-}
-
-#[cfg(test)]
-fn logical_file_name(position: &Position<'_>) -> String {
-    // The standalone facade has no workspace-relative path input yet. The
-    // scanner already separates the directory from this basename, so using
-    // only the logical filename keeps query identities and emitted symbols
-    // portable across checkout roots. The query database must replace this
-    // bootstrap rule with its canonical package-relative file key.
-    position
-        .filename()
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or_default()
-        .to_string()
-}
-
-fn identity_diagnostic(collision: IdentityCollision) -> Diagnostic {
-    Diagnostic::backend(collision.to_string())
-}
-
-#[cfg(test)]
-fn identity_diagnostics(collision: IdentityCollision) -> Vec<Diagnostic> {
-    vec![identity_diagnostic(collision)]
 }

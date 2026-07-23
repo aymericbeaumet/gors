@@ -3,7 +3,8 @@
 //! The only production path is:
 //!
 //! ```text
-//! parsed Go AST
+//! immutable Go source
+//!   -> owned structural syntax
 //!   -> typed HIR
 //!   -> verified explicit-order Go MIR
 //!   -> representation-neutral MIR normalization and reverification
@@ -38,9 +39,6 @@ pub use session::CompilerSession;
 
 use std::collections::BTreeMap;
 use std::fmt;
-
-#[cfg(test)]
-use crate::ast;
 
 /// MIR that has passed whole-file structural, type, call-ABI, and dataflow
 /// verification.
@@ -98,13 +96,13 @@ impl VerifiedRustIr {
     }
 }
 
-/// Lower a parsed Go file through every authoritative compiler stage.
+/// Lower one source file through every authoritative compiler stage.
 ///
 /// This is an internal stage-test helper. Production and fuzz callers enter
 /// through [`ProgramInput`](input::ProgramInput) and [`CompilerSession`].
 #[cfg(test)]
-pub(crate) fn compile_file(file: &ast::File<'_>) -> Result<syn::File, Vec<Diagnostic>> {
-    let hir = lower_to_hir(file)?;
+pub(crate) fn compile_file(filename: &str, source: &str) -> Result<syn::File, Vec<Diagnostic>> {
+    let hir = lower_to_hir(filename, source)?;
     compile_hir(hir)
 }
 
@@ -118,8 +116,45 @@ fn compile_hir(hir: hir::File) -> Result<syn::File, Vec<Diagnostic>> {
 /// Produce typed, name-resolved HIR without committing to a Rust
 /// representation.
 #[cfg(test)]
-pub(crate) fn lower_to_hir(file: &ast::File<'_>) -> Result<hir::File, Vec<Diagnostic>> {
-    semantic::lower_file(file)
+pub(crate) fn lower_to_hir(filename: &str, source: &str) -> Result<hir::File, Vec<Diagnostic>> {
+    use std::sync::Arc;
+
+    let mut database = db::CompilerDatabase::new(db::BuildConfig::default());
+    let workspace = input::WorkspaceKey::ad_hoc("compiler-stage-tests")
+        .map_err(|error| vec![Diagnostic::backend(error.to_string())])?;
+    let package = input::PackageKey::command_line();
+    let snapshot = input::SourceSnapshot::from_source(filename, source)
+        .map(Arc::new)
+        .map_err(|error| vec![Diagnostic::backend(error.to_string())])?;
+    let file = database
+        .set_source(&workspace, &package, filename, snapshot)
+        .map_err(query_diagnostics)?
+        .file();
+    let analysis = database.analyze_file(file).map_err(query_diagnostics)?;
+    let mut functions = analysis
+        .functions()
+        .iter()
+        .map(|function| {
+            database
+                .typed_hir(file, function.id())
+                .map(|function| function.function().clone())
+                .map_err(query_diagnostics)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    functions.sort_by_key(|function| function.id);
+    Ok(hir::File {
+        package: analysis.package().to_string(),
+        constants: Vec::new(),
+        functions,
+    })
+}
+
+#[cfg(test)]
+fn query_diagnostics(error: db::QueryError) -> Vec<Diagnostic> {
+    match error {
+        db::QueryError::StageFailure(failure) => failure.diagnostics().to_vec(),
+        error => vec![Diagnostic::backend(error.to_string())],
+    }
 }
 
 /// Produce evaluation-order-explicit Go MIR.

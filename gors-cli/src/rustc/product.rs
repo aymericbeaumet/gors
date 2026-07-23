@@ -186,14 +186,17 @@ mod platform {
         renameat(&parent, pending_name, &parent, output_name)
             .map_err(|error| errno("publish executable", output, error))?;
         let published = regular_stat_at(&parent, output_name, output)?;
-        if !same_snapshot(&admitted_stat, &published) {
+        // Renaming an inode can legitimately advance ctime on some Unix
+        // kernels. The descriptor and destination must still name the same
+        // inode with the exact admitted content-bearing facts.
+        if !same_content_snapshot(&admitted_stat, &published) {
             return Err(changed(output, "is not the validated pending executable"));
         }
         fsync(&parent).map_err(|error| errno("sync executable directory", parent_path, error))?;
         validate_directory_path(parent_path, &parent)?;
         let still_open =
             fstat(&file).map_err(|error| errno("reinspect published executable", output, error))?;
-        if !same_snapshot(&admitted_stat, &still_open) {
+        if !same_snapshot(&published, &still_open) {
             return Err(changed(output, "changed during atomic publication"));
         }
         Ok(admitted)
@@ -306,13 +309,17 @@ mod platform {
     }
 
     fn same_snapshot(left: &Stat, right: &Stat) -> bool {
+        same_content_snapshot(left, right)
+            && left.st_ctime == right.st_ctime
+            && left.st_ctime_nsec == right.st_ctime_nsec
+    }
+
+    fn same_content_snapshot(left: &Stat, right: &Stat) -> bool {
         same_node(left, right)
             && left.st_size == right.st_size
             && left.st_mode == right.st_mode
             && left.st_mtime == right.st_mtime
             && left.st_mtime_nsec == right.st_mtime_nsec
-            && left.st_ctime == right.st_ctime
-            && left.st_ctime_nsec == right.st_ctime_nsec
     }
 
     fn errno(action: &str, path: &Path, error: rustix::io::Errno) -> std::io::Error {

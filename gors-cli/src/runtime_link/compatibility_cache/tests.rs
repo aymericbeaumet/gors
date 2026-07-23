@@ -10,8 +10,8 @@ use gors_runtime_abi::{
 
 use super::probe::{CompatibilityProbe, ProbeError};
 use super::{
-    CACHE_FILENAME, CompatibilityCacheError, ResolvedRustcCompatibility, SnapshotError,
-    cache_entry_directory, resolve_with_probe,
+    CACHE_FILENAME, CACHE_SCHEMA, CompatibilityCacheError, ResolvedRustcCompatibility,
+    SnapshotError, cache_entry_directory, resolve_with_probe,
 };
 
 const SELECTOR: &str = "test-toolchain";
@@ -163,6 +163,14 @@ fn warm_hit_only_resolves_rustc_and_reuses_canonical_compatibility() -> TestResu
         warm.rustc_snapshot_identity()
     );
     assert_eq!(cold.rustc_snapshot_identity().len(), 64);
+    let canonical_target_libdir = std::fs::canonicalize(&fixture.target_libdir)?;
+    assert_eq!(cold.target_libdir(), canonical_target_libdir.as_path());
+    assert_eq!(warm.target_libdir(), canonical_target_libdir.as_path());
+    assert_eq!(
+        cold.target_libdir_snapshot_identity(),
+        warm.target_libdir_snapshot_identity()
+    );
+    assert_eq!(cold.target_libdir_snapshot_identity().len(), 64);
     assert_eq!(fixture.probe.which_calls.load(Ordering::SeqCst), 2);
     assert_eq!(fixture.probe.verbose_calls.load(Ordering::SeqCst), 1);
     assert_eq!(fixture.probe.target_libdir_calls.load(Ordering::SeqCst), 1);
@@ -221,7 +229,10 @@ fn malformed_unknown_and_bad_checksum_records_are_reprobed_and_repaired() -> Tes
     assert_eq!(fixture.probe.verbose_calls.load(Ordering::SeqCst), 4);
     assert_eq!(fixture.probe.target_libdir_calls.load(Ordering::SeqCst), 4);
     let repaired: serde_json::Value = serde_json::from_slice(&std::fs::read(cache_path)?)?;
-    assert_eq!(repaired.get("schema_version"), Some(&serde_json::json!(2)));
+    assert_eq!(
+        repaired.get("schema_version"),
+        Some(&serde_json::json!(CACHE_SCHEMA))
+    );
     assert!(repaired.get("future_field").is_none());
     assert_ne!(
         repaired.get("checksum"),

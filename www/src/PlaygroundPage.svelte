@@ -314,21 +314,13 @@ function resetRustOutput() {
 }
 
 async function waitForVM() {
-	startVM();
 	if (
-		runner.state !== State.READY &&
-		runner.state !== State.COMPILING &&
-		runner.state !== State.RUNNING
-	) {
-		await new Promise<void>((resolve) => {
-			const unsubscribe = runner.onStateChange((state) => {
-				if (state === State.READY) {
-					unsubscribe();
-					resolve();
-				}
-			});
-		});
-	}
+		runner.state === State.READY ||
+		runner.state === State.COMPILING ||
+		runner.state === State.RUNNING
+	)
+		return;
+	await runner.start();
 }
 
 async function doTranspile() {
@@ -606,9 +598,14 @@ function closeVmOverlay() {
 function startVM() {
 	if (vmStartRequested) return;
 	vmStartRequested = true;
-	runner.start().catch(() => {
-		vmState = State.ERROR;
-	});
+	void runner
+		.start()
+		.catch(() => {
+			vmState = State.ERROR;
+		})
+		.finally(() => {
+			vmStartRequested = false;
+		});
 }
 
 let resizeObserver: ResizeObserver | null = null;
@@ -740,7 +737,7 @@ $: if (goEditor && rustEditor && !initialized) {
 onDestroy(() => {
 	cancelScheduledPipeline();
 	go2rust.dispose();
-	runner.dispose();
+	void runner.dispose();
 	resizeObserver?.disconnect();
 	term?.dispose();
 });

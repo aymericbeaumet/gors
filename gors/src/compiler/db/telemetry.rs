@@ -9,8 +9,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub enum QueryKind {
     /// Parse one immutable source snapshot and project its declarations.
     FileProjection,
-    /// Type-check one independently parsed file into tracked HIR projections.
-    SemanticFile,
     /// Materialize the body-independent file index.
     FileAnalysis,
     /// Merge sorted file projections into a body-independent package index.
@@ -29,8 +27,12 @@ pub enum QueryKind {
     TypedHir,
     /// Publish one stable definition's exact typed signature.
     TypedSignature,
+    /// Type-check one stable package constant.
+    TypedConstant,
     /// Resolve one stable callee identity through the package index.
     PackageFunctionLookup,
+    /// Resolve one stable package constant through the package index.
+    PackageConstantLookup,
     /// Build one function's self and direct-callee signature dependency set.
     SignatureDependencies,
     /// Classify one function's package as executable or library code.
@@ -51,7 +53,6 @@ impl QueryKind {
     const COUNT: usize = Self::RustIrPackage as usize + 1;
     const ALL: [Self; Self::COUNT] = [
         Self::FileProjection,
-        Self::SemanticFile,
         Self::FileAnalysis,
         Self::PackageAnalysis,
         Self::PublicApi,
@@ -61,7 +62,9 @@ impl QueryKind {
         Self::DefinitionSourceTable,
         Self::TypedHir,
         Self::TypedSignature,
+        Self::TypedConstant,
         Self::PackageFunctionLookup,
+        Self::PackageConstantLookup,
         Self::SignatureDependencies,
         Self::ExecutableRole,
         Self::RustIrRootInputs,

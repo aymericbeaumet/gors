@@ -26,7 +26,6 @@ use error::{RawParserError, Result};
 use version::extract_go_version;
 
 pub use error::{ParserError, ParserErrorKind};
-pub use import_path::ImportPathIssue;
 pub(crate) use import_path::decode_and_validate as decode_import_path_literal;
 pub use output::ParsedFile;
 pub use tokens::{TokenObservation, TokenSpelling};

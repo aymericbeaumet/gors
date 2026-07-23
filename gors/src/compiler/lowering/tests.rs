@@ -5,8 +5,7 @@ use crate::compiler::rust_ir::{
 };
 
 fn lower_source(source: &str) -> rust_ir::File {
-    let ast = crate::parser::parse_file("lowering.go", source).unwrap();
-    let hir = crate::compiler::lower_to_hir(ast.ast()).unwrap();
+    let hir = crate::compiler::lower_to_hir("lowering.go", source).unwrap();
     let mir = crate::compiler::lower_to_mir(&hir).unwrap();
     super::lower(mir).unwrap()
 }

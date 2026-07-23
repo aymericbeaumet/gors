@@ -97,8 +97,8 @@ def _validate_rootfs_record(record: object) -> None:
         raise ValueError("rootfs integrity evidence has an unsupported field set")
     if type(record["schemaVersion"]) is not int or record["schemaVersion"] != 1:
         raise ValueError("rootfs integrity evidence schema must be 1")
-    if type(record["blobCount"]) is not int or record["blobCount"] < 0:
-        raise ValueError("rootfs blob count must be a non-negative integer")
+    if type(record["blobCount"]) is not int or record["blobCount"] <= 0:
+        raise ValueError("rootfs blob count must be a positive integer")
     for field in ("blobSetIdentity", "indexSha256"):
         value = record[field]
         if not isinstance(value, str) or _SHA256.fullmatch(value) is None:

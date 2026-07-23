@@ -59,6 +59,8 @@ def inspect_rootfs(index_path: Path, blob_directory: Path) -> dict[str, Any]:
 
     referenced: set[str] = set()
     _collect_blob_keys(index["fsroot"], referenced, "fsroot")
+    if not referenced:
+        raise ValueError("rootfs must reference at least one content-addressed blob")
     _verify_blob_directory(blob_directory, referenced)
 
     return {

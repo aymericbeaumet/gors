@@ -22,6 +22,14 @@ pub fn hir_function(function: &hir::Function) -> Fingerprint {
     encoder.finish()
 }
 
+/// Fingerprint one exact typed package constant independently of siblings.
+#[must_use]
+pub fn hir_constant(constant: &hir::Constant) -> Fingerprint {
+    let mut encoder = Encoder::root(b"hir-constant");
+    encode_constant(&mut encoder, constant);
+    encoder.finish()
+}
+
 fn encode_file(encoder: &mut Encoder, file: &hir::File) {
     encoder.field(b"package", |encoder| encoder.string(&file.package));
     encoder.field(b"constants", |encoder| {

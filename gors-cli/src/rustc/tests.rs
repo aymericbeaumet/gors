@@ -23,12 +23,19 @@ fn action_fixture(release: bool) -> ActionFixture {
     let module = temporary.path().join("module.rs");
     let runtime = temporary.path().join("lib__gors_runtime.rlib");
     let rustc = temporary.path().join("rustc");
+    let linker = temporary.path().join("linker");
+    let target_libdir = temporary.path().join("target-libdir");
     let output = temporary.path().join("main");
     std::fs::write(source, b"fn main() {}\n").unwrap();
     std::fs::write(module, b"pub fn value() -> i64 { 1 }\n").unwrap();
     std::fs::write(&runtime, RUNTIME_PAYLOAD).unwrap();
     std::fs::write(&rustc, b"test rustc").unwrap();
-    let rustc_snapshot_identity = crate::runtime_link::rustc_snapshot_identity(&rustc).unwrap();
+    std::fs::write(&linker, b"test linker").unwrap();
+    std::fs::create_dir(&target_libdir).unwrap();
+    make_executable(&rustc);
+    make_executable(&linker);
+    let toolchain =
+        TerminalToolchain::for_test(&rustc, &linker, &target_libdir, "test-target").unwrap();
     let generated_file_hashes = generated_hashes([
         (GENERATED_SOURCE_FILENAME, b"fn main() {}\n".as_slice()),
         ("module.rs", b"pub fn value() -> i64 { 1 }\n".as_slice()),
@@ -38,7 +45,7 @@ fn action_fixture(release: bool) -> ActionFixture {
         &output,
         &runtime,
         &test_runtime_link_descriptor(),
-        AdmittedRustc::new(&rustc, &rustc_snapshot_identity),
+        &toolchain,
         &generated_file_hashes,
         RustcProfile::from_release_flag(release),
     )
@@ -46,6 +53,14 @@ fn action_fixture(release: bool) -> ActionFixture {
     ActionFixture {
         _temporary: temporary,
         action,
+    }
+}
+
+fn make_executable(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 }
 
@@ -77,10 +92,7 @@ fn action_is_stable_and_uses_one_explicit_portable_runtime_link() {
         first.action.output_path(),
         &first.action.runtime_artifact_path,
         &test_runtime_link_descriptor(),
-        AdmittedRustc::new(
-            Path::new(first.action.program()),
-            &first.action.rustc_snapshot_identity,
-        ),
+        &first.action.toolchain,
         &generated_file_hashes,
         RustcProfile::Development,
     )
@@ -134,6 +146,11 @@ fn action_is_stable_and_uses_one_explicit_portable_runtime_link() {
     assert!(
         arguments
             .iter()
+            .any(|argument| { argument.to_string_lossy().starts_with("-Clinker=") })
+    );
+    assert!(
+        arguments
+            .iter()
             .all(|argument| !argument.to_string_lossy().contains("native"))
     );
     assert!(arguments.windows(2).any(|pair| pair
@@ -181,16 +198,25 @@ fn action_identity_changes_with_every_owned_semantic_input() {
     };
 
     let mut mutated = action.clone();
-    mutated.program.push("-other");
-    assert_changed(&mutated, "program");
-
-    let mut mutated = action.clone();
-    mutated.rustc_snapshot_identity.push_str("-other");
-    assert_changed(&mutated, "rustc snapshot identity");
+    let alternate_tool = mutated.cwd.join("alternate-tool");
+    std::fs::write(&alternate_tool, b"alternate tool").unwrap();
+    make_executable(&alternate_tool);
+    mutated.toolchain = TerminalToolchain::for_test(
+        &alternate_tool,
+        &alternate_tool,
+        action.toolchain.target_libdir_path(),
+        "test-target",
+    )
+    .unwrap();
+    assert_changed(&mutated, "terminal toolchain");
 
     let mut mutated = action.clone();
     mutated.cwd.push("other");
     assert_changed(&mutated, "cwd");
+
+    let mut mutated = action.clone();
+    mutated.scratch_path.push("other");
+    assert_changed(&mutated, "scratch path");
 
     let mut mutated = action.clone();
     mutated.generated_sources[0].filename.push_str("-other");
@@ -276,10 +302,7 @@ fn action_identity_changes_with_source_profile_and_runtime_selection() {
         debug.action.output_path(),
         &debug.action.runtime_artifact_path,
         &test_runtime_link_descriptor(),
-        AdmittedRustc::new(
-            Path::new(debug.action.program()),
-            &debug.action.rustc_snapshot_identity,
-        ),
+        &debug.action.toolchain,
         &changed_hashes,
         RustcProfile::Development,
     )
@@ -291,10 +314,7 @@ fn action_identity_changes_with_source_profile_and_runtime_selection() {
         debug.action.output_path(),
         &debug.action.runtime_artifact_path,
         &test_runtime_link_descriptor(),
-        AdmittedRustc::new(
-            Path::new(debug.action.program()),
-            &debug.action.rustc_snapshot_identity,
-        ),
+        &debug.action.toolchain,
         &changed_hashes,
         RustcProfile::Production,
     )
@@ -308,10 +328,7 @@ fn action_identity_changes_with_source_profile_and_runtime_selection() {
         debug.action.output_path(),
         &alternate_runtime,
         &crate::runtime_descriptor::test_runtime_link_descriptor_with_payload(b"alternate"),
-        AdmittedRustc::new(
-            Path::new(debug.action.program()),
-            &debug.action.rustc_snapshot_identity,
-        ),
+        &debug.action.toolchain,
         &changed_hashes,
         RustcProfile::Development,
     )
@@ -356,10 +373,7 @@ fn warm_action_construction_reuses_admitted_hashes_without_input_io() {
         fixture.action.output_path(),
         &fixture.action.runtime_artifact_path,
         &test_runtime_link_descriptor(),
-        AdmittedRustc::new(
-            Path::new(fixture.action.program()),
-            &fixture.action.rustc_snapshot_identity,
-        ),
+        &fixture.action.toolchain,
         &generated_file_hashes,
         RustcProfile::Development,
     )
@@ -382,24 +396,41 @@ fn warm_action_construction_does_not_inspect_historical_rustc() {
     )
     .unwrap();
     std::fs::write(temporary.path().join("runtime.rlib"), RUNTIME_PAYLOAD).unwrap();
+    let removed_linker = temporary.path().join("removed-linker");
+    std::fs::write(&removed_linker, b"linker").unwrap();
     let generated_file_hashes =
         generated_hashes([(GENERATED_SOURCE_FILENAME, b"fn main() {}\n".as_slice())]);
     let missing_rustc = temporary.path().join("removed-rustc");
+    std::fs::write(&missing_rustc, b"rustc").unwrap();
+    make_executable(&missing_rustc);
+    make_executable(&removed_linker);
+    let target_libdir = temporary.path().join("target-libdir");
+    std::fs::create_dir(&target_libdir).unwrap();
+    let toolchain = TerminalToolchain::for_test(
+        &missing_rustc,
+        &removed_linker,
+        &target_libdir,
+        "test-target",
+    )
+    .unwrap();
+    let admitted_rustc = toolchain.rustc_path().to_path_buf();
+    std::fs::remove_file(&missing_rustc).unwrap();
+    std::fs::remove_file(&removed_linker).unwrap();
     let action = RustcAction::for_generated_binary(
         temporary.path(),
         &temporary.path().join("main"),
         &temporary.path().join("runtime.rlib"),
         &test_runtime_link_descriptor(),
-        AdmittedRustc::new(&missing_rustc, &"0".repeat(64)),
+        &toolchain,
         &generated_file_hashes,
         RustcProfile::Development,
     )
     .unwrap();
 
-    assert_eq!(Path::new(action.program()), missing_rustc);
+    assert_eq!(Path::new(action.program()), admitted_rustc);
     assert!(matches!(
         action.execute(),
-        Err(RustcActionError::RustcSnapshotInspection { .. })
+        Err(RustcActionError::ToolchainChanged(_))
     ));
 }
 
@@ -413,7 +444,7 @@ fn execution_rejects_rustc_changed_after_compatibility_selection() {
     .unwrap();
     assert!(matches!(
         fixture.action.execute(),
-        Err(RustcActionError::RustcSnapshotChanged { .. })
+        Err(RustcActionError::ToolchainChanged(_))
     ));
 }
 
@@ -422,9 +453,14 @@ fn execution_rejects_rustc_changed_after_compatibility_selection() {
 fn execution_uses_the_owned_command_and_stable_pending_output() {
     let fixture = action_fixture(false);
     let mut action = fixture.action;
-    action.program = OsString::from("/bin/sh");
-    action.rustc_snapshot_identity =
-        crate::runtime_link::rustc_snapshot_identity(Path::new("/bin/sh")).unwrap();
+    let target_libdir = tempfile::tempdir().unwrap();
+    action.toolchain = TerminalToolchain::for_test(
+        Path::new("/bin/sh"),
+        Path::new("/bin/sh"),
+        target_libdir.path(),
+        "test-target",
+    )
+    .unwrap();
     action.argv = vec![
         OsString::from("-c"),
         OsString::from("printf stable > .main.pending && chmod 644 .main.pending"),
@@ -436,6 +472,24 @@ fn execution_uses_the_owned_command_and_stable_pending_output() {
     assert_eq!(executable.path(), action.output_path());
     assert_eq!(executable.size_bytes(), 6);
     assert_eq!(executable.mode(), 0o755);
+}
+
+#[cfg(unix)]
+#[test]
+fn execution_rejects_a_symlinked_compiler_scratch_directory() {
+    use std::os::unix::fs::symlink;
+
+    let fixture = action_fixture(false);
+    let outside = tempfile::tempdir().unwrap();
+    symlink(outside.path(), &fixture.action.scratch_path).unwrap();
+
+    let error = fixture.action.execute().unwrap_err();
+    assert!(matches!(error, RustcActionError::Io(_)));
+    assert!(
+        error
+            .to_string()
+            .contains("scratch path is not a real directory")
+    );
 }
 
 #[cfg(unix)]

@@ -445,7 +445,6 @@ fn production_executes_the_query_spine_and_noop_reuses_every_stage() {
     let first = session.database().telemetry();
     for stage in [
         QueryKind::FileProjection,
-        QueryKind::SemanticFile,
         QueryKind::TypedHir,
         QueryKind::VerifiedGoMir,
         QueryKind::NormalizedGoMir,
@@ -509,7 +508,6 @@ fn different_length_private_body_edit_keeps_unrelated_products_green() {
 
     let telemetry = session.database().telemetry();
     assert_eq!(telemetry.executions(QueryKind::FileProjection), 1);
-    assert_eq!(telemetry.executions(QueryKind::SemanticFile), 1);
     assert_eq!(telemetry.executions(QueryKind::PackageAnalysis), 0);
     assert_eq!(telemetry.executions(QueryKind::PackageFunctionLookup), 0);
 }

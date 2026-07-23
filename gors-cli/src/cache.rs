@@ -17,7 +17,7 @@ pub use output_manifest::GeneratedOutputManifest;
 const CACHE_MANIFEST_FILENAME: &str = ".gors_cli_cache.json";
 const CACHE_MANIFEST_VERSION: u32 = 5;
 const TERMINAL_MANIFEST_FILENAME: &str = ".gors_cli_terminal.json";
-const TERMINAL_MANIFEST_VERSION: u32 = 4;
+const TERMINAL_MANIFEST_VERSION: u32 = 6;
 const CACHE_MAX_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 const CACHE_MAX_ENTRIES: usize = 256;
 const CACHE_MAX_AGE: Duration = Duration::from_secs(14 * 24 * 60 * 60);
@@ -79,8 +79,7 @@ struct TerminalState {
     generated_identity: String,
     runtime: RuntimeLinkDescriptor,
     artifact_path: String,
-    rustc_path: String,
-    rustc_snapshot_identity: String,
+    toolchain: crate::rustc::TerminalToolchain,
     executables: BTreeMap<String, ExecutableArtifact>,
 }
 
@@ -260,16 +259,8 @@ impl CliCacheManifest {
         &mut self,
         runtime: &RuntimeLinkDescriptor,
         artifact_path: &Path,
-        rustc_path: &Path,
-        rustc_snapshot_identity: &str,
+        toolchain: &crate::rustc::TerminalToolchain,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        if !rustc_path.is_absolute() {
-            return Err(std::io::Error::other(format!(
-                "terminal rustc path is not absolute: {}",
-                rustc_path.display()
-            ))
-            .into());
-        }
         if !artifact_path.is_absolute() {
             return Err(std::io::Error::other(format!(
                 "terminal runtime artifact path is not absolute: {}",
@@ -283,24 +274,17 @@ impl CliCacheManifest {
                 artifact_path.display()
             ))
         })?;
-        let rustc_path = rustc_path.to_str().ok_or_else(|| {
-            std::io::Error::other(format!(
-                "terminal rustc path is not valid UTF-8: {}",
-                rustc_path.display()
-            ))
-        })?;
-        if !is_sha256(rustc_snapshot_identity) {
-            return Err(std::io::Error::other(format!(
-                "terminal rustc snapshot identity is not canonical SHA-256: {rustc_snapshot_identity}"
-            ))
+        if !toolchain.is_canonical() || toolchain.target() != runtime.target_triple() {
+            return Err(std::io::Error::other(
+                "terminal toolchain is not canonical for the selected runtime target",
+            )
             .into());
         }
         match &mut self.terminal {
             Some(terminal) => {
                 terminal.runtime = runtime.clone();
                 terminal.artifact_path = artifact_path.to_string();
-                terminal.rustc_path = rustc_path.to_string();
-                terminal.rustc_snapshot_identity = rustc_snapshot_identity.to_string();
+                terminal.toolchain = toolchain.clone();
             }
             None => {
                 self.terminal = Some(TerminalState {
@@ -308,8 +292,7 @@ impl CliCacheManifest {
                     generated_identity: self.generated_identity.clone(),
                     runtime: runtime.clone(),
                     artifact_path: artifact_path.to_string(),
-                    rustc_path: rustc_path.to_string(),
-                    rustc_snapshot_identity: rustc_snapshot_identity.to_string(),
+                    toolchain: toolchain.clone(),
                     executables: BTreeMap::new(),
                 });
             }
@@ -328,16 +311,8 @@ impl CliCacheManifest {
             .map(|terminal| Path::new(&terminal.artifact_path))
     }
 
-    pub fn selected_rustc_path(&self) -> Option<&Path> {
-        self.terminal
-            .as_ref()
-            .map(|terminal| Path::new(&terminal.rustc_path))
-    }
-
-    pub fn selected_rustc_snapshot_identity(&self) -> Option<&str> {
-        self.terminal
-            .as_ref()
-            .map(|terminal| terminal.rustc_snapshot_identity.as_str())
+    pub fn selected_terminal_toolchain(&self) -> Option<&crate::rustc::TerminalToolchain> {
+        self.terminal.as_ref().map(|terminal| &terminal.toolchain)
     }
 
     pub fn admit_executable(
@@ -482,8 +457,8 @@ impl TerminalState {
             || &selected_dependency != generated_dependency
             || !terminal.runtime.is_canonical()
             || !Path::new(&terminal.artifact_path).is_absolute()
-            || !Path::new(&terminal.rustc_path).is_absolute()
-            || !is_sha256(&terminal.rustc_snapshot_identity)
+            || !terminal.toolchain.is_canonical()
+            || terminal.toolchain.target() != terminal.runtime.target_triple()
             || !terminal.executables.iter().all(|(profile, executable)| {
                 matches!(profile.as_str(), "development" | "production")
                     && executable.is_canonical()
@@ -520,10 +495,9 @@ pub fn refresh_runtime_selection(
     manifest: &mut CliCacheManifest,
     runtime: &RuntimeLinkDescriptor,
     artifact_path: &Path,
-    rustc_path: &Path,
-    rustc_snapshot_identity: &str,
+    toolchain: &crate::rustc::TerminalToolchain,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    manifest.refresh_runtime(runtime, artifact_path, rustc_path, rustc_snapshot_identity)?;
+    manifest.refresh_runtime(runtime, artifact_path, toolchain)?;
     manifest.save_terminal(output_dir)
 }
 

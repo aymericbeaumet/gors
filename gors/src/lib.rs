@@ -96,6 +96,9 @@ pub mod error;
 
 pub(crate) mod profile;
 
+/// Canonical Go package import-path identities.
+pub mod import_path;
+
 /// Go source code parser.
 ///
 /// Parses Go source code into an Abstract Syntax Tree following

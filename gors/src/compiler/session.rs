@@ -143,11 +143,6 @@ impl CompilerSession {
         }
         self.validate_bootstrap_boundary(&installed, &main_analysis)?;
 
-        for file in &installed.main_files {
-            self.database
-                .semantic_status(file.id)
-                .map_err(|error| self.query_error(error))?;
-        }
         let current_root_inputs = self.current_root_inputs(&main_analysis)?;
         let roots = self.roots_requiring_prewarm(&current_root_inputs);
         self.prewarm_rust_ir(&roots)?;
@@ -592,6 +587,10 @@ impl CompilerSession {
                 .functions()
                 .iter()
                 .any(|function| function.id() == definition)
+                || analysis
+                    .constants()
+                    .iter()
+                    .any(|constant| constant.id() == definition)
             {
                 return self.database.definition_source_table(file, definition).ok();
             }
@@ -671,6 +670,19 @@ impl CompilerSession {
                     code: "GORS2003",
                     message: format!(
                         "could not project function {name:?} into owned semantic syntax: {message}"
+                    ),
+                    file: self.source_path_or_empty(*file),
+                    line: 0,
+                    column: 0,
+                },
+                PackageIssue::ConstantProjectionFailure {
+                    file,
+                    name,
+                    message,
+                } => CompilerDiagnostic {
+                    code: "GORS2003",
+                    message: format!(
+                        "could not project constant {name:?} into owned semantic syntax: {message}"
                     ),
                     file: self.source_path_or_empty(*file),
                     line: 0,

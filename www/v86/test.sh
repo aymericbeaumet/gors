@@ -32,6 +32,47 @@ grep -Fq "printf 'GORS_RUN_DONE:%s\\n' \"\$NONCE\"" \
     "${SCRIPT_DIR}/rootfs/gors-run"
 grep -Fq '32-character lowercase hexadecimal nonce' \
     "${SCRIPT_DIR}/rootfs/gors-compile"
+python3 - \
+    "${SCRIPT_DIR}/boot-contract.json" \
+    "${SCRIPT_DIR}/rootfs/gors-compile" \
+    "${SCRIPT_DIR}/rootfs/gors-run" \
+    "${SCRIPT_DIR}/rootfs/gors-warmup" \
+    "${SCRIPT_DIR}/../v86-boot-manifest-build.js" \
+    "${SCRIPT_DIR}/../webpack.config.js" <<'PY'
+import json
+from pathlib import Path
+import re
+import sys
+
+contract = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+compile_script = Path(sys.argv[2]).read_text(encoding="utf-8")
+run_script = Path(sys.argv[3]).read_text(encoding="utf-8")
+warmup_script = Path(sys.argv[4]).read_text(encoding="utf-8")
+manifest_builder = Path(sys.argv[5]).read_text(encoding="utf-8")
+webpack_config = Path(sys.argv[6]).read_text(encoding="utf-8")
+protocol = contract["guestProtocol"]
+vm = contract["vm"]
+
+assert contract["schemaVersion"] == 1
+assert protocol["schemaVersion"] == 1
+assert protocol["compileCommand"] == "gors-compile"
+assert protocol["runCommand"] == "gors-run"
+assert protocol["jobDirectory"] == "tmp"
+assert protocol["nonceHexLength"] == 32
+assert protocol["bootReadyMarker"] in warmup_script
+assert protocol["compileDonePrefix"] in compile_script
+assert protocol["runDonePrefix"] in run_script
+assert str(protocol["nonceHexLength"]) in compile_script
+assert str(protocol["nonceHexLength"]) in run_script
+assert vm["memorySizeBytes"] > 0
+assert vm["maxSavedStateBytes"] >= vm["memorySizeBytes"]
+assert "slice(0, 16)" not in manifest_builder
+assert re.search(r"rootfs-\$\{rootfsPublication\.rootfs\.indexSha256\}", manifest_builder)
+assert "v86/tools/verify-manifest.py" in webpack_config
+assert "rootfsPublication.inputDigest" in webpack_config
+assert "verifyEmittedV86BootAssets" in webpack_config
+assert "PROCESS_ASSETS_STAGE_SUMMARIZE" in webpack_config
+PY
 grep -q '/usr/local/share/gors/runtime/producer.json' "${SCRIPT_DIR}/Dockerfile"
 grep -q "'.producer_identity'" "${SCRIPT_DIR}/rootfs/gors-runtime-publish"
 grep -q "'.producer_identity'" "${SCRIPT_DIR}/rootfs/gors-runtime-verify"
@@ -295,6 +336,18 @@ python3 "${SCRIPT_DIR}/tools/verify-manifest.py" \
     "${TEMPORARY}/rootfs.json" \
     "${TEMPORARY}/rootfs-flat" \
     verbose
+mkdir -p "${TEMPORARY}/rootfs-flat-empty"
+printf '%s\n' '{"fsroot":[],"size":0,"version":3}' \
+    >"${TEMPORARY}/rootfs-empty.json"
+if python3 "${SCRIPT_DIR}/tools/write-manifest.py" \
+    "${DIGEST_A}" \
+    "${TEMPORARY}/provider-a.json" \
+    "${TEMPORARY}/rootfs-empty.json" \
+    "${TEMPORARY}/rootfs-flat-empty" \
+    "${TEMPORARY}/manifest-empty.json" > /dev/null 2>&1; then
+    echo "empty V86 rootfs publication was accepted" >&2
+    exit 1
+fi
 if python3 "${SCRIPT_DIR}/tools/verify-manifest.py" \
     "${DIGEST_CONTENT}" \
     "${PUBLICATION_MANIFEST}" \

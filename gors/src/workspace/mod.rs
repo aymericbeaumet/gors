@@ -7,6 +7,7 @@
 
 mod error;
 mod loader;
+pub mod local_module;
 mod model;
 
 pub use error::{LoadError, PathExpectation};

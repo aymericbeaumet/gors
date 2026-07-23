@@ -22,8 +22,8 @@ use self::snapshot::{RustcSnapshot, SnapshotError, TreeSnapshot, rustc_snapshot,
 mod probe;
 mod snapshot;
 
-const CACHE_SCHEMA: u32 = 2;
-const CACHE_FILENAME: &str = "compatibility-v2.json";
+const CACHE_SCHEMA: u32 = 3;
+const CACHE_FILENAME: &str = "compatibility-v3.json";
 const LOCK_FILENAME: &str = ".compatibility.lock";
 const CACHE_KEY_DOMAIN: &[u8] = b"gors.native-rustc-compatibility-cache-key\0";
 static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -44,11 +44,20 @@ pub(super) fn current_rustc_snapshot_identity(
     snapshot_identity(&snapshot)
 }
 
+pub(super) fn current_target_libdir_snapshot_identity(
+    target_libdir: &Path,
+) -> Result<String, CompatibilityCacheError> {
+    let snapshot = tree_snapshot(target_libdir).map_err(CompatibilityCacheError::Snapshot)?;
+    target_snapshot_identity(&snapshot)
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct ResolvedRustcCompatibility {
     compatibility: RustRlibCompatibility,
     rustc_path: PathBuf,
     rustc_snapshot_identity: String,
+    target_libdir: PathBuf,
+    target_libdir_snapshot_identity: String,
 }
 
 impl ResolvedRustcCompatibility {
@@ -62,6 +71,14 @@ impl ResolvedRustcCompatibility {
 
     pub(super) fn rustc_snapshot_identity(&self) -> &str {
         &self.rustc_snapshot_identity
+    }
+
+    pub(super) fn target_libdir(&self) -> &Path {
+        &self.target_libdir
+    }
+
+    pub(super) fn target_libdir_snapshot_identity(&self) -> &str {
+        &self.target_libdir_snapshot_identity
     }
 }
 
@@ -186,6 +203,7 @@ fn fully_probe(
         });
     }
     let rustc_snapshot_identity = snapshot_identity(&rustc_after)?;
+    let target_libdir_snapshot_identity = target_snapshot_identity(&target_after)?;
     let payload = CachePayload {
         selector: selector.to_owned(),
         target: CachedTarget::from(target),
@@ -206,6 +224,8 @@ fn fully_probe(
             compatibility,
             rustc_path: rustc_path.to_path_buf(),
             rustc_snapshot_identity,
+            target_libdir,
+            target_libdir_snapshot_identity,
         },
         document,
     })
@@ -248,6 +268,8 @@ fn admit_cached(
     )
     .ok()?;
     let current_rustc_snapshot_identity = snapshot_identity(current_rustc_snapshot).ok()?;
+    let current_target_snapshot_identity =
+        target_snapshot_identity(&current_target_snapshot).ok()?;
     if payload.rustc_release_record != hex(compatibility.rustc_release_record())
         || payload.target_libdir_record != hex(compatibility.target_libdir_record())
         || payload.compatibility_record != hex(compatibility.canonical_bytes())
@@ -262,6 +284,8 @@ fn admit_cached(
         compatibility,
         rustc_path: rustc_path.to_path_buf(),
         rustc_snapshot_identity: current_rustc_snapshot_identity,
+        target_libdir: PathBuf::from(&payload.target_libdir),
+        target_libdir_snapshot_identity: current_target_snapshot_identity,
     })
 }
 
@@ -366,6 +390,13 @@ fn payload_checksum_json(payload: &CachePayload) -> Result<String, serde_json::E
 }
 
 fn snapshot_identity(snapshot: &RustcSnapshot) -> Result<String, CompatibilityCacheError> {
+    snapshot
+        .identity()
+        .map(hex)
+        .map_err(CompatibilityCacheError::Serialize)
+}
+
+fn target_snapshot_identity(snapshot: &TreeSnapshot) -> Result<String, CompatibilityCacheError> {
     snapshot
         .identity()
         .map(hex)

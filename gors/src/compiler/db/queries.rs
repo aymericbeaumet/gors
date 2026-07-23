@@ -1,25 +1,40 @@
 //! Salsa ingredients and the first source-projection query graph.
 
+mod analysis;
+mod constant_eval;
+mod hir_dependencies;
+mod support;
+
+pub(super) use analysis::{
+    body_product, file_analysis_product, package_analysis_product, public_api_product,
+    signature_product,
+};
+use hir_dependencies::direct_callees;
+use support::{
+    check_semantic_barrier, collect_constant_references, function_file, referenced_names_in_body,
+    semantic_build_dependency, semantic_failure,
+};
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::ast;
 use crate::compiler::fingerprint::{fingerprint_parts, rust_ir_root_inputs};
 use crate::compiler::input::SourceContent;
-use crate::compiler::provenance::DefinitionSourceTable;
-use crate::compiler::syntax::{FunctionLayout, ProjectedFunctionSyntax, project_function};
+use crate::compiler::provenance::{DefinitionSourceTable, FileRange, SourceRef};
+use crate::compiler::syntax::{
+    ConstantLayout, ConstantSyntax, FunctionLayout, ProjectedConstantSyntax,
+    ProjectedFunctionSyntax, project_constant, project_function,
+};
 use crate::compiler::{Diagnostic, lowering, mir, rust_ir};
 use crate::source::SourceCoordinateMap;
 
 use super::super::ids::{DefId, DefinitionKey, DefinitionKind, FileId, PackageId};
-use super::model::{
-    FileAnalysis, FileIssue, FunctionBody, FunctionDescriptor, FunctionSignature, PackageAnalysis,
-    PackageIssue, ParseFailure, PublicApi, RuntimeAbiId,
-};
+use super::model::{FileIssue, FunctionBody, FunctionSignature, ParseFailure, RuntimeAbiId};
 use super::products::{
     CompilerStage, MirSignatureDependencies, NormalizedMirFunction, RustSignatureDependencies,
-    StageFailure, StageResult, TypedFunctionSignature, TypedHirFunction, VerifiedMirFunction,
-    VerifiedRustIrFunction, VerifiedRustIrPackage,
+    SemanticFunctionProduct, StageFailure, StageResult, TypedFunctionSignature, TypedHirFunction,
+    VerifiedMirFunction, VerifiedRustIrFunction, VerifiedRustIrPackage,
 };
 use super::source_metadata::{FileComments, FileImports};
 use super::source_projection::{project_comments, project_imports};
@@ -83,13 +98,31 @@ pub(super) struct FunctionProjection<'db> {
     pub(super) layout: Arc<FunctionLayout>,
     #[tracked]
     #[returns(clone)]
-    pub(super) typed_signature: Option<crate::compiler::types::Signature>,
+    pub(super) semantic_barrier: Option<Arc<str>>,
+}
+
+#[salsa::tracked]
+pub(super) struct ConstantProjection<'db> {
+    #[returns(copy)]
+    pub(super) id: DefId,
     #[tracked]
     #[returns(clone)]
-    pub(super) hir: StageResult<TypedHirFunction>,
+    pub(super) key: DefinitionKey,
     #[tracked]
     #[returns(clone)]
-    pub(super) source_table: StageResult<DefinitionSourceTable>,
+    pub(super) name: Arc<str>,
+    #[tracked]
+    #[returns(clone)]
+    pub(super) syntax: Arc<ConstantSyntax>,
+    #[tracked]
+    #[returns(clone)]
+    pub(super) layout: Arc<ConstantLayout>,
+    #[tracked]
+    #[returns(clone)]
+    pub(super) dependencies: Arc<[Arc<str>]>,
+    #[tracked]
+    #[returns(clone)]
+    pub(super) semantic_barrier: Option<Arc<str>>,
 }
 
 #[salsa::tracked]
@@ -119,13 +152,13 @@ pub(super) struct FileFacts<'db> {
     pub(super) functions: Vec<FunctionProjection<'db>>,
     #[tracked]
     #[returns(clone)]
+    pub(super) constants: Vec<ConstantProjection<'db>>,
+    #[tracked]
+    #[returns(clone)]
     pub(super) failure: Option<ParseFailure>,
     #[tracked]
     #[returns(clone)]
     pub(super) issues: Vec<FileIssue>,
-    #[tracked]
-    #[returns(clone)]
-    pub(super) semantic_failure: Option<Arc<StageFailure>>,
 }
 
 #[salsa::tracked(returns(copy))]
@@ -149,9 +182,9 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
                 Arc::new(FileImports::new(file, Arc::from([]), Arc::from([]))),
                 Arc::new(FileComments::new(file, Arc::from([]))),
                 Vec::new(),
+                Vec::new(),
                 Some(ParseFailure::new(error.message(), error.physical_range())),
                 Vec::new(),
-                None,
             );
         }
     };
@@ -162,139 +195,148 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
     let imports = Arc::new(project_imports(file, &parsed));
     let comments = Arc::new(project_comments(file, &content, &parsed));
 
-    let mut seen = BTreeSet::new();
-    let mut projected = Vec::new();
+    let semantic_barrier = if !imports.direct().is_empty() || !imports.invalid().is_empty() {
+        Some(Arc::from(
+            "imported packages are not implemented by the semantic query pipeline",
+        ))
+    } else if parsed.decls.iter().any(|declaration| {
+        matches!(
+            declaration,
+            ast::Decl::GenDecl(declaration)
+                if matches!(declaration.tok, crate::token::Token::TYPE | crate::token::Token::VAR)
+        )
+    }) {
+        Some(Arc::from(
+            "package variables and declared types are not implemented by the semantic query pipeline",
+        ))
+    } else {
+        None
+    };
+    let mut seen = BTreeSet::<Arc<str>>::new();
+    let mut projected_functions = Vec::new();
+    let mut projected_constants = Vec::new();
     let mut issues = Vec::new();
     for declaration in &parsed.decls {
-        let ast::Decl::FuncDecl(function) = declaration else {
-            continue;
-        };
-        let name: Arc<str> = Arc::from(function.name.name);
-        // The identity API can represent repeated `init` declarations, but
-        // this parser has no stable syntax-node anchor from which to derive a
-        // semantic disambiguator yet. Reject every repeated source name at
-        // this indexing frontier instead of inventing an ordinal or offset.
-        if !seen.insert(Arc::clone(&name)) {
-            issues.push(FileIssue::DuplicateFunction(name));
-            continue;
-        }
-        let key =
-            DefinitionKey::package_named(package_id, DefinitionKind::Function, function.name.name);
-        let id = key.id();
-        let ProjectedFunctionSyntax {
-            anchor,
-            layout,
-            header,
-            body,
-        } = match project_function(function, &token_observations) {
-            Ok(projected) => projected,
-            Err(error) => {
-                issues.push(FileIssue::FunctionProjectionFailure {
+        match declaration {
+            ast::Decl::FuncDecl(function) => {
+                let name: Arc<str> = Arc::from(function.name.name);
+                if !seen.insert(Arc::clone(&name)) {
+                    issues.push(FileIssue::DuplicateDefinition(name));
+                    continue;
+                }
+                let key = DefinitionKey::package_named(
+                    package_id,
+                    DefinitionKind::Function,
+                    function.name.name,
+                );
+                let id = key.id();
+                let ProjectedFunctionSyntax {
+                    anchor,
+                    layout,
+                    header,
+                    body,
+                    structural_header,
+                    structural_body,
+                } = match project_function(function, &token_observations) {
+                    Ok(projected) => projected,
+                    Err(error) => {
+                        issues.push(FileIssue::FunctionProjectionFailure {
+                            name,
+                            message: Arc::from(error.to_string()),
+                        });
+                        continue;
+                    }
+                };
+                let signature = Arc::new(FunctionSignature::new(
+                    id,
+                    Arc::clone(&name),
+                    anchor.clone(),
+                    header,
+                    Arc::new(structural_header),
+                    !function.type_.params.list.is_empty(),
+                    function
+                        .type_
+                        .results
+                        .as_ref()
+                        .is_some_and(|results| !results.list.is_empty()),
+                ));
+                projected_functions.push((
+                    id,
+                    key,
                     name,
-                    message: Arc::from(error.to_string()),
-                });
-                continue;
+                    signature,
+                    Arc::new(FunctionBody::new(
+                        id,
+                        anchor,
+                        body,
+                        Arc::new(structural_body),
+                    )),
+                    Arc::new(layout),
+                ));
             }
-        };
-        let signature = Arc::new(FunctionSignature::new(
-            id,
-            Arc::clone(&name),
-            anchor.clone(),
-            header,
-            !function.type_.params.list.is_empty(),
-            function
-                .type_
-                .results
-                .as_ref()
-                .is_some_and(|results| !results.list.is_empty()),
-        ));
-        projected.push((
-            id,
-            key,
-            name,
-            signature,
-            Arc::new(FunctionBody::new(id, anchor, body)),
-            Arc::new(layout),
-        ));
+            ast::Decl::GenDecl(declaration) if declaration.tok == crate::token::Token::CONST => {
+                for spec in &declaration.specs {
+                    let ast::Spec::ValueSpec(spec) = spec else {
+                        continue;
+                    };
+                    let values = spec.values.as_deref().unwrap_or_default();
+                    let arity_mismatch = !values.is_empty() && values.len() != spec.names.len();
+                    for (index, name) in spec.names.iter().enumerate() {
+                        let owned_name: Arc<str> = Arc::from(name.name);
+                        if !seen.insert(Arc::clone(&owned_name)) {
+                            issues.push(FileIssue::DuplicateDefinition(owned_name));
+                            continue;
+                        }
+                        let key = DefinitionKey::package_named(
+                            package_id,
+                            DefinitionKind::Constant,
+                            name.name,
+                        );
+                        let id = key.id();
+                        let ProjectedConstantSyntax { syntax, layout } = match project_constant(
+                            name,
+                            spec.type_.as_ref(),
+                            values.get(index),
+                            arity_mismatch,
+                            content.text_len(),
+                        ) {
+                            Ok(projected) => projected,
+                            Err(error) => {
+                                issues.push(FileIssue::ConstantProjectionFailure {
+                                    name: owned_name,
+                                    message: Arc::from(error.to_string()),
+                                });
+                                continue;
+                            }
+                        };
+                        let mut referenced = BTreeSet::new();
+                        collect_constant_references(&syntax, &mut referenced);
+                        let dependencies = referenced
+                            .into_iter()
+                            .filter(|name| !matches!(name.as_str(), "true" | "false"))
+                            .map(Arc::<str>::from)
+                            .collect::<Vec<_>>();
+                        projected_constants.push((
+                            id,
+                            key,
+                            Arc::clone(&owned_name),
+                            Arc::new(syntax),
+                            Arc::new(layout),
+                            Arc::<[Arc<str>]>::from(dependencies),
+                        ));
+                    }
+                }
+            }
+            ast::Decl::GenDecl(_) => {}
+        }
     }
-    projected.sort_by_key(|(id, _, _, _, _, _)| *id);
+    projected_functions.sort_by_key(|(id, _, _, _, _, _)| *id);
+    projected_constants.sort_by_key(|(id, _, _, _, _, _)| *id);
     issues.sort();
 
-    db.query_telemetry().record_query(QueryKind::SemanticFile);
-    // The current semantic frontier has no version-conditioned construct yet,
-    // but consuming this field makes the pinned Go language version an
-    // explicit dependency instead of an ambient or forgotten input.
-    let context = super::super::semantic::SemanticContext {
-        package: package_id,
-        file,
-        logical_file: logical_path.to_string(),
-    };
-    let semantic = if let Some(build) = db.query_build_input() {
-        let _go_version = build.go_version(db);
-        super::super::semantic::lower_file_with_context(&parsed, context)
-    } else {
-        Err(vec![Diagnostic::backend(
-            "compiler build config is missing from the semantic query database",
-        )])
-    };
-    let (mut typed_functions, semantic_failure) = match semantic {
-        Ok(mut semantic) => {
-            let functions = semantic
-                .file
-                .functions
-                .drain(..)
-                .map(|function| {
-                    let source_table = semantic.source_tables.remove(&function.id);
-                    (function.id, (function, source_table))
-                })
-                .collect::<BTreeMap<_, _>>();
-            (functions, None)
-        }
-        Err(diagnostics) => {
-            let failure = Arc::new(StageFailure::for_file(
-                CompilerStage::Semantic,
-                file,
-                diagnostics,
-            ));
-            (BTreeMap::new(), Some(failure))
-        }
-    };
-    let functions = projected
+    let functions = projected_functions
         .into_iter()
         .map(|(id, key, name, signature, body, layout)| {
-            let (typed_signature, hir, source_table) = match typed_functions.remove(&id) {
-                Some((function, Some(source_table))) => {
-                    let typed_signature = Some(function.signature.clone());
-                    let hir = Ok(Arc::new(TypedHirFunction::new(Arc::new(function))));
-                    (typed_signature, hir, Ok(Arc::new(source_table)))
-                }
-                Some((function, None)) => {
-                    let failure = Arc::new(StageFailure::one_for_definition(
-                        CompilerStage::Semantic,
-                        id,
-                        Diagnostic::backend(format!(
-                            "semantic lowering omitted source table for DefId {id}"
-                        )),
-                    ));
-                    (
-                        Some(function.signature),
-                        Err(Arc::clone(&failure)),
-                        Err(failure),
-                    )
-                }
-                None => {
-                    let failure = semantic_failure.clone().unwrap_or_else(|| {
-                        Arc::new(StageFailure::one_for_definition(
-                            CompilerStage::Semantic,
-                            id,
-                            Diagnostic::backend(format!(
-                                "semantic lowering omitted indexed function DefId {id}"
-                            )),
-                        ))
-                    });
-                    (None, Err(Arc::clone(&failure)), Err(failure))
-                }
-            };
             FunctionProjection::new(
                 db,
                 id,
@@ -304,9 +346,22 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
                 signature,
                 body,
                 layout,
-                typed_signature,
-                hir,
-                source_table,
+                semantic_barrier.clone(),
+            )
+        })
+        .collect();
+    let constants = projected_constants
+        .into_iter()
+        .map(|(id, key, name, syntax, layout, dependencies)| {
+            ConstantProjection::new(
+                db,
+                id,
+                key,
+                name,
+                syntax,
+                layout,
+                dependencies,
+                semantic_barrier.clone(),
             )
         })
         .collect();
@@ -320,28 +375,85 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
         imports,
         comments,
         functions,
+        constants,
         None,
         issues,
-        semantic_failure,
     )
-}
-
-#[salsa::tracked(returns(clone))]
-pub(super) fn semantic_status_product(
-    db: &dyn Db,
-    facts: FileFacts<'_>,
-) -> Result<(), Arc<StageFailure>> {
-    facts.semantic_failure(db).map_or(Ok(()), Err)
 }
 
 #[salsa::tracked(returns(clone))]
 pub(super) fn definition_source_table_product(
     db: &dyn Db,
+    input: PackageInput,
     function: FunctionProjection<'_>,
 ) -> StageResult<DefinitionSourceTable> {
     db.query_telemetry()
         .record_query(QueryKind::DefinitionSourceTable);
-    function.source_table(db)
+    let definition = function.id(db);
+    let layout = function.layout(db);
+    let file = function_file(db, input, function)?;
+    let semantic = semantic_function_product(db, input, function);
+    let source_plan = semantic.source_plan();
+    let mappings = source_plan
+        .iter()
+        .copied()
+        .map(|(source, syntax_source)| {
+            layout
+                .resolve(syntax_source)
+                .map(|range| (source, FileRange::new(file, range)))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            Arc::new(StageFailure::one_for_definition(
+                CompilerStage::Semantic,
+                definition,
+                Diagnostic::backend(format!(
+                    "owned syntax source plan does not match its physical layout: {error}"
+                )),
+            ))
+        })?;
+    DefinitionSourceTable::try_new(definition, file, layout.source_len(), mappings)
+        .map(Arc::new)
+        .map_err(|error| {
+            Arc::new(StageFailure::one_for_definition(
+                CompilerStage::Semantic,
+                definition,
+                Diagnostic::backend(format!(
+                    "failed to construct definition source table: {error}"
+                )),
+            ))
+        })
+}
+
+#[salsa::tracked(returns(clone))]
+pub(super) fn constant_source_table_product(
+    db: &dyn Db,
+    file: FileId,
+    constant: ConstantProjection<'_>,
+) -> StageResult<DefinitionSourceTable> {
+    db.query_telemetry()
+        .record_query(QueryKind::DefinitionSourceTable);
+    let definition = constant.id(db);
+    let layout = constant.layout(db);
+    DefinitionSourceTable::try_new(
+        definition,
+        file,
+        layout.source_len(),
+        [(
+            SourceRef::definition(definition),
+            FileRange::new(file, layout.declaration()),
+        )],
+    )
+    .map(Arc::new)
+    .map_err(|error| {
+        Arc::new(StageFailure::one_for_definition(
+            CompilerStage::Semantic,
+            definition,
+            Diagnostic::backend(format!(
+                "failed to construct constant source table: {error}"
+            )),
+        ))
+    })
 }
 
 #[salsa::tracked(returns(clone))]
@@ -354,12 +466,104 @@ pub(super) fn function_layout_product(
 }
 
 #[salsa::tracked(returns(clone))]
+pub(super) fn semantic_function_product(
+    db: &dyn Db,
+    input: PackageInput,
+    function: FunctionProjection<'_>,
+) -> Arc<SemanticFunctionProduct> {
+    let definition = function.id(db);
+    let fallback_plan: Arc<[(SourceRef, crate::compiler::syntax::SyntaxSource)]> = Arc::from([(
+        SourceRef::definition(definition),
+        function.signature(db).structure().name.source,
+    )]);
+    if let Err(failure) = check_semantic_barrier(db, definition, function.semantic_barrier(db)) {
+        return Arc::new(SemanticFunctionProduct::new(Err(failure), fallback_plan));
+    }
+    let signature = match typed_signature_product(db, function) {
+        Ok(signature) => signature,
+        Err(failure) => {
+            return Arc::new(SemanticFunctionProduct::new(Err(failure), fallback_plan));
+        }
+    };
+    let body = function.body(db);
+    let names = referenced_names_in_body(function.signature(db).structure(), body.structure());
+    let mut functions = BTreeMap::new();
+    let mut constants = BTreeMap::new();
+    for name in names {
+        db.unwind_if_revision_cancelled();
+        if let Some(dependency) = package_function_named_product(db, input, name.clone()) {
+            let typed = match typed_signature_product(db, dependency) {
+                Ok(typed) => typed,
+                Err(failure) => {
+                    return Arc::new(SemanticFunctionProduct::new(Err(failure), fallback_plan));
+                }
+            };
+            functions.insert(
+                name.to_string(),
+                super::super::semantic::FunctionSymbol {
+                    id: dependency.id(db),
+                    signature: typed.signature().clone(),
+                },
+            );
+        }
+        if let Some(dependency) = package_constant_named_product(db, input, name.clone()) {
+            let typed = match typed_constant_product(db, input, dependency) {
+                Ok(typed) => typed,
+                Err(failure) => {
+                    return Arc::new(SemanticFunctionProduct::new(Err(failure), fallback_plan));
+                }
+            };
+            constants.insert(
+                name.to_string(),
+                super::super::semantic::ConstantSymbol {
+                    id: typed.id,
+                    ty: typed.ty.clone(),
+                    value: typed.value.clone(),
+                },
+            );
+        }
+    }
+    match super::super::semantic::lower_function(
+        definition,
+        function.signature(db).structure(),
+        body.structure(),
+        signature.signature().clone(),
+        functions,
+        constants,
+    ) {
+        Ok(lowered) => {
+            let source_plan = Arc::from(lowered.source_plan.clone());
+            Arc::new(SemanticFunctionProduct::new(
+                Ok(Arc::new(lowered)),
+                source_plan,
+            ))
+        }
+        Err(failure) => {
+            let source_plan = Arc::from(failure.source_plan);
+            Arc::new(SemanticFunctionProduct::new(
+                Err(semantic_failure(definition, failure.diagnostic)),
+                source_plan,
+            ))
+        }
+    }
+}
+
+#[salsa::tracked(returns(clone))]
 pub(super) fn typed_hir_product(
     db: &dyn Db,
+    input: PackageInput,
     function: FunctionProjection<'_>,
 ) -> StageResult<TypedHirFunction> {
     db.query_telemetry().record_query(QueryKind::TypedHir);
-    function.hir(db)
+    semantic_function_product(db, input, function)
+        .result()
+        .clone()
+        .map(|lowered| {
+            Arc::new(TypedHirFunction::new(
+                Arc::new(lowered.function.clone()),
+                Arc::from(lowered.source_plan.clone()),
+            ))
+        })
 }
 
 #[salsa::tracked(returns(clone))]
@@ -369,18 +573,21 @@ pub(super) fn typed_signature_product(
 ) -> StageResult<TypedFunctionSignature> {
     db.query_telemetry().record_query(QueryKind::TypedSignature);
     let definition = function.id(db);
-    function
-        .typed_signature(db)
+    check_semantic_barrier(db, definition, function.semantic_barrier(db))?;
+    semantic_build_dependency(db, definition)?;
+    super::super::semantic::lower_signature(definition, function.signature(db).structure())
         .map(|signature| Arc::new(TypedFunctionSignature::new(definition, signature)))
-        .ok_or_else(|| {
-            Arc::new(StageFailure::one_for_definition(
-                CompilerStage::Semantic,
-                definition,
-                Diagnostic::backend(format!(
-                    "typed signature is missing for function DefId {definition}"
-                )),
-            ))
-        })
+        .map_err(|diagnostic| semantic_failure(definition, diagnostic))
+}
+
+#[salsa::tracked(returns(clone))]
+pub(super) fn typed_constant_product(
+    db: &dyn Db,
+    input: PackageInput,
+    constant: ConstantProjection<'_>,
+) -> StageResult<super::super::semantic::TypedConstant> {
+    db.query_telemetry().record_query(QueryKind::TypedConstant);
+    constant_eval::evaluate_constant(db, input, constant)
 }
 
 #[salsa::tracked(returns(copy))]
@@ -406,6 +613,50 @@ pub(super) fn package_function_product<'db>(
     None
 }
 
+#[salsa::tracked(returns(copy))]
+pub(super) fn package_function_named_product<'db>(
+    db: &'db dyn Db,
+    input: PackageInput,
+    name: Arc<str>,
+) -> Option<FunctionProjection<'db>> {
+    db.query_telemetry()
+        .record_query(QueryKind::PackageFunctionLookup);
+    let mut sources = input.sources(db).iter().copied().collect::<Vec<_>>();
+    sources.sort_by_key(|source| source.file(db));
+    for source in sources {
+        if let Some(function) = file_projection(db, source)
+            .functions(db)
+            .into_iter()
+            .find(|function| function.name(db) == name)
+        {
+            return Some(function);
+        }
+    }
+    None
+}
+
+#[salsa::tracked(returns(copy))]
+pub(super) fn package_constant_named_product<'db>(
+    db: &'db dyn Db,
+    input: PackageInput,
+    name: Arc<str>,
+) -> Option<ConstantProjection<'db>> {
+    db.query_telemetry()
+        .record_query(QueryKind::PackageConstantLookup);
+    let mut sources = input.sources(db).iter().copied().collect::<Vec<_>>();
+    sources.sort_by_key(|source| source.file(db));
+    for source in sources {
+        if let Some(constant) = file_projection(db, source)
+            .constants(db)
+            .into_iter()
+            .find(|constant| constant.name(db) == name)
+        {
+            return Some(constant);
+        }
+    }
+    None
+}
+
 #[salsa::tracked(returns(clone))]
 pub(super) fn mir_signature_dependencies_product(
     db: &dyn Db,
@@ -414,7 +665,7 @@ pub(super) fn mir_signature_dependencies_product(
 ) -> StageResult<MirSignatureDependencies> {
     db.query_telemetry()
         .record_query(QueryKind::SignatureDependencies);
-    let hir = typed_hir_product(db, function)?;
+    let hir = typed_hir_product(db, input, function)?;
     let caller = function.id(db);
     let mut definitions = direct_callees(hir.function());
     definitions.insert(caller);
@@ -447,7 +698,7 @@ pub(super) fn verified_mir_product(
     function: FunctionProjection<'_>,
 ) -> StageResult<VerifiedMirFunction> {
     db.query_telemetry().record_query(QueryKind::VerifiedGoMir);
-    let hir = typed_hir_product(db, function)?;
+    let hir = typed_hir_product(db, input, function)?;
     db.unwind_if_revision_cancelled();
     let signatures = mir_signature_dependencies_product(db, input, function)?;
     db.unwind_if_revision_cancelled();
@@ -551,7 +802,7 @@ pub(super) fn rust_ir_root_inputs_product(
 ) -> StageResult<super::super::fingerprint::Fingerprint> {
     db.query_telemetry()
         .record_query(QueryKind::RustIrRootInputs);
-    let hir = typed_hir_product(db, function)?;
+    let hir = typed_hir_product(db, input, function)?;
     db.unwind_if_revision_cancelled();
     let signatures = mir_signature_dependencies_product(db, input, function)?;
     db.unwind_if_revision_cancelled();
@@ -615,6 +866,12 @@ pub(super) fn rust_ir_package_product(
     sources.sort_by_key(|source| source.file(db));
     for source in sources {
         let facts = file_projection(db, source);
+        let mut constants = facts.constants(db);
+        constants.sort_by_key(|constant| constant.id(db));
+        for constant in constants {
+            db.unwind_if_revision_cancelled();
+            typed_constant_product(db, input, constant)?;
+        }
         let mut projected = facts.functions(db);
         projected.sort_by_key(|function| function.id(db));
         for function in projected {
@@ -651,183 +908,6 @@ pub(super) fn rust_ir_package_product(
     )))
 }
 
-#[salsa::tracked(returns(clone))]
-pub(super) fn file_analysis_product(db: &dyn Db, facts: FileFacts<'_>) -> Arc<FileAnalysis> {
-    db.query_telemetry().record_query(QueryKind::FileAnalysis);
-    let functions = facts
-        .functions(db)
-        .into_iter()
-        .map(|function| {
-            FunctionDescriptor::new(facts.file(db), function.key(db), function.name(db))
-        })
-        .collect::<Vec<_>>();
-    Arc::new(FileAnalysis::new(
-        facts.file(db),
-        facts.package(db),
-        functions.into(),
-        facts.failure(db),
-        facts.issues(db).into(),
-    ))
-}
-
-#[salsa::tracked(returns(clone))]
-pub(super) fn package_analysis_product(db: &dyn Db, input: PackageInput) -> Arc<PackageAnalysis> {
-    db.query_telemetry()
-        .record_query(QueryKind::PackageAnalysis);
-    let package = input.package(db);
-    let mut sources = input.sources(db).iter().copied().collect::<Vec<_>>();
-    sources.sort_by_key(|source| source.file(db));
-
-    let mut package_name: Option<Arc<str>> = None;
-    let mut files = Vec::with_capacity(sources.len());
-    let mut direct_imports = BTreeSet::new();
-    let mut functions = Vec::new();
-    let mut exported_signatures = Vec::new();
-    let mut issues = Vec::new();
-    let mut definitions_by_digest = BTreeMap::<DefId, (DefinitionKey, FileId)>::new();
-    let mut declarations_by_name = BTreeMap::<Arc<str>, FileId>::new();
-
-    for source in sources {
-        db.unwind_if_revision_cancelled();
-        let facts = file_projection(db, source);
-        let file = facts.file(db);
-        files.push(file);
-
-        if let Some(failure) = facts.failure(db) {
-            issues.push(PackageIssue::FileParseFailure { file, failure });
-            continue;
-        }
-
-        let imports = facts.imports(db);
-        direct_imports.extend(
-            imports
-                .direct()
-                .iter()
-                .map(|import| Arc::<str>::from(import.path())),
-        );
-        issues.extend(
-            imports
-                .invalid()
-                .iter()
-                .map(|import| PackageIssue::InvalidImportPath {
-                    file: import.file(),
-                    literal: Arc::from(import.literal()),
-                    line: import.line(),
-                    column: import.column(),
-                    virtual_file: import.virtual_file().map(Arc::from),
-                    issue: import.issue().clone(),
-                }),
-        );
-        let declared_package = facts.package(db);
-        if let Some(expected) = &package_name {
-            if expected != &declared_package {
-                issues.push(PackageIssue::PackageClauseMismatch {
-                    file,
-                    expected: Arc::clone(expected),
-                    found: declared_package,
-                });
-            }
-        } else {
-            package_name = Some(declared_package);
-        }
-
-        for issue in facts.issues(db) {
-            match issue {
-                FileIssue::DuplicateFunction(name) => {
-                    issues.push(PackageIssue::DuplicateDefinition {
-                        name,
-                        first_file: file,
-                        second_file: file,
-                    });
-                }
-                FileIssue::FunctionProjectionFailure { name, message } => {
-                    issues.push(PackageIssue::FunctionProjectionFailure {
-                        file,
-                        name,
-                        message,
-                    });
-                }
-            }
-        }
-
-        for function in facts.functions(db) {
-            let id = function.id(db);
-            let key = function.key(db);
-            let name = function.name(db);
-
-            if let Some(first_file) = declarations_by_name.insert(Arc::clone(&name), file) {
-                issues.push(PackageIssue::DuplicateDefinition {
-                    name: Arc::clone(&name),
-                    first_file,
-                    second_file: file,
-                });
-            }
-
-            if let Some((existing_key, _)) = definitions_by_digest.get(&id) {
-                if existing_key != &key {
-                    issues.push(PackageIssue::IdentityCollision {
-                        id,
-                        existing_key: Arc::from(format!("{existing_key:?}")),
-                        requested_key: Arc::from(format!("{key:?}")),
-                    });
-                }
-            } else {
-                definitions_by_digest.insert(id, (key.clone(), file));
-            }
-
-            if is_exported(&name) {
-                exported_signatures.push(signature_product(db, function).as_ref().clone());
-            }
-            functions.push(FunctionDescriptor::new(file, key, name));
-        }
-    }
-
-    files.sort();
-    functions.sort_by_key(|function| (function.id(), function.file()));
-    exported_signatures.sort_by_key(FunctionSignature::id);
-    issues.sort();
-    Arc::new(PackageAnalysis::new(
-        package,
-        package_name.unwrap_or_else(|| Arc::from("")),
-        files.into(),
-        direct_imports.into_iter().collect::<Vec<_>>().into(),
-        functions.into(),
-        issues.into(),
-        &exported_signatures,
-    ))
-}
-
-#[salsa::tracked(returns(clone))]
-pub(super) fn signature_product(
-    db: &dyn Db,
-    function: FunctionProjection<'_>,
-) -> Arc<FunctionSignature> {
-    db.query_telemetry()
-        .record_query(QueryKind::FunctionSignature);
-    function.signature(db)
-}
-
-#[salsa::tracked(returns(clone))]
-pub(super) fn body_product(db: &dyn Db, function: FunctionProjection<'_>) -> Arc<FunctionBody> {
-    db.query_telemetry().record_query(QueryKind::FunctionBody);
-    function.body(db)
-}
-
-#[salsa::tracked(returns(clone))]
-pub(super) fn public_api_product(db: &dyn Db, facts: FileFacts<'_>) -> Arc<PublicApi> {
-    db.query_telemetry().record_query(QueryKind::PublicApi);
-    let signatures = facts
-        .functions(db)
-        .into_iter()
-        .map(|function| signature_product(db, function).as_ref().clone())
-        .collect::<Vec<_>>();
-    Arc::new(PublicApi::new(facts.file(db), signatures.into()))
-}
-
-fn is_exported(name: &str) -> bool {
-    name.chars().next().is_some_and(char::is_uppercase)
-}
-
 fn representation_key(
     db: &dyn Db,
 ) -> Result<super::super::fingerprint::Fingerprint, Arc<StageFailure>> {
@@ -844,90 +924,4 @@ fn representation_key(
         b"rust-representation-config",
         &[runtime_abi.as_bytes()],
     ))
-}
-
-fn direct_callees(function: &crate::compiler::hir::Function) -> BTreeSet<DefId> {
-    let mut callees = BTreeSet::new();
-    collect_block_callees(&function.body, &mut callees);
-    callees
-}
-
-fn collect_block_callees(block: &crate::compiler::hir::Block, callees: &mut BTreeSet<DefId>) {
-    for statement in &block.stmts {
-        collect_statement_callees(statement, callees);
-    }
-}
-
-fn collect_statement_callees(
-    statement: &crate::compiler::hir::Stmt,
-    callees: &mut BTreeSet<DefId>,
-) {
-    use crate::compiler::hir::StmtKind;
-    match &statement.kind {
-        StmtKind::Let { values, .. }
-        | StmtKind::Assign { values, .. }
-        | StmtKind::Return(values) => {
-            for value in values {
-                collect_expression_callees(value, callees);
-            }
-        }
-        StmtKind::Expr(expression) => collect_expression_callees(expression, callees),
-        StmtKind::If {
-            init,
-            condition,
-            then_block,
-            else_branch,
-        } => {
-            if let Some(init) = init {
-                collect_statement_callees(init, callees);
-            }
-            collect_expression_callees(condition, callees);
-            collect_block_callees(then_block, callees);
-            if let Some(branch) = else_branch {
-                collect_statement_callees(branch, callees);
-            }
-        }
-        StmtKind::For {
-            init,
-            condition,
-            post,
-            body,
-        } => {
-            if let Some(init) = init {
-                collect_statement_callees(init, callees);
-            }
-            if let Some(condition) = condition {
-                collect_expression_callees(condition, callees);
-            }
-            if let Some(post) = post {
-                collect_statement_callees(post, callees);
-            }
-            collect_block_callees(body, callees);
-        }
-        StmtKind::Block(block) => collect_block_callees(block, callees),
-        StmtKind::Break | StmtKind::Continue => {}
-    }
-}
-
-fn collect_expression_callees(
-    expression: &crate::compiler::hir::Expr,
-    callees: &mut BTreeSet<DefId>,
-) {
-    use crate::compiler::hir::{Callee, ExprKind};
-    match &expression.kind {
-        ExprKind::Binary { left, right, .. } => {
-            collect_expression_callees(left, callees);
-            collect_expression_callees(right, callees);
-        }
-        ExprKind::Unary { operand, .. } => collect_expression_callees(operand, callees),
-        ExprKind::Call { callee, args } => {
-            if let Callee::Function(definition) = callee {
-                callees.insert(*definition);
-            }
-            for argument in args {
-                collect_expression_callees(argument, callees);
-            }
-        }
-        ExprKind::Constant(_) | ExprKind::Local(_) | ExprKind::GlobalConstant(..) => {}
-    }
 }

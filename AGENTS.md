@@ -243,25 +243,43 @@ no provider or executable state.
 
 The independently replaceable terminal manifest is bound back to that
 generated identity and dependency. It owns the selected provider descriptor
-and artifact path, the exact admitted rustc path and snapshot identity, plus
-per-profile executable records. Every executable is admitted by the exact
-`RustcActionIdentity`: the immutable program, working directory, ordered
-arguments, every generated-Rust filename and content hash, runtime artifact
-path and implementation hash, link-plan and compatibility identities, output
-profile, target, portable CPU and feature policy, and publication paths. Debug
-and release therefore reuse the same generated Rust while producing distinct
-terminal actions and executables. Corrupt or stale terminal state is a terminal
-miss and must not poison a valid generated-Rust entry.
+and artifact path, an immutable `TerminalToolchain`, plus per-profile
+executable records. The toolchain content-admits absolute rustc and linker
+executables, records the target, ordered deterministic environment, and the
+selected target-libdir metadata identity, and on Apple records the canonical
+SDK selection plus its settings identity. A terminal miss revalidates that
+target-libdir snapshot immediately before rustc execution. Compatibility
+inventory schema v2 hashes every target-libdir file, including hash-suffixed
+rustlibs; filenames and sizes are never content surrogates. The toolchain's
+semantic identity projects rustc/linker path, content, target, environment, and
+platform contract; revision and target-libdir snapshot facts are execution
+admission guards, while the runtime compatibility identity owns target-libdir
+content. Every executable is admitted by the exact `RustcActionIdentity`: that
+semantic toolchain projection, working and scratch directories, ordered
+arguments, every generated-Rust
+filename and content hash, runtime artifact path and implementation hash,
+link-plan and compatibility identities, output profile, target, portable CPU
+and feature policy, and publication paths. Rustc receives an absolute linker
+and runs after `env_clear()`. Debug and release therefore reuse the same
+generated Rust while producing distinct terminal actions and executables.
+Corrupt or stale terminal state is a terminal miss and must not poison a valid
+generated-Rust entry.
 
-The terminal action is not yet a complete hermetic action: direct `rustc`
-execution still inherits ambient environment, selects its linker and platform
-SDK implicitly, and identifies the compiler executable from metadata rather
-than content. Treat that as P0 cache and performance debt. No performance
-scenario may be promoted until an immutable terminal toolchain/environment
-product owns those inputs, passes an explicit linker, and executes from a
-cleared environment. Exact executable hits may reconstruct recorded identities
-without touching the historical toolchain; a terminal miss must perform the
-live content admission.
+The terminal action is still not fully hermetic on hosted targets: the admitted
+rustc launcher can load host driver/codegen libraries outside the descriptor,
+and a selected linker can consume transitive helper binaries and system
+libraries whose bytes are not yet enumerated by `TerminalToolchain`; the Apple
+SDK record currently owns SDK selection/settings rather than every linkable
+stub. The target-libdir guard is a cheap revision recheck of that exact
+compatibility inventory. Tool verification and process spawn are also still
+path-separated, so a hostile path replacement can race the admitted revision.
+Treat the host
+compiler-driver closure, platform link closures, and handle-to-exec boundary as
+P0 cache and performance debt. No performance scenario may be promoted until
+both closures are content-addressed and execution consumes the admitted handles
+or immutable CAS paths. Exact executable hits reconstruct recorded identities
+without touching the historical toolchain; a terminal miss performs live
+content admission.
 
 An exact warm executable hit must be admitted from the current source snapshot,
 generated and terminal manifests, recorded generated-product hashes, and the
@@ -314,9 +332,38 @@ admitted flight owns a fresh 128-bit nonce, an abort-aware deadline, one exact
 line-framed marker waiter, and nonce-scoped status/output paths. Missing or
 malformed markers and exit-status files are protocol failures, never successful
 exit zero. Preserve guest stdout and stderr exactly; presentation trimming does
-not belong in the runner. Cancellation and disposal must reject the active
-flight exactly once, and serial bytes from a stale emulator or nonce must never
-settle a later flight.
+not belong in the runner. Once guest filesystem or serial work has started, any
+cancellation, timeout, or protocol failure permanently poisons that emulator
+generation. It must reject all later work, notify the runner, and be stopped and
+destroyed through the pinned asynchronous V86 API before a fresh generation is
+created. Cancellation and disposal must reject the active flight exactly once,
+and serial bytes from a stale emulator or nonce must never settle a later
+flight. Rootfs download-error monitoring remains installed for the full
+emulator lifetime so lazy 9p failures invalidate a ready generation promptly.
+
+`www/v86/boot-contract.json` is the checked-in source of truth for V86 machine
+settings and the guest command/marker protocol. Webpack emits one strictly
+validated boot manifest whose full SHA-256 identity binds that contract, exact
+V86/Wasm and BIOS content, and the verified rootfs index/blob-set evidence;
+an empty blob set is invalid, and there are no truncated asset identities or
+unhashed filename fallbacks. Browser manifest reads reject oversized declared
+lengths before consuming the body and abort a streaming download as soon as its
+actual body exceeds 128 KiB. The fixed commit manifest is fetched with
+`cache: no-store`, and Webpack rehashes the exact final emitted buffers for
+every V86/BIOS asset, the rootfs index, and every hash-named blob before it
+emits that manifest. The browser still trusts the same-origin deployment and
+CDN to serve bytes matching those immutable full-hash names; it does not
+independently rehash the V86, BIOS, or lazy rootfs responses. Do not describe
+that deployment trust boundary as end-to-end browser content admission.
+Browser saved state uses only IndexedDB schema and record schema 2, with the
+exact boot identity, bounded byte length, full state checksum, and payload.
+Legacy, corrupt, oversized, or identity-mismatched records are deleted and
+treated as cold misses, as are all IndexedDB failures. A valid warm restore
+omits the rootfs index and lets V86 restore its serialized 9p state. Cold boot
+supplies exactly one content-addressed rootfs index. Acquisition, warm restore,
+cleanup, and cold boot each own an abort-aware deadline. A failed restore tears
+down the emulator, deletes the state, and receives exactly one fresh-deadline
+cold retry; download and cold-boot failures never enter a retry loop.
 
 Until the Wasm compiler exposes cooperative cancellation, cancelling or
 superseding an active browser compilation terminates that worker generation.
@@ -385,19 +432,27 @@ edits do not re-type-check importers.
 
 Current checkpoint: the Salsa-backed `compiler::db` facade owns explicit
 source, package, and build inputs. Its tracked path parses each file projection
-once, sharing that temporary AST between indexing and semantic lowering, and
-publishes non-comment token observations from that same scanner pass. The file
-projection partitions those observations into owned, trivia-insensitive
-function header and body token streams, normalizes explicit and inserted
-semicolons, and keeps revision-local physical ranges in a separate
-`FunctionLayout`. The current `SyntaxAnchor` is declaration kind plus unique
-package-level name; it contains no offset, traversal ordinal, or token index,
-and repeated `init` remains rejected until a structural disambiguator exists.
-The tracked path then reaches function-relative typed HIR, per-definition
+once and projects that temporary AST exactly once into owned, trivia-insensitive
+structural function and constant syntax plus canonical header/body token
+streams. Semantic queries never retain or revisit the AST or raw source.
+Revision-local physical ranges live only in `FunctionLayout` and
+`ConstantLayout`; successful semantic lowering publishes a physical-free source
+plan which the presentation query joins to the current layout. The current
+`SyntaxAnchor` is declaration kind plus unique package-level name; it contains
+no offset, traversal ordinal, or token index, and repeated `init` remains
+rejected until a structural disambiguator exists. Demand queries independently
+type function headers, package constants, and function bodies before reaching
+function-relative typed HIR, per-definition
 verified MIR, mandatory normalized/reverified MIR, configured verified Rust IR,
 and deterministic package Rust-IR assembly. Function verification reads only
 its own and direct callees' signatures; unrelated declaration or signature
 edits must leave a leaf function's HIR, MIR, normalized MIR, and Rust IR green.
+Lexical reference collection respects parameter, named-result, declaration,
+short-declaration, and nested control-flow scopes, so shadowed names do not
+create false package dependencies. Package-constant dependencies resolve by
+stable name across the complete package, permit forward and cross-file
+references, and reject cycles with a deterministic path. Exported constant
+type/value semantics participate in the package public-API fingerprint.
 Production program
 compilation delegates to `CompilerSession`; convenience functions create a
 short-lived session, while the browser worker retains one explicitly across
@@ -413,16 +468,15 @@ owns an explicit positive job budget. Queries must not create nested pools or
 submit scheduler work. This is not yet the global scheduler for parsing,
 external codegen, linking, cancellation, or memory admission, and a native
 daemon or watch mode still does not exist. Terminal syn emission
-remains outside the semantic queries. Parsing and semantic lowering are still
-file-granular: a whitespace or comment edit still executes `FileProjection` and
-`SemanticFile`, even though unchanged owned signature/body products and
-downstream HIR, MIR, and Rust IR backdate. This is not incremental parsing. The
-next boundary is for semantic lowering to consume the owned per-definition
-syntax before avoiding whole-file semantic work. Compact per-definition
-`SourceRef` values and separate definition source tables already allow
-unchanged semantic stage products to backdate. Query and scheduler counters
-are not a memory budget, complete cancellation protocol, global scheduler, or
-persistent CAS; do not claim those target properties from the current kernel.
+remains outside the semantic queries. Parsing and structural projection are
+still file-granular, so a whitespace or comment edit executes `FileProjection`;
+it may replace layouts and definition source tables while executing zero typed
+signature, typed HIR, MIR, or Rust-IR queries. This is not incremental parsing.
+Compact per-definition `SourceRef` values and separate definition source tables
+allow unchanged semantic stage products to backdate. Query and scheduler
+counters are not a memory budget, complete cancellation protocol, global
+scheduler, or persistent CAS; do not claim those target properties from the
+current kernel.
 
 Semantic source inputs are immutable `SourceContent` values containing text,
 line indexes, and a content digest under a stable logical file identity. Exact
@@ -533,6 +587,19 @@ discovery. The deleted parser package graph has no compatibility shim. Rebuild
 module resolution as query-owned manifest expansion from decoded direct-import
 facts and resolver source metadata; never reintroduce parser recursion or a
 second pre-query parse.
+
+Canonical decoded package identities live in the frontend-neutral
+`gors::import_path::CanonicalImportPath`; parser import-literal decoding must
+consume that type's shared decoded-path validator instead of maintaining a
+parser-local validator. `workspace::local_module::LocalModuleCatalog` is the
+filesystem-only first boundary for local module discovery. Opening it
+canonicalizes one explicit module root and reads only its strict `module`
+directive. It materializes and memoizes one explicitly requested local package
+at a time, verifies lexical and canonical containment, reads only immediate
+eligible non-test Go files in canonical order, and never parses source or
+follows imports. It is not yet connected to `ProgramInput` or the compiler
+session; query-owned reachable-package admission remains the next boundary.
+There is no GORSPATH compatibility path.
 
 Source mappings and diagnostics are ordinary explicit outputs. The current
 `SourceMapPlan` follows that rule and is safe to build or consume independently;

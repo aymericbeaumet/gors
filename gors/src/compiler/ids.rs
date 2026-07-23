@@ -321,6 +321,7 @@ enum IdentityKey {
         package: PackageId,
         logical_path: String,
     },
+    #[cfg(test)]
     Definition(DefinitionKey),
 }
 
@@ -330,6 +331,7 @@ impl IdentityKey {
             Self::Workspace { .. } => IdentityDomain::Workspace,
             Self::Package { .. } => IdentityDomain::Package,
             Self::File { .. } => IdentityDomain::File,
+            #[cfg(test)]
             Self::Definition(_) => IdentityDomain::Definition,
         }
     }
@@ -355,6 +357,7 @@ impl IdentityKey {
                 encoded.fingerprint(package.0);
                 encoded.string(logical_path);
             }
+            #[cfg(test)]
             Self::Definition(key) => return key.encode(),
         }
         encoded.finish()
@@ -366,6 +369,7 @@ enum IdentityDomain {
     Workspace,
     Package,
     File,
+    #[cfg(test)]
     Definition,
 }
 
@@ -467,6 +471,7 @@ impl IdentityInterner {
         .map(FileId)
     }
 
+    #[cfg(test)]
     pub(crate) fn definition(&mut self, key: DefinitionKey) -> Result<DefId, IdentityCollision> {
         self.intern(IdentityKey::Definition(key)).map(DefId)
     }

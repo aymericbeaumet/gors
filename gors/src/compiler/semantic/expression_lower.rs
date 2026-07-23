@@ -1,18 +1,18 @@
-//! Typed expression and direct-call lowering.
+//! Typed expression and direct-call lowering over owned structural syntax.
 
-use crate::ast;
 use crate::token::Token;
 
 use super::FunctionLowerer;
+use super::eval_constant;
 use super::expressions::*;
-use super::positions::expr_position;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::{LocalId, NodeId};
 use crate::compiler::provenance::SourceRef;
+use crate::compiler::syntax::{ExprSyntax, ExprSyntaxKind};
 use crate::compiler::types::{ConstValue, IntTy, Ty, UntypedTy};
 
-impl FunctionLowerer<'_> {
+impl FunctionLowerer {
     pub(super) fn local_expr(&self, node: NodeId, local: LocalId, ty: Ty) -> hir::Expr {
         hir::Expr {
             node,
@@ -29,7 +29,7 @@ impl FunctionLowerer<'_> {
 
     pub(super) fn lower_expr(
         &mut self,
-        expr: &ast::Expr<'_>,
+        expr: &ExprSyntax,
         expected: Option<&Ty>,
     ) -> Result<hir::Expr, Diagnostic> {
         self.lower_expr_inner(expr, expected, false)
@@ -37,93 +37,91 @@ impl FunctionLowerer<'_> {
 
     pub(super) fn lower_expr_inner(
         &mut self,
-        expr: &ast::Expr<'_>,
+        expr: &ExprSyntax,
         expected: Option<&Ty>,
         allow_discarded_call_result: bool,
     ) -> Result<hir::Expr, Diagnostic> {
-        let range = self.file.range(&expr_position(expr))?;
-        let node = self.alloc_node(range)?;
-        let mut lowered = match expr {
-            ast::Expr::BasicLit(literal) => {
-                if literal.kind == Token::FLOAT {
+        let node = self.alloc_node(expr.source)?;
+        let source = SourceRef::node(node);
+        let mut lowered = match &expr.kind {
+            ExprSyntaxKind::Literal { token, .. } => {
+                if *token == Token::FLOAT {
                     return Err(Diagnostic::unsupported(
                         "floating-point literals are outside the bootstrap bool/int/string runtime frontier",
-                        range,
+                        source,
                     ));
                 }
-                let (ty, value) = self.file.eval_constant(expr)?;
+                let (ty, value) = eval_constant(expr, &self.constants, source)?;
                 hir::Expr {
                     node,
                     kind: hir::ExprKind::Constant(value),
                     ty,
                     category: hir::ValueCategory::Constant,
                     effects: hir::Effects::default(),
-                    source: SourceRef::node(node),
+                    source,
                 }
             }
-            ast::Expr::Ident(ident) => {
-                if let Some(local) = self.lookup_local(ident.name) {
+            ExprSyntaxKind::Ident(ident) => {
+                let name = ident.name.as_ref();
+                if let Some(local) = self.lookup_local(name) {
                     let ty = self.place_ty(hir::Place::Local(local))?.clone();
                     self.local_expr(node, local, ty)
-                } else if let Some(constant) = self.constants.get(ident.name).cloned() {
+                } else if let Some(constant) = self.constants.get(name).cloned() {
                     hir::Expr {
                         node,
                         kind: hir::ExprKind::GlobalConstant(constant.id, constant.value),
                         ty: constant.ty,
                         category: hir::ValueCategory::Constant,
                         effects: hir::Effects::default(),
-                        source: SourceRef::node(node),
+                        source,
                     }
-                } else if self.functions.contains_key(ident.name) {
+                } else if self.functions.contains_key(name) {
                     return Err(Diagnostic::unsupported(
-                        format!(
-                            "function value {} is not implemented by the HIR/MIR backend",
-                            ident.name
-                        ),
-                        range,
+                        format!("function value {name} is not implemented by the HIR/MIR backend"),
+                        source,
                     ));
-                } else if ident.name == "true" || ident.name == "false" {
+                } else if matches!(name, "true" | "false") {
                     hir::Expr {
                         node,
-                        kind: hir::ExprKind::Constant(ConstValue::Bool(ident.name == "true")),
+                        kind: hir::ExprKind::Constant(ConstValue::Bool(name == "true")),
                         ty: Ty::Untyped(UntypedTy::Bool),
                         category: hir::ValueCategory::Constant,
                         effects: hir::Effects::default(),
-                        source: SourceRef::node(node),
+                        source,
                     }
-                } else if ident.name == "print" || ident.name == "println" {
+                } else if matches!(name, "print" | "println") {
                     return Err(Diagnostic::unsupported(
-                        format!("builtin value {} is not implemented", ident.name),
-                        range,
+                        format!("builtin value {name} is not implemented"),
+                        source,
                     ));
                 } else {
                     return Err(Diagnostic::semantic(
-                        format!("undefined identifier {}", ident.name),
-                        range,
+                        format!("undefined identifier {name}"),
+                        source,
                     ));
                 }
             }
-            ast::Expr::ParenExpr(paren) => {
-                return self.lower_expr_inner(&paren.x, expected, allow_discarded_call_result);
+            ExprSyntaxKind::Paren(expression) => {
+                return self.lower_expr_inner(expression, expected, allow_discarded_call_result);
             }
-            ast::Expr::UnaryExpr(unary) => {
-                let mut operand = self.lower_expr(&unary.x, expected)?;
+            ExprSyntaxKind::Unary { token, expression } => {
+                let mut operand = self.lower_expr(expression, expected)?;
                 let operand_ty = operand.ty.default_typed();
-                ensure_bootstrap_value_type(&operand_ty, range)?;
-                let op = match unary.op {
+                ensure_bootstrap_value_type(&operand_ty, source)?;
+                let op = match *token {
                     Token::ADD if operand_ty == Ty::Int(IntTy::Int) => hir::UnaryOp::Positive,
                     Token::SUB if operand_ty == Ty::Int(IntTy::Int) => hir::UnaryOp::Negative,
                     Token::NOT if is_bool(&operand_ty) => hir::UnaryOp::Not,
                     Token::XOR if operand_ty == Ty::Int(IntTy::Int) => hir::UnaryOp::BitNot,
                     _ => {
                         return Err(Diagnostic::semantic(
-                            format!("invalid unary {:?} operand {:?}", unary.op, operand.ty),
-                            range,
+                            format!("invalid unary {token:?} operand {:?}", operand.ty),
+                            source,
                         ));
                     }
                 };
                 if let Some(value) = expr_constant(&operand)
-                    .map(|value| fold_constant_unary(op, value, range))
+                    .map(|value| fold_constant_unary(op, value, source))
                     .transpose()?
                     .flatten()
                 {
@@ -133,10 +131,10 @@ impl FunctionLowerer<'_> {
                         ty: operand.ty,
                         category: hir::ValueCategory::Constant,
                         effects: hir::Effects::default(),
-                        source: SourceRef::node(node),
+                        source,
                     }
                 } else {
-                    coerce_expr(&mut operand, &operand_ty, range)?;
+                    coerce_expr(&mut operand, &operand_ty, source)?;
                     let effects = operand.effects;
                     hir::Expr {
                         node,
@@ -147,17 +145,17 @@ impl FunctionLowerer<'_> {
                         ty: operand_ty,
                         category: hir::ValueCategory::Value,
                         effects,
-                        source: SourceRef::node(node),
+                        source,
                     }
                 }
             }
-            ast::Expr::BinaryExpr(binary) => {
-                let mut left = self.lower_expr(&binary.x, None)?;
-                let mut right = self.lower_expr(&binary.y, None)?;
-                let op = lower_binary_op(binary.op).ok_or_else(|| {
+            ExprSyntaxKind::Binary { left, token, right } => {
+                let mut left = self.lower_expr(left, None)?;
+                let mut right = self.lower_expr(right, None)?;
+                let op = lower_binary_op(*token).ok_or_else(|| {
                     Diagnostic::unsupported(
-                        format!("binary operator {:?} is not implemented", binary.op),
-                        range,
+                        format!("binary operator {token:?} is not implemented"),
+                        source,
                     )
                 })?;
                 let comparison = matches!(
@@ -176,12 +174,12 @@ impl FunctionLowerer<'_> {
                             "incompatible binary operands {:?} and {:?}",
                             left.ty, right.ty
                         ),
-                        range,
+                        source,
                     )
                 })?;
-                coerce_expr(&mut left, &operand_ty, range)?;
-                coerce_expr(&mut right, &operand_ty, range)?;
-                validate_binary_operator(op, &operand_ty, range)?;
+                coerce_expr(&mut left, &operand_ty, source)?;
+                coerce_expr(&mut right, &operand_ty, source)?;
+                validate_binary_operator(op, &operand_ty, source)?;
                 let mut effects = left.effects.union(right.effects);
                 if matches!(
                     op,
@@ -190,9 +188,6 @@ impl FunctionLowerer<'_> {
                         | hir::BinaryOp::Shl
                         | hir::BinaryOp::Shr
                 ) {
-                    // Dynamic division/remainder can divide by zero, and a
-                    // dynamic Go shift count can be negative. Exact constant
-                    // cases were either folded or diagnosed above.
                     effects.may_panic = true;
                 }
                 if op == hir::BinaryOp::Add && operand_ty == Ty::String {
@@ -205,7 +200,7 @@ impl FunctionLowerer<'_> {
                 };
                 let folded = expr_constant(&left)
                     .zip(expr_constant(&right))
-                    .map(|(left, right)| fold_constant_binary(op, left, right, range))
+                    .map(|(left, right)| fold_constant_binary(op, left, right, source))
                     .transpose()?
                     .flatten();
                 if let Some(value) = folded {
@@ -215,7 +210,7 @@ impl FunctionLowerer<'_> {
                         ty: result_ty,
                         category: hir::ValueCategory::Constant,
                         effects: hir::Effects::default(),
-                        source: SourceRef::node(node),
+                        source,
                     }
                 } else {
                     hir::Expr {
@@ -228,75 +223,73 @@ impl FunctionLowerer<'_> {
                         ty: result_ty,
                         category: hir::ValueCategory::Value,
                         effects,
-                        source: SourceRef::node(node),
+                        source,
                     }
                 }
             }
-            ast::Expr::CallExpr(call) => {
-                let ast::Expr::Ident(callee_ident) = call.fun.as_ref() else {
+            ExprSyntaxKind::Call { callee, arguments } => {
+                let ExprSyntaxKind::Ident(callee_ident) = &callee.kind else {
                     return Err(Diagnostic::unsupported(
                         "only direct calls are implemented by the HIR/MIR backend",
-                        range,
+                        source,
                     ));
                 };
-                let raw_args = call.args.as_deref().unwrap_or_default();
-                let callee_range = self.file.range(&callee_ident.name_pos)?;
-                let (callee, params, results) = if self.lookup_local(callee_ident.name).is_some() {
+                let name = callee_ident.name.as_ref();
+                let (callee, params, results) = if self.lookup_local(name).is_some() {
                     return Err(Diagnostic::unsupported(
                         format!(
-                            "calling local value {} requires function-value HIR and is not implemented",
-                            callee_ident.name
+                            "calling local value {name} requires function-value HIR and is not implemented"
                         ),
-                        callee_range,
+                        source,
                     ));
-                } else if let Some(symbol) = self.functions.get(callee_ident.name).cloned() {
+                } else if let Some(symbol) = self.functions.get(name).cloned() {
                     (
                         hir::Callee::Function(symbol.id),
                         symbol.signature.params,
                         symbol.signature.results,
                     )
-                } else if self.constants.contains_key(callee_ident.name) {
+                } else if self.constants.contains_key(name) {
                     return Err(Diagnostic::semantic(
-                        format!("constant {} is not callable", callee_ident.name),
-                        callee_range,
+                        format!("constant {name} is not callable"),
+                        source,
                     ));
                 } else {
-                    match callee_ident.name {
+                    match name {
                         "print" => (hir::Callee::Builtin(hir::Builtin::Print), vec![], vec![]),
                         "println" => (hir::Callee::Builtin(hir::Builtin::Println), vec![], vec![]),
                         name => {
                             return Err(Diagnostic::semantic(
                                 format!("undefined function {name}"),
-                                callee_range,
+                                source,
                             ));
                         }
                     }
                 };
-                if !matches!(callee, hir::Callee::Builtin(_)) && raw_args.len() != params.len() {
+                if !matches!(callee, hir::Callee::Builtin(_)) && arguments.len() != params.len() {
                     return Err(Diagnostic::semantic(
                         format!(
                             "call has {} arguments; expected {}",
-                            raw_args.len(),
+                            arguments.len(),
                             params.len()
                         ),
-                        range,
+                        source,
                     ));
                 }
                 let args = if matches!(callee, hir::Callee::Builtin(_)) {
-                    raw_args
+                    arguments
                         .iter()
-                        .map(|arg| {
-                            let argument_range = self.file.range(&expr_position(arg))?;
-                            self.lower_expr(arg, None).and_then(|expression| {
-                                default_expr_type(expression, argument_range)
+                        .map(|argument| {
+                            self.lower_expr(argument, None).and_then(|expression| {
+                                let expression_source = expression.source;
+                                default_expr_type(expression, expression_source)
                             })
                         })
                         .collect::<Result<Vec<_>, _>>()?
                 } else {
-                    raw_args
+                    arguments
                         .iter()
                         .zip(&params)
-                        .map(|(arg, expected)| self.lower_expr(arg, Some(expected)))
+                        .map(|(argument, expected)| self.lower_expr(argument, Some(expected)))
                         .collect::<Result<Vec<_>, _>>()?
                 };
                 let ty = match results.as_slice() {
@@ -305,14 +298,14 @@ impl FunctionLowerer<'_> {
                     _ => {
                         return Err(Diagnostic::unsupported(
                             "multiple-result calls require explicit expression-arity HIR",
-                            range,
+                            source,
                         ));
                     }
                 };
                 if ty == Ty::Unit && !allow_discarded_call_result {
                     return Err(Diagnostic::unsupported(
                         "a no-result call cannot be used as a value",
-                        range,
+                        source,
                     ));
                 }
                 let effects = args.iter().fold(
@@ -324,7 +317,7 @@ impl FunctionLowerer<'_> {
                         may_panic: true,
                         may_write: true,
                     },
-                    |effects, arg| effects.union(arg.effects),
+                    |effects, argument| effects.union(argument.effects),
                 );
                 hir::Expr {
                     node,
@@ -332,18 +325,18 @@ impl FunctionLowerer<'_> {
                     ty,
                     category: hir::ValueCategory::Value,
                     effects,
-                    source: SourceRef::node(node),
+                    source,
                 }
             }
-            _ => {
+            ExprSyntaxKind::Unsupported(kind) => {
                 return Err(Diagnostic::unsupported(
-                    format!("expression {expr:?} is not implemented by the HIR/MIR backend"),
-                    range,
+                    format!("expression {kind} is not implemented by the HIR/MIR backend"),
+                    source,
                 ));
             }
         };
         if let Some(expected) = expected {
-            coerce_expr(&mut lowered, expected, range)?;
+            coerce_expr(&mut lowered, expected, source)?;
         }
         Ok(lowered)
     }

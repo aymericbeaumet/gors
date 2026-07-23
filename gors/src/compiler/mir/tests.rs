@@ -3,8 +3,7 @@ use crate::compiler::ids::LocalId;
 use crate::compiler::types::{ConstValue, IntTy, Ty};
 
 fn lower(source: &str) -> File {
-    let ast = crate::parser::parse_file("verify.go", source).unwrap();
-    let hir = crate::compiler::lower_to_hir(ast.ast()).unwrap();
+    let hir = crate::compiler::lower_to_hir("verify.go", source).unwrap();
     lower_file(&hir).unwrap()
 }
 
@@ -147,8 +146,7 @@ fn string_concat_allocation_survives_hir_to_normalized_mir() {
             println(value)
         }
     "#;
-    let ast = crate::parser::parse_file("concat.go", source).unwrap();
-    let hir = crate::compiler::lower_to_hir(ast.ast()).unwrap();
+    let hir = crate::compiler::lower_to_hir("concat.go", source).unwrap();
     let main = hir
         .functions
         .iter()

@@ -79,8 +79,7 @@ fn stage_products_are_real_and_mandatory_lowering_is_deterministic() {
         }
         func main() { println(answer()) }
     "#;
-    let ast = crate::parser::parse_file("stages.go", source).unwrap();
-    let hir = lower_to_hir(ast.ast()).expect("typed HIR");
+    let hir = lower_to_hir("stages.go", source).expect("typed HIR");
     assert_eq!(hir.functions.len(), 2);
 
     let mir = lower_to_mir(&hir).expect("verified explicit-order MIR");
@@ -300,8 +299,7 @@ fn def_id_function_names_cannot_collide_with_rust_keywords() {
 #[test]
 fn basic_program_uses_the_hir_mir_pipeline() {
     let source = "package main\nfunc main() { x := 40 + 2; println(x) }\n";
-    let ast = crate::parser::parse_file("main.go", source).unwrap();
-    let rust = crate::printer::generate(compile_file(ast.ast()).unwrap()).unwrap();
+    let rust = crate::printer::generate(compile_file("main.go", source).unwrap()).unwrap();
     assert!(rust.contains("fn main"), "{rust}");
     assert!(rust.contains("42"), "{rust}");
 }
@@ -309,12 +307,13 @@ fn basic_program_uses_the_hir_mir_pipeline() {
 #[test]
 fn imports_fail_before_partial_codegen() {
     let source = "package main\nimport \"fmt\"\nfunc main() { fmt.Println(1) }\n";
-    let ast = crate::parser::parse_file("main.go", source).unwrap();
-    let result = compile_file(ast.ast());
+    let result = compile_file("main.go", source);
     assert!(result.is_err(), "imports must be a semantic diagnostic");
     let errors = result.err().unwrap();
     assert!(
-        errors.iter().any(|error| error.message.contains("imports")),
+        errors
+            .iter()
+            .any(|error| error.message.contains("imported packages")),
         "{errors:?}"
     );
 }

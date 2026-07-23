@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::parser::ImportPathIssue;
+use crate::import_path::ImportPathIssue;
 
 use super::super::fingerprint::Fingerprint;
 use super::super::ids::FileId;

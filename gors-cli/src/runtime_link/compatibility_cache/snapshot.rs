@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 const RUSTC_SNAPSHOT_IDENTITY_DOMAIN: &[u8] = b"gors.native-rustc-snapshot-v1\0";
+const TARGET_LIBDIR_SNAPSHOT_IDENTITY_DOMAIN: &[u8] = b"gors.native-target-libdir-snapshot-v1\0";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -44,6 +45,21 @@ pub(super) struct TreeSnapshot {
     entries: Vec<TreeEntry>,
 }
 
+impl TreeSnapshot {
+    pub(super) fn identity(&self) -> Result<[u8; 32], serde_json::Error> {
+        let encoded = serde_json::to_vec(self)?;
+        let mut hasher = Sha256::new();
+        hasher.update(TARGET_LIBDIR_SNAPSHOT_IDENTITY_DOMAIN);
+        hasher.update(
+            u64::try_from(encoded.len())
+                .unwrap_or(u64::MAX)
+                .to_be_bytes(),
+        );
+        hasher.update(encoded);
+        Ok(hasher.finalize().into())
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct TreeEntry {
@@ -59,6 +75,16 @@ struct MetadataFacts {
     modified: ModifiedTime,
     readonly: bool,
     symlink_target: Option<String>,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(unix)]
+    mode: u32,
+    #[cfg(unix)]
+    changed_seconds: i64,
+    #[cfg(unix)]
+    changed_nanoseconds: i64,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -251,6 +277,8 @@ fn metadata_facts(path: &Path, allow_symlink: bool) -> Result<MetadataFacts, Sna
     } else {
         return Err(SnapshotError::UnsupportedFileType(path.to_path_buf()));
     };
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt as _;
     Ok(MetadataFacts {
         kind,
         size: metadata.len(),
@@ -259,6 +287,16 @@ fn metadata_facts(path: &Path, allow_symlink: bool) -> Result<MetadataFacts, Sna
         })?),
         readonly: metadata.permissions().readonly(),
         symlink_target,
+        #[cfg(unix)]
+        device: metadata.dev(),
+        #[cfg(unix)]
+        inode: metadata.ino(),
+        #[cfg(unix)]
+        mode: metadata.mode(),
+        #[cfg(unix)]
+        changed_seconds: metadata.ctime(),
+        #[cfg(unix)]
+        changed_nanoseconds: metadata.ctime_nsec(),
     })
 }
 
@@ -268,6 +306,8 @@ fn followed_file_facts(path: &Path) -> Result<MetadataFacts, SnapshotError> {
     if !metadata.file_type().is_file() {
         return Err(SnapshotError::RustcNotFile(path.to_path_buf()));
     }
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt as _;
     Ok(MetadataFacts {
         kind: EntryKind::File,
         size: metadata.len(),
@@ -278,6 +318,16 @@ fn followed_file_facts(path: &Path) -> Result<MetadataFacts, SnapshotError> {
         ),
         readonly: metadata.permissions().readonly(),
         symlink_target: None,
+        #[cfg(unix)]
+        device: metadata.dev(),
+        #[cfg(unix)]
+        inode: metadata.ino(),
+        #[cfg(unix)]
+        mode: metadata.mode(),
+        #[cfg(unix)]
+        changed_seconds: metadata.ctime(),
+        #[cfg(unix)]
+        changed_nanoseconds: metadata.ctime_nsec(),
     })
 }
 

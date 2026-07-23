@@ -3,10 +3,14 @@ import {
 	runtimeDependencyRequestJson,
 	type RuntimeDependency,
 } from "./runtime-dependency";
+import { V86_BOOT_CONTRACT } from "./v86-boot-contract";
 
-const COMPILE_DONE = "GORS_COMPILE_DONE:";
-const RUN_DONE = "GORS_RUN_DONE:";
-const NONCE_PATTERN = /^[0-9a-f]{32}$/;
+const GUEST_PROTOCOL = V86_BOOT_CONTRACT.guestProtocol;
+const COMPILE_DONE = GUEST_PROTOCOL.compileDonePrefix;
+const RUN_DONE = GUEST_PROTOCOL.runDonePrefix;
+const NONCE_PATTERN = new RegExp(
+	`^[0-9a-f]{${GUEST_PROTOCOL.nonceHexLength}}$`,
+);
 const MAX_SERIAL_LINE_LENGTH = 16 * 1024;
 const MAX_PENDING_SERIAL_LINES = 64;
 
@@ -53,6 +57,7 @@ export interface V86JobCoordinatorOptions {
 	runTimeoutMs: number;
 	nonceFactory?: () => string;
 	onPhaseChange?: (phase: V86ExecutionPhase | null) => void;
+	onPoison?: (error: Error) => void;
 }
 
 type FlightKind = "compile" | "run" | "compile-and-run";
@@ -62,6 +67,7 @@ interface ActiveFlight {
 	readonly kind: FlightKind;
 	readonly nonce: string;
 	finished: boolean;
+	guestWorkStarted: boolean;
 	timeout: ReturnType<typeof setTimeout> | null;
 }
 
@@ -117,8 +123,17 @@ export class RustRunnerProtocolError extends Error {
 	}
 }
 
+export class RustRunnerPoisonedError extends Error {
+	constructor(readonly failure: Error) {
+		super(
+			`V86 emulator generation is unusable and must be restarted: ${failure.message}`,
+		);
+		this.name = "RustRunnerPoisonedError";
+	}
+}
+
 function defaultNonceFactory(): string {
-	const bytes = new Uint8Array(16);
+	const bytes = new Uint8Array(GUEST_PROTOCOL.nonceHexLength / 2);
 	crypto.getRandomValues(bytes);
 	return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
 		"",
@@ -198,11 +213,13 @@ export class V86JobCoordinator {
 	private readonly issuedNonces = new Set<string>();
 	private readonly nonceFactory: () => string;
 	private readonly onPhaseChange: (phase: V86ExecutionPhase | null) => void;
+	private readonly onPoison: (error: Error) => void;
 	private readonly pendingSerialLines: string[] = [];
 	private readonly runTimeoutMs: number;
 	private activeFlight: ActiveFlight | null = null;
 	private disposed = false;
 	private markerWaiter: MarkerWaiter | null = null;
+	private poisoned: RustRunnerPoisonedError | null = null;
 	private serialLine = "";
 
 	constructor(
@@ -215,6 +232,7 @@ export class V86JobCoordinator {
 		this.runTimeoutMs = options.runTimeoutMs;
 		this.nonceFactory = options.nonceFactory ?? defaultNonceFactory;
 		this.onPhaseChange = options.onPhaseChange ?? (() => {});
+		this.onPoison = options.onPoison ?? (() => {});
 	}
 
 	get busy(): boolean {
@@ -223,6 +241,7 @@ export class V86JobCoordinator {
 
 	assertCanAdmit(requestedKind: FlightKind): void {
 		if (this.disposed) throw new RustRunnerDisposedError();
+		if (this.poisoned) throw this.poisoned;
 		if (this.activeFlight) {
 			throw new RustRunnerBusyError(this.activeFlight.kind, requestedKind);
 		}
@@ -269,6 +288,11 @@ export class V86JobCoordinator {
 
 	cancelActive(reason = "V86 execution cancelled"): void {
 		this.activeFlight?.controller.abort(new RustRunnerCancelledError(reason));
+	}
+
+	invalidate(error: Error): void {
+		if (this.disposed || this.poisoned) return;
+		this.poison(error);
 	}
 
 	dispose(): void {
@@ -385,7 +409,7 @@ export class V86JobCoordinator {
 			const nonce = this.nonceFactory();
 			if (!NONCE_PATTERN.test(nonce)) {
 				throw new RustRunnerProtocolError(
-					"V86 job nonce must be 32 lowercase hexadecimal characters",
+					`V86 job nonce must be ${GUEST_PROTOCOL.nonceHexLength} lowercase hexadecimal characters`,
 				);
 			}
 			if (!this.issuedNonces.has(nonce)) {
@@ -405,6 +429,7 @@ export class V86JobCoordinator {
 			kind,
 			nonce: this.issueNonce(),
 			finished: false,
+			guestWorkStarted: false,
 			timeout: null,
 		};
 		this.activeFlight = flight;
@@ -422,7 +447,7 @@ export class V86JobCoordinator {
 			);
 		}
 		if (this.activeFlight === flight) this.activeFlight = null;
-		if (!this.disposed) this.onPhaseChange(null);
+		if (!this.disposed && !this.poisoned) this.onPhaseChange(null);
 	}
 
 	private async withFlight<T>(
@@ -432,9 +457,25 @@ export class V86JobCoordinator {
 		const flight = this.beginFlight(kind);
 		try {
 			return await action(flight);
+		} catch (error) {
+			const admittedError =
+				error instanceof Error ? error : new Error(String(error));
+			if (!this.disposed && flight.guestWorkStarted) {
+				this.poison(admittedError);
+			}
+			throw admittedError;
 		} finally {
 			this.finishFlight(flight);
 		}
+	}
+
+	private poison(error: Error): void {
+		if (this.disposed || this.poisoned) return;
+		this.poisoned = new RustRunnerPoisonedError(error);
+		if (this.activeFlight && !this.activeFlight.controller.signal.aborted) {
+			this.activeFlight.controller.abort(error);
+		}
+		this.onPoison(error);
 	}
 
 	private armDeadline(
@@ -463,6 +504,7 @@ export class V86JobCoordinator {
 		path: string,
 		data: Uint8Array,
 	): Promise<void> {
+		flight.guestWorkStarted = true;
 		await abortable(
 			Promise.resolve().then(() => this.emulator.create_file(path, data)),
 			flight.controller.signal,
@@ -475,6 +517,7 @@ export class V86JobCoordinator {
 		path: string,
 	): Promise<string> {
 		let bytes: Uint8Array;
+		flight.guestWorkStarted = true;
 		try {
 			bytes = await abortable(
 				Promise.resolve().then(() => this.emulator.read_file(path)),
@@ -508,6 +551,7 @@ export class V86JobCoordinator {
 		expectedMarker: string,
 	): Promise<void> {
 		const marker = this.waitForMarker(expectedMarker, flight.controller.signal);
+		flight.guestWorkStarted = true;
 		try {
 			this.sendCommand(command);
 		} catch (error) {
@@ -534,30 +578,30 @@ export class V86JobCoordinator {
 
 		await this.createFile(
 			flight,
-			`tmp/${jobId}.rs`,
+			`${GUEST_PROTOCOL.jobDirectory}/${jobId}.rs`,
 			encoder.encode(rustSource),
 		);
 		await this.createFile(
 			flight,
-			`tmp/${jobId}.runtime.json`,
+			`${GUEST_PROTOCOL.jobDirectory}/${jobId}.runtime.json`,
 			encoder.encode(runtimeRequest),
 		);
 
 		this.resetSerialProtocol();
 		await this.sendCommandAndWaitForMarker(
 			flight,
-			`gors-compile ${jobId}`,
+			`${GUEST_PROTOCOL.compileCommand} ${jobId}`,
 			COMPILE_DONE + flight.nonce,
 		);
 
-		const statusPath = `tmp/${jobId}.compile.status`;
+		const statusPath = `${GUEST_PROTOCOL.jobDirectory}/${jobId}.compile.status`;
 		const compileStatus = parseExitStatus(
 			statusPath,
 			await this.readRequiredText(flight, statusPath),
 		);
 		const compileStderr = await this.readRequiredText(
 			flight,
-			`tmp/${jobId}.compile.err`,
+			`${GUEST_PROTOCOL.jobDirectory}/${jobId}.compile.err`,
 		);
 
 		return {
@@ -576,7 +620,7 @@ export class V86JobCoordinator {
 	): Promise<RunJobResult> {
 		if (!NONCE_PATTERN.test(jobId)) {
 			throw new RustRunnerProtocolError(
-				"V86 compiled job ID must be 32 lowercase hexadecimal characters",
+				`V86 compiled job ID must be ${GUEST_PROTOCOL.nonceHexLength} lowercase hexadecimal characters`,
 			);
 		}
 
@@ -584,11 +628,11 @@ export class V86JobCoordinator {
 		this.resetSerialProtocol();
 		await this.sendCommandAndWaitForMarker(
 			flight,
-			`gors-run ${jobId} ${runNonce}`,
+			`${GUEST_PROTOCOL.runCommand} ${jobId} ${runNonce}`,
 			RUN_DONE + runNonce,
 		);
 
-		const outputPrefix = `tmp/${jobId}.${runNonce}.run`;
+		const outputPrefix = `${GUEST_PROTOCOL.jobDirectory}/${jobId}.${runNonce}.run`;
 		const statusPath = `${outputPrefix}.status`;
 		const exitCode = parseExitStatus(
 			statusPath,

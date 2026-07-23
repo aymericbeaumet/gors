@@ -4,6 +4,7 @@ import {
 	RustRunnerBusyError,
 	RustRunnerCancelledError,
 	RustRunnerDisposedError,
+	RustRunnerPoisonedError,
 	RustRunnerProtocolError,
 	V86JobCoordinator,
 	type V86GuestEmulator,
@@ -44,6 +45,7 @@ function nonce(value: number): string {
 
 function createHarness(options?: {
 	compileTimeoutMs?: number;
+	onPoison?: (error: Error) => void;
 	runTimeoutMs?: number;
 }) {
 	const emulator = new FakeEmulator();
@@ -54,6 +56,7 @@ function createHarness(options?: {
 		runTimeoutMs: options?.runTimeoutMs ?? 500,
 		nonceFactory: () => nonce(nextNonce++),
 		onPhaseChange: (phase) => phases.push(phase),
+		onPoison: options?.onPoison,
 	});
 	return { coordinator, emulator, phases };
 }
@@ -119,8 +122,11 @@ describe("V86JobCoordinator", () => {
 		expect(phases).toEqual(["compiling", "running", null]);
 	});
 
-	it("ignores a cancelled job's stale marker and recovers with a new nonce", async () => {
-		const { coordinator, emulator } = createHarness();
+	it("permanently poisons a generation when a live guest job is cancelled", async () => {
+		const failures: Error[] = [];
+		const { coordinator, emulator } = createHarness({
+			onPoison: (error) => failures.push(error),
+		});
 		const first = coordinator.compile("fn main() {}", runtimeDependency);
 		const [, staleNonce] = await commandAt(emulator, 0);
 		coordinator.cancelActive("superseded");
@@ -130,73 +136,47 @@ describe("V86JobCoordinator", () => {
 				message: "superseded",
 			}),
 		);
+		expect(failures).toHaveLength(1);
+		await expect(
+			coordinator.compile("fn main() {}", runtimeDependency),
+		).rejects.toBeInstanceOf(RustRunnerPoisonedError);
+		expect(emulator.commands).toHaveLength(1);
 
-		const retry = coordinator.compile("fn main() {}", runtimeDependency);
-		const [, retryNonce] = await commandAt(emulator, 1);
-		let retrySettled = false;
-		void retry.then(
-			() => {
-				retrySettled = true;
-			},
-			() => {
-				retrySettled = true;
-			},
+		emitLine(coordinator, `GORS_COMPILE_DONE:${staleNonce}`);
+		await expect(coordinator.runJob(staleNonce)).rejects.toBeInstanceOf(
+			RustRunnerPoisonedError,
 		);
-
-		emitLine(coordinator, `GORS_COMPILE_DONE:${staleNonce}`);
-		await new Promise((resolve) => setTimeout(resolve, 5));
-		expect(retrySettled).toBe(false);
-
-		publishCompile(emulator, retryNonce);
-		emitLine(coordinator, `GORS_COMPILE_DONE:${retryNonce}`);
-		await expect(retry).resolves.toMatchObject({
-			jobId: retryNonce,
-			compile: { success: true },
-		});
+		expect(failures).toHaveLength(1);
 	});
 
-	it("rejects a malformed compile marker and admits a successful retry", async () => {
-		const { coordinator, emulator } = createHarness({
-			compileTimeoutMs: 20,
-		});
-		const malformed = coordinator.compile("fn main() {}", runtimeDependency);
-		const [, staleNonce] = await commandAt(emulator, 0);
-		emitLine(coordinator, `GORS_COMPILE_DONE:${staleNonce}:malformed`);
+	it("poisons malformed and incomplete guest publications instead of reusing the VM", async () => {
+		const malformedHarness = createHarness();
+		const malformed = malformedHarness.coordinator.compile(
+			"fn main() {}",
+			runtimeDependency,
+		);
+		const [, malformedNonce] = await commandAt(malformedHarness.emulator, 0);
+		emitLine(
+			malformedHarness.coordinator,
+			`GORS_COMPILE_DONE:${malformedNonce}:malformed`,
+		);
 		await expect(malformed).rejects.toThrow("malformed V86 completion marker");
+		await expect(
+			malformedHarness.coordinator.compile("fn main() {}", runtimeDependency),
+		).rejects.toBeInstanceOf(RustRunnerPoisonedError);
 
-		const retry = coordinator.compile("fn main() {}", runtimeDependency);
-		const [, retryNonce] = await commandAt(emulator, 1);
-		emitLine(coordinator, `GORS_COMPILE_DONE:${staleNonce}`);
-		publishCompile(emulator, retryNonce);
-		emitLine(coordinator, `GORS_COMPILE_DONE:${retryNonce}`);
-		await expect(retry).resolves.toMatchObject({
-			jobId: retryNonce,
-			compile: { success: true },
-		});
-	});
-
-	it("fails closed on missing or malformed guest status and then recovers", async () => {
-		const { coordinator, emulator } = createHarness();
-		const missing = coordinator.compile("fn main() {}", runtimeDependency);
-		const [, missingNonce] = await commandAt(emulator, 0);
-		emulator.publish(`tmp/${missingNonce}.compile.err`, "");
-		emitLine(coordinator, `GORS_COMPILE_DONE:${missingNonce}`);
+		const missingHarness = createHarness();
+		const missing = missingHarness.coordinator.compile(
+			"fn main() {}",
+			runtimeDependency,
+		);
+		const [, missingNonce] = await commandAt(missingHarness.emulator, 0);
+		missingHarness.emulator.publish(`tmp/${missingNonce}.compile.err`, "");
+		emitLine(missingHarness.coordinator, `GORS_COMPILE_DONE:${missingNonce}`);
 		await expect(missing).rejects.toBeInstanceOf(RustRunnerProtocolError);
-
-		const malformed = coordinator.compile("fn main() {}", runtimeDependency);
-		const [, malformedNonce] = await commandAt(emulator, 1);
-		publishCompile(emulator, malformedNonce, "0\n");
-		emitLine(coordinator, `GORS_COMPILE_DONE:${malformedNonce}`);
-		await expect(malformed).rejects.toThrow("malformed exit status");
-
-		const recovered = coordinator.compile("fn main() {}", runtimeDependency);
-		const [, recoveredNonce] = await commandAt(emulator, 2);
-		publishCompile(emulator, recoveredNonce);
-		emitLine(coordinator, `GORS_COMPILE_DONE:${recoveredNonce}`);
-		await expect(recovered).resolves.toMatchObject({
-			jobId: recoveredNonce,
-			compile: { success: true },
-		});
+		await expect(
+			missingHarness.coordinator.runJob(missingNonce),
+		).rejects.toBeInstanceOf(RustRunnerPoisonedError);
 	});
 
 	it("uses a fresh run nonce and preserves output text byte-for-byte", async () => {
@@ -229,7 +209,7 @@ describe("V86JobCoordinator", () => {
 		});
 	});
 
-	it("times out a run with no marker and rejects work after disposal", async () => {
+	it("poisons a timed-out generation and rejects work after disposal", async () => {
 		const { coordinator, emulator } = createHarness({ runTimeoutMs: 20 });
 		const running = coordinator.runJob(nonce(99));
 		await commandAt(emulator, 0);
@@ -240,11 +220,10 @@ describe("V86JobCoordinator", () => {
 			}),
 		);
 
-		const pending = coordinator.compile("fn main() {}", runtimeDependency);
-		const [, pendingNonce] = await commandAt(emulator, 1);
+		await expect(
+			coordinator.compile("fn main() {}", runtimeDependency),
+		).rejects.toBeInstanceOf(RustRunnerPoisonedError);
 		coordinator.dispose();
-		await expect(pending).rejects.toBeInstanceOf(RustRunnerDisposedError);
-		emitLine(coordinator, `GORS_COMPILE_DONE:${pendingNonce}`);
 		await expect(
 			coordinator.compile("fn main() {}", runtimeDependency),
 		).rejects.toBeInstanceOf(RustRunnerDisposedError);

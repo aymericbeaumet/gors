@@ -23,13 +23,15 @@ use super::input::{PackageKey, SourceSnapshot, WorkspaceKey};
 use super::provenance::DefinitionSourceTable;
 pub use super::syntax::FunctionLayout;
 use crate::source::SourceCoordinateMap;
-use queries::{BuildInput, FileFacts, FunctionProjection, PackageInput, SourceInput};
+use queries::{
+    BuildInput, ConstantProjection, FileFacts, FunctionProjection, PackageInput, SourceInput,
+};
 use telemetry::Telemetry;
 
 pub use super::fingerprint::Fingerprint;
 pub use model::{
-    BuildConfig, FileAnalysis, FileIssue, FunctionBody, FunctionDescriptor, FunctionSignature,
-    PackageAnalysis, PackageIssue, ParseFailure, PublicApi, RuntimeAbiId,
+    BuildConfig, ConstantDescriptor, FileAnalysis, FileIssue, FunctionBody, FunctionDescriptor,
+    FunctionSignature, PackageAnalysis, PackageIssue, ParseFailure, PublicApi, RuntimeAbiId,
 };
 pub(in crate::compiler) use mutation::SourceInputMutation;
 pub use products::{
@@ -171,11 +173,15 @@ impl CompilerDatabase {
             .ingredient::<queries::function_layout_product>()
             .ingredient::<queries::public_api_product>()
             .ingredient::<queries::package_analysis_product>()
-            .ingredient::<queries::semantic_status_product>()
             .ingredient::<queries::definition_source_table_product>()
+            .ingredient::<queries::constant_source_table_product>()
+            .ingredient::<queries::semantic_function_product>()
             .ingredient::<queries::typed_hir_product>()
             .ingredient::<queries::typed_signature_product>()
+            .ingredient::<queries::typed_constant_product>()
             .ingredient::<queries::package_function_product>()
+            .ingredient::<queries::package_function_named_product>()
+            .ingredient::<queries::package_constant_named_product>()
             .ingredient::<queries::mir_signature_dependencies_product>()
             .ingredient::<queries::verified_mir_product>()
             .ingredient::<queries::normalized_mir_product>()
@@ -189,6 +195,7 @@ impl CompilerDatabase {
             .ingredient::<BuildInput>()
             .ingredient::<FileFacts<'_>>()
             .ingredient::<FunctionProjection<'_>>()
+            .ingredient::<ConstantProjection<'_>>()
             .build();
         let mut database = Self {
             storage,
@@ -380,20 +387,21 @@ impl CompilerDatabase {
         Ok(queries::function_layout_product(self, function))
     }
 
-    /// Demand file-level semantic validation without reparsing its snapshot.
-    pub fn semantic_status(&self, file: FileId) -> Result<(), QueryError> {
-        let facts = self.file_facts(file)?;
-        queries::semantic_status_product(self, facts).map_err(QueryError::StageFailure)
-    }
-
     /// Current physical source table for one stable function definition.
     pub fn definition_source_table(
         &self,
         file: FileId,
         function: DefId,
     ) -> Result<Arc<DefinitionSourceTable>, QueryError> {
-        let function = self.function_projection(file, function)?;
-        queries::definition_source_table_product(self, function).map_err(QueryError::StageFailure)
+        let package = self.package_for_file(file)?;
+        let input = self.package_input(package)?;
+        if let Ok(function) = self.function_projection(file, function) {
+            return queries::definition_source_table_product(self, input, function)
+                .map_err(QueryError::StageFailure);
+        }
+        let constant = self.constant_projection(file, function)?;
+        queries::constant_source_table_product(self, file, constant)
+            .map_err(QueryError::StageFailure)
     }
 
     /// Demand one stable definition's typed HIR product.
@@ -402,8 +410,10 @@ impl CompilerDatabase {
         file: FileId,
         function: DefId,
     ) -> Result<Arc<TypedHirFunction>, QueryError> {
+        let package = self.package_for_file(file)?;
+        let input = self.package_input(package)?;
         let function = self.function_projection(file, function)?;
-        queries::typed_hir_product(self, function).map_err(QueryError::StageFailure)
+        queries::typed_hir_product(self, input, function).map_err(QueryError::StageFailure)
     }
 
     /// Demand one stable definition's exact typed signature independently of its body.
@@ -531,6 +541,22 @@ impl CompilerDatabase {
             .into_iter()
             .find(|candidate| candidate.id(self) == function)
             .ok_or(QueryError::UnknownFunction { file, function })
+    }
+
+    fn constant_projection(
+        &self,
+        file: FileId,
+        definition: DefId,
+    ) -> Result<ConstantProjection<'_>, QueryError> {
+        let facts = self.file_facts(file)?;
+        facts
+            .constants(self)
+            .into_iter()
+            .find(|candidate| candidate.id(self) == definition)
+            .ok_or(QueryError::UnknownFunction {
+                file,
+                function: definition,
+            })
     }
 
     fn package_input(&self, package: PackageId) -> Result<PackageInput, QueryError> {

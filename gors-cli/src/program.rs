@@ -6,9 +6,7 @@ use crate::cache_paths::program_cache_dir;
 use crate::compiler::{cli_workspace, compile_program};
 use crate::output::{FileWriteStats, OutputDirectoryLock, write_generated_output_locked};
 use crate::runtime_link::{ResolvedRuntime, resolve_runtime};
-use crate::rustc::{
-    AdmittedRustc, ExecutableProduct, RustcAction, RustcProfile, compile_generated_binary,
-};
+use crate::rustc::{ExecutableProduct, RustcAction, RustcProfile, compile_generated_binary};
 use crate::timings::TimingCollector;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
@@ -296,7 +294,7 @@ impl ProgramBuild {
             output_path,
             runtime.artifact_path(),
             runtime.descriptor(),
-            AdmittedRustc::new(runtime.rustc_path(), runtime.rustc_snapshot_identity()),
+            runtime.terminal_toolchain(),
             manifest.generated_files(),
             profile,
         )?)
@@ -318,8 +316,7 @@ impl ProgramBuild {
             manifest,
             runtime.descriptor(),
             runtime.artifact_path(),
-            runtime.rustc_path(),
-            runtime.rustc_snapshot_identity(),
+            runtime.terminal_toolchain(),
         )?;
         self.runtime = Some(runtime);
         Ok(())
@@ -331,11 +328,10 @@ impl ProgramBuild {
         output_path: &Path,
     ) -> Option<RustcAction> {
         let manifest = self.manifest.as_ref()?;
-        let (Some(runtime), Some(artifact_path), Some(rustc_path), Some(snapshot_identity)) = (
+        let (Some(runtime), Some(artifact_path), Some(toolchain)) = (
             manifest.selected_runtime(),
             manifest.selected_artifact_path(),
-            manifest.selected_rustc_path(),
-            manifest.selected_rustc_snapshot_identity(),
+            manifest.selected_terminal_toolchain(),
         ) else {
             return None;
         };
@@ -344,7 +340,7 @@ impl ProgramBuild {
             output_path,
             artifact_path,
             runtime,
-            AdmittedRustc::new(rustc_path, snapshot_identity),
+            toolchain,
             manifest.generated_files(),
             profile,
         )

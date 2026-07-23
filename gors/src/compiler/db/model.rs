@@ -5,8 +5,10 @@ use std::sync::Arc;
 
 use gors_runtime_abi::{ContractIdentity, RuntimeAbiManifest};
 
-use crate::compiler::syntax::{SemanticTokenStream, SyntaxAnchor};
-use crate::parser::ImportPathIssue;
+use crate::compiler::syntax::{
+    FunctionBodySyntax, FunctionHeaderSyntax, SemanticTokenStream, SyntaxAnchor,
+};
+use crate::import_path::ImportPathIssue;
 use crate::source::TextRange;
 
 use super::super::fingerprint::{Fingerprint, fingerprint_parts};
@@ -150,10 +152,12 @@ impl ParseFailure {
 /// Non-syntax issue discovered while indexing declarations.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum FileIssue {
-    /// A Go file declares the same free-function name more than once.
-    DuplicateFunction(Arc<str>),
+    /// A Go file declares the same package-level name more than once.
+    DuplicateDefinition(Arc<str>),
     /// Parser observations could not be projected into owned function syntax.
     FunctionProjectionFailure { name: Arc<str>, message: Arc<str> },
+    /// A parsed constant could not be projected into owned semantic syntax.
+    ConstantProjectionFailure { name: Arc<str>, message: Arc<str> },
 }
 
 /// Stable function identity and display name in one file index.
@@ -194,12 +198,48 @@ impl FunctionDescriptor {
     }
 }
 
+/// Stable package constant identity and display name in one file index.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ConstantDescriptor {
+    id: DefId,
+    file: FileId,
+    name: Arc<str>,
+    key: DefinitionKey,
+}
+
+impl ConstantDescriptor {
+    pub(super) fn new(file: FileId, key: DefinitionKey, name: Arc<str>) -> Self {
+        Self {
+            id: key.id(),
+            file,
+            name,
+            key,
+        }
+    }
+
+    #[must_use]
+    pub const fn id(&self) -> DefId {
+        self.id
+    }
+
+    #[must_use]
+    pub const fn file(&self) -> FileId {
+        self.file
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
 /// Deterministic, body-independent index of one parsed source file.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileAnalysis {
     file: FileId,
     package: Arc<str>,
     functions: Arc<[FunctionDescriptor]>,
+    constants: Arc<[ConstantDescriptor]>,
     failure: Option<ParseFailure>,
     issues: Arc<[FileIssue]>,
     fingerprint: Fingerprint,
@@ -210,6 +250,7 @@ impl FileAnalysis {
         file: FileId,
         package: Arc<str>,
         functions: Arc<[FunctionDescriptor]>,
+        constants: Arc<[ConstantDescriptor]>,
         failure: Option<ParseFailure>,
         issues: Arc<[FileIssue]>,
     ) -> Self {
@@ -220,18 +261,27 @@ impl FileAnalysis {
             writer.bytes(function.id.canonical_bytes());
             writer.bytes(function.name.as_bytes());
         }
+        for constant in &*constants {
+            writer.bytes(constant.id.canonical_bytes());
+            writer.bytes(constant.name.as_bytes());
+        }
         if let Some(failure) = &failure {
             writer.bytes(b"parse-failure");
             failure.write_fingerprint(&mut writer);
         }
         for issue in &*issues {
             match issue {
-                FileIssue::DuplicateFunction(name) => {
-                    writer.bytes(b"duplicate-function");
+                FileIssue::DuplicateDefinition(name) => {
+                    writer.bytes(b"duplicate-definition");
                     writer.bytes(name.as_bytes());
                 }
                 FileIssue::FunctionProjectionFailure { name, message } => {
                     writer.bytes(b"function-projection-failure");
+                    writer.bytes(name.as_bytes());
+                    writer.bytes(message.as_bytes());
+                }
+                FileIssue::ConstantProjectionFailure { name, message } => {
+                    writer.bytes(b"constant-projection-failure");
                     writer.bytes(name.as_bytes());
                     writer.bytes(message.as_bytes());
                 }
@@ -241,6 +291,7 @@ impl FileAnalysis {
             file,
             package,
             functions,
+            constants,
             failure,
             issues,
             fingerprint: writer.finish(),
@@ -263,6 +314,12 @@ impl FileAnalysis {
     #[must_use]
     pub fn functions(&self) -> &[FunctionDescriptor] {
         &self.functions
+    }
+
+    /// Constants sorted by stable definition identity.
+    #[must_use]
+    pub fn constants(&self) -> &[ConstantDescriptor] {
+        &self.constants
     }
 
     /// Parser diagnostic, if the input revision is invalid.
@@ -289,10 +346,14 @@ impl FileAnalysis {
         let functions = self.functions.iter().fold(0_usize, |total, function| {
             total.saturating_add(function.name.len())
         });
+        let constants = self.constants.iter().fold(0_usize, |total, constant| {
+            total.saturating_add(constant.name.len())
+        });
         let issues = self.issues.iter().fold(0_usize, |total, issue| {
             let bytes = match issue {
-                FileIssue::DuplicateFunction(name) => name.len(),
-                FileIssue::FunctionProjectionFailure { name, message } => {
+                FileIssue::DuplicateDefinition(name) => name.len(),
+                FileIssue::FunctionProjectionFailure { name, message }
+                | FileIssue::ConstantProjectionFailure { name, message } => {
                     name.len().saturating_add(message.len())
                 }
             };
@@ -301,6 +362,7 @@ impl FileAnalysis {
         self.package
             .len()
             .saturating_add(functions)
+            .saturating_add(constants)
             .saturating_add(issues)
             .saturating_add(
                 self.failure
@@ -349,6 +411,12 @@ pub enum PackageIssue {
         name: Arc<str>,
         message: Arc<str>,
     },
+    /// One parsed constant could not be projected into owned semantic syntax.
+    ConstantProjectionFailure {
+        file: FileId,
+        name: Arc<str>,
+        message: Arc<str>,
+    },
 }
 
 /// Deterministic, body-independent semantic package index.
@@ -363,27 +431,47 @@ pub struct PackageAnalysis {
     files: Arc<[FileId]>,
     direct_imports: Arc<[Arc<str>]>,
     functions: Arc<[FunctionDescriptor]>,
+    constants: Arc<[ConstantDescriptor]>,
     issues: Arc<[PackageIssue]>,
     public_api_fingerprint: Fingerprint,
     fingerprint: Fingerprint,
 }
 
+pub(super) struct PackageAnalysisData {
+    pub(super) package: PackageId,
+    pub(super) package_name: Arc<str>,
+    pub(super) files: Arc<[FileId]>,
+    pub(super) direct_imports: Arc<[Arc<str>]>,
+    pub(super) functions: Arc<[FunctionDescriptor]>,
+    pub(super) constants: Arc<[ConstantDescriptor]>,
+    pub(super) issues: Arc<[PackageIssue]>,
+}
+
 impl PackageAnalysis {
     pub(super) fn new(
-        package: PackageId,
-        package_name: Arc<str>,
-        files: Arc<[FileId]>,
-        direct_imports: Arc<[Arc<str>]>,
-        functions: Arc<[FunctionDescriptor]>,
-        issues: Arc<[PackageIssue]>,
+        data: PackageAnalysisData,
         exported_signatures: &[FunctionSignature],
+        exported_constants: &[(DefId, Fingerprint)],
     ) -> Self {
+        let PackageAnalysisData {
+            package,
+            package_name,
+            files,
+            direct_imports,
+            functions,
+            constants,
+            issues,
+        } = data;
         let mut public_api = FingerprintBuilder::new(b"package-public-api");
         public_api.bytes(package.canonical_bytes());
         public_api.bytes(package_name.as_bytes());
         for signature in exported_signatures {
             public_api.bytes(signature.id.canonical_bytes());
             public_api.bytes(signature.fingerprint.as_bytes());
+        }
+        for (definition, fingerprint) in exported_constants {
+            public_api.bytes(definition.canonical_bytes());
+            public_api.bytes(fingerprint.as_bytes());
         }
         let public_api_fingerprint = public_api.finish();
 
@@ -400,6 +488,11 @@ impl PackageAnalysis {
             fingerprint.bytes(function.id.canonical_bytes());
             fingerprint.bytes(function.file.canonical_bytes());
             fingerprint.bytes(function.name.as_bytes());
+        }
+        for constant in &*constants {
+            fingerprint.bytes(constant.id.canonical_bytes());
+            fingerprint.bytes(constant.file.canonical_bytes());
+            fingerprint.bytes(constant.name.as_bytes());
         }
         for issue in &*issues {
             match issue {
@@ -470,6 +563,16 @@ impl PackageAnalysis {
                     fingerprint.bytes(name.as_bytes());
                     fingerprint.bytes(message.as_bytes());
                 }
+                PackageIssue::ConstantProjectionFailure {
+                    file,
+                    name,
+                    message,
+                } => {
+                    fingerprint.bytes(b"constant-projection-failure");
+                    fingerprint.bytes(file.canonical_bytes());
+                    fingerprint.bytes(name.as_bytes());
+                    fingerprint.bytes(message.as_bytes());
+                }
             }
         }
         fingerprint.bytes(public_api_fingerprint.as_bytes());
@@ -480,6 +583,7 @@ impl PackageAnalysis {
             files,
             direct_imports,
             functions,
+            constants,
             issues,
             public_api_fingerprint,
             fingerprint: fingerprint.finish(),
@@ -516,6 +620,12 @@ impl PackageAnalysis {
         &self.functions
     }
 
+    /// All indexed package constants in stable key and evidence order.
+    #[must_use]
+    pub fn constants(&self) -> &[ConstantDescriptor] {
+        &self.constants
+    }
+
     /// Deterministically sorted package-index issues.
     #[must_use]
     pub fn issues(&self) -> &[PackageIssue] {
@@ -540,6 +650,9 @@ impl PackageAnalysis {
         let functions = self.functions.iter().fold(0_usize, |total, function| {
             total.saturating_add(function.name.len())
         });
+        let constants = self.constants.iter().fold(0_usize, |total, constant| {
+            total.saturating_add(constant.name.len())
+        });
         let issues = self.issues.iter().fold(0_usize, |total, issue| {
             let retained = match issue {
                 PackageIssue::FileParseFailure { failure, .. } => failure.retained_bytes(),
@@ -559,7 +672,8 @@ impl PackageAnalysis {
                     requested_key,
                     ..
                 } => existing_key.len().saturating_add(requested_key.len()),
-                PackageIssue::FunctionProjectionFailure { name, message, .. } => {
+                PackageIssue::FunctionProjectionFailure { name, message, .. }
+                | PackageIssue::ConstantProjectionFailure { name, message, .. } => {
                     name.len().saturating_add(message.len())
                 }
             };
@@ -574,6 +688,7 @@ impl PackageAnalysis {
                     .fold(0_usize, |total, import| total.saturating_add(import.len())),
             )
             .saturating_add(functions)
+            .saturating_add(constants)
             .saturating_add(issues)
             .saturating_add(64)
     }
@@ -589,6 +704,7 @@ pub struct FunctionSignature {
     name: Arc<str>,
     anchor: SyntaxAnchor,
     syntax: SemanticTokenStream,
+    structure: Arc<FunctionHeaderSyntax>,
     has_parameters: bool,
     has_results: bool,
     fingerprint: Fingerprint,
@@ -600,6 +716,7 @@ impl FunctionSignature {
         name: Arc<str>,
         anchor: SyntaxAnchor,
         syntax: SemanticTokenStream,
+        structure: Arc<FunctionHeaderSyntax>,
         has_parameters: bool,
         has_results: bool,
     ) -> Self {
@@ -623,6 +740,7 @@ impl FunctionSignature {
             name,
             anchor,
             syntax,
+            structure,
             has_parameters,
             has_results,
             fingerprint: writer.finish(),
@@ -651,6 +769,12 @@ impl FunctionSignature {
     #[must_use]
     pub const fn syntax(&self) -> &SemanticTokenStream {
         &self.syntax
+    }
+
+    /// Owned structural header consumed by semantic lowering.
+    #[must_use]
+    pub fn structure(&self) -> &FunctionHeaderSyntax {
+        &self.structure
     }
 
     /// Whether the Go declaration contains one or more parameters.
@@ -690,6 +814,7 @@ pub struct FunctionBody {
     id: DefId,
     anchor: SyntaxAnchor,
     syntax: Option<SemanticTokenStream>,
+    structure: Arc<FunctionBodySyntax>,
     fingerprint: Fingerprint,
 }
 
@@ -698,6 +823,7 @@ impl FunctionBody {
         id: DefId,
         anchor: SyntaxAnchor,
         syntax: Option<SemanticTokenStream>,
+        structure: Arc<FunctionBodySyntax>,
     ) -> Self {
         let mut writer = FingerprintBuilder::new(b"function-body-syntax-v1");
         writer.bytes(id.canonical_bytes());
@@ -713,6 +839,7 @@ impl FunctionBody {
             id,
             anchor,
             syntax,
+            structure,
             fingerprint: writer.finish(),
         }
     }
@@ -733,6 +860,12 @@ impl FunctionBody {
     #[must_use]
     pub const fn syntax(&self) -> Option<&SemanticTokenStream> {
         self.syntax.as_ref()
+    }
+
+    /// Owned structural body consumed by semantic lowering.
+    #[must_use]
+    pub fn structure(&self) -> &FunctionBodySyntax {
+        &self.structure
     }
 
     /// Domain-separated body fingerprint.

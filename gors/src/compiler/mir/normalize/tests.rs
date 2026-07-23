@@ -16,8 +16,7 @@ impl MirPass for CorruptBlockId {
 #[test]
 fn pass_manager_rejects_a_pass_that_breaks_mir() {
     let source = "package main\nfunc main() { println(true) }\n";
-    let ast = crate::parser::parse_file("pass.go", source).unwrap();
-    let hir = crate::compiler::lower_to_hir(ast.ast()).unwrap();
+    let hir = crate::compiler::lower_to_hir("pass.go", source).unwrap();
     let mir = crate::compiler::lower_to_mir(&hir).unwrap();
     let corrupt = CorruptBlockId;
     let passes: [&dyn MirPass; 1] = [&corrupt];
