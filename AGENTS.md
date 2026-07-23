@@ -244,8 +244,10 @@ edits do not re-type-check importers.
 - Query values are immutable, deterministic, reference-counted, cost-accounted,
   and evictable under an explicit memory budget.
 - An on-disk content-addressed semantic cache uses canonical encoding, checksums,
-  atomic publication, schema validation, and complete compiler, target, SDK,
-  runtime ABI, source, and dependency keys. Corruption is a cache miss.
+  atomic publication, schema validation, and complete compiler, SDK, runtime
+  contract, source, and dependency keys. Artifact target, format, toolchain,
+  capabilities, and implementation identity belong only to post-Rust-IR link
+  and executable cache keys. Corruption is a cache miss.
 - A canonical package DAG exposes ready work. One bounded global job budget and
   one work-stealing scheduler cover parsing, semantics, MIR, Rust
   representation lowering, codegen, external tools, and linking; nested phase

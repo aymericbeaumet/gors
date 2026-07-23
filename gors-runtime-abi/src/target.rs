@@ -124,7 +124,6 @@ pub struct TargetModel {
     triple: Box<str>,
     pointer_width: DataWidth,
     endianness: Endianness,
-    capabilities: TargetCapabilities,
 }
 
 impl TargetModel {
@@ -132,7 +131,6 @@ impl TargetModel {
         triple: impl Into<Box<str>>,
         pointer_width: DataWidth,
         endianness: Endianness,
-        capabilities: TargetCapabilities,
     ) -> Result<Self, TargetModelError> {
         let triple = triple.into();
         if triple.is_empty() {
@@ -145,7 +143,6 @@ impl TargetModel {
             triple,
             pointer_width,
             endianness,
-            capabilities,
         })
     }
 
@@ -164,15 +161,9 @@ impl TargetModel {
         self.endianness
     }
 
-    #[must_use]
-    pub const fn capabilities(&self) -> &TargetCapabilities {
-        &self.capabilities
-    }
-
     pub(crate) fn encode(&self, encoder: &mut CanonicalEncoder) {
         encoder.text(&self.triple);
         encoder.u8(self.pointer_width.canonical_tag());
         encoder.u8(self.endianness.canonical_tag());
-        self.capabilities.encode(encoder);
     }
 }

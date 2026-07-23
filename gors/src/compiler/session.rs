@@ -87,7 +87,7 @@ impl CompilerSession {
         self.host.telemetry()
     }
 
-    /// Change explicit build inputs while preserving target-independent memos.
+    /// Change explicit compiler inputs while preserving unrelated stage memos.
     pub fn set_build_config(&mut self, config: BuildConfig) -> Result<(), CompilerError> {
         validate_runtime_contract(&config)?;
         let changed = self

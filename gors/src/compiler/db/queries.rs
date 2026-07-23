@@ -53,8 +53,6 @@ pub(super) struct PackageInput {
 #[salsa::input]
 pub(super) struct BuildInput {
     #[returns(clone)]
-    pub(super) target: Arc<str>,
-    #[returns(clone)]
     pub(super) go_version: Arc<str>,
     #[returns(copy)]
     pub(super) runtime_abi: RuntimeAbiId,
@@ -805,11 +803,10 @@ fn representation_key(
             ),
         ))
     })?;
-    let target = build.target(db);
     let runtime_abi = build.runtime_abi(db);
     Ok(fingerprint_parts(
         b"rust-representation-config",
-        &[target.as_bytes(), runtime_abi.as_bytes()],
+        &[runtime_abi.as_bytes()],
     ))
 }
 

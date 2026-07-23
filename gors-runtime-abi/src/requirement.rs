@@ -68,6 +68,13 @@ impl RuntimeRequirement {
     pub const fn len(&self) -> usize {
         self.operations.len()
     }
+
+    pub(crate) fn encode(&self, encoder: &mut crate::encoding::CanonicalEncoder) {
+        encoder.count(self.operations.len());
+        for operation in &self.operations {
+            encoder.u16(operation.id().get());
+        }
+    }
 }
 
 impl FromIterator<RuntimeOp> for RuntimeRequirement {

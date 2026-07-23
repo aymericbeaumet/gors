@@ -66,7 +66,6 @@ impl fmt::Display for RuntimeAbiId {
 /// state.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct BuildConfig {
-    target: Arc<str>,
     go_version: Arc<str>,
     runtime_abi: RuntimeAbiId,
 }
@@ -74,22 +73,11 @@ pub struct BuildConfig {
 impl BuildConfig {
     /// Construct an explicit compiler configuration.
     #[must_use]
-    pub fn new(
-        target: impl Into<Arc<str>>,
-        go_version: impl Into<Arc<str>>,
-        runtime_abi: RuntimeAbiId,
-    ) -> Self {
+    pub fn new(go_version: impl Into<Arc<str>>, runtime_abi: RuntimeAbiId) -> Self {
         Self {
-            target: target.into(),
             go_version: go_version.into(),
             runtime_abi,
         }
-    }
-
-    /// Explicit target identity; never inferred from the host environment.
-    #[must_use]
-    pub fn target(&self) -> &str {
-        &self.target
     }
 
     /// Pinned Go language/toolchain version.
@@ -108,7 +96,6 @@ impl BuildConfig {
     #[must_use]
     pub fn fingerprint(&self) -> Fingerprint {
         let mut writer = FingerprintBuilder::new(b"build-config");
-        writer.bytes(self.target.as_bytes());
         writer.bytes(self.go_version.as_bytes());
         writer.bytes(self.runtime_abi.as_bytes());
         writer.finish()
@@ -117,7 +104,7 @@ impl BuildConfig {
 
 impl Default for BuildConfig {
     fn default() -> Self {
-        Self::new("rust-source", crate::GO_VERSION, RuntimeAbiId::current())
+        Self::new(crate::GO_VERSION, RuntimeAbiId::current())
     }
 }
 

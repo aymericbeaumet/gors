@@ -1,15 +1,14 @@
-//! Target-specific runtime artifact selection and validation.
+//! Target-specific runtime artifact provider manifests.
 
-use std::fmt::{Display, Formatter};
-
-use crate::contract::RuntimeAbiManifest;
 use crate::encoding::CanonicalEncoder;
-use crate::identity::{ArtifactIdentity, ContractIdentity, ImplementationHash};
-use crate::operations::RuntimeOp;
-use crate::target::{TargetCapability, TargetModel};
+use crate::identity::{ArtifactIdentity, ContractIdentity, ImplementationHash, ToolchainIdentity};
+use crate::target::{TargetCapabilities, TargetModel};
 
 /// Current schema for target-specific runtime artifact identities.
-pub const CURRENT_ARTIFACT_SCHEMA: ArtifactSchemaVersion = ArtifactSchemaVersion::new(1);
+///
+/// Schema 2 separates target facts from capabilities actually provided by an
+/// artifact and records the exact Rust link format and toolchain identity.
+pub const CURRENT_ARTIFACT_SCHEMA: ArtifactSchemaVersion = ArtifactSchemaVersion::new(2);
 
 /// Version of the canonical target-specific artifact encoding.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -27,68 +26,88 @@ impl ArtifactSchemaVersion {
     }
 }
 
-/// A contract requirement that the selected artifact target cannot provide.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct MissingCapability {
-    operation: RuntimeOp,
-    capability: TargetCapability,
+/// Link format of a precompiled runtime provider.
+///
+/// Generated Rust currently shares runtime-defined Rust value types, so the
+/// only supported provider is an rlib built by an exactly compatible rustc.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum RuntimeArtifactFormat {
+    RustRlibV1,
 }
 
-impl MissingCapability {
-    #[must_use]
-    pub const fn operation(self) -> RuntimeOp {
-        self.operation
-    }
-
-    #[must_use]
-    pub const fn capability(self) -> TargetCapability {
-        self.capability
+impl RuntimeArtifactFormat {
+    pub(crate) const fn canonical_tag(self) -> u8 {
+        match self {
+            Self::RustRlibV1 => 1,
+        }
     }
 }
 
-impl Display for MissingCapability {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "runtime operation {:?} requires missing target capability {:?}",
-            self.operation, self.capability
-        )
-    }
-}
-
-impl std::error::Error for MissingCapability {}
-
-/// Target-specific runtime implementation selected for one contract.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// Target-specific runtime implementation reusable by compatible programs.
+///
+/// The provider records capabilities it can actually supply. It is not
+/// rejected merely because another operation in the contract needs a missing
+/// capability; compatibility is checked later against one program's selected
+/// operation requirement.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct RuntimeArtifactManifest {
     schema: ArtifactSchemaVersion,
     contract: ContractIdentity,
     target: TargetModel,
+    provided_capabilities: TargetCapabilities,
+    format: RuntimeArtifactFormat,
+    toolchain: ToolchainIdentity,
     implementation: ImplementationHash,
 }
 
 impl RuntimeArtifactManifest {
+    /// Construct a provider using the current artifact schema.
+    #[must_use]
     pub fn new(
-        contract: &RuntimeAbiManifest,
+        contract: ContractIdentity,
         target: TargetModel,
+        provided_capabilities: TargetCapabilities,
+        format: RuntimeArtifactFormat,
+        toolchain: ToolchainIdentity,
         implementation: ImplementationHash,
-    ) -> Result<Self, MissingCapability> {
-        for operation in contract.runtime_ops() {
-            for capability in operation.required_capabilities() {
-                if !target.capabilities().contains(*capability) {
-                    return Err(MissingCapability {
-                        operation: *operation,
-                        capability: *capability,
-                    });
-                }
-            }
-        }
-        Ok(Self {
-            schema: CURRENT_ARTIFACT_SCHEMA,
-            contract: contract.identity(),
+    ) -> Self {
+        Self::from_parts(
+            CURRENT_ARTIFACT_SCHEMA,
+            contract,
             target,
+            provided_capabilities,
+            format,
+            toolchain,
             implementation,
-        })
+        )
+    }
+
+    /// Construct a decoded provider before compatibility validation.
+    ///
+    /// Callers admitting a sidecar manifest must pass the result through
+    /// [`Self::select`]. That operation rejects every schema except the current
+    /// one. Keeping the schema explicit also makes stale-cache tests possible
+    /// without unsafe mutation or a legacy decoding path.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts(
+        schema: ArtifactSchemaVersion,
+        contract: ContractIdentity,
+        target: TargetModel,
+        provided_capabilities: TargetCapabilities,
+        format: RuntimeArtifactFormat,
+        toolchain: ToolchainIdentity,
+        implementation: ImplementationHash,
+    ) -> Self {
+        Self {
+            schema,
+            contract,
+            target,
+            provided_capabilities,
+            format,
+            toolchain,
+            implementation,
+        }
     }
 
     #[must_use]
@@ -107,8 +126,29 @@ impl RuntimeArtifactManifest {
     }
 
     #[must_use]
+    pub const fn provided_capabilities(&self) -> &TargetCapabilities {
+        &self.provided_capabilities
+    }
+
+    #[must_use]
+    pub const fn format(&self) -> RuntimeArtifactFormat {
+        self.format
+    }
+
+    #[must_use]
+    pub const fn toolchain(&self) -> ToolchainIdentity {
+        self.toolchain
+    }
+
+    #[must_use]
     pub const fn implementation(&self) -> ImplementationHash {
         self.implementation
+    }
+
+    /// Whether the provider payload still has its recorded exact content.
+    #[must_use]
+    pub fn verifies_payload(&self, bytes: &[u8]) -> bool {
+        self.implementation.matches(bytes)
     }
 
     /// Encode exact artifact-selection facts using a separate stable domain.
@@ -118,11 +158,14 @@ impl RuntimeArtifactManifest {
         encoder.u32(self.schema.get());
         encoder.fixed_bytes(self.contract.as_bytes());
         self.target.encode(&mut encoder);
+        self.provided_capabilities.encode(&mut encoder);
+        encoder.u8(self.format.canonical_tag());
+        encoder.fixed_bytes(self.toolchain.as_bytes());
         encoder.fixed_bytes(self.implementation.as_bytes());
         encoder.finish()
     }
 
-    /// Hash the exact contract, target, capability, and implementation tuple.
+    /// Hash the exact provider contract, compatibility, and payload facts.
     #[must_use]
     pub fn identity(&self) -> ArtifactIdentity {
         ArtifactIdentity::sha256(&self.canonical_bytes())

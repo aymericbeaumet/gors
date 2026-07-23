@@ -118,6 +118,58 @@ fn default_build_config_uses_the_current_runtime_contract() {
 }
 
 #[test]
+fn runtime_contract_change_invalidates_only_rust_representation() {
+    let mut db = CompilerDatabase::default();
+    let file = insert(&mut db, COMPLETE_PROGRAM);
+    let functions = functions(&db.analyze_file(file).unwrap());
+    let function = function_id(&functions, "f");
+    let package = db.package_for_file(file).unwrap();
+    let before_hir = db.typed_hir(file, function).unwrap();
+    let before_mir = db.verified_mir(file, function).unwrap();
+    let before_normalized = db.normalized_mir(file, function).unwrap();
+    let before_rust = db.verified_rust_ir(file, function).unwrap();
+    let before_package = db.verified_rust_ir_package(package).unwrap();
+
+    db.set_build_config(BuildConfig::new(
+        gors::GO_VERSION,
+        RuntimeAbiId::from_contract_hash([0xa5; 32]),
+    ))
+    .unwrap();
+    db.reset_telemetry();
+
+    let after_hir = db.typed_hir(file, function).unwrap();
+    let after_mir = db.verified_mir(file, function).unwrap();
+    let after_normalized = db.normalized_mir(file, function).unwrap();
+    let after_rust = db.verified_rust_ir(file, function).unwrap();
+    let after_package = db.verified_rust_ir_package(package).unwrap();
+
+    assert!(Arc::ptr_eq(&before_hir, &after_hir));
+    assert!(Arc::ptr_eq(&before_mir, &after_mir));
+    assert!(Arc::ptr_eq(&before_normalized, &after_normalized));
+    assert!(!Arc::ptr_eq(&before_rust, &after_rust));
+    assert_eq!(before_rust.function(), after_rust.function());
+    assert_eq!(
+        before_rust.runtime_requirement(),
+        after_rust.runtime_requirement()
+    );
+    assert!(!Arc::ptr_eq(&before_package, &after_package));
+    assert_eq!(before_package.file(), after_package.file());
+    assert_eq!(
+        before_package.runtime_requirement(),
+        after_package.runtime_requirement()
+    );
+
+    let telemetry = db.telemetry();
+    assert_eq!(telemetry.executions(QueryKind::FileProjection), 0);
+    assert_eq!(telemetry.executions(QueryKind::SemanticFile), 0);
+    assert_eq!(telemetry.executions(QueryKind::TypedHir), 0);
+    assert_eq!(telemetry.executions(QueryKind::VerifiedGoMir), 0);
+    assert_eq!(telemetry.executions(QueryKind::NormalizedGoMir), 0);
+    assert!(telemetry.executions(QueryKind::VerifiedRustIr) > 0);
+    assert!(telemetry.executions(QueryKind::RustIrPackage) > 0);
+}
+
+#[test]
 fn equal_source_update_executes_no_query_bodies() {
     let mut db = CompilerDatabase::default();
     let file = insert(&mut db, ORIGINAL);

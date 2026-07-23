@@ -197,15 +197,10 @@ impl CompilerDatabase {
             packages: BTreeMap::new(),
             build: None,
         };
-        let build = BuildInput::builder(
-            Arc::from(config.target()),
-            Arc::from(config.go_version()),
-            config.runtime_abi(),
-        )
-        .target_durability(Durability::HIGH)
-        .go_version_durability(Durability::HIGH)
-        .runtime_abi_durability(Durability::HIGH)
-        .new(&database);
+        let build = BuildInput::builder(Arc::from(config.go_version()), config.runtime_abi())
+            .go_version_durability(Durability::HIGH)
+            .runtime_abi_durability(Durability::HIGH)
+            .new(&database);
         database.build = Some(build);
         database
     }
@@ -281,7 +276,6 @@ impl CompilerDatabase {
         self.build
             .map(|build| {
                 Arc::new(BuildConfig::new(
-                    build.target(self),
                     build.go_version(self),
                     build.runtime_abi(self),
                 ))
@@ -294,9 +288,6 @@ impl CompilerDatabase {
         let Some(build) = self.build else {
             return Err(QueryError::MissingBuildConfig);
         };
-        if build.target(self).as_ref() != config.target() {
-            build.set_target(self).to(Arc::from(config.target()));
-        }
         if build.go_version(self).as_ref() != config.go_version() {
             build
                 .set_go_version(self)

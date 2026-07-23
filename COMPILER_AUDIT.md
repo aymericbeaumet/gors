@@ -456,13 +456,14 @@ stay inline. This is only the semantic-query slice: it does not yet admit
 parsing, rustc, linking, memory, or foreground cancellation through one global
 scheduler.
 
-Build configuration now carries the typed target-neutral runtime
-`ContractIdentity` derived from the canonical manifest; numeric ABI scraping and
-parallel string labels are deleted. Target, pinned Go version, and runtime
-contract are explicit query inputs. Target-specific artifact identity remains
-an artifact-publication concern. Configuration granularity still needs
-evidence: a changed artifact target or implementation must not invalidate
-target-independent syntax, HIR, or Go MIR.
+Build configuration now carries only the pinned Go version and typed
+target-neutral runtime `ContractIdentity` derived from the canonical manifest;
+numeric ABI scraping and parallel string labels are deleted. Artifact target,
+format, toolchain, capabilities, and implementation identity are deliberately
+absent from compiler queries. They belong to the post-Rust-IR link request and
+artifact-publication keys, so changing an artifact cannot invalidate syntax,
+HIR, Go MIR, or target-neutral Rust IR. A runtime-contract change invalidates
+only Rust representation lowering and its deterministic package assembly.
 
 The typed manifest is now authoritative at the Rust-representation boundary.
 Rust IR carries canonical `PrimitiveOp` and `RuntimeOp` values, verifies their
@@ -484,7 +485,9 @@ implementation fingerprints remain separate so a private dependency edit does
 not re-type-check importers. Immutable query values are memory-accounted and
 evictable. An on-disk content-addressed semantic cache uses deterministic
 encoding, atomic publication, checksums, and complete schema, source, SDK,
-target, runtime ABI, and dependency keys.
+runtime-contract, and dependency keys. Target, artifact format, toolchain,
+provider capabilities, and runtime implementation belong to distinct link and
+executable cache keys after verified target-neutral Rust IR.
 
 Parallelism operates on ready package-DAG nodes and query boundaries. One
 bounded global job budget covers discovery, parsing, semantics, MIR,

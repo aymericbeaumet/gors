@@ -250,22 +250,6 @@ fn warm_scheduler_skips_comments_and_fans_out_only_changed_root_inputs() {
         .compile_program(program("main.go", PARALLEL_PROGRAM_EDIT))
         .unwrap();
     assert_eq!(host.telemetry(), edited);
-
-    session
-        .set_build_config(BuildConfig::new(
-            "rust-source-warm-scheduler-test",
-            gors::GO_VERSION,
-            RuntimeAbiId::current(),
-        ))
-        .unwrap();
-    session
-        .compile_program(program("main.go", PARALLEL_PROGRAM_EDIT))
-        .unwrap();
-    let reconfigured = host.telemetry();
-    assert_eq!(reconfigured.scheduled_roots, 17);
-    assert_eq!(reconfigured.parallel_waves, 2);
-    assert_eq!(reconfigured.serial_waves, 1);
-    assert_eq!(reconfigured.pool_starts, 1);
 }
 
 #[test]
@@ -421,7 +405,6 @@ fn canonical_package_root_selects_the_same_error_for_every_worker_count() {
 #[test]
 fn production_session_rejects_an_unsupported_runtime_contract() {
     let unsupported = BuildConfig::new(
-        "rust-source",
         gors::GO_VERSION,
         RuntimeAbiId::from_contract_hash([0x99; 32]),
     );
@@ -570,50 +553,6 @@ fn assert_unrelated_edit_keeps_g_green(edited: &str, inserts_declaration: bool) 
     if inserts_declaration {
         assert!(telemetry.executions(QueryKind::PackageFunctionLookup) > 0);
     }
-}
-
-#[test]
-fn target_change_invalidates_representation_but_not_go_semantics() {
-    let mut session = CompilerSession::default();
-    session
-        .compile_program(program("main.go", ORIGINAL))
-        .unwrap();
-    let file = only_file(&session);
-    let ids = functions(&session.database().analyze_file(file).unwrap());
-    let g = *ids.get("g").unwrap();
-    let before_hir = session.database().typed_hir(file, g).unwrap();
-    let before_mir = session.database().verified_mir(file, g).unwrap();
-    let before_normalized = session.database().normalized_mir(file, g).unwrap();
-    let before_rust = session.database().verified_rust_ir(file, g).unwrap();
-
-    session
-        .set_build_config(BuildConfig::new(
-            "rust-source-test-target",
-            gors::GO_VERSION,
-            RuntimeAbiId::current(),
-        ))
-        .unwrap();
-    session.database().reset_telemetry();
-    session
-        .compile_program(program("main.go", ORIGINAL))
-        .unwrap();
-
-    let after_hir = session.database().typed_hir(file, g).unwrap();
-    let after_mir = session.database().verified_mir(file, g).unwrap();
-    let after_normalized = session.database().normalized_mir(file, g).unwrap();
-    let after_rust = session.database().verified_rust_ir(file, g).unwrap();
-    assert!(Arc::ptr_eq(&before_hir, &after_hir));
-    assert!(Arc::ptr_eq(&before_mir, &after_mir));
-    assert!(Arc::ptr_eq(&before_normalized, &after_normalized));
-    assert!(!Arc::ptr_eq(&before_rust, &after_rust));
-
-    let telemetry = session.database().telemetry();
-    assert_eq!(telemetry.executions(QueryKind::FileProjection), 0);
-    assert_eq!(telemetry.executions(QueryKind::SemanticFile), 0);
-    assert_eq!(telemetry.executions(QueryKind::TypedHir), 0);
-    assert_eq!(telemetry.executions(QueryKind::VerifiedGoMir), 0);
-    assert_eq!(telemetry.executions(QueryKind::NormalizedGoMir), 0);
-    assert!(telemetry.executions(QueryKind::VerifiedRustIr) > 0);
 }
 
 #[test]

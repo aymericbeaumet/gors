@@ -4,6 +4,7 @@ use sha2::{Digest as _, Sha256};
 
 const CONTRACT_DOMAIN: &[u8] = b"gors.runtime-abi.contract\0";
 const ARTIFACT_DOMAIN: &[u8] = b"gors.runtime-abi.artifact\0";
+const LINK_PLAN_DOMAIN: &[u8] = b"gors.runtime-abi.link-plan\0";
 
 pub struct CanonicalEncoder {
     bytes: Vec<u8>,
@@ -16,6 +17,10 @@ impl CanonicalEncoder {
 
     pub(crate) fn artifact() -> Self {
         Self::new(ARTIFACT_DOMAIN)
+    }
+
+    pub(crate) fn link_plan() -> Self {
+        Self::new(LINK_PLAN_DOMAIN)
     }
 
     pub(crate) fn u8(&mut self, value: u8) {

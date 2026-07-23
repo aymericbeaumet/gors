@@ -58,6 +58,12 @@ impl ImplementationHash {
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
+
+    /// Whether these are the exact bytes named by this implementation hash.
+    #[must_use]
+    pub fn matches(self, bytes: &[u8]) -> bool {
+        self == Self::sha256(bytes)
+    }
 }
 
 impl Debug for ImplementationHash {
@@ -105,6 +111,83 @@ impl Debug for ArtifactIdentity {
 }
 
 impl Display for ArtifactIdentity {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        write_digest(formatter, &self.0)
+    }
+}
+
+/// SHA-256 identity of the exact Rust toolchain and link-ABI configuration.
+///
+/// Runtime artifact producers should hash a canonical record containing the
+/// complete `rustc -vV` output and every compatibility-relevant codegen input.
+/// This identity is deliberately separate from the runtime implementation
+/// hash: rebuilding identical runtime source with an incompatible compiler
+/// must select a different provider.
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ToolchainIdentity([u8; 32]);
+
+impl ToolchainIdentity {
+    #[must_use]
+    pub fn sha256(bytes: &[u8]) -> Self {
+        Self(sha256(bytes))
+    }
+
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl Debug for ToolchainIdentity {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("ToolchainIdentity")
+            .field(&HexDigest(&self.0))
+            .finish()
+    }
+}
+
+impl Display for ToolchainIdentity {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        write_digest(formatter, &self.0)
+    }
+}
+
+/// SHA-256 identity of one validated consumer-to-provider link plan.
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct LinkPlanIdentity([u8; 32]);
+
+impl LinkPlanIdentity {
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    pub(crate) fn sha256(bytes: &[u8]) -> Self {
+        Self(sha256(bytes))
+    }
+}
+
+impl Debug for LinkPlanIdentity {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("LinkPlanIdentity")
+            .field(&HexDigest(&self.0))
+            .finish()
+    }
+}
+
+impl Display for LinkPlanIdentity {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         write_digest(formatter, &self.0)
     }

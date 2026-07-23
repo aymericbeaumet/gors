@@ -4,23 +4,52 @@ use std::error::Error;
 use sha2::{Digest as _, Sha256};
 
 use gors_runtime_abi::{
-    AllocationEffect, ArgumentMutationEffect, CURRENT_ARTIFACT_SCHEMA, CURRENT_CONTRACT_VERSION,
-    CURRENT_MANIFEST_SCHEMA, ContractVersion, DataWidth, Endianness, GoPanicCondition,
-    GoSemanticModel, HostIoEffect, ImplementationHash, PrimitiveOp, RuntimeAbiManifest,
-    RuntimeArtifactManifest, RuntimeOp, RuntimeRequirement, RuntimeType, TargetCapabilities,
-    TargetCapability, TargetModel, TargetModelError,
+    AllocationEffect, ArgumentMutationEffect, ArtifactSchemaVersion, CURRENT_ARTIFACT_SCHEMA,
+    CURRENT_CONTRACT_VERSION, CURRENT_MANIFEST_SCHEMA, ContractVersion, DataWidth, Endianness,
+    GoPanicCondition, GoSemanticModel, HostIoEffect, ImplementationHash, PrimitiveOp,
+    RuntimeAbiManifest, RuntimeArtifactFormat, RuntimeArtifactManifest, RuntimeDependency,
+    RuntimeLinkError, RuntimeLinkRequest, RuntimeOp, RuntimeRequirement, RuntimeType,
+    TargetCapabilities, TargetCapability, TargetModel, TargetModelError, ToolchainIdentity,
 };
 
-fn target(
-    triple: &str,
+fn target_model(triple: &str) -> Result<TargetModel, TargetModelError> {
+    TargetModel::new(triple, DataWidth::Bits32, Endianness::Little)
+}
+
+fn toolchain_identity(label: &[u8]) -> ToolchainIdentity {
+    ToolchainIdentity::sha256(label)
+}
+
+fn artifact(
+    contract: &RuntimeAbiManifest,
+    target: TargetModel,
     capabilities: impl IntoIterator<Item = TargetCapability>,
-) -> Result<TargetModel, TargetModelError> {
-    TargetModel::new(
-        triple,
-        DataWidth::Bits32,
-        Endianness::Little,
+    toolchain: ToolchainIdentity,
+    implementation: &[u8],
+) -> RuntimeArtifactManifest {
+    RuntimeArtifactManifest::new(
+        contract.identity(),
+        target,
         TargetCapabilities::new(capabilities),
+        RuntimeArtifactFormat::RustRlibV1,
+        toolchain,
+        ImplementationHash::sha256(implementation),
     )
+}
+
+fn request(
+    contract: &RuntimeAbiManifest,
+    requirement: impl IntoIterator<Item = RuntimeOp>,
+    target: TargetModel,
+    toolchain: ToolchainIdentity,
+) -> Result<RuntimeLinkRequest, Box<dyn Error>> {
+    let dependency = RuntimeDependency::new(contract, RuntimeRequirement::new(requirement))?;
+    Ok(RuntimeLinkRequest::new(
+        dependency,
+        target,
+        RuntimeArtifactFormat::RustRlibV1,
+        toolchain,
+    ))
 }
 
 fn manifest(
@@ -242,20 +271,27 @@ fn semantic_contract_dimensions_change_only_the_contract_hash() {
 fn target_and_implementation_change_artifact_but_not_contract_identity()
 -> Result<(), Box<dyn Error>> {
     let contract = manifest([], [RuntimeOp::IntDiv]);
-    let first = RuntimeArtifactManifest::new(
+    let first = artifact(
         &contract,
-        target("wasm32-unknown-unknown", [])?,
-        ImplementationHash::sha256(b"implementation one"),
-    )?;
-    let second = RuntimeArtifactManifest::new(
+        target_model("wasm32-unknown-unknown")?,
+        [],
+        toolchain_identity(b"rustc one"),
+        b"implementation one",
+    );
+    let second = artifact(
         &contract,
-        target("x86_64-unknown-linux-gnu", [TargetCapability::Threads])?,
-        ImplementationHash::sha256(b"implementation two"),
-    )?;
+        target_model("x86_64-unknown-linux-gnu")?,
+        [TargetCapability::Threads],
+        toolchain_identity(b"rustc two"),
+        b"implementation two",
+    );
 
     assert_eq!(first.contract(), contract.identity());
     assert_eq!(second.contract(), contract.identity());
     assert_eq!(first.schema(), CURRENT_ARTIFACT_SCHEMA);
+    assert_eq!(first.format(), RuntimeArtifactFormat::RustRlibV1);
+    assert!(first.verifies_payload(b"implementation one"));
+    assert!(!first.verifies_payload(b"implementation two"));
     assert_ne!(first.identity(), second.identity());
     Ok(())
 }
@@ -397,66 +433,212 @@ fn runtime_requirements_are_canonical_and_composable() {
 
 #[test]
 fn artifact_selection_enforces_runtime_capability_requirements() -> Result<(), Box<dyn Error>> {
-    let contract = manifest([], [RuntimeOp::PrintI64]);
-    let error = RuntimeArtifactManifest::new(
-        &contract,
-        target("wasm32-unknown-unknown", [])?,
-        ImplementationHash::sha256(b"runtime"),
-    );
+    let contract = manifest([], [RuntimeOp::IntDiv, RuntimeOp::PrintI64]);
+    let target = target_model("wasm32-unknown-unknown")?;
+    let toolchain = toolchain_identity(b"rustc");
+    let provider = artifact(&contract, target.clone(), [], toolchain, b"runtime");
 
+    let pure = provider.select(request(
+        &contract,
+        [RuntimeOp::IntDiv],
+        target.clone(),
+        toolchain,
+    )?)?;
+    assert_eq!(pure.request().dependency().requirement().len(), 1);
+
+    let Err(error) = provider.select(request(
+        &contract,
+        [RuntimeOp::PrintI64],
+        target,
+        toolchain,
+    )?) else {
+        return Err("stdio use was not checked against the program requirement".into());
+    };
     assert!(matches!(
         error,
-        Err(error)
-            if error.operation() == RuntimeOp::PrintI64
-                && error.capability() == TargetCapability::StandardIo
+        RuntimeLinkError::MissingCapability {
+            operation: RuntimeOp::PrintI64,
+            capability: TargetCapability::StandardIo,
+        }
     ));
-    assert!(
-        RuntimeArtifactManifest::new(
-            &contract,
-            target("wasm32-unknown-unknown", [TargetCapability::StandardIo])?,
-            ImplementationHash::sha256(b"runtime"),
-        )
-        .is_ok()
-    );
     Ok(())
 }
 
 #[test]
 fn artifact_capabilities_are_canonicalized() -> Result<(), Box<dyn Error>> {
     let contract = manifest([], [RuntimeOp::PrintBool]);
-    let left = RuntimeArtifactManifest::new(
+    let left = artifact(
         &contract,
-        target(
-            "wasm32-unknown-unknown",
-            [
-                TargetCapability::StandardIo,
-                TargetCapability::Atomics32,
-                TargetCapability::StandardIo,
-            ],
-        )?,
-        ImplementationHash::sha256(b"runtime"),
-    )?;
-    let right = RuntimeArtifactManifest::new(
+        target_model("wasm32-unknown-unknown")?,
+        [
+            TargetCapability::StandardIo,
+            TargetCapability::Atomics32,
+            TargetCapability::StandardIo,
+        ],
+        toolchain_identity(b"rustc"),
+        b"runtime",
+    );
+    let right = artifact(
         &contract,
-        target(
-            "wasm32-unknown-unknown",
-            [TargetCapability::Atomics32, TargetCapability::StandardIo],
-        )?,
-        ImplementationHash::sha256(b"runtime"),
-    )?;
+        target_model("wasm32-unknown-unknown")?,
+        [TargetCapability::Atomics32, TargetCapability::StandardIo],
+        toolchain_identity(b"rustc"),
+        b"runtime",
+    );
 
     assert_eq!(left, right);
+    assert_eq!(
+        left.provided_capabilities().as_slice(),
+        [TargetCapability::Atomics32, TargetCapability::StandardIo]
+    );
     assert_eq!(left.canonical_bytes(), right.canonical_bytes());
     assert_eq!(left.identity(), right.identity());
     Ok(())
 }
 
 #[test]
+fn empty_operation_requirement_still_selects_a_runtime() -> Result<(), Box<dyn Error>> {
+    let contract = manifest([], [RuntimeOp::PrintI64]);
+    let target = target_model("x86_64-unknown-linux-gnu")?;
+    let toolchain = toolchain_identity(b"rustc");
+    let provider = artifact(&contract, target.clone(), [], toolchain, b"runtime");
+    let plan = provider.select(request(&contract, [], target, toolchain)?)?;
+
+    assert!(plan.request().dependency().requirement().is_empty());
+    assert_eq!(plan.artifact(), provider.identity());
+    assert_eq!(plan.implementation(), provider.implementation());
+    Ok(())
+}
+
+#[test]
+fn dependency_rejects_an_operation_outside_its_contract() -> Result<(), Box<dyn Error>> {
+    let contract = manifest([], [RuntimeOp::IntDiv]);
+    let Err(error) =
+        RuntimeDependency::new(&contract, RuntimeRequirement::new([RuntimeOp::PrintI64]))
+    else {
+        return Err("a consumer selected an operation absent from its contract".into());
+    };
+    assert_eq!(error.operation(), RuntimeOp::PrintI64);
+    Ok(())
+}
+
+#[test]
+fn link_validation_order_is_schema_contract_target_then_toolchain() -> Result<(), Box<dyn Error>> {
+    let contract = manifest([], [RuntimeOp::PrintI64]);
+    let other_contract = manifest([], [RuntimeOp::IntDiv]);
+    let target = target_model("x86_64-unknown-linux-gnu")?;
+    let other_target = target_model("wasm32-unknown-unknown")?;
+    let expected_toolchain = toolchain_identity(b"expected rustc");
+    let other_toolchain = toolchain_identity(b"other rustc");
+    let dependency = RuntimeDependency::new(&contract, RuntimeRequirement::default())?;
+    let request = RuntimeLinkRequest::new(
+        dependency,
+        target.clone(),
+        RuntimeArtifactFormat::RustRlibV1,
+        expected_toolchain,
+    );
+
+    let stale = RuntimeArtifactManifest::from_parts(
+        ArtifactSchemaVersion::new(1),
+        other_contract.identity(),
+        other_target.clone(),
+        TargetCapabilities::default(),
+        RuntimeArtifactFormat::RustRlibV1,
+        other_toolchain,
+        ImplementationHash::sha256(b"runtime"),
+    );
+    assert!(matches!(
+        stale.select(request.clone()),
+        Err(RuntimeLinkError::UnsupportedSchema { .. })
+    ));
+
+    let wrong_contract = artifact(
+        &other_contract,
+        other_target.clone(),
+        [],
+        other_toolchain,
+        b"runtime",
+    );
+    assert!(matches!(
+        wrong_contract.select(request.clone()),
+        Err(RuntimeLinkError::ContractMismatch { .. })
+    ));
+
+    let wrong_target = artifact(&contract, other_target, [], other_toolchain, b"runtime");
+    assert!(matches!(
+        wrong_target.select(request.clone()),
+        Err(RuntimeLinkError::TargetMismatch { .. })
+    ));
+
+    let wrong_toolchain = artifact(&contract, target, [], other_toolchain, b"runtime");
+    assert!(matches!(
+        wrong_toolchain.select(request),
+        Err(RuntimeLinkError::ToolchainMismatch { .. })
+    ));
+    Ok(())
+}
+
+#[test]
+fn artifact_and_link_plan_identities_cover_every_selection_dimension() -> Result<(), Box<dyn Error>>
+{
+    let contract = manifest([], [RuntimeOp::IntDiv, RuntimeOp::PrintI64]);
+    let target = target_model("x86_64-unknown-linux-gnu")?;
+    let toolchain = toolchain_identity(b"rustc");
+    let baseline = artifact(
+        &contract,
+        target.clone(),
+        [TargetCapability::StandardIo],
+        toolchain,
+        b"runtime",
+    );
+    let changed_capabilities = artifact(&contract, target.clone(), [], toolchain, b"runtime");
+    let changed_toolchain = artifact(
+        &contract,
+        target.clone(),
+        [TargetCapability::StandardIo],
+        toolchain_identity(b"other rustc"),
+        b"runtime",
+    );
+    let changed_implementation = artifact(
+        &contract,
+        target.clone(),
+        [TargetCapability::StandardIo],
+        toolchain,
+        b"other runtime",
+    );
+    assert_ne!(baseline.identity(), changed_capabilities.identity());
+    assert_ne!(baseline.identity(), changed_toolchain.identity());
+    assert_ne!(baseline.identity(), changed_implementation.identity());
+
+    let div = baseline.select(request(
+        &contract,
+        [RuntimeOp::IntDiv],
+        target.clone(),
+        toolchain,
+    )?)?;
+    let reordered = baseline.select(request(
+        &contract,
+        [RuntimeOp::IntDiv, RuntimeOp::IntDiv],
+        target.clone(),
+        toolchain,
+    )?)?;
+    let print = baseline.select(request(
+        &contract,
+        [RuntimeOp::PrintI64],
+        target,
+        toolchain,
+    )?)?;
+    assert_eq!(div.identity(), reordered.identity());
+    assert_ne!(div.identity(), print.identity());
+    Ok(())
+}
+
+#[test]
 fn invalid_target_triples_are_rejected() {
-    assert!(target("wasm32-unknown-unknown", []).is_ok());
-    assert_eq!(target("", []), Err(TargetModelError::EmptyTriple));
+    assert!(target_model("wasm32-unknown-unknown").is_ok());
+    assert_eq!(target_model(""), Err(TargetModelError::EmptyTriple));
     assert_eq!(
-        target("x86_64 unknown linux gnu", []),
+        target_model("x86_64 unknown linux gnu"),
         Err(TargetModelError::InvalidTripleCharacter)
     );
 }
