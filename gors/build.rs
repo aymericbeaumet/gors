@@ -14,7 +14,20 @@ use sdk_index::StdlibPackages;
 
 const GO_VERSION_FILE: &str = "../.go-version";
 const STDLIB_PRELOAD_SCHEMA_SUFFIX: &str = "stdlib-source-metadata-v4";
-const COMPILER_FINGERPRINT_DOMAIN: &[u8] = b"gors-compiler-artifact-v1\0";
+const GENERATED_RUST_FINGERPRINT_DOMAIN: &[u8] = b"gors-generated-rust-v2\0";
+const GENERATED_RUST_SOURCE_DIRS: &[&str] = &[
+    "src/ast",
+    "src/compiler",
+    "src/parser",
+    "src/printer",
+    "src/resolve",
+    "src/scanner",
+    "src/source",
+    "src/token",
+    "src/workspace",
+];
+const GENERATED_RUST_BUILD_INPUTS: &[&str] =
+    &["build/platform.rs", "build/sdk_index.rs", GO_VERSION_FILE];
 
 type BuildResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -34,7 +47,7 @@ fn read_go_version() -> BuildResult<String> {
     Ok(version.to_string())
 }
 
-fn compiler_source_fingerprint(
+fn generated_rust_fingerprint(
     sdk_fingerprint: &str,
     target_goos: &str,
     target_goarch: &str,
@@ -56,41 +69,36 @@ fn compiler_source_fingerprint(
         Ok(())
     }
 
+    // This is deliberately an allowlist of inputs that can alter generated
+    // Rust. Runtime provider production, artifact publication, workspace
+    // manifests, dependency locks, and the implementation of the ABI crate
+    // belong to terminal identities. The typed ABI identity below is the
+    // semantic dependency on that crate.
     let mut files = Vec::new();
-    collect_rust_sources(Path::new("src"), &mut files)?;
-    // Runtime provider publication is a terminal artifact concern with its
-    // own exact identity; it must not invalidate semantic compiler products.
-    files.retain(|path| !path.starts_with("src/artifact"));
-    collect_rust_sources(Path::new("../gors-runtime-abi/src"), &mut files)?;
-    files.extend(
-        [
-            "build.rs",
-            "build/platform.rs",
-            "build/sdk_index.rs",
-            "Cargo.toml",
-            "../Cargo.toml",
-            "../Cargo.lock",
-            GO_VERSION_FILE,
-            "../gors-runtime-abi/Cargo.toml",
-        ]
-        .into_iter()
-        .map(PathBuf::from),
-    );
+    for root in GENERATED_RUST_SOURCE_DIRS {
+        collect_rust_sources(Path::new(root), &mut files)?;
+    }
+    files.extend(GENERATED_RUST_BUILD_INPUTS.iter().map(PathBuf::from));
     files.sort();
 
     let mut hasher = Sha256::new();
-    hasher.update(COMPILER_FINGERPRINT_DOMAIN);
-    hasher.update(b"embedded-go-sdk\0");
+    hasher.update(GENERATED_RUST_FINGERPRINT_DOMAIN);
+    hasher.update(b"package\0");
+    hasher.update(std::env::var("CARGO_PKG_NAME")?.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(std::env::var("CARGO_PKG_VERSION")?.as_bytes());
+    hasher.update(b"\0stdlib-preload-schema\0");
+    hasher.update(STDLIB_PRELOAD_SCHEMA_SUFFIX.as_bytes());
+    hasher.update(b"\0embedded-go-sdk\0");
     hasher.update(sdk_fingerprint.as_bytes());
     hasher.update(b"\0runtime-abi-contract\0");
     hasher.update(RuntimeAbiManifest::current().identity().as_bytes());
+    hasher.update(b"\0runtime-crate-name\0");
+    hasher.update(gors_runtime_abi::RUST_RUNTIME_CRATE_NAME.as_bytes());
     hasher.update(b"\0target-goos\0");
     hasher.update(target_goos.as_bytes());
     hasher.update(b"\0target-goarch\0");
     hasher.update(target_goarch.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(b"CARGO_PKG_VERSION=");
-    hasher.update(std::env::var("CARGO_PKG_VERSION")?.as_bytes());
     hasher.update(b"\0");
     for path in files {
         hasher.update(path.to_string_lossy().as_bytes());
@@ -482,11 +490,11 @@ fn main() -> BuildResult<()> {
         sdk_index::load_stdlib_from_sdk(&sdk_path, &oracle_cache, target_goos, target_goarch)?;
     let sdk_fingerprint =
         stdlib_source_fingerprint(&packages, &go_version, target_goos, target_goarch);
-    let compiler_fingerprint =
-        compiler_source_fingerprint(&sdk_fingerprint, target_goos, target_goarch)?;
+    let generated_rust_fingerprint =
+        generated_rust_fingerprint(&sdk_fingerprint, target_goos, target_goarch)?;
     println!("cargo:rustc-env=GORS_GO_VERSION={go_version}");
     println!("cargo:rustc-env=GORS_STDLIB_VERSION={stdlib_version}");
-    println!("cargo:rustc-env=GORS_COMPILER_FINGERPRINT={compiler_fingerprint}");
+    println!("cargo:rustc-env=GORS_GENERATED_RUST_FINGERPRINT={generated_rust_fingerprint}");
     println!(
         "cargo:rustc-env=GORS_BUILT_GO_SDK_PATH={}",
         sdk_path.display()

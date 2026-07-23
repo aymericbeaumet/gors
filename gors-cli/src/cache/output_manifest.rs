@@ -4,20 +4,19 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::runtime_descriptor::LINK_OUTPUT_FILENAME;
-use crate::runtime_descriptor::RuntimeLinkDescriptor;
+use crate::runtime_descriptor::{RuntimeDependencyDescriptor, RuntimeDescriptorError};
 
 const FILENAME: &str = ".gors-generated-output.json";
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 3;
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GeneratedOutputManifest {
     schema_version: u32,
-    compiler_fingerprint: String,
+    generated_rust_fingerprint: String,
     stdlib_version: String,
-    runtime: RuntimeLinkDescriptor,
+    runtime_dependency: RuntimeDependencyDescriptor,
     files: BTreeMap<String, GeneratedFileEntry>,
 }
 
@@ -29,12 +28,12 @@ struct GeneratedFileEntry {
 }
 
 impl GeneratedOutputManifest {
-    pub fn new(runtime: RuntimeLinkDescriptor) -> Self {
+    pub fn new(runtime_dependency: &gors_runtime_abi::RuntimeDependency) -> Self {
         Self {
             schema_version: SCHEMA_VERSION,
-            compiler_fingerprint: gors::COMPILER_FINGERPRINT.to_string(),
+            generated_rust_fingerprint: gors::GENERATED_RUST_FINGERPRINT.to_string(),
             stdlib_version: gors::STDLIB_VERSION.to_string(),
-            runtime,
+            runtime_dependency: RuntimeDependencyDescriptor::from_dependency(runtime_dependency),
             files: BTreeMap::new(),
         }
     }
@@ -102,12 +101,10 @@ impl GeneratedOutputManifest {
         self.files.len()
     }
 
-    pub fn runtime(&self) -> &RuntimeLinkDescriptor {
-        &self.runtime
-    }
-
-    pub fn refresh_runtime(&mut self, runtime: RuntimeLinkDescriptor) {
-        self.runtime = runtime;
+    pub fn runtime_dependency(
+        &self,
+    ) -> Result<gors_runtime_abi::RuntimeDependency, RuntimeDescriptorError> {
+        self.runtime_dependency.reconstruct()
     }
 
     #[cfg(test)]
@@ -123,15 +120,18 @@ impl GeneratedOutputManifest {
 
     fn is_compatible(&self) -> bool {
         self.schema_version == SCHEMA_VERSION
-            && self.compiler_fingerprint == gors::COMPILER_FINGERPRINT
+            && self.generated_rust_fingerprint == gors::GENERATED_RUST_FINGERPRINT
             && self.stdlib_version == gors::STDLIB_VERSION
-            && self.files.contains_key(LINK_OUTPUT_FILENAME)
+            && self.files.contains_key("main.rs")
             && self.files.iter().all(|(filename, entry)| {
                 filename == &entry.output_file
                     && is_normal_relative_filename(filename)
+                    && Path::new(filename)
+                        .extension()
+                        .is_some_and(|extension| extension == "rs")
                     && is_sha256(&entry.content_hash)
             })
-            && self.runtime.reconstruct_dependency().is_ok()
+            && self.runtime_dependency.reconstruct().is_ok()
     }
 }
 

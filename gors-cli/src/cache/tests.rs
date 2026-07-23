@@ -3,20 +3,14 @@
 use super::*;
 use std::sync::mpsc;
 
-fn request() -> CacheRequest {
-    CacheRequest {
-        fingerprint: "request".to_string(),
-    }
+fn identity() -> GeneratedRustIdentity {
+    GeneratedRustIdentity::for_test("generated")
 }
 
-fn request_options(source_paths: &[String]) -> CacheRequestOptions<'_> {
-    CacheRequestOptions {
-        command: "build",
-        source_paths,
-        release: false,
-        output: None,
-        sourcemap: None,
-    }
+fn rustc_selection() -> (PathBuf, String) {
+    let path = std::env::current_exe().unwrap();
+    let identity = crate::runtime_link::rustc_snapshot_identity(&path).unwrap();
+    (path, identity)
 }
 
 fn write_expired_manifest(path: &Path) {
@@ -25,94 +19,18 @@ fn write_expired_manifest(path: &Path) {
         .saturating_sub(CACHE_MAX_AGE.as_millis().try_into().unwrap())
         .saturating_sub(1);
     CliCacheManifest::new(
-        &request(),
+        &identity(),
         InputSnapshot {
             files: BTreeMap::new(),
             directories: BTreeMap::new(),
         },
         BTreeMap::new(),
         None,
-        crate::runtime_descriptor::test_runtime_link_descriptor(),
+        &crate::runtime_descriptor::test_runtime_dependency(),
     )
     .with_last_used(old_timestamp)
     .save(path)
     .unwrap();
-}
-
-#[test]
-fn cache_request_tracks_cli_abi() {
-    let temp = tempfile::tempdir().unwrap();
-    let source = temp.path().join("main.go");
-    std::fs::write(&source, "package main\n").unwrap();
-    let source_paths = vec![source.to_string_lossy().into_owned()];
-
-    let initial =
-        CacheRequest::new_with_identity(request_options(&source_paths), "cli-abi-a", None).unwrap();
-    let changed_abi =
-        CacheRequest::new_with_identity(request_options(&source_paths), "cli-abi-b", None).unwrap();
-
-    assert_ne!(initial, changed_abi);
-}
-
-#[test]
-fn cache_request_tracks_gorspath_identity_without_scanning_root_contents() {
-    let invocation = tempfile::tempdir().unwrap();
-    let source = invocation.path().join("main.go");
-    std::fs::write(&source, "package main\n").unwrap();
-    let source_paths = vec![source.to_string_lossy().into_owned()];
-
-    let first_root = tempfile::tempdir().unwrap();
-    let package_dir = first_root
-        .path()
-        .join("src")
-        .join("example")
-        .join("dependency");
-    std::fs::create_dir_all(&package_dir).unwrap();
-    let dependency = package_dir.join("dependency.go");
-    std::fs::write(&dependency, "package dependency\nconst Value = 1\n").unwrap();
-    let first_gorspath = std::env::join_paths([first_root.path()]).unwrap();
-
-    let initial = CacheRequest::new_with_identity(
-        request_options(&source_paths),
-        "cli-abi",
-        Some(first_gorspath.as_os_str()),
-    )
-    .unwrap();
-    let unchanged = CacheRequest::new_with_identity(
-        request_options(&source_paths),
-        "cli-abi",
-        Some(first_gorspath.as_os_str()),
-    )
-    .unwrap();
-    assert_eq!(initial, unchanged);
-
-    std::fs::write(&dependency, "package dependency\nconst Value = 2\n").unwrap();
-    let edited = CacheRequest::new_with_identity(
-        request_options(&source_paths),
-        "cli-abi",
-        Some(first_gorspath.as_os_str()),
-    )
-    .unwrap();
-    assert_eq!(initial, edited);
-
-    std::fs::write(package_dir.join("added.go"), "package dependency\n").unwrap();
-    let added = CacheRequest::new_with_identity(
-        request_options(&source_paths),
-        "cli-abi",
-        Some(first_gorspath.as_os_str()),
-    )
-    .unwrap();
-    assert_eq!(edited, added);
-
-    let second_root = tempfile::tempdir().unwrap();
-    let second_gorspath = std::env::join_paths([second_root.path()]).unwrap();
-    let changed_value = CacheRequest::new_with_identity(
-        request_options(&source_paths),
-        "cli-abi",
-        Some(second_gorspath.as_os_str()),
-    )
-    .unwrap();
-    assert_ne!(added, changed_value);
 }
 
 #[test]
@@ -153,44 +71,30 @@ fn cache_admission_compares_supplied_snapshot_without_rereading_sources() {
     let captured = InputSnapshot::capture(&loaded).unwrap();
     let generated_source = "fn main() {}\n";
     std::fs::write(output_directory.join("main.rs"), generated_source).unwrap();
-    let runtime_output = crate::runtime_descriptor::test_runtime_link_output();
-    let runtime_source = runtime_output.json().unwrap();
-    std::fs::write(
-        output_directory.join(crate::runtime_descriptor::LINK_OUTPUT_FILENAME),
-        &runtime_source,
-    )
-    .unwrap();
-    let generated_files = BTreeMap::from([
-        (
-            "main.rs".to_string(),
-            sha2_hash(generated_source.as_bytes()),
-        ),
-        (
-            crate::runtime_descriptor::LINK_OUTPUT_FILENAME.to_string(),
-            sha2_hash(runtime_source.as_bytes()),
-        ),
-    ]);
-    let runtime = runtime_output.link().clone();
-    let mut output_manifest = GeneratedOutputManifest::new(runtime.clone());
+    let generated_files = BTreeMap::from([(
+        "main.rs".to_string(),
+        sha2_hash(generated_source.as_bytes()),
+    )]);
+    let runtime_dependency = crate::runtime_descriptor::test_runtime_dependency();
+    let mut output_manifest = GeneratedOutputManifest::new(&runtime_dependency);
     output_manifest.record(
         "main.rs".to_string(),
         generated_files.get("main.rs").unwrap().clone(),
     );
-    output_manifest.record(
-        crate::runtime_descriptor::LINK_OUTPUT_FILENAME.to_string(),
-        generated_files
-            .get(crate::runtime_descriptor::LINK_OUTPUT_FILENAME)
-            .unwrap()
-            .clone(),
-    );
     output_manifest.save(&output_directory).unwrap();
-    CliCacheManifest::new(&request(), captured.clone(), generated_files, None, runtime)
-        .save(&output_directory)
-        .unwrap();
+    CliCacheManifest::new(
+        &identity(),
+        captured.clone(),
+        generated_files,
+        None,
+        &runtime_dependency,
+    )
+    .save(&output_directory)
+    .unwrap();
 
     std::fs::write(&source, "package changed\n").unwrap();
     assert!(
-        CliCacheManifest::load_if_generated_valid(&output_directory, &request(), &captured)
+        CliCacheManifest::load_if_generated_valid(&output_directory, &identity(), &captured)
             .is_some(),
         "cache admission reread source bytes instead of trusting the supplied revision"
     );
@@ -200,7 +104,7 @@ fn cache_admission_compares_supplied_snapshot_without_rereading_sources() {
     let current = InputSnapshot::capture(&reloaded).unwrap();
     assert_ne!(captured, current);
     assert!(
-        CliCacheManifest::load_if_generated_valid(&output_directory, &request(), &current)
+        CliCacheManifest::load_if_generated_valid(&output_directory, &identity(), &current)
             .is_none()
     );
 }
@@ -239,27 +143,169 @@ fn generated_validation_rejects_deleted_modified_and_stale_rust_files() {
 fn cache_manifest_round_trips_and_validates_executable_content() {
     let temp = tempfile::tempdir().unwrap();
     let executable = temp.path().join("main");
+    let generated_source = "fn main() {}\n";
+    let generated_files = BTreeMap::from([(
+        "main.rs".to_string(),
+        sha2_hash(generated_source.as_bytes()),
+    )]);
     std::fs::write(&executable, "binary").unwrap();
     let mut manifest = CliCacheManifest::new(
-        &request(),
+        &identity(),
         InputSnapshot {
             files: BTreeMap::new(),
             directories: BTreeMap::new(),
         },
-        BTreeMap::new(),
+        generated_files.clone(),
         None,
-        crate::runtime_descriptor::test_runtime_link_descriptor(),
+        &crate::runtime_descriptor::test_runtime_dependency(),
     );
-    let runtime = manifest.runtime().clone();
-    manifest.set_executable(&executable, &runtime).unwrap();
+    let runtime_output = crate::runtime_descriptor::test_runtime_link_output();
+    let (rustc_path, rustc_snapshot_identity) = rustc_selection();
+    manifest
+        .refresh_runtime(&runtime_output, &rustc_path, &rustc_snapshot_identity)
+        .unwrap();
+    std::fs::write(temp.path().join("main.rs"), generated_source).unwrap();
+    let action = crate::rustc::RustcAction::for_generated_binary(
+        temp.path(),
+        &executable,
+        Path::new(runtime_output.artifact_path()),
+        runtime_output.link(),
+        crate::rustc::AdmittedRustc::new(&rustc_path, &rustc_snapshot_identity),
+        &generated_files,
+        false,
+    )
+    .unwrap();
+    manifest
+        .set_executable("debug", &executable, &action)
+        .unwrap();
     manifest.save(temp.path()).unwrap();
+    manifest.save_terminal(temp.path()).unwrap();
 
-    let loaded: CliCacheManifest =
+    let mut loaded: CliCacheManifest =
         serde_json::from_slice(&std::fs::read(temp.path().join(CACHE_MANIFEST_FILENAME)).unwrap())
             .unwrap();
-    assert!(loaded.executable_is_valid(&executable, &runtime));
+    let generated_json =
+        std::fs::read_to_string(temp.path().join(CACHE_MANIFEST_FILENAME)).unwrap();
+    assert!(!generated_json.contains("terminal"));
+    let dependency = loaded.runtime_dependency().unwrap();
+    loaded.terminal =
+        TerminalState::load_if_valid(temp.path(), &loaded.generated_identity, &dependency);
+    assert!(loaded.executable_is_valid("debug", &executable, &action));
     std::fs::write(&executable, "changed").unwrap();
-    assert!(!loaded.executable_is_valid(&executable, &runtime));
+    assert!(!loaded.executable_is_valid("debug", &executable, &action));
+}
+
+#[test]
+fn corrupt_terminal_state_does_not_invalidate_generated_rust() {
+    let temp = tempfile::tempdir().unwrap();
+    let generated_source = "fn main() {}\n";
+    std::fs::write(temp.path().join("main.rs"), generated_source).unwrap();
+    let generated_files = BTreeMap::from([(
+        "main.rs".to_string(),
+        sha2_hash(generated_source.as_bytes()),
+    )]);
+    let dependency = crate::runtime_descriptor::test_runtime_dependency();
+    let mut output_manifest = GeneratedOutputManifest::new(&dependency);
+    output_manifest.record(
+        "main.rs".to_string(),
+        generated_files.get("main.rs").unwrap().clone(),
+    );
+    output_manifest.save(temp.path()).unwrap();
+    let inputs = InputSnapshot {
+        files: BTreeMap::new(),
+        directories: BTreeMap::new(),
+    };
+    CliCacheManifest::new(
+        &identity(),
+        inputs.clone(),
+        generated_files,
+        None,
+        &dependency,
+    )
+    .save(temp.path())
+    .unwrap();
+    std::fs::write(temp.path().join(TERMINAL_MANIFEST_FILENAME), b"not-json").unwrap();
+
+    let loaded = CliCacheManifest::load_if_generated_valid(temp.path(), &identity(), &inputs)
+        .expect("terminal corruption must not poison generated Rust admission");
+    assert!(loaded.selected_runtime().is_none());
+}
+
+#[test]
+fn executable_metadata_admission_does_not_read_generated_rust() {
+    let temp = tempfile::tempdir().unwrap();
+    let generated_source = "fn main() {}\n";
+    let generated_path = temp.path().join("main.rs");
+    std::fs::write(&generated_path, generated_source).unwrap();
+    let generated_files = BTreeMap::from([(
+        "main.rs".to_string(),
+        sha2_hash(generated_source.as_bytes()),
+    )]);
+    let dependency = crate::runtime_descriptor::test_runtime_dependency();
+    let mut output_manifest = GeneratedOutputManifest::new(&dependency);
+    output_manifest.record(
+        "main.rs".to_string(),
+        generated_files.get("main.rs").unwrap().clone(),
+    );
+    output_manifest.save(temp.path()).unwrap();
+    let inputs = InputSnapshot {
+        files: BTreeMap::new(),
+        directories: BTreeMap::new(),
+    };
+    CliCacheManifest::new(
+        &identity(),
+        inputs.clone(),
+        generated_files,
+        None,
+        &dependency,
+    )
+    .save(temp.path())
+    .unwrap();
+
+    std::fs::write(&generated_path, "fn externally_changed() {}\n").unwrap();
+    let metadata =
+        CliCacheManifest::load_if_source_revision_matches(temp.path(), &identity(), &inputs)
+            .expect("executable admission should not consume generated intermediates");
+    assert!(!metadata.generated_files_are_current(temp.path()));
+    assert!(CliCacheManifest::load_if_generated_valid(temp.path(), &identity(), &inputs).is_none());
+}
+
+#[test]
+fn immediate_cache_hit_does_not_rewrite_access_metadata() {
+    let temp = tempfile::tempdir().unwrap();
+    let generated_source = "fn main() {}\n";
+    std::fs::write(temp.path().join("main.rs"), generated_source).unwrap();
+    let generated_files = BTreeMap::from([(
+        "main.rs".to_string(),
+        sha2_hash(generated_source.as_bytes()),
+    )]);
+    let dependency = crate::runtime_descriptor::test_runtime_dependency();
+    let mut output_manifest = GeneratedOutputManifest::new(&dependency);
+    output_manifest.record(
+        "main.rs".to_string(),
+        generated_files.get("main.rs").unwrap().clone(),
+    );
+    output_manifest.save(temp.path()).unwrap();
+    let inputs = InputSnapshot {
+        files: BTreeMap::new(),
+        directories: BTreeMap::new(),
+    };
+    CliCacheManifest::new(
+        &identity(),
+        inputs.clone(),
+        generated_files,
+        None,
+        &dependency,
+    )
+    .save(temp.path())
+    .unwrap();
+    let manifest_path = temp.path().join(CACHE_MANIFEST_FILENAME);
+    let before = std::fs::read(&manifest_path).unwrap();
+
+    CliCacheManifest::load_if_source_revision_matches(temp.path(), &identity(), &inputs)
+        .expect("fresh cache metadata");
+
+    assert_eq!(std::fs::read(manifest_path).unwrap(), before);
 }
 
 #[test]
@@ -269,20 +315,57 @@ fn executable_reuse_requires_the_exact_runtime_link_plan() {
     std::fs::write(&executable, "binary").unwrap();
     let selected = crate::runtime_descriptor::test_runtime_link_descriptor_with_payload(b"one");
     let changed = crate::runtime_descriptor::test_runtime_link_descriptor_with_payload(b"two");
+    let generated_source = "fn main() {}\n";
+    let generated_files = BTreeMap::from([(
+        "main.rs".to_string(),
+        sha2_hash(generated_source.as_bytes()),
+    )]);
     let mut manifest = CliCacheManifest::new(
-        &request(),
+        &identity(),
         InputSnapshot {
             files: BTreeMap::new(),
             directories: BTreeMap::new(),
         },
-        BTreeMap::new(),
+        generated_files.clone(),
         None,
-        selected.clone(),
+        &crate::runtime_descriptor::test_runtime_dependency(),
     );
-    manifest.set_executable(&executable, &selected).unwrap();
+    let selected_output = crate::runtime_descriptor::RuntimeLinkOutput::new(
+        selected.clone(),
+        &temp.path().join("runtime.rlib"),
+    );
+    let (rustc_path, rustc_snapshot_identity) = rustc_selection();
+    manifest
+        .refresh_runtime(&selected_output, &rustc_path, &rustc_snapshot_identity)
+        .unwrap();
+    std::fs::write(temp.path().join("main.rs"), generated_source).unwrap();
+    let selected_action = crate::rustc::RustcAction::for_generated_binary(
+        temp.path(),
+        &executable,
+        Path::new(selected_output.artifact_path()),
+        &selected,
+        crate::rustc::AdmittedRustc::new(&rustc_path, &rustc_snapshot_identity),
+        &generated_files,
+        true,
+    )
+    .unwrap();
+    let changed_action = crate::rustc::RustcAction::for_generated_binary(
+        temp.path(),
+        &executable,
+        Path::new(selected_output.artifact_path()),
+        &changed,
+        crate::rustc::AdmittedRustc::new(&rustc_path, &rustc_snapshot_identity),
+        &generated_files,
+        true,
+    )
+    .unwrap();
+    manifest
+        .set_executable("release", &executable, &selected_action)
+        .unwrap();
 
-    assert!(manifest.executable_is_valid(&executable, &selected));
-    assert!(!manifest.executable_is_valid(&executable, &changed));
+    assert!(manifest.executable_is_valid("release", &executable, &selected_action));
+    assert!(!manifest.executable_is_valid("release", &executable, &changed_action));
+    assert!(!manifest.executable_is_valid("debug", &executable, &selected_action));
 }
 
 #[test]

@@ -577,7 +577,12 @@ class NativeBoundaryTests(unittest.TestCase):
         self.assertIn("--jobs", plan["commands"][0]["argv"])
         jobs_index = plan["commands"][0]["argv"].index("--jobs")
         self.assertEqual(plan["commands"][0]["argv"][jobs_index + 1], "1")
+        self.assertNotIn("--release", plan["commands"][0]["argv"])
         self.assertIn("-Clto=fat", plan["commands"][1]["argv"])
+        self.assertIn("-Ctarget-cpu=generic", plan["commands"][1]["argv"])
+        self.assertIn("-Ctarget-feature=", plan["commands"][1]["argv"])
+        target_index = plan["commands"][1]["argv"].index("--target")
+        self.assertEqual(plan["commands"][1]["argv"][target_index + 1], "test-target")
         self.assertNotIn("--extern", plan["commands"][1]["argv"])
         self.assertEqual(
             plan["commands"][1]["runtimeLink"]["descriptorPath"],

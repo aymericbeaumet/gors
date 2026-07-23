@@ -12,8 +12,9 @@ on recurring warm builds. Performance is a design constraint while language
 support is added, not a cleanup phase after stdlib compliance.
 
 No current result satisfies that claim. The authoritative backend is still a
-single-file bootstrap, the current CLI cache is a whole-request output cache,
-and the Rust source plus rustc path has not been shown capable of winning an
+single-file bootstrap. The CLI now separates generated-Rust reuse from exact
+terminal executable reuse, but it has no cross-process semantic query CAS, and
+the Rust source plus rustc path has not been shown capable of winning an
 equivalent end-to-end comparison. Until the contract below is satisfied, use
 "target" rather than "faster than Go" in project material.
 
@@ -61,7 +62,10 @@ Every workload runs these scenarios:
 2. **No-op warm build.** Start a new process after a successful build with all
    persistent caches and the prior artifact present. This measures validation
    and reuse, not an in-process shortcut. A persistent-session no-op metric may
-   be reported additionally, under a different name.
+   be reported additionally, under a different name. An exact executable hit
+   must validate and run without resolving or materializing the runtime
+   provider, locating or probing rustc through rustup, inventorying its target
+   rustlib, or reconstructing a link plan.
 3. **Leaf implementation edit.** Change the body of a leaf declaration without
    changing its exported semantic fingerprint. The executable must contain an
    observable edit sentinel so stale-output reuse fails validation.
@@ -86,6 +90,11 @@ the summary.
 
 - Pin gors commit and profile, Go version, Go experiment flags, Rust toolchain,
   runtime ABI, target triple, linker, benchmark corpus digest, and cache schema.
+- Treat generated Rust and executable profiles as separate identities. Debug
+  and release must reuse byte-identical generated Rust for the same semantic
+  input, while each profile has a distinct terminal action and executable; a
+  profile switch may not force semantic recompilation or reuse the other
+  profile's binary.
 - Use the default user-facing artifact mode for the end-to-end comparison. Do
   not compare a debug-only gors shortcut with a materially different Go
   artifact without labeling it as a diagnostic experiment.
@@ -305,8 +314,8 @@ The CAS is bounded by configurable memory and disk budgets and supports
 cost-aware LRU eviction. A future remote CAS may exchange the same immutable
 blobs, but local correctness cannot depend on it. Do not serialize generated
 Rust resolver archives, syn trees as semantic state, ambient paths, or live
-compiler objects. The existing CLI whole-output manifest remains an outer
-artifact cache; it is not the semantic query database.
+compiler objects. The existing CLI generated-Rust and terminal manifests remain
+outer artifact caches; neither is the semantic query database.
 
 ## Fingerprints, dumps, and invalidation tests
 
@@ -337,6 +346,35 @@ Each newly supported language feature must add a positive semantic test, a
 negative diagnostic test, a MIR verifier test when applicable, an invalidation
 test, and a query-cost or benchmark observation. Compliance work that creates
 coarse invalidation or unbounded stage growth is incomplete.
+
+### Generated Rust and terminal action identity
+
+The CLI has two independently validated cache domains. `GeneratedRustIdentity`
+owns the generated-source schema, driver source-selection schema and
+configuration, compiler/SDK build facts, and typed runtime contract. Admission
+separately compares the immutable source snapshot captured for the invocation.
+Neither may contain runtime provider bytes or provenance, runtime
+compatibility, the terminal Rust toolchain or linker, output profile, target
+CPU, target features, or an executable action.
+
+Terminal state is separately replaceable and bound to the admitted
+generated-Rust identity and `RuntimeDependency`. Provider selection lives here.
+A `RustcAction` is an immutable ordered command snapshot; its
+`RustcActionIdentity` includes its program, working directory, complete argv,
+every generated-Rust filename and content hash, runtime artifact path and
+implementation hash, runtime link-plan and compatibility identities, exact
+rustc snapshot, profile, target, explicit portable CPU and feature policy, and
+output/publication paths. Debug and release actions intentionally diverge while
+consuming the same generated source.
+
+Warm executable admission checks the current source snapshot, generated
+manifest, terminal record, action identity, and executable content before any
+generated-Rust read or live runtime/toolchain resolution. A valid hit runs
+immediately without reading runtime bytes or statting rustc. Missing, corrupt,
+or stale terminal state does not invalidate generated Rust; only the terminal
+selection/action is rebuilt. A generated-source-only consumer may reselect the
+provider after generated admission because it still needs a current link
+descriptor.
 
 ## Terminal Rust feasibility gate
 
@@ -440,11 +478,11 @@ architecture described here:
   when that artifact matches the currently installed successful source
   revision; this is a real warm semantic path, but it is not the native artifact
   certification boundary;
-- the CLI manifest validates and reuses a complete generated-output or
-  executable request, but does not reuse semantic queries after an edit. Every
+- the CLI independently validates generated output and per-profile executable
+  action state, but does not reuse semantic queries after an edit. Every
   invocation now loads one immutable source snapshot before cache comparison
-  and reuses that exact snapshot for miss compilation; warm complete-output
-  hits therefore still pay honest source admission cost;
+  and reuses that exact snapshot for miss compilation; warm generated-output
+  and executable hits therefore still pay honest source admission cost;
 - the runtime sidecar/link hard cut is complete for native artifacts. Compiler
   and printer products carry only the target-neutral dependency, while the CLI
   verifies and materializes one fixed-recipe precompiled rlib, publishes its
@@ -452,9 +490,11 @@ architecture described here:
   supplies one `--extern` at every native rustc boundary. Producer provenance
   is evidence only; host-neutral target-sysroot compatibility drives selection.
   Native provider production and consumption resolve the same exact pinned
-  rustup compiler, independent of Cargo's build compiler;
-  Generated-output cache hits reselect the current
-  provider; executable reuse additionally requires the exact link-plan identity;
+  rustup compiler, independent of Cargo's build compiler. Generated-output
+  reuse does not depend on that provider. Exact executable hits validate their
+  recorded `RustcActionIdentity` and binary before terminal resolution and
+  bypass provider materialization, rustup lookup, rustc probing, target-rustlib
+  inventory, and link-plan reselection;
 - dynamic divide/remainder-by-zero and negative-shift faults currently unwind
   through Rust `panic_any`, so those executions do not yet have Go-compatible
   process behavior and cannot enter behavior-validated performance evidence;

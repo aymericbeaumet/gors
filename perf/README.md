@@ -13,7 +13,7 @@ descriptor for the exact precompiled runtime provider, while `gors run`
 compiles and executes it. The harness therefore owns
 a temporary bootstrap artifact driver whose measured interval is:
 
-    gors build --release --jobs <budget>
+    gors build --jobs <budget>
       -> strict descriptor, target, payload, artifact, and link-plan validation
       -> repository-pinned rustc with the CLI release flags
          and exactly one --extern __gors_runtime=<validated rlib>

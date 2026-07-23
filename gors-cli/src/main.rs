@@ -40,8 +40,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 use build::build_with_cache_base;
 #[cfg(test)]
 use cache::{
-    CacheAccessLock, CacheRequest, CacheRequestOptions, CliCacheManifest, FileArtifact,
-    GeneratedOutputManifest, InputSnapshot, generated_file_hashes, maybe_prune_cli_cache,
+    CacheAccessLock, CliCacheManifest, FileArtifact, GeneratedOutputManifest,
+    GeneratedRustIdentity, GeneratedRustIdentityOptions, InputSnapshot, generated_file_hashes,
+    maybe_prune_cli_cache,
 };
 #[cfg(test)]
 use compiler::cli_workspace;
@@ -57,7 +58,7 @@ use output::{
 #[cfg(test)]
 use run::split_run_args;
 #[cfg(test)]
-use rustc::RustcArgs;
+use rustc::{AdmittedRustc, RustcAction};
 #[cfg(test)]
 use std::num::NonZeroUsize;
 #[cfg(test)]

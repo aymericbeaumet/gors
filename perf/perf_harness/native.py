@@ -563,10 +563,12 @@ def validate_behavior(
     }
 
 
-def rustc_arguments(source: Path, output: Path) -> list[str]:
+def rustc_arguments(source: Path, output: Path, target: str) -> list[str]:
     return [
         str(source),
         "--edition=2024",
+        "--target",
+        target,
         "-D",
         "unused_imports",
         "-D",
@@ -576,7 +578,8 @@ def rustc_arguments(source: Path, output: Path) -> list[str]:
         "-Ccodegen-units=1",
         "-Clto=fat",
         "-Copt-level=3",
-        "-Ctarget-cpu=native",
+        "-Ctarget-cpu=generic",
+        "-Ctarget-feature=",
         "-o",
         str(output),
     ]
@@ -614,7 +617,6 @@ def pipeline_plan(
                     "--jobs",
                     str(job_budget),
                     str(source),
-                    "--release",
                     "--output",
                     str(generated),
                     "--timings-json",
@@ -625,7 +627,10 @@ def pipeline_plan(
             },
             {
                 "stage": "gors.external_rustc_link",
-                "argv": [str(toolchains.rustc), *rustc_arguments(generated / "main.rs", pending)],
+                "argv": [
+                    str(toolchains.rustc),
+                    *rustc_arguments(generated / "main.rs", pending, toolchains.rust_target),
+                ],
                 "cwd": str(side_root),
                 "env": environment,
                 "runtimeLink": {

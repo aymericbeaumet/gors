@@ -66,9 +66,6 @@ pub struct Ast {
 pub struct Build {
     /// The Go source file or directory to build
     pub path: String,
-    /// Build in release mode, with optimizations
-    #[arg(long)]
-    pub release: bool,
     /// Output path for source map (.map file in standard v3 format)
     #[arg(long)]
     pub sourcemap: Option<String>,

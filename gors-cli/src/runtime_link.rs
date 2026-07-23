@@ -1,17 +1,19 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use gors_runtime_abi::{
     NATIVE_RUNTIME_RUST_TOOLCHAIN, RuntimeArtifactFormat, RuntimeDependency, RuntimeLinkRequest,
-    RustRlibCompatibility, canonical_target_libdir_record,
 };
 
 use crate::runtime_descriptor::{RuntimeLinkDescriptor, RuntimeLinkOutput};
+
+mod compatibility_cache;
 
 /// Fully validated and materialized runtime sidecar for one generated program.
 pub struct ResolvedRuntime {
     descriptor: RuntimeLinkDescriptor,
     artifact_path: PathBuf,
+    rustc_path: PathBuf,
+    rustc_snapshot_identity: String,
 }
 
 impl ResolvedRuntime {
@@ -23,6 +25,16 @@ impl ResolvedRuntime {
     #[must_use]
     pub fn artifact_path(&self) -> &Path {
         &self.artifact_path
+    }
+
+    #[must_use]
+    pub fn rustc_path(&self) -> &Path {
+        &self.rustc_path
+    }
+
+    #[must_use]
+    pub fn rustc_snapshot_identity(&self) -> &str {
+        &self.rustc_snapshot_identity
     }
 
     #[must_use]
@@ -42,38 +54,26 @@ pub fn resolve_runtime(
     dependency: RuntimeDependency,
 ) -> Result<ResolvedRuntime, Box<dyn std::error::Error>> {
     let provider = gors::artifact::embedded_runtime_artifact();
-
-    let rustc_verbose_version = live_rustc_verbose_version()?;
-    let target_libdir = live_target_libdir(provider.manifest().target().triple())?;
-    let target_libdir_record = canonical_target_libdir_record(&target_libdir)?;
-    let live_compatibility = RustRlibCompatibility::new(
-        rustc_verbose_version,
-        target_libdir_record,
-        provider.manifest().target().clone(),
+    let absolute_cache_base = if cache_base.is_absolute() {
+        cache_base.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(cache_base)
+    };
+    let resolved_rustc = compatibility_cache::resolve(
+        &absolute_cache_base.join("toolchains"),
+        NATIVE_RUNTIME_RUST_TOOLCHAIN,
+        provider.manifest().target(),
+        provider.compatibility(),
     )?;
-    if live_compatibility.canonical_bytes() != provider.compatibility().canonical_bytes()
-        || live_compatibility.identity() != provider.manifest().compatibility()
-    {
-        return Err(std::io::Error::other(format!(
-            "rustup toolchain {NATIVE_RUNTIME_RUST_TOOLCHAIN} is incompatible with embedded runtime provider: live identity {}, provider identity {}",
-            live_compatibility.identity(),
-            provider.manifest().compatibility()
-        ))
-        .into());
-    }
 
     let request = RuntimeLinkRequest::new(
         dependency,
         provider.manifest().target().clone(),
         RuntimeArtifactFormat::RustRlibV1,
-        live_compatibility.identity(),
+        resolved_rustc.compatibility().identity(),
     );
     let plan = provider.manifest().select(request)?;
-    let runtime_cache = if cache_base.is_absolute() {
-        cache_base.join("runtime")
-    } else {
-        std::env::current_dir()?.join(cache_base).join("runtime")
-    };
+    let runtime_cache = absolute_cache_base.join("runtime");
     let artifact_path = provider.materialize(&runtime_cache)?;
 
     let expected_path = runtime_cache
@@ -94,58 +94,11 @@ pub fn resolve_runtime(
     Ok(ResolvedRuntime {
         descriptor: RuntimeLinkDescriptor::from_plan(&plan, provider.producer().identity()),
         artifact_path,
+        rustc_path: resolved_rustc.rustc_path().to_path_buf(),
+        rustc_snapshot_identity: resolved_rustc.rustc_snapshot_identity().to_string(),
     })
 }
 
-fn live_rustc_verbose_version() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let output = Command::new("rustup")
-        .args(["run", NATIVE_RUNTIME_RUST_TOOLCHAIN, "rustc", "-vV"])
-        .output()?;
-    if !output.status.success() {
-        return Err(std::io::Error::other(format!(
-            "rustup run {NATIVE_RUNTIME_RUST_TOOLCHAIN} rustc -vV failed with {}\nstdout:\n{}\nstderr:\n{}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        ))
-        .into());
-    }
-    if output.stdout.is_empty() {
-        return Err(std::io::Error::other(format!(
-            "rustup run {NATIVE_RUNTIME_RUST_TOOLCHAIN} rustc -vV returned an empty compatibility record"
-        ))
-        .into());
-    }
-    Ok(output.stdout)
-}
-
-fn live_target_libdir(target: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let output = Command::new("rustup")
-        .args([
-            "run",
-            NATIVE_RUNTIME_RUST_TOOLCHAIN,
-            "rustc",
-            "--target",
-            target,
-            "--print",
-            "target-libdir",
-        ])
-        .output()?;
-    if !output.status.success() {
-        return Err(std::io::Error::other(format!(
-            "rustup run {NATIVE_RUNTIME_RUST_TOOLCHAIN} rustc target-libdir query failed with {}\nstdout:\n{}\nstderr:\n{}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        ))
-        .into());
-    }
-    let path = std::str::from_utf8(&output.stdout)?.trim();
-    if path.is_empty() {
-        return Err(std::io::Error::other(format!(
-            "rustup run {NATIVE_RUNTIME_RUST_TOOLCHAIN} rustc returned an empty target-libdir for {target}"
-        ))
-        .into());
-    }
-    Ok(PathBuf::from(path))
+pub fn rustc_snapshot_identity(path: &Path) -> Result<String, String> {
+    compatibility_cache::current_rustc_snapshot_identity(path).map_err(|error| error.to_string())
 }

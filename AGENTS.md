@@ -214,19 +214,43 @@ both `producer_identity` and `compatibility_identity`; only compatibility enters
 artifact selection and the link-plan identity. Terminal consumers must select
 one compatible `RuntimeLinkPlan` and pass exactly one
 `--extern __gors_runtime=<artifact>` to rustc. Generated-Rust caches retain only
-the dependency and reselect the current provider; executable caches additionally
-key on the exact link-plan identity. There is no bundled, optional, or fallback
-runtime path. Native provider production must resolve
-`NATIVE_RUNTIME_RUST_TOOLCHAIN` through rustup rather than inheriting Cargo's
-arbitrary `RUSTC`; generated-program compilation consumes that same exact
-toolchain. Target-rustlib inventories reject absolute symlinks and relative
+the dependency; provider and executable state are terminal products. There is
+no bundled, optional, or fallback runtime path. Native provider production must
+resolve `NATIVE_RUNTIME_RUST_TOOLCHAIN` through rustup rather than inheriting
+Cargo's arbitrary `RUSTC`; generated-program compilation consumes that same
+exact probed rustc path and revalidates its snapshot immediately before a
+relink. Target-rustlib inventories reject absolute symlinks and relative
 symlinks whose lexical resolution escapes the inventory root.
 
-The current CLI cache still stores the refreshed terminal link sidecar beside
-generated Rust. The next cache-schema cut must separate target-neutral
-generated-Rust identity from the exact terminal rustc action; do not deepen
-that temporary coupling or treat provider selection as a semantic compiler
-input.
+The CLI cache hard split is complete. `GeneratedRustIdentity` composes the
+generated-Rust schema fingerprint, CLI driver schema, source-selection
+configuration, and typed runtime contract. Cache admission separately compares
+the immutable `InputSnapshot` captured for that invocation. Both exclude
+runtime provider bytes and provenance, target compatibility, the Rust toolchain
+and linker, `RustcAction`, output profile, target CPU, and target features. The
+generated manifest owns its identity and input snapshot, generated files and
+their hashes, source-map presentation state, and `RuntimeDependency`; it owns
+no provider or executable state.
+
+The independently replaceable terminal manifest is bound back to that
+generated identity and dependency. It owns the selected provider descriptor
+and artifact path, the exact admitted rustc path and snapshot identity, plus
+per-profile executable records. Every executable is admitted by the exact
+`RustcActionIdentity`: the immutable program, working directory, ordered
+arguments, every generated-Rust filename and content hash, runtime artifact
+path and implementation hash, link-plan and compatibility identities, output
+profile, target, portable CPU and feature policy, and publication paths. Debug
+and release therefore reuse the same generated Rust while producing distinct
+terminal actions and executables. Corrupt or stale terminal state is a terminal
+miss and must not poison a valid generated-Rust entry.
+
+An exact warm executable hit must be admitted from the current source snapshot,
+generated and terminal manifests, recorded generated-product hashes, and the
+current executable hash before any generated-Rust read, runtime provider
+materialization, runtime-artifact read, rustup lookup, rustc probe or stat,
+target-rustlib inventory, or link-plan reselection. It executes directly. A
+generated-Rust hit that still needs a refreshed link descriptor or executable
+may resolve the terminal provider only after that cheaper admission fails.
 
 The browser compiler remains target-neutral. It transports only the runtime
 dependency schema, contract identity, and canonical operation IDs; the V86
@@ -282,6 +306,10 @@ edits do not re-type-check importers.
   contract, source, and dependency keys. Artifact target, format, toolchain,
   capabilities, and implementation identity belong only to post-Rust-IR link
   and executable cache keys. Corruption is a cache miss.
+- Generated-Rust cache identity and terminal `RustcActionIdentity` are separate
+  domains. Build profile and all terminal toolchain, target, provider, CPU, and
+  feature facts may invalidate an executable but must not invalidate identical
+  generated Rust.
 - A canonical package DAG exposes ready work. One bounded global job budget and
   one work-stealing scheduler cover parsing, semantics, MIR, Rust
   representation lowering, codegen, external tools, and linking; nested phase
@@ -639,6 +667,11 @@ Legacy compiler modules or imports should be absent:
 Generated-Rust resolver/cache concepts should be absent:
 
     rg -ni 'resolver.?cache|resolved.?module|partial.?declaration|type.?environment.?cache' gors gors-cli www
+
+Legacy mixed cache/action identities and host-native terminal codegen should be
+absent from production compiler, CLI, and performance paths:
+
+    rg -n 'GORS_CLI_ABI_FINGERPRINT|CacheRequest|RustcArgs|target-cpu=native' gors/src gors-cli/src perf/perf_harness
 
 Semantic syn manipulation should be limited to the terminal emitter and public
 output facade:

@@ -173,6 +173,21 @@ impl RuntimeLinkDescriptor {
     pub fn link_plan_identity(&self) -> &str {
         &self.link_plan_identity
     }
+
+    #[must_use]
+    pub fn compatibility_identity(&self) -> &str {
+        &self.compatibility_identity
+    }
+
+    #[must_use]
+    pub fn implementation_hash(&self) -> &str {
+        &self.implementation_hash
+    }
+
+    #[must_use]
+    pub fn target_triple(&self) -> &str {
+        &self.target_triple
+    }
 }
 
 impl RuntimeLinkOutput {
@@ -189,6 +204,11 @@ impl RuntimeLinkOutput {
     #[must_use]
     pub const fn link(&self) -> &RuntimeLinkDescriptor {
         &self.link
+    }
+
+    #[must_use]
+    pub fn artifact_path(&self) -> &str {
+        &self.artifact_path
     }
 
     pub fn json(&self) -> Result<String, serde_json::Error> {

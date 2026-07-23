@@ -69,6 +69,27 @@ fail_on_matches \
   gors/src gors-cli/src www/wasm fuzz/src
 
 fail_on_matches \
+  'legacy mixed generated-Rust/terminal cache identities are forbidden:' \
+  'GORS_(CLI_ABI|COMPILER)_FINGERPRINT|(^|[^[:alnum:]_])(COMPILER_FINGERPRINT|CacheRequest|RustcArgs)([^[:alnum:]_]|$)' \
+  gors/src \
+  gors/build.rs \
+  gors/build \
+  gors-cli \
+  perf/perf_harness \
+  --glob '*.py'
+
+fail_on_matches \
+  'host-native terminal codegen is forbidden; CPU and features must be explicit and portable:' \
+  'target-cpu=native|(^|[^[:alnum:]_])(target_cpu|TARGET_CPU)[^;]*"native"' \
+  gors/src/compiler \
+  gors/src/printer \
+  gors/build \
+  gors-cli/src \
+  perf/perf_harness \
+  --glob '*.py' \
+  --glob '!**/tests.rs'
+
+fail_on_matches \
   'post-syntax or fallback semantic lowering is forbidden:' \
   'post.?syn|rust.?ast.?pass|ast.?to.?syn|fallback.?lower' \
   gors/src
@@ -225,6 +246,29 @@ fail_on_matches \
   www/wasm \
   fuzz/src
 
+if [[ -f gors-cli/src/run.rs ]]; then
+  warm_executable_prefix="$(
+    sed -n '/^pub fn run(/,/^[[:space:]]*if executable_hit {/p' gors-cli/src/run.rs
+  )"
+  warm_executable_hit="$(
+    sed -n '/^[[:space:]]*if executable_hit {/,/^[[:space:]]*} else {/p' gors-cli/src/run.rs
+  )"
+  if [[ -z "${warm_executable_prefix}" || -z "${warm_executable_hit}" ]]; then
+    printf '%s\n' \
+      'run cache must expose an explicit warm executable admission branch' >&2
+    failed=1
+  fi
+  if matches="$(rg -n \
+    'resolve_runtime\(|embedded_runtime_artifact|\.materialize\(|NATIVE_RUNTIME_RUST_TOOLCHAIN|rustup[[:space:]]+(run|which)' \
+    <<< "${warm_executable_prefix}${warm_executable_hit}" || true)" && \
+    [[ -n "${matches}" ]]; then
+    printf '%s\n%s\n' \
+      'warm executable admission must precede runtime and toolchain resolution:' \
+      "${matches}" >&2
+    failed=1
+  fi
+fi
+
 fail_on_matches \
   'stateless Wasm build_rust exports are forbidden; retain GorsCompiler::build_rust only:' \
   '^pub[[:space:]]+fn[[:space:]]+build_rust|^export[[:space:]].*build_rust|^[[:space:]]*build_rust\??:[[:space:]]*\(' \
@@ -277,7 +321,6 @@ fail_on_matches \
 
 for native_runtime_toolchain_owner in \
   gors/build/runtime_artifact.rs \
-  gors-cli/src/rustc.rs \
   gors-cli/src/runtime_link.rs
 do
   if ! rg -q 'NATIVE_RUNTIME_RUST_TOOLCHAIN' "${native_runtime_toolchain_owner}"; then
@@ -286,6 +329,14 @@ do
     failed=1
   fi
 done
+
+if matches="$(rg -n 'NATIVE_RUNTIME_RUST_TOOLCHAIN|Command::new\("rustup"\)' \
+  gors-cli/src/rustc.rs || true)" && [[ -n "${matches}" ]]; then
+  printf '%s\n%s\n' \
+    'terminal rustc actions must execute the exact probed compiler path directly:' \
+    "${matches}" >&2
+  failed=1
+fi
 
 for terminal_linker in \
   gors-cli/src/rustc.rs \

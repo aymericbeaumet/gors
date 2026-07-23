@@ -1,6 +1,6 @@
 use crate::cache::{
-    CacheAccessLock, CacheRequest, CacheRequestOptions, CliCacheManifest, InputSnapshot,
-    generated_file_hashes, maybe_prune_cli_cache, refresh_runtime_selection,
+    CacheAccessLock, CliCacheManifest, GeneratedRustIdentity, GeneratedRustIdentityOptions,
+    InputSnapshot, generated_file_hashes, maybe_prune_cli_cache, refresh_runtime_selection,
 };
 use crate::cache_paths::{build_cache_dir, gors_cache_base};
 use crate::compiler::{cli_workspace, compile_program};
@@ -21,21 +21,16 @@ pub fn build_with_cache_base(
     cache_base: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let timings = TimingCollector::new(cmd.jobs);
-    let compiler_host = gors::compiler::CompilerHost::new(cmd.jobs)?;
     let source_paths = vec![cmd.path.clone()];
+    let identity = GeneratedRustIdentity::new(GeneratedRustIdentityOptions {
+        source_paths: &source_paths,
+    })?;
     let output_dir = cmd
         .output
         .as_deref()
         .map(PathBuf::from)
-        .map_or_else(|| build_cache_dir(&cmd.path), Ok)?;
+        .unwrap_or_else(|| build_cache_dir(cache_base, &identity));
     let sourcemap_path = cmd.sourcemap.as_deref().map(PathBuf::from);
-    let request = CacheRequest::new(CacheRequestOptions {
-        command: "build",
-        source_paths: &source_paths,
-        release: cmd.release,
-        output: Some(&output_dir),
-        sourcemap: sourcemap_path.as_deref(),
-    })?;
     maybe_prune_cli_cache(cache_base, Some(&output_dir))?;
     let cache_access_lock = CacheAccessLock::acquire_shared(cache_base)?;
     let output_lock = OutputDirectoryLock::acquire(&output_dir)?;
@@ -47,15 +42,26 @@ pub fn build_with_cache_base(
 
     let cached_manifest = {
         let _cache_timer = timings.phase("cli.cache_lookup");
-        CliCacheManifest::load_if_generated_valid(&output_dir, &request, &inputs)
+        CliCacheManifest::load_if_generated_valid(&output_dir, &identity, &inputs)
     };
     if let Some(mut manifest) = cached_manifest {
-        // A stale dependency schema or contract is a semantic cache miss. A
-        // current dependency must reselect and verify the one live provider.
-        if let Ok(dependency) = manifest.runtime_dependency() {
+        let source_map_ready = sourcemap_path
+            .as_deref()
+            .map(|path| manifest.reuse_sourcemap(path))
+            .transpose()?
+            .unwrap_or(true);
+        // A stale dependency schema or missing requested presentation artifact
+        // is a miss. Provider selection itself is terminal-only.
+        if source_map_ready && let Ok(dependency) = manifest.runtime_dependency() {
             let runtime = resolve_runtime(cache_base, dependency)?;
             let runtime_output = runtime.output_descriptor();
-            refresh_runtime_selection(&output_dir, &mut manifest, &runtime_output)?;
+            refresh_runtime_selection(
+                &output_dir,
+                &mut manifest,
+                &runtime_output,
+                runtime.rustc_path(),
+                runtime.rustc_snapshot_identity(),
+            )?;
             timings.cache_event("compiler", true);
             println!(
                 "Reused {} cached files from {}",
@@ -70,6 +76,7 @@ pub fn build_with_cache_base(
     }
     timings.cache_event("compiler", false);
 
+    let compiler_host = gors::compiler::CompilerHost::new(cmd.jobs)?;
     let primary_file = loaded.primary_diagnostic_path().to_string();
 
     let compile_timer = timings.phase("cli.compile");
@@ -94,7 +101,7 @@ pub fn build_with_cache_base(
     drop(print_timer);
     let runtime = resolve_runtime(cache_base, output.runtime.clone())?;
     let runtime_output = runtime.output_descriptor();
-    let generated_files = generated_file_hashes(&output, &runtime_output)?;
+    let generated_files = generated_file_hashes(&output);
     let write_timer = timings.phase("cli.file_writes");
     let stats = write_generated_output_locked(&output, &output_dir, &runtime_output)?;
     let sourcemap = sourcemap_path
@@ -108,22 +115,24 @@ pub fn build_with_cache_base(
         .transpose()?;
     drop(write_timer);
 
-    let completed_request = CacheRequest::new(CacheRequestOptions {
-        command: "build",
+    let completed_identity = GeneratedRustIdentity::new(GeneratedRustIdentityOptions {
         source_paths: &source_paths,
-        release: cmd.release,
-        output: Some(&output_dir),
-        sourcemap: sourcemap_path.as_deref(),
     })?;
-    if request == completed_request {
-        CliCacheManifest::new(
-            &request,
+    if identity == completed_identity {
+        let mut manifest = CliCacheManifest::new(
+            &identity,
             inputs,
             generated_files,
             sourcemap,
-            runtime_output.link().clone(),
-        )
-        .save(&output_dir)?;
+            &output.runtime,
+        );
+        manifest.refresh_runtime(
+            &runtime_output,
+            runtime.rustc_path(),
+            runtime.rustc_snapshot_identity(),
+        )?;
+        manifest.save(&output_dir)?;
+        manifest.save_terminal(&output_dir)?;
     }
 
     let output_dir_display = output_dir.display();

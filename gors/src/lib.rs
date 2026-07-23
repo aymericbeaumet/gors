@@ -56,12 +56,12 @@ pub const GO_VERSION: &str = env!("GORS_GO_VERSION");
 /// Version label for the embedded Go stdlib archive compiled into gors.
 pub const STDLIB_VERSION: &str = env!("GORS_STDLIB_VERSION");
 
-/// Content fingerprint for compiler semantics, the selected Go SDK, and the
-/// target-neutral runtime contract.
+/// Content fingerprint for generated Rust source, the selected Go SDK/build
+/// platform, the package schema, and the typed runtime contract.
 ///
 /// Target-specific runtime implementation and packaging changes are excluded;
 /// their exact artifact and link-plan identities belong to terminal caches.
-pub const COMPILER_FINGERPRINT: &str = env!("GORS_COMPILER_FINGERPRINT");
+pub const GENERATED_RUST_FINGERPRINT: &str = env!("GORS_GENERATED_RUST_FINGERPRINT");
 
 #[cfg(any(
     feature = "test_integration_go_repositories",

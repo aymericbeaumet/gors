@@ -117,9 +117,10 @@ target-libdir record, while compatibility removes the producer host and binds
 the target's recursive rustlib inventory. Compiler semantic keys therefore do
 not become red merely because the same contract was rebuilt for another target
 or from another implementation. Native production resolves the exact shared
-rustup toolchain instead of inheriting Cargo's possibly newer `RUSTC`, and the
-consumer uses that same selector. Recursive inventories reject symlink targets
-that resolve outside their target-libdir root.
+rustup toolchain instead of inheriting Cargo's possibly newer `RUSTC`. The
+consumer records the probed absolute rustc path and snapshot, invokes that path
+directly, and revalidates it immediately before relinking. Recursive inventories
+reject symlink targets that resolve outside their target-libdir root.
 
 ## Canonical stage products
 

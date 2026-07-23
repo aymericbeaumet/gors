@@ -1,6 +1,6 @@
 use crate::cache::{
-    CacheAccessLock, CacheRequest, CacheRequestOptions, CliCacheManifest, InputSnapshot,
-    generated_file_hashes, maybe_prune_cli_cache, refresh_runtime_selection,
+    CacheAccessLock, CliCacheManifest, GeneratedRustIdentity, GeneratedRustIdentityOptions,
+    InputSnapshot, generated_file_hashes, maybe_prune_cli_cache, refresh_runtime_selection,
 };
 use crate::cache_paths::{gors_cache_base, run_cache_dir};
 use crate::compiler::{cli_workspace, compile_program};
@@ -8,7 +8,7 @@ use crate::diagnostics::print_compiler_error;
 use crate::options::Run;
 use crate::output::{OutputDirectoryLock, write_generated_output_locked};
 use crate::runtime_link::resolve_runtime;
-use crate::rustc::compile_generated_binary;
+use crate::rustc::{AdmittedRustc, RustcAction, compile_generated_binary};
 use crate::timings::TimingCollector;
 use std::path::Path;
 use std::process::Command;
@@ -45,19 +45,16 @@ pub fn split_run_args(args: &[String]) -> (Vec<String>, Vec<String>) {
 pub fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
     let (source_paths, program_args) = split_run_args(&cmd.args);
     let timings = TimingCollector::new(cmd.jobs);
-    let compiler_host = gors::compiler::CompilerHost::new(cmd.jobs)?;
     let cache_base = gors_cache_base()?;
-    let cache_dir = run_cache_dir(&source_paths, cmd.release)?;
+    let identity = GeneratedRustIdentity::new(GeneratedRustIdentityOptions {
+        source_paths: &source_paths,
+    })?;
+    let cache_dir = run_cache_dir(&cache_base, &identity);
     maybe_prune_cli_cache(&cache_base, Some(&cache_dir))?;
     let cache_access_lock = CacheAccessLock::acquire_shared(&cache_base)?;
     let cache_lock = OutputDirectoryLock::acquire(&cache_dir)?;
-    let request = CacheRequest::new(CacheRequestOptions {
-        command: "run",
-        source_paths: &source_paths,
-        release: cmd.release,
-        output: Some(&cache_dir),
-        sourcemap: None,
-    })?;
+    let profile = if cmd.release { "release" } else { "debug" };
+    let bin_path = cache_dir.join(format!("main-{profile}"));
 
     let source_load_timer = timings.phase("cli.source_load");
     let loaded = gors::workspace::load_program_files(cli_workspace()?, &source_paths)?;
@@ -66,96 +63,137 @@ pub fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut cache_manifest = {
         let _cache_timer = timings.phase("cli.cache_lookup");
-        CliCacheManifest::load_if_generated_valid(&cache_dir, &request, &inputs)
+        CliCacheManifest::load_if_source_revision_matches(&cache_dir, &identity, &inputs)
     };
-    let mut linked_runtime = None;
-    if let Some(manifest) = cache_manifest.as_mut() {
-        match manifest.runtime_dependency() {
-            Ok(dependency) => {
-                let runtime = resolve_runtime(&cache_base, dependency)?;
-                let runtime_output = runtime.output_descriptor();
-                refresh_runtime_selection(&cache_dir, manifest, &runtime_output)?;
-                linked_runtime = Some(runtime);
-            }
-            Err(_) => cache_manifest = None,
-        }
-    }
+    let cached_action = cache_manifest.as_ref().and_then(|manifest| {
+        let runtime = manifest.selected_runtime()?;
+        let artifact_path = manifest.selected_artifact_path()?;
+        let rustc_path = manifest.selected_rustc_path()?;
+        let rustc_snapshot_identity = manifest.selected_rustc_snapshot_identity()?;
+        RustcAction::for_generated_binary(
+            &cache_dir,
+            &bin_path,
+            artifact_path,
+            runtime,
+            AdmittedRustc::new(rustc_path, rustc_snapshot_identity),
+            manifest.generated_files(),
+            cmd.release,
+        )
+        .ok()
+    });
+    let executable_hit = cached_action.as_ref().is_some_and(|action| {
+        cache_manifest
+            .as_ref()
+            .is_some_and(|manifest| manifest.executable_is_valid(profile, &bin_path, action))
+    });
 
-    if cache_manifest.is_some() {
+    if executable_hit {
         timings.cache_event("compiler", true);
+        timings.cache_event("rustc", true);
         drop(loaded);
         drop(inputs);
-        drop(compiler_host);
     } else {
-        timings.cache_event("compiler", false);
-        let primary_file = loaded.primary_diagnostic_path().to_string();
-
-        let compile_timer = timings.phase("cli.compile");
-        let compilation = compile_program(loaded.into_input(), false, &compiler_host);
-        timings.scheduler_telemetry(compiler_host.telemetry());
-        drop(compiler_host);
-        let compiled = match compilation {
-            Ok((compiled, None)) => compiled,
-            Ok((_, Some(_))) => {
-                return Err("unexpected source-map plan for run compilation".into());
-            }
-            Err(err) => {
-                print_compiler_error(&err, &primary_file);
-                std::process::exit(1);
-            }
-        };
-        drop(compile_timer);
-
-        let print_timer = timings.phase("cli.print");
-        let output = gors::printer::generate_multi(compiled)?;
-        drop(print_timer);
-        let runtime = resolve_runtime(&cache_base, output.runtime.clone())?;
-        let runtime_output = runtime.output_descriptor();
-        let generated_files = generated_file_hashes(&output, &runtime_output)?;
-        let write_timer = timings.phase("cli.file_writes");
-        write_generated_output_locked(&output, &cache_dir, &runtime_output)?;
-        drop(write_timer);
-
-        let completed_request = CacheRequest::new(CacheRequestOptions {
-            command: "run",
-            source_paths: &source_paths,
-            release: cmd.release,
-            output: Some(&cache_dir),
-            sourcemap: None,
-        })?;
-        if request == completed_request {
-            let manifest = CliCacheManifest::new(
-                &request,
-                inputs,
-                generated_files,
-                None,
-                runtime_output.link().clone(),
-            );
-            manifest.save(&cache_dir)?;
-            cache_manifest = Some(manifest);
-            linked_runtime = Some(runtime);
+        if cache_manifest
+            .as_ref()
+            .is_some_and(|manifest| !manifest.generated_files_are_current(&cache_dir))
+        {
+            cache_manifest = None;
         }
-    }
+        let mut linked_runtime = None;
+        if let Some(manifest) = cache_manifest.as_mut() {
+            match manifest.runtime_dependency() {
+                Ok(dependency) => {
+                    let runtime = resolve_runtime(&cache_base, dependency)?;
+                    let runtime_output = runtime.output_descriptor();
+                    refresh_runtime_selection(
+                        &cache_dir,
+                        manifest,
+                        &runtime_output,
+                        runtime.rustc_path(),
+                        runtime.rustc_snapshot_identity(),
+                    )?;
+                    linked_runtime = Some(runtime);
+                }
+                Err(_) => cache_manifest = None,
+            }
+        }
 
-    let Some(mut cache_manifest) = cache_manifest else {
-        return Err("source inputs changed while compiling; rerun the command".into());
-    };
-    let runtime =
-        linked_runtime.ok_or("runtime link plan was not retained for generated output")?;
-    let bin_path = cache_dir.join("main");
-    if cache_manifest.executable_is_valid(&bin_path, runtime.descriptor()) {
-        timings.cache_event("rustc", true);
-    } else {
-        timings.cache_event("rustc", false);
-        compile_generated_binary(
+        if cache_manifest.is_some() {
+            timings.cache_event("compiler", true);
+            drop(loaded);
+            drop(inputs);
+        } else {
+            timings.cache_event("compiler", false);
+            let compiler_host = gors::compiler::CompilerHost::new(cmd.jobs)?;
+            let primary_file = loaded.primary_diagnostic_path().to_string();
+
+            let compile_timer = timings.phase("cli.compile");
+            let compilation = compile_program(loaded.into_input(), false, &compiler_host);
+            timings.scheduler_telemetry(compiler_host.telemetry());
+            drop(compiler_host);
+            let compiled = match compilation {
+                Ok((compiled, None)) => compiled,
+                Ok((_, Some(_))) => {
+                    return Err("unexpected source-map plan for run compilation".into());
+                }
+                Err(err) => {
+                    print_compiler_error(&err, &primary_file);
+                    std::process::exit(1);
+                }
+            };
+            drop(compile_timer);
+
+            let print_timer = timings.phase("cli.print");
+            let output = gors::printer::generate_multi(compiled)?;
+            drop(print_timer);
+            let runtime = resolve_runtime(&cache_base, output.runtime.clone())?;
+            let runtime_output = runtime.output_descriptor();
+            let generated_files = generated_file_hashes(&output);
+            let write_timer = timings.phase("cli.file_writes");
+            write_generated_output_locked(&output, &cache_dir, &runtime_output)?;
+            drop(write_timer);
+
+            let completed_identity = GeneratedRustIdentity::new(GeneratedRustIdentityOptions {
+                source_paths: &source_paths,
+            })?;
+            if identity == completed_identity {
+                let mut manifest = CliCacheManifest::new(
+                    &identity,
+                    inputs,
+                    generated_files,
+                    None,
+                    &output.runtime,
+                );
+                manifest.refresh_runtime(
+                    &runtime_output,
+                    runtime.rustc_path(),
+                    runtime.rustc_snapshot_identity(),
+                )?;
+                manifest.save(&cache_dir)?;
+                manifest.save_terminal(&cache_dir)?;
+                cache_manifest = Some(manifest);
+                linked_runtime = Some(runtime);
+            }
+        }
+
+        let Some(mut manifest) = cache_manifest else {
+            return Err("source inputs changed while compiling; rerun the command".into());
+        };
+        let runtime =
+            linked_runtime.ok_or("runtime link plan was not retained for generated output")?;
+        let action = RustcAction::for_generated_binary(
             &cache_dir,
             &bin_path,
             runtime.artifact_path(),
+            runtime.descriptor(),
+            AdmittedRustc::new(runtime.rustc_path(), runtime.rustc_snapshot_identity()),
+            manifest.generated_files(),
             cmd.release,
-            &timings,
         )?;
-        cache_manifest.set_executable(&bin_path, runtime.descriptor())?;
-        cache_manifest.save(&cache_dir)?;
+        timings.cache_event("rustc", false);
+        compile_generated_binary(&action, &timings)?;
+        manifest.set_executable(profile, &bin_path, &action)?;
+        manifest.save_terminal(&cache_dir)?;
     }
 
     let execute_timer = timings.phase("cli.execute");

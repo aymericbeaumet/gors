@@ -12,6 +12,20 @@ fn args(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| value.to_string()).collect()
 }
 
+fn rustc_selection() -> (PathBuf, String) {
+    let path = std::env::current_exe().unwrap();
+    let identity = runtime_link::rustc_snapshot_identity(&path).unwrap();
+    (path, identity)
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest as _, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 fn timing_phase_names(report: &serde_json::Value) -> Vec<&str> {
     report
         .get("phases")
@@ -68,7 +82,6 @@ fn build_timing_v5_reports_single_load_before_hit_or_miss_cache_lookup() {
 
     let command = |timings: &Path| Build {
         path: source.to_string_lossy().into_owned(),
-        release: false,
         sourcemap: None,
         output: Some(output.to_string_lossy().into_owned()),
         timings_json: Some(timings.to_string_lossy().into_owned()),
@@ -85,6 +98,7 @@ fn build_timing_v5_reports_single_load_before_hit_or_miss_cache_lookup() {
             .unwrap(),
     );
     std::fs::write(&artifact_path, b"corrupt runtime cache entry").unwrap();
+    std::fs::write(&link_path, b"corrupt terminal sidecar").unwrap();
 
     build_with_cache_base(command(&hit_timings), &cache).unwrap();
 
@@ -252,13 +266,30 @@ fn compiler_job_budget_must_be_positive() {
 
 #[test]
 fn rustc_arguments_do_not_create_per_invocation_incremental_state() {
-    let flags = Vec::from(RustcArgs {
-        src: "main.rs",
-        runtime: "/cache/runtime/artifact/lib__gors_runtime.rlib",
-        out: Some("main"),
-        emit: None,
-        release: false,
-    });
+    let directory = tempfile::tempdir().unwrap();
+    let generated_source = "fn main() {}\n";
+    let generated_files = BTreeMap::from([(
+        "main.rs".to_string(),
+        sha256_hex(generated_source.as_bytes()),
+    )]);
+    std::fs::write(directory.path().join("main.rs"), generated_source).unwrap();
+    let runtime = directory.path().join("lib__gors_runtime.rlib");
+    let (rustc_path, rustc_snapshot_identity) = rustc_selection();
+    let action = RustcAction::for_generated_binary(
+        directory.path(),
+        &directory.path().join("main"),
+        &runtime,
+        &runtime_descriptor::test_runtime_link_descriptor(),
+        AdmittedRustc::new(&rustc_path, &rustc_snapshot_identity),
+        &generated_files,
+        false,
+    )
+    .unwrap();
+    let flags = action
+        .argv()
+        .iter()
+        .map(|argument| argument.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
     assert!(
         flags.iter().all(|flag| !flag.contains("incremental")),
         "{flags:?}"
@@ -271,9 +302,9 @@ fn rustc_arguments_do_not_create_per_invocation_incremental_state() {
         1
     );
     assert!(
-        flags.iter().any(|flag| {
-            flag == "__gors_runtime=/cache/runtime/artifact/lib__gors_runtime.rlib"
-        })
+        flags
+            .iter()
+            .any(|flag| flag.starts_with("__gors_runtime=") && flag.ends_with(".rlib"))
     );
 }
 
@@ -330,7 +361,7 @@ fn external_runtime_cut_removes_untracked_legacy_runtime_source() {
             .is_file()
     );
     let manifest = GeneratedOutputManifest::load(tmp.path()).unwrap();
-    assert!(manifest.contains(runtime_descriptor::LINK_OUTPUT_FILENAME));
+    assert!(!manifest.contains(runtime_descriptor::LINK_OUTPUT_FILENAME));
 }
 
 #[test]
@@ -364,12 +395,8 @@ fn concurrent_output_publications_publish_one_consistent_transaction() {
                 )
                 .unwrap();
                 let inputs = InputSnapshot::capture(&loaded).unwrap();
-                let request = CacheRequest::new(CacheRequestOptions {
-                    command: "run",
+                let identity = GeneratedRustIdentity::new(GeneratedRustIdentityOptions {
                     source_paths: &source_paths,
-                    release: false,
-                    output: Some(&output_dir),
-                    sourcemap: Some(&source_map_path),
                 })
                 .unwrap();
                 let mut files = BTreeMap::new();
@@ -379,11 +406,12 @@ fn concurrent_output_publications_publish_one_consistent_transaction() {
                 );
                 files.insert(format!("{module}.rs"), body.to_string());
                 let runtime = runtime_descriptor::test_runtime_link_output();
+                let (rustc_path, rustc_snapshot_identity) = rustc_selection();
                 let output = gors::printer::GeneratedOutput {
                     files,
                     runtime: runtime_descriptor::test_runtime_dependency(),
                 };
-                let generated_files = generated_file_hashes(&output, &runtime).unwrap();
+                let generated_files = generated_file_hashes(&output);
                 barrier.wait();
 
                 let _output_lock = OutputDirectoryLock::acquire(&output_dir).unwrap();
@@ -400,21 +428,34 @@ fn concurrent_output_publications_publish_one_consistent_transaction() {
                     .unwrap();
                 let source_map = FileArtifact::capture(&source_map_path).unwrap();
                 let mut manifest = CliCacheManifest::new(
-                    &request,
+                    &identity,
                     inputs,
                     generated_files,
                     Some(source_map),
-                    runtime.link().clone(),
+                    &output.runtime,
                 );
+                manifest
+                    .refresh_runtime(&runtime, &rustc_path, &rustc_snapshot_identity)
+                    .unwrap();
                 manifest.save(&output_dir).unwrap();
                 prepare_atomic_write(&executable_path, &format!("{module}-executable\n"))
                     .unwrap()
                     .persist(&executable_path)
                     .unwrap();
+                let action = RustcAction::for_generated_binary(
+                    &output_dir,
+                    &executable_path,
+                    Path::new(runtime.artifact_path()),
+                    runtime.link(),
+                    AdmittedRustc::new(&rustc_path, &rustc_snapshot_identity),
+                    manifest.generated_files(),
+                    false,
+                )
+                .unwrap();
                 manifest
-                    .set_executable(&executable_path, runtime.link())
+                    .set_executable("debug", &executable_path, &action)
                     .unwrap();
-                manifest.save(&output_dir).unwrap();
+                manifest.save_terminal(&output_dir).unwrap();
                 assert_eq!(
                     active_publishers.fetch_sub(1, std::sync::atomic::Ordering::SeqCst),
                     1
@@ -459,12 +500,8 @@ fn concurrent_output_publications_publish_one_consistent_transaction() {
             .to_string_lossy()
             .into_owned(),
     ];
-    let request = CacheRequest::new(CacheRequestOptions {
-        command: "run",
+    let identity = GeneratedRustIdentity::new(GeneratedRustIdentityOptions {
         source_paths: &source_paths,
-        release: false,
-        output: Some(&output_dir),
-        sourcemap: Some(&source_map_path),
     })
     .unwrap();
     let loaded = gors::workspace::load_program(
@@ -473,10 +510,29 @@ fn concurrent_output_publications_publish_one_consistent_transaction() {
     )
     .unwrap();
     let inputs = InputSnapshot::capture(&loaded).unwrap();
-    let cli_manifest = CliCacheManifest::load_if_generated_valid(&output_dir, &request, &inputs)
+    let cli_manifest = CliCacheManifest::load_if_generated_valid(&output_dir, &identity, &inputs)
         .expect("published CLI cache manifest");
-    let runtime = cli_manifest.runtime().clone();
-    assert!(cli_manifest.executable_is_valid(&executable_path, &runtime));
+    let runtime = cli_manifest.runtime().expect("published runtime").clone();
+    let artifact_path = cli_manifest
+        .selected_artifact_path()
+        .expect("published runtime artifact");
+    let rustc_path = cli_manifest
+        .selected_rustc_path()
+        .expect("published rustc path");
+    let rustc_snapshot_identity = cli_manifest
+        .selected_rustc_snapshot_identity()
+        .expect("published rustc snapshot identity");
+    let action = RustcAction::for_generated_binary(
+        &output_dir,
+        &executable_path,
+        artifact_path,
+        &runtime,
+        AdmittedRustc::new(rustc_path, rustc_snapshot_identity),
+        cli_manifest.generated_files(),
+        false,
+    )
+    .unwrap();
+    assert!(cli_manifest.executable_is_valid("debug", &executable_path, &action));
 }
 
 #[test]

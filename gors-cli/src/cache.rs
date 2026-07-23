@@ -1,23 +1,27 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::runtime_descriptor::{
-    LINK_OUTPUT_FILENAME, RuntimeDescriptorError, RuntimeLinkDescriptor, RuntimeLinkOutput,
+    RuntimeDependencyDescriptor, RuntimeDescriptorError, RuntimeLinkDescriptor, RuntimeLinkOutput,
 };
 
+mod identity;
 mod output_manifest;
 
+pub use identity::{GeneratedRustIdentity, GeneratedRustIdentityOptions};
 pub use output_manifest::GeneratedOutputManifest;
 
 const CACHE_MANIFEST_FILENAME: &str = ".gors_cli_cache.json";
-const CACHE_MANIFEST_VERSION: u32 = 4;
+const CACHE_MANIFEST_VERSION: u32 = 5;
+const TERMINAL_MANIFEST_FILENAME: &str = ".gors_cli_terminal.json";
+const TERMINAL_MANIFEST_VERSION: u32 = 2;
 const CACHE_MAX_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 const CACHE_MAX_ENTRIES: usize = 256;
 const CACHE_MAX_AGE: Duration = Duration::from_secs(14 * 24 * 60 * 60);
+const CACHE_ACCESS_PERSIST_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const PRUNE_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const CACHE_ACCESS_LOCK_FILENAME: &str = ".gors-cache.lock";
 const CACHE_PRUNE_MARKER_FILENAME: &str = ".last-prune";
@@ -26,114 +30,55 @@ pub struct CacheAccessLock {
     _file: std::fs::File,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CacheRequest {
-    fingerprint: String,
-}
-
 /// Immutable source-admission record derived from one `LoadedProgram`.
 ///
 /// Cache comparison consumes this value directly and never rereads its source
 /// paths. A cache miss compiles the same loaded revision that produced it.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct InputSnapshot {
     files: BTreeMap<String, String>,
     directories: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct FileArtifact {
     path: String,
     content_hash: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CliCacheManifest {
     version: u32,
-    request_fingerprint: String,
+    generated_identity: String,
     inputs: InputSnapshot,
     generated_files: BTreeMap<String, String>,
     sourcemap: Option<FileArtifact>,
-    runtime: RuntimeLinkDescriptor,
-    executable: Option<ExecutableArtifact>,
+    runtime_dependency: RuntimeDependencyDescriptor,
+    #[serde(skip)]
+    terminal: Option<TerminalState>,
     last_used_unix_ms: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct ExecutableArtifact {
     file: FileArtifact,
-    runtime_link_plan_identity: String,
+    rustc_action_identity: String,
 }
 
-impl CacheRequest {
-    pub fn new(options: CacheRequestOptions<'_>) -> Result<Self, Box<dyn std::error::Error>> {
-        let gorspath = std::env::var_os("GORSPATH");
-        Self::new_with_identity(
-            options,
-            env!("GORS_CLI_ABI_FINGERPRINT"),
-            gorspath.as_deref(),
-        )
-    }
-
-    fn new_with_identity(
-        options: CacheRequestOptions<'_>,
-        cli_abi_fingerprint: &str,
-        gorspath: Option<&OsStr>,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        let mut hasher = Sha256::new();
-        hash_part(&mut hasher, b"gors-cli-cache-request-v4");
-        hash_part(&mut hasher, options.command.as_bytes());
-        hash_part(
-            &mut hasher,
-            if options.release {
-                b"release"
-            } else {
-                b"debug"
-            },
-        );
-        hash_part(&mut hasher, env!("CARGO_PKG_VERSION").as_bytes());
-        hash_part(&mut hasher, gors::GO_VERSION.as_bytes());
-        hash_part(&mut hasher, gors::STDLIB_VERSION.as_bytes());
-        hash_part(&mut hasher, gors::COMPILER_FINGERPRINT.as_bytes());
-        hash_part(&mut hasher, cli_abi_fingerprint.as_bytes());
-        hash_part(
-            &mut hasher,
-            gors_runtime_abi::NATIVE_RUNTIME_RUST_TOOLCHAIN.as_bytes(),
-        );
-        hash_part(&mut hasher, crate::rustc::RUST_EDITION.as_bytes());
-        hash_part(&mut hasher, std::env::consts::OS.as_bytes());
-        hash_part(&mut hasher, std::env::consts::ARCH.as_bytes());
-        hash_gorspath(&mut hasher, gorspath);
-
-        for source_path in options.source_paths {
-            hash_part(
-                &mut hasher,
-                normalized_path(Path::new(source_path))?.as_bytes(),
-            );
-            hash_part(
-                &mut hasher,
-                module_context(Path::new(source_path))?.as_bytes(),
-            );
-        }
-        if let Some(output) = options.output {
-            hash_part(&mut hasher, normalized_path(output)?.as_bytes());
-        }
-        if let Some(sourcemap) = options.sourcemap {
-            hash_part(&mut hasher, normalized_path(sourcemap)?.as_bytes());
-        }
-
-        Ok(Self {
-            fingerprint: hex_digest(hasher.finalize()),
-        })
-    }
-}
-
-pub struct CacheRequestOptions<'a> {
-    pub command: &'static str,
-    pub source_paths: &'a [String],
-    pub release: bool,
-    pub output: Option<&'a Path>,
-    pub sourcemap: Option<&'a Path>,
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct TerminalState {
+    version: u32,
+    generated_identity: String,
+    runtime: RuntimeLinkDescriptor,
+    artifact_path: String,
+    rustc_path: String,
+    rustc_snapshot_identity: String,
+    executables: BTreeMap<String, ExecutableArtifact>,
 }
 
 impl CacheAccessLock {
@@ -206,50 +151,49 @@ impl FileArtifact {
 
 impl CliCacheManifest {
     pub fn new(
-        request: &CacheRequest,
+        identity: &GeneratedRustIdentity,
         inputs: InputSnapshot,
         generated_files: BTreeMap<String, String>,
         sourcemap: Option<FileArtifact>,
-        runtime: RuntimeLinkDescriptor,
+        runtime_dependency: &gors_runtime_abi::RuntimeDependency,
     ) -> Self {
         Self {
             version: CACHE_MANIFEST_VERSION,
-            request_fingerprint: request.fingerprint.clone(),
+            generated_identity: identity.fingerprint().to_string(),
             inputs,
             generated_files,
             sourcemap,
-            runtime,
-            executable: None,
+            runtime_dependency: RuntimeDependencyDescriptor::from_dependency(runtime_dependency),
+            terminal: None,
             last_used_unix_ms: unix_time_ms(),
         }
     }
 
-    /// Load a complete output only when it belongs to `current_inputs`.
+    /// Admit cache metadata for an executable check without touching generated
+    /// Rust files.
     ///
     /// The caller must supply the snapshot captured during this invocation's
-    /// source-load phase; this function validates output artifacts but never
-    /// reopens source inputs.
-    pub fn load_if_generated_valid(
+    /// source-load phase. The generated and terminal manifests are validated
+    /// and cross-checked, but their recorded Rust files are deliberately not
+    /// opened: a verified executable does not consume those intermediates.
+    pub fn load_if_source_revision_matches(
         output_dir: &Path,
-        request: &CacheRequest,
+        identity: &GeneratedRustIdentity,
         current_inputs: &InputSnapshot,
     ) -> Option<Self> {
         let content = std::fs::read(output_dir.join(CACHE_MANIFEST_FILENAME)).ok()?;
         let mut manifest: Self = serde_json::from_slice(&content).ok()?;
         if manifest.version != CACHE_MANIFEST_VERSION
-            || manifest.request_fingerprint != request.fingerprint
+            || manifest.generated_identity != identity.fingerprint()
             || &manifest.inputs != current_inputs
-            || !generated_files_are_current(output_dir, &manifest.generated_files)
-            || manifest
-                .sourcemap
-                .as_ref()
-                .is_some_and(|artifact| !artifact.is_current())
         {
             return None;
         }
 
         let output_manifest = GeneratedOutputManifest::load(output_dir)?;
-        if output_manifest.runtime() != &manifest.runtime {
+        let output_dependency = output_manifest.runtime_dependency().ok()?;
+        let cached_dependency = manifest.runtime_dependency().ok()?;
+        if output_dependency != cached_dependency {
             return None;
         }
         if output_manifest.len() != manifest.generated_files.len() {
@@ -261,64 +205,208 @@ impl CliCacheManifest {
             }
         }
 
-        manifest.last_used_unix_ms = unix_time_ms();
-        if manifest.save(output_dir).is_err() {
-            return None;
+        manifest.terminal = TerminalState::load_if_valid(
+            output_dir,
+            &manifest.generated_identity,
+            &cached_dependency,
+        );
+        let now = unix_time_ms();
+        let persist_interval = CACHE_ACCESS_PERSIST_INTERVAL
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX);
+        let should_persist_access =
+            now.saturating_sub(manifest.last_used_unix_ms) >= persist_interval;
+        manifest.last_used_unix_ms = now;
+        if should_persist_access {
+            // Access accounting is pruning metadata, never cache admission.
+            // A read-only or transiently unavailable cache must not turn an
+            // otherwise exact executable hit into compilation work.
+            drop(manifest.save(output_dir));
         }
         Some(manifest)
+    }
+
+    /// Load reusable generated Rust after validating every recorded source
+    /// artifact. Source-emitting commands and terminal misses use this stricter
+    /// path before reading or relinking generated files.
+    pub fn load_if_generated_valid(
+        output_dir: &Path,
+        identity: &GeneratedRustIdentity,
+        current_inputs: &InputSnapshot,
+    ) -> Option<Self> {
+        let manifest = Self::load_if_source_revision_matches(output_dir, identity, current_inputs)?;
+        manifest
+            .generated_files_are_current(output_dir)
+            .then_some(manifest)
     }
 
     pub fn runtime_dependency(
         &self,
     ) -> Result<gors_runtime_abi::RuntimeDependency, RuntimeDescriptorError> {
-        self.runtime.reconstruct_dependency()
+        self.runtime_dependency.reconstruct()
     }
 
     #[cfg(test)]
-    pub fn runtime(&self) -> &RuntimeLinkDescriptor {
-        &self.runtime
+    pub fn runtime(&self) -> Option<&RuntimeLinkDescriptor> {
+        self.terminal.as_ref().map(|terminal| &terminal.runtime)
     }
 
-    pub fn refresh_runtime(&mut self, runtime: RuntimeLinkDescriptor) {
-        self.runtime = runtime;
+    pub fn refresh_runtime(
+        &mut self,
+        runtime: &RuntimeLinkOutput,
+        rustc_path: &Path,
+        rustc_snapshot_identity: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if !rustc_path.is_absolute() {
+            return Err(std::io::Error::other(format!(
+                "terminal rustc path is not absolute: {}",
+                rustc_path.display()
+            ))
+            .into());
+        }
+        let rustc_path = rustc_path.to_str().ok_or_else(|| {
+            std::io::Error::other(format!(
+                "terminal rustc path is not valid UTF-8: {}",
+                rustc_path.display()
+            ))
+        })?;
+        if !is_sha256(rustc_snapshot_identity) {
+            return Err(std::io::Error::other(format!(
+                "terminal rustc snapshot identity is not canonical SHA-256: {rustc_snapshot_identity}"
+            ))
+            .into());
+        }
+        match &mut self.terminal {
+            Some(terminal) => {
+                terminal.runtime = runtime.link().clone();
+                terminal.artifact_path = runtime.artifact_path().to_string();
+                terminal.rustc_path = rustc_path.to_string();
+                terminal.rustc_snapshot_identity = rustc_snapshot_identity.to_string();
+            }
+            None => {
+                self.terminal = Some(TerminalState {
+                    version: TERMINAL_MANIFEST_VERSION,
+                    generated_identity: self.generated_identity.clone(),
+                    runtime: runtime.link().clone(),
+                    artifact_path: runtime.artifact_path().to_string(),
+                    rustc_path: rustc_path.to_string(),
+                    rustc_snapshot_identity: rustc_snapshot_identity.to_string(),
+                    executables: BTreeMap::new(),
+                });
+            }
+        }
         self.last_used_unix_ms = unix_time_ms();
+        Ok(())
     }
 
-    fn record_generated_file(&mut self, filename: &str, content_hash: String) {
-        self.generated_files
-            .insert(filename.to_string(), content_hash);
+    pub fn selected_runtime(&self) -> Option<&RuntimeLinkDescriptor> {
+        self.terminal.as_ref().map(|terminal| &terminal.runtime)
+    }
+
+    pub fn selected_artifact_path(&self) -> Option<&Path> {
+        self.terminal
+            .as_ref()
+            .map(|terminal| Path::new(&terminal.artifact_path))
+    }
+
+    pub fn selected_rustc_path(&self) -> Option<&Path> {
+        self.terminal
+            .as_ref()
+            .map(|terminal| Path::new(&terminal.rustc_path))
+    }
+
+    pub fn selected_rustc_snapshot_identity(&self) -> Option<&str> {
+        self.terminal
+            .as_ref()
+            .map(|terminal| terminal.rustc_snapshot_identity.as_str())
     }
 
     pub fn executable_is_valid(
         &self,
+        profile: &str,
         expected_path: &Path,
-        runtime: &RuntimeLinkDescriptor,
+        action: &crate::rustc::RustcAction,
     ) -> bool {
         let Ok(expected_path) = normalized_path(expected_path) else {
             return false;
         };
-        self.executable.as_ref().is_some_and(|artifact| {
-            artifact.file.path == expected_path
-                && artifact.file.is_current()
-                && artifact.runtime_link_plan_identity == runtime.link_plan_identity()
-        })
+        self.terminal
+            .as_ref()
+            .and_then(|terminal| terminal.executables.get(profile))
+            .is_some_and(|artifact| {
+                artifact.file.path == expected_path
+                    && artifact.file.is_current()
+                    && artifact.rustc_action_identity == action.identity().to_string()
+            })
     }
 
     pub fn generated_file_count(&self) -> usize {
         self.generated_files.len()
     }
 
+    pub fn generated_files_are_current(&self, output_dir: &Path) -> bool {
+        generated_files_are_current(output_dir, &self.generated_files)
+    }
+
+    pub fn generated_files(&self) -> &BTreeMap<String, String> {
+        &self.generated_files
+    }
+
     pub fn set_executable(
         &mut self,
+        profile: &str,
         path: &Path,
-        runtime: &RuntimeLinkDescriptor,
+        action: &crate::rustc::RustcAction,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        self.executable = Some(ExecutableArtifact {
-            file: FileArtifact::capture(path)?,
-            runtime_link_plan_identity: runtime.link_plan_identity().to_string(),
-        });
+        let terminal = self
+            .terminal
+            .as_mut()
+            .ok_or("cannot record an executable before selecting a runtime")?;
+        terminal.executables.insert(
+            profile.to_string(),
+            ExecutableArtifact {
+                file: FileArtifact::capture(path)?,
+                rustc_action_identity: action.identity().to_string(),
+            },
+        );
         self.last_used_unix_ms = unix_time_ms();
         Ok(())
+    }
+
+    /// Reuse a presentation-only source map without changing generated-Rust
+    /// identity. Returns false when no valid map bytes are available.
+    pub fn reuse_sourcemap(&mut self, destination: &Path) -> Result<bool, std::io::Error> {
+        let Some(current) = self.sourcemap.as_ref() else {
+            return Ok(false);
+        };
+        if !current.is_current() {
+            return Ok(false);
+        }
+        let destination = normalized_path(destination)
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        if current.path == destination {
+            return Ok(true);
+        }
+        let bytes = std::fs::read(&current.path)?;
+        let parent = Path::new(&destination)
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        std::fs::create_dir_all(parent)?;
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+        use std::io::Write as _;
+        temporary.write_all(&bytes)?;
+        temporary.as_file_mut().sync_all()?;
+        temporary
+            .persist(&destination)
+            .map_err(|error| error.error)?;
+        self.sourcemap = Some(
+            FileArtifact::capture(Path::new(&destination))
+                .map_err(|error| std::io::Error::other(error.to_string()))?,
+        );
+        self.last_used_unix_ms = unix_time_ms();
+        Ok(true)
     }
 
     pub fn save(&self, output_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -333,6 +421,21 @@ impl CliCacheManifest {
         Ok(())
     }
 
+    pub fn save_terminal(&self, output_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let Some(terminal) = &self.terminal else {
+            return Ok(());
+        };
+        std::fs::create_dir_all(output_dir)?;
+        let mut temp = tempfile::NamedTempFile::new_in(output_dir)?;
+        serde_json::to_writer_pretty(temp.as_file_mut(), terminal)?;
+        use std::io::Write as _;
+        temp.as_file_mut().write_all(b"\n")?;
+        temp.as_file_mut().sync_all()?;
+        temp.persist(output_dir.join(TERMINAL_MANIFEST_FILENAME))
+            .map_err(|error| error.error)?;
+        Ok(())
+    }
+
     #[cfg(test)]
     fn with_last_used(mut self, last_used_unix_ms: u64) -> Self {
         self.last_used_unix_ms = last_used_unix_ms;
@@ -340,39 +443,47 @@ impl CliCacheManifest {
     }
 }
 
-pub fn generated_file_hashes(
-    output: &gors::printer::GeneratedOutput,
-    runtime: &RuntimeLinkOutput,
-) -> Result<BTreeMap<String, String>, serde_json::Error> {
-    let mut hashes: BTreeMap<_, _> = output
+impl TerminalState {
+    fn load_if_valid(
+        output_dir: &Path,
+        generated_identity: &str,
+        generated_dependency: &gors_runtime_abi::RuntimeDependency,
+    ) -> Option<Self> {
+        let content = std::fs::read(output_dir.join(TERMINAL_MANIFEST_FILENAME)).ok()?;
+        let terminal: Self = serde_json::from_slice(&content).ok()?;
+        let selected_dependency = terminal.runtime.reconstruct_dependency().ok()?;
+        if terminal.version != TERMINAL_MANIFEST_VERSION
+            || terminal.generated_identity != generated_identity
+            || &selected_dependency != generated_dependency
+            || !Path::new(&terminal.rustc_path).is_absolute()
+            || !is_sha256(&terminal.rustc_snapshot_identity)
+        {
+            return None;
+        }
+        Some(terminal)
+    }
+}
+
+pub fn generated_file_hashes(output: &gors::printer::GeneratedOutput) -> BTreeMap<String, String> {
+    output
         .files
         .iter()
         .map(|(filename, source)| (filename.clone(), sha2_hash(source.as_bytes())))
-        .collect();
-    hashes.insert(
-        LINK_OUTPUT_FILENAME.to_string(),
-        sha2_hash(runtime.json()?.as_bytes()),
-    );
-    Ok(hashes)
+        .collect()
 }
 
-/// Publish a newly selected provider for an otherwise reusable generated-Rust
-/// cache entry. A crash between the two atomic manifests leaves a mismatch,
-/// which is deliberately treated as a cache miss on the next invocation.
+/// Publish a newly selected terminal provider without changing the reusable
+/// target-neutral generated-Rust product.
 pub fn refresh_runtime_selection(
     output_dir: &Path,
     manifest: &mut CliCacheManifest,
     runtime: &RuntimeLinkOutput,
+    rustc_path: &Path,
+    rustc_snapshot_identity: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut generated = GeneratedOutputManifest::load(output_dir)
-        .ok_or("generated-output manifest disappeared during runtime reselection")?;
-    let link_hash = crate::output::write_runtime_link_locked(runtime, output_dir)?;
-    generated.refresh_runtime(runtime.link().clone());
-    generated.record(LINK_OUTPUT_FILENAME.to_string(), link_hash.clone());
-    generated.save(output_dir)?;
-    manifest.refresh_runtime(runtime.link().clone());
-    manifest.record_generated_file(LINK_OUTPUT_FILENAME, link_hash);
-    manifest.save(output_dir)
+    crate::output::write_runtime_link_locked(runtime, output_dir)?;
+    manifest.refresh_runtime(runtime, rustc_path, rustc_snapshot_identity)?;
+    manifest.save_terminal(output_dir)
 }
 
 pub fn maybe_prune_cli_cache(
@@ -514,121 +625,6 @@ fn generated_files_are_current(output_dir: &Path, expected: &BTreeMap<String, St
     actual_rust_files == expected_rust_files
 }
 
-fn module_context(source_path: &Path) -> Result<String, Box<dyn std::error::Error>> {
-    let mut directory = if source_path.is_dir() {
-        source_path.to_path_buf()
-    } else {
-        source_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .to_path_buf()
-    };
-    if directory.is_relative() {
-        directory = std::env::current_dir()?.join(directory);
-    }
-    loop {
-        let go_mod = directory.join("go.mod");
-        if go_mod.is_file() {
-            return Ok(format!(
-                "{}:{}",
-                normalized_path(&go_mod)?,
-                file_hash(&go_mod)?
-            ));
-        }
-        if !directory.pop() {
-            return Ok("no-go-mod".to_string());
-        }
-    }
-}
-
-fn hash_gorspath(hasher: &mut Sha256, gorspath: Option<&OsStr>) {
-    hash_part(hasher, b"gorspath");
-    let Some(gorspath) = gorspath else {
-        hash_part(hasher, b"unset");
-        return;
-    };
-
-    hash_part(hasher, b"set");
-    hash_os_part(hasher, gorspath);
-    for (index, root) in std::env::split_paths(gorspath).enumerate() {
-        hash_part(
-            hasher,
-            &u64::try_from(index).unwrap_or(u64::MAX).to_le_bytes(),
-        );
-        hash_gorspath_root(hasher, &root);
-    }
-}
-
-fn hash_gorspath_root(hasher: &mut Sha256, root: &Path) {
-    hash_part(hasher, b"root");
-    hash_os_part(hasher, root.as_os_str());
-    if root.as_os_str().is_empty() {
-        hash_part(hasher, b"empty");
-        return;
-    }
-
-    let absolute = if root.is_absolute() {
-        root.to_path_buf()
-    } else {
-        match std::env::current_dir() {
-            Ok(current_dir) => current_dir.join(root),
-            Err(error) => {
-                hash_io_error(hasher, b"current-directory-error", root, &error);
-                return;
-            }
-        }
-    };
-    let canonical = match std::fs::canonicalize(&absolute) {
-        Ok(canonical) => canonical,
-        Err(error) => {
-            hash_io_error(hasher, b"missing-or-inaccessible-root", &absolute, &error);
-            return;
-        }
-    };
-    hash_part(hasher, b"canonical");
-    hash_os_part(hasher, canonical.as_os_str());
-
-    if canonical.is_file() {
-        hash_part(hasher, b"file");
-    } else if canonical.is_dir() {
-        // GORSPATH config identity belongs in the pre-parse lookup key. Exact
-        // selected source contents and eligible directory membership come from
-        // the one InputSnapshot captured before cache comparison. Recursively
-        // reading every possible Go file here would make source admission
-        // O(the entire search tree).
-        hash_part(hasher, b"directory");
-    } else {
-        hash_part(hasher, b"unsupported-root-kind");
-    }
-}
-
-fn hash_io_error(hasher: &mut Sha256, marker: &[u8], path: &Path, error: &std::io::Error) {
-    hash_part(hasher, marker);
-    hash_os_part(hasher, path.as_os_str());
-    hash_part(hasher, format!("{:?}", error.kind()).as_bytes());
-}
-
-#[cfg(unix)]
-fn hash_os_part(hasher: &mut Sha256, part: &OsStr) {
-    use std::os::unix::ffi::OsStrExt as _;
-    hash_part(hasher, part.as_bytes());
-}
-
-#[cfg(windows)]
-fn hash_os_part(hasher: &mut Sha256, part: &OsStr) {
-    use std::os::windows::ffi::OsStrExt as _;
-    let bytes = part
-        .encode_wide()
-        .flat_map(u16::to_le_bytes)
-        .collect::<Vec<_>>();
-    hash_part(hasher, &bytes);
-}
-
-#[cfg(not(any(unix, windows)))]
-fn hash_os_part(hasher: &mut Sha256, part: &OsStr) {
-    hash_part(hasher, part.to_string_lossy().as_bytes());
-}
-
 fn normalized_path(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
     if let Ok(canonical) = std::fs::canonicalize(path) {
         return Ok(canonical.to_string_lossy().into_owned());
@@ -666,9 +662,11 @@ fn sha2_hash(content: &[u8]) -> String {
     hex_digest(hasher.finalize())
 }
 
-fn hash_part(hasher: &mut Sha256, part: &[u8]) {
-    hasher.update(part.len().to_le_bytes());
-    hasher.update(part);
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn hex_digest(digest: impl AsRef<[u8]>) -> String {

@@ -77,7 +77,7 @@ pub fn write_generated_output_locked(
     runtime: &RuntimeLinkOutput,
 ) -> Result<FileWriteStats, Box<dyn std::error::Error>> {
     let previous_manifest = GeneratedOutputManifest::load(output_dir);
-    let mut new_manifest = GeneratedOutputManifest::new(runtime.link().clone());
+    let mut new_manifest = GeneratedOutputManifest::new(&output.runtime);
     let mut stats = FileWriteStats {
         written: 0,
         skipped: 0,
@@ -85,16 +85,7 @@ pub fn write_generated_output_locked(
     };
     let mut pending_writes = Vec::new();
 
-    let runtime_source = runtime.json()?;
-    let generated_sources = output
-        .files
-        .iter()
-        .map(|(filename, source)| (filename.as_str(), source.as_str()))
-        .chain(std::iter::once((
-            LINK_OUTPUT_FILENAME,
-            runtime_source.as_str(),
-        )));
-    for (filename, source) in generated_sources {
+    for (filename, source) in &output.files {
         let file_path = output_dir.join(filename);
         let current_hash = sha2_hash(source);
         let unchanged = previous_manifest
@@ -109,7 +100,7 @@ pub fn write_generated_output_locked(
             stats.written += 1;
         }
 
-        new_manifest.record(filename.to_string(), current_hash);
+        new_manifest.record(filename.clone(), current_hash);
     }
 
     // Publish leaf modules before the coordinator files that reference them.
@@ -122,7 +113,7 @@ pub fn write_generated_output_locked(
 
     if let Some(previous_manifest) = &previous_manifest {
         for (filename, output_file) in previous_manifest.files() {
-            if output.files.contains_key(filename) || filename == LINK_OUTPUT_FILENAME {
+            if output.files.contains_key(filename) {
                 continue;
             }
             let file_path = output_dir.join(output_file);
@@ -143,6 +134,11 @@ pub fn write_generated_output_locked(
         stats.removed += 1;
     }
 
+    if write_runtime_link_locked(runtime, output_dir)? {
+        stats.written += 1;
+    } else {
+        stats.skipped += 1;
+    }
     new_manifest.save(output_dir)?;
     Ok(stats)
 }
@@ -174,15 +170,16 @@ pub fn write_source_map(
 pub fn write_runtime_link_locked(
     runtime: &RuntimeLinkOutput,
     output_dir: &Path,
-) -> Result<String, Box<dyn std::error::Error>> {
+) -> Result<bool, Box<dyn std::error::Error>> {
     let source = runtime.json()?;
     let path = output_dir.join(LINK_OUTPUT_FILENAME);
-    if std::fs::read(&path).ok().as_deref() != Some(source.as_bytes()) {
-        prepare_atomic_write(&path, &source)?
-            .persist(path)
-            .map_err(|error| error.error)?;
+    if std::fs::read(&path).ok().as_deref() == Some(source.as_bytes()) {
+        return Ok(false);
     }
-    Ok(sha2_hash(&source))
+    prepare_atomic_write(&path, &source)?
+        .persist(path)
+        .map_err(|error| error.error)?;
+    Ok(true)
 }
 
 fn sha2_hash(content: &str) -> String {
