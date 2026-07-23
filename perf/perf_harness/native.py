@@ -18,8 +18,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .runtime_link import (
+    LINK_DESCRIPTOR_SCHEMA_VERSION,
+    RUNTIME_LINK_VALIDATION,
+    canonical_rustc_release_record,
+    canonical_target_libdir_record,
+    expand_rustc_runtime_link,
+    gors_runtime_contract_identity,
+    rust_runtime_compatibility_identity,
+    validate_runtime_link_descriptor,
+)
 
-ARTIFACT_DRIVER = "bootstrap-generated-rust-v1"
+
+ARTIFACT_DRIVER = "bootstrap-generated-rust-v3"
 ARTIFACT_DRIVER_PRODUCTION = False
 GORS_TIMING_REPORT_VERSION = 5
 GORS_BUILD_CACHE_HIT_PHASES = (
@@ -46,6 +57,13 @@ class Toolchains:
     go_version: str
     rustc_version: str
     rust_target: str
+    rust_pointer_width: int
+    rust_endianness: str
+    runtime_contract_identity: str
+    rustc_target_libdir: Path
+    rustc_release_record_sha256: str
+    target_libdir_record_sha256: str
+    runtime_compatibility_identity: str
     linker_path: str | None
     linker_version: str | None
     linker_sha256: str | None
@@ -64,6 +82,21 @@ def command_output(args: list[str], *, cwd: Path) -> str:
         stderr = completed.stderr.decode(errors="replace").strip()
         raise RuntimeError(f"command failed ({completed.returncode}): {' '.join(args)}\n{stderr}")
     return completed.stdout.decode(errors="replace").strip()
+
+
+def command_bytes(args: list[str], *, cwd: Path) -> bytes:
+    completed = subprocess.run(
+        args,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        timeout=120,
+    )
+    if completed.returncode != 0:
+        stderr = completed.stderr.decode(errors="replace").strip()
+        raise RuntimeError(f"command failed ({completed.returncode}): {' '.join(args)}\n{stderr}")
+    return completed.stdout
 
 
 def host_go_platform() -> tuple[str, str]:
@@ -142,7 +175,11 @@ def discover_toolchains(
         raise RuntimeError(
             f"Go version mismatch: expected {go_version_pin}, got {go_version_output}"
         )
-    rustc_verbose = command_output([str(rustc), "-vV"], cwd=root)
+    rustc_verbose_bytes = command_bytes([str(rustc), "-vV"], cwd=root)
+    try:
+        rustc_verbose = rustc_verbose_bytes.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise RuntimeError("pinned rustc -vV output is not UTF-8") from error
     rust_release = next(
         (
             line.removeprefix("release: ")
@@ -159,8 +196,37 @@ def discover_toolchains(
         ),
         "unknown",
     )
+    if rust_target == "unknown":
+        raise RuntimeError("pinned rustc -vV output has no host target")
     if rust_release != rust_channel:
         raise RuntimeError(f"Rust version mismatch: expected {rust_channel}, got {rust_release}")
+    rust_cfg = command_output(
+        [str(rustc), "--print", "cfg", "--target", rust_target], cwd=root
+    )
+    pointer_match = re.search(r'^target_pointer_width="(\d+)"$', rust_cfg, re.MULTILINE)
+    endian_match = re.search(r'^target_endian="(little|big)"$', rust_cfg, re.MULTILINE)
+    if pointer_match is None or endian_match is None:
+        raise RuntimeError("pinned rustc target cfg lacks pointer-width or endianness facts")
+    rust_pointer_width = int(pointer_match.group(1))
+    rust_endianness = endian_match.group(1)
+    target_libdir_value = command_output(
+        [str(rustc), "--target", rust_target, "--print", "target-libdir"], cwd=root
+    )
+    rustc_target_libdir = Path(target_libdir_value)
+    if not rustc_target_libdir.is_absolute() or not rustc_target_libdir.is_dir():
+        raise RuntimeError(
+            "pinned rustc returned an invalid target-libdir: "
+            f"{rustc_target_libdir}"
+        )
+    rustc_release_record = canonical_rustc_release_record(rustc_verbose_bytes)
+    target_libdir_record = canonical_target_libdir_record(rustc_target_libdir)
+    runtime_compatibility_identity = rust_runtime_compatibility_identity(
+        rustc_verbose_bytes,
+        target_libdir_record,
+        target_triple=rust_target,
+        target_pointer_width=rust_pointer_width,
+        target_endianness=rust_endianness,
+    )
     linker = shutil.which("cc")
     linker_version = None
     linker_sha256 = None
@@ -180,6 +246,13 @@ def discover_toolchains(
         go_version=go_version_output,
         rustc_version=rustc_verbose,
         rust_target=rust_target,
+        rust_pointer_width=rust_pointer_width,
+        rust_endianness=rust_endianness,
+        runtime_contract_identity=gors_runtime_contract_identity(gors_version),
+        rustc_target_libdir=rustc_target_libdir,
+        rustc_release_record_sha256=hashlib.sha256(rustc_release_record).hexdigest(),
+        target_libdir_record_sha256=hashlib.sha256(target_libdir_record).hexdigest(),
+        runtime_compatibility_identity=runtime_compatibility_identity,
         linker_path=linker,
         linker_version=linker_version,
         linker_sha256=linker_sha256,
@@ -318,11 +391,38 @@ def _measurement_worker(plan: dict[str, Any], sender: Any) -> None:
     try:
         usage_before = resource.getrusage(resource.RUSAGE_CHILDREN)
         commands: list[dict[str, Any]] = []
+        runtime_link_evidence = None
         started = time.perf_counter_ns()
         for command in plan["commands"]:
             stage_started = time.perf_counter_ns()
+            argv = list(command["argv"])
+            command_runtime_link = None
+            if runtime_link := command.get("runtimeLink"):
+                if runtime_link_evidence is not None:
+                    raise RuntimeError("measurement plan contains multiple runtime link descriptors")
+                command_runtime_link = validate_runtime_link_descriptor(
+                    Path(runtime_link["descriptorPath"]),
+                    expected_contract_identity=runtime_link["expectedContractIdentity"],
+                    expected_target_triple=runtime_link["expectedTargetTriple"],
+                    expected_target_pointer_width=runtime_link[
+                        "expectedTargetPointerWidth"
+                    ],
+                    expected_target_endianness=runtime_link["expectedTargetEndianness"],
+                    expected_compatibility_identity=runtime_link[
+                        "expectedCompatibilityIdentity"
+                    ],
+                    expected_rustc_release_record_sha256=runtime_link[
+                        "expectedRustcReleaseRecordSha256"
+                    ],
+                    expected_target_libdir_record_sha256=runtime_link[
+                        "expectedTargetLibdirRecordSha256"
+                    ],
+                    expected_runtime_cache_root=Path(runtime_link["runtimeCacheRoot"]),
+                )
+                argv = expand_rustc_runtime_link(argv, command_runtime_link)
+                runtime_link_evidence = command_runtime_link
             completed = subprocess.run(
-                command["argv"],
+                argv,
                 cwd=command["cwd"],
                 env=command["env"],
                 stdout=subprocess.PIPE,
@@ -334,18 +434,23 @@ def _measurement_worker(plan: dict[str, Any], sender: Any) -> None:
             commands.append(
                 {
                     "stage": command["stage"],
-                    "argv": command["argv"],
+                    "argv": argv,
                     "cwd": command["cwd"],
                     "environment": command["env"],
                     "durationNs": stage_ended - stage_started,
                     "exitCode": completed.returncode,
                     "stdoutBase64": base64.b64encode(completed.stdout).decode(),
                     "stderrBase64": base64.b64encode(completed.stderr).decode(),
+                    "runtimeLink": command_runtime_link,
                 }
             )
             if completed.returncode != 0:
                 stderr = completed.stderr.decode(errors="replace")[-4000:]
                 raise RuntimeError(f"{command['stage']} failed: {stderr}")
+        if plan.get("runtimeLinkRequired") and runtime_link_evidence is None:
+            raise RuntimeError("measurement plan did not admit a runtime link descriptor")
+        if not plan.get("runtimeLinkRequired") and runtime_link_evidence is not None:
+            raise RuntimeError("measurement plan admitted an unexpected runtime link descriptor")
         os.replace(plan["pendingArtifact"], plan["artifact"])
         ended = time.perf_counter_ns()
         usage_after = resource.getrusage(resource.RUSAGE_CHILDREN)
@@ -378,6 +483,7 @@ def _measurement_worker(plan: dict[str, Any], sender: Any) -> None:
                     "artifactBytes": Path(plan["artifact"]).stat().st_size,
                     "commands": commands,
                     "internalTimings": timings,
+                    "runtimeLink": runtime_link_evidence,
                 },
             }
         )
@@ -522,6 +628,23 @@ def pipeline_plan(
                 "argv": [str(toolchains.rustc), *rustc_arguments(generated / "main.rs", pending)],
                 "cwd": str(side_root),
                 "env": environment,
+                "runtimeLink": {
+                    "descriptorPath": str(generated / ".gors-link.json"),
+                    "expectedContractIdentity": toolchains.runtime_contract_identity,
+                    "expectedTargetTriple": toolchains.rust_target,
+                    "expectedTargetPointerWidth": toolchains.rust_pointer_width,
+                    "expectedTargetEndianness": toolchains.rust_endianness,
+                    "expectedCompatibilityIdentity": (
+                        toolchains.runtime_compatibility_identity
+                    ),
+                    "expectedRustcReleaseRecordSha256": (
+                        toolchains.rustc_release_record_sha256
+                    ),
+                    "expectedTargetLibdirRecordSha256": (
+                        toolchains.target_libdir_record_sha256
+                    ),
+                    "runtimeCacheRoot": str(cache / "gors" / "runtime"),
+                },
             },
         ]
         return {
@@ -530,6 +653,9 @@ def pipeline_plan(
             "artifact": str(artifact),
             "gorsTimings": str(timings),
             "jobBudget": job_budget,
+            "runtimeLinkRequired": True,
+            "runtimeLinkDescriptorSchema": LINK_DESCRIPTOR_SCHEMA_VERSION,
+            "runtimeLinkValidation": RUNTIME_LINK_VALIDATION,
         }, artifact
     if compiler == "go":
         cache = side_root / "gocache"
@@ -569,5 +695,6 @@ def pipeline_plan(
             ],
             "pendingArtifact": str(pending),
             "artifact": str(artifact),
+            "runtimeLinkRequired": False,
         }, artifact
     raise ValueError(f"unknown compiler {compiler}")

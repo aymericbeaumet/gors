@@ -67,6 +67,9 @@ fn generated_source(source: String) -> String {
 #[derive(Clone)]
 pub struct GeneratedOutput {
     pub files: std::collections::BTreeMap<String, String>,
+    /// Runtime provider requirement that must be validated and linked with
+    /// every generated artifact, even when no runtime operation was selected.
+    pub runtime: gors_runtime_abi::RuntimeDependency,
 }
 
 fn main_wrapper_module_name(dependency_mods: &[&str]) -> String {
@@ -81,26 +84,23 @@ pub fn generate_multi(
     program: crate::compiler::CompiledProgram,
 ) -> Result<GeneratedOutput, Box<dyn std::error::Error>> {
     let timer = ProfileTimer::start("printer.formatting");
+    let crate::compiler::CompiledProgram {
+        entry,
+        modules,
+        runtime,
+    } = program;
     let mut files = std::collections::BTreeMap::new();
     let mut module_sources = std::collections::BTreeMap::new();
 
-    if program
-        .modules
-        .contains_key(crate::artifact::RUNTIME_MODULE_NAME)
-    {
+    if modules.contains_key(crate::artifact::RUNTIME_CRATE_NAME) {
         return Err(std::io::Error::other(format!(
-            "generated module name {} is reserved for the runtime ABI",
-            crate::artifact::RUNTIME_MODULE_NAME
+            "generated module name {} is reserved for the external runtime crate",
+            crate::artifact::RUNTIME_CRATE_NAME
         ))
         .into());
     }
 
-    module_sources.insert(
-        crate::artifact::RUNTIME_MODULE_NAME.to_string(),
-        generated_source(crate::artifact::RUNTIME_SOURCE.to_string()),
-    );
-
-    for (module_name, file) in &program.modules {
+    for (module_name, file) in &modules {
         module_sources.insert(
             module_name.clone(),
             generated_source(generate(file.clone())?),
@@ -114,62 +114,69 @@ pub fn generate_multi(
         files.insert(format!("{module_name}.rs"), source);
     }
 
-    files.insert(
-        "lib.rs".to_string(),
-        generated_source(mod_decls.join("\n") + "\n"),
-    );
+    if !modules.is_empty() {
+        files.insert(
+            "lib.rs".to_string(),
+            generated_source(mod_decls.join("\n") + "\n"),
+        );
+    }
 
     let mut main_parts = Vec::new();
-    let dependency_mods = std::iter::once(crate::artifact::RUNTIME_MODULE_NAME)
-        .chain(program.modules.keys().map(String::as_str))
-        .collect::<Vec<_>>();
-    let wrapper_mod = main_wrapper_module_name(&dependency_mods);
-    main_parts.push(format!(
-        "#[path = \"lib.rs\"]\nmod {wrapper_mod};\nuse {wrapper_mod}::*;",
-    ));
-    main_parts.push(generate(program.entry)?);
+    if !modules.is_empty() {
+        let dependency_mods = modules.keys().map(String::as_str).collect::<Vec<_>>();
+        let wrapper_mod = main_wrapper_module_name(&dependency_mods);
+        main_parts.push(format!(
+            "#[path = \"lib.rs\"]\nmod {wrapper_mod};\nuse {wrapper_mod}::*;",
+        ));
+    }
+    main_parts.push(generate(entry)?);
     files.insert(
         "main.rs".to_string(),
         generated_source(main_parts.join("\n\n") + "\n"),
     );
 
     drop(timer);
-    Ok(GeneratedOutput { files })
+    Ok(GeneratedOutput { files, runtime })
 }
 
 /// Generate a single Rust source file from a compiled program.
 ///
 /// The entry unit is emitted first. Dependency modules follow in deterministic
-/// module-name order as inline `mod` blocks.
+/// module-name order as inline `mod` blocks. The returned output container
+/// retains the unconditional external runtime dependency beside `main.rs`.
 pub fn generate_single(
     program: crate::compiler::CompiledProgram,
-) -> Result<String, Box<dyn std::error::Error>> {
-    if program
-        .modules
-        .contains_key(crate::artifact::RUNTIME_MODULE_NAME)
-    {
+) -> Result<GeneratedOutput, Box<dyn std::error::Error>> {
+    let crate::compiler::CompiledProgram {
+        entry,
+        modules,
+        runtime,
+    } = program;
+    if modules.contains_key(crate::artifact::RUNTIME_CRATE_NAME) {
         return Err(std::io::Error::other(format!(
-            "generated module name {} is reserved for the runtime ABI",
-            crate::artifact::RUNTIME_MODULE_NAME
+            "generated module name {} is reserved for the external runtime crate",
+            crate::artifact::RUNTIME_CRATE_NAME
         ))
         .into());
     }
     let mut parts: Vec<String> = Vec::new();
 
-    parts.push(generate(program.entry)?);
-    parts.push(format!(
-        "mod {} {{\n{}}}",
-        crate::artifact::RUNTIME_MODULE_NAME,
-        indent_block(crate::artifact::RUNTIME_SOURCE)
-    ));
+    parts.push(generate(entry)?);
 
     // Dependency modules follow in deterministic module-name order.
-    for (module_name, file) in program.modules {
+    for (module_name, file) in modules {
         let body = generate(file)?;
         parts.push(format!("mod {module_name} {{\n{}}}", indent_block(&body)));
     }
 
-    Ok(generated_source(parts.join("\n\n") + "\n"))
+    Ok(GeneratedOutput {
+        files: std::iter::once((
+            "main.rs".to_string(),
+            generated_source(parts.join("\n\n") + "\n"),
+        ))
+        .collect(),
+        runtime,
+    })
 }
 
 fn indent_block(source: &str) -> String {
@@ -190,6 +197,8 @@ mod tests {
     use std::collections::BTreeMap;
     use std::process::Command;
 
+    use gors_runtime_abi::{RuntimeAbiManifest, RuntimeDependency, RuntimeRequirement};
+
     use crate::compiler::input::{
         PackageInputManifest, PackageKey, ProgramInput, SourceFileInput, WorkspaceKey,
     };
@@ -206,14 +215,24 @@ mod tests {
         .unwrap()
     }
 
+    fn empty_runtime_dependency() -> RuntimeDependency {
+        let contract = RuntimeAbiManifest::current();
+        RuntimeDependency::new(&contract, RuntimeRequirement::default()).unwrap()
+    }
+
+    fn main_source(output: &super::GeneratedOutput) -> &str {
+        output.files.get("main.rs").unwrap()
+    }
+
     #[test]
     fn source_map_plan_maps_terminal_output() {
         let go_source = "package main\n\nfunc main() {}\n";
         let (compiled, source_map_plan) =
             crate::compiler::compile_program_with_source_map(program("test.go", go_source))
                 .unwrap();
-        let rust_source = super::generate_single(compiled).unwrap();
-        let source_map = source_map_plan.build(&rust_source);
+        let output = super::generate_single(compiled).unwrap();
+        let rust_source = main_source(&output);
+        let source_map = source_map_plan.build(rust_source);
 
         assert!(rust_source.contains("fn main"), "{rust_source}");
         assert!(source_map.get_token_count() > 0);
@@ -258,12 +277,15 @@ mod tests {
                 pub fn PublicAlpha() {}
             },
         );
+        let runtime = empty_runtime_dependency();
         let program = crate::compiler::CompiledProgram {
             entry: syn::parse_quote! { pub fn main() {} },
             modules,
+            runtime: runtime.clone(),
         };
 
         let multi = super::generate_multi(program.clone()).unwrap();
+        assert_eq!(multi.runtime, runtime);
         let lib_rs = multi.files.get("lib.rs").unwrap();
         assert!(lib_rs.find("pub mod alpha;").unwrap() < lib_rs.find("pub mod zeta;").unwrap());
         let alpha_rs = multi.files.get("alpha.rs").unwrap();
@@ -273,6 +295,8 @@ mod tests {
         );
 
         let single = super::generate_single(program).unwrap();
+        assert_eq!(single.runtime, runtime);
+        let single = main_source(&single);
         assert!(single.find("mod alpha").unwrap() < single.find("mod zeta").unwrap());
     }
 
@@ -288,58 +312,98 @@ mod tests {
         let program = crate::compiler::CompiledProgram {
             entry: syn::parse_quote! { pub fn main() {} },
             modules,
+            runtime: empty_runtime_dependency(),
         };
         let output = super::generate_multi(program).unwrap();
         let expected_prefix = format!("{}{}\n\n", super::GENERATED_HEADER, super::GENERATED_LINTS);
 
+        assert!(!output.files.contains_key("__gors_runtime.rs"));
         for (filename, source) in &output.files {
             assert!(
                 source.starts_with(&expected_prefix),
                 "{filename} should start with the generated header and lint prelude"
             );
-            if filename == "__gors_runtime.rs" {
-                assert!(source.contains("allow(dead_code)"));
-            } else {
-                assert!(
-                    !source.contains("allow(dead_code)"),
-                    "{filename} should keep dead-code denial enabled"
-                );
-            }
+            assert!(
+                !source.contains("allow(dead_code)"),
+                "{filename} should keep dead-code denial enabled"
+            );
         }
+    }
+
+    #[test]
+    fn external_runtime_crate_name_is_reserved() {
+        let program = crate::compiler::CompiledProgram {
+            entry: syn::parse_quote! { pub fn main() {} },
+            modules: std::iter::once((
+                crate::artifact::RUNTIME_CRATE_NAME.to_string(),
+                syn::parse_quote! { pub fn counterfeit_runtime() {} },
+            ))
+            .collect(),
+            runtime: empty_runtime_dependency(),
+        };
+
+        let multi = super::generate_multi(program.clone())
+            .err()
+            .expect("multi-file output rejects a local runtime module");
+        let single = super::generate_single(program)
+            .err()
+            .expect("single-file output rejects a local runtime module");
+
+        assert!(multi.to_string().contains("external runtime crate"));
+        assert!(single.to_string().contains("external runtime crate"));
     }
 
     #[test]
     fn runtime_program_compiles_in_multi_and_single_layouts() {
         let source = "package main\nfunc join(left string, right string) string { return left + right }\nfunc main() { println(join(\"\\xff\", \"\\x00\")) }\n";
         let compiled = crate::compiler::compile_program(program("main.go", source)).unwrap();
+        let runtime = compiled.runtime.clone();
         let temporary = tempfile::tempdir().unwrap();
         let expected = [0xff, 0, b'\n'];
+        let runtime_path = crate::artifact::embedded_runtime_artifact()
+            .materialize(&temporary.path().join("runtime-cache"))
+            .unwrap();
 
         let multi_dir = temporary.path().join("multi");
         std::fs::create_dir(&multi_dir).unwrap();
-        for (filename, source) in super::generate_multi(compiled.clone()).unwrap().files {
+        let multi = super::generate_multi(compiled.clone()).unwrap();
+        assert_eq!(multi.runtime, runtime);
+        assert!(!multi.files.contains_key("__gors_runtime.rs"));
+        assert!(!multi.files.contains_key("lib.rs"));
+        for (filename, source) in multi.files {
             std::fs::write(multi_dir.join(filename), source).unwrap();
         }
         compile_and_assert_output(
             &multi_dir.join("main.rs"),
             &multi_dir.join("main"),
             &expected,
+            &runtime_path,
         );
 
-        let single_source = super::generate_single(compiled).unwrap();
+        let single = super::generate_single(compiled).unwrap();
+        assert_eq!(single.runtime, runtime);
+        let single_source = main_source(&single);
         let single_path = temporary.path().join("single.rs");
         let single_binary = temporary.path().join("single");
         std::fs::write(&single_path, single_source).unwrap();
-        compile_and_assert_output(&single_path, &single_binary, &expected);
+        compile_and_assert_output(&single_path, &single_binary, &expected, &runtime_path);
     }
 
     fn compile_and_assert_output(
         source: &std::path::Path,
         binary: &std::path::Path,
         expected_stderr: &[u8],
+        runtime_path: &std::path::Path,
     ) {
-        let compilation = Command::new("rustc")
+        let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+        let compilation = Command::new(rustc)
             .arg("--edition=2024")
+            .arg("--extern")
+            .arg(format!(
+                "{}={}",
+                crate::artifact::RUNTIME_CRATE_NAME,
+                runtime_path.display()
+            ))
             .arg(source)
             .arg("-o")
             .arg(binary)

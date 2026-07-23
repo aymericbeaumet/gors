@@ -319,8 +319,9 @@ fn emit_primitive_op(operation: PrimitiveOp, args: &[syn::Expr]) -> Result<syn::
 }
 
 fn emit_runtime_call(operation: RuntimeOp, args: Vec<syn::Expr>) -> syn::Expr {
+    let runtime_crate = syn::Ident::new(crate::artifact::RUNTIME_CRATE_NAME, Span::mixed_site());
     let symbol = syn::Ident::new(operation.symbol(), Span::mixed_site());
-    syn::parse_quote! { crate::__gors_runtime::#symbol(#(#args),*) }
+    syn::parse_quote! { ::#runtime_crate::#symbol(#(#args),*) }
 }
 
 fn emit_operand(operand: &Operand, function: &rust_ir::Function) -> Result<syn::Expr, Diagnostic> {
@@ -405,10 +406,11 @@ fn emit_return_type(results: &[RustType]) -> Result<syn::ReturnType, Diagnostic>
 }
 
 fn emit_type(ty: &RustType) -> Result<syn::Type, Diagnostic> {
+    let runtime_crate = syn::Ident::new(crate::artifact::RUNTIME_CRATE_NAME, Span::mixed_site());
     Ok(match ty {
         RustType::Unit => syn::parse_quote! { () },
         RustType::Bool => syn::parse_quote! { bool },
-        RustType::GoString => syn::parse_quote! { crate::__gors_runtime::GoString },
+        RustType::GoString => syn::parse_quote! { ::#runtime_crate::GoString },
         RustType::I64 => syn::parse_quote! { i64 },
     })
 }

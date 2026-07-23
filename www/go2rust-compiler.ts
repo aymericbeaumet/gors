@@ -6,11 +6,16 @@ import type {
 	CompilerStatus,
 	WorkerResponse,
 } from "./go2rust-protocol";
+import {
+	admitRuntimeDependency,
+	type RuntimeDependency,
+} from "./runtime-dependency";
 
 export type CompileResult =
 	| {
 			success: true;
 			rustCode: string;
+			runtimeDependency: RuntimeDependency;
 			sourceMap: SourceMapIndex;
 			error: null;
 			durationMs: number;
@@ -21,6 +26,7 @@ export type CompileResult =
 	| {
 			success: false;
 			rustCode: "";
+			runtimeDependency: null;
 			sourceMap: null;
 			error: CompilerError;
 			durationMs: number;
@@ -234,6 +240,14 @@ export class Go2RustCompiler {
 					]
 				: [...data.timings];
 		if (!data.result.success) {
+			if (data.result.runtimeDependency !== null) {
+				pending.reject(
+					new Error(
+						"compiler worker error result carried a runtime dependency",
+					),
+				);
+				return;
+			}
 			pending.resolve({
 				...data.result,
 				durationMs: receivedAt - pending.startedAt,
@@ -244,6 +258,16 @@ export class Go2RustCompiler {
 			return;
 		}
 
+		let runtimeDependency: RuntimeDependency;
+		try {
+			runtimeDependency = admitRuntimeDependency(
+				data.result.runtimeDependency,
+				"compiler worker response",
+			);
+		} catch (error) {
+			pending.reject(error instanceof Error ? error : new Error(String(error)));
+			return;
+		}
 		const hydrationStartedAt = performance.now();
 		const sourceMap = new SourceMapIndex(
 			data.result.sourceMap,
@@ -264,6 +288,7 @@ export class Go2RustCompiler {
 		};
 		pending.resolve({
 			...data.result,
+			runtimeDependency,
 			sourceMap,
 			...metadata,
 		});

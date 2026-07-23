@@ -7,6 +7,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
+use gors_runtime_abi::{RuntimeAbiManifest, RuntimeDependency};
+
 use self::readiness::RustIrRoot;
 use super::db::{
     BuildConfig, CompilerDatabase, Fingerprint, PackageAnalysis, PackageIssue, ParseFailure,
@@ -156,6 +158,16 @@ impl CompilerSession {
             .database
             .verified_rust_ir_package(installed.main_package)
             .map_err(|error| self.query_error(error))?;
+        let runtime_contract = RuntimeAbiManifest::current();
+        let runtime = RuntimeDependency::new(
+            &runtime_contract,
+            rust_ir.runtime_requirement().clone(),
+        )
+        .map_err(|error| {
+            CompilerError::backend(format!(
+                "verified Rust IR selected an operation outside the current runtime contract: {error}"
+            ))
+        })?;
         let source_map = with_source_map
             .then(|| self.source_map_plan(&installed, &main_analysis, rust_ir.file()))
             .transpose()?;
@@ -164,6 +176,7 @@ impl CompilerSession {
             CompiledProgram {
                 entry,
                 modules: BTreeMap::new(),
+                runtime,
             },
             source_map,
         ))

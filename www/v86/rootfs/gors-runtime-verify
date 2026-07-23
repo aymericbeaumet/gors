@@ -1,0 +1,36 @@
+#!/bin/sh
+set -eu
+
+RUNTIME_DIR=/usr/local/share/gors/runtime
+EXPECTED_MANIFEST="${RUNTIME_DIR}/provider.json"
+TARGET_TRIPLE=$(cat "${RUNTIME_DIR}/target-triple")
+PAYLOAD="${RUNTIME_DIR}/lib__gors_runtime.rlib"
+PROVIDER_TOOL=/usr/local/libexec/gors-runtime-provider-manifest
+PRODUCER_IDENTITY=$(jq -er '.producer_identity' "${RUNTIME_DIR}/producer.json")
+TARGET_LIBDIR=$(rustc --target "$TARGET_TRIPLE" --print target-libdir)
+[ -d "$TARGET_LIBDIR" ] || {
+    printf '%s\n' 'runtime provider target rustlib directory is missing' >&2
+    exit 1
+}
+
+CURRENT_RUSTC=$(mktemp)
+CURRENT_MANIFEST=$(mktemp)
+cleanup() {
+    rm -f "$CURRENT_RUSTC" "$CURRENT_MANIFEST"
+}
+trap cleanup EXIT HUP INT TERM
+
+rustc -vV >"$CURRENT_RUSTC"
+"$PROVIDER_TOOL" \
+    "$PRODUCER_IDENTITY" \
+    "$CURRENT_RUSTC" \
+    "$TARGET_LIBDIR" \
+    "$TARGET_TRIPLE" \
+    32 \
+    little \
+    "$PAYLOAD" \
+    "$CURRENT_MANIFEST"
+if ! cmp -s "$EXPECTED_MANIFEST" "$CURRENT_MANIFEST"; then
+    printf '%s\n' 'runtime provider compiler, target sysroot, manifest, or payload identity is invalid' >&2
+    exit 1
+fi

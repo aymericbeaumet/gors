@@ -10,6 +10,10 @@ import {
 	type CompileResult,
 } from "../go2rust-compiler";
 import type { CompilerPhase, CompilerPhaseTiming } from "../go2rust-protocol";
+import {
+	admitRuntimeDependency,
+	type RuntimeDependency,
+} from "../runtime-dependency";
 import { RustRunner, State, type State as VmState } from "../rust-runner";
 import {
 	formatConsoleLine,
@@ -34,6 +38,7 @@ type PipelineStage = "idle" | "gors" | "rustc" | "main";
 interface PipelineCache {
 	goSource: string | null;
 	rustCode: string | null;
+	runtimeDependency: RuntimeDependency | null;
 	jobId: string | null;
 	compiled: boolean;
 }
@@ -107,7 +112,8 @@ $: if (active !== wasActive) {
 	if (active) layoutEditors();
 }
 $: pipelineBusy = activePipelines > 0;
-$: runDisabled = pipelineBusy || !cache.rustCode;
+$: runDisabled =
+	pipelineBusy || !cache.rustCode || cache.runtimeDependency === null;
 $: runButtonLabel =
 	pipelineStage === "gors"
 		? compilerPhase === "loading-wasm"
@@ -226,6 +232,7 @@ function clearRustHighlight() {
 let cache: PipelineCache = {
 	goSource: null,
 	rustCode: null,
+	runtimeDependency: null,
 	jobId: null,
 	compiled: false,
 };
@@ -329,10 +336,21 @@ async function doTranspile() {
 	const activeGoModel = goEditor.getModel();
 	if (!activeGoModel) return null;
 	const goCode = activeGoModel.getValue();
-	if (cache.goSource === goCode && cache.rustCode !== null)
+	if (cache.goSource === goCode && cache.rustCode !== null) {
+		cache.runtimeDependency = admitRuntimeDependency(
+			cache.runtimeDependency,
+			"playground transpile cache reuse",
+		);
 		return cache.rustCode;
+	}
 
-	cache = { goSource: null, rustCode: null, jobId: null, compiled: false };
+	cache = {
+		goSource: null,
+		rustCode: null,
+		runtimeDependency: null,
+		jobId: null,
+		compiled: false,
+	};
 	++pipelineGeneration;
 	const goModel = goEditor.getModel();
 	const rustModel = rustEditor.getModel();
@@ -403,16 +421,24 @@ async function doTranspile() {
 	if (timingSummary) conOut(`gors phases: ${timingSummary}`);
 	setRustValue(goResult.rustCode);
 	sourceMap = goResult.sourceMap;
+	const runtimeDependency = admitRuntimeDependency(
+		goResult.runtimeDependency,
+		"playground transpile cache insertion",
+	);
 	cache = {
 		goSource: goCode,
 		rustCode: goResult.rustCode,
+		runtimeDependency,
 		jobId: null,
 		compiled: false,
 	};
 	return goResult.rustCode;
 }
 
-async function doCompile(rustCode: string) {
+async function doCompile(
+	rustCode: string,
+	runtimeDependency: RuntimeDependency,
+) {
 	if (!rustEditor) return null;
 	if (cache.compiled && cache.jobId) return cache.jobId;
 
@@ -426,7 +452,7 @@ async function doCompile(rustCode: string) {
 	}
 
 	const startedAt = performance.now();
-	const result = await runner.compile(rustCode);
+	const result = await runner.compile(rustCode, runtimeDependency);
 	if (generation !== pipelineGeneration || result.cancelled) {
 		pipelineStage = "idle";
 		return null;
@@ -505,7 +531,13 @@ async function runPipeline() {
 function onGoChanged() {
 	pipelineGeneration++;
 	compilerPhase = null;
-	cache = { ...cache, jobId: null, compiled: false };
+	cache = {
+		goSource: null,
+		rustCode: null,
+		runtimeDependency: null,
+		jobId: null,
+		compiled: false,
+	};
 	resetRustOutput();
 	if (activePipelines > 0) {
 		go2rust.cancelActive("compiler input changed");
@@ -515,10 +547,11 @@ function onGoChanged() {
 
 async function handleRun() {
 	cancelScheduledPipeline();
-	if (!cache.rustCode || activePipelines > 0) return;
+	if (!cache.rustCode || !cache.runtimeDependency || activePipelines > 0)
+		return;
 	activePipelines++;
 	try {
-		const jobId = await doCompile(cache.rustCode);
+		const jobId = await doCompile(cache.rustCode, cache.runtimeDependency);
 		if (jobId) await doRun(jobId);
 	} finally {
 		pipelineStage = "idle";

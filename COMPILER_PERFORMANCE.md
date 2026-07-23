@@ -445,10 +445,16 @@ architecture described here:
   invocation now loads one immutable source snapshot before cache comparison
   and reuses that exact snapshot for miss compilation; warm complete-output
   hits therefore still pay honest source admission cost;
-- the bootstrap Rust artifact still recompiles its bundled runtime module for
-  each uncached executable instead of linking a prebuilt versioned runtime ABI.
-  The target-neutral typed contract and separate target-specific artifact
-  identity now exist, but the vertical sidecar/link hard cut is not complete;
+- the runtime sidecar/link hard cut is complete for native artifacts. Compiler
+  and printer products carry only the target-neutral dependency, while the CLI
+  verifies and materializes one fixed-recipe precompiled rlib, publishes its
+  exact schema-2 producer, compatibility, provider, and link identities, and
+  supplies one `--extern` at every native rustc boundary. Producer provenance
+  is evidence only; host-neutral target-sysroot compatibility drives selection.
+  Native provider production and consumption resolve the same exact pinned
+  rustup compiler, independent of Cargo's build compiler;
+  Generated-output cache hits reselect the current
+  provider; executable reuse additionally requires the exact link-plan identity;
 - dynamic divide/remainder-by-zero and negative-shift faults currently unwind
   through Rust `panic_any`, so those executions do not yet have Go-compatible
   process behavior and cannot enter behavior-validated performance evidence;
@@ -458,9 +464,10 @@ architecture described here:
   records `cli.source_load` before `cli.cache_lookup` for hits and misses;
   reports do not yet expose complete dependency traces, retained memory, or a
   foreground cancellation protocol;
-- `gors build` currently publishes generated Rust sources rather than a runnable
-  executable, so a harness-composed gors-plus-rustc measurement is diagnostic
-  only until the default artifact command owns the complete publication path;
+- `gors build` currently publishes generated Rust sources plus a validated link
+  descriptor rather than a runnable executable, so the harness still composes
+  the terminal rustc/link step. That end-to-end measurement remains diagnostic
+  until the default artifact command owns complete executable publication;
 - no single global scheduler, cancellation generation, memory budget, or
   semantic CAS yet spans the compiler and external artifact tools;
 - the build embeds roughly 17 MB of raw selected SDK source into each compiler

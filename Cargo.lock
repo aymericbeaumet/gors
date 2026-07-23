@@ -675,6 +675,7 @@ dependencies = [
  "atty",
  "clap",
  "gors",
+ "gors-runtime-abi",
  "pretty_env_logger",
  "serde",
  "serde_json",
@@ -694,6 +695,7 @@ name = "gors-runtime-abi"
 version = "0.1.0"
 dependencies = [
  "sha2",
+ "tempfile",
 ]
 
 [[package]]

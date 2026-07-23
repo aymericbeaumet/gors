@@ -48,7 +48,8 @@ fail_on_matches \
   gors/tests \
   gors-cli/src \
   www/wasm \
-  fuzz/src
+  fuzz/src \
+  --glob '!tests.rs'
 
 fail_on_matches \
   'HIR, Go MIR, and Rust IR fields must carry SourceRef through `source`, not `span`:' \
@@ -255,6 +256,51 @@ fail_on_matches \
   'fn[[:space:]]+(int_add|int_sub|int_mul|int_neg|print_empty)' \
   gors-runtime/src \
   gors/src/compiler/emit.rs
+
+fail_on_matches \
+  'runtime source bundling and relative runtime modules are forbidden:' \
+  '(^|[^[:alnum:]_])(RUNTIME_SOURCE|RUNTIME_MODULE_NAME)([^[:alnum:]_]|$)|include_str!\([^)]*gors-runtime|crate::__gors_runtime|^[[:space:]]*(pub[[:space:]]+)?mod[[:space:]]+__gors_runtime|#\[path[[:space:]]*=[^]]*__gors_runtime' \
+  gors/src \
+  gors-cli/src \
+  www/wasm \
+  fuzz/src
+
+fail_on_matches \
+  'the browser compiler must transport dependencies without selecting target artifacts:' \
+  'RuntimeArtifactManifest|RuntimeArtifactFormat|RuntimeLinkPlan|RuntimeLinkRequest|RustRlib(Producer|Compatibility)|embedded_runtime_artifact|\.materialize\(' \
+  www/wasm
+
+fail_on_matches \
+  'native runtime provider production must not inherit Cargo RUSTC:' \
+  'required_environment_path\("RUSTC"\)|std::env::var(_os)?\("RUSTC"\)' \
+  gors/build/runtime_artifact.rs
+
+for native_runtime_toolchain_owner in \
+  gors/build/runtime_artifact.rs \
+  gors-cli/src/rustc.rs \
+  gors-cli/src/runtime_link.rs
+do
+  if ! rg -q 'NATIVE_RUNTIME_RUST_TOOLCHAIN' "${native_runtime_toolchain_owner}"; then
+    printf 'native runtime boundary does not use the ABI-owned rustup toolchain: %s\n' \
+      "${native_runtime_toolchain_owner}" >&2
+    failed=1
+  fi
+done
+
+for terminal_linker in \
+  gors-cli/src/rustc.rs \
+  gors/src/compiler/tests.rs \
+  gors/src/printer/mod.rs \
+  gors/tests/common/runner.rs \
+  perf/perf_harness/runtime_link.py \
+  www/v86/rootfs/gors-compile
+do
+  if [[ ! -f "${terminal_linker}" ]] || ! rg -q -- '--extern' "${terminal_linker}"; then
+    printf 'terminal Rust linker does not require the external runtime: %s\n' \
+      "${terminal_linker}" >&2
+    failed=1
+  fi
+done
 
 fail_on_matches \
   'runtime ABI identity must come from the typed contract, never source scraping or build-script environment strings:' \

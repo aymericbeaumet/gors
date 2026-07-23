@@ -116,17 +116,12 @@ impl Display for ArtifactIdentity {
     }
 }
 
-/// SHA-256 identity of the exact Rust toolchain and link-ABI configuration.
-///
-/// Runtime artifact producers should hash a canonical record containing the
-/// complete `rustc -vV` output and every compatibility-relevant codegen input.
-/// This identity is deliberately separate from the runtime implementation
-/// hash: rebuilding identical runtime source with an incompatible compiler
-/// must select a different provider.
+/// SHA-256 provenance identity of the compiler host and recipe that produced
+/// an rlib. Consumers retain this for evidence but never use it for selection.
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct ToolchainIdentity([u8; 32]);
+pub struct ProducerIdentity([u8; 32]);
 
-impl ToolchainIdentity {
+impl ProducerIdentity {
     #[must_use]
     pub fn sha256(bytes: &[u8]) -> Self {
         Self(sha256(bytes))
@@ -143,16 +138,57 @@ impl ToolchainIdentity {
     }
 }
 
-impl Debug for ToolchainIdentity {
+impl Debug for ProducerIdentity {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_tuple("ToolchainIdentity")
+            .debug_tuple("ProducerIdentity")
             .field(&HexDigest(&self.0))
             .finish()
     }
 }
 
-impl Display for ToolchainIdentity {
+impl Display for ProducerIdentity {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        write_digest(formatter, &self.0)
+    }
+}
+
+/// SHA-256 identity of the host-neutral compiler, target rustlib ABI, and
+/// representation settings required to consume a Rust runtime rlib.
+///
+/// This is deliberately separate from producer provenance: a cross-produced
+/// rlib is selected by the target machine's compatibility identity, while its
+/// original compiler host remains immutable evidence.
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct CompatibilityIdentity([u8; 32]);
+
+impl CompatibilityIdentity {
+    #[must_use]
+    pub fn sha256(bytes: &[u8]) -> Self {
+        Self(sha256(bytes))
+    }
+
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl Debug for CompatibilityIdentity {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("CompatibilityIdentity")
+            .field(&HexDigest(&self.0))
+            .finish()
+    }
+}
+
+impl Display for CompatibilityIdentity {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         write_digest(formatter, &self.0)
     }

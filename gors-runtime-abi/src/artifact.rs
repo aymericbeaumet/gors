@@ -1,13 +1,15 @@
 //! Target-specific runtime artifact provider manifests.
 
 use crate::encoding::CanonicalEncoder;
-use crate::identity::{ArtifactIdentity, ContractIdentity, ImplementationHash, ToolchainIdentity};
+use crate::identity::{
+    ArtifactIdentity, CompatibilityIdentity, ContractIdentity, ImplementationHash,
+};
 use crate::target::{TargetCapabilities, TargetModel};
 
 /// Current schema for target-specific runtime artifact identities.
 ///
 /// Schema 2 separates target facts from capabilities actually provided by an
-/// artifact and records the exact Rust link format and toolchain identity.
+/// artifact and records the exact Rust link format and compatibility identity.
 pub const CURRENT_ARTIFACT_SCHEMA: ArtifactSchemaVersion = ArtifactSchemaVersion::new(2);
 
 /// Version of the canonical target-specific artifact encoding.
@@ -56,7 +58,7 @@ pub struct RuntimeArtifactManifest {
     target: TargetModel,
     provided_capabilities: TargetCapabilities,
     format: RuntimeArtifactFormat,
-    toolchain: ToolchainIdentity,
+    compatibility: CompatibilityIdentity,
     implementation: ImplementationHash,
 }
 
@@ -68,7 +70,7 @@ impl RuntimeArtifactManifest {
         target: TargetModel,
         provided_capabilities: TargetCapabilities,
         format: RuntimeArtifactFormat,
-        toolchain: ToolchainIdentity,
+        compatibility: CompatibilityIdentity,
         implementation: ImplementationHash,
     ) -> Self {
         Self::from_parts(
@@ -77,7 +79,7 @@ impl RuntimeArtifactManifest {
             target,
             provided_capabilities,
             format,
-            toolchain,
+            compatibility,
             implementation,
         )
     }
@@ -96,7 +98,7 @@ impl RuntimeArtifactManifest {
         target: TargetModel,
         provided_capabilities: TargetCapabilities,
         format: RuntimeArtifactFormat,
-        toolchain: ToolchainIdentity,
+        compatibility: CompatibilityIdentity,
         implementation: ImplementationHash,
     ) -> Self {
         Self {
@@ -105,7 +107,7 @@ impl RuntimeArtifactManifest {
             target,
             provided_capabilities,
             format,
-            toolchain,
+            compatibility,
             implementation,
         }
     }
@@ -136,8 +138,8 @@ impl RuntimeArtifactManifest {
     }
 
     #[must_use]
-    pub const fn toolchain(&self) -> ToolchainIdentity {
-        self.toolchain
+    pub const fn compatibility(&self) -> CompatibilityIdentity {
+        self.compatibility
     }
 
     #[must_use]
@@ -160,7 +162,7 @@ impl RuntimeArtifactManifest {
         self.target.encode(&mut encoder);
         self.provided_capabilities.encode(&mut encoder);
         encoder.u8(self.format.canonical_tag());
-        encoder.fixed_bytes(self.toolchain.as_bytes());
+        encoder.fixed_bytes(self.compatibility.as_bytes());
         encoder.fixed_bytes(self.implementation.as_bytes());
         encoder.finish()
     }

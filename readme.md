@@ -29,7 +29,8 @@ contract](COMPILER_PERFORMANCE.md).
 - Terminal Rust `syn` emitter with no semantic syntax-repair passes
 - Embedded Go SDK source metadata for future generic package compilation
 - Rust source printer with Go-to-Rust source-map support
-- Explicit language-runtime ABI in `gors-runtime`
+- Typed runtime contract plus one validated precompiled `gors-runtime` sidecar;
+  generated Rust never embeds or recompiles runtime source
 - CLI and browser/Wasm compiler surfaces
 
 ## Install
@@ -56,7 +57,7 @@ cargo install --path gors-cli
 ## Usage
 
 ```bash
-# Transpile into a multi-file Rust crate.
+# Transpile into Rust source plus its exact external-runtime link descriptor.
 gors build --output generated-rust main.go
 
 # Transpile, compile, and run.
@@ -95,8 +96,15 @@ $ gors run sum.go
 ## Fast feedback
 
 `build` and `run` cache validated compiler output; `run` also caches the compiled
-Rust executable. The bounded cache invalidates on source/module, compiler, SDK,
-CLI, toolchain, target, configuration, or output changes.
+Rust executable. Generated-output hits reselect and verify the current
+content-addressed runtime provider, while executable hits additionally require
+the exact runtime link-plan identity. The public `.gors-link.json` beside
+generated Rust carries the one required `--extern` path and its validated target,
+immutable producer provenance, host-neutral compatibility, implementation,
+artifact, and dependency identities. Producer provenance records how the rlib
+was built; only compatibility participates in target-side selection. Native
+provider production and generated-program linking use the same exact pinned
+rustup toolchain, even when Cargo itself was launched with another compiler.
 
 `--timings-json timings.json` records phase durations and cache events after a
 successful `build` or `run`; `GORS_PROFILE=1` prints phase timings to stderr.

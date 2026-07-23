@@ -6,7 +6,8 @@ mod process;
 
 use crate::common::{TestConfig, fixtures_dir, go_command};
 use cache::{
-    RUST_EDITION, RUST_TOOLCHAIN, cached_fixture_output_dir, prune_integration_cache,
+    RUST_EDITION, admit_cached_binary, discard_pending_binary, locked_fixture_cache_entry,
+    prune_integration_cache, publish_compiled_binary, reserve_pending_binary, resolve_runtime,
     write_generated_output,
 };
 use catalog::discover_program_dirs;
@@ -15,7 +16,6 @@ use process::{
     wait_command_output_abortable,
 };
 use rayon::prelude::*;
-use std::fs;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::sync::{
@@ -316,13 +316,11 @@ fn compile_and_run_generated_rust(
     abort: &AtomicBool,
     metrics: &RunMetrics,
 ) -> Result<Option<Output>, String> {
-    let build_dir = cached_fixture_output_dir(fixture_root, dir)?;
+    let cache_entry = locked_fixture_cache_entry(fixture_root, dir)?;
+    let build_dir = cache_entry.path();
     let bin_path = build_dir.join("main");
-    let cache_ok_path = build_dir.join(".rustc-ok");
-    if bin_path.exists() && cache_ok_path.exists() {
+    if admit_cached_binary(&cache_entry, &bin_path)? {
         metrics.cache_hits.fetch_add(1, Ordering::Relaxed);
-        // Refresh the marker so cache pruning can retain fixtures that remain in use.
-        fs::write(&cache_ok_path, b"ok").map_err(|e| e.to_string())?;
         let before = Instant::now();
         let mut bin = Command::new(&bin_path);
         bin.current_dir(dir).stdin(Stdio::null());
@@ -348,10 +346,12 @@ fn compile_and_run_generated_rust(
     let before = Instant::now();
     let output =
         gors::printer::generate_multi(compiled).map_err(|e| format!("print failed: {e}"))?;
+    let runtime_dependency = output.runtime.clone();
+    let runtime = resolve_runtime(runtime_dependency.clone())?;
     RunMetrics::add_duration(&metrics.print, before.elapsed());
 
     let before = Instant::now();
-    write_generated_output(&output, &build_dir)?;
+    write_generated_output(&output, build_dir)?;
     RunMetrics::add_duration(&metrics.write, before.elapsed());
 
     let src_path = build_dir.join("main.rs");
@@ -360,11 +360,22 @@ fn compile_and_run_generated_rust(
     }
 
     let edition_arg = format!("--edition={RUST_EDITION}");
+    let pending_bin_path = reserve_pending_binary(&cache_entry)?;
 
     let mut rustc = Command::new("rustup");
     rustc
-        .args(["run", RUST_TOOLCHAIN, "rustc"])
+        .args([
+            "run",
+            gors_runtime_abi::NATIVE_RUNTIME_RUST_TOOLCHAIN,
+            "rustc",
+        ])
         .arg(&src_path)
+        .arg("--extern")
+        .arg(format!(
+            "{}={}",
+            gors_runtime_abi::RUST_RUNTIME_CRATE_NAME,
+            runtime.path.display()
+        ))
         .args([
             edition_arg.as_str(),
             "-D",
@@ -375,14 +386,23 @@ fn compile_and_run_generated_rust(
             "overflow-checks=off",
             "-o",
         ])
-        .arg(&bin_path);
+        .arg(&pending_bin_path);
 
     let before = Instant::now();
-    let Some(rustc_out) = command_output_abortable(rustc, abort, None)? else {
-        return Ok(None);
+    let rustc_out = match command_output_abortable(rustc, abort, None) {
+        Ok(Some(output)) => output,
+        Ok(None) => {
+            discard_pending_binary(&pending_bin_path);
+            return Ok(None);
+        }
+        Err(error) => {
+            discard_pending_binary(&pending_bin_path);
+            return Err(error);
+        }
     };
     RunMetrics::add_duration(&metrics.rustc, before.elapsed());
     if !rustc_out.status.success() {
+        discard_pending_binary(&pending_bin_path);
         return Err(format!(
             "rustc failed for {} with {}:\n{}",
             src_path.display(),
@@ -390,7 +410,13 @@ fn compile_and_run_generated_rust(
             String::from_utf8_lossy(&rustc_out.stderr)
         ));
     }
-    fs::write(&cache_ok_path, b"ok").map_err(|e| e.to_string())?;
+    publish_compiled_binary(
+        &cache_entry,
+        &pending_bin_path,
+        &bin_path,
+        &runtime_dependency,
+        runtime.link_plan,
+    )?;
 
     let before = Instant::now();
     let mut bin = Command::new(&bin_path);

@@ -75,7 +75,79 @@ fn build_timing_v5_reports_single_load_before_hit_or_miss_cache_lookup() {
         jobs: NonZeroUsize::MIN,
     };
     build_with_cache_base(command(&miss_timings), &cache).unwrap();
+    let link_path = output.join(runtime_descriptor::LINK_OUTPUT_FILENAME);
+    let first_link: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&link_path).unwrap()).unwrap();
+    let artifact_path = PathBuf::from(
+        first_link
+            .get("artifact_path")
+            .and_then(serde_json::Value::as_str)
+            .unwrap(),
+    );
+    std::fs::write(&artifact_path, b"corrupt runtime cache entry").unwrap();
+
     build_with_cache_base(command(&hit_timings), &cache).unwrap();
+
+    let link: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&link_path).unwrap()).unwrap();
+    assert_eq!(link.get("schema_version"), Some(&serde_json::json!(1)));
+    assert_eq!(
+        link.get("link_descriptor_schema_version"),
+        Some(&serde_json::json!(2))
+    );
+    assert_eq!(
+        link.get("extern_crate"),
+        Some(&serde_json::json!("__gors_runtime"))
+    );
+    let artifact_path = PathBuf::from(
+        link.get("artifact_path")
+            .and_then(serde_json::Value::as_str)
+            .unwrap(),
+    );
+    assert!(artifact_path.is_file(), "{}", artifact_path.display());
+    assert!(artifact_path.starts_with(cache.join("runtime")));
+    assert_eq!(
+        artifact_path
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str()),
+        link.get("artifact_identity")
+            .and_then(serde_json::Value::as_str)
+    );
+    assert!(!output.join("__gors_runtime.rs").exists());
+    let implementation_hash = {
+        use sha2::{Digest as _, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(std::fs::read(&artifact_path).unwrap());
+        hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    assert_eq!(
+        implementation_hash,
+        link.get("implementation_hash")
+            .and_then(serde_json::Value::as_str)
+            .unwrap()
+    );
+    for field in [
+        "dependency",
+        "target_triple",
+        "target_pointer_width",
+        "target_endianness",
+        "format",
+        "producer_identity",
+        "compatibility_identity",
+        "implementation_hash",
+        "artifact_identity",
+        "link_plan_identity",
+    ] {
+        assert!(
+            link.get(field).is_some_and(|entry| !entry.is_null()),
+            "missing {field}: {link}"
+        );
+    }
 
     let read_report = |path: &Path| -> serde_json::Value {
         serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
@@ -182,6 +254,7 @@ fn compiler_job_budget_must_be_positive() {
 fn rustc_arguments_do_not_create_per_invocation_incremental_state() {
     let flags = Vec::from(RustcArgs {
         src: "main.rs",
+        runtime: "/cache/runtime/artifact/lib__gors_runtime.rlib",
         out: Some("main"),
         emit: None,
         release: false,
@@ -189,6 +262,18 @@ fn rustc_arguments_do_not_create_per_invocation_incremental_state() {
     assert!(
         flags.iter().all(|flag| !flag.contains("incremental")),
         "{flags:?}"
+    );
+    assert_eq!(
+        flags
+            .iter()
+            .filter(|flag| flag.as_str() == "--extern")
+            .count(),
+        1
+    );
+    assert!(
+        flags.iter().any(|flag| {
+            flag == "__gors_runtime=/cache/runtime/artifact/lib__gors_runtime.rlib"
+        })
     );
 }
 
@@ -199,21 +284,53 @@ fn write_generated_output_removes_files_missing_from_new_manifest() {
     let mut first_files = BTreeMap::new();
     first_files.insert("main.rs".to_string(), "fn main() {}\n".to_string());
     first_files.insert("stale.rs".to_string(), "fn stale() {}\n".to_string());
-    let first = gors::printer::GeneratedOutput { files: first_files };
-    let first_stats = write_generated_output(&first, tmp.path()).unwrap();
-    assert_eq!(first_stats.written, 2);
+    let runtime = runtime_descriptor::test_runtime_link_output();
+    let first = gors::printer::GeneratedOutput {
+        files: first_files,
+        runtime: runtime_descriptor::test_runtime_dependency(),
+    };
+    let first_stats = write_generated_output(&first, tmp.path(), &runtime).unwrap();
+    assert_eq!(first_stats.written, 3);
     assert!(tmp.path().join("stale.rs").exists());
 
     let mut second_files = BTreeMap::new();
     second_files.insert("main.rs".to_string(), "fn main() {}\n".to_string());
     let second = gors::printer::GeneratedOutput {
         files: second_files,
+        runtime: runtime_descriptor::test_runtime_dependency(),
     };
-    let second_stats = write_generated_output(&second, tmp.path()).unwrap();
+    let second_stats = write_generated_output(&second, tmp.path(), &runtime).unwrap();
 
-    assert_eq!(second_stats.skipped, 1);
+    assert_eq!(second_stats.skipped, 2);
     assert_eq!(second_stats.removed, 1);
     assert!(!tmp.path().join("stale.rs").exists());
+}
+
+#[test]
+fn external_runtime_cut_removes_untracked_legacy_runtime_source() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("__gors_runtime.rs"),
+        "// stale source-bundled runtime\n",
+    )
+    .unwrap();
+    let output = gors::printer::GeneratedOutput {
+        files: BTreeMap::from([("main.rs".to_string(), "fn main() {}\n".to_string())]),
+        runtime: runtime_descriptor::test_runtime_dependency(),
+    };
+    let runtime = runtime_descriptor::test_runtime_link_output();
+
+    let stats = write_generated_output(&output, tmp.path(), &runtime).unwrap();
+
+    assert_eq!(stats.removed, 1);
+    assert!(!tmp.path().join("__gors_runtime.rs").exists());
+    assert!(
+        tmp.path()
+            .join(runtime_descriptor::LINK_OUTPUT_FILENAME)
+            .is_file()
+    );
+    let manifest = GeneratedOutputManifest::load(tmp.path()).unwrap();
+    assert!(manifest.contains(runtime_descriptor::LINK_OUTPUT_FILENAME));
 }
 
 #[test]
@@ -261,8 +378,12 @@ fn concurrent_output_publications_publish_one_consistent_transaction() {
                     format!("mod {module};\nfn main() {{ {module}(); }}\n"),
                 );
                 files.insert(format!("{module}.rs"), body.to_string());
-                let output = gors::printer::GeneratedOutput { files };
-                let generated_files = generated_file_hashes(&output);
+                let runtime = runtime_descriptor::test_runtime_link_output();
+                let output = gors::printer::GeneratedOutput {
+                    files,
+                    runtime: runtime_descriptor::test_runtime_dependency(),
+                };
+                let generated_files = generated_file_hashes(&output, &runtime).unwrap();
                 barrier.wait();
 
                 let _output_lock = OutputDirectoryLock::acquire(&output_dir).unwrap();
@@ -272,20 +393,27 @@ fn concurrent_output_publications_publish_one_consistent_transaction() {
                     "publication transactions overlapped"
                 );
                 std::thread::sleep(Duration::from_millis(25));
-                write_generated_output_locked(&output, &output_dir).unwrap();
+                write_generated_output_locked(&output, &output_dir, &runtime).unwrap();
                 prepare_atomic_write(&source_map_path, &format!("{module}-map\n"))
                     .unwrap()
                     .persist(&source_map_path)
                     .unwrap();
                 let source_map = FileArtifact::capture(&source_map_path).unwrap();
-                let mut manifest =
-                    CliCacheManifest::new(&request, inputs, generated_files, Some(source_map));
+                let mut manifest = CliCacheManifest::new(
+                    &request,
+                    inputs,
+                    generated_files,
+                    Some(source_map),
+                    runtime.link().clone(),
+                );
                 manifest.save(&output_dir).unwrap();
                 prepare_atomic_write(&executable_path, &format!("{module}-executable\n"))
                     .unwrap()
                     .persist(&executable_path)
                     .unwrap();
-                manifest.set_executable(&executable_path).unwrap();
+                manifest
+                    .set_executable(&executable_path, runtime.link())
+                    .unwrap();
                 manifest.save(&output_dir).unwrap();
                 assert_eq!(
                     active_publishers.fetch_sub(1, std::sync::atomic::Ordering::SeqCst),
@@ -347,7 +475,8 @@ fn concurrent_output_publications_publish_one_consistent_transaction() {
     let inputs = InputSnapshot::capture(&loaded).unwrap();
     let cli_manifest = CliCacheManifest::load_if_generated_valid(&output_dir, &request, &inputs)
         .expect("published CLI cache manifest");
-    assert!(cli_manifest.executable_is_valid(&executable_path));
+    let runtime = cli_manifest.runtime().clone();
+    assert!(cli_manifest.executable_is_valid(&executable_path, &runtime));
 }
 
 #[test]

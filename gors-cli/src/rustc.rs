@@ -1,13 +1,14 @@
 use crate::timings::TimingCollector;
+use gors_runtime_abi::NATIVE_RUNTIME_RUST_TOOLCHAIN;
 use std::path::Path;
 use std::process::Command;
 
-pub const RUST_TOOLCHAIN: &str = "1.96.0";
-pub const RUST_EDITION: &str = "2024";
+pub const RUST_EDITION: &str = gors_runtime_abi::RUST_RUNTIME_EDITION;
 
 pub fn compile_generated_binary(
     cache_dir: &Path,
     bin_path: &Path,
+    runtime_path: &Path,
     release: bool,
     timings: &TimingCollector,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -19,8 +20,10 @@ pub fn compile_generated_binary(
 
     let src_str = src_path.to_string_lossy();
     let pending_str = pending_path.to_string_lossy();
+    let runtime_str = runtime_path.to_string_lossy();
     let rustc_args = RustcArgs {
         src: &src_str,
+        runtime: &runtime_str,
         out: Some(&pending_str),
         emit: None,
         release,
@@ -28,7 +31,7 @@ pub fn compile_generated_binary(
 
     let rustc_timer = timings.phase("cli.rustc");
     let rustc_status = Command::new("rustup")
-        .args(["run", RUST_TOOLCHAIN, "rustc"])
+        .args(["run", NATIVE_RUNTIME_RUST_TOOLCHAIN, "rustc"])
         .args(Vec::from(rustc_args))
         .status()?;
     drop(rustc_timer);
@@ -44,6 +47,7 @@ pub fn compile_generated_binary(
 
 pub struct RustcArgs<'a> {
     pub src: &'a str,
+    pub runtime: &'a str,
     pub out: Option<&'a str>,
     pub emit: Option<&'a str>,
     pub release: bool,
@@ -54,6 +58,12 @@ impl From<RustcArgs<'_>> for Vec<String> {
         let mut flags = vec![
             args.src.to_string(),
             format!("--edition={RUST_EDITION}"),
+            "--extern".to_string(),
+            format!(
+                "{}={}",
+                gors_runtime_abi::RUST_RUNTIME_CRATE_NAME,
+                args.runtime
+            ),
             "-D".to_string(),
             "unused_imports".to_string(),
             "-D".to_string(),

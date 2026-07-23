@@ -4,30 +4,37 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::runtime_descriptor::LINK_OUTPUT_FILENAME;
+use crate::runtime_descriptor::RuntimeLinkDescriptor;
+
 const FILENAME: &str = ".gors-generated-output.json";
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct GeneratedOutputManifest {
     schema_version: u32,
     compiler_fingerprint: String,
     stdlib_version: String,
+    runtime: RuntimeLinkDescriptor,
     files: BTreeMap<String, GeneratedFileEntry>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct GeneratedFileEntry {
     content_hash: String,
     output_file: String,
 }
 
 impl GeneratedOutputManifest {
-    pub fn new() -> Self {
+    pub fn new(runtime: RuntimeLinkDescriptor) -> Self {
         Self {
             schema_version: SCHEMA_VERSION,
             compiler_fingerprint: gors::COMPILER_FINGERPRINT.to_string(),
             stdlib_version: gors::STDLIB_VERSION.to_string(),
+            runtime,
             files: BTreeMap::new(),
         }
     }
@@ -68,8 +75,8 @@ impl GeneratedOutputManifest {
                 Err(error) => return Err(error.into()),
             }
         };
-        if let Err(error) = std::fs::rename(&temporary, destination) {
-            let _ = std::fs::remove_file(temporary);
+        if let Err(error) = publish_manifest(&temporary, &destination) {
+            let _ = std::fs::remove_file(&temporary);
             return Err(error.into());
         }
         Ok(())
@@ -95,6 +102,14 @@ impl GeneratedOutputManifest {
         self.files.len()
     }
 
+    pub fn runtime(&self) -> &RuntimeLinkDescriptor {
+        &self.runtime
+    }
+
+    pub fn refresh_runtime(&mut self, runtime: RuntimeLinkDescriptor) {
+        self.runtime = runtime;
+    }
+
     #[cfg(test)]
     pub fn contains(&self, filename: &str) -> bool {
         self.files.contains_key(filename)
@@ -110,7 +125,48 @@ impl GeneratedOutputManifest {
         self.schema_version == SCHEMA_VERSION
             && self.compiler_fingerprint == gors::COMPILER_FINGERPRINT
             && self.stdlib_version == gors::STDLIB_VERSION
+            && self.files.contains_key(LINK_OUTPUT_FILENAME)
+            && self.files.iter().all(|(filename, entry)| {
+                filename == &entry.output_file
+                    && is_normal_relative_filename(filename)
+                    && is_sha256(&entry.content_hash)
+            })
+            && self.runtime.reconstruct_dependency().is_ok()
     }
+}
+
+fn publish_manifest(temporary: &Path, destination: &Path) -> Result<(), std::io::Error> {
+    // Unix rename replaces atomically. Windows rename cannot replace an
+    // existing file; removing this advisory cache record first is fail-safe,
+    // because a crash in the gap becomes a cache miss rather than stale reuse.
+    #[cfg(windows)]
+    match std::fs::remove_file(destination) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    std::fs::rename(temporary, destination)
+}
+
+fn is_normal_relative_filename(filename: &str) -> bool {
+    if filename.is_empty()
+        || filename == "."
+        || filename == ".."
+        || filename.contains('/')
+        || filename.contains('\\')
+    {
+        return false;
+    }
+    let mut components = Path::new(filename).components();
+    matches!(components.next(), Some(std::path::Component::Normal(_)))
+        && components.next().is_none()
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 #[cfg(test)]

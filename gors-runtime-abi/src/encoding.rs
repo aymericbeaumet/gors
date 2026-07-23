@@ -5,6 +5,9 @@ use sha2::{Digest as _, Sha256};
 const CONTRACT_DOMAIN: &[u8] = b"gors.runtime-abi.contract\0";
 const ARTIFACT_DOMAIN: &[u8] = b"gors.runtime-abi.artifact\0";
 const LINK_PLAN_DOMAIN: &[u8] = b"gors.runtime-abi.link-plan\0";
+const RUST_RLIB_PRODUCER_DOMAIN: &[u8] = b"gors.runtime-abi.rust-rlib-producer\0";
+const RUST_RLIB_COMPATIBILITY_DOMAIN: &[u8] = b"gors.runtime-abi.rust-rlib-compatibility\0";
+const RUST_TARGET_LIBDIR_DOMAIN: &[u8] = b"gors.runtime-abi.rust-target-libdir\0";
 
 pub struct CanonicalEncoder {
     bytes: Vec<u8>,
@@ -23,6 +26,18 @@ impl CanonicalEncoder {
         Self::new(LINK_PLAN_DOMAIN)
     }
 
+    pub(crate) fn rust_rlib_producer() -> Self {
+        Self::new(RUST_RLIB_PRODUCER_DOMAIN)
+    }
+
+    pub(crate) fn rust_rlib_compatibility() -> Self {
+        Self::new(RUST_RLIB_COMPATIBILITY_DOMAIN)
+    }
+
+    pub(crate) fn rust_target_libdir() -> Self {
+        Self::new(RUST_TARGET_LIBDIR_DOMAIN)
+    }
+
     pub(crate) fn u8(&mut self, value: u8) {
         self.bytes.push(value);
     }
@@ -32,6 +47,10 @@ impl CanonicalEncoder {
     }
 
     pub(crate) fn u32(&mut self, value: u32) {
+        self.bytes.extend_from_slice(&value.to_be_bytes());
+    }
+
+    pub(crate) fn u64(&mut self, value: u64) {
         self.bytes.extend_from_slice(&value.to_be_bytes());
     }
 

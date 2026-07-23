@@ -248,6 +248,13 @@ impl std::error::Error for CompilerError {}
 pub struct CompiledProgram {
     pub entry: syn::File,
     pub modules: BTreeMap<String, syn::File>,
+    /// Exact target-neutral runtime contract and operations selected by the
+    /// verified Rust IR package.
+    ///
+    /// This dependency is unconditional, including when its operation set is
+    /// empty, because runtime-backed value representations are not yet
+    /// independently sliceable.
+    pub runtime: gors_runtime_abi::RuntimeDependency,
 }
 
 /// Immutable inputs required to map one generated Rust artifact back to Go.

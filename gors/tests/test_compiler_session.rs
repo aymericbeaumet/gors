@@ -158,13 +158,19 @@ fn functions(analysis: &FileAnalysis) -> BTreeMap<String, DefId> {
         .collect()
 }
 
+fn generate_single_source(compiled: gors::compiler::CompiledProgram) -> String {
+    let mut generated = gors::printer::generate_single(compiled).unwrap();
+    assert_eq!(generated.files.len(), 1);
+    generated.files.remove("main.rs").unwrap()
+}
+
 fn parallel_evidence(jobs: usize) -> (String, Vec<u8>, Fingerprint, SchedulerTelemetry) {
     let host = CompilerHost::new(NonZeroUsize::new(jobs).unwrap()).unwrap();
     let mut session = host.session(BuildConfig::default()).unwrap();
     let (compiled, plan) = session
         .compile_program_with_source_map(program("main.go", PARALLEL_PROGRAM))
         .unwrap();
-    let rust = gors::printer::generate_single(compiled).unwrap();
+    let rust = generate_single_source(compiled);
     let mut source_map = Vec::new();
     plan.build(&rust).to_writer(&mut source_map).unwrap();
     let file = only_file(&session);
@@ -298,14 +304,14 @@ fn checkout_root_move_reuses_semantics_and_republishes_source_location() {
     let (first_compiled, first_plan) = session
         .compile_program_with_source_map(program("/checkout/one/main.go", PARALLEL_PROGRAM))
         .unwrap();
-    let first_rust = gors::printer::generate_single(first_compiled).unwrap();
+    let first_rust = generate_single_source(first_compiled);
     let first_scheduler = host.telemetry();
     session.database().reset_telemetry();
 
     let (second_compiled, second_plan) = session
         .compile_program_with_source_map(program("/checkout/two/main.go", PARALLEL_PROGRAM))
         .unwrap();
-    let second_rust = gors::printer::generate_single(second_compiled).unwrap();
+    let second_rust = generate_single_source(second_compiled);
     let first_map = first_plan.build(&first_rust);
     let second_map = second_plan.build(&second_rust);
 
@@ -573,8 +579,8 @@ fn checkout_path_does_not_change_ids_or_generated_output() {
         functions(&second.database().analyze_file(second_file).unwrap())
     );
     assert_eq!(
-        gors::printer::generate_single(first_output).unwrap(),
-        gors::printer::generate_single(second_output).unwrap()
+        generate_single_source(first_output),
+        generate_single_source(second_output)
     );
 }
 
@@ -723,7 +729,7 @@ fn source_map_tracks_non_main_function_through_its_generated_symbol() {
     let (compiled, plan) = session
         .compile_program_with_source_map(program("main.go", ORIGINAL))
         .unwrap();
-    let rust = gors::printer::generate_single(compiled).unwrap();
+    let rust = generate_single_source(compiled);
     let source_map = plan.build(&rust);
     let token = source_map
         .tokens()
@@ -741,7 +747,7 @@ fn source_maps_use_physical_sources_even_with_line_directives() {
     let (compiled, plan) = session
         .compile_program_with_source_map(program("/checkout/main.go", source))
         .unwrap();
-    let rust = gors::printer::generate_single(compiled).unwrap();
+    let rust = generate_single_source(compiled);
     let source_map = plan.build(&rust);
     let token = source_map
         .tokens()

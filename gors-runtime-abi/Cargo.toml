@@ -11,5 +11,8 @@ repository = "https://github.com/aymericbeaumet/gors/"
 [dependencies]
 sha2 = "0.11"
 
+[dev-dependencies]
+tempfile = "3.27"
+
 [lints]
 workspace = true

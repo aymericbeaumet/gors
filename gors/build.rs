@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 
 #[path = "build/platform.rs"]
 mod platform;
+#[path = "build/runtime_artifact.rs"]
+mod runtime_artifact;
 #[path = "build/sdk_index.rs"]
 mod sdk_index;
 
@@ -56,7 +58,9 @@ fn compiler_source_fingerprint(
 
     let mut files = Vec::new();
     collect_rust_sources(Path::new("src"), &mut files)?;
-    collect_rust_sources(Path::new("../gors-runtime/src"), &mut files)?;
+    // Runtime provider publication is a terminal artifact concern with its
+    // own exact identity; it must not invalidate semantic compiler products.
+    files.retain(|path| !path.starts_with("src/artifact"));
     collect_rust_sources(Path::new("../gors-runtime-abi/src"), &mut files)?;
     files.extend(
         [
@@ -67,7 +71,6 @@ fn compiler_source_fingerprint(
             "../Cargo.toml",
             "../Cargo.lock",
             GO_VERSION_FILE,
-            "../gors-runtime/Cargo.toml",
             "../gors-runtime-abi/Cargo.toml",
         ]
         .into_iter()
@@ -86,35 +89,14 @@ fn compiler_source_fingerprint(
     hasher.update(b"\0target-goarch\0");
     hasher.update(target_goarch.as_bytes());
     hasher.update(b"\0");
-    for key in ["TARGET", "PROFILE", "CARGO_PKG_VERSION"] {
-        hasher.update(key.as_bytes());
-        hasher.update(b"=");
-        hasher.update(std::env::var(key)?.as_bytes());
-        hasher.update(b"\0");
-    }
-    let mut enabled_features = std::env::vars()
-        .filter_map(|(key, value)| key.starts_with("CARGO_FEATURE_").then_some((key, value)))
-        .collect::<Vec<_>>();
-    enabled_features.sort();
-    for (key, value) in enabled_features {
-        hasher.update(key.as_bytes());
-        hasher.update(b"=");
-        hasher.update(value.as_bytes());
-        hasher.update(b"\0");
-    }
+    hasher.update(b"CARGO_PKG_VERSION=");
+    hasher.update(std::env::var("CARGO_PKG_VERSION")?.as_bytes());
+    hasher.update(b"\0");
     for path in files {
         hasher.update(path.to_string_lossy().as_bytes());
         hasher.update(b"\0");
         hasher.update(std::fs::read(&path)?);
         hasher.update(b"\0");
-    }
-    if std::env::var("TARGET")?.starts_with("wasm32-") {
-        for path in ["../www/wasm/Cargo.toml", "../www/wasm/Cargo.lock"] {
-            hasher.update(path.as_bytes());
-            hasher.update(b"\0");
-            hasher.update(std::fs::read(path)?);
-            hasher.update(b"\0");
-        }
     }
     Ok(hasher
         .finalize()
@@ -464,12 +446,12 @@ fn rust_string(value: &str) -> String {
 fn main() -> BuildResult<()> {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=build/platform.rs");
+    println!("cargo:rerun-if-changed=build/runtime_artifact.rs");
     println!("cargo:rerun-if-changed=build/sdk_index.rs");
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-changed=../Cargo.toml");
     println!("cargo:rerun-if-changed=../Cargo.lock");
-    println!("cargo:rerun-if-changed=../gors-runtime/Cargo.toml");
     println!("cargo:rerun-if-changed=../gors-runtime-abi/Cargo.toml");
     println!("cargo:rerun-if-changed={GO_VERSION_FILE}");
     println!("cargo:rerun-if-changed=../gors-runtime/src");
@@ -477,11 +459,11 @@ fn main() -> BuildResult<()> {
     println!("cargo:rerun-if-env-changed=GORS_GO_SDK_PATH");
     println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_OS");
     println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_ARCH");
-    if std::env::var("TARGET")?.starts_with("wasm32-") {
-        println!("cargo:rerun-if-changed=../www/wasm/Cargo.toml");
-        println!("cargo:rerun-if-changed=../www/wasm/Cargo.lock");
-    }
-
+    println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_ENDIAN");
+    println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_FAMILY");
+    println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_POINTER_WIDTH");
+    println!("cargo:rerun-if-env-changed=RUSTC");
+    println!("cargo:rerun-if-env-changed=TARGET");
     let go_version = read_go_version()?;
     let stdlib_version = stdlib_version(&go_version);
     let sdk_path = ensure_go_sdk(&go_version)?;
@@ -516,6 +498,8 @@ fn main() -> BuildResult<()> {
     let marker_path = out_dir.join("go_stdlib.version");
     let preload_schema =
         stdlib_preload_schema(&go_version, target_goos, target_goarch, &sdk_fingerprint);
+
+    runtime_artifact::build_native_provider(&out_dir)?;
 
     if preload_path.exists()
         && source_dir.exists()

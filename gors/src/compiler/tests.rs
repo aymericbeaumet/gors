@@ -18,21 +18,31 @@ fn raw_program(logical_path: &str, diagnostic_path: &str, source: &str) -> input
 }
 
 fn compile_and_run(source: &str) -> GeneratedRun {
-    let ast = crate::parser::parse_file("generated.go", source).unwrap();
-    let rust_file = compile_file(ast.ast()).expect("compile Go through verified MIR");
-    let rust = prettyplease::unparse(&rust_file);
-    let complete_source = crate::printer::generate_single(CompiledProgram {
-        entry: rust_file,
-        modules: BTreeMap::new(),
-    })
-    .expect("package generated Rust with the runtime ABI");
+    let compiled = compile_program(raw_program("generated.go", "generated.go", source))
+        .expect("compile Go through verified MIR");
+    let generated = crate::printer::generate_single(compiled)
+        .expect("package generated Rust with an external runtime dependency");
+    let rust = generated
+        .files
+        .get("main.rs")
+        .expect("single-file output owns main.rs")
+        .clone();
     let directory = tempfile::tempdir().expect("create generated-program directory");
     let source_path = directory.path().join("generated.rs");
     let binary_path = directory.path().join("generated-program");
-    std::fs::write(&source_path, complete_source).expect("write generated Rust");
+    let runtime_path = crate::artifact::embedded_runtime_artifact()
+        .materialize(&directory.path().join("runtime-cache"))
+        .expect("materialize precompiled runtime artifact");
+    std::fs::write(&source_path, &rust).expect("write generated Rust");
     let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
     let compilation = std::process::Command::new(rustc)
         .arg("--edition=2024")
+        .arg("--extern")
+        .arg(format!(
+            "{}={}",
+            crate::artifact::RUNTIME_CRATE_NAME,
+            runtime_path.display()
+        ))
         .arg(&source_path)
         .arg("-o")
         .arg(&binary_path)
@@ -88,6 +98,44 @@ fn stage_products_are_real_and_mandatory_lowering_is_deterministic() {
 
     let rust = emit_rust_ir(&rust_ir).expect("terminal syn emission");
     assert!(rust.items.len() >= 2);
+}
+
+#[test]
+fn compiled_program_retains_the_verified_runtime_dependency() {
+    let compiled = compile_program(raw_program(
+        "runtime.go",
+        "runtime.go",
+        "package main\nfunc main() { println(\"value\") }\n",
+    ))
+    .unwrap();
+    let expected_contract = gors_runtime_abi::RuntimeAbiManifest::current().identity();
+
+    assert_eq!(compiled.runtime.contract(), expected_contract);
+    for operation in [
+        gors_runtime_abi::RuntimeOp::GoStringFromStatic,
+        gors_runtime_abi::RuntimeOp::PrintGoString,
+        gors_runtime_abi::RuntimeOp::PrintNewline,
+    ] {
+        assert!(compiled.runtime.requirement().contains(operation));
+    }
+
+    let runtime = compiled.runtime.clone();
+    let generated = crate::printer::generate_single(compiled).unwrap();
+    assert_eq!(generated.runtime, runtime);
+    assert_eq!(
+        generated
+            .files
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["main.rs"]
+    );
+    let main = generated
+        .files
+        .get("main.rs")
+        .expect("single-file output owns main.rs");
+    assert!(main.contains("::__gors_runtime::"), "{}", main);
+    assert!(!main.contains("mod __gors_runtime"));
 }
 
 #[test]
@@ -342,11 +390,13 @@ fn source_map_plans_are_independent_products() {
     );
     let (first, first_plan) = compile_program_with_source_map(first).unwrap();
     let (second, second_plan) = compile_program_with_source_map(second).unwrap();
-    let first_rust = crate::printer::generate_single(first).unwrap();
-    let second_rust = crate::printer::generate_single(second).unwrap();
+    let first_output = crate::printer::generate_single(first).unwrap();
+    let second_output = crate::printer::generate_single(second).unwrap();
+    let first_rust = first_output.files.get("main.rs").unwrap();
+    let second_rust = second_output.files.get("main.rs").unwrap();
 
-    let first_map = first_plan.build(&first_rust);
-    let second_map = second_plan.build(&second_rust);
+    let first_map = first_plan.build(first_rust);
+    let second_map = second_plan.build(second_rust);
 
     assert_eq!(first_map.get_source(0), Some("first.go"));
     assert_eq!(second_map.get_source(0), Some("second.go"));

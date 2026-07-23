@@ -1,0 +1,16 @@
+#!/bin/sh
+set -u
+
+ID=${1-}
+case "$ID" in
+    ''|*[!0-9]*)
+        printf '%s\n' 'gors-run: job ID must contain only decimal digits' >&2
+        exit 2
+        ;;
+esac
+
+cd /tmp
+"./${ID}.bin" >"${ID}.run.out" 2>"${ID}.run.err"
+RESULT=$?
+printf '%s' "$RESULT" >"${ID}.run.status"
+printf 'GORS_RUN_DONE:%s\n' "$ID"

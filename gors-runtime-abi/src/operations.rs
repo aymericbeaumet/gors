@@ -5,6 +5,7 @@ use crate::effects::{
 };
 use crate::encoding::CanonicalEncoder;
 use crate::target::{TargetCapability, TargetCapability::StandardIo};
+use std::fmt::{Display, Formatter};
 
 /// Go operations emitted directly without a runtime ABI symbol.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -283,6 +284,25 @@ impl RuntimeOpId {
     }
 }
 
+/// Stable operation ID that is not defined by this ABI crate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UnknownRuntimeOpId(u16);
+
+impl UnknownRuntimeOpId {
+    #[must_use]
+    pub const fn get(self) -> u16 {
+        self.0
+    }
+}
+
+impl Display for UnknownRuntimeOpId {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "unknown runtime operation ID {}", self.0)
+    }
+}
+
+impl std::error::Error for UnknownRuntimeOpId {}
+
 impl RuntimeOp {
     /// Complete helper catalog for the current contract.
     pub const ALL: &'static [Self] = &[
@@ -438,6 +458,28 @@ impl RuntimeOp {
         encoder.count(requirements.len());
         for requirement in requirements {
             encoder.u16(requirement.canonical_tag());
+        }
+    }
+}
+
+impl TryFrom<u16> for RuntimeOp {
+    type Error = UnknownRuntimeOpId;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::GoStringFromBytes),
+            2 => Ok(Self::GoStringFromStatic),
+            3 => Ok(Self::ConcatGoStrings),
+            8 => Ok(Self::IntDiv),
+            9 => Ok(Self::IntRem),
+            10 => Ok(Self::IntShl),
+            11 => Ok(Self::IntShr),
+            13 => Ok(Self::PrintBool),
+            14 => Ok(Self::PrintI64),
+            15 => Ok(Self::PrintSpace),
+            16 => Ok(Self::PrintNewline),
+            17 => Ok(Self::PrintGoString),
+            unknown => Err(UnknownRuntimeOpId(unknown)),
         }
     }
 }

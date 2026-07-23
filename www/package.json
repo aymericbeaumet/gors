@@ -20,7 +20,8 @@
 		"lint": "npm run lint:eslint && npm run typecheck",
 		"lint:eslint": "eslint .",
 		"typecheck": "svelte-check --tsconfig ./tsconfig.json && tsc -p ./tsconfig.node.json --noEmit",
-		"test:unit": "vitest run",
+		"test:unit": "vitest run && npm run test:v86-static",
+		"test:v86-static": "bash v86/test.sh",
 		"test:compiler": "playwright test --config playwright.compiler.config.ts",
 		"test:integration": "playwright test"
 	},

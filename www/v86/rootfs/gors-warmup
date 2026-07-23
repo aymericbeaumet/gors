@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+
+/usr/local/bin/gors-runtime-verify
+FLAGS=$(cat /usr/local/share/gors/rustc-flags)
+TARGET_TRIPLE=$(cat /usr/local/share/gors/runtime/target-triple)
+rustc --crate-name gors_warmup --edition 2024 --target "$TARGET_TRIPLE" $FLAGS \
+    --extern "__gors_runtime=/usr/local/share/gors/runtime/lib__gors_runtime.rlib" \
+    -o /tmp/gors-warmup /usr/local/share/gors/warmup.rs 2>/dev/null
+/tmp/gors-warmup > /dev/null 2>&1
+rm -f /tmp/gors-warmup
+echo GORS_BOOT_READY

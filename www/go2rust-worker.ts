@@ -12,7 +12,12 @@ import type {
 	WorkerCompileResult,
 	WorkerRequest,
 	WorkerResponse,
+	WorkerSuccessResult,
 } from "./go2rust-protocol";
+import {
+	admitRuntimeDependency,
+	runtimeDependencyCacheIdentity,
+} from "./runtime-dependency";
 
 // Cache generated code and mapping buffers by bytes, not entry count. A single
 // stdlib-heavy result can be much larger than dozens of small programs.
@@ -24,7 +29,9 @@ const worker = self as unknown as {
 };
 
 interface CacheEntry {
-	result: WorkerCompileResult;
+	identity: string;
+	goSource: string;
+	result: WorkerSuccessResult;
 	bytes: number;
 }
 
@@ -36,6 +43,7 @@ function createWorkerId(): string {
 
 const workerId = createWorkerId();
 const cache = new Map<string, CacheEntry>();
+const cacheIdentityBySource = new Map<string, string>();
 let cacheBytes = 0;
 let queuedRequest: CompileRequest | null = null;
 let activeRequestId: number | null = null;
@@ -69,37 +77,101 @@ function estimateResultBytes(
 	}
 
 	bytes += result.rustCode.length * 2;
+	bytes += result.runtimeDependency.contractIdentity.length * 2;
+	bytes += result.runtimeDependency.operationIds.byteLength;
 	bytes += result.sourceMap.positions.byteLength;
 	for (const name of result.sourceMap.names) bytes += name.length * 2 + 8;
 	return bytes;
 }
 
-function touchCache(goSource: string, entry: CacheEntry): void {
-	const existing = cache.get(goSource);
+function touchCache(
+	goSource: string,
+	result: WorkerSuccessResult,
+	bytes: number,
+): void {
+	const runtimeDependency = admitRuntimeDependency(
+		result.runtimeDependency,
+		"compiler worker cache insertion",
+	);
+	const identity = runtimeDependencyCacheIdentity(goSource, runtimeDependency);
+	const existingIdentity = cacheIdentityBySource.get(goSource);
+	const existing = existingIdentity ? cache.get(existingIdentity) : undefined;
 	if (existing) cacheBytes -= existing.bytes;
-	cache.delete(goSource);
+	if (existingIdentity) cache.delete(existingIdentity);
+	cacheIdentityBySource.delete(goSource);
 
-	if (entry.bytes > MAX_CACHE_BYTES) return;
+	if (bytes > MAX_CACHE_BYTES) return;
 
-	cache.set(goSource, entry);
-	cacheBytes += entry.bytes;
+	const entry: CacheEntry = {
+		identity,
+		goSource,
+		result: { ...result, runtimeDependency },
+		bytes,
+	};
+	cache.set(identity, entry);
+	cacheIdentityBySource.set(goSource, identity);
+	cacheBytes += bytes;
 	while (cacheBytes > MAX_CACHE_BYTES) {
-		const oldestKey = cache.keys().next().value;
-		if (oldestKey === undefined) break;
-		const oldest = cache.get(oldestKey);
-		cache.delete(oldestKey);
-		if (oldest) cacheBytes -= oldest.bytes;
+		const oldestIdentity = cache.keys().next().value;
+		if (oldestIdentity === undefined) break;
+		const oldest = cache.get(oldestIdentity);
+		cache.delete(oldestIdentity);
+		if (oldest) {
+			cacheBytes -= oldest.bytes;
+			if (cacheIdentityBySource.get(oldest.goSource) === oldestIdentity) {
+				cacheIdentityBySource.delete(oldest.goSource);
+			}
+		}
 	}
+}
+
+function readCached(goSource: string): CacheEntry | undefined {
+	const identity = cacheIdentityBySource.get(goSource);
+	if (identity === undefined) return undefined;
+	const entry = cache.get(identity);
+	if (!entry) {
+		throw new Error("compiler worker cache index references a missing entry");
+	}
+	const runtimeDependency = admitRuntimeDependency(
+		entry.result.runtimeDependency,
+		"compiler worker cache reuse",
+	);
+	const expectedIdentity = runtimeDependencyCacheIdentity(
+		goSource,
+		runtimeDependency,
+	);
+	if (
+		entry.goSource !== goSource ||
+		entry.identity !== identity ||
+		expectedIdentity !== identity
+	) {
+		throw new Error(
+			"compiler worker cache identity does not match its payload",
+		);
+	}
+	return {
+		...entry,
+		result: { ...entry.result, runtimeDependency },
+	};
 }
 
 function normalizeResult(result: GorsBuildResult): WorkerCompileResult {
 	try {
 		if (result.success) {
+			const runtimeDependency = admitRuntimeDependency(
+				{
+					schemaVersion: result.runtime_dependency_schema_version,
+					contractIdentity: result.runtime_contract_identity,
+					operationIds: result.get_runtime_operation_ids(),
+				},
+				"Wasm compiler result",
+			);
 			const mappingCount = result.mapping_count();
 			const sourceMapEnabled = mappingCount <= MAX_SOURCE_MAP_INDEX_MAPPINGS;
 			return {
 				success: true,
 				rustCode: result.output,
+				runtimeDependency,
 				sourceMap: {
 					success: sourceMapEnabled,
 					positions: sourceMapEnabled
@@ -116,6 +188,7 @@ function normalizeResult(result: GorsBuildResult): WorkerCompileResult {
 		return {
 			success: false,
 			rustCode: "",
+			runtimeDependency: null,
 			sourceMap: null,
 			error: {
 				message: result.error_message,
@@ -144,12 +217,17 @@ function transferableResult(result: WorkerCompileResult): {
 	// The cache retains the original buffer. Transfer a single compact copy to
 	// the UI instead of cloning every nested source-map tuple.
 	const positions = result.sourceMap.positions.slice();
+	const runtimeDependency = admitRuntimeDependency(
+		result.runtimeDependency,
+		"compiler worker transfer",
+	);
 	return {
 		result: {
 			...result,
+			runtimeDependency,
 			sourceMap: { ...result.sourceMap, positions },
 		},
-		transfer: [positions.buffer],
+		transfer: [positions.buffer, runtimeDependency.operationIds.buffer],
 	};
 }
 
@@ -180,23 +258,23 @@ async function executeCompile(request: CompileRequest): Promise<void> {
 	const startedAt = performance.now();
 	const timings: CompilerPhaseTiming[] = [];
 
-	const cached = cache.get(goSource);
-	// An older artifact cannot bypass reinstalling its source in the retained
-	// compiler; otherwise the following edit would fork from a stale revision.
-	if (cached && compilerSourceRevision.canReuseCachedResult(goSource)) {
-		const cacheStartedAt = performance.now();
-		postStatus(id, "cache-hit", startedAt);
-		touchCache(goSource, cached);
-		timings.push({
-			phase: "cache-hit",
-			durationMs: performance.now() - cacheStartedAt,
-		});
-		postStatus(id, "complete", startedAt);
-		postResult(id, cached.result, startedAt, timings, true);
-		return;
-	}
-
 	try {
+		const cached = readCached(goSource);
+		// An older artifact cannot bypass reinstalling its source in the retained
+		// compiler; otherwise the following edit would fork from a stale revision.
+		if (cached && compilerSourceRevision.canReuseCachedResult(goSource)) {
+			const cacheStartedAt = performance.now();
+			postStatus(id, "cache-hit", startedAt);
+			touchCache(goSource, cached.result, cached.bytes);
+			timings.push({
+				phase: "cache-hit",
+				durationMs: performance.now() - cacheStartedAt,
+			});
+			postStatus(id, "complete", startedAt);
+			postResult(id, cached.result, startedAt, timings, true);
+			return;
+		}
+
 		let phaseStartedAt = performance.now();
 		postStatus(id, "loading-wasm", startedAt);
 		const compiler = await loadCompiler();
@@ -236,10 +314,7 @@ async function executeCompile(request: CompileRequest): Promise<void> {
 		});
 
 		if (result.success) {
-			touchCache(goSource, {
-				result,
-				bytes: estimateResultBytes(goSource, result),
-			});
+			touchCache(goSource, result, estimateResultBytes(goSource, result));
 		}
 		postStatus(id, "complete", startedAt);
 		postResult(id, result, startedAt, timings, false);

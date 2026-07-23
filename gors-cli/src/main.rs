@@ -10,6 +10,8 @@ mod inspect;
 mod options;
 mod output;
 mod run;
+mod runtime_descriptor;
+mod runtime_link;
 mod rustc;
 mod timings;
 

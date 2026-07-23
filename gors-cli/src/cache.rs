@@ -5,12 +5,16 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::runtime_descriptor::{
+    LINK_OUTPUT_FILENAME, RuntimeDescriptorError, RuntimeLinkDescriptor, RuntimeLinkOutput,
+};
+
 mod output_manifest;
 
 pub use output_manifest::GeneratedOutputManifest;
 
 const CACHE_MANIFEST_FILENAME: &str = ".gors_cli_cache.json";
-const CACHE_MANIFEST_VERSION: u32 = 3;
+const CACHE_MANIFEST_VERSION: u32 = 4;
 const CACHE_MAX_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 const CACHE_MAX_ENTRIES: usize = 256;
 const CACHE_MAX_AGE: Duration = Duration::from_secs(14 * 24 * 60 * 60);
@@ -50,8 +54,15 @@ pub struct CliCacheManifest {
     inputs: InputSnapshot,
     generated_files: BTreeMap<String, String>,
     sourcemap: Option<FileArtifact>,
-    executable: Option<FileArtifact>,
+    runtime: RuntimeLinkDescriptor,
+    executable: Option<ExecutableArtifact>,
     last_used_unix_ms: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct ExecutableArtifact {
+    file: FileArtifact,
+    runtime_link_plan_identity: String,
 }
 
 impl CacheRequest {
@@ -70,7 +81,7 @@ impl CacheRequest {
         gorspath: Option<&OsStr>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut hasher = Sha256::new();
-        hash_part(&mut hasher, b"gors-cli-cache-request-v3");
+        hash_part(&mut hasher, b"gors-cli-cache-request-v4");
         hash_part(&mut hasher, options.command.as_bytes());
         hash_part(
             &mut hasher,
@@ -85,7 +96,10 @@ impl CacheRequest {
         hash_part(&mut hasher, gors::STDLIB_VERSION.as_bytes());
         hash_part(&mut hasher, gors::COMPILER_FINGERPRINT.as_bytes());
         hash_part(&mut hasher, cli_abi_fingerprint.as_bytes());
-        hash_part(&mut hasher, crate::rustc::RUST_TOOLCHAIN.as_bytes());
+        hash_part(
+            &mut hasher,
+            gors_runtime_abi::NATIVE_RUNTIME_RUST_TOOLCHAIN.as_bytes(),
+        );
         hash_part(&mut hasher, crate::rustc::RUST_EDITION.as_bytes());
         hash_part(&mut hasher, std::env::consts::OS.as_bytes());
         hash_part(&mut hasher, std::env::consts::ARCH.as_bytes());
@@ -196,6 +210,7 @@ impl CliCacheManifest {
         inputs: InputSnapshot,
         generated_files: BTreeMap<String, String>,
         sourcemap: Option<FileArtifact>,
+        runtime: RuntimeLinkDescriptor,
     ) -> Self {
         Self {
             version: CACHE_MANIFEST_VERSION,
@@ -203,6 +218,7 @@ impl CliCacheManifest {
             inputs,
             generated_files,
             sourcemap,
+            runtime,
             executable: None,
             last_used_unix_ms: unix_time_ms(),
         }
@@ -233,6 +249,9 @@ impl CliCacheManifest {
         }
 
         let output_manifest = GeneratedOutputManifest::load(output_dir)?;
+        if output_manifest.runtime() != &manifest.runtime {
+            return None;
+        }
         if output_manifest.len() != manifest.generated_files.len() {
             return None;
         }
@@ -249,21 +268,55 @@ impl CliCacheManifest {
         Some(manifest)
     }
 
-    pub fn executable_is_valid(&self, expected_path: &Path) -> bool {
+    pub fn runtime_dependency(
+        &self,
+    ) -> Result<gors_runtime_abi::RuntimeDependency, RuntimeDescriptorError> {
+        self.runtime.reconstruct_dependency()
+    }
+
+    #[cfg(test)]
+    pub fn runtime(&self) -> &RuntimeLinkDescriptor {
+        &self.runtime
+    }
+
+    pub fn refresh_runtime(&mut self, runtime: RuntimeLinkDescriptor) {
+        self.runtime = runtime;
+        self.last_used_unix_ms = unix_time_ms();
+    }
+
+    fn record_generated_file(&mut self, filename: &str, content_hash: String) {
+        self.generated_files
+            .insert(filename.to_string(), content_hash);
+    }
+
+    pub fn executable_is_valid(
+        &self,
+        expected_path: &Path,
+        runtime: &RuntimeLinkDescriptor,
+    ) -> bool {
         let Ok(expected_path) = normalized_path(expected_path) else {
             return false;
         };
-        self.executable
-            .as_ref()
-            .is_some_and(|artifact| artifact.path == expected_path && artifact.is_current())
+        self.executable.as_ref().is_some_and(|artifact| {
+            artifact.file.path == expected_path
+                && artifact.file.is_current()
+                && artifact.runtime_link_plan_identity == runtime.link_plan_identity()
+        })
     }
 
     pub fn generated_file_count(&self) -> usize {
         self.generated_files.len()
     }
 
-    pub fn set_executable(&mut self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-        self.executable = Some(FileArtifact::capture(path)?);
+    pub fn set_executable(
+        &mut self,
+        path: &Path,
+        runtime: &RuntimeLinkDescriptor,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.executable = Some(ExecutableArtifact {
+            file: FileArtifact::capture(path)?,
+            runtime_link_plan_identity: runtime.link_plan_identity().to_string(),
+        });
         self.last_used_unix_ms = unix_time_ms();
         Ok(())
     }
@@ -287,12 +340,39 @@ impl CliCacheManifest {
     }
 }
 
-pub fn generated_file_hashes(output: &gors::printer::GeneratedOutput) -> BTreeMap<String, String> {
-    output
+pub fn generated_file_hashes(
+    output: &gors::printer::GeneratedOutput,
+    runtime: &RuntimeLinkOutput,
+) -> Result<BTreeMap<String, String>, serde_json::Error> {
+    let mut hashes: BTreeMap<_, _> = output
         .files
         .iter()
         .map(|(filename, source)| (filename.clone(), sha2_hash(source.as_bytes())))
-        .collect()
+        .collect();
+    hashes.insert(
+        LINK_OUTPUT_FILENAME.to_string(),
+        sha2_hash(runtime.json()?.as_bytes()),
+    );
+    Ok(hashes)
+}
+
+/// Publish a newly selected provider for an otherwise reusable generated-Rust
+/// cache entry. A crash between the two atomic manifests leaves a mismatch,
+/// which is deliberately treated as a cache miss on the next invocation.
+pub fn refresh_runtime_selection(
+    output_dir: &Path,
+    manifest: &mut CliCacheManifest,
+    runtime: &RuntimeLinkOutput,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut generated = GeneratedOutputManifest::load(output_dir)
+        .ok_or("generated-output manifest disappeared during runtime reselection")?;
+    let link_hash = crate::output::write_runtime_link_locked(runtime, output_dir)?;
+    generated.refresh_runtime(runtime.link().clone());
+    generated.record(LINK_OUTPUT_FILENAME.to_string(), link_hash.clone());
+    generated.save(output_dir)?;
+    manifest.refresh_runtime(runtime.link().clone());
+    manifest.record_generated_file(LINK_OUTPUT_FILENAME, link_hash);
+    manifest.save(output_dir)
 }
 
 pub fn maybe_prune_cli_cache(

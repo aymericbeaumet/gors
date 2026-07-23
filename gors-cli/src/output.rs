@@ -3,6 +3,8 @@ use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 
+use crate::runtime_descriptor::{LINK_OUTPUT_FILENAME, RuntimeLinkOutput};
+
 pub struct FileWriteStats {
     pub written: usize,
     pub skipped: usize,
@@ -63,17 +65,19 @@ pub fn prepare_atomic_write(
 pub fn write_generated_output(
     output: &gors::printer::GeneratedOutput,
     output_dir: &Path,
+    runtime: &RuntimeLinkOutput,
 ) -> Result<FileWriteStats, Box<dyn std::error::Error>> {
     let _output_lock = OutputDirectoryLock::acquire(output_dir)?;
-    write_generated_output_locked(output, output_dir)
+    write_generated_output_locked(output, output_dir, runtime)
 }
 
 pub fn write_generated_output_locked(
     output: &gors::printer::GeneratedOutput,
     output_dir: &Path,
+    runtime: &RuntimeLinkOutput,
 ) -> Result<FileWriteStats, Box<dyn std::error::Error>> {
     let previous_manifest = GeneratedOutputManifest::load(output_dir);
-    let mut new_manifest = GeneratedOutputManifest::new();
+    let mut new_manifest = GeneratedOutputManifest::new(runtime.link().clone());
     let mut stats = FileWriteStats {
         written: 0,
         skipped: 0,
@@ -81,7 +85,16 @@ pub fn write_generated_output_locked(
     };
     let mut pending_writes = Vec::new();
 
-    for (filename, source) in &output.files {
+    let runtime_source = runtime.json()?;
+    let generated_sources = output
+        .files
+        .iter()
+        .map(|(filename, source)| (filename.as_str(), source.as_str()))
+        .chain(std::iter::once((
+            LINK_OUTPUT_FILENAME,
+            runtime_source.as_str(),
+        )));
+    for (filename, source) in generated_sources {
         let file_path = output_dir.join(filename);
         let current_hash = sha2_hash(source);
         let unchanged = previous_manifest
@@ -96,7 +109,7 @@ pub fn write_generated_output_locked(
             stats.written += 1;
         }
 
-        new_manifest.record(filename.clone(), current_hash);
+        new_manifest.record(filename.to_string(), current_hash);
     }
 
     // Publish leaf modules before the coordinator files that reference them.
@@ -109,7 +122,7 @@ pub fn write_generated_output_locked(
 
     if let Some(previous_manifest) = &previous_manifest {
         for (filename, output_file) in previous_manifest.files() {
-            if output.files.contains_key(filename) {
+            if output.files.contains_key(filename) || filename == LINK_OUTPUT_FILENAME {
                 continue;
             }
             let file_path = output_dir.join(output_file);
@@ -118,6 +131,16 @@ pub fn write_generated_output_locked(
                 stats.removed += 1;
             }
         }
+    }
+
+    // Schema-1 output manifests are intentionally unreadable after the
+    // external-runtime cut, so explicitly remove the one legacy source file
+    // they could leave behind. There is no source-bundled fallback.
+    let stale_runtime_filename = format!("{}.rs", gors_runtime_abi::RUST_RUNTIME_CRATE_NAME);
+    let stale_runtime_source = output_dir.join(&stale_runtime_filename);
+    if !output.files.contains_key(&stale_runtime_filename) && stale_runtime_source.is_file() {
+        std::fs::remove_file(stale_runtime_source)?;
+        stats.removed += 1;
     }
 
     new_manifest.save(output_dir)?;
@@ -144,6 +167,22 @@ pub fn write_source_map(
     temp.as_file_mut().sync_all()?;
     temp.persist(path).map_err(|error| error.error)?;
     FileArtifact::capture(path)
+}
+
+/// Atomically refresh the terminal link descriptor for a generated-output
+/// cache hit without rewriting Rust sources.
+pub fn write_runtime_link_locked(
+    runtime: &RuntimeLinkOutput,
+    output_dir: &Path,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let source = runtime.json()?;
+    let path = output_dir.join(LINK_OUTPUT_FILENAME);
+    if std::fs::read(&path).ok().as_deref() != Some(source.as_bytes()) {
+        prepare_atomic_write(&path, &source)?
+            .persist(path)
+            .map_err(|error| error.error)?;
+    }
+    Ok(sha2_hash(&source))
 }
 
 fn sha2_hash(content: &str) -> String {

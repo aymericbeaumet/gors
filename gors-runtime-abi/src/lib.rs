@@ -23,6 +23,7 @@ mod link;
 mod operations;
 mod requirement;
 mod target;
+mod toolchain;
 
 pub use artifact::{
     ArtifactSchemaVersion, CURRENT_ARTIFACT_SCHEMA, RuntimeArtifactFormat, RuntimeArtifactManifest,
@@ -35,14 +36,24 @@ pub use effects::{
     AllocationEffect, ArgumentMutationEffect, GoPanicCondition, HostIoEffect, RuntimeEffects,
 };
 pub use identity::{
-    ArtifactIdentity, ContractIdentity, ImplementationHash, LinkPlanIdentity, ToolchainIdentity,
+    ArtifactIdentity, CompatibilityIdentity, ContractIdentity, ImplementationHash,
+    LinkPlanIdentity, ProducerIdentity,
 };
 pub use link::{
-    CURRENT_LINK_PLAN_SCHEMA, RequirementContractError, RuntimeDependency, RuntimeLinkError,
-    RuntimeLinkPlan, RuntimeLinkRequest,
+    CURRENT_LINK_PLAN_SCHEMA, CURRENT_RUNTIME_DEPENDENCY_SCHEMA, RequirementContractError,
+    RuntimeDependency, RuntimeLinkError, RuntimeLinkPlan, RuntimeLinkRequest,
 };
 pub use operations::{
     PrimitiveOp, PrimitiveOpId, RuntimeOp, RuntimeOpId, RuntimeSignature, RuntimeType,
+    UnknownRuntimeOpId,
 };
 pub use requirement::RuntimeRequirement;
 pub use target::{Endianness, TargetCapabilities, TargetCapability, TargetModel, TargetModelError};
+pub use toolchain::{
+    CURRENT_RUST_RLIB_COMPATIBILITY_SCHEMA, CURRENT_RUST_RLIB_PRODUCER_SCHEMA,
+    CURRENT_RUST_TARGET_LIBDIR_SCHEMA, NATIVE_RUNTIME_RUST_TOOLCHAIN, RUST_RUNTIME_CODEGEN_UNITS,
+    RUST_RUNTIME_CRATE_NAME, RUST_RUNTIME_EDITION, RUST_RUNTIME_EMBED_BITCODE,
+    RUST_RUNTIME_METADATA, RUST_RUNTIME_OPT_LEVEL, RUST_RUNTIME_PANIC_STRATEGY,
+    RUST_RUNTIME_REMAP_ROOT, RustRlibCompatibility, RustRlibProducer, RustRlibRecordError,
+    RustTargetLibdirError, canonical_target_libdir_record,
+};

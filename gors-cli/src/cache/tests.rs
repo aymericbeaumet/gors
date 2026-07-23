@@ -32,6 +32,7 @@ fn write_expired_manifest(path: &Path) {
         },
         BTreeMap::new(),
         None,
+        crate::runtime_descriptor::test_runtime_link_descriptor(),
     )
     .with_last_used(old_timestamp)
     .save(path)
@@ -152,17 +153,38 @@ fn cache_admission_compares_supplied_snapshot_without_rereading_sources() {
     let captured = InputSnapshot::capture(&loaded).unwrap();
     let generated_source = "fn main() {}\n";
     std::fs::write(output_directory.join("main.rs"), generated_source).unwrap();
-    let generated_files = BTreeMap::from([(
-        "main.rs".to_string(),
-        sha2_hash(generated_source.as_bytes()),
-    )]);
-    let mut output_manifest = GeneratedOutputManifest::new();
+    let runtime_output = crate::runtime_descriptor::test_runtime_link_output();
+    let runtime_source = runtime_output.json().unwrap();
+    std::fs::write(
+        output_directory.join(crate::runtime_descriptor::LINK_OUTPUT_FILENAME),
+        &runtime_source,
+    )
+    .unwrap();
+    let generated_files = BTreeMap::from([
+        (
+            "main.rs".to_string(),
+            sha2_hash(generated_source.as_bytes()),
+        ),
+        (
+            crate::runtime_descriptor::LINK_OUTPUT_FILENAME.to_string(),
+            sha2_hash(runtime_source.as_bytes()),
+        ),
+    ]);
+    let runtime = runtime_output.link().clone();
+    let mut output_manifest = GeneratedOutputManifest::new(runtime.clone());
     output_manifest.record(
         "main.rs".to_string(),
         generated_files.get("main.rs").unwrap().clone(),
     );
+    output_manifest.record(
+        crate::runtime_descriptor::LINK_OUTPUT_FILENAME.to_string(),
+        generated_files
+            .get(crate::runtime_descriptor::LINK_OUTPUT_FILENAME)
+            .unwrap()
+            .clone(),
+    );
     output_manifest.save(&output_directory).unwrap();
-    CliCacheManifest::new(&request(), captured.clone(), generated_files, None)
+    CliCacheManifest::new(&request(), captured.clone(), generated_files, None, runtime)
         .save(&output_directory)
         .unwrap();
 
@@ -226,16 +248,41 @@ fn cache_manifest_round_trips_and_validates_executable_content() {
         },
         BTreeMap::new(),
         None,
+        crate::runtime_descriptor::test_runtime_link_descriptor(),
     );
-    manifest.set_executable(&executable).unwrap();
+    let runtime = manifest.runtime().clone();
+    manifest.set_executable(&executable, &runtime).unwrap();
     manifest.save(temp.path()).unwrap();
 
     let loaded: CliCacheManifest =
         serde_json::from_slice(&std::fs::read(temp.path().join(CACHE_MANIFEST_FILENAME)).unwrap())
             .unwrap();
-    assert!(loaded.executable_is_valid(&executable));
+    assert!(loaded.executable_is_valid(&executable, &runtime));
     std::fs::write(&executable, "changed").unwrap();
-    assert!(!loaded.executable_is_valid(&executable));
+    assert!(!loaded.executable_is_valid(&executable, &runtime));
+}
+
+#[test]
+fn executable_reuse_requires_the_exact_runtime_link_plan() {
+    let temp = tempfile::tempdir().unwrap();
+    let executable = temp.path().join("main");
+    std::fs::write(&executable, "binary").unwrap();
+    let selected = crate::runtime_descriptor::test_runtime_link_descriptor_with_payload(b"one");
+    let changed = crate::runtime_descriptor::test_runtime_link_descriptor_with_payload(b"two");
+    let mut manifest = CliCacheManifest::new(
+        &request(),
+        InputSnapshot {
+            files: BTreeMap::new(),
+            directories: BTreeMap::new(),
+        },
+        BTreeMap::new(),
+        None,
+        selected.clone(),
+    );
+    manifest.set_executable(&executable, &selected).unwrap();
+
+    assert!(manifest.executable_is_valid(&executable, &selected));
+    assert!(!manifest.executable_is_valid(&executable, &changed));
 }
 
 #[test]

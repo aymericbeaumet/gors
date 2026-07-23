@@ -11,6 +11,11 @@ import type {
 export interface HarnessResult {
 	success: boolean;
 	rustCode: string;
+	runtimeDependency: {
+		schemaVersion: number;
+		contractIdentity: string;
+		operationIds: number[];
+	} | null;
 	durationMs: number;
 	workerDurationMs: number;
 	timings: CompilerPhaseTiming[];
@@ -64,6 +69,13 @@ async function compile(source: string): Promise<HarnessResult> {
 	return {
 		success: result.success,
 		rustCode: result.rustCode,
+		runtimeDependency: result.success
+			? {
+					schemaVersion: result.runtimeDependency.schemaVersion,
+					contractIdentity: result.runtimeDependency.contractIdentity,
+					operationIds: Array.from(result.runtimeDependency.operationIds),
+				}
+			: null,
 		durationMs: result.durationMs,
 		workerDurationMs: result.workerDurationMs,
 		timings: result.timings,
@@ -102,6 +114,13 @@ window.__gorsCompilerHarness = {
 				.then((result) => ({
 					success: result.success,
 					rustCode: result.rustCode,
+					runtimeDependency: result.success
+						? {
+								schemaVersion: result.runtimeDependency.schemaVersion,
+								contractIdentity: result.runtimeDependency.contractIdentity,
+								operationIds: Array.from(result.runtimeDependency.operationIds),
+							}
+						: null,
 					durationMs: result.durationMs,
 					workerDurationMs: result.workerDurationMs,
 					timings: result.timings,

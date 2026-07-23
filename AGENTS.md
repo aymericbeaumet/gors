@@ -192,18 +192,52 @@ unconditionally rather than incorrectly omitting it for a type-only use.
 symbols, semantic contract version, and required capabilities; compiler query
 keys retain its typed `ContractIdentity`, never a scraped version string. A
 separate `RuntimeArtifactManifest` composes that contract with the exact target
-model, provided capabilities, and implementation hash. Target or implementation
-changes select another artifact without pretending the language contract
-changed. `RuntimeType` names semantic ABI categories, not generated Rust path
-spellings; runtime crate paths belong to artifact selection and terminal
-emission so changing packaging does not pretend the language contract changed.
+model, provided capabilities, consumer compatibility identity, and
+implementation hash. Immutable `RustRlibProducer` provenance retains the build
+host and pre-build target sysroot but never participates in consumer selection;
+`RustRlibCompatibility` removes only the `rustc -vV` host and binds the target
+model plus canonical recursive target-libdir inventory. Never relabel producer
+provenance after a cross-build or target-sysroot trim. `RuntimeType` names
+semantic ABI categories, not generated Rust path spellings; runtime crate paths
+belong to artifact selection and terminal emission so changing packaging does
+not pretend the language contract changed.
 
-The semantic compiler does not parse, inject, or patch runtime source. The
-remaining source-bundled bootstrap packaging is transitional and must be removed
-in one hard cut: generated Rust will reference typed Rust-IR runtime operations,
-and artifact packaging will select, validate, and link one content-addressed
-precompiled runtime artifact. Do not add a second optional sidecar path beside
-the bundled module.
+The semantic compiler does not parse, inject, patch, or emit runtime source.
+Every `CompiledProgram` and printer `GeneratedOutput` carries an unconditional
+target-neutral `RuntimeDependency`; generated Rust references the absolute
+external crate `::__gors_runtime` and contains no runtime module or source file.
+Native distributions build the runtime once as a fixed-recipe rlib, embed its
+exact bytes plus immutable producer provenance and a schema-2
+`RuntimeArtifactManifest`, verify every identity, and atomically materialize it
+in a content-addressed cache. The schema-2 terminal link descriptor carries
+both `producer_identity` and `compatibility_identity`; only compatibility enters
+artifact selection and the link-plan identity. Terminal consumers must select
+one compatible `RuntimeLinkPlan` and pass exactly one
+`--extern __gors_runtime=<artifact>` to rustc. Generated-Rust caches retain only
+the dependency and reselect the current provider; executable caches additionally
+key on the exact link-plan identity. There is no bundled, optional, or fallback
+runtime path. Native provider production must resolve
+`NATIVE_RUNTIME_RUST_TOOLCHAIN` through rustup rather than inheriting Cargo's
+arbitrary `RUSTC`; generated-program compilation consumes that same exact
+toolchain. Target-rustlib inventories reject absolute symlinks and relative
+symlinks whose lexical resolution escapes the inventory root.
+
+The current CLI cache still stores the refreshed terminal link sidecar beside
+generated Rust. The next cache-schema cut must separate target-neutral
+generated-Rust identity from the exact terminal rustc action; do not deepen
+that temporary coupling or treat provider selection as a semantic compiler
+input.
+
+The browser compiler remains target-neutral. It transports only the runtime
+dependency schema, contract identity, and canonical operation IDs; the V86
+runner owns selection of its separately precompiled target artifact. The guest
+uses the Rust package version captured by its digest-bound Alpine resolution,
+not the native workspace host toolchain. If its rustlib tree is trimmed, retain
+the original producer identity and recompute only consumer compatibility before
+the final external-link smoke. Never make the Wasm compiler select or embed a
+runnable-program runtime provider. V86 publication is manifest-last: admission
+must verify the provider hash, rootfs index hash, exact referenced blob-set
+identity and count, and every content-addressed blob before reusing an image.
 
 ### Resolver boundary
 
@@ -508,7 +542,7 @@ weaken parser behavior to fit the bootstrap backend.
 
     gors/
       src/
-        artifact/           terminal runtime and artifact packaging inputs
+        artifact/           embedded native runtime provider and CAS publication
         scanner/            Go tokenization
         parser/             independent Go file parsing
         ast/                parser-owned Go AST

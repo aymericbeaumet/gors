@@ -1,0 +1,65 @@
+#!/bin/sh
+set -u
+
+ID=${1-}
+case "$ID" in
+    ''|*[!0-9]*)
+        printf '%s\n' 'gors-compile: job ID must contain only decimal digits' >&2
+        exit 2
+        ;;
+esac
+
+REQUEST="/tmp/${ID}.runtime.json"
+SOURCE="/tmp/${ID}.rs"
+BINARY="/tmp/${ID}.bin"
+STATUS="/tmp/${ID}.compile.status"
+ERROR="/tmp/${ID}.compile.err"
+PROVIDER_MANIFEST=/usr/local/share/gors/runtime/provider.json
+RUNTIME_RLIB=/usr/local/share/gors/runtime/lib__gors_runtime.rlib
+TARGET_TRIPLE=$(cat /usr/local/share/gors/runtime/target-triple)
+
+finish() {
+    printf '%s' "$1" >"$STATUS"
+    printf 'GORS_COMPILE_DONE:%s\n' "$ID"
+}
+
+reject() {
+    printf 'gors-compile: %s\n' "$1" >>"$ERROR"
+    rm -f "$BINARY"
+    finish 2
+    exit 0
+}
+
+rm -f "$BINARY" "$STATUS" "$ERROR"
+[ -f "$SOURCE" ] || reject "missing Rust source ${ID}.rs"
+[ -f "$REQUEST" ] || reject "missing runtime request ${ID}.runtime.json"
+
+if ! /usr/local/bin/gors-runtime-verify > /dev/null 2>"${ERROR}.runtime"; then
+    cat "${ERROR}.runtime" >"$ERROR"
+    rm -f "${ERROR}.runtime"
+    reject "runtime provider verification failed"
+fi
+rm -f "${ERROR}.runtime"
+
+SCHEMA=$(jq -er '.runtime_dependency_schema_version' "$PROVIDER_MANIFEST") \
+    || reject "runtime provider has no dependency schema"
+CONTRACT=$(jq -er '.contract' "$PROVIDER_MANIFEST") \
+    || reject "runtime provider has no contract"
+SUPPORTED_OPERATIONS=$(jq -er '.supported_operation_ids | join(",")' \
+    "$PROVIDER_MANIFEST") \
+    || reject "runtime provider has no operation catalog"
+if ! /usr/local/libexec/gors-runtime-dependency-validator \
+    "$REQUEST" \
+    "$SCHEMA" \
+    "$CONTRACT" \
+    "$SUPPORTED_OPERATIONS" \
+    2>"$ERROR"; then
+    reject "runtime request must use the current exact schema, contract, and supported strictly ascending operation IDs"
+fi
+
+FLAGS=$(cat /usr/local/share/gors/rustc-flags)
+rustc --crate-name gors_program --edition 2024 --target "$TARGET_TRIPLE" $FLAGS \
+    --extern "__gors_runtime=${RUNTIME_RLIB}" \
+    -o "$BINARY" "$SOURCE" 2>"$ERROR"
+RESULT=$?
+finish "$RESULT"

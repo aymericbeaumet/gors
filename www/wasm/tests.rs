@@ -54,6 +54,29 @@ func main() {
     assert!(result.mapping_count() > 0);
     assert!(!result.get_mapping_positions().is_empty());
     assert_ne!(result.get_source_map_json(), "");
+    assert_eq!(result.runtime_dependency_schema_version(), 1);
+    assert_eq!(
+        result.runtime_contract_identity(),
+        gors::compiler::db::RuntimeAbiId::current().to_string()
+    );
+    assert_eq!(result.get_runtime_operation_ids(), [14, 16]);
+    assert!(result.output().contains("::__gors_runtime::"));
+    assert!(!result.output().contains("mod __gors_runtime"));
+}
+
+#[test]
+fn runtime_dependency_is_unconditional_and_target_neutral() {
+    let result = GorsCompiler::new().build_rust("package main\nfunc main() {}\n".to_string());
+
+    assert!(result.success());
+    assert_eq!(result.runtime_dependency_schema_version(), 1);
+    assert_eq!(
+        result.runtime_contract_identity(),
+        gors::compiler::db::RuntimeAbiId::current().to_string()
+    );
+    assert!(result.get_runtime_operation_ids().is_empty());
+    assert!(!result.output().contains("mod __gors_runtime"));
+    assert!(!result.output().contains("runtime artifact"));
 }
 
 #[test]
@@ -182,6 +205,9 @@ func main() {
             .contains("imports are not implemented by the HIR/MIR backend")
     );
     assert_eq!(result.error_source_line(), "package main");
+    assert_eq!(result.runtime_dependency_schema_version(), 0);
+    assert_eq!(result.runtime_contract_identity(), "");
+    assert!(result.get_runtime_operation_ids().is_empty());
 }
 
 #[test]

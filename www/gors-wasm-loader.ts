@@ -8,6 +8,8 @@ import * as bindings from "./wasm/pkg/gors_bg.js";
 export interface GorsBuildResult {
 	readonly success: boolean;
 	readonly output: string;
+	readonly runtime_dependency_schema_version: number;
+	readonly runtime_contract_identity: string;
 	readonly error_message: string;
 	readonly error_line: number;
 	/** One-based UTF-16 code-unit column for browser editors. */
@@ -15,6 +17,7 @@ export interface GorsBuildResult {
 	/** One-based exclusive UTF-16 code-unit column for browser editors. */
 	readonly error_end_column: number;
 	readonly error_kind: string;
+	get_runtime_operation_ids(): Uint16Array;
 	get_mapping_names_json(): string;
 	get_mapping_positions(): Uint32Array;
 	mapping_count(): number;

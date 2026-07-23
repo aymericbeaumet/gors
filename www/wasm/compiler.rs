@@ -5,6 +5,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::build_result::BuildResult;
 use crate::comments;
+use crate::runtime_dependency::RuntimeDependencyProtocol;
 
 /// Explicitly owned browser compiler state.
 ///
@@ -68,7 +69,7 @@ fn build_rust_with_session(
         source_map_plan.entry_source_name(),
         &input,
     );
-    let rust_source = match gors::printer::generate_single(compiled) {
+    let mut generated = match gors::printer::generate_single(compiled) {
         Ok(output) => output,
         Err(error) => {
             return BuildResult::error_result(Diagnostic::new(
@@ -80,11 +81,41 @@ fn build_rust_with_session(
             ));
         }
     };
+    let runtime_dependency = match RuntimeDependencyProtocol::from_generated_output(&generated) {
+        Ok(dependency) => dependency,
+        Err(error) => {
+            return BuildResult::error_result(Diagnostic::new(
+                "main.go",
+                0,
+                0,
+                error.to_string(),
+                DiagnosticKind::Compiler,
+            ));
+        }
+    };
+    let Some(rust_source) = generated.files.remove("main.rs") else {
+        return BuildResult::error_result(Diagnostic::new(
+            "main.go",
+            0,
+            0,
+            "single-file Rust generation omitted main.rs",
+            DiagnosticKind::Compiler,
+        ));
+    };
+    if !generated.files.is_empty() {
+        return BuildResult::error_result(Diagnostic::new(
+            "main.go",
+            0,
+            0,
+            "single-file Rust generation produced unexpected additional files",
+            DiagnosticKind::Compiler,
+        ));
+    }
 
     let initial_source_map = source_map_plan.build(&rust_source);
     let (output, source_map) =
         comments::insert_and_remap(&rust_source, &comments, &initial_source_map);
-    BuildResult::success_rust(output, source_map)
+    BuildResult::success_rust(output, source_map, runtime_dependency)
 }
 
 fn browser_program_input(

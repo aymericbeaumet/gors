@@ -8,7 +8,7 @@ use crate::artifact::{
 use crate::contract::RuntimeAbiManifest;
 use crate::encoding::CanonicalEncoder;
 use crate::identity::{
-    ArtifactIdentity, ContractIdentity, ImplementationHash, LinkPlanIdentity, ToolchainIdentity,
+    ArtifactIdentity, CompatibilityIdentity, ContractIdentity, ImplementationHash, LinkPlanIdentity,
 };
 use crate::operations::RuntimeOp;
 use crate::requirement::RuntimeRequirement;
@@ -16,6 +16,12 @@ use crate::target::{TargetCapability, TargetModel};
 
 /// Current canonical encoding schema for validated runtime link plans.
 pub const CURRENT_LINK_PLAN_SCHEMA: u32 = 1;
+
+/// Current wire schema for a target-neutral compiled-program dependency.
+///
+/// Consumers must reject any other schema rather than guessing how stable
+/// operation IDs from another protocol should be interpreted.
+pub const CURRENT_RUNTIME_DEPENDENCY_SCHEMA: u32 = 1;
 
 /// A selected operation that is absent from the named runtime contract.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -92,7 +98,7 @@ pub struct RuntimeLinkRequest {
     dependency: RuntimeDependency,
     target: TargetModel,
     format: RuntimeArtifactFormat,
-    toolchain: ToolchainIdentity,
+    compatibility: CompatibilityIdentity,
 }
 
 impl RuntimeLinkRequest {
@@ -101,13 +107,13 @@ impl RuntimeLinkRequest {
         dependency: RuntimeDependency,
         target: TargetModel,
         format: RuntimeArtifactFormat,
-        toolchain: ToolchainIdentity,
+        compatibility: CompatibilityIdentity,
     ) -> Self {
         Self {
             dependency,
             target,
             format,
-            toolchain,
+            compatibility,
         }
     }
 
@@ -127,15 +133,15 @@ impl RuntimeLinkRequest {
     }
 
     #[must_use]
-    pub const fn toolchain(&self) -> ToolchainIdentity {
-        self.toolchain
+    pub const fn compatibility(&self) -> CompatibilityIdentity {
+        self.compatibility
     }
 
     fn encode(&self, encoder: &mut CanonicalEncoder) {
         self.dependency.encode(encoder);
         self.target.encode(encoder);
         encoder.u8(self.format.canonical_tag());
-        encoder.fixed_bytes(self.toolchain.as_bytes());
+        encoder.fixed_bytes(self.compatibility.as_bytes());
     }
 }
 
@@ -158,9 +164,9 @@ pub enum RuntimeLinkError {
         required: RuntimeArtifactFormat,
         provided: RuntimeArtifactFormat,
     },
-    ToolchainMismatch {
-        required: ToolchainIdentity,
-        provided: ToolchainIdentity,
+    CompatibilityMismatch {
+        required: CompatibilityIdentity,
+        provided: CompatibilityIdentity,
     },
     MissingCapability {
         operation: RuntimeOp,
@@ -189,9 +195,9 @@ impl Display for RuntimeLinkError {
                 formatter,
                 "runtime artifact format {provided:?} does not match required format {required:?}"
             ),
-            Self::ToolchainMismatch { required, provided } => write!(
+            Self::CompatibilityMismatch { required, provided } => write!(
                 formatter,
-                "runtime artifact toolchain {provided} does not match required toolchain {required}"
+                "runtime artifact compatibility {provided} does not match required compatibility {required}"
             ),
             Self::MissingCapability {
                 operation,
@@ -284,10 +290,10 @@ impl RuntimeArtifactManifest {
                 provided: self.format(),
             });
         }
-        if self.toolchain() != request.toolchain() {
-            return Err(RuntimeLinkError::ToolchainMismatch {
-                required: request.toolchain(),
-                provided: self.toolchain(),
+        if self.compatibility() != request.compatibility() {
+            return Err(RuntimeLinkError::CompatibilityMismatch {
+                required: request.compatibility(),
+                provided: self.compatibility(),
             });
         }
         for operation in request.dependency().requirement().iter() {

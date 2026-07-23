@@ -5,26 +5,27 @@ use sha2::{Digest as _, Sha256};
 
 use gors_runtime_abi::{
     AllocationEffect, ArgumentMutationEffect, ArtifactSchemaVersion, CURRENT_ARTIFACT_SCHEMA,
-    CURRENT_CONTRACT_VERSION, CURRENT_MANIFEST_SCHEMA, ContractVersion, DataWidth, Endianness,
-    GoPanicCondition, GoSemanticModel, HostIoEffect, ImplementationHash, PrimitiveOp,
-    RuntimeAbiManifest, RuntimeArtifactFormat, RuntimeArtifactManifest, RuntimeDependency,
-    RuntimeLinkError, RuntimeLinkRequest, RuntimeOp, RuntimeRequirement, RuntimeType,
-    TargetCapabilities, TargetCapability, TargetModel, TargetModelError, ToolchainIdentity,
+    CURRENT_CONTRACT_VERSION, CURRENT_MANIFEST_SCHEMA, CompatibilityIdentity, ContractVersion,
+    DataWidth, Endianness, GoPanicCondition, GoSemanticModel, HostIoEffect, ImplementationHash,
+    PrimitiveOp, RuntimeAbiManifest, RuntimeArtifactFormat, RuntimeArtifactManifest,
+    RuntimeDependency, RuntimeLinkError, RuntimeLinkRequest, RuntimeOp, RuntimeRequirement,
+    RuntimeType, RustRlibCompatibility, TargetCapabilities, TargetCapability, TargetModel,
+    TargetModelError,
 };
 
 fn target_model(triple: &str) -> Result<TargetModel, TargetModelError> {
     TargetModel::new(triple, DataWidth::Bits32, Endianness::Little)
 }
 
-fn toolchain_identity(label: &[u8]) -> ToolchainIdentity {
-    ToolchainIdentity::sha256(label)
+fn compatibility_identity(label: &[u8]) -> CompatibilityIdentity {
+    CompatibilityIdentity::sha256(label)
 }
 
 fn artifact(
     contract: &RuntimeAbiManifest,
     target: TargetModel,
     capabilities: impl IntoIterator<Item = TargetCapability>,
-    toolchain: ToolchainIdentity,
+    toolchain: CompatibilityIdentity,
     implementation: &[u8],
 ) -> RuntimeArtifactManifest {
     RuntimeArtifactManifest::new(
@@ -41,7 +42,7 @@ fn request(
     contract: &RuntimeAbiManifest,
     requirement: impl IntoIterator<Item = RuntimeOp>,
     target: TargetModel,
-    toolchain: ToolchainIdentity,
+    toolchain: CompatibilityIdentity,
 ) -> Result<RuntimeLinkRequest, Box<dyn Error>> {
     let dependency = RuntimeDependency::new(contract, RuntimeRequirement::new(requirement))?;
     Ok(RuntimeLinkRequest::new(
@@ -275,14 +276,14 @@ fn target_and_implementation_change_artifact_but_not_contract_identity()
         &contract,
         target_model("wasm32-unknown-unknown")?,
         [],
-        toolchain_identity(b"rustc one"),
+        compatibility_identity(b"rustc one"),
         b"implementation one",
     );
     let second = artifact(
         &contract,
         target_model("x86_64-unknown-linux-gnu")?,
         [TargetCapability::Threads],
-        toolchain_identity(b"rustc two"),
+        compatibility_identity(b"rustc two"),
         b"implementation two",
     );
 
@@ -432,10 +433,31 @@ fn runtime_requirements_are_canonical_and_composable() {
 }
 
 #[test]
+fn runtime_requirement_wire_ids_round_trip_and_reject_unknown_values() -> Result<(), Box<dyn Error>>
+{
+    let requirement = RuntimeRequirement::new([
+        RuntimeOp::PrintNewline,
+        RuntimeOp::IntDiv,
+        RuntimeOp::PrintNewline,
+    ]);
+    let ids = requirement.operation_ids().collect::<Vec<_>>();
+
+    assert_eq!(ids, [8, 16]);
+    assert_eq!(RuntimeRequirement::from_operation_ids(ids)?, requirement);
+    let error = match RuntimeRequirement::from_operation_ids([8, 12, 16]) {
+        Ok(_) => return Err("unknown stable IDs must fail closed".into()),
+        Err(error) => error,
+    };
+    assert_eq!(error.get(), 12);
+    assert_eq!(error.to_string(), "unknown runtime operation ID 12");
+    Ok(())
+}
+
+#[test]
 fn artifact_selection_enforces_runtime_capability_requirements() -> Result<(), Box<dyn Error>> {
     let contract = manifest([], [RuntimeOp::IntDiv, RuntimeOp::PrintI64]);
     let target = target_model("wasm32-unknown-unknown")?;
-    let toolchain = toolchain_identity(b"rustc");
+    let toolchain = compatibility_identity(b"rustc");
     let provider = artifact(&contract, target.clone(), [], toolchain, b"runtime");
 
     let pure = provider.select(request(
@@ -475,14 +497,14 @@ fn artifact_capabilities_are_canonicalized() -> Result<(), Box<dyn Error>> {
             TargetCapability::Atomics32,
             TargetCapability::StandardIo,
         ],
-        toolchain_identity(b"rustc"),
+        compatibility_identity(b"rustc"),
         b"runtime",
     );
     let right = artifact(
         &contract,
         target_model("wasm32-unknown-unknown")?,
         [TargetCapability::Atomics32, TargetCapability::StandardIo],
-        toolchain_identity(b"rustc"),
+        compatibility_identity(b"rustc"),
         b"runtime",
     );
 
@@ -500,7 +522,7 @@ fn artifact_capabilities_are_canonicalized() -> Result<(), Box<dyn Error>> {
 fn empty_operation_requirement_still_selects_a_runtime() -> Result<(), Box<dyn Error>> {
     let contract = manifest([], [RuntimeOp::PrintI64]);
     let target = target_model("x86_64-unknown-linux-gnu")?;
-    let toolchain = toolchain_identity(b"rustc");
+    let toolchain = compatibility_identity(b"rustc");
     let provider = artifact(&contract, target.clone(), [], toolchain, b"runtime");
     let plan = provider.select(request(&contract, [], target, toolchain)?)?;
 
@@ -528,8 +550,8 @@ fn link_validation_order_is_schema_contract_target_then_toolchain() -> Result<()
     let other_contract = manifest([], [RuntimeOp::IntDiv]);
     let target = target_model("x86_64-unknown-linux-gnu")?;
     let other_target = target_model("wasm32-unknown-unknown")?;
-    let expected_toolchain = toolchain_identity(b"expected rustc");
-    let other_toolchain = toolchain_identity(b"other rustc");
+    let expected_toolchain = compatibility_identity(b"expected rustc");
+    let other_toolchain = compatibility_identity(b"other rustc");
     let dependency = RuntimeDependency::new(&contract, RuntimeRequirement::default())?;
     let request = RuntimeLinkRequest::new(
         dependency,
@@ -573,7 +595,7 @@ fn link_validation_order_is_schema_contract_target_then_toolchain() -> Result<()
     let wrong_toolchain = artifact(&contract, target, [], other_toolchain, b"runtime");
     assert!(matches!(
         wrong_toolchain.select(request),
-        Err(RuntimeLinkError::ToolchainMismatch { .. })
+        Err(RuntimeLinkError::CompatibilityMismatch { .. })
     ));
     Ok(())
 }
@@ -583,7 +605,7 @@ fn artifact_and_link_plan_identities_cover_every_selection_dimension() -> Result
 {
     let contract = manifest([], [RuntimeOp::IntDiv, RuntimeOp::PrintI64]);
     let target = target_model("x86_64-unknown-linux-gnu")?;
-    let toolchain = toolchain_identity(b"rustc");
+    let toolchain = compatibility_identity(b"rustc");
     let baseline = artifact(
         &contract,
         target.clone(),
@@ -596,7 +618,7 @@ fn artifact_and_link_plan_identities_cover_every_selection_dimension() -> Result
         &contract,
         target.clone(),
         [TargetCapability::StandardIo],
-        toolchain_identity(b"other rustc"),
+        compatibility_identity(b"other rustc"),
         b"runtime",
     );
     let changed_implementation = artifact(
@@ -641,4 +663,55 @@ fn invalid_target_triples_are_rejected() {
         target_model("x86_64 unknown linux gnu"),
         Err(TargetModelError::InvalidTripleCharacter)
     );
+}
+
+#[test]
+fn rust_rlib_compatibility_identity_is_path_free_and_covers_exact_producer_facts()
+-> Result<(), Box<dyn Error>> {
+    let target = target_model("x86_64-unknown-linux-gnu")?;
+    let rustc_version = b"rustc 1.96.0\nhost: x86_64-unknown-linux-gnu\n";
+    let target_libdir = b"canonical-target-libdir-v1";
+    let baseline =
+        RustRlibCompatibility::new(rustc_version, target_libdir.as_slice(), target.clone())?;
+    let same = RustRlibCompatibility::new(
+        b"rustc 1.96.0\nhost: aarch64-unknown-linux-gnu\n",
+        target_libdir.as_slice(),
+        target,
+    )?;
+    let other_rustc = RustRlibCompatibility::new(
+        b"rustc 1.96.1\nhost: x86_64-unknown-linux-gnu\n",
+        target_libdir.as_slice(),
+        target_model("x86_64-unknown-linux-gnu")?,
+    )?;
+    let other_target = RustRlibCompatibility::new(
+        rustc_version,
+        target_libdir.as_slice(),
+        target_model("i686-unknown-linux-musl")?,
+    )?;
+    let other_sysroot = RustRlibCompatibility::new(
+        rustc_version,
+        b"different-target-libdir".as_slice(),
+        target_model("x86_64-unknown-linux-gnu")?,
+    )?;
+
+    assert_eq!(baseline.canonical_bytes(), same.canonical_bytes());
+    assert_eq!(baseline.identity(), same.identity());
+    assert_ne!(baseline.identity(), other_rustc.identity());
+    assert_ne!(baseline.identity(), other_target.identity());
+    assert_ne!(baseline.identity(), other_sysroot.identity());
+    assert!(
+        !baseline
+            .canonical_bytes()
+            .windows(7)
+            .any(|bytes| bytes == b"/Users/")
+    );
+    assert_eq!(
+        RustRlibCompatibility::new(
+            [],
+            target_libdir.as_slice(),
+            target_model("x86_64-unknown-linux-gnu")?
+        ),
+        Err(gors_runtime_abi::RustRlibRecordError::EmptyRustcVerboseVersion)
+    );
+    Ok(())
 }

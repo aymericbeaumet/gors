@@ -1,3 +1,5 @@
+import type { RuntimeDependency } from "./runtime-dependency";
+
 export type CompilerPhase =
 	| "queued"
 	| "loading-wasm"
@@ -45,6 +47,7 @@ export interface CompilerError {
 export interface WorkerSuccessResult {
 	success: true;
 	rustCode: string;
+	runtimeDependency: RuntimeDependency;
 	sourceMap: PackedSourceMap;
 	error: null;
 }
@@ -52,6 +55,7 @@ export interface WorkerSuccessResult {
 export interface WorkerErrorResult {
 	success: false;
 	rustCode: "";
+	runtimeDependency: null;
 	sourceMap: null;
 	error: CompilerError;
 }

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://gors.dev/schemas/performance-result-v2.json",
+  "$id": "https://gors.dev/schemas/performance-result-v3.json",
   "title": "gors paired native performance evidence",
   "type": "object",
   "required": [
@@ -22,7 +22,7 @@
     "workloads"
   ],
   "properties": {
-    "schemaVersion": { "const": 2 },
+    "schemaVersion": { "const": 3 },
     "kind": { "const": "gors.performance.result" },
     "resultId": { "$ref": "#/$defs/sha256" },
     "configurationFingerprint": { "$ref": "#/$defs/sha256" },
@@ -68,6 +68,10 @@
         "minimumPromotionSessions",
         "calibrationVersion",
         "gorsCacheSchema",
+        "runtimeLinkDescriptorSchema",
+        "runtimeLinkValidation",
+        "runtimeCompatibilitySchemaVersion",
+        "targetLibdirSchemaVersion",
         "ioByteCountersAvailable",
         "processTreeCountersAvailable",
         "stageFingerprintsAvailable"
@@ -85,7 +89,11 @@
         "minimumPromotionSamples": { "type": "integer", "minimum": 1 },
         "minimumPromotionSessions": { "type": "integer", "minimum": 1 },
         "calibrationVersion": { "type": "string", "minLength": 1 },
-        "gorsCacheSchema": { "type": "integer", "minimum": 1 },
+        "gorsCacheSchema": { "const": 4 },
+        "runtimeLinkDescriptorSchema": { "const": 2 },
+        "runtimeLinkValidation": { "const": "strict-runtime-link-v2" },
+        "runtimeCompatibilitySchemaVersion": { "const": 2 },
+        "targetLibdirSchemaVersion": { "const": 1 },
         "ioByteCountersAvailable": { "type": "boolean" },
         "processTreeCountersAvailable": { "type": "boolean" },
         "stageFingerprintsAvailable": { "type": "boolean" }
@@ -105,7 +113,7 @@
     },
     "toolchains": {
       "type": "object",
-      "required": ["gors"],
+      "required": ["gors", "go", "rustc", "linker"],
       "properties": {
         "gors": {
           "type": "object",
@@ -113,8 +121,36 @@
           "properties": {
             "runtimeContractIdentity": { "$ref": "#/$defs/sha256" }
           }
-        }
-      }
+        },
+        "go": { "type": "object" },
+        "rustc": {
+          "type": "object",
+          "required": [
+            "target",
+            "pointerWidth",
+            "endianness",
+            "targetLibdir",
+            "runtimeCompatibilitySchemaVersion",
+            "runtimeCompatibilityIdentity",
+            "rustcReleaseRecordSha256",
+            "targetLibdirSchemaVersion",
+            "targetLibdirRecordSha256"
+          ],
+          "properties": {
+            "target": { "type": "string", "minLength": 1 },
+            "pointerWidth": { "enum": [32, 64] },
+            "endianness": { "enum": ["little", "big"] },
+            "targetLibdir": { "type": "string", "minLength": 1 },
+            "runtimeCompatibilitySchemaVersion": { "const": 2 },
+            "runtimeCompatibilityIdentity": { "$ref": "#/$defs/sha256" },
+            "rustcReleaseRecordSha256": { "$ref": "#/$defs/sha256" },
+            "targetLibdirSchemaVersion": { "const": 1 },
+            "targetLibdirRecordSha256": { "$ref": "#/$defs/sha256" }
+          }
+        },
+        "linker": { "type": "object" }
+      },
+      "additionalProperties": false
     },
     "workloads": {
       "type": "array",
@@ -166,7 +202,8 @@
         "directProcessCount",
         "artifactBytes",
         "commands",
-        "internalTimings"
+        "internalTimings",
+        "runtimeLink"
       ],
       "properties": {
         "wallNs": { "type": "integer", "exclusiveMinimum": 0 },
@@ -181,8 +218,109 @@
         "processCount": { "type": ["integer", "null"], "minimum": 1 },
         "directProcessCount": { "type": "integer", "minimum": 1 },
         "artifactBytes": { "type": "integer", "minimum": 1 },
-        "commands": { "type": "array", "minItems": 1, "items": { "type": "object" } },
-        "internalTimings": { "type": ["object", "null"] }
+        "commands": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/command" } },
+        "internalTimings": { "type": ["object", "null"] },
+        "runtimeLink": {
+          "oneOf": [
+            { "$ref": "#/$defs/runtimeLinkEvidence" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "command": {
+      "type": "object",
+      "required": [
+        "stage",
+        "argv",
+        "cwd",
+        "environment",
+        "durationNs",
+        "exitCode",
+        "stdoutBase64",
+        "stderrBase64",
+        "runtimeLink"
+      ],
+      "properties": {
+        "stage": { "type": "string", "minLength": 1 },
+        "argv": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" }
+        },
+        "cwd": { "type": "string", "minLength": 1 },
+        "environment": { "type": "object" },
+        "durationNs": { "type": "integer", "minimum": 0 },
+        "exitCode": { "type": "integer" },
+        "stdoutBase64": { "type": "string" },
+        "stderrBase64": { "type": "string" },
+        "runtimeLink": {
+          "oneOf": [
+            { "$ref": "#/$defs/runtimeLinkEvidence" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "runtimeLinkEvidence": {
+      "type": "object",
+      "required": [
+        "validation",
+        "descriptorPath",
+        "descriptorSha256",
+        "outputSchemaVersion",
+        "linkDescriptorSchemaVersion",
+        "dependencySchemaVersion",
+        "externCrate",
+        "artifactPath",
+        "contractIdentity",
+        "operationIds",
+        "targetTriple",
+        "targetPointerWidth",
+        "targetEndianness",
+        "format",
+        "runtimeCompatibilitySchemaVersion",
+        "rustcReleaseRecordSha256",
+        "targetLibdirSchemaVersion",
+        "targetLibdirRecordSha256",
+        "producerIdentity",
+        "compatibilityIdentity",
+        "implementationHash",
+        "artifactSha256",
+        "artifactIdentity",
+        "linkPlanIdentity"
+      ],
+      "properties": {
+        "validation": { "const": "strict-runtime-link-v2" },
+        "descriptorPath": { "type": "string", "minLength": 1 },
+        "descriptorSha256": { "$ref": "#/$defs/sha256" },
+        "outputSchemaVersion": { "const": 1 },
+        "linkDescriptorSchemaVersion": { "const": 2 },
+        "dependencySchemaVersion": { "const": 1 },
+        "externCrate": { "const": "__gors_runtime" },
+        "artifactPath": { "type": "string", "minLength": 1 },
+        "contractIdentity": { "$ref": "#/$defs/sha256" },
+        "operationIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": [1, 2, 3, 8, 9, 10, 11, 13, 14, 15, 16, 17] }
+        },
+        "targetTriple": { "type": "string", "minLength": 1 },
+        "targetPointerWidth": { "enum": [32, 64] },
+        "targetEndianness": { "enum": ["little", "big"] },
+        "format": { "const": "rust-rlib-v1" },
+        "runtimeCompatibilitySchemaVersion": { "const": 2 },
+        "rustcReleaseRecordSha256": { "$ref": "#/$defs/sha256" },
+        "targetLibdirSchemaVersion": { "const": 1 },
+        "targetLibdirRecordSha256": { "$ref": "#/$defs/sha256" },
+        "producerIdentity": { "$ref": "#/$defs/sha256" },
+        "compatibilityIdentity": { "$ref": "#/$defs/sha256" },
+        "implementationHash": { "$ref": "#/$defs/sha256" },
+        "artifactSha256": { "$ref": "#/$defs/sha256" },
+        "artifactIdentity": { "$ref": "#/$defs/sha256" },
+        "linkPlanIdentity": { "$ref": "#/$defs/sha256" }
       },
       "additionalProperties": false
     },

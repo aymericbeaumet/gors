@@ -1,12 +1,13 @@
 use crate::cache::{
     CacheAccessLock, CacheRequest, CacheRequestOptions, CliCacheManifest, InputSnapshot,
-    generated_file_hashes, maybe_prune_cli_cache,
+    generated_file_hashes, maybe_prune_cli_cache, refresh_runtime_selection,
 };
 use crate::cache_paths::{build_cache_dir, gors_cache_base};
 use crate::compiler::{cli_workspace, compile_program};
 use crate::diagnostics::print_compiler_error;
 use crate::options::Build;
 use crate::output::{OutputDirectoryLock, write_generated_output_locked, write_source_map};
+use crate::runtime_link::resolve_runtime;
 use crate::timings::TimingCollector;
 use std::path::{Path, PathBuf};
 
@@ -48,17 +49,24 @@ pub fn build_with_cache_base(
         let _cache_timer = timings.phase("cli.cache_lookup");
         CliCacheManifest::load_if_generated_valid(&output_dir, &request, &inputs)
     };
-    if let Some(manifest) = cached_manifest {
-        timings.cache_event("compiler", true);
-        println!(
-            "Reused {} cached files from {}",
-            manifest.generated_file_count(),
-            output_dir.display()
-        );
-        timings.write_json(cmd.timings_json.as_deref().map(Path::new), "build")?;
-        drop(output_lock);
-        drop(cache_access_lock);
-        return Ok(());
+    if let Some(mut manifest) = cached_manifest {
+        // A stale dependency schema or contract is a semantic cache miss. A
+        // current dependency must reselect and verify the one live provider.
+        if let Ok(dependency) = manifest.runtime_dependency() {
+            let runtime = resolve_runtime(cache_base, dependency)?;
+            let runtime_output = runtime.output_descriptor();
+            refresh_runtime_selection(&output_dir, &mut manifest, &runtime_output)?;
+            timings.cache_event("compiler", true);
+            println!(
+                "Reused {} cached files from {}",
+                manifest.generated_file_count(),
+                output_dir.display()
+            );
+            timings.write_json(cmd.timings_json.as_deref().map(Path::new), "build")?;
+            drop(output_lock);
+            drop(cache_access_lock);
+            return Ok(());
+        }
     }
     timings.cache_event("compiler", false);
 
@@ -84,9 +92,11 @@ pub fn build_with_cache_base(
     let print_timer = timings.phase("cli.print");
     let output = gors::printer::generate_multi(compiled)?;
     drop(print_timer);
-    let generated_files = generated_file_hashes(&output);
+    let runtime = resolve_runtime(cache_base, output.runtime.clone())?;
+    let runtime_output = runtime.output_descriptor();
+    let generated_files = generated_file_hashes(&output, &runtime_output)?;
     let write_timer = timings.phase("cli.file_writes");
-    let stats = write_generated_output_locked(&output, &output_dir)?;
+    let stats = write_generated_output_locked(&output, &output_dir, &runtime_output)?;
     let sourcemap = sourcemap_path
         .as_deref()
         .map(|path| {
@@ -106,7 +116,14 @@ pub fn build_with_cache_base(
         sourcemap: sourcemap_path.as_deref(),
     })?;
     if request == completed_request {
-        CliCacheManifest::new(&request, inputs, generated_files, sourcemap).save(&output_dir)?;
+        CliCacheManifest::new(
+            &request,
+            inputs,
+            generated_files,
+            sourcemap,
+            runtime_output.link().clone(),
+        )
+        .save(&output_dir)?;
     }
 
     let output_dir_display = output_dir.display();

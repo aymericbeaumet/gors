@@ -1,89 +1,111 @@
-FROM --platform=linux/386 alpine:edge AS builder
+ARG ALPINE_IMAGE=alpine:edge
+ARG APK_RESOLUTION
 
-RUN apk add --no-cache curl linux-virt linux-firmware-none rust
+FROM --platform=linux/386 ${ALPINE_IMAGE} AS provider-builder
+ARG APK_RESOLUTION
 
+RUN set -eu; \
+    test -n "${APK_RESOLUTION}"; \
+    apk update > /dev/null; \
+    CURRENT_RESOLUTION=$(apk policy alpine-base cargo ca-certificates jq linux-firmware-none linux-virt mold openrc rust); \
+    test "$CURRENT_RESOLUTION" = "${APK_RESOLUTION}"; \
+    apk add cargo rust ca-certificates; \
+    rm -rf /var/cache/apk/*
+WORKDIR /build
+COPY Cargo.v86.toml Cargo.toml
+COPY Cargo.lock Cargo.lock
+COPY gors-runtime-abi gors-runtime-abi
+COPY gors-runtime gors-runtime
+
+RUN cargo build --locked --release --package gors-runtime-abi \
+      --example runtime_provider_manifest \
+      --example runtime_dependency_validator
+
+RUN set -eu; \
+    mkdir -p /out; \
+    rustc -vV > /out/rustc-vV; \
+    sed -n 's/^host: //p' /out/rustc-vV > /out/target-triple; \
+    test -s /out/target-triple; \
+    TARGET_TRIPLE=$(cat /out/target-triple); \
+    TARGET_LIBDIR=$(rustc --target "$TARGET_TRIPLE" --print target-libdir); \
+    test -d "$TARGET_LIBDIR"; \
+    rustc gors-runtime/src/lib.rs \
+      --crate-name __gors_runtime \
+      --crate-type rlib \
+      --edition 2024 \
+      --target "$TARGET_TRIPLE" \
+      --emit link \
+      -C metadata=gors-runtime-v1 \
+      -C opt-level=3 \
+      -C codegen-units=1 \
+      -C panic=unwind \
+      -C embed-bitcode=yes \
+      --remap-path-prefix=/build=/gors-workspace \
+      -o /out/lib__gors_runtime.rlib; \
+    cp target/release/examples/runtime_provider_manifest \
+      /out/gors-runtime-provider-manifest; \
+    cp target/release/examples/runtime_dependency_validator \
+      /out/gors-runtime-dependency-validator; \
+    /out/gors-runtime-provider-manifest \
+      auto \
+      /out/rustc-vV \
+      "$TARGET_LIBDIR" \
+      "$TARGET_TRIPLE" \
+      32 \
+      little \
+      /out/lib__gors_runtime.rlib \
+      /out/provider.json
+
+FROM --platform=linux/386 ${ALPINE_IMAGE} AS kernel-builder
+ARG APK_RESOLUTION
+
+RUN set -eu; \
+    test -n "${APK_RESOLUTION}"; \
+    apk update > /dev/null; \
+    CURRENT_RESOLUTION=$(apk policy alpine-base cargo ca-certificates jq linux-firmware-none linux-virt mold openrc rust); \
+    test "$CURRENT_RESOLUTION" = "${APK_RESOLUTION}"; \
+    apk add linux-virt linux-firmware-none; \
+    rm -rf /var/cache/apk/*
 RUN mkinitfs -F "base virtio 9p" $(cat /usr/share/kernel/virt/kernel.release)
 
-FROM --platform=linux/386 alpine:edge
-ARG RUST_VERSION=1.96.0
+FROM --platform=linux/386 ${ALPINE_IMAGE}
+ARG APK_RESOLUTION
 
-RUN apk add --no-cache openrc alpine-base linux-virt linux-firmware-none rust mold
+RUN set -eu; \
+    test -n "${APK_RESOLUTION}"; \
+    apk update > /dev/null; \
+    CURRENT_RESOLUTION=$(apk policy alpine-base cargo ca-certificates jq linux-firmware-none linux-virt mold openrc rust); \
+    test "$CURRENT_RESOLUTION" = "${APK_RESOLUTION}"; \
+    apk add openrc alpine-base linux-virt linux-firmware-none rust mold jq; \
+    rm -rf /var/cache/apk/*
+COPY --from=kernel-builder /boot/initramfs-virt /boot/initramfs-virt
+COPY --from=provider-builder /out/lib__gors_runtime.rlib \
+    /usr/local/share/gors/runtime/lib__gors_runtime.rlib
+COPY --from=provider-builder /out/provider.json \
+    /usr/local/share/gors/runtime/producer.json
+COPY --from=provider-builder /out/target-triple \
+    /usr/local/share/gors/runtime/target-triple
+COPY --from=provider-builder /out/gors-runtime-provider-manifest \
+    /usr/local/libexec/gors-runtime-provider-manifest
+COPY --from=provider-builder /out/gors-runtime-dependency-validator \
+    /usr/local/libexec/gors-runtime-dependency-validator
 
-COPY --from=builder /boot/initramfs-virt /boot/initramfs-virt
+COPY --chmod=755 rootfs/gors-compile /usr/local/bin/gors-compile
+COPY --chmod=755 rootfs/gors-run /usr/local/bin/gors-run
+COPY --chmod=755 rootfs/gors-runtime-publish /usr/local/bin/gors-runtime-publish
+COPY --chmod=755 rootfs/gors-runtime-verify /usr/local/bin/gors-runtime-verify
+COPY --chmod=755 rootfs/gors-warmup /usr/local/bin/gors-warmup
+COPY rootfs/rustc-flags /usr/local/share/gors/rustc-flags
+COPY rootfs/warmup.rs /usr/local/share/gors/warmup.rs
 
 RUN for svc in devfs dmesg mdev hwdrivers; do rc-update add $svc sysinit; done && \
     for svc in hwclock modules sysctl hostname syslog bootmisc; do rc-update add $svc boot; done
 
-# Shared rustc flags: fast compile, no debug info, mold linker, incremental cache
-COPY <<'SCRIPT' /usr/local/bin/gors-rustc-flags
--C opt-level=0 -C debuginfo=0 -C codegen-units=16 -C link-arg=-fuse-ld=mold -C incremental=/tmp/rustc-incr
-SCRIPT
-
-# gors-compile <id>
-# Input:  /tmp/<id>.rs
-# Output: /tmp/<id>.bin, /tmp/<id>.compile.status ("0" on success, non-zero on error),
-#         /tmp/<id>.compile.err (stderr)
-# Signal: GORS_COMPILE_DONE:<id>  (pure trigger, all data in files)
-COPY <<'SCRIPT' /usr/local/bin/gors-compile
-#!/bin/sh
-ID="$1"
-FLAGS=$(cat /usr/local/bin/gors-rustc-flags)
-cd /tmp
-ln -sf "${ID}.rs" main.rs
-rustc --edition 2024 $FLAGS \
-  -o "${ID}.bin" main.rs 2>"${ID}.compile.err"
-printf '%s' "$?" >"${ID}.compile.status"
-printf 'GORS_COMPILE_DONE:%s\n' "$ID"
-SCRIPT
-RUN chmod +x /usr/local/bin/gors-compile
-
-# gors-run <id>
-# Input:  /tmp/<id>.bin
-# Output: /tmp/<id>.run.status (exit code), /tmp/<id>.run.out (stdout),
-#         /tmp/<id>.run.err (stderr)
-# Signal: GORS_RUN_DONE:<id>  (pure trigger, all data in files)
-COPY <<'SCRIPT' /usr/local/bin/gors-run
-#!/bin/sh
-ID="$1"
-cd /tmp
-"./${ID}.bin" >"${ID}.run.out" 2>"${ID}.run.err"
-printf '%s' "$?" >"${ID}.run.status"
-printf 'GORS_RUN_DONE:%s\n' "$ID"
-SCRIPT
-RUN chmod +x /usr/local/bin/gors-run
-
-# Warmup program exercising the types gors generates — used both at build time
-# (validation) and at boot time (priming incremental cache before state save).
-COPY <<'WARMUP' /usr/local/share/gors/warmup.rs
-#![allow(non_snake_case)]
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, Condvar};
-use std::fmt;
-fn main() {
-    let _ = HashMap::<String, i64>::new();
-    let _ = Arc::new((Mutex::new(0), Condvar::new()));
-    let _ = Vec::<i64>::new();
-    let _ = format!("{}", "hello");
-    println!("ok");
-}
-WARMUP
-
-# Validate rustc works at build time
-RUN rustc --edition 2024 -C opt-level=0 -C debuginfo=0 -C codegen-units=16 \
-      -o /tmp/warmup /usr/local/share/gors/warmup.rs && /tmp/warmup && rm /tmp/warmup
-
-# gors-warmup: compiles warmup program with incremental flags to prime the cache.
-# Runs at boot time so the IndexedDB state snapshot includes the warm cache.
-COPY <<'SCRIPT' /usr/local/bin/gors-warmup
-#!/bin/sh
-FLAGS=$(cat /usr/local/bin/gors-rustc-flags)
-cd /tmp
-cp /usr/local/share/gors/warmup.rs main.rs
-rustc --edition 2024 $FLAGS -o /tmp/warmup main.rs 2>/dev/null
-rm -f /tmp/warmup /tmp/main.rs
-echo GORS_BOOT_READY
-SCRIPT
-RUN chmod +x /usr/local/bin/gors-warmup
+# Verify the final image's live rustc, canonical producer record, schema-2
+# manifest, exact rlib payload, and external link before publishing rootfs.
+RUN /usr/local/bin/gors-runtime-publish && \
+    /usr/local/bin/gors-runtime-verify && \
+    /usr/local/bin/gors-warmup
 
 RUN printf '%s\n' \
       '::once:/usr/local/bin/gors-warmup > /dev/ttyS0' \
@@ -95,15 +117,22 @@ RUN rm -rf /usr/share/man /usr/share/doc /usr/share/info /usr/share/mkinitfs \
            /usr/lib/rustlib/src /usr/lib/rustlib/etc \
            /usr/lib/rustlib/*/lib/libtest-*.rlib \
            /usr/lib/rustlib/*/lib/libproc_macro-*.rlib \
-           /usr/libexec/gcc/*/15.*/cc1 /usr/libexec/gcc/*/15.*/cc1plus \
-           /usr/libexec/gcc/*/15.*/lto1 /usr/libexec/gcc/*/15.*/f951 \
-           /usr/libexec/gcc/*/15.*/plugin /usr/libexec/rust-analyzer-proc-macro-srv \
+           /usr/libexec/gcc/*/*/cc1 /usr/libexec/gcc/*/*/cc1plus \
+           /usr/libexec/gcc/*/*/lto1 /usr/libexec/gcc/*/*/f951 \
+           /usr/libexec/gcc/*/*/plugin /usr/libexec/rust-analyzer-proc-macro-srv \
            /usr/bin/rustdoc /usr/bin/rust-gdb /usr/bin/rust-gdbgui /usr/bin/rust-lldb
 
 RUN find /usr/lib/rustlib -name '*.so' -exec strip --strip-unneeded {} + 2>/dev/null; \
     strip --strip-unneeded /usr/bin/rustc 2>/dev/null; \
+    strip --strip-unneeded /usr/local/libexec/gors-runtime-provider-manifest 2>/dev/null; \
+    strip --strip-unneeded /usr/local/libexec/gors-runtime-dependency-validator 2>/dev/null; \
     true
 
-RUN rustc --version | grep "rustc ${RUST_VERSION} "
+# Trimming changes the canonical target-libdir inventory. Publish the one and
+# only provider identity again from the final filesystem, then prove it links.
+RUN /usr/local/bin/gors-runtime-publish && \
+    /usr/local/bin/gors-runtime-verify && \
+    /usr/local/bin/gors-warmup && \
+    rm -f /usr/local/bin/gors-runtime-publish
 
 ENTRYPOINT ["/bin/sh"]

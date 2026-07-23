@@ -1,3 +1,9 @@
+import {
+	admitRuntimeDependency,
+	runtimeDependencyRequestJson,
+	type RuntimeDependency,
+} from "./runtime-dependency";
+
 const COMPILE_DONE = "GORS_COMPILE_DONE:";
 const RUN_DONE = "GORS_RUN_DONE:";
 const BOOT_READY_MARKER = "GORS_BOOT_READY";
@@ -299,7 +305,15 @@ export class RustRunner {
 		}
 	}
 
-	async compile(rustSource: string): Promise<CompileResult> {
+	async compile(
+		rustSource: string,
+		runtimeDependency: RuntimeDependency,
+	): Promise<CompileResult> {
+		const admittedRuntime = admitRuntimeDependency(
+			runtimeDependency,
+			"RustRunner compile input",
+		);
+		const runtimeRequest = runtimeDependencyRequestJson(admittedRuntime);
 		const jobId = String(nextJobId++);
 		this.currentJobId = jobId;
 
@@ -329,6 +343,10 @@ export class RustRunner {
 		await this.emulator.create_file(
 			`tmp/${jobId}.rs`,
 			new TextEncoder().encode(rustSource),
+		);
+		await this.emulator.create_file(
+			`tmp/${jobId}.runtime.json`,
+			new TextEncoder().encode(runtimeRequest),
 		);
 		this.serialBuffer = "";
 		this.sendCommand(`gors-compile ${jobId}`);
@@ -399,8 +417,9 @@ export class RustRunner {
 
 	async run(
 		rustSource: string,
+		runtimeDependency: RuntimeDependency,
 	): Promise<RunJobResult & { compile: CompileOutput | null }> {
-		const compileResult = await this.compile(rustSource);
+		const compileResult = await this.compile(rustSource, runtimeDependency);
 		if (
 			compileResult.cancelled ||
 			!compileResult.compile.success ||

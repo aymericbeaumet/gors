@@ -10,10 +10,25 @@ import statistics
 from pathlib import Path
 from typing import Any
 
+from .runtime_link import (
+    DEPENDENCY_SCHEMA_VERSION,
+    LINK_DESCRIPTOR_SCHEMA_VERSION,
+    LINK_OUTPUT_SCHEMA_VERSION,
+    RUNTIME_ARTIFACT_FILENAME,
+    RUNTIME_ARTIFACT_FORMAT,
+    RUNTIME_CRATE_NAME,
+    RUNTIME_LINK_EVIDENCE_FIELDS,
+    RUNTIME_LINK_VALIDATION,
+    RUNTIME_OPERATION_IDS,
+    RUST_RLIB_COMPATIBILITY_SCHEMA_VERSION,
+    RUST_TARGET_LIBDIR_SCHEMA_VERSION,
+)
 
-RESULT_SCHEMA_VERSION = 2
+
+RESULT_SCHEMA_VERSION = 3
 ACCEPTANCE_SCHEMA_VERSION = 1
 CORPUS_SCHEMA_VERSION = 1
+GORS_CACHE_SCHEMA_VERSION = 4
 REQUIRED_SCENARIOS = ("cold", "no_op", "leaf_edit")
 UNSUPPORTED_DEPENDENCY_SCENARIOS = ("dependency_body_edit", "dependency_api_edit")
 
@@ -260,7 +275,7 @@ def recompute_measurement(measurement: dict[str, Any], *, seed: int) -> dict[str
 def result_id(result: dict[str, Any]) -> str:
     value = copy.deepcopy(result)
     value.pop("resultId", None)
-    return sha256_bytes(b"gors-performance-result-v2\0" + canonical_json(value))
+    return sha256_bytes(b"gors-performance-result-v3\0" + canonical_json(value))
 
 
 def _runtime_contract_identity(result: dict[str, Any]) -> str:
@@ -278,6 +293,29 @@ def _runtime_contract_identity(result: dict[str, Any]) -> str:
     return identity
 
 
+def _runtime_artifact_configurations(result: dict[str, Any]) -> list[dict[str, Any]]:
+    configurations: set[tuple[Any, Any]] = set()
+    for workload in result.get("workloads", []):
+        if not isinstance(workload, dict):
+            continue
+        for session in workload.get("sessions", []):
+            if not isinstance(session, dict):
+                continue
+            for sample in session.get("samples", []):
+                if not isinstance(sample, dict):
+                    continue
+                gors = sample.get("gors")
+                link = gors.get("runtimeLink") if isinstance(gors, dict) else None
+                if isinstance(link, dict):
+                    configurations.add(
+                        (link.get("implementationHash"), link.get("artifactIdentity"))
+                    )
+    return [
+        {"implementationHash": implementation, "artifactIdentity": artifact}
+        for implementation, artifact in sorted(configurations, key=repr)
+    ]
+
+
 def configuration_fingerprint(result: dict[str, Any]) -> str:
     protocol = result.get("protocol", {})
     environment = result.get("environment", {})
@@ -288,6 +326,12 @@ def configuration_fingerprint(result: dict[str, Any]) -> str:
         "artifactDriver": protocol.get("artifactDriver"),
         "calibrationVersion": protocol.get("calibrationVersion"),
         "gorsCacheSchema": protocol.get("gorsCacheSchema"),
+        "runtimeLinkDescriptorSchema": protocol.get("runtimeLinkDescriptorSchema"),
+        "runtimeLinkValidation": protocol.get("runtimeLinkValidation"),
+        "runtimeCompatibilitySchemaVersion": protocol.get(
+            "runtimeCompatibilitySchemaVersion"
+        ),
+        "targetLibdirSchemaVersion": protocol.get("targetLibdirSchemaVersion"),
         "ioByteCountersAvailable": protocol.get("ioByteCountersAvailable"),
         "processTreeCountersAvailable": protocol.get("processTreeCountersAvailable"),
         "stageFingerprintsAvailable": protocol.get("stageFingerprintsAvailable"),
@@ -301,15 +345,176 @@ def configuration_fingerprint(result: dict[str, Any]) -> str:
         "rustc": {
             "channel": toolchains.get("rustc", {}).get("channel"),
             "target": toolchains.get("rustc", {}).get("target"),
+            "pointerWidth": toolchains.get("rustc", {}).get("pointerWidth"),
+            "endianness": toolchains.get("rustc", {}).get("endianness"),
+            "runtimeCompatibilitySchemaVersion": toolchains.get("rustc", {}).get(
+                "runtimeCompatibilitySchemaVersion"
+            ),
+            "runtimeCompatibilityIdentity": toolchains.get("rustc", {}).get(
+                "runtimeCompatibilityIdentity"
+            ),
+            "rustcReleaseRecordSha256": toolchains.get("rustc", {}).get(
+                "rustcReleaseRecordSha256"
+            ),
+            "targetLibdirSchemaVersion": toolchains.get("rustc", {}).get(
+                "targetLibdirSchemaVersion"
+            ),
+            "targetLibdirRecordSha256": toolchains.get("rustc", {}).get(
+                "targetLibdirRecordSha256"
+            ),
             "sha256": toolchains.get("rustc", {}).get("sha256"),
         },
         "runtimeContractIdentity": _runtime_contract_identity(result),
+        "runtimeArtifacts": _runtime_artifact_configurations(result),
         "linker": {
             "version": toolchains.get("linker", {}).get("version"),
             "sha256": toolchains.get("linker", {}).get("sha256"),
         },
     }
-    return sha256_bytes(b"gors-performance-configuration-v2\0" + canonical_json(value))
+    return sha256_bytes(b"gors-performance-configuration-v3\0" + canonical_json(value))
+
+
+def _is_sha256(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _validate_runtime_link_evidence(
+    measurement: dict[str, Any],
+    *,
+    compiler: str,
+    contract_identity: str,
+    rustc: dict[str, Any],
+) -> None:
+    commands = measurement.get("commands")
+    if not isinstance(commands, list) or not commands:
+        raise EvidenceError(f"{compiler} measurement commands are missing")
+    if any(not isinstance(command, dict) for command in commands):
+        raise EvidenceError(f"{compiler} measurement commands are malformed")
+    runtime_link = measurement.get("runtimeLink")
+    if compiler == "go":
+        if runtime_link is not None:
+            raise EvidenceError("Go measurement must not carry Rust runtime-link evidence")
+        if any(command.get("runtimeLink") is not None for command in commands):
+            raise EvidenceError("Go command must not carry Rust runtime-link evidence")
+        for command in commands:
+            argv = command.get("argv")
+            if not isinstance(argv, list) or any(not isinstance(arg, str) for arg in argv):
+                raise EvidenceError("Go command argv evidence is malformed")
+            if any(arg == "--extern" or arg.startswith("--extern=") for arg in argv):
+                raise EvidenceError("Go command must not contain a Rust runtime extern")
+        return
+
+    if not isinstance(runtime_link, dict):
+        raise EvidenceError("gors measurement is missing validated runtime-link evidence")
+    if frozenset(runtime_link) != RUNTIME_LINK_EVIDENCE_FIELDS:
+        raise EvidenceError("gors runtime-link evidence fields are incompatible")
+    if runtime_link.get("validation") != RUNTIME_LINK_VALIDATION:
+        raise EvidenceError("gors runtime-link validation protocol is incompatible")
+    for field, expected in (
+        ("outputSchemaVersion", LINK_OUTPUT_SCHEMA_VERSION),
+        ("linkDescriptorSchemaVersion", LINK_DESCRIPTOR_SCHEMA_VERSION),
+        ("dependencySchemaVersion", DEPENDENCY_SCHEMA_VERSION),
+    ):
+        if type(runtime_link.get(field)) is not int or runtime_link[field] != expected:
+            raise EvidenceError(f"gors runtime-link {field} is incompatible")
+    if runtime_link.get("externCrate") != RUNTIME_CRATE_NAME:
+        raise EvidenceError("gors runtime-link extern crate is incompatible")
+    if runtime_link.get("format") != RUNTIME_ARTIFACT_FORMAT:
+        raise EvidenceError("gors runtime-link artifact format is incompatible")
+    for field in (
+        "descriptorSha256",
+        "contractIdentity",
+        "rustcReleaseRecordSha256",
+        "targetLibdirRecordSha256",
+        "producerIdentity",
+        "compatibilityIdentity",
+        "implementationHash",
+        "artifactSha256",
+        "artifactIdentity",
+        "linkPlanIdentity",
+    ):
+        if not _is_sha256(runtime_link.get(field)):
+            raise EvidenceError(f"gors runtime-link {field} is not lowercase SHA-256")
+    if runtime_link["contractIdentity"] != contract_identity:
+        raise EvidenceError("gors runtime-link contract identity is stale")
+    for field, expected in (
+        ("runtimeCompatibilitySchemaVersion", RUST_RLIB_COMPATIBILITY_SCHEMA_VERSION),
+        ("targetLibdirSchemaVersion", RUST_TARGET_LIBDIR_SCHEMA_VERSION),
+    ):
+        if type(runtime_link.get(field)) is not int or runtime_link[field] != expected:
+            raise EvidenceError(f"gors runtime-link {field} is incompatible")
+    if runtime_link["artifactSha256"] != runtime_link["implementationHash"]:
+        raise EvidenceError("gors runtime-link artifact payload evidence is stale")
+    operation_ids = runtime_link.get("operationIds")
+    if not isinstance(operation_ids, list) or any(
+        type(operation_id) is not int for operation_id in operation_ids
+    ):
+        raise EvidenceError("gors runtime-link operation IDs are malformed")
+    if operation_ids != sorted(set(operation_ids)) or any(
+        operation_id not in RUNTIME_OPERATION_IDS for operation_id in operation_ids
+    ):
+        raise EvidenceError("gors runtime-link operation IDs are not canonical")
+    expected_target = (
+        rustc.get("target"),
+        rustc.get("pointerWidth"),
+        rustc.get("endianness"),
+    )
+    actual_target = (
+        runtime_link.get("targetTriple"),
+        runtime_link.get("targetPointerWidth"),
+        runtime_link.get("targetEndianness"),
+    )
+    if actual_target != expected_target:
+        raise EvidenceError("gors runtime-link target evidence is stale")
+    for link_field, rustc_field in (
+        ("compatibilityIdentity", "runtimeCompatibilityIdentity"),
+        ("rustcReleaseRecordSha256", "rustcReleaseRecordSha256"),
+        ("targetLibdirRecordSha256", "targetLibdirRecordSha256"),
+    ):
+        if runtime_link[link_field] != rustc.get(rustc_field):
+            raise EvidenceError(
+                f"gors runtime-link {link_field} compatibility evidence is stale"
+            )
+    descriptor_path = runtime_link.get("descriptorPath")
+    artifact_path = runtime_link.get("artifactPath")
+    if not isinstance(descriptor_path, str) or not Path(descriptor_path).is_absolute():
+        raise EvidenceError("gors runtime-link descriptor path is not absolute")
+    if not isinstance(artifact_path, str) or not Path(artifact_path).is_absolute():
+        raise EvidenceError("gors runtime-link artifact path is not absolute")
+    artifact = Path(artifact_path)
+    if (
+        artifact.name != RUNTIME_ARTIFACT_FILENAME
+        or artifact.parent.name != runtime_link["artifactIdentity"]
+    ):
+        raise EvidenceError("gors runtime-link artifact path is not content-addressed")
+
+    linked_commands = [
+        command for command in commands if command.get("runtimeLink") is not None
+    ]
+    if len(linked_commands) != 1 or linked_commands[0].get("runtimeLink") != runtime_link:
+        raise EvidenceError("gors command evidence has an ambiguous runtime-link plan")
+    linked_command = linked_commands[0]
+    if linked_command.get("stage") != "gors.external_rustc_link":
+        raise EvidenceError("gors runtime-link evidence is attached to the wrong stage")
+    extern_value = f"{RUNTIME_CRATE_NAME}={artifact_path}"
+    extern_count = 0
+    for command in commands:
+        argv = command.get("argv")
+        if not isinstance(argv, list) or any(not isinstance(arg, str) for arg in argv):
+            raise EvidenceError("gors command argv evidence is malformed")
+        for index, argument in enumerate(argv):
+            if argument == "--extern":
+                extern_count += 1
+                if index + 1 >= len(argv) or argv[index + 1] != extern_value:
+                    raise EvidenceError("gors runtime --extern value is stale")
+            elif argument.startswith("--extern="):
+                raise EvidenceError("gors runtime link uses a noncanonical --extern form")
+    if extern_count != 1:
+        raise EvidenceError("gors runtime link must contain exactly one --extern")
 
 
 def validate_result(result: dict[str, Any]) -> None:
@@ -327,12 +532,45 @@ def validate_result(result: dict[str, Any]) -> None:
         raise EvidenceError("result protocol is missing")
     if protocol.get("samples") is None or protocol.get("sessions") is None:
         raise EvidenceError("result protocol must record sample and session counts")
+    if protocol.get("gorsCacheSchema") != GORS_CACHE_SCHEMA_VERSION:
+        raise EvidenceError("result records an incompatible gors cache schema")
+    if protocol.get("runtimeLinkDescriptorSchema") != LINK_DESCRIPTOR_SCHEMA_VERSION:
+        raise EvidenceError("result records an incompatible runtime-link descriptor schema")
+    if protocol.get("runtimeLinkValidation") != RUNTIME_LINK_VALIDATION:
+        raise EvidenceError("result records an incompatible runtime-link validation protocol")
+    if (
+        protocol.get("runtimeCompatibilitySchemaVersion")
+        != RUST_RLIB_COMPATIBILITY_SCHEMA_VERSION
+        or protocol.get("targetLibdirSchemaVersion")
+        != RUST_TARGET_LIBDIR_SCHEMA_VERSION
+    ):
+        raise EvidenceError("result records incompatible Rust compatibility schemas")
     seed = protocol.get("seed")
     if not isinstance(seed, int):
         raise EvidenceError("result protocol must record an integer random seed")
     workloads = result.get("workloads")
     if not isinstance(workloads, list) or not workloads:
         raise EvidenceError("result workloads are missing")
+    toolchains = result.get("toolchains")
+    rustc = toolchains.get("rustc") if isinstance(toolchains, dict) else None
+    if not isinstance(rustc, dict):
+        raise EvidenceError("result rustc toolchain evidence is missing")
+    if (
+        not isinstance(rustc.get("target"), str)
+        or type(rustc.get("pointerWidth")) is not int
+        or rustc.get("pointerWidth") not in (32, 64)
+        or rustc.get("endianness") not in ("little", "big")
+        or not isinstance(rustc.get("targetLibdir"), str)
+        or not Path(rustc["targetLibdir"]).is_absolute()
+        or rustc.get("runtimeCompatibilitySchemaVersion")
+        != RUST_RLIB_COMPATIBILITY_SCHEMA_VERSION
+        or rustc.get("targetLibdirSchemaVersion") != RUST_TARGET_LIBDIR_SCHEMA_VERSION
+        or not _is_sha256(rustc.get("runtimeCompatibilityIdentity"))
+        or not _is_sha256(rustc.get("rustcReleaseRecordSha256"))
+        or not _is_sha256(rustc.get("targetLibdirRecordSha256"))
+    ):
+        raise EvidenceError("result rustc runtime-link compatibility evidence is malformed")
+    contract_identity = _runtime_contract_identity(result)
     for workload in workloads:
         if not isinstance(workload, dict):
             raise EvidenceError("result workload entries must be objects")
@@ -343,6 +581,23 @@ def validate_result(result: dict[str, Any]) -> None:
             raise EvidenceError("each measured workload must retain raw sessions")
         if len(sessions) != protocol["sessions"]:
             raise EvidenceError("raw session count does not match the protocol")
+        for session in sessions:
+            samples = session.get("samples") if isinstance(session, dict) else None
+            if not isinstance(samples, list):
+                raise EvidenceError("raw performance session samples must be an array")
+            for sample in samples:
+                if not isinstance(sample, dict):
+                    raise EvidenceError("raw performance samples must be objects")
+                for compiler in ("gors", "go"):
+                    measurement = sample.get(compiler)
+                    if not isinstance(measurement, dict):
+                        raise EvidenceError(f"raw {compiler} measurement is missing")
+                    _validate_runtime_link_evidence(
+                        measurement,
+                        compiler=compiler,
+                        contract_identity=contract_identity,
+                        rustc=rustc,
+                    )
         raw_count = sum(len(session.get("samples", [])) for session in sessions)
         summary = workload.get("summary", {})
         for lane in ("raw", "normalized"):
@@ -358,6 +613,23 @@ def validate_result(result: dict[str, Any]) -> None:
                 raise EvidenceError(
                     f"stored performance {field} does not match recomputed raw evidence"
                 )
+    runtime_artifacts = _runtime_artifact_configurations(result)
+    if len(runtime_artifacts) != 1 or any(
+        not _is_sha256(configuration.get(field))
+        for configuration in runtime_artifacts
+        for field in ("implementationHash", "artifactIdentity")
+    ):
+        raise EvidenceError("result must use one exact runtime artifact configuration")
+    producer_identities = {
+        sample["gors"]["runtimeLink"]["producerIdentity"]
+        for workload in workloads
+        for session in workload["sessions"]
+        for sample in session["samples"]
+    }
+    if len(producer_identities) != 1 or not all(
+        _is_sha256(identity) for identity in producer_identities
+    ):
+        raise EvidenceError("result must retain one exact runtime producer identity")
 
 
 def validate_acceptance(manifest: dict[str, Any]) -> None:

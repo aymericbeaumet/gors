@@ -28,6 +28,11 @@ test("persistent compiler worker handles cold, cached, edited, and coalesced inp
 	const cold = await compile(page, sourceWith(1001));
 	expect(cold.success).toBe(true);
 	expect(cold.cacheHit).toBe(false);
+	expect(cold.runtimeDependency).toEqual({
+		schemaVersion: 1,
+		contractIdentity: expect.stringMatching(/^[0-9a-f]{64}$/),
+		operationIds: [14, 16],
+	});
 	expect(cold.statuses.map(({ phase }) => phase)).toEqual(
 		expect.arrayContaining([
 			"queued",
@@ -52,6 +57,7 @@ test("persistent compiler worker handles cold, cached, edited, and coalesced inp
 		].join("\n"),
 	);
 	expect(unsupported.success).toBe(false);
+	expect(unsupported.runtimeDependency).toBeNull();
 	expect(unsupported.error?.kind).toBe("compile error");
 	expect(unsupported.error?.message).toContain("GORS2001");
 	expect(unsupported.error?.message).toContain(
@@ -75,6 +81,7 @@ test("persistent compiler worker handles cold, cached, edited, and coalesced inp
 	const repeated = await compile(page, sourceWith(1001));
 	expect(repeated.success).toBe(true);
 	expect(repeated.cacheHit).toBe(true);
+	expect(repeated.runtimeDependency).toEqual(cold.runtimeDependency);
 	expect(repeated.timings.map(({ phase }) => phase)).toContain("cache-hit");
 
 	const edited = await compile(page, sourceWith(1002));

@@ -110,9 +110,16 @@ The runtime boundary is now modeled in a dedicated `gors-runtime-abi` crate.
 Its target-neutral manifest assigns typed value and operation identities, exact
 signatures, symbols, and required capabilities to a canonical
 `ContractIdentity`. Target-specific `RuntimeArtifactManifest` values combine
-that contract with target facts, provided capabilities, and an implementation
-hash. Compiler semantic keys therefore do not become red merely because the
-same contract was rebuilt for another target or from another implementation.
+that contract with target facts, provided capabilities, a consumer
+compatibility identity, and an implementation hash. Immutable producer
+provenance is separate evidence: it retains the build host and pre-build
+target-libdir record, while compatibility removes the producer host and binds
+the target's recursive rustlib inventory. Compiler semantic keys therefore do
+not become red merely because the same contract was rebuilt for another target
+or from another implementation. Native production resolves the exact shared
+rustup toolchain instead of inheriting Cargo's possibly newer `RUSTC`, and the
+consumer uses that same selector. Recursive inventories reject symlink targets
+that resolve outside their target-libdir root.
 
 ## Canonical stage products
 
@@ -282,11 +289,17 @@ The ABI must be versioned and covered by Rust-level unit tests plus small Go
 differential fixtures. Generated code should call runtime primitives directly;
 the compiler must not patch emitted stdlib modules afterward.
 
-The semantic compiler must not parse or inject runtime source. Bootstrap Rust
-artifact packaging copies the exact versioned runtime module directly, while a
-production native artifact path should link a precompiled ABI object or crate.
-That removes repeated runtime parsing today and repeated runtime compilation in
-the target architecture without moving public stdlib behavior behind helpers.
+The semantic compiler does not parse, inject, or emit runtime source. Generated
+Rust uses one absolute external crate path and carries an unconditional typed
+runtime dependency beside its source files. Native distributions precompile the
+fixed-recipe runtime rlib once, embed its exact bytes and schema-2 manifest, and
+materialize the verified payload into a content-addressed cache. Every terminal
+link descriptor retains both immutable producer provenance and host-neutral
+consumer compatibility; artifact and link-plan selection use only the latter.
+Every terminal rustc boundary selects a compatible link plan and supplies
+exactly one `--extern`; there is no source-bundled or fallback path. This removes runtime
+parsing and per-program runtime compilation without moving public stdlib
+behavior behind helpers.
 
 Representation policy should be centralized. HIR describes Go types and MIR
 captures Go places, value uses, control flow, and effects. Mandatory Rust
@@ -459,8 +472,9 @@ scheduler.
 Build configuration now carries only the pinned Go version and typed
 target-neutral runtime `ContractIdentity` derived from the canonical manifest;
 numeric ABI scraping and parallel string labels are deleted. Artifact target,
-format, toolchain, capabilities, and implementation identity are deliberately
-absent from compiler queries. They belong to the post-Rust-IR link request and
+format, producer provenance, compatibility, capabilities, and implementation
+identity are deliberately absent from compiler queries. They belong to the
+post-Rust-IR link request and
 artifact-publication keys, so changing an artifact cannot invalidate syntax,
 HIR, Go MIR, or target-neutral Rust IR. A runtime-contract change invalidates
 only Rust representation lowering and its deterministic package assembly.
@@ -474,10 +488,10 @@ compiler-local unary/binary runtime tables are deleted. Wrapping arithmetic is
 emitted directly as Rust primitives; versioned runtime calls remain explicit.
 Runtime types remain semantic categories rather than embedding generated Rust
 crate paths in the target-neutral contract; those paths belong to artifact
-selection and terminal emission.
-The remaining bootstrap debt is packaging only: replace source bundling with a
-single validated precompiled runtime artifact, without adding an optional
-second path.
+selection and terminal emission. Runtime packaging is now a single validated
+precompiled-artifact path. Generated-Rust cache reuse reconstructs only the
+target-neutral dependency and reselects the current provider, while executable
+reuse additionally requires the exact link-plan identity.
 
 The target is one explicitly owned, demand-driven red-green query database.
 Each query records fine-grained dependency edges automatically; public API and
@@ -485,9 +499,10 @@ implementation fingerprints remain separate so a private dependency edit does
 not re-type-check importers. Immutable query values are memory-accounted and
 evictable. An on-disk content-addressed semantic cache uses deterministic
 encoding, atomic publication, checksums, and complete schema, source, SDK,
-runtime-contract, and dependency keys. Target, artifact format, toolchain,
-provider capabilities, and runtime implementation belong to distinct link and
-executable cache keys after verified target-neutral Rust IR.
+runtime-contract, and dependency keys. Target, artifact format, producer
+provenance, consumer compatibility, provider capabilities, and runtime
+implementation belong to distinct link and executable cache keys after
+verified target-neutral Rust IR.
 
 Parallelism operates on ready package-DAG nodes and query boundaries. One
 bounded global job budget covers discovery, parsing, semantics, MIR,
@@ -588,8 +603,9 @@ Before broad stdlib work can be considered scalable, finish these foundations:
   publication;
 - one global scheduler and job budget spanning queries, external codegen, and
   linking, with revision cancellation and memory backpressure;
-- the precompiled-runtime experiment and terminal rustc feasibility gate, with
-  an aggressive switch to direct codegen from the same Rust IR if it cannot win;
+- the terminal rustc feasibility and performance gate over the completed
+  precompiled-runtime path, with an aggressive switch to direct codegen from the
+  same Rust IR if it cannot win;
 - content-addressed reachable SDK shards instead of the monolithic embedded
   source table; and
 - generic language, package, and runtime-ABI breadth sufficient to compile and

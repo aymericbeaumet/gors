@@ -1,6 +1,7 @@
 mod build_result;
 mod comments;
 mod compiler;
+mod runtime_dependency;
 
 pub use build_result::BuildResult;
 pub use compiler::GorsCompiler;

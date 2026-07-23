@@ -73,11 +73,14 @@ fn compiler_corpus_either_reports_diagnostics_or_prints_rust() {
                 continue;
             }
         };
-        let rust_source = gors::printer::generate_single(compiled).unwrap_or_else(|error| {
+        let generated = gors::printer::generate_single(compiled).unwrap_or_else(|error| {
             panic!(
                 "compiler corpus seed {} does not print: {error}",
                 path.display()
             );
+        });
+        let rust_source = generated.files.get("main.rs").unwrap_or_else(|| {
+            panic!("compiler corpus seed {} printed no main.rs", path.display())
         });
         assert!(
             !rust_source.is_empty(),

@@ -1,12 +1,13 @@
 use crate::cache::{
     CacheAccessLock, CacheRequest, CacheRequestOptions, CliCacheManifest, InputSnapshot,
-    generated_file_hashes, maybe_prune_cli_cache,
+    generated_file_hashes, maybe_prune_cli_cache, refresh_runtime_selection,
 };
 use crate::cache_paths::{gors_cache_base, run_cache_dir};
 use crate::compiler::{cli_workspace, compile_program};
 use crate::diagnostics::print_compiler_error;
 use crate::options::Run;
 use crate::output::{OutputDirectoryLock, write_generated_output_locked};
+use crate::runtime_link::resolve_runtime;
 use crate::rustc::compile_generated_binary;
 use crate::timings::TimingCollector;
 use std::path::Path;
@@ -67,6 +68,18 @@ pub fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
         let _cache_timer = timings.phase("cli.cache_lookup");
         CliCacheManifest::load_if_generated_valid(&cache_dir, &request, &inputs)
     };
+    let mut linked_runtime = None;
+    if let Some(manifest) = cache_manifest.as_mut() {
+        match manifest.runtime_dependency() {
+            Ok(dependency) => {
+                let runtime = resolve_runtime(&cache_base, dependency)?;
+                let runtime_output = runtime.output_descriptor();
+                refresh_runtime_selection(&cache_dir, manifest, &runtime_output)?;
+                linked_runtime = Some(runtime);
+            }
+            Err(_) => cache_manifest = None,
+        }
+    }
 
     if cache_manifest.is_some() {
         timings.cache_event("compiler", true);
@@ -96,9 +109,11 @@ pub fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
         let print_timer = timings.phase("cli.print");
         let output = gors::printer::generate_multi(compiled)?;
         drop(print_timer);
-        let generated_files = generated_file_hashes(&output);
+        let runtime = resolve_runtime(&cache_base, output.runtime.clone())?;
+        let runtime_output = runtime.output_descriptor();
+        let generated_files = generated_file_hashes(&output, &runtime_output)?;
         let write_timer = timings.phase("cli.file_writes");
-        write_generated_output_locked(&output, &cache_dir)?;
+        write_generated_output_locked(&output, &cache_dir, &runtime_output)?;
         drop(write_timer);
 
         let completed_request = CacheRequest::new(CacheRequestOptions {
@@ -109,22 +124,37 @@ pub fn run(cmd: Run) -> Result<(), Box<dyn std::error::Error>> {
             sourcemap: None,
         })?;
         if request == completed_request {
-            let manifest = CliCacheManifest::new(&request, inputs, generated_files, None);
+            let manifest = CliCacheManifest::new(
+                &request,
+                inputs,
+                generated_files,
+                None,
+                runtime_output.link().clone(),
+            );
             manifest.save(&cache_dir)?;
             cache_manifest = Some(manifest);
+            linked_runtime = Some(runtime);
         }
     }
 
     let Some(mut cache_manifest) = cache_manifest else {
         return Err("source inputs changed while compiling; rerun the command".into());
     };
+    let runtime =
+        linked_runtime.ok_or("runtime link plan was not retained for generated output")?;
     let bin_path = cache_dir.join("main");
-    if cache_manifest.executable_is_valid(&bin_path) {
+    if cache_manifest.executable_is_valid(&bin_path, runtime.descriptor()) {
         timings.cache_event("rustc", true);
     } else {
         timings.cache_event("rustc", false);
-        compile_generated_binary(&cache_dir, &bin_path, cmd.release, &timings)?;
-        cache_manifest.set_executable(&bin_path)?;
+        compile_generated_binary(
+            &cache_dir,
+            &bin_path,
+            runtime.artifact_path(),
+            cmd.release,
+            &timings,
+        )?;
+        cache_manifest.set_executable(&bin_path, runtime.descriptor())?;
         cache_manifest.save(&cache_dir)?;
     }
 

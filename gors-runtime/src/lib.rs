@@ -5,8 +5,9 @@
 //! contains no Go standard-library replacements. The language built-ins
 //! `print` and `println` write to standard error, matching the pinned Go oracle.
 
-// Generated programs embed the complete runtime ABI even when one program uses
-// only a subset of it.
+// Native distributions precompile this complete runtime once and generated
+// programs link it as `__gors_runtime`, even when one program uses only a
+// subset of its operations. Generated source never embeds or recompiles it.
 #![allow(dead_code)]
 
 use std::cmp::Ordering;

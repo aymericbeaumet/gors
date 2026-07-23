@@ -2,6 +2,8 @@ use gors::error::{Diagnostic, DiagnosticKind};
 use gors::sourcemap::SourceMap;
 use wasm_bindgen::prelude::*;
 
+use crate::runtime_dependency::RuntimeDependencyProtocol;
+
 /// Result of a browser build operation.
 #[wasm_bindgen]
 pub struct BuildResult {
@@ -14,6 +16,7 @@ pub struct BuildResult {
     error_end_column: u32,
     error_kind: String,
     error_source_line: String,
+    runtime_dependency: Option<RuntimeDependencyProtocol>,
     source_map: Option<SourceMap>,
 }
 
@@ -62,6 +65,35 @@ impl BuildResult {
     #[wasm_bindgen(getter)]
     pub fn error_source_line(&self) -> String {
         self.error_source_line.clone()
+    }
+
+    /// Browser runtime-dependency wire schema, or zero when compilation
+    /// failed before a dependency could be produced.
+    #[wasm_bindgen(getter)]
+    pub fn runtime_dependency_schema_version(&self) -> u32 {
+        self.runtime_dependency
+            .as_ref()
+            .map_or(0, RuntimeDependencyProtocol::schema_version)
+    }
+
+    /// Exact target-neutral runtime contract identity selected by compilation.
+    #[wasm_bindgen(getter)]
+    pub fn runtime_contract_identity(&self) -> String {
+        self.runtime_dependency
+            .as_ref()
+            .map(RuntimeDependencyProtocol::contract_identity)
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// Stable runtime operation IDs in canonical ascending order.
+    #[wasm_bindgen]
+    pub fn get_runtime_operation_ids(&self) -> Vec<u16> {
+        self.runtime_dependency
+            .as_ref()
+            .map(RuntimeDependencyProtocol::operation_ids)
+            .unwrap_or_default()
+            .to_vec()
     }
 
     /// Return the complete Source Map v3 document.
@@ -279,7 +311,11 @@ impl BuildResult {
 }
 
 impl BuildResult {
-    pub(crate) fn success_rust(output: String, source_map: SourceMap) -> Self {
+    pub(crate) fn success_rust(
+        output: String,
+        source_map: SourceMap,
+        runtime_dependency: RuntimeDependencyProtocol,
+    ) -> Self {
         Self {
             success: true,
             output,
@@ -290,6 +326,7 @@ impl BuildResult {
             error_end_column: 0,
             error_kind: String::new(),
             error_source_line: String::new(),
+            runtime_dependency: Some(runtime_dependency),
             source_map: Some(source_map),
         }
     }
@@ -321,6 +358,7 @@ impl BuildResult {
                 DiagnosticKind::Compiler => "compiler".to_string(),
             },
             error_source_line: source_line,
+            runtime_dependency: None,
             source_map: None,
         }
     }

@@ -10,6 +10,7 @@ from pathlib import Path
 
 from perf_harness.cli import repository_root, validate_checked_in_files, validate_protocol_arguments
 from perf_harness.model import (
+    GORS_CACHE_SCHEMA_VERSION,
     RESULT_SCHEMA_VERSION,
     EvidenceError,
     achievement,
@@ -32,6 +33,87 @@ from perf_harness.native import (
     pipeline_plan,
 )
 from perf_harness.runner import runtime_contract_identity
+from perf_harness.runtime_link import (
+    LINK_DESCRIPTOR_SCHEMA_VERSION,
+    LINK_OUTPUT_SCHEMA_VERSION,
+    RUNTIME_ARTIFACT_FILENAME,
+    RUNTIME_ARTIFACT_FORMAT,
+    RUNTIME_CRATE_NAME,
+    RUNTIME_LINK_VALIDATION,
+    RUST_RLIB_COMPATIBILITY_SCHEMA_VERSION,
+    RUST_TARGET_LIBDIR_SCHEMA_VERSION,
+)
+
+
+def synthetic_runtime_link_evidence() -> dict:
+    artifact_identity = "8" * 64
+    artifact_path = f"/cache/runtime/{artifact_identity}/{RUNTIME_ARTIFACT_FILENAME}"
+    implementation_hash = "7" * 64
+    return {
+        "validation": RUNTIME_LINK_VALIDATION,
+        "descriptorPath": "/generated/.gors-link.json",
+        "descriptorSha256": "9" * 64,
+        "outputSchemaVersion": LINK_OUTPUT_SCHEMA_VERSION,
+        "linkDescriptorSchemaVersion": LINK_DESCRIPTOR_SCHEMA_VERSION,
+        "dependencySchemaVersion": 1,
+        "externCrate": RUNTIME_CRATE_NAME,
+        "artifactPath": artifact_path,
+        "contractIdentity": "5" * 64,
+        "operationIds": [14, 16],
+        "targetTriple": "test-target",
+        "targetPointerWidth": 64,
+        "targetEndianness": "little",
+        "format": RUNTIME_ARTIFACT_FORMAT,
+        "runtimeCompatibilitySchemaVersion": RUST_RLIB_COMPATIBILITY_SCHEMA_VERSION,
+        "rustcReleaseRecordSha256": "b" * 64,
+        "targetLibdirSchemaVersion": RUST_TARGET_LIBDIR_SCHEMA_VERSION,
+        "targetLibdirRecordSha256": "c" * 64,
+        "producerIdentity": "f" * 64,
+        "compatibilityIdentity": "6" * 64,
+        "implementationHash": implementation_hash,
+        "artifactSha256": implementation_hash,
+        "artifactIdentity": artifact_identity,
+        "linkPlanIdentity": "a" * 64,
+    }
+
+
+def synthetic_measurement(wall_ns: float, compiler: str) -> dict:
+    runtime_link = synthetic_runtime_link_evidence() if compiler == "gors" else None
+    commands = []
+    if compiler == "gors":
+        commands.append(
+            {
+                "stage": "gors.compile_emit",
+                "argv": ["gors", "build"],
+                "runtimeLink": None,
+            }
+        )
+        commands.append(
+            {
+                "stage": "gors.external_rustc_link",
+                "argv": [
+                    "rustc",
+                    "main.rs",
+                    "--extern",
+                    f"{RUNTIME_CRATE_NAME}={runtime_link['artifactPath']}",
+                ],
+                "runtimeLink": runtime_link,
+            }
+        )
+    else:
+        commands.append(
+            {
+                "stage": "go.build_link",
+                "argv": ["go", "build"],
+                "runtimeLink": None,
+            }
+        )
+    return {
+        "wallNs": wall_ns,
+        "normalizedWallNs": wall_ns,
+        "commands": commands,
+        "runtimeLink": runtime_link,
+    }
 
 
 def synthetic_result(*, commit: str, p50: float = 91.0, p95: float = 96.0) -> dict:
@@ -43,8 +125,8 @@ def synthetic_result(*, commit: str, p50: float = 91.0, p95: float = 96.0) -> di
     go_values = [100.0] * 47 + [go_high] * 3
     pairs = [
         {
-            "gors": {"wallNs": gors, "normalizedWallNs": gors},
-            "go": {"wallNs": go, "normalizedWallNs": go},
+            "gors": synthetic_measurement(gors, "gors"),
+            "go": synthetic_measurement(go, "go"),
         }
         for gors, go in zip(gors_values, go_values, strict=True)
     ]
@@ -100,7 +182,13 @@ def synthetic_result(*, commit: str, p50: float = 91.0, p95: float = 96.0) -> di
             "seed": 20260722,
             "smoke": False,
             "calibrationVersion": "calibration-v1",
-            "gorsCacheSchema": 3,
+            "gorsCacheSchema": GORS_CACHE_SCHEMA_VERSION,
+            "runtimeLinkDescriptorSchema": LINK_DESCRIPTOR_SCHEMA_VERSION,
+            "runtimeLinkValidation": RUNTIME_LINK_VALIDATION,
+            "runtimeCompatibilitySchemaVersion": (
+                RUST_RLIB_COMPATIBILITY_SCHEMA_VERSION
+            ),
+            "targetLibdirSchemaVersion": RUST_TARGET_LIBDIR_SCHEMA_VERSION,
             "ioByteCountersAvailable": True,
             "processTreeCountersAvailable": True,
             "stageFingerprintsAvailable": True,
@@ -113,7 +201,21 @@ def synthetic_result(*, commit: str, p50: float = 91.0, p95: float = 96.0) -> di
         "toolchains": {
             "gors": {"runtimeContractIdentity": "5" * 64},
             "go": {"version": "go1.26.3", "sha256": "2" * 64, "experiment": ""},
-            "rustc": {"channel": "1.96.0", "target": "test-target", "sha256": "3" * 64},
+            "rustc": {
+                "channel": "1.96.0",
+                "target": "test-target",
+                "pointerWidth": 64,
+                "endianness": "little",
+                "targetLibdir": "/tool/lib/rustlib/test-target/lib",
+                "runtimeCompatibilitySchemaVersion": (
+                    RUST_RLIB_COMPATIBILITY_SCHEMA_VERSION
+                ),
+                "runtimeCompatibilityIdentity": "6" * 64,
+                "rustcReleaseRecordSha256": "b" * 64,
+                "targetLibdirSchemaVersion": RUST_TARGET_LIBDIR_SCHEMA_VERSION,
+                "targetLibdirRecordSha256": "c" * 64,
+                "sha256": "3" * 64,
+            },
             "linker": {"version": "test-linker", "sha256": "4" * 64},
         },
         "workloads": [
@@ -153,6 +255,56 @@ class RuntimeContractIdentityTests(unittest.TestCase):
 
 
 class RuntimeContractEvidenceTests(unittest.TestCase):
+    def test_runtime_artifact_is_part_of_configuration_fingerprint(self) -> None:
+        result = synthetic_result(commit="a" * 40)
+        original = result["configurationFingerprint"]
+        for workload in result["workloads"]:
+            for session in workload["sessions"]:
+                for sample in session["samples"]:
+                    link = sample["gors"]["runtimeLink"]
+                    link["implementationHash"] = "c" * 64
+                    link["artifactIdentity"] = "d" * 64
+
+        self.assertNotEqual(original, configuration_fingerprint(result))
+
+    def test_release_and_target_libdir_records_are_configuration_inputs(self) -> None:
+        result = synthetic_result(commit="a" * 40)
+        original = result["configurationFingerprint"]
+        result["toolchains"]["rustc"]["rustcReleaseRecordSha256"] = "d" * 64
+        self.assertNotEqual(original, configuration_fingerprint(result))
+        result["toolchains"]["rustc"]["rustcReleaseRecordSha256"] = "b" * 64
+        result["toolchains"]["rustc"]["targetLibdirRecordSha256"] = "e" * 64
+        self.assertNotEqual(original, configuration_fingerprint(result))
+
+    def test_rejects_multiple_runtime_artifact_configurations(self) -> None:
+        result = synthetic_result(commit="a" * 40)
+        measurement = result["workloads"][0]["sessions"][0]["samples"][0]["gors"]
+        link = measurement["runtimeLink"]
+        artifact_identity = "d" * 64
+        artifact_path = f"/cache/runtime/{artifact_identity}/{RUNTIME_ARTIFACT_FILENAME}"
+        link["implementationHash"] = "c" * 64
+        link["artifactSha256"] = "c" * 64
+        link["artifactIdentity"] = artifact_identity
+        link["artifactPath"] = artifact_path
+        measurement["commands"][1]["argv"][-1] = (
+            f"{RUNTIME_CRATE_NAME}={artifact_path}"
+        )
+        result["configurationFingerprint"] = configuration_fingerprint(result)
+        result["resultId"] = result_id(result)
+
+        with self.assertRaisesRegex(EvidenceError, "one exact runtime artifact"):
+            validate_result(result)
+
+    def test_rejects_multiple_runtime_producer_identities(self) -> None:
+        result = synthetic_result(commit="a" * 40)
+        result["workloads"][0]["sessions"][0]["samples"][0]["gors"][
+            "runtimeLink"
+        ]["producerIdentity"] = "e" * 64
+        result["resultId"] = result_id(result)
+
+        with self.assertRaisesRegex(EvidenceError, "one exact runtime producer"):
+            validate_result(result)
+
     def test_rejects_missing_runtime_contract_identity(self) -> None:
         result = synthetic_result(commit="a" * 40)
         del result["toolchains"]["gors"]["runtimeContractIdentity"]
@@ -171,9 +323,53 @@ class RuntimeContractEvidenceTests(unittest.TestCase):
 
     def test_rejects_legacy_result_schema(self) -> None:
         result = synthetic_result(commit="a" * 40)
-        result["schemaVersion"] = 1
+        result["schemaVersion"] = RESULT_SCHEMA_VERSION - 1
 
         with self.assertRaisesRegex(EvidenceError, "unsupported result schemaVersion"):
+            validate_result(result)
+
+    def test_rejects_missing_runtime_link_evidence(self) -> None:
+        result = synthetic_result(commit="a" * 40)
+        result["workloads"][0]["sessions"][0]["samples"][0]["gors"][
+            "runtimeLink"
+        ] = None
+        result["resultId"] = result_id(result)
+
+        with self.assertRaisesRegex(EvidenceError, "missing validated runtime-link"):
+            validate_result(result)
+
+    def test_rejects_stale_runtime_compatibility_evidence(self) -> None:
+        result = synthetic_result(commit="a" * 40)
+        link = result["workloads"][0]["sessions"][0]["samples"][0]["gors"][
+            "runtimeLink"
+        ]
+        link["compatibilityIdentity"] = "d" * 64
+        result["resultId"] = result_id(result)
+
+        with self.assertRaisesRegex(EvidenceError, "compatibility evidence is stale"):
+            validate_result(result)
+
+    def test_rejects_stale_release_and_target_libdir_evidence(self) -> None:
+        for field in ("rustcReleaseRecordSha256", "targetLibdirRecordSha256"):
+            with self.subTest(field=field):
+                result = synthetic_result(commit="a" * 40)
+                link = result["workloads"][0]["sessions"][0]["samples"][0][
+                    "gors"
+                ]["runtimeLink"]
+                link[field] = "d" * 64
+                result["resultId"] = result_id(result)
+
+                with self.assertRaisesRegex(EvidenceError, "compatibility evidence is stale"):
+                    validate_result(result)
+
+    def test_rejects_duplicate_runtime_extern_evidence(self) -> None:
+        result = synthetic_result(commit="a" * 40)
+        measurement = result["workloads"][0]["sessions"][0]["samples"][0]["gors"]
+        extern_value = f"{RUNTIME_CRATE_NAME}={measurement['runtimeLink']['artifactPath']}"
+        measurement["commands"][1]["argv"].extend(["--extern", extern_value])
+        result["resultId"] = result_id(result)
+
+        with self.assertRaisesRegex(EvidenceError, "exactly one --extern"):
             validate_result(result)
 
 
@@ -353,6 +549,13 @@ class NativeBoundaryTests(unittest.TestCase):
                 go_version="go version go1.26.3 test/test",
                 rustc_version="test",
                 rust_target="test-target",
+                rust_pointer_width=64,
+                rust_endianness="little",
+                runtime_contract_identity="5" * 64,
+                rustc_target_libdir=Path("/tool/lib/rustlib/test-target/lib"),
+                rustc_release_record_sha256="b" * 64,
+                target_libdir_record_sha256="c" * 64,
+                runtime_compatibility_identity="6" * 64,
                 linker_path="/tool/cc",
                 linker_version="test-linker",
                 linker_sha256="4" * 64,
@@ -375,6 +578,24 @@ class NativeBoundaryTests(unittest.TestCase):
         jobs_index = plan["commands"][0]["argv"].index("--jobs")
         self.assertEqual(plan["commands"][0]["argv"][jobs_index + 1], "1")
         self.assertIn("-Clto=fat", plan["commands"][1]["argv"])
+        self.assertNotIn("--extern", plan["commands"][1]["argv"])
+        self.assertEqual(
+            plan["commands"][1]["runtimeLink"]["descriptorPath"],
+            str(root / "generated" / ".gors-link.json"),
+        )
+        self.assertEqual(
+            plan["commands"][1]["runtimeLink"]["expectedCompatibilityIdentity"],
+            "6" * 64,
+        )
+        self.assertEqual(
+            plan["commands"][1]["runtimeLink"]["expectedTargetLibdirRecordSha256"],
+            "c" * 64,
+        )
+        self.assertTrue(plan["runtimeLinkRequired"])
+        self.assertEqual(
+            plan["runtimeLinkDescriptorSchema"], LINK_DESCRIPTOR_SCHEMA_VERSION
+        )
+        self.assertEqual(plan["runtimeLinkValidation"], RUNTIME_LINK_VALIDATION)
 
 
 class AcceptanceGateTests(unittest.TestCase):

@@ -40,12 +40,15 @@
 //!     [manifest],
 //! ).unwrap();
 //! let compiled = compiler::compile_program(input).unwrap();
-//! let rust_source = printer::generate_single(compiled).unwrap();
+//! let generated = printer::generate_single(compiled).unwrap();
+//! let rust_source = generated.files.get("main.rs").unwrap();
+//! assert!(rust_source.contains("fn main"));
 //! ```
 
 // Lints are configured at workspace level in the root Cargo.toml.
 
-mod artifact;
+/// Precompiled runtime provider and terminal artifact packaging support.
+pub mod artifact;
 
 /// Go SDK version pinned by the repository-level `.go-version` file.
 pub const GO_VERSION: &str = env!("GORS_GO_VERSION");
@@ -53,10 +56,11 @@ pub const GO_VERSION: &str = env!("GORS_GO_VERSION");
 /// Version label for the embedded Go stdlib archive compiled into gors.
 pub const STDLIB_VERSION: &str = env!("GORS_STDLIB_VERSION");
 
-/// Content fingerprint for compiler and generated-runtime sources.
+/// Content fingerprint for compiler semantics, the selected Go SDK, and the
+/// target-neutral runtime contract.
 ///
-/// Persistent compiler artifacts include this value so they are rejected
-/// automatically when lowering or runtime semantics change.
+/// Target-specific runtime implementation and packaging changes are excluded;
+/// their exact artifact and link-plan identities belong to terminal caches.
 pub const COMPILER_FINGERPRINT: &str = env!("GORS_COMPILER_FINGERPRINT");
 
 #[cfg(any(

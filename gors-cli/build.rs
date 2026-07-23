@@ -21,7 +21,7 @@ fn main() -> BuildResult<()> {
 
 fn cli_abi_fingerprint(manifest_dir: &Path, workspace_dir: &Path) -> BuildResult<String> {
     let mut hasher = Sha256::new();
-    hash_part(&mut hasher, b"gors-cli-abi-v1");
+    hash_part(&mut hasher, b"gors-cli-abi-v2-external-runtime");
 
     for key in [
         "TARGET",

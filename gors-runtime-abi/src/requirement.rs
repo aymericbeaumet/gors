@@ -1,6 +1,6 @@
 //! Canonical per-program runtime operation requirements.
 
-use crate::operations::RuntimeOp;
+use crate::operations::{RuntimeOp, UnknownRuntimeOpId};
 use crate::target::TargetCapabilities;
 
 /// Sorted, duplicate-free runtime operations required by one compiled unit.
@@ -23,6 +23,21 @@ impl RuntimeRequirement {
         Self {
             operations: operations.into_boxed_slice(),
         }
+    }
+
+    /// Decode stable operation IDs and canonicalize the resulting requirement.
+    ///
+    /// Unknown IDs fail closed; callers must not reinterpret a descriptor from
+    /// another ABI schema as the current operation catalog.
+    pub fn from_operation_ids(
+        operation_ids: impl IntoIterator<Item = u16>,
+    ) -> Result<Self, UnknownRuntimeOpId> {
+        operation_ids.into_iter().map(RuntimeOp::try_from).collect()
+    }
+
+    /// Iterate over the stable IDs used by cache and sidecar descriptors.
+    pub fn operation_ids(&self) -> impl DoubleEndedIterator<Item = u16> + ExactSizeIterator + '_ {
+        self.operations.iter().map(|operation| operation.id().get())
     }
 
     /// Return the canonical operation sequence.
