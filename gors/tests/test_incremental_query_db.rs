@@ -57,7 +57,7 @@ fn workspace() -> WorkspaceKey {
 }
 
 fn package_key(import_path: &str) -> PackageKey {
-    PackageKey::ImportPath(import_path.into())
+    PackageKey::import_path(import_path).unwrap()
 }
 
 fn insert(db: &mut CompilerDatabase, text: &str) -> FileId {

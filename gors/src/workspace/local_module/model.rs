@@ -78,14 +78,3 @@ impl MaterializedPackage {
         &self.files
     }
 }
-
-/// Demand-driven package-source provider independent of compiler manifests.
-pub trait PackageSourceCatalog: Send + Sync {
-    type Error: std::error::Error + Send + Sync + 'static;
-
-    /// Materialize exactly one requested package without following its imports.
-    fn materialize(
-        &self,
-        import_path: &CanonicalImportPath,
-    ) -> Result<Arc<MaterializedPackage>, Self::Error>;
-}

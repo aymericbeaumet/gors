@@ -4,6 +4,8 @@ use std::path::PathBuf;
 
 use crate::compiler::input::InputError;
 
+use super::local_module::LocalModuleError;
+
 /// Required filesystem shape for an invocation path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PathExpectation {
@@ -55,6 +57,7 @@ pub enum LoadError {
         file: PathBuf,
         found_directory: PathBuf,
     },
+    LocalModule(LocalModuleError),
     InvalidManifest(InputError),
 }
 
@@ -117,6 +120,7 @@ impl fmt::Display for LoadError {
                 found_directory.to_string_lossy(),
                 expected_directory.to_string_lossy()
             ),
+            Self::LocalModule(error) => error.fmt(formatter),
             Self::InvalidManifest(error) => error.fmt(formatter),
         }
     }
@@ -126,6 +130,7 @@ impl std::error::Error for LoadError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io { source, .. } => Some(source),
+            Self::LocalModule(error) => Some(error),
             Self::InvalidManifest(error) => Some(error),
             _ => None,
         }
@@ -135,5 +140,11 @@ impl std::error::Error for LoadError {
 impl From<InputError> for LoadError {
     fn from(error: InputError) -> Self {
         Self::InvalidManifest(error)
+    }
+}
+
+impl From<LocalModuleError> for LoadError {
+    fn from(error: LocalModuleError) -> Self {
+        Self::LocalModule(error)
     }
 }

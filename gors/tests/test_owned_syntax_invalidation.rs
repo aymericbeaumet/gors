@@ -97,7 +97,7 @@ fn workspace() -> WorkspaceKey {
 }
 
 fn package() -> PackageKey {
-    PackageKey::ImportPath("example/owned-syntax".into())
+    PackageKey::import_path("example/owned-syntax").unwrap()
 }
 
 fn install(db: &mut CompilerDatabase, source: &str) -> FileId {

@@ -3,9 +3,13 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::compiler::input::{PackageKey, PackageManifestCatalog};
 use crate::import_path::{CanonicalImportPath, ImportPathIssue};
 
-use super::{LocalModuleCatalog, LocalModuleError, ModuleFileIssue, parse_module_directive};
+use super::{
+    LocalModuleCatalog, LocalModuleError, LocalModuleManifestCatalog, ModuleFileIssue,
+    parse_module_directive,
+};
 
 fn write(path: &Path, contents: impl AsRef<[u8]>) {
     std::fs::write(path, contents).unwrap();
@@ -291,4 +295,53 @@ fn concurrent_requests_share_one_materialization() {
 
     assert!(packages.all(|package| Arc::ptr_eq(&first, &package)));
     assert_eq!(catalog.materialized_package_count(), 1);
+}
+
+#[test]
+fn compiler_catalog_is_object_safe_lazy_and_memoizes_immutable_manifests() {
+    let temporary = tempfile::tempdir().unwrap();
+    let requested_directory = temporary.path().join("requested");
+    let untouched_directory = temporary.path().join("untouched");
+    std::fs::create_dir(&requested_directory).unwrap();
+    std::fs::create_dir(&untouched_directory).unwrap();
+    write(
+        &requested_directory.join("value.go"),
+        "package requested\nconst Value = 1\n",
+    );
+    write(&untouched_directory.join("broken.go"), [0xff, 0xfe]);
+
+    let source_catalog = Arc::new(module(temporary.path(), "example.com/project"));
+    let catalog = Arc::new(LocalModuleManifestCatalog::new(Arc::clone(&source_catalog)));
+    let object_safe: Arc<dyn PackageManifestCatalog> = catalog.clone();
+    let requested = PackageKey::import_path("example.com/project/requested").unwrap();
+
+    assert_eq!(source_catalog.materialized_package_count(), 0);
+    assert_eq!(catalog.materialized_manifest_count(), 0);
+    let first = object_safe.materialize(&requested).unwrap().unwrap();
+    let second = object_safe.materialize(&requested).unwrap().unwrap();
+
+    assert!(Arc::ptr_eq(&first, &second));
+    assert_eq!(first.key(), &requested);
+    assert_eq!(first.files().first().unwrap().logical_path(), "value.go");
+    assert_eq!(source_catalog.materialized_package_count(), 1);
+    assert_eq!(catalog.materialized_manifest_count(), 1);
+}
+
+#[test]
+fn compiler_catalog_distinguishes_unowned_imports_and_preserves_owned_failures() {
+    let temporary = tempfile::tempdir().unwrap();
+    write(&temporary.path().join("root.go"), "package project\n");
+    let catalog =
+        LocalModuleManifestCatalog::new(Arc::new(module(temporary.path(), "example.com/project")));
+
+    let external = PackageKey::import_path("elsewhere.example/package").unwrap();
+    assert!(catalog.materialize(&external).unwrap().is_none());
+
+    let missing = PackageKey::import_path("example.com/project/missing").unwrap();
+    let error = catalog.materialize(&missing).unwrap_err();
+    assert_eq!(error.package(), &missing);
+    assert!(matches!(
+        error.cause().downcast_ref::<LocalModuleError>(),
+        Some(LocalModuleError::MissingPackage { .. })
+    ));
 }

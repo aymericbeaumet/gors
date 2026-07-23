@@ -2,12 +2,20 @@ use std::fmt;
 use std::sync::Arc;
 
 use super::{LogicalPathIssue, PackageKey};
+use crate::import_path::ImportPathIssue;
 
 /// Structural failure while constructing compiler-owned raw inputs.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InputError {
-    EmptyWorkspaceKey,
-    EmptyPackageKey,
+    EmptyAdHocWorkspaceKey,
+    InvalidWorkspaceModulePath {
+        path: Arc<str>,
+        issue: ImportPathIssue,
+    },
+    InvalidPackageImportPath {
+        path: Arc<str>,
+        issue: ImportPathIssue,
+    },
     InvalidLogicalPath {
         path: Arc<str>,
         issue: LogicalPathIssue,
@@ -23,19 +31,20 @@ pub enum InputError {
     PackageHasNoFiles {
         package: PackageKey,
     },
-    DuplicatePackageKey {
-        package: PackageKey,
-    },
-    MissingEntryPackage {
-        package: PackageKey,
-    },
 }
 
 impl fmt::Display for InputError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::EmptyWorkspaceKey => formatter.write_str("workspace key must not be empty"),
-            Self::EmptyPackageKey => formatter.write_str("package key must not be empty"),
+            Self::EmptyAdHocWorkspaceKey => {
+                formatter.write_str("ad-hoc workspace key must not be empty")
+            }
+            Self::InvalidWorkspaceModulePath { path, issue } => {
+                write!(formatter, "invalid workspace module path {path:?}: {issue}")
+            }
+            Self::InvalidPackageImportPath { path, issue } => {
+                write!(formatter, "invalid package import path {path:?}: {issue}")
+            }
             Self::InvalidLogicalPath { path, issue } => {
                 write!(formatter, "invalid logical source path {path:?}: {issue}")
             }
@@ -50,12 +59,6 @@ impl fmt::Display for InputError {
             ),
             Self::PackageHasNoFiles { package } => {
                 write!(formatter, "{package} contains no source files")
-            }
-            Self::DuplicatePackageKey { package } => {
-                write!(formatter, "duplicate package key: {package}")
-            }
-            Self::MissingEntryPackage { package } => {
-                write!(formatter, "entry {package} is not in the manifest")
             }
         }
     }

@@ -127,11 +127,10 @@ fn browser_program_input(
 
     let package_key = PackageKey::command_line();
     let file = SourceFileInput::from_source("main.go", "main.go", source)?;
-    let package = PackageInputManifest::new(package_key.clone(), [file])?;
-    ProgramInput::new(
+    let package = PackageInputManifest::new(package_key, [file])?;
+    ProgramInput::standalone(
         WorkspaceKey::ad_hoc("browser-worker")?,
-        package_key,
-        [package],
+        package,
     )
 }
 

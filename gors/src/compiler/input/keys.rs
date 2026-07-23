@@ -2,6 +2,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use super::InputError;
+use crate::import_path::CanonicalImportPath;
 
 /// Stable caller-selected identity of one compiler workspace.
 ///
@@ -10,17 +11,21 @@ use super::InputError;
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum WorkspaceKey {
     /// Workspace rooted in a Go module with this canonical module path.
-    Module(Arc<str>),
+    Module(CanonicalImportPath),
     /// Filesystem-free or command-line workspace with a caller-owned name.
     AdHoc(Arc<str>),
 }
 
 impl WorkspaceKey {
-    /// Construct a module workspace with a nonempty logical module path.
+    /// Construct a module workspace with a canonical Go module identity.
     pub fn module(module_path: impl Into<Arc<str>>) -> Result<Self, InputError> {
-        let key = Self::Module(module_path.into());
-        key.validate()?;
-        Ok(key)
+        let module_path = module_path.into();
+        CanonicalImportPath::new(Arc::clone(&module_path))
+            .map(Self::Module)
+            .map_err(|issue| InputError::InvalidWorkspaceModulePath {
+                path: module_path,
+                issue,
+            })
     }
 
     /// Construct an ad-hoc workspace with a nonempty stable caller name.
@@ -34,13 +39,23 @@ impl WorkspaceKey {
     #[must_use]
     pub fn logical_name(&self) -> &str {
         match self {
-            Self::Module(name) | Self::AdHoc(name) => name,
+            Self::Module(module_path) => module_path.as_str(),
+            Self::AdHoc(name) => name,
+        }
+    }
+
+    /// Typed canonical module identity when this is a Go module workspace.
+    #[must_use]
+    pub const fn canonical_module_path(&self) -> Option<&CanonicalImportPath> {
+        match self {
+            Self::Module(module_path) => Some(module_path),
+            Self::AdHoc(_) => None,
         }
     }
 
     pub(super) fn validate(&self) -> Result<(), InputError> {
-        if self.logical_name().is_empty() {
-            return Err(InputError::EmptyWorkspaceKey);
+        if matches!(self, Self::AdHoc(name) if name.is_empty()) {
+            return Err(InputError::EmptyAdHocWorkspaceKey);
         }
         Ok(())
     }
@@ -62,20 +77,21 @@ impl fmt::Display for WorkspaceKey {
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum PackageKey {
     /// Package selected through this canonical Go import path.
-    ImportPath(Arc<str>),
+    ImportPath(CanonicalImportPath),
     /// Package formed directly from command-line source arguments.
     CommandLine,
 }
 
 impl PackageKey {
-    /// Construct a package with a nonempty import-path identity.
-    ///
-    /// Canonical Go import-path validation remains resolver-owned; this input
-    /// layer rejects only an empty structural key.
+    /// Construct a package with a canonical Go import-path identity.
     pub fn import_path(import_path: impl Into<Arc<str>>) -> Result<Self, InputError> {
-        let key = Self::ImportPath(import_path.into());
-        key.validate()?;
-        Ok(key)
+        let import_path = import_path.into();
+        CanonicalImportPath::new(Arc::clone(&import_path))
+            .map(Self::ImportPath)
+            .map_err(|issue| InputError::InvalidPackageImportPath {
+                path: import_path,
+                issue,
+            })
     }
 
     /// Construct the unique command-line package identity.
@@ -88,6 +104,15 @@ impl PackageKey {
     #[must_use]
     pub fn as_import_path(&self) -> Option<&str> {
         match self {
+            Self::ImportPath(path) => Some(path.as_str()),
+            Self::CommandLine => None,
+        }
+    }
+
+    /// Typed canonical import identity when this is not a command-line package.
+    #[must_use]
+    pub const fn canonical_import_path(&self) -> Option<&CanonicalImportPath> {
+        match self {
             Self::ImportPath(path) => Some(path),
             Self::CommandLine => None,
         }
@@ -97,13 +122,6 @@ impl PackageKey {
     #[must_use]
     pub const fn is_command_line(&self) -> bool {
         matches!(self, Self::CommandLine)
-    }
-
-    pub(super) fn validate(&self) -> Result<(), InputError> {
-        if matches!(self, Self::ImportPath(path) if path.is_empty()) {
-            return Err(InputError::EmptyPackageKey);
-        }
-        Ok(())
     }
 }
 

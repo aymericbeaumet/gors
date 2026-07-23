@@ -1,7 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::compiler::input::SourceSnapshot;
+use crate::compiler::input::{
+    PackageCatalogError, PackageInputManifest, PackageKey, PackageManifestCatalog, SourceSnapshot,
+    WorkspaceKey,
+};
 use crate::compiler::provenance::SourceRef;
 
 use super::*;
@@ -10,13 +14,65 @@ fn test_workspace() -> WorkspaceKey {
     WorkspaceKey::ad_hoc("compiler-session-tests").unwrap()
 }
 
+#[derive(Debug)]
+struct TestCatalog {
+    manifests: BTreeMap<PackageKey, Arc<PackageInputManifest>>,
+    requests: AtomicUsize,
+}
+
+impl TestCatalog {
+    fn new(manifests: impl IntoIterator<Item = PackageInputManifest>) -> Self {
+        Self {
+            manifests: manifests
+                .into_iter()
+                .map(|manifest| (manifest.key().clone(), Arc::new(manifest)))
+                .collect(),
+            requests: AtomicUsize::new(0),
+        }
+    }
+
+    fn request_count(&self) -> usize {
+        self.requests.load(Ordering::Relaxed)
+    }
+}
+
+impl PackageManifestCatalog for TestCatalog {
+    fn materialize(
+        &self,
+        package: &PackageKey,
+    ) -> Result<Option<Arc<PackageInputManifest>>, PackageCatalogError> {
+        self.requests.fetch_add(1, Ordering::Relaxed);
+        Ok(self.manifests.get(package).map(Arc::clone))
+    }
+}
+
+fn package_manifest(
+    key: PackageKey,
+    logical_path: &str,
+    diagnostic_path: &str,
+    source: &str,
+) -> PackageInputManifest {
+    PackageInputManifest::new(
+        key,
+        [
+            super::super::input::SourceFileInput::from_source(
+                logical_path,
+                diagnostic_path,
+                source,
+            )
+            .unwrap(),
+        ],
+    )
+    .unwrap()
+}
+
 fn raw_program(logical_path: &str, diagnostic_path: &str, source: &str) -> ProgramInput {
     let package = super::super::input::PackageKey::command_line();
     let file =
         super::super::input::SourceFileInput::from_source(logical_path, diagnostic_path, source)
             .unwrap();
-    let manifest = PackageInputManifest::new(package.clone(), [file]).unwrap();
-    ProgramInput::new(test_workspace(), package, [manifest]).unwrap()
+    let manifest = PackageInputManifest::new(package, [file]).unwrap();
+    ProgramInput::standalone(test_workspace(), manifest).unwrap()
 }
 
 #[test]
@@ -51,10 +107,9 @@ fn install_transaction_rolls_back_updated_inserted_and_stale_inputs() {
     let readiness = session.ready_rust_ir_roots.clone();
     assert!(!readiness.is_empty());
 
-    let input = ProgramInput::new(
+    let input = ProgramInput::standalone(
         workspace,
-        package.clone(),
-        [PackageInputManifest::new(
+        PackageInputManifest::new(
             package,
             [
                 super::super::input::SourceFileInput::from_source(
@@ -71,7 +126,7 @@ fn install_transaction_rolls_back_updated_inserted_and_stale_inputs() {
                 .unwrap(),
             ],
         )
-        .unwrap()],
+        .unwrap(),
     )
     .unwrap();
 
@@ -147,10 +202,9 @@ fn install_rollback_restores_removed_package_and_discards_new_package() {
         .file();
     let old_package_id = session.database.package_for_file(old_file).unwrap();
     let new_package = super::super::input::PackageKey::command_line();
-    let input = ProgramInput::new(
+    let input = ProgramInput::standalone(
         workspace,
-        new_package.clone(),
-        [PackageInputManifest::new(
+        PackageInputManifest::new(
             new_package,
             [super::super::input::SourceFileInput::from_source(
                 "main.go",
@@ -159,7 +213,7 @@ fn install_rollback_restores_removed_package_and_discards_new_package() {
             )
             .unwrap()],
         )
-        .unwrap()],
+        .unwrap(),
     )
     .unwrap();
     let new_package_id = std::cell::Cell::new(None);
@@ -386,11 +440,11 @@ fn source_map_plan_owns_entry_comments_across_session_revisions() {
 }
 
 #[test]
-fn catalog_dependency_is_not_materialized_before_import_rejection() {
+fn reachable_catalog_dependency_is_admitted_before_backend_import_rejection() {
     let entry = super::super::input::PackageKey::command_line();
     let dependency = super::super::input::PackageKey::import_path("example/dependency").unwrap();
     let entry_manifest = PackageInputManifest::new(
-        entry.clone(),
+        entry,
         [super::super::input::SourceFileInput::from_source(
             "main.go",
             "/checkout/main.go",
@@ -409,12 +463,8 @@ fn catalog_dependency_is_not_materialized_before_import_rejection() {
         .unwrap()],
     )
     .unwrap();
-    let input = ProgramInput::new(
-        test_workspace(),
-        entry,
-        [dependency_manifest, entry_manifest],
-    )
-    .unwrap();
+    let catalog = Arc::new(TestCatalog::new([dependency_manifest]));
+    let input = ProgramInput::new(test_workspace(), entry_manifest, catalog.clone()).unwrap();
     let mut session = CompilerSession::default();
 
     let error = session
@@ -424,21 +474,156 @@ fn catalog_dependency_is_not_materialized_before_import_rejection() {
 
     assert_eq!(error.diagnostics().first().unwrap().code, "GORS2001");
     assert!(error.to_string().contains("imports are not implemented"));
-    assert_eq!(session.database().active_files().len(), 1);
+    assert_eq!(catalog.request_count(), 1);
+    assert_eq!(session.database().active_files().len(), 2);
     let packages = session
         .database()
         .active_files()
         .into_iter()
         .map(|file| session.database().package_for_file(file).unwrap())
         .collect::<BTreeSet<_>>();
-    assert_eq!(packages.len(), 1);
+    assert_eq!(packages.len(), 2);
+    let dag = session
+        .admitted_package_dag()
+        .expect("successful admission publishes its canonical package graph");
+    assert_eq!(dag.nodes().len(), 2);
+    assert_eq!(dag.edges().len(), 1);
+    assert_eq!(dag.topological_order().last(), Some(&dag.entry()));
+}
+
+#[test]
+fn recursively_admits_only_reachable_packages_in_dependency_first_layers() {
+    let entry_key = PackageKey::command_line();
+    let first_key = PackageKey::import_path("example/first").unwrap();
+    let leaf_key = PackageKey::import_path("example/leaf").unwrap();
+    let unrelated_key = PackageKey::import_path("example/unrelated").unwrap();
+    let entry = package_manifest(
+        entry_key.clone(),
+        "main.go",
+        "/checkout/main.go",
+        "package main\nimport \"example/first\"\nfunc main() {}\n",
+    );
+    let first = package_manifest(
+        first_key.clone(),
+        "first.go",
+        "/checkout/first/first.go",
+        "package first\nimport \"example/leaf\"\nfunc Value() int { return leaf.Value() }\n",
+    );
+    let leaf = package_manifest(
+        leaf_key.clone(),
+        "leaf.go",
+        "/checkout/leaf/leaf.go",
+        "package leaf\nfunc Value() int { return 1 }\n",
+    );
+    let unrelated = package_manifest(
+        unrelated_key,
+        "unrelated.go",
+        "/checkout/unrelated/unrelated.go",
+        "package unrelated\n",
+    );
+    let catalog = Arc::new(TestCatalog::new([unrelated, leaf, first]));
+    let input = ProgramInput::new(test_workspace(), entry, catalog.clone()).unwrap();
+    let mut session = CompilerSession::default();
+
+    let error = session
+        .compile_program(input)
+        .err()
+        .expect("backend import support must remain gated after graph admission");
+
+    assert_eq!(error.diagnostics().first().unwrap().code, "GORS2001");
+    assert_eq!(catalog.request_count(), 2);
+    let dag = session.admitted_package_dag().unwrap();
+    assert_eq!(dag.nodes().len(), 3);
+    assert_eq!(dag.edges().len(), 2);
+    assert_eq!(dag.layers().len(), 3);
+    let id_for = |key: &PackageKey| {
+        dag.nodes()
+            .iter()
+            .find(|node| node.key() == key)
+            .unwrap()
+            .package()
+    };
+    assert_eq!(
+        dag.topological_order(),
+        [id_for(&leaf_key), id_for(&first_key), id_for(&entry_key)]
+    );
+}
+
+#[test]
+fn missing_reachable_package_rolls_back_sources_and_preserves_prior_dag() {
+    let mut session = CompilerSession::default();
+    session
+        .compile_program(raw_program(
+            "main.go",
+            "/checkout/previous.go",
+            "package main\nfunc main() {}\n",
+        ))
+        .unwrap();
+    let previous_files = session.database().active_files();
+    let previous_dag = session.admitted_package_dag().unwrap().clone();
+    let entry = package_manifest(
+        PackageKey::command_line(),
+        "main.go",
+        "/checkout/next.go",
+        "package main\nimport \"example/missing\"\nfunc main() {}\n",
+    );
+    let input = ProgramInput::standalone(test_workspace(), entry).unwrap();
+
+    let error = session
+        .compile_program(input)
+        .err()
+        .expect("a missing reachable package must reject admission");
+
+    assert_eq!(error.diagnostics().first().unwrap().code, "GORS2004");
+    assert!(error.to_string().contains("unresolved import"));
+    assert_eq!(session.database().active_files(), previous_files);
+    assert_eq!(session.admitted_package_dag(), Some(&previous_dag));
+}
+
+#[test]
+fn import_cycle_is_source_anchored_and_never_commits_partial_packages() {
+    let entry = package_manifest(
+        PackageKey::command_line(),
+        "main.go",
+        "/checkout/main.go",
+        "package main\nimport \"example/a\"\nfunc main() {}\n",
+    );
+    let a = package_manifest(
+        PackageKey::import_path("example/a").unwrap(),
+        "a.go",
+        "/checkout/a/a.go",
+        "package a\nimport \"example/b\"\n",
+    );
+    let b = package_manifest(
+        PackageKey::import_path("example/b").unwrap(),
+        "b.go",
+        "/checkout/b/b.go",
+        "package b\nimport \"example/a\"\n",
+    );
+    let catalog = Arc::new(TestCatalog::new([a, b]));
+    let input = ProgramInput::new(test_workspace(), entry, catalog.clone()).unwrap();
+    let mut session = CompilerSession::default();
+
+    let error = session
+        .compile_program(input)
+        .err()
+        .expect("an import cycle must reject admission");
+
+    let diagnostic = error.diagnostics().first().unwrap();
+    assert_eq!(diagnostic.code, "GORS2004");
+    assert!(diagnostic.message.contains("import cycle"));
+    assert!(!diagnostic.file.is_empty());
+    assert!(diagnostic.line > 0);
+    assert_eq!(catalog.request_count(), 2);
+    assert!(session.database().active_files().is_empty());
+    assert!(session.admitted_package_dag().is_none());
 }
 
 #[test]
 fn huge_valid_and_invalid_catalog_packages_cost_nothing_beyond_entry() {
     let entry = super::super::input::PackageKey::command_line();
     let entry_manifest = PackageInputManifest::new(
-        entry.clone(),
+        entry,
         [super::super::input::SourceFileInput::from_source(
             "main.go",
             "/checkout/main.go",
@@ -448,7 +633,7 @@ fn huge_valid_and_invalid_catalog_packages_cost_nothing_beyond_entry() {
     )
     .unwrap();
     let baseline_input =
-        ProgramInput::new(test_workspace(), entry.clone(), [entry_manifest.clone()]).unwrap();
+        ProgramInput::standalone(test_workspace(), entry_manifest.clone()).unwrap();
     let payload = "x".repeat(1024 * 1024);
     let valid = super::super::input::PackageKey::import_path("example/valid").unwrap();
     let valid_manifest = PackageInputManifest::new(
@@ -472,12 +657,8 @@ fn huge_valid_and_invalid_catalog_packages_cost_nothing_beyond_entry() {
         .unwrap()],
     )
     .unwrap();
-    let input = ProgramInput::new(
-        test_workspace(),
-        entry,
-        [invalid_manifest, valid_manifest, entry_manifest],
-    )
-    .unwrap();
+    let catalog = Arc::new(TestCatalog::new([invalid_manifest, valid_manifest]));
+    let input = ProgramInput::new(test_workspace(), entry_manifest, catalog.clone()).unwrap();
     let mut baseline = CompilerSession::default();
     baseline.compile_program(baseline_input).unwrap();
     let baseline_files = baseline.database().active_files();
@@ -490,15 +671,16 @@ fn huge_valid_and_invalid_catalog_packages_cost_nothing_beyond_entry() {
     assert_eq!(session.database().active_files(), baseline_files);
     assert_eq!(session.database().retained_source_bytes(), baseline_bytes);
     assert_eq!(session.database().telemetry(), baseline_telemetry);
+    assert_eq!(catalog.request_count(), 0);
 }
 
 #[test]
 fn unrelated_package_edit_preserves_entry_queries_and_scheduler_readiness() {
-    fn input(unrelated_body: &str) -> ProgramInput {
+    fn input(unrelated_body: &str) -> (ProgramInput, Arc<TestCatalog>) {
         let entry = super::super::input::PackageKey::command_line();
         let unrelated = super::super::input::PackageKey::import_path("example/unrelated").unwrap();
         let entry_manifest = PackageInputManifest::new(
-            entry.clone(),
+            entry,
             [super::super::input::SourceFileInput::from_source(
                 "main.go",
                 "/checkout/main.go",
@@ -517,27 +699,25 @@ fn unrelated_package_edit_preserves_entry_queries_and_scheduler_readiness() {
             .unwrap()],
         )
         .unwrap();
-        ProgramInput::new(
-            test_workspace(),
-            entry,
-            [unrelated_manifest, entry_manifest],
-        )
-        .unwrap()
+        let catalog = Arc::new(TestCatalog::new([unrelated_manifest]));
+        let input = ProgramInput::new(test_workspace(), entry_manifest, catalog.clone()).unwrap();
+        (input, catalog)
     }
 
     let host = CompilerHost::new(NonZeroUsize::new(2).unwrap()).unwrap();
     let mut session = host.session(BuildConfig::default()).unwrap();
-    session
-        .compile_program(input("package unrelated\nfunc Value() int { return 1 }\n"))
-        .unwrap();
+    let (first_input, first_catalog) = input("package unrelated\nfunc Value() int { return 1 }\n");
+    session.compile_program(first_input).unwrap();
+    assert_eq!(first_catalog.request_count(), 0);
     let scheduler = host.telemetry();
     let retained_bytes = session.database().retained_source_bytes();
     session.database().reset_telemetry();
 
-    session
-        .compile_program(input("package unrelated\nfunc Value() int { return 2 }\n"))
-        .unwrap();
+    let (second_input, second_catalog) =
+        input("package unrelated\nfunc Value() int { return 2 }\n");
+    session.compile_program(second_input).unwrap();
 
+    assert_eq!(second_catalog.request_count(), 0);
     assert_eq!(session.database().telemetry().total_executions(), 0);
     assert_eq!(host.telemetry(), scheduler);
     assert_eq!(session.database().active_files().len(), 1);
@@ -550,7 +730,7 @@ fn previous_entry_is_removed_when_retained_only_as_catalog_package() {
     let previous_key =
         super::super::input::PackageKey::import_path("example/previous-entry").unwrap();
     let previous_manifest = PackageInputManifest::new(
-        previous_key.clone(),
+        previous_key,
         [super::super::input::SourceFileInput::from_source(
             "previous.go",
             "/checkout/previous.go",
@@ -559,8 +739,7 @@ fn previous_entry_is_removed_when_retained_only_as_catalog_package() {
         .unwrap()],
     )
     .unwrap();
-    let first =
-        ProgramInput::new(workspace.clone(), previous_key, [previous_manifest.clone()]).unwrap();
+    let first = ProgramInput::standalone(workspace.clone(), previous_manifest.clone()).unwrap();
     let mut session = CompilerSession::default();
     session.compile_program(first).unwrap();
     let previous_file = *session.database().active_files().first().unwrap();
@@ -568,7 +747,7 @@ fn previous_entry_is_removed_when_retained_only_as_catalog_package() {
 
     let entry = super::super::input::PackageKey::command_line();
     let entry_manifest = PackageInputManifest::new(
-        entry.clone(),
+        entry,
         [super::super::input::SourceFileInput::from_source(
             "main.go",
             "/checkout/main.go",
@@ -577,10 +756,12 @@ fn previous_entry_is_removed_when_retained_only_as_catalog_package() {
         .unwrap()],
     )
     .unwrap();
-    let second = ProgramInput::new(workspace, entry, [previous_manifest, entry_manifest]).unwrap();
+    let catalog = Arc::new(TestCatalog::new([previous_manifest]));
+    let second = ProgramInput::new(workspace, entry_manifest, catalog.clone()).unwrap();
 
     session.compile_program(second).unwrap();
 
+    assert_eq!(catalog.request_count(), 0);
     let active = session.database().active_files();
     assert_eq!(active.len(), 1);
     assert_ne!(active.first().copied(), Some(previous_file));

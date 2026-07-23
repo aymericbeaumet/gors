@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
 use super::path::validate_logical_path;
-use super::{InputError, PackageKey, SourceSnapshot, WorkspaceKey};
+use super::{
+    EmptyPackageManifestCatalog, InputError, PackageKey, PackageManifestCatalog, SourceSnapshot,
+    WorkspaceKey,
+};
 use crate::source::TextSizeOverflow;
 
 /// One stable logical source file paired with an immutable raw source revision.
@@ -80,7 +83,6 @@ impl PackageInputManifest {
         key: PackageKey,
         files: impl IntoIterator<Item = SourceFileInput>,
     ) -> Result<Self, InputError> {
-        key.validate()?;
         let mut files = files.into_iter().collect::<Vec<_>>();
         if files.is_empty() {
             return Err(InputError::PackageHasNoFiles { package: key });
@@ -121,43 +123,38 @@ impl PackageInputManifest {
 pub struct ProgramInput {
     workspace: WorkspaceKey,
     entry_package: PackageInputManifest,
-    packages: Arc<[PackageInputManifest]>,
+    package_catalog: Arc<dyn PackageManifestCatalog>,
 }
 
 impl ProgramInput {
-    /// Validate package uniqueness and entry membership, then canonicalize order.
+    /// Bind one explicit entry package to its demand-driven package catalog.
+    ///
+    /// The entry manifest is authoritative and is never rematerialized through
+    /// the catalog. Imported packages are requested individually only when a
+    /// later compiler query proves them reachable.
     pub fn new(
         workspace: WorkspaceKey,
-        entry_package: PackageKey,
-        packages: impl IntoIterator<Item = PackageInputManifest>,
+        entry_package: PackageInputManifest,
+        package_catalog: Arc<dyn PackageManifestCatalog>,
     ) -> Result<Self, InputError> {
         workspace.validate()?;
-        entry_package.validate()?;
-        let mut packages = packages.into_iter().collect::<Vec<_>>();
-        packages.sort_by(|left, right| left.key.cmp(&right.key));
-        if let Some(duplicate_key) = packages.windows(2).find_map(|pair| {
-            let [left, right] = pair else {
-                return None;
-            };
-            (left.key == right.key).then(|| left.key.clone())
-        }) {
-            return Err(InputError::DuplicatePackageKey {
-                package: duplicate_key,
-            });
-        }
-        let entry = packages
-            .binary_search_by(|package| package.key.cmp(&entry_package))
-            .ok()
-            .and_then(|index| packages.get(index))
-            .cloned()
-            .ok_or(InputError::MissingEntryPackage {
-                package: entry_package,
-            })?;
         Ok(Self {
             workspace,
-            entry_package: entry,
-            packages: packages.into(),
+            entry_package,
+            package_catalog,
         })
+    }
+
+    /// Construct an intentionally closed input containing only its entry.
+    pub fn standalone(
+        workspace: WorkspaceKey,
+        entry_package: PackageInputManifest,
+    ) -> Result<Self, InputError> {
+        Self::new(
+            workspace,
+            entry_package,
+            Arc::new(EmptyPackageManifestCatalog),
+        )
     }
 
     /// Explicit workspace identity for every package and source in this input.
@@ -172,18 +169,9 @@ impl ProgramInput {
         &self.entry_package
     }
 
-    /// Every package in canonical package-key order, including the entry.
+    /// Share the lazy provider used for individually requested dependencies.
     #[must_use]
-    pub fn packages(&self) -> &[PackageInputManifest] {
-        &self.packages
-    }
-
-    /// Look up one package by stable key.
-    #[must_use]
-    pub fn package(&self, key: &PackageKey) -> Option<&PackageInputManifest> {
-        self.packages
-            .binary_search_by(|package| package.key.cmp(key))
-            .ok()
-            .and_then(|index| self.packages.get(index))
+    pub fn package_catalog(&self) -> Arc<dyn PackageManifestCatalog> {
+        Arc::clone(&self.package_catalog)
     }
 }

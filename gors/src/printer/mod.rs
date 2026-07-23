@@ -206,13 +206,8 @@ mod tests {
     fn program(filename: &str, source: &str) -> ProgramInput {
         let package = PackageKey::command_line();
         let file = SourceFileInput::from_source(filename, filename, source).unwrap();
-        let manifest = PackageInputManifest::new(package.clone(), [file]).unwrap();
-        ProgramInput::new(
-            WorkspaceKey::ad_hoc("printer-tests").unwrap(),
-            package,
-            [manifest],
-        )
-        .unwrap()
+        let manifest = PackageInputManifest::new(package, [file]).unwrap();
+        ProgramInput::standalone(WorkspaceKey::ad_hoc("printer-tests").unwrap(), manifest).unwrap()
     }
 
     fn empty_runtime_dependency() -> RuntimeDependency {

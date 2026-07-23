@@ -547,7 +547,18 @@ The file projection owns decoded direct-import occurrences, structured invalid
 imports, and owned source comments from its one ephemeral parse. Those products
 contain `FileId` and content-relative provenance, never checkout paths. Import
 paths are sorted and deduplicated only at the package-analysis boundary;
-occurrence products preserve source order and duplicates.
+occurrence products preserve source order and duplicates. Every valid occurrence
+also retains its exact `default`, named, blank, or dot binding and separate
+compiler-owned physical ranges for the binding token and import literal; never
+reconstruct aliases from an import-path basename.
+
+`compiler::package_dag` is a pure boundary over already-resolved package IDs.
+It performs no discovery, resolution, or input mutation. A command-line entry
+has a real `PackageKey::CommandLine` node and no synthetic import path; every
+dependency target must have an exact canonical `PackageKey::ImportPath`.
+Canonical topology layers place dependencies before importers and sort ready
+packages by stable `PackageId`. Illegal strongly connected components select
+one deterministic closed path apiece with exact import-occurrence evidence.
 
 `CompilerSession` and the free compiler facade now accept the syntax-unvalidated
 `ProgramInput` model directly. The CLI uses `workspace` to select and read raw
@@ -561,26 +572,35 @@ every invocation loads one immutable `LoadedProgram` and `InputSnapshot`, then
 uses that exact revision for cache comparison and, on a miss, compilation.
 
 Workspace and package identities are enum-tagged `WorkspaceKey` and
-`PackageKey` values encoded directly by the collision-checked semantic interner;
-do not flatten them into caller-constructed strings. `ProgramInput` is the
-caller-owned package catalog for one invocation. The bootstrap session installs
-only its entry package manifest; unrelated catalog packages must not become
-Salsa `SourceInput` or `PackageInput` values, retain database bytes, or advance
-the query revision. Future import expansion must materialize reachable package
-inputs on demand from direct-import facts and resolver metadata.
+`PackageKey` values encoded directly by the collision-checked semantic
+interner; do not flatten them into caller-constructed strings.
+`WorkspaceKey::Module` and `PackageKey::ImportPath` each own a validated
+`CanonicalImportPath`, never an unchecked string. `ProgramInput` owns one
+authoritative entry manifest plus an object-safe immutable
+`PackageManifestCatalog`. Session admission installs the entry, queries its
+owned direct-import facts, and materializes dependencies in deterministic
+sorted waves until the reachable closure is complete. Unrelated packages must
+never become Salsa `SourceInput` or `PackageInput` values, retain database
+bytes, or advance the query revision.
 
 Session input installation is one delta transaction. The compiler journals only
 changed, inserted, and removed source inputs, includes stale-file removal in the
 same rollback boundary, and rolls mutations back in reverse application order.
 Exact no-op installs must not call a Salsa setter or synthesize rollback snapshots.
 Do not restore the deleted O(all-active-files) snapshot/rollback path or an
-all-`program.packages()` installation loop. Future reachable-package admission
-must extend this transaction rather than constructing a session-side graph.
+all-`program.packages()` installation loop. Missing packages, catalog failures,
+and package cycles abort the same transaction and preserve both the preceding
+database revision and its published package DAG. A successful admission
+publishes the pure `compiler::package_dag` result with dependency-first ready
+layers for later parallel semantic work.
 
-The filesystem workspace loader requires an explicit caller-owned
-`WorkspaceKey`; it must never synthesize an ad-hoc identity or derive semantic
-identity from a checkout path. The CLI boundary owns the stable `gors-cli`
-workspace key used for command-line builds and runs.
+The raw filesystem workspace loader requires an explicit caller-owned
+`WorkspaceKey`; it must never synthesize an ad-hoc identity from a checkout
+path. The production `load_program_files_auto` boundary may replace the CLI's
+fallback ad-hoc key only with the validated module identity read from the
+nearest containing `go.mod`. Directory entry packages receive their canonical
+module import path; explicit file lists remain `PackageKey::CommandLine` while
+sharing the local-module dependency catalog.
 
 The raw workspace loader deliberately performs no recursive module or import
 discovery. The deleted parser package graph has no compatibility shim. Rebuild
@@ -597,9 +617,15 @@ canonicalizes one explicit module root and reads only its strict `module`
 directive. It materializes and memoizes one explicitly requested local package
 at a time, verifies lexical and canonical containment, reads only immediate
 eligible non-test Go files in canonical order, and never parses source or
-follows imports. It is not yet connected to `ProgramInput` or the compiler
-session; query-owned reachable-package admission remains the next boundary.
-There is no GORSPATH compatibility path.
+follows imports. `LocalModuleManifestCatalog` is its compiler adapter: it lazily
+converts and memoizes immutable `PackageInputManifest` values, reports external
+imports as unowned, and preserves concrete local loading failures through the
+catalog error chain. `ProgramInput` owns that adapter and the session admits its
+reachable closure from query-owned direct-import occurrences without another
+parse. There is no GORSPATH compatibility path. Until the compiler publishes a
+closed reachable-input snapshot for the CLI manifest, module-catalog builds
+must conservatively bypass cross-invocation generated-artifact cache admission;
+an entry-only snapshot is not sufficient evidence for a cache hit.
 
 Source mappings and diagnostics are ordinary explicit outputs. The current
 `SourceMapPlan` follows that rule and is safe to build or consume independently;

@@ -112,14 +112,12 @@ impl InputSnapshot {
         loaded: &gors::workspace::LoadedProgram,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut files = BTreeMap::new();
-        for package in loaded.input().packages() {
-            for file in package.files() {
-                let snapshot = file.snapshot();
-                files.insert(
-                    normalized_path(Path::new(snapshot.diagnostic_path()))?,
-                    hex_digest(snapshot.content_digest()),
-                );
-            }
+        for file in loaded.input().entry_package().files() {
+            let snapshot = file.snapshot();
+            files.insert(
+                normalized_path(Path::new(snapshot.diagnostic_path()))?,
+                hex_digest(snapshot.content_digest()),
+            );
         }
 
         let mut directories = BTreeMap::new();

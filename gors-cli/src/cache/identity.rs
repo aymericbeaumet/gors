@@ -1,7 +1,6 @@
 //! Target-neutral identity for generated Rust source products.
 
 use sha2::{Digest, Sha256};
-use std::ffi::OsStr;
 use std::path::Path;
 
 use super::{file_hash, normalized_path};
@@ -10,7 +9,7 @@ use super::{file_hash, normalized_path};
 ///
 /// CLI implementation details are intentionally not hashed. Bump this only
 /// when the driver changes which semantic program is presented to `gors`.
-pub const GENERATED_DRIVER_SCHEMA: u32 = 1;
+pub const GENERATED_DRIVER_SCHEMA: u32 = 2;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GeneratedRustIdentity {
@@ -25,12 +24,10 @@ impl GeneratedRustIdentity {
     pub fn new(
         options: GeneratedRustIdentityOptions<'_>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let gorspath = std::env::var_os("GORSPATH");
         Self::new_with_facts(
             options,
             gors::GENERATED_RUST_FINGERPRINT,
             GENERATED_DRIVER_SCHEMA,
-            gorspath.as_deref(),
         )
     }
 
@@ -38,10 +35,9 @@ impl GeneratedRustIdentity {
         options: GeneratedRustIdentityOptions<'_>,
         generated_rust_fingerprint: &str,
         driver_schema: u32,
-        gorspath: Option<&OsStr>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut hasher = Sha256::new();
-        hash_part(&mut hasher, b"gors-generated-rust-request-v1");
+        hash_part(&mut hasher, b"gors-generated-rust-request-v2");
         hash_part(&mut hasher, &driver_schema.to_le_bytes());
         hash_part(&mut hasher, generated_rust_fingerprint.as_bytes());
         hash_part(&mut hasher, gors::GO_VERSION.as_bytes());
@@ -52,7 +48,6 @@ impl GeneratedRustIdentity {
                 .identity()
                 .as_bytes(),
         );
-        hash_gorspath(&mut hasher, gorspath);
 
         let mut source_facts = options
             .source_paths
@@ -114,91 +109,6 @@ fn module_context(source_path: &Path) -> Result<String, Box<dyn std::error::Erro
     }
 }
 
-fn hash_gorspath(hasher: &mut Sha256, gorspath: Option<&OsStr>) {
-    hash_part(hasher, b"gorspath");
-    let Some(gorspath) = gorspath else {
-        hash_part(hasher, b"unset");
-        return;
-    };
-
-    hash_part(hasher, b"set");
-    hash_os_part(hasher, gorspath);
-    for (index, root) in std::env::split_paths(gorspath).enumerate() {
-        hash_part(
-            hasher,
-            &u64::try_from(index).unwrap_or(u64::MAX).to_le_bytes(),
-        );
-        hash_gorspath_root(hasher, &root);
-    }
-}
-
-fn hash_gorspath_root(hasher: &mut Sha256, root: &Path) {
-    hash_part(hasher, b"root");
-    hash_os_part(hasher, root.as_os_str());
-    if root.as_os_str().is_empty() {
-        hash_part(hasher, b"empty");
-        return;
-    }
-
-    let absolute = if root.is_absolute() {
-        root.to_path_buf()
-    } else {
-        match std::env::current_dir() {
-            Ok(current_dir) => current_dir.join(root),
-            Err(error) => {
-                hash_io_error(hasher, b"current-directory-error", root, &error);
-                return;
-            }
-        }
-    };
-    let canonical = match std::fs::canonicalize(&absolute) {
-        Ok(canonical) => canonical,
-        Err(error) => {
-            hash_io_error(hasher, b"missing-or-inaccessible-root", &absolute, &error);
-            return;
-        }
-    };
-    hash_part(hasher, b"canonical");
-    hash_os_part(hasher, canonical.as_os_str());
-
-    if canonical.is_file() {
-        hash_part(hasher, b"file");
-    } else if canonical.is_dir() {
-        // Exact selected contents and eligible membership come from the one
-        // immutable InputSnapshot captured before cache comparison.
-        hash_part(hasher, b"directory");
-    } else {
-        hash_part(hasher, b"unsupported-root-kind");
-    }
-}
-
-fn hash_io_error(hasher: &mut Sha256, marker: &[u8], path: &Path, error: &std::io::Error) {
-    hash_part(hasher, marker);
-    hash_os_part(hasher, path.as_os_str());
-    hash_part(hasher, format!("{:?}", error.kind()).as_bytes());
-}
-
-#[cfg(unix)]
-fn hash_os_part(hasher: &mut Sha256, part: &OsStr) {
-    use std::os::unix::ffi::OsStrExt as _;
-    hash_part(hasher, part.as_bytes());
-}
-
-#[cfg(windows)]
-fn hash_os_part(hasher: &mut Sha256, part: &OsStr) {
-    use std::os::windows::ffi::OsStrExt as _;
-    let bytes = part
-        .encode_wide()
-        .flat_map(u16::to_le_bytes)
-        .collect::<Vec<_>>();
-    hash_part(hasher, &bytes);
-}
-
-#[cfg(not(any(unix, windows)))]
-fn hash_os_part(hasher: &mut Sha256, part: &OsStr) {
-    hash_part(hasher, part.to_string_lossy().as_bytes());
-}
-
 fn hash_part(hasher: &mut Sha256, part: &[u8]) {
     hasher.update(part.len().to_le_bytes());
     hasher.update(part);
@@ -226,18 +136,15 @@ mod tests {
     }
 
     #[test]
-    fn identity_tracks_generated_schema_and_driver_selection_only() {
+    fn identity_tracks_generated_schema_and_driver_selection() {
         let (_directory, source_paths) = source_fixture();
         let options = || GeneratedRustIdentityOptions {
             source_paths: &source_paths,
         };
-        let baseline =
-            GeneratedRustIdentity::new_with_facts(options(), "compiler-a", 1, None).unwrap();
-        let same = GeneratedRustIdentity::new_with_facts(options(), "compiler-a", 1, None).unwrap();
-        let compiler =
-            GeneratedRustIdentity::new_with_facts(options(), "compiler-b", 1, None).unwrap();
-        let driver =
-            GeneratedRustIdentity::new_with_facts(options(), "compiler-a", 2, None).unwrap();
+        let baseline = GeneratedRustIdentity::new_with_facts(options(), "compiler-a", 1).unwrap();
+        let same = GeneratedRustIdentity::new_with_facts(options(), "compiler-a", 1).unwrap();
+        let compiler = GeneratedRustIdentity::new_with_facts(options(), "compiler-b", 1).unwrap();
+        let driver = GeneratedRustIdentity::new_with_facts(options(), "compiler-a", 2).unwrap();
 
         assert_eq!(baseline, same);
         assert_ne!(baseline, compiler);
@@ -245,45 +152,56 @@ mod tests {
     }
 
     #[test]
-    fn identity_tracks_gorspath_configuration_without_scanning_contents() {
-        let (_directory, source_paths) = source_fixture();
-        let first_root = tempfile::tempdir().unwrap();
-        let package = first_root.path().join("src/example/dependency");
-        std::fs::create_dir_all(&package).unwrap();
-        let dependency = package.join("dependency.go");
-        std::fs::write(&dependency, "package dependency\nconst Value = 1\n").unwrap();
-        let first_path = std::env::join_paths([first_root.path()]).unwrap();
-        let options = || GeneratedRustIdentityOptions {
-            source_paths: &source_paths,
-        };
-
+    fn identity_tracks_explicit_module_context() {
+        let (directory, source_paths) = source_fixture();
+        let module = directory.path().join("go.mod");
+        std::fs::write(&module, "module example.com/first\n").unwrap();
         let baseline = GeneratedRustIdentity::new_with_facts(
-            options(),
+            GeneratedRustIdentityOptions {
+                source_paths: &source_paths,
+            },
             "compiler",
             1,
-            Some(first_path.as_os_str()),
         )
         .unwrap();
-        std::fs::write(&dependency, "package dependency\nconst Value = 2\n").unwrap();
-        let content_edit = GeneratedRustIdentity::new_with_facts(
-            options(),
-            "compiler",
-            1,
-            Some(first_path.as_os_str()),
-        )
-        .unwrap();
-        assert_eq!(baseline, content_edit);
 
-        let second_root = tempfile::tempdir().unwrap();
-        let second_path = std::env::join_paths([second_root.path()]).unwrap();
-        let configuration = GeneratedRustIdentity::new_with_facts(
-            options(),
+        std::fs::write(&module, "module example.com/second\n").unwrap();
+        let changed = GeneratedRustIdentity::new_with_facts(
+            GeneratedRustIdentityOptions {
+                source_paths: &source_paths,
+            },
             "compiler",
             1,
-            Some(second_path.as_os_str()),
         )
         .unwrap();
-        assert_ne!(baseline, configuration);
+
+        assert_ne!(baseline, changed);
+    }
+
+    #[test]
+    fn identity_tracks_explicit_source_selection() {
+        let (directory, source_paths) = source_fixture();
+        let alternate = directory.path().join("alternate.go");
+        std::fs::write(&alternate, "package main\n").unwrap();
+        let alternate = alternate.to_string_lossy().into_owned();
+        let baseline = GeneratedRustIdentity::new_with_facts(
+            GeneratedRustIdentityOptions {
+                source_paths: &source_paths,
+            },
+            "compiler",
+            1,
+        )
+        .unwrap();
+        let changed = GeneratedRustIdentity::new_with_facts(
+            GeneratedRustIdentityOptions {
+                source_paths: &[alternate],
+            },
+            "compiler",
+            1,
+        )
+        .unwrap();
+
+        assert_ne!(baseline, changed);
     }
 
     #[test]
@@ -301,7 +219,6 @@ mod tests {
             },
             "compiler",
             1,
-            None,
         )
         .unwrap();
         let equivalent = GeneratedRustIdentity::new_with_facts(
@@ -310,7 +227,6 @@ mod tests {
             },
             "compiler",
             1,
-            None,
         )
         .unwrap();
 
@@ -335,7 +251,6 @@ mod tests {
             },
             "compiler",
             1,
-            None,
         )
         .unwrap();
         let reverse = GeneratedRustIdentity::new_with_facts(
@@ -344,7 +259,6 @@ mod tests {
             },
             "compiler",
             1,
-            None,
         )
         .unwrap();
 

@@ -458,12 +458,13 @@ architecture described here:
   invalid-import facts, semantic projection, and browser comments share one
   query-owned ephemeral parse. There is still no reusable incremental syntax
   tree with stable syntax anchors or explicit parse-product memory accounting;
-- the bootstrap session installs only the entry manifest from the caller-owned
-  `ProgramInput` catalog. Unrelated packages create no Salsa inputs, retain no
-  database bytes, and execute no queries. The raw loader intentionally performs
-  no recursive import or module discovery; reachable expansion must be rebuilt
-  as query-owned manifest admission from direct-import facts and resolver
-  metadata, not as a parser compatibility layer or session-side package graph;
+- session admission expands query-owned direct-import occurrences in sorted
+  waves, installs only the reachable catalog closure, and publishes a canonical
+  dependency-first package DAG. Unrelated packages create no Salsa inputs,
+  retain no database bytes, and execute no queries. Missing imports, catalog
+  failures, and cycles roll the full source delta back. The raw loader still
+  performs no recursive parsing; the module-aware production loader only owns
+  `go.mod` identity and lazy filesystem materialization;
 - the frontend-neutral `source` layer now enforces fixed-width byte lengths and
   exposes checked `TextSize`, half-open `TextRange`, physical positions,
   adjusted coordinates, and presentation-path rebasing without depending on
@@ -499,10 +500,9 @@ architecture described here:
   Wasm/default/free calls stay inline, parallelism requires an explicit host or
   budget, and every revision-scoped snapshot is joined before readiness is
   published or input mutation resumes;
-- program installation journals only changed, inserted, and removed sources,
-  includes stale-file deletion in the same reversible transaction, and gives
-  exact no-op installs no Salsa setter or cancellation. The mutation set is the
-  entry manifest today and must expand only with proven reachable imports;
+- program installation journals only changed, inserted, and removed reachable
+  sources, includes stale-file deletion in the same reversible transaction, and
+  gives exact no-op installs no Salsa setter or cancellation;
 - the browser worker explicitly retains one `CompilerSession` across changed
   edits, consumes query-owned comments, and uses its exact-output cache only
   when that artifact matches the currently installed successful source
@@ -512,7 +512,10 @@ architecture described here:
   action state, but does not reuse semantic queries after an edit. Every
   invocation now loads one immutable source snapshot before cache comparison
   and reuses that exact snapshot for miss compilation; warm generated-output
-  and executable hits therefore still pay honest source admission cost;
+  and executable hits therefore still pay honest source admission cost. Module
+  catalog builds currently force a conservative cross-invocation miss because
+  the entry snapshot does not yet prove the full reachable dependency closure;
+  publishing that closure is required before warm module-cache promotion;
 - the runtime sidecar/link hard cut is complete for native artifacts. Compiler
   and printer products carry only the target-neutral dependency, while the CLI
   verifies and materializes one fixed-recipe precompiled rlib, publishes its

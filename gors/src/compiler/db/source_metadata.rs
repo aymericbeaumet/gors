@@ -2,11 +2,77 @@
 
 use std::sync::Arc;
 
-use crate::import_path::ImportPathIssue;
+use crate::compiler::provenance::FileRange;
+use crate::import_path::{CanonicalImportPath, ImportPathIssue};
 
 use super::super::fingerprint::Fingerprint;
 use super::super::ids::FileId;
 use super::model::FingerprintBuilder;
+
+/// Binding syntax attached to one Go import occurrence.
+///
+/// The range anchors the token that selects the binding. For a default import,
+/// there is no separate name token, so the import-path literal is the anchor.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ImportBinding {
+    Default { source: FileRange },
+    Named { name: Arc<str>, source: FileRange },
+    Blank { source: FileRange },
+    Dot { source: FileRange },
+}
+
+impl ImportBinding {
+    /// Physical source token that selected this binding.
+    #[must_use]
+    pub const fn source(&self) -> FileRange {
+        match self {
+            Self::Default { source }
+            | Self::Named { source, .. }
+            | Self::Blank { source }
+            | Self::Dot { source } => *source,
+        }
+    }
+
+    /// Explicit local package name, excluding the blank and dot forms.
+    #[must_use]
+    pub fn explicit_name(&self) -> Option<&str> {
+        match self {
+            Self::Named { name, .. } => Some(name),
+            Self::Default { .. } | Self::Blank { .. } | Self::Dot { .. } => None,
+        }
+    }
+}
+
+/// Shared physical and presentation facts for one import occurrence.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(super) struct ImportOccurrenceLocation {
+    file: FileId,
+    source: FileRange,
+    byte_offset: usize,
+    line: usize,
+    column: usize,
+    virtual_file: Option<Arc<str>>,
+}
+
+impl ImportOccurrenceLocation {
+    pub(super) fn new(
+        file: FileId,
+        source: FileRange,
+        byte_offset: usize,
+        line: usize,
+        column: usize,
+        virtual_file: Option<Arc<str>>,
+    ) -> Self {
+        Self {
+            file,
+            source,
+            byte_offset,
+            line,
+            column,
+            virtual_file,
+        }
+    }
+}
 
 /// One canonical direct-import occurrence in an independently parsed file.
 ///
@@ -15,46 +81,55 @@ use super::model::FingerprintBuilder;
 /// checkout path or browser URI.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct DirectImport {
-    file: FileId,
-    path: Arc<str>,
+    path: CanonicalImportPath,
+    binding: ImportBinding,
     literal: Arc<str>,
-    byte_offset: usize,
-    line: usize,
-    column: usize,
-    virtual_file: Option<Arc<str>>,
+    location: ImportOccurrenceLocation,
 }
 
 impl DirectImport {
     pub(super) fn new(
-        file: FileId,
-        path: Arc<str>,
+        path: CanonicalImportPath,
+        binding: ImportBinding,
         literal: Arc<str>,
-        byte_offset: usize,
-        line: usize,
-        column: usize,
-        virtual_file: Option<Arc<str>>,
+        location: ImportOccurrenceLocation,
     ) -> Self {
         Self {
-            file,
             path,
+            binding,
             literal,
-            byte_offset,
-            line,
-            column,
-            virtual_file,
+            location,
         }
     }
 
     /// Stable logical source-file identity.
     #[must_use]
     pub const fn file(&self) -> FileId {
-        self.file
+        self.location.file
     }
 
     /// Decoded and validated canonical Go import path.
     #[must_use]
     pub fn path(&self) -> &str {
+        self.path.as_str()
+    }
+
+    /// Validated package identity carried by this occurrence.
+    #[must_use]
+    pub const fn canonical_path(&self) -> &CanonicalImportPath {
         &self.path
+    }
+
+    /// File-scoped Go binding selected by this import declaration.
+    #[must_use]
+    pub const fn binding(&self) -> &ImportBinding {
+        &self.binding
+    }
+
+    /// Exact physical range of the import-path literal.
+    #[must_use]
+    pub const fn source(&self) -> FileRange {
+        self.location.source
     }
 
     /// Original quoted Go string literal.
@@ -66,72 +141,72 @@ impl DirectImport {
     /// Zero-based byte offset of the import literal in the logical file.
     #[must_use]
     pub const fn byte_offset(&self) -> usize {
-        self.byte_offset
+        self.location.byte_offset
     }
 
     /// One-based logical source line.
     #[must_use]
     pub const fn line(&self) -> usize {
-        self.line
+        self.location.line
     }
 
     /// One-based logical source column.
     #[must_use]
     pub const fn column(&self) -> usize {
-        self.column
+        self.location.column
     }
 
     /// Explicit virtual filename installed by `//line`, when present.
     #[must_use]
     pub fn virtual_file(&self) -> Option<&str> {
-        self.virtual_file.as_deref()
+        self.location.virtual_file.as_deref()
     }
 
     fn retained_bytes(&self) -> usize {
         self.path
+            .as_str()
             .len()
             .saturating_add(self.literal.len())
-            .saturating_add(self.virtual_file.as_ref().map_or(0, |file| file.len()))
+            .saturating_add(
+                self.location
+                    .virtual_file
+                    .as_ref()
+                    .map_or(0, |file| file.len()),
+            )
     }
 }
 
 /// One parsed import occurrence whose literal is not a valid Go import path.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct InvalidImport {
-    file: FileId,
     literal: Arc<str>,
-    byte_offset: usize,
-    line: usize,
-    column: usize,
-    virtual_file: Option<Arc<str>>,
     issue: ImportPathIssue,
+    location: ImportOccurrenceLocation,
 }
 
 impl InvalidImport {
     pub(super) fn new(
-        file: FileId,
         literal: Arc<str>,
-        byte_offset: usize,
-        line: usize,
-        column: usize,
-        virtual_file: Option<Arc<str>>,
         issue: ImportPathIssue,
+        location: ImportOccurrenceLocation,
     ) -> Self {
         Self {
-            file,
             literal,
-            byte_offset,
-            line,
-            column,
-            virtual_file,
             issue,
+            location,
         }
     }
 
     /// Stable logical source-file identity.
     #[must_use]
     pub const fn file(&self) -> FileId {
-        self.file
+        self.location.file
+    }
+
+    /// Exact physical range of the invalid import-path literal.
+    #[must_use]
+    pub const fn source(&self) -> FileRange {
+        self.location.source
     }
 
     /// Original quoted Go string literal.
@@ -143,25 +218,25 @@ impl InvalidImport {
     /// Zero-based byte offset of the import literal in the logical file.
     #[must_use]
     pub const fn byte_offset(&self) -> usize {
-        self.byte_offset
+        self.location.byte_offset
     }
 
     /// One-based logical source line.
     #[must_use]
     pub const fn line(&self) -> usize {
-        self.line
+        self.location.line
     }
 
     /// One-based logical source column.
     #[must_use]
     pub const fn column(&self) -> usize {
-        self.column
+        self.location.column
     }
 
     /// Explicit virtual filename installed by `//line`, when present.
     #[must_use]
     pub fn virtual_file(&self) -> Option<&str> {
-        self.virtual_file.as_deref()
+        self.location.virtual_file.as_deref()
     }
 
     /// Structured parser-owned validation failure.
@@ -173,7 +248,12 @@ impl InvalidImport {
     fn retained_bytes(&self) -> usize {
         self.literal
             .len()
-            .saturating_add(self.virtual_file.as_ref().map_or(0, |file| file.len()))
+            .saturating_add(
+                self.location
+                    .virtual_file
+                    .as_ref()
+                    .map_or(0, |file| file.len()),
+            )
             .saturating_add(import_issue_bytes(&self.issue))
     }
 }
@@ -381,23 +461,54 @@ impl FileComments {
 }
 
 fn write_direct_import(writer: &mut FingerprintBuilder, import: &DirectImport) {
-    writer.bytes(import.file.canonical_bytes());
-    writer.bytes(import.path.as_bytes());
+    writer.bytes(import.file().canonical_bytes());
+    writer.bytes(import.path.as_str().as_bytes());
+    write_import_binding(writer, &import.binding);
+    write_file_range(writer, import.source());
     writer.bytes(import.literal.as_bytes());
-    writer.usize(import.byte_offset);
-    writer.usize(import.line);
-    writer.usize(import.column);
-    write_optional_text(writer, import.virtual_file.as_deref());
+    writer.usize(import.byte_offset());
+    writer.usize(import.line());
+    writer.usize(import.column());
+    write_optional_text(writer, import.virtual_file());
 }
 
 fn write_invalid_import(writer: &mut FingerprintBuilder, import: &InvalidImport) {
-    writer.bytes(import.file.canonical_bytes());
+    writer.bytes(import.file().canonical_bytes());
+    write_file_range(writer, import.source());
     writer.bytes(import.literal.as_bytes());
-    writer.usize(import.byte_offset);
-    writer.usize(import.line);
-    writer.usize(import.column);
-    write_optional_text(writer, import.virtual_file.as_deref());
+    writer.usize(import.byte_offset());
+    writer.usize(import.line());
+    writer.usize(import.column());
+    write_optional_text(writer, import.virtual_file());
     write_import_issue(writer, &import.issue);
+}
+
+fn write_import_binding(writer: &mut FingerprintBuilder, binding: &ImportBinding) {
+    match binding {
+        ImportBinding::Default { source } => {
+            writer.bytes(b"default");
+            write_file_range(writer, *source);
+        }
+        ImportBinding::Named { name, source } => {
+            writer.bytes(b"named");
+            writer.bytes(name.as_bytes());
+            write_file_range(writer, *source);
+        }
+        ImportBinding::Blank { source } => {
+            writer.bytes(b"blank");
+            write_file_range(writer, *source);
+        }
+        ImportBinding::Dot { source } => {
+            writer.bytes(b"dot");
+            write_file_range(writer, *source);
+        }
+    }
+}
+
+fn write_file_range(writer: &mut FingerprintBuilder, source: FileRange) {
+    writer.bytes(source.file().canonical_bytes());
+    writer.usize(source.range().start().to_usize());
+    writer.usize(source.range().end().to_usize());
 }
 
 fn write_optional_text(writer: &mut FingerprintBuilder, value: Option<&str>) {
@@ -471,3 +582,7 @@ fn import_issue_bytes(issue: &ImportPathIssue) -> usize {
         | ImportPathIssue::InvalidCharacter(_) => 0,
     }
 }
+
+#[cfg(test)]
+#[path = "source_metadata/tests.rs"]
+mod tests;

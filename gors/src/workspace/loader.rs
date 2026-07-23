@@ -197,8 +197,8 @@ fn load_selected(
         return Err(LoadError::NoInputPaths);
     };
     let package_key = PackageKey::command_line();
-    let package = PackageInputManifest::new(package_key.clone(), files)?;
-    let input = ProgramInput::new(workspace, package_key, [package])?;
+    let package = PackageInputManifest::new(package_key, files)?;
+    let input = ProgramInput::standalone(workspace, package)?;
     Ok(LoadedProgram::new(
         input,
         watched_directories,

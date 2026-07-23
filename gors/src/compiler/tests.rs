@@ -8,11 +8,10 @@ struct GeneratedRun {
 fn raw_program(logical_path: &str, diagnostic_path: &str, source: &str) -> input::ProgramInput {
     let package = input::PackageKey::command_line();
     let file = input::SourceFileInput::from_source(logical_path, diagnostic_path, source).unwrap();
-    let manifest = input::PackageInputManifest::new(package.clone(), [file]).unwrap();
-    input::ProgramInput::new(
+    let manifest = input::PackageInputManifest::new(package, [file]).unwrap();
+    input::ProgramInput::standalone(
         input::WorkspaceKey::ad_hoc("compiler-tests").unwrap(),
-        package,
-        [manifest],
+        manifest,
     )
     .unwrap()
 }
@@ -322,7 +321,7 @@ fn imports_fail_before_partial_codegen() {
 fn program_boundary_rejects_multiple_independent_files() {
     let package = input::PackageKey::command_line();
     let manifest = input::PackageInputManifest::new(
-        package.clone(),
+        package,
         [
             input::SourceFileInput::from_source(
                 "main.go",
@@ -339,10 +338,9 @@ fn program_boundary_rejects_multiple_independent_files() {
         ],
     )
     .unwrap();
-    let program = input::ProgramInput::new(
+    let program = input::ProgramInput::standalone(
         input::WorkspaceKey::ad_hoc("compiler-tests").unwrap(),
-        package,
-        [manifest],
+        manifest,
     )
     .unwrap();
 

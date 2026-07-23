@@ -9,10 +9,12 @@ mod error;
 mod loader;
 pub mod local_module;
 mod model;
+mod module_loader;
 
 pub use error::{LoadError, PathExpectation};
 pub use loader::{load_program, load_program_files};
 pub use model::LoadedProgram;
+pub use module_loader::load_program_files_auto;
 
 #[cfg(test)]
 mod tests;

@@ -397,7 +397,7 @@ impl CanonicalKey {
         match key {
             WorkspaceKey::Module(module_path) => {
                 self.bytes(b"module");
-                self.string(module_path);
+                self.string(module_path.as_str());
             }
             WorkspaceKey::AdHoc(name) => {
                 self.bytes(b"ad-hoc");
@@ -410,7 +410,7 @@ impl CanonicalKey {
         match key {
             PackageKey::ImportPath(import_path) => {
                 self.bytes(b"import-path");
-                self.string(import_path);
+                self.string(import_path.as_str());
             }
             PackageKey::CommandLine => self.bytes(b"command-line"),
         }

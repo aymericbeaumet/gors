@@ -192,7 +192,7 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
     let coordinate_map = Arc::new(coordinate_map);
     db.unwind_if_revision_cancelled();
     let declared_package: Arc<str> = Arc::from(parsed.name.name);
-    let imports = Arc::new(project_imports(file, &parsed));
+    let imports = Arc::new(project_imports(file, &content, &parsed));
     let comments = Arc::new(project_comments(file, &content, &parsed));
 
     let semantic_barrier = if !imports.direct().is_empty() || !imports.invalid().is_empty() {

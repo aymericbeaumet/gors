@@ -11,7 +11,7 @@ fn workspace() -> WorkspaceKey {
 }
 
 fn package() -> PackageKey {
-    PackageKey::ImportPath("example/semantic-dependencies".into())
+    PackageKey::import_path("example/semantic-dependencies").unwrap()
 }
 
 fn install(db: &mut CompilerDatabase, logical_path: &str, source: &str) -> FileId {

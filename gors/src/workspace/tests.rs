@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 
 use crate::compiler::input::{PackageKey, WorkspaceKey};
 
-use super::{LoadError, PathExpectation, load_program, load_program_files};
+use super::{
+    LoadError, PathExpectation, load_program, load_program_files, load_program_files_auto,
+};
 
 fn test_workspace() -> WorkspaceKey {
     WorkspaceKey::ad_hoc("workspace-loader-tests").unwrap()
@@ -49,7 +51,72 @@ fn directory_load_is_filtered_ordered_and_watched() {
     );
     assert_eq!(loaded.input().workspace(), &workspace);
     assert!(loaded.input().entry_package().key().is_command_line());
-    assert_eq!(loaded.input().packages().len(), 1);
+}
+
+#[test]
+fn module_directory_uses_canonical_entry_and_lazy_dependency_catalog() {
+    let temporary = tempfile::tempdir().unwrap();
+    write(
+        &temporary.path().join("go.mod"),
+        "module example.com/project\n",
+    );
+    write(&temporary.path().join("main.go"), "package main\n");
+    std::fs::create_dir(temporary.path().join("dep")).unwrap();
+    write(
+        &temporary.path().join("dep/dep.go"),
+        "package dep\nconst Value = 1\n",
+    );
+
+    let loaded =
+        load_program_files_auto(test_workspace(), &[temporary.path().to_path_buf()]).unwrap();
+
+    assert_eq!(
+        loaded.input().workspace(),
+        &WorkspaceKey::module("example.com/project").unwrap()
+    );
+    assert_eq!(
+        loaded.input().entry_package().key().as_import_path(),
+        Some("example.com/project")
+    );
+    let dependency = PackageKey::import_path("example.com/project/dep").unwrap();
+    let manifest = loaded
+        .input()
+        .package_catalog()
+        .materialize(&dependency)
+        .unwrap()
+        .unwrap();
+    assert_eq!(manifest.key(), &dependency);
+    assert_eq!(manifest.files().len(), 1);
+}
+
+#[test]
+fn explicit_module_file_remains_command_line_but_resolves_local_imports() {
+    let temporary = tempfile::tempdir().unwrap();
+    write(
+        &temporary.path().join("go.mod"),
+        "module example.com/project\n",
+    );
+    let main = temporary.path().join("main.go");
+    write(&main, "package main\n");
+    std::fs::create_dir(temporary.path().join("dep")).unwrap();
+    write(&temporary.path().join("dep/dep.go"), "package dep\n");
+
+    let loaded = load_program_files_auto(test_workspace(), &[main]).unwrap();
+
+    assert!(loaded.input().entry_package().key().is_command_line());
+    assert_eq!(
+        loaded.input().workspace(),
+        &WorkspaceKey::module("example.com/project").unwrap()
+    );
+    let dependency = PackageKey::import_path("example.com/project/dep").unwrap();
+    assert!(
+        loaded
+            .input()
+            .package_catalog()
+            .materialize(&dependency)
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[test]

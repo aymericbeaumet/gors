@@ -33,11 +33,10 @@
 //!
 //! let package = PackageKey::command_line();
 //! let file = SourceFileInput::from_source("example.go", "example.go", go_source).unwrap();
-//! let manifest = PackageInputManifest::new(package.clone(), [file]).unwrap();
-//! let input = ProgramInput::new(
+//! let manifest = PackageInputManifest::new(package, [file]).unwrap();
+//! let input = ProgramInput::standalone(
 //!     WorkspaceKey::ad_hoc("example").unwrap(),
-//!     package,
-//!     [manifest],
+//!     manifest,
 //! ).unwrap();
 //! let compiled = compiler::compile_program(input).unwrap();
 //! let generated = printer::generate_single(compiled).unwrap();

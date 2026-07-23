@@ -1,12 +1,15 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+use crate::import_path::ImportPathIssue;
 use crate::source::{TextRange, TextSize};
 
 use super::{
-    InputError, LogicalPathIssue, PackageInputManifest, PackageKey, ProgramInput, SourceContent,
-    SourceFileInput, SourceSnapshot, WorkspaceKey,
+    InputError, LogicalPathIssue, PackageCatalogError, PackageInputManifest, PackageKey,
+    PackageManifestCatalog, ProgramInput, SourceContent, SourceFileInput, SourceSnapshot,
+    WorkspaceKey,
 };
 
 fn workspace() -> WorkspaceKey {
@@ -25,35 +28,38 @@ fn manifest(name: &str, files: Vec<SourceFileInput>) -> PackageInputManifest {
     PackageInputManifest::new(package(name), files).unwrap()
 }
 
+#[derive(Debug, Default)]
+struct CountingCatalog {
+    requests: AtomicUsize,
+}
+
+impl PackageManifestCatalog for CountingCatalog {
+    fn materialize(
+        &self,
+        _package: &PackageKey,
+    ) -> Result<Option<Arc<PackageInputManifest>>, PackageCatalogError> {
+        self.requests.fetch_add(1, Ordering::Relaxed);
+        Ok(None)
+    }
+}
+
 #[test]
-fn canonicalizes_package_and_file_order() {
+fn keeps_one_explicit_entry_and_does_not_eagerly_touch_its_catalog() {
+    let catalog = Arc::new(CountingCatalog::default());
+    let shared_catalog: Arc<dyn PackageManifestCatalog> = catalog.clone();
     let input = ProgramInput::new(
         workspace(),
-        package("z.example/entry"),
-        [
-            manifest(
-                "z.example/entry",
-                vec![
-                    source("z.go", "/checkout/z.go", "package main"),
-                    source("nested/a.go", "/checkout/nested/a.go", "package main"),
-                ],
-            ),
-            manifest(
-                "a.example/dependency",
-                vec![source("dep.go", "/checkout/dep.go", "package dependency")],
-            ),
-        ],
+        manifest(
+            "z.example/entry",
+            vec![
+                source("z.go", "/checkout/z.go", "package main"),
+                source("nested/a.go", "/checkout/nested/a.go", "package main"),
+            ],
+        ),
+        shared_catalog,
     )
     .unwrap();
 
-    assert_eq!(
-        input
-            .packages()
-            .iter()
-            .filter_map(|package| package.key().as_import_path())
-            .collect::<Vec<_>>(),
-        ["a.example/dependency", "z.example/entry"]
-    );
     assert_eq!(
         input.entry_package().key().as_import_path(),
         Some("z.example/entry")
@@ -67,30 +73,15 @@ fn canonicalizes_package_and_file_order() {
             .collect::<Vec<_>>(),
         ["nested/a.go", "z.go"]
     );
-}
-
-#[test]
-fn rejects_duplicate_package_keys() {
-    let duplicate = package("example/duplicate");
-    let error = ProgramInput::new(
-        workspace(),
-        duplicate.clone(),
-        [
-            manifest(
-                "example/duplicate",
-                vec![source("one.go", "/one.go", "package duplicate")],
-            ),
-            manifest(
-                "example/duplicate",
-                vec![source("two.go", "/two.go", "package duplicate")],
-            ),
-        ],
-    )
-    .unwrap_err();
-    assert_eq!(
-        error,
-        InputError::DuplicatePackageKey { package: duplicate }
+    assert_eq!(catalog.requests.load(Ordering::Relaxed), 0);
+    assert!(
+        input
+            .package_catalog()
+            .materialize(&package("a.example/dependency"))
+            .unwrap()
+            .is_none()
     );
+    assert_eq!(catalog.requests.load(Ordering::Relaxed), 1);
 }
 
 #[test]
@@ -114,34 +105,37 @@ fn rejects_duplicate_logical_paths_independent_of_display_path() {
 }
 
 #[test]
-fn rejects_missing_entry_package() {
-    let missing = package("example/missing");
-    let error = ProgramInput::new(
-        workspace(),
-        missing.clone(),
-        [manifest(
-            "example/present",
-            vec![source("present.go", "/present.go", "package present")],
-        )],
-    )
-    .unwrap_err();
-    assert_eq!(error, InputError::MissingEntryPackage { package: missing });
-}
-
-#[test]
 fn rejects_empty_keys() {
-    assert_eq!(
+    assert!(matches!(
         WorkspaceKey::module("").unwrap_err(),
-        InputError::EmptyWorkspaceKey
-    );
+        InputError::InvalidWorkspaceModulePath {
+            issue: ImportPathIssue::Empty,
+            ..
+        }
+    ));
     assert_eq!(
-        PackageKey::import_path("").unwrap_err(),
-        InputError::EmptyPackageKey
+        WorkspaceKey::ad_hoc("").unwrap_err(),
+        InputError::EmptyAdHocWorkspaceKey
     );
+    assert!(matches!(
+        PackageKey::import_path("").unwrap_err(),
+        InputError::InvalidPackageImportPath {
+            issue: ImportPathIssue::Empty,
+            ..
+        }
+    ));
 }
 
 #[test]
-fn rejects_direct_empty_variants_and_packages_without_files() {
+fn rejects_noncanonical_package_paths_and_packages_without_files() {
+    assert!(matches!(
+        PackageKey::import_path("example.com/../escape").unwrap_err(),
+        InputError::InvalidPackageImportPath {
+            issue: ImportPathIssue::DotElement(element),
+            ..
+        } if element == ".."
+    ));
+
     let command_line = PackageKey::command_line();
     let no_files = PackageInputManifest::new(command_line.clone(), []).unwrap_err();
     assert_eq!(
@@ -152,21 +146,13 @@ fn rejects_direct_empty_variants_and_packages_without_files() {
     );
 
     let entry = PackageInputManifest::new(
-        command_line.clone(),
+        command_line,
         [source("main.go", "/main.go", "package main")],
     )
     .unwrap();
     assert_eq!(
-        ProgramInput::new(WorkspaceKey::Module(Arc::from("")), command_line, [entry],).unwrap_err(),
-        InputError::EmptyWorkspaceKey
-    );
-    assert_eq!(
-        PackageInputManifest::new(
-            PackageKey::ImportPath(Arc::from("")),
-            [source("invalid.go", "/invalid.go", "package invalid")],
-        )
-        .unwrap_err(),
-        InputError::EmptyPackageKey
+        ProgramInput::standalone(WorkspaceKey::AdHoc(Arc::from("")), entry).unwrap_err(),
+        InputError::EmptyAdHocWorkspaceKey
     );
 }
 
@@ -207,10 +193,9 @@ fn accepts_syntax_invalid_source_without_parsing_it() {
     let snapshot = file.snapshot();
     assert!(crate::parser::parse_file(snapshot.diagnostic_path(), snapshot.source()).is_err());
 
-    let input = ProgramInput::new(
+    let input = ProgramInput::standalone(
         workspace(),
-        PackageKey::command_line(),
-        [PackageInputManifest::new(PackageKey::command_line(), [file]).unwrap()],
+        PackageInputManifest::new(PackageKey::command_line(), [file]).unwrap(),
     )
     .unwrap();
     assert!(input.entry_package().key().is_command_line());

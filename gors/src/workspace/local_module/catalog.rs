@@ -8,7 +8,7 @@ use crate::import_path::CanonicalImportPath;
 
 use super::{
     LocalModuleError, MaterializedPackage, MaterializedSourceFile, ModuleFileIssue,
-    PackageSourceCatalog, parse_module_directive,
+    parse_module_directive,
 };
 
 type PackageCell = Arc<PackageSingleFlight>;
@@ -195,26 +195,15 @@ impl LocalModuleCatalog {
     }
 }
 
-impl PackageSourceCatalog for LocalModuleCatalog {
-    type Error = LocalModuleError;
-
-    fn materialize(
-        &self,
-        import_path: &CanonicalImportPath,
-    ) -> Result<Arc<MaterializedPackage>, LocalModuleError> {
-        self.require_local_import(import_path)?;
-        let cell = self.package_cell(import_path);
-        cell.get_or_load(|| self.load_package(import_path))
-    }
-}
-
 impl LocalModuleCatalog {
     /// Materialize exactly one local package without traversing its imports.
     pub fn materialize(
         &self,
         import_path: &CanonicalImportPath,
     ) -> Result<Arc<MaterializedPackage>, LocalModuleError> {
-        PackageSourceCatalog::materialize(self, import_path)
+        self.require_local_import(import_path)?;
+        let cell = self.package_cell(import_path);
+        cell.get_or_load(|| self.load_package(import_path))
     }
 }
 

@@ -78,13 +78,26 @@ impl ProgramBuild {
         let output_lock = OutputDirectoryLock::acquire(&cache_dir)?;
 
         let source_load_timer = timings.phase("cli.source_load");
-        let loaded = gors::workspace::load_program_files(cli_workspace()?, request.source_paths)?;
+        let loaded =
+            gors::workspace::load_program_files_auto(cli_workspace()?, request.source_paths)?;
         let inputs = InputSnapshot::capture(&loaded)?;
         drop(source_load_timer);
 
         let manifest = {
             let _cache_timer = timings.phase("cli.cache_lookup");
-            CliCacheManifest::load_if_source_revision_matches(&cache_dir, &identity, &inputs)
+            // A module catalog is demand-driven, so the entry snapshot is not
+            // yet a closed record of reachable package inputs. Never admit a
+            // generated artifact from that partial observation. The compiler
+            // admission manifest will replace this conservative miss once it
+            // is published as an explicit product.
+            if matches!(
+                loaded.input().workspace(),
+                gors::compiler::input::WorkspaceKey::Module(_)
+            ) {
+                None
+            } else {
+                CliCacheManifest::load_if_source_revision_matches(&cache_dir, &identity, &inputs)
+            }
         };
 
         Ok(Self {

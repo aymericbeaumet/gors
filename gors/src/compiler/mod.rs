@@ -25,6 +25,7 @@ pub mod ids;
 pub mod input;
 mod lowering;
 pub mod mir;
+pub mod package_dag;
 pub mod provenance;
 pub mod rust_ir;
 mod scheduler;

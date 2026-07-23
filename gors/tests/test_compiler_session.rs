@@ -132,14 +132,13 @@ fn program(path: &str, source: &str) -> ProgramInput {
 fn program_file(logical_path: &str, diagnostic_path: &str, source: &str) -> ProgramInput {
     let package = PackageKey::command_line();
     let manifest = PackageInputManifest::new(
-        package.clone(),
+        package,
         [SourceFileInput::from_source(logical_path, diagnostic_path, source).unwrap()],
     )
     .unwrap();
-    ProgramInput::new(
+    ProgramInput::standalone(
         WorkspaceKey::ad_hoc("compiler-session-integration-tests").unwrap(),
-        package,
-        [manifest],
+        manifest,
     )
     .unwrap()
 }
@@ -586,7 +585,7 @@ fn checkout_path_does_not_change_ids_or_generated_output() {
 fn production_package_index_rejects_cross_file_issues_before_codegen() {
     let package = PackageKey::command_line();
     let manifest = PackageInputManifest::new(
-        package.clone(),
+        package,
         [
             SourceFileInput::from_source(
                 "a.go",
@@ -603,10 +602,9 @@ fn production_package_index_rejects_cross_file_issues_before_codegen() {
         ],
     )
     .unwrap();
-    let input = ProgramInput::new(
+    let input = ProgramInput::standalone(
         WorkspaceKey::ad_hoc("compiler-session-integration-tests").unwrap(),
-        package,
-        [manifest],
+        manifest,
     )
     .unwrap();
     let mut session = CompilerSession::default();

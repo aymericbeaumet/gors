@@ -38,7 +38,9 @@ pub use products::{
     CompilerStage, NormalizedMirFunction, StageFailure, TypedFunctionSignature, TypedHirFunction,
     VerifiedMirFunction, VerifiedRustIrFunction, VerifiedRustIrPackage,
 };
-pub use source_metadata::{DirectImport, FileComments, FileImports, InvalidImport, SourceComment};
+pub use source_metadata::{
+    DirectImport, FileComments, FileImports, ImportBinding, InvalidImport, SourceComment,
+};
 pub use telemetry::{EngineEventCounts, QueryKind, TelemetrySnapshot};
 
 /// Compiler-database lookup or stable-identity failure.

@@ -1,9 +1,10 @@
 //! Stateful production compiler session backed by the red-green query graph.
 
+mod admission;
 mod prewarm;
 mod readiness;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
@@ -12,11 +13,12 @@ use gors_runtime_abi::{RuntimeAbiManifest, RuntimeDependency};
 use self::readiness::RustIrRoot;
 use super::db::{
     BuildConfig, CompilerDatabase, Fingerprint, PackageAnalysis, PackageIssue, ParseFailure,
-    QueryError, RuntimeAbiId, SourceInputMutation, StageFailure,
+    QueryError, RuntimeAbiId, StageFailure,
 };
 use super::diagnostic::DiagnosticLocation;
 use super::ids::{FileId, PackageId};
-use super::input::{PackageInputManifest, ProgramInput, WorkspaceKey};
+use super::input::ProgramInput;
+use super::package_dag::PackageDag;
 use super::provenance::{DefinitionSourceTable, FileRange, SourceRef};
 use super::scheduler::{CompilerHost, SchedulerTelemetry};
 use super::{CompiledProgram, CompilerDiagnostic, CompilerError, SourceMapPlan, emit};
@@ -30,6 +32,7 @@ pub struct CompilerSession {
     database: CompilerDatabase,
     host: CompilerHost,
     ready_rust_ir_roots: BTreeMap<RustIrRoot, Fingerprint>,
+    admitted_package_dag: Option<Arc<PackageDag>>,
 }
 
 impl CompilerSession {
@@ -68,6 +71,7 @@ impl CompilerSession {
             database: CompilerDatabase::new(config),
             host,
             ready_rust_ir_roots: BTreeMap::new(),
+            admitted_package_dag: None,
         }
     }
 
@@ -87,6 +91,16 @@ impl CompilerSession {
     #[must_use]
     pub fn scheduler_telemetry(&self) -> SchedulerTelemetry {
         self.host.telemetry()
+    }
+
+    /// Canonical reachable-package graph from the latest committed admission.
+    ///
+    /// This remains available when a later semantic or representation stage
+    /// rejects the admitted program. A failed admission transaction preserves
+    /// the preceding graph together with the preceding database revision.
+    #[must_use]
+    pub fn admitted_package_dag(&self) -> Option<&PackageDag> {
+        self.admitted_package_dag.as_deref()
     }
 
     /// Change explicit compiler inputs while preserving unrelated stage memos.
@@ -141,6 +155,18 @@ impl CompilerSession {
         if !main_analysis.issues().is_empty() {
             return Err(self.package_issues(installed.main_package, main_analysis.issues()));
         }
+        for package in installed.package_dag.topological_order() {
+            if *package == installed.main_package {
+                continue;
+            }
+            let analysis = self
+                .database
+                .analyze_package(*package)
+                .map_err(|error| self.query_error(error))?;
+            if !analysis.issues().is_empty() {
+                return Err(self.package_issues(*package, analysis.issues()));
+            }
+        }
         self.validate_bootstrap_boundary(&installed, &main_analysis)?;
 
         let current_root_inputs = self.current_root_inputs(&main_analysis)?;
@@ -175,124 +201,6 @@ impl CompilerSession {
             },
             source_map,
         ))
-    }
-
-    fn install_program(
-        &mut self,
-        program: &ProgramInput,
-    ) -> Result<InstalledProgram, CompilerError> {
-        self.install_program_transaction(program, |_| Ok(()))
-    }
-
-    fn install_program_transaction<F>(
-        &mut self,
-        program: &ProgramInput,
-        before_commit: F,
-    ) -> Result<InstalledProgram, CompilerError>
-    where
-        F: FnOnce(&CompilerDatabase) -> Result<(), CompilerError>,
-    {
-        let mut mutations = Vec::new();
-        let result = (|| {
-            let (installed, next_sources) = self.install_program_inputs(program, &mut mutations)?;
-            let stale = self
-                .database
-                .active_files()
-                .into_iter()
-                .filter(|file| !next_sources.contains(file))
-                .collect::<Vec<_>>();
-            for file in stale {
-                let mutation = self
-                    .database
-                    .remove_source_transactional(file)
-                    .map_err(|error| self.query_error(error))?;
-                mutations.push(mutation);
-            }
-            before_commit(&self.database)?;
-            Ok((installed, next_sources))
-        })();
-        match result {
-            Ok((installed, next_sources)) => {
-                self.database.commit_source_mutations(mutations);
-                self.retain_ready_roots_for_files(&next_sources);
-                Ok(installed)
-            }
-            Err(error) => {
-                self.database
-                    .rollback_source_mutations(mutations.into_iter().rev());
-                Err(error)
-            }
-        }
-    }
-
-    fn install_program_inputs(
-        &mut self,
-        program: &ProgramInput,
-        mutations: &mut Vec<SourceInputMutation>,
-    ) -> Result<(InstalledProgram, BTreeSet<FileId>), CompilerError> {
-        let mut next_sources = BTreeSet::new();
-        let (main_files, main_package) = self.install_package(
-            program.workspace(),
-            program.entry_package(),
-            &mut next_sources,
-            mutations,
-        )?;
-        Ok((
-            InstalledProgram {
-                main_package,
-                main_files,
-            },
-            next_sources,
-        ))
-    }
-
-    fn install_package(
-        &mut self,
-        workspace: &WorkspaceKey,
-        package: &PackageInputManifest,
-        next_sources: &mut BTreeSet<FileId>,
-        mutations: &mut Vec<SourceInputMutation>,
-    ) -> Result<(Vec<InstalledFile>, PackageId), CompilerError> {
-        let mut installed = Vec::with_capacity(package.files().len());
-        let mut package_id = None;
-        for file in package.files() {
-            let logical_path = file.logical_path().to_string();
-            let snapshot = file.snapshot();
-            let (update, mutation) = self
-                .database
-                .set_source_transactional(
-                    workspace,
-                    package.key(),
-                    &logical_path,
-                    Arc::clone(&snapshot),
-                )
-                .map_err(|error| self.query_error(error))?;
-            mutations.extend(mutation);
-            let id = update.file();
-            let current_package = self
-                .database
-                .package_for_file(id)
-                .map_err(|error| self.query_error(error))?;
-            if package_id
-                .replace(current_package)
-                .is_some_and(|old| old != current_package)
-            {
-                return Err(CompilerError::backend(
-                    "one package input produced multiple stable package identities",
-                ));
-            }
-            next_sources.insert(id);
-            installed.push(InstalledFile {
-                id,
-                logical_path,
-                original_path: snapshot.diagnostic_path().to_string(),
-            });
-        }
-        let package_id = package_id.ok_or_else(|| {
-            CompilerError::backend("validated package input contains no Go source files")
-        })?;
-        installed.sort_by(|left, right| left.logical_path.cmp(&right.logical_path));
-        Ok((installed, package_id))
     }
 
     fn validate_bootstrap_boundary(
@@ -788,8 +696,10 @@ fn validate_runtime_contract(config: &BuildConfig) -> Result<(), CompilerError> 
 struct InstalledProgram {
     main_package: PackageId,
     main_files: Vec<InstalledFile>,
+    package_dag: Arc<PackageDag>,
 }
 
+#[derive(Clone)]
 struct InstalledFile {
     id: FileId,
     logical_path: String,

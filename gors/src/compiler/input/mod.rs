@@ -4,12 +4,14 @@
 //! validates only manifest structure; Go syntax and package-clause validation
 //! belong to demand-driven compiler queries.
 
+mod catalog;
 mod error;
 mod keys;
 mod manifest;
 mod path;
 mod source;
 
+pub use catalog::{EmptyPackageManifestCatalog, PackageCatalogError, PackageManifestCatalog};
 pub use error::InputError;
 pub use keys::{PackageKey, WorkspaceKey};
 pub use manifest::{PackageInputManifest, ProgramInput, SourceFileInput};
