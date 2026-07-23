@@ -573,11 +573,14 @@ The monolithic embedded SDK source table is a fourth: replace it before imports
 become a hot path so SDK contents are lazy, bounded, target-correct, and keyed at
 reachable-file granularity.
 
-The source-only `gors build` command is a fifth product boundary: competitive
-artifact certification cannot promote a harness-composed transpile-plus-rustc
-shortcut. The default build command must atomically publish the validated
-runnable artifact, while an explicit inspection mode may continue to export
-generated Rust.
+The fifth product boundary is now closed: `gors build` always compiles and
+atomically publishes the validated production executable, while
+`gors emit-rust -o <directory>` is the explicit target-neutral inspection
+surface. Source emission does not select a runtime provider or Rust toolchain.
+Performance result schema v4 now measures that production command directly;
+the harness-owned generated-source, link-descriptor, and external-rustc path
+was deleted rather than retained as a compatibility driver. No scenario is
+promoted until the resulting cold and warm evidence satisfies the contract.
 
 The Rust `panic_any` realization of dynamic arithmetic faults is a sixth:
 replace it with the versioned runtime's Go panic/process boundary and compare

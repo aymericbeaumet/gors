@@ -60,7 +60,6 @@ def add_measurement_arguments(parser: argparse.ArgumentParser, mode: str) -> Non
     )
     parser.add_argument("--gors", type=Path, help="explicit gors executable override")
     parser.add_argument("--go", type=Path, help="explicit pinned Go executable override")
-    parser.add_argument("--rustc", type=Path, help="explicit pinned rustc executable override")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -131,7 +130,6 @@ def run_measurement(arguments: argparse.Namespace) -> int:
         go_experiment=arguments.go_experiment,
         gors_path=arguments.gors.resolve() if arguments.gors else None,
         go_path=arguments.go.resolve() if arguments.go else None,
-        rustc_path=arguments.rustc.resolve() if arguments.rustc else None,
     )
     print(
         f"gors-perf: {options.mode}, {options.samples} pairs/scenario across "

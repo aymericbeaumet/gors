@@ -112,10 +112,10 @@ impl GeneratedOutputManifest {
         self.files.contains_key(filename)
     }
 
-    pub fn files(&self) -> impl Iterator<Item = (&str, &str)> {
+    pub fn owned_files(&self) -> impl Iterator<Item = (&str, &str)> {
         self.files
             .iter()
-            .map(|(name, entry)| (name.as_str(), entry.output_file.as_str()))
+            .map(|(name, entry)| (name.as_str(), entry.content_hash.as_str()))
     }
 
     fn is_compatible(&self) -> bool {

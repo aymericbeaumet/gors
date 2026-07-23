@@ -10,7 +10,7 @@ use std::process::{Command, ExitStatus};
 
 pub const RUST_EDITION: &str = gors_runtime_abi::RUST_RUNTIME_EDITION;
 
-const RUSTC_ACTION_SCHEMA: &[u8] = b"gors-cli-rustc-action-v3";
+const RUSTC_ACTION_SCHEMA: &[u8] = b"gors-cli-rustc-action-v4";
 const GENERATED_SOURCE_FILENAME: &str = "main.rs";
 const PENDING_BINARY_FILENAME: &str = ".main.pending";
 const TARGET_CPU: &str = "generic";
@@ -549,10 +549,22 @@ pub fn compile_generated_binary(
     action: &RustcAction,
     timings: &TimingCollector,
 ) -> Result<ExecutableProduct, Box<dyn std::error::Error>> {
+    #[cfg(test)]
+    TERMINAL_COMPILATION_COUNT.with(|count| count.set(count.get().saturating_add(1)));
     let rustc_timer = timings.phase("cli.rustc");
     let result = action.execute();
     drop(rustc_timer);
     result.map_err(|error| Box::new(error) as Box<dyn std::error::Error>)
+}
+
+#[cfg(test)]
+thread_local! {
+    static TERMINAL_COMPILATION_COUNT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub fn compilation_count() -> u64 {
+    TERMINAL_COMPILATION_COUNT.with(std::cell::Cell::get)
 }
 
 fn rustc_argv(
@@ -586,9 +598,9 @@ fn rustc_argv(
     ];
     if profile == RustcProfile::Production {
         argv.extend([
-            OsString::from("-Ccodegen-units=1"),
-            OsString::from("-Clto=fat"),
-            OsString::from("-Copt-level=3"),
+            OsString::from("-Copt-level=2"),
+            OsString::from("-Clto=off"),
+            OsString::from("-Cdebuginfo=0"),
         ]);
     }
     argv

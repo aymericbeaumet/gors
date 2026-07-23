@@ -68,14 +68,9 @@ export interface CompileRequest {
 	goSource: string;
 	/** Browser-harness-only synchronous stall used to test worker preemption. */
 	testSynchronousDelayMs?: number;
+	/** Browser-harness-only async stall used to test loading-phase liveness. */
+	testWasmLoadDelayMs?: number;
 }
-
-export interface CancelRequest {
-	type: "cancel";
-	ids: number[];
-}
-
-export type WorkerRequest = CompileRequest | CancelRequest;
 
 export type WorkerResponse =
 	| {

@@ -67,7 +67,7 @@ fn command_line_compilation_uses_an_explicit_stable_workspace_identity() {
 }
 
 #[test]
-fn build_timing_v5_reports_single_load_before_hit_or_miss_cache_lookup() {
+fn emit_rust_timing_v5_reports_single_load_before_hit_or_miss_cache_lookup() {
     let temporary = tempfile::tempdir().unwrap();
     let source = temporary.path().join("main.go");
     let output = temporary.path().join("output");
@@ -80,88 +80,20 @@ fn build_timing_v5_reports_single_load_before_hit_or_miss_cache_lookup() {
     )
     .unwrap();
 
-    let command = |timings: &Path| Build {
-        path: source.to_string_lossy().into_owned(),
+    let command = |timings: &Path| EmitRust {
+        paths: vec![source.to_string_lossy().into_owned()],
         sourcemap: None,
-        output: Some(output.to_string_lossy().into_owned()),
+        output: output.to_string_lossy().into_owned(),
         timings_json: Some(timings.to_string_lossy().into_owned()),
         jobs: NonZeroUsize::MIN,
     };
-    build_with_cache_base(command(&miss_timings), &cache).unwrap();
-    let link_path = output.join(runtime_descriptor::LINK_OUTPUT_FILENAME);
-    let first_link: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&link_path).unwrap()).unwrap();
-    let artifact_path = PathBuf::from(
-        first_link
-            .get("artifact_path")
-            .and_then(serde_json::Value::as_str)
-            .unwrap(),
-    );
-    std::fs::write(&artifact_path, b"corrupt runtime cache entry").unwrap();
-    std::fs::write(&link_path, b"corrupt terminal sidecar").unwrap();
+    emit_rust_with_cache_base(command(&miss_timings), &cache).unwrap();
+    emit_rust_with_cache_base(command(&hit_timings), &cache).unwrap();
 
-    build_with_cache_base(command(&hit_timings), &cache).unwrap();
-
-    let link: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&link_path).unwrap()).unwrap();
-    assert_eq!(link.get("schema_version"), Some(&serde_json::json!(1)));
-    assert_eq!(
-        link.get("link_descriptor_schema_version"),
-        Some(&serde_json::json!(2))
-    );
-    assert_eq!(
-        link.get("extern_crate"),
-        Some(&serde_json::json!("__gors_runtime"))
-    );
-    let artifact_path = PathBuf::from(
-        link.get("artifact_path")
-            .and_then(serde_json::Value::as_str)
-            .unwrap(),
-    );
-    assert!(artifact_path.is_file(), "{}", artifact_path.display());
-    assert!(artifact_path.starts_with(cache.join("runtime")));
-    assert_eq!(
-        artifact_path
-            .parent()
-            .and_then(Path::file_name)
-            .and_then(|name| name.to_str()),
-        link.get("artifact_identity")
-            .and_then(serde_json::Value::as_str)
-    );
+    assert!(output.join("main.rs").is_file());
     assert!(!output.join("__gors_runtime.rs").exists());
-    let implementation_hash = {
-        use sha2::{Digest as _, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(std::fs::read(&artifact_path).unwrap());
-        hasher
-            .finalize()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>()
-    };
-    assert_eq!(
-        implementation_hash,
-        link.get("implementation_hash")
-            .and_then(serde_json::Value::as_str)
-            .unwrap()
-    );
-    for field in [
-        "dependency",
-        "target_triple",
-        "target_pointer_width",
-        "target_endianness",
-        "format",
-        "producer_identity",
-        "compatibility_identity",
-        "implementation_hash",
-        "artifact_identity",
-        "link_plan_identity",
-    ] {
-        assert!(
-            link.get(field).is_some_and(|entry| !entry.is_null()),
-            "missing {field}: {link}"
-        );
-    }
+    assert!(!cache.join("runtime").exists());
+    assert!(!cache.join("toolchains").exists());
 
     let read_report = |path: &Path| -> serde_json::Value {
         serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
@@ -191,31 +123,101 @@ fn build_timing_v5_reports_single_load_before_hit_or_miss_cache_lookup() {
 }
 
 #[test]
-fn split_run_args_keeps_single_file_as_source() {
-    let (sources, program_args) = split_run_args(&args(&["main.go", "--", "arg"]));
-    assert_eq!(sources, args(&["main.go"]));
-    assert_eq!(program_args, args(&["--", "arg"]));
+fn generated_cache_rejects_go_mod_change_after_session_open() {
+    let temporary = tempfile::tempdir().unwrap();
+    let source = temporary.path().join("main.go");
+    let module = temporary.path().join("go.mod");
+    let cache = temporary.path().join("cache");
+    std::fs::write(&source, "package main\n\nfunc main() { println(1) }\n").unwrap();
+    std::fs::write(&module, "module example.com/first\n").unwrap();
+    let paths = vec![source.to_string_lossy().into_owned()];
+    let request = program::ProgramBuildRequest::new(&cache, &paths, NonZeroUsize::MIN);
+    let mut initial =
+        program::ProgramBuild::open(request, timings::TimingCollector::new(NonZeroUsize::MIN))
+            .unwrap();
+    initial
+        .ensure_generated(program::SourceMapNeed::NotRequested)
+        .unwrap();
+    drop(initial);
+
+    let request = program::ProgramBuildRequest::new(&cache, &paths, NonZeroUsize::MIN);
+    let mut reopened =
+        program::ProgramBuild::open(request, timings::TimingCollector::new(NonZeroUsize::MIN))
+            .unwrap();
+    std::fs::write(&module, "module example.com/changed\n").unwrap();
+
+    let error = reopened
+        .ensure_generated(program::SourceMapNeed::NotRequested)
+        .unwrap_err();
+    assert!(error.to_string().contains("identity changed"));
 }
 
 #[test]
-fn split_run_args_groups_leading_go_files() {
-    let (sources, program_args) = split_run_args(&args(&["main.go", "helpers.go", "--flag"]));
-    assert_eq!(sources, args(&["main.go", "helpers.go"]));
-    assert_eq!(program_args, args(&["--flag"]));
-}
+fn build_publishes_runnable_production_and_reuses_it_across_outputs() {
+    let temporary = tempfile::tempdir().unwrap();
+    let source = temporary.path().join("program.go");
+    let cache = temporary.path().join("cache");
+    let first_output = temporary.path().join("first-program");
+    let second_output = temporary.path().join("second-program");
+    std::fs::write(
+        &source,
+        "package main\n\nfunc twice(value int) int { return value * 2 }\n\nfunc main() { println(twice(4)) }\n",
+    )
+    .unwrap();
+    let command = |output: &Path| Build {
+        paths: vec![source.to_string_lossy().into_owned()],
+        output: Some(output.to_string_lossy().into_owned()),
+        timings_json: None,
+        jobs: NonZeroUsize::MIN,
+    };
+    let runtime_before = runtime_link::resolution_count();
+    let rustc_before = rustc::compilation_count();
 
-#[test]
-fn split_run_args_treats_directory_as_single_source() {
-    let (sources, program_args) = split_run_args(&args(&[".", "--flag", "value"]));
-    assert_eq!(sources, args(&["."]));
-    assert_eq!(program_args, args(&["--flag", "value"]));
-}
+    build_with_cache_base(command(&first_output), &cache).unwrap();
 
-#[test]
-fn split_run_args_treats_package_path_as_single_source() {
-    let (sources, program_args) = split_run_args(&args(&["./cmd/myapp", "arg"]));
-    assert_eq!(sources, args(&["./cmd/myapp"]));
-    assert_eq!(program_args, args(&["arg"]));
+    assert_eq!(runtime_link::resolution_count(), runtime_before + 1);
+    assert_eq!(rustc::compilation_count(), rustc_before + 1);
+    let execution = Command::new(&first_output).output().unwrap();
+    assert!(execution.status.success());
+    assert!(
+        execution.stdout == b"8\n" || execution.stderr == b"8\n",
+        "stdout={:?}, stderr={:?}",
+        execution.stdout,
+        execution.stderr
+    );
+    let first_bytes = std::fs::read(&first_output).unwrap();
+    #[cfg(unix)]
+    let first_inode = {
+        use std::os::unix::fs::MetadataExt as _;
+        std::fs::metadata(&first_output).unwrap().ino()
+    };
+
+    build_with_cache_base(command(&first_output), &cache).unwrap();
+
+    assert_eq!(runtime_link::resolution_count(), runtime_before + 1);
+    assert_eq!(rustc::compilation_count(), rustc_before + 1);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        assert_eq!(std::fs::metadata(&first_output).unwrap().ino(), first_inode);
+    }
+
+    std::fs::remove_dir_all(cache.join("runtime")).unwrap();
+    build_with_cache_base(command(&second_output), &cache).unwrap();
+
+    assert_eq!(runtime_link::resolution_count(), runtime_before + 1);
+    assert_eq!(rustc::compilation_count(), rustc_before + 1);
+    assert_eq!(std::fs::read(&second_output).unwrap(), first_bytes);
+
+    let paths = vec![source.to_string_lossy().into_owned()];
+    let request = program::ProgramBuildRequest::new(&cache, &paths, NonZeroUsize::MIN);
+    let mut shared =
+        program::ProgramBuild::open(request, timings::TimingCollector::new(NonZeroUsize::MIN))
+            .unwrap();
+    let production = shared.ensure_executable(RustcProfile::Production).unwrap();
+    assert_eq!(std::fs::read(production.path()).unwrap(), first_bytes);
+    assert_eq!(runtime_link::resolution_count(), runtime_before + 1);
+    assert_eq!(rustc::compilation_count(), rustc_before + 1);
 }
 
 #[test]
@@ -235,11 +237,11 @@ fn build_accepts_timing_report_option() {
     };
     assert_eq!(build.timings_json.as_deref(), Some("timings.json"));
     assert_eq!(build.jobs.get(), 3);
-    assert_eq!(build.path, "main.go");
+    assert_eq!(build.paths, args(&["main.go"]));
 }
 
 #[test]
-fn run_accepts_timing_option_before_trailing_program_arguments() {
+fn run_requires_a_literal_delimiter_before_program_arguments() {
     let opts = Opts::try_parse_from([
         "gors",
         "run",
@@ -248,6 +250,8 @@ fn run_accepts_timing_option_before_trailing_program_arguments() {
         "--timings-json",
         "timings.json",
         "main.go",
+        "helpers.go",
+        "--",
         "--program-flag",
     ])
     .unwrap();
@@ -256,7 +260,20 @@ fn run_accepts_timing_option_before_trailing_program_arguments() {
     };
     assert_eq!(run.timings_json.as_deref(), Some("timings.json"));
     assert_eq!(run.jobs.get(), 2);
-    assert_eq!(run.args, args(&["main.go", "--program-flag"]));
+    assert_eq!(run.paths, args(&["main.go", "helpers.go"]));
+    assert_eq!(run.program_args, args(&["--program-flag"]));
+    assert!(Opts::try_parse_from(["gors", "run", "main.go", "--program-flag"]).is_err());
+}
+
+#[test]
+fn emit_rust_requires_an_explicit_output_directory() {
+    assert!(Opts::try_parse_from(["gors", "emit-rust", "main.go"]).is_err());
+    let opts = Opts::try_parse_from(["gors", "emit-rust", "-o", "generated", "main.go"]).unwrap();
+    let SubCommand::EmitRust(command) = opts.subcmd else {
+        panic!("expected emit-rust command");
+    };
+    assert_eq!(command.paths, args(&["main.go"]));
+    assert_eq!(command.output, "generated");
 }
 
 #[test]
@@ -315,13 +332,12 @@ fn write_generated_output_removes_files_missing_from_new_manifest() {
     let mut first_files = BTreeMap::new();
     first_files.insert("main.rs".to_string(), "fn main() {}\n".to_string());
     first_files.insert("stale.rs".to_string(), "fn stale() {}\n".to_string());
-    let runtime = runtime_descriptor::test_runtime_link_output();
     let first = gors::printer::GeneratedOutput {
         files: first_files,
         runtime: runtime_descriptor::test_runtime_dependency(),
     };
-    let first_stats = write_generated_output(&first, tmp.path(), &runtime).unwrap();
-    assert_eq!(first_stats.written, 3);
+    let first_stats = write_generated_output(&first, tmp.path()).unwrap();
+    assert_eq!(first_stats.written, 2);
     assert!(tmp.path().join("stale.rs").exists());
 
     let mut second_files = BTreeMap::new();
@@ -330,15 +346,77 @@ fn write_generated_output_removes_files_missing_from_new_manifest() {
         files: second_files,
         runtime: runtime_descriptor::test_runtime_dependency(),
     };
-    let second_stats = write_generated_output(&second, tmp.path(), &runtime).unwrap();
+    let second_stats = write_generated_output(&second, tmp.path()).unwrap();
 
-    assert_eq!(second_stats.skipped, 2);
+    assert_eq!(second_stats.skipped, 1);
     assert_eq!(second_stats.removed, 1);
     assert!(!tmp.path().join("stale.rs").exists());
 }
 
 #[test]
-fn external_runtime_cut_removes_untracked_legacy_runtime_source() {
+fn generated_output_repairs_corrupt_missing_and_untracked_rust_files() {
+    let temporary = tempfile::tempdir().unwrap();
+    let output = gors::printer::GeneratedOutput {
+        files: BTreeMap::from([
+            ("main.rs".to_string(), "fn main() {}\n".to_string()),
+            ("module.rs".to_string(), "pub fn value() {}\n".to_string()),
+        ]),
+        runtime: runtime_descriptor::test_runtime_dependency(),
+    };
+    write_generated_output(&output, temporary.path()).unwrap();
+    std::fs::write(temporary.path().join("main.rs"), "corrupt\n").unwrap();
+    std::fs::remove_file(temporary.path().join("module.rs")).unwrap();
+    std::fs::write(temporary.path().join("untracked.rs"), "stale\n").unwrap();
+
+    let stats = write_generated_output(&output, temporary.path()).unwrap();
+
+    assert_eq!(stats.written, 2);
+    assert_eq!(stats.skipped, 0);
+    assert_eq!(stats.removed, 1);
+    assert_eq!(
+        std::fs::read_to_string(temporary.path().join("main.rs")).unwrap(),
+        "fn main() {}\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(temporary.path().join("module.rs")).unwrap(),
+        "pub fn value() {}\n"
+    );
+    assert!(!temporary.path().join("untracked.rs").exists());
+}
+
+#[test]
+fn rust_export_removes_only_unchanged_files_owned_by_its_previous_manifest() {
+    let temporary = tempfile::tempdir().unwrap();
+    let first = gors::printer::GeneratedOutput {
+        files: BTreeMap::from([
+            ("main.rs".to_string(), "fn main() {}\n".to_string()),
+            ("stale.rs".to_string(), "fn stale() {}\n".to_string()),
+        ]),
+        runtime: runtime_descriptor::test_runtime_dependency(),
+    };
+    write_generated_export(&first, temporary.path()).unwrap();
+    std::fs::write(
+        temporary.path().join("unrelated.rs"),
+        "fn belongs_to_the_user() {}\n",
+    )
+    .unwrap();
+    let second = gors::printer::GeneratedOutput {
+        files: BTreeMap::from([("main.rs".to_string(), "fn main() {}\n".to_string())]),
+        runtime: runtime_descriptor::test_runtime_dependency(),
+    };
+
+    let stats = write_generated_export(&second, temporary.path()).unwrap();
+
+    assert_eq!(stats.removed, 1);
+    assert!(!temporary.path().join("stale.rs").exists());
+    assert_eq!(
+        std::fs::read_to_string(temporary.path().join("unrelated.rs")).unwrap(),
+        "fn belongs_to_the_user() {}\n"
+    );
+}
+
+#[test]
+fn generated_output_retains_only_target_neutral_runtime_dependency() {
     let tmp = tempfile::tempdir().unwrap();
     std::fs::write(
         tmp.path().join("__gors_runtime.rs"),
@@ -349,19 +427,15 @@ fn external_runtime_cut_removes_untracked_legacy_runtime_source() {
         files: BTreeMap::from([("main.rs".to_string(), "fn main() {}\n".to_string())]),
         runtime: runtime_descriptor::test_runtime_dependency(),
     };
-    let runtime = runtime_descriptor::test_runtime_link_output();
-
-    let stats = write_generated_output(&output, tmp.path(), &runtime).unwrap();
+    let stats = write_generated_output(&output, tmp.path()).unwrap();
 
     assert_eq!(stats.removed, 1);
     assert!(!tmp.path().join("__gors_runtime.rs").exists());
-    assert!(
-        tmp.path()
-            .join(runtime_descriptor::LINK_OUTPUT_FILENAME)
-            .is_file()
-    );
     let manifest = GeneratedOutputManifest::load(tmp.path()).unwrap();
-    assert!(!manifest.contains(runtime_descriptor::LINK_OUTPUT_FILENAME));
+    assert_eq!(
+        manifest.runtime_dependency().unwrap(),
+        runtime_descriptor::test_runtime_dependency()
+    );
 }
 
 #[test]
@@ -405,7 +479,8 @@ fn concurrent_output_publications_publish_one_consistent_transaction() {
                     format!("mod {module};\nfn main() {{ {module}(); }}\n"),
                 );
                 files.insert(format!("{module}.rs"), body.to_string());
-                let runtime = runtime_descriptor::test_runtime_link_output();
+                let runtime = runtime_descriptor::test_runtime_link_descriptor();
+                let runtime_artifact = output_dir.join("runtime.rlib");
                 let (rustc_path, rustc_snapshot_identity) = rustc_selection();
                 let output = gors::printer::GeneratedOutput {
                     files,
@@ -421,7 +496,7 @@ fn concurrent_output_publications_publish_one_consistent_transaction() {
                     "publication transactions overlapped"
                 );
                 std::thread::sleep(Duration::from_millis(25));
-                write_generated_output_locked(&output, &output_dir, &runtime).unwrap();
+                write_generated_output_locked(&output, &output_dir).unwrap();
                 prepare_atomic_write(&source_map_path, &format!("{module}-map\n"))
                     .unwrap()
                     .persist(&source_map_path)
@@ -435,7 +510,12 @@ fn concurrent_output_publications_publish_one_consistent_transaction() {
                     &output.runtime,
                 );
                 manifest
-                    .refresh_runtime(&runtime, &rustc_path, &rustc_snapshot_identity)
+                    .refresh_runtime(
+                        &runtime,
+                        &runtime_artifact,
+                        &rustc_path,
+                        &rustc_snapshot_identity,
+                    )
                     .unwrap();
                 manifest.save(&output_dir).unwrap();
                 prepare_atomic_write(&executable_path, &format!("{module}-executable\n"))
@@ -445,8 +525,8 @@ fn concurrent_output_publications_publish_one_consistent_transaction() {
                 let action = RustcAction::for_generated_binary(
                     &output_dir,
                     &executable_path,
-                    Path::new(runtime.artifact_path()),
-                    runtime.link(),
+                    &runtime_artifact,
+                    &runtime,
                     AdmittedRustc::new(&rustc_path, &rustc_snapshot_identity),
                     manifest.generated_files(),
                     RustcProfile::Development,

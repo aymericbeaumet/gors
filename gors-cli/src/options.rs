@@ -23,7 +23,7 @@ const ROOT_HELP_TEMPLATE: &str = "\
 #[command(
     name = "gors",
     author = "Aymeric Beaumet <hi@aymericbeaumet.com>",
-    about = "gors is a go toolbelt written in rust; providing a parser and rust transpiler",
+    about = "gors is a Go-to-Rust compiler",
     disable_help_subcommand = true,
     disable_version_flag = true,
     help_template = ROOT_HELP_TEMPLATE
@@ -38,13 +38,16 @@ pub enum SubCommand {
     /// Parse the named Go file and print the AST
     #[command(hide = true)]
     Ast(Ast),
-    /// Transpile Go source to Rust files, writing to cache or --output
+    /// Compile Go source into an optimized runnable executable
     #[command(display_order = 0)]
     Build(Build),
+    /// Emit generated Rust source for inspection
+    #[command(display_order = 0)]
+    EmitRust(EmitRust),
     /// Print this message or the help of the given command(s)
     #[command(display_order = 0)]
     Help(Help),
-    /// Transpile, compile, and run Go source path(s)
+    /// Compile and run Go source
     #[command(display_order = 0)]
     Run(Run),
     /// Scan the named Go file and print the tokens
@@ -64,14 +67,31 @@ pub struct Ast {
 
 #[derive(Parser)]
 pub struct Build {
-    /// The Go source file or directory to build
-    pub path: String,
-    /// Output path for source map (.map file in standard v3 format)
-    #[arg(long)]
-    pub sourcemap: Option<String>,
-    /// Output file path
+    /// Go source files or directories to build
+    #[arg(required = true)]
+    pub paths: Vec<String>,
+    /// Runnable executable output path
     #[arg(short, long)]
     pub output: Option<String>,
+    /// Write machine-readable phase timings to this JSON file
+    #[arg(long, value_name = "PATH")]
+    pub timings_json: Option<String>,
+    /// Maximum number of compiler jobs
+    #[arg(long, value_name = "N", default_value_t = default_job_budget())]
+    pub jobs: NonZeroUsize,
+}
+
+#[derive(Parser)]
+pub struct EmitRust {
+    /// Go source files or directories to compile
+    #[arg(required = true)]
+    pub paths: Vec<String>,
+    /// Generated Rust output directory
+    #[arg(short, long, required = true, value_name = "DIRECTORY")]
+    pub output: String,
+    /// Output path for a Source Map v3 file
+    #[arg(long, value_name = "PATH")]
+    pub sourcemap: Option<String>,
     /// Write machine-readable phase timings to this JSON file
     #[arg(long, value_name = "PATH")]
     pub timings_json: Option<String>,
@@ -91,9 +111,12 @@ pub struct Run {
     /// Maximum number of compiler jobs
     #[arg(long, value_name = "N", default_value_t = default_job_budget())]
     pub jobs: NonZeroUsize,
-    /// Go source file(s), directory, or package path, followed by optional program arguments
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
-    pub args: Vec<String>,
+    /// Go source files or directories
+    #[arg(required = true, num_args = 1..)]
+    pub paths: Vec<String>,
+    /// Arguments passed to the program after a literal `--`
+    #[arg(last = true, allow_hyphen_values = true, value_name = "ARG")]
+    pub program_args: Vec<String>,
 }
 
 #[derive(Parser)]

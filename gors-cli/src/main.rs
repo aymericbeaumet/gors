@@ -5,11 +5,13 @@ mod cache;
 mod cache_paths;
 mod compiler;
 mod diagnostics;
+mod emit_rust;
 mod help;
 mod inspect;
 mod options;
 mod output;
 mod program;
+mod public_executable;
 mod run;
 mod runtime_descriptor;
 mod runtime_link;
@@ -18,6 +20,7 @@ mod timings;
 
 use build::build;
 use clap::Parser;
+use emit_rust::emit_rust;
 use help::{help, version};
 use inspect::{ast, tokens};
 use options::{Opts, SubCommand};
@@ -30,6 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match opts.subcmd {
         SubCommand::Ast(cmd) => ast(cmd),
         SubCommand::Build(cmd) => build(cmd),
+        SubCommand::EmitRust(cmd) => emit_rust(cmd),
         SubCommand::Help(cmd) => help(cmd),
         SubCommand::Run(cmd) => run(cmd),
         SubCommand::Tokens(cmd) => tokens(cmd),
@@ -48,16 +52,18 @@ use cache::{
 #[cfg(test)]
 use compiler::cli_workspace;
 #[cfg(test)]
+use emit_rust::emit_rust_with_cache_base;
+#[cfg(test)]
 use gors::compiler::input::WorkspaceKey;
 #[cfg(test)]
 use options::Build;
 #[cfg(test)]
+use options::EmitRust;
+#[cfg(test)]
 use output::{
-    OutputDirectoryLock, prepare_atomic_write, write_generated_output,
+    OutputDirectoryLock, prepare_atomic_write, write_generated_export, write_generated_output,
     write_generated_output_locked,
 };
-#[cfg(test)]
-use run::split_run_args;
 #[cfg(test)]
 use rustc::{AdmittedRustc, ExecutableProduct, RustcAction, RustcProfile};
 #[cfg(test)]

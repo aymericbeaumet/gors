@@ -113,10 +113,7 @@ fn rejects_terminal_files_in_the_generated_rust_manifest() {
     let directory = tempfile::tempdir().unwrap();
     let mut manifest = manifest();
     manifest.record("main.rs".to_string(), "a".repeat(64));
-    manifest.record(
-        crate::runtime_descriptor::LINK_OUTPUT_FILENAME.to_string(),
-        "b".repeat(64),
-    );
+    manifest.record("runtime.rlib".to_string(), "b".repeat(64));
     manifest.save(directory.path()).unwrap();
 
     assert!(GeneratedOutputManifest::load(directory.path()).is_none());

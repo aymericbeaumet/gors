@@ -3,6 +3,7 @@ import {
 	type GorsCompiler,
 	type GorsWasm,
 } from "./gors-wasm-loader";
+import { createRetryableLazyLoader } from "./lazy-loader";
 
 type BindingsLoader = () => Promise<GorsWasm>;
 
@@ -27,11 +28,8 @@ export class CompilerSourceRevision {
 export function createCompilerSessionLoader(
 	loadBindings: BindingsLoader = loadGorsWasm,
 ): () => Promise<GorsCompiler> {
-	let compilerPromise: Promise<GorsCompiler> | null = null;
-	return () => {
-		compilerPromise ??= loadBindings().then(
-			({ GorsCompiler: Compiler }) => new Compiler(),
-		);
-		return compilerPromise;
-	};
+	return createRetryableLazyLoader(async () => {
+		const { GorsCompiler: Compiler } = await loadBindings();
+		return new Compiler();
+	});
 }

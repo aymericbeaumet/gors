@@ -504,10 +504,13 @@ architecture described here:
   records `cli.source_load` before `cli.cache_lookup` for hits and misses;
   reports do not yet expose complete dependency traces, retained memory, or a
   foreground cancellation protocol;
-- `gors build` currently publishes generated Rust sources plus a validated link
-  descriptor rather than a runnable executable, so the harness still composes
-  the terminal rustc/link step. That end-to-end measurement remains diagnostic
-  until the default artifact command owns complete executable publication;
+- `gors build` now owns production rustc/link and durable atomic executable
+  publication. Its portable production policy is `opt-level=2`, LTO disabled,
+  debug info disabled, `target-cpu=generic`, and an empty requested target
+  feature set. Performance result schema v4 invokes that command directly and
+  rejects the deleted generated-source/link-descriptor/external-rustc driver.
+  This makes new end-to-end evidence structurally promotable, but no scenario
+  has yet met the statistical acceptance threshold;
 - no single global scheduler, cancellation generation, memory budget, or
   semantic CAS yet spans the compiler and external artifact tools;
 - the build embeds roughly 17 MB of raw selected SDK source into each compiler

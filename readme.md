@@ -57,8 +57,11 @@ cargo install --path gors-cli
 ## Usage
 
 ```bash
-# Transpile into Rust source plus its exact external-runtime link descriptor.
-gors build --output generated-rust main.go
+# Compile and atomically publish an optimized runnable executable.
+gors build -o hello main.go
+
+# Emit target-neutral Rust source for inspection.
+gors emit-rust -o generated-rust main.go
 
 # Transpile, compile, and run.
 gors run main.go
@@ -95,21 +98,22 @@ $ gors run sum.go
 
 ## Fast feedback
 
-`build` and `run` cache validated compiler output; `run` also caches the compiled
-Rust executable. Generated-output hits reselect and verify the current
-content-addressed runtime provider, while executable hits additionally require
-the exact runtime link-plan identity. The public `.gors-link.json` beside
-generated Rust carries the one required `--extern` path and its validated target,
-immutable producer provenance, host-neutral compatibility, implementation,
-artifact, and dependency identities. Producer provenance records how the rlib
-was built; only compatibility participates in target-side selection. Native
-provider production and generated-program linking use the same exact pinned
-rustup toolchain, even when Cargo itself was launched with another compiler.
+`build`, `emit-rust`, and `run` share one validated generated-Rust cache.
+`build` and `run --release` also share the exact internal production
+executable; changing `build -o` is only an atomic public copy and does not
+relink. `emit-rust` resolves no runtime provider or Rust toolchain and exports
+no terminal link descriptor. Runtime provider selection is terminal-only:
+executable hits require the exact runtime link-plan identity and bypass provider
+materialization and toolchain probing. Native provider production and
+generated-program linking use the same exact pinned rustup toolchain, even when
+Cargo itself was launched with another compiler.
 
 `--timings-json timings.json` records phase durations and cache events after a
-successful `build` or `run`; `GORS_PROFILE=1` prints phase timings to stderr.
-Parallel compilation will return only after deterministic semantic query
-boundaries exist; the CLI does not expose a non-functional worker-count flag.
+successful `build`, `emit-rust`, or `run`; `GORS_PROFILE=1` prints phase timings
+to stderr.
+`--jobs N` sets the compiler-owned worker budget. Ready per-definition work
+already uses that bounded pool; parsing and finer semantic-query parallelism
+remain part of the incremental compiler migration.
 
 ## Development
 

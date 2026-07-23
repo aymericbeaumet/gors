@@ -4,12 +4,8 @@ use gors_runtime_abi::{
 };
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
-use std::path::Path;
 
 const LINK_DESCRIPTOR_SCHEMA: u32 = 2;
-const LINK_OUTPUT_SCHEMA: u32 = 1;
-
-pub const LINK_OUTPUT_FILENAME: &str = ".gors-link.json";
 
 /// Current-schema wire record for one unconditional runtime dependency.
 ///
@@ -40,19 +36,6 @@ pub struct RuntimeLinkDescriptor {
     implementation_hash: String,
     artifact_identity: String,
     link_plan_identity: String,
-}
-
-/// Terminal transport descriptor published beside generated Rust.
-///
-/// `artifact_path` is intentionally transport-only. It is not an input to the
-/// artifact or link-plan identities flattened into this record.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct RuntimeLinkOutput {
-    schema_version: u32,
-    extern_crate: String,
-    artifact_path: String,
-    #[serde(flatten)]
-    link: RuntimeLinkDescriptor,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -188,34 +171,31 @@ impl RuntimeLinkDescriptor {
     pub fn target_triple(&self) -> &str {
         &self.target_triple
     }
+
+    #[must_use]
+    pub fn is_canonical(&self) -> bool {
+        self.reconstruct_dependency().is_ok()
+            && !self.target_triple.is_empty()
+            && matches!(self.target_pointer_width, 32 | 64)
+            && matches!(self.target_endianness.as_str(), "little" | "big")
+            && self.format == "rust-rlib-v1"
+            && [
+                &self.producer_identity,
+                &self.compatibility_identity,
+                &self.implementation_hash,
+                &self.artifact_identity,
+                &self.link_plan_identity,
+            ]
+            .into_iter()
+            .all(|identity| is_sha256(identity))
+    }
 }
 
-impl RuntimeLinkOutput {
-    #[must_use]
-    pub fn new(link: RuntimeLinkDescriptor, artifact_path: &Path) -> Self {
-        Self {
-            schema_version: LINK_OUTPUT_SCHEMA,
-            extern_crate: gors_runtime_abi::RUST_RUNTIME_CRATE_NAME.to_string(),
-            artifact_path: artifact_path.to_string_lossy().into_owned(),
-            link,
-        }
-    }
-
-    #[must_use]
-    pub const fn link(&self) -> &RuntimeLinkDescriptor {
-        &self.link
-    }
-
-    #[must_use]
-    pub fn artifact_path(&self) -> &str {
-        &self.artifact_path
-    }
-
-    pub fn json(&self) -> Result<String, serde_json::Error> {
-        let mut json = serde_json::to_string_pretty(self)?;
-        json.push('\n');
-        Ok(json)
-    }
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 #[cfg(test)]
@@ -271,14 +251,6 @@ pub fn test_runtime_dependency() -> RuntimeDependency {
         panic!("test link descriptor must reconstruct its dependency")
     };
     dependency
-}
-
-#[cfg(test)]
-pub fn test_runtime_link_output() -> RuntimeLinkOutput {
-    RuntimeLinkOutput::new(
-        test_runtime_link_descriptor(),
-        Path::new("/cache/runtime/test/lib__gors_runtime.rlib"),
-    )
 }
 
 #[cfg(test)]
@@ -355,47 +327,5 @@ mod tests {
         };
         dependency.insert("future_field".to_string(), serde_json::json!(true));
         assert!(serde_json::from_value::<RuntimeLinkDescriptor>(value).is_err());
-    }
-
-    #[test]
-    fn link_output_exposes_transport_and_exact_path_independent_facts() {
-        let output = RuntimeLinkOutput::new(
-            test_runtime_link_descriptor(),
-            Path::new("/cache/runtime/artifact/lib__gors_runtime.rlib"),
-        );
-        let Ok(json) = output.json() else {
-            panic!("test link output must serialize")
-        };
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&json) else {
-            panic!("test link output must be valid JSON")
-        };
-        assert_eq!(value.get("schema_version"), Some(&serde_json::json!(1)));
-        assert_eq!(
-            value.get("extern_crate"),
-            Some(&serde_json::json!("__gors_runtime"))
-        );
-        assert_eq!(
-            value.get("artifact_path"),
-            Some(&serde_json::json!(
-                "/cache/runtime/artifact/lib__gors_runtime.rlib"
-            ))
-        );
-        for field in [
-            "dependency",
-            "target_triple",
-            "target_pointer_width",
-            "target_endianness",
-            "format",
-            "producer_identity",
-            "compatibility_identity",
-            "implementation_hash",
-            "artifact_identity",
-            "link_plan_identity",
-        ] {
-            assert!(
-                value.get(field).is_some_and(|entry| !entry.is_null()),
-                "missing {field}: {value}"
-            );
-        }
     }
 }

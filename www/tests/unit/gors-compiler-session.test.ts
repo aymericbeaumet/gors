@@ -42,6 +42,28 @@ describe("createCompilerSessionLoader", () => {
 		expect(loadBindings).toHaveBeenCalledOnce();
 		expect(construct).toHaveBeenCalledOnce();
 	});
+
+	it("retries bindings and compiler construction after a transient failure", async () => {
+		class TestCompiler implements GorsCompiler {
+			build_rust(_input: string): GorsBuildResult {
+				throw new Error("not needed by this ownership test");
+			}
+
+			free(): void {}
+		}
+		const bindings: GorsWasm = {
+			GorsCompiler: TestCompiler,
+		};
+		const loadBindings = vi
+			.fn<() => Promise<GorsWasm>>()
+			.mockRejectedValueOnce(new Error("transient bindings failure"))
+			.mockResolvedValue(bindings);
+		const loadCompiler = createCompilerSessionLoader(loadBindings);
+
+		await expect(loadCompiler()).rejects.toThrow("transient bindings failure");
+		await expect(loadCompiler()).resolves.toBeInstanceOf(TestCompiler);
+		expect(loadBindings).toHaveBeenCalledTimes(2);
+	});
 });
 
 describe("CompilerSourceRevision", () => {

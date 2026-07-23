@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::runtime_descriptor::{
-    RuntimeDependencyDescriptor, RuntimeDescriptorError, RuntimeLinkDescriptor, RuntimeLinkOutput,
+    RuntimeDependencyDescriptor, RuntimeDescriptorError, RuntimeLinkDescriptor,
 };
 
 mod identity;
@@ -232,6 +232,7 @@ impl CliCacheManifest {
     /// Load reusable generated Rust after validating every recorded source
     /// artifact. Source-emitting commands and terminal misses use this stricter
     /// path before reading or relinking generated files.
+    #[cfg(test)]
     pub fn load_if_generated_valid(
         output_dir: &Path,
         identity: &GeneratedRustIdentity,
@@ -256,7 +257,8 @@ impl CliCacheManifest {
 
     pub fn refresh_runtime(
         &mut self,
-        runtime: &RuntimeLinkOutput,
+        runtime: &RuntimeLinkDescriptor,
+        artifact_path: &Path,
         rustc_path: &Path,
         rustc_snapshot_identity: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -267,6 +269,19 @@ impl CliCacheManifest {
             ))
             .into());
         }
+        if !artifact_path.is_absolute() {
+            return Err(std::io::Error::other(format!(
+                "terminal runtime artifact path is not absolute: {}",
+                artifact_path.display()
+            ))
+            .into());
+        }
+        let artifact_path = artifact_path.to_str().ok_or_else(|| {
+            std::io::Error::other(format!(
+                "terminal runtime artifact path is not valid UTF-8: {}",
+                artifact_path.display()
+            ))
+        })?;
         let rustc_path = rustc_path.to_str().ok_or_else(|| {
             std::io::Error::other(format!(
                 "terminal rustc path is not valid UTF-8: {}",
@@ -281,8 +296,8 @@ impl CliCacheManifest {
         }
         match &mut self.terminal {
             Some(terminal) => {
-                terminal.runtime = runtime.link().clone();
-                terminal.artifact_path = runtime.artifact_path().to_string();
+                terminal.runtime = runtime.clone();
+                terminal.artifact_path = artifact_path.to_string();
                 terminal.rustc_path = rustc_path.to_string();
                 terminal.rustc_snapshot_identity = rustc_snapshot_identity.to_string();
             }
@@ -290,8 +305,8 @@ impl CliCacheManifest {
                 self.terminal = Some(TerminalState {
                     version: TERMINAL_MANIFEST_VERSION,
                     generated_identity: self.generated_identity.clone(),
-                    runtime: runtime.link().clone(),
-                    artifact_path: runtime.artifact_path().to_string(),
+                    runtime: runtime.clone(),
+                    artifact_path: artifact_path.to_string(),
                     rustc_path: rustc_path.to_string(),
                     rustc_snapshot_identity: rustc_snapshot_identity.to_string(),
                     executables: BTreeMap::new(),
@@ -346,10 +361,6 @@ impl CliCacheManifest {
         (product.content_hash() == artifact.content_hash
             && product.size_bytes() == artifact.size_bytes)
             .then_some(product)
-    }
-
-    pub fn generated_file_count(&self) -> usize {
-        self.generated_files.len()
     }
 
     pub fn generated_files_are_current(&self, output_dir: &Path) -> bool {
@@ -464,6 +475,8 @@ impl TerminalState {
         if terminal.version != TERMINAL_MANIFEST_VERSION
             || terminal.generated_identity != generated_identity
             || &selected_dependency != generated_dependency
+            || !terminal.runtime.is_canonical()
+            || !Path::new(&terminal.artifact_path).is_absolute()
             || !Path::new(&terminal.rustc_path).is_absolute()
             || !is_sha256(&terminal.rustc_snapshot_identity)
         {
@@ -486,12 +499,12 @@ pub fn generated_file_hashes(output: &gors::printer::GeneratedOutput) -> BTreeMa
 pub fn refresh_runtime_selection(
     output_dir: &Path,
     manifest: &mut CliCacheManifest,
-    runtime: &RuntimeLinkOutput,
+    runtime: &RuntimeLinkDescriptor,
+    artifact_path: &Path,
     rustc_path: &Path,
     rustc_snapshot_identity: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    crate::output::write_runtime_link_locked(runtime, output_dir)?;
-    manifest.refresh_runtime(runtime, rustc_path, rustc_snapshot_identity)?;
+    manifest.refresh_runtime(runtime, artifact_path, rustc_path, rustc_snapshot_identity)?;
     manifest.save_terminal(output_dir)
 }
 

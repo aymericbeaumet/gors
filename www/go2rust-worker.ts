@@ -5,12 +5,10 @@ import {
 	createCompilerSessionLoader,
 } from "./gors-compiler-session";
 import type {
-	CancelRequest,
 	CompileRequest,
 	CompilerPhase,
 	CompilerPhaseTiming,
 	WorkerCompileResult,
-	WorkerRequest,
 	WorkerResponse,
 	WorkerSuccessResult,
 } from "./go2rust-protocol";
@@ -24,7 +22,7 @@ import {
 const MAX_CACHE_BYTES = 16 * 1024 * 1024;
 
 const worker = self as unknown as {
-	onmessage: ((event: MessageEvent<WorkerRequest>) => void) | null;
+	onmessage: ((event: MessageEvent<CompileRequest>) => void) | null;
 	postMessage(message: WorkerResponse, transfer?: Transferable[]): void;
 };
 
@@ -33,6 +31,11 @@ interface CacheEntry {
 	goSource: string;
 	result: WorkerSuccessResult;
 	bytes: number;
+}
+
+interface ActiveCompile {
+	request: CompileRequest;
+	cancelled: boolean;
 }
 
 function createWorkerId(): string {
@@ -46,10 +49,9 @@ const cache = new Map<string, CacheEntry>();
 const cacheIdentityBySource = new Map<string, string>();
 let cacheBytes = 0;
 let queuedRequest: CompileRequest | null = null;
-let activeRequestId: number | null = null;
+let activeCompile: ActiveCompile | null = null;
 let drainScheduled = false;
 let draining = false;
-const cancelledRequestIds = new Set<number>();
 const loadCompiler = createCompilerSessionLoader();
 const compilerSourceRevision = new CompilerSourceRevision();
 
@@ -253,16 +255,35 @@ function postResult(
 	);
 }
 
-async function executeCompile(request: CompileRequest): Promise<void> {
+function mayPublish(active: ActiveCompile): boolean {
+	return activeCompile === active && !active.cancelled;
+}
+
+function requestedDelay(value: number | undefined, maximumMs: number): number {
+	if (value === undefined || !Number.isFinite(value) || value <= 0) return 0;
+	return Math.min(value, maximumMs);
+}
+
+function delay(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function executeCompile(active: ActiveCompile): Promise<void> {
+	const { request } = active;
 	const { id, goSource } = request;
 	const startedAt = performance.now();
 	const timings: CompilerPhaseTiming[] = [];
 
 	try {
+		if (!mayPublish(active)) return;
 		const cached = readCached(goSource);
 		// An older artifact cannot bypass reinstalling its source in the retained
 		// compiler; otherwise the following edit would fork from a stale revision.
-		if (cached && compilerSourceRevision.canReuseCachedResult(goSource)) {
+		if (
+			cached &&
+			compilerSourceRevision.canReuseCachedResult(goSource) &&
+			mayPublish(active)
+		) {
 			const cacheStartedAt = performance.now();
 			postStatus(id, "cache-hit", startedAt);
 			touchCache(goSource, cached.result, cached.bytes);
@@ -277,18 +298,24 @@ async function executeCompile(request: CompileRequest): Promise<void> {
 
 		let phaseStartedAt = performance.now();
 		postStatus(id, "loading-wasm", startedAt);
+		const loadDelayMs = requestedDelay(request.testWasmLoadDelayMs, 60_000);
+		if (loadDelayMs > 0) await delay(loadDelayMs);
+		if (!mayPublish(active)) return;
 		const compiler = await loadCompiler();
 		timings.push({
 			phase: "loading-wasm",
 			durationMs: performance.now() - phaseStartedAt,
 		});
-		if (cancelledRequestIds.has(id)) return;
+		if (!mayPublish(active)) return;
 
 		phaseStartedAt = performance.now();
 		postStatus(id, "compiling", startedAt);
-		const requestedTestDelay = request.testSynchronousDelayMs ?? 0;
-		if (Number.isFinite(requestedTestDelay) && requestedTestDelay > 0) {
-			const deadline = performance.now() + Math.min(requestedTestDelay, 5_000);
+		const compileDelayMs = requestedDelay(
+			request.testSynchronousDelayMs,
+			5_000,
+		);
+		if (compileDelayMs > 0) {
+			const deadline = performance.now() + compileDelayMs;
 			let spinCount = 0;
 			while (performance.now() < deadline) spinCount++;
 			void spinCount;
@@ -300,7 +327,7 @@ async function executeCompile(request: CompileRequest): Promise<void> {
 			phase: "compiling",
 			durationMs: performance.now() - phaseStartedAt,
 		});
-		if (cancelledRequestIds.has(id)) {
+		if (!mayPublish(active)) {
 			buildResult.free();
 			return;
 		}
@@ -313,12 +340,14 @@ async function executeCompile(request: CompileRequest): Promise<void> {
 			durationMs: performance.now() - phaseStartedAt,
 		});
 
+		if (!mayPublish(active)) return;
 		if (result.success) {
 			touchCache(goSource, result, estimateResultBytes(goSource, result));
 		}
 		postStatus(id, "complete", startedAt);
 		postResult(id, result, startedAt, timings, false);
 	} catch (error) {
+		if (!mayPublish(active)) return;
 		worker.postMessage({
 			id,
 			type: "result",
@@ -340,14 +369,12 @@ async function drainQueue(): Promise<void> {
 		while (queuedRequest) {
 			const request = queuedRequest;
 			queuedRequest = null;
-			activeRequestId = request.id;
-			if (!cancelledRequestIds.has(request.id)) {
-				await executeCompile(request);
-			}
-			cancelledRequestIds.delete(request.id);
-			activeRequestId = null;
+			const active: ActiveCompile = { request, cancelled: false };
+			activeCompile = active;
+			await executeCompile(active);
+			if (activeCompile === active) activeCompile = null;
 
-			// Let compile/cancel events queued while synchronous Wasm was running
+			// Let compile events queued while synchronous Wasm was running
 			// collapse into one latest request before starting more work.
 			await yieldToWorkerMessages();
 		}
@@ -367,6 +394,14 @@ function scheduleDrain(): void {
 
 function enqueueCompile(request: CompileRequest): void {
 	postStatus(request.id, "queued", performance.now());
+	if (activeCompile && !activeCompile.cancelled) {
+		activeCompile.cancelled = true;
+		worker.postMessage({
+			id: activeCompile.request.id,
+			type: "cancelled",
+			reason: "superseded by newer compiler input",
+		});
+	}
 	if (queuedRequest) {
 		worker.postMessage({
 			id: queuedRequest.id,
@@ -378,23 +413,6 @@ function enqueueCompile(request: CompileRequest): void {
 	scheduleDrain();
 }
 
-function cancelRequests(request: CancelRequest): void {
-	for (const id of request.ids) {
-		if (activeRequestId === id) cancelledRequestIds.add(id);
-		if (queuedRequest?.id === id) {
-			queuedRequest = null;
-			worker.postMessage({
-				id,
-				type: "cancelled",
-				reason: "compiler request cancelled",
-			});
-		}
-	}
-}
-
-worker.onmessage = ({ data }) => {
-	if (data.type === "compile") enqueueCompile(data);
-	else cancelRequests(data);
-};
+worker.onmessage = ({ data }) => enqueueCompile(data);
 
 worker.postMessage({ type: "ready", workerId });

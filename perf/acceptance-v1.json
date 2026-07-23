@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "resultSchemaVersion": 3,
+  "resultSchemaVersion": 4,
   "corpusDigest": "1334d198a769363fd0cfdaf2cf263fefe4109bac31efecaa1892c919f32130ae",
   "maximumCurrentEvidenceAgeHours": 24,
   "promotedScenarios": []

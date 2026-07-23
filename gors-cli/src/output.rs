@@ -3,8 +3,6 @@ use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 
-use crate::runtime_descriptor::{LINK_OUTPUT_FILENAME, RuntimeLinkOutput};
-
 pub struct FileWriteStats {
     pub written: usize,
     pub skipped: usize,
@@ -13,6 +11,12 @@ pub struct FileWriteStats {
 
 pub struct OutputDirectoryLock {
     _file: std::fs::File,
+}
+
+#[derive(Clone, Copy)]
+enum CleanupPolicy {
+    StrictInternalCache,
+    PreviousExportOnly,
 }
 
 impl OutputDirectoryLock {
@@ -65,16 +69,30 @@ pub fn prepare_atomic_write(
 pub fn write_generated_output(
     output: &gors::printer::GeneratedOutput,
     output_dir: &Path,
-    runtime: &RuntimeLinkOutput,
 ) -> Result<FileWriteStats, Box<dyn std::error::Error>> {
     let _output_lock = OutputDirectoryLock::acquire(output_dir)?;
-    write_generated_output_locked(output, output_dir, runtime)
+    write_generated_output_locked(output, output_dir)
 }
 
 pub fn write_generated_output_locked(
     output: &gors::printer::GeneratedOutput,
     output_dir: &Path,
-    runtime: &RuntimeLinkOutput,
+) -> Result<FileWriteStats, Box<dyn std::error::Error>> {
+    write_generated_files_locked(output, output_dir, CleanupPolicy::StrictInternalCache)
+}
+
+pub fn write_generated_export(
+    output: &gors::printer::GeneratedOutput,
+    output_dir: &Path,
+) -> Result<FileWriteStats, Box<dyn std::error::Error>> {
+    let _output_lock = OutputDirectoryLock::acquire(output_dir)?;
+    write_generated_files_locked(output, output_dir, CleanupPolicy::PreviousExportOnly)
+}
+
+fn write_generated_files_locked(
+    output: &gors::printer::GeneratedOutput,
+    output_dir: &Path,
+    cleanup: CleanupPolicy,
 ) -> Result<FileWriteStats, Box<dyn std::error::Error>> {
     let previous_manifest = GeneratedOutputManifest::load(output_dir);
     let mut new_manifest = GeneratedOutputManifest::new(&output.runtime);
@@ -92,7 +110,7 @@ pub fn write_generated_output_locked(
             .as_ref()
             .is_some_and(|manifest| manifest.matches(filename, &current_hash));
 
-        if unchanged && file_path.exists() {
+        if unchanged && regular_file_matches(&file_path, &current_hash) {
             stats.skipped += 1;
         } else {
             let temp = prepare_atomic_write(&file_path, source)?;
@@ -111,36 +129,72 @@ pub fn write_generated_output_locked(
         temp.persist(file_path).map_err(|error| error.error)?;
     }
 
-    if let Some(previous_manifest) = &previous_manifest {
-        for (filename, output_file) in previous_manifest.files() {
-            if output.files.contains_key(filename) {
-                continue;
-            }
-            let file_path = output_dir.join(output_file);
-            if file_path.is_file() {
-                std::fs::remove_file(&file_path)?;
-                stats.removed += 1;
-            }
+    match cleanup {
+        CleanupPolicy::StrictInternalCache => {
+            remove_all_untracked_rust(output, output_dir, &mut stats)?;
+        }
+        CleanupPolicy::PreviousExportOnly => {
+            remove_owned_stale_exports(output, output_dir, previous_manifest.as_ref(), &mut stats)?;
         }
     }
 
-    // Schema-1 output manifests are intentionally unreadable after the
-    // external-runtime cut, so explicitly remove the one legacy source file
-    // they could leave behind. There is no source-bundled fallback.
-    let stale_runtime_filename = format!("{}.rs", gors_runtime_abi::RUST_RUNTIME_CRATE_NAME);
-    let stale_runtime_source = output_dir.join(&stale_runtime_filename);
-    if !output.files.contains_key(&stale_runtime_filename) && stale_runtime_source.is_file() {
-        std::fs::remove_file(stale_runtime_source)?;
-        stats.removed += 1;
-    }
-
-    if write_runtime_link_locked(runtime, output_dir)? {
-        stats.written += 1;
-    } else {
-        stats.skipped += 1;
-    }
     new_manifest.save(output_dir)?;
     Ok(stats)
+}
+
+fn remove_all_untracked_rust(
+    output: &gors::printer::GeneratedOutput,
+    output_dir: &Path,
+    stats: &mut FileWriteStats,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for entry in std::fs::read_dir(output_dir)? {
+        let entry = entry?;
+        let filename = entry.file_name();
+        let Some(filename) = filename.to_str() else {
+            continue;
+        };
+        if Path::new(filename)
+            .extension()
+            .is_none_or(|extension| extension != "rs")
+            || output.files.contains_key(filename)
+        {
+            continue;
+        }
+        let file_type = entry.file_type()?;
+        if file_type.is_file() || file_type.is_symlink() {
+            std::fs::remove_file(entry.path())?;
+            stats.removed += 1;
+        } else {
+            return Err(std::io::Error::other(format!(
+                "untracked generated Rust path is not a file: {}",
+                entry.path().display()
+            ))
+            .into());
+        }
+    }
+    Ok(())
+}
+
+fn remove_owned_stale_exports(
+    output: &gors::printer::GeneratedOutput,
+    output_dir: &Path,
+    previous: Option<&GeneratedOutputManifest>,
+    stats: &mut FileWriteStats,
+) -> Result<(), std::io::Error> {
+    let Some(previous) = previous else {
+        return Ok(());
+    };
+    for (filename, content_hash) in previous.owned_files() {
+        if output.files.contains_key(filename) {
+            continue;
+        }
+        let path = output_dir.join(filename);
+        if regular_file_matches(&path, content_hash) {
+            std::fs::remove_file(path)?;
+            stats.removed += 1;
+        }
+    }
+    Ok(())
 }
 
 pub fn write_source_map(
@@ -165,27 +219,19 @@ pub fn write_source_map(
     FileArtifact::capture(path)
 }
 
-/// Atomically refresh the terminal link descriptor for a generated-output
-/// cache hit without rewriting Rust sources.
-pub fn write_runtime_link_locked(
-    runtime: &RuntimeLinkOutput,
-    output_dir: &Path,
-) -> Result<bool, Box<dyn std::error::Error>> {
-    let source = runtime.json()?;
-    let path = output_dir.join(LINK_OUTPUT_FILENAME);
-    if std::fs::read(&path).ok().as_deref() == Some(source.as_bytes()) {
-        return Ok(false);
-    }
-    prepare_atomic_write(&path, &source)?
-        .persist(path)
-        .map_err(|error| error.error)?;
-    Ok(true)
+fn regular_file_matches(path: &Path, expected_hash: &str) -> bool {
+    std::fs::symlink_metadata(path)
+        .ok()
+        .is_some_and(|metadata| metadata.file_type().is_file())
+        && std::fs::read(path)
+            .ok()
+            .is_some_and(|content| sha2_hash(&content) == expected_hash)
 }
 
-fn sha2_hash(content: &str) -> String {
+fn sha2_hash(content: impl AsRef<[u8]>) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
-    hasher.update(content.as_bytes());
+    hasher.update(content.as_ref());
     let hash = hasher.finalize();
     hash.iter().map(|byte| format!("{byte:02x}")).collect()
 }

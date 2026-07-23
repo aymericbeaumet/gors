@@ -678,6 +678,7 @@ dependencies = [
  "gors",
  "gors-runtime-abi",
  "pretty_env_logger",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",

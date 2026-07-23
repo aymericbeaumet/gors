@@ -361,7 +361,7 @@ async function doTranspile() {
 	monaco.editor.setModelMarkers(rustModel, "rustc", []);
 	sourceMap = null;
 
-	conCmd("$ gors build -o main.rs main.go");
+	conCmd("$ gors emit-rust -o generated-rust main.go");
 	pipelineStage = "gors";
 	compilerPhase = "queued";
 	await tick();

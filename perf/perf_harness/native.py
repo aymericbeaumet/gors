@@ -9,29 +9,15 @@ import os
 import platform
 import re
 import resource
-import shutil
 import subprocess
 import sys
 import time
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .runtime_link import (
-    LINK_DESCRIPTOR_SCHEMA_VERSION,
-    RUNTIME_LINK_VALIDATION,
-    canonical_rustc_release_record,
-    canonical_target_libdir_record,
-    expand_rustc_runtime_link,
-    gors_runtime_contract_identity,
-    rust_runtime_compatibility_identity,
-    validate_runtime_link_descriptor,
-)
-
-
-ARTIFACT_DRIVER = "bootstrap-generated-rust-v3"
-ARTIFACT_DRIVER_PRODUCTION = False
+ARTIFACT_DRIVER = "gors-build-production-v1"
+ARTIFACT_DRIVER_PRODUCTION = True
 GORS_TIMING_REPORT_VERSION = 5
 GORS_BUILD_CACHE_HIT_PHASES = (
     "cli.source_load",
@@ -43,6 +29,12 @@ GORS_BUILD_CACHE_MISS_PHASES = (
     "cli.compile",
     "cli.print",
     "cli.file_writes",
+    "cli.rustc",
+)
+GORS_BUILD_GENERATED_HIT_RUSTC_MISS_PHASES = (
+    "cli.source_load",
+    "cli.cache_lookup",
+    "cli.rustc",
 )
 
 
@@ -51,22 +43,9 @@ class Toolchains:
     gors: Path
     go: Path
     goroot: Path
-    rustc: Path
-    rust_channel: str
     gors_version: str
     go_version: str
-    rustc_version: str
-    rust_target: str
-    rust_pointer_width: int
-    rust_endianness: str
     runtime_contract_identity: str
-    rustc_target_libdir: Path
-    rustc_release_record_sha256: str
-    target_libdir_record_sha256: str
-    runtime_compatibility_identity: str
-    linker_path: str | None
-    linker_version: str | None
-    linker_sha256: str | None
 
 
 def command_output(args: list[str], *, cwd: Path) -> str:
@@ -82,21 +61,6 @@ def command_output(args: list[str], *, cwd: Path) -> str:
         stderr = completed.stderr.decode(errors="replace").strip()
         raise RuntimeError(f"command failed ({completed.returncode}): {' '.join(args)}\n{stderr}")
     return completed.stdout.decode(errors="replace").strip()
-
-
-def command_bytes(args: list[str], *, cwd: Path) -> bytes:
-    completed = subprocess.run(
-        args,
-        cwd=cwd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-        timeout=120,
-    )
-    if completed.returncode != 0:
-        stderr = completed.stderr.decode(errors="replace").strip()
-        raise RuntimeError(f"command failed ({completed.returncode}): {' '.join(args)}\n{stderr}")
-    return completed.stdout
 
 
 def host_go_platform() -> tuple[str, str]:
@@ -121,7 +85,6 @@ def discover_toolchains(
     repository_root: Path,
     gors_path: Path | None,
     go_path: Path | None,
-    rustc_path: Path | None,
 ) -> Toolchains:
     root = repository_root
     if gors_path is None:
@@ -155,19 +118,6 @@ def discover_toolchains(
             f"repo-pinned Go executable does not exist: {go}; build gors once to install it"
         )
 
-    toolchain = tomllib.loads((root / "rust-toolchain.toml").read_text(encoding="utf-8"))
-    rust_channel = str(toolchain["toolchain"]["channel"])
-    if rustc_path is None:
-        rustc = Path(
-            command_output(
-                ["rustup", "which", "rustc", "--toolchain", rust_channel], cwd=root
-            )
-        )
-    else:
-        rustc = rustc_path
-    if not rustc.is_file():
-        raise RuntimeError(f"pinned rustc executable does not exist: {rustc}")
-
     gors_version = command_output([str(gors), "version"], cwd=root)
     go_version_output = command_output([str(go), "version"], cwd=root)
     match = re.search(r"\bgo(\d+\.\d+\.\d+)\b", go_version_output)
@@ -175,87 +125,18 @@ def discover_toolchains(
         raise RuntimeError(
             f"Go version mismatch: expected {go_version_pin}, got {go_version_output}"
         )
-    rustc_verbose_bytes = command_bytes([str(rustc), "-vV"], cwd=root)
-    try:
-        rustc_verbose = rustc_verbose_bytes.decode("utf-8")
-    except UnicodeDecodeError as error:
-        raise RuntimeError("pinned rustc -vV output is not UTF-8") from error
-    rust_release = next(
-        (
-            line.removeprefix("release: ")
-            for line in rustc_verbose.splitlines()
-            if line.startswith("release: ")
-        ),
-        "unknown",
+    runtime_contract = re.search(
+        r"(?:^|\s)runtime-contract=([0-9a-f]{64})(?:\s|$)", gors_version
     )
-    rust_target = next(
-        (
-            line.removeprefix("host: ")
-            for line in rustc_verbose.splitlines()
-            if line.startswith("host: ")
-        ),
-        "unknown",
-    )
-    if rust_target == "unknown":
-        raise RuntimeError("pinned rustc -vV output has no host target")
-    if rust_release != rust_channel:
-        raise RuntimeError(f"Rust version mismatch: expected {rust_channel}, got {rust_release}")
-    rust_cfg = command_output(
-        [str(rustc), "--print", "cfg", "--target", rust_target], cwd=root
-    )
-    pointer_match = re.search(r'^target_pointer_width="(\d+)"$', rust_cfg, re.MULTILINE)
-    endian_match = re.search(r'^target_endian="(little|big)"$', rust_cfg, re.MULTILINE)
-    if pointer_match is None or endian_match is None:
-        raise RuntimeError("pinned rustc target cfg lacks pointer-width or endianness facts")
-    rust_pointer_width = int(pointer_match.group(1))
-    rust_endianness = endian_match.group(1)
-    target_libdir_value = command_output(
-        [str(rustc), "--target", rust_target, "--print", "target-libdir"], cwd=root
-    )
-    rustc_target_libdir = Path(target_libdir_value)
-    if not rustc_target_libdir.is_absolute() or not rustc_target_libdir.is_dir():
-        raise RuntimeError(
-            "pinned rustc returned an invalid target-libdir: "
-            f"{rustc_target_libdir}"
-        )
-    rustc_release_record = canonical_rustc_release_record(rustc_verbose_bytes)
-    target_libdir_record = canonical_target_libdir_record(rustc_target_libdir)
-    runtime_compatibility_identity = rust_runtime_compatibility_identity(
-        rustc_verbose_bytes,
-        target_libdir_record,
-        target_triple=rust_target,
-        target_pointer_width=rust_pointer_width,
-        target_endianness=rust_endianness,
-    )
-    linker = shutil.which("cc")
-    linker_version = None
-    linker_sha256 = None
-    if linker:
-        completed = subprocess.run(
-            [linker, "--version"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False
-        )
-        linker_version = completed.stdout.decode(errors="replace").splitlines()[0]
-        linker_sha256 = hashlib.sha256(Path(linker).resolve().read_bytes()).hexdigest()
+    if runtime_contract is None:
+        raise RuntimeError("gors version does not expose a typed runtime contract identity")
     return Toolchains(
         gors=gors.resolve(),
         go=go.resolve(),
         goroot=goroot.resolve(),
-        rustc=rustc.resolve(),
-        rust_channel=rust_channel,
         gors_version=gors_version,
         go_version=go_version_output,
-        rustc_version=rustc_verbose,
-        rust_target=rust_target,
-        rust_pointer_width=rust_pointer_width,
-        rust_endianness=rust_endianness,
-        runtime_contract_identity=gors_runtime_contract_identity(gors_version),
-        rustc_target_libdir=rustc_target_libdir,
-        rustc_release_record_sha256=hashlib.sha256(rustc_release_record).hexdigest(),
-        target_libdir_record_sha256=hashlib.sha256(target_libdir_record).hexdigest(),
-        runtime_compatibility_identity=runtime_compatibility_identity,
-        linker_path=linker,
-        linker_version=linker_version,
-        linker_sha256=linker_sha256,
+        runtime_contract_identity=runtime_contract.group(1),
     )
 
 
@@ -317,23 +198,29 @@ def _validate_gors_timing_evidence(timings: Any, expected_jobs: int) -> None:
     cache_events = timings.get("cacheEvents")
     if not isinstance(cache_events, list):
         raise RuntimeError("gors timing report does not contain cache-event evidence")
-    compiler_cache_events = [
-        event
-        for event in cache_events
-        if isinstance(event, dict) and event.get("layer") == "compiler"
-    ]
-    if len(compiler_cache_events) != 1 or len(cache_events) != 1:
+    if len(cache_events) != 2 or any(not isinstance(event, dict) for event in cache_events):
         raise RuntimeError(
-            "gors timing report must contain exactly one unambiguous compiler cache event"
+            "gors timing report must contain one compiler and one rustc cache event"
         )
-    cache_hit = compiler_cache_events[0].get("hit")
-    if type(cache_hit) is not bool:
-        raise RuntimeError("gors compiler cache-event evidence is malformed")
-    expected_phases = (
-        GORS_BUILD_CACHE_HIT_PHASES if cache_hit else GORS_BUILD_CACHE_MISS_PHASES
-    )
+    cache_by_layer = {event.get("layer"): event.get("hit") for event in cache_events}
+    if set(cache_by_layer) != {"compiler", "rustc"} or any(
+        type(hit) is not bool for hit in cache_by_layer.values()
+    ):
+        raise RuntimeError("gors compiler/rustc cache-event evidence is malformed")
+    compiler_hit = cache_by_layer["compiler"]
+    rustc_hit = cache_by_layer["rustc"]
+    if not compiler_hit and rustc_hit:
+        raise RuntimeError("gors cannot reuse a terminal artifact after recompiling generated Rust")
+    if compiler_hit and rustc_hit:
+        expected_phases = GORS_BUILD_CACHE_HIT_PHASES
+        cache_state = "generated and terminal hit"
+    elif compiler_hit:
+        expected_phases = GORS_BUILD_GENERATED_HIT_RUSTC_MISS_PHASES
+        cache_state = "generated hit and terminal miss"
+    else:
+        expected_phases = GORS_BUILD_CACHE_MISS_PHASES
+        cache_state = "generated and terminal miss"
     if tuple(phase_names) != expected_phases:
-        cache_state = "hit" if cache_hit else "miss"
         raise RuntimeError(
             f"gors {cache_state} timing phases are incompatible: "
             f"expected {list(expected_phases)!r}, got {phase_names!r}"
@@ -359,8 +246,8 @@ def _validate_gors_timing_evidence(timings: Any, expected_jobs: int) -> None:
         for field in scheduler_fields
     ):
         raise RuntimeError("gors scheduler timing evidence is malformed")
-    if cache_hit and any(scheduler[field] != 0 for field in scheduler_fields):
-        raise RuntimeError("gors cache-hit scheduler evidence must be all zero")
+    if compiler_hit and any(scheduler[field] != 0 for field in scheduler_fields):
+        raise RuntimeError("gors compiler-cache-hit scheduler evidence must be all zero")
     if scheduler["peakWorkers"] > expected_jobs:
         raise RuntimeError(
             "gors scheduler exceeded the certified job budget: "
@@ -391,36 +278,10 @@ def _measurement_worker(plan: dict[str, Any], sender: Any) -> None:
     try:
         usage_before = resource.getrusage(resource.RUSAGE_CHILDREN)
         commands: list[dict[str, Any]] = []
-        runtime_link_evidence = None
         started = time.perf_counter_ns()
         for command in plan["commands"]:
             stage_started = time.perf_counter_ns()
             argv = list(command["argv"])
-            command_runtime_link = None
-            if runtime_link := command.get("runtimeLink"):
-                if runtime_link_evidence is not None:
-                    raise RuntimeError("measurement plan contains multiple runtime link descriptors")
-                command_runtime_link = validate_runtime_link_descriptor(
-                    Path(runtime_link["descriptorPath"]),
-                    expected_contract_identity=runtime_link["expectedContractIdentity"],
-                    expected_target_triple=runtime_link["expectedTargetTriple"],
-                    expected_target_pointer_width=runtime_link[
-                        "expectedTargetPointerWidth"
-                    ],
-                    expected_target_endianness=runtime_link["expectedTargetEndianness"],
-                    expected_compatibility_identity=runtime_link[
-                        "expectedCompatibilityIdentity"
-                    ],
-                    expected_rustc_release_record_sha256=runtime_link[
-                        "expectedRustcReleaseRecordSha256"
-                    ],
-                    expected_target_libdir_record_sha256=runtime_link[
-                        "expectedTargetLibdirRecordSha256"
-                    ],
-                    expected_runtime_cache_root=Path(runtime_link["runtimeCacheRoot"]),
-                )
-                argv = expand_rustc_runtime_link(argv, command_runtime_link)
-                runtime_link_evidence = command_runtime_link
             completed = subprocess.run(
                 argv,
                 cwd=command["cwd"],
@@ -441,17 +302,14 @@ def _measurement_worker(plan: dict[str, Any], sender: Any) -> None:
                     "exitCode": completed.returncode,
                     "stdoutBase64": base64.b64encode(completed.stdout).decode(),
                     "stderrBase64": base64.b64encode(completed.stderr).decode(),
-                    "runtimeLink": command_runtime_link,
                 }
             )
             if completed.returncode != 0:
                 stderr = completed.stderr.decode(errors="replace")[-4000:]
                 raise RuntimeError(f"{command['stage']} failed: {stderr}")
-        if plan.get("runtimeLinkRequired") and runtime_link_evidence is None:
-            raise RuntimeError("measurement plan did not admit a runtime link descriptor")
-        if not plan.get("runtimeLinkRequired") and runtime_link_evidence is not None:
-            raise RuntimeError("measurement plan admitted an unexpected runtime link descriptor")
-        os.replace(plan["pendingArtifact"], plan["artifact"])
+        artifact = Path(plan["artifact"])
+        if not artifact.is_file():
+            raise RuntimeError("compiler command did not produce the requested executable")
         ended = time.perf_counter_ns()
         usage_after = resource.getrusage(resource.RUSAGE_CHILDREN)
         timings = None
@@ -480,10 +338,9 @@ def _measurement_worker(plan: dict[str, Any], sender: Any) -> None:
                     "ioOutputBlocks": usage_after.ru_oublock - usage_before.ru_oublock,
                     "processCount": None,
                     "directProcessCount": len(plan["commands"]),
-                    "artifactBytes": Path(plan["artifact"]).stat().st_size,
+                    "artifactBytes": artifact.stat().st_size,
                     "commands": commands,
                     "internalTimings": timings,
-                    "runtimeLink": runtime_link_evidence,
                 },
             }
         )
@@ -563,28 +420,6 @@ def validate_behavior(
     }
 
 
-def rustc_arguments(source: Path, output: Path, target: str) -> list[str]:
-    return [
-        str(source),
-        "--edition=2024",
-        "--target",
-        target,
-        "-D",
-        "unused_imports",
-        "-D",
-        "unused_macros",
-        "-C",
-        "overflow-checks=off",
-        "-Ccodegen-units=1",
-        "-Clto=fat",
-        "-Copt-level=3",
-        "-Ctarget-cpu=generic",
-        "-Ctarget-feature=",
-        "-o",
-        str(output),
-    ]
-
-
 def pipeline_plan(
     compiler: str,
     *,
@@ -595,72 +430,37 @@ def pipeline_plan(
     go_experiment: str,
 ) -> tuple[dict[str, Any], Path]:
     artifact = side_root / ("program.exe" if os.name == "nt" else "program")
-    pending = side_root / ("program.pending.exe" if os.name == "nt" else "program.pending")
-    pending.unlink(missing_ok=True)
     temp_dir = side_root / "tmp"
     temp_dir.mkdir(parents=True, exist_ok=True)
     environment = sanitized_environment(temp_dir)
     if compiler == "gors":
-        generated = side_root / "generated"
         timings = side_root / "gors-timings.json"
         timings.unlink(missing_ok=True)
         cache = side_root / "cache"
-        generated.mkdir(parents=True, exist_ok=True)
         cache.mkdir(parents=True, exist_ok=True)
         environment["XDG_CACHE_HOME"] = str(cache)
-        commands = [
-            {
-                "stage": "gors.compile_emit",
-                "argv": [
-                    str(toolchains.gors),
-                    "build",
-                    "--jobs",
-                    str(job_budget),
-                    str(source),
-                    "--output",
-                    str(generated),
-                    "--timings-json",
-                    str(timings),
-                ],
-                "cwd": str(side_root),
-                "env": environment,
-            },
-            {
-                "stage": "gors.external_rustc_link",
-                "argv": [
-                    str(toolchains.rustc),
-                    *rustc_arguments(generated / "main.rs", pending, toolchains.rust_target),
-                ],
-                "cwd": str(side_root),
-                "env": environment,
-                "runtimeLink": {
-                    "descriptorPath": str(generated / ".gors-link.json"),
-                    "expectedContractIdentity": toolchains.runtime_contract_identity,
-                    "expectedTargetTriple": toolchains.rust_target,
-                    "expectedTargetPointerWidth": toolchains.rust_pointer_width,
-                    "expectedTargetEndianness": toolchains.rust_endianness,
-                    "expectedCompatibilityIdentity": (
-                        toolchains.runtime_compatibility_identity
-                    ),
-                    "expectedRustcReleaseRecordSha256": (
-                        toolchains.rustc_release_record_sha256
-                    ),
-                    "expectedTargetLibdirRecordSha256": (
-                        toolchains.target_libdir_record_sha256
-                    ),
-                    "runtimeCacheRoot": str(cache / "gors" / "runtime"),
-                },
-            },
-        ]
         return {
-            "commands": commands,
-            "pendingArtifact": str(pending),
+            "commands": [
+                {
+                    "stage": "gors.build",
+                    "argv": [
+                        str(toolchains.gors),
+                        "build",
+                        "--jobs",
+                        str(job_budget),
+                        "-o",
+                        str(artifact),
+                        "--timings-json",
+                        str(timings),
+                        str(source),
+                    ],
+                    "cwd": str(side_root),
+                    "env": environment,
+                }
+            ],
             "artifact": str(artifact),
             "gorsTimings": str(timings),
             "jobBudget": job_budget,
-            "runtimeLinkRequired": True,
-            "runtimeLinkDescriptorSchema": LINK_DESCRIPTOR_SCHEMA_VERSION,
-            "runtimeLinkValidation": RUNTIME_LINK_VALIDATION,
         }, artifact
     if compiler == "go":
         cache = side_root / "gocache"
@@ -684,22 +484,20 @@ def pipeline_plan(
         return {
             "commands": [
                 {
-                    "stage": "go.build_link",
+                    "stage": "go.build",
                     "argv": [
                         str(toolchains.go),
                         "build",
                         "-p",
                         str(job_budget),
                         "-o",
-                        str(pending),
+                        str(artifact),
                         str(source),
                     ],
                     "cwd": str(side_root),
                     "env": environment,
                 }
             ],
-            "pendingArtifact": str(pending),
             "artifact": str(artifact),
-            "runtimeLinkRequired": False,
         }, artifact
     raise ValueError(f"unknown compiler {compiler}")

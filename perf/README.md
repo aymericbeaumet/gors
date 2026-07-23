@@ -7,37 +7,26 @@ promoted scenarios.
 
 ## Current artifact boundary
 
-The current CLI has no artifact-only command: `gors build` emits Rust source
-plus a schema-1 `.gors-link.json` transport containing a schema-2 link
-descriptor for the exact precompiled runtime provider, while `gors run`
-compiles and executes it. The harness therefore owns
-a temporary bootstrap artifact driver whose measured interval is:
+The gors side measures exactly one production command:
 
-    gors build --jobs <budget>
-      -> strict descriptor, target, payload, artifact, and link-plan validation
-      -> repository-pinned rustc with the CLI release flags
-         and exactly one --extern __gors_runtime=<validated rlib>
-      -> link
-      -> atomic executable publication
+    gors build --jobs <budget> -o <executable> \
+      --timings-json <timings.json> <sources>
+
+That command owns semantic compilation, Rust emission, runtime-provider
+selection, rustc, linking, caching, and atomic executable publication. The
+harness does not invoke `emit-rust`, read generated Rust or link descriptors,
+or run rustc itself. `emit-rust` remains a separate inspection command and is
+never part of certification.
 
 The Go side measures the repository-pinned SDK's `go build` through the same
 artifact-publication boundary. Program execution is never timed. Both artifacts
 are executed afterward, and exit status plus raw stdout and stderr must match the
 checked-in oracle exactly.
 
-Descriptor reading, runtime-payload hashing, argument expansion, and linking are
-all inside the measured interval. Missing, malformed, stale, duplicate-key, or
-unknown-schema descriptors fail closed; there is no runtime-source fallback.
-The expanded rustc argv and every validated contract, operation, target,
-host-neutral rustc release, recursive target-libdir ABI, producer provenance,
-consumer compatibility, implementation, artifact, and link-plan identities
-remain in raw sample evidence. Producer provenance is audit-only and never a
-consumer link-request input.
-
-This driver is recorded as `bootstrap-generated-rust-v3` and is explicitly
-non-production. Its results cannot promote a budget. A real default
-user-facing artifact command must replace it before performance can become an
-acceptance claim.
+The driver is recorded as `gors-build-production-v1`. Raw command evidence must
+contain exactly one direct `gors build` child and one direct `go build` child
+per measured side. Result validation rejects the removed output-directory,
+`.gors-link.json`, generated-`main.rs`, `--extern`, and external-rustc paths.
 
 ## Corpus and scenarios
 
@@ -81,14 +70,13 @@ default is 50 pairs per scenario split across three independent sessions:
 `PERF_JOBS` is passed to both the gors semantic compiler host and Go's
 `-p`/`GOMAXPROCS` boundary. The harness rejects missing, malformed, or
 out-of-budget gors scheduler evidence. It accepts only timing schema v5: every
-build loads one immutable input revision, so a compiler-cache miss must report
-`cli.source_load`, `cli.cache_lookup`, `cli.compile`, `cli.print`, and
-`cli.file_writes` in order; a proven cache hit must report `cli.source_load`
-then `cli.cache_lookup` and an all-zero scheduler. Missing or contradictory
-cache events fail closed. The separately launched descriptor-validation and
-rustc/link step is not yet admitted through that host, so end-to-end job-budget
-symmetry remains a promotion blocker rather than a property of the current
-harness.
+build loads one immutable input revision. A full miss reports
+`cli.source_load`, `cli.cache_lookup`, `cli.compile`, `cli.print`,
+`cli.file_writes`, and `cli.rustc` in order. A generated-Rust hit with a
+terminal miss reports the two lookup phases followed by `cli.rustc`; an exact
+executable hit reports only the lookup phases and an all-zero compiler
+scheduler. Exactly one compiler and one rustc cache event are required, and
+contradictory states fail closed.
 
 The result keeps every randomized pair, child CPU and peak-RSS observations,
 artifact sizes, direct-child counts, gors internal phase timings, exact behavior
@@ -97,21 +85,17 @@ and a deterministic 10,000-resample
 bootstrap confidence interval. Exact byte-I/O counters and semantic-stage
 fingerprints and complete process-tree counts are marked unavailable rather than invented.
 
-Result schema v3 requires the exact lowercase SHA-256 identities of the typed
-target-neutral runtime contract, schema-2 host-neutral rustc compatibility
-identity, canonical rustc release and recursive target-libdir record digests,
-runtime payload, schema-2 artifact, and validated link plan. It also retains
-the exact expanded rustc argv and includes the descriptor-validation protocol
-in the versioned configuration fingerprint. Pre-v3 evidence is unsupported;
-the gate does not reinterpret or migrate legacy evidence.
-Any runtime ABI operation catalog, capability set, artifact recipe, or producer
-identity change requires a matching driver/schema revision; stale harness
-assumptions fail closed instead of silently producing comparable evidence.
+Result schema v4 records the exact gors and Go executable hashes, their version
+evidence, the typed runtime-contract identity reported by gors, the production
+driver, corpus, hardware class, and job budget. Internal rustc and runtime
+provider details stay owned by the timed `gors build` process instead of being
+duplicated as harness configuration. Pre-v4 evidence is unsupported; the gate
+does not reinterpret or migrate legacy evidence.
 
 The acceptance gate succeeds without timing while no scenarios are promoted.
 After promotion it requires fresh certification evidence for the current clean
-commit and exact corpus, hardware, job-budget, runtime/toolchain, linker, cache,
-and driver configuration:
+commit and exact corpus, hardware, job-budget, compiler binaries, runtime
+contract, cache, and driver configuration:
 
     make perf-gate PERF_RESULT=target/perf/certification.json
 

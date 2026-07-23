@@ -346,7 +346,6 @@ for terminal_linker in \
   gors/src/compiler/tests.rs \
   gors/src/printer/mod.rs \
   gors/tests/common/runner.rs \
-  perf/perf_harness/runtime_link.py \
   www/v86/rootfs/gors-compile
 do
   if [[ ! -f "${terminal_linker}" ]] || ! rg -q -- '--extern' "${terminal_linker}"; then

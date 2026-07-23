@@ -159,17 +159,23 @@ fn cache_manifest_round_trips_and_validates_executable_content() {
         None,
         &crate::runtime_descriptor::test_runtime_dependency(),
     );
-    let runtime_output = crate::runtime_descriptor::test_runtime_link_output();
+    let runtime = crate::runtime_descriptor::test_runtime_link_descriptor();
+    let runtime_artifact = temp.path().join("runtime.rlib");
     let (rustc_path, rustc_snapshot_identity) = rustc_selection();
     manifest
-        .refresh_runtime(&runtime_output, &rustc_path, &rustc_snapshot_identity)
+        .refresh_runtime(
+            &runtime,
+            &runtime_artifact,
+            &rustc_path,
+            &rustc_snapshot_identity,
+        )
         .unwrap();
     std::fs::write(temp.path().join("main.rs"), generated_source).unwrap();
     let action = crate::rustc::RustcAction::for_generated_binary(
         temp.path(),
         &executable,
-        Path::new(runtime_output.artifact_path()),
-        runtime_output.link(),
+        &runtime_artifact,
+        &runtime,
         crate::rustc::AdmittedRustc::new(&rustc_path, &rustc_snapshot_identity),
         &generated_files,
         crate::rustc::RustcProfile::Development,
@@ -247,8 +253,32 @@ fn corrupt_terminal_state_does_not_invalidate_generated_rust() {
     .unwrap();
     std::fs::write(temp.path().join(TERMINAL_MANIFEST_FILENAME), b"not-json").unwrap();
 
-    let loaded = CliCacheManifest::load_if_generated_valid(temp.path(), &identity(), &inputs)
+    let mut loaded = CliCacheManifest::load_if_generated_valid(temp.path(), &identity(), &inputs)
         .expect("terminal corruption must not poison generated Rust admission");
+    assert!(loaded.selected_runtime().is_none());
+
+    let runtime = crate::runtime_descriptor::test_runtime_link_descriptor();
+    let artifact = temp.path().join("runtime.rlib");
+    let (rustc_path, rustc_snapshot_identity) = rustc_selection();
+    loaded
+        .refresh_runtime(&runtime, &artifact, &rustc_path, &rustc_snapshot_identity)
+        .unwrap();
+    loaded.save_terminal(temp.path()).unwrap();
+    let terminal_path = temp.path().join(TERMINAL_MANIFEST_FILENAME);
+    let mut malformed: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&terminal_path).unwrap()).unwrap();
+    malformed
+        .get_mut("runtime")
+        .and_then(serde_json::Value::as_object_mut)
+        .unwrap()
+        .insert(
+            "implementation_hash".to_string(),
+            serde_json::json!("not-a-hash"),
+        );
+    std::fs::write(&terminal_path, serde_json::to_vec(&malformed).unwrap()).unwrap();
+
+    let loaded = CliCacheManifest::load_if_generated_valid(temp.path(), &identity(), &inputs)
+        .expect("malformed terminal fields must remain a generated-Rust hit");
     assert!(loaded.selected_runtime().is_none());
 }
 
@@ -351,19 +381,21 @@ fn executable_reuse_requires_the_exact_runtime_link_plan() {
         None,
         &crate::runtime_descriptor::test_runtime_dependency(),
     );
-    let selected_output = crate::runtime_descriptor::RuntimeLinkOutput::new(
-        selected.clone(),
-        &temp.path().join("runtime.rlib"),
-    );
+    let runtime_artifact = temp.path().join("runtime.rlib");
     let (rustc_path, rustc_snapshot_identity) = rustc_selection();
     manifest
-        .refresh_runtime(&selected_output, &rustc_path, &rustc_snapshot_identity)
+        .refresh_runtime(
+            &selected,
+            &runtime_artifact,
+            &rustc_path,
+            &rustc_snapshot_identity,
+        )
         .unwrap();
     std::fs::write(temp.path().join("main.rs"), generated_source).unwrap();
     let selected_action = crate::rustc::RustcAction::for_generated_binary(
         temp.path(),
         &executable,
-        Path::new(selected_output.artifact_path()),
+        &runtime_artifact,
         &selected,
         crate::rustc::AdmittedRustc::new(&rustc_path, &rustc_snapshot_identity),
         &generated_files,
@@ -373,7 +405,7 @@ fn executable_reuse_requires_the_exact_runtime_link_plan() {
     let changed_action = crate::rustc::RustcAction::for_generated_binary(
         temp.path(),
         &executable,
-        Path::new(selected_output.artifact_path()),
+        &runtime_artifact,
         &changed,
         crate::rustc::AdmittedRustc::new(&rustc_path, &rustc_snapshot_identity),
         &generated_files,

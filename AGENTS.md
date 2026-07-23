@@ -261,6 +261,24 @@ target-rustlib inventory, or link-plan reselection. It executes directly. A
 generated-Rust hit that still needs a refreshed link descriptor or executable
 may resolve the terminal provider only after that cheaper admission fails.
 
+The CLI product split is destructive and has no compatibility alias:
+`gors build` always requests the portable production profile and atomically
+publishes one runnable executable, `gors emit-rust -o <directory>` is the only
+source-export command, and `gors run` accepts program arguments only after a
+literal `--`. Build and `run --release` share the same internal production
+`ExecutableProduct`; the public output path is presentation state and cannot
+force a relink. Production rustc uses `opt-level=2`, LTO off, debug info zero,
+`target-cpu=generic`, and an empty requested target-feature set. Generated-Rust
+commands must not resolve rustup, materialize the runtime, or publish a terminal
+link descriptor.
+
+Unix public executable publication opens the destination parent once and uses
+descriptor-relative no-follow lock, temporary, admission, and rename
+operations. An exact size, mode, and SHA-256 match is a zero-write warm hit.
+Publication syncs the new file and parent directory and never pre-deletes the
+destination; non-Unix hosts fail closed until an equally atomic implementation
+exists.
+
 The browser compiler remains target-neutral. It transports only the runtime
 dependency schema, contract identity, and canonical operation IDs; the V86
 runner owns selection of its separately precompiled target artifact. The guest
@@ -271,6 +289,13 @@ the final external-link smoke. Never make the Wasm compiler select or embed a
 runnable-program runtime provider. V86 publication is manifest-last: admission
 must verify the provider hash, rootfs index hash, exact referenced blob-set
 identity and count, and every content-addressed blob before reusing an image.
+
+Until the Wasm compiler exposes cooperative cancellation, cancelling or
+superseding an active browser compilation terminates that worker generation.
+Only the current worker identity and request ID may report progress, resolve a
+caller, or publish retained-session/cache state; a terminated or stale worker
+must be observationally inert. Loader failures are retryable and a watchdog
+termination must leave the next compilation able to start from a fresh worker.
 
 ### Resolver boundary
 

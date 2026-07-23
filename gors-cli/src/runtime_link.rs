@@ -4,9 +4,14 @@ use gors_runtime_abi::{
     NATIVE_RUNTIME_RUST_TOOLCHAIN, RuntimeArtifactFormat, RuntimeDependency, RuntimeLinkRequest,
 };
 
-use crate::runtime_descriptor::{RuntimeLinkDescriptor, RuntimeLinkOutput};
+use crate::runtime_descriptor::RuntimeLinkDescriptor;
 
 mod compatibility_cache;
+
+#[cfg(test)]
+thread_local! {
+    static RUNTIME_RESOLUTION_COUNT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
 
 /// Fully validated and materialized runtime sidecar for one generated program.
 pub struct ResolvedRuntime {
@@ -36,11 +41,6 @@ impl ResolvedRuntime {
     pub fn rustc_snapshot_identity(&self) -> &str {
         &self.rustc_snapshot_identity
     }
-
-    #[must_use]
-    pub fn output_descriptor(&self) -> RuntimeLinkOutput {
-        RuntimeLinkOutput::new(self.descriptor.clone(), &self.artifact_path)
-    }
 }
 
 /// Select the repository's single embedded provider and make its exact bytes
@@ -53,6 +53,9 @@ pub fn resolve_runtime(
     cache_base: &Path,
     dependency: RuntimeDependency,
 ) -> Result<ResolvedRuntime, Box<dyn std::error::Error>> {
+    #[cfg(test)]
+    RUNTIME_RESOLUTION_COUNT.with(|count| count.set(count.get().saturating_add(1)));
+
     let provider = gors::artifact::embedded_runtime_artifact();
     let absolute_cache_base = if cache_base.is_absolute() {
         cache_base.to_path_buf()
@@ -97,6 +100,11 @@ pub fn resolve_runtime(
         rustc_path: resolved_rustc.rustc_path().to_path_buf(),
         rustc_snapshot_identity: resolved_rustc.rustc_snapshot_identity().to_string(),
     })
+}
+
+#[cfg(test)]
+pub fn resolution_count() -> u64 {
+    RUNTIME_RESOLUTION_COUNT.with(std::cell::Cell::get)
 }
 
 pub fn rustc_snapshot_identity(path: &Path) -> Result<String, String> {

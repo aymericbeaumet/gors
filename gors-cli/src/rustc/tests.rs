@@ -144,6 +144,34 @@ fn action_is_stable_and_uses_one_explicit_portable_runtime_link() {
 }
 
 #[test]
+fn production_profile_uses_latency_oriented_portable_optimization() {
+    let fixture = action_fixture(true);
+    let arguments = fixture.action.argv();
+    for expected in ["-Copt-level=2", "-Clto=off", "-Cdebuginfo=0"] {
+        assert!(
+            arguments.iter().any(|argument| argument == expected),
+            "missing {expected}: {arguments:?}"
+        );
+    }
+    for removed in ["-Copt-level=3", "-Clto=fat", "-Ccodegen-units=1"] {
+        assert!(
+            arguments.iter().all(|argument| argument != removed),
+            "obsolete production option {removed}: {arguments:?}"
+        );
+    }
+    assert!(
+        arguments
+            .iter()
+            .any(|argument| argument == "-Ctarget-cpu=generic")
+    );
+    assert!(
+        arguments
+            .iter()
+            .any(|argument| argument == "-Ctarget-feature=")
+    );
+}
+
+#[test]
 fn action_identity_changes_with_every_owned_semantic_input() {
     let fixture = action_fixture(false);
     let action = fixture.action;

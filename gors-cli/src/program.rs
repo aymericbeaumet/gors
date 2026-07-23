@@ -26,14 +26,6 @@ pub enum SourceMapNeed<'a> {
     WriteTo(&'a Path),
 }
 
-#[derive(Clone, Debug)]
-pub struct GeneratedProduct {
-    directory: PathBuf,
-    file_count: usize,
-    cache_hit: bool,
-    writes: Option<GeneratedWrites>,
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct GeneratedWrites {
     pub written: usize,
@@ -59,7 +51,7 @@ pub struct ProgramBuild {
     inputs: Option<InputSnapshot>,
     manifest: Option<CliCacheManifest>,
     runtime: Option<ResolvedRuntime>,
-    generated: Option<GeneratedProduct>,
+    generated_ready: bool,
     compiler_cache_reported: bool,
 }
 
@@ -110,7 +102,7 @@ impl ProgramBuild {
             inputs: Some(inputs),
             manifest,
             runtime: None,
-            generated: None,
+            generated_ready: false,
             compiler_cache_reported: false,
         })
     }
@@ -118,51 +110,35 @@ impl ProgramBuild {
     pub fn ensure_generated(
         &mut self,
         source_map: SourceMapNeed<'_>,
-    ) -> Result<GeneratedProduct, Box<dyn std::error::Error>> {
-        if matches!(source_map, SourceMapNeed::NotRequested)
-            && let Some(generated) = &self.generated
-        {
-            return Ok(generated.clone());
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if matches!(source_map, SourceMapNeed::NotRequested) && self.generated_ready {
+            self.ensure_identity_current()?;
+            return Ok(());
         }
 
-        let reusable_dependency = if let Some(manifest) = self.manifest.as_mut() {
+        let reusable = if let Some(manifest) = self.manifest.as_mut() {
             let generated_ready = manifest.generated_files_are_current(&self.cache_dir);
             let source_map_ready = match source_map {
                 SourceMapNeed::NotRequested => true,
                 SourceMapNeed::WriteTo(path) => manifest.reuse_sourcemap(path)?,
             };
-            (generated_ready && source_map_ready)
-                .then(|| manifest.runtime_dependency().ok())
-                .flatten()
+            generated_ready && source_map_ready && manifest.runtime_dependency().is_ok()
         } else {
-            None
+            false
         };
 
-        if let Some(dependency) = reusable_dependency {
-            let runtime = resolve_runtime(&self.cache_base, dependency)?;
-            let output = runtime.output_descriptor();
+        if reusable {
+            self.ensure_identity_current()?;
             let manifest = self
                 .manifest
                 .as_mut()
                 .ok_or("generated manifest disappeared during cache admission")?;
-            refresh_runtime_selection(
-                &self.cache_dir,
-                manifest,
-                &output,
-                runtime.rustc_path(),
-                runtime.rustc_snapshot_identity(),
-            )?;
-            manifest.save(&self.cache_dir)?;
-            let product = GeneratedProduct {
-                directory: self.cache_dir.clone(),
-                file_count: manifest.generated_file_count(),
-                cache_hit: true,
-                writes: None,
-            };
-            self.runtime = Some(runtime);
-            self.generated = Some(product.clone());
+            if matches!(source_map, SourceMapNeed::WriteTo(_)) {
+                manifest.save(&self.cache_dir)?;
+            }
+            self.generated_ready = true;
             self.report_compiler_cache(true);
-            return Ok(product);
+            return Ok(());
         }
 
         self.manifest = None;
@@ -190,11 +166,9 @@ impl ProgramBuild {
         let print_timer = self.timings.phase("cli.print");
         let output = gors::printer::generate_multi(compiled)?;
         drop(print_timer);
-        let runtime = resolve_runtime(&self.cache_base, output.runtime.clone())?;
-        let runtime_output = runtime.output_descriptor();
         let generated_files = generated_file_hashes(&output);
         let write_timer = self.timings.phase("cli.file_writes");
-        let writes = write_generated_output_locked(&output, &self.cache_dir, &runtime_output)?;
+        write_generated_output_locked(&output, &self.cache_dir)?;
         let source_map_artifact = match source_map {
             SourceMapNeed::NotRequested => None,
             SourceMapNeed::WriteTo(path) => {
@@ -206,40 +180,20 @@ impl ProgramBuild {
         };
         drop(write_timer);
 
-        let completed_identity = GeneratedRustIdentity::new(GeneratedRustIdentityOptions {
-            source_paths: &self.source_paths,
-        })?;
-        if self.identity != completed_identity {
-            return Err(
-                "generated-Rust identity changed while compiling; rerun the command".into(),
-            );
-        }
+        self.ensure_identity_current()?;
 
-        let mut manifest = CliCacheManifest::new(
+        let manifest = CliCacheManifest::new(
             &self.identity,
             inputs,
             generated_files,
             source_map_artifact,
             &output.runtime,
         );
-        manifest.refresh_runtime(
-            &runtime_output,
-            runtime.rustc_path(),
-            runtime.rustc_snapshot_identity(),
-        )?;
         manifest.save(&self.cache_dir)?;
-        manifest.save_terminal(&self.cache_dir)?;
-        let product = GeneratedProduct {
-            directory: self.cache_dir.clone(),
-            file_count: manifest.generated_file_count(),
-            cache_hit: false,
-            writes: Some(writes.into()),
-        };
         self.manifest = Some(manifest);
-        self.runtime = Some(runtime);
-        self.generated = Some(product.clone());
+        self.generated_ready = true;
         self.report_compiler_cache(false);
-        Ok(product)
+        Ok(())
     }
 
     pub fn ensure_executable(
@@ -247,24 +201,27 @@ impl ProgramBuild {
         profile: RustcProfile,
     ) -> Result<ExecutableProduct, Box<dyn std::error::Error>> {
         let output_path = self.cache_dir.join(profile.executable_filename());
-        if let Some(action) = self.action_from_manifest(profile, &output_path)?
+        if let Some(action) = self.action_from_manifest(profile, &output_path)
             && let Some(executable) = self
                 .manifest
                 .as_ref()
                 .and_then(|manifest| manifest.admit_executable(profile, &output_path, &action))
         {
+            self.ensure_identity_current()?;
             self.report_compiler_cache(true);
             self.timings.cache_event("rustc", true);
             return Ok(executable);
         }
 
         self.ensure_generated(SourceMapNeed::NotRequested)?;
+        self.resolve_terminal_runtime()?;
         let action = self.current_action(profile, &output_path)?;
         if let Some(executable) = self
             .manifest
             .as_ref()
             .and_then(|manifest| manifest.admit_executable(profile, &output_path, &action))
         {
+            self.ensure_identity_current()?;
             self.timings.cache_event("rustc", true);
             return Ok(executable);
         }
@@ -279,7 +236,30 @@ impl ProgramBuild {
         // The executable is published first; its admitting terminal manifest
         // is the final commit point for the action.
         manifest.save_terminal(&self.cache_dir)?;
+        self.ensure_identity_current()?;
         Ok(executable)
+    }
+
+    pub fn export_generated_rust(
+        &mut self,
+        output_directory: &Path,
+    ) -> Result<GeneratedWrites, Box<dyn std::error::Error>> {
+        self.ensure_generated(SourceMapNeed::NotRequested)?;
+        let manifest = self
+            .manifest
+            .as_ref()
+            .ok_or("generated manifest is unavailable for Rust export")?;
+        let mut files = std::collections::BTreeMap::new();
+        for filename in manifest.generated_files().keys() {
+            let path = self.cache_dir.join(filename);
+            files.insert(filename.clone(), std::fs::read_to_string(path)?);
+        }
+        let output = gors::printer::GeneratedOutput {
+            files,
+            runtime: manifest.runtime_dependency()?,
+        };
+        let writes = crate::output::write_generated_export(&output, output_directory)?;
+        Ok(writes.into())
     }
 
     pub fn spawn_and_release(
@@ -322,23 +302,44 @@ impl ProgramBuild {
         )?)
     }
 
+    fn resolve_terminal_runtime(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let dependency = self
+            .manifest
+            .as_ref()
+            .ok_or("generated manifest is unavailable for runtime selection")?
+            .runtime_dependency()?;
+        let runtime = resolve_runtime(&self.cache_base, dependency)?;
+        let manifest = self
+            .manifest
+            .as_mut()
+            .ok_or("generated manifest disappeared during runtime selection")?;
+        refresh_runtime_selection(
+            &self.cache_dir,
+            manifest,
+            runtime.descriptor(),
+            runtime.artifact_path(),
+            runtime.rustc_path(),
+            runtime.rustc_snapshot_identity(),
+        )?;
+        self.runtime = Some(runtime);
+        Ok(())
+    }
+
     fn action_from_manifest(
         &self,
         profile: RustcProfile,
         output_path: &Path,
-    ) -> Result<Option<RustcAction>, Box<dyn std::error::Error>> {
-        let Some(manifest) = self.manifest.as_ref() else {
-            return Ok(None);
-        };
+    ) -> Option<RustcAction> {
+        let manifest = self.manifest.as_ref()?;
         let (Some(runtime), Some(artifact_path), Some(rustc_path), Some(snapshot_identity)) = (
             manifest.selected_runtime(),
             manifest.selected_artifact_path(),
             manifest.selected_rustc_path(),
             manifest.selected_rustc_snapshot_identity(),
         ) else {
-            return Ok(None);
+            return None;
         };
-        Ok(Some(RustcAction::for_generated_binary(
+        RustcAction::for_generated_binary(
             &self.cache_dir,
             output_path,
             artifact_path,
@@ -346,7 +347,8 @@ impl ProgramBuild {
             AdmittedRustc::new(rustc_path, snapshot_identity),
             manifest.generated_files(),
             profile,
-        )?))
+        )
+        .ok()
     }
 
     fn report_compiler_cache(&mut self, hit: bool) {
@@ -355,27 +357,17 @@ impl ProgramBuild {
             self.compiler_cache_reported = true;
         }
     }
-}
 
-impl GeneratedProduct {
-    #[must_use]
-    pub fn directory(&self) -> &Path {
-        &self.directory
-    }
-
-    #[must_use]
-    pub const fn file_count(&self) -> usize {
-        self.file_count
-    }
-
-    #[must_use]
-    pub const fn cache_hit(&self) -> bool {
-        self.cache_hit
-    }
-
-    #[must_use]
-    pub const fn writes(&self) -> Option<GeneratedWrites> {
-        self.writes
+    fn ensure_identity_current(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let completed = GeneratedRustIdentity::new(GeneratedRustIdentityOptions {
+            source_paths: &self.source_paths,
+        })?;
+        if self.identity != completed {
+            return Err(
+                "generated-Rust identity changed during the command; rerun the command".into(),
+            );
+        }
+        Ok(())
     }
 }
 

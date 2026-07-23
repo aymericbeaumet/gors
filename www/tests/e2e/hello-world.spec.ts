@@ -15,7 +15,7 @@ test.skip("default bootstrap program auto-compiles and runs manually", async ({
 
 	const consoleOutput = page.locator(".console-content");
 	await expect(page.getByRole("button", { name: "gors" })).toBeVisible();
-	await expect(consoleOutput).toContainText("$ gors build", {
+	await expect(consoleOutput).toContainText("$ gors emit-rust", {
 		timeout: 2 * 60 * 1000,
 	});
 	await expect(consoleOutput).toContainText("gors transpiled", {
@@ -38,7 +38,7 @@ test.skip("default bootstrap program auto-compiles and runs manually", async ({
 			consoleOutput.evaluate((node) => {
 				const text = node.textContent ?? "";
 				return (
-					text.indexOf("$ gors build") <
+					text.indexOf("$ gors emit-rust") <
 						text.indexOf("$ rustc -o main main.rs") &&
 					text.indexOf("$ rustc -o main main.rs") < text.indexOf("$ ./main")
 				);

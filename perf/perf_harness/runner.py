@@ -36,14 +36,6 @@ from .native import (
     pipeline_plan,
     validate_behavior,
 )
-from .runtime_link import (
-    LINK_DESCRIPTOR_SCHEMA_VERSION,
-    RUST_RLIB_COMPATIBILITY_SCHEMA_VERSION,
-    RUST_TARGET_LIBDIR_SCHEMA_VERSION,
-    RUNTIME_LINK_VALIDATION,
-    RuntimeLinkEvidenceError,
-    gors_runtime_contract_identity,
-)
 
 
 MINIMUM_SAMPLES = 50
@@ -68,7 +60,6 @@ class RunOptions:
     go_experiment: str
     gors_path: Path | None = None
     go_path: Path | None = None
-    rustc_path: Path | None = None
 
 
 def run_calibration(root: Path) -> dict[str, Any]:
@@ -130,10 +121,10 @@ def repository_state(root: Path) -> dict[str, Any]:
 
 
 def runtime_contract_identity(gors_version: str) -> str:
-    try:
-        return gors_runtime_contract_identity(gors_version)
-    except RuntimeLinkEvidenceError as error:
-        raise RuntimeError(str(error)) from error
+    match = re.search(r"(?:^|\s)runtime-contract=([0-9a-f]{64})(?:\s|$)", gors_version)
+    if match is None:
+        raise RuntimeError("gors version does not expose a typed runtime contract identity")
+    return match.group(1)
 
 
 def distribute_samples(samples: int, sessions: int) -> list[int]:
@@ -149,7 +140,6 @@ class PerformanceRun:
             repository_root=options.repository_root,
             gors_path=options.gors_path,
             go_path=options.go_path,
-            rustc_path=options.rustc_path,
         )
         self.repository = repository_state(options.repository_root)
 
@@ -316,10 +306,6 @@ class PerformanceRun:
             protocol_blockers.append("hardware class is unclassified")
         if self.repository["dirty"]:
             protocol_blockers.append("repository worktree is dirty")
-        if not ARTIFACT_DRIVER_PRODUCTION:
-            protocol_blockers.append(
-                "bootstrap artifact driver is not the default user-facing artifact command"
-            )
         protocol_blockers.append("exact process byte-I/O counters are unavailable")
         protocol_blockers.append("exact process-tree counts are unavailable")
         protocol_blockers.append("semantic stage fingerprints are unavailable")
@@ -368,10 +354,7 @@ class PerformanceRun:
                 "lane": "end_to_end_artifact",
                 "artifactDriver": ARTIFACT_DRIVER,
                 "artifactDriverProduction": ARTIFACT_DRIVER_PRODUCTION,
-                "interval": (
-                    "before gors process through descriptor validation, external rustc/link, "
-                    "and atomic executable publication"
-                ),
+                "interval": "complete production gors build process and executable publication",
                 "executionTimed": False,
                 "samples": self.options.samples,
                 "sessions": self.options.sessions,
@@ -381,12 +364,6 @@ class PerformanceRun:
                 "minimumPromotionSessions": MINIMUM_SESSIONS,
                 "calibrationVersion": CALIBRATION_VERSION,
                 "gorsCacheSchema": GORS_CACHE_SCHEMA_VERSION,
-                "runtimeLinkDescriptorSchema": LINK_DESCRIPTOR_SCHEMA_VERSION,
-                "runtimeLinkValidation": RUNTIME_LINK_VALIDATION,
-                "runtimeCompatibilitySchemaVersion": (
-                    RUST_RLIB_COMPATIBILITY_SCHEMA_VERSION
-                ),
-                "targetLibdirSchemaVersion": RUST_TARGET_LIBDIR_SCHEMA_VERSION,
                 "ioByteCountersAvailable": False,
                 "processTreeCountersAvailable": False,
                 "stageFingerprintsAvailable": False,
@@ -402,9 +379,7 @@ class PerformanceRun:
                     "path": str(toolchains.gors),
                     "version": toolchains.gors_version,
                     "sha256": hashlib.sha256(toolchains.gors.read_bytes()).hexdigest(),
-                    "runtimeContractIdentity": runtime_contract_identity(
-                        toolchains.gors_version
-                    ),
+                    "runtimeContractIdentity": toolchains.runtime_contract_identity,
                 },
                 "go": {
                     "path": str(toolchains.go),
@@ -412,34 +387,6 @@ class PerformanceRun:
                     "version": toolchains.go_version,
                     "sha256": hashlib.sha256(toolchains.go.read_bytes()).hexdigest(),
                     "experiment": self.options.go_experiment,
-                },
-                "rustc": {
-                    "path": str(toolchains.rustc),
-                    "channel": toolchains.rust_channel,
-                    "versionVerbose": toolchains.rustc_version,
-                    "target": toolchains.rust_target,
-                    "pointerWidth": toolchains.rust_pointer_width,
-                    "endianness": toolchains.rust_endianness,
-                    "targetLibdir": str(toolchains.rustc_target_libdir),
-                    "runtimeCompatibilitySchemaVersion": (
-                        RUST_RLIB_COMPATIBILITY_SCHEMA_VERSION
-                    ),
-                    "runtimeCompatibilityIdentity": (
-                        toolchains.runtime_compatibility_identity
-                    ),
-                    "rustcReleaseRecordSha256": (
-                        toolchains.rustc_release_record_sha256
-                    ),
-                    "targetLibdirSchemaVersion": RUST_TARGET_LIBDIR_SCHEMA_VERSION,
-                    "targetLibdirRecordSha256": (
-                        toolchains.target_libdir_record_sha256
-                    ),
-                    "sha256": hashlib.sha256(toolchains.rustc.read_bytes()).hexdigest(),
-                },
-                "linker": {
-                    "path": toolchains.linker_path,
-                    "version": toolchains.linker_version,
-                    "sha256": toolchains.linker_sha256,
                 },
             },
             "workloads": measurements,
