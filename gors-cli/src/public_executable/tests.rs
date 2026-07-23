@@ -4,6 +4,11 @@ use super::*;
 use crate::rustc::ExecutableProduct;
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 
+fn write_executable(path: &Path, content: &[u8]) {
+    std::fs::write(path, content).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
 #[test]
 fn default_name_uses_go_stem_or_canonical_directory_basename() {
     assert_eq!(
@@ -30,7 +35,7 @@ fn publication_copies_exact_bytes_size_and_executable_mode() {
     let temporary = tempfile::tempdir().unwrap();
     let source_path = temporary.path().join("cached");
     let destination = temporary.path().join("program");
-    std::fs::write(&source_path, b"new executable bytes").unwrap();
+    write_executable(&source_path, b"new executable bytes");
     std::fs::set_permissions(&source_path, std::fs::Permissions::from_mode(0o751)).unwrap();
     std::fs::write(&destination, b"old bytes").unwrap();
     let source = ExecutableProduct::admit(&source_path).unwrap();
@@ -59,7 +64,7 @@ fn exact_republication_preserves_the_existing_inode_and_mtime() {
     let temporary = tempfile::tempdir().unwrap();
     let source_path = temporary.path().join("cached");
     let destination = temporary.path().join("program");
-    std::fs::write(&source_path, b"stable executable bytes").unwrap();
+    write_executable(&source_path, b"stable executable bytes");
     std::fs::set_permissions(&source_path, std::fs::Permissions::from_mode(0o755)).unwrap();
     let source = ExecutableProduct::admit(&source_path).unwrap();
     publish_executable(&source, &destination).unwrap();
@@ -79,7 +84,7 @@ fn publication_replaces_a_symlink_without_touching_its_outside_target() {
     let source_path = temporary.path().join("cached");
     let outside = temporary.path().join("outside");
     let destination = temporary.path().join("program");
-    std::fs::write(&source_path, b"new executable").unwrap();
+    write_executable(&source_path, b"new executable");
     std::fs::write(&outside, b"outside stays unchanged").unwrap();
     symlink(&outside, &destination).unwrap();
     let source = ExecutableProduct::admit(&source_path).unwrap();
@@ -103,7 +108,7 @@ fn publication_rejects_a_symlink_lock_without_touching_its_target() {
     let outside = temporary.path().join("outside-lock-target");
     let destination = temporary.path().join("program");
     let lock = temporary.path().join(".program.gors-build.lock");
-    std::fs::write(&source_path, b"new executable").unwrap();
+    write_executable(&source_path, b"new executable");
     std::fs::write(&outside, b"outside lock stays unchanged").unwrap();
     symlink(&outside, &lock).unwrap();
     let source = ExecutableProduct::admit(&source_path).unwrap();
@@ -121,7 +126,7 @@ fn publication_failure_does_not_predelete_the_destination() {
     let temporary = tempfile::tempdir().unwrap();
     let source_path = temporary.path().join("cached");
     let destination = temporary.path().join("program");
-    std::fs::write(&source_path, b"new executable").unwrap();
+    write_executable(&source_path, b"new executable");
     std::fs::create_dir(&destination).unwrap();
     std::fs::write(destination.join("sentinel"), b"keep").unwrap();
     let source = ExecutableProduct::admit(&source_path).unwrap();

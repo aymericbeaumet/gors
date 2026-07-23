@@ -6,9 +6,7 @@ use std::sync::Arc;
 use crate::ast;
 use crate::compiler::input::SourceContent;
 use crate::parser::decode_import_path_literal;
-use crate::scanner::Scanner;
 use crate::source::TextSize;
-use crate::token::Token;
 
 use super::super::ids::FileId;
 use super::source_metadata::{
@@ -91,61 +89,4 @@ pub(super) fn project_comments(
         })
         .collect::<Vec<_>>();
     FileComments::new(file, comments.into())
-}
-
-pub(super) fn signature_source(
-    content: &SourceContent,
-    logical_path: &str,
-    function: &ast::FuncDecl<'_>,
-) -> Arc<str> {
-    let start = function
-        .type_
-        .func
-        .as_ref()
-        .map_or(function.name.name_pos.offset, |position| position.offset);
-    let end = function.body.as_ref().map_or_else(
-        || bodyless_signature_end(content, logical_path, start),
-        |body| body.lbrace.offset,
-    );
-    source_range(content.source(), start, end)
-}
-
-pub(super) fn body_source(content: &SourceContent, body: &ast::BlockStmt<'_>) -> Arc<str> {
-    source_range(
-        content.source(),
-        body.lbrace.offset,
-        body.rbrace.offset.saturating_add(1),
-    )
-}
-
-fn source_range(source: &str, start: usize, end: usize) -> Arc<str> {
-    source
-        .get(start..end)
-        .map_or_else(|| Arc::from(""), Arc::from)
-}
-
-fn bodyless_signature_end(content: &SourceContent, logical_path: &str, start: usize) -> usize {
-    let Some(suffix) = content.source().get(start..) else {
-        return content.source().len();
-    };
-    let mut scanner = Scanner::new(logical_path, suffix);
-    let mut nesting = 0_u32;
-    loop {
-        let Ok((position, token, _)) = scanner.scan() else {
-            return content.source().len();
-        };
-        match token {
-            Token::LPAREN | Token::LBRACK | Token::LBRACE => {
-                nesting = nesting.saturating_add(1);
-            }
-            Token::RPAREN | Token::RBRACK | Token::RBRACE => {
-                nesting = nesting.saturating_sub(1);
-            }
-            Token::SEMICOLON if nesting == 0 => {
-                return start.saturating_add(position.offset);
-            }
-            Token::EOF => return content.source().len(),
-            _ => {}
-        }
-    }
 }

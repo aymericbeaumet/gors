@@ -1,7 +1,75 @@
 use crate::scanner::ScannerErrorKind;
 use crate::source::{LogicalColumn, TextSize};
+use crate::token::Token;
 
-use super::{ParserErrorKind, parse_file};
+use super::{ParserErrorKind, TokenSpelling, parse_file};
+
+#[test]
+fn one_scanner_pass_publishes_spelling_semicolon_and_eof_observations() {
+    let source = "package main\nfunc main() { value := 1 /* ignored */; _ = value }\n";
+    let parsed = parse_file("main.go", source).unwrap();
+    let observations = parsed.token_observations();
+    let kinds = observations
+        .iter()
+        .map(|observation| observation.token())
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        kinds,
+        [
+            Token::PACKAGE,
+            Token::IDENT,
+            Token::SEMICOLON,
+            Token::FUNC,
+            Token::IDENT,
+            Token::LPAREN,
+            Token::RPAREN,
+            Token::LBRACE,
+            Token::IDENT,
+            Token::DEFINE,
+            Token::INT,
+            Token::SEMICOLON,
+            Token::IDENT,
+            Token::ASSIGN,
+            Token::IDENT,
+            Token::RBRACE,
+            Token::SEMICOLON,
+            Token::EOF,
+        ]
+    );
+    assert!(!kinds.contains(&Token::COMMENT));
+
+    let value = observations
+        .iter()
+        .find(|observation| {
+            observation.token() == Token::IDENT
+                && observation.spelling() == TokenSpelling::Source("value")
+        })
+        .unwrap();
+    assert_eq!(
+        source.get(value.byte_offset()..value.byte_end()).unwrap(),
+        "value"
+    );
+
+    let semicolons = observations
+        .iter()
+        .filter(|observation| observation.token() == Token::SEMICOLON)
+        .map(|observation| observation.spelling())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        semicolons,
+        [
+            TokenSpelling::InsertedSemicolon,
+            TokenSpelling::Source(";"),
+            TokenSpelling::InsertedSemicolon,
+        ]
+    );
+    assert_eq!(
+        observations.last().unwrap().spelling(),
+        TokenSpelling::EndOfFile
+    );
+    assert_eq!(observations.last().unwrap().byte_offset(), source.len());
+}
 
 #[test]
 fn successful_parse_publishes_the_complete_scanner_map() {

@@ -2,15 +2,30 @@
 set -u
 
 ID=${1-}
+NONCE=${2-}
 case "$ID" in
-    ''|*[!0-9]*)
-        printf '%s\n' 'gors-run: job ID must contain only decimal digits' >&2
+    ''|*[!0-9a-f]*)
+        printf '%s\n' 'gors-run: job ID must be a 32-character lowercase hexadecimal nonce' >&2
         exit 2
         ;;
 esac
+if [ "${#ID}" -ne 32 ]; then
+    printf '%s\n' 'gors-run: job ID must be a 32-character lowercase hexadecimal nonce' >&2
+    exit 2
+fi
+case "$NONCE" in
+    ''|*[!0-9a-f]*)
+        printf '%s\n' 'gors-run: execution nonce must be 32 lowercase hexadecimal characters' >&2
+        exit 2
+        ;;
+esac
+if [ "${#NONCE}" -ne 32 ]; then
+    printf '%s\n' 'gors-run: execution nonce must be 32 lowercase hexadecimal characters' >&2
+    exit 2
+fi
 
 cd /tmp
-"./${ID}.bin" >"${ID}.run.out" 2>"${ID}.run.err"
+"./${ID}.bin" >"${ID}.${NONCE}.run.out" 2>"${ID}.${NONCE}.run.err"
 RESULT=$?
-printf '%s' "$RESULT" >"${ID}.run.status"
-printf 'GORS_RUN_DONE:%s\n' "$ID"
+printf '%s' "$RESULT" >"${ID}.${NONCE}.run.status"
+printf 'GORS_RUN_DONE:%s\n' "$NONCE"

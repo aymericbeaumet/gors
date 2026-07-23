@@ -3,11 +3,15 @@ set -u
 
 ID=${1-}
 case "$ID" in
-    ''|*[!0-9]*)
-        printf '%s\n' 'gors-compile: job ID must contain only decimal digits' >&2
+    ''|*[!0-9a-f]*)
+        printf '%s\n' 'gors-compile: job ID must be a 32-character lowercase hexadecimal nonce' >&2
         exit 2
         ;;
 esac
+if [ "${#ID}" -ne 32 ]; then
+    printf '%s\n' 'gors-compile: job ID must be a 32-character lowercase hexadecimal nonce' >&2
+    exit 2
+fi
 
 REQUEST="/tmp/${ID}.runtime.json"
 SOURCE="/tmp/${ID}.rs"

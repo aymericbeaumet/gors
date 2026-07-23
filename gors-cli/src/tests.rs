@@ -522,6 +522,15 @@ fn concurrent_output_publications_publish_one_consistent_transaction() {
                     .unwrap()
                     .persist(&executable_path)
                     .unwrap();
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt as _;
+                    std::fs::set_permissions(
+                        &executable_path,
+                        std::fs::Permissions::from_mode(0o755),
+                    )
+                    .unwrap();
+                }
                 let action = RustcAction::for_generated_binary(
                     &output_dir,
                     &executable_path,

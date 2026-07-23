@@ -427,7 +427,7 @@ fn execution_uses_the_owned_command_and_stable_pending_output() {
         crate::runtime_link::rustc_snapshot_identity(Path::new("/bin/sh")).unwrap();
     action.argv = vec![
         OsString::from("-c"),
-        OsString::from("printf stable > .main.pending"),
+        OsString::from("printf stable > .main.pending && chmod 644 .main.pending"),
     ];
     let executable = action.execute().unwrap();
 
@@ -435,6 +435,22 @@ fn execution_uses_the_owned_command_and_stable_pending_output() {
     assert!(!action.pending_path().exists());
     assert_eq!(executable.path(), action.output_path());
     assert_eq!(executable.size_bytes(), 6);
+    assert_eq!(executable.mode(), 0o755);
+}
+
+#[cfg(unix)]
+#[test]
+fn executable_admission_rejects_a_non_executable_regular_file() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path().join("not-runnable");
+    std::fs::write(&path, b"bytes").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    let error = ExecutableProduct::admit(&path).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert!(error.to_string().contains("executable permission"));
 }
 
 #[test]
@@ -444,8 +460,29 @@ fn failed_internal_publication_preserves_the_admitted_executable() {
     let output = temporary.path().join("main-development");
     std::fs::write(&output, b"admitted executable").unwrap();
 
-    let error = publish_pending_executable(&pending, &output).unwrap_err();
+    let error = product::publish_pending_executable(&pending, &output).unwrap_err();
 
     assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    assert_eq!(std::fs::read(&output).unwrap(), b"admitted executable");
+}
+
+#[cfg(unix)]
+#[test]
+fn internal_publication_rejects_a_pending_symlink_and_preserves_both_targets() {
+    use std::os::unix::fs::{PermissionsExt as _, symlink};
+
+    let temporary = tempfile::tempdir().unwrap();
+    let pending = temporary.path().join(PENDING_BINARY_FILENAME);
+    let output = temporary.path().join("main-development");
+    let outside = temporary.path().join("outside");
+    std::fs::write(&outside, b"outside stays unchanged").unwrap();
+    std::fs::write(&output, b"admitted executable").unwrap();
+    std::fs::set_permissions(&output, std::fs::Permissions::from_mode(0o755)).unwrap();
+    symlink(&outside, &pending).unwrap();
+
+    let error = product::publish_pending_executable(&pending, &output).unwrap_err();
+
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(std::fs::read(&outside).unwrap(), b"outside stays unchanged");
     assert_eq!(std::fs::read(&output).unwrap(), b"admitted executable");
 }

@@ -49,8 +49,8 @@ pub fn exercise_ast_snapshot(data: &[u8]) {
     let Ok(second) = gors::parser::parse_file("fuzz.go", &source) else {
         panic!("the parser accepted identical input only once");
     };
-    let (first_ast, first_map) = first.into_parts();
-    let (second_ast, second_map) = second.into_parts();
+    let (first_ast, first_map, first_tokens) = first.into_parts();
+    let (second_ast, second_map, second_tokens) = second.into_parts();
 
     let mut first = Vec::new();
     let mut second = Vec::new();
@@ -63,6 +63,10 @@ pub fn exercise_ast_snapshot(data: &[u8]) {
     assert_eq!(
         first_map, second_map,
         "source coordinate mapping is not deterministic"
+    );
+    assert_eq!(
+        first_tokens, second_tokens,
+        "parser token observations are not deterministic"
     );
 }
 

@@ -29,6 +29,7 @@ pub mod rust_ir;
 mod scheduler;
 mod semantic;
 mod session;
+pub mod syntax;
 pub mod types;
 
 pub use diagnostic::Diagnostic;

@@ -740,6 +740,7 @@ $: if (goEditor && rustEditor && !initialized) {
 onDestroy(() => {
 	cancelScheduledPipeline();
 	go2rust.dispose();
+	runner.dispose();
 	resizeObserver?.disconnect();
 	term?.dispose();
 });

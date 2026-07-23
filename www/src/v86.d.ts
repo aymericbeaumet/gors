@@ -7,6 +7,7 @@ interface V86Emulator {
 	read_file(path: string): Promise<Uint8Array>;
 	save_state(): Promise<ArrayBuffer>;
 	serial0_send(data: string): void;
+	stop?(): void;
 }
 
 interface V86Constructor {

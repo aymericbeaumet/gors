@@ -27,6 +27,11 @@ python3 -m py_compile \
 [[ -x "${SCRIPT_DIR}/rootfs/gors-run" ]]
 grep -q 'COPY --chmod=755 rootfs/gors-run /usr/local/bin/gors-run' \
     "${SCRIPT_DIR}/Dockerfile"
+grep -Fq '${ID}.${NONCE}.run.status' "${SCRIPT_DIR}/rootfs/gors-run"
+grep -Fq "printf 'GORS_RUN_DONE:%s\\n' \"\$NONCE\"" \
+    "${SCRIPT_DIR}/rootfs/gors-run"
+grep -Fq '32-character lowercase hexadecimal nonce' \
+    "${SCRIPT_DIR}/rootfs/gors-compile"
 grep -q '/usr/local/share/gors/runtime/producer.json' "${SCRIPT_DIR}/Dockerfile"
 grep -q "'.producer_identity'" "${SCRIPT_DIR}/rootfs/gors-runtime-publish"
 grep -q "'.producer_identity'" "${SCRIPT_DIR}/rootfs/gors-runtime-verify"

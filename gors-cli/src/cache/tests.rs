@@ -3,6 +3,15 @@
 use super::*;
 use std::sync::mpsc;
 
+fn write_test_executable(path: &Path, content: impl AsRef<[u8]>) {
+    std::fs::write(path, content).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
 fn identity() -> GeneratedRustIdentity {
     GeneratedRustIdentity::for_test("generated")
 }
@@ -148,7 +157,7 @@ fn cache_manifest_round_trips_and_validates_executable_content() {
         "main.rs".to_string(),
         sha2_hash(generated_source.as_bytes()),
     )]);
-    std::fs::write(&executable, "binary").unwrap();
+    write_test_executable(&executable, "binary");
     let mut manifest = CliCacheManifest::new(
         &identity(),
         InputSnapshot {
@@ -210,6 +219,22 @@ fn cache_manifest_round_trips_and_validates_executable_content() {
             )
             .is_some()
     );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(
+            loaded
+                .admit_executable(
+                    crate::rustc::RustcProfile::Development,
+                    &executable,
+                    &action,
+                )
+                .is_none(),
+            "a content-identical but non-runnable artifact is not a warm hit"
+        );
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
     std::fs::write(&executable, "changed").unwrap();
     assert!(
         loaded
@@ -363,7 +388,7 @@ fn immediate_cache_hit_does_not_rewrite_access_metadata() {
 fn executable_reuse_requires_the_exact_runtime_link_plan() {
     let temp = tempfile::tempdir().unwrap();
     let executable = temp.path().join("main");
-    std::fs::write(&executable, "binary").unwrap();
+    write_test_executable(&executable, "binary");
     let selected = crate::runtime_descriptor::test_runtime_link_descriptor_with_payload(b"one");
     let changed = crate::runtime_descriptor::test_runtime_link_descriptor_with_payload(b"two");
     let generated_source = "fn main() {}\n";

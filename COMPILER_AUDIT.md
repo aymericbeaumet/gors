@@ -366,17 +366,26 @@ CAS identities until reusable syntax anchors exist.
 The first Salsa-backed `compiler::db` kernel owns explicit source, package, and
 build inputs and keeps Salsa handles behind a compiler-owned facade. Its
 tracked file projection shares one temporary parse between indexing and
-semantic lowering, separates package public API from bodies, builds
+semantic lowering. The parser publishes non-comment token observations from
+that existing scanner pass; the projection partitions them into owned
+trivia-insensitive header/body streams, normalizes explicit and inserted
+semicolons, and retains physical declaration ranges only in a separate
+revision-local `FunctionLayout`. Its function `SyntaxAnchor` uses declaration
+kind and unique package-level name, never an offset or traversal ordinal;
+repeated `init` remains explicitly rejected until a structural disambiguator
+exists. The query graph separates package public API from bodies, builds
 function-relative typed HIR, and reaches per-definition verified MIR plus
 mandatory normalized and reverified MIR, configured verified Rust IR, and
 deterministic package Rust-IR assembly. Production `compile_program` delegates
 to `CompilerSession`; convenience calls create a short-lived session, while
 long-lived callers can retain the same session across edits. Terminal syn
 emission consumes the verified package outside the semantic query graph.
-Parsing and semantic projection remain file-granular, though tracked function
-fields, compact `SourceRef` values, and separate definition source tables allow
-unchanged sibling products to backdate. That is useful incremental reuse, not
-the final owned incremental syntax boundary or a cross-process cache.
+Parsing and semantic lowering remain file-granular. Trivia edits therefore
+still execute the file projection and semantic-file query, while unchanged
+owned function syntax and downstream HIR, MIR, and Rust IR backdate. This is
+useful incremental reuse, not incremental parsing or a cross-process cache.
+The next cut is to make semantic lowering consume owned per-definition syntax
+before avoiding whole-file semantic work.
 
 Tracked source state is now split at the semantic boundary. Salsa owns one
 canonical immutable `SourceContent` allocation per active logical file: source

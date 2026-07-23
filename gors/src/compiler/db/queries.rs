@@ -7,6 +7,7 @@ use crate::ast;
 use crate::compiler::fingerprint::{fingerprint_parts, rust_ir_root_inputs};
 use crate::compiler::input::SourceContent;
 use crate::compiler::provenance::DefinitionSourceTable;
+use crate::compiler::syntax::{FunctionLayout, ProjectedFunctionSyntax, project_function};
 use crate::compiler::{Diagnostic, lowering, mir, rust_ir};
 use crate::source::SourceCoordinateMap;
 
@@ -21,7 +22,7 @@ use super::products::{
     VerifiedRustIrFunction, VerifiedRustIrPackage,
 };
 use super::source_metadata::{FileComments, FileImports};
-use super::source_projection::{body_source, project_comments, project_imports, signature_source};
+use super::source_projection::{project_comments, project_imports};
 use super::telemetry::{QueryKind, Telemetry};
 
 #[salsa::db]
@@ -77,6 +78,9 @@ pub(super) struct FunctionProjection<'db> {
     #[tracked]
     #[returns(clone)]
     pub(super) body: Arc<FunctionBody>,
+    #[tracked]
+    #[returns(clone)]
+    pub(super) layout: Arc<FunctionLayout>,
     #[tracked]
     #[returns(clone)]
     pub(super) typed_signature: Option<crate::compiler::types::Signature>,
@@ -151,7 +155,7 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
             );
         }
     };
-    let (parsed, coordinate_map) = parsed.into_parts();
+    let (parsed, coordinate_map, token_observations) = parsed.into_parts();
     let coordinate_map = Arc::new(coordinate_map);
     db.unwind_if_revision_cancelled();
     let declared_package: Arc<str> = Arc::from(parsed.name.name);
@@ -177,15 +181,26 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
         let key =
             DefinitionKey::package_named(package_id, DefinitionKind::Function, function.name.name);
         let id = key.id();
-        let signature_source = signature_source(&content, &logical_path, function);
-        let body_source = function
-            .body
-            .as_ref()
-            .map(|body| body_source(&content, body));
+        let ProjectedFunctionSyntax {
+            anchor,
+            layout,
+            header,
+            body,
+        } = match project_function(function, &token_observations) {
+            Ok(projected) => projected,
+            Err(error) => {
+                issues.push(FileIssue::FunctionProjectionFailure {
+                    name,
+                    message: Arc::from(error.to_string()),
+                });
+                continue;
+            }
+        };
         let signature = Arc::new(FunctionSignature::new(
             id,
             Arc::clone(&name),
-            signature_source,
+            anchor.clone(),
+            header,
             !function.type_.params.list.is_empty(),
             function
                 .type_
@@ -198,10 +213,11 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
             key,
             name,
             signature,
-            Arc::new(FunctionBody::new(id, body_source)),
+            Arc::new(FunctionBody::new(id, anchor, body)),
+            Arc::new(layout),
         ));
     }
-    projected.sort_by_key(|(id, _, _, _, _)| *id);
+    projected.sort_by_key(|(id, _, _, _, _, _)| *id);
     issues.sort();
 
     db.query_telemetry().record_query(QueryKind::SemanticFile);
@@ -245,7 +261,7 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
     };
     let functions = projected
         .into_iter()
-        .map(|(id, key, name, signature, body)| {
+        .map(|(id, key, name, signature, body, layout)| {
             let (typed_signature, hir, source_table) = match typed_functions.remove(&id) {
                 Some((function, Some(source_table))) => {
                     let typed_signature = Some(function.signature.clone());
@@ -287,6 +303,7 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
                 Arc::clone(&declared_package),
                 signature,
                 body,
+                layout,
                 typed_signature,
                 hir,
                 source_table,
@@ -325,6 +342,15 @@ pub(super) fn definition_source_table_product(
     db.query_telemetry()
         .record_query(QueryKind::DefinitionSourceTable);
     function.source_table(db)
+}
+
+#[salsa::tracked(returns(clone))]
+pub(super) fn function_layout_product(
+    db: &dyn Db,
+    function: FunctionProjection<'_>,
+) -> Arc<FunctionLayout> {
+    db.query_telemetry().record_query(QueryKind::FunctionLayout);
+    function.layout(db)
 }
 
 #[salsa::tracked(returns(clone))]
@@ -706,12 +732,22 @@ pub(super) fn package_analysis_product(db: &dyn Db, input: PackageInput) -> Arc<
         }
 
         for issue in facts.issues(db) {
-            let FileIssue::DuplicateFunction(name) = issue;
-            issues.push(PackageIssue::DuplicateDefinition {
-                name,
-                first_file: file,
-                second_file: file,
-            });
+            match issue {
+                FileIssue::DuplicateFunction(name) => {
+                    issues.push(PackageIssue::DuplicateDefinition {
+                        name,
+                        first_file: file,
+                        second_file: file,
+                    });
+                }
+                FileIssue::FunctionProjectionFailure { name, message } => {
+                    issues.push(PackageIssue::FunctionProjectionFailure {
+                        file,
+                        name,
+                        message,
+                    });
+                }
+            }
         }
 
         for function in facts.functions(db) {

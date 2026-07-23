@@ -181,19 +181,26 @@ Each semantic input revision is an immutable, reference-counted
 `SourceContent` containing source text, a line index, and a content digest.
 `SourceSnapshot` pairs that allocation with one user-facing diagnostic path;
 both types belong to `compiler::input` and expose no parser convenience
-methods. The compiler stores that presentation path outside Salsa. A future
-owned incremental syntax product may reference-count source content and
-represent text by byte ranges, interned tokens, or another serializable owned
-form. Dropping the last semantic owner must release syntax and content memory
-independently of presentation state.
+methods. The compiler stores that presentation path outside Salsa. During its
+single scanner pass, the parser publishes ephemeral non-comment token
+observations alongside the borrowed AST. The file projection partitions them
+into compact owned header/body token streams, normalizes explicit and inserted
+semicolons, and excludes trivia and physical coordinates from their
+fingerprints. Revision-local declaration ranges live in a separate
+`FunctionLayout`. Dropping the last semantic owner releases those streams and
+source content independently of presentation state.
 
 `ProgramInput` is the production syntax-unvalidated manifest. Each
 `SourceFileInput` owns a reference-counted snapshot; the tracked file projection
 creates a temporary AST borrowing one snapshot while the query executes and
 publishes no self-reference or `'static` fiction. The parser-owned program and
 package graph were deleted with no compatibility shim. The red-green database
-may later cache an owned syntax representation, but it must preserve this
-per-file release boundary and remain free of self-referential unsafe code.
+tracks the owned per-definition streams, but parsing and semantic lowering
+remain file-granular. A trivia edit still executes both queries; unchanged
+signature/body products and downstream HIR, MIR, and Rust IR backdate. This is
+not incremental parsing. The next boundary is semantic lowering over the owned
+per-definition syntax, while preserving the per-file release boundary and
+remaining free of self-referential unsafe code.
 
 Parse one file per query. Package merging belongs in semantic indexing, not in
 an AST concatenation step, so a one-file edit cannot invalidate every parse
@@ -359,18 +366,30 @@ CPU, target features, or an executable action.
 
 Terminal state is separately replaceable and bound to the admitted
 generated-Rust identity and `RuntimeDependency`. Provider selection lives here.
-A `RustcAction` is an immutable ordered command snapshot; its
+A `RustcAction` currently owns an ordered command snapshot; its
 `RustcActionIdentity` includes its program, working directory, complete argv,
 every generated-Rust filename and content hash, runtime artifact path and
-implementation hash, runtime link-plan and compatibility identities, exact
-rustc snapshot, profile, target, explicit portable CPU and feature policy, and
-output/publication paths. Debug and release actions intentionally diverge while
-consuming the same generated source.
+implementation hash, runtime link-plan and compatibility identities, the exact
+recorded rustc metadata snapshot, profile, target, explicit portable CPU and
+feature policy, and output/publication paths. Debug and release actions
+intentionally diverge while consuming the same generated source.
+
+This is not yet a hermetic terminal action. Direct `rustc` execution inherits
+ambient environment, chooses the linker and platform SDK/system inputs
+implicitly, and the rustc snapshot is a metadata identity rather than a content
+identity. The same current action key can therefore produce different bytes.
+Before any scenario promotion, replace this with an immutable terminal
+toolchain/environment product that content-identifies rustc, its codegen/sysroot
+inputs, the exact linker and platform SDK inputs, passes an absolute linker,
+owns scratch policy, and uses `env_clear()` plus an ordered explicit
+environment. Preserve the cheaper exact-warm path: stored action facts can be
+reconstructed without touching a historical toolchain, while terminal misses
+perform live admission.
 
 Warm executable admission checks the current source snapshot, generated
-manifest, terminal record, action identity, and executable content before any
-generated-Rust read or live runtime/toolchain resolution. A valid hit runs
-immediately without reading runtime bytes or statting rustc. Missing, corrupt,
+manifest, terminal record, action identity, executable content, and executable
+mode before any generated-Rust read or live runtime/toolchain resolution. A
+valid hit runs immediately without reading runtime bytes or statting rustc. Missing, corrupt,
 or stale terminal state does not invalidate generated Rust; only the terminal
 selection/action is rebuilt. A generated-source-only consumer may reselect the
 provider after generated admission because it still needs a current link
@@ -495,6 +514,11 @@ architecture described here:
   recorded `RustcActionIdentity` and binary before terminal resolution and
   bypass provider materialization, rustup lookup, rustc probing, target-rustlib
   inventory, and link-plan reselection;
+- Unix internal executable admission is descriptor-based and no-follow,
+  requires stable metadata while hashing, records mode in the terminal
+  manifest, canonicalizes new compiler outputs to `0o755`, verifies inode
+  continuity across rename, and syncs the file and directory before commit.
+  A byte-identical artifact with execute permission removed is a terminal miss;
 - dynamic divide/remainder-by-zero and negative-shift faults currently unwind
   through Rust `panic_any`, so those executions do not yet have Go-compatible
   process behavior and cannot enter behavior-validated performance evidence;
@@ -502,8 +526,13 @@ architecture described here:
   scheduler wave evidence, and invalidation tests exist, and CLI/performance
   timings record the exact compiler job budget. CLI timing report schema v5
   records `cli.source_load` before `cli.cache_lookup` for hits and misses;
-  reports do not yet expose complete dependency traces, retained memory, or a
-  foreground cancellation protocol;
+  it does not separately phase cache pruning and lock waits, generated and
+  executable admission, runtime/toolchain selection, terminal input validation,
+  internal/manifest publication, identity rechecks, or public publication.
+  Result schema v4 does not type or revalidate those internal timings, and
+  `--jobs` does not yet constrain rustc/LLVM/linker work. Reports therefore do
+  not yet expose causally complete terminal evidence, complete dependency
+  traces, retained memory, or a foreground cancellation protocol;
 - `gors build` now owns production rustc/link and durable atomic executable
   publication. Its portable production policy is `opt-level=2`, LTO disabled,
   debug info disabled, `target-cpu=generic`, and an empty requested target

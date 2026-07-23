@@ -253,9 +253,20 @@ and release therefore reuse the same generated Rust while producing distinct
 terminal actions and executables. Corrupt or stale terminal state is a terminal
 miss and must not poison a valid generated-Rust entry.
 
+The terminal action is not yet a complete hermetic action: direct `rustc`
+execution still inherits ambient environment, selects its linker and platform
+SDK implicitly, and identifies the compiler executable from metadata rather
+than content. Treat that as P0 cache and performance debt. No performance
+scenario may be promoted until an immutable terminal toolchain/environment
+product owns those inputs, passes an explicit linker, and executes from a
+cleared environment. Exact executable hits may reconstruct recorded identities
+without touching the historical toolchain; a terminal miss must perform the
+live content admission.
+
 An exact warm executable hit must be admitted from the current source snapshot,
 generated and terminal manifests, recorded generated-product hashes, and the
-current executable hash before any generated-Rust read, runtime provider
+current executable hash and executable mode before any generated-Rust read,
+runtime provider
 materialization, runtime-artifact read, rustup lookup, rustc probe or stat,
 target-rustlib inventory, or link-plan reselection. It executes directly. A
 generated-Rust hit that still needs a refreshed link descriptor or executable
@@ -271,6 +282,13 @@ force a relink. Production rustc uses `opt-level=2`, LTO off, debug info zero,
 `target-cpu=generic`, and an empty requested target-feature set. Generated-Rust
 commands must not resolve rustup, materialize the runtime, or publish a terminal
 link descriptor.
+
+Internal Unix executables are admitted through no-follow descriptors, hashed
+against stable `fstat` snapshots, normalized to mode `0o755`, atomically renamed
+with inode continuity, and synced with their containing directory before the
+terminal manifest commits. The terminal manifest records the admitted mode;
+removing execute permission is a terminal cache miss even when bytes are
+unchanged.
 
 Unix public executable publication opens the destination parent once and uses
 descriptor-relative no-follow lock, temporary, admission, and rename
@@ -289,6 +307,16 @@ the final external-link smoke. Never make the Wasm compiler select or embed a
 runnable-program runtime provider. V86 publication is manifest-last: admission
 must verify the provider hash, rootfs index hash, exact referenced blob-set
 identity and count, and every content-addressed blob before reusing an image.
+
+V86 guest execution is strict single-flight: an overlapping compile or run is
+rejected with a typed busy error rather than replacing the active job. Every
+admitted flight owns a fresh 128-bit nonce, an abort-aware deadline, one exact
+line-framed marker waiter, and nonce-scoped status/output paths. Missing or
+malformed markers and exit-status files are protocol failures, never successful
+exit zero. Preserve guest stdout and stderr exactly; presentation trimming does
+not belong in the runner. Cancellation and disposal must reject the active
+flight exactly once, and serial bytes from a stale emulator or nonce must never
+settle a later flight.
 
 Until the Wasm compiler exposes cooperative cancellation, cancelling or
 superseding an active browser compilation terminates that worker generation.
@@ -358,11 +386,19 @@ edits do not re-type-check importers.
 Current checkpoint: the Salsa-backed `compiler::db` facade owns explicit
 source, package, and build inputs. Its tracked path parses each file projection
 once, sharing that temporary AST between indexing and semantic lowering, and
-reaches function-relative typed HIR, per-definition verified MIR, and mandatory
-normalized/reverified MIR, configured verified Rust IR, and deterministic
-package Rust-IR assembly. Function verification reads only its own and direct
-callees' signatures; unrelated declaration or signature edits must leave a leaf
-function's HIR, MIR, normalized MIR, and Rust IR green. Production program
+publishes non-comment token observations from that same scanner pass. The file
+projection partitions those observations into owned, trivia-insensitive
+function header and body token streams, normalizes explicit and inserted
+semicolons, and keeps revision-local physical ranges in a separate
+`FunctionLayout`. The current `SyntaxAnchor` is declaration kind plus unique
+package-level name; it contains no offset, traversal ordinal, or token index,
+and repeated `init` remains rejected until a structural disambiguator exists.
+The tracked path then reaches function-relative typed HIR, per-definition
+verified MIR, mandatory normalized/reverified MIR, configured verified Rust IR,
+and deterministic package Rust-IR assembly. Function verification reads only
+its own and direct callees' signatures; unrelated declaration or signature
+edits must leave a leaf function's HIR, MIR, normalized MIR, and Rust IR green.
+Production program
 compilation delegates to `CompilerSession`; convenience functions create a
 short-lived session, while the browser worker retains one explicitly across
 edits. Native retained sessions may share one explicit `CompilerHost`: it owns
@@ -377,10 +413,14 @@ owns an explicit positive job budget. Queries must not create nested pools or
 submit scheduler work. This is not yet the global scheduler for parsing,
 external codegen, linking, cancellation, or memory admission, and a native
 daemon or watch mode still does not exist. Terminal syn emission
-remains outside the semantic queries. Parsing and semantic projection are still
-file-granular, although tracked function fields, compact per-definition
-`SourceRef` values, and separate definition source tables allow unchanged
-sibling stage products to backdate. Query and scheduler counters
+remains outside the semantic queries. Parsing and semantic lowering are still
+file-granular: a whitespace or comment edit still executes `FileProjection` and
+`SemanticFile`, even though unchanged owned signature/body products and
+downstream HIR, MIR, and Rust IR backdate. This is not incremental parsing. The
+next boundary is for semantic lowering to consume the owned per-definition
+syntax before avoiding whole-file semantic work. Compact per-definition
+`SourceRef` values and separate definition source tables already allow
+unchanged semantic stage products to backdate. Query and scheduler counters
 are not a memory budget, complete cancellation protocol, global scheduler, or
 persistent CAS; do not claim those target properties from the current kernel.
 

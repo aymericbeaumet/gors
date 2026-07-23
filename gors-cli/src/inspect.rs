@@ -30,7 +30,7 @@ fn ast_single(file: &str, writer: &mut impl Write) -> Result<(), Box<dyn std::er
             std::process::exit(1);
         }
     };
-    let (ast, _) = parsed.into_parts();
+    let (ast, _, _) = parsed.into_parts();
     gors::ast::fprint(writer, ast)?;
     Ok(())
 }
@@ -38,7 +38,7 @@ fn ast_single(file: &str, writer: &mut impl Write) -> Result<(), Box<dyn std::er
 fn ast_output(file: &str) -> Result<Vec<u8>, String> {
     let buffer = std::fs::read_to_string(file).map_err(|error| error.to_string())?;
     let parsed = gors::parser::parse_file(file, &buffer).map_err(|error| error.to_string())?;
-    let (ast, _) = parsed.into_parts();
+    let (ast, _, _) = parsed.into_parts();
     let mut output = Vec::new();
     gors::ast::fprint(&mut output, ast).map_err(|error| error.to_string())?;
     Ok(output)

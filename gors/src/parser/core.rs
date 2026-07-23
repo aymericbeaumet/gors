@@ -1,4 +1,4 @@
-use super::{RawParserError, Result};
+use super::{RawParserError, Result, TokenObservation};
 use crate::ast;
 use crate::scanner;
 use crate::token::{Position, SourceOrigin, Token};
@@ -34,6 +34,7 @@ pub(super) struct Parser<'scanner> {
     pub(super) lead_comment: Option<ast::CommentGroup<'scanner>>,
     pub(super) line_comment: Option<ast::CommentGroup<'scanner>>,
     pub(super) all_comments: Vec<ast::CommentGroup<'scanner>>,
+    pub(super) token_observations: Vec<TokenObservation<'scanner>>,
 }
 
 impl<'scanner> Parser<'scanner> {
@@ -53,6 +54,7 @@ impl<'scanner> Parser<'scanner> {
             lead_comment: None,
             line_comment: None,
             all_comments: Vec::new(),
+            token_observations: Vec::new(),
         }
     }
 
@@ -273,6 +275,8 @@ impl<'scanner> Parser<'scanner> {
                     comments.push(ast::Comment { slash: pos, text });
                 }
                 Some(Ok(step)) => {
+                    self.token_observations
+                        .push(TokenObservation::from_step(step));
                     self.current_step = step;
                     break;
                 }

@@ -70,7 +70,13 @@ pub(super) fn publish(
             source.path().display()
         )));
     }
-    let expected_mode = u32::from(source_stat.st_mode & 0o7777);
+    let expected_mode = source.mode();
+    if u32::from(source_stat.st_mode & 0o7777) != expected_mode {
+        return Err(PublicExecutableError::message(format!(
+            "cached executable mode changed before publication: {}",
+            source.path().display()
+        )));
+    }
     if admit_existing(
         &parent,
         destination_name,
@@ -87,8 +93,16 @@ pub(super) fn publish(
         });
     }
 
+    let mut source_file = File::from(source_fd);
     let mut temporary = create_temporary(&parent, parent_path, destination_name)?;
-    let (copied_hash, copied_size) = copy_and_hash(File::from(source_fd), &mut temporary.file)?;
+    let (copied_hash, copied_size) = copy_and_hash(&mut source_file, &mut temporary.file)?;
+    let source_after_copy = require_regular_file(&source_file, source.path())?;
+    if !same_snapshot(&source_stat, &source_after_copy) {
+        return Err(PublicExecutableError::message(format!(
+            "cached executable changed while copying: {}",
+            source.path().display()
+        )));
+    }
     if copied_hash != source.content_hash() || copied_size != source.size_bytes() {
         return Err(PublicExecutableError::message(format!(
             "cached executable changed while copying: {}",
@@ -170,7 +184,13 @@ fn admit_existing(
     if !same_node(&linked, &opened) {
         return Err(unsafe_node(path, "the same existing regular executable"));
     }
-    Ok(hash_file(File::from(descriptor))? == expected_hash)
+    let mut file = File::from(descriptor);
+    let actual_hash = hash_file(&mut file)?;
+    let after = require_regular_file(&file, path)?;
+    if !same_snapshot(&opened, &after) {
+        return Err(unsafe_node(path, "one stable existing regular executable"));
+    }
+    Ok(actual_hash == expected_hash)
 }
 
 fn open_real_directory(path: &Path) -> Result<OwnedFd, PublicExecutableError> {
@@ -323,7 +343,7 @@ fn create_temporary<'a>(
 }
 
 fn copy_and_hash(
-    mut source: File,
+    source: &mut File,
     temporary: &mut File,
 ) -> Result<(String, u64), PublicExecutableError> {
     let mut hasher = Sha256::new();
@@ -358,7 +378,7 @@ fn copy_and_hash(
     ))
 }
 
-fn hash_file(mut file: File) -> Result<String, PublicExecutableError> {
+fn hash_file(file: &mut File) -> Result<String, PublicExecutableError> {
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
     loop {
@@ -430,6 +450,16 @@ fn sibling_lock_name(destination: &OsStr) -> OsString {
 
 fn same_node(left: &Stat, right: &Stat) -> bool {
     left.st_dev == right.st_dev && left.st_ino == right.st_ino
+}
+
+fn same_snapshot(left: &Stat, right: &Stat) -> bool {
+    same_node(left, right)
+        && left.st_size == right.st_size
+        && left.st_mode == right.st_mode
+        && left.st_mtime == right.st_mtime
+        && left.st_mtime_nsec == right.st_mtime_nsec
+        && left.st_ctime == right.st_ctime
+        && left.st_ctime_nsec == right.st_ctime_nsec
 }
 
 fn errno(action: &str, path: &Path, error: rustix::io::Errno) -> PublicExecutableError {

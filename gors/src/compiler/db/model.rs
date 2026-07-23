@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use gors_runtime_abi::{ContractIdentity, RuntimeAbiManifest};
 
+use crate::compiler::syntax::{SemanticTokenStream, SyntaxAnchor};
 use crate::parser::ImportPathIssue;
 use crate::source::TextRange;
 
@@ -151,6 +152,8 @@ impl ParseFailure {
 pub enum FileIssue {
     /// A Go file declares the same free-function name more than once.
     DuplicateFunction(Arc<str>),
+    /// Parser observations could not be projected into owned function syntax.
+    FunctionProjectionFailure { name: Arc<str>, message: Arc<str> },
 }
 
 /// Stable function identity and display name in one file index.
@@ -227,6 +230,11 @@ impl FileAnalysis {
                     writer.bytes(b"duplicate-function");
                     writer.bytes(name.as_bytes());
                 }
+                FileIssue::FunctionProjectionFailure { name, message } => {
+                    writer.bytes(b"function-projection-failure");
+                    writer.bytes(name.as_bytes());
+                    writer.bytes(message.as_bytes());
+                }
             }
         }
         Self {
@@ -284,6 +292,9 @@ impl FileAnalysis {
         let issues = self.issues.iter().fold(0_usize, |total, issue| {
             let bytes = match issue {
                 FileIssue::DuplicateFunction(name) => name.len(),
+                FileIssue::FunctionProjectionFailure { name, message } => {
+                    name.len().saturating_add(message.len())
+                }
             };
             total.saturating_add(bytes)
         });
@@ -331,6 +342,12 @@ pub enum PackageIssue {
         id: DefId,
         existing_key: Arc<str>,
         requested_key: Arc<str>,
+    },
+    /// One parser product could not be projected into owned semantic syntax.
+    FunctionProjectionFailure {
+        file: FileId,
+        name: Arc<str>,
+        message: Arc<str>,
     },
 }
 
@@ -443,6 +460,16 @@ impl PackageAnalysis {
                     fingerprint.bytes(existing_key.as_bytes());
                     fingerprint.bytes(requested_key.as_bytes());
                 }
+                PackageIssue::FunctionProjectionFailure {
+                    file,
+                    name,
+                    message,
+                } => {
+                    fingerprint.bytes(b"function-projection-failure");
+                    fingerprint.bytes(file.canonical_bytes());
+                    fingerprint.bytes(name.as_bytes());
+                    fingerprint.bytes(message.as_bytes());
+                }
             }
         }
         fingerprint.bytes(public_api_fingerprint.as_bytes());
@@ -532,6 +559,9 @@ impl PackageAnalysis {
                     requested_key,
                     ..
                 } => existing_key.len().saturating_add(requested_key.len()),
+                PackageIssue::FunctionProjectionFailure { name, message, .. } => {
+                    name.len().saturating_add(message.len())
+                }
             };
             total.saturating_add(retained)
         });
@@ -549,16 +579,16 @@ impl PackageAnalysis {
     }
 }
 
-/// Structural function-header projection.
+/// Owned, trivia-insensitive structural function-header projection.
 ///
-/// `source` is the exact declaration header from `func` through the byte
-/// before the body brace. This bootstrap representation is intentionally
-/// trivia-sensitive; it is not yet a type-checked Go signature.
+/// This is deliberately smaller than the parser AST and excludes physical
+/// layout. It is not yet a type-checked Go signature.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FunctionSignature {
     id: DefId,
     name: Arc<str>,
-    source: Arc<str>,
+    anchor: SyntaxAnchor,
+    syntax: SemanticTokenStream,
     has_parameters: bool,
     has_results: bool,
     fingerprint: Fingerprint,
@@ -568,14 +598,16 @@ impl FunctionSignature {
     pub(super) fn new(
         id: DefId,
         name: Arc<str>,
-        source: Arc<str>,
+        anchor: SyntaxAnchor,
+        syntax: SemanticTokenStream,
         has_parameters: bool,
         has_results: bool,
     ) -> Self {
-        let mut writer = FingerprintBuilder::new(b"function-signature-source");
+        let mut writer = FingerprintBuilder::new(b"function-signature-syntax-v1");
         writer.bytes(id.canonical_bytes());
         writer.bytes(name.as_bytes());
-        writer.bytes(source.as_bytes());
+        writer.bytes(anchor.fingerprint().as_bytes());
+        writer.bytes(syntax.fingerprint().as_bytes());
         writer.bytes(if has_parameters {
             b"parameters-present"
         } else {
@@ -589,7 +621,8 @@ impl FunctionSignature {
         Self {
             id,
             name,
-            source,
+            anchor,
+            syntax,
             has_parameters,
             has_results,
             fingerprint: writer.finish(),
@@ -608,10 +641,16 @@ impl FunctionSignature {
         &self.name
     }
 
-    /// Exact header source retained by this projection.
+    /// Stable declaration anchor independent of source layout.
     #[must_use]
-    pub fn source(&self) -> &str {
-        &self.source
+    pub const fn anchor(&self) -> &SyntaxAnchor {
+        &self.anchor
+    }
+
+    /// Canonical owned header tokens.
+    #[must_use]
+    pub const fn syntax(&self) -> &SemanticTokenStream {
+        &self.syntax
     }
 
     /// Whether the Go declaration contains one or more parameters.
@@ -637,35 +676,43 @@ impl FunctionSignature {
     pub fn retained_bytes(&self) -> usize {
         self.name
             .len()
-            .saturating_add(self.source.len())
+            .saturating_add(self.syntax.retained_bytes())
             .saturating_add(32)
     }
 }
 
-/// Structural function-body projection, separate from its public header.
+/// Owned, trivia-insensitive function-body projection.
 ///
-/// This is source projection data, not typed HIR or executable MIR.
+/// Physical layout is retained separately. This is semantic source projection
+/// data, not typed HIR or executable MIR.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FunctionBody {
     id: DefId,
-    source: Option<Arc<str>>,
+    anchor: SyntaxAnchor,
+    syntax: Option<SemanticTokenStream>,
     fingerprint: Fingerprint,
 }
 
 impl FunctionBody {
-    pub(super) fn new(id: DefId, source: Option<Arc<str>>) -> Self {
-        let mut writer = FingerprintBuilder::new(b"function-body-source");
+    pub(super) fn new(
+        id: DefId,
+        anchor: SyntaxAnchor,
+        syntax: Option<SemanticTokenStream>,
+    ) -> Self {
+        let mut writer = FingerprintBuilder::new(b"function-body-syntax-v1");
         writer.bytes(id.canonical_bytes());
-        match &source {
-            Some(source) => {
+        writer.bytes(anchor.fingerprint().as_bytes());
+        match &syntax {
+            Some(syntax) => {
                 writer.bytes(b"present");
-                writer.bytes(source.as_bytes());
+                writer.bytes(syntax.fingerprint().as_bytes());
             }
             None => writer.bytes(b"absent"),
         }
         Self {
             id,
-            source,
+            anchor,
+            syntax,
             fingerprint: writer.finish(),
         }
     }
@@ -676,10 +723,16 @@ impl FunctionBody {
         self.id
     }
 
-    /// Exact braced body source, or `None` for a bodyless declaration.
+    /// Stable declaration anchor independent of source layout.
     #[must_use]
-    pub fn source(&self) -> Option<&str> {
-        self.source.as_deref()
+    pub const fn anchor(&self) -> &SyntaxAnchor {
+        &self.anchor
+    }
+
+    /// Canonical owned braced-body tokens, absent for bodyless declarations.
+    #[must_use]
+    pub const fn syntax(&self) -> Option<&SemanticTokenStream> {
+        self.syntax.as_ref()
     }
 
     /// Domain-separated body fingerprint.
@@ -691,9 +744,9 @@ impl FunctionBody {
     /// Approximate retained bytes for future memory-budget accounting.
     #[must_use]
     pub fn retained_bytes(&self) -> usize {
-        self.source
+        self.syntax
             .as_ref()
-            .map_or(32, |source| source.len().saturating_add(32))
+            .map_or(32, |syntax| syntax.retained_bytes().saturating_add(32))
     }
 }
 

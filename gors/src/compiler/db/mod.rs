@@ -21,6 +21,7 @@ use salsa::{Durability, Setter as _};
 use super::ids::{DefId, FileId, IdentityInterner, PackageId};
 use super::input::{PackageKey, SourceSnapshot, WorkspaceKey};
 use super::provenance::DefinitionSourceTable;
+pub use super::syntax::FunctionLayout;
 use crate::source::SourceCoordinateMap;
 use queries::{BuildInput, FileFacts, FunctionProjection, PackageInput, SourceInput};
 use telemetry::Telemetry;
@@ -167,6 +168,7 @@ impl CompilerDatabase {
             .ingredient::<queries::file_analysis_product>()
             .ingredient::<queries::signature_product>()
             .ingredient::<queries::body_product>()
+            .ingredient::<queries::function_layout_product>()
             .ingredient::<queries::public_api_product>()
             .ingredient::<queries::package_analysis_product>()
             .ingredient::<queries::semantic_status_product>()
@@ -366,6 +368,16 @@ impl CompilerDatabase {
     ) -> Result<Arc<FunctionBody>, QueryError> {
         let function = self.function_projection(file, function)?;
         Ok(queries::body_product(self, function))
+    }
+
+    /// Demand one stable function's revision-local physical layout.
+    pub fn function_layout(
+        &self,
+        file: FileId,
+        function: DefId,
+    ) -> Result<Arc<FunctionLayout>, QueryError> {
+        let function = self.function_projection(file, function)?;
+        Ok(queries::function_layout_product(self, function))
     }
 
     /// Demand file-level semantic validation without reparsing its snapshot.

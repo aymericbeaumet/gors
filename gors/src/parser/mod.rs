@@ -13,6 +13,7 @@ mod statements;
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 mod tests;
+mod tokens;
 mod types;
 mod version;
 
@@ -28,6 +29,7 @@ pub use error::{ParserError, ParserErrorKind};
 pub use import_path::ImportPathIssue;
 pub(crate) use import_path::decode_and_validate as decode_import_path_literal;
 pub use output::ParsedFile;
+pub use tokens::{TokenObservation, TokenSpelling};
 
 enum TypeParameterParse<'scanner> {
     None,
@@ -120,9 +122,10 @@ pub fn parse_file<'a>(
             ));
         }
     };
+    let token_observations = parser.token_observations.into_boxed_slice();
 
     match parsed {
-        Ok(ast) => Ok(ParsedFile::new(ast, coordinate_map)),
+        Ok(ast) => Ok(ParsedFile::new(ast, coordinate_map, token_observations)),
         Err(error) => Err(locate_error(error, current, coordinate_map)),
     }
 }

@@ -17,7 +17,7 @@ pub use output_manifest::GeneratedOutputManifest;
 const CACHE_MANIFEST_FILENAME: &str = ".gors_cli_cache.json";
 const CACHE_MANIFEST_VERSION: u32 = 5;
 const TERMINAL_MANIFEST_FILENAME: &str = ".gors_cli_terminal.json";
-const TERMINAL_MANIFEST_VERSION: u32 = 3;
+const TERMINAL_MANIFEST_VERSION: u32 = 4;
 const CACHE_MAX_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 const CACHE_MAX_ENTRIES: usize = 256;
 const CACHE_MAX_AGE: Duration = Duration::from_secs(14 * 24 * 60 * 60);
@@ -68,6 +68,7 @@ struct ExecutableArtifact {
     path: String,
     content_hash: String,
     size_bytes: u64,
+    mode: u32,
     rustc_action_identity: String,
 }
 
@@ -359,7 +360,8 @@ impl CliCacheManifest {
         }
         let product = crate::rustc::ExecutableProduct::admit(expected_path).ok()?;
         (product.content_hash() == artifact.content_hash
-            && product.size_bytes() == artifact.size_bytes)
+            && product.size_bytes() == artifact.size_bytes
+            && product.mode() == artifact.mode)
             .then_some(product)
     }
 
@@ -387,6 +389,7 @@ impl CliCacheManifest {
                 path: normalized_path(executable.path())?,
                 content_hash: executable.content_hash().to_string(),
                 size_bytes: executable.size_bytes(),
+                mode: executable.mode(),
                 rustc_action_identity: action.identity().to_string(),
             },
         );
@@ -453,6 +456,8 @@ impl CliCacheManifest {
         temp.as_file_mut().sync_all()?;
         temp.persist(output_dir.join(TERMINAL_MANIFEST_FILENAME))
             .map_err(|error| error.error)?;
+        #[cfg(unix)]
+        std::fs::File::open(output_dir)?.sync_all()?;
         Ok(())
     }
 
@@ -479,10 +484,24 @@ impl TerminalState {
             || !Path::new(&terminal.artifact_path).is_absolute()
             || !Path::new(&terminal.rustc_path).is_absolute()
             || !is_sha256(&terminal.rustc_snapshot_identity)
+            || !terminal.executables.iter().all(|(profile, executable)| {
+                matches!(profile.as_str(), "development" | "production")
+                    && executable.is_canonical()
+            })
         {
             return None;
         }
         Some(terminal)
+    }
+}
+
+impl ExecutableArtifact {
+    fn is_canonical(&self) -> bool {
+        Path::new(&self.path).is_absolute()
+            && is_sha256(&self.content_hash)
+            && self.size_bytes > 0
+            && self.mode == crate::rustc::ExecutableProduct::canonical_mode()
+            && is_sha256(&self.rustc_action_identity)
     }
 }
 

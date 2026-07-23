@@ -327,7 +327,7 @@ proptest! {
 
         // Print the AST
         let mut output = Vec::new();
-        let (ast, _) = ast.unwrap().into_parts();
+        let (ast, _, _) = ast.unwrap().into_parts();
         let print_result = gors::ast::fprint(&mut output, ast);
         prop_assert!(print_result.is_ok(), "Print failed: {:?}", print_result.err());
 
@@ -343,7 +343,7 @@ proptest! {
         // Parse
         let ast = gors::parser::parse_file("test.go", &source);
         prop_assert!(ast.is_ok(), "Parse failed: {:?}", ast.err());
-        let (ast, _) = ast.unwrap().into_parts();
+        let (ast, _, _) = ast.unwrap().into_parts();
 
         // Print AST dump
         let mut output = Vec::new();

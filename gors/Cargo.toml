@@ -48,6 +48,10 @@ name = "test_incremental_query_db"
 path = "tests/test_incremental_query_db.rs"
 
 [[test]]
+name = "test_owned_syntax_invalidation"
+path = "tests/test_owned_syntax_invalidation.rs"
+
+[[test]]
 name = "test_compiler_session"
 path = "tests/test_compiler_session.rs"
 

@@ -21,6 +21,8 @@ pub enum QueryKind {
     FunctionSignature,
     /// Read one function's body projection.
     FunctionBody,
+    /// Read one function's revision-local physical declaration layout.
+    FunctionLayout,
     /// Read one function's revision-local physical source table.
     DefinitionSourceTable,
     /// Publish one stable definition's typed HIR.
@@ -55,6 +57,7 @@ impl QueryKind {
         Self::PublicApi,
         Self::FunctionSignature,
         Self::FunctionBody,
+        Self::FunctionLayout,
         Self::DefinitionSourceTable,
         Self::TypedHir,
         Self::TypedSignature,
