@@ -40,7 +40,7 @@ fn action_fixture(release: bool) -> ActionFixture {
         &test_runtime_link_descriptor(),
         AdmittedRustc::new(&rustc, &rustc_snapshot_identity),
         &generated_file_hashes,
-        release,
+        RustcProfile::from_release_flag(release),
     )
     .unwrap();
     ActionFixture {
@@ -82,7 +82,7 @@ fn action_is_stable_and_uses_one_explicit_portable_runtime_link() {
             &first.action.rustc_snapshot_identity,
         ),
         &generated_file_hashes,
-        false,
+        RustcProfile::Development,
     )
     .unwrap();
 
@@ -201,7 +201,7 @@ fn action_identity_changes_with_every_owned_semantic_input() {
     assert_changed(&mutated, "pending output path");
 
     let mut mutated = action.clone();
-    mutated.profile = RustcProfile::Release;
+    mutated.profile = RustcProfile::Production;
     assert_changed(&mutated, "profile");
 
     let mut mutated = action.clone();
@@ -253,7 +253,7 @@ fn action_identity_changes_with_source_profile_and_runtime_selection() {
             &debug.action.rustc_snapshot_identity,
         ),
         &changed_hashes,
-        false,
+        RustcProfile::Development,
     )
     .unwrap();
     assert_ne!(source_changed.identity(), original);
@@ -268,7 +268,7 @@ fn action_identity_changes_with_source_profile_and_runtime_selection() {
             &debug.action.rustc_snapshot_identity,
         ),
         &changed_hashes,
-        true,
+        RustcProfile::Production,
     )
     .unwrap();
     assert_ne!(release.identity(), source_changed.identity());
@@ -285,7 +285,7 @@ fn action_identity_changes_with_source_profile_and_runtime_selection() {
             &debug.action.rustc_snapshot_identity,
         ),
         &changed_hashes,
-        false,
+        RustcProfile::Development,
     )
     .unwrap();
     assert_ne!(runtime_changed.identity(), source_changed.identity());
@@ -333,7 +333,7 @@ fn warm_action_construction_reuses_admitted_hashes_without_input_io() {
             &fixture.action.rustc_snapshot_identity,
         ),
         &generated_file_hashes,
-        false,
+        RustcProfile::Development,
     )
     .unwrap();
 
@@ -364,7 +364,7 @@ fn warm_action_construction_does_not_inspect_historical_rustc() {
         &test_runtime_link_descriptor(),
         AdmittedRustc::new(&missing_rustc, &"0".repeat(64)),
         &generated_file_hashes,
-        false,
+        RustcProfile::Development,
     )
     .unwrap();
 
@@ -401,8 +401,23 @@ fn execution_uses_the_owned_command_and_stable_pending_output() {
         OsString::from("-c"),
         OsString::from("printf stable > .main.pending"),
     ];
-    action.execute().unwrap();
+    let executable = action.execute().unwrap();
 
     assert_eq!(std::fs::read(action.output_path()).unwrap(), b"stable");
     assert!(!action.pending_path().exists());
+    assert_eq!(executable.path(), action.output_path());
+    assert_eq!(executable.size_bytes(), 6);
+}
+
+#[test]
+fn failed_internal_publication_preserves_the_admitted_executable() {
+    let temporary = tempfile::tempdir().unwrap();
+    let pending = temporary.path().join(PENDING_BINARY_FILENAME);
+    let output = temporary.path().join("main-development");
+    std::fs::write(&output, b"admitted executable").unwrap();
+
+    let error = publish_pending_executable(&pending, &output).unwrap_err();
+
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    assert_eq!(std::fs::read(&output).unwrap(), b"admitted executable");
 }

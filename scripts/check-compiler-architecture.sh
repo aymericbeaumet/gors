@@ -246,24 +246,27 @@ fail_on_matches \
   www/wasm \
   fuzz/src
 
-if [[ -f gors-cli/src/run.rs ]]; then
+if [[ -f gors-cli/src/program.rs ]]; then
   warm_executable_prefix="$(
-    sed -n '/^pub fn run(/,/^[[:space:]]*if executable_hit {/p' gors-cli/src/run.rs
+    awk '
+      /^[[:space:]]*pub fn ensure_executable\(/ { inside = 1 }
+      inside && /^[[:space:]]*self\.ensure_generated\(/ { exit }
+      inside { print }
+    ' gors-cli/src/program.rs
   )"
-  warm_executable_hit="$(
-    sed -n '/^[[:space:]]*if executable_hit {/,/^[[:space:]]*} else {/p' gors-cli/src/run.rs
-  )"
-  if [[ -z "${warm_executable_prefix}" || -z "${warm_executable_hit}" ]]; then
+  if [[ -z "${warm_executable_prefix}" ]] || \
+    ! rg -q 'admit_executable' <<< "${warm_executable_prefix}" || \
+    ! rg -q 'return Ok\(executable\)' <<< "${warm_executable_prefix}"; then
     printf '%s\n' \
-      'run cache must expose an explicit warm executable admission branch' >&2
+      'program cache must expose an explicit warm executable admission branch' >&2
     failed=1
   fi
   if matches="$(rg -n \
-    'resolve_runtime\(|embedded_runtime_artifact|\.materialize\(|NATIVE_RUNTIME_RUST_TOOLCHAIN|rustup[[:space:]]+(run|which)' \
-    <<< "${warm_executable_prefix}${warm_executable_hit}" || true)" && \
+    'resolve_runtime\(|generated_files_are_current|embedded_runtime_artifact|\.materialize\(|NATIVE_RUNTIME_RUST_TOOLCHAIN|rustup[[:space:]]+(run|which)' \
+    <<< "${warm_executable_prefix}" || true)" && \
     [[ -n "${matches}" ]]; then
     printf '%s\n%s\n' \
-      'warm executable admission must precede runtime and toolchain resolution:' \
+      'warm executable admission must precede generated-file, runtime, and toolchain resolution:' \
       "${matches}" >&2
     failed=1
   fi

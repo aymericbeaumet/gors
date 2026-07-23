@@ -2,11 +2,12 @@ use crate::cache::{
     CacheAccessLock, CliCacheManifest, GeneratedRustIdentity, GeneratedRustIdentityOptions,
     InputSnapshot, generated_file_hashes, maybe_prune_cli_cache, refresh_runtime_selection,
 };
-use crate::cache_paths::{build_cache_dir, gors_cache_base};
+use crate::cache_paths::{gors_cache_base, program_cache_dir};
 use crate::compiler::{cli_workspace, compile_program};
 use crate::diagnostics::print_compiler_error;
 use crate::options::Build;
 use crate::output::{OutputDirectoryLock, write_generated_output_locked, write_source_map};
+use crate::program::{ProgramBuild, ProgramBuildRequest, SourceMapNeed};
 use crate::runtime_link::resolve_runtime;
 use crate::timings::TimingCollector;
 use std::path::{Path, PathBuf};
@@ -20,6 +21,10 @@ pub fn build_with_cache_base(
     cmd: Build,
     cache_base: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if cmd.output.is_none() {
+        return build_cached_program(cmd, cache_base);
+    }
+
     let timings = TimingCollector::new(cmd.jobs);
     let source_paths = vec![cmd.path.clone()];
     let identity = GeneratedRustIdentity::new(GeneratedRustIdentityOptions {
@@ -29,7 +34,7 @@ pub fn build_with_cache_base(
         .output
         .as_deref()
         .map(PathBuf::from)
-        .unwrap_or_else(|| build_cache_dir(cache_base, &identity));
+        .unwrap_or_else(|| program_cache_dir(cache_base, &identity));
     let sourcemap_path = cmd.sourcemap.as_deref().map(PathBuf::from);
     maybe_prune_cli_cache(cache_base, Some(&output_dir))?;
     let cache_access_lock = CacheAccessLock::acquire_shared(cache_base)?;
@@ -152,4 +157,40 @@ pub fn build_with_cache_base(
     drop(output_lock);
     drop(cache_access_lock);
     Ok(())
+}
+
+fn build_cached_program(cmd: Build, cache_base: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let timings = TimingCollector::new(cmd.jobs);
+    let source_paths = vec![cmd.path];
+    let request = ProgramBuildRequest::new(cache_base, &source_paths, cmd.jobs);
+    let mut program = ProgramBuild::open(request, timings.clone())?;
+    let source_map = cmd
+        .sourcemap
+        .as_deref()
+        .map(Path::new)
+        .map_or(SourceMapNeed::NotRequested, SourceMapNeed::WriteTo);
+    let generated = program.ensure_generated(source_map)?;
+
+    if generated.cache_hit() {
+        println!(
+            "Reused {} cached files from {}",
+            generated.file_count(),
+            generated.directory().display()
+        );
+    } else if let Some(writes) = generated.writes() {
+        let output = generated.directory().display();
+        if writes.removed == 0 {
+            println!(
+                "Wrote {} files to {output} ({} unchanged)",
+                writes.written, writes.skipped
+            );
+        } else {
+            println!(
+                "Wrote {} files to {output} ({} unchanged, {} removed)",
+                writes.written, writes.skipped, writes.removed
+            );
+        }
+    }
+
+    timings.write_json(cmd.timings_json.as_deref().map(Path::new), "build")
 }

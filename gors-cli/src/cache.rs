@@ -17,7 +17,7 @@ pub use output_manifest::GeneratedOutputManifest;
 const CACHE_MANIFEST_FILENAME: &str = ".gors_cli_cache.json";
 const CACHE_MANIFEST_VERSION: u32 = 5;
 const TERMINAL_MANIFEST_FILENAME: &str = ".gors_cli_terminal.json";
-const TERMINAL_MANIFEST_VERSION: u32 = 2;
+const TERMINAL_MANIFEST_VERSION: u32 = 3;
 const CACHE_MAX_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 const CACHE_MAX_ENTRIES: usize = 256;
 const CACHE_MAX_AGE: Duration = Duration::from_secs(14 * 24 * 60 * 60);
@@ -65,7 +65,9 @@ pub struct CliCacheManifest {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ExecutableArtifact {
-    file: FileArtifact,
+    path: String,
+    content_hash: String,
+    size_bytes: u64,
     rustc_action_identity: String,
 }
 
@@ -322,23 +324,28 @@ impl CliCacheManifest {
             .map(|terminal| terminal.rustc_snapshot_identity.as_str())
     }
 
-    pub fn executable_is_valid(
+    pub fn admit_executable(
         &self,
-        profile: &str,
+        profile: crate::rustc::RustcProfile,
         expected_path: &Path,
         action: &crate::rustc::RustcAction,
-    ) -> bool {
-        let Ok(expected_path) = normalized_path(expected_path) else {
-            return false;
+    ) -> Option<crate::rustc::ExecutableProduct> {
+        let Ok(normalized_expected_path) = normalized_path(expected_path) else {
+            return None;
         };
-        self.terminal
+        let artifact = self
+            .terminal
             .as_ref()
-            .and_then(|terminal| terminal.executables.get(profile))
-            .is_some_and(|artifact| {
-                artifact.file.path == expected_path
-                    && artifact.file.is_current()
-                    && artifact.rustc_action_identity == action.identity().to_string()
-            })
+            .and_then(|terminal| terminal.executables.get(profile.label()))?;
+        if artifact.path != normalized_expected_path
+            || artifact.rustc_action_identity != action.identity().to_string()
+        {
+            return None;
+        }
+        let product = crate::rustc::ExecutableProduct::admit(expected_path).ok()?;
+        (product.content_hash() == artifact.content_hash
+            && product.size_bytes() == artifact.size_bytes)
+            .then_some(product)
     }
 
     pub fn generated_file_count(&self) -> usize {
@@ -355,8 +362,8 @@ impl CliCacheManifest {
 
     pub fn set_executable(
         &mut self,
-        profile: &str,
-        path: &Path,
+        profile: crate::rustc::RustcProfile,
+        executable: &crate::rustc::ExecutableProduct,
         action: &crate::rustc::RustcAction,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let terminal = self
@@ -364,9 +371,11 @@ impl CliCacheManifest {
             .as_mut()
             .ok_or("cannot record an executable before selecting a runtime")?;
         terminal.executables.insert(
-            profile.to_string(),
+            profile.label().to_string(),
             ExecutableArtifact {
-                file: FileArtifact::capture(path)?,
+                path: normalized_path(executable.path())?,
+                content_hash: executable.content_hash().to_string(),
+                size_bytes: executable.size_bytes(),
                 rustc_action_identity: action.identity().to_string(),
             },
         );
@@ -531,7 +540,7 @@ fn prune_cli_cache(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let keep = keep.map(normalized_path).transpose()?;
     let mut entries = Vec::new();
-    for category in ["build", "run"] {
+    for category in ["programs"] {
         let category_path = cache_base.join(category);
         let Ok(children) = std::fs::read_dir(category_path) else {
             continue;

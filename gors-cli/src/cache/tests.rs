@@ -172,11 +172,16 @@ fn cache_manifest_round_trips_and_validates_executable_content() {
         runtime_output.link(),
         crate::rustc::AdmittedRustc::new(&rustc_path, &rustc_snapshot_identity),
         &generated_files,
-        false,
+        crate::rustc::RustcProfile::Development,
     )
     .unwrap();
+    let executable_product = crate::rustc::ExecutableProduct::admit(&executable).unwrap();
     manifest
-        .set_executable("debug", &executable, &action)
+        .set_executable(
+            crate::rustc::RustcProfile::Development,
+            &executable_product,
+            &action,
+        )
         .unwrap();
     manifest.save(temp.path()).unwrap();
     manifest.save_terminal(temp.path()).unwrap();
@@ -190,9 +195,25 @@ fn cache_manifest_round_trips_and_validates_executable_content() {
     let dependency = loaded.runtime_dependency().unwrap();
     loaded.terminal =
         TerminalState::load_if_valid(temp.path(), &loaded.generated_identity, &dependency);
-    assert!(loaded.executable_is_valid("debug", &executable, &action));
+    assert!(
+        loaded
+            .admit_executable(
+                crate::rustc::RustcProfile::Development,
+                &executable,
+                &action,
+            )
+            .is_some()
+    );
     std::fs::write(&executable, "changed").unwrap();
-    assert!(!loaded.executable_is_valid("debug", &executable, &action));
+    assert!(
+        loaded
+            .admit_executable(
+                crate::rustc::RustcProfile::Development,
+                &executable,
+                &action,
+            )
+            .is_none()
+    );
 }
 
 #[test]
@@ -346,7 +367,7 @@ fn executable_reuse_requires_the_exact_runtime_link_plan() {
         &selected,
         crate::rustc::AdmittedRustc::new(&rustc_path, &rustc_snapshot_identity),
         &generated_files,
-        true,
+        crate::rustc::RustcProfile::Production,
     )
     .unwrap();
     let changed_action = crate::rustc::RustcAction::for_generated_binary(
@@ -356,16 +377,45 @@ fn executable_reuse_requires_the_exact_runtime_link_plan() {
         &changed,
         crate::rustc::AdmittedRustc::new(&rustc_path, &rustc_snapshot_identity),
         &generated_files,
-        true,
+        crate::rustc::RustcProfile::Production,
     )
     .unwrap();
+    let executable_product = crate::rustc::ExecutableProduct::admit(&executable).unwrap();
     manifest
-        .set_executable("release", &executable, &selected_action)
+        .set_executable(
+            crate::rustc::RustcProfile::Production,
+            &executable_product,
+            &selected_action,
+        )
         .unwrap();
 
-    assert!(manifest.executable_is_valid("release", &executable, &selected_action));
-    assert!(!manifest.executable_is_valid("release", &executable, &changed_action));
-    assert!(!manifest.executable_is_valid("debug", &executable, &selected_action));
+    assert!(
+        manifest
+            .admit_executable(
+                crate::rustc::RustcProfile::Production,
+                &executable,
+                &selected_action,
+            )
+            .is_some()
+    );
+    assert!(
+        manifest
+            .admit_executable(
+                crate::rustc::RustcProfile::Production,
+                &executable,
+                &changed_action,
+            )
+            .is_none()
+    );
+    assert!(
+        manifest
+            .admit_executable(
+                crate::rustc::RustcProfile::Development,
+                &executable,
+                &selected_action,
+            )
+            .is_none()
+    );
 }
 
 #[test]
@@ -442,7 +492,7 @@ fn cache_access_lock_allows_shared_users_and_excludes_pruning() {
 #[test]
 fn pruning_waits_for_active_cache_users_before_removing_entries() {
     let temp = tempfile::tempdir().unwrap();
-    let old = temp.path().join("run").join("old");
+    let old = temp.path().join("programs").join("old");
     write_expired_manifest(&old);
     let active_user = CacheAccessLock::acquire_shared(temp.path()).unwrap();
 
@@ -476,7 +526,7 @@ fn pruning_waits_for_active_cache_users_before_removing_entries() {
 #[test]
 fn pruning_rechecks_fresh_marker_after_acquiring_exclusive_lock() {
     let temp = tempfile::tempdir().unwrap();
-    let old = temp.path().join("run").join("old");
+    let old = temp.path().join("programs").join("old");
     write_expired_manifest(&old);
 
     let cache_base = temp.path().to_path_buf();
@@ -506,8 +556,8 @@ fn pruning_rechecks_fresh_marker_after_acquiring_exclusive_lock() {
 #[test]
 fn prune_removes_expired_entries_but_preserves_current_entry() {
     let temp = tempfile::tempdir().unwrap();
-    let old = temp.path().join("run").join("old");
-    let keep = temp.path().join("run").join("keep");
+    let old = temp.path().join("programs").join("old");
+    let keep = temp.path().join("programs").join("keep");
     write_expired_manifest(&old);
     write_expired_manifest(&keep);
 

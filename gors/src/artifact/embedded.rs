@@ -1,10 +1,8 @@
 //! Native embedded runtime provider and content-addressed publication.
 
 use std::fmt::{Display, Formatter};
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use gors_runtime_abi::{
     ArtifactIdentity, ArtifactSchemaVersion, CURRENT_ARTIFACT_SCHEMA, CompatibilityIdentity,
@@ -14,7 +12,7 @@ use gors_runtime_abi::{
     TargetModelError,
 };
 
-use super::RUNTIME_CRATE_NAME;
+mod publication;
 
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/gors_runtime_artifact.rs"));
@@ -22,7 +20,6 @@ mod generated {
 
 static EMBEDDED_ARTIFACT: LazyLock<EmbeddedRuntimeArtifact> =
     LazyLock::new(load_embedded_artifact_or_abort);
-static TEMPORARY_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Exact compiler recipe used to produce the embedded rlib.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -161,9 +158,7 @@ impl EmbeddedRuntimeArtifact {
     ///
     /// Returns an I/O error when the file cannot be read.
     pub fn verify_materialized(&self, path: &Path) -> Result<bool, RuntimeArtifactError> {
-        let payload = std::fs::read(path)
-            .map_err(|source| RuntimeArtifactError::io("read runtime artifact", path, source))?;
-        Ok(self.manifest.verifies_payload(&payload))
+        publication::verify_materialized(self, path)
     }
 
     /// Materialize the rlib below an artifact cache root and return its exact
@@ -179,81 +174,7 @@ impl EmbeddedRuntimeArtifact {
     /// publication, or final payload verification fails.
     pub fn materialize(&self, cache_root: &Path) -> Result<PathBuf, RuntimeArtifactError> {
         self.verify()?;
-        let artifact_dir = cache_root.join(self.manifest.identity().to_string());
-        std::fs::create_dir_all(&artifact_dir).map_err(|source| {
-            RuntimeArtifactError::io("create runtime artifact directory", &artifact_dir, source)
-        })?;
-        let lock_path = artifact_dir.join(".materialize.lock");
-        let lock_file = std::fs::OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(&lock_path)
-            .map_err(|source| {
-                RuntimeArtifactError::io("open runtime artifact lock", &lock_path, source)
-            })?;
-        lock_file.lock().map_err(|source| {
-            RuntimeArtifactError::io("lock runtime artifact directory", &lock_path, source)
-        })?;
-
-        let destination = artifact_dir.join(format!("lib{RUNTIME_CRATE_NAME}.rlib"));
-        if destination.is_file() && self.verify_materialized(&destination)? {
-            return Ok(destination);
-        }
-
-        let (temporary_path, mut temporary_file) = create_temporary_file(&artifact_dir)?;
-        if let Err(source) = temporary_file.write_all(self.payload) {
-            drop(std::fs::remove_file(&temporary_path));
-            return Err(RuntimeArtifactError::io(
-                "write temporary runtime artifact",
-                &temporary_path,
-                source,
-            ));
-        }
-        if let Err(source) = temporary_file.sync_all() {
-            drop(std::fs::remove_file(&temporary_path));
-            return Err(RuntimeArtifactError::io(
-                "sync temporary runtime artifact",
-                &temporary_path,
-                source,
-            ));
-        }
-        drop(temporary_file);
-
-        // Re-check under the artifact-directory lock. A concurrent process may
-        // have published the same provider while this process was preparing.
-        if destination.is_file() && self.verify_materialized(&destination)? {
-            drop(std::fs::remove_file(&temporary_path));
-            return Ok(destination);
-        }
-        if destination.exists()
-            && let Err(source) = std::fs::remove_file(&destination)
-        {
-            drop(std::fs::remove_file(&temporary_path));
-            return Err(RuntimeArtifactError::io(
-                "replace corrupt runtime artifact",
-                &destination,
-                source,
-            ));
-        }
-        if let Err(source) = std::fs::rename(&temporary_path, &destination) {
-            if destination.is_file() && self.verify_materialized(&destination)? {
-                drop(std::fs::remove_file(&temporary_path));
-                return Ok(destination);
-            }
-            drop(std::fs::remove_file(&temporary_path));
-            return Err(RuntimeArtifactError::io(
-                "publish runtime artifact",
-                &destination,
-                source,
-            ));
-        }
-        if !self.verify_materialized(&destination)? {
-            return Err(RuntimeArtifactError::PublishedPayloadMismatch(destination));
-        }
-        sync_directory(&artifact_dir)?;
-        Ok(destination)
+        publication::materialize(self, cache_root)
     }
 }
 
@@ -301,6 +222,10 @@ pub enum RuntimeArtifactError {
         action: &'static str,
         path: PathBuf,
         source: std::io::Error,
+    },
+    UnsafeFilesystemNode {
+        path: PathBuf,
+        expected: &'static str,
     },
     PublishedPayloadMismatch(PathBuf),
 }
@@ -371,6 +296,11 @@ impl Display for RuntimeArtifactError {
                 path,
                 source,
             } => write!(formatter, "failed to {action} {}: {source}", path.display()),
+            Self::UnsafeFilesystemNode { path, expected } => write!(
+                formatter,
+                "refusing unsafe runtime cache node {}; expected {expected} without symlinks",
+                path.display()
+            ),
             Self::PublishedPayloadMismatch(path) => write!(
                 formatter,
                 "published runtime artifact does not match its implementation hash: {}",
@@ -448,54 +378,4 @@ fn load_embedded_artifact() -> Result<EmbeddedRuntimeArtifact, RuntimeArtifactEr
         compatibility,
         compatibility_record: generated::COMPATIBILITY_RECORD,
     })
-}
-
-fn create_temporary_file(
-    directory: &Path,
-) -> Result<(PathBuf, std::fs::File), RuntimeArtifactError> {
-    for _ in 0..64 {
-        let sequence = TEMPORARY_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let path = directory.join(format!(
-            ".lib{RUNTIME_CRATE_NAME}.rlib.tmp-{}-{sequence}",
-            std::process::id()
-        ));
-        match std::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&path)
-        {
-            Ok(file) => return Ok((path, file)),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(source) => {
-                return Err(RuntimeArtifactError::io(
-                    "create temporary runtime artifact",
-                    &path,
-                    source,
-                ));
-            }
-        }
-    }
-    let path = directory.join(format!(".lib{RUNTIME_CRATE_NAME}.rlib.tmp"));
-    Err(RuntimeArtifactError::io(
-        "create temporary runtime artifact",
-        &path,
-        std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            "temporary filename sequence exhausted",
-        ),
-    ))
-}
-
-#[cfg(unix)]
-fn sync_directory(directory: &Path) -> Result<(), RuntimeArtifactError> {
-    std::fs::File::open(directory)
-        .and_then(|file| file.sync_all())
-        .map_err(|source| {
-            RuntimeArtifactError::io("sync runtime artifact directory", directory, source)
-        })
-}
-
-#[cfg(not(unix))]
-fn sync_directory(_directory: &Path) -> Result<(), RuntimeArtifactError> {
-    Ok(())
 }

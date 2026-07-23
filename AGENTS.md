@@ -222,6 +222,15 @@ exact probed rustc path and revalidates its snapshot immediately before a
 relink. Target-rustlib inventories reject absolute symlinks and relative
 symlinks whose lexical resolution escapes the inventory root.
 
+Native runtime CAS publication must also reject symlinks or other non-regular
+nodes at the cache root, artifact-identity directory, lock, temporary, and
+destination boundaries. Unix publication is descriptor-relative beneath an
+opened real cache root, uses no-follow opens, verifies device/inode continuity,
+and atomically renames within the opened artifact directory. Non-Unix
+publication must reject reparse-backed redirects and fail closed before
+removing anything except a validated corrupt destination. An outside target
+must remain untouched even when it contains the exact expected payload.
+
 The CLI cache hard split is complete. `GeneratedRustIdentity` composes the
 generated-Rust schema fingerprint, CLI driver schema, source-selection
 configuration, and typed runtime contract. Cache admission separately compares

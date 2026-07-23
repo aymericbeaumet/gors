@@ -282,7 +282,7 @@ fn rustc_arguments_do_not_create_per_invocation_incremental_state() {
         &runtime_descriptor::test_runtime_link_descriptor(),
         AdmittedRustc::new(&rustc_path, &rustc_snapshot_identity),
         &generated_files,
-        false,
+        RustcProfile::Development,
     )
     .unwrap();
     let flags = action
@@ -449,11 +449,12 @@ fn concurrent_output_publications_publish_one_consistent_transaction() {
                     runtime.link(),
                     AdmittedRustc::new(&rustc_path, &rustc_snapshot_identity),
                     manifest.generated_files(),
-                    false,
+                    RustcProfile::Development,
                 )
                 .unwrap();
+                let executable = ExecutableProduct::admit(&executable_path).unwrap();
                 manifest
-                    .set_executable("debug", &executable_path, &action)
+                    .set_executable(RustcProfile::Development, &executable, &action)
                     .unwrap();
                 manifest.save_terminal(&output_dir).unwrap();
                 assert_eq!(
@@ -529,17 +530,21 @@ fn concurrent_output_publications_publish_one_consistent_transaction() {
         &runtime,
         AdmittedRustc::new(rustc_path, rustc_snapshot_identity),
         cli_manifest.generated_files(),
-        false,
+        RustcProfile::Development,
     )
     .unwrap();
-    assert!(cli_manifest.executable_is_valid("debug", &executable_path, &action));
+    assert!(
+        cli_manifest
+            .admit_executable(RustcProfile::Development, &executable_path, &action)
+            .is_some()
+    );
 }
 
 #[test]
 fn spawned_program_does_not_retain_publication_locks_while_running() {
     let tmp = tempfile::tempdir().unwrap();
     let cache_base = tmp.path().join("cache");
-    let output_dir = cache_base.join("run").join("entry");
+    let output_dir = cache_base.join("programs").join("entry");
     let cache_access_lock = CacheAccessLock::acquire_shared(&cache_base).unwrap();
     let output_lock = OutputDirectoryLock::acquire(&output_dir).unwrap();
     let mut command = Command::new(std::env::current_exe().unwrap());

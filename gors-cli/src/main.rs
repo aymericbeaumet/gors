@@ -9,6 +9,7 @@ mod help;
 mod inspect;
 mod options;
 mod output;
+mod program;
 mod run;
 mod runtime_descriptor;
 mod runtime_link;
@@ -58,7 +59,7 @@ use output::{
 #[cfg(test)]
 use run::split_run_args;
 #[cfg(test)]
-use rustc::{AdmittedRustc, RustcAction};
+use rustc::{AdmittedRustc, ExecutableProduct, RustcAction, RustcProfile};
 #[cfg(test)]
 use std::num::NonZeroUsize;
 #[cfg(test)]

@@ -10,7 +10,7 @@ use std::process::{Command, ExitStatus};
 
 pub const RUST_EDITION: &str = gors_runtime_abi::RUST_RUNTIME_EDITION;
 
-const RUSTC_ACTION_SCHEMA: &[u8] = b"gors-cli-rustc-action-v2";
+const RUSTC_ACTION_SCHEMA: &[u8] = b"gors-cli-rustc-action-v3";
 const GENERATED_SOURCE_FILENAME: &str = "main.rs";
 const PENDING_BINARY_FILENAME: &str = ".main.pending";
 const TARGET_CPU: &str = "generic";
@@ -50,10 +50,10 @@ pub struct AdmittedRustc<'a> {
     snapshot_identity: &'a str,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RustcProfile {
-    Debug,
-    Release,
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum RustcProfile {
+    Development,
+    Production,
 }
 
 #[derive(Clone)]
@@ -65,6 +65,14 @@ struct GeneratedSource {
 /// Canonical SHA-256 identity of one [`RustcAction`].
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
 pub struct RustcActionIdentity([u8; 32]);
+
+/// One regular, non-empty executable admitted by content after publication.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExecutableProduct {
+    path: PathBuf,
+    content_hash: String,
+    size_bytes: u64,
+}
 
 #[derive(Debug)]
 pub enum RustcActionError {
@@ -127,7 +135,7 @@ impl RustcAction {
         runtime: &RuntimeLinkDescriptor,
         rustc: AdmittedRustc<'_>,
         generated_file_hashes: &BTreeMap<String, String>,
-        release: bool,
+        profile: RustcProfile,
     ) -> Result<Self, RustcActionError> {
         if !rustc.path.is_absolute() {
             return Err(RustcActionError::RustcPathNotAbsolute {
@@ -145,11 +153,6 @@ impl RustcAction {
                     value: runtime.implementation_hash().to_string(),
                 }
             })?;
-        let profile = if release {
-            RustcProfile::Release
-        } else {
-            RustcProfile::Debug
-        };
         let target = runtime.target_triple().to_string();
         let target_cpu = TARGET_CPU.to_string();
         let requested_target_features = REQUESTED_TARGET_FEATURES
@@ -225,7 +228,7 @@ impl RustcAction {
     /// lifetime. That lock makes the fixed `.main.pending` name exclusive and
     /// prevents generated input mutation between identity construction and
     /// execution.
-    pub fn execute(&self) -> Result<(), RustcActionError> {
+    pub fn execute(&self) -> Result<ExecutableProduct, RustcActionError> {
         for source in &self.generated_sources {
             let path = self.cwd.join(&source.filename);
             let actual = sha256_file(&path).map_err(|source| {
@@ -273,9 +276,11 @@ impl RustcAction {
             return Err(RustcActionError::CompilerFailed { status });
         }
 
-        remove_file_if_present(&self.output_path)?;
-        std::fs::rename(&self.pending_path, &self.output_path)?;
-        Ok(())
+        // Reject a compiler that claims success without producing one regular,
+        // non-empty executable before touching the previously admitted output.
+        ExecutableProduct::admit(&self.pending_path)?;
+        publish_pending_executable(&self.pending_path, &self.output_path)?;
+        Ok(ExecutableProduct::admit(&self.output_path)?)
     }
 
     fn calculate_identity(&self) -> RustcActionIdentity {
@@ -325,7 +330,11 @@ impl RustcAction {
             b"runtime-compatibility-identity",
             self.runtime_compatibility_identity.as_bytes(),
         );
-        hash_bytes(&mut hasher, b"output-profile", self.profile.label());
+        hash_bytes(
+            &mut hasher,
+            b"output-profile",
+            self.profile.label().as_bytes(),
+        );
         hash_bytes(&mut hasher, b"target", self.target.as_bytes());
         hash_bytes(&mut hasher, b"target-cpu", self.target_cpu.as_bytes());
         hash_count(
@@ -365,11 +374,71 @@ impl<'a> AdmittedRustc<'a> {
 }
 
 impl RustcProfile {
-    const fn label(self) -> &'static [u8] {
-        match self {
-            Self::Debug => b"debug",
-            Self::Release => b"release",
+    #[must_use]
+    pub const fn from_release_flag(release: bool) -> Self {
+        if release {
+            Self::Production
+        } else {
+            Self::Development
         }
+    }
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Development => "development",
+            Self::Production => "production",
+        }
+    }
+
+    #[must_use]
+    pub const fn executable_filename(self) -> &'static str {
+        match self {
+            Self::Development => "main-development",
+            Self::Production => "main-production",
+        }
+    }
+}
+
+impl ExecutableProduct {
+    pub(crate) fn admit(path: &Path) -> Result<Self, std::io::Error> {
+        let metadata = std::fs::symlink_metadata(path)?;
+        if !metadata.file_type().is_file() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "terminal compiler output is not a regular file: {}",
+                    path.display()
+                ),
+            ));
+        }
+        if metadata.len() == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("terminal compiler output is empty: {}", path.display()),
+            ));
+        }
+        let content_hash = hex_sha256(sha256_file(path)?);
+        Ok(Self {
+            path: absolute_path(path)?,
+            content_hash,
+            size_bytes: metadata.len(),
+        })
+    }
+
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    #[must_use]
+    pub fn content_hash(&self) -> &str {
+        &self.content_hash
+    }
+
+    #[must_use]
+    pub const fn size_bytes(&self) -> u64 {
+        self.size_bytes
     }
 }
 
@@ -479,17 +548,11 @@ impl From<std::io::Error> for RustcActionError {
 pub fn compile_generated_binary(
     action: &RustcAction,
     timings: &TimingCollector,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<ExecutableProduct, Box<dyn std::error::Error>> {
     let rustc_timer = timings.phase("cli.rustc");
     let result = action.execute();
     drop(rustc_timer);
-    match result {
-        Err(RustcActionError::CompilerFailed { status }) => {
-            std::process::exit(status.code().unwrap_or(1));
-        }
-        Err(error) => Err(Box::new(error)),
-        Ok(()) => Ok(()),
-    }
+    result.map_err(|error| Box::new(error) as Box<dyn std::error::Error>)
 }
 
 fn rustc_argv(
@@ -521,7 +584,7 @@ fn rustc_argv(
         OsString::from("-o"),
         OsString::from(PENDING_BINARY_FILENAME),
     ];
-    if profile == RustcProfile::Release {
+    if profile == RustcProfile::Production {
         argv.extend([
             OsString::from("-Ccodegen-units=1"),
             OsString::from("-Clto=fat"),
@@ -541,6 +604,10 @@ fn absolute_path(path: &Path) -> Result<PathBuf, std::io::Error> {
 
 fn sha256_file(path: &Path) -> Result<[u8; 32], std::io::Error> {
     Ok(Sha256::digest(std::fs::read(path)?).into())
+}
+
+fn hex_sha256(bytes: [u8; 32]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn admitted_generated_sources(
@@ -621,6 +688,12 @@ fn remove_file_if_present(path: &Path) -> Result<(), std::io::Error> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
     }
+}
+
+fn publish_pending_executable(pending: &Path, output: &Path) -> Result<(), std::io::Error> {
+    tempfile::TempPath::try_from_path(pending.to_path_buf())?
+        .persist(output)
+        .map_err(|error| error.error)
 }
 
 fn hash_count(hasher: &mut Sha256, tag: &[u8], count: usize) {
