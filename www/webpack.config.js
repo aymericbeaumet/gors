@@ -64,6 +64,10 @@ if (!compilerHarness) {
 		copyPatterns.push({
 			from: assetPaths[key],
 			to: `assets/${bootManifest.assets[key].file}`,
+			// These content-addressed inputs are already final boot assets. In
+			// particular, production Terser must not rewrite libv86.js after its
+			// filename and manifest hash have been computed.
+			info: { minimized: true },
 		});
 	}
 	copyPatterns.push(

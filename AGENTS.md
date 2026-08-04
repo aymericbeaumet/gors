@@ -330,7 +330,9 @@ The reduced V86 provider-helper workspace owns its own
 `www/v86/Cargo.v86.toml` and `www/v86/Cargo.v86.lock`. Its temporary Docker
 context renames those files to Cargo's standard names and must consume that
 exact lock; the full compiler workspace lock is not a valid locked resolution
-for the reduced helper workspace.
+for the reduced helper workspace. Content-addressed V86 boot assets are copied
+as finalized Webpack assets so production minimizers cannot rewrite them before
+the manifest-last emitted-byte verification.
 
 V86 guest execution is strict single-flight: an overlapping compile or run is
 rejected with a typed busy error rather than replacing the active job. Every
