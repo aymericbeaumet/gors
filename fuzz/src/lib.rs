@@ -84,15 +84,13 @@ pub fn exercise_compiler(data: &[u8]) {
     else {
         return;
     };
-    let Ok(manifest) = gors::compiler::input::PackageInputManifest::new(package.clone(), [file])
-    else {
+    let Ok(manifest) = gors::compiler::input::PackageInputManifest::new(package, [file]) else {
         return;
     };
     let Ok(workspace) = gors::compiler::input::WorkspaceKey::ad_hoc("fuzz-compiler") else {
         return;
     };
-    let Ok(program) = gors::compiler::input::ProgramInput::new(workspace, package, [manifest])
-    else {
+    let Ok(program) = gors::compiler::input::ProgramInput::standalone(workspace, manifest) else {
         return;
     };
     let Ok(compiled) = gors::compiler::compile_program(program) else {

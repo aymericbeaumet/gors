@@ -56,11 +56,11 @@ fn compiler_corpus_either_reports_diagnostics_or_prints_rust() {
             source.as_ref(),
         )
         .unwrap_or_else(|error| panic!("cannot construct compiler corpus source input: {error}"));
-        let manifest = gors::compiler::input::PackageInputManifest::new(package.clone(), [file])
+        let manifest = gors::compiler::input::PackageInputManifest::new(package, [file])
             .unwrap_or_else(|error| panic!("cannot construct compiler corpus package: {error}"));
         let workspace = gors::compiler::input::WorkspaceKey::ad_hoc("fuzz-corpus")
             .unwrap_or_else(|error| panic!("cannot construct compiler corpus workspace: {error}"));
-        let program = gors::compiler::input::ProgramInput::new(workspace, package, [manifest])
+        let program = gors::compiler::input::ProgramInput::standalone(workspace, manifest)
             .unwrap_or_else(|error| panic!("cannot construct compiler corpus program: {error}"));
         let compiled = match gors::compiler::compile_program(program) {
             Ok(compiled) => compiled,
