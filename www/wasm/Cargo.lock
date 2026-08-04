@@ -508,6 +508,7 @@ dependencies = [
  "quote",
  "rayon",
  "reqwest",
+ "rustix",
  "salsa",
  "serde",
  "serde_json",

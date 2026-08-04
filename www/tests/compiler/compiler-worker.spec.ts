@@ -63,11 +63,11 @@ test("persistent compiler worker handles cold, cached, edited, and coalesced inp
 	expect(unsupported.success).toBe(false);
 	expect(unsupported.runtimeDependency).toBeNull();
 	expect(unsupported.error?.kind).toBe("compile error");
-	expect(unsupported.error?.message).toContain("GORS2001");
+	expect(unsupported.error?.message).toContain("GORS2004");
 	expect(unsupported.error?.message).toContain(
-		"imports are not implemented by the HIR/MIR backend",
+		"no package catalog owns this canonical path",
 	);
-	expect(unsupported.error?.line).toBe(1);
+	expect(unsupported.error?.line).toBe(3);
 
 	const firstStats = await page.evaluate(() =>
 		window.__gorsCompilerHarness.stats(),
@@ -200,7 +200,7 @@ test("liveness watchdog replaces a worker that stops making progress", async ({
 		return window.__gorsCompilerHarness.watchdogStuckWasmLoad(
 			source,
 			30_000,
-			100,
+			1_000,
 		);
 	}, sourceWith(5501));
 

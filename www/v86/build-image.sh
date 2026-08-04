@@ -56,13 +56,13 @@ LOCK_HELD=1
 printf '%s\n' "$$" >"${LOCK_DIR}/pid"
 
 DIGEST_INPUTS=(
-    Cargo.lock
     gors-runtime/Cargo.toml
     gors-runtime/src
     gors-runtime-abi/Cargo.toml
     gors-runtime-abi/src
     gors-runtime-abi/examples
     www/v86/Cargo.v86.toml
+    www/v86/Cargo.v86.lock
     www/v86/Dockerfile
     www/v86/build-image.sh
     www/v86/rootfs
@@ -103,7 +103,7 @@ CONTEXT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gors-v86-context.XXXXXX")
 
 cp "${SCRIPT_DIR}/Dockerfile" "${CONTEXT_DIR}/Dockerfile"
 cp "${SCRIPT_DIR}/Cargo.v86.toml" "${CONTEXT_DIR}/Cargo.v86.toml"
-cp "${REPOSITORY_ROOT}/Cargo.lock" "${CONTEXT_DIR}/Cargo.lock"
+cp "${SCRIPT_DIR}/Cargo.v86.lock" "${CONTEXT_DIR}/Cargo.lock"
 cp -R "${SCRIPT_DIR}/rootfs" "${CONTEXT_DIR}/rootfs"
 mkdir -p "${CONTEXT_DIR}/gors-runtime" "${CONTEXT_DIR}/gors-runtime-abi"
 cp "${REPOSITORY_ROOT}/gors-runtime/Cargo.toml" \

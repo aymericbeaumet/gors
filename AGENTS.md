@@ -326,6 +326,12 @@ runnable-program runtime provider. V86 publication is manifest-last: admission
 must verify the provider hash, rootfs index hash, exact referenced blob-set
 identity and count, and every content-addressed blob before reusing an image.
 
+The reduced V86 provider-helper workspace owns its own
+`www/v86/Cargo.v86.toml` and `www/v86/Cargo.v86.lock`. Its temporary Docker
+context renames those files to Cargo's standard names and must consume that
+exact lock; the full compiler workspace lock is not a valid locked resolution
+for the reduced helper workspace.
+
 V86 guest execution is strict single-flight: an overlapping compile or run is
 rejected with a typed busy error rather than replacing the active job. Every
 admitted flight owns a fresh 128-bit nonce, an abort-aware deadline, one exact
