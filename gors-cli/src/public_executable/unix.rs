@@ -71,7 +71,7 @@ pub(super) fn publish(
         )));
     }
     let expected_mode = source.mode();
-    if u32::from(source_stat.st_mode & 0o7777) != expected_mode {
+    if permission_mode(&source_stat) != expected_mode {
         return Err(PublicExecutableError::message(format!(
             "cached executable mode changed before publication: {}",
             source.path().display()
@@ -124,7 +124,7 @@ pub(super) fn publish(
     let temporary_stat = require_regular_file(&temporary.file, &temporary.path)?;
     let linked_temporary = regular_stat_at(&parent, &temporary.name, &temporary.path)?;
     if !same_node(&temporary_stat, &linked_temporary)
-        || u32::from(temporary_stat.st_mode & 0o7777) != expected_mode
+        || permission_mode(&temporary_stat) != expected_mode
     {
         return Err(unsafe_node(
             &temporary.path,
@@ -137,7 +137,7 @@ pub(super) fn publish(
     temporary.cleanup.disarm();
     let published_stat = regular_stat_at(&parent, destination_name, &destination)?;
     if !same_node(&temporary_stat, &published_stat)
-        || u32::from(published_stat.st_mode & 0o7777) != expected_mode
+        || permission_mode(&published_stat) != expected_mode
     {
         return Err(unsafe_node(
             &destination,
@@ -169,7 +169,7 @@ fn admit_existing(
     };
     if linked.st_size < 0
         || u64::try_from(linked.st_size).ok() != Some(expected_size)
-        || u32::from(linked.st_mode & 0o7777) != expected_mode
+        || permission_mode(&linked) != expected_mode
     {
         return Ok(false);
     }
@@ -450,6 +450,13 @@ fn sibling_lock_name(destination: &OsStr) -> OsString {
 
 fn same_node(left: &Stat, right: &Stat) -> bool {
     left.st_dev == right.st_dev && left.st_ino == right.st_ino
+}
+
+// `Stat::st_mode` is narrower than `u32` on Apple targets but is already
+// `u32` on Linux, so the portable widening is target-dependent.
+#[allow(clippy::useless_conversion)]
+fn permission_mode(stat: &Stat) -> u32 {
+    u32::from(stat.st_mode & 0o7777)
 }
 
 fn same_snapshot(left: &Stat, right: &Stat) -> bool {

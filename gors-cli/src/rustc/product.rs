@@ -300,6 +300,9 @@ mod platform {
         u64::try_from(stat.st_size).ok()
     }
 
+    // `Stat::st_mode` is narrower than `u32` on Apple targets but is already
+    // `u32` on Linux, so the portable widening is target-dependent.
+    #[allow(clippy::useless_conversion)]
     fn mode(stat: &Stat) -> u32 {
         u32::from(stat.st_mode & 0o7777)
     }
