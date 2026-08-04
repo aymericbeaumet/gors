@@ -373,11 +373,11 @@ pub(super) fn eval_constant(
                 )),
             }
         }
-        ExprSyntaxKind::Call { .. } | ExprSyntaxKind::Unsupported(_) => {
-            Err(Diagnostic::unsupported(
-                "constant expression is not implemented by the HIR/MIR backend",
-                source,
-            ))
-        }
+        ExprSyntaxKind::Call { .. }
+        | ExprSyntaxKind::Selector { .. }
+        | ExprSyntaxKind::Unsupported(_) => Err(Diagnostic::unsupported(
+            "constant expression is not implemented by the HIR/MIR backend",
+            source,
+        )),
     }
 }

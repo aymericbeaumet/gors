@@ -81,6 +81,42 @@ impl fmt::Display for DefId {
     }
 }
 
+/// Globally unambiguous identity of one package-owned definition.
+///
+/// [`DefId`] remains a package-owned key even though its current digest input
+/// includes the declaring package. Cross-package products must retain this
+/// explicit pair instead of attempting to recover or infer a [`PackageId`]
+/// from opaque definition bytes. Canonical ordering is lexicographic by
+/// package first and definition second.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct QualifiedDefId {
+    package: PackageId,
+    definition: DefId,
+}
+
+impl QualifiedDefId {
+    /// Pair an explicitly known package with one of its definition identities.
+    #[must_use]
+    pub const fn new(package: PackageId, definition: DefId) -> Self {
+        Self {
+            package,
+            definition,
+        }
+    }
+
+    /// Package that owns this definition.
+    #[must_use]
+    pub const fn package(self) -> PackageId {
+        self.package
+    }
+
+    /// Package-local stable definition identity.
+    #[must_use]
+    pub const fn definition(self) -> DefId {
+        self.definition
+    }
+}
+
 /// Dense identity of one HIR node within a stable definition owner.
 ///
 /// This pair is unique and deterministic for one rebuilt function, but the

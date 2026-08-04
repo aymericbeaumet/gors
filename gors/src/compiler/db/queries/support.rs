@@ -250,6 +250,7 @@ impl PackageReferenceCollector {
                     self.expression(argument);
                 }
             }
+            ExprSyntaxKind::Selector { base, .. } => self.expression(base),
             ExprSyntaxKind::Literal { .. } | ExprSyntaxKind::Unsupported(_) => {}
         }
     }
@@ -273,6 +274,7 @@ fn collect_all_expression_names(expression: &ExprSyntax, names: &mut BTreeSet<St
                 collect_all_expression_names(argument, names);
             }
         }
+        ExprSyntaxKind::Selector { base, .. } => collect_all_expression_names(base, names),
         ExprSyntaxKind::Literal { .. } | ExprSyntaxKind::Unsupported(_) => {}
     }
 }

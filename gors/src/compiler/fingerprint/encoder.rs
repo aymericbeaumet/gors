@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 
 use super::Fingerprint;
 use crate::compiler::hir;
-use crate::compiler::ids::{BasicBlockId, DefId, LocalId, NodeId};
+use crate::compiler::ids::{BasicBlockId, DefId, LocalId, NodeId, PackageId, QualifiedDefId};
 use crate::compiler::provenance::{SourceRef, SourceRefKind};
 use crate::compiler::types::{ConstValue, FloatTy, IntTy, Signature, Ty, UintTy, UntypedTy};
 
@@ -109,6 +109,15 @@ impl Encoder {
 
 pub(super) fn def_id(encoder: &mut Encoder, value: DefId) {
     encoder.blob(value.canonical_bytes());
+}
+
+pub(super) fn package_id(encoder: &mut Encoder, value: PackageId) {
+    encoder.blob(value.canonical_bytes());
+}
+
+pub(super) fn qualified_def_id(encoder: &mut Encoder, value: QualifiedDefId) {
+    encoder.field(b"package", |encoder| package_id(encoder, value.package()));
+    encoder.field(b"definition", |encoder| def_id(encoder, value.definition()));
 }
 
 pub(super) fn node_id(encoder: &mut Encoder, value: NodeId) {

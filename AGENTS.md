@@ -551,6 +551,11 @@ occurrence products preserve source order and duplicates. Every valid occurrence
 also retains its exact `default`, named, blank, or dot binding and separate
 compiler-owned physical ranges for the binding token and import literal; never
 reconstruct aliases from an import-path basename.
+Owned expression syntax preserves selectors as recursive `base.member` nodes
+with independent source identities for the selector, base, and member. The
+member is not an unqualified lexical reference. Name resolution must consume
+that structure rather than flattening a selector into a string path or
+reconstructing it from source text.
 
 `compiler::package_dag` is a pure boundary over already-resolved package IDs.
 It performs no discovery, resolution, or input mutation. A command-line entry
@@ -574,6 +579,10 @@ uses that exact revision for cache comparison and, on a miss, compilation.
 Workspace and package identities are enum-tagged `WorkspaceKey` and
 `PackageKey` values encoded directly by the collision-checked semantic
 interner; do not flatten them into caller-constructed strings.
+Cross-package semantic references use `QualifiedDefId { package, definition }`.
+Keep `DefId` for package-owned declarations and provenance owners, but never
+infer a referenced definition's package from its opaque digest or carry package
+ownership in an adjacent string side channel.
 `WorkspaceKey::Module` and `PackageKey::ImportPath` each own a validated
 `CanonicalImportPath`, never an unchecked string. `ProgramInput` owns one
 authoritative entry manifest plus an object-safe immutable
@@ -584,9 +593,13 @@ never become Salsa `SourceInput` or `PackageInput` values, retain database
 bytes, or advance the query revision.
 
 Session input installation is one delta transaction. The compiler journals only
-changed, inserted, and removed source inputs, includes stale-file removal in the
-same rollback boundary, and rolls mutations back in reverse application order.
-Exact no-op installs must not call a Salsa setter or synthesize rollback snapshots.
+changed, inserted, and removed source and file-scoped resolved-import inputs,
+includes both kinds of stale-input removal in the same rollback boundary, and
+rolls mutations back in reverse application order. Every active source owns a
+resolved-import product, including an explicit empty product. Default bindings
+store the target package's actual parsed package-clause name; named, blank, and
+dot bindings remain distinct. Exact no-op installs must not call a Salsa setter
+or synthesize rollback snapshots.
 Do not restore the deleted O(all-active-files) snapshot/rollback path or an
 all-`program.packages()` installation loop. Missing packages, catalog failures,
 and package cycles abort the same transaction and preserve both the preceding

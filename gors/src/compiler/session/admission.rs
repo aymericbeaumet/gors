@@ -4,7 +4,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use super::{CompilerSession, InstalledFile, InstalledProgram};
-use crate::compiler::db::{CompilerDatabase, DirectImport, SourceInputMutation};
+use crate::compiler::db::{
+    CompilerDatabase, DirectImport, ResolvedFileImports, ResolvedImport,
+    ResolvedImportInputMutation, SourceInputMutation,
+};
 use crate::compiler::ids::{FileId, PackageId};
 use crate::compiler::input::{PackageInputManifest, PackageKey, ProgramInput, WorkspaceKey};
 use crate::compiler::package_dag::{
@@ -12,6 +15,11 @@ use crate::compiler::package_dag::{
 };
 use crate::compiler::provenance::FileRange;
 use crate::compiler::{CompilerDiagnostic, CompilerError};
+
+enum AdmissionInputMutation {
+    Source(SourceInputMutation),
+    ResolvedImports(ResolvedImportInputMutation),
+}
 
 impl CompilerSession {
     pub(super) fn install_program(
@@ -32,6 +40,24 @@ impl CompilerSession {
         let mut mutations = Vec::new();
         let result = (|| {
             let (installed, next_sources) = self.install_program_inputs(program, &mut mutations)?;
+            self.install_resolved_import_inputs(
+                &installed.package_dag,
+                &next_sources,
+                &mut mutations,
+            )?;
+            let stale_resolved_imports = self
+                .database
+                .active_resolved_import_files()
+                .into_iter()
+                .filter(|file| !next_sources.contains(file))
+                .collect::<Vec<_>>();
+            for file in stale_resolved_imports {
+                let mutation = self
+                    .database
+                    .remove_resolved_file_imports_transactional(file)
+                    .map_err(|error| self.query_error(error))?;
+                mutations.push(AdmissionInputMutation::ResolvedImports(mutation));
+            }
             let stale = self
                 .database
                 .active_files()
@@ -43,21 +69,20 @@ impl CompilerSession {
                     .database
                     .remove_source_transactional(file)
                     .map_err(|error| self.query_error(error))?;
-                mutations.push(mutation);
+                mutations.push(AdmissionInputMutation::Source(mutation));
             }
             before_commit(&self.database)?;
             Ok((installed, next_sources))
         })();
         match result {
             Ok((installed, next_sources)) => {
-                self.database.commit_source_mutations(mutations);
+                self.commit_admission_mutations(mutations);
                 self.retain_ready_roots_for_files(&next_sources);
                 self.admitted_package_dag = Some(Arc::clone(&installed.package_dag));
                 Ok(installed)
             }
             Err(error) => {
-                self.database
-                    .rollback_source_mutations(mutations.into_iter().rev());
+                self.rollback_admission_mutations(mutations);
                 Err(error)
             }
         }
@@ -66,7 +91,7 @@ impl CompilerSession {
     fn install_program_inputs(
         &mut self,
         program: &ProgramInput,
-        mutations: &mut Vec<SourceInputMutation>,
+        mutations: &mut Vec<AdmissionInputMutation>,
     ) -> Result<(InstalledProgram, BTreeSet<FileId>), CompilerError> {
         let mut next_sources = BTreeSet::new();
         let entry_key = program.entry_package().key().clone();
@@ -181,7 +206,7 @@ impl CompilerSession {
         workspace: &WorkspaceKey,
         package: &PackageInputManifest,
         next_sources: &mut BTreeSet<FileId>,
-        mutations: &mut Vec<SourceInputMutation>,
+        mutations: &mut Vec<AdmissionInputMutation>,
     ) -> Result<(Vec<InstalledFile>, PackageId), CompilerError> {
         let mut installed = Vec::with_capacity(package.files().len());
         let mut package_id = None;
@@ -197,7 +222,7 @@ impl CompilerSession {
                     Arc::clone(&snapshot),
                 )
                 .map_err(|error| self.query_error(error))?;
-            mutations.extend(mutation);
+            mutations.extend(mutation.map(AdmissionInputMutation::Source));
             let id = update.file();
             let current_package = self
                 .database
@@ -223,6 +248,103 @@ impl CompilerSession {
         })?;
         installed.sort_by(|left, right| left.logical_path.cmp(&right.logical_path));
         Ok((installed, package_id))
+    }
+
+    fn install_resolved_import_inputs(
+        &mut self,
+        package_dag: &crate::compiler::package_dag::PackageDag,
+        next_sources: &BTreeSet<FileId>,
+        mutations: &mut Vec<AdmissionInputMutation>,
+    ) -> Result<(), CompilerError> {
+        let mut package_names = BTreeMap::new();
+        for node in package_dag.nodes() {
+            let analysis = self
+                .database
+                .analyze_package(node.package())
+                .map_err(|error| self.query_error(error))?;
+            package_names.insert(node.package(), Arc::<str>::from(analysis.package_name()));
+        }
+
+        let mut by_file = next_sources
+            .iter()
+            .copied()
+            .map(|file| (file, Vec::new()))
+            .collect::<BTreeMap<_, _>>();
+        for edge in package_dag.edges() {
+            let target_package_name = package_names.get(&edge.dependency()).ok_or_else(|| {
+                CompilerError::backend(format!(
+                    "resolved package DAG omitted package name for {:?}",
+                    edge.dependency()
+                ))
+            })?;
+            for occurrence in edge.occurrences() {
+                let importer = self
+                    .database
+                    .package_for_file(occurrence.file())
+                    .map_err(|error| self.query_error(error))?;
+                if importer != edge.importer() {
+                    return Err(CompilerError::backend(format!(
+                        "resolved import occurrence in {:?} belongs to {importer:?}, not DAG importer {:?}",
+                        occurrence.file(),
+                        edge.importer()
+                    )));
+                }
+                let imports = by_file.get_mut(&occurrence.file()).ok_or_else(|| {
+                    CompilerError::backend(format!(
+                        "resolved import occurrence belongs to inactive source file {:?}",
+                        occurrence.file()
+                    ))
+                })?;
+                imports.push(ResolvedImport::from_occurrence(
+                    edge.dependency(),
+                    Arc::clone(target_package_name),
+                    occurrence,
+                ));
+            }
+        }
+
+        for (file, mut imports) in by_file {
+            imports.sort_by_key(ResolvedImport::source);
+            let resolved = ResolvedFileImports::try_new(file, imports).map_err(|error| {
+                CompilerError::backend(format!(
+                    "failed to build resolved imports for source file {file:?}: {error}"
+                ))
+            })?;
+            let (_, mutation) = self
+                .database
+                .set_resolved_file_imports_transactional(Arc::new(resolved))
+                .map_err(|error| self.query_error(error))?;
+            mutations.extend(mutation.map(AdmissionInputMutation::ResolvedImports));
+        }
+        Ok(())
+    }
+
+    fn commit_admission_mutations(&mut self, mutations: Vec<AdmissionInputMutation>) {
+        for mutation in mutations {
+            match mutation {
+                AdmissionInputMutation::Source(mutation) => {
+                    self.database.commit_source_mutations(Some(mutation));
+                }
+                AdmissionInputMutation::ResolvedImports(mutation) => {
+                    self.database
+                        .commit_resolved_import_mutations(Some(mutation));
+                }
+            }
+        }
+    }
+
+    fn rollback_admission_mutations(&mut self, mutations: Vec<AdmissionInputMutation>) {
+        for mutation in mutations.into_iter().rev() {
+            match mutation {
+                AdmissionInputMutation::Source(mutation) => {
+                    self.database.rollback_source_mutations(Some(mutation));
+                }
+                AdmissionInputMutation::ResolvedImports(mutation) => {
+                    self.database
+                        .rollback_resolved_import_mutations(Some(mutation));
+                }
+            }
+        }
     }
 
     fn unresolved_import(&self, import: &DirectImport) -> CompilerError {

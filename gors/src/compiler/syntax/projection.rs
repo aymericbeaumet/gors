@@ -589,6 +589,10 @@ impl StructuralProjector {
                     .collect::<Result<Vec<_>, _>>()?
                     .into(),
             },
+            ast::Expr::SelectorExpr(expression) => ExprSyntaxKind::Selector {
+                base: Box::new(self.expression(&expression.x)?),
+                member: self.ident(&expression.sel)?,
+            },
             ast::Expr::ArrayType(_) => ExprSyntaxKind::Unsupported("array or slice type"),
             ast::Expr::ChanType(_) => ExprSyntaxKind::Unsupported("channel type"),
             ast::Expr::CompositeLit(_) => ExprSyntaxKind::Unsupported("composite literal"),
@@ -600,7 +604,6 @@ impl StructuralProjector {
             ast::Expr::InterfaceType(_) => ExprSyntaxKind::Unsupported("interface type"),
             ast::Expr::KeyValueExpr(_) => ExprSyntaxKind::Unsupported("key-value expression"),
             ast::Expr::MapType(_) => ExprSyntaxKind::Unsupported("map type"),
-            ast::Expr::SelectorExpr(_) => ExprSyntaxKind::Unsupported("selector expression"),
             ast::Expr::SliceExpr(_) => ExprSyntaxKind::Unsupported("slice expression"),
             ast::Expr::StarExpr(_) => ExprSyntaxKind::Unsupported("pointer expression"),
             ast::Expr::StructType(_) => ExprSyntaxKind::Unsupported("struct type"),

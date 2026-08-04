@@ -1,5 +1,7 @@
 use super::rust_ir::runtime_requirement as runtime_requirement_fingerprint;
 use super::*;
+use crate::compiler::ids::{DefinitionKey, DefinitionKind, IdentityInterner, QualifiedDefId};
+use crate::compiler::input::{PackageKey, WorkspaceKey};
 use crate::compiler::{self, hir, mir, rust_ir};
 use gors_runtime_abi::{PrimitiveOp, RuntimeOp, RuntimeRequirement};
 
@@ -332,6 +334,38 @@ fn stage_domains_separate_analogous_file_payloads() {
     assert_ne!(hir, mir);
     assert_ne!(hir, rust_ir);
     assert_ne!(mir, rust_ir);
+}
+
+#[test]
+fn qualified_definition_fingerprints_include_explicit_package_ownership() {
+    let mut interner = IdentityInterner::default();
+    let workspace = interner
+        .workspace(&WorkspaceKey::ad_hoc("qualified-fingerprint-test").unwrap())
+        .unwrap();
+    let first_package = interner
+        .package(
+            workspace,
+            &PackageKey::import_path("example/first").unwrap(),
+        )
+        .unwrap();
+    let second_package = interner
+        .package(
+            workspace,
+            &PackageKey::import_path("example/second").unwrap(),
+        )
+        .unwrap();
+    let definition =
+        DefinitionKey::package_named(first_package, DefinitionKind::Function, "Run").id();
+
+    let first = QualifiedDefId::new(first_package, definition);
+    let same = QualifiedDefId::new(first_package, definition);
+    let different_owner = QualifiedDefId::new(second_package, definition);
+
+    assert_eq!(qualified_definition(first), qualified_definition(same));
+    assert_ne!(
+        qualified_definition(first),
+        qualified_definition(different_owner)
+    );
 }
 
 fn value_op_mut<'a>(

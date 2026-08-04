@@ -1,7 +1,9 @@
 use crate::ast;
 use crate::parser::parse_file;
 
-use super::{ProjectedFunctionSyntax, SyntaxAnchor, project_function};
+use super::{
+    ExprSyntaxKind, ProjectedFunctionSyntax, StmtSyntaxKind, SyntaxAnchor, project_function,
+};
 
 fn project(source: &str, name: &str) -> ProjectedFunctionSyntax {
     let parsed = parse_file("syntax_projection.go", source).expect("source should parse");
@@ -101,4 +103,85 @@ fn bodyless_header_uses_existing_semicolon_observation() {
     assert!(inserted.body.is_none());
     assert!(explicit.body.is_none());
     assert_ne!(inserted.layout, explicit.layout);
+}
+
+#[test]
+fn selector_projection_preserves_chains_and_distinct_sources() {
+    let projected = project("package p\nfunc f() { use(client.API.Call) }\n", "f");
+    let block = projected
+        .structural_body
+        .block
+        .as_ref()
+        .expect("function should have a body");
+    let [statement] = block.statements.as_ref() else {
+        panic!("function body should contain one statement");
+    };
+    let StmtSyntaxKind::Expr(call) = &statement.kind else {
+        panic!("function body should contain an expression statement");
+    };
+    let ExprSyntaxKind::Call { arguments, .. } = &call.kind else {
+        panic!("expression statement should contain a call");
+    };
+    let [selector] = arguments.as_ref() else {
+        panic!("call should have one selector argument");
+    };
+    let ExprSyntaxKind::Selector { base, member } = &selector.kind else {
+        panic!("argument should retain its outer selector");
+    };
+    assert_eq!(member.name.as_ref(), "Call");
+    assert_ne!(base.source, member.source);
+    assert_ne!(
+        projected.layout.resolve(base.source).unwrap(),
+        projected.layout.resolve(member.source).unwrap()
+    );
+
+    let ExprSyntaxKind::Selector {
+        base: root,
+        member: intermediate,
+    } = &base.kind
+    else {
+        panic!("selector base should retain its inner selector");
+    };
+    assert_eq!(intermediate.name.as_ref(), "API");
+    assert_ne!(root.source, intermediate.source);
+    let ExprSyntaxKind::Ident(root) = &root.kind else {
+        panic!("inner selector should retain its identifier base");
+    };
+    assert_eq!(root.name.as_ref(), "client");
+
+    let sources = [
+        selector.source,
+        member.source,
+        base.source,
+        intermediate.source,
+        root.source,
+    ];
+    for (index, source) in sources.iter().enumerate() {
+        assert!(
+            !sources.get(..index).unwrap_or_default().contains(source),
+            "each structural selector component should own a distinct source"
+        );
+    }
+}
+
+#[test]
+fn selector_trivia_is_stable_but_member_edits_change_body_fingerprint() {
+    let compact = project("package p\nfunc f() { use(client.API.Call) }\n", "f");
+    let spaced = project(
+        "package p\nfunc f () { use ( client /* base */ . API . Call ) }\n",
+        "f",
+    );
+    let edited = project("package p\nfunc f() { use(client.API.Fetch) }\n", "f");
+
+    assert_eq!(compact.structural_body, spaced.structural_body);
+    assert_eq!(
+        compact.body.as_ref().unwrap().fingerprint(),
+        spaced.body.as_ref().unwrap().fingerprint()
+    );
+    assert_ne!(compact.layout, spaced.layout);
+    assert_ne!(compact.structural_body, edited.structural_body);
+    assert_ne!(
+        compact.body.as_ref().unwrap().fingerprint(),
+        edited.body.as_ref().unwrap().fingerprint()
+    );
 }

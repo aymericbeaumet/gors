@@ -105,6 +105,7 @@ fn install_transaction_rolls_back_updated_inserted_and_stale_inputs() {
         .file();
     let package_id = session.database.package_for_file(main_file).unwrap();
     let readiness = session.ready_rust_ir_roots.clone();
+    let resolved_inputs = session.database.active_resolved_import_files();
     assert!(!readiness.is_empty());
 
     let input = ProgramInput::standalone(
@@ -131,7 +132,8 @@ fn install_transaction_rolls_back_updated_inserted_and_stale_inputs() {
     .unwrap();
 
     let error = session
-        .install_program_transaction(&input, |_| {
+        .install_program_transaction(&input, |database| {
+            assert_eq!(database.active_resolved_import_files().len(), 2);
             Err(CompilerError::backend(
                 "injected failure after stale-file deletion",
             ))
@@ -165,6 +167,10 @@ fn install_transaction_rolls_back_updated_inserted_and_stale_inputs() {
         stale.as_ref()
     );
     assert_eq!(session.ready_rust_ir_roots, readiness);
+    assert_eq!(
+        session.database.active_resolved_import_files(),
+        resolved_inputs
+    );
 
     let restored = session.database.analyze_package(package_id).unwrap();
     assert!(restored.issues().is_empty());
@@ -226,6 +232,7 @@ fn install_rollback_restores_removed_package_and_discards_new_package() {
                 .into_iter()
                 .find(|file| *file != old_file)
                 .expect("the new package source must be active before commit");
+            assert!(database.resolved_file_imports(new_file).is_ok());
             new_package_id.set(Some(database.package_for_file(new_file).unwrap()));
             Err(CompilerError::backend(
                 "injected failure across package-map boundaries",
@@ -253,6 +260,7 @@ fn install_rollback_restores_removed_package_and_discards_new_package() {
             .analyze_package(new_package_id.get().unwrap())
             .is_err()
     );
+    assert!(session.database.active_resolved_import_files().is_empty());
 }
 
 #[test]
@@ -458,7 +466,7 @@ fn reachable_catalog_dependency_is_admitted_before_backend_import_rejection() {
         [super::super::input::SourceFileInput::from_source(
             "dependency.go",
             "/checkout/dependency/dependency.go",
-            "package dependency\nfunc Value() int { return 1 }\n",
+            "package actualname\nfunc Value() int { return 1 }\n",
         )
         .unwrap()],
     )
@@ -483,6 +491,24 @@ fn reachable_catalog_dependency_is_admitted_before_backend_import_rejection() {
         .map(|file| session.database().package_for_file(file).unwrap())
         .collect::<BTreeSet<_>>();
     assert_eq!(packages.len(), 2);
+    let entry_file = session
+        .database()
+        .active_files()
+        .into_iter()
+        .find(|file| {
+            session.database().package_for_file(*file).unwrap()
+                == session.admitted_package_dag().unwrap().entry()
+        })
+        .unwrap();
+    let resolved = session
+        .database()
+        .resolved_file_imports(entry_file)
+        .unwrap();
+    assert_eq!(resolved.imports().len(), 1);
+    assert_eq!(
+        resolved.imports().first().unwrap().binding().local_name(),
+        Some("actualname")
+    );
     let dag = session
         .admitted_package_dag()
         .expect("successful admission publishes its canonical package graph");
@@ -560,6 +586,7 @@ fn missing_reachable_package_rolls_back_sources_and_preserves_prior_dag() {
         ))
         .unwrap();
     let previous_files = session.database().active_files();
+    let previous_resolved_files = session.database().active_resolved_import_files();
     let previous_dag = session.admitted_package_dag().unwrap().clone();
     let entry = package_manifest(
         PackageKey::command_line(),
@@ -577,6 +604,10 @@ fn missing_reachable_package_rolls_back_sources_and_preserves_prior_dag() {
     assert_eq!(error.diagnostics().first().unwrap().code, "GORS2004");
     assert!(error.to_string().contains("unresolved import"));
     assert_eq!(session.database().active_files(), previous_files);
+    assert_eq!(
+        session.database().active_resolved_import_files(),
+        previous_resolved_files
+    );
     assert_eq!(session.admitted_package_dag(), Some(&previous_dag));
 }
 
@@ -766,6 +797,12 @@ fn previous_entry_is_removed_when_retained_only_as_catalog_package() {
     assert_eq!(active.len(), 1);
     assert_ne!(active.first().copied(), Some(previous_file));
     assert!(session.database().source_snapshot(previous_file).is_err());
+    assert!(
+        session
+            .database()
+            .resolved_file_imports(previous_file)
+            .is_err()
+    );
     assert!(
         session
             .database()

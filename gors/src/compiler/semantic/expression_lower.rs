@@ -328,6 +328,12 @@ impl FunctionLowerer {
                     source,
                 }
             }
+            ExprSyntaxKind::Selector { .. } => {
+                return Err(Diagnostic::unsupported(
+                    "selector resolution is not implemented by the HIR/MIR backend",
+                    source,
+                ));
+            }
             ExprSyntaxKind::Unsupported(kind) => {
                 return Err(Diagnostic::unsupported(
                     format!("expression {kind} is not implemented by the HIR/MIR backend"),

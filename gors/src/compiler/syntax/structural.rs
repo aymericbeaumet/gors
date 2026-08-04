@@ -169,5 +169,9 @@ pub enum ExprSyntaxKind {
         callee: Box<ExprSyntax>,
         arguments: Arc<[ExprSyntax]>,
     },
+    Selector {
+        base: Box<ExprSyntax>,
+        member: IdentSyntax,
+    },
     Unsupported(&'static str),
 }

@@ -8,6 +8,7 @@ mod model;
 mod mutation;
 mod products;
 mod queries;
+mod resolved_imports;
 mod source_metadata;
 mod source_projection;
 mod telemetry;
@@ -26,6 +27,7 @@ use crate::source::SourceCoordinateMap;
 use queries::{
     BuildInput, ConstantProjection, FileFacts, FunctionProjection, PackageInput, SourceInput,
 };
+use resolved_imports::ResolvedImportsInput;
 use telemetry::Telemetry;
 
 pub use super::fingerprint::Fingerprint;
@@ -37,6 +39,11 @@ pub(in crate::compiler) use mutation::SourceInputMutation;
 pub use products::{
     CompilerStage, NormalizedMirFunction, StageFailure, TypedFunctionSignature, TypedHirFunction,
     VerifiedMirFunction, VerifiedRustIrFunction, VerifiedRustIrPackage,
+};
+pub(in crate::compiler) use resolved_imports::ResolvedImportInputMutation;
+pub use resolved_imports::{
+    ResolvedFileImports, ResolvedImport, ResolvedImportBinding, ResolvedImportBuildError,
+    ResolvedImportsUpdate,
 };
 pub use source_metadata::{
     DirectImport, FileComments, FileImports, ImportBinding, InvalidImport, SourceComment,
@@ -50,6 +57,8 @@ pub enum QueryError {
     UnknownFile(FileId),
     /// No active package input with this compiler-owned identity exists.
     UnknownPackage(PackageId),
+    /// No resolved-import input for this active source file exists.
+    UnknownResolvedImports(FileId),
     /// The file index contains no function with this stable identity.
     UnknownFunction { file: FileId, function: DefId },
     /// Stable identity interning detected a full-key digest collision.
@@ -71,6 +80,12 @@ impl fmt::Display for QueryError {
             Self::UnknownFile(file) => write!(formatter, "unknown source file {file:?}"),
             Self::UnknownPackage(package) => {
                 write!(formatter, "unknown source package {package:?}")
+            }
+            Self::UnknownResolvedImports(file) => {
+                write!(
+                    formatter,
+                    "no resolved imports installed for source file {file:?}"
+                )
             }
             Self::UnknownFunction { file, function } => {
                 write!(
@@ -146,6 +161,7 @@ pub struct CompilerDatabase {
     sources: BTreeMap<FileId, SourceInput>,
     diagnostic_paths: BTreeMap<FileId, Arc<str>>,
     packages: BTreeMap<PackageId, PackageInput>,
+    resolved_imports: BTreeMap<FileId, ResolvedImportsInput>,
     build: Option<BuildInput>,
 }
 
@@ -194,6 +210,7 @@ impl CompilerDatabase {
             .ingredient::<queries::rust_ir_package_product>()
             .ingredient::<SourceInput>()
             .ingredient::<PackageInput>()
+            .ingredient::<ResolvedImportsInput>()
             .ingredient::<BuildInput>()
             .ingredient::<FileFacts<'_>>()
             .ingredient::<FunctionProjection<'_>>()
@@ -206,6 +223,7 @@ impl CompilerDatabase {
             sources: BTreeMap::new(),
             diagnostic_paths: BTreeMap::new(),
             packages: BTreeMap::new(),
+            resolved_imports: BTreeMap::new(),
             build: None,
         };
         let build = BuildInput::builder(Arc::from(config.go_version()), config.runtime_abi())
@@ -277,6 +295,7 @@ impl CompilerDatabase {
                 sources: self.sources.clone(),
                 diagnostic_paths: BTreeMap::new(),
                 packages: self.packages.clone(),
+                resolved_imports: self.resolved_imports.clone(),
                 build: self.build,
             },
         }

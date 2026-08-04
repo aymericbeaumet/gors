@@ -95,6 +95,20 @@ pub(in crate::compiler) fn fingerprint_parts(domain: &[u8], parts: &[&[u8]]) -> 
     encoder.finish()
 }
 
+/// Fingerprint one explicitly package-qualified definition identity.
+///
+/// The canonical encoding retains both complete identity components. As with
+/// every [`Fingerprint`], callers using this as a persistent-cache accelerator
+/// must still validate the full [`QualifiedDefId`](crate::compiler::ids::QualifiedDefId).
+#[must_use]
+pub fn qualified_definition(value: crate::compiler::ids::QualifiedDefId) -> Fingerprint {
+    let mut encoder = encoder::Encoder::root(b"qualified-definition-identity");
+    encoder.field(b"identity", |encoder| {
+        encoder::qualified_def_id(encoder, value)
+    });
+    encoder.finish()
+}
+
 #[cfg(test)]
 #[allow(
     clippy::expect_used,

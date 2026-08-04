@@ -74,6 +74,28 @@ fn identical_package_clauses_in_distinct_import_paths_do_not_alias() -> TestResu
 }
 
 #[test]
+fn qualified_definitions_retain_explicit_ownership_and_canonical_order() {
+    fn stable(byte: u8) -> StableFingerprint {
+        StableFingerprint([byte; 32])
+    }
+
+    let package_a = PackageId(stable(0x10));
+    let package_b = PackageId(stable(0x20));
+    let definition_a = DefId(stable(0x30));
+    let definition_b = DefId(stable(0x40));
+
+    let first = QualifiedDefId::new(package_a, definition_a);
+    let later_definition = QualifiedDefId::new(package_a, definition_b);
+    let later_package = QualifiedDefId::new(package_b, definition_a);
+
+    assert_eq!(first.package(), package_a);
+    assert_eq!(first.definition(), definition_a);
+    assert!(first < later_definition);
+    assert!(later_definition < later_package);
+    assert_ne!(first, QualifiedDefId::new(package_b, definition_a));
+}
+
+#[test]
 fn method_receiver_identity_is_part_of_the_definition_key() -> TestResult {
     let mut interner = IdentityInterner::default();
     let package = package(&mut interner, "example/project")?;
