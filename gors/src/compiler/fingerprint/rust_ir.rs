@@ -59,6 +59,12 @@ fn encode_function(encoder: &mut Encoder, function: &rust_ir::Function) {
         encoder.sequence(&function.blocks, encode_block);
     });
     encoder.field(b"entry", |encoder| block_id(encoder, function.entry));
+    encoder.field(b"panic-cleanup", |encoder| {
+        encoder.option(function.panic_cleanup.as_ref(), |encoder, cleanup| {
+            encoder.field(b"entry", |encoder| block_id(encoder, cleanup.entry));
+            encoder.field(b"active", |encoder| local_id(encoder, cleanup.active));
+        });
+    });
     encoder.field(b"control-flow", |encoder| {
         encode_control_flow(encoder, &function.control_flow);
     });
@@ -199,6 +205,12 @@ fn encode_rvalue_kind(encoder: &mut Encoder, kind: &rust_ir::RvalueKind) {
             encoder.variant(b"unary", |encoder| {
                 encoder.field(b"operation", |encoder| encode_value_op(encoder, *op));
                 encoder.field(b"operand", |encoder| encode_operand(encoder, operand));
+            });
+        }
+        rust_ir::RvalueKind::RecoverCompareNil { state, equal } => {
+            encoder.variant(b"recover-compare-nil", |encoder| {
+                encoder.field(b"state", |encoder| encode_place(encoder, *state));
+                encoder.field(b"equal", |encoder| encoder.bool(*equal));
             });
         }
         rust_ir::RvalueKind::Binary { op, left, right } => {
@@ -386,13 +398,13 @@ fn encode_effects(encoder: &mut Encoder, effects: rust_ir::Effects) {
 }
 
 fn encode_panic(encoder: &mut Encoder, panic: rust_ir::PanicEdge) {
-    encoder.variant(
-        match panic {
-            rust_ir::PanicEdge::None => b"none",
-            rust_ir::PanicEdge::Propagate => b"propagate",
-        },
-        |_| {},
-    );
+    match panic {
+        rust_ir::PanicEdge::None => encoder.variant(b"none", |_| {}),
+        rust_ir::PanicEdge::Propagate => encoder.variant(b"propagate", |_| {}),
+        rust_ir::PanicEdge::Cleanup(target) => {
+            encoder.variant(b"cleanup", |encoder| block_id(encoder, target));
+        }
+    }
 }
 
 fn encode_provenance(encoder: &mut Encoder, provenance: &rust_ir::Provenance) {
@@ -407,6 +419,10 @@ fn encode_provenance(encoder: &mut Encoder, provenance: &rust_ir::Provenance) {
                         rust_ir::SyntheticOrigin::NamedResultInitialization => {
                             b"named-result-initialization"
                         }
+                        rust_ir::SyntheticOrigin::PanicCleanupInitialization => {
+                            b"panic-cleanup-initialization"
+                        }
+                        rust_ir::SyntheticOrigin::PanicCleanupDispatch => b"panic-cleanup-dispatch",
                         rust_ir::SyntheticOrigin::ImplicitReturn => b"implicit-return",
                     },
                     |_| {},

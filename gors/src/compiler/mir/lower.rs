@@ -1,9 +1,10 @@
 //! Evaluation-order-explicit lowering from typed HIR to MIR.
 
 mod flow;
-
+mod panic_cleanup;
 #[cfg(test)]
-use super::File;
+mod test_file;
+
 use super::construct::{
     assignment_binary_op, binary_effects, call_effects, make_rvalue, make_statement,
     make_terminator, operand_ty,
@@ -19,6 +20,8 @@ use crate::compiler::ids::{BasicBlockId, LocalId};
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::types::{ConstValue, Ty};
 use std::collections::BTreeMap;
+#[cfg(test)]
+pub(super) use test_file::lower_file;
 
 struct BlockBuilder {
     provenance: Provenance,
@@ -34,6 +37,16 @@ struct FunctionLowerer {
     labels: BTreeMap<String, BasicBlockId>,
     named_results: Vec<Option<LocalId>>,
     deferred: Vec<hir::Block>,
+    all_deferred: Vec<DeferredAction>,
+    defer_flags: Vec<LocalId>,
+    next_defer: usize,
+    recover_active: Option<LocalId>,
+}
+
+#[derive(Clone)]
+struct DeferredAction {
+    registered: LocalId,
+    body: hir::Block,
 }
 
 #[derive(Clone)]
@@ -42,26 +55,6 @@ struct LoopTargets {
     break_target: BasicBlockId,
     continue_target: BasicBlockId,
     break_used: bool,
-}
-
-#[cfg(test)]
-pub(super) fn lower_file(file: &hir::File) -> Result<File, Vec<Diagnostic>> {
-    let mut functions = Vec::new();
-    let mut diagnostics = Vec::new();
-    for function in &file.functions {
-        match FunctionLowerer::lower(function) {
-            Ok(function) => functions.push(function),
-            Err(diagnostic) => diagnostics.push(diagnostic),
-        }
-    }
-    if diagnostics.is_empty() {
-        Ok(File {
-            package: file.package.clone(),
-            functions,
-        })
-    } else {
-        Err(diagnostics)
-    }
 }
 
 /// Lower one independently tracked HIR function into explicit-order Go MIR.
@@ -97,10 +90,47 @@ impl FunctionLowerer {
             labels: BTreeMap::new(),
             named_results: hir.named_results.clone(),
             deferred: Vec::new(),
+            all_deferred: Vec::new(),
+            defer_flags: Vec::new(),
+            next_defer: 0,
+            recover_active: None,
+        };
+
+        let deferred_bodies = hir
+            .body
+            .stmts
+            .iter()
+            .filter_map(|statement| match &statement.kind {
+                hir::StmtKind::Defer { body, .. } => Some(body.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let body_entry = if deferred_bodies.is_empty() {
+            None
+        } else {
+            for body in deferred_bodies {
+                let registered = lowerer.new_temp(Ty::Bool);
+                lowerer.defer_flags.push(registered);
+                lowerer
+                    .all_deferred
+                    .push(DeferredAction { registered, body });
+            }
+            let active = lowerer.new_temp(Ty::Bool);
+            lowerer.recover_active = Some(active);
+            lowerer.initialize_panic_cleanup_locals(hir)?;
+            let body_entry = lowerer.new_block(Provenance::Source(hir.body.source));
+            lowerer.current = body_entry;
+            Some(body_entry)
         };
 
         let mut labels = Vec::new();
         collect_labels(&hir.body, &mut labels);
+        if body_entry.is_some() && !labels.is_empty() {
+            return Err(Diagnostic::unsupported(
+                "functions combining defer with labels are not yet implemented",
+                hir.source,
+            ));
+        }
         for (label, source) in labels {
             let target = lowerer.new_block(Provenance::Source(source));
             if lowerer.labels.insert(label.clone(), target).is_some() {
@@ -112,18 +142,24 @@ impl FunctionLowerer {
 
         // Named Go results exist and contain their zero values at function
         // entry, even when the function exits via a bare return.
-        for result in hir.named_results.iter().flatten() {
-            let ty = lowerer.local_ty(*result)?.clone();
-            let value = ty.zero().ok_or_else(|| {
-                Diagnostic::backend(format!("no MIR zero value for named result {ty:?}"))
-            })?;
-            let provenance = Provenance::Synthetic(SyntheticOrigin::NamedResultInitialization);
-            let value = make_rvalue(
-                RvalueKind::Use(Operand::Constant(value, ty)),
-                hir::Effects::default(),
-                provenance.clone(),
-            );
-            lowerer.push_statement(make_statement(Place { local: *result }, value, provenance))?;
+        if body_entry.is_none() {
+            for result in hir.named_results.iter().flatten() {
+                let ty = lowerer.local_ty(*result)?.clone();
+                let value = ty.zero().ok_or_else(|| {
+                    Diagnostic::backend(format!("no MIR zero value for named result {ty:?}"))
+                })?;
+                let provenance = Provenance::Synthetic(SyntheticOrigin::NamedResultInitialization);
+                let value = make_rvalue(
+                    RvalueKind::Use(Operand::Constant(value, ty)),
+                    hir::Effects::default(),
+                    provenance.clone(),
+                );
+                lowerer.push_statement(make_statement(
+                    Place { local: *result },
+                    value,
+                    provenance,
+                ))?;
+            }
         }
 
         lowerer.lower_block(&hir.body)?;
@@ -144,6 +180,25 @@ impl FunctionLowerer {
                 )));
             }
         }
+
+        let panic_cleanup =
+            if let (Some(body_entry), Some(active)) = (body_entry, lowerer.recover_active) {
+                let cleanup = lowerer.build_panic_cleanup(hir, active)?;
+                lowerer.retarget_body_panics(cleanup.entry);
+                lowerer.current = BasicBlockId(0);
+                lowerer.terminate(make_terminator(
+                    TerminatorKind::SwitchBool {
+                        condition: Operand::Constant(ConstValue::Bool(false), Ty::Bool),
+                        then_target: cleanup.entry,
+                        else_target: body_entry,
+                    },
+                    hir::Effects::default(),
+                    Provenance::Synthetic(SyntheticOrigin::PanicCleanupDispatch),
+                ))?;
+                Some(cleanup)
+            } else {
+                None
+            };
 
         let blocks = lowerer
             .blocks
@@ -172,6 +227,7 @@ impl FunctionLowerer {
             locals: lowerer.locals,
             blocks,
             entry: BasicBlockId(0),
+            panic_cleanup,
             source: hir.source,
         })
     }
@@ -470,84 +526,8 @@ impl FunctionLowerer {
                 parameters,
                 values,
                 body,
-            } => {
-                if parameters.len() != values.len() {
-                    return Err(Diagnostic::backend(
-                        "deferred HIR call argument arity changed before MIR lowering",
-                    ));
-                }
-                let mut operands = Vec::with_capacity(values.len());
-                for value in values {
-                    let operand = self.lower_expr(value)?;
-                    operands.push(self.materialize(
-                        operand,
-                        value.ty.clone(),
-                        Provenance::Source(value.source),
-                    )?);
-                }
-                for (parameter, operand) in parameters.iter().zip(operands) {
-                    let parameter_ty = self.local_ty(*parameter)?.clone();
-                    let operand_ty = operand_ty(&operand, &self.locals)?;
-                    if parameter_ty != operand_ty {
-                        return Err(Diagnostic::backend(
-                            "deferred HIR call argument type changed before MIR lowering",
-                        ));
-                    }
-                    let provenance = Provenance::Source(statement.source);
-                    let value = make_rvalue(
-                        RvalueKind::Use(operand),
-                        hir::Effects::default(),
-                        provenance.clone(),
-                    );
-                    self.push_statement(make_statement(
-                        Place { local: *parameter },
-                        value,
-                        provenance,
-                    ))?;
-                }
-                self.deferred.push(body.clone());
-            }
-            hir::StmtKind::Return(values) => {
-                let operands = self.lower_return_values(values)?;
-                let returned = if self.named_results.is_empty() {
-                    operands
-                } else {
-                    if self.named_results.len() != operands.len() {
-                        return Err(Diagnostic::backend(
-                            "named-result arity changed before MIR lowering",
-                        ));
-                    }
-                    let mut returned = Vec::with_capacity(operands.len());
-                    let named_results = self.named_results.clone();
-                    for (named_result, operand) in named_results.into_iter().zip(operands) {
-                        if let Some(local) = named_result {
-                            let provenance = Provenance::Source(statement.source);
-                            let value = make_rvalue(
-                                RvalueKind::Use(operand),
-                                hir::Effects::default(),
-                                provenance.clone(),
-                            );
-                            self.push_statement(make_statement(
-                                Place { local },
-                                value,
-                                provenance,
-                            ))?;
-                            returned.push(Operand::Read(Place { local }));
-                        } else {
-                            returned.push(operand);
-                        }
-                    }
-                    returned
-                };
-                self.lower_deferred()?;
-                if !self.is_terminated(self.current)? {
-                    self.terminate(make_terminator(
-                        TerminatorKind::Return(returned),
-                        hir::Effects::default(),
-                        Provenance::Source(statement.source),
-                    ))?;
-                }
-            }
+            } => self.register_defer(parameters, values, body, statement.source)?,
+            hir::StmtKind::Return(values) => self.lower_return(values, statement.source)?,
             hir::StmtKind::Block(block) => self.lower_block(block)?,
             hir::StmtKind::If {
                 init,
@@ -776,6 +756,25 @@ impl FunctionLowerer {
                 Ok(Operand::Read(place))
             }
             hir::ExprKind::Local(local) => Ok(Operand::Read(Place { local: *local })),
+            hir::ExprKind::RecoverCompareNil { equal } => {
+                let state = self.recover_active.ok_or_else(|| {
+                    Diagnostic::backend("recover comparison reached a function without cleanup")
+                })?;
+                let result = Place {
+                    local: self.new_temp(Ty::Bool),
+                };
+                let provenance = Provenance::Source(expr.source);
+                let value = make_rvalue(
+                    RvalueKind::RecoverCompareNil {
+                        state: Place { local: state },
+                        equal: *equal,
+                    },
+                    expr.effects,
+                    provenance.clone(),
+                );
+                self.push_statement(make_statement(result, value, provenance))?;
+                Ok(Operand::Read(result))
+            }
             hir::ExprKind::Unary { op, operand } => {
                 let operand_provenance = Provenance::Source(operand.source);
                 let operand = self.lower_expr(operand)?;

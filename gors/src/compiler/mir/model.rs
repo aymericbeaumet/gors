@@ -20,7 +20,14 @@ pub struct Function {
     pub locals: Vec<LocalDecl>,
     pub blocks: Vec<BasicBlock>,
     pub entry: BasicBlockId,
+    pub panic_cleanup: Option<PanicCleanup>,
     pub source: SourceRef,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PanicCleanup {
+    pub entry: BasicBlockId,
+    pub active: LocalId,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -75,6 +82,10 @@ pub enum RvalueKind {
         from: Ty,
         ty: Ty,
     },
+    RecoverCompareNil {
+        state: Place,
+        equal: bool,
+    },
     Binary {
         op: hir::BinaryOp,
         left: Operand,
@@ -128,6 +139,8 @@ pub enum Provenance {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SyntheticOrigin {
     NamedResultInitialization,
+    PanicCleanupInitialization,
+    PanicCleanupDispatch,
     ImplicitReturn,
 }
 
@@ -135,7 +148,6 @@ pub enum SyntheticOrigin {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PanicEdge {
     None,
-    /// Propagate the Go panic to the caller. Recover/defer landing pads will
-    /// replace this edge when that frontier is implemented.
     Propagate,
+    Cleanup(BasicBlockId),
 }

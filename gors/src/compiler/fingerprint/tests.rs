@@ -388,6 +388,7 @@ fn value_op_mut<'a>(
                 }
                 rust_ir::RvalueKind::Use(_)
                 | rust_ir::RvalueKind::Unary { .. }
+                | rust_ir::RvalueKind::RecoverCompareNil { .. }
                 | rust_ir::RvalueKind::Binary { .. } => {}
             }
         }
@@ -433,6 +434,7 @@ fn rvalue_runtime_static_op_mut(
                 operand_runtime_static_op_mut(right, expected)
             }
         }
+        rust_ir::RvalueKind::RecoverCompareNil { .. } => None,
     }
 }
 

@@ -32,6 +32,10 @@ pub(super) fn lower_function(
         out::FunctionArtifactPlan::public_definition(function.id)
     };
     let signature = lower_signature(&function.signature)?;
+    let panic_cleanup = function.panic_cleanup.map(|cleanup| out::PanicCleanup {
+        entry: cleanup.entry,
+        active: cleanup.active,
+    });
     let locals = function
         .locals
         .into_iter()
@@ -70,6 +74,7 @@ pub(super) fn lower_function(
         locals,
         blocks,
         entry: function.entry,
+        panic_cleanup,
         control_flow: out::ControlFlowPlan::PcDispatchU32,
         source: function.source,
     };
@@ -126,6 +131,7 @@ fn lower_statement(
 }
 
 fn lower_rvalue(rvalue: mir::Rvalue, locals: &[out::LocalDecl]) -> Result<out::Rvalue, Diagnostic> {
+    let panic = rvalue.panic;
     let kind = match rvalue.kind {
         mir::RvalueKind::Use(operand) => out::RvalueKind::Use(lower_operand(operand, locals)?),
         mir::RvalueKind::SliceLiteralI64(elements) => {
@@ -158,6 +164,10 @@ fn lower_rvalue(rvalue: mir::Rvalue, locals: &[out::LocalDecl]) -> Result<out::R
             }
             out::RvalueKind::Use(lower_operand(operand, locals)?)
         }
+        mir::RvalueKind::RecoverCompareNil { state, equal } => out::RvalueKind::RecoverCompareNil {
+            state: lower_place(state),
+            equal,
+        },
         mir::RvalueKind::Binary {
             op,
             left,
@@ -177,7 +187,7 @@ fn lower_rvalue(rvalue: mir::Rvalue, locals: &[out::LocalDecl]) -> Result<out::R
     Ok(out::Rvalue {
         kind,
         effects,
-        panic: out::panic_edge(effects),
+        panic: lower_panic_edge(panic, effects),
         provenance: lower_provenance(rvalue.provenance),
     })
 }
@@ -188,6 +198,7 @@ fn lower_terminator(
     original_block_count: usize,
     extra_blocks: &mut Vec<out::BasicBlock>,
 ) -> Result<out::Terminator, Diagnostic> {
+    let panic = terminator.panic;
     let provenance = lower_provenance(terminator.provenance);
     let kind = match terminator.kind {
         mir::TerminatorKind::Goto(target) => out::TerminatorKind::Goto(target),
@@ -225,10 +236,11 @@ fn lower_terminator(
                     locals,
                     original_block_count,
                     extra_blocks,
+                    panic,
                 );
             }
             hir::Callee::Builtin(hir::Builtin::Panic) => {
-                return lower_panic_call(args, destinations, next, provenance, locals);
+                return lower_panic_call(args, destinations, next, provenance, locals, panic);
             }
             hir::Callee::Builtin(
                 builtin @ (hir::Builtin::SliceI64Index
@@ -279,7 +291,7 @@ fn lower_terminator(
         ),
         mir::TerminatorKind::Unreachable => out::TerminatorKind::Unreachable,
     };
-    Ok(finish_terminator(kind, provenance))
+    Ok(finish_terminator(kind, provenance, panic))
 }
 
 fn lower_panic_call(
@@ -288,6 +300,7 @@ fn lower_panic_call(
     next: out::BasicBlockId,
     provenance: out::Provenance,
     locals: &[out::LocalDecl],
+    panic: mir::PanicEdge,
 ) -> Result<out::Terminator, Diagnostic> {
     if !destinations.is_empty() {
         return Err(Diagnostic::backend(
@@ -326,6 +339,7 @@ fn lower_panic_call(
             next,
         },
         provenance,
+        panic,
     ))
 }
 
@@ -339,6 +353,7 @@ fn lower_print_call(
     locals: &[out::LocalDecl],
     original_block_count: usize,
     extra_blocks: &mut Vec<out::BasicBlock>,
+    panic: mir::PanicEdge,
 ) -> Result<out::Terminator, Diagnostic> {
     if !destinations.is_empty() {
         return Err(Diagnostic::backend(
@@ -388,6 +403,7 @@ fn lower_print_call(
         return Ok(finish_terminator(
             out::TerminatorKind::Goto(next),
             provenance,
+            panic,
         ));
     }
 
@@ -425,6 +441,7 @@ fn lower_print_call(
                     next: call_next,
                 },
                 provenance.clone(),
+                panic,
             ),
         });
     }
@@ -437,16 +454,31 @@ fn lower_print_call(
             next: first_next,
         },
         provenance,
+        panic,
     ))
 }
 
-fn finish_terminator(kind: out::TerminatorKind, provenance: out::Provenance) -> out::Terminator {
+fn finish_terminator(
+    kind: out::TerminatorKind,
+    provenance: out::Provenance,
+    panic: mir::PanicEdge,
+) -> out::Terminator {
     let effects = out::terminator_effects(&kind);
     out::Terminator {
         kind,
         effects,
-        panic: out::panic_edge(effects),
+        panic: lower_panic_edge(panic, effects),
         provenance,
+    }
+}
+
+fn lower_panic_edge(edge: mir::PanicEdge, effects: out::Effects) -> out::PanicEdge {
+    if !effects.may_panic {
+        return out::PanicEdge::None;
+    }
+    match edge {
+        mir::PanicEdge::Cleanup(target) => out::PanicEdge::Cleanup(target),
+        mir::PanicEdge::None | mir::PanicEdge::Propagate => out::PanicEdge::Propagate,
     }
 }
 
@@ -667,6 +699,12 @@ fn lower_provenance(provenance: mir::Provenance) -> out::Provenance {
         mir::Provenance::Source(source) => out::Provenance::Source(source),
         mir::Provenance::Synthetic(mir::SyntheticOrigin::NamedResultInitialization) => {
             out::Provenance::Synthetic(out::SyntheticOrigin::NamedResultInitialization)
+        }
+        mir::Provenance::Synthetic(mir::SyntheticOrigin::PanicCleanupInitialization) => {
+            out::Provenance::Synthetic(out::SyntheticOrigin::PanicCleanupInitialization)
+        }
+        mir::Provenance::Synthetic(mir::SyntheticOrigin::PanicCleanupDispatch) => {
+            out::Provenance::Synthetic(out::SyntheticOrigin::PanicCleanupDispatch)
         }
         mir::Provenance::Synthetic(mir::SyntheticOrigin::ImplicitReturn) => {
             out::Provenance::Synthetic(out::SyntheticOrigin::ImplicitReturn)

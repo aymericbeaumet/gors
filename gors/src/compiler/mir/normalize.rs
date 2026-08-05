@@ -12,7 +12,8 @@ use crate::compiler::VerifiedMir;
 use crate::compiler::hir;
 use crate::compiler::ids::{BasicBlockId, LocalId};
 use crate::compiler::mir::{
-    self, Operand, PanicEdge, Rvalue, RvalueKind, Terminator, TerminatorKind,
+    self, Operand, PanicEdge, Provenance, Rvalue, RvalueKind, SyntheticOrigin, Terminator,
+    TerminatorKind,
 };
 use crate::compiler::types::{ConstValue, Ty};
 
@@ -141,7 +142,10 @@ fn propagate_block_booleans(function: &mut mir::Function) {
             });
         }
         rewrite_terminator_boolean_reads(&mut block.terminator, &constants);
-        if let TerminatorKind::SwitchBool {
+        if !matches!(
+            block.terminator.provenance,
+            Provenance::Synthetic(SyntheticOrigin::PanicCleanupDispatch)
+        ) && let TerminatorKind::SwitchBool {
             condition: Operand::Constant(ConstValue::Bool(value), Ty::Bool),
             then_target,
             else_target,
@@ -166,6 +170,7 @@ fn rewrite_rvalue_boolean_reads(rvalue: &mut Rvalue, constants: &BTreeMap<LocalI
             rewrite_boolean_read(left, constants);
             rewrite_boolean_read(right, constants);
         }
+        RvalueKind::RecoverCompareNil { .. } => {}
         RvalueKind::SliceLiteralI64(_) | RvalueKind::SliceLiteralU8(_) => {}
     }
 }
@@ -225,6 +230,7 @@ fn refresh_rvalue_effects(rvalue: &mut Rvalue) {
         | RvalueKind::Unary { operand, .. }
         | RvalueKind::Conversion { operand, .. } => operand_reads(operand),
         RvalueKind::Binary { left, right, .. } => operand_reads(left) || operand_reads(right),
+        RvalueKind::RecoverCompareNil { .. } => true,
         RvalueKind::SliceLiteralI64(_) | RvalueKind::SliceLiteralU8(_) => false,
     };
     let may_panic = matches!(
@@ -243,14 +249,19 @@ fn refresh_rvalue_effects(rvalue: &mut Rvalue) {
         } | RvalueKind::SliceLiteralI64(_)
             | RvalueKind::SliceLiteralU8(_)
     );
+    let recover = matches!(rvalue.kind, RvalueKind::RecoverCompareNil { .. });
     rvalue.effects = hir::Effects {
         may_read,
+        may_write: recover,
         may_allocate,
         may_panic,
         ..hir::Effects::default()
     };
     rvalue.panic = if may_panic {
-        PanicEdge::Propagate
+        match rvalue.panic {
+            PanicEdge::Cleanup(target) => PanicEdge::Cleanup(target),
+            PanicEdge::None | PanicEdge::Propagate => PanicEdge::Propagate,
+        }
     } else {
         PanicEdge::None
     };
@@ -326,11 +337,19 @@ fn remove_unreachable_blocks(function: &mut mir::Function) -> Result<(), Diagnos
         .cloned()
     {
         block.id = remapped_block(block.id, &remap)?;
+        for statement in &mut block.statements {
+            if let PanicEdge::Cleanup(target) = &mut statement.value.panic {
+                *target = remapped_block(*target, &remap)?;
+            }
+        }
         remap_terminator(&mut block.terminator, &remap)?;
         new_blocks.push(block);
     }
     function.blocks = new_blocks;
     function.entry = new_entry;
+    if let Some(cleanup) = &mut function.panic_cleanup {
+        cleanup.entry = remapped_block(cleanup.entry, &remap)?;
+    }
     Ok(())
 }
 
@@ -360,6 +379,9 @@ fn remap_terminator(
         }
         TerminatorKind::Call { target, .. } => *target = remapped_block(*target, remap)?,
         TerminatorKind::Return(_) | TerminatorKind::Unreachable => {}
+    }
+    if let PanicEdge::Cleanup(target) = &mut terminator.panic {
+        *target = remapped_block(*target, remap)?;
     }
     Ok(())
 }

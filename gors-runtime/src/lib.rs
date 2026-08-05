@@ -312,14 +312,14 @@ fn optional_slice_bound(bound: GoInt, default: usize) -> usize {
 #[inline(never)]
 #[allow(clippy::panic)] // This is the Go language panic boundary, not an invariant failure.
 fn index_out_of_range() -> ! {
-    std::panic::panic_any("runtime error: index out of range")
+    std::panic::resume_unwind(Box::new("runtime error: index out of range"))
 }
 
 #[cold]
 #[inline(never)]
 #[allow(clippy::panic)] // This is the Go language panic boundary, not an invariant failure.
 fn slice_bounds_out_of_range() -> ! {
-    std::panic::panic_any("runtime error: slice bounds out of range")
+    std::panic::resume_unwind(Box::new("runtime error: slice bounds out of range"))
 }
 
 /// An immutable Go string containing arbitrary bytes.
@@ -528,14 +528,14 @@ pub fn int_shr(value: GoInt, shift: GoInt) -> GoInt {
 #[inline(never)]
 #[allow(clippy::panic)] // This is the Go language panic boundary, not an invariant failure.
 fn integer_divide_by_zero() -> ! {
-    std::panic::panic_any("runtime error: integer divide by zero")
+    std::panic::resume_unwind(Box::new("runtime error: integer divide by zero"))
 }
 
 #[cold]
 #[inline(never)]
 #[allow(clippy::panic)] // This is the Go language panic boundary, not an invariant failure.
 fn negative_shift_amount() -> ! {
-    std::panic::panic_any("runtime error: negative shift amount")
+    std::panic::resume_unwind(Box::new("runtime error: negative shift amount"))
 }
 
 /// Print an exact Go boolean representation.
@@ -570,19 +570,19 @@ pub fn print_go_string(value: GoString) {
 /// Raise an explicit Go panic carrying a boolean value.
 #[allow(clippy::panic)] // This is the Go language panic boundary, not an invariant failure.
 pub fn panic_bool(value: bool) {
-    std::panic::panic_any(value)
+    std::panic::resume_unwind(Box::new(value))
 }
 
 /// Raise an explicit Go panic carrying an `int` value.
 #[allow(clippy::panic)] // This is the Go language panic boundary, not an invariant failure.
 pub fn panic_i64(value: GoInt) {
-    std::panic::panic_any(value)
+    std::panic::resume_unwind(Box::new(value))
 }
 
 /// Raise an explicit Go panic carrying a string value.
 #[allow(clippy::panic)] // This is the Go language panic boundary, not an invariant failure.
 pub fn panic_go_string(value: GoString) {
-    std::panic::panic_any(value)
+    std::panic::resume_unwind(Box::new(value))
 }
 
 fn write_stderr_bytes(bytes: &[u8]) {

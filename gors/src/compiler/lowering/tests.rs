@@ -213,6 +213,7 @@ fn rvalue_operands(kind: &RvalueKind) -> Vec<&Operand> {
     match kind {
         RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => vec![operand],
         RvalueKind::Binary { left, right, .. } => vec![left, right],
+        RvalueKind::RecoverCompareNil { .. } => Vec::new(),
     }
 }
 

@@ -515,6 +515,32 @@ fn generated_deferred_closures_capture_arguments_and_update_named_results() {
 }
 
 #[test]
+fn generated_deferred_recover_consumes_the_active_panic() {
+    let run = compile_and_run(
+        r#"
+            package main
+            func safe() {
+                defer func() {
+                    if recover() == nil {
+                        panic("missing panic")
+                    }
+                }()
+                panic("boom")
+                panic("continued after panic")
+            }
+            func main() {
+                safe()
+                println("recovered")
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"recovered\n");
+    assert!(run.rust.contains("catch_unwind"), "{}", run.rust);
+    assert!(run.rust.contains("resume_unwind"), "{}", run.rust);
+}
+
+#[test]
 fn def_id_function_names_cannot_collide_with_rust_keywords() {
     let run = compile_and_run(
         r#"

@@ -156,6 +156,10 @@ impl Function {
                 self.transfer_operand(left, state, check_reads)?;
                 self.transfer_operand(right, state, check_reads)
             }
+            RvalueKind::RecoverCompareNil {
+                state: recovery_state,
+                ..
+            } => self.transfer_operand(&Operand::Read(*recovery_state), state, check_reads),
             RvalueKind::SliceLiteralI64(_) | RvalueKind::SliceLiteralU8(_) => Ok(()),
         }
     }

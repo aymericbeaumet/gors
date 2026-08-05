@@ -20,8 +20,15 @@ pub struct Function {
     pub locals: Vec<LocalDecl>,
     pub blocks: Vec<BasicBlock>,
     pub entry: BasicBlockId,
+    pub panic_cleanup: Option<PanicCleanup>,
     pub control_flow: ControlFlowPlan,
     pub source: SourceRef,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PanicCleanup {
+    pub entry: BasicBlockId,
+    pub active: LocalId,
 }
 
 /// Final Rust artifact decisions selected before terminal syntax emission.
@@ -153,6 +160,10 @@ pub enum RvalueKind {
     Unary {
         op: ValueOp,
         operand: Operand,
+    },
+    RecoverCompareNil {
+        state: Place,
+        equal: bool,
     },
     Binary {
         op: ValueOp,
@@ -294,6 +305,7 @@ pub struct Effects {
 pub enum PanicEdge {
     None,
     Propagate,
+    Cleanup(BasicBlockId),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -305,5 +317,7 @@ pub enum Provenance {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SyntheticOrigin {
     NamedResultInitialization,
+    PanicCleanupInitialization,
+    PanicCleanupDispatch,
     ImplicitReturn,
 }

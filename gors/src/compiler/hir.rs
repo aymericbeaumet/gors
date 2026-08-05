@@ -169,6 +169,11 @@ pub enum ExprKind {
     Conversion {
         value: Box<Expr>,
     },
+    /// Compare the result of a direct `recover()` call with `nil` while
+    /// consuming the active panic when one exists.
+    RecoverCompareNil {
+        equal: bool,
+    },
     SliceLiteralI64(Vec<i64>),
     SliceLiteralU8(Vec<u8>),
     Call {

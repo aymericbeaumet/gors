@@ -97,10 +97,48 @@ fn emit_function(
         ControlFlowPlan::PcDispatchU32 => emit_pc_dispatch(function, function_names)?,
     };
 
-    let body: syn::Block = syn::parse_quote! {{
-        #(#initializers)*
-        #(#control_flow)*
-    }};
+    let body: syn::Block = if let Some(cleanup) = function.panic_cleanup {
+        let cleanup_flow = emit_pc_dispatch_from(function, function_names, cleanup.entry.0)?;
+        let active = slot_ident(cleanup.active);
+        syn::parse_quote! {{
+            #(#initializers)*
+            let __gors_execution = ::std::panic::catch_unwind(
+                ::std::panic::AssertUnwindSafe(|| {
+                    #(#control_flow)*
+                })
+            );
+            match __gors_execution {
+                ::std::result::Result::Ok(value) => value,
+                ::std::result::Result::Err(__gors_panic_payload) => {
+                    #active = ::std::option::Option::Some(true);
+                    let __gors_cleanup = ::std::panic::catch_unwind(
+                        ::std::panic::AssertUnwindSafe(|| {
+                            #(#cleanup_flow)*
+                        })
+                    );
+                    match __gors_cleanup {
+                        ::std::result::Result::Err(payload) => {
+                            ::std::panic::resume_unwind(payload)
+                        }
+                        ::std::result::Result::Ok(value) => {
+                            if *#active.as_ref().expect(
+                                "compiler read of uninitialized panic recovery state"
+                            ) {
+                                ::std::panic::resume_unwind(__gors_panic_payload)
+                            } else {
+                                value
+                            }
+                        }
+                    }
+                }
+            }
+        }}
+    } else {
+        syn::parse_quote! {{
+            #(#initializers)*
+            #(#control_flow)*
+        }}
+    };
 
     let visibility: syn::Visibility = match function.artifact.linkage {
         RustLinkage::Internal => syn::Visibility::Inherited,
@@ -185,7 +223,14 @@ fn emit_pc_dispatch(
     function: &rust_ir::Function,
     function_names: &BTreeMap<DefId, syn::Ident>,
 ) -> Result<Vec<syn::Stmt>, Diagnostic> {
-    let entry = function.entry.0;
+    emit_pc_dispatch_from(function, function_names, function.entry.0)
+}
+
+fn emit_pc_dispatch_from(
+    function: &rust_ir::Function,
+    function_names: &BTreeMap<DefId, syn::Ident>,
+    entry: u32,
+) -> Result<Vec<syn::Stmt>, Diagnostic> {
     let pc = syn::Ident::new("__gors_pc", Span::mixed_site());
     let mut arms = Vec::<syn::Arm>::new();
     for block in &function.blocks {
@@ -354,6 +399,26 @@ fn emit_rvalue(rvalue: &Rvalue, function: &rust_ir::Function) -> Result<syn::Exp
         RvalueKind::Unary { op, operand } => {
             let operand = emit_operand(operand, function)?;
             emit_value_op(*op, vec![operand])
+        }
+        RvalueKind::RecoverCompareNil { state, equal } => {
+            let state = checked_slot(*state, function)?;
+            if *equal {
+                Ok(syn::parse_quote! {{
+                    let __gors_recover_was_active = *#state.as_ref().expect(
+                        "compiler read of uninitialized panic recovery state"
+                    );
+                    #state = ::std::option::Option::Some(false);
+                    !__gors_recover_was_active
+                }})
+            } else {
+                Ok(syn::parse_quote! {{
+                    let __gors_recover_was_active = *#state.as_ref().expect(
+                        "compiler read of uninitialized panic recovery state"
+                    );
+                    #state = ::std::option::Option::Some(false);
+                    __gors_recover_was_active
+                }})
+            }
         }
         RvalueKind::Binary { op, left, right } => {
             let left = emit_operand(left, function)?;

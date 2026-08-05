@@ -1,8 +1,8 @@
 //! Canonical effect derivation for the selected Rust representation.
 
 use super::{
-    CallTarget, Constant, Effects, Operand, PanicEdge, PrimitiveOp, ReadOp, RuntimeOp, Rvalue,
-    RvalueKind, TerminatorKind, ValueOp,
+    CallTarget, Constant, Effects, Operand, PrimitiveOp, ReadOp, RuntimeOp, Rvalue, RvalueKind,
+    TerminatorKind, ValueOp,
 };
 use gors_runtime_abi::{AllocationEffect, ArgumentMutationEffect, HostIoEffect, RuntimeType};
 
@@ -16,12 +16,18 @@ pub(in crate::compiler) fn rvalue_effects(kind: &RvalueKind) -> Effects {
     let intrinsic = match kind {
         RvalueKind::Use(_) => Effects::default(),
         RvalueKind::Unary { op, .. } | RvalueKind::Binary { op, .. } => value_op_effects(*op),
+        RvalueKind::RecoverCompareNil { .. } => Effects {
+            may_read: true,
+            may_write: true,
+            ..Effects::default()
+        },
     };
     let operands = match kind {
         RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => operand_effects(operand),
         RvalueKind::Binary { left, right, .. } => {
             union(operand_effects(left), operand_effects(right))
         }
+        RvalueKind::RecoverCompareNil { .. } => Effects::default(),
     };
     union(intrinsic, operands)
 }
@@ -53,11 +59,12 @@ pub(in crate::compiler) fn terminator_effects(kind: &TerminatorKind) -> Effects 
     effects
 }
 
-pub(in crate::compiler) fn panic_edge(effects: Effects) -> PanicEdge {
+#[cfg(test)]
+pub(super) fn panic_edge(effects: Effects) -> super::PanicEdge {
     if effects.may_panic {
-        PanicEdge::Propagate
+        super::PanicEdge::Propagate
     } else {
-        PanicEdge::None
+        super::PanicEdge::None
     }
 }
 

@@ -1,3 +1,4 @@
+use super::effects::panic_edge;
 use super::*;
 
 fn lower(source: &str) -> File {
@@ -756,6 +757,7 @@ fn rvalue_read_op_mut(rvalue: &mut Rvalue, expected: ReadOp) -> Option<&mut Read
         RvalueKind::Binary { left, right, .. } => {
             operand_read_op_mut(left, expected).or_else(|| operand_read_op_mut(right, expected))
         }
+        RvalueKind::RecoverCompareNil { .. } => None,
     }
 }
 

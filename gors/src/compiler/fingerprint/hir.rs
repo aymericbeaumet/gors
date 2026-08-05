@@ -357,6 +357,11 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
         hir::ExprKind::Conversion { value } => encoder.variant(b"conversion", |encoder| {
             encode_expression(encoder, value);
         }),
+        hir::ExprKind::RecoverCompareNil { equal } => {
+            encoder.variant(b"recover-compare-nil", |encoder| {
+                encoder.field(b"equal", |encoder| encoder.bool(*equal));
+            });
+        }
         hir::ExprKind::SliceLiteralI64(elements) => {
             encoder.variant(b"slice-literal-i64", |encoder| {
                 encoder.sequence(elements, |encoder, element| encoder.i64(*element));

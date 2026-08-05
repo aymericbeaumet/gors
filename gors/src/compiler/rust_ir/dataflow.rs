@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use super::{
     BasicBlock, BasicBlockId, Function, LocalId, Operand, ReadOp, RustType, Rvalue, RvalueKind,
-    SlotInitialization, Terminator, TerminatorKind, panic_edge, rvalue_effects, statement_effects,
+    SlotInitialization, Terminator, TerminatorKind, rvalue_effects, statement_effects,
     terminator_effects,
 };
 use crate::compiler::Diagnostic;
@@ -149,6 +149,13 @@ impl Function {
                 )?;
             }
             reverse_plan.reverse();
+            if self.panic_cleanup.is_some() {
+                for operation in &mut reverse_plan {
+                    if *operation == ReadOp::ProvenLastUseMove {
+                        *operation = ReadOp::ProvenInitializedClone;
+                    }
+                }
+            }
             plans.insert(*block_id, reverse_plan);
         }
         Ok(plans)
@@ -314,6 +321,18 @@ impl Function {
                 self.transfer_operand(left, state, check_reads)?;
                 self.transfer_operand(right, state, check_reads)
             }
+            RvalueKind::RecoverCompareNil {
+                state: recovery_state,
+                ..
+            } => {
+                if check_reads && !state.contains(&recovery_state.local) {
+                    return Err(Diagnostic::backend(format!(
+                        "Rust IR reads panic recovery local {} before initialization",
+                        recovery_state.local.0
+                    )));
+                }
+                Ok(())
+            }
         }
     }
 
@@ -387,6 +406,9 @@ fn add_rvalue_uses_backwards(rvalue: &Rvalue, live: &mut BTreeSet<LocalId>) {
             add_operand_use(right, live);
             add_operand_use(left, live);
         }
+        RvalueKind::RecoverCompareNil { state, .. } => {
+            live.insert(state.local);
+        }
     }
 }
 
@@ -441,6 +463,10 @@ fn plan_rvalue_backwards(
             plan_operand_backwards(right, live, local_types, reverse_plan)?;
             plan_operand_backwards(left, live, local_types, reverse_plan)
         }
+        RvalueKind::RecoverCompareNil { state, .. } => {
+            live.insert(state.local);
+            Ok(())
+        }
     }
 }
 
@@ -480,6 +506,7 @@ fn apply_rvalue_plan(
             apply_operand_plan(left, plan, cursor)?;
             apply_operand_plan(right, plan, cursor)
         }
+        RvalueKind::RecoverCompareNil { .. } => Ok(()),
     }
 }
 
@@ -533,6 +560,7 @@ fn collect_rvalue_reads(rvalue: &Rvalue, reads: &mut Vec<(LocalId, ReadOp)>) {
             collect_operand_read(left, reads);
             collect_operand_read(right, reads);
         }
+        RvalueKind::RecoverCompareNil { .. } => {}
     }
 }
 
@@ -559,12 +587,22 @@ fn refresh_effects(function: &mut Function) {
         for statement in &mut block.statements {
             let effects = rvalue_effects(&statement.value.kind);
             statement.value.effects = effects;
-            statement.value.panic = panic_edge(effects);
+            statement.value.panic = refreshed_panic_edge(statement.value.panic, effects);
             statement.effects = statement_effects(&statement.value);
         }
         let effects = terminator_effects(&block.terminator.kind);
         block.terminator.effects = effects;
-        block.terminator.panic = panic_edge(effects);
+        block.terminator.panic = refreshed_panic_edge(block.terminator.panic, effects);
+    }
+}
+
+fn refreshed_panic_edge(edge: super::PanicEdge, effects: super::Effects) -> super::PanicEdge {
+    if !effects.may_panic {
+        return super::PanicEdge::None;
+    }
+    match edge {
+        super::PanicEdge::Cleanup(target) => super::PanicEdge::Cleanup(target),
+        super::PanicEdge::None | super::PanicEdge::Propagate => super::PanicEdge::Propagate,
     }
 }
 

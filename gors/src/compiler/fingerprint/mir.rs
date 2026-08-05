@@ -45,6 +45,12 @@ fn encode_function(encoder: &mut Encoder, function: &mir::Function) {
         encoder.sequence(&function.blocks, encode_block);
     });
     encoder.field(b"entry", |encoder| block_id(encoder, function.entry));
+    encoder.field(b"panic-cleanup", |encoder| {
+        encoder.option(function.panic_cleanup.as_ref(), |encoder, cleanup| {
+            encoder.field(b"entry", |encoder| block_id(encoder, cleanup.entry));
+            encoder.field(b"active", |encoder| local_id(encoder, cleanup.active));
+        });
+    });
     encoder.field(b"source", |encoder| source_ref(encoder, function.source));
 }
 
@@ -141,6 +147,12 @@ fn encode_rvalue_kind(encoder: &mut Encoder, kind: &mir::RvalueKind) {
                 encoder.field(b"operand", |encoder| encode_operand(encoder, operand));
                 encoder.field(b"from", |encoder| ty(encoder, from));
                 encoder.field(b"to", |encoder| ty(encoder, to));
+            });
+        }
+        mir::RvalueKind::RecoverCompareNil { state, equal } => {
+            encoder.variant(b"recover-compare-nil", |encoder| {
+                encoder.field(b"state", |encoder| encode_place(encoder, *state));
+                encoder.field(b"equal", |encoder| encoder.bool(*equal));
             });
         }
         mir::RvalueKind::Binary {
@@ -293,13 +305,13 @@ fn encode_binary_op(encoder: &mut Encoder, op: hir::BinaryOp) {
 }
 
 fn encode_panic(encoder: &mut Encoder, panic: mir::PanicEdge) {
-    encoder.variant(
-        match panic {
-            mir::PanicEdge::None => b"none",
-            mir::PanicEdge::Propagate => b"propagate",
-        },
-        |_| {},
-    );
+    match panic {
+        mir::PanicEdge::None => encoder.variant(b"none", |_| {}),
+        mir::PanicEdge::Propagate => encoder.variant(b"propagate", |_| {}),
+        mir::PanicEdge::Cleanup(target) => {
+            encoder.variant(b"cleanup", |encoder| block_id(encoder, target));
+        }
+    }
 }
 
 fn encode_provenance(encoder: &mut Encoder, provenance: &mir::Provenance) {
@@ -314,6 +326,10 @@ fn encode_provenance(encoder: &mut Encoder, provenance: &mir::Provenance) {
                         mir::SyntheticOrigin::NamedResultInitialization => {
                             b"named-result-initialization"
                         }
+                        mir::SyntheticOrigin::PanicCleanupInitialization => {
+                            b"panic-cleanup-initialization"
+                        }
+                        mir::SyntheticOrigin::PanicCleanupDispatch => b"panic-cleanup-dispatch",
                         mir::SyntheticOrigin::ImplicitReturn => b"implicit-return",
                     },
                     |_| {},

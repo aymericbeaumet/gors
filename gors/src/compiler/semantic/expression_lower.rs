@@ -162,6 +162,44 @@ impl FunctionLowerer {
                 }
             }
             ExprSyntaxKind::Binary { left, token, right } => {
+                if matches!(token, Token::EQL | Token::NEQ)
+                    && let Some((arguments, spread)) = recover_nil_comparison(left, right)
+                {
+                    if spread || !arguments.is_empty() {
+                        return Err(Diagnostic::semantic(
+                            "recover requires no arguments",
+                            source,
+                        ));
+                    }
+                    let equal = *token == Token::EQL;
+                    let mut recovered = if !self.inside_deferred_closure {
+                        hir::Expr {
+                            node,
+                            kind: hir::ExprKind::Constant(ConstValue::Bool(equal)),
+                            ty: Ty::Bool,
+                            category: hir::ValueCategory::Constant,
+                            effects: hir::Effects::default(),
+                            source,
+                        }
+                    } else {
+                        hir::Expr {
+                            node,
+                            kind: hir::ExprKind::RecoverCompareNil { equal },
+                            ty: Ty::Bool,
+                            category: hir::ValueCategory::Value,
+                            effects: hir::Effects {
+                                may_read: true,
+                                may_write: true,
+                                ..hir::Effects::default()
+                            },
+                            source,
+                        }
+                    };
+                    if let Some(expected) = expected {
+                        coerce_expr(&mut recovered, expected, source)?;
+                    }
+                    return Ok(recovered);
+                }
                 let mut left = self.lower_expr(left, None)?;
                 let mut right = self.lower_expr(right, None)?;
                 let op = lower_binary_op(*token).ok_or_else(|| {
@@ -378,6 +416,12 @@ impl FunctionLowerer {
                             vec![],
                             false,
                         ),
+                        "recover" => {
+                            return Err(Diagnostic::unsupported(
+                                "recover results are currently supported in direct nil comparisons",
+                                source,
+                            ));
+                        }
                         name => {
                             return Err(Diagnostic::semantic(
                                 format!("undefined function {name}"),
@@ -823,6 +867,37 @@ impl FunctionLowerer {
         }
         Ok(lowered)
     }
+}
+
+fn recover_nil_comparison<'a>(
+    left: &'a ExprSyntax,
+    right: &'a ExprSyntax,
+) -> Option<(&'a [ExprSyntax], bool)> {
+    recover_call(left)
+        .filter(|_| is_nil_identifier(right))
+        .or_else(|| recover_call(right).filter(|_| is_nil_identifier(left)))
+}
+
+fn recover_call(expression: &ExprSyntax) -> Option<(&[ExprSyntax], bool)> {
+    let ExprSyntaxKind::Call {
+        callee,
+        arguments,
+        spread,
+    } = &expression.kind
+    else {
+        return None;
+    };
+    let ExprSyntaxKind::Ident(callee) = &callee.kind else {
+        return None;
+    };
+    (callee.name.as_ref() == "recover").then_some((arguments, *spread))
+}
+
+fn is_nil_identifier(expression: &ExprSyntax) -> bool {
+    matches!(
+        &expression.kind,
+        ExprSyntaxKind::Ident(identifier) if identifier.name.as_ref() == "nil"
+    )
 }
 
 fn slice_runtime_effects(

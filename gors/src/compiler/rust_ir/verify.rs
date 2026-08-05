@@ -153,9 +153,40 @@ impl Function {
             }
             self.verify_terminator(&block.terminator, signatures)?;
         }
+        self.verify_panic_cleanup()?;
         self.verify_control_flow_plan()?;
         self.verify_storage_dataflow()?;
         Ok(runtime_requirement(self))
+    }
+
+    fn verify_panic_cleanup(&self) -> Result<(), Diagnostic> {
+        if let Some(cleanup) = self.panic_cleanup {
+            self.verify_target(cleanup.entry)?;
+            verify_same(
+                self.place_ty(Place {
+                    local: cleanup.active,
+                })?,
+                RustType::Bool,
+                "panic cleanup state",
+            )?;
+        }
+        for block in &self.blocks {
+            for edge in block
+                .statements
+                .iter()
+                .map(|statement| statement.value.panic)
+                .chain(std::iter::once(block.terminator.panic))
+            {
+                if let PanicEdge::Cleanup(target) = edge
+                    && self.panic_cleanup.map(|cleanup| cleanup.entry) != Some(target)
+                {
+                    return Err(Diagnostic::backend(
+                        "Rust IR panic edge does not target the function cleanup entry",
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn verify_control_flow_plan(&self) -> Result<(), Diagnostic> {
@@ -238,6 +269,14 @@ impl Function {
             RvalueKind::Unary { op, operand } => {
                 let operand = self.operand_ty(operand)?;
                 verify_value_operation(*op, &[operand], "unary operation")?
+            }
+            RvalueKind::RecoverCompareNil { state, .. } => {
+                verify_same(
+                    self.place_ty(*state)?,
+                    RustType::Bool,
+                    "panic recovery state",
+                )?;
+                RustType::Bool
             }
             RvalueKind::Binary { op, left, right } => {
                 let left = self.operand_ty(left)?;
@@ -507,6 +546,7 @@ fn collect_rvalue_runtime_operations(rvalue: &Rvalue, operations: &mut Vec<Runti
             collect_operand_runtime_operations(left, operations);
             collect_operand_runtime_operations(right, operations);
         }
+        RvalueKind::RecoverCompareNil { .. } => {}
     }
 }
 
@@ -558,14 +598,14 @@ fn verify_effects(actual: Effects, expected: Effects, context: &str) -> Result<(
 }
 
 fn verify_panic(effects: Effects, edge: PanicEdge, context: &str) -> Result<(), Diagnostic> {
-    let expected = if effects.may_panic {
-        PanicEdge::Propagate
+    let valid = if effects.may_panic {
+        matches!(edge, PanicEdge::Propagate | PanicEdge::Cleanup(_))
     } else {
-        PanicEdge::None
+        edge == PanicEdge::None
     };
-    (edge == expected).then_some(()).ok_or_else(|| {
+    valid.then_some(()).ok_or_else(|| {
         Diagnostic::backend(format!(
-            "Rust IR {context} panic edge mismatch: expected {expected:?}, found {edge:?}"
+            "Rust IR {context} panic edge mismatch for effects {effects:?}: found {edge:?}"
         ))
     })
 }
@@ -585,6 +625,7 @@ fn verify_source_provenance(
 ) -> Result<(), Diagnostic> {
     match provenance {
         Provenance::Source(source) => verify_source_ref(*source, owner, context),
+        Provenance::Synthetic(SyntheticOrigin::PanicCleanupDispatch) => Ok(()),
         Provenance::Synthetic(origin) => Err(Diagnostic::backend(format!(
             "synthetic provenance {origin:?} is invalid for {context}"
         ))),
@@ -594,7 +635,10 @@ fn verify_source_provenance(
 fn verify_statement_provenance(provenance: &Provenance, owner: DefId) -> Result<(), Diagnostic> {
     match provenance {
         Provenance::Source(source) => verify_source_ref(*source, owner, "statement"),
-        Provenance::Synthetic(SyntheticOrigin::NamedResultInitialization) => Ok(()),
+        Provenance::Synthetic(
+            SyntheticOrigin::NamedResultInitialization
+            | SyntheticOrigin::PanicCleanupInitialization,
+        ) => Ok(()),
         Provenance::Synthetic(other) => Err(Diagnostic::backend(format!(
             "synthetic provenance {other:?} is invalid for a statement"
         ))),
@@ -604,7 +648,10 @@ fn verify_statement_provenance(provenance: &Provenance, owner: DefId) -> Result<
 fn verify_rvalue_provenance(provenance: &Provenance, owner: DefId) -> Result<(), Diagnostic> {
     match provenance {
         Provenance::Source(source) => verify_source_ref(*source, owner, "rvalue"),
-        Provenance::Synthetic(SyntheticOrigin::NamedResultInitialization) => Ok(()),
+        Provenance::Synthetic(
+            SyntheticOrigin::NamedResultInitialization
+            | SyntheticOrigin::PanicCleanupInitialization,
+        ) => Ok(()),
         Provenance::Synthetic(other) => Err(Diagnostic::backend(format!(
             "synthetic provenance {other:?} is invalid for an rvalue"
         ))),
@@ -614,7 +661,9 @@ fn verify_rvalue_provenance(provenance: &Provenance, owner: DefId) -> Result<(),
 fn verify_terminator_provenance(provenance: &Provenance, owner: DefId) -> Result<(), Diagnostic> {
     match provenance {
         Provenance::Source(source) => verify_source_ref(*source, owner, "terminator"),
-        Provenance::Synthetic(SyntheticOrigin::ImplicitReturn) => Ok(()),
+        Provenance::Synthetic(
+            SyntheticOrigin::ImplicitReturn | SyntheticOrigin::PanicCleanupDispatch,
+        ) => Ok(()),
         Provenance::Synthetic(other) => Err(Diagnostic::backend(format!(
             "synthetic provenance {other:?} is invalid for a terminator"
         ))),

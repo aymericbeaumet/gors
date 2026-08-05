@@ -1,7 +1,7 @@
 //! Function-exit and label control-flow helpers.
 
-use super::super::construct::make_terminator;
-use super::super::{Operand, Place, Provenance, TerminatorKind};
+use super::super::construct::{make_rvalue, make_statement, make_terminator};
+use super::super::{Operand, Place, Provenance, RvalueKind, TerminatorKind};
 use super::FunctionLowerer;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
@@ -10,6 +10,49 @@ use crate::compiler::provenance::SourceRef;
 use crate::compiler::types::Ty;
 
 impl FunctionLowerer {
+    pub(super) fn lower_return(
+        &mut self,
+        values: &[hir::Expr],
+        source: SourceRef,
+    ) -> Result<(), Diagnostic> {
+        let operands = self.lower_return_values(values)?;
+        let returned = if self.named_results.is_empty() {
+            operands
+        } else {
+            if self.named_results.len() != operands.len() {
+                return Err(Diagnostic::backend(
+                    "named-result arity changed before MIR lowering",
+                ));
+            }
+            let mut returned = Vec::with_capacity(operands.len());
+            let named_results = self.named_results.clone();
+            for (named_result, operand) in named_results.into_iter().zip(operands) {
+                if let Some(local) = named_result {
+                    let provenance = Provenance::Source(source);
+                    let value = make_rvalue(
+                        RvalueKind::Use(operand),
+                        hir::Effects::default(),
+                        provenance.clone(),
+                    );
+                    self.push_statement(make_statement(Place { local }, value, provenance))?;
+                    returned.push(Operand::Read(Place { local }));
+                } else {
+                    returned.push(operand);
+                }
+            }
+            returned
+        };
+        self.lower_deferred()?;
+        if !self.is_terminated(self.current)? {
+            self.terminate(make_terminator(
+                TerminatorKind::Return(returned),
+                hir::Effects::default(),
+                Provenance::Source(source),
+            ))?;
+        }
+        Ok(())
+    }
+
     pub(super) fn lower_return_values(
         &mut self,
         values: &[hir::Expr],
