@@ -11,8 +11,8 @@ use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{
-    DeclSyntax, ExprSyntax, ExprSyntaxKind, StmtSyntax, StmtSyntaxKind, SyntaxSource,
-    ValueSpecSyntax,
+    DeclSyntax, ExprSyntax, ExprSyntaxKind, StmtSyntax, StmtSyntaxKind, SwitchCaseSyntax,
+    SyntaxSource, ValueSpecSyntax,
 };
 use crate::compiler::types::{ConstValue, IntTy, Ty};
 
@@ -190,6 +190,9 @@ impl FunctionLowerer {
                     body,
                 }
             }
+            StmtSyntaxKind::Switch { init, tag, cases } => {
+                return self.lower_switch(stmt, init.as_deref(), tag.as_ref(), cases, source);
+            }
             StmtSyntaxKind::Branch { token, label } => {
                 let label = label.as_ref().map(|label| label.name.to_string());
                 let target_exists = label.as_ref().map_or_else(
@@ -220,6 +223,145 @@ impl FunctionLowerer {
             }
         };
         Ok(Some(hir::Stmt { node, kind, source }))
+    }
+
+    fn lower_switch(
+        &mut self,
+        statement: &StmtSyntax,
+        init: Option<&StmtSyntax>,
+        tag: Option<&ExprSyntax>,
+        cases: &[SwitchCaseSyntax],
+        source: SourceRef,
+    ) -> Result<Option<hir::Stmt>, Diagnostic> {
+        self.push_scope();
+        let mut statements = Vec::new();
+        if let Some(init) = init
+            && let Some(init) = self.lower_stmt(init)?
+        {
+            statements.push(init);
+        }
+
+        let tag_local = if let Some(tag) = tag {
+            let tag = default_expr_type(self.lower_expr(tag, None)?, source)?;
+            ensure_bootstrap_value_type(&tag.ty, source)?;
+            let local = self.alloc_local(
+                None,
+                tag.ty.clone(),
+                hir::LocalKind::Temporary,
+                statement.source,
+            )?;
+            let node = self.alloc_node(statement.source)?;
+            statements.push(hir::Stmt {
+                node,
+                kind: hir::StmtKind::Let {
+                    destinations: vec![hir::Place::Local(local)],
+                    values: vec![tag],
+                },
+                source: SourceRef::node(node),
+            });
+            Some(local)
+        } else {
+            None
+        };
+
+        let mut default = None;
+        let mut branches = Vec::new();
+        for case in cases {
+            let body = self.lower_block(&case.body, true)?;
+            if case.expressions.is_empty() {
+                if default.replace((case.source, body)).is_some() {
+                    self.pop_scope();
+                    return Err(Diagnostic::semantic(
+                        "expression switch has multiple default cases",
+                        source,
+                    ));
+                }
+                continue;
+            }
+            let mut conditions = Vec::new();
+            for expression in &*case.expressions {
+                let condition = if let Some(tag_local) = tag_local {
+                    let tag_ty = self.place_ty(hir::Place::Local(tag_local))?.clone();
+                    let right = self.lower_expr(expression, Some(&tag_ty))?;
+                    let left_node = self.alloc_node(expression.source)?;
+                    let left = self.local_expr(left_node, tag_local, tag_ty);
+                    let node = self.alloc_node(expression.source)?;
+                    hir::Expr {
+                        node,
+                        ty: Ty::Bool,
+                        category: hir::ValueCategory::Value,
+                        effects: left.effects.union(right.effects),
+                        kind: hir::ExprKind::Binary {
+                            op: hir::BinaryOp::Equal,
+                            left: Box::new(left),
+                            right: Box::new(right),
+                        },
+                        source: SourceRef::node(node),
+                    }
+                } else {
+                    self.lower_expr(expression, Some(&Ty::Bool))?
+                };
+                conditions.push(condition);
+            }
+            let mut conditions = conditions.into_iter();
+            let mut condition = conditions
+                .next()
+                .ok_or_else(|| Diagnostic::backend("switch case lost its expressions"))?;
+            for right in conditions {
+                let node = self.alloc_node(case.source)?;
+                condition = hir::Expr {
+                    node,
+                    ty: Ty::Bool,
+                    category: hir::ValueCategory::Value,
+                    effects: condition.effects.union(right.effects),
+                    kind: hir::ExprKind::Binary {
+                        op: hir::BinaryOp::LogicalOr,
+                        left: Box::new(condition),
+                        right: Box::new(right),
+                    },
+                    source: SourceRef::node(node),
+                };
+            }
+            branches.push((case.source, condition, body));
+        }
+
+        let mut tail = if let Some((case_source, block)) = default {
+            let node = self.alloc_node(case_source)?;
+            Some(Box::new(hir::Stmt {
+                node,
+                source: SourceRef::node(node),
+                kind: hir::StmtKind::Block(block),
+            }))
+        } else {
+            None
+        };
+        for (case_source, condition, then_block) in branches.into_iter().rev() {
+            let node = self.alloc_node(case_source)?;
+            tail = Some(Box::new(hir::Stmt {
+                node,
+                kind: hir::StmtKind::If {
+                    init: None,
+                    condition,
+                    then_block,
+                    else_branch: tail,
+                },
+                source: SourceRef::node(node),
+            }));
+        }
+        if let Some(tail) = tail {
+            statements.push(*tail);
+        }
+        self.pop_scope();
+        let block_node = self.alloc_node(statement.source)?;
+        Ok(Some(hir::Stmt {
+            node: block_node,
+            kind: hir::StmtKind::Block(hir::Block {
+                node: block_node,
+                stmts: statements,
+                source: SourceRef::node(block_node),
+            }),
+            source: SourceRef::node(block_node),
+        }))
     }
 
     fn lower_local_decl(

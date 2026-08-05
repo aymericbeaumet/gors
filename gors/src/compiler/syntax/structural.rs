@@ -121,11 +121,23 @@ pub enum StmtSyntaxKind {
         post: Option<Box<StmtSyntax>>,
         body: BlockSyntax,
     },
+    Switch {
+        init: Option<Box<StmtSyntax>>,
+        tag: Option<ExprSyntax>,
+        cases: Arc<[SwitchCaseSyntax]>,
+    },
     Branch {
         token: Token,
         label: Option<IdentSyntax>,
     },
     Unsupported(&'static str),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SwitchCaseSyntax {
+    pub(crate) source: SyntaxSource,
+    pub(crate) expressions: Arc<[ExprSyntax]>,
+    pub(crate) body: BlockSyntax,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

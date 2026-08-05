@@ -11,8 +11,8 @@ use crate::token::{Position, Token};
 use super::{
     BlockSyntax, ConstantLayout, ConstantSyntax, ConstantValueSyntax, DeclSyntax, ExprSyntax,
     ExprSyntaxKind, FieldListSyntax, FieldSyntax, FunctionBodySyntax, FunctionHeaderSyntax,
-    FunctionLayout, IdentSyntax, SemanticTokenStream, StmtSyntax, StmtSyntaxKind, SyntaxAnchor,
-    SyntaxSource, SyntaxSourceRegion, ValueSpecSyntax,
+    FunctionLayout, IdentSyntax, SemanticTokenStream, StmtSyntax, StmtSyntaxKind, SwitchCaseSyntax,
+    SyntaxAnchor, SyntaxSource, SyntaxSourceRegion, ValueSpecSyntax,
 };
 
 pub struct ProjectedFunctionSyntax {
@@ -45,6 +45,7 @@ pub enum ProjectionError {
     MissingFunctionToken,
     MissingBodyBrace,
     MissingBodylessTerminator,
+    InvalidSwitchBody,
     OffsetOutsideTextDomain { offset: usize },
     ReversedRange { start: usize, end: usize },
 }
@@ -60,6 +61,9 @@ impl fmt::Display for ProjectionError {
             }
             Self::MissingBodylessTerminator => {
                 formatter.write_str("parser observations omitted a bodyless declaration terminator")
+            }
+            Self::InvalidSwitchBody => {
+                formatter.write_str("parser produced a non-case statement in a switch body")
             }
             Self::OffsetOutsideTextDomain { offset } => {
                 write!(
@@ -489,7 +493,7 @@ impl StructuralProjector {
             ast::Stmt::RangeStmt(_) => StmtSyntaxKind::Unsupported("range statement"),
             ast::Stmt::SelectStmt(_) => StmtSyntaxKind::Unsupported("select statement"),
             ast::Stmt::SendStmt(_) => StmtSyntaxKind::Unsupported("send statement"),
-            ast::Stmt::SwitchStmt(_) => StmtSyntaxKind::Unsupported("switch statement"),
+            ast::Stmt::SwitchStmt(statement) => self.switch_statement(statement)?,
             ast::Stmt::TypeSwitchStmt(_) => StmtSyntaxKind::Unsupported("type switch statement"),
         };
         Ok(StmtSyntax { source, kind })
@@ -518,6 +522,55 @@ impl StructuralProjector {
                 .map(|statement| self.statement(statement).map(Box::new))
                 .transpose()?,
             body: self.block(&statement.body)?,
+        })
+    }
+
+    fn switch_statement(
+        &mut self,
+        statement: &ast::SwitchStmt<'_>,
+    ) -> Result<StmtSyntaxKind, ProjectionError> {
+        let init = statement
+            .init
+            .as_deref()
+            .map(|statement| self.statement(statement).map(Box::new))
+            .transpose()?;
+        let tag = statement
+            .tag
+            .as_ref()
+            .map(|expression| self.expression(expression))
+            .transpose()?;
+        let mut cases = Vec::new();
+        for statement in &statement.body.list {
+            let ast::Stmt::CaseClause(case) = statement else {
+                return Err(ProjectionError::InvalidSwitchBody);
+            };
+            let source = self.source(&case.case)?;
+            let expressions = case
+                .list
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .map(|expression| self.expression(expression))
+                .collect::<Result<Vec<_>, _>>()?;
+            let body_source = self.source(&case.colon)?;
+            let body = case
+                .body
+                .iter()
+                .map(|statement| self.statement(statement))
+                .collect::<Result<Vec<_>, _>>()?;
+            cases.push(SwitchCaseSyntax {
+                source,
+                expressions: expressions.into(),
+                body: BlockSyntax {
+                    source: body_source,
+                    statements: body.into(),
+                },
+            });
+        }
+        Ok(StmtSyntaxKind::Switch {
+            init,
+            tag,
+            cases: cases.into(),
         })
     }
 

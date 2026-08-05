@@ -13,9 +13,9 @@
     "groupCount": 15,
     "passingGroupCount": 0,
     "caseCount": 211,
-    "passingCaseCount": 14,
-    "unsupportedCaseCount": 197,
-    "fixtureCount": 14
+    "passingCaseCount": 16,
+    "unsupportedCaseCount": 195,
+    "fixtureCount": 15
   },
   "groups": [
     {
@@ -1356,15 +1356,16 @@
       "title": "Statements",
       "subtitle": "",
       "fixtures": [
-        "declarations_and_scope_labels"
+        "declarations_and_scope_labels",
+        "switch_statements"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 46,
-        "passingCaseCount": 0,
-        "unsupportedCaseCount": 46,
-        "fixtureCount": 1
+        "passingCaseCount": 2,
+        "unsupportedCaseCount": 44,
+        "fixtureCount": 2
       },
       "cases": [
         {
@@ -1485,18 +1486,28 @@
           "title": "Expression switches support init clauses and omitted switch expressions",
           "subtitle": "Switch statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: switch_statements."
+          "status": "passing",
+          "fixtures": [
+            "switch_statements"
+          ],
+          "freshFixtures": [
+            "switch_statements"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-switch-multiple-expressions",
           "title": "Switch cases accept multiple matching expressions",
           "subtitle": "Switch statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: switch_statements."
+          "status": "passing",
+          "fixtures": [
+            "switch_statements"
+          ],
+          "freshFixtures": [
+            "switch_statements"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-switch-source-order-and-default",

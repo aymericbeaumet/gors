@@ -241,6 +241,31 @@ fn labeled_loop_branches_target_the_named_enclosing_loop() {
 }
 
 #[test]
+fn expression_switch_evaluates_its_tag_once() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            func tag() int {
+                println("tag")
+                return 2
+            }
+
+            func main() {
+                switch value := tag(); value {
+                case 1, 2:
+                    println("matched")
+                default:
+                    panic("switch default selected")
+                }
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"tag\nmatched\n");
+}
+
+#[test]
 fn generated_rust_preserves_arbitrary_string_bytes() {
     let run = compile_and_run(
         r#"

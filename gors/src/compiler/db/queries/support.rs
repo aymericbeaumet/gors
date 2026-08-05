@@ -214,6 +214,22 @@ impl PackageReferenceCollector {
                 }
                 self.scopes.pop();
             }
+            StmtSyntaxKind::Switch { init, tag, cases } => {
+                self.scopes.push(BTreeSet::new());
+                if let Some(init) = init {
+                    self.statement(init);
+                }
+                if let Some(tag) = tag {
+                    self.expression(tag);
+                }
+                for case in &**cases {
+                    for expression in &*case.expressions {
+                        self.expression(expression);
+                    }
+                    self.block(&case.body, true);
+                }
+                self.scopes.pop();
+            }
         }
     }
 
