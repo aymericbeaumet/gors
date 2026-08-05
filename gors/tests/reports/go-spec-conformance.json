@@ -13,9 +13,9 @@
     "groupCount": 15,
     "passingGroupCount": 0,
     "caseCount": 211,
-    "passingCaseCount": 12,
-    "unsupportedCaseCount": 199,
-    "fixtureCount": 12
+    "passingCaseCount": 13,
+    "unsupportedCaseCount": 198,
+    "fixtureCount": 13
   },
   "groups": [
     {
@@ -308,15 +308,16 @@
       "title": "Constants",
       "subtitle": "",
       "fixtures": [
-        "_negative/constants_representability"
+        "_negative/constants_representability",
+        "large_constant_precision"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 10,
-        "passingCaseCount": 1,
-        "unsupportedCaseCount": 9,
-        "fixtureCount": 1
+        "passingCaseCount": 2,
+        "unsupportedCaseCount": 8,
+        "fixtureCount": 2
       },
       "cases": [
         {
@@ -378,9 +379,14 @@
           "title": "Constant folding preserves integer intermediates through at least 256 bits",
           "subtitle": "Constants",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: large_constant_precision."
+          "status": "passing",
+          "fixtures": [
+            "large_constant_precision"
+          ],
+          "freshFixtures": [
+            "large_constant_precision"
+          ],
+          "reason": ""
         },
         {
           "id": "constants-representability",

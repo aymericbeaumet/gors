@@ -127,8 +127,8 @@ pub(super) fn lower_constant(
         .as_ref()
         .map(|ty| lower_type(ty, source))
         .transpose()?
-        .unwrap_or_else(|| raw_ty.default_typed());
-    ensure_bootstrap_value_type(&ty, source)?;
+        .unwrap_or_else(|| raw_ty.clone());
+    ensure_bootstrap_value_type(&ty.default_typed(), source)?;
     if !is_assignable(&raw_ty, &ty) {
         return Err(Diagnostic::semantic(
             format!("constant {} is not assignable to {ty:?}", syntax.name.name),

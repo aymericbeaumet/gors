@@ -186,6 +186,28 @@ fn generated_rust_executes_go_int_edge_semantics() {
 }
 
 #[test]
+fn untyped_package_constants_remain_exact_until_use() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            const (
+                highBit = 1 << 255
+                folded = ((1 << 200) + (1 << 199)) >> 190
+                lowBits = (highBit - 1) & 0xffff
+            )
+
+            func main() {
+                println(folded)
+                println(lowBits)
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"1536\n65535\n");
+}
+
+#[test]
 fn generated_rust_preserves_arbitrary_string_bytes() {
     let run = compile_and_run(
         r#"
