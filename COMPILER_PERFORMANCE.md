@@ -570,7 +570,7 @@ runtime and terminal-rustc feasibility decision; reachable content-addressed
 SDK shards; and enough generic language and package support to benchmark real
 stdlib work.
 
-Some cutover foundations already point in the correct direction: source mapping
+Several foundations already point in the correct direction: source mapping
 is an explicit `SourceMapPlan`, `CompiledProgram` separates its entry from a
 deterministic module map, and the printer has no output cache or post-syn
 ordering transform. Preserve those explicit value boundaries as they move into

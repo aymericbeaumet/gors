@@ -2,6 +2,7 @@
 
 mod dataflow;
 mod effects;
+mod idiom;
 mod model;
 mod verify;
 
@@ -20,6 +21,7 @@ pub(in crate::compiler) use dataflow::select_read_operations;
 pub(in crate::compiler) use effects::{
     panic_edge, rvalue_effects, statement_effects, terminator_effects,
 };
+pub(in crate::compiler) use idiom::select_control_flow_plan;
 pub(super) fn verify(file: &File) -> Result<RuntimeRequirement, Diagnostic> {
     file.verify()
 }

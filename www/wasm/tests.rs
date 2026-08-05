@@ -80,7 +80,7 @@ fn runtime_dependency_is_unconditional_and_target_neutral() {
 }
 
 #[test]
-fn supported_comments_are_preserved_without_legacy_statement_mapping() {
+fn supported_comments_are_preserved_through_semantic_lowering() {
     let input = r#"package main
 
 func main() {

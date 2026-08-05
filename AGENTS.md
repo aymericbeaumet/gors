@@ -5,8 +5,7 @@ non-obvious operating constraint changes.
 
 ## Project
 
-gors is a Go-to-Rust compiler written in Rust. The compiler has completed an
-intentional hard cutover. There is one supported architecture:
+gors is a Go-to-Rust compiler written in Rust. Its production architecture is:
 
     Go source
       -> scanner and parser
@@ -20,8 +19,8 @@ intentional hard cutover. There is one supported architecture:
       -> prettyplease
       -> Rust source
 
-Backward compatibility with the removed compiler is not a goal. Prefer a clear
-unsupported diagnostic over fallback to an old lowering path.
+Every supported construct travels through this complete pipeline. Constructs
+outside the semantic model receive a structured source diagnostic.
 
 ## Non-negotiable compiler boundaries
 
@@ -30,7 +29,7 @@ unsupported diagnostic over fallback to an old lowering path.
 - The typed HIR, Go MIR, and Rust IR pipeline is the only production compiler.
 - Do not add a direct Go AST to syn path, per-node fallback, compatibility
   adapter, feature flag, or second backend.
-- Delete obsolete code instead of leaving dormant legacy modules in the tree.
+- Delete obsolete code instead of leaving dormant alternate modules in the tree.
 - A Go construct not represented by the new semantic model must fail with a
   structured source diagnostic.
 
@@ -290,7 +289,7 @@ target-rustlib inventory, or link-plan reselection. It executes directly. A
 generated-Rust hit that still needs a refreshed link descriptor or executable
 may resolve the terminal provider only after that cheaper admission fails.
 
-The CLI product split is destructive and has no compatibility alias:
+The CLI product model has three precise surfaces:
 `gors build` always requests the portable production profile and atomically
 publishes one runnable executable, `gors emit-rust -o <directory>` is the only
 source-export command, and `gors run` accepts program arguments only after a
@@ -334,6 +333,13 @@ for the reduced helper workspace. Content-addressed V86 boot assets are copied
 as finalized Webpack assets so production minimizers cannot rewrite them before
 the manifest-last emitted-byte verification.
 
+The image build runs `gors-warmup --smoke` after the final runtime publication
+to prove an external link and execution. Guest startup calls `gors-warmup`
+without that flag and must publish `GORS_BOOT_READY` as soon as Linux and the
+serial shell are operational; do not put rustc work or recursive runtime
+inventory in the browser boot-ready path. User compilation owns its explicit
+runtime-provider verification and rustc work after the VM becomes ready.
+
 V86 guest execution is strict single-flight: an overlapping compile or run is
 rejected with a typed busy error rather than replacing the active job. Every
 admitted flight owns a fresh 128-bit nonce, an abort-aware deadline, one exact
@@ -365,7 +371,7 @@ independently rehash the V86, BIOS, or lazy rootfs responses. Do not describe
 that deployment trust boundary as end-to-end browser content admission.
 Browser saved state uses only IndexedDB schema and record schema 2, with the
 exact boot identity, bounded byte length, full state checksum, and payload.
-Legacy, corrupt, oversized, or identity-mismatched records are deleted and
+Outdated, corrupt, oversized, or identity-mismatched records are deleted and
 treated as cold misses, as are all IndexedDB failures. A valid warm restore
 omits the rootfs index and lets V86 restore its serialized 9p state. Cold boot
 supplies exactly one content-addressed rootfs index. Acquisition, warm restore,
@@ -708,13 +714,9 @@ Narrow integer types, unsigned integers, and floating-point values are also
 explicitly unsupported until their exact Go conversion, overflow, comparison,
 and runtime representation rules exist in HIR and MIR.
 
-Regressions against the former backend are accepted during the cutover. Do not
-hide them by routing a fixture through removed code.
-
 The existing Go-spec, stdlib, repository, and arbitrary-program fixtures are a
-prioritized backlog and differential oracle. Pre-cutover conformance reports
-are historical artifacts and are not evidence for the authoritative backend.
-Only a complete, unfiltered rerun may establish a new baseline.
+prioritized coverage map and differential oracle. Only complete, unfiltered
+runs may establish a conformance baseline.
 
 The narrow frontier does not suspend performance architecture. Owned parse
 products, stable cross-revision identities, query boundaries, deterministic
@@ -803,8 +805,8 @@ CLI and Wasm callers, but every entry point must delegate to the same backend.
 An API wrapper is acceptable; an alternate semantic path is not.
 
 `COMPILER_PERFORMANCE.md` is the normative performance and incremental
-architecture contract. `COMPILER_AUDIT.md` records the broader replacement
-decision and roadmap.
+architecture contract. `COMPILER_AUDIT.md` records the broader architecture
+and roadmap.
 
 ## Development workflow
 
@@ -825,9 +827,9 @@ Run a focused generated-program fixture while expanding the frontier:
     make rust-test-integration-go-spec-fixture FIXTURE=<fixture>
     make rust-test-integration-go-stdlib-fixture FIXTURE=<fixture>
 
-The broad generated-program suites are expected to expose migration backlog
-until their constructs have native HIR and MIR support. A red unsupported
-fixture is actionable coverage; it is not permission to restore legacy code.
+The broad generated-program suites expose the remaining language and library
+coverage. A red unsupported fixture is actionable input for a generic compiler
+or runtime improvement.
 
 Performance certification is opt-in and belongs on dedicated, normalized
 workers. Once any scenario is promoted under `COMPILER_PERFORMANCE.md`, its
@@ -848,7 +850,7 @@ The enforced aggregate check is:
 
     bash scripts/check-compiler-architecture.sh
 
-Legacy compiler modules or imports should be absent:
+Alternate compiler modules or imports should be absent:
 
     rg -n 'compiler::(ir|typeinfer|passes)|mod (ir|typeinfer|passes)' gors gors-cli www
 
@@ -856,7 +858,7 @@ Generated-Rust resolver/cache concepts should be absent:
 
     rg -ni 'resolver.?cache|resolved.?module|partial.?declaration|type.?environment.?cache' gors gors-cli www
 
-Legacy mixed cache/action identities and host-native terminal codegen should be
+Mixed cache/action identities and host-native terminal codegen should be
 absent from production compiler, CLI, and performance paths:
 
     rg -n 'GORS_CLI_ABI_FINGERPRINT|CacheRequest|RustcArgs|target-cpu=native' gors/src gors-cli/src perf/perf_harness
@@ -866,7 +868,7 @@ output facade:
 
     rg -n 'syn::|quote!|parse_quote!' gors/src/compiler
 
-The old model must not reappear under a new name:
+Semantic work must not move beyond verified Rust IR:
 
     rg -ni 'post.?syn|rust.?ast.?pass|ast.?to.?syn|fallback.?lower' gors/src
 
@@ -907,8 +909,8 @@ Also inspect all unsupported diagnostics before claiming support:
 
 Development order is:
 
-1. Preserve the completed destructive cutover and independent parser contract,
-   and install machine-readable stage and performance measurement.
+1. Preserve the single compiler pipeline and independent parser contract, and
+   install machine-readable stage and performance measurement.
 2. Preserve the completed owned per-file snapshot boundary, stable
    workspace/package/file/definition keys, and `SourceRef`/source-table split.
    Add reusable syntax anchors so schema-v2 physical-location-free stage

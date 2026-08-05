@@ -90,41 +90,16 @@ fn emit_function(
         initializers.push(statement);
     }
 
-    if function.control_flow != ControlFlowPlan::PcDispatchU32 {
-        return Err(Diagnostic::backend(
-            "unsupported verified control-flow plan",
-        ));
-    }
-    let entry = function.entry.0;
-    let pc = syn::Ident::new("__gors_pc", Span::mixed_site());
-    let mut arms = Vec::<syn::Arm>::new();
-    for block in &function.blocks {
-        let block_id = syn::LitInt::new(&format!("{}u32", block.id.0), Span::mixed_site());
-        let statements = block
-            .statements
-            .iter()
-            .map(|statement| emit_statement(statement, function))
-            .collect::<Result<Vec<_>, _>>()?;
-        let terminator = emit_terminator(&block.terminator, function, function_names, &pc)?;
-        arms.push(syn::parse_quote! {
-            #block_id => {
-                #(#statements)*
-                #terminator
-            }
-        });
-    }
-    arms.push(syn::parse_quote! {
-        _ => ::std::unreachable!("invalid compiler Rust IR block")
-    });
+    let control_flow = match &function.control_flow {
+        ControlFlowPlan::StructuredLinear { order } => {
+            emit_structured_linear(function, function_names, order)?
+        }
+        ControlFlowPlan::PcDispatchU32 => emit_pc_dispatch(function, function_names)?,
+    };
 
     let body: syn::Block = syn::parse_quote! {{
         #(#initializers)*
-        let mut #pc: u32 = #entry;
-        loop {
-            match #pc {
-                #(#arms),*
-            }
-        }
+        #(#control_flow)*
     }};
 
     let visibility: syn::Visibility = match function.artifact.linkage {
@@ -149,6 +124,105 @@ fn emit_function(
         },
         block: Box::new(body),
     })
+}
+
+fn emit_structured_linear(
+    function: &rust_ir::Function,
+    function_names: &BTreeMap<DefId, syn::Ident>,
+    order: &[rust_ir::BasicBlockId],
+) -> Result<Vec<syn::Stmt>, Diagnostic> {
+    let mut emitted = Vec::new();
+    for block_id in order {
+        let block = function
+            .blocks
+            .get(block_id.0 as usize)
+            .ok_or_else(|| Diagnostic::backend("verified structured block is missing"))?;
+        emitted.extend(
+            block
+                .statements
+                .iter()
+                .map(|statement| emit_statement(statement, function))
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+        match &block.terminator.kind {
+            TerminatorKind::Goto(_) => {}
+            TerminatorKind::Call {
+                target,
+                args,
+                destination,
+                ..
+            } => {
+                let args = args
+                    .iter()
+                    .map(|arg| emit_operand(arg, function))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let call = emit_call(target, args, function_names)?;
+                emitted.push(if let Some(destination) = destination {
+                    let slot = slot_ident(destination.local);
+                    syn::parse_quote! {
+                        #slot = ::std::option::Option::Some(#call);
+                    }
+                } else {
+                    syn::parse_quote! { #call; }
+                });
+            }
+            TerminatorKind::Return(values) => {
+                let values = values
+                    .iter()
+                    .map(|value| emit_operand(value, function))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let value: syn::Expr = match values.as_slice() {
+                    [] => syn::parse_quote! { () },
+                    [value] => value.clone(),
+                    values => syn::parse_quote! { (#(#values),*) },
+                };
+                emitted.push(syn::parse_quote! { return #value; });
+            }
+            TerminatorKind::SwitchBool { .. } | TerminatorKind::Unreachable => {
+                return Err(Diagnostic::backend(
+                    "verified structured-linear plan contains non-linear control flow",
+                ));
+            }
+        }
+    }
+    Ok(emitted)
+}
+
+fn emit_pc_dispatch(
+    function: &rust_ir::Function,
+    function_names: &BTreeMap<DefId, syn::Ident>,
+) -> Result<Vec<syn::Stmt>, Diagnostic> {
+    let entry = function.entry.0;
+    let pc = syn::Ident::new("__gors_pc", Span::mixed_site());
+    let mut arms = Vec::<syn::Arm>::new();
+    for block in &function.blocks {
+        let block_id = syn::LitInt::new(&format!("{}u32", block.id.0), Span::mixed_site());
+        let statements = block
+            .statements
+            .iter()
+            .map(|statement| emit_statement(statement, function))
+            .collect::<Result<Vec<_>, _>>()?;
+        let terminator = emit_terminator(&block.terminator, function, function_names, &pc)?;
+        arms.push(syn::parse_quote! {
+            #block_id => {
+                #(#statements)*
+                #terminator
+            }
+        });
+    }
+    arms.push(syn::parse_quote! {
+        _ => ::std::unreachable!("invalid compiler Rust IR block")
+    });
+    Ok(vec![
+        syn::parse_quote! { let mut #pc: u32 = #entry; },
+        syn::parse_quote! {
+            loop {
+                match #pc {
+                    #(#arms),*
+                }
+            }
+        },
+    ])
 }
 
 fn emit_statement(

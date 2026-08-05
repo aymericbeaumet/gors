@@ -72,6 +72,7 @@ pub(super) fn lower_function(
         source: function.source,
     };
     out::select_read_operations(&mut lowered)?;
+    out::select_control_flow_plan(&mut lowered)?;
     Ok(lowered)
 }
 

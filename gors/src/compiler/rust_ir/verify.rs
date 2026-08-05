@@ -86,9 +86,6 @@ impl Function {
         signatures: &BTreeMap<DefId, Signature>,
     ) -> Result<RuntimeRequirement, Diagnostic> {
         verify_source_ref(self.source, self.id, "function")?;
-        if self.control_flow != ControlFlowPlan::PcDispatchU32 {
-            return Err(Diagnostic::backend("unsupported Rust IR control-flow plan"));
-        }
         if self.entry.0 as usize >= self.blocks.len() {
             return Err(Diagnostic::backend("Rust IR entry block does not exist"));
         }
@@ -156,8 +153,28 @@ impl Function {
             }
             self.verify_terminator(&block.terminator, signatures)?;
         }
+        self.verify_control_flow_plan()?;
         self.verify_storage_dataflow()?;
         Ok(runtime_requirement(self))
+    }
+
+    fn verify_control_flow_plan(&self) -> Result<(), Diagnostic> {
+        match &self.control_flow {
+            ControlFlowPlan::PcDispatchU32 => Ok(()),
+            ControlFlowPlan::StructuredLinear { order } => {
+                let expected = super::idiom::recognize_linear_order(self)?.ok_or_else(|| {
+                    Diagnostic::backend(
+                        "Rust IR structured-linear plan does not match a straight-line CFG",
+                    )
+                })?;
+                if order != &expected {
+                    return Err(Diagnostic::backend(
+                        "Rust IR structured-linear plan block order is not canonical",
+                    ));
+                }
+                Ok(())
+            }
+        }
     }
 
     fn verify_artifact_plan(&self) -> Result<(), Diagnostic> {

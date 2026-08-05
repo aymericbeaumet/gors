@@ -100,7 +100,7 @@ $: vmStarted =
 	vmState === State.READY ||
 	vmState === State.COMPILING ||
 	vmState === State.RUNNING;
-$: if (vmOverlayVisible && vmStarted) {
+$: if (vmOverlayVisible) {
 	tick().then(() => {
 		fitAddon.fit();
 		term.focus();
@@ -545,6 +545,8 @@ async function handleRun() {
 	try {
 		const jobId = await doCompile(cache.rustCode, cache.runtimeDependency);
 		if (jobId) await doRun(jobId);
+	} catch (error) {
+		reportVmError(error);
 	} finally {
 		pipelineStage = "idle";
 		activePipelines--;
@@ -595,14 +597,18 @@ function closeVmOverlay() {
 	vmOverlayVisible = false;
 }
 
+function reportVmError(error: unknown) {
+	vmState = State.ERROR;
+	const message = error instanceof Error ? error.message : String(error);
+	conErr(`Linux VM failed to start: ${message}`);
+}
+
 function startVM() {
 	if (vmStartRequested) return;
 	vmStartRequested = true;
 	void runner
 		.start()
-		.catch(() => {
-			vmState = State.ERROR;
-		})
+		.catch(reportVmError)
 		.finally(() => {
 			vmStartRequested = false;
 		});

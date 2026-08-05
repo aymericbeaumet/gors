@@ -46,7 +46,12 @@ fn mandatory_lowering_selects_explicit_storage_moves_and_control_flow() {
     let rust_ir = lower_source("package main\nfunc echo(value string) string { return value }\n");
     let function = &rust_ir.functions[0];
 
-    assert_eq!(function.control_flow, ControlFlowPlan::PcDispatchU32);
+    assert_eq!(
+        function.control_flow,
+        ControlFlowPlan::StructuredLinear {
+            order: vec![function.entry]
+        }
+    );
     assert!(
         function
             .locals
@@ -61,6 +66,18 @@ fn mandatory_lowering_selects_explicit_storage_moves_and_control_flow() {
     let reads = local_reads(function, "value");
     assert!(!reads.is_empty());
     assert!(reads.iter().all(|read| *read == ReadOp::ProvenLastUseMove));
+}
+
+#[test]
+fn idiom_pass_keeps_branching_and_looping_cfgs_explicit() {
+    let file = lower_source(
+        "package main\nfunc choose(flag bool) int { if flag { return 1 }; return 2 }\n",
+    );
+
+    assert_eq!(
+        named_function(&file, "choose").control_flow,
+        ControlFlowPlan::PcDispatchU32
+    );
 }
 
 #[test]

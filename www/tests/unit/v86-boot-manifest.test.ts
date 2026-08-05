@@ -161,7 +161,7 @@ describe("V86 boot manifest", () => {
 			"content-addressed asset",
 		);
 
-		const extra = { ...raw, legacyVersion: "fixed" };
+		const extra = { ...raw, unknownVersion: "fixed" };
 		await expect(admitV86BootManifest(extra)).rejects.toThrow(
 			"unsupported field set",
 		);

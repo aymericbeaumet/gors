@@ -42,7 +42,7 @@ fail_on_matches \
   gors/src/token
 
 fail_on_matches \
-  'legacy mixed or arithmetic-rebased compiler provenance is forbidden:' \
+  'mixed or arithmetic-rebased compiler provenance is forbidden:' \
   'SourceSpan|FunctionProvenance|make_function_relative|rebase_function_diagnostic' \
   gors/src/compiler \
   gors/tests \
@@ -59,7 +59,7 @@ fail_on_matches \
   gors/src/compiler/rust_ir
 
 fail_on_matches \
-  'legacy compiler modules or imports are forbidden:' \
+  'alternate compiler modules or imports are forbidden:' \
   'compiler::(ir|typeinfer|passes)|mod (ir|typeinfer|passes)' \
   gors/src gors-cli/src www/wasm fuzz/src
 
@@ -69,7 +69,7 @@ fail_on_matches \
   gors/src gors-cli/src www/wasm fuzz/src
 
 fail_on_matches \
-  'legacy mixed generated-Rust/terminal cache identities are forbidden:' \
+  'mixed generated-Rust/terminal cache identities are forbidden:' \
   'GORS_(CLI_ABI|COMPILER)_FINGERPRINT|(^|[^[:alnum:]_])(COMPILER_FINGERPRINT|CacheRequest|RustcArgs)([^[:alnum:]_]|$)' \
   gors/src \
   gors/build.rs \
@@ -285,7 +285,7 @@ fail_on_matches \
   gors-runtime/src
 
 fail_on_matches \
-  'legacy Rust-IR operation shadows and bundled print plans are forbidden:' \
+  'Rust-IR operation shadows and bundled print plans are forbidden:' \
   'RuntimePrint|PrintStep|print_plan|enum[[:space:]]+(BinaryOp|UnaryOp)' \
   gors/src/compiler/rust_ir \
   gors/src/compiler/emit.rs \

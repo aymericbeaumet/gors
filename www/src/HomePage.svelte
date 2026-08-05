@@ -86,12 +86,12 @@ onDestroy(() => {
         <p>The resolver exposes build-selected SDK source metadata only. Package and stdlib lowering return after their semantics exist in HIR and MIR.</p>
       </article>
       <article>
-        <h3>Honest migration status</h3>
-        <p>The bootstrap subset executes end to end; unsupported features fail with structured diagnostics and never fall back. <a href="/conformance" on:click={(event) => navigateTo("conformance", event)}>Learn more.</a></p>
+        <h3>Measured compatibility</h3>
+        <p>Executable fixtures compare generated programs with the pinned Go toolchain, and unsupported features return structured diagnostics. <a href="/conformance" on:click={(event) => navigateTo("conformance", event)}>Explore the results.</a></p>
       </article>
       <article>
-        <h3>Generic stdlib target</h3>
-        <p>Spec and stdlib fixtures remain the migration inventory. Support returns through generic semantics, never handwritten public API replacements.</p>
+        <h3>Generic stdlib compilation</h3>
+        <p>Standard-library packages compile from their Go source through the same typed semantics and verified IR pipeline as user programs.</p>
       </article>
       <article>
         <h3>Hermetic comparisons</h3>

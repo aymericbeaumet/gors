@@ -9,12 +9,13 @@
 //!   -> verified explicit-order Go MIR
 //!   -> representation-neutral MIR normalization and reverification
 //!   -> mandatory Rust representation lowering
+//!   -> verified Rust control-flow idiom recognition
 //!   -> verified Rust IR
 //!   -> terminal syn
 //! ```
 //!
 //! `syn` is a terminal serialization target. It is never inspected to recover
-//! semantic facts and is never repaired by a post-lowering compatibility pass.
+//! semantic facts and is never used to repair semantic lowering.
 
 pub mod db;
 mod diagnostic;

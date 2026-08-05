@@ -60,6 +60,11 @@ assert protocol["runCommand"] == "gors-run"
 assert protocol["jobDirectory"] == "tmp"
 assert protocol["nonceHexLength"] == 32
 assert protocol["bootReadyMarker"] in warmup_script
+assert "printf '\\nGORS_BOOT_READY\\n'" in warmup_script
+assert "/usr/local/bin/gors-runtime-verify" not in warmup_script
+assert '"--smoke"' in warmup_script
+assert "rustc --crate-name gors_warmup" in warmup_script
+assert "/usr/local/bin/gors-runtime-verify" in compile_script
 assert protocol["compileDonePrefix"] in compile_script
 assert protocol["runDonePrefix"] in run_script
 assert str(protocol["nonceHexLength"]) in compile_script
@@ -111,7 +116,7 @@ post_strip = dockerfile.split(
 )[1]
 assert "/usr/local/bin/gors-runtime-publish" in post_strip
 assert "/usr/local/bin/gors-runtime-verify" in post_strip
-assert "/usr/local/bin/gors-warmup" in post_strip
+assert "/usr/local/bin/gors-warmup --smoke" in post_strip
 PY
 grep -Fq 'mktemp "${RUNTIME_DIR}/.provider.json.XXXXXX"' \
     "${SCRIPT_DIR}/rootfs/gors-runtime-publish"

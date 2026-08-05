@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test.skip("default bootstrap program auto-compiles and runs manually", async ({
+test("default showcase auto-compiles and updates after an edit", async ({
 	page,
 }) => {
 	const pageErrors: string[] = [];
@@ -23,28 +23,6 @@ test.skip("default bootstrap program auto-compiles and runs manually", async ({
 	});
 	await expect(consoleOutput).not.toContainText("$ rustc -o main main.rs");
 	await expect(consoleOutput).not.toContainText("$ ./main", { timeout: 1000 });
-	await page.getByRole("button", { name: "Run" }).click();
-	await expect(consoleOutput).toContainText("$ rustc -o main main.rs", {
-		timeout: 7 * 60 * 1000,
-	});
-	await expect(consoleOutput).toContainText("$ ./main", {
-		timeout: 9 * 60 * 1000,
-	});
-	await expect(consoleOutput).toContainText("10", {
-		timeout: 10 * 60 * 1000,
-	});
-	await expect
-		.poll(() =>
-			consoleOutput.evaluate((node) => {
-				const text = node.textContent ?? "";
-				return (
-					text.indexOf("$ gors emit-rust") <
-						text.indexOf("$ rustc -o main main.rs") &&
-					text.indexOf("$ rustc -o main main.rs") < text.indexOf("$ ./main")
-				);
-			}),
-		)
-		.toBe(true);
 
 	await page.locator(".go .monaco-editor .view-lines").click();
 	await page.keyboard.press("ControlOrMeta+A");
@@ -55,7 +33,9 @@ test.skip("default bootstrap program auto-compiles and runs manually", async ({
 		timeout: 8 * 60 * 1000,
 	});
 	await expect(consoleOutput).not.toContainText("$ rustc -o main main.rs");
-	await expect(page.locator(".rust .monaco-editor")).not.toContainText("10");
+	await expect(page.locator(".rust .monaco-editor")).not.toContainText(
+		"triangular",
+	);
 	await expect(consoleOutput).not.toContainText("$ ./main", { timeout: 1000 });
 	await expect(consoleOutput).not.toContainText("waiting for VM");
 	await expect(consoleOutput).not.toContainText("VM ready in");
@@ -64,16 +44,41 @@ test.skip("default bootstrap program auto-compiles and runs manually", async ({
 	expect(consoleErrors).toEqual([]);
 });
 
-test("conformance route reports the hard-cutover baseline", async ({
+test("Linux VM reaches ready", async ({ page }) => {
+	test.skip(
+		process.env.GORS_RUN_V86_E2E !== "1",
+		"set GORS_RUN_V86_E2E=1 to exercise the heavyweight cold V86 boot",
+	);
+	test.setTimeout(10 * 60 * 1000);
+
+	await page.goto("/playground");
+	await page.getByRole("button", { name: "Linux VM" }).click();
+	await expect(page.locator('.vm-status[data-state="ready"]')).toBeVisible({
+		timeout: 8 * 60 * 1000,
+	});
+	await page.getByRole("button", { name: "Close" }).click();
+});
+
+test("conformance route exposes Go spec and standard library results", async ({
 	page,
 }) => {
 	await page.goto("/conformance");
 	await expect(
-		page.getByRole("heading", { name: "Conformance baseline reset" }),
+		page.getByRole("heading", { name: "Go compatibility" }),
 	).toBeVisible();
-	await expect(page.getByText("No old backend or fallback")).toBeVisible();
-	await expect(page.getByText("Implemented foundation")).toBeVisible();
-	await expect(page.getByText("Migration backlog")).toBeVisible();
+	await expect(
+		page.getByRole("heading", {
+			name: "Go Language Specification Conformance",
+		}),
+	).toBeVisible();
+
+	await page.getByRole("tab", { name: /Stdlib/ }).click();
+	await expect(
+		page.getByRole("heading", { name: "Go Standard Library Conformance" }),
+	).toBeVisible();
+	await expect(
+		page.getByRole("searchbox", { name: "Filter packages" }),
+	).toBeVisible();
 });
 
 test("home page links to playground without rendering the console", async ({

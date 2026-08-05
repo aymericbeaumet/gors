@@ -177,7 +177,7 @@ class RuntimeContractIdentityTests(unittest.TestCase):
 
         self.assertEqual(runtime_contract_identity(version), identity)
 
-    def test_rejects_legacy_version_only_output(self) -> None:
+    def test_rejects_version_output_without_a_contract(self) -> None:
         with self.assertRaises(RuntimeError):
             runtime_contract_identity(
                 "gors version gors0.1.0 gostdlib1.26.3 darwin/arm64"
@@ -201,7 +201,7 @@ class RuntimeContractEvidenceTests(unittest.TestCase):
         result["toolchains"]["gors"]["runtimeContractIdentity"] = "d" * 64
         self.assertNotEqual(original, configuration_fingerprint(result))
 
-    def test_rejects_legacy_external_toolchain_evidence(self) -> None:
+    def test_rejects_external_toolchain_evidence(self) -> None:
         result = synthetic_result(commit="a" * 40)
         result["toolchains"]["rustc"] = {"sha256": "4" * 64}
         result["configurationFingerprint"] = configuration_fingerprint(result)
@@ -235,7 +235,7 @@ class RuntimeContractEvidenceTests(unittest.TestCase):
                 with self.assertRaisesRegex(EvidenceError, "runtime contract identity"):
                     validate_result(result)
 
-    def test_rejects_legacy_result_schema(self) -> None:
+    def test_rejects_unsupported_result_schema(self) -> None:
         result = synthetic_result(commit="a" * 40)
         result["schemaVersion"] = RESULT_SCHEMA_VERSION - 1
 
@@ -260,13 +260,13 @@ class RuntimeContractEvidenceTests(unittest.TestCase):
                 with self.assertRaises(EvidenceError):
                     validate_result(result)
 
-    def test_rejects_legacy_runtime_link_evidence(self) -> None:
+    def test_rejects_runtime_link_evidence(self) -> None:
         result = synthetic_result(commit="a" * 40)
         measurement = result["workloads"][0]["sessions"][0]["samples"][0]["gors"]
         measurement["runtimeLink"] = {}
         result["resultId"] = result_id(result)
 
-        with self.assertRaisesRegex(EvidenceError, "runtime-link evidence is forbidden"):
+        with self.assertRaisesRegex(EvidenceError, "runtime-link evidence is not supported"):
             validate_result(result)
 
 

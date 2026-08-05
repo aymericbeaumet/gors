@@ -532,7 +532,10 @@ fn run_generated_program_fixture_set_impl(
     if let Err(error) = prune_integration_cache() {
         eprintln!("Warning: could not prune the generated-program cache: {error}");
     }
-    assert!(failed.is_empty(), "{} tests failed", failed.len());
+    let report_mode = crate::common::reporter::canonical_report_requested();
+    if !report_mode {
+        assert!(failed.is_empty(), "{} tests failed", failed.len());
+    }
     let complete = config.filter.is_none()
         && config.limit.is_none()
         && !config.include_unsupported

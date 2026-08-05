@@ -60,7 +60,7 @@ fn encode_function(encoder: &mut Encoder, function: &rust_ir::Function) {
     });
     encoder.field(b"entry", |encoder| block_id(encoder, function.entry));
     encoder.field(b"control-flow", |encoder| {
-        encode_control_flow(encoder, function.control_flow);
+        encode_control_flow(encoder, &function.control_flow);
     });
     encoder.field(b"source", |encoder| source_ref(encoder, function.source));
 }
@@ -128,13 +128,17 @@ fn encode_initialization(encoder: &mut Encoder, initialization: rust_ir::SlotIni
     }
 }
 
-fn encode_control_flow(encoder: &mut Encoder, plan: rust_ir::ControlFlowPlan) {
-    encoder.variant(
-        match plan {
-            rust_ir::ControlFlowPlan::PcDispatchU32 => b"pc-dispatch-u32",
-        },
-        |_| {},
-    );
+fn encode_control_flow(encoder: &mut Encoder, plan: &rust_ir::ControlFlowPlan) {
+    match plan {
+        rust_ir::ControlFlowPlan::StructuredLinear { order } => {
+            encoder.variant(b"structured-linear", |encoder| {
+                encoder.sequence(order, |encoder, block| block_id(encoder, *block));
+            });
+        }
+        rust_ir::ControlFlowPlan::PcDispatchU32 => {
+            encoder.variant(b"pc-dispatch-u32", |_| {});
+        }
+    }
 }
 
 fn encode_block(encoder: &mut Encoder, block: &rust_ir::BasicBlock) {

@@ -104,8 +104,11 @@ pub enum SlotInitialization {
     Uninitialized,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ControlFlowPlan {
+    /// A proven straight-line CFG emitted as ordinary sequential Rust.
+    StructuredLinear { order: Vec<BasicBlockId> },
+    /// General CFG fallback with an explicit program-counter dispatcher.
     PcDispatchU32,
 }
 

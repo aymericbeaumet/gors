@@ -89,7 +89,7 @@ impl RuntimeArtifactManifest {
     /// Callers admitting a sidecar manifest must pass the result through
     /// [`Self::select`]. That operation rejects every schema except the current
     /// one. Keeping the schema explicit also makes stale-cache tests possible
-    /// without unsafe mutation or a legacy decoding path.
+    /// without unsafe mutation or ambiguous decoding.
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn from_parts(
