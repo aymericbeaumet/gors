@@ -189,7 +189,7 @@ assert re.fullmatch(r"[0-9a-f]{64}", provider["producer_identity"])
 assert re.fullmatch(r"[0-9a-f]{64}", provider["compatibility_identity"])
 assert re.fullmatch(r"[0-9a-f]{64}", provider["artifact_identity"])
 assert "toolchain_identity" not in provider
-assert provider["supported_operation_ids"] == [1, 2, 3, 8, 9, 10, 11, 13, 14, 15, 16, 17]
+assert provider["supported_operation_ids"] == [1, 2, 3, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20]
 PY
 
 PRODUCER_IDENTITY=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["producer_identity"])' \
@@ -219,7 +219,7 @@ PY
 
 CONTRACT=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["contract"])' \
     "${TEMPORARY}/provider-a.json")
-SUPPORTED=1,2,3,8,9,10,11,13,14,15,16,17
+SUPPORTED=1,2,3,8,9,10,11,13,14,15,16,17,18,19,20
 validate() {
     "${REQUEST_TOOL}" "$1" 1 "${CONTRACT}" "${SUPPORTED}"
 }

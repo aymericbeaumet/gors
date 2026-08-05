@@ -13,9 +13,9 @@
     "groupCount": 15,
     "passingGroupCount": 0,
     "caseCount": 211,
-    "passingCaseCount": 6,
-    "unsupportedCaseCount": 205,
-    "fixtureCount": 7
+    "passingCaseCount": 12,
+    "unsupportedCaseCount": 199,
+    "fixtureCount": 12
   },
   "groups": [
     {
@@ -25,15 +25,16 @@
       "fixtures": [
         "_source_bytes/bom_leading",
         "_source_bytes/bom_middle",
-        "_source_bytes/source_nul"
+        "_source_bytes/source_nul",
+        "source_code_representation"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 6,
-        "passingCaseCount": 2,
-        "unsupportedCaseCount": 4,
-        "fixtureCount": 3
+        "passingCaseCount": 5,
+        "unsupportedCaseCount": 1,
+        "fixtureCount": 4
       },
       "cases": [
         {
@@ -41,27 +42,42 @@
           "title": "UTF-8 source text in string and rune literals compiles and executes",
           "subtitle": "Source code representation",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: source_code_representation."
+          "status": "passing",
+          "fixtures": [
+            "source_code_representation"
+          ],
+          "freshFixtures": [
+            "source_code_representation"
+          ],
+          "reason": ""
         },
         {
           "id": "source-unicode-text",
           "title": "Source text is UTF-8 Unicode and code points are distinct",
           "subtitle": "Source code representation",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: source_code_representation."
+          "status": "passing",
+          "fixtures": [
+            "source_code_representation"
+          ],
+          "freshFixtures": [
+            "source_code_representation"
+          ],
+          "reason": ""
         },
         {
           "id": "source-characters",
           "title": "Unicode code points are accepted in source text and literals",
           "subtitle": "Characters",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: source_code_representation."
+          "status": "passing",
+          "fixtures": [
+            "source_code_representation"
+          ],
+          "freshFixtures": [
+            "source_code_representation"
+          ],
+          "reason": ""
         },
         {
           "id": "source-letters-and-digits",
@@ -69,8 +85,13 @@
           "subtitle": "Letters and digits",
           "kind": "spec-test",
           "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: source_code_representation, spec_section_edgecases."
+          "fixtures": [
+            "source_code_representation"
+          ],
+          "freshFixtures": [
+            "source_code_representation"
+          ],
+          "reason": "Fresh fixture execution did not pass for: spec_section_edgecases."
         },
         {
           "id": "source-nul-character",
@@ -875,14 +896,18 @@
       "id": "declarations-and-scope",
       "title": "Declarations and scope",
       "subtitle": "",
-      "fixtures": [],
+      "fixtures": [
+        "declarations_and_scope_blocks",
+        "declarations_and_scope_predeclared",
+        "declarations_and_scope_uniqueness"
+      ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 15,
-        "passingCaseCount": 0,
-        "unsupportedCaseCount": 15,
-        "fixtureCount": 0
+        "passingCaseCount": 3,
+        "unsupportedCaseCount": 12,
+        "fixtureCount": 3
       },
       "cases": [
         {
@@ -890,9 +915,14 @@
           "title": "Blocks nest and influence scoping",
           "subtitle": "Blocks",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: declarations_and_scope_blocks."
+          "status": "passing",
+          "fixtures": [
+            "declarations_and_scope_blocks"
+          ],
+          "freshFixtures": [
+            "declarations_and_scope_blocks"
+          ],
+          "reason": ""
         },
         {
           "id": "decl-label-scopes",
@@ -908,9 +938,14 @@
           "title": "Predeclared identifiers are in the universe block and can be shadowed",
           "subtitle": "Predeclared identifiers",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: declarations_and_scope_predeclared."
+          "status": "passing",
+          "fixtures": [
+            "declarations_and_scope_predeclared"
+          ],
+          "freshFixtures": [
+            "declarations_and_scope_predeclared"
+          ],
+          "reason": ""
         },
         {
           "id": "decl-exported-identifiers",
@@ -926,9 +961,14 @@
           "title": "Identifiers in different blocks or packages are unique",
           "subtitle": "Uniqueness of identifiers",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: declarations_and_scope_uniqueness."
+          "status": "passing",
+          "fixtures": [
+            "declarations_and_scope_uniqueness"
+          ],
+          "freshFixtures": [
+            "declarations_and_scope_uniqueness"
+          ],
+          "reason": ""
         },
         {
           "id": "decl-package-clause",
@@ -1902,14 +1942,16 @@
       "id": "packages-and-program-initialization",
       "title": "Packages and program initialization",
       "subtitle": "",
-      "fixtures": [],
+      "fixtures": [
+        "program_execution"
+      ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 10,
         "passingCaseCount": 0,
         "unsupportedCaseCount": 10,
-        "fixtureCount": 0
+        "fixtureCount": 1
       },
       "cases": [
         {
@@ -1918,8 +1960,13 @@
           "subtitle": "Program execution",
           "kind": "spec-test",
           "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: packages_and_program_initialization, program_execution."
+          "fixtures": [
+            "program_execution"
+          ],
+          "freshFixtures": [
+            "program_execution"
+          ],
+          "reason": "Fresh fixture execution did not pass for: packages_and_program_initialization."
         },
         {
           "id": "packages-multiple-files",

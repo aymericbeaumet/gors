@@ -266,6 +266,24 @@ pub fn print_go_string(value: GoString) {
     drop(write_go_string_to(&mut output, &value));
 }
 
+/// Raise an explicit Go panic carrying a boolean value.
+#[allow(clippy::panic)] // This is the Go language panic boundary, not an invariant failure.
+pub fn panic_bool(value: bool) {
+    std::panic::panic_any(value)
+}
+
+/// Raise an explicit Go panic carrying an `int` value.
+#[allow(clippy::panic)] // This is the Go language panic boundary, not an invariant failure.
+pub fn panic_i64(value: GoInt) {
+    std::panic::panic_any(value)
+}
+
+/// Raise an explicit Go panic carrying a string value.
+#[allow(clippy::panic)] // This is the Go language panic boundary, not an invariant failure.
+pub fn panic_go_string(value: GoString) {
+    std::panic::panic_any(value)
+}
+
 fn write_stderr_bytes(bytes: &[u8]) {
     let stderr = std::io::stderr();
     let mut output = stderr.lock();

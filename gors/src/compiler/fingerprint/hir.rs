@@ -318,6 +318,7 @@ fn encode_builtin(encoder: &mut Encoder, builtin: hir::Builtin) {
         match builtin {
             hir::Builtin::Print => b"print",
             hir::Builtin::Println => b"println",
+            hir::Builtin::Panic => b"panic",
         },
         |_| {},
     );

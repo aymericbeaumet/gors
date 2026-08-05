@@ -66,6 +66,7 @@ impl HostIoEffect {
 pub enum GoPanicCondition {
     IntegerDivideByZero,
     NegativeShiftAmount,
+    ExplicitPanic,
 }
 
 impl GoPanicCondition {
@@ -73,6 +74,7 @@ impl GoPanicCondition {
         match self {
             Self::IntegerDivideByZero => 1,
             Self::NegativeShiftAmount => 2,
+            Self::ExplicitPanic => 3,
         }
     }
 }

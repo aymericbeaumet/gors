@@ -256,12 +256,32 @@ impl Function {
                         }
                         self.verify_call_destination(destination, &signature.results)?;
                     }
-                    hir::Callee::Builtin(_) => {
-                        for ty in &argument_types {
-                            if !matches!(ty, Ty::Bool | Ty::Int(IntTy::Int) | Ty::String) {
-                                return Err(Diagnostic::backend(format!(
-                                    "print builtin cannot consume MIR operand type {ty:?}"
-                                )));
+                    hir::Callee::Builtin(builtin) => {
+                        match builtin {
+                            hir::Builtin::Print | hir::Builtin::Println => {
+                                for ty in &argument_types {
+                                    if !matches!(ty, Ty::Bool | Ty::Int(IntTy::Int) | Ty::String) {
+                                        return Err(Diagnostic::backend(format!(
+                                            "print builtin cannot consume MIR operand type {ty:?}"
+                                        )));
+                                    }
+                                }
+                            }
+                            hir::Builtin::Panic => {
+                                if argument_types.len() != 1 {
+                                    return Err(Diagnostic::backend(format!(
+                                        "panic builtin has {} MIR operands; expected 1",
+                                        argument_types.len()
+                                    )));
+                                }
+                                if !matches!(
+                                    argument_types.as_slice(),
+                                    [Ty::Bool | Ty::Int(IntTy::Int) | Ty::String]
+                                ) {
+                                    return Err(Diagnostic::backend(
+                                        "panic builtin received an unsupported MIR operand type",
+                                    ));
+                                }
                             }
                         }
                         self.verify_call_destination(destination, &[])?;

@@ -257,6 +257,7 @@ impl FunctionLowerer {
                     match name {
                         "print" => (hir::Callee::Builtin(hir::Builtin::Print), vec![], vec![]),
                         "println" => (hir::Callee::Builtin(hir::Builtin::Println), vec![], vec![]),
+                        "panic" => (hir::Callee::Builtin(hir::Builtin::Panic), vec![], vec![]),
                         name => {
                             return Err(Diagnostic::semantic(
                                 format!("undefined function {name}"),
@@ -265,15 +266,27 @@ impl FunctionLowerer {
                         }
                     }
                 };
-                if !matches!(callee, hir::Callee::Builtin(_)) && arguments.len() != params.len() {
-                    return Err(Diagnostic::semantic(
-                        format!(
-                            "call has {} arguments; expected {}",
-                            arguments.len(),
-                            params.len()
-                        ),
-                        source,
-                    ));
+                match callee {
+                    hir::Callee::Function(_) if arguments.len() != params.len() => {
+                        return Err(Diagnostic::semantic(
+                            format!(
+                                "call has {} arguments; expected {}",
+                                arguments.len(),
+                                params.len()
+                            ),
+                            source,
+                        ));
+                    }
+                    hir::Callee::Builtin(hir::Builtin::Panic) if arguments.len() != 1 => {
+                        return Err(Diagnostic::semantic(
+                            format!(
+                                "call to panic has {} arguments; expected 1",
+                                arguments.len()
+                            ),
+                            source,
+                        ));
+                    }
+                    _ => {}
                 }
                 let args = if matches!(callee, hir::Callee::Builtin(_)) {
                     arguments

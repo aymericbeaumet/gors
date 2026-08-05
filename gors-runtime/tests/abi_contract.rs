@@ -1,6 +1,7 @@
 use gors_runtime::{
     GoInt, GoString, concat_go_strings, go_string_from_bytes, go_string_from_static, int_div,
-    int_rem, int_shl, int_shr, print_bool, print_go_string, print_i64, print_newline, print_space,
+    int_rem, int_shl, int_shr, panic_bool, panic_go_string, panic_i64, print_bool, print_go_string,
+    print_i64, print_newline, print_space,
 };
 use gors_runtime_abi::{RuntimeOp, RuntimeType};
 
@@ -81,6 +82,21 @@ fn implementation_surface(operation: RuntimeOp) -> RuntimeSurface {
         ),
         RuntimeOp::PrintGoString => runtime_surface!(
             print_go_string,
+            fn(GoString),
+            [RuntimeType::GoString] -> RuntimeType::Unit
+        ),
+        RuntimeOp::PanicBool => runtime_surface!(
+            panic_bool,
+            fn(bool),
+            [RuntimeType::Bool] -> RuntimeType::Unit
+        ),
+        RuntimeOp::PanicI64 => runtime_surface!(
+            panic_i64,
+            fn(GoInt),
+            [RuntimeType::I64] -> RuntimeType::Unit
+        ),
+        RuntimeOp::PanicGoString => runtime_surface!(
+            panic_go_string,
             fn(GoString),
             [RuntimeType::GoString] -> RuntimeType::Unit
         ),

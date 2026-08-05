@@ -157,6 +157,7 @@ pub enum Callee {
 pub enum Builtin {
     Print,
     Println,
+    Panic,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

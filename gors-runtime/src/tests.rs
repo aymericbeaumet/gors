@@ -124,3 +124,36 @@ fn invalid_integer_operations_panic() {
     assert!(std::panic::catch_unwind(|| int_shl(1, -1)).is_err());
     assert!(std::panic::catch_unwind(|| int_shr(1, -1)).is_err());
 }
+
+#[test]
+fn explicit_panics_preserve_supported_payload_types() {
+    let boolean = std::panic::catch_unwind(|| panic_bool(true));
+    assert!(boolean.is_err());
+    assert_eq!(
+        boolean
+            .err()
+            .and_then(|value| value.downcast::<bool>().ok())
+            .as_deref(),
+        Some(&true)
+    );
+
+    let integer = std::panic::catch_unwind(|| panic_i64(42));
+    assert!(integer.is_err());
+    assert_eq!(
+        integer
+            .err()
+            .and_then(|value| value.downcast::<GoInt>().ok())
+            .as_deref(),
+        Some(&42)
+    );
+
+    let string = std::panic::catch_unwind(|| panic_go_string(go_string_from_static(b"boom")));
+    assert!(string.is_err());
+    let payload = string
+        .err()
+        .and_then(|value| value.downcast::<GoString>().ok());
+    assert_eq!(
+        payload.as_deref().map(GoString::as_bytes),
+        Some(b"boom".as_slice())
+    );
+}

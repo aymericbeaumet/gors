@@ -162,7 +162,10 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::PrintI64
             | RuntimeOp::PrintSpace
             | RuntimeOp::PrintNewline
-            | RuntimeOp::PrintGoString => AllocationEffect::None,
+            | RuntimeOp::PrintGoString
+            | RuntimeOp::PanicBool
+            | RuntimeOp::PanicI64
+            | RuntimeOp::PanicGoString => AllocationEffect::None,
         };
         let expected_argument_mutation = match operation {
             RuntimeOp::ConcatGoStrings => ArgumentMutationEffect::MayMutateOwnedArgument,
@@ -176,7 +179,10 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::PrintI64
             | RuntimeOp::PrintSpace
             | RuntimeOp::PrintNewline
-            | RuntimeOp::PrintGoString => ArgumentMutationEffect::None,
+            | RuntimeOp::PrintGoString
+            | RuntimeOp::PanicBool
+            | RuntimeOp::PanicI64
+            | RuntimeOp::PanicGoString => ArgumentMutationEffect::None,
         };
         let expected_host_io = match operation {
             RuntimeOp::PrintBool
@@ -190,11 +196,17 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::IntDiv
             | RuntimeOp::IntRem
             | RuntimeOp::IntShl
-            | RuntimeOp::IntShr => HostIoEffect::None,
+            | RuntimeOp::IntShr
+            | RuntimeOp::PanicBool
+            | RuntimeOp::PanicI64
+            | RuntimeOp::PanicGoString => HostIoEffect::None,
         };
         let expected_panics: &[GoPanicCondition] = match operation {
             RuntimeOp::IntDiv | RuntimeOp::IntRem => &[GoPanicCondition::IntegerDivideByZero],
             RuntimeOp::IntShl | RuntimeOp::IntShr => &[GoPanicCondition::NegativeShiftAmount],
+            RuntimeOp::PanicBool | RuntimeOp::PanicI64 | RuntimeOp::PanicGoString => {
+                &[GoPanicCondition::ExplicitPanic]
+            }
             RuntimeOp::GoStringFromBytes
             | RuntimeOp::GoStringFromStatic
             | RuntimeOp::ConcatGoStrings
@@ -364,6 +376,9 @@ fn runtime_signatures_are_complete_and_exact() {
             RuntimeOp::PrintI64 => (&[RuntimeType::I64], RuntimeType::Unit),
             RuntimeOp::PrintSpace | RuntimeOp::PrintNewline => (&[], RuntimeType::Unit),
             RuntimeOp::PrintGoString => (&[RuntimeType::GoString], RuntimeType::Unit),
+            RuntimeOp::PanicBool => (&[RuntimeType::Bool], RuntimeType::Unit),
+            RuntimeOp::PanicI64 => (&[RuntimeType::I64], RuntimeType::Unit),
+            RuntimeOp::PanicGoString => (&[RuntimeType::GoString], RuntimeType::Unit),
         };
 
         assert_eq!(

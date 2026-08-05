@@ -254,6 +254,7 @@ const STANDARD_IO_CAPABILITY: &[TargetCapability] = &[StandardIo];
 const NO_GO_PANICS: &[GoPanicCondition] = &[];
 const INTEGER_DIVIDE_BY_ZERO: &[GoPanicCondition] = &[GoPanicCondition::IntegerDivideByZero];
 const NEGATIVE_SHIFT_AMOUNT: &[GoPanicCondition] = &[GoPanicCondition::NegativeShiftAmount];
+const EXPLICIT_PANIC: &[GoPanicCondition] = &[GoPanicCondition::ExplicitPanic];
 
 /// Operations that require an exact symbol from the versioned runtime ABI.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -270,6 +271,9 @@ pub enum RuntimeOp {
     PrintSpace,
     PrintNewline,
     PrintGoString,
+    PanicBool,
+    PanicI64,
+    PanicGoString,
 }
 
 /// Stable compact identity of one runtime ABI operation.
@@ -318,6 +322,9 @@ impl RuntimeOp {
         Self::PrintSpace,
         Self::PrintNewline,
         Self::PrintGoString,
+        Self::PanicBool,
+        Self::PanicI64,
+        Self::PanicGoString,
     ];
 
     /// Stable exported Rust symbol assigned to this ABI operation.
@@ -336,6 +343,9 @@ impl RuntimeOp {
             Self::PrintSpace => "print_space",
             Self::PrintNewline => "print_newline",
             Self::PrintGoString => "print_go_string",
+            Self::PanicBool => "panic_bool",
+            Self::PanicI64 => "panic_i64",
+            Self::PanicGoString => "panic_go_string",
         }
     }
 
@@ -361,6 +371,9 @@ impl RuntimeOp {
             Self::PrintBool => RuntimeSignature::new(BOOL_PARAMETER, RuntimeType::Unit),
             Self::PrintI64 => RuntimeSignature::new(I64_PARAMETER, RuntimeType::Unit),
             Self::PrintGoString => RuntimeSignature::new(GO_STRING_PARAMETER, RuntimeType::Unit),
+            Self::PanicBool => RuntimeSignature::new(BOOL_PARAMETER, RuntimeType::Unit),
+            Self::PanicI64 => RuntimeSignature::new(I64_PARAMETER, RuntimeType::Unit),
+            Self::PanicGoString => RuntimeSignature::new(GO_STRING_PARAMETER, RuntimeType::Unit),
         }
     }
 
@@ -379,7 +392,10 @@ impl RuntimeOp {
             | Self::IntDiv
             | Self::IntRem
             | Self::IntShl
-            | Self::IntShr => NO_CAPABILITIES,
+            | Self::IntShr
+            | Self::PanicBool
+            | Self::PanicI64
+            | Self::PanicGoString => NO_CAPABILITIES,
         }
     }
 
@@ -427,6 +443,12 @@ impl RuntimeOp {
                 HostIoEffect::None,
                 NO_GO_PANICS,
             ),
+            Self::PanicBool | Self::PanicI64 | Self::PanicGoString => RuntimeEffects::new(
+                AllocationEffect::None,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                EXPLICIT_PANIC,
+            ),
         }
     }
 
@@ -446,6 +468,9 @@ impl RuntimeOp {
             Self::PrintSpace => 15,
             Self::PrintNewline => 16,
             Self::PrintGoString => 17,
+            Self::PanicBool => 18,
+            Self::PanicI64 => 19,
+            Self::PanicGoString => 20,
         })
     }
 
@@ -479,6 +504,9 @@ impl TryFrom<u16> for RuntimeOp {
             15 => Ok(Self::PrintSpace),
             16 => Ok(Self::PrintNewline),
             17 => Ok(Self::PrintGoString),
+            18 => Ok(Self::PanicBool),
+            19 => Ok(Self::PanicI64),
+            20 => Ok(Self::PanicGoString),
             unknown => Err(UnknownRuntimeOpId(unknown)),
         }
     }

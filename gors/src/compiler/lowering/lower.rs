@@ -191,7 +191,7 @@ fn lower_terminator(
                 destination: destination.map(lower_place),
                 next,
             },
-            hir::Callee::Builtin(builtin) => {
+            hir::Callee::Builtin(builtin @ (hir::Builtin::Print | hir::Builtin::Println)) => {
                 return lower_print_call(
                     builtin,
                     args,
@@ -203,6 +203,9 @@ fn lower_terminator(
                     extra_blocks,
                 );
             }
+            hir::Callee::Builtin(hir::Builtin::Panic) => {
+                return lower_panic_call(args, destination, next, provenance, locals);
+            }
         },
         mir::TerminatorKind::Return(values) => out::TerminatorKind::Return(
             values
@@ -213,6 +216,45 @@ fn lower_terminator(
         mir::TerminatorKind::Unreachable => out::TerminatorKind::Unreachable,
     };
     Ok(finish_terminator(kind, provenance))
+}
+
+fn lower_panic_call(
+    args: Vec<mir::Operand>,
+    destination: Option<mir::Place>,
+    next: out::BasicBlockId,
+    provenance: out::Provenance,
+    locals: &[out::LocalDecl],
+) -> Result<out::Terminator, Diagnostic> {
+    if destination.is_some() {
+        return Err(Diagnostic::backend(
+            "Go panic builtin unexpectedly has a result destination",
+        ));
+    }
+    let [argument]: [mir::Operand; 1] = args.try_into().map_err(|args: Vec<_>| {
+        Diagnostic::backend(format!(
+            "Go panic builtin reached Rust lowering with {} arguments",
+            args.len()
+        ))
+    })?;
+    let operation = match mir_operand_type(&argument, locals)? {
+        out::RustType::Bool => RuntimeOp::PanicBool,
+        out::RustType::I64 => RuntimeOp::PanicI64,
+        out::RustType::GoString => RuntimeOp::PanicGoString,
+        out::RustType::Unit => {
+            return Err(Diagnostic::backend(
+                "unit value reached Rust panic representation lowering",
+            ));
+        }
+    };
+    Ok(finish_terminator(
+        out::TerminatorKind::Call {
+            target: out::CallTarget::Runtime(operation),
+            args: vec![lower_operand(argument, locals)?],
+            destination: None,
+            next,
+        },
+        provenance,
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -216,6 +216,7 @@ fn encode_callee(encoder: &mut Encoder, callee: hir::Callee) {
                 match builtin {
                     hir::Builtin::Print => b"print",
                     hir::Builtin::Println => b"println",
+                    hir::Builtin::Panic => b"panic",
                 },
                 |_| {},
             );

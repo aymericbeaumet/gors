@@ -1,7 +1,7 @@
 use super::*;
 use crate::compiler::rust_ir::{
-    ControlFlowPlan, Operand, Provenance, ReadOp, RvalueKind, SlotInitialization, StorageClass,
-    SyntheticOrigin, TerminatorKind,
+    CallTarget, ControlFlowPlan, Operand, PanicEdge, Provenance, ReadOp, RuntimeOp, RvalueKind,
+    SlotInitialization, StorageClass, SyntheticOrigin, TerminatorKind,
 };
 
 fn lower_source(source: &str) -> rust_ir::File {
@@ -171,6 +171,42 @@ fn mandatory_lowering_preserves_explicit_synthetic_origins() {
         block.terminator.provenance,
         Provenance::Synthetic(SyntheticOrigin::ImplicitReturn)
     )));
+}
+
+#[test]
+fn panic_builtin_selects_typed_runtime_operations() {
+    let file = lower_source(
+        r#"
+            package main
+            func panicBool() { panic(true) }
+            func panicInt() { panic(42) }
+            func panicString() { panic("boom") }
+        "#,
+    );
+
+    for (name, expected) in [
+        ("panicBool", RuntimeOp::PanicBool),
+        ("panicInt", RuntimeOp::PanicI64),
+        ("panicString", RuntimeOp::PanicGoString),
+    ] {
+        let function = named_function(&file, name);
+        let call = function
+            .blocks
+            .iter()
+            .map(|block| &block.terminator)
+            .find(|terminator| {
+                matches!(
+                    &terminator.kind,
+                    TerminatorKind::Call {
+                        target: CallTarget::Runtime(operation),
+                        ..
+                    } if *operation == expected
+                )
+            })
+            .unwrap();
+        assert!(call.effects.may_panic);
+        assert_eq!(call.panic, PanicEdge::Propagate);
+    }
 }
 
 fn rvalue_operands(kind: &RvalueKind) -> Vec<&Operand> {
