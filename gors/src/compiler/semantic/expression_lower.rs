@@ -446,12 +446,7 @@ impl FunctionLowerer {
                 let ty = match results.as_slice() {
                     [] => Ty::Unit,
                     [single] => single.clone(),
-                    _ => {
-                        return Err(Diagnostic::unsupported(
-                            "multiple-result calls require explicit expression-arity HIR",
-                            source,
-                        ));
-                    }
+                    many => Ty::Tuple(many.to_vec()),
                 };
                 if ty == Ty::Unit && !allow_discarded_call_result {
                     return Err(Diagnostic::unsupported(

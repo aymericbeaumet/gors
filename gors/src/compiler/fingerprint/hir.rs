@@ -118,6 +118,15 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
         } => encoder.variant(b"let", |encoder| {
             encode_places_and_values(encoder, destinations, values);
         }),
+        hir::StmtKind::LetTuple {
+            destinations,
+            value,
+        } => encoder.variant(b"let-tuple", |encoder| {
+            encoder.field(b"destinations", |encoder| {
+                encoder.sequence(destinations, |encoder, place| encode_place(encoder, *place));
+            });
+            encoder.field(b"value", |encoder| encode_expression(encoder, value));
+        }),
         hir::StmtKind::Assign {
             destinations,
             op,
@@ -132,6 +141,15 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
                     encode_expression(encoder, expression);
                 });
             });
+        }),
+        hir::StmtKind::AssignTuple {
+            destinations,
+            value,
+        } => encoder.variant(b"assign-tuple", |encoder| {
+            encoder.field(b"destinations", |encoder| {
+                encoder.sequence(destinations, |encoder, place| encode_place(encoder, *place));
+            });
+            encoder.field(b"value", |encoder| encode_expression(encoder, value));
         }),
         hir::StmtKind::Expr(expression) => {
             encoder.variant(b"expression", |encoder| {

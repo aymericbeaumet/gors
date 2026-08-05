@@ -307,17 +307,15 @@ fn encode_terminator_kind(encoder: &mut Encoder, kind: &rust_ir::TerminatorKind)
         rust_ir::TerminatorKind::Call {
             target,
             args,
-            destination,
+            destinations,
             next,
         } => encoder.variant(b"call", |encoder| {
             encoder.field(b"target", |encoder| encode_call_target(encoder, target));
             encoder.field(b"arguments", |encoder| {
                 encoder.sequence(args, encode_operand);
             });
-            encoder.field(b"destination", |encoder| {
-                encoder.option(destination.as_ref(), |encoder, place| {
-                    encode_place(encoder, *place);
-                });
+            encoder.field(b"destinations", |encoder| {
+                encoder.sequence(destinations, |encoder, place| encode_place(encoder, *place));
             });
             encoder.field(b"next", |encoder| block_id(encoder, *next));
         }),

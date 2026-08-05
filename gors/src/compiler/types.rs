@@ -146,6 +146,9 @@ impl Ty {
                 Self::Int(IntTy::Int) | Self::Uint(UintTy::Uint8)
             );
         }
+        if let Self::Tuple(elements) = self {
+            return elements.iter().all(Self::is_bootstrap_value);
+        }
         matches!(
             self,
             Self::Bool

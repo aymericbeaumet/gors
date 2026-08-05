@@ -333,7 +333,7 @@ fn compile_and_run_generated_rust(
     let before = Instant::now();
     let workspace = gors::compiler::input::WorkspaceKey::ad_hoc(GENERATED_FIXTURE_WORKSPACE)
         .map_err(|error| format!("invalid fixture workspace identity: {error}"))?;
-    let program = gors::workspace::load_program(workspace, dir)
+    let program = gors::workspace::load_program_files_auto(workspace, &[dir])
         .map_err(|e| format!("source load failed: {e}"))?
         .into_input();
     RunMetrics::add_duration(&metrics.source_load, before.elapsed());

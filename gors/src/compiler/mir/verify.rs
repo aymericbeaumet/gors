@@ -254,7 +254,7 @@ impl Function {
             TerminatorKind::Call {
                 callee,
                 args,
-                destination,
+                destinations,
                 target,
             } => {
                 self.verify_target(*target)?;
@@ -278,7 +278,7 @@ impl Function {
                         for (actual, expected) in argument_types.iter().zip(&signature.params) {
                             verify_same_type(actual, expected, "call argument")?;
                         }
-                        self.verify_call_destination(destination, &signature.results)?;
+                        self.verify_call_destinations(destinations, &signature.results)?;
                     }
                     hir::Callee::Builtin(builtin) => {
                         let results = match builtin {
@@ -396,7 +396,7 @@ impl Function {
                                 vec![Ty::String]
                             }
                         };
-                        self.verify_call_destination(destination, &results)?;
+                        self.verify_call_destinations(destinations, &results)?;
                     }
                 }
                 call_effects()
@@ -421,29 +421,22 @@ impl Function {
         verify_panic_edge(terminator.effects, terminator.panic, "terminator")
     }
 
-    fn verify_call_destination(
+    fn verify_call_destinations(
         &self,
-        destination: &Option<Place>,
+        destinations: &[Place],
         results: &[Ty],
     ) -> Result<(), Diagnostic> {
-        match (destination, results) {
-            (None, []) => Ok(()),
-            (Some(place), [result]) => {
-                verify_same_type(self.place_ty(*place)?, result, "call destination")
-            }
-            (Some(place), many @ [_, _, ..]) => verify_same_type(
-                self.place_ty(*place)?,
-                &Ty::Tuple(many.to_vec()),
-                "call destination",
-            ),
-            (None, results) => Err(Diagnostic::backend(format!(
-                "MIR call discards {} result value(s)",
+        if destinations.len() != results.len() {
+            return Err(Diagnostic::backend(format!(
+                "MIR call has {} destinations for {} result values",
+                destinations.len(),
                 results.len()
-            ))),
-            (Some(_), []) => Err(Diagnostic::backend(
-                "MIR call with no results has a destination",
-            )),
+            )));
         }
+        for (destination, result) in destinations.iter().zip(results) {
+            verify_same_type(self.place_ty(*destination)?, result, "call destination")?;
+        }
+        Ok(())
     }
 
     fn verify_target(&self, target: BasicBlockId) -> Result<(), Diagnostic> {

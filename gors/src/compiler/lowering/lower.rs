@@ -203,7 +203,7 @@ fn lower_terminator(
         mir::TerminatorKind::Call {
             callee,
             args,
-            destination,
+            destinations,
             target: next,
         } => match callee {
             hir::Callee::Function(id) => out::TerminatorKind::Call {
@@ -212,14 +212,14 @@ fn lower_terminator(
                     .into_iter()
                     .map(|argument| lower_operand(argument, locals))
                     .collect::<Result<Vec<_>, _>>()?,
-                destination: destination.map(lower_place),
+                destinations: destinations.into_iter().map(lower_place).collect(),
                 next,
             },
             hir::Callee::Builtin(builtin @ (hir::Builtin::Print | hir::Builtin::Println)) => {
                 return lower_print_call(
                     builtin,
                     args,
-                    destination,
+                    destinations,
                     next,
                     provenance,
                     locals,
@@ -228,7 +228,7 @@ fn lower_terminator(
                 );
             }
             hir::Callee::Builtin(hir::Builtin::Panic) => {
-                return lower_panic_call(args, destination, next, provenance, locals);
+                return lower_panic_call(args, destinations, next, provenance, locals);
             }
             hir::Callee::Builtin(
                 builtin @ (hir::Builtin::SliceI64Index
@@ -267,7 +267,7 @@ fn lower_terminator(
                     .into_iter()
                     .map(|argument| lower_operand(argument, locals))
                     .collect::<Result<Vec<_>, _>>()?,
-                destination: destination.map(lower_place),
+                destinations: destinations.into_iter().map(lower_place).collect(),
                 next,
             },
         },
@@ -284,12 +284,12 @@ fn lower_terminator(
 
 fn lower_panic_call(
     args: Vec<mir::Operand>,
-    destination: Option<mir::Place>,
+    destinations: Vec<mir::Place>,
     next: out::BasicBlockId,
     provenance: out::Provenance,
     locals: &[out::LocalDecl],
 ) -> Result<out::Terminator, Diagnostic> {
-    if destination.is_some() {
+    if !destinations.is_empty() {
         return Err(Diagnostic::backend(
             "Go panic builtin unexpectedly has a result destination",
         ));
@@ -322,7 +322,7 @@ fn lower_panic_call(
         out::TerminatorKind::Call {
             target: out::CallTarget::Runtime(operation),
             args: vec![lower_operand(argument, locals)?],
-            destination: None,
+            destinations: Vec::new(),
             next,
         },
         provenance,
@@ -333,14 +333,14 @@ fn lower_panic_call(
 fn lower_print_call(
     builtin: hir::Builtin,
     args: Vec<mir::Operand>,
-    destination: Option<mir::Place>,
+    destinations: Vec<mir::Place>,
     next: out::BasicBlockId,
     provenance: out::Provenance,
     locals: &[out::LocalDecl],
     original_block_count: usize,
     extra_blocks: &mut Vec<out::BasicBlock>,
 ) -> Result<out::Terminator, Diagnostic> {
-    if destination.is_some() {
+    if !destinations.is_empty() {
         return Err(Diagnostic::backend(
             "Go print builtin unexpectedly has a result destination",
         ));
@@ -421,7 +421,7 @@ fn lower_print_call(
                 out::TerminatorKind::Call {
                     target: out::CallTarget::Runtime(operation),
                     args,
-                    destination: None,
+                    destinations: Vec::new(),
                     next: call_next,
                 },
                 provenance.clone(),
@@ -433,7 +433,7 @@ fn lower_print_call(
         out::TerminatorKind::Call {
             target: out::CallTarget::Runtime(first_operation),
             args: first_args,
-            destination: None,
+            destinations: Vec::new(),
             next: first_next,
         },
         provenance,

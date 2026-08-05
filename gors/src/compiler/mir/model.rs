@@ -111,7 +111,7 @@ pub enum TerminatorKind {
     Call {
         callee: hir::Callee,
         args: Vec<Operand>,
-        destination: Option<Place>,
+        destinations: Vec<Place>,
         target: BasicBlockId,
     },
     Return(Vec<Operand>),

@@ -74,9 +74,9 @@ fn verifier_rejects_mutated_ids_types_and_call_abis() {
         .find_map(|block| match &block.terminator.kind {
             TerminatorKind::Call {
                 callee: hir::Callee::Function(_),
-                destination,
+                destinations,
                 ..
-            } => *destination,
+            } => destinations.first().copied(),
             _ => None,
         })
         .unwrap();

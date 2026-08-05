@@ -149,7 +149,7 @@ fn emit_structured_linear(
             TerminatorKind::Call {
                 target,
                 args,
-                destination,
+                destinations,
                 ..
             } => {
                 let args = args
@@ -157,14 +157,7 @@ fn emit_structured_linear(
                     .map(|arg| emit_operand(arg, function))
                     .collect::<Result<Vec<_>, _>>()?;
                 let call = emit_call(target, args, function_names)?;
-                emitted.push(if let Some(destination) = destination {
-                    let slot = slot_ident(destination.local);
-                    syn::parse_quote! {
-                        #slot = ::std::option::Option::Some(#call);
-                    }
-                } else {
-                    syn::parse_quote! { #call; }
-                });
+                emitted.extend(emit_call_writes(call, destinations));
             }
             TerminatorKind::Return(values) => {
                 let values = values
@@ -269,7 +262,7 @@ fn emit_terminator(
         TerminatorKind::Call {
             target: call_target,
             args,
-            destination,
+            destinations,
             next,
         } => {
             let emitted_args = args
@@ -278,20 +271,12 @@ fn emit_terminator(
                 .collect::<Result<Vec<_>, _>>()?;
             let call = emit_call(call_target, emitted_args, function_names)?;
             let target = next.0;
-            if let Some(destination) = destination {
-                let slot = slot_ident(destination.local);
-                Ok(syn::parse_quote! {{
-                    #slot = ::std::option::Option::Some(#call);
-                    #pc = #target;
-                    continue;
-                }})
-            } else {
-                Ok(syn::parse_quote! {{
-                    #call;
-                    #pc = #target;
-                    continue;
-                }})
-            }
+            let writes = emit_call_writes(call, destinations);
+            Ok(syn::parse_quote! {{
+                #(#writes)*
+                #pc = #target;
+                continue;
+            }})
         }
         TerminatorKind::Return(values) => {
             let values = values
@@ -308,6 +293,42 @@ fn emit_terminator(
         TerminatorKind::Unreachable => Ok(syn::parse_quote! {
             ::std::unreachable!("entered unreachable compiler Rust IR block")
         }),
+    }
+}
+
+fn emit_call_writes(call: syn::Expr, destinations: &[rust_ir::Place]) -> Vec<syn::Stmt> {
+    match destinations {
+        [] => vec![syn::parse_quote! { #call; }],
+        [destination] => {
+            let slot = slot_ident(destination.local);
+            vec![syn::parse_quote! {
+                #slot = ::std::option::Option::Some(#call);
+            }]
+        }
+        destinations => {
+            let temporaries = destinations
+                .iter()
+                .enumerate()
+                .map(|(index, destination)| {
+                    syn::Ident::new(
+                        &format!("__gors_result_{index}_{}", destination.local.0),
+                        proc_macro2::Span::call_site(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let mut statements = vec![syn::parse_quote! {
+                let (#(#temporaries),*) = #call;
+            }];
+            statements.extend(destinations.iter().zip(&temporaries).map(
+                |(destination, temporary)| {
+                    let slot = slot_ident(destination.local);
+                    syn::parse_quote! {
+                        #slot = ::std::option::Option::Some(#temporary);
+                    }
+                },
+            ));
+            statements
+        }
     }
 }
 

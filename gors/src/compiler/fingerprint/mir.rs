@@ -204,17 +204,15 @@ fn encode_terminator_kind(encoder: &mut Encoder, kind: &mir::TerminatorKind) {
         mir::TerminatorKind::Call {
             callee,
             args,
-            destination,
+            destinations,
             target,
         } => encoder.variant(b"call", |encoder| {
             encoder.field(b"callee", |encoder| encode_callee(encoder, *callee));
             encoder.field(b"arguments", |encoder| {
                 encoder.sequence(args, encode_operand);
             });
-            encoder.field(b"destination", |encoder| {
-                encoder.option(destination.as_ref(), |encoder, place| {
-                    encode_place(encoder, *place);
-                });
+            encoder.field(b"destinations", |encoder| {
+                encoder.sequence(destinations, |encoder, place| encode_place(encoder, *place));
             });
             encoder.field(b"target", |encoder| block_id(encoder, *target));
         }),

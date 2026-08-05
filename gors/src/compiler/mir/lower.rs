@@ -6,6 +6,7 @@ use super::construct::{
     assignment_binary_op, binary_effects, call_effects, make_rvalue, make_statement,
     make_terminator, operand_ty,
 };
+use super::labels::{collect_labels, statement_declares_label};
 use super::{
     BasicBlock, Function, LocalDecl, Operand, Place, Provenance, RvalueKind, Statement,
     SyntheticOrigin, Terminator, TerminatorKind,
@@ -259,6 +260,36 @@ impl FunctionLowerer {
 
     fn lower_statement(&mut self, statement: &hir::Stmt) -> Result<(), Diagnostic> {
         match &statement.kind {
+            hir::StmtKind::LetTuple {
+                destinations,
+                value,
+            }
+            | hir::StmtKind::AssignTuple {
+                destinations,
+                value,
+            } => {
+                let Ty::Tuple(component_types) = &value.ty else {
+                    return Err(Diagnostic::backend(
+                        "multi-result HIR assignment value is not a tuple",
+                    ));
+                };
+                if destinations.len() != component_types.len() {
+                    return Err(Diagnostic::backend(
+                        "multi-result HIR assignment arity changed before MIR lowering",
+                    ));
+                }
+                let places = destinations
+                    .iter()
+                    .zip(component_types)
+                    .map(|(destination, ty)| match destination {
+                        hir::Place::Local(local) => Place { local: *local },
+                        hir::Place::Discard => Place {
+                            local: self.new_temp(ty.clone()),
+                        },
+                    })
+                    .collect::<Vec<_>>();
+                self.lower_call_into(value, places)?;
+            }
             hir::StmtKind::Let {
                 destinations,
                 values,
@@ -379,7 +410,7 @@ impl FunctionLowerer {
                         TerminatorKind::Call {
                             callee: hir::Callee::Builtin(hir::Builtin::SliceI64Index),
                             args: vec![slice_operand.clone(), index_operand.clone()],
-                            destination: Some(old),
+                            destinations: vec![old],
                             target: after_index,
                         },
                         call_effects(),
@@ -415,7 +446,7 @@ impl FunctionLowerer {
                     TerminatorKind::Call {
                         callee: hir::Callee::Builtin(hir::Builtin::SliceI64Set),
                         args: vec![slice_operand, index_operand, assigned],
-                        destination: None,
+                        destinations: Vec::new(),
                         target: after_set,
                     },
                     call_effects(),
@@ -427,6 +458,25 @@ impl FunctionLowerer {
                 let _ = self.lower_expr(expr)?;
             }
             hir::StmtKind::Return(values) => {
+                if let [value] = values.as_slice()
+                    && let Ty::Tuple(component_types) = &value.ty
+                {
+                    let destinations = component_types
+                        .iter()
+                        .map(|ty| Place {
+                            local: self.new_temp(ty.clone()),
+                        })
+                        .collect::<Vec<_>>();
+                    self.lower_call_into(value, destinations.clone())?;
+                    self.terminate(make_terminator(
+                        TerminatorKind::Return(
+                            destinations.into_iter().map(Operand::Read).collect(),
+                        ),
+                        hir::Effects::default(),
+                        Provenance::Source(statement.source),
+                    ))?;
+                    return Ok(());
+                }
                 let mut operands = Vec::new();
                 for value in values {
                     let operand = self.lower_expr(value)?;
@@ -785,7 +835,7 @@ impl FunctionLowerer {
                     TerminatorKind::Call {
                         callee: *callee,
                         args: operands,
-                        destination,
+                        destinations: destination.into_iter().collect(),
                         target,
                     },
                     call_effects(),
@@ -795,6 +845,41 @@ impl FunctionLowerer {
                 Ok(destination.map_or(Operand::Unit, Operand::Read))
             }
         }
+    }
+
+    fn lower_call_into(
+        &mut self,
+        expr: &hir::Expr,
+        destinations: Vec<Place>,
+    ) -> Result<(), Diagnostic> {
+        let hir::ExprKind::Call { callee, args } = &expr.kind else {
+            return Err(Diagnostic::backend(
+                "tuple-valued non-call reached MIR call lowering",
+            ));
+        };
+        let mut operands = Vec::with_capacity(args.len());
+        for argument in args {
+            let operand = self.lower_expr(argument)?;
+            operands.push(self.materialize(
+                operand,
+                argument.ty.clone(),
+                Provenance::Source(argument.source),
+            )?);
+        }
+        let provenance = Provenance::Source(expr.source);
+        let target = self.new_block(provenance.clone());
+        self.terminate(make_terminator(
+            TerminatorKind::Call {
+                callee: *callee,
+                args: operands,
+                destinations,
+                target,
+            },
+            call_effects(),
+            provenance,
+        ))?;
+        self.current = target;
+        Ok(())
     }
 
     fn lower_short_circuit(
@@ -860,83 +945,5 @@ impl FunctionLowerer {
         ))?;
         self.current = join;
         Ok(Operand::Read(result))
-    }
-}
-
-fn statement_declares_label(statement: &hir::Stmt) -> bool {
-    matches!(
-        &statement.kind,
-        hir::StmtKind::Label { .. } | hir::StmtKind::For { label: Some(_), .. }
-    )
-}
-
-fn collect_labels(block: &hir::Block, labels: &mut Vec<(String, SourceRef)>) {
-    for statement in &block.stmts {
-        match &statement.kind {
-            hir::StmtKind::Label {
-                name,
-                statement: body,
-            } => {
-                labels.push((name.clone(), statement.source));
-                if let Some(body) = body {
-                    collect_statement_labels(body, labels);
-                }
-            }
-            hir::StmtKind::For { label, .. } => {
-                if let Some(label) = label {
-                    labels.push((label.clone(), statement.source));
-                }
-                collect_statement_labels(statement, labels);
-            }
-            _ => collect_statement_labels(statement, labels),
-        }
-    }
-}
-
-fn collect_statement_labels(statement: &hir::Stmt, labels: &mut Vec<(String, SourceRef)>) {
-    match &statement.kind {
-        hir::StmtKind::If {
-            init,
-            then_block,
-            else_branch,
-            ..
-        } => {
-            if let Some(init) = init {
-                collect_statement_labels(init, labels);
-            }
-            collect_labels(then_block, labels);
-            if let Some(else_branch) = else_branch {
-                collect_statement_labels(else_branch, labels);
-            }
-        }
-        hir::StmtKind::For {
-            init, post, body, ..
-        } => {
-            if let Some(init) = init {
-                collect_statement_labels(init, labels);
-            }
-            if let Some(post) = post {
-                collect_statement_labels(post, labels);
-            }
-            collect_labels(body, labels);
-        }
-        hir::StmtKind::Block(block) => collect_labels(block, labels),
-        hir::StmtKind::Label {
-            name,
-            statement: body,
-        } => {
-            labels.push((name.clone(), statement.source));
-            if let Some(body) = body {
-                collect_statement_labels(body, labels);
-            }
-        }
-        hir::StmtKind::Let { .. }
-        | hir::StmtKind::Assign { .. }
-        | hir::StmtKind::SliceAssign { .. }
-        | hir::StmtKind::Expr(_)
-        | hir::StmtKind::Return(_)
-        | hir::StmtKind::Goto(_)
-        | hir::StmtKind::Break(_)
-        | hir::StmtKind::Continue(_) => {}
     }
 }

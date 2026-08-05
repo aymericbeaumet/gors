@@ -281,12 +281,12 @@ impl Function {
                 self.transfer_operand(condition, state, check_reads)?;
             }
             TerminatorKind::Call {
-                args, destination, ..
+                args, destinations, ..
             } => {
                 for argument in args {
                     self.transfer_operand(argument, state, check_reads)?;
                 }
-                if let Some(destination) = destination {
+                for destination in destinations {
                     state.insert(destination.local);
                 }
             }
@@ -360,9 +360,9 @@ fn add_terminator_uses_backwards(terminator: &Terminator, live: &mut BTreeSet<Lo
     match &terminator.kind {
         TerminatorKind::SwitchBool { condition, .. } => add_operand_use(condition, live),
         TerminatorKind::Call {
-            args, destination, ..
+            args, destinations, ..
         } => {
-            if let Some(destination) = destination {
+            for destination in destinations {
                 live.remove(&destination.local);
             }
             for argument in args.iter().rev() {
@@ -407,9 +407,9 @@ fn plan_terminator_backwards(
             plan_operand_backwards(condition, live, local_types, reverse_plan)
         }
         TerminatorKind::Call {
-            args, destination, ..
+            args, destinations, ..
         } => {
-            if let Some(destination) = destination {
+            for destination in destinations {
                 live.remove(&destination.local);
             }
             for argument in args.iter().rev() {

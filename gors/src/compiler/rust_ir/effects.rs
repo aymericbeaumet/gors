@@ -47,13 +47,7 @@ pub(in crate::compiler) fn terminator_effects(kind: &TerminatorKind) -> Effects 
         TerminatorKind::Goto(_) | TerminatorKind::Unreachable => Effects::default(),
     };
     let mut effects = union(intrinsic, operands);
-    if matches!(
-        kind,
-        TerminatorKind::Call {
-            destination: Some(_),
-            ..
-        }
-    ) {
+    if matches!(kind, TerminatorKind::Call { destinations, .. } if !destinations.is_empty()) {
         effects.may_write = true;
     }
     effects

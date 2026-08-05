@@ -470,6 +470,32 @@ fn generated_integer_slice_append_respects_capacity() {
 }
 
 #[test]
+fn generated_multiple_results_preserve_call_and_return_arity() {
+    let run = compile_and_run(
+        r#"
+            package main
+            func pair() (int, int) { return 3, 4 }
+            func forward() (int, int) { return pair() }
+            func named() (left int, right int) {
+                left = 5
+                right = 6
+                return
+            }
+            func main() {
+                first, second := forward()
+                first, second = named()
+                println(first, second)
+                first, first = pair()
+                println(first)
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"5 6\n4\n");
+    assert!(run.rust.contains("let (__gors_result_"), "{}", run.rust);
+}
+
+#[test]
 fn def_id_function_names_cannot_collide_with_rust_keywords() {
     let run = compile_and_run(
         r#"

@@ -2,6 +2,7 @@
 
 mod construct;
 mod dataflow;
+mod labels;
 mod lower;
 mod model;
 mod normalize;

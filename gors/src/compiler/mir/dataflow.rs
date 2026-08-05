@@ -121,12 +121,12 @@ impl Function {
                 self.transfer_operand(condition, state, check_reads)?;
             }
             TerminatorKind::Call {
-                args, destination, ..
+                args, destinations, ..
             } => {
                 for argument in args {
                     self.transfer_operand(argument, state, check_reads)?;
                 }
-                if let Some(destination) = destination {
+                for destination in destinations {
                     state.insert(destination.local);
                 }
             }

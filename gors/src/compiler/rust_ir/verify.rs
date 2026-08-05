@@ -276,7 +276,7 @@ impl Function {
             TerminatorKind::Call {
                 target,
                 args,
-                destination,
+                destinations,
                 next,
             } => {
                 self.verify_target(*next)?;
@@ -295,7 +295,7 @@ impl Function {
                                 id
                             )));
                         }
-                        self.verify_call_destination(*destination, &signature.results)?;
+                        self.verify_call_destinations(destinations, &signature.results)?;
                     }
                     CallTarget::Runtime(operation) => {
                         let result = verify_operation_signature(
@@ -308,7 +308,7 @@ impl Function {
                         } else {
                             vec![result]
                         };
-                        self.verify_call_destination(*destination, &results)?;
+                        self.verify_call_destinations(destinations, &results)?;
                     }
                 }
             }
@@ -332,28 +332,22 @@ impl Function {
         verify_panic(terminator.effects, terminator.panic, "terminator")
     }
 
-    fn verify_call_destination(
+    fn verify_call_destinations(
         &self,
-        destination: Option<Place>,
+        destinations: &[Place],
         results: &[RustType],
     ) -> Result<(), Diagnostic> {
-        match (destination, results) {
-            (None, []) => Ok(()),
-            (Some(place), [result]) => {
-                verify_same(self.place_ty(place)?, *result, "call destination")
-            }
-            (None, results) => Err(Diagnostic::backend(format!(
-                "Rust IR call discards {} result value(s)",
+        if destinations.len() != results.len() {
+            return Err(Diagnostic::backend(format!(
+                "Rust IR call has {} destinations for {} result values",
+                destinations.len(),
                 results.len()
-            ))),
-            (Some(_), []) => Err(Diagnostic::backend(
-                "Rust IR no-result call has a destination",
-            )),
-            (Some(_), results) => Err(Diagnostic::backend(format!(
-                "Rust IR lacks a {}-result destination representation",
-                results.len()
-            ))),
+            )));
         }
+        for (destination, result) in destinations.iter().zip(results) {
+            verify_same(self.place_ty(*destination)?, *result, "call destination")?;
+        }
+        Ok(())
     }
 
     fn verify_target(&self, target: BasicBlockId) -> Result<(), Diagnostic> {

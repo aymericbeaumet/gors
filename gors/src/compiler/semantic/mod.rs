@@ -80,12 +80,6 @@ pub(super) fn lower_signature(
         .map(|fields| field_types(fields, type_aliases, source))
         .transpose()?
         .unwrap_or_default();
-    if results.len() > 1 {
-        return Err(Diagnostic::unsupported(
-            "multiple-result functions require explicit expression-arity HIR and are not implemented",
-            source,
-        ));
-    }
     if header.name.name.as_ref() == "init" {
         return Err(Diagnostic::unsupported(
             "package init functions are not implemented by the HIR/MIR backend",

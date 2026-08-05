@@ -26,6 +26,9 @@ fn collect_statement_callees(statement: &hir::Stmt, callees: &mut BTreeSet<DefId
                 collect_expression_callees(value, callees);
             }
         }
+        hir::StmtKind::LetTuple { value, .. } | hir::StmtKind::AssignTuple { value, .. } => {
+            collect_expression_callees(value, callees);
+        }
         hir::StmtKind::Expr(expression) => collect_expression_callees(expression, callees),
         hir::StmtKind::SliceAssign {
             slice,

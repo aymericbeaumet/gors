@@ -214,7 +214,7 @@ pub enum TerminatorKind {
     Call {
         target: CallTarget,
         args: Vec<Operand>,
-        destination: Option<Place>,
+        destinations: Vec<Place>,
         next: BasicBlockId,
     },
     Return(Vec<Operand>),

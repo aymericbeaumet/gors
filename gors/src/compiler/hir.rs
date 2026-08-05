@@ -71,10 +71,18 @@ pub enum StmtKind {
         destinations: Vec<Place>,
         values: Vec<Expr>,
     },
+    LetTuple {
+        destinations: Vec<Place>,
+        value: Expr,
+    },
     Assign {
         destinations: Vec<Place>,
         op: AssignOp,
         values: Vec<Expr>,
+    },
+    AssignTuple {
+        destinations: Vec<Place>,
+        value: Expr,
     },
     Expr(Expr),
     Return(Vec<Expr>),
