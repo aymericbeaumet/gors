@@ -29,8 +29,9 @@ struct FunctionLowerer {
     loops: Vec<LoopTargets>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct LoopTargets {
+    label: Option<String>,
     break_target: BasicBlockId,
     continue_target: BasicBlockId,
     break_used: bool,
@@ -407,6 +408,7 @@ impl FunctionLowerer {
                 }
             }
             hir::StmtKind::For {
+                label,
                 init,
                 condition,
                 post,
@@ -449,6 +451,7 @@ impl FunctionLowerer {
                 }
 
                 self.loops.push(LoopTargets {
+                    label: label.clone(),
                     break_target: exit_target,
                     continue_target: post_target,
                     break_used: false,
@@ -484,11 +487,16 @@ impl FunctionLowerer {
                     ))?;
                 }
             }
-            hir::StmtKind::Break => {
-                let targets = self
-                    .loops
-                    .last_mut()
-                    .ok_or_else(|| Diagnostic::backend("break outside MIR loop"))?;
+            hir::StmtKind::Break(label) => {
+                let targets = match label {
+                    Some(label) => self
+                        .loops
+                        .iter_mut()
+                        .rev()
+                        .find(|targets| targets.label.as_deref() == Some(label)),
+                    None => self.loops.last_mut(),
+                }
+                .ok_or_else(|| Diagnostic::backend("break outside MIR loop"))?;
                 targets.break_used = true;
                 let target = targets.break_target;
                 self.terminate(make_terminator(
@@ -497,12 +505,17 @@ impl FunctionLowerer {
                     Provenance::Source(statement.source),
                 ))?;
             }
-            hir::StmtKind::Continue => {
-                let target = self
-                    .loops
-                    .last()
-                    .ok_or_else(|| Diagnostic::backend("continue outside MIR loop"))?
-                    .continue_target;
+            hir::StmtKind::Continue(label) => {
+                let target = match label {
+                    Some(label) => self
+                        .loops
+                        .iter()
+                        .rev()
+                        .find(|targets| targets.label.as_deref() == Some(label)),
+                    None => self.loops.last(),
+                }
+                .ok_or_else(|| Diagnostic::backend("continue outside MIR loop"))?
+                .continue_target;
                 self.terminate(make_terminator(
                     TerminatorKind::Goto(target),
                     hir::Effects::default(),

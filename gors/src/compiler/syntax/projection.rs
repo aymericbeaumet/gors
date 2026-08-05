@@ -466,33 +466,26 @@ impl StructuralProjector {
                     .map(|statement| self.statement(statement).map(Box::new))
                     .transpose()?,
             },
-            ast::Stmt::ForStmt(statement) => StmtSyntaxKind::For {
-                init: statement
-                    .init
-                    .as_deref()
-                    .map(|statement| self.statement(statement).map(Box::new))
-                    .transpose()?,
-                condition: statement
-                    .cond
-                    .as_ref()
-                    .map(|expression| self.expression(expression))
-                    .transpose()?,
-                post: statement
-                    .post
-                    .as_deref()
-                    .map(|statement| self.statement(statement).map(Box::new))
-                    .transpose()?,
-                body: self.block(&statement.body)?,
-            },
+            ast::Stmt::ForStmt(statement) => self.for_statement(statement, None)?,
             ast::Stmt::BranchStmt(statement) => StmtSyntaxKind::Branch {
                 token: statement.tok,
-                has_label: statement.label.is_some(),
+                label: statement
+                    .label
+                    .as_ref()
+                    .map(|label| self.ident(label))
+                    .transpose()?,
             },
             ast::Stmt::CaseClause(_) => StmtSyntaxKind::Unsupported("case clause"),
             ast::Stmt::CommClause(_) => StmtSyntaxKind::Unsupported("communication clause"),
             ast::Stmt::DeferStmt(_) => StmtSyntaxKind::Unsupported("defer statement"),
             ast::Stmt::GoStmt(_) => StmtSyntaxKind::Unsupported("go statement"),
-            ast::Stmt::LabeledStmt(_) => StmtSyntaxKind::Unsupported("labeled statement"),
+            ast::Stmt::LabeledStmt(statement) => match statement.stmt.as_ref() {
+                ast::Stmt::ForStmt(for_statement) => {
+                    let label = self.ident(&statement.label)?;
+                    self.for_statement(for_statement, Some(label))?
+                }
+                _ => StmtSyntaxKind::Unsupported("label on a non-for statement"),
+            },
             ast::Stmt::RangeStmt(_) => StmtSyntaxKind::Unsupported("range statement"),
             ast::Stmt::SelectStmt(_) => StmtSyntaxKind::Unsupported("select statement"),
             ast::Stmt::SendStmt(_) => StmtSyntaxKind::Unsupported("send statement"),
@@ -500,6 +493,32 @@ impl StructuralProjector {
             ast::Stmt::TypeSwitchStmt(_) => StmtSyntaxKind::Unsupported("type switch statement"),
         };
         Ok(StmtSyntax { source, kind })
+    }
+
+    fn for_statement(
+        &mut self,
+        statement: &ast::ForStmt<'_>,
+        label: Option<IdentSyntax>,
+    ) -> Result<StmtSyntaxKind, ProjectionError> {
+        Ok(StmtSyntaxKind::For {
+            label,
+            init: statement
+                .init
+                .as_deref()
+                .map(|statement| self.statement(statement).map(Box::new))
+                .transpose()?,
+            condition: statement
+                .cond
+                .as_ref()
+                .map(|expression| self.expression(expression))
+                .transpose()?,
+            post: statement
+                .post
+                .as_deref()
+                .map(|statement| self.statement(statement).map(Box::new))
+                .transpose()?,
+            body: self.block(&statement.body)?,
+        })
     }
 
     fn declaration(

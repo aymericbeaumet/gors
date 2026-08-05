@@ -115,6 +115,7 @@ pub enum StmtSyntaxKind {
         else_branch: Option<Box<StmtSyntax>>,
     },
     For {
+        label: Option<IdentSyntax>,
         init: Option<Box<StmtSyntax>>,
         condition: Option<ExprSyntax>,
         post: Option<Box<StmtSyntax>>,
@@ -122,7 +123,7 @@ pub enum StmtSyntaxKind {
     },
     Branch {
         token: Token,
-        has_label: bool,
+        label: Option<IdentSyntax>,
     },
     Unsupported(&'static str),
 }

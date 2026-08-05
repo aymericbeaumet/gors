@@ -208,6 +208,39 @@ fn untyped_package_constants_remain_exact_until_use() {
 }
 
 #[test]
+fn labeled_loop_branches_target_the_named_enclosing_loop() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            func main() {
+                total := 0
+            Outer:
+                for i := 0; i < 3; i++ {
+                    for j := 0; j < 3; j++ {
+                        if j == 1 {
+                            continue Outer
+                        }
+                        total++
+                    }
+                }
+
+            Stop:
+                for i := 0; i < 3; i++ {
+                    for {
+                        total += 10
+                        break Stop
+                    }
+                }
+                println(total)
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"13\n");
+}
+
+#[test]
 fn generated_rust_preserves_arbitrary_string_bytes() {
     let run = compile_and_run(
         r#"

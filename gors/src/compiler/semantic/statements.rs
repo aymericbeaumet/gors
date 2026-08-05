@@ -146,11 +146,21 @@ impl FunctionLowerer {
                 }
             }
             StmtSyntaxKind::For {
+                label,
                 init,
                 condition,
                 post,
                 body,
             } => {
+                let label = label.as_ref().map(|label| label.name.to_string());
+                if let Some(label) = &label
+                    && !self.declared_labels.insert(label.clone())
+                {
+                    return Err(Diagnostic::semantic(
+                        format!("label {label} already defined"),
+                        source,
+                    ));
+                }
                 self.push_scope();
                 let init = init
                     .as_deref()
@@ -162,7 +172,7 @@ impl FunctionLowerer {
                     .as_ref()
                     .map(|expression| self.lower_expr(expression, Some(&Ty::Bool)))
                     .transpose()?;
-                self.loop_depth += 1;
+                self.loop_labels.push(label.clone());
                 let body = self.lower_block(body, true)?;
                 let post = post
                     .as_deref()
@@ -170,25 +180,38 @@ impl FunctionLowerer {
                     .transpose()?
                     .flatten()
                     .map(Box::new);
-                self.loop_depth -= 1;
+                self.loop_labels.pop();
                 self.pop_scope();
                 hir::StmtKind::For {
+                    label,
                     init,
                     condition,
                     post,
                     body,
                 }
             }
-            StmtSyntaxKind::Branch { token, has_label } => match token {
-                Token::BREAK if !has_label && self.loop_depth != 0 => hir::StmtKind::Break,
-                Token::CONTINUE if !has_label && self.loop_depth != 0 => hir::StmtKind::Continue,
-                _ => {
-                    return Err(Diagnostic::unsupported(
-                        "only unlabeled break and continue in loops are implemented",
-                        source,
-                    ));
+            StmtSyntaxKind::Branch { token, label } => {
+                let label = label.as_ref().map(|label| label.name.to_string());
+                let target_exists = label.as_ref().map_or_else(
+                    || !self.loop_labels.is_empty(),
+                    |label| {
+                        self.loop_labels
+                            .iter()
+                            .rev()
+                            .any(|candidate| candidate.as_deref() == Some(label))
+                    },
+                );
+                match token {
+                    Token::BREAK if target_exists => hir::StmtKind::Break(label),
+                    Token::CONTINUE if target_exists => hir::StmtKind::Continue(label),
+                    _ => {
+                        return Err(Diagnostic::unsupported(
+                            "branch does not target a supported enclosing for loop",
+                            source,
+                        ));
+                    }
                 }
-            },
+            }
             StmtSyntaxKind::Unsupported(description) => {
                 return Err(Diagnostic::unsupported(
                     format!("statement {description} is not implemented by the HIR/MIR backend"),

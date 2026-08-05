@@ -195,6 +195,7 @@ impl PackageReferenceCollector {
                 self.scopes.pop();
             }
             StmtSyntaxKind::For {
+                label: _,
                 init,
                 condition,
                 post,

@@ -167,11 +167,15 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
             });
         }),
         hir::StmtKind::For {
+            label,
             init,
             condition,
             post,
             body,
         } => encoder.variant(b"for", |encoder| {
+            encoder.field(b"label", |encoder| {
+                encoder.option(label.as_ref(), |encoder, label| encoder.string(label));
+            });
             encoder.field(b"init", |encoder| {
                 encoder.option(init.as_deref(), |encoder, statement| {
                     encode_statement(encoder, statement);
@@ -196,8 +200,12 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
                 encode_block(encoder, block);
             });
         }
-        hir::StmtKind::Break => encoder.variant(b"break", |_| {}),
-        hir::StmtKind::Continue => encoder.variant(b"continue", |_| {}),
+        hir::StmtKind::Break(label) => encoder.variant(b"break", |encoder| {
+            encoder.option(label.as_ref(), |encoder, label| encoder.string(label));
+        }),
+        hir::StmtKind::Continue(label) => encoder.variant(b"continue", |encoder| {
+            encoder.option(label.as_ref(), |encoder, label| encoder.string(label));
+        }),
     }
 }
 

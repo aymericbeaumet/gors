@@ -85,14 +85,15 @@ pub enum StmtKind {
         else_branch: Option<Box<Stmt>>,
     },
     For {
+        label: Option<String>,
         init: Option<Box<Stmt>>,
         condition: Option<Expr>,
         post: Option<Box<Stmt>>,
         body: Block,
     },
     Block(Block),
-    Break,
-    Continue,
+    Break(Option<String>),
+    Continue(Option<String>),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

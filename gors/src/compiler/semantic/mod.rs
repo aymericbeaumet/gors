@@ -5,7 +5,7 @@ mod expressions;
 mod function;
 mod statements;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use num_bigint::BigInt;
 
@@ -183,7 +183,8 @@ pub(super) fn lower_function(
         locals: Vec::new(),
         scopes: vec![BTreeMap::new()],
         named_results: Vec::new(),
-        loop_depth: 0,
+        loop_labels: Vec::new(),
+        declared_labels: BTreeSet::new(),
         source_plan: initial_source_plan,
     };
     let lowered = (|| {

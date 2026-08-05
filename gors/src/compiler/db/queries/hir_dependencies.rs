@@ -43,6 +43,7 @@ fn collect_statement_callees(statement: &hir::Stmt, callees: &mut BTreeSet<DefId
             }
         }
         hir::StmtKind::For {
+            label: _,
             init,
             condition,
             post,
@@ -60,7 +61,7 @@ fn collect_statement_callees(statement: &hir::Stmt, callees: &mut BTreeSet<DefId
             collect_block_callees(body, callees);
         }
         hir::StmtKind::Block(block) => collect_block_callees(block, callees),
-        hir::StmtKind::Break | hir::StmtKind::Continue => {}
+        hir::StmtKind::Break(_) | hir::StmtKind::Continue(_) => {}
     }
 }
 

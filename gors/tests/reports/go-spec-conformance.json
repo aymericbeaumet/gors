@@ -13,9 +13,9 @@
     "groupCount": 15,
     "passingGroupCount": 0,
     "caseCount": 211,
-    "passingCaseCount": 13,
-    "unsupportedCaseCount": 198,
-    "fixtureCount": 13
+    "passingCaseCount": 14,
+    "unsupportedCaseCount": 197,
+    "fixtureCount": 14
   },
   "groups": [
     {
@@ -904,6 +904,7 @@
       "subtitle": "",
       "fixtures": [
         "declarations_and_scope_blocks",
+        "declarations_and_scope_labels",
         "declarations_and_scope_predeclared",
         "declarations_and_scope_uniqueness"
       ],
@@ -911,9 +912,9 @@
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 15,
-        "passingCaseCount": 3,
-        "unsupportedCaseCount": 12,
-        "fixtureCount": 3
+        "passingCaseCount": 4,
+        "unsupportedCaseCount": 11,
+        "fixtureCount": 4
       },
       "cases": [
         {
@@ -935,9 +936,14 @@
           "title": "Labels are function-scoped and do not conflict with identifiers",
           "subtitle": "Label scopes",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: declarations_and_scope_labels."
+          "status": "passing",
+          "fixtures": [
+            "declarations_and_scope_labels"
+          ],
+          "freshFixtures": [
+            "declarations_and_scope_labels"
+          ],
+          "reason": ""
         },
         {
           "id": "decl-predeclared-identifiers",
@@ -1349,14 +1355,16 @@
       "id": "statements",
       "title": "Statements",
       "subtitle": "",
-      "fixtures": [],
+      "fixtures": [
+        "declarations_and_scope_labels"
+      ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 46,
         "passingCaseCount": 0,
         "unsupportedCaseCount": 46,
-        "fixtureCount": 0
+        "fixtureCount": 1
       },
       "cases": [
         {
@@ -1392,8 +1400,13 @@
           "subtitle": "Labeled statements",
           "kind": "spec-test",
           "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: declarations_and_scope_labels, spec_section_edgecases."
+          "fixtures": [
+            "declarations_and_scope_labels"
+          ],
+          "freshFixtures": [
+            "declarations_and_scope_labels"
+          ],
+          "reason": "Fresh fixture execution did not pass for: spec_section_edgecases."
         },
         {
           "id": "stmt-empty-expression",
