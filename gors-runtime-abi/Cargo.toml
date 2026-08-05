@@ -1,0 +1,18 @@
+[package]
+name = "gors-runtime-abi"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96.0"
+license = "MIT"
+description = "Canonical compiler/runtime ABI contract for gors"
+homepage = "https://aymericbeaumet.github.io/gors/"
+repository = "https://github.com/aymericbeaumet/gors/"
+
+[dependencies]
+sha2 = "0.11"
+
+[dev-dependencies]
+tempfile = "3.27"
+
+[lints]
+workspace = true

@@ -1,138 +1,156 @@
 # gors [![GitHub Actions](https://github.com/aymericbeaumet/gors/actions/workflows/ci.yml/badge.svg)](https://github.com/aymericbeaumet/gors/actions/workflows/ci.yml)
 
-[gors](https://github.com/aymericbeaumet/gors) is an experimental Go toolchain
-written in Rust, featuring a parser, compiler, and code printer that transpiles
-Go to Rust.
+[gors](https://github.com/aymericbeaumet/gors) is an experimental Go-to-Rust
+compiler written in Rust. It scans and parses Go source, builds typed HIR,
+lowers executable semantics to verified Go MIR, reverifies representation-neutral
+MIR transforms, performs mandatory Rust representation lowering into verified
+Rust IR, and emits formatted Rust source.
+Try it at
+[gors.aymericbeaumet.com](https://gors.aymericbeaumet.com).
 
-## Features
+The compiler has completed a destructive architecture cutover. There is no
+legacy backend or compatibility fallback. The current executable bootstrap
+supports import-free programs with primitive values, free functions, scalar
+expressions, assignments, `if`, and `for`; its current behavior claim is limited
+to non-panicking executions, and unsupported Go constructs return a structured
+diagnostic. Imports, composite types, methods, generics, Go-compatible panic
+process behavior, and the Go stdlib are the active migration backlog. See [the architecture
+audit](COMPILER_AUDIT.md) and [performance acceptance
+contract](COMPILER_PERFORMANCE.md).
 
-- **Scanner/Lexer**: Tokenizes Go source code
-- **Parser**: Generates an AST compatible with Go's `go/ast` package
-- **Compiler**: Transpiles Go AST to Rust `syn` AST
-- **Code Generator**: Outputs formatted Rust code
+## Components
 
-## Supported Go Constructs
-
-- Package declarations and imports
-- Functions and methods
-- Variables and constants
-- Control flow: `if`, `for`, `switch`, `select`
-- Branch statements: `break`, `continue`, `goto`, `fallthrough`
-- Labeled statements
-- Basic types and composite literals
-- Pointers and references
-- Channels (parsing only)
+- Scanner and parser for Go source and AST construction
+- Typed semantic HIR and explicit-order control-flow MIR
+- Mandatory Rust representation lowering; its bootstrap policy copies `Copy`
+  values and conservatively clones owned non-`Copy` values, while later proven
+  move, borrow, ABI, and storage refinements remain owned by the same stage
+- Verified Rust IR consumed by every terminal codegen path
+- Terminal Rust `syn` emitter with no semantic syntax-repair passes
+- Embedded Go SDK source metadata for future generic package compilation
+- Rust source printer with Go-to-Rust source-map support
+- Typed runtime contract plus one validated precompiled `gors-runtime` sidecar;
+  generated Rust never embeds or recompiles runtime source
+- CLI and browser/Wasm compiler surfaces
 
 ## Install
 
-### Using Homebrew (Recommended)
+With Homebrew:
 
 ```bash
 brew tap aymericbeaumet/tap
 brew install gors
 ```
 
-### Using Cargo
-
-_This method requires the [Rust
-toolchain](https://www.rust-lang.org/tools/install) to be installed on your
-machine._
+With Cargo:
 
 ```bash
 cargo install --git https://github.com/aymericbeaumet/gors.git gors-cli
 ```
 
-### From Source
+Or from a checkout:
 
 ```bash
-git clone --depth=1 https://github.com/aymericbeaumet/gors.git /tmp/gors
-cargo install --path=/tmp/gors/gors-cli
+cargo install --path gors-cli
 ```
 
 ## Usage
 
 ```bash
-# Tokenize a Go file
-gors tokens path/to/file.go
+# Compile and atomically publish an optimized runnable executable.
+gors build -o hello main.go
 
-# Parse and print AST
-gors ast path/to/file.go
+# Emit target-neutral Rust source for inspection.
+gors emit-rust -o generated-rust main.go
 
-# Compile to Rust (outputs main.rs)
-gors build --emit=rust path/to/file.go
+# Transpile, compile, and run.
+gors run main.go
 
-# Compile and run
-gors run path/to/file.go
+# Advanced scanner/parser inspection.
+gors tokens main.go
+gors ast main.go
 ```
 
-### Example
+Values after `--` are forwarded to the generated program:
+
+```bash
+gors run main.go -- --flag value
+```
+
+For example:
 
 ```go
-// hello.go
 package main
 
-import "fmt"
-
 func main() {
-    fmt.Println("Hello, World!")
+    total := 0
+    for value := 0; value < 5; value++ {
+        total += value
+    }
+    println(total)
 }
 ```
 
-```bash
-$ gors run hello.go
-Hello, World!
+```console
+$ gors run sum.go
+10
 ```
+
+## Fast feedback
+
+`build`, `emit-rust`, and `run` share one validated generated-Rust cache.
+`build` and `run --release` also share the exact internal production
+executable; changing `build -o` is only an atomic public copy and does not
+relink. `emit-rust` resolves no runtime provider or Rust toolchain and exports
+no terminal link descriptor. Runtime provider selection is terminal-only:
+executable hits require the exact runtime link-plan identity and bypass provider
+materialization and toolchain probing. Native provider production and
+generated-program linking use the same exact pinned rustup toolchain, even when
+Cargo itself was launched with another compiler.
+
+`--timings-json timings.json` records phase durations and cache events after a
+successful `build`, `emit-rust`, or `run`; `GORS_PROFILE=1` prints phase timings
+to stderr.
+`--jobs N` sets the compiler-owned worker budget. Ready per-definition work
+already uses that bounded pool; parsing and finer semantic-query parallelism
+remain part of the incremental compiler migration.
 
 ## Development
 
-### Prerequisites
+The workspace pins Rust 1.96.0 and its Go SDK. The Rust build downloads and
+verifies that SDK under `$CARGO_HOME/gors-cache/`; do not substitute a system Go
+toolchain for integration-oracle results.
 
 ```bash
-brew install rustup binaryen watchexec
-rustup toolchain install 1.96.0 --component rustfmt --component clippy && rustup toolchain install nightly && rustup default 1.96.0
-cargo install --force cargo-fuzz
+# Build, lint, and unit gates for the cutover backend.
+make rust-build rust-lint rust-test-unit
+
+# Stable deterministic corpus/property replay.
+make fuzz-test
+
+# Browser development server.
+make dev
 ```
 
-The Go SDK is pinned by `.go-version`; the Rust build downloads and extracts
-that SDK into `$CARGO_HOME/gors-cache/` for the embedded stdlib and integration
-test oracle.
-
-### Building and Testing
+For a focused [Go specification](https://go.dev/ref/spec) fixture:
 
 ```bash
-# Run the same local build/test/check commands as CI
-make all
-
-# Lint
-cargo clippy --workspace -- -D warnings
-
-# Build
-cargo build --workspace
-
-# Run unit tests
-make rust-test-unit
-
-# Run integration suites
-make rust-test-integration-lexer
-make rust-test-integration-parser
-make rust-test-integration-run
-
-# Fuzz testing
-cargo +nightly fuzz run scanner
-cargo +nightly fuzz run parser
-
-# Generate documentation
-cargo doc -p gors --open
+make rust-test-integration-go-spec-fixture FIXTURE=assignment_two_phase
 ```
 
-### Debug Mode
+The generated-program oracle compares the pinned Go program with generated
+Rust. Most integration fixtures currently produce explicit unsupported
+diagnostics and remain the ordered migration backlog. Canonical conformance
+reports are valid only after a complete, unfiltered run:
 
 ```bash
-RUST_LOG=debug cargo run -- tokens tests/fixtures/go_programs/fizzbuzz/main.go
-RUST_LOG=debug cargo run -- ast tests/fixtures/go_programs/fizzbuzz/main.go
-RUST_LOG=debug cargo run -- build tests/fixtures/go_programs/fizzbuzz
-RUST_LOG=debug cargo run -- run tests/fixtures/go_programs/fizzbuzz
+make conformance-report
+make conformance-check
 ```
+
+Browser compilation uses the same backend in a persistent single-threaded Wasm
+worker. See [the Wasm notes](www/wasm/readme.md) and
+[fuzzing guide](fuzz/readme.md) for details.
 
 ## License
 

@@ -16,7 +16,7 @@ export default [
 		],
 	},
 	{
-		files: ["webpack.config.js"],
+		files: ["webpack.config.js", "v86-boot-manifest-build.js"],
 		languageOptions: {
 			sourceType: "commonjs",
 			globals: {
@@ -26,6 +26,7 @@ export default [
 				__dirname: "readonly",
 				__filename: "readonly",
 				process: "readonly",
+				Buffer: "readonly",
 			},
 		},
 		rules: {
@@ -76,7 +77,6 @@ export default [
 				encodeURIComponent: "readonly",
 				Blob: "readonly",
 				Response: "readonly",
-				DecompressionStream: "readonly",
 				indexedDB: "readonly",
 				performance: "readonly",
 				self: "readonly",

@@ -1,0 +1,111 @@
+.vm-terminal-overlay {
+	position: fixed;
+	inset: 0;
+	z-index: 100;
+	display: none;
+	background: rgba(31, 35, 40, 0.55);
+}
+
+.vm-terminal-overlay.visible {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 48px;
+}
+
+.vm-terminal-panel {
+	display: flex;
+	width: 800px;
+	height: 600px;
+	flex-direction: column;
+	overflow: hidden;
+	border: 1px solid #30363d;
+	border-radius: 12px;
+	background: #0d1117;
+}
+
+.vm-terminal-header {
+	display: grid;
+	grid-template-columns: 1fr auto 1fr;
+	align-items: center;
+	padding: 10px 12px;
+	border-bottom: 1px solid #21262d;
+	background: #161b22;
+}
+
+.vm-terminal-left {
+	min-width: 0;
+}
+
+.vm-terminal-title {
+	color: #c9d1d9;
+	font-size: 13px;
+	font-weight: 650;
+	text-align: center;
+}
+
+.vm-terminal-right {
+	display: flex;
+	justify-content: flex-end;
+}
+
+.vm-terminal-close {
+	padding: 4px 8px;
+	border: none;
+	border-radius: 4px;
+	background: transparent;
+	color: #8b949e;
+	cursor: pointer;
+	font-size: 16px;
+}
+
+.vm-terminal-close:hover {
+	background: #21262d;
+	color: #c9d1d9;
+}
+
+.vm-terminal-body {
+	flex: 1;
+	overflow: hidden;
+	padding: 8px;
+}
+
+.vm-spinner-container {
+	display: flex;
+	flex: 1;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 16px;
+}
+
+.vm-spinner {
+	width: 32px;
+	height: 32px;
+	border: 3px solid #30363d;
+	border-top-color: #58a6ff;
+	border-radius: 50%;
+	animation: spin 0.8s linear infinite;
+}
+
+.vm-spinner-label {
+	color: #8b949e;
+	font-size: 13px;
+}
+
+@keyframes spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+@media (max-width: 980px) {
+	.vm-terminal-overlay.visible {
+		padding: 16px;
+	}
+
+	.vm-terminal-panel {
+		width: 100%;
+		height: min(680px, 90vh);
+	}
+}

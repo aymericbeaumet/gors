@@ -1,13 +1,25 @@
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+mod cache;
+mod catalog;
+mod process;
+
 use crate::common::{TestConfig, fixtures_dir, go_command};
+use cache::{
+    RUST_EDITION, admit_cached_binary, discard_pending_binary, locked_fixture_cache_entry,
+    prune_integration_cache, publish_compiled_binary, reserve_pending_binary, resolve_runtime,
+    write_generated_output,
+};
+use catalog::discover_program_dirs;
+use process::{
+    RunningCommand, command_output_abortable, spawn_command_abortable,
+    wait_command_output_abortable,
+};
 use rayon::prelude::*;
-use sha2::{Digest, Sha256};
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::path::Path;
+use std::process::{Command, Output, Stdio};
 use std::sync::{
-    Arc, OnceLock,
+    Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::time::{Duration, Instant};
@@ -15,8 +27,11 @@ use std::time::{Duration, Instant};
 const PROGRAM_TEST_STACK_SIZE: usize = 16 * 1024 * 1024;
 const DEFAULT_GO_RUN_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_GENERATED_RUN_TIMEOUT: Duration = Duration::from_secs(10);
-const RUST_TOOLCHAIN: &str = "1.96.0";
-const RUST_EDITION: &str = "2024";
+const GENERATED_FIXTURE_WORKSPACE: &str = "gors-generated-fixtures";
+
+pub fn command_output_with_timeout(command: Command, timeout: Duration) -> Result<Output, String> {
+    process::command_output_with_timeout(command, timeout)
+}
 
 fn program_name(fixture_root: &Path, dir: &Path) -> String {
     dir.strip_prefix(fixture_root)
@@ -48,26 +63,42 @@ fn default_run_test_thread_count() -> usize {
 }
 
 fn default_run_test_thread_count_for_cpus(cpus: usize) -> usize {
-    cpus.max(1).saturating_mul(2)
+    cpus.max(1)
 }
 
 struct ProgramRunResult {
     name: String,
     passed: bool,
-    skipped: bool,
+    cancelled: bool,
     error: Option<String>,
 }
 
 pub struct ProgramFixtureRun {
     pub attempted_fixture_names: Vec<String>,
     pub passed_fixture_names: Vec<String>,
-    pub retain_unattempted_fixture_names: bool,
+    pub complete: bool,
+}
+
+impl ProgramFixtureRun {
+    pub fn add_passing_evidence<I>(&mut self, fixture_names: I)
+    where
+        I: IntoIterator<Item = String>,
+    {
+        for fixture in fixture_names {
+            self.attempted_fixture_names.push(fixture.clone());
+            self.passed_fixture_names.push(fixture);
+        }
+        self.attempted_fixture_names.sort();
+        self.attempted_fixture_names.dedup();
+        self.passed_fixture_names.sort();
+        self.passed_fixture_names.dedup();
+    }
 }
 
 #[derive(Default)]
 struct RunMetrics {
     go: AtomicU64,
-    parse: AtomicU64,
+    source_load: AtomicU64,
     compile: AtomicU64,
     print: AtomicU64,
     write: AtomicU64,
@@ -89,9 +120,9 @@ impl RunMetrics {
 
     fn print(&self) {
         eprintln!(
-            "Timings: go={:?}, parse={:?}, compile={:?}, print={:?}, write={:?}, rustc={:?}, run={:?}, rustc-cache={} hits/{} misses",
+            "Timings: go={:?}, source-load={:?}, compile={:?}, print={:?}, write={:?}, rustc={:?}, run={:?}, fixture-cache={} hits/{} misses",
             Self::duration(&self.go),
-            Self::duration(&self.parse),
+            Self::duration(&self.source_load),
             Self::duration(&self.compile),
             Self::duration(&self.print),
             Self::duration(&self.write),
@@ -103,76 +134,8 @@ impl RunMetrics {
     }
 }
 
-struct RunningCommand {
-    child: Child,
-    stdout_file: tempfile::NamedTempFile,
-    stderr_file: tempfile::NamedTempFile,
-    started: Instant,
-}
-
-fn spawn_command_abortable(
-    mut command: Command,
-    abort: &AtomicBool,
-) -> Result<Option<RunningCommand>, String> {
-    if abort.load(Ordering::SeqCst) {
-        return Ok(None);
-    }
-    let stdout_file = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
-    let stderr_file = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
-    command
-        .stdout(Stdio::from(
-            stdout_file.reopen().map_err(|e| e.to_string())?,
-        ))
-        .stderr(Stdio::from(
-            stderr_file.reopen().map_err(|e| e.to_string())?,
-        ));
-    let child = command.spawn().map_err(|e| e.to_string())?;
-    Ok(Some(RunningCommand {
-        child,
-        stdout_file,
-        stderr_file,
-        started: Instant::now(),
-    }))
-}
-
-fn wait_command_output_abortable(
-    mut running: RunningCommand,
-    abort: &AtomicBool,
-    timeout: Option<Duration>,
-) -> Result<Option<Output>, String> {
-    loop {
-        if abort.load(Ordering::SeqCst) {
-            let _ = running.child.kill();
-            let _ = running.child.wait();
-            return Ok(None);
-        }
-        if let Some(status) = running.child.try_wait().map_err(|e| e.to_string())? {
-            return Ok(Some(Output {
-                status,
-                stdout: fs::read(running.stdout_file.path()).map_err(|e| e.to_string())?,
-                stderr: fs::read(running.stderr_file.path()).map_err(|e| e.to_string())?,
-            }));
-        }
-        if let Some(timeout) = timeout
-            && running.started.elapsed() >= timeout
-        {
-            let _ = running.child.kill();
-            let _ = running.child.wait();
-            return Err(format!("command timed out after {timeout:?}"));
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-}
-
-fn command_output_abortable(
-    command: Command,
-    abort: &AtomicBool,
-    timeout: Option<Duration>,
-) -> Result<Option<Output>, String> {
-    let Some(running) = spawn_command_abortable(command, abort)? else {
-        return Ok(None);
-    };
-    wait_command_output_abortable(running, abort, timeout)
+pub fn configured_go_run_timeout() -> Duration {
+    go_run_timeout()
 }
 
 fn run_generated_rust_program(
@@ -187,7 +150,7 @@ fn run_generated_rust_program(
         return ProgramRunResult {
             name,
             passed: false,
-            skipped: true,
+            cancelled: true,
             error: None,
         };
     }
@@ -196,86 +159,87 @@ fn run_generated_rust_program(
     }
 
     let go_run = match spawn_go_program(dir, abort) {
-        Ok(Some(go_run)) => Some(go_run),
+        Ok(Some(go_run)) => go_run,
         Ok(None) => {
             return ProgramRunResult {
                 name,
                 passed: false,
-                skipped: true,
-                error: None,
-            };
-        }
-        Err(_) => None,
-    };
-
-    let rust_out = match compile_and_run_generated_rust(fixture_root, dir, abort, metrics) {
-        Ok(Some(output)) => output,
-        Ok(None) => {
-            let _ = finish_go_reference_stdout(go_run, abort, metrics, &name);
-            return ProgramRunResult {
-                name,
-                passed: false,
-                skipped: true,
+                cancelled: true,
                 error: None,
             };
         }
         Err(error) => {
-            if finish_go_reference_stdout(go_run, abort, metrics, &name).is_none() {
-                return ProgramRunResult {
-                    name,
-                    passed: false,
-                    skipped: true,
-                    error: None,
-                };
-            }
-            let result = ProgramRunResult {
+            return failed_program_result(
                 name,
-                passed: false,
-                skipped: false,
-                error: Some(error),
-            };
-            if config.fail_fast {
-                abort.store(true, Ordering::SeqCst);
-            }
-            return result;
+                format!("Go oracle could not be started: {error}"),
+                config,
+                abort,
+            );
         }
     };
 
-    let Some(go_stdout) = finish_go_reference_stdout(go_run, abort, metrics, &name) else {
-        return ProgramRunResult {
-            name,
-            passed: false,
-            skipped: true,
-            error: None,
-        };
+    let rust_result = compile_and_run_generated_rust(fixture_root, dir, abort, metrics);
+    let go_out = match finish_go_reference(go_run, abort, metrics, &name) {
+        Ok(Some(output)) => output,
+        Ok(None) => {
+            return ProgramRunResult {
+                name,
+                passed: false,
+                cancelled: true,
+                error: None,
+            };
+        }
+        Err(error) => return failed_program_result(name, error, config, abort),
     };
 
-    let rust_stdout = String::from_utf8_lossy(&rust_out.stdout);
-    let result = if rust_out.status.success() && rust_stdout == go_stdout.as_str() {
+    let rust_out = match rust_result {
+        Ok(Some(output)) => output,
+        Ok(None) => {
+            return ProgramRunResult {
+                name,
+                passed: false,
+                cancelled: true,
+                error: None,
+            };
+        }
+        Err(error) => return failed_program_result(name, error, config, abort),
+    };
+
+    let result = if rust_out.status.success()
+        && rust_out.stdout == go_out.stdout
+        && rust_out.stderr == go_out.stderr
+    {
         ProgramRunResult {
             name,
             passed: true,
-            skipped: false,
+            cancelled: false,
             error: None,
         }
-    } else if rust_out.status.success() {
+    } else if !rust_out.status.success() {
         ProgramRunResult {
             name,
             passed: false,
-            skipped: false,
+            cancelled: false,
             error: Some(format!(
-                "Output mismatch:\nExpected: {:?}\nGot: {:?}",
-                go_stdout, rust_stdout
+                "generated Rust program exited with {}:\nstdout: {}\nstderr: {}",
+                rust_out.status,
+                String::from_utf8_lossy(&rust_out.stdout),
+                String::from_utf8_lossy(&rust_out.stderr),
             )),
         }
     } else {
         ProgramRunResult {
             name,
             passed: false,
-            skipped: false,
+            cancelled: false,
             error: Some(format!(
-                "generated Rust program failed:\n{}",
-                String::from_utf8_lossy(&rust_out.stderr)
+                "observable behavior mismatch:\nGo exit: {}\nRust exit: {}\nGo stdout: {:?}\nRust stdout: {:?}\nGo stderr: {:?}\nRust stderr: {:?}",
+                go_out.status,
+                rust_out.status,
+                String::from_utf8_lossy(&go_out.stdout),
+                String::from_utf8_lossy(&rust_out.stdout),
+                String::from_utf8_lossy(&go_out.stderr),
+                String::from_utf8_lossy(&rust_out.stderr),
             )),
         }
     };
@@ -298,32 +262,51 @@ fn run_generated_rust_program(
     result
 }
 
+fn failed_program_result(
+    name: String,
+    error: String,
+    config: &TestConfig,
+    abort: &AtomicBool,
+) -> ProgramRunResult {
+    if config.fail_fast {
+        abort.store(true, Ordering::SeqCst);
+    }
+    ProgramRunResult {
+        name,
+        passed: false,
+        cancelled: false,
+        error: Some(error),
+    }
+}
+
 fn spawn_go_program(dir: &Path, abort: &AtomicBool) -> Result<Option<RunningCommand>, String> {
     let mut go_cmd = go_command();
-    go_cmd.args(["run", "."]).current_dir(dir);
+    go_cmd
+        .args(["run", "."])
+        .current_dir(dir)
+        .stdin(Stdio::null());
     spawn_command_abortable(go_cmd, abort)
 }
 
-fn finish_go_reference_stdout(
-    go_run: Option<RunningCommand>,
+fn finish_go_reference(
+    go_run: RunningCommand,
     abort: &AtomicBool,
     metrics: &RunMetrics,
     name: &str,
-) -> Option<String> {
-    let Some(go_run) = go_run else {
-        eprintln!("Skipping {name} - go run failed");
-        return None;
-    };
-    let before = go_run.started;
+) -> Result<Option<Output>, String> {
+    let before = go_run.started();
     let output = wait_command_output_abortable(go_run, abort, Some(go_run_timeout()));
     RunMetrics::add_duration(&metrics.go, before.elapsed());
     match output {
-        Ok(Some(o)) if o.status.success() => Some(String::from_utf8_lossy(&o.stdout).to_string()),
-        Ok(None) => None,
-        _ => {
-            eprintln!("Skipping {name} - go run failed");
-            None
-        }
+        Ok(Some(output)) if output.status.success() => Ok(Some(output)),
+        Ok(Some(output)) => Err(format!(
+            "Go oracle for {name} exited with {}:\nstdout: {}\nstderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        )),
+        Ok(None) => Ok(None),
+        Err(error) => Err(format!("Go oracle for {name} failed: {error}")),
     }
 }
 
@@ -333,29 +316,14 @@ fn compile_and_run_generated_rust(
     abort: &AtomicBool,
     metrics: &RunMetrics,
 ) -> Result<Option<Output>, String> {
-    let source_path = dir.to_string_lossy().into_owned();
-    let before = Instant::now();
-    let program = gors::parser::parse_program_files(&[source_path])
-        .map_err(|e| format!("parse failed: {e}"))?;
-    RunMetrics::add_duration(&metrics.parse, before.elapsed());
-
-    let before = Instant::now();
-    let compiled = gors::compiler::compile_program_multi(program)
-        .map_err(|e| format!("compile failed: {e}"))?;
-    RunMetrics::add_duration(&metrics.compile, before.elapsed());
-
-    let before = Instant::now();
-    let output =
-        gors::printer::generate_multi(compiled).map_err(|e| format!("print failed: {e}"))?;
-    RunMetrics::add_duration(&metrics.print, before.elapsed());
-
-    let build_dir = cached_generated_output_dir(&program_name(fixture_root, dir), &output)?;
+    let cache_entry = locked_fixture_cache_entry(fixture_root, dir)?;
+    let build_dir = cache_entry.path();
     let bin_path = build_dir.join("main");
-    let cache_ok_path = build_dir.join(".rustc-ok");
-    if bin_path.exists() && cache_ok_path.exists() {
+    if admit_cached_binary(&cache_entry, &bin_path)? {
         metrics.cache_hits.fetch_add(1, Ordering::Relaxed);
         let before = Instant::now();
-        let bin = Command::new(&bin_path);
+        let mut bin = Command::new(&bin_path);
+        bin.current_dir(dir).stdin(Stdio::null());
         let output = command_output_abortable(bin, abort, Some(generated_run_timeout()));
         RunMetrics::add_duration(&metrics.rust_run, before.elapsed());
         return output;
@@ -363,7 +331,27 @@ fn compile_and_run_generated_rust(
     metrics.cache_misses.fetch_add(1, Ordering::Relaxed);
 
     let before = Instant::now();
-    write_generated_output(&output, &build_dir)?;
+    let workspace = gors::compiler::input::WorkspaceKey::ad_hoc(GENERATED_FIXTURE_WORKSPACE)
+        .map_err(|error| format!("invalid fixture workspace identity: {error}"))?;
+    let program = gors::workspace::load_program(workspace, dir)
+        .map_err(|e| format!("source load failed: {e}"))?
+        .into_input();
+    RunMetrics::add_duration(&metrics.source_load, before.elapsed());
+
+    let before = Instant::now();
+    let compiled =
+        gors::compiler::compile_program(program).map_err(|e| format!("compile failed: {e}"))?;
+    RunMetrics::add_duration(&metrics.compile, before.elapsed());
+
+    let before = Instant::now();
+    let output =
+        gors::printer::generate_multi(compiled).map_err(|e| format!("print failed: {e}"))?;
+    let runtime_dependency = output.runtime.clone();
+    let runtime = resolve_runtime(runtime_dependency.clone())?;
+    RunMetrics::add_duration(&metrics.print, before.elapsed());
+
+    let before = Instant::now();
+    write_generated_output(&output, build_dir)?;
     RunMetrics::add_duration(&metrics.write, before.elapsed());
 
     let src_path = build_dir.join("main.rs");
@@ -371,15 +359,23 @@ fn compile_and_run_generated_rust(
         return Err("generated output did not include main.rs".to_string());
     }
 
-    let incremental_path = build_dir.join("rustc-incremental");
-    fs::create_dir_all(&incremental_path).map_err(|e| e.to_string())?;
-    let incremental_arg = format!("incremental={}", incremental_path.display());
     let edition_arg = format!("--edition={RUST_EDITION}");
+    let pending_bin_path = reserve_pending_binary(&cache_entry)?;
 
     let mut rustc = Command::new("rustup");
     rustc
-        .args(["run", RUST_TOOLCHAIN, "rustc"])
+        .args([
+            "run",
+            gors_runtime_abi::NATIVE_RUNTIME_RUST_TOOLCHAIN,
+            "rustc",
+        ])
         .arg(&src_path)
+        .arg("--extern")
+        .arg(format!(
+            "{}={}",
+            gors_runtime_abi::RUST_RUNTIME_CRATE_NAME,
+            runtime.path.display()
+        ))
         .args([
             edition_arg.as_str(),
             "-D",
@@ -390,15 +386,23 @@ fn compile_and_run_generated_rust(
             "overflow-checks=off",
             "-o",
         ])
-        .arg(&bin_path)
-        .args(["-C", &incremental_arg]);
+        .arg(&pending_bin_path);
 
     let before = Instant::now();
-    let Some(rustc_out) = command_output_abortable(rustc, abort, None)? else {
-        return Ok(None);
+    let rustc_out = match command_output_abortable(rustc, abort, None) {
+        Ok(Some(output)) => output,
+        Ok(None) => {
+            discard_pending_binary(&pending_bin_path);
+            return Ok(None);
+        }
+        Err(error) => {
+            discard_pending_binary(&pending_bin_path);
+            return Err(error);
+        }
     };
     RunMetrics::add_duration(&metrics.rustc, before.elapsed());
     if !rustc_out.status.success() {
+        discard_pending_binary(&pending_bin_path);
         return Err(format!(
             "rustc failed for {} with {}:\n{}",
             src_path.display(),
@@ -406,10 +410,17 @@ fn compile_and_run_generated_rust(
             String::from_utf8_lossy(&rustc_out.stderr)
         ));
     }
-    fs::write(&cache_ok_path, b"ok").map_err(|e| e.to_string())?;
+    publish_compiled_binary(
+        &cache_entry,
+        &pending_bin_path,
+        &bin_path,
+        &runtime_dependency,
+        runtime.link_plan,
+    )?;
 
     let before = Instant::now();
-    let bin = Command::new(&bin_path);
+    let mut bin = Command::new(&bin_path);
+    bin.current_dir(dir).stdin(Stdio::null());
     let output = command_output_abortable(bin, abort, Some(generated_run_timeout()));
     RunMetrics::add_duration(&metrics.rust_run, before.elapsed());
     output
@@ -435,94 +446,38 @@ fn duration_from_env(name: &str, default: Duration) -> Duration {
         .unwrap_or(default)
 }
 
-fn write_generated_output(
-    output: &gors::printer::GeneratedOutput,
-    output_dir: &Path,
-) -> Result<(), String> {
-    fs::create_dir_all(output_dir).map_err(|e| e.to_string())?;
-    for (filename, source) in &output.files {
-        let path = output_dir.join(filename);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        fs::write(path, source).map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
-fn cached_generated_output_dir(
-    program_name: &str,
-    output: &gors::printer::GeneratedOutput,
-) -> Result<PathBuf, String> {
-    let mut hasher = Sha256::new();
-    hasher.update(program_name.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(rustc_fingerprint().as_bytes());
-    hasher.update(b"\0");
-    hasher.update(gors::STDLIB_VERSION.as_bytes());
-    hasher.update(
-        format!(
-            "\0rustc-toolchain:{RUST_TOOLCHAIN},rustc-flags:edition{RUST_EDITION},deny-unused,overflow-checks-off"
-        )
-        .as_bytes(),
-    );
-    hasher.update(b"\0");
-    for (filename, source) in &output.files {
-        hasher.update(filename.as_bytes());
-        hasher.update(b"\0");
-        hasher.update(source.as_bytes());
-        hasher.update(b"\0");
-    }
-    let digest = hasher.finalize();
-    let hash = hex_hash(&digest);
-    let dir = workspace_root()
-        .join("target")
-        .join("gors-integration-run")
-        .join(hash);
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir)
-}
-
-fn rustc_fingerprint() -> &'static str {
-    static RUSTC_FINGERPRINT: OnceLock<String> = OnceLock::new();
-    RUSTC_FINGERPRINT.get_or_init(|| {
-        Command::new("rustup")
-            .args(["run", RUST_TOOLCHAIN, "rustc", "-vV"])
-            .output()
-            .map(|output| {
-                let mut hasher = Sha256::new();
-                hasher.update(&output.stdout);
-                hasher.update(&output.stderr);
-                hasher.update([u8::from(output.status.success())]);
-                let digest = hasher.finalize();
-                hex_hash(&digest)
-            })
-            .unwrap_or_else(|error| format!("rustc-fingerprint-error:{error}"))
-    })
-}
-
-fn hex_hash(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
 pub fn default_run_workers_for_cpus(cpus: usize) -> usize {
     default_run_test_thread_count_for_cpus(cpus)
 }
 
-fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("gors crate should live under workspace root")
-        .to_path_buf()
+pub fn run_generated_program_fixture_set(fixture_set: &str) -> ProgramFixtureRun {
+    run_generated_program_fixture_set_impl(fixture_set, false)
 }
 
-pub fn run_generated_program_fixture_set(fixture_set: &str) -> ProgramFixtureRun {
+pub fn run_generated_program_fixture_set_allow_empty(fixture_set: &str) -> ProgramFixtureRun {
+    run_generated_program_fixture_set_impl(fixture_set, true)
+}
+
+fn run_generated_program_fixture_set_impl(
+    fixture_set: &str,
+    allow_empty_filtered_run: bool,
+) -> ProgramFixtureRun {
     let config = TestConfig::from_env();
     let fixture_root = fixtures_dir().join(fixture_set);
-    let dirs = discover_program_dirs(&fixture_root, &config);
+    let catalog = discover_program_dirs(&fixture_root, &config)
+        .unwrap_or_else(|error| panic!("failed to discover fixtures/{fixture_set}: {error}"));
+    let dirs = catalog.runnable_dirs;
+    if dirs.is_empty() && allow_empty_filtered_run && config.filter.is_some() {
+        return ProgramFixtureRun {
+            attempted_fixture_names: Vec::new(),
+            passed_fixture_names: Vec::new(),
+            complete: false,
+        };
+    }
     assert!(
         !dirs.is_empty(),
-        "No programs found in fixtures/{fixture_set}"
+        "No runnable programs found in fixtures/{fixture_set}; filter={:?}",
+        config.filter
     );
 
     let abort = Arc::new(AtomicBool::new(false));
@@ -549,6 +504,7 @@ pub fn run_generated_program_fixture_set(fixture_set: &str) -> ProgramFixtureRun
 
     let attempted_fixture_names = results
         .iter()
+        .filter(|result| !result.cancelled)
         .map(|result| result.name.clone())
         .collect::<Vec<_>>();
     let passed_fixture_names = results
@@ -557,72 +513,41 @@ pub fn run_generated_program_fixture_set(fixture_set: &str) -> ProgramFixtureRun
         .map(|result| result.name.clone())
         .collect::<Vec<_>>();
     let passed = passed_fixture_names.len();
-    let skipped = results.iter().filter(|result| result.skipped).count();
+    let cancelled = results.iter().filter(|result| result.cancelled).count();
     let failed: Vec<(String, String)> = results
         .into_iter()
         .filter_map(|result| result.error.map(|error| (result.name, error)))
         .collect();
 
     eprintln!(
-        "\nResults: {passed}/{} passed, {skipped} skipped",
+        "\nResults: {passed}/{} passed, {cancelled} cancelled",
         passed + failed.len()
     );
     metrics.print();
     if !failed.is_empty() {
         for (name, err) in &failed {
-            eprintln!("  FAIL {name}: {}", err.lines().next().unwrap_or(""));
+            eprintln!("  FAIL {name}:\n{err}");
         }
     }
+    if let Err(error) = prune_integration_cache() {
+        eprintln!("Warning: could not prune the generated-program cache: {error}");
+    }
     assert!(failed.is_empty(), "{} tests failed", failed.len());
+    let complete = config.filter.is_none()
+        && config.limit.is_none()
+        && !config.include_unsupported
+        && cancelled == 0
+        && attempted_fixture_names.len()
+            == catalog
+                .all_program_names
+                .len()
+                .saturating_sub(catalog.excluded_names.len());
     ProgramFixtureRun {
         attempted_fixture_names,
         passed_fixture_names,
-        retain_unattempted_fixture_names: config.filter.is_some() || config.limit.is_some(),
+        complete,
     }
 }
 
-fn discover_program_dirs(fixture_root: &Path, config: &TestConfig) -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    collect_program_dirs_recursive(fixture_root, &mut dirs);
-    dirs.retain(|path| program_matches_filter(fixture_root, path, config.filter.as_deref()));
-    dirs.sort();
-    if let Some(limit) = config.limit {
-        dirs.truncate(limit);
-    }
-    dirs
-}
-
-fn collect_program_dirs_recursive(dir: &Path, dirs: &mut Vec<PathBuf>) {
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(_) => return,
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        if path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with('_'))
-        {
-            continue;
-        }
-        if path.join("main.go").exists() {
-            dirs.push(path.clone());
-        }
-        collect_program_dirs_recursive(&path, dirs);
-    }
-}
-
-fn program_matches_filter(fixture_root: &Path, path: &Path, filter: Option<&str>) -> bool {
-    filter.is_none_or(|filter| {
-        path.strip_prefix(fixture_root)
-            .ok()
-            .and_then(|relative| relative.to_str())
-            .or_else(|| path.file_name().and_then(|name| name.to_str()))
-            .is_some_and(|name| name.contains(filter))
-    })
-}
+#[cfg(test)]
+mod tests;

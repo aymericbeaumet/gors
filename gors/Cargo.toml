@@ -17,10 +17,11 @@ path = "src/lib.rs"
 workspace = true
 
 [features]
-test_integration_go_repositories = ["dep:rayon"]
-test_integration_go_spec = ["dep:rayon"]
-test_integration_go_stdlib = ["dep:rayon"]
-test_integration_go_programs = ["dep:rayon"]
+default = []
+test_integration_go_repositories = []
+test_integration_go_spec = []
+test_integration_go_stdlib = []
+test_integration_go_programs = []
 
 [[test]]
 name = "test_integration_go_repositories"
@@ -42,27 +43,55 @@ name = "test_integration_go_programs"
 path = "tests/test_integration_go_programs.rs"
 required-features = ["test_integration_go_programs"]
 
+[[test]]
+name = "test_incremental_query_db"
+path = "tests/test_incremental_query_db.rs"
+
+[[test]]
+name = "test_owned_syntax_invalidation"
+path = "tests/test_owned_syntax_invalidation.rs"
+
+[[test]]
+name = "test_owned_semantic_dependencies"
+path = "tests/test_owned_semantic_dependencies.rs"
+
+[[test]]
+name = "test_compiler_session"
+path = "tests/test_compiler_session.rs"
+
 [dependencies]
 # Library dependencies
+gors-runtime-abi = { path = "../gors-runtime-abi" }
 log = { version = "0.4", features = ["release_max_level_warn"] }
+num-bigint = "0.4"
+num-traits = "0.2"
 phf = { version = "0.13", features = ["macros"] }
 prettyplease = "0.2"
 proc-macro2 = "1.0"
 quote = "1.0"
+salsa = { version = "=0.28.1", default-features = false, features = ["macros"] }
 serde = { version = "1.0", features = ["derive"] }
 sourcemap = "9"
-syn = { version = "2.0", features = ["full", "visit", "visit-mut"] }
+syn = { version = "2.0", features = ["full"] }
 unicode-general-category = "1.1"
 
 sha2 = "0.11"
 
 serde_json = "1.0"
-rayon = { version = "1.12", optional = true }
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+rayon = "1.12"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1", features = ["fs"] }
 
 [build-dependencies]
 dirs = "6"
 flate2 = "1"
+gors-runtime-abi = { path = "../gors-runtime-abi" }
 reqwest = { version = "0.13", features = ["blocking", "rustls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 sha2 = "0.11"
 tar = "0.4"
 

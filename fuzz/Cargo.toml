@@ -5,14 +5,15 @@ edition = "2024"
 rust-version = "1.96.0"
 publish = false
 
+[package.metadata]
+cargo-fuzz = true
+
 [lints]
 workspace = true
 
 [dependencies]
-gors = { path = "../gors" }
-
-# AFL dependency is optional - only used when building fuzz targets with `cargo afl build`
-afl = { version = "0.18", optional = true }
+gors = { path = "../gors", default-features = false }
+libfuzzer-sys = { version = "0.4.13", optional = true }
 
 # Property-based testing (stable Rust alternative to fuzzing for CI)
 [dev-dependencies]
@@ -20,23 +21,36 @@ proptest = "1.11"
 
 [features]
 default = []
-# Enable AFL fuzzing targets (requires `cargo afl build`)
-afl-fuzz = ["afl"]
-
-# Fuzz targets are only built when the afl-fuzz feature is enabled
-# Build with: cd fuzz && cargo afl build --release --features afl-fuzz
+fuzzing = ["dep:libfuzzer-sys"]
 
 [[bin]]
-name = "fuzz_scanner"
+name = "scanner"
 path = "fuzz_targets/scanner.rs"
-required-features = ["afl-fuzz"]
+required-features = ["fuzzing"]
+test = false
+doc = false
+bench = false
 
 [[bin]]
-name = "fuzz_parser"
+name = "parser"
 path = "fuzz_targets/parser.rs"
-required-features = ["afl-fuzz"]
+required-features = ["fuzzing"]
+test = false
+doc = false
+bench = false
 
 [[bin]]
-name = "fuzz_roundtrip"
+name = "roundtrip"
 path = "fuzz_targets/roundtrip.rs"
-required-features = ["afl-fuzz"]
+required-features = ["fuzzing"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "compiler"
+path = "fuzz_targets/compiler.rs"
+required-features = ["fuzzing"]
+test = false
+doc = false
+bench = false

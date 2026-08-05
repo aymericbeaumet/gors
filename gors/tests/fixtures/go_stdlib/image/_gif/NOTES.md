@@ -1,4 +1,4 @@
-## Known-failing fixture (skipped via `_` prefix)
+## Known-failing fixture (excluded via `fixtures.json`)
 
 The compiler panics at `gors/src/compiler/mod.rs:13115` with
 `"color.Palette" is not a valid Ident`. The lowering passes a qualified

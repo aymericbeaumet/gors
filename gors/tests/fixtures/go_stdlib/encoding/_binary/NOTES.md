@@ -1,4 +1,4 @@
-## Known-failing fixture (skipped via `_` prefix)
+## Known-failing fixture (excluded via `fixtures.json`)
 
 The generated `main.rs` fails `rustc` compilation in CI (exit status 1).
 The fixture exercises `binary.LittleEndian.Uint32`, `binary.BigEndian.Uint16`,

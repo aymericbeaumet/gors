@@ -1,4 +1,4 @@
-## Known-failing fixture (skipped via `_` prefix)
+## Known-failing fixture (excluded via `fixtures.json`)
 
 `rustc` fails to compile the generated `main.rs` (exit status 1). The
 fixture exercises a large surface of the `bytes` package, so the

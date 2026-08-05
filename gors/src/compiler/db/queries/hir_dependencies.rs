@@ -1,0 +1,86 @@
+//! Dependency traversal over typed HIR.
+
+use std::collections::BTreeSet;
+
+use crate::compiler::hir;
+use crate::compiler::ids::DefId;
+
+pub(super) fn direct_callees(function: &hir::Function) -> BTreeSet<DefId> {
+    let mut callees = BTreeSet::new();
+    collect_block_callees(&function.body, &mut callees);
+    callees
+}
+
+fn collect_block_callees(block: &hir::Block, callees: &mut BTreeSet<DefId>) {
+    for statement in &block.stmts {
+        collect_statement_callees(statement, callees);
+    }
+}
+
+fn collect_statement_callees(statement: &hir::Stmt, callees: &mut BTreeSet<DefId>) {
+    match &statement.kind {
+        hir::StmtKind::Let { values, .. }
+        | hir::StmtKind::Assign { values, .. }
+        | hir::StmtKind::Return(values) => {
+            for value in values {
+                collect_expression_callees(value, callees);
+            }
+        }
+        hir::StmtKind::Expr(expression) => collect_expression_callees(expression, callees),
+        hir::StmtKind::If {
+            init,
+            condition,
+            then_block,
+            else_branch,
+        } => {
+            if let Some(init) = init {
+                collect_statement_callees(init, callees);
+            }
+            collect_expression_callees(condition, callees);
+            collect_block_callees(then_block, callees);
+            if let Some(branch) = else_branch {
+                collect_statement_callees(branch, callees);
+            }
+        }
+        hir::StmtKind::For {
+            init,
+            condition,
+            post,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_statement_callees(init, callees);
+            }
+            if let Some(condition) = condition {
+                collect_expression_callees(condition, callees);
+            }
+            if let Some(post) = post {
+                collect_statement_callees(post, callees);
+            }
+            collect_block_callees(body, callees);
+        }
+        hir::StmtKind::Block(block) => collect_block_callees(block, callees),
+        hir::StmtKind::Break | hir::StmtKind::Continue => {}
+    }
+}
+
+fn collect_expression_callees(expression: &hir::Expr, callees: &mut BTreeSet<DefId>) {
+    match &expression.kind {
+        hir::ExprKind::Binary { left, right, .. } => {
+            collect_expression_callees(left, callees);
+            collect_expression_callees(right, callees);
+        }
+        hir::ExprKind::Unary { operand, .. } => collect_expression_callees(operand, callees),
+        hir::ExprKind::Call { callee, args } => {
+            if let hir::Callee::Function(definition) = callee {
+                callees.insert(*definition);
+            }
+            for argument in args {
+                collect_expression_callees(argument, callees);
+            }
+        }
+        hir::ExprKind::Constant(_)
+        | hir::ExprKind::Local(_)
+        | hir::ExprKind::GlobalConstant(..) => {}
+    }
+}

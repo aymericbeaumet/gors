@@ -5,7 +5,7 @@
 //!
 //! The number of test cases can be controlled via the GORS_FUZZ_CASES environment
 //! variable. Defaults are smoke-sized so `cargo test --workspace` stays fast;
-//! use `make fuzz` or explicit environment values for deeper runs.
+//! use `make fuzz-test` or explicit environment values for deeper runs.
 
 // Tests may use unwrap for assertions
 #![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
@@ -305,6 +305,12 @@ proptest! {
         let _ = gors::parser::parse_file("test.go", &input);
     }
 
+    /// Test that accepted generated sources never panic generic lowering
+    #[test]
+    fn compiler_no_panic(source in go_source_strategy()) {
+        fuzz::exercise_compiler(source.as_bytes());
+    }
+
     /// Test that valid Go source parses successfully
     #[test]
     fn valid_go_parses(source in go_source_strategy()) {
@@ -321,7 +327,8 @@ proptest! {
 
         // Print the AST
         let mut output = Vec::new();
-        let print_result = gors::ast::fprint(&mut output, ast.unwrap());
+        let (ast, _, _) = ast.unwrap().into_parts();
+        let print_result = gors::ast::fprint(&mut output, ast);
         prop_assert!(print_result.is_ok(), "Print failed: {:?}", print_result.err());
 
         // Verify the output is valid UTF-8
@@ -336,7 +343,7 @@ proptest! {
         // Parse
         let ast = gors::parser::parse_file("test.go", &source);
         prop_assert!(ast.is_ok(), "Parse failed: {:?}", ast.err());
-        let ast = ast.unwrap();
+        let (ast, _, _) = ast.unwrap().into_parts();
 
         // Print AST dump
         let mut output = Vec::new();

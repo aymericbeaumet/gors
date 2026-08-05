@@ -1,4 +1,4 @@
-## Known-failing fixture (skipped via `_` prefix)
+## Known-failing fixture (excluded via `fixtures.json`)
 
 `rustc` fails to compile the generated `main.rs`. The fixture body is
 minimal (`fmt.Println(scanner.ScanComments == scanner.ScanComments)`),

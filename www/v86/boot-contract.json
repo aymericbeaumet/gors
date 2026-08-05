@@ -1,0 +1,24 @@
+{
+	"schemaVersion": 1,
+	"vm": {
+		"autostart": true,
+		"memorySizeBytes": 536870912,
+		"vgaMemorySizeBytes": 2097152,
+		"disableKeyboard": true,
+		"disableMouse": true,
+		"bzimageInitrdFromFilesystem": true,
+		"cmdline": "rw root=host9p rootfstype=9p rootflags=trans=virtio,cache=loose modules=virtio_pci tsc=reliable console=ttyS0 quiet",
+		"maxSavedStateBytes": 805306368
+	},
+	"guestProtocol": {
+		"schemaVersion": 1,
+		"bootReadyMarker": "GORS_BOOT_READY",
+		"readyMarker": "GORS_READY",
+		"compileDonePrefix": "GORS_COMPILE_DONE:",
+		"runDonePrefix": "GORS_RUN_DONE:",
+		"compileCommand": "gors-compile",
+		"runCommand": "gors-run",
+		"jobDirectory": "tmp",
+		"nonceHexLength": 32
+	}
+}

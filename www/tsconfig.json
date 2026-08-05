@@ -18,8 +18,13 @@
 		"src/**/*.ts",
 		"src/**/*.svelte",
 		"go2rust-compiler.ts",
+		"gors-compiler-session.ts",
+		"go2rust-protocol.ts",
 		"go2rust-worker.ts",
-		"rust-runner.ts"
+		"gors-wasm-loader.ts",
+		"lazy-loader.ts",
+		"rust-runner.ts",
+		"v86-job-coordinator.ts"
 	],
 	"exclude": ["dist", "node_modules", "v86", "wasm/pkg", "wasm/target"]
 }

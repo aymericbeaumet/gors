@@ -1,4 +1,4 @@
-## Known-failing fixture (skipped via `_` prefix)
+## Known-failing fixture (excluded via `fixtures.json`)
 
 The generated binary hangs (10s test timeout exceeded) before printing any
 output. The compress/bzip2 init builds a 256-entry CRC table via a tight

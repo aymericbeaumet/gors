@@ -1,0 +1,150 @@
+name: fuzz
+
+on:
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Fuzz target to run
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - scanner
+          - parser
+          - roundtrip
+          - compiler
+      duration_seconds:
+        description: Per-target libFuzzer budget
+        required: true
+        default: '300'
+        type: choice
+        options:
+          - '60'
+          - '300'
+          - '900'
+          - '1800'
+      property_cases:
+        description: Stable proptest cases per property
+        required: true
+        default: '2048'
+        type: choice
+        options:
+          - '256'
+          - '2048'
+          - '8192'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  stable-properties:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GORS_FUZZ_CASES: ${{ inputs.property_cases || '2048' }}
+      GORS_FUZZ_EDGE_CASES: 512
+      PROPTEST_RNG_SEED: '1'
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.96.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: scheduled-fuzz-properties
+
+      - name: Cache pinned Go SDK
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/gors-cache
+          key: gors-go-sdk-${{ runner.os }}-${{ hashFiles('.go-version') }}
+
+      - name: Run deep stable properties and corpus regressions
+        run: cargo test --profile ci --package fuzz --tests
+
+  coverage-guided:
+    runs-on: ubuntu-latest
+    # The longest manual budget is 30 minutes; leave room for toolchain,
+    # cargo-fuzz, and instrumented target compilation before libFuzzer starts.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target: >-
+          ${{
+            fromJSON(
+              (github.event_name == 'schedule' || inputs.target == 'all') &&
+              '["scanner","parser","roundtrip","compiler"]' ||
+              format('["{0}"]', inputs.target)
+            )
+          }}
+    env:
+      # Production builds use fat LTO and one codegen unit. Fuzz targets favor
+      # fast instrumentation builds so more of the job budget reaches libFuzzer.
+      CARGO_PROFILE_RELEASE_LTO: 'off'
+      FUZZ_SECONDS: ${{ inputs.duration_seconds || '300' }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install pinned nightly toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-01
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cargo-fuzz-${{ matrix.target }}
+
+      - name: Cache pinned Go SDK
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/gors-cache
+          key: gors-go-sdk-${{ runner.os }}-${{ hashFiles('.go-version') }}
+
+      - name: Restore evolving fuzz corpus
+        uses: actions/cache@v4
+        with:
+          path: fuzz/work-corpus/${{ matrix.target }}
+          key: gors-fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: |
+            gors-fuzz-corpus-${{ matrix.target }}-
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --version 0.13.2 --locked
+
+      - name: Run bounded coverage-guided fuzzing
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          artifact_dir="$GITHUB_WORKSPACE/fuzz/artifacts/$TARGET"
+          work_corpus="$GITHUB_WORKSPACE/fuzz/work-corpus/$TARGET"
+          mkdir -p "$artifact_dir" "$work_corpus"
+          cargo fuzz run --features fuzzing --codegen-units 16 \
+            "$TARGET" "$work_corpus" "fuzz/corpus/$TARGET" -- \
+            "-max_total_time=$FUZZ_SECONDS" \
+            -timeout=10 \
+            -rss_limit_mb=4096 \
+            -max_len=65536 \
+            -seed=1
+
+      - name: Upload crash, timeout, and OOM artifacts
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore
+          retention-days: 14

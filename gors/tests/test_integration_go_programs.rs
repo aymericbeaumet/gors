@@ -4,10 +4,10 @@
 mod common;
 
 #[test]
-fn default_run_workers_oversubscribe_cpus() {
-    assert_eq!(common::runner::default_run_workers_for_cpus(0), 2);
-    assert_eq!(common::runner::default_run_workers_for_cpus(1), 2);
-    assert_eq!(common::runner::default_run_workers_for_cpus(8), 16);
+fn default_run_workers_respect_cpu_budget() {
+    assert_eq!(common::runner::default_run_workers_for_cpus(0), 1);
+    assert_eq!(common::runner::default_run_workers_for_cpus(1), 1);
+    assert_eq!(common::runner::default_run_workers_for_cpus(8), 8);
 }
 
 #[test]

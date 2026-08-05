@@ -1,0 +1,15 @@
+package main
+
+type pair[T any] struct {
+	left  T
+	right T
+}
+
+func swap[T any](value pair[T]) pair[T] {
+	return pair[T]{left: value.right, right: value.left}
+}
+
+func main() {
+	value := swap(pair[int]{left: 1, right: 2})
+	println(value.left, value.right)
+}

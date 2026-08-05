@@ -43,8 +43,60 @@ func testDivideByZero() {
 	panic("divide-by-zero panic continued after recovery")
 }
 
+func triggerGenericByteIndex[S ~string | ~[]byte](value S) {
+	_ = value[len(value)]
+}
+
+func triggerGenericByteSlice[S ~string | ~[]byte](value S) {
+	_ = value[:len(value)+1]
+}
+
+func testGenericStringIndexOutOfBounds() {
+	defer func() {
+		if r := recover(); r == nil {
+			panic("generic string index panic was not recovered")
+		}
+	}()
+	triggerGenericByteIndex("\xff")
+	panic("generic string index panic continued after recovery")
+}
+
+func testGenericByteSliceIndexOutOfBounds() {
+	defer func() {
+		if r := recover(); r == nil {
+			panic("generic byte slice index panic was not recovered")
+		}
+	}()
+	triggerGenericByteIndex([]byte{1})
+	panic("generic byte slice index panic continued after recovery")
+}
+
+func testGenericStringSliceOutOfBounds() {
+	defer func() {
+		if r := recover(); r == nil {
+			panic("generic string slice panic was not recovered")
+		}
+	}()
+	triggerGenericByteSlice("\xff")
+	panic("generic string slice panic continued after recovery")
+}
+
+func testGenericByteSliceSliceOutOfBounds() {
+	defer func() {
+		if r := recover(); r == nil {
+			panic("generic byte slice slice panic was not recovered")
+		}
+	}()
+	triggerGenericByteSlice([]byte{1})
+	panic("generic byte slice slice panic continued after recovery")
+}
+
 func main() {
 	testOutOfBounds()
 	testNilPointer()
 	testDivideByZero()
+	testGenericStringIndexOutOfBounds()
+	testGenericByteSliceIndexOutOfBounds()
+	testGenericStringSliceOutOfBounds()
+	testGenericByteSliceSliceOutOfBounds()
 }

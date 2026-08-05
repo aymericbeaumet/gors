@@ -5,3 +5,7 @@
 rootfs.json
 rootfs-flat/
 rootfs.tar
+runtime-provider.json
+.build.lock/
+.previous.*/
+.publish.*/

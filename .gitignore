@@ -8,3 +8,4 @@ gors_output/
 test-results/
 www/playwright-report/
 www/test-results/
+!www/v86/Cargo.v86.lock

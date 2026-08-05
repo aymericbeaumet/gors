@@ -1,0 +1,36 @@
+* {
+	box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+	max-width: 100%;
+	min-height: 100%;
+	overflow-x: hidden;
+}
+
+body {
+	margin: 0;
+	padding: 0;
+	background: #f5f7fb;
+	color: #1f2328;
+	font-family: system-ui, -apple-system, sans-serif;
+}
+
+.source-map-highlight {
+	border-radius: 2px;
+	background-color: rgba(9, 105, 218, 0.18);
+}
+
+.monaco-editor .lines-content {
+	padding-left: 5px;
+}
+
+.monaco-editor .editor-widget {
+	z-index: 50;
+}
+
+.hidden {
+	display: none !important;
+}

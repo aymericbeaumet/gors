@@ -11,7 +11,8 @@ import sys
 import io
 import importlib
 
-HASH_LENGTH = 8
+# Keep blob filenames identical to the full keys recorded by fs2json.py.
+HASH_LENGTH = 64
 
 def hash_file(filename) -> str:
     with open(filename, "rb", buffering=0) as f:

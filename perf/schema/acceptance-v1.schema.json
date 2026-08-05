@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gors.dev/schemas/performance-acceptance-v1.json",
+  "title": "gors promoted native performance budgets",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "resultSchemaVersion",
+    "corpusDigest",
+    "maximumCurrentEvidenceAgeHours",
+    "promotedScenarios"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "resultSchemaVersion": { "const": 4 },
+    "corpusDigest": { "$ref": "#/$defs/sha256" },
+    "maximumCurrentEvidenceAgeHours": { "type": "number", "exclusiveMinimum": 0 },
+    "promotedScenarios": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/promotion" }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "promotion": {
+      "type": "object",
+      "required": [
+        "workloadId",
+        "scenario",
+        "corpusDigest",
+        "hardwareClass",
+        "jobBudget",
+        "artifactDriver",
+        "configurationFingerprint",
+        "baselineEvidence",
+        "budgets"
+      ],
+      "properties": {
+        "workloadId": { "type": "string", "minLength": 1 },
+        "scenario": { "enum": ["cold", "no_op", "leaf_edit"] },
+        "corpusDigest": { "$ref": "#/$defs/sha256" },
+        "hardwareClass": { "type": "string", "minLength": 1 },
+        "jobBudget": { "type": "integer", "minimum": 1 },
+        "artifactDriver": { "type": "string", "minLength": 1 },
+        "configurationFingerprint": { "$ref": "#/$defs/sha256" },
+        "baselineEvidence": {
+          "type": "object",
+          "required": ["path", "sha256", "resultId"],
+          "properties": {
+            "path": { "type": "string", "minLength": 1 },
+            "sha256": { "$ref": "#/$defs/sha256" },
+            "resultId": { "$ref": "#/$defs/sha256" }
+          },
+          "additionalProperties": false
+        },
+        "budgets": {
+          "type": "object",
+          "required": [
+            "gorsNormalizedP50Ns",
+            "gorsNormalizedP95Ns",
+            "maximumPairedRatioCiUpper"
+          ],
+          "properties": {
+            "gorsNormalizedP50Ns": { "type": "number", "exclusiveMinimum": 0 },
+            "gorsNormalizedP95Ns": { "type": "number", "exclusiveMinimum": 0 },
+            "maximumPairedRatioCiUpper": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 1
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

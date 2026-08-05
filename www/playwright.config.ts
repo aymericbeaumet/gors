@@ -2,6 +2,8 @@ import { defineConfig, devices } from "@playwright/test";
 
 const webTestPort = process.env.GORS_WEB_TEST_PORT ?? "18080";
 const webTestUrl = `http://127.0.0.1:${webTestPort}`;
+const compilerArtifactsArePrepared =
+	process.env.GORS_WEB_COMPILER_PREBUILT === "1";
 
 export default defineConfig({
 	testDir: "./tests/e2e",
@@ -20,7 +22,9 @@ export default defineConfig({
 		},
 	],
 	webServer: {
-		command: `npm run serve:e2e -- --port ${webTestPort}`,
+		command: `npm run ${
+			compilerArtifactsArePrepared ? "serve:e2e:prepared" : "serve:e2e"
+		} -- --port ${webTestPort}`,
 		env: {
 			GORS_WEB_LIVE_RELOAD: "0",
 		},

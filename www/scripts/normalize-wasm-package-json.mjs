@@ -1,6 +1,10 @@
 import fs from "node:fs";
 
-const packageJsonUrl = new URL("../wasm/pkg/package.json", import.meta.url);
+const packageDirectory = process.argv[2] ?? "pkg";
+const packageJsonUrl = new URL(
+	`../wasm/${packageDirectory}/package.json`,
+	import.meta.url,
+);
 
 if (fs.existsSync(packageJsonUrl)) {
 	const pkg = JSON.parse(fs.readFileSync(packageJsonUrl, "utf8"));

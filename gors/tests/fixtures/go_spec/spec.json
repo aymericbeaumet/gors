@@ -4,7 +4,7 @@
     "url": "https://go.dev/ref/spec",
     "languageVersion": "go1.26",
     "published": "2026-01-12",
-    "retrieved": "2026-06-01"
+    "retrieved": "2026-07-20"
   },
   "categories": [
     {
@@ -226,6 +226,15 @@
           "fixtures": [
             "lexical_elements"
           ]
+        },
+        {
+          "id": "lexical-string-byte-escapes",
+          "section": "String literals",
+          "title": "Hexadecimal and octal string escapes preserve arbitrary individual bytes",
+          "status": "passing",
+          "fixtures": [
+            "string_bytes_and_invalid_utf8"
+          ]
         }
       ]
     },
@@ -284,6 +293,15 @@
           "status": "passing",
           "fixtures": [
             "constants"
+          ]
+        },
+        {
+          "id": "constants-minimum-256-bit-precision",
+          "section": "Constants",
+          "title": "Constant folding preserves integer intermediates through at least 256 bits",
+          "status": "passing",
+          "fixtures": [
+            "large_constant_precision"
           ]
         },
         {
@@ -452,6 +470,15 @@
           ]
         },
         {
+          "id": "types-string-byte-index-and-conversions",
+          "section": "String types",
+          "title": "String indexing and byte-slice conversions operate on the exact underlying bytes",
+          "status": "passing",
+          "fixtures": [
+            "string_bytes_and_invalid_utf8"
+          ]
+        },
+        {
           "id": "types-arrays",
           "section": "Array types",
           "title": "Arrays have fixed length and support indexed mutation",
@@ -476,6 +503,15 @@
           "status": "passing",
           "fixtures": [
             "types_slice_alias_mutation"
+          ]
+        },
+        {
+          "id": "types-slice-capacity-and-append-aliasing",
+          "section": "Slice types",
+          "title": "Slice capacity governs reslicing, append reuse, and backing-array detachment",
+          "status": "passing",
+          "fixtures": [
+            "slice_capacity_and_append"
           ]
         },
         {
@@ -606,6 +642,15 @@
           ]
         },
         {
+          "id": "types-map-zero-value-comma-ok-and-nil",
+          "section": "Map types",
+          "title": "Map lookup distinguishes present zero values from missing keys and nil maps remain readable",
+          "status": "passing",
+          "fixtures": [
+            "map_lookup_and_nil"
+          ]
+        },
+        {
           "id": "types-channels",
           "section": "Channel types",
           "title": "Channels support send, receive, buffering, close, and comma-ok",
@@ -654,6 +699,15 @@
           "fixtures": [
             "properties_of_types_and_values",
             "spec_section_edgecases"
+          ]
+        },
+        {
+          "id": "properties-map-reference-sharing",
+          "section": "Representation of values",
+          "title": "Assigned map values share the same underlying map data",
+          "status": "passing",
+          "fixtures": [
+            "map_reference_and_nil_write"
           ]
         },
         {
@@ -890,6 +944,15 @@
           ]
         },
         {
+          "id": "expr-interface-method-value-receiver-capture",
+          "section": "Method values",
+          "title": "Method values save value receivers and preserve pointer or interface receiver identity",
+          "status": "passing",
+          "fixtures": [
+            "method_value_receiver_capture"
+          ]
+        },
+        {
           "id": "expr-qualified-identifiers",
           "section": "Qualified identifiers",
           "title": "Qualified identifiers access exported package-level declarations",
@@ -941,6 +1004,15 @@
           "status": "passing",
           "fixtures": [
             "expressions"
+          ]
+        },
+        {
+          "id": "expr-nil-map-assignment-panics",
+          "section": "Index expressions",
+          "title": "Assigning an element through a nil map causes a run-time panic",
+          "status": "passing",
+          "fixtures": [
+            "map_reference_and_nil_write"
           ]
         },
         {
@@ -1191,6 +1263,24 @@
           ]
         },
         {
+          "id": "stmt-assignment-two-phase-index-places",
+          "section": "Assignment statements",
+          "title": "Indexed left-hand operands are evaluated before assignment writes begin",
+          "status": "passing",
+          "fixtures": [
+            "assignment_two_phase"
+          ]
+        },
+        {
+          "id": "stmt-assignment-evaluation-order",
+          "section": "Assignment statements",
+          "title": "Left-hand index operands and right-hand expressions are evaluated before assignment writes",
+          "status": "passing",
+          "fixtures": [
+            "assignment_evaluation_order"
+          ]
+        },
+        {
           "id": "stmt-if",
           "section": "If statements",
           "title": "if statements support init clauses and nested branches",
@@ -1224,6 +1314,15 @@
           "status": "passing",
           "fixtures": [
             "switch_statements"
+          ]
+        },
+        {
+          "id": "stmt-switch-source-order-and-default",
+          "section": "Switch statements",
+          "title": "Switch tags evaluate once and case expressions are tested in source order before default",
+          "status": "passing",
+          "fixtures": [
+            "control_flow_evaluation"
           ]
         },
         {
@@ -1308,6 +1407,24 @@
           ]
         },
         {
+          "id": "stmt-for-per-iteration-variables",
+          "section": "For statements",
+          "title": "Each for-clause iteration has distinct variables captured by closures",
+          "status": "passing",
+          "fixtures": [
+            "for_iteration_variables"
+          ]
+        },
+        {
+          "id": "stmt-for-continue-runs-post",
+          "section": "Continue statements",
+          "title": "continue in a for-clause loop executes the post statement before the next condition",
+          "status": "passing",
+          "fixtures": [
+            "control_flow_evaluation"
+          ]
+        },
+        {
           "id": "stmt-range",
           "section": "For statements with range clause",
           "title": "range supports slice and channel iteration in statement bodies",
@@ -1362,6 +1479,33 @@
           ]
         },
         {
+          "id": "stmt-range-per-iteration-variables",
+          "section": "For statements with range clause",
+          "title": "Each range iteration has distinct variables captured by closures",
+          "status": "passing",
+          "fixtures": [
+            "for_iteration_variables"
+          ]
+        },
+        {
+          "id": "stmt-range-expression-evaluated-once",
+          "section": "For statements with range clause",
+          "title": "A non-constant range expression is evaluated exactly once before iteration",
+          "status": "passing",
+          "fixtures": [
+            "control_flow_evaluation"
+          ]
+        },
+        {
+          "id": "stmt-range-invalid-utf8-string",
+          "section": "For statements with range clause",
+          "title": "Ranging over invalid UTF-8 bytes yields replacement runes and advances one byte",
+          "status": "passing",
+          "fixtures": [
+            "string_bytes_and_invalid_utf8"
+          ]
+        },
+        {
           "id": "stmt-go",
           "section": "Go statements",
           "title": "go statements start concurrent function execution",
@@ -1377,6 +1521,15 @@
           "status": "passing",
           "fixtures": [
             "statements"
+          ]
+        },
+        {
+          "id": "stmt-defer-saved-arguments-and-named-result",
+          "section": "Defer statements",
+          "title": "Deferred calls save arguments immediately, run in reverse order, and may update named results",
+          "status": "passing",
+          "fixtures": [
+            "defer_lifo_and_arguments"
           ]
         },
         {
@@ -1530,6 +1683,24 @@
           ]
         },
         {
+          "id": "builtin-delete-nil-map-noop",
+          "section": "Deletion of map elements",
+          "title": "Deleting a missing key from a nil map is a no-op",
+          "status": "passing",
+          "fixtures": [
+            "map_lookup_and_nil"
+          ]
+        },
+        {
+          "id": "builtin-clear-nil-map-noop",
+          "section": "Clear",
+          "title": "Clearing a nil map is a no-op",
+          "status": "passing",
+          "fixtures": [
+            "map_lookup_and_nil"
+          ]
+        },
+        {
           "id": "builtin-clear-slice",
           "section": "Clear",
           "title": "clear assigns zero values to slice elements",
@@ -1604,7 +1775,8 @@
           "title": "A main package with main.main executes",
           "status": "passing",
           "fixtures": [
-            "packages_and_program_initialization"
+            "packages_and_program_initialization",
+            "program_execution"
           ]
         },
         {

@@ -1,0 +1,1 @@
+-C opt-level=0 -C debuginfo=0 -C codegen-units=16 -C link-arg=-fuse-ld=mold -C incremental=/tmp/rustc-incr

@@ -1,4 +1,4 @@
-## Known-failing fixture (skipped via `_` prefix)
+## Known-failing fixture (excluded via `fixtures.json`)
 
 `strings.Builder` calls pointer-receiver methods (e.g. `builder.Grow(8)`,
 `builder.WriteByte(':')`) on a non-addressable value receiver, which the

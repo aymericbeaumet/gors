@@ -30,7 +30,10 @@ IDX_GID = 5
 IDX_TARGET = 6
 IDX_FILENAME = 6
 
-HASH_LENGTH = 8
+# V86 treats this value as an opaque blob key. Use the complete digest; short
+# prefixes make unrelated rootfs files alias before the browser can verify
+# which payload it fetched.
+HASH_LENGTH = 64
 
 S_IFLNK = 0xA000
 S_IFREG = 0x8000
@@ -201,7 +204,7 @@ def handle_dir(logger, path, exclude, use_compression):
                 file_hash = hash_file(absname)
                 filename = file_hash[0:HASH_LENGTH] + (".bin.zst" if use_compression else ".bin")
                 existing = filename_to_hash.get(filename)
-                assert existing is None or existing == file_hash, "Collision in short hash (%s and %s)" % (existing, file_hash)
+                assert existing is None or existing == file_hash, "Collision in content hash (%s and %s)" % (existing, file_hash)
                 filename_to_hash[filename] = file_hash
                 obj[IDX_FILENAME] = filename
 
@@ -244,7 +247,7 @@ def handle_tar(logger, tar, use_compression):
             file_hash = hash_fileobj(f)
             filename = file_hash[0:HASH_LENGTH] + (".bin.zst" if use_compression else ".bin")
             existing = filename_to_hash.get(filename)
-            assert existing is None or existing == file_hash, "Collision in short hash (%s and %s)" % (existing, file_hash)
+            assert existing is None or existing == file_hash, "Collision in content hash (%s and %s)" % (existing, file_hash)
             filename_to_hash[filename] = file_hash
             obj[IDX_FILENAME] = filename
             if member.islnk():

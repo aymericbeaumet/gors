@@ -1,4 +1,4 @@
-## Known-failing fixture (skipped via `_` prefix)
+## Known-failing fixture (excluded via `fixtures.json`)
 
 Skipped together with the other minimal "print package constants"
 fixtures (`_log`, `runtime/_metrics`, `hash/_adler32`, `hash/_fnv`).

@@ -1,120 +1,91 @@
 # Fuzzing gors
 
-This directory contains fuzzing infrastructure for gors. It supports two approaches:
+The fuzz crate has two complementary feedback loops:
 
-1. **Property-based testing** with proptest (runs on stable Rust, suitable for CI)
-2. **Coverage-guided fuzzing** with AFL (requires `cargo-afl`, for deep testing)
+- Stable, deterministic property and corpus-replay tests for pull requests.
+- Coverage-guided `cargo-fuzz` runs for local, scheduled, and manually
+  dispatched deeper testing.
 
-## Quick Start
+The compiler target exercises the generic Go AST to Rust AST lowering and Rust
+source-printing path. It does not contain Rust replacements for Go
+standard-library packages.
 
-### Property-based Tests (Stable Rust)
+## Fast stable checks
 
-These tests can run without any special setup:
+From the repository root:
 
 ```bash
-# From the project root
-cargo test --package gors-fuzz
+make fuzz-test
 
-# Or run with more test cases
-PROPTEST_CASES=10000 cargo test --package gors-fuzz
+# Or choose explicit deterministic case budgets.
+PROPTEST_RNG_SEED=1 GORS_FUZZ_CASES=128 GORS_FUZZ_EDGE_CASES=32 \
+  cargo test --profile ci --package fuzz --tests
 ```
 
-### Coverage-guided Fuzzing with AFL
+The environment variables only control the proptest seed and case counts.
+Checked-in corpus inputs are always replayed.
 
-AFL fuzzing requires the `cargo-afl` tool:
+## Coverage-guided fuzzing
+
+Install cargo-fuzz once:
 
 ```bash
-# Install cargo-afl (one-time setup)
-cargo install afl
+rustup toolchain install nightly-2026-07-01
+cargo install cargo-fuzz --version 0.13.2 --locked
+```
 
-# Fuzz the scanner (uses all CPUs)
+The repository Makefile exposes unbounded interactive targets:
+
+```bash
 make fuzz-scanner
-
-# Fuzz the parser
 make fuzz-parser
-
-# Fuzz the roundtrip (parse -> print -> reparse)
 make fuzz-roundtrip
-
-# Or use the script directly for more options
-./gors-fuzz/scripts/fuzz.sh scanner -j 4    # Use 4 CPUs
-./gors-fuzz/scripts/fuzz.sh parser -c       # Continue previous session
+make fuzz-compiler
 ```
 
-## Fuzzing Targets
-
-| Target | Description |
-|--------|-------------|
-| `fuzz_scanner` | Fuzz the Go lexer/scanner |
-| `fuzz_parser` | Fuzz the Go parser |
-| `fuzz_roundtrip` | Fuzz parse -> print -> reparse cycle |
-
-## Directory Structure
-
-```
-gors-fuzz/
-├── Cargo.toml          # Crate configuration
-├── corpus/             # Seed inputs for fuzzing
-│   ├── scanner/        # Scanner seeds
-│   ├── parser/         # Parser seeds
-│   └── roundtrip/      # Roundtrip seeds
-├── fuzz_targets/       # AFL fuzz target binaries
-│   ├── scanner.rs
-│   ├── parser.rs
-│   └── roundtrip.rs
-├── scripts/
-│   ├── fuzz.sh         # Multi-CPU fuzzing script
-│   └── export-crashes.sh  # Export crashes as test files
-├── out/                # AFL output (gitignored)
-├── sync/               # AFL sync directory (gitignored)
-└── tests/
-    └── proptest.rs     # Property-based tests
-```
-
-## Exporting Crashes as Test Files
-
-When fuzzing finds crashes, you can export them as test files:
+For an explicitly bounded local run, use the helper:
 
 ```bash
-# Export all crashes to gors-cli/tests/files/fuzz_*.go
-make fuzz-export
-
-# Or export a specific target
-./gors-fuzz/scripts/export-crashes.sh parser
+./fuzz/scripts/fuzz.sh scanner -t 300
+./fuzz/scripts/fuzz.sh parser -j 4 -t 1800
+./fuzz/scripts/fuzz.sh compiler -t 3600
 ```
 
-The exported files will be automatically picked up by the integration tests.
+The helper and scheduled workflow keep optimized fuzzing code but disable fat
+LTO and use 16 codegen units. This makes instrumented builds much faster, so
+more of a bounded job is spent exploring inputs. Both default to the pinned
+`nightly-2026-07-01` toolchain; set `GORS_FUZZ_TOOLCHAIN` to test another
+installed nightly explicitly. The libFuzzer binaries are also gated behind the
+`fuzzing` Cargo feature so ordinary workspace builds do not link them.
 
-## Adding New Corpus Files
+| Target | Property |
+| --- | --- |
+| `scanner` | Arbitrary bytes do not panic the Go scanner. |
+| `parser` | Arbitrary bytes do not panic the Go parser. |
+| `roundtrip` | Independent parses produce identical AST snapshots. |
+| `compiler` | Accepted Go ASTs do not panic generic Rust lowering or source printing. |
 
-To improve fuzzing effectiveness, add representative Go source files to the corpus:
+`ast::fprint` emits an AST dump, not Go source. The historical roundtrip target
+attempted to parse that dump as Go and therefore reported every accepted seed as
+a false crash. The retained target name preserves the Makefile interface while
+testing the valid determinism property.
+
+## Corpus and regressions
+
+Each target owns a reviewed seed corpus under `fuzz/corpus/<target>/`.
+libFuzzer writes new coverage inputs into ignored
+`fuzz/work-corpus/<target>/`, so an ordinary fuzz run does not dirty the
+reviewed seeds. Scheduled runs cache that evolving corpus between jobs.
+Crashes, timeouts, and OOM inputs go under ignored `fuzz/artifacts/`.
+
+After minimizing and understanding an artifact, promote it into the checked-in
+corpus:
 
 ```bash
-# Add a new scanner seed
-echo 'package main' > gors-fuzz/corpus/scanner/my_seed
-
-# Add a new parser seed
-cp my_complex_file.go gors-fuzz/corpus/parser/
+./fuzz/scripts/export-crashes.sh compiler
+cargo test --package fuzz --test corpus
 ```
 
-## Continuous Fuzzing
-
-For extended fuzzing sessions:
-
-```bash
-# Start fuzzing (will use all CPUs)
-./gors-fuzz/scripts/fuzz.sh parser
-
-# In another terminal, monitor progress
-watch -n 1 'ls -la gors-fuzz/sync/parser/*/crashes/ 2>/dev/null | head -20'
-
-# Stop with Ctrl+C, then export findings
-make fuzz-export
-```
-
-## Tips
-
-- Start with a good corpus - the existing test files in `gors-cli/tests/files/` are good seeds
-- Run fuzzing for at least a few hours for meaningful coverage
-- After finding crashes, export them and add regression tests
-- The roundtrip target is particularly good at finding consistency bugs
+Never commit a finding blindly. Give a promoted input a descriptive name when
+possible and add a focused compiler regression test when the root cause warrants
+one.

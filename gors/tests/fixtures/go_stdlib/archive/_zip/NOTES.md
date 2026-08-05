@@ -1,4 +1,4 @@
-## Known-failing fixture (skipped via `_` prefix)
+## Known-failing fixture (excluded via `fixtures.json`)
 
 `rustc` fails to compile the generated `main.rs` (exit status 1). The
 lowering issue is somewhere inside the `archive/zip` package

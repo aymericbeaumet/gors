@@ -11,6 +11,12 @@ env:
 permissions:
   contents: read
 
+concurrency:
+  # Cancel stale feedback for the same PR. Main pushes finish the bootstrap
+  # backend, parser corpus, and web gates before serialized deployment.
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   rust-lint:
     runs-on: ubuntu-latest
@@ -31,8 +37,21 @@ jobs:
           path: ~/.cargo/gors-cache
           key: gors-go-sdk-${{ runner.os }}-${{ hashFiles('.go-version') }}
 
+      - name: Install architecture-check tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ripgrep
+
       - name: Lint
         run: make rust-lint
+
+  perf-harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Validate performance schemas and acceptance logic
+        run: make perf-test
 
   rust-build:
     runs-on: ubuntu-latest
@@ -78,7 +97,58 @@ jobs:
       - name: Test unit
         run: make rust-test-unit
 
+  rust-test-fuzz-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GORS_FUZZ_CASES: 64
+      GORS_FUZZ_EDGE_CASES: 16
+      PROPTEST_RNG_SEED: '1'
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.96.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fuzz-smoke
+
+      - name: Cache pinned Go SDK
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/gors-cache
+          key: gors-go-sdk-${{ runner.os }}-${{ hashFiles('.go-version') }}
+
+      - name: Replay fuzz corpora and deterministic properties
+        run: cargo test --profile ci --package fuzz --tests
+
+  rust-test-backend-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.96.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Cache pinned Go SDK
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/gors-cache
+          key: gors-go-sdk-${{ runner.os }}-${{ hashFiles('.go-version') }}
+
+      - name: Execute the authoritative HIR, Go MIR, and Rust IR pipeline
+        run: make rust-test-backend-smoke
+
   rust-test-integration-go-repositories:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -103,74 +173,9 @@ jobs:
       - name: Test integration go repositories
         run: make rust-test-integration-go-repositories
 
-  rust-test-integration-go-spec:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.96.0
-          components: rustfmt, clippy
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Cache pinned Go SDK
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/gors-cache
-          key: gors-go-sdk-${{ runner.os }}-${{ hashFiles('.go-version') }}
-
-      - name: Test integration go spec
-        run: make rust-test-integration-go-spec
-
-  rust-test-integration-go-stdlib:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.96.0
-          components: rustfmt, clippy
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Cache pinned Go SDK
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/gors-cache
-          key: gors-go-sdk-${{ runner.os }}-${{ hashFiles('.go-version') }}
-
-      - name: Test integration go stdlib
-        run: make rust-test-integration-go-stdlib
-
-  rust-test-integration-go-programs:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.96.0
-          components: rustfmt, clippy
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Cache pinned Go SDK
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/gors-cache
-          key: gors-go-sdk-${{ runner.os }}-${{ hashFiles('.go-version') }}
-
-      - name: Test integration go programs
-        run: make rust-test-integration-go-programs
+      - name: Remove generated-program cache before cache save
+        if: always()
+        run: rm -rf target/gors-integration-run
 
   web-lint:
     runs-on: ubuntu-latest
@@ -181,12 +186,18 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: '20'
+          cache: npm
+          cache-dependency-path: www/package-lock.json
 
       - name: Lint web
         run: make web-lint
 
-  web-build:
+  # Build the stable browser compiler once per run.
+  # Webpack and both browser suites consume this exact artifact instead of
+  # independently paying for the nested Wasm workspace compilation.
+  web-compiler-assets:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
 
@@ -194,10 +205,14 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.96.0
-          components: rustfmt, clippy
           targets: wasm32-unknown-unknown
 
-      - uses: Swatinem/rust-cache@v2
+      - name: Cache nested Wasm build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: www/wasm -> target
+          shared-key: web-wasm-stable
+          cache-workspace-crates: true
 
       - name: Cache pinned Go SDK
         uses: actions/cache@v4
@@ -209,9 +224,53 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: '20'
+          cache: npm
+          cache-dependency-path: www/package-lock.json
+
+      - name: Install web dependencies
+        run: npm --prefix www ci --no-audit --fund=false --loglevel=error
+
+      - name: Build stable compiler assets
+        run: npm --prefix www run build:wasm
+
+      - name: Upload stable compiler assets
+        uses: actions/upload-artifact@v6
+        with:
+          name: web-compiler-assets
+          path: www/wasm/pkg
+          if-no-files-found: error
+          retention-days: 1
+
+  web-build:
+    needs: web-compiler-assets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download stable compiler assets
+        uses: actions/download-artifact@v7
+        with:
+          name: web-compiler-assets
+          path: www/wasm/pkg
+
+      - name: Install Node.js toolchain
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: www/package-lock.json
+
+      - name: Install web dependencies
+        run: npm --prefix www ci --no-audit --fund=false --loglevel=error
 
       - name: Build web
-        run: make web-build
+        run: npm --prefix www run build:prepared
+
+      - name: Upload GitHub Pages artifact
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: ./www/dist
 
   web-test-unit:
     runs-on: ubuntu-latest
@@ -222,78 +281,90 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: '20'
+          cache: npm
+          cache-dependency-path: www/package-lock.json
 
       - name: Test unit
         run: make web-test-unit
 
   web-test-integration:
+    if: github.event_name == 'push'
+    needs: web-compiler-assets
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
+      - name: Download stable compiler assets
+        uses: actions/download-artifact@v7
         with:
-          toolchain: 1.96.0
-          components: rustfmt, clippy
-          targets: wasm32-unknown-unknown
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Cache pinned Go SDK
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/gors-cache
-          key: gors-go-sdk-${{ runner.os }}-${{ hashFiles('.go-version') }}
+          name: web-compiler-assets
+          path: www/wasm/pkg
 
       - name: Install Node.js toolchain
         uses: actions/setup-node@v6
         with:
           node-version: '20'
+          cache: npm
+          cache-dependency-path: www/package-lock.json
+
+      - name: Install web dependencies
+        run: npm --prefix www ci --no-audit --fund=false --loglevel=error
+
+      - name: Install Chromium
+        run: npm --prefix www exec playwright install --with-deps chromium
 
       - name: Test integration
-        run: make web-test-integration PLAYWRIGHT_INSTALL_ARGS="--with-deps chromium"
+        run: npm --prefix www run test:integration
+        env:
+          GORS_WEB_COMPILER_PREBUILT: '1'
 
-  # Upload GitHub Pages artifact from web-build
-  upload-pages:
+  web-test-compiler:
+    needs: web-compiler-assets
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    needs: [web-build]
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
+      - name: Download stable compiler assets
+        uses: actions/download-artifact@v7
         with:
-          toolchain: 1.96.0
-          components: rustfmt, clippy
-          targets: wasm32-unknown-unknown
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Cache pinned Go SDK
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/gors-cache
-          key: gors-go-sdk-${{ runner.os }}-${{ hashFiles('.go-version') }}
+          name: web-compiler-assets
+          path: www/wasm/pkg
 
       - name: Install Node.js toolchain
         uses: actions/setup-node@v6
         with:
           node-version: '20'
+          cache: npm
+          cache-dependency-path: www/package-lock.json
 
-      - name: Build web
-        run: make web-build
+      - name: Install web dependencies
+        run: npm --prefix www ci --no-audit --fund=false --loglevel=error
 
-      - name: Upload GitHub Pages artifact
-        uses: actions/upload-pages-artifact@v5
-        with:
-          path: ./www/dist
+      - name: Install Chromium
+        run: npm --prefix www exec playwright install --with-deps chromium
+
+      - name: Test browser compiler
+        run: npm --prefix www run test:compiler
+        env:
+          GORS_WEB_COMPILER_PREBUILT: '1'
 
   deploy-www:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    needs: [upload-pages]
+    needs:
+      - perf-harness
+      - rust-lint
+      - rust-build
+      - rust-test-unit
+      - rust-test-fuzz-smoke
+      - rust-test-backend-smoke
+      - rust-test-integration-go-repositories
+      - web-build
+      - web-lint
+      - web-test-unit
+      - web-test-integration
+      - web-test-compiler
     permissions:
       contents: read
       pages: write
@@ -305,9 +376,24 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - name: Verify this run still owns the main branch
+        id: main-head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          current_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+          if [ "$current_sha" = "$GITHUB_SHA" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "deploy=false" >> "$GITHUB_OUTPUT"
+          echo "::notice::Skipping stale Pages deployment for $GITHUB_SHA; main is $current_sha"
+
       - name: Configure GitHub Pages
+        if: steps.main-head.outputs.deploy == 'true'
         uses: actions/configure-pages@v6
 
       - name: Deploy www to GitHub Pages
+        if: steps.main-head.outputs.deploy == 'true'
         id: deployment
         uses: actions/deploy-pages@v5

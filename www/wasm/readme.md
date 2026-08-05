@@ -1,7 +1,9 @@
 # gors-wasm
 
-## Compile
+## Build
 
-```
-wasm-pack build
+From the repository root:
+
+```sh
+npm --prefix www run build:wasm
 ```

@@ -4,7 +4,7 @@
 mod common;
 
 use common::fixtures_dir;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -37,7 +37,6 @@ struct SpecCase {
     title: String,
     status: String,
     fixtures: Option<Vec<String>>,
-    reason: Option<String>,
     expect: Option<String>,
 }
 
@@ -46,6 +45,19 @@ struct SourceBytesFixture {
     filename: Option<String>,
     source: String,
 }
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FixtureExecutionManifest {
+    fixtures: HashMap<String, FixtureExecutionDirective>,
+}
+
+#[derive(serde::Deserialize)]
+struct FixtureExecutionDirective {
+    status: String,
+}
+
+const EXPECTED_SPEC_CASE_COUNT: usize = 211;
 
 const GO_1_26_SPEC_SECTIONS: &[&str] = &[
     "Source code representation",
@@ -186,7 +198,20 @@ fn read_spec_manifest() -> SpecManifest {
 fn go_spec_manifest_has_valid_statuses_and_fixtures() {
     let manifest = read_spec_manifest();
     let go_spec = fixtures_dir().join("go_spec");
+    let execution_manifest_path = go_spec.join("fixtures.json");
+    let execution_manifest: FixtureExecutionManifest = serde_json::from_str(
+        &fs::read_to_string(&execution_manifest_path).unwrap_or_else(|error| {
+            panic!("cannot read {}: {error}", execution_manifest_path.display())
+        }),
+    )
+    .unwrap_or_else(|error| {
+        panic!(
+            "cannot parse {}: {error}",
+            execution_manifest_path.display()
+        )
+    });
     let mut ids = HashSet::new();
+    let mut referenced_fixtures = HashSet::new();
     let mut total = 0usize;
 
     for category in manifest.categories {
@@ -213,53 +238,115 @@ fn go_spec_manifest_has_valid_statuses_and_fixtures() {
                 "duplicate spec test id {}",
                 case.id
             );
+            assert_eq!(
+                case.status, "passing",
+                "spec test {} must be supported; unsupported cases are not permitted",
+                case.id
+            );
             let fixtures = case.fixtures.unwrap_or_default();
-            match case.status.as_str() {
-                "passing" => {
-                    assert!(
-                        !fixtures.is_empty(),
-                        "passing spec test {} has no fixtures",
-                        case.id
-                    );
-                    for fixture in fixtures {
-                        if case.expect.as_deref() == Some("source_bytes") {
-                            assert!(
-                                go_spec.join(&fixture).join("source.json").exists(),
-                                "passing source-bytes spec test {} references missing fixture {}",
-                                case.id,
-                                fixture
-                            );
-                            continue;
-                        }
-                        assert!(
-                            go_spec.join(&fixture).join("main.go").exists(),
-                            "passing spec test {} references missing fixture {}",
-                            case.id,
-                            fixture
-                        );
-                    }
+            referenced_fixtures.extend(fixtures.iter().cloned());
+            for fixture in &fixtures {
+                let execution_status = execution_manifest
+                    .fixtures
+                    .get(fixture)
+                    .map(|directive| directive.status.as_str());
+                match case.expect.as_deref() {
+                    Some("compile_error") => assert_eq!(
+                        execution_status,
+                        Some("compile_error"),
+                        "compile-error spec test {} fixture {} must have an explicit compile_error execution status",
+                        case.id,
+                        fixture
+                    ),
+                    _ => assert!(
+                        !matches!(execution_status, Some("unsupported" | "compile_error")),
+                        "passing spec test {} fixture {} has non-running execution status {:?}",
+                        case.id,
+                        fixture,
+                        execution_status
+                    ),
                 }
-                "unsupported" => {
+            }
+            assert!(
+                !fixtures.is_empty(),
+                "passing spec test {} has no fixtures",
+                case.id
+            );
+            for fixture in fixtures {
+                if case.expect.as_deref() == Some("source_bytes") {
                     assert!(
-                        case.reason.is_some_and(|reason| !reason.trim().is_empty()),
-                        "unsupported spec test {} has no reason",
-                        case.id
+                        go_spec.join(&fixture).join("source.json").exists(),
+                        "passing source-bytes spec test {} references missing fixture {}",
+                        case.id,
+                        fixture
                     );
-                    for fixture in fixtures {
-                        assert!(
-                            go_spec.join(&fixture).join("main.go").exists(),
-                            "unsupported spec test {} references missing fixture {}",
-                            case.id,
-                            fixture
-                        );
-                    }
+                    continue;
                 }
-                other => panic!("spec test {} has invalid status {}", case.id, other),
+                assert!(
+                    go_spec.join(&fixture).join("main.go").exists(),
+                    "passing spec test {} references missing fixture {}",
+                    case.id,
+                    fixture
+                );
             }
         }
     }
 
-    assert!(total > 0, "spec manifest is empty");
+    assert_eq!(
+        total, EXPECTED_SPEC_CASE_COUNT,
+        "Go spec manifest must contain exactly {EXPECTED_SPEC_CASE_COUNT} supported cases"
+    );
+    for (fixture, directive) in &execution_manifest.fixtures {
+        assert_ne!(
+            directive.status, "unsupported",
+            "Go spec fixture {} must not have an unsupported execution status",
+            fixture
+        );
+    }
+    let mut executable_fixtures = Vec::new();
+    collect_fixture_directories_with_file(&go_spec, &go_spec, "main.go", &mut executable_fixtures);
+    collect_fixture_directories_with_file(
+        &go_spec,
+        &go_spec,
+        "source.json",
+        &mut executable_fixtures,
+    );
+    let unreferenced = executable_fixtures
+        .into_iter()
+        .filter(|fixture| !referenced_fixtures.contains(fixture))
+        .collect::<Vec<_>>();
+    assert!(
+        unreferenced.is_empty(),
+        "Go spec fixtures without manifest evidence cases: {}",
+        unreferenced.join(", ")
+    );
+}
+
+fn collect_fixture_directories_with_file(
+    root: &Path,
+    dir: &Path,
+    filename: &str,
+    fixtures: &mut Vec<String>,
+) {
+    let entries = fs::read_dir(dir)
+        .unwrap_or_else(|error| panic!("cannot enumerate {}: {error}", dir.display()));
+    for entry in entries {
+        let entry =
+            entry.unwrap_or_else(|error| panic!("cannot enumerate {}: {error}", dir.display()));
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if path.join(filename).exists() {
+            let relative = path
+                .strip_prefix(root)
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()))
+                .to_string_lossy()
+                .replace('\\', "/");
+            fixtures.push(relative);
+        }
+        collect_fixture_directories_with_file(root, &path, filename, fixtures);
+    }
 }
 
 #[test]
@@ -297,49 +384,73 @@ fn go_spec_manifest_covers_go_1_26_language_sections() {
     );
 }
 
-#[test]
-fn go_spec_compile_error_fixtures_reject_like_go() {
+fn go_spec_compile_error_fixtures_reject_like_go(filter: Option<&str>) -> Vec<String> {
     let manifest = read_spec_manifest();
     let go_spec = fixtures_dir().join("go_spec");
-    let mut checked = 0usize;
+    let mut passed_fixtures = Vec::new();
 
     for category in manifest.categories {
         for case in category.tests {
             if case.status != "passing" || case.expect.as_deref() != Some("compile_error") {
                 continue;
             }
-            for fixture in case.fixtures.unwrap_or_default() {
-                checked += 1;
+            let fixtures = case.fixtures.unwrap_or_default();
+            if filter.is_some_and(|filter| {
+                !case.id.contains(filter)
+                    && !fixtures.iter().any(|fixture| fixture.contains(filter))
+            }) {
+                continue;
+            }
+            for fixture in fixtures {
                 assert_compile_error_fixture(&go_spec.join(&fixture), &case.id);
+                passed_fixtures.push(fixture);
             }
         }
     }
 
-    assert!(checked > 0, "no compile-error spec fixtures found");
+    if filter.is_none() {
+        assert!(
+            !passed_fixtures.is_empty(),
+            "no compile-error spec fixtures found"
+        );
+    }
+    passed_fixtures
 }
 
-#[test]
-fn go_spec_source_byte_fixtures_match_go() {
+fn go_spec_source_byte_fixtures_match_go(filter: Option<&str>) -> Vec<String> {
     let manifest = read_spec_manifest();
     let go_spec = fixtures_dir().join("go_spec");
-    let mut checked = 0usize;
+    let mut passed_fixtures = Vec::new();
 
     for category in manifest.categories {
         for case in category.tests {
             if case.status != "passing" || case.expect.as_deref() != Some("source_bytes") {
                 continue;
             }
-            for fixture in case.fixtures.unwrap_or_default() {
-                checked += 1;
+            let fixtures = case.fixtures.unwrap_or_default();
+            if filter.is_some_and(|filter| {
+                !case.id.contains(filter)
+                    && !fixtures.iter().any(|fixture| fixture.contains(filter))
+            }) {
+                continue;
+            }
+            for fixture in fixtures {
                 assert_source_bytes_fixture_matches_go(
                     &go_spec.join(&fixture).join("source.json"),
                     &case.id,
                 );
+                passed_fixtures.push(fixture);
             }
         }
     }
 
-    assert!(checked > 0, "no source-bytes spec fixtures found");
+    if filter.is_none() {
+        assert!(
+            !passed_fixtures.is_empty(),
+            "no source-bytes spec fixtures found"
+        );
+    }
+    passed_fixtures
 }
 
 fn assert_source_bytes_fixture_matches_go(path: &Path, case_id: &str) {
@@ -352,11 +463,16 @@ fn assert_source_bytes_fixture_matches_go(path: &Path, case_id: &str) {
         tempfile::tempdir().unwrap_or_else(|e| panic!("{case_id}: failed to create tempdir: {e}"));
     fs::write(tempdir.path().join(filename), fixture.source.as_bytes())
         .unwrap_or_else(|e| panic!("{case_id}: failed to write source bytes: {e}"));
-    let go_output = common::go_command()
+    let mut go_command = common::go_command();
+    go_command
         .args(["run", filename])
         .current_dir(tempdir.path())
-        .output()
-        .unwrap_or_else(|e| panic!("{case_id}: failed to run Go oracle: {e}"));
+        .stdin(std::process::Stdio::null());
+    let go_output = common::runner::command_output_with_timeout(
+        go_command,
+        common::runner::configured_go_run_timeout(),
+    )
+    .unwrap_or_else(|e| panic!("{case_id}: failed to run Go oracle: {e}"));
     let go_accepts = go_output.status.success();
     let gors_accepts = gors::parser::parse_file(filename, &fixture.source).is_ok();
 
@@ -369,20 +485,26 @@ fn assert_source_bytes_fixture_matches_go(path: &Path, case_id: &str) {
 }
 
 fn assert_compile_error_fixture(dir: &Path, case_id: &str) {
-    let go_output = common::go_command()
+    let mut go_command = common::go_command();
+    go_command
         .args(["run", "."])
         .current_dir(dir)
-        .output()
-        .unwrap_or_else(|e| panic!("{case_id}: failed to run Go oracle: {e}"));
+        .stdin(std::process::Stdio::null());
+    let go_output = common::runner::command_output_with_timeout(
+        go_command,
+        common::runner::configured_go_run_timeout(),
+    )
+    .unwrap_or_else(|e| panic!("{case_id}: failed to run Go oracle: {e}"));
     assert!(
         !go_output.status.success(),
         "{case_id}: Go accepted negative fixture {}",
         dir.display()
     );
 
-    let source_path = dir.to_string_lossy().into_owned();
-    let rejected = match gors::parser::parse_program_files(&[source_path]) {
-        Ok(program) => gors::compiler::compile_program_multi(program).is_err(),
+    let workspace = gors::compiler::input::WorkspaceKey::ad_hoc("gors-go-spec-negative-fixtures")
+        .expect("negative fixture workspace identity is valid");
+    let rejected = match gors::workspace::load_program(workspace, dir) {
+        Ok(program) => gors::compiler::compile_program(program.into_input()).is_err(),
         Err(_) => true,
     };
     assert!(
@@ -394,7 +516,29 @@ fn assert_compile_error_fixture(dir: &Path, case_id: &str) {
 
 #[test]
 fn run_go_spec_generated_rust() {
-    common::runner::run_generated_program_fixture_set("go_spec");
-    common::reporter::write_go_spec_conformance()
+    // Keep report generation self-contained: a parallel manifest-validation test
+    // must not be the only thing preventing missing evidence from reaching disk.
+    go_spec_manifest_has_valid_statuses_and_fixtures();
+    let filter = std::env::var("GORS_TEST_FILTER").ok();
+    let mut fixture_run = common::runner::run_generated_program_fixture_set_allow_empty("go_spec");
+    fixture_run.add_passing_evidence(go_spec_compile_error_fixtures_reject_like_go(
+        filter.as_deref(),
+    ));
+    fixture_run.add_passing_evidence(go_spec_source_byte_fixtures_match_go(filter.as_deref()));
+    assert!(
+        !fixture_run.attempted_fixture_names.is_empty(),
+        "no Go spec fixtures matched filter {:?}",
+        filter
+    );
+    if common::reporter::canonical_report_requested() {
+        assert!(
+            fixture_run.complete,
+            "refusing to regenerate the canonical Go spec report from a filtered, limited, diagnostic, or cancelled run"
+        );
+        common::reporter::write_go_spec_conformance(
+            &fixture_run.passed_fixture_names,
+            &fixture_run.attempted_fixture_names,
+        )
         .expect("failed to write go-spec-conformance report");
+    }
 }

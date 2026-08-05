@@ -1,4 +1,4 @@
-## Known-failing fixture (skipped via `_` prefix)
+## Known-failing fixture (excluded via `fixtures.json`)
 
 Skipped preemptively alongside `go/_scanner` — same shape
 (`fmt.Println(token.ADD == token.ADD)`...), same suspected lowering

@@ -1,4 +1,4 @@
-## Known-failing fixture (skipped via `_` prefix)
+## Known-failing fixture (excluded via `fixtures.json`)
 
 Skipped preemptively alongside `_mime`, `runtime/_metrics`,
 `hash/_adler32`, `hash/_fnv` — all five are minimal "print package
