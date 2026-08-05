@@ -95,6 +95,12 @@ pub enum StmtKind {
         destinations: Vec<Place>,
         value: Expr,
     },
+    /// Dynamic left-hand-side operands are evaluated before all right-hand
+    /// sides, then destinations are written from left to right.
+    ParallelAssign {
+        destinations: Vec<AssignTarget>,
+        values: Vec<Expr>,
+    },
     Expr(Expr),
     ClosureBinding(ClosureId),
     Defer {
@@ -130,6 +136,13 @@ pub enum StmtKind {
         op: AssignOp,
         value: Expr,
     },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AssignTarget {
+    Local(LocalId),
+    Discard,
+    SliceIndex { slice: Expr, index: Expr },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

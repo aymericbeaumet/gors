@@ -172,6 +172,17 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
             });
             encoder.field(b"value", |encoder| encode_expression(encoder, value));
         }),
+        hir::StmtKind::ParallelAssign {
+            destinations,
+            values,
+        } => encoder.variant(b"parallel-assign", |encoder| {
+            encoder.field(b"destinations", |encoder| {
+                encoder.sequence(destinations, encode_assignment_target);
+            });
+            encoder.field(b"values", |encoder| {
+                encoder.sequence(values, encode_expression);
+            });
+        }),
         hir::StmtKind::Expr(expression) => {
             encoder.variant(b"expression", |encoder| {
                 encode_expression(encoder, expression)
@@ -285,6 +296,21 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
             encoder.field(b"operation", |encoder| encode_assign_op(encoder, *op));
             encoder.field(b"value", |encoder| encode_expression(encoder, value));
         }),
+    }
+}
+
+fn encode_assignment_target(encoder: &mut Encoder, target: &hir::AssignTarget) {
+    match target {
+        hir::AssignTarget::Local(id) => {
+            encoder.variant(b"local", |encoder| local_id(encoder, *id));
+        }
+        hir::AssignTarget::Discard => encoder.variant(b"discard", |_| {}),
+        hir::AssignTarget::SliceIndex { slice, index } => {
+            encoder.variant(b"slice-index", |encoder| {
+                encoder.field(b"slice", |encoder| encode_expression(encoder, slice));
+                encoder.field(b"index", |encoder| encode_expression(encoder, index));
+            });
+        }
     }
 }
 

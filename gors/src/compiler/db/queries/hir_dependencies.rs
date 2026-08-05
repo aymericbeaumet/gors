@@ -32,6 +32,20 @@ fn collect_statement_callees(statement: &hir::Stmt, callees: &mut BTreeSet<DefId
         hir::StmtKind::LetTuple { value, .. } | hir::StmtKind::AssignTuple { value, .. } => {
             collect_expression_callees(value, callees);
         }
+        hir::StmtKind::ParallelAssign {
+            destinations,
+            values,
+        } => {
+            for destination in destinations {
+                if let hir::AssignTarget::SliceIndex { slice, index } = destination {
+                    collect_expression_callees(slice, callees);
+                    collect_expression_callees(index, callees);
+                }
+            }
+            for value in values {
+                collect_expression_callees(value, callees);
+            }
+        }
         hir::StmtKind::Expr(expression) => collect_expression_callees(expression, callees),
         hir::StmtKind::Defer { values, body, .. } => {
             for value in values {

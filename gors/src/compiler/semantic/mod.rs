@@ -1,5 +1,6 @@
 //! Definition-demanded name resolution and type checking over owned syntax.
 
+mod assignments;
 mod closures;
 mod expression_lower;
 mod expressions;

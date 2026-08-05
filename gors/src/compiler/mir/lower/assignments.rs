@@ -1,0 +1,96 @@
+//! Explicit two-phase lowering for assignments with dynamic destinations.
+
+use super::super::construct::{call_effects, make_rvalue, make_statement, make_terminator};
+use super::super::{Operand, Place, Provenance, RvalueKind, TerminatorKind};
+use super::FunctionLowerer;
+use crate::compiler::Diagnostic;
+use crate::compiler::hir;
+use crate::compiler::provenance::SourceRef;
+
+enum PreparedTarget {
+    Local(Place),
+    Discard,
+    SliceIndex { slice: Operand, index: Operand },
+}
+
+impl FunctionLowerer {
+    pub(super) fn lower_parallel_assignment(
+        &mut self,
+        destinations: &[hir::AssignTarget],
+        values: &[hir::Expr],
+        source: SourceRef,
+    ) -> Result<(), Diagnostic> {
+        if destinations.len() != values.len() {
+            return Err(Diagnostic::backend(
+                "parallel assignment arity changed before MIR lowering",
+            ));
+        }
+
+        let mut prepared = Vec::with_capacity(destinations.len());
+        for destination in destinations {
+            prepared.push(match destination {
+                hir::AssignTarget::Local(local) => PreparedTarget::Local(Place { local: *local }),
+                hir::AssignTarget::Discard => PreparedTarget::Discard,
+                hir::AssignTarget::SliceIndex { slice, index } => {
+                    let slice_operand = self.lower_expr(slice)?;
+                    let slice_operand = self.materialize(
+                        slice_operand,
+                        slice.ty.clone(),
+                        Provenance::Source(slice.source),
+                    )?;
+                    let index_operand = self.lower_expr(index)?;
+                    let index_operand = self.materialize(
+                        index_operand,
+                        index.ty.clone(),
+                        Provenance::Source(index.source),
+                    )?;
+                    PreparedTarget::SliceIndex {
+                        slice: slice_operand,
+                        index: index_operand,
+                    }
+                }
+            });
+        }
+
+        let mut operands = Vec::with_capacity(values.len());
+        for value in values {
+            let operand = self.lower_expr(value)?;
+            operands.push(self.materialize(
+                operand,
+                value.ty.clone(),
+                Provenance::Source(value.source),
+            )?);
+        }
+
+        for (destination, operand) in prepared.into_iter().zip(operands) {
+            match destination {
+                PreparedTarget::Local(destination) => {
+                    let provenance = Provenance::Source(source);
+                    let value = make_rvalue(
+                        RvalueKind::Use(operand),
+                        hir::Effects::default(),
+                        provenance.clone(),
+                    );
+                    self.push_statement(make_statement(destination, value, provenance))?;
+                }
+                PreparedTarget::Discard => {}
+                PreparedTarget::SliceIndex { slice, index } => {
+                    let provenance = Provenance::Source(source);
+                    let target = self.new_block(provenance.clone());
+                    self.terminate(make_terminator(
+                        TerminatorKind::Call {
+                            callee: hir::Callee::Builtin(hir::Builtin::SliceI64Set),
+                            args: vec![slice, index, operand],
+                            destinations: Vec::new(),
+                            target,
+                        },
+                        call_effects(),
+                        provenance,
+                    ))?;
+                    self.current = target;
+                }
+            }
+        }
+        Ok(())
+    }
+}

@@ -518,6 +518,22 @@ fn generated_local_functions_capture_mutable_state_and_return_directly() {
 }
 
 #[test]
+fn generated_parallel_assignments_freeze_dynamic_targets_before_writes() {
+    let run = compile_and_run(
+        r#"
+            package main
+            func main() {
+                values := []int{0, 1}
+                values[0], values[values[0]] = 1, 2
+                println(values[0], values[1])
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"2 1\n");
+}
+
+#[test]
 fn generated_deferred_closures_capture_arguments_and_update_named_results() {
     let run = compile_and_run(
         r#"

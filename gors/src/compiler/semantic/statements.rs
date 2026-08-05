@@ -642,6 +642,11 @@ impl FunctionLowerer {
         if let Some(binding) = self.try_lower_closure_binding(left, token, right, source) {
             return binding;
         }
+        if let Some(assignment) =
+            self.try_lower_parallel_index_assignment(left, token, right, source)
+        {
+            return assignment;
+        }
         if let (
             [
                 ExprSyntax {
@@ -919,7 +924,7 @@ impl FunctionLowerer {
         })
     }
 
-    fn lower_place(
+    pub(super) fn lower_place(
         &self,
         expression: &ExprSyntax,
         source: SourceRef,

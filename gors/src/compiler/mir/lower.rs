@@ -1,5 +1,6 @@
 //! Evaluation-order-explicit lowering from typed HIR to MIR.
 
+mod assignments;
 mod closures;
 mod flow;
 mod panic_cleanup;
@@ -369,6 +370,10 @@ impl FunctionLowerer {
                     .collect::<Vec<_>>();
                 self.lower_call_into(value, places)?;
             }
+            hir::StmtKind::ParallelAssign {
+                destinations,
+                values,
+            } => self.lower_parallel_assignment(destinations, values, statement.source)?,
             hir::StmtKind::Let {
                 destinations,
                 values,
