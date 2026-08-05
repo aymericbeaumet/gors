@@ -4,6 +4,7 @@ mod analysis;
 mod constant_eval;
 mod hir_dependencies;
 mod support;
+mod type_aliases;
 
 pub(super) use analysis::{
     body_product, file_analysis_product, package_analysis_product, public_api_product,
@@ -14,6 +15,7 @@ use support::{
     check_semantic_barrier, collect_constant_references, function_file, referenced_names_in_body,
     semantic_build_dependency, semantic_failure,
 };
+pub(super) use type_aliases::{TypeAliasProjection, package_type_aliases_product};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -24,7 +26,7 @@ use crate::compiler::input::SourceContent;
 use crate::compiler::provenance::{DefinitionSourceTable, FileRange, SourceRef};
 use crate::compiler::syntax::{
     ConstantLayout, ConstantSyntax, FunctionLayout, ProjectedConstantSyntax,
-    ProjectedFunctionSyntax, project_constant, project_function,
+    ProjectedFunctionSyntax, project_constant, project_function, project_type_alias,
 };
 use crate::compiler::{Diagnostic, lowering, mir, rust_ir};
 use crate::source::SourceCoordinateMap;
@@ -155,6 +157,9 @@ pub(super) struct FileFacts<'db> {
     pub(super) constants: Vec<ConstantProjection<'db>>,
     #[tracked]
     #[returns(clone)]
+    pub(super) type_aliases: Vec<TypeAliasProjection<'db>>,
+    #[tracked]
+    #[returns(clone)]
     pub(super) failure: Option<ParseFailure>,
     #[tracked]
     #[returns(clone)]
@@ -183,6 +188,7 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
                 Arc::new(FileComments::new(file, Arc::from([]))),
                 Vec::new(),
                 Vec::new(),
+                Vec::new(),
                 Some(ParseFailure::new(error.message(), error.physical_range())),
                 Vec::new(),
             );
@@ -199,12 +205,18 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
         Some(Arc::from(
             "imported packages are not implemented by the semantic query pipeline",
         ))
-    } else if parsed.decls.iter().any(|declaration| {
-        matches!(
-            declaration,
-            ast::Decl::GenDecl(declaration)
-                if matches!(declaration.tok, crate::token::Token::TYPE | crate::token::Token::VAR)
-        )
+    } else if parsed.decls.iter().any(|declaration| match declaration {
+        ast::Decl::GenDecl(declaration) if declaration.tok == crate::token::Token::VAR => true,
+        ast::Decl::GenDecl(declaration) if declaration.tok == crate::token::Token::TYPE => {
+            declaration.specs.iter().any(|spec| {
+                !matches!(
+                    spec,
+                    ast::Spec::TypeSpec(spec)
+                        if spec.assign.is_some() && spec.type_params.is_none()
+                )
+            })
+        }
+        _ => false,
     }) {
         Some(Arc::from(
             "package variables and declared types are not implemented by the semantic query pipeline",
@@ -215,6 +227,7 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
     let mut seen = BTreeSet::<Arc<str>>::new();
     let mut projected_functions = Vec::new();
     let mut projected_constants = Vec::new();
+    let mut projected_type_aliases = Vec::new();
     let mut issues = Vec::new();
     for declaration in &parsed.decls {
         match declaration {
@@ -334,11 +347,42 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
                     }
                 }
             }
+            ast::Decl::GenDecl(declaration) if declaration.tok == crate::token::Token::TYPE => {
+                for spec in &declaration.specs {
+                    let ast::Spec::TypeSpec(spec) = spec else {
+                        continue;
+                    };
+                    if spec.assign.is_none() || spec.type_params.is_some() {
+                        continue;
+                    }
+                    let Some(name) = spec.name.as_ref() else {
+                        continue;
+                    };
+                    let owned_name: Arc<str> = Arc::from(name.name);
+                    if !seen.insert(Arc::clone(&owned_name)) {
+                        issues.push(FileIssue::DuplicateDefinition(owned_name));
+                        continue;
+                    }
+                    let key =
+                        DefinitionKey::package_named(package_id, DefinitionKind::Type, name.name);
+                    let id = key.id();
+                    match project_type_alias(spec) {
+                        Ok(syntax) => {
+                            projected_type_aliases.push((id, key, owned_name, Arc::new(syntax)))
+                        }
+                        Err(error) => issues.push(FileIssue::TypeProjectionFailure {
+                            name: owned_name,
+                            message: Arc::from(error.to_string()),
+                        }),
+                    }
+                }
+            }
             ast::Decl::GenDecl(_) => {}
         }
     }
     projected_functions.sort_by_key(|(id, _, _, _, _, _)| *id);
     projected_constants.sort_by_key(|(id, _, _, _, _, _)| *id);
+    projected_type_aliases.sort_by_key(|(id, _, _, _)| *id);
     issues.sort();
 
     let functions = projected_functions
@@ -372,6 +416,10 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
             )
         })
         .collect();
+    let type_aliases = projected_type_aliases
+        .into_iter()
+        .map(|(id, key, name, syntax)| TypeAliasProjection::new(db, id, key, name, syntax))
+        .collect();
     FileFacts::new(
         db,
         file,
@@ -383,6 +431,7 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
         comments,
         functions,
         constants,
+        type_aliases,
         None,
         issues,
     )
@@ -486,7 +535,7 @@ pub(super) fn semantic_function_product(
     if let Err(failure) = check_semantic_barrier(db, definition, function.semantic_barrier(db)) {
         return Arc::new(SemanticFunctionProduct::new(Err(failure), fallback_plan));
     }
-    let signature = match typed_signature_product(db, function) {
+    let signature = match typed_signature_product(db, input, function) {
         Ok(signature) => signature,
         Err(failure) => {
             return Arc::new(SemanticFunctionProduct::new(Err(failure), fallback_plan));
@@ -496,10 +545,16 @@ pub(super) fn semantic_function_product(
     let names = referenced_names_in_body(function.signature(db).structure(), body.structure());
     let mut functions = BTreeMap::new();
     let mut constants = BTreeMap::new();
+    let type_aliases = match package_type_aliases_product(db, input) {
+        Ok(type_aliases) => type_aliases,
+        Err(failure) => {
+            return Arc::new(SemanticFunctionProduct::new(Err(failure), fallback_plan));
+        }
+    };
     for name in names {
         db.unwind_if_revision_cancelled();
         if let Some(dependency) = package_function_named_product(db, input, name.clone()) {
-            let typed = match typed_signature_product(db, dependency) {
+            let typed = match typed_signature_product(db, input, dependency) {
                 Ok(typed) => typed,
                 Err(failure) => {
                     return Arc::new(SemanticFunctionProduct::new(Err(failure), fallback_plan));
@@ -537,6 +592,7 @@ pub(super) fn semantic_function_product(
         signature.signature().clone(),
         functions,
         constants,
+        type_aliases.as_ref().clone(),
     ) {
         Ok(lowered) => {
             let source_plan = Arc::from(lowered.source_plan.clone());
@@ -576,15 +632,21 @@ pub(super) fn typed_hir_product(
 #[salsa::tracked(returns(clone))]
 pub(super) fn typed_signature_product(
     db: &dyn Db,
+    input: PackageInput,
     function: FunctionProjection<'_>,
 ) -> StageResult<TypedFunctionSignature> {
     db.query_telemetry().record_query(QueryKind::TypedSignature);
     let definition = function.id(db);
     check_semantic_barrier(db, definition, function.semantic_barrier(db))?;
     semantic_build_dependency(db, definition)?;
-    super::super::semantic::lower_signature(definition, function.signature(db).structure())
-        .map(|signature| Arc::new(TypedFunctionSignature::new(definition, signature)))
-        .map_err(|diagnostic| semantic_failure(definition, diagnostic))
+    let type_aliases = package_type_aliases_product(db, input)?;
+    super::super::semantic::lower_signature(
+        definition,
+        function.signature(db).structure(),
+        &type_aliases,
+    )
+    .map(|signature| Arc::new(TypedFunctionSignature::new(definition, signature)))
+    .map_err(|diagnostic| semantic_failure(definition, diagnostic))
 }
 
 #[salsa::tracked(returns(clone))]
@@ -692,7 +754,7 @@ pub(super) fn mir_signature_dependencies_product(
                 ))
             })?
         };
-        let signature = typed_signature_product(db, projection)?;
+        let signature = typed_signature_product(db, input, projection)?;
         signatures.insert(definition, signature.signature().clone());
     }
     Ok(Arc::new(MirSignatureDependencies { signatures }))

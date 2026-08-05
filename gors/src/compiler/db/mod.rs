@@ -26,6 +26,7 @@ pub use super::syntax::FunctionLayout;
 use crate::source::SourceCoordinateMap;
 use queries::{
     BuildInput, ConstantProjection, FileFacts, FunctionProjection, PackageInput, SourceInput,
+    TypeAliasProjection,
 };
 use resolved_imports::ResolvedImportsInput;
 use telemetry::Telemetry;
@@ -34,6 +35,7 @@ pub use super::fingerprint::Fingerprint;
 pub use model::{
     BuildConfig, ConstantDescriptor, FileAnalysis, FileIssue, FunctionBody, FunctionDescriptor,
     FunctionSignature, PackageAnalysis, PackageIssue, ParseFailure, PublicApi, RuntimeAbiId,
+    TypeAliasDescriptor,
 };
 pub(in crate::compiler) use mutation::SourceInputMutation;
 pub use products::{
@@ -197,6 +199,7 @@ impl CompilerDatabase {
             .ingredient::<queries::typed_hir_product>()
             .ingredient::<queries::typed_signature_product>()
             .ingredient::<queries::typed_constant_product>()
+            .ingredient::<queries::package_type_aliases_product>()
             .ingredient::<queries::package_function_product>()
             .ingredient::<queries::package_function_named_product>()
             .ingredient::<queries::package_constant_named_product>()
@@ -215,6 +218,7 @@ impl CompilerDatabase {
             .ingredient::<FileFacts<'_>>()
             .ingredient::<FunctionProjection<'_>>()
             .ingredient::<ConstantProjection<'_>>()
+            .ingredient::<TypeAliasProjection<'_>>()
             .build();
         let mut database = Self {
             storage,
@@ -443,8 +447,10 @@ impl CompilerDatabase {
         file: FileId,
         function: DefId,
     ) -> Result<Arc<TypedFunctionSignature>, QueryError> {
+        let package = self.package_for_file(file)?;
+        let input = self.package_input(package)?;
         let function = self.function_projection(file, function)?;
-        queries::typed_signature_product(self, function).map_err(QueryError::StageFailure)
+        queries::typed_signature_product(self, input, function).map_err(QueryError::StageFailure)
     }
 
     /// Demand one stable definition's verified explicit-order Go MIR.

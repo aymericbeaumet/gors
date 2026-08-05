@@ -15,6 +15,7 @@ pub(super) struct FunctionLowerer {
     pub(super) next_node: u32,
     pub(super) functions: BTreeMap<String, FunctionSymbol>,
     pub(super) constants: BTreeMap<String, ConstantSymbol>,
+    pub(super) type_aliases: BTreeMap<String, Ty>,
     pub(super) signature: Signature,
     pub(super) locals: Vec<hir::Local>,
     pub(super) scopes: Vec<BTreeMap<String, LocalId>>,

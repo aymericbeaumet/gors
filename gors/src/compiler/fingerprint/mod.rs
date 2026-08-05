@@ -109,6 +109,14 @@ pub fn qualified_definition(value: crate::compiler::ids::QualifiedDefId) -> Fing
     encoder.finish()
 }
 
+/// Fingerprint one exact semantic Go type for declaration and API identities.
+#[must_use]
+pub(in crate::compiler) fn go_type(value: &crate::compiler::types::Ty) -> Fingerprint {
+    let mut encoder = encoder::Encoder::root(b"go-type");
+    encoder.field(b"type", |encoder| encoder::ty(encoder, value));
+    encoder.finish()
+}
+
 #[cfg(test)]
 #[allow(
     clippy::expect_used,

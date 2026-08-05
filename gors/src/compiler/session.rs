@@ -596,6 +596,19 @@ impl CompilerSession {
                     line: 0,
                     column: 0,
                 },
+                PackageIssue::TypeProjectionFailure {
+                    file,
+                    name,
+                    message,
+                } => CompilerDiagnostic {
+                    code: "GORS2003",
+                    message: format!(
+                        "could not project type {name:?} into owned semantic syntax: {message}"
+                    ),
+                    file: self.source_path_or_empty(*file),
+                    line: 0,
+                    column: 0,
+                },
             })
             .collect::<Vec<_>>();
         diagnostics.sort_by(|left, right| {

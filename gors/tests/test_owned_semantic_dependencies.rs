@@ -92,6 +92,49 @@ const Later = 40
 }
 
 #[test]
+fn type_aliases_resolve_transitively_across_files() {
+    let mut db = CompilerDatabase::default();
+    let entry = install(
+        &mut db,
+        "entry.go",
+        "package main\nfunc value() Count { var result Count = 6; return result }\n",
+    );
+    install(
+        &mut db,
+        "aliases.go",
+        "package main\ntype Count = Number\ntype Number = int\n",
+    );
+    let value = function_id(&db, entry, "value");
+    let signature = db.typed_signature(entry, value).unwrap();
+    assert_eq!(
+        signature.signature().results,
+        [gors::compiler::types::Ty::Int(
+            gors::compiler::types::IntTy::Int,
+        )]
+    );
+    assert_eq!(db.typed_hir(entry, value).unwrap().function().name, "value");
+}
+
+#[test]
+fn type_alias_cycles_fail_deterministically() {
+    let mut db = CompilerDatabase::default();
+    let file = install(
+        &mut db,
+        "main.go",
+        "package main\ntype A = B\ntype B = A\nfunc value() int { return 1 }\n",
+    );
+    let value = function_id(&db, file, "value");
+    let failure = match db.typed_hir(file, value).unwrap_err() {
+        QueryError::StageFailure(failure) => failure,
+        error => panic!("unexpected query error: {error}"),
+    };
+    assert_eq!(
+        failure.diagnostics().first().unwrap().message,
+        "type alias cycle: A -> B -> A"
+    );
+}
+
+#[test]
 fn constant_cycles_fail_deterministically() {
     let mut db = CompilerDatabase::default();
     let file = install(
@@ -158,6 +201,42 @@ fn exported_constant_semantics_participate_in_package_api() {
         &mut db,
         "main.go",
         "package main\nconst Exported = 2\nconst hidden = 2\n",
+    );
+    let exported_edit = db.analyze_package(package).unwrap();
+    assert_ne!(
+        hidden_edit.public_api_fingerprint(),
+        exported_edit.public_api_fingerprint()
+    );
+}
+
+#[test]
+fn exported_type_alias_semantics_participate_in_package_api() {
+    let mut db = CompilerDatabase::default();
+    let file = install(
+        &mut db,
+        "main.go",
+        "package main\ntype Exported = int\ntype hidden = int\n",
+    );
+    let package = db.package_for_file(file).unwrap();
+    let base = db.analyze_package(package).unwrap();
+    assert_eq!(base.type_aliases().len(), 2);
+    assert_eq!(db.analyze_file(file).unwrap().type_aliases().len(), 2);
+
+    install(
+        &mut db,
+        "main.go",
+        "package main\ntype Exported = int\ntype hidden = bool\n",
+    );
+    let hidden_edit = db.analyze_package(package).unwrap();
+    assert_eq!(
+        base.public_api_fingerprint(),
+        hidden_edit.public_api_fingerprint()
+    );
+
+    install(
+        &mut db,
+        "main.go",
+        "package main\ntype Exported = bool\ntype hidden = bool\n",
     );
     let exported_edit = db.analyze_package(package).unwrap();
     assert_ne!(

@@ -75,6 +75,12 @@ pub struct ConstantSyntax {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TypeAliasSyntax {
+    pub(crate) name: IdentSyntax,
+    pub(crate) target: ExprSyntax,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ConstantValueSyntax {
     Expression(ExprSyntax),
     ImplicitOrIota,

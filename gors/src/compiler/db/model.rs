@@ -1,5 +1,9 @@
 //! Compiler-owned query inputs and immutable projection products.
 
+mod descriptors;
+
+pub use descriptors::{ConstantDescriptor, FunctionDescriptor, TypeAliasDescriptor};
+
 use std::fmt;
 use std::sync::Arc;
 
@@ -12,7 +16,7 @@ use crate::import_path::ImportPathIssue;
 use crate::source::TextRange;
 
 use super::super::fingerprint::{Fingerprint, fingerprint_parts};
-use super::super::ids::{DefId, DefinitionKey, FileId, PackageId};
+use super::super::ids::{DefId, FileId, PackageId};
 use super::source_metadata::write_import_issue;
 
 /// Compiler identity for the exact target-neutral runtime contract.
@@ -158,79 +162,8 @@ pub enum FileIssue {
     FunctionProjectionFailure { name: Arc<str>, message: Arc<str> },
     /// A parsed constant could not be projected into owned semantic syntax.
     ConstantProjectionFailure { name: Arc<str>, message: Arc<str> },
-}
-
-/// Stable function identity and display name in one file index.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct FunctionDescriptor {
-    id: DefId,
-    file: FileId,
-    name: Arc<str>,
-    key: DefinitionKey,
-}
-
-impl FunctionDescriptor {
-    pub(super) fn new(file: FileId, key: DefinitionKey, name: Arc<str>) -> Self {
-        Self {
-            id: key.id(),
-            file,
-            name,
-            key,
-        }
-    }
-
-    /// Stable cross-revision definition identity.
-    #[must_use]
-    pub const fn id(&self) -> DefId {
-        self.id
-    }
-
-    /// Stable logical file containing this declaration revision.
-    #[must_use]
-    pub const fn file(&self) -> FileId {
-        self.file
-    }
-
-    /// Go declaration name.
-    #[must_use]
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-}
-
-/// Stable package constant identity and display name in one file index.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct ConstantDescriptor {
-    id: DefId,
-    file: FileId,
-    name: Arc<str>,
-    key: DefinitionKey,
-}
-
-impl ConstantDescriptor {
-    pub(super) fn new(file: FileId, key: DefinitionKey, name: Arc<str>) -> Self {
-        Self {
-            id: key.id(),
-            file,
-            name,
-            key,
-        }
-    }
-
-    #[must_use]
-    pub const fn id(&self) -> DefId {
-        self.id
-    }
-
-    #[must_use]
-    pub const fn file(&self) -> FileId {
-        self.file
-    }
-
-    #[must_use]
-    pub fn name(&self) -> &str {
-        &self.name
-    }
+    /// A parsed type alias could not be projected into owned semantic syntax.
+    TypeProjectionFailure { name: Arc<str>, message: Arc<str> },
 }
 
 /// Deterministic, body-independent index of one parsed source file.
@@ -240,6 +173,7 @@ pub struct FileAnalysis {
     package: Arc<str>,
     functions: Arc<[FunctionDescriptor]>,
     constants: Arc<[ConstantDescriptor]>,
+    type_aliases: Arc<[TypeAliasDescriptor]>,
     failure: Option<ParseFailure>,
     issues: Arc<[FileIssue]>,
     fingerprint: Fingerprint,
@@ -251,6 +185,7 @@ impl FileAnalysis {
         package: Arc<str>,
         functions: Arc<[FunctionDescriptor]>,
         constants: Arc<[ConstantDescriptor]>,
+        type_aliases: Arc<[TypeAliasDescriptor]>,
         failure: Option<ParseFailure>,
         issues: Arc<[FileIssue]>,
     ) -> Self {
@@ -264,6 +199,11 @@ impl FileAnalysis {
         for constant in &*constants {
             writer.bytes(constant.id.canonical_bytes());
             writer.bytes(constant.name.as_bytes());
+        }
+        for alias in &*type_aliases {
+            writer.bytes(alias.id.canonical_bytes());
+            writer.bytes(alias.name.as_bytes());
+            writer.bytes(alias.target.as_bytes());
         }
         if let Some(failure) = &failure {
             writer.bytes(b"parse-failure");
@@ -285,6 +225,11 @@ impl FileAnalysis {
                     writer.bytes(name.as_bytes());
                     writer.bytes(message.as_bytes());
                 }
+                FileIssue::TypeProjectionFailure { name, message } => {
+                    writer.bytes(b"type-projection-failure");
+                    writer.bytes(name.as_bytes());
+                    writer.bytes(message.as_bytes());
+                }
             }
         }
         Self {
@@ -292,6 +237,7 @@ impl FileAnalysis {
             package,
             functions,
             constants,
+            type_aliases,
             failure,
             issues,
             fingerprint: writer.finish(),
@@ -322,6 +268,12 @@ impl FileAnalysis {
         &self.constants
     }
 
+    /// Type aliases sorted by stable definition identity.
+    #[must_use]
+    pub fn type_aliases(&self) -> &[TypeAliasDescriptor] {
+        &self.type_aliases
+    }
+
     /// Parser diagnostic, if the input revision is invalid.
     #[must_use]
     pub const fn failure(&self) -> Option<&ParseFailure> {
@@ -349,11 +301,17 @@ impl FileAnalysis {
         let constants = self.constants.iter().fold(0_usize, |total, constant| {
             total.saturating_add(constant.name.len())
         });
+        let type_aliases = self.type_aliases.iter().fold(0_usize, |total, alias| {
+            total
+                .saturating_add(alias.name.len())
+                .saturating_add(alias.target.len())
+        });
         let issues = self.issues.iter().fold(0_usize, |total, issue| {
             let bytes = match issue {
                 FileIssue::DuplicateDefinition(name) => name.len(),
                 FileIssue::FunctionProjectionFailure { name, message }
-                | FileIssue::ConstantProjectionFailure { name, message } => {
+                | FileIssue::ConstantProjectionFailure { name, message }
+                | FileIssue::TypeProjectionFailure { name, message } => {
                     name.len().saturating_add(message.len())
                 }
             };
@@ -363,6 +321,7 @@ impl FileAnalysis {
             .len()
             .saturating_add(functions)
             .saturating_add(constants)
+            .saturating_add(type_aliases)
             .saturating_add(issues)
             .saturating_add(
                 self.failure
@@ -417,6 +376,12 @@ pub enum PackageIssue {
         name: Arc<str>,
         message: Arc<str>,
     },
+    /// One parsed type alias could not be projected into owned semantic syntax.
+    TypeProjectionFailure {
+        file: FileId,
+        name: Arc<str>,
+        message: Arc<str>,
+    },
 }
 
 /// Deterministic, body-independent semantic package index.
@@ -432,6 +397,7 @@ pub struct PackageAnalysis {
     direct_imports: Arc<[Arc<str>]>,
     functions: Arc<[FunctionDescriptor]>,
     constants: Arc<[ConstantDescriptor]>,
+    type_aliases: Arc<[TypeAliasDescriptor]>,
     issues: Arc<[PackageIssue]>,
     public_api_fingerprint: Fingerprint,
     fingerprint: Fingerprint,
@@ -444,6 +410,7 @@ pub(super) struct PackageAnalysisData {
     pub(super) direct_imports: Arc<[Arc<str>]>,
     pub(super) functions: Arc<[FunctionDescriptor]>,
     pub(super) constants: Arc<[ConstantDescriptor]>,
+    pub(super) type_aliases: Arc<[TypeAliasDescriptor]>,
     pub(super) issues: Arc<[PackageIssue]>,
 }
 
@@ -452,6 +419,7 @@ impl PackageAnalysis {
         data: PackageAnalysisData,
         exported_signatures: &[FunctionSignature],
         exported_constants: &[(DefId, Fingerprint)],
+        exported_type_aliases: &[(DefId, Fingerprint)],
     ) -> Self {
         let PackageAnalysisData {
             package,
@@ -460,6 +428,7 @@ impl PackageAnalysis {
             direct_imports,
             functions,
             constants,
+            type_aliases,
             issues,
         } = data;
         let mut public_api = FingerprintBuilder::new(b"package-public-api");
@@ -470,6 +439,10 @@ impl PackageAnalysis {
             public_api.bytes(signature.fingerprint.as_bytes());
         }
         for (definition, fingerprint) in exported_constants {
+            public_api.bytes(definition.canonical_bytes());
+            public_api.bytes(fingerprint.as_bytes());
+        }
+        for (definition, fingerprint) in exported_type_aliases {
             public_api.bytes(definition.canonical_bytes());
             public_api.bytes(fingerprint.as_bytes());
         }
@@ -493,6 +466,12 @@ impl PackageAnalysis {
             fingerprint.bytes(constant.id.canonical_bytes());
             fingerprint.bytes(constant.file.canonical_bytes());
             fingerprint.bytes(constant.name.as_bytes());
+        }
+        for alias in &*type_aliases {
+            fingerprint.bytes(alias.id.canonical_bytes());
+            fingerprint.bytes(alias.file.canonical_bytes());
+            fingerprint.bytes(alias.name.as_bytes());
+            fingerprint.bytes(alias.target.as_bytes());
         }
         for issue in &*issues {
             match issue {
@@ -573,6 +552,16 @@ impl PackageAnalysis {
                     fingerprint.bytes(name.as_bytes());
                     fingerprint.bytes(message.as_bytes());
                 }
+                PackageIssue::TypeProjectionFailure {
+                    file,
+                    name,
+                    message,
+                } => {
+                    fingerprint.bytes(b"type-projection-failure");
+                    fingerprint.bytes(file.canonical_bytes());
+                    fingerprint.bytes(name.as_bytes());
+                    fingerprint.bytes(message.as_bytes());
+                }
             }
         }
         fingerprint.bytes(public_api_fingerprint.as_bytes());
@@ -584,6 +573,7 @@ impl PackageAnalysis {
             direct_imports,
             functions,
             constants,
+            type_aliases,
             issues,
             public_api_fingerprint,
             fingerprint: fingerprint.finish(),
@@ -626,6 +616,12 @@ impl PackageAnalysis {
         &self.constants
     }
 
+    /// All indexed package type aliases in stable key and evidence order.
+    #[must_use]
+    pub fn type_aliases(&self) -> &[TypeAliasDescriptor] {
+        &self.type_aliases
+    }
+
     /// Deterministically sorted package-index issues.
     #[must_use]
     pub fn issues(&self) -> &[PackageIssue] {
@@ -653,6 +649,11 @@ impl PackageAnalysis {
         let constants = self.constants.iter().fold(0_usize, |total, constant| {
             total.saturating_add(constant.name.len())
         });
+        let type_aliases = self.type_aliases.iter().fold(0_usize, |total, alias| {
+            total
+                .saturating_add(alias.name.len())
+                .saturating_add(alias.target.len())
+        });
         let issues = self.issues.iter().fold(0_usize, |total, issue| {
             let retained = match issue {
                 PackageIssue::FileParseFailure { failure, .. } => failure.retained_bytes(),
@@ -673,7 +674,8 @@ impl PackageAnalysis {
                     ..
                 } => existing_key.len().saturating_add(requested_key.len()),
                 PackageIssue::FunctionProjectionFailure { name, message, .. }
-                | PackageIssue::ConstantProjectionFailure { name, message, .. } => {
+                | PackageIssue::ConstantProjectionFailure { name, message, .. }
+                | PackageIssue::TypeProjectionFailure { name, message, .. } => {
                     name.len().saturating_add(message.len())
                 }
             };
@@ -689,6 +691,7 @@ impl PackageAnalysis {
             )
             .saturating_add(functions)
             .saturating_add(constants)
+            .saturating_add(type_aliases)
             .saturating_add(issues)
             .saturating_add(64)
     }

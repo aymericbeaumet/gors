@@ -12,7 +12,7 @@ use super::{
     BlockSyntax, ConstantLayout, ConstantSyntax, ConstantValueSyntax, DeclSyntax, ExprSyntax,
     ExprSyntaxKind, FieldListSyntax, FieldSyntax, FunctionBodySyntax, FunctionHeaderSyntax,
     FunctionLayout, IdentSyntax, SemanticTokenStream, StmtSyntax, StmtSyntaxKind, SwitchCaseSyntax,
-    SyntaxAnchor, SyntaxSource, SyntaxSourceRegion, ValueSpecSyntax,
+    SyntaxAnchor, SyntaxSource, SyntaxSourceRegion, TypeAliasSyntax, ValueSpecSyntax,
 };
 
 pub struct ProjectedFunctionSyntax {
@@ -46,6 +46,7 @@ pub enum ProjectionError {
     MissingBodyBrace,
     MissingBodylessTerminator,
     InvalidSwitchBody,
+    MissingTypeName,
     OffsetOutsideTextDomain { offset: usize },
     ReversedRange { start: usize, end: usize },
 }
@@ -65,6 +66,7 @@ impl fmt::Display for ProjectionError {
             Self::InvalidSwitchBody => {
                 formatter.write_str("parser produced a non-case statement in a switch body")
             }
+            Self::MissingTypeName => formatter.write_str("parser produced a type without a name"),
             Self::OffsetOutsideTextDomain { offset } => {
                 write!(
                     formatter,
@@ -302,6 +304,15 @@ pub fn project_constant(
             iota,
         },
         layout: ConstantLayout::new(declaration, source_len, projector.finish()),
+    })
+}
+
+pub fn project_type_alias(spec: &ast::TypeSpec<'_>) -> Result<TypeAliasSyntax, ProjectionError> {
+    let name = spec.name.as_ref().ok_or(ProjectionError::MissingTypeName)?;
+    let mut projector = StructuralProjector::new(SyntaxSourceRegion::Constant);
+    Ok(TypeAliasSyntax {
+        name: projector.ident(name)?,
+        target: projector.expression(&spec.type_)?,
     })
 }
 

@@ -13,9 +13,9 @@
     "groupCount": 15,
     "passingGroupCount": 1,
     "caseCount": 211,
-    "passingCaseCount": 41,
-    "unsupportedCaseCount": 170,
-    "fixtureCount": 18
+    "passingCaseCount": 42,
+    "unsupportedCaseCount": 169,
+    "fixtureCount": 19
   },
   "groups": [
     {
@@ -643,15 +643,16 @@
       "title": "Types",
       "subtitle": "",
       "fixtures": [
-        "_negative/types_interface_method_sets"
+        "_negative/types_interface_method_sets",
+        "types_aliases"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 30,
-        "passingCaseCount": 1,
-        "unsupportedCaseCount": 29,
-        "fixtureCount": 1
+        "passingCaseCount": 2,
+        "unsupportedCaseCount": 28,
+        "fixtureCount": 2
       },
       "cases": [
         {
@@ -916,9 +917,14 @@
           "title": "Alias declarations preserve identity with the aliased type",
           "subtitle": "Alias declarations",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: types_aliases."
+          "status": "passing",
+          "fixtures": [
+            "types_aliases"
+          ],
+          "freshFixtures": [
+            "types_aliases"
+          ],
+          "reason": ""
         },
         {
           "id": "types-recursive",

@@ -429,7 +429,7 @@ impl FunctionLowerer {
         let explicit_ty = spec
             .explicit_type
             .as_ref()
-            .map(|ty| lower_type(ty, declaration_source))
+            .map(|ty| lower_type(ty, &self.type_aliases, declaration_source))
             .transpose()?;
         let raw_values = spec.values.as_deref().unwrap_or_default();
         if !raw_values.is_empty() && raw_values.len() != spec.names.len() {

@@ -58,6 +58,7 @@ pub(super) struct FunctionLoweringFailure {
 pub(super) fn lower_signature(
     definition: DefId,
     header: &FunctionHeaderSyntax,
+    type_aliases: &BTreeMap<String, Ty>,
 ) -> Result<Signature, Diagnostic> {
     let source = SourceRef::definition(definition);
     if header.has_receiver {
@@ -72,11 +73,11 @@ pub(super) fn lower_signature(
             source,
         ));
     }
-    let params = field_types(&header.params, source)?;
+    let params = field_types(&header.params, type_aliases, source)?;
     let results = header
         .results
         .as_ref()
-        .map(|fields| field_types(fields, source))
+        .map(|fields| field_types(fields, type_aliases, source))
         .transpose()?
         .unwrap_or_default();
     if results.len() > 1 {
@@ -104,6 +105,7 @@ pub(super) fn lower_constant(
     definition: DefId,
     syntax: &ConstantSyntax,
     constants: &BTreeMap<String, ConstantSymbol>,
+    type_aliases: &BTreeMap<String, Ty>,
 ) -> Result<TypedConstant, Diagnostic> {
     let source = SourceRef::definition(definition);
     let expression = match &syntax.value {
@@ -125,7 +127,7 @@ pub(super) fn lower_constant(
     let ty = syntax
         .explicit_type
         .as_ref()
-        .map(|ty| lower_type(ty, source))
+        .map(|ty| lower_type(ty, type_aliases, source))
         .transpose()?
         .unwrap_or_else(|| raw_ty.clone());
     ensure_bootstrap_value_type(&ty.default_typed(), source)?;
@@ -159,6 +161,7 @@ pub(super) fn lower_function(
     signature: Signature,
     functions: BTreeMap<String, FunctionSymbol>,
     constants: BTreeMap<String, ConstantSymbol>,
+    type_aliases: BTreeMap<String, Ty>,
 ) -> Result<LoweredFunction, FunctionLoweringFailure> {
     let node = NodeId::owner_local(definition, 0);
     let initial_source_plan = vec![
@@ -179,6 +182,7 @@ pub(super) fn lower_function(
         next_node: 1,
         functions,
         constants,
+        type_aliases,
         signature: signature.clone(),
         locals: Vec::new(),
         scopes: vec![BTreeMap::new()],
@@ -233,21 +237,29 @@ pub(super) fn lower_function(
     }
 }
 
-fn field_types(fields: &FieldListSyntax, source: SourceRef) -> Result<Vec<Ty>, Diagnostic> {
+fn field_types(
+    fields: &FieldListSyntax,
+    type_aliases: &BTreeMap<String, Ty>,
+    source: SourceRef,
+) -> Result<Vec<Ty>, Diagnostic> {
     let mut result = Vec::new();
     for field in &*fields.fields {
         let type_expression = field
             .ty
             .as_ref()
             .ok_or_else(|| Diagnostic::backend("signature field has no type"))?;
-        let ty = lower_type(type_expression, source)?;
+        let ty = lower_type(type_expression, type_aliases, source)?;
         let count = field.names.as_ref().map_or(1, |names| names.len());
         result.extend(std::iter::repeat_n(ty, count));
     }
     Ok(result)
 }
 
-fn lower_type(expression: &ExprSyntax, source: SourceRef) -> Result<Ty, Diagnostic> {
+pub(super) fn lower_type(
+    expression: &ExprSyntax,
+    type_aliases: &BTreeMap<String, Ty>,
+    source: SourceRef,
+) -> Result<Ty, Diagnostic> {
     let ExprSyntaxKind::Ident(ident) = &expression.kind else {
         return Err(Diagnostic::unsupported(
             "only primitive types are implemented by the HIR/MIR backend",
@@ -266,10 +278,12 @@ fn lower_type(expression: &ExprSyntax, source: SourceRef) -> Result<Ty, Diagnost
             ),
             source,
         )),
-        other => Err(Diagnostic::unsupported(
-            format!("type {other} is not implemented by the HIR/MIR backend"),
-            source,
-        )),
+        other => type_aliases.get(other).cloned().ok_or_else(|| {
+            Diagnostic::unsupported(
+                format!("type {other} is not implemented by the HIR/MIR backend"),
+                source,
+            )
+        }),
     }
 }
 
