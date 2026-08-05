@@ -58,7 +58,9 @@ pub(super) fn make_rvalue(
     provenance: Provenance,
 ) -> Rvalue {
     let may_read = match &kind {
-        RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => operand_reads(operand),
+        RvalueKind::Use(operand)
+        | RvalueKind::Unary { operand, .. }
+        | RvalueKind::Conversion { operand, .. } => operand_reads(operand),
         RvalueKind::Binary { left, right, .. } => operand_reads(left) || operand_reads(right),
     };
     let effects = intrinsic_effects.union(hir::Effects {

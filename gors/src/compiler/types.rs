@@ -5,6 +5,8 @@
 
 use num_bigint::BigInt;
 
+use super::ids::DefId;
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum Ty {
     Unit,
@@ -13,6 +15,10 @@ pub enum Ty {
     Uint(UintTy),
     Float(FloatTy),
     Complex(ComplexTy),
+    Named {
+        definition: DefId,
+        underlying: Box<Ty>,
+    },
     String,
     Tuple(Vec<Ty>),
     Untyped(UntypedTy),
@@ -83,6 +89,14 @@ pub struct Signature {
 }
 
 impl Ty {
+    #[must_use]
+    pub fn underlying(&self) -> &Ty {
+        match self {
+            Self::Named { underlying, .. } => underlying.underlying(),
+            other => other,
+        }
+    }
+
     pub fn default_typed(&self) -> Ty {
         match self {
             Self::Untyped(UntypedTy::Bool) => Self::Bool,
@@ -95,6 +109,9 @@ impl Ty {
     }
 
     pub fn is_numeric(&self) -> bool {
+        if let Self::Named { underlying, .. } = self {
+            return underlying.is_numeric();
+        }
         matches!(
             self,
             Self::Int(_)
@@ -106,6 +123,9 @@ impl Ty {
     }
 
     pub fn is_integer(&self) -> bool {
+        if let Self::Named { underlying, .. } = self {
+            return underlying.is_integer();
+        }
         matches!(
             self,
             Self::Int(_) | Self::Uint(_) | Self::Untyped(UntypedTy::Int)
@@ -115,6 +135,9 @@ impl Ty {
     /// Values the bootstrap backend can currently execute without relying on
     /// target-dependent or incomplete numeric semantics.
     pub fn is_bootstrap_value(&self) -> bool {
+        if let Self::Named { underlying, .. } = self {
+            return underlying.is_bootstrap_value();
+        }
         matches!(
             self,
             Self::Bool
@@ -126,6 +149,9 @@ impl Ty {
     }
 
     pub fn zero(&self) -> Option<ConstValue> {
+        if let Self::Named { underlying, .. } = self {
+            return underlying.zero();
+        }
         match self.default_typed() {
             Self::Bool => Some(ConstValue::Bool(false)),
             Self::Int(_) | Self::Uint(_) => Some(ConstValue::Int("0".into())),
@@ -135,6 +161,7 @@ impl Ty {
                 imag: "0.0".into(),
             }),
             Self::String => Some(ConstValue::String(Vec::new())),
+            Self::Named { underlying, .. } => underlying.zero(),
             Self::Unit | Self::Tuple(_) | Self::Untyped(_) => None,
         }
     }
@@ -144,6 +171,9 @@ impl ConstValue {
     /// Whether this exact Go constant can be materialized as `ty` by the
     /// current target's bootstrap representation.
     pub fn is_representable_as(&self, ty: &Ty) -> bool {
+        if let Ty::Named { underlying, .. } = ty {
+            return self.is_representable_as(underlying);
+        }
         match (self, ty) {
             (Self::Bool(_), Ty::Bool | Ty::Untyped(UntypedTy::Bool)) => true,
             (Self::String(_), Ty::String | Ty::Untyped(UntypedTy::String)) => true,

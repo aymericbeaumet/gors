@@ -3,6 +3,7 @@
 mod analysis;
 mod constant_eval;
 mod hir_dependencies;
+mod lookups;
 mod support;
 mod type_aliases;
 
@@ -11,11 +12,16 @@ pub(super) use analysis::{
     signature_product,
 };
 use hir_dependencies::direct_callees;
+pub(super) use lookups::{
+    package_constant_named_product, package_function_named_product, package_function_product,
+};
 use support::{
     check_semantic_barrier, collect_constant_references, function_file, referenced_names_in_body,
     semantic_build_dependency, semantic_failure,
 };
-pub(super) use type_aliases::{TypeAliasProjection, package_type_aliases_product};
+pub(super) use type_aliases::{
+    TypeAliasProjection, TypeDefinitionProjection, package_type_aliases_product,
+};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -27,6 +33,7 @@ use crate::compiler::provenance::{DefinitionSourceTable, FileRange, SourceRef};
 use crate::compiler::syntax::{
     ConstantLayout, ConstantSyntax, FunctionLayout, ProjectedConstantSyntax,
     ProjectedFunctionSyntax, project_constant, project_function, project_type_alias,
+    project_type_definition,
 };
 use crate::compiler::{Diagnostic, lowering, mir, rust_ir};
 use crate::source::SourceCoordinateMap;
@@ -160,6 +167,9 @@ pub(super) struct FileFacts<'db> {
     pub(super) type_aliases: Vec<TypeAliasProjection<'db>>,
     #[tracked]
     #[returns(clone)]
+    pub(super) type_definitions: Vec<TypeDefinitionProjection<'db>>,
+    #[tracked]
+    #[returns(clone)]
     pub(super) failure: Option<ParseFailure>,
     #[tracked]
     #[returns(clone)]
@@ -189,6 +199,7 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
+                Vec::new(),
                 Some(ParseFailure::new(error.message(), error.physical_range())),
                 Vec::new(),
             );
@@ -211,8 +222,7 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
             declaration.specs.iter().any(|spec| {
                 !matches!(
                     spec,
-                    ast::Spec::TypeSpec(spec)
-                        if spec.assign.is_some() && spec.type_params.is_none()
+                    ast::Spec::TypeSpec(spec) if spec.type_params.is_none()
                 )
             })
         }
@@ -228,6 +238,7 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
     let mut projected_functions = Vec::new();
     let mut projected_constants = Vec::new();
     let mut projected_type_aliases = Vec::new();
+    let mut projected_type_definitions = Vec::new();
     let mut issues = Vec::new();
     for declaration in &parsed.decls {
         match declaration {
@@ -352,7 +363,7 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
                     let ast::Spec::TypeSpec(spec) = spec else {
                         continue;
                     };
-                    if spec.assign.is_none() || spec.type_params.is_some() {
+                    if spec.type_params.is_some() {
                         continue;
                     }
                     let Some(name) = spec.name.as_ref() else {
@@ -366,10 +377,27 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
                     let key =
                         DefinitionKey::package_named(package_id, DefinitionKind::Type, name.name);
                     let id = key.id();
-                    match project_type_alias(spec) {
-                        Ok(syntax) => {
-                            projected_type_aliases.push((id, key, owned_name, Arc::new(syntax)))
-                        }
+                    let projected = if spec.assign.is_some() {
+                        project_type_alias(spec).map(|syntax| {
+                            projected_type_aliases.push((
+                                id,
+                                key.clone(),
+                                Arc::clone(&owned_name),
+                                Arc::new(syntax),
+                            ));
+                        })
+                    } else {
+                        project_type_definition(spec).map(|syntax| {
+                            projected_type_definitions.push((
+                                id,
+                                key.clone(),
+                                Arc::clone(&owned_name),
+                                Arc::new(syntax),
+                            ));
+                        })
+                    };
+                    match projected {
+                        Ok(()) => {}
                         Err(error) => issues.push(FileIssue::TypeProjectionFailure {
                             name: owned_name,
                             message: Arc::from(error.to_string()),
@@ -383,6 +411,7 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
     projected_functions.sort_by_key(|(id, _, _, _, _, _)| *id);
     projected_constants.sort_by_key(|(id, _, _, _, _, _)| *id);
     projected_type_aliases.sort_by_key(|(id, _, _, _)| *id);
+    projected_type_definitions.sort_by_key(|(id, _, _, _)| *id);
     issues.sort();
 
     let functions = projected_functions
@@ -420,6 +449,10 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
         .into_iter()
         .map(|(id, key, name, syntax)| TypeAliasProjection::new(db, id, key, name, syntax))
         .collect();
+    let type_definitions = projected_type_definitions
+        .into_iter()
+        .map(|(id, key, name, syntax)| TypeDefinitionProjection::new(db, id, key, name, syntax))
+        .collect();
     FileFacts::new(
         db,
         file,
@@ -432,6 +465,7 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
         functions,
         constants,
         type_aliases,
+        type_definitions,
         None,
         issues,
     )
@@ -657,73 +691,6 @@ pub(super) fn typed_constant_product(
 ) -> StageResult<super::super::semantic::TypedConstant> {
     db.query_telemetry().record_query(QueryKind::TypedConstant);
     constant_eval::evaluate_constant(db, input, constant)
-}
-
-#[salsa::tracked(returns(copy))]
-pub(super) fn package_function_product<'db>(
-    db: &'db dyn Db,
-    input: PackageInput,
-    definition: DefId,
-) -> Option<FunctionProjection<'db>> {
-    db.query_telemetry()
-        .record_query(QueryKind::PackageFunctionLookup);
-    let mut sources = input.sources(db).iter().copied().collect::<Vec<_>>();
-    sources.sort_by_key(|source| source.file(db));
-    for source in sources {
-        let facts = file_projection(db, source);
-        if let Some(function) = facts
-            .functions(db)
-            .into_iter()
-            .find(|function| function.id(db) == definition)
-        {
-            return Some(function);
-        }
-    }
-    None
-}
-
-#[salsa::tracked(returns(copy))]
-pub(super) fn package_function_named_product<'db>(
-    db: &'db dyn Db,
-    input: PackageInput,
-    name: Arc<str>,
-) -> Option<FunctionProjection<'db>> {
-    db.query_telemetry()
-        .record_query(QueryKind::PackageFunctionLookup);
-    let mut sources = input.sources(db).iter().copied().collect::<Vec<_>>();
-    sources.sort_by_key(|source| source.file(db));
-    for source in sources {
-        if let Some(function) = file_projection(db, source)
-            .functions(db)
-            .into_iter()
-            .find(|function| function.name(db) == name)
-        {
-            return Some(function);
-        }
-    }
-    None
-}
-
-#[salsa::tracked(returns(copy))]
-pub(super) fn package_constant_named_product<'db>(
-    db: &'db dyn Db,
-    input: PackageInput,
-    name: Arc<str>,
-) -> Option<ConstantProjection<'db>> {
-    db.query_telemetry()
-        .record_query(QueryKind::PackageConstantLookup);
-    let mut sources = input.sources(db).iter().copied().collect::<Vec<_>>();
-    sources.sort_by_key(|source| source.file(db));
-    for source in sources {
-        if let Some(constant) = file_projection(db, source)
-            .constants(db)
-            .into_iter()
-            .find(|constant| constant.name(db) == name)
-        {
-            return Some(constant);
-        }
-    }
-    None
 }
 
 #[salsa::tracked(returns(clone))]

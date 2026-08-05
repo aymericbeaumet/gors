@@ -136,6 +136,16 @@ fn lower_rvalue(rvalue: mir::Rvalue, locals: &[out::LocalDecl]) -> Result<out::R
                 None => out::RvalueKind::Use(operand),
             }
         }
+        mir::RvalueKind::Conversion { operand, from, ty } => {
+            let from = lower_type(&from)?;
+            let to = lower_type(&ty)?;
+            if from != to {
+                return Err(Diagnostic::backend(format!(
+                    "representation-preserving conversion changed Rust type from {from:?} to {to:?}"
+                )));
+            }
+            out::RvalueKind::Use(lower_operand(operand, locals)?)
+        }
         mir::RvalueKind::Binary {
             op,
             left,
@@ -406,7 +416,7 @@ fn lower_operand(
 }
 
 fn lower_constant(value: ConstValue, ty: &Ty) -> Result<out::Constant, Diagnostic> {
-    match (value, ty) {
+    match (value, ty.underlying()) {
         (ConstValue::Bool(value), Ty::Bool) => Ok(out::Constant::Bool(value)),
         (ConstValue::Int(value), Ty::Int(IntTy::Int)) => value
             .parse::<i64>()
@@ -551,7 +561,8 @@ fn lower_binary_op(
 }
 
 fn lower_type(ty: &Ty) -> Result<out::RustType, Diagnostic> {
-    match ty.default_typed() {
+    let ty = ty.default_typed();
+    match ty.underlying() {
         Ty::Unit => Ok(out::RustType::Unit),
         Ty::Bool => Ok(out::RustType::Bool),
         Ty::Int(IntTy::Int) => Ok(out::RustType::I64),

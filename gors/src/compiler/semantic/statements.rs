@@ -46,7 +46,7 @@ impl FunctionLowerer {
             StmtSyntaxKind::IncDec { expression, token } => {
                 let destination = self.lower_place(expression, source)?;
                 let ty = self.place_ty(destination)?.clone();
-                if ty != Ty::Int(IntTy::Int) {
+                if *ty.underlying() != Ty::Int(IntTy::Int) {
                     return Err(Diagnostic::semantic(
                         "increment and decrement require an int operand in the bootstrap backend",
                         source,

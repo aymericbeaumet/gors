@@ -5,6 +5,7 @@ use crate::token::Token;
 use super::FunctionLowerer;
 use super::eval_constant;
 use super::expressions::*;
+use super::lower_type;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::{LocalId, NodeId};
@@ -102,27 +103,28 @@ impl FunctionLowerer {
                 let mut operand = self.lower_expr(expression, expected)?;
                 let operand_ty = operand.ty.default_typed();
                 ensure_bootstrap_value_type(&operand_ty, source)?;
+                let operator_ty = operand_ty.underlying();
                 let op = match *token {
-                    Token::ADD if operand_ty == Ty::Int(IntTy::Int) => hir::UnaryOp::Positive,
+                    Token::ADD if *operator_ty == Ty::Int(IntTy::Int) => hir::UnaryOp::Positive,
                     Token::ADD
                         if matches!(
-                            operand_ty,
+                            operator_ty,
                             Ty::Float(FloatTy::Float64) | Ty::Complex(ComplexTy::Complex128)
                         ) =>
                     {
                         hir::UnaryOp::Positive
                     }
-                    Token::SUB if operand_ty == Ty::Int(IntTy::Int) => hir::UnaryOp::Negative,
+                    Token::SUB if *operator_ty == Ty::Int(IntTy::Int) => hir::UnaryOp::Negative,
                     Token::SUB
                         if matches!(
-                            operand_ty,
+                            operator_ty,
                             Ty::Float(FloatTy::Float64) | Ty::Complex(ComplexTy::Complex128)
                         ) =>
                     {
                         hir::UnaryOp::Negative
                     }
                     Token::NOT if is_bool(&operand_ty) => hir::UnaryOp::Not,
-                    Token::XOR if operand_ty == Ty::Int(IntTy::Int) => hir::UnaryOp::BitNot,
+                    Token::XOR if *operator_ty == Ty::Int(IntTy::Int) => hir::UnaryOp::BitNot,
                     _ => {
                         return Err(Diagnostic::semantic(
                             format!("invalid unary {token:?} operand {:?}", operand.ty),
@@ -245,6 +247,42 @@ impl FunctionLowerer {
                     ));
                 };
                 let name = callee_ident.name.as_ref();
+                if self.type_aliases.contains_key(name)
+                    || matches!(name, "bool" | "string" | "int" | "float64" | "complex128")
+                {
+                    let [argument] = arguments.as_ref() else {
+                        return Err(Diagnostic::semantic(
+                            format!("conversion to {name} requires exactly one argument"),
+                            source,
+                        ));
+                    };
+                    let target = lower_type(callee, &self.type_aliases, source)?;
+                    let mut argument = self.lower_expr(argument, None)?;
+                    if is_assignable(&argument.ty, &target) {
+                        coerce_expr(&mut argument, &target, source)?;
+                    } else if argument.ty.underlying() == target.underlying() {
+                        let effects = argument.effects;
+                        return Ok(hir::Expr {
+                            node,
+                            kind: hir::ExprKind::Conversion {
+                                value: Box::new(argument),
+                            },
+                            ty: target,
+                            category: hir::ValueCategory::Value,
+                            effects,
+                            source,
+                        });
+                    } else {
+                        return Err(Diagnostic::unsupported(
+                            format!(
+                                "conversion from {:?} to {name} requires a representation change",
+                                argument.ty
+                            ),
+                            source,
+                        ));
+                    }
+                    return Ok(argument);
+                }
                 if matches!(name, "real" | "imag") {
                     let [argument] = arguments.as_ref() else {
                         return Err(Diagnostic::semantic(

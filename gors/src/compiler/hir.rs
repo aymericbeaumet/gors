@@ -147,6 +147,9 @@ pub enum ExprKind {
         op: UnaryOp,
         operand: Box<Expr>,
     },
+    Conversion {
+        value: Box<Expr>,
+    },
     Call {
         callee: Callee,
         args: Vec<Expr>,

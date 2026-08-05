@@ -1,8 +1,12 @@
 //! Compiler-owned query inputs and immutable projection products.
 
 mod descriptors;
+mod issues;
 
-pub use descriptors::{ConstantDescriptor, FunctionDescriptor, TypeAliasDescriptor};
+pub use descriptors::{
+    ConstantDescriptor, FunctionDescriptor, TypeAliasDescriptor, TypeDefinitionDescriptor,
+};
+pub use issues::{FileIssue, PackageIssue};
 
 use std::fmt;
 use std::sync::Arc;
@@ -12,7 +16,6 @@ use gors_runtime_abi::{ContractIdentity, RuntimeAbiManifest};
 use crate::compiler::syntax::{
     FunctionBodySyntax, FunctionHeaderSyntax, SemanticTokenStream, SyntaxAnchor,
 };
-use crate::import_path::ImportPathIssue;
 use crate::source::TextRange;
 
 use super::super::fingerprint::{Fingerprint, fingerprint_parts};
@@ -153,19 +156,6 @@ impl ParseFailure {
     }
 }
 
-/// Non-syntax issue discovered while indexing declarations.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum FileIssue {
-    /// A Go file declares the same package-level name more than once.
-    DuplicateDefinition(Arc<str>),
-    /// Parser observations could not be projected into owned function syntax.
-    FunctionProjectionFailure { name: Arc<str>, message: Arc<str> },
-    /// A parsed constant could not be projected into owned semantic syntax.
-    ConstantProjectionFailure { name: Arc<str>, message: Arc<str> },
-    /// A parsed type alias could not be projected into owned semantic syntax.
-    TypeProjectionFailure { name: Arc<str>, message: Arc<str> },
-}
-
 /// Deterministic, body-independent index of one parsed source file.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileAnalysis {
@@ -174,21 +164,35 @@ pub struct FileAnalysis {
     functions: Arc<[FunctionDescriptor]>,
     constants: Arc<[ConstantDescriptor]>,
     type_aliases: Arc<[TypeAliasDescriptor]>,
+    type_definitions: Arc<[TypeDefinitionDescriptor]>,
     failure: Option<ParseFailure>,
     issues: Arc<[FileIssue]>,
     fingerprint: Fingerprint,
 }
 
+pub(super) struct FileAnalysisData {
+    pub(super) file: FileId,
+    pub(super) package: Arc<str>,
+    pub(super) functions: Arc<[FunctionDescriptor]>,
+    pub(super) constants: Arc<[ConstantDescriptor]>,
+    pub(super) type_aliases: Arc<[TypeAliasDescriptor]>,
+    pub(super) type_definitions: Arc<[TypeDefinitionDescriptor]>,
+    pub(super) failure: Option<ParseFailure>,
+    pub(super) issues: Arc<[FileIssue]>,
+}
+
 impl FileAnalysis {
-    pub(super) fn new(
-        file: FileId,
-        package: Arc<str>,
-        functions: Arc<[FunctionDescriptor]>,
-        constants: Arc<[ConstantDescriptor]>,
-        type_aliases: Arc<[TypeAliasDescriptor]>,
-        failure: Option<ParseFailure>,
-        issues: Arc<[FileIssue]>,
-    ) -> Self {
+    pub(super) fn new(data: FileAnalysisData) -> Self {
+        let FileAnalysisData {
+            file,
+            package,
+            functions,
+            constants,
+            type_aliases,
+            type_definitions,
+            failure,
+            issues,
+        } = data;
         let mut writer = FingerprintBuilder::new(b"file-analysis");
         writer.bytes(file.canonical_bytes());
         writer.bytes(package.as_bytes());
@@ -204,6 +208,11 @@ impl FileAnalysis {
             writer.bytes(alias.id.canonical_bytes());
             writer.bytes(alias.name.as_bytes());
             writer.bytes(alias.target.as_bytes());
+        }
+        for definition in &*type_definitions {
+            writer.bytes(definition.id.canonical_bytes());
+            writer.bytes(definition.name.as_bytes());
+            writer.bytes(definition.underlying.as_bytes());
         }
         if let Some(failure) = &failure {
             writer.bytes(b"parse-failure");
@@ -238,6 +247,7 @@ impl FileAnalysis {
             functions,
             constants,
             type_aliases,
+            type_definitions,
             failure,
             issues,
             fingerprint: writer.finish(),
@@ -274,6 +284,12 @@ impl FileAnalysis {
         &self.type_aliases
     }
 
+    /// Defined types sorted by stable definition identity.
+    #[must_use]
+    pub fn type_definitions(&self) -> &[TypeDefinitionDescriptor] {
+        &self.type_definitions
+    }
+
     /// Parser diagnostic, if the input revision is invalid.
     #[must_use]
     pub const fn failure(&self) -> Option<&ParseFailure> {
@@ -306,6 +322,14 @@ impl FileAnalysis {
                 .saturating_add(alias.name.len())
                 .saturating_add(alias.target.len())
         });
+        let type_definitions = self
+            .type_definitions
+            .iter()
+            .fold(0_usize, |total, definition| {
+                total
+                    .saturating_add(definition.name.len())
+                    .saturating_add(definition.underlying.len())
+            });
         let issues = self.issues.iter().fold(0_usize, |total, issue| {
             let bytes = match issue {
                 FileIssue::DuplicateDefinition(name) => name.len(),
@@ -322,6 +346,7 @@ impl FileAnalysis {
             .saturating_add(functions)
             .saturating_add(constants)
             .saturating_add(type_aliases)
+            .saturating_add(type_definitions)
             .saturating_add(issues)
             .saturating_add(
                 self.failure
@@ -330,58 +355,6 @@ impl FileAnalysis {
             )
             .saturating_add(32)
     }
-}
-
-/// Deterministic package-index issue, distinct from stable-ID interning.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum PackageIssue {
-    /// One package input file currently has invalid Go syntax.
-    FileParseFailure { file: FileId, failure: ParseFailure },
-    /// One import literal cannot name a canonical Go package.
-    InvalidImportPath {
-        file: FileId,
-        literal: Arc<str>,
-        line: usize,
-        column: usize,
-        virtual_file: Option<Arc<str>>,
-        issue: ImportPathIssue,
-    },
-    /// Independently parsed files disagree on their package clause.
-    PackageClauseMismatch {
-        file: FileId,
-        expected: Arc<str>,
-        found: Arc<str>,
-    },
-    /// The same package-level name was declared by two source files.
-    DuplicateDefinition {
-        name: Arc<str>,
-        first_file: FileId,
-        second_file: FileId,
-    },
-    /// Distinct complete definition keys produced the same compact digest.
-    IdentityCollision {
-        id: DefId,
-        existing_key: Arc<str>,
-        requested_key: Arc<str>,
-    },
-    /// One parser product could not be projected into owned semantic syntax.
-    FunctionProjectionFailure {
-        file: FileId,
-        name: Arc<str>,
-        message: Arc<str>,
-    },
-    /// One parsed constant could not be projected into owned semantic syntax.
-    ConstantProjectionFailure {
-        file: FileId,
-        name: Arc<str>,
-        message: Arc<str>,
-    },
-    /// One parsed type alias could not be projected into owned semantic syntax.
-    TypeProjectionFailure {
-        file: FileId,
-        name: Arc<str>,
-        message: Arc<str>,
-    },
 }
 
 /// Deterministic, body-independent semantic package index.
@@ -398,6 +371,7 @@ pub struct PackageAnalysis {
     functions: Arc<[FunctionDescriptor]>,
     constants: Arc<[ConstantDescriptor]>,
     type_aliases: Arc<[TypeAliasDescriptor]>,
+    type_definitions: Arc<[TypeDefinitionDescriptor]>,
     issues: Arc<[PackageIssue]>,
     public_api_fingerprint: Fingerprint,
     fingerprint: Fingerprint,
@@ -411,6 +385,7 @@ pub(super) struct PackageAnalysisData {
     pub(super) functions: Arc<[FunctionDescriptor]>,
     pub(super) constants: Arc<[ConstantDescriptor]>,
     pub(super) type_aliases: Arc<[TypeAliasDescriptor]>,
+    pub(super) type_definitions: Arc<[TypeDefinitionDescriptor]>,
     pub(super) issues: Arc<[PackageIssue]>,
 }
 
@@ -420,6 +395,7 @@ impl PackageAnalysis {
         exported_signatures: &[FunctionSignature],
         exported_constants: &[(DefId, Fingerprint)],
         exported_type_aliases: &[(DefId, Fingerprint)],
+        exported_type_definitions: &[(DefId, Fingerprint)],
     ) -> Self {
         let PackageAnalysisData {
             package,
@@ -429,6 +405,7 @@ impl PackageAnalysis {
             functions,
             constants,
             type_aliases,
+            type_definitions,
             issues,
         } = data;
         let mut public_api = FingerprintBuilder::new(b"package-public-api");
@@ -443,6 +420,10 @@ impl PackageAnalysis {
             public_api.bytes(fingerprint.as_bytes());
         }
         for (definition, fingerprint) in exported_type_aliases {
+            public_api.bytes(definition.canonical_bytes());
+            public_api.bytes(fingerprint.as_bytes());
+        }
+        for (definition, fingerprint) in exported_type_definitions {
             public_api.bytes(definition.canonical_bytes());
             public_api.bytes(fingerprint.as_bytes());
         }
@@ -472,6 +453,12 @@ impl PackageAnalysis {
             fingerprint.bytes(alias.file.canonical_bytes());
             fingerprint.bytes(alias.name.as_bytes());
             fingerprint.bytes(alias.target.as_bytes());
+        }
+        for definition in &*type_definitions {
+            fingerprint.bytes(definition.id.canonical_bytes());
+            fingerprint.bytes(definition.file.canonical_bytes());
+            fingerprint.bytes(definition.name.as_bytes());
+            fingerprint.bytes(definition.underlying.as_bytes());
         }
         for issue in &*issues {
             match issue {
@@ -574,6 +561,7 @@ impl PackageAnalysis {
             functions,
             constants,
             type_aliases,
+            type_definitions,
             issues,
             public_api_fingerprint,
             fingerprint: fingerprint.finish(),
@@ -622,6 +610,12 @@ impl PackageAnalysis {
         &self.type_aliases
     }
 
+    /// All indexed defined types in stable key and evidence order.
+    #[must_use]
+    pub fn type_definitions(&self) -> &[TypeDefinitionDescriptor] {
+        &self.type_definitions
+    }
+
     /// Deterministically sorted package-index issues.
     #[must_use]
     pub fn issues(&self) -> &[PackageIssue] {
@@ -654,6 +648,14 @@ impl PackageAnalysis {
                 .saturating_add(alias.name.len())
                 .saturating_add(alias.target.len())
         });
+        let type_definitions = self
+            .type_definitions
+            .iter()
+            .fold(0_usize, |total, definition| {
+                total
+                    .saturating_add(definition.name.len())
+                    .saturating_add(definition.underlying.len())
+            });
         let issues = self.issues.iter().fold(0_usize, |total, issue| {
             let retained = match issue {
                 PackageIssue::FileParseFailure { failure, .. } => failure.retained_bytes(),
@@ -692,6 +694,7 @@ impl PackageAnalysis {
             .saturating_add(functions)
             .saturating_add(constants)
             .saturating_add(type_aliases)
+            .saturating_add(type_definitions)
             .saturating_add(issues)
             .saturating_add(64)
     }

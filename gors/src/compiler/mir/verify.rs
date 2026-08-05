@@ -188,6 +188,16 @@ impl Function {
                 verify_same_type(ty, &expected, "unary result")?;
                 (ty.clone(), hir::Effects::default())
             }
+            RvalueKind::Conversion { operand, from, ty } => {
+                let operand_ty = self.operand_ty(operand)?;
+                verify_same_type(&operand_ty, from, "conversion operand")?;
+                if from.underlying() != ty.underlying() {
+                    return Err(Diagnostic::backend(format!(
+                        "MIR conversion changes representation from {from:?} to {ty:?}"
+                    )));
+                }
+                (ty.clone(), hir::Effects::default())
+            }
             RvalueKind::Binary {
                 op,
                 left,
@@ -455,7 +465,9 @@ fn read_effects<'a>(operands: impl IntoIterator<Item = &'a Operand>) -> hir::Eff
 
 fn rvalue_operands(kind: &RvalueKind) -> Vec<&Operand> {
     match kind {
-        RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => vec![operand],
+        RvalueKind::Use(operand)
+        | RvalueKind::Unary { operand, .. }
+        | RvalueKind::Conversion { operand, .. } => vec![operand],
         RvalueKind::Binary { left, right, .. } => vec![left, right],
     }
 }
@@ -491,15 +503,7 @@ fn call_effects() -> hir::Effects {
 }
 
 fn verify_bootstrap_type(ty: &Ty, context: &str) -> Result<(), Diagnostic> {
-    if matches!(
-        ty,
-        Ty::Unit
-            | Ty::Bool
-            | Ty::Int(IntTy::Int)
-            | Ty::Float(FloatTy::Float64)
-            | Ty::Complex(ComplexTy::Complex128)
-            | Ty::String
-    ) {
+    if *ty == Ty::Unit || ty.is_bootstrap_value() {
         Ok(())
     } else {
         Err(Diagnostic::backend(format!(
@@ -509,8 +513,9 @@ fn verify_bootstrap_type(ty: &Ty, context: &str) -> Result<(), Diagnostic> {
 }
 
 fn verify_constant_type(value: &ConstValue, ty: &Ty) -> Result<(), Diagnostic> {
+    let underlying = ty.underlying();
     matches!(
-        (value, ty),
+        (value, underlying),
         (ConstValue::Bool(_), Ty::Bool)
             | (ConstValue::Int(_), Ty::Int(IntTy::Int))
             | (ConstValue::Float(_), Ty::Float(FloatTy::Float64))
@@ -544,20 +549,30 @@ fn verify_binary_types(
     right: &Ty,
     result: &Ty,
 ) -> Result<(), Diagnostic> {
-    let int = Ty::Int(IntTy::Int);
-    let float = Ty::Float(FloatTy::Float64);
-    let complex = Ty::Complex(ComplexTy::Complex128);
+    let same_operands = left == right;
+    let same_result = result == left;
+    let underlying = left.underlying();
     let valid = match op {
         hir::BinaryOp::Add => {
-            (left == &int && right == &int && result == &int)
-                || (left == &float && right == &float && result == &float)
-                || (left == &complex && right == &complex && result == &complex)
-                || (left == &Ty::String && right == &Ty::String && result == &Ty::String)
+            same_operands
+                && same_result
+                && matches!(
+                    underlying,
+                    Ty::Int(IntTy::Int)
+                        | Ty::Float(FloatTy::Float64)
+                        | Ty::Complex(ComplexTy::Complex128)
+                        | Ty::String
+                )
         }
         hir::BinaryOp::Sub | hir::BinaryOp::Mul | hir::BinaryOp::Div => {
-            (left == &int && right == &int && result == &int)
-                || (left == &float && right == &float && result == &float)
-                || (left == &complex && right == &complex && result == &complex)
+            same_operands
+                && same_result
+                && matches!(
+                    underlying,
+                    Ty::Int(IntTy::Int)
+                        | Ty::Float(FloatTy::Float64)
+                        | Ty::Complex(ComplexTy::Complex128)
+                )
         }
         hir::BinaryOp::Rem
         | hir::BinaryOp::BitAnd
@@ -565,11 +580,13 @@ fn verify_binary_types(
         | hir::BinaryOp::BitXor
         | hir::BinaryOp::Shl
         | hir::BinaryOp::Shr
-        | hir::BinaryOp::AndNot => left == &int && right == &int && result == &int,
+        | hir::BinaryOp::AndNot => {
+            same_operands && same_result && *underlying == Ty::Int(IntTy::Int)
+        }
         hir::BinaryOp::Equal | hir::BinaryOp::NotEqual => {
-            left == right
+            same_operands
                 && matches!(
-                    left,
+                    underlying,
                     Ty::Bool
                         | Ty::Int(IntTy::Int)
                         | Ty::Float(FloatTy::Float64)
@@ -582,9 +599,9 @@ fn verify_binary_types(
         | hir::BinaryOp::LessEqual
         | hir::BinaryOp::Greater
         | hir::BinaryOp::GreaterEqual => {
-            left == right
+            same_operands
                 && matches!(
-                    left,
+                    underlying,
                     Ty::Int(IntTy::Int) | Ty::Float(FloatTy::Float64) | Ty::String
                 )
                 && result == &Ty::Bool

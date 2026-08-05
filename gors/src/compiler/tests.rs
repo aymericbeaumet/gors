@@ -237,6 +237,30 @@ fn package_constants_support_iota_repetition_and_complex_components() {
 }
 
 #[test]
+fn defined_numeric_types_keep_identity_through_operations_and_conversions() {
+    let source = r#"
+            package main
+
+            type Score int
+            type Ratio float64
+
+            func main() {
+                score := Score(4)
+                score += Score(3)
+                ratio := Ratio(2.5)
+                ratio += Ratio(1.5)
+                if int(score) != 7 || float64(ratio) != 4.0 {
+                    panic("defined numeric type changed")
+                }
+                println("named-types: ok")
+            }
+        "#;
+    let run = compile_and_run(source);
+
+    assert_eq!(run.stderr, b"named-types: ok\n");
+}
+
+#[test]
 fn labeled_loop_branches_target_the_named_enclosing_loop() {
     let run = compile_and_run(
         r#"

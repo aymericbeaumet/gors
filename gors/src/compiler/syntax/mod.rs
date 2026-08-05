@@ -17,11 +17,11 @@ pub use structural::{
     BlockSyntax, ConstantSyntax, ConstantValueSyntax, DeclSyntax, ExprSyntax, ExprSyntaxKind,
     FieldListSyntax, FieldSyntax, FunctionBodySyntax, FunctionHeaderSyntax, IdentSyntax,
     StmtSyntax, StmtSyntaxKind, SwitchCaseSyntax, SyntaxSource, SyntaxSourceRegion,
-    TypeAliasSyntax, ValueSpecSyntax,
+    TypeAliasSyntax, TypeDefinitionSyntax, ValueSpecSyntax,
 };
 pub use token::SemanticToken;
 
 pub(crate) use projection::{
     ProjectedConstantSyntax, ProjectedFunctionSyntax, project_constant, project_function,
-    project_type_alias,
+    project_type_alias, project_type_definition,
 };

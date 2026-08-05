@@ -13,9 +13,9 @@
     "groupCount": 15,
     "passingGroupCount": 1,
     "caseCount": 211,
-    "passingCaseCount": 42,
-    "unsupportedCaseCount": 169,
-    "fixtureCount": 19
+    "passingCaseCount": 43,
+    "unsupportedCaseCount": 168,
+    "fixtureCount": 20
   },
   "groups": [
     {
@@ -644,15 +644,16 @@
       "subtitle": "",
       "fixtures": [
         "_negative/types_interface_method_sets",
+        "named_numeric_types",
         "types_aliases"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 30,
-        "passingCaseCount": 2,
-        "unsupportedCaseCount": 28,
-        "fixtureCount": 2
+        "passingCaseCount": 3,
+        "unsupportedCaseCount": 27,
+        "fixtureCount": 3
       },
       "cases": [
         {
@@ -687,9 +688,14 @@
           "title": "Named numeric types support arithmetic, comparisons, and conversions",
           "subtitle": "Numeric types",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: named_numeric_types."
+          "status": "passing",
+          "fixtures": [
+            "named_numeric_types"
+          ],
+          "freshFixtures": [
+            "named_numeric_types"
+          ],
+          "reason": ""
         },
         {
           "id": "types-complex",
@@ -942,7 +948,8 @@
       "title": "Properties of types and values",
       "subtitle": "",
       "fixtures": [
-        "_negative/properties_non_comparable"
+        "_negative/properties_non_comparable",
+        "named_numeric_types"
       ],
       "summary": {
         "groupCount": 0,
@@ -950,7 +957,7 @@
         "caseCount": 8,
         "passingCaseCount": 1,
         "unsupportedCaseCount": 7,
-        "fixtureCount": 1
+        "fixtureCount": 2
       },
       "cases": [
         {
@@ -977,8 +984,13 @@
           "subtitle": "Underlying types",
           "kind": "spec-test",
           "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: named_numeric_types, spec_section_edgecases."
+          "fixtures": [
+            "named_numeric_types"
+          ],
+          "freshFixtures": [
+            "named_numeric_types"
+          ],
+          "reason": "Fresh fixture execution did not pass for: spec_section_edgecases."
         },
         {
           "id": "properties-type-identity",
@@ -986,8 +998,13 @@
           "subtitle": "Type identity",
           "kind": "spec-test",
           "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: named_numeric_types, spec_section_edgecases."
+          "fixtures": [
+            "named_numeric_types"
+          ],
+          "freshFixtures": [
+            "named_numeric_types"
+          ],
+          "reason": "Fresh fixture execution did not pass for: spec_section_edgecases."
         },
         {
           "id": "properties-assignability",

@@ -308,6 +308,9 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
                 encode_expression(encoder, operand);
             });
         }),
+        hir::ExprKind::Conversion { value } => encoder.variant(b"conversion", |encoder| {
+            encode_expression(encoder, value);
+        }),
         hir::ExprKind::Call { callee, args } => encoder.variant(b"call", |encoder| {
             encoder.field(b"callee", |encoder| encode_callee(encoder, *callee));
             encoder.field(b"arguments", |encoder| {

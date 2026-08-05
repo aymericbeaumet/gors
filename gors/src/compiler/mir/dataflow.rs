@@ -147,7 +147,9 @@ impl Function {
         check_reads: bool,
     ) -> Result<(), Diagnostic> {
         match &rvalue.kind {
-            RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => {
+            RvalueKind::Use(operand)
+            | RvalueKind::Unary { operand, .. }
+            | RvalueKind::Conversion { operand, .. } => {
                 self.transfer_operand(operand, state, check_reads)
             }
             RvalueKind::Binary { left, right, .. } => {

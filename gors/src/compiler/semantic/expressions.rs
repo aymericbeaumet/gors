@@ -226,6 +226,11 @@ pub(super) fn is_assignable(actual: &Ty, expected: &Ty) -> bool {
     if actual == expected {
         return true;
     }
+    if let Ty::Named { underlying, .. } = expected
+        && matches!(actual, Ty::Untyped(_))
+    {
+        return is_assignable(actual, underlying);
+    }
     matches!(
         (actual, expected),
         (Ty::Untyped(UntypedTy::Bool), Ty::Bool)
@@ -293,6 +298,7 @@ pub(super) fn validate_binary_operator(
     ty: &Ty,
     source: SourceRef,
 ) -> Result<(), Diagnostic> {
+    let ty = ty.underlying();
     let valid = match op {
         hir::BinaryOp::LogicalAnd | hir::BinaryOp::LogicalOr => *ty == Ty::Bool,
         hir::BinaryOp::Equal | hir::BinaryOp::NotEqual => matches!(

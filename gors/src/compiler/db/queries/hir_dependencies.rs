@@ -77,6 +77,7 @@ fn collect_expression_callees(expression: &hir::Expr, callees: &mut BTreeSet<Def
             collect_expression_callees(right, callees);
         }
         hir::ExprKind::Unary { operand, .. } => collect_expression_callees(operand, callees),
+        hir::ExprKind::Conversion { value } => collect_expression_callees(value, callees),
         hir::ExprKind::Call { callee, args } => {
             if let hir::Callee::Function(definition) = callee {
                 callees.insert(*definition);

@@ -606,6 +606,25 @@ impl FunctionLowerer {
                 self.push_statement(make_statement(place, value, provenance))?;
                 Ok(Operand::Read(place))
             }
+            hir::ExprKind::Conversion { value } => {
+                let operand = self.lower_expr(value)?;
+                let operand =
+                    self.materialize(operand, value.ty.clone(), Provenance::Source(value.source))?;
+                let result = self.new_temp(expr.ty.clone());
+                let place = Place { local: result };
+                let provenance = Provenance::Source(expr.source);
+                let converted = make_rvalue(
+                    RvalueKind::Conversion {
+                        operand,
+                        from: value.ty.clone(),
+                        ty: expr.ty.clone(),
+                    },
+                    value.effects,
+                    provenance.clone(),
+                );
+                self.push_statement(make_statement(place, converted, provenance))?;
+                Ok(Operand::Read(place))
+            }
             hir::ExprKind::Binary { op, left, right }
                 if matches!(op, hir::BinaryOp::LogicalAnd | hir::BinaryOp::LogicalOr) =>
             {

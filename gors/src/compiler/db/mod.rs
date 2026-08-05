@@ -26,7 +26,7 @@ pub use super::syntax::FunctionLayout;
 use crate::source::SourceCoordinateMap;
 use queries::{
     BuildInput, ConstantProjection, FileFacts, FunctionProjection, PackageInput, SourceInput,
-    TypeAliasProjection,
+    TypeAliasProjection, TypeDefinitionProjection,
 };
 use resolved_imports::ResolvedImportsInput;
 use telemetry::Telemetry;
@@ -35,7 +35,7 @@ pub use super::fingerprint::Fingerprint;
 pub use model::{
     BuildConfig, ConstantDescriptor, FileAnalysis, FileIssue, FunctionBody, FunctionDescriptor,
     FunctionSignature, PackageAnalysis, PackageIssue, ParseFailure, PublicApi, RuntimeAbiId,
-    TypeAliasDescriptor,
+    TypeAliasDescriptor, TypeDefinitionDescriptor,
 };
 pub(in crate::compiler) use mutation::SourceInputMutation;
 pub use products::{
@@ -219,6 +219,7 @@ impl CompilerDatabase {
             .ingredient::<FunctionProjection<'_>>()
             .ingredient::<ConstantProjection<'_>>()
             .ingredient::<TypeAliasProjection<'_>>()
+            .ingredient::<TypeDefinitionProjection<'_>>()
             .build();
         let mut database = Self {
             storage,

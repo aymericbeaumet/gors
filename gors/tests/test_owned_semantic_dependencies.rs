@@ -130,8 +130,46 @@ fn type_alias_cycles_fail_deterministically() {
     };
     assert_eq!(
         failure.diagnostics().first().unwrap().message,
-        "type alias cycle: A -> B -> A"
+        "type declaration cycle: A -> B -> A"
     );
+}
+
+#[test]
+fn aliases_of_defined_types_preserve_the_definition_identity() {
+    let mut db = CompilerDatabase::default();
+    let file = install(
+        &mut db,
+        "main.go",
+        "package main\ntype Count int\ntype Alias = Count\nfunc value() Alias { return Alias(6) }\n",
+    );
+    let value = function_id(&db, file, "value");
+    let signature = db.typed_signature(file, value).unwrap();
+    let [
+        gors::compiler::types::Ty::Named {
+            definition,
+            underlying,
+        },
+    ] = signature.signature().results.as_slice()
+    else {
+        panic!("alias should resolve to its defined type")
+    };
+    assert_eq!(
+        **underlying,
+        gors::compiler::types::Ty::Int(gors::compiler::types::IntTy::Int)
+    );
+    let analysis = db
+        .analyze_package(db.package_for_file(file).unwrap())
+        .unwrap();
+    assert_eq!(analysis.type_definitions().len(), 1);
+    assert_eq!(
+        analysis
+            .type_definitions()
+            .first()
+            .expect("defined type descriptor")
+            .id(),
+        *definition
+    );
+    assert_eq!(analysis.type_aliases().len(), 1);
 }
 
 #[test]

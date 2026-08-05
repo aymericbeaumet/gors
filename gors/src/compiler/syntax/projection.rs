@@ -12,7 +12,8 @@ use super::{
     BlockSyntax, ConstantLayout, ConstantSyntax, ConstantValueSyntax, DeclSyntax, ExprSyntax,
     ExprSyntaxKind, FieldListSyntax, FieldSyntax, FunctionBodySyntax, FunctionHeaderSyntax,
     FunctionLayout, IdentSyntax, SemanticTokenStream, StmtSyntax, StmtSyntaxKind, SwitchCaseSyntax,
-    SyntaxAnchor, SyntaxSource, SyntaxSourceRegion, TypeAliasSyntax, ValueSpecSyntax,
+    SyntaxAnchor, SyntaxSource, SyntaxSourceRegion, TypeAliasSyntax, TypeDefinitionSyntax,
+    ValueSpecSyntax,
 };
 
 pub struct ProjectedFunctionSyntax {
@@ -313,6 +314,17 @@ pub fn project_type_alias(spec: &ast::TypeSpec<'_>) -> Result<TypeAliasSyntax, P
     Ok(TypeAliasSyntax {
         name: projector.ident(name)?,
         target: projector.expression(&spec.type_)?,
+    })
+}
+
+pub fn project_type_definition(
+    spec: &ast::TypeSpec<'_>,
+) -> Result<TypeDefinitionSyntax, ProjectionError> {
+    let name = spec.name.as_ref().ok_or(ProjectionError::MissingTypeName)?;
+    let mut projector = StructuralProjector::new(SyntaxSourceRegion::Constant);
+    Ok(TypeDefinitionSyntax {
+        name: projector.ident(name)?,
+        underlying: projector.expression(&spec.type_)?,
     })
 }
 

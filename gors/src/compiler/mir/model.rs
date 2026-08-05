@@ -68,6 +68,11 @@ pub enum RvalueKind {
         operand: Operand,
         ty: Ty,
     },
+    Conversion {
+        operand: Operand,
+        from: Ty,
+        ty: Ty,
+    },
     Binary {
         op: hir::BinaryOp,
         left: Operand,

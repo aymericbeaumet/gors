@@ -163,6 +163,13 @@ pub(super) fn ty(encoder: &mut Encoder, value: &Ty) {
         Ty::Uint(value) => encoder.variant(b"uint", |encoder| uint_ty(encoder, *value)),
         Ty::Float(value) => encoder.variant(b"float", |encoder| float_ty(encoder, *value)),
         Ty::Complex(value) => encoder.variant(b"complex", |encoder| complex_ty(encoder, *value)),
+        Ty::Named {
+            definition,
+            underlying,
+        } => encoder.variant(b"named", |encoder| {
+            encoder.field(b"definition", |encoder| def_id(encoder, *definition));
+            encoder.field(b"underlying", |encoder| ty(encoder, underlying));
+        }),
         Ty::String => encoder.variant(b"string", |_| {}),
         Ty::Tuple(values) => {
             encoder.variant(b"tuple", |encoder| encoder.sequence(values, ty));

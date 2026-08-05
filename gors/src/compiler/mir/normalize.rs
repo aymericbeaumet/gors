@@ -157,7 +157,9 @@ fn propagate_block_booleans(function: &mut mir::Function) {
 
 fn rewrite_rvalue_boolean_reads(rvalue: &mut Rvalue, constants: &BTreeMap<LocalId, bool>) {
     match &mut rvalue.kind {
-        RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => {
+        RvalueKind::Use(operand)
+        | RvalueKind::Unary { operand, .. }
+        | RvalueKind::Conversion { operand, .. } => {
             rewrite_boolean_read(operand, constants);
         }
         RvalueKind::Binary { left, right, .. } => {
@@ -218,7 +220,9 @@ fn fold_boolean_rvalue(rvalue: &Rvalue) -> Option<bool> {
 
 fn refresh_rvalue_effects(rvalue: &mut Rvalue) {
     let may_read = match &rvalue.kind {
-        RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => operand_reads(operand),
+        RvalueKind::Use(operand)
+        | RvalueKind::Unary { operand, .. }
+        | RvalueKind::Conversion { operand, .. } => operand_reads(operand),
         RvalueKind::Binary { left, right, .. } => operand_reads(left) || operand_reads(right),
     };
     let may_panic = matches!(

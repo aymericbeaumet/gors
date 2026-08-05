@@ -10,6 +10,7 @@ use super::{
 use crate::compiler::db::model::{
     ConstantDescriptor, FileAnalysis, FileIssue, FunctionBody, FunctionDescriptor,
     FunctionSignature, PackageAnalysis, PackageIssue, PublicApi, TypeAliasDescriptor,
+    TypeDefinitionDescriptor,
 };
 use crate::compiler::db::telemetry::QueryKind;
 use crate::compiler::ids::{DefId, FileId};
@@ -47,15 +48,35 @@ pub(in crate::compiler::db) fn file_analysis_product(
             TypeAliasDescriptor::new(facts.file(db), alias.key(db), alias.name(db), target)
         })
         .collect::<Vec<_>>();
-    Arc::new(FileAnalysis::new(
-        facts.file(db),
-        facts.package(db),
-        functions.into(),
-        constants.into(),
-        type_aliases.into(),
-        facts.failure(db),
-        facts.issues(db).into(),
-    ))
+    let type_definitions = facts
+        .type_definitions(db)
+        .into_iter()
+        .map(|definition| {
+            let syntax = definition.syntax(db);
+            let underlying = match &syntax.underlying.kind {
+                crate::compiler::syntax::ExprSyntaxKind::Ident(underlying) => {
+                    Arc::clone(&underlying.name)
+                }
+                _ => Arc::from("<unsupported>"),
+            };
+            TypeDefinitionDescriptor::new(
+                facts.file(db),
+                definition.key(db),
+                definition.name(db),
+                underlying,
+            )
+        })
+        .collect::<Vec<_>>();
+    Arc::new(FileAnalysis::new(super::super::model::FileAnalysisData {
+        file: facts.file(db),
+        package: facts.package(db),
+        functions: functions.into(),
+        constants: constants.into(),
+        type_aliases: type_aliases.into(),
+        type_definitions: type_definitions.into(),
+        failure: facts.failure(db),
+        issues: facts.issues(db).into(),
+    }))
 }
 
 #[salsa::tracked(returns(clone))]
@@ -75,9 +96,11 @@ pub(in crate::compiler::db) fn package_analysis_product(
     let mut functions = Vec::new();
     let mut constants = Vec::new();
     let mut type_aliases = Vec::new();
+    let mut type_definitions = Vec::new();
     let mut exported_signatures = Vec::new();
     let mut exported_constants = Vec::new();
     let mut exported_type_aliases = Vec::new();
+    let mut exported_type_definitions = Vec::new();
     let mut issues = Vec::new();
     let mut definitions_by_digest =
         BTreeMap::<DefId, (crate::compiler::ids::DefinitionKey, FileId)>::new();
@@ -260,12 +283,50 @@ pub(in crate::compiler::db) fn package_analysis_product(
             };
             type_aliases.push(TypeAliasDescriptor::new(file, alias.key(db), name, target));
         }
+
+        for definition in facts.type_definitions(db) {
+            let id = definition.id(db);
+            let key = definition.key(db);
+            let name = definition.name(db);
+            if let Some(first_file) = declarations_by_name.insert(Arc::clone(&name), file) {
+                issues.push(PackageIssue::DuplicateDefinition {
+                    name: Arc::clone(&name),
+                    first_file,
+                    second_file: file,
+                });
+            }
+            if let Some((existing_key, _)) = definitions_by_digest.get(&id) {
+                if existing_key != &key {
+                    issues.push(PackageIssue::IdentityCollision {
+                        id,
+                        existing_key: Arc::from(format!("{existing_key:?}")),
+                        requested_key: Arc::from(format!("{key:?}")),
+                    });
+                }
+            } else {
+                definitions_by_digest.insert(id, (key, file));
+            }
+            let syntax = definition.syntax(db);
+            let underlying = match &syntax.underlying.kind {
+                crate::compiler::syntax::ExprSyntaxKind::Ident(underlying) => {
+                    Arc::clone(&underlying.name)
+                }
+                _ => Arc::from("<unsupported>"),
+            };
+            type_definitions.push(TypeDefinitionDescriptor::new(
+                file,
+                definition.key(db),
+                name,
+                underlying,
+            ));
+        }
     }
 
     files.sort();
     functions.sort_by_key(|function| (function.id(), function.file()));
     constants.sort_by_key(|constant| (constant.id(), constant.file()));
     type_aliases.sort_by_key(|alias| (alias.id(), alias.file()));
+    type_definitions.sort_by_key(|definition| (definition.id(), definition.file()));
     exported_signatures.sort_by_key(FunctionSignature::id);
     exported_constants.sort_by_key(|(definition, _)| *definition);
     if let Ok(resolved) = package_type_aliases_product(db, input) {
@@ -276,8 +337,17 @@ pub(in crate::compiler::db) fn package_analysis_product(
                 exported_type_aliases.push((alias.id(), crate::compiler::fingerprint::go_type(ty)));
             }
         }
+        for definition in &type_definitions {
+            if is_exported(definition.name())
+                && let Some(ty) = resolved.get(definition.name())
+            {
+                exported_type_definitions
+                    .push((definition.id(), crate::compiler::fingerprint::go_type(ty)));
+            }
+        }
     }
     exported_type_aliases.sort_by_key(|(definition, _)| *definition);
+    exported_type_definitions.sort_by_key(|(definition, _)| *definition);
     issues.sort();
     Arc::new(PackageAnalysis::new(
         super::super::model::PackageAnalysisData {
@@ -288,11 +358,13 @@ pub(in crate::compiler::db) fn package_analysis_product(
             functions: functions.into(),
             constants: constants.into(),
             type_aliases: type_aliases.into(),
+            type_definitions: type_definitions.into(),
             issues: issues.into(),
         },
         &exported_signatures,
         &exported_constants,
         &exported_type_aliases,
+        &exported_type_definitions,
     ))
 }
 

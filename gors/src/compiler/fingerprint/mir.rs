@@ -124,6 +124,17 @@ fn encode_rvalue_kind(encoder: &mut Encoder, kind: &mir::RvalueKind) {
                 encoder.field(b"type", |encoder| ty(encoder, value_ty));
             });
         }
+        mir::RvalueKind::Conversion {
+            operand,
+            from,
+            ty: to,
+        } => {
+            encoder.variant(b"conversion", |encoder| {
+                encoder.field(b"operand", |encoder| encode_operand(encoder, operand));
+                encoder.field(b"from", |encoder| ty(encoder, from));
+                encoder.field(b"to", |encoder| ty(encoder, to));
+            });
+        }
         mir::RvalueKind::Binary {
             op,
             left,
