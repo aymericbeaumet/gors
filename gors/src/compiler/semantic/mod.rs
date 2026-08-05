@@ -283,16 +283,15 @@ pub(super) fn lower_type(
         "int" => Ok(Ty::Int(IntTy::Int)),
         "float64" => Ok(Ty::Float(super::types::FloatTy::Float64)),
         "complex128" => Ok(Ty::Complex(super::types::ComplexTy::Complex128)),
-        "int8" | "int16" | "int32" | "rune" | "int64" | "uint" | "uint8" | "byte" | "uint16"
-        | "uint32" | "uint64" | "uintptr" | "float32" | "complex64" => {
-            Err(Diagnostic::unsupported(
-                format!(
-                    "type {} is outside the bootstrap bool/int/string runtime frontier",
-                    ident.name
-                ),
-                source,
-            ))
-        }
+        "uint8" | "byte" => Ok(Ty::Uint(super::types::UintTy::Uint8)),
+        "int8" | "int16" | "int32" | "rune" | "int64" | "uint" | "uint16" | "uint32" | "uint64"
+        | "uintptr" | "float32" | "complex64" => Err(Diagnostic::unsupported(
+            format!(
+                "type {} is outside the bootstrap bool/int/string runtime frontier",
+                ident.name
+            ),
+            source,
+        )),
         other => type_aliases.get(other).cloned().ok_or_else(|| {
             Diagnostic::unsupported(
                 format!("type {other} is not implemented by the HIR/MIR backend"),

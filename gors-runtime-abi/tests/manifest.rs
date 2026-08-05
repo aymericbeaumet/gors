@@ -154,7 +154,11 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::ConcatGoStrings
             | RuntimeOp::GoSliceI64FromStatic
             | RuntimeOp::GoSliceI64Make
-            | RuntimeOp::GoSliceI64Append => AllocationEffect::MayAllocate,
+            | RuntimeOp::GoSliceI64Append
+            | RuntimeOp::GoSliceU8FromStatic
+            | RuntimeOp::GoSliceU8AppendSlice
+            | RuntimeOp::GoSliceU8AppendString
+            | RuntimeOp::GoStringFromSliceU8 => AllocationEffect::MayAllocate,
             RuntimeOp::GoStringFromStatic
             | RuntimeOp::IntDiv
             | RuntimeOp::IntRem
@@ -172,12 +176,18 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceI64Range
             | RuntimeOp::GoSliceI64Set
             | RuntimeOp::GoSliceI64Len
-            | RuntimeOp::GoSliceI64Cap => AllocationEffect::None,
+            | RuntimeOp::GoSliceI64Cap
+            | RuntimeOp::GoSliceU8CopyString
+            | RuntimeOp::GoSliceI64Clear => AllocationEffect::None,
         };
         let expected_argument_mutation = match operation {
-            RuntimeOp::ConcatGoStrings | RuntimeOp::GoSliceI64Set | RuntimeOp::GoSliceI64Append => {
-                ArgumentMutationEffect::MayMutateOwnedArgument
-            }
+            RuntimeOp::ConcatGoStrings
+            | RuntimeOp::GoSliceI64Set
+            | RuntimeOp::GoSliceI64Append
+            | RuntimeOp::GoSliceU8AppendSlice
+            | RuntimeOp::GoSliceU8AppendString
+            | RuntimeOp::GoSliceU8CopyString
+            | RuntimeOp::GoSliceI64Clear => ArgumentMutationEffect::MayMutateOwnedArgument,
             RuntimeOp::GoStringFromBytes
             | RuntimeOp::GoStringFromStatic
             | RuntimeOp::IntDiv
@@ -197,7 +207,9 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceI64Range
             | RuntimeOp::GoSliceI64Make
             | RuntimeOp::GoSliceI64Len
-            | RuntimeOp::GoSliceI64Cap => ArgumentMutationEffect::None,
+            | RuntimeOp::GoSliceI64Cap
+            | RuntimeOp::GoSliceU8FromStatic
+            | RuntimeOp::GoStringFromSliceU8 => ArgumentMutationEffect::None,
         };
         let expected_host_io = match operation {
             RuntimeOp::PrintBool
@@ -222,7 +234,13 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceI64Make
             | RuntimeOp::GoSliceI64Len
             | RuntimeOp::GoSliceI64Cap
-            | RuntimeOp::GoSliceI64Append => HostIoEffect::None,
+            | RuntimeOp::GoSliceI64Append
+            | RuntimeOp::GoSliceU8FromStatic
+            | RuntimeOp::GoSliceU8AppendSlice
+            | RuntimeOp::GoSliceU8AppendString
+            | RuntimeOp::GoSliceU8CopyString
+            | RuntimeOp::GoSliceI64Clear
+            | RuntimeOp::GoStringFromSliceU8 => HostIoEffect::None,
         };
         let expected_panics: &[GoPanicCondition] = match operation {
             RuntimeOp::IntDiv | RuntimeOp::IntRem => &[GoPanicCondition::IntegerDivideByZero],
@@ -247,7 +265,13 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceI64FromStatic
             | RuntimeOp::GoSliceI64Len
             | RuntimeOp::GoSliceI64Cap
-            | RuntimeOp::GoSliceI64Append => &[],
+            | RuntimeOp::GoSliceI64Append
+            | RuntimeOp::GoSliceU8FromStatic
+            | RuntimeOp::GoSliceU8AppendSlice
+            | RuntimeOp::GoSliceU8AppendString
+            | RuntimeOp::GoSliceU8CopyString
+            | RuntimeOp::GoSliceI64Clear
+            | RuntimeOp::GoStringFromSliceU8 => &[],
         };
 
         assert_eq!(effects.allocation(), expected_allocation, "{operation:?}");
@@ -468,6 +492,23 @@ fn runtime_signatures_are_complete_and_exact() {
                 &[RuntimeType::GoSliceI64, RuntimeType::I64],
                 RuntimeType::GoSliceI64,
             ),
+            RuntimeOp::GoSliceU8FromStatic => {
+                (&[RuntimeType::StaticByteSlice], RuntimeType::GoSliceU8)
+            }
+            RuntimeOp::GoSliceU8AppendSlice => (
+                &[RuntimeType::GoSliceU8, RuntimeType::GoSliceU8],
+                RuntimeType::GoSliceU8,
+            ),
+            RuntimeOp::GoSliceU8AppendString => (
+                &[RuntimeType::GoSliceU8, RuntimeType::GoString],
+                RuntimeType::GoSliceU8,
+            ),
+            RuntimeOp::GoSliceU8CopyString => (
+                &[RuntimeType::GoSliceU8, RuntimeType::GoString],
+                RuntimeType::I64,
+            ),
+            RuntimeOp::GoSliceI64Clear => (&[RuntimeType::GoSliceI64], RuntimeType::Unit),
+            RuntimeOp::GoStringFromSliceU8 => (&[RuntimeType::GoSliceU8], RuntimeType::GoString),
         };
 
         assert_eq!(

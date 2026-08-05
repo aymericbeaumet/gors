@@ -198,6 +198,7 @@ pub enum ExprSyntaxKind {
     Call {
         callee: Box<ExprSyntax>,
         arguments: Arc<[ExprSyntax]>,
+        spread: bool,
     },
     Selector {
         base: Box<ExprSyntax>,

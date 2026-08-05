@@ -183,6 +183,13 @@ impl Function {
                     ..hir::Effects::default()
                 },
             ),
+            RvalueKind::SliceLiteralU8(_) => (
+                Ty::Slice(Box::new(Ty::Uint(crate::compiler::types::UintTy::Uint8))),
+                hir::Effects {
+                    may_allocate: true,
+                    ..hir::Effects::default()
+                },
+            ),
             RvalueKind::Unary { op, operand, ty } => {
                 let operand_ty = self.operand_ty(operand)?;
                 let expected = match op {
@@ -341,6 +348,52 @@ impl Function {
                             hir::Builtin::SliceI64Append => {
                                 verify_slice_call_arguments(&argument_types, 2, "slice append")?;
                                 vec![Ty::Slice(Box::new(Ty::Int(IntTy::Int)))]
+                            }
+                            hir::Builtin::SliceU8AppendSlice => {
+                                verify_byte_slice_call_arguments(
+                                    &argument_types,
+                                    &Ty::Slice(Box::new(Ty::Uint(
+                                        crate::compiler::types::UintTy::Uint8,
+                                    ))),
+                                    "byte slice append",
+                                )?;
+                                vec![Ty::Slice(Box::new(Ty::Uint(
+                                    crate::compiler::types::UintTy::Uint8,
+                                )))]
+                            }
+                            hir::Builtin::SliceU8AppendString | hir::Builtin::SliceU8CopyString => {
+                                verify_byte_slice_call_arguments(
+                                    &argument_types,
+                                    &Ty::String,
+                                    "string to byte slice operation",
+                                )?;
+                                if *builtin == hir::Builtin::SliceU8CopyString {
+                                    vec![Ty::Int(IntTy::Int)]
+                                } else {
+                                    vec![Ty::Slice(Box::new(Ty::Uint(
+                                        crate::compiler::types::UintTy::Uint8,
+                                    )))]
+                                }
+                            }
+                            hir::Builtin::SliceI64Clear => {
+                                if argument_types != [Ty::Slice(Box::new(Ty::Int(IntTy::Int)))] {
+                                    return Err(Diagnostic::backend(format!(
+                                        "invalid MIR slice clear arguments: {argument_types:?}"
+                                    )));
+                                }
+                                Vec::new()
+                            }
+                            hir::Builtin::StringFromSliceU8 => {
+                                if argument_types
+                                    != [Ty::Slice(Box::new(Ty::Uint(
+                                        crate::compiler::types::UintTy::Uint8,
+                                    )))]
+                                {
+                                    return Err(Diagnostic::backend(format!(
+                                        "invalid MIR byte slice conversion arguments: {argument_types:?}"
+                                    )));
+                                }
+                                vec![Ty::String]
                             }
                         };
                         self.verify_call_destination(destination, &results)?;
@@ -518,7 +571,7 @@ fn rvalue_operands(kind: &RvalueKind) -> Vec<&Operand> {
         | RvalueKind::Unary { operand, .. }
         | RvalueKind::Conversion { operand, .. } => vec![operand],
         RvalueKind::Binary { left, right, .. } => vec![left, right],
-        RvalueKind::SliceLiteralI64(_) => Vec::new(),
+        RvalueKind::SliceLiteralI64(_) | RvalueKind::SliceLiteralU8(_) => Vec::new(),
     }
 }
 
@@ -536,6 +589,20 @@ fn verify_slice_call_arguments(
             .iter()
             .any(|ty| ty != &Ty::Int(IntTy::Int))
     {
+        return Err(Diagnostic::backend(format!(
+            "invalid MIR {context} argument types: {arguments:?}"
+        )));
+    }
+    Ok(())
+}
+
+fn verify_byte_slice_call_arguments(
+    arguments: &[Ty],
+    second: &Ty,
+    context: &str,
+) -> Result<(), Diagnostic> {
+    let byte_slice = Ty::Slice(Box::new(Ty::Uint(crate::compiler::types::UintTy::Uint8)));
+    if arguments != [byte_slice, second.clone()] {
         return Err(Diagnostic::backend(format!(
             "invalid MIR {context} argument types: {arguments:?}"
         )));

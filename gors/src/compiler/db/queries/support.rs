@@ -262,7 +262,9 @@ impl PackageReferenceCollector {
                 self.expression(left);
                 self.expression(right);
             }
-            ExprSyntaxKind::Call { callee, arguments } => {
+            ExprSyntaxKind::Call {
+                callee, arguments, ..
+            } => {
                 self.expression(callee);
                 for argument in &**arguments {
                     self.expression(argument);
@@ -315,7 +317,9 @@ fn collect_all_expression_names(expression: &ExprSyntax, names: &mut BTreeSet<St
             collect_all_expression_names(left, names);
             collect_all_expression_names(right, names);
         }
-        ExprSyntaxKind::Call { callee, arguments } => {
+        ExprSyntaxKind::Call {
+            callee, arguments, ..
+        } => {
             collect_all_expression_names(callee, names);
             for argument in &**arguments {
                 collect_all_expression_names(argument, names);

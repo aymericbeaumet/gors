@@ -156,7 +156,7 @@ impl Function {
                 self.transfer_operand(left, state, check_reads)?;
                 self.transfer_operand(right, state, check_reads)
             }
-            RvalueKind::SliceLiteralI64(_) => Ok(()),
+            RvalueKind::SliceLiteralI64(_) | RvalueKind::SliceLiteralU8(_) => Ok(()),
         }
     }
 

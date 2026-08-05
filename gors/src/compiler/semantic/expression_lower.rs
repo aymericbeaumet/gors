@@ -11,7 +11,7 @@ use crate::compiler::hir;
 use crate::compiler::ids::{LocalId, NodeId};
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{ExprSyntax, ExprSyntaxKind};
-use crate::compiler::types::{ComplexTy, ConstValue, FloatTy, IntTy, Ty, UntypedTy};
+use crate::compiler::types::{ComplexTy, ConstValue, FloatTy, IntTy, Ty, UintTy, UntypedTy};
 
 impl FunctionLowerer {
     pub(super) fn local_expr(&self, node: NodeId, local: LocalId, ty: Ty) -> hir::Expr {
@@ -239,7 +239,11 @@ impl FunctionLowerer {
                     }
                 }
             }
-            ExprSyntaxKind::Call { callee, arguments } => {
+            ExprSyntaxKind::Call {
+                callee,
+                arguments,
+                spread,
+            } => {
                 let ExprSyntaxKind::Ident(callee_ident) = &callee.kind else {
                     return Err(Diagnostic::unsupported(
                         "only direct calls are implemented by the HIR/MIR backend",
@@ -247,8 +251,10 @@ impl FunctionLowerer {
                     ));
                 };
                 let name = callee_ident.name.as_ref();
-                if matches!(name, "make" | "len" | "cap" | "append") {
-                    return self.lower_slice_builtin_call(name, arguments, node, source, expected);
+                if matches!(name, "make" | "len" | "cap" | "append" | "copy" | "clear") {
+                    return self.lower_slice_builtin_call(
+                        name, arguments, *spread, node, source, expected,
+                    );
                 }
                 if self.type_aliases.contains_key(name)
                     || matches!(name, "bool" | "string" | "int" | "float64" | "complex128")
@@ -261,6 +267,22 @@ impl FunctionLowerer {
                     };
                     let target = lower_type(callee, &self.type_aliases, source)?;
                     let mut argument = self.lower_expr(argument, None)?;
+                    if target == Ty::String
+                        && argument.ty == Ty::Slice(Box::new(Ty::Uint(UintTy::Uint8)))
+                    {
+                        let effects = slice_runtime_effects(&[&argument], false, true, false);
+                        return Ok(hir::Expr {
+                            node,
+                            kind: hir::ExprKind::Call {
+                                callee: hir::Callee::Builtin(hir::Builtin::StringFromSliceU8),
+                                args: vec![argument],
+                            },
+                            ty: Ty::String,
+                            category: hir::ValueCategory::Value,
+                            effects,
+                            source,
+                        });
+                    }
                     if is_assignable(&argument.ty, &target) {
                         coerce_expr(&mut argument, &target, source)?;
                     } else if argument.ty.underlying() == target.underlying() {
@@ -443,9 +465,11 @@ impl FunctionLowerer {
                         source,
                     ));
                 };
-                if element_ty.underlying() != &Ty::Int(IntTy::Int) {
+                let integer_elements = element_ty.underlying() == &Ty::Int(IntTy::Int);
+                let byte_elements = element_ty.underlying() == &Ty::Uint(UintTy::Uint8);
+                if !integer_elements && !byte_elements {
                     return Err(Diagnostic::unsupported(
-                        "slice literals currently require int elements",
+                        "slice literals currently require int or byte elements",
                         source,
                     ));
                 }
@@ -462,9 +486,26 @@ impl FunctionLowerer {
                         Diagnostic::semantic("slice literal element is outside Go int", source)
                     })?);
                 }
+                let kind = if byte_elements {
+                    hir::ExprKind::SliceLiteralU8(
+                        values
+                            .into_iter()
+                            .map(|value| {
+                                u8::try_from(value).map_err(|_| {
+                                    Diagnostic::semantic(
+                                        "byte slice literal element is outside byte range",
+                                        source,
+                                    )
+                                })
+                            })
+                            .collect::<Result<Vec<_>, _>>()?,
+                    )
+                } else {
+                    hir::ExprKind::SliceLiteralI64(values)
+                };
                 hir::Expr {
                     node,
-                    kind: hir::ExprKind::SliceLiteralI64(values),
+                    kind,
                     ty: literal_ty,
                     category: hir::ValueCategory::Value,
                     effects: hir::Effects {
@@ -582,11 +623,13 @@ impl FunctionLowerer {
         &mut self,
         name: &str,
         arguments: &[ExprSyntax],
+        spread: bool,
         node: NodeId,
         source: SourceRef,
         expected: Option<&Ty>,
     ) -> Result<hir::Expr, Diagnostic> {
         let slice_ty = Ty::Slice(Box::new(Ty::Int(IntTy::Int)));
+        let byte_slice_ty = Ty::Slice(Box::new(Ty::Uint(UintTy::Uint8)));
         let (builtin, args, ty, allocates, writes, panics) = match name {
             "make" => {
                 let (declared_syntax, len_syntax, cap_syntax) = match arguments {
@@ -649,13 +692,80 @@ impl FunctionLowerer {
                         source,
                     ));
                 };
-                let slice = self.lower_expr(slice, Some(&slice_ty))?;
-                let value = self.lower_expr(value, Some(&Ty::Int(IntTy::Int)))?;
+                if spread {
+                    let slice = self.lower_expr(slice, Some(&byte_slice_ty))?;
+                    let mut value = self.lower_expr(value, None)?;
+                    if value.ty == Ty::Untyped(UntypedTy::String) {
+                        coerce_expr(&mut value, &Ty::String, source)?;
+                    }
+                    let builtin = match value.ty {
+                        Ty::String => hir::Builtin::SliceU8AppendString,
+                        ref ty if ty == &byte_slice_ty => hir::Builtin::SliceU8AppendSlice,
+                        _ => {
+                            return Err(Diagnostic::semantic(
+                                "[]byte append spread requires a string or []byte source",
+                                source,
+                            ));
+                        }
+                    };
+                    (
+                        builtin,
+                        vec![slice, value],
+                        byte_slice_ty,
+                        true,
+                        true,
+                        false,
+                    )
+                } else {
+                    let slice = self.lower_expr(slice, Some(&slice_ty))?;
+                    let value = self.lower_expr(value, Some(&Ty::Int(IntTy::Int)))?;
+                    (
+                        hir::Builtin::SliceI64Append,
+                        vec![slice, value],
+                        slice_ty,
+                        true,
+                        true,
+                        false,
+                    )
+                }
+            }
+            "copy" => {
+                let [destination, source_value] = arguments else {
+                    return Err(Diagnostic::semantic(
+                        "copy currently requires a []byte destination and string source",
+                        source,
+                    ));
+                };
+                if spread {
+                    return Err(Diagnostic::semantic("copy does not accept ...", source));
+                }
+                let destination = self.lower_expr(destination, Some(&byte_slice_ty))?;
+                let source_value = self.lower_expr(source_value, Some(&Ty::String))?;
                 (
-                    hir::Builtin::SliceI64Append,
-                    vec![slice, value],
-                    slice_ty,
+                    hir::Builtin::SliceU8CopyString,
+                    vec![destination, source_value],
+                    Ty::Int(IntTy::Int),
+                    false,
                     true,
+                    false,
+                )
+            }
+            "clear" => {
+                let [value] = arguments else {
+                    return Err(Diagnostic::semantic(
+                        "clear requires exactly one slice argument",
+                        source,
+                    ));
+                };
+                if spread {
+                    return Err(Diagnostic::semantic("clear does not accept ...", source));
+                }
+                let value = self.lower_expr(value, Some(&slice_ty))?;
+                (
+                    hir::Builtin::SliceI64Clear,
+                    vec![value],
+                    Ty::Unit,
+                    false,
                     true,
                     false,
                 )

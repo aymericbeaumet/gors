@@ -688,6 +688,7 @@ impl StructuralProjector {
                     .map(|argument| self.expression(argument))
                     .collect::<Result<Vec<_>, _>>()?
                     .into(),
+                spread: expression.ellipsis.is_some(),
             },
             ast::Expr::SelectorExpr(expression) => ExprSyntaxKind::Selector {
                 base: Box::new(self.expression(&expression.x)?),

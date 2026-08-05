@@ -13,9 +13,9 @@
     "groupCount": 15,
     "passingGroupCount": 1,
     "caseCount": 211,
-    "passingCaseCount": 45,
-    "unsupportedCaseCount": 166,
-    "fixtureCount": 22
+    "passingCaseCount": 48,
+    "unsupportedCaseCount": 163,
+    "fixtureCount": 23
   },
   "groups": [
     {
@@ -1972,14 +1972,16 @@
       "id": "built-in-functions",
       "title": "Built-in functions",
       "subtitle": "",
-      "fixtures": [],
+      "fixtures": [
+        "append_copy_clear_builtins"
+      ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 17,
-        "passingCaseCount": 0,
-        "unsupportedCaseCount": 17,
-        "fixtureCount": 0
+        "passingCaseCount": 3,
+        "unsupportedCaseCount": 14,
+        "fixtureCount": 1
       },
       "cases": [
         {
@@ -1996,18 +1998,28 @@
           "title": "append accepts variadic slice and string expansion",
           "subtitle": "Appending to and copying slices",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: append_copy_clear_builtins."
+          "status": "passing",
+          "fixtures": [
+            "append_copy_clear_builtins"
+          ],
+          "freshFixtures": [
+            "append_copy_clear_builtins"
+          ],
+          "reason": ""
         },
         {
           "id": "builtin-copy-string-source",
           "title": "copy copies bytes from string sources into byte slices",
           "subtitle": "Appending to and copying slices",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: append_copy_clear_builtins."
+          "status": "passing",
+          "fixtures": [
+            "append_copy_clear_builtins"
+          ],
+          "freshFixtures": [
+            "append_copy_clear_builtins"
+          ],
+          "reason": ""
         },
         {
           "id": "builtin-len-cap",
@@ -2077,9 +2089,14 @@
           "title": "clear assigns zero values to slice elements",
           "subtitle": "Clear",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: append_copy_clear_builtins."
+          "status": "passing",
+          "fixtures": [
+            "append_copy_clear_builtins"
+          ],
+          "freshFixtures": [
+            "append_copy_clear_builtins"
+          ],
+          "reason": ""
         },
         {
           "id": "builtin-complex-real-imag",

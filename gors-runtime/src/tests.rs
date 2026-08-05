@@ -89,6 +89,37 @@ fn integer_slice_append_reuses_or_detaches_by_capacity() {
 }
 
 #[test]
+fn byte_slice_spreads_and_string_conversion_preserve_bytes() {
+    let bytes = go_slice_u8_from_static(b"go");
+    let bytes = go_slice_u8_append_string(bytes, go_string_from_static(b"rs"));
+    let bytes = go_slice_u8_append_slice(bytes, go_slice_u8_from_static(b"!?"));
+
+    assert_eq!(go_string_from_slice_u8(bytes).as_bytes(), b"gors!?");
+}
+
+#[test]
+fn byte_slice_copy_uses_the_shorter_visible_length() {
+    let destination = go_slice_u8_from_static(b"\0\0\0\0\0");
+
+    assert_eq!(
+        go_slice_u8_copy_string(destination.clone(), go_string_from_static(b"hello!")),
+        5
+    );
+    assert_eq!(go_string_from_slice_u8(destination).as_bytes(), b"hello");
+}
+
+#[test]
+fn clear_updates_only_the_visible_integer_slice() {
+    let values = go_slice_i64_from_static(&[1, 2, 3, 4]);
+    go_slice_i64_clear(go_slice_i64_range(values.clone(), 1, 3, -1));
+
+    assert_eq!(go_slice_i64_index(values.clone(), 0), 1);
+    assert_eq!(go_slice_i64_index(values.clone(), 1), 0);
+    assert_eq!(go_slice_i64_index(values.clone(), 2), 0);
+    assert_eq!(go_slice_i64_index(values, 3), 4);
+}
+
+#[test]
 fn integer_slice_bounds_fail_at_the_runtime_boundary() {
     let values = go_slice_i64_from_static(&[1, 2, 3]);
 

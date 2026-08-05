@@ -64,6 +64,7 @@ pub struct Rvalue {
 pub enum RvalueKind {
     Use(Operand),
     SliceLiteralI64(Vec<i64>),
+    SliceLiteralU8(Vec<u8>),
     Unary {
         op: hir::UnaryOp,
         operand: Operand,

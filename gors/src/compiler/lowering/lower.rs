@@ -134,6 +134,12 @@ fn lower_rvalue(rvalue: mir::Rvalue, locals: &[out::LocalDecl]) -> Result<out::R
                 values: elements,
             }))
         }
+        mir::RvalueKind::SliceLiteralU8(elements) => {
+            out::RvalueKind::Use(out::Operand::Constant(out::Constant::RuntimeStaticU8s {
+                op: RuntimeOp::GoSliceU8FromStatic,
+                values: elements,
+            }))
+        }
         mir::RvalueKind::Unary { op, operand, ty } => {
             let operand_ty = mir_operand_type(&operand, locals)?;
             let operand = lower_operand(operand, locals)?;
@@ -231,7 +237,12 @@ fn lower_terminator(
                 | hir::Builtin::SliceI64Make
                 | hir::Builtin::SliceI64Len
                 | hir::Builtin::SliceI64Cap
-                | hir::Builtin::SliceI64Append),
+                | hir::Builtin::SliceI64Append
+                | hir::Builtin::SliceU8AppendSlice
+                | hir::Builtin::SliceU8AppendString
+                | hir::Builtin::SliceU8CopyString
+                | hir::Builtin::SliceI64Clear
+                | hir::Builtin::StringFromSliceU8),
             ) => out::TerminatorKind::Call {
                 target: out::CallTarget::Runtime(match builtin {
                     hir::Builtin::SliceI64Index => RuntimeOp::GoSliceI64Index,
@@ -241,6 +252,11 @@ fn lower_terminator(
                     hir::Builtin::SliceI64Len => RuntimeOp::GoSliceI64Len,
                     hir::Builtin::SliceI64Cap => RuntimeOp::GoSliceI64Cap,
                     hir::Builtin::SliceI64Append => RuntimeOp::GoSliceI64Append,
+                    hir::Builtin::SliceU8AppendSlice => RuntimeOp::GoSliceU8AppendSlice,
+                    hir::Builtin::SliceU8AppendString => RuntimeOp::GoSliceU8AppendString,
+                    hir::Builtin::SliceU8CopyString => RuntimeOp::GoSliceU8CopyString,
+                    hir::Builtin::SliceI64Clear => RuntimeOp::GoSliceI64Clear,
+                    hir::Builtin::StringFromSliceU8 => RuntimeOp::GoStringFromSliceU8,
                     hir::Builtin::Print | hir::Builtin::Println | hir::Builtin::Panic => {
                         return Err(Diagnostic::backend(
                             "non-slice builtin reached slice representation lowering",
@@ -288,7 +304,10 @@ fn lower_panic_call(
         out::RustType::Bool => RuntimeOp::PanicBool,
         out::RustType::I64 => RuntimeOp::PanicI64,
         out::RustType::GoString => RuntimeOp::PanicGoString,
-        out::RustType::F64 | out::RustType::Complex128 | out::RustType::GoSliceI64 => {
+        out::RustType::F64
+        | out::RustType::Complex128
+        | out::RustType::GoSliceI64
+        | out::RustType::GoSliceU8 => {
             return Err(Diagnostic::backend(
                 "unsupported numeric panic payload reached Rust lowering",
             ));
@@ -343,7 +362,10 @@ fn lower_print_call(
             out::RustType::Bool => RuntimeOp::PrintBool,
             out::RustType::I64 => RuntimeOp::PrintI64,
             out::RustType::GoString => RuntimeOp::PrintGoString,
-            out::RustType::F64 | out::RustType::Complex128 | out::RustType::GoSliceI64 => {
+            out::RustType::F64
+            | out::RustType::Complex128
+            | out::RustType::GoSliceI64
+            | out::RustType::GoSliceU8 => {
                 return Err(Diagnostic::backend(
                     "numeric print operation reached lowering without a runtime ABI operation",
                 ));
@@ -607,6 +629,11 @@ fn lower_type(ty: &Ty) -> Result<out::RustType, Diagnostic> {
         Ty::String => Ok(out::RustType::GoString),
         Ty::Slice(element) if element.underlying() == &Ty::Int(IntTy::Int) => {
             Ok(out::RustType::GoSliceI64)
+        }
+        Ty::Slice(element)
+            if element.underlying() == &Ty::Uint(crate::compiler::types::UintTy::Uint8) =>
+        {
+            Ok(out::RustType::GoSliceU8)
         }
         unsupported => Err(Diagnostic::backend(format!(
             "unsupported Go type reached Rust lowering: {unsupported:?}"

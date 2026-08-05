@@ -327,6 +327,9 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
                 encoder.sequence(elements, |encoder, element| encoder.i64(*element));
             });
         }
+        hir::ExprKind::SliceLiteralU8(elements) => {
+            encoder.variant(b"slice-literal-u8", |encoder| encoder.blob(elements));
+        }
         hir::ExprKind::Call { callee, args } => encoder.variant(b"call", |encoder| {
             encoder.field(b"callee", |encoder| encode_callee(encoder, *callee));
             encoder.field(b"arguments", |encoder| {
@@ -362,6 +365,11 @@ fn encode_builtin(encoder: &mut Encoder, builtin: hir::Builtin) {
             hir::Builtin::SliceI64Len => b"slice-i64-len",
             hir::Builtin::SliceI64Cap => b"slice-i64-cap",
             hir::Builtin::SliceI64Append => b"slice-i64-append",
+            hir::Builtin::SliceU8AppendSlice => b"slice-u8-append-slice",
+            hir::Builtin::SliceU8AppendString => b"slice-u8-append-string",
+            hir::Builtin::SliceU8CopyString => b"slice-u8-copy-string",
+            hir::Builtin::SliceI64Clear => b"slice-i64-clear",
+            hir::Builtin::StringFromSliceU8 => b"string-from-slice-u8",
         },
         |_| {},
     );

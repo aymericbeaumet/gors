@@ -434,6 +434,7 @@ fn rust_type_from_runtime(ty: RuntimeType, context: &str) -> Result<RustType, Di
         RuntimeType::Complex128 => Ok(RustType::Complex128),
         RuntimeType::GoString => Ok(RustType::GoString),
         RuntimeType::GoSliceI64 => Ok(RustType::GoSliceI64),
+        RuntimeType::GoSliceU8 => Ok(RustType::GoSliceU8),
         RuntimeType::ByteSlice | RuntimeType::StaticByteSlice | RuntimeType::StaticI64Slice => {
             Err(Diagnostic::backend(format!(
                 "Rust IR {context} requires ABI-only operand type {ty:?}"
@@ -471,6 +472,18 @@ fn constant_type(constant: &Constant) -> Result<RustType, Diagnostic> {
             } else {
                 Err(Diagnostic::backend(format!(
                     "Rust IR static int slice uses runtime operation {op:?} with an incompatible signature"
+                )))
+            }
+        }
+        Constant::RuntimeStaticU8s { op, .. } => {
+            let signature = op.signature();
+            if signature.parameters() == [RuntimeType::StaticByteSlice]
+                && signature.result() == RuntimeType::GoSliceU8
+            {
+                Ok(RustType::GoSliceU8)
+            } else {
+                Err(Diagnostic::backend(format!(
+                    "Rust IR static byte slice uses runtime operation {op:?} with an incompatible signature"
                 )))
             }
         }
@@ -533,7 +546,9 @@ fn collect_value_runtime_operation(operation: ValueOp, operations: &mut Vec<Runt
 
 fn collect_operand_runtime_operations(operand: &Operand, operations: &mut Vec<RuntimeOp>) {
     if let Operand::Constant(
-        Constant::RuntimeStaticBytes { op, .. } | Constant::RuntimeStaticI64s { op, .. },
+        Constant::RuntimeStaticBytes { op, .. }
+        | Constant::RuntimeStaticI64s { op, .. }
+        | Constant::RuntimeStaticU8s { op, .. },
     ) = operand
     {
         operations.push(*op);

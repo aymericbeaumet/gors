@@ -166,7 +166,7 @@ fn rewrite_rvalue_boolean_reads(rvalue: &mut Rvalue, constants: &BTreeMap<LocalI
             rewrite_boolean_read(left, constants);
             rewrite_boolean_read(right, constants);
         }
-        RvalueKind::SliceLiteralI64(_) => {}
+        RvalueKind::SliceLiteralI64(_) | RvalueKind::SliceLiteralU8(_) => {}
     }
 }
 
@@ -225,7 +225,7 @@ fn refresh_rvalue_effects(rvalue: &mut Rvalue) {
         | RvalueKind::Unary { operand, .. }
         | RvalueKind::Conversion { operand, .. } => operand_reads(operand),
         RvalueKind::Binary { left, right, .. } => operand_reads(left) || operand_reads(right),
-        RvalueKind::SliceLiteralI64(_) => false,
+        RvalueKind::SliceLiteralI64(_) | RvalueKind::SliceLiteralU8(_) => false,
     };
     let may_panic = matches!(
         &rvalue.kind,
@@ -241,6 +241,7 @@ fn refresh_rvalue_effects(rvalue: &mut Rvalue) {
             ty: Ty::String,
             ..
         } | RvalueKind::SliceLiteralI64(_)
+            | RvalueKind::SliceLiteralU8(_)
     );
     rvalue.effects = hir::Effects {
         may_read,

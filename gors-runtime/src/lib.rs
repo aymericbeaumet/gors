@@ -21,17 +21,20 @@ use std::sync::{Arc, RwLock};
 /// Rust host, including wasm32, instead of inheriting Rust's pointer width.
 pub type GoInt = i64;
 
-/// A Go `[]int` header backed by shared mutable array storage.
+/// A Go slice header backed by shared mutable array storage.
 ///
 /// Cloning this value copies only the slice header. Indexing and reslicing
 /// therefore preserve Go's backing-array aliasing rules.
 #[derive(Clone, Debug)]
-pub struct GoSliceI64 {
-    storage: Arc<RwLock<Vec<GoInt>>>,
+pub struct GoSlice<T> {
+    storage: Arc<RwLock<Vec<T>>>,
     start: usize,
     len: usize,
     capacity: usize,
 }
+
+pub type GoSliceI64 = GoSlice<GoInt>;
+pub type GoSliceU8 = GoSlice<u8>;
 
 /// Construct a `[]int` value from compiler-emitted literal elements.
 #[must_use]
@@ -111,6 +114,132 @@ pub fn go_slice_i64_append(mut slice: GoSliceI64, value: GoInt) -> GoSliceI64 {
     values.resize(capacity, 0);
     GoSliceI64 {
         storage: Arc::new(RwLock::new(values)),
+        start: 0,
+        len: required,
+        capacity,
+    }
+}
+
+/// Construct a `[]byte` value from compiler-emitted literal bytes.
+#[must_use]
+pub fn go_slice_u8_from_static(values: &'static [u8]) -> GoSliceU8 {
+    GoSliceU8 {
+        storage: Arc::new(RwLock::new(values.to_vec())),
+        start: 0,
+        len: values.len(),
+        capacity: values.len(),
+    }
+}
+
+/// Append every byte from another slice, retaining Go backing-array behavior.
+#[must_use]
+pub fn go_slice_u8_append_slice(slice: GoSliceU8, values: GoSliceU8) -> GoSliceU8 {
+    let values = {
+        let storage = values
+            .storage
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let end = values.start.saturating_add(values.len);
+        storage
+            .get(values.start..end)
+            .unwrap_or_else(|| slice_bounds_out_of_range())
+            .to_vec()
+    };
+    append_u8_values(slice, &values)
+}
+
+/// Append every byte from a Go string to a byte slice.
+#[must_use]
+pub fn go_slice_u8_append_string(slice: GoSliceU8, value: GoString) -> GoSliceU8 {
+    append_u8_values(slice, value.as_bytes())
+}
+
+/// Copy bytes from a Go string into a destination byte slice.
+pub fn go_slice_u8_copy_string(destination: GoSliceU8, source: GoString) -> GoInt {
+    let count = destination.len.min(source.len);
+    let mut storage = destination
+        .storage
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let end = destination.start.saturating_add(count);
+    let Some(target) = storage.get_mut(destination.start..end) else {
+        slice_bounds_out_of_range();
+    };
+    target.copy_from_slice(
+        source
+            .as_bytes()
+            .get(..count)
+            .unwrap_or_else(|| slice_bounds_out_of_range()),
+    );
+    drop(storage);
+    GoInt::try_from(count).unwrap_or_else(|_| slice_bounds_out_of_range())
+}
+
+/// Assign the element zero value throughout an integer slice.
+pub fn go_slice_i64_clear(slice: GoSliceI64) {
+    let mut storage = slice
+        .storage
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let end = slice.start.saturating_add(slice.len);
+    let Some(values) = storage.get_mut(slice.start..end) else {
+        slice_bounds_out_of_range();
+    };
+    values.fill(0);
+    drop(storage);
+}
+
+/// Convert the visible bytes of a byte slice into an immutable Go string.
+#[must_use]
+pub fn go_string_from_slice_u8(slice: GoSliceU8) -> GoString {
+    let storage = slice
+        .storage
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let end = slice.start.saturating_add(slice.len);
+    go_string_from_bytes(
+        storage
+            .get(slice.start..end)
+            .unwrap_or_else(|| slice_bounds_out_of_range()),
+    )
+}
+
+fn append_u8_values(mut slice: GoSliceU8, values: &[u8]) -> GoSliceU8 {
+    let required = slice.len.saturating_add(values.len());
+    if required <= slice.capacity {
+        let start = slice.start.saturating_add(slice.len);
+        let end = start.saturating_add(values.len());
+        let mut storage = slice
+            .storage
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(target) = storage.get_mut(start..end) else {
+            slice_bounds_out_of_range();
+        };
+        target.copy_from_slice(values);
+        drop(storage);
+        slice.len = required;
+        return slice;
+    }
+
+    let capacity = slice.capacity.saturating_mul(2).max(required).max(1);
+    let mut combined = Vec::with_capacity(capacity);
+    {
+        let storage = slice
+            .storage
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let end = slice.start.saturating_add(slice.len);
+        combined.extend_from_slice(
+            storage
+                .get(slice.start..end)
+                .unwrap_or_else(|| slice_bounds_out_of_range()),
+        );
+    }
+    combined.extend_from_slice(values);
+    combined.resize(capacity, 0);
+    GoSliceU8 {
+        storage: Arc::new(RwLock::new(combined)),
         start: 0,
         len: required,
         capacity,

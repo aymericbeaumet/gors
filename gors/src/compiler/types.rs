@@ -140,7 +140,10 @@ impl Ty {
             return underlying.is_bootstrap_value();
         }
         if let Self::Slice(element) = self {
-            return element.underlying() == &Self::Int(IntTy::Int);
+            return matches!(
+                element.underlying(),
+                Self::Int(IntTy::Int) | Self::Uint(UintTy::Uint8)
+            );
         }
         matches!(
             self,
@@ -190,6 +193,12 @@ impl ConstValue {
                     return false;
                 };
                 value >= BigInt::from(i64::MIN) && value <= BigInt::from(i64::MAX)
+            }
+            (Self::Int(value), Ty::Uint(UintTy::Uint8)) => {
+                let Some(value) = BigInt::parse_bytes(value.as_bytes(), 10) else {
+                    return false;
+                };
+                value >= BigInt::from(u8::MIN) && value <= BigInt::from(u8::MAX)
             }
             (Self::Int(value), Ty::Float(FloatTy::Float64)) => {
                 BigInt::parse_bytes(value.as_bytes(), 10)

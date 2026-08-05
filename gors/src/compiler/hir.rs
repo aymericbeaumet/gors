@@ -157,6 +157,7 @@ pub enum ExprKind {
         value: Box<Expr>,
     },
     SliceLiteralI64(Vec<i64>),
+    SliceLiteralU8(Vec<u8>),
     Call {
         callee: Callee,
         args: Vec<Expr>,
@@ -181,6 +182,11 @@ pub enum Builtin {
     SliceI64Len,
     SliceI64Cap,
     SliceI64Append,
+    SliceU8AppendSlice,
+    SliceU8AppendString,
+    SliceU8CopyString,
+    SliceI64Clear,
+    StringFromSliceU8,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

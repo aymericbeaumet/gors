@@ -677,6 +677,18 @@ impl FunctionLowerer {
                 self.push_statement(make_statement(place, value, provenance))?;
                 Ok(Operand::Read(place))
             }
+            hir::ExprKind::SliceLiteralU8(elements) => {
+                let result = self.new_temp(expr.ty.clone());
+                let place = Place { local: result };
+                let provenance = Provenance::Source(expr.source);
+                let value = make_rvalue(
+                    RvalueKind::SliceLiteralU8(elements.clone()),
+                    expr.effects,
+                    provenance.clone(),
+                );
+                self.push_statement(make_statement(place, value, provenance))?;
+                Ok(Operand::Read(place))
+            }
             hir::ExprKind::Local(local) => Ok(Operand::Read(Place { local: *local })),
             hir::ExprKind::Unary { op, operand } => {
                 let operand_provenance = Provenance::Source(operand.source);

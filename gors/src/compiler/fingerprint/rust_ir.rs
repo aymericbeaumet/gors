@@ -266,6 +266,12 @@ fn encode_constant(encoder: &mut Encoder, constant: &rust_ir::Constant) {
                 });
             });
         }
+        rust_ir::Constant::RuntimeStaticU8s { op, values } => {
+            encoder.variant(b"runtime-static-u8s", |encoder| {
+                encoder.field(b"operation", |encoder| encode_runtime_op(encoder, *op));
+                encoder.field(b"values", |encoder| encoder.blob(values));
+            });
+        }
     }
 }
 
@@ -364,6 +370,7 @@ fn encode_type(encoder: &mut Encoder, ty: rust_ir::RustType) {
             rust_ir::RustType::Complex128 => b"complex128",
             rust_ir::RustType::GoString => b"go-string",
             rust_ir::RustType::GoSliceI64 => b"go-slice-i64",
+            rust_ir::RustType::GoSliceU8 => b"go-slice-u8",
         },
         |_| {},
     );
