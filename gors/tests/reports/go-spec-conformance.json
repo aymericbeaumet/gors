@@ -13,9 +13,9 @@
     "groupCount": 15,
     "passingGroupCount": 1,
     "caseCount": 211,
-    "passingCaseCount": 54,
-    "unsupportedCaseCount": 157,
-    "fixtureCount": 27
+    "passingCaseCount": 55,
+    "unsupportedCaseCount": 156,
+    "fixtureCount": 28
   },
   "groups": [
     {
@@ -1526,6 +1526,7 @@
       "title": "Statements",
       "subtitle": "",
       "fixtures": [
+        "assignment_evaluation_order",
         "declarations_and_scope_labels",
         "defer_lifo_and_arguments",
         "return_statements",
@@ -1536,9 +1537,9 @@
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 46,
-        "passingCaseCount": 7,
-        "unsupportedCaseCount": 39,
-        "fixtureCount": 5
+        "passingCaseCount": 8,
+        "unsupportedCaseCount": 38,
+        "fixtureCount": 6
       },
       "cases": [
         {
@@ -1637,9 +1638,14 @@
           "title": "Left-hand index operands and right-hand expressions are evaluated before assignment writes",
           "subtitle": "Assignment statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: assignment_evaluation_order."
+          "status": "passing",
+          "fixtures": [
+            "assignment_evaluation_order"
+          ],
+          "freshFixtures": [
+            "assignment_evaluation_order"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-if",
