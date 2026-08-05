@@ -275,11 +275,17 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
                 ));
             }
             ast::Decl::GenDecl(declaration) if declaration.tok == crate::token::Token::CONST => {
-                for spec in &declaration.specs {
+                let mut previous_values = None;
+                for (iota, spec) in declaration.specs.iter().enumerate() {
                     let ast::Spec::ValueSpec(spec) = spec else {
                         continue;
                     };
-                    let values = spec.values.as_deref().unwrap_or_default();
+                    let explicit_values =
+                        spec.values.as_deref().filter(|values| !values.is_empty());
+                    if let Some(values) = explicit_values {
+                        previous_values = Some(values);
+                    }
+                    let values = explicit_values.or(previous_values).unwrap_or_default();
                     let arity_mismatch = !values.is_empty() && values.len() != spec.names.len();
                     for (index, name) in spec.names.iter().enumerate() {
                         let owned_name: Arc<str> = Arc::from(name.name);
@@ -298,6 +304,7 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
                             spec.type_.as_ref(),
                             values.get(index),
                             arity_mismatch,
+                            u64::try_from(iota).unwrap_or(u64::MAX),
                             content.text_len(),
                         ) {
                             Ok(projected) => projected,
@@ -313,7 +320,7 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
                         collect_constant_references(&syntax, &mut referenced);
                         let dependencies = referenced
                             .into_iter()
-                            .filter(|name| !matches!(name.as_str(), "true" | "false"))
+                            .filter(|name| !matches!(name.as_str(), "true" | "false" | "iota"))
                             .map(Arc::<str>::from)
                             .collect::<Vec<_>>();
                         projected_constants.push((

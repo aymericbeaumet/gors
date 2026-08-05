@@ -71,6 +71,7 @@ pub struct ConstantSyntax {
     pub(crate) name: IdentSyntax,
     pub(crate) explicit_type: Option<ExprSyntax>,
     pub(crate) value: ConstantValueSyntax,
+    pub(crate) iota: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

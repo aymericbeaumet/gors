@@ -208,6 +208,35 @@ fn untyped_package_constants_remain_exact_until_use() {
 }
 
 #[test]
+fn package_constants_support_iota_repetition_and_complex_components() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            const (
+                zero = iota
+                one
+                repeated = 10
+                repeatedAgain
+            )
+            const value = 1 + 2i
+
+            func main() {
+                if zero != 0 || one != 1 || repeatedAgain != 10 {
+                    panic("constant repetition changed")
+                }
+                if real(value) != 1 || imag(value) != 2 {
+                    panic("complex components changed")
+                }
+                println("constants: ok")
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"constants: ok\n");
+}
+
+#[test]
 fn labeled_loop_branches_target_the_named_enclosing_loop() {
     let run = compile_and_run(
         r#"

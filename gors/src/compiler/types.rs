@@ -147,16 +147,27 @@ impl ConstValue {
         match (self, ty) {
             (Self::Bool(_), Ty::Bool | Ty::Untyped(UntypedTy::Bool)) => true,
             (Self::String(_), Ty::String | Ty::Untyped(UntypedTy::String)) => true,
-            (Self::Int(value), Ty::Untyped(UntypedTy::Int)) => {
-                BigInt::parse_bytes(value.as_bytes(), 10).is_some()
-            }
+            (
+                Self::Int(value),
+                Ty::Untyped(UntypedTy::Int | UntypedTy::Float | UntypedTy::Complex),
+            ) => BigInt::parse_bytes(value.as_bytes(), 10).is_some(),
             (Self::Int(value), Ty::Int(IntTy::Int)) => {
                 let Some(value) = BigInt::parse_bytes(value.as_bytes(), 10) else {
                     return false;
                 };
                 value >= BigInt::from(i64::MIN) && value <= BigInt::from(i64::MAX)
             }
-            (Self::Float(value), Ty::Untyped(UntypedTy::Float)) => parse_go_float(value).is_some(),
+            (Self::Int(value), Ty::Float(FloatTy::Float64)) => {
+                BigInt::parse_bytes(value.as_bytes(), 10)
+                    .and_then(|value| value.to_string().parse::<f64>().ok())
+                    .is_some_and(f64::is_finite)
+            }
+            (Self::Int(value), Ty::Complex(ComplexTy::Complex128)) => {
+                BigInt::parse_bytes(value.as_bytes(), 10).is_some()
+            }
+            (Self::Float(value), Ty::Untyped(UntypedTy::Float | UntypedTy::Complex)) => {
+                parse_go_float(value).is_some()
+            }
             (Self::Float(value), Ty::Float(FloatTy::Float64)) => parse_go_float(value).is_some(),
             (
                 Self::Complex { real, imag },

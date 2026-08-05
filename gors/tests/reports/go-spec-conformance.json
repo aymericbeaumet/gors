@@ -11,11 +11,11 @@
   },
   "summary": {
     "groupCount": 15,
-    "passingGroupCount": 0,
+    "passingGroupCount": 1,
     "caseCount": 211,
-    "passingCaseCount": 33,
-    "unsupportedCaseCount": 178,
-    "fixtureCount": 17
+    "passingCaseCount": 41,
+    "unsupportedCaseCount": 170,
+    "fixtureCount": 18
   },
   "groups": [
     {
@@ -396,15 +396,16 @@
       "subtitle": "",
       "fixtures": [
         "_negative/constants_representability",
+        "constants",
         "large_constant_precision"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 10,
-        "passingCaseCount": 2,
-        "unsupportedCaseCount": 8,
-        "fixtureCount": 2
+        "passingCaseCount": 10,
+        "unsupportedCaseCount": 0,
+        "fixtureCount": 3
       },
       "cases": [
         {
@@ -412,54 +413,84 @@
           "title": "Boolean constants participate in expressions",
           "subtitle": "Constants",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: constants."
+          "status": "passing",
+          "fixtures": [
+            "constants"
+          ],
+          "freshFixtures": [
+            "constants"
+          ],
+          "reason": ""
         },
         {
           "id": "constants-iota",
           "title": "iota increments across const specifications",
           "subtitle": "Iota",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: constants."
+          "status": "passing",
+          "fixtures": [
+            "constants"
+          ],
+          "freshFixtures": [
+            "constants"
+          ],
+          "reason": ""
         },
         {
           "id": "constants-repeated-expressions",
           "title": "Const declarations repeat omitted expressions from the previous specification",
           "subtitle": "Constant declarations",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: constants."
+          "status": "passing",
+          "fixtures": [
+            "constants"
+          ],
+          "freshFixtures": [
+            "constants"
+          ],
+          "reason": ""
         },
         {
           "id": "constants-string-concat",
           "title": "String constant concatenation is evaluated",
           "subtitle": "Constant expressions",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: constants."
+          "status": "passing",
+          "fixtures": [
+            "constants"
+          ],
+          "freshFixtures": [
+            "constants"
+          ],
+          "reason": ""
         },
         {
           "id": "constants-numeric-expressions",
           "title": "Numeric constant expressions are folded and coerced at use sites",
           "subtitle": "Constant expressions",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: constants."
+          "status": "passing",
+          "fixtures": [
+            "constants"
+          ],
+          "freshFixtures": [
+            "constants"
+          ],
+          "reason": ""
         },
         {
           "id": "constants-shift-expressions",
           "title": "Shift expressions produce integer constants",
           "subtitle": "Constant expressions",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: constants."
+          "status": "passing",
+          "fixtures": [
+            "constants"
+          ],
+          "freshFixtures": [
+            "constants"
+          ],
+          "reason": ""
         },
         {
           "id": "constants-minimum-256-bit-precision",
@@ -494,18 +525,28 @@
           "title": "Complex constants preserve real and imaginary components",
           "subtitle": "Constants",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: constants."
+          "status": "passing",
+          "fixtures": [
+            "constants"
+          ],
+          "freshFixtures": [
+            "constants"
+          ],
+          "reason": ""
         },
         {
           "id": "constants-typed-constants",
           "title": "Typed constants retain their explicit constant type at use sites",
           "subtitle": "Constants",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: constants."
+          "status": "passing",
+          "fixtures": [
+            "constants"
+          ],
+          "freshFixtures": [
+            "constants"
+          ],
+          "reason": ""
         }
       ]
     },

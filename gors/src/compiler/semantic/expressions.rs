@@ -132,9 +132,71 @@ pub(super) fn fold_constant_binary(
             hir::BinaryOp::GreaterEqual => ConstValue::Bool(left >= right),
             _ => return Ok(None),
         },
+        (ConstValue::Int(left), ConstValue::Complex { real, imag }) => {
+            fold_integer_complex(op, left, "0", real, imag, source)?
+        }
+        (ConstValue::Complex { real, imag }, ConstValue::Int(right)) => {
+            fold_integer_complex(op, real, imag, right, "0", source)?
+        }
+        (
+            ConstValue::Complex {
+                real: left_real,
+                imag: left_imag,
+            },
+            ConstValue::Complex {
+                real: right_real,
+                imag: right_imag,
+            },
+        ) => fold_integer_complex(op, left_real, left_imag, right_real, right_imag, source)?,
         _ => return Ok(None),
     };
     Ok(Some(folded))
+}
+
+fn fold_integer_complex(
+    op: hir::BinaryOp,
+    left_real: &str,
+    left_imag: &str,
+    right_real: &str,
+    right_imag: &str,
+    source: SourceRef,
+) -> Result<ConstValue, Diagnostic> {
+    let parse = |value: &str| {
+        BigInt::parse_bytes(value.as_bytes(), 10)
+            .ok_or_else(|| Diagnostic::unsupported("non-integer exact complex arithmetic", source))
+    };
+    let left_real = parse(left_real)?;
+    let left_imag = parse(left_imag)?;
+    let right_real = parse(right_real)?;
+    let right_imag = parse(right_imag)?;
+    let (real, imag) = match op {
+        hir::BinaryOp::Add => (left_real + right_real, left_imag + right_imag),
+        hir::BinaryOp::Sub => (left_real - right_real, left_imag - right_imag),
+        hir::BinaryOp::Mul => (
+            &left_real * &right_real - &left_imag * &right_imag,
+            left_real * right_imag + left_imag * right_real,
+        ),
+        hir::BinaryOp::Equal => {
+            return Ok(ConstValue::Bool(
+                left_real == right_real && left_imag == right_imag,
+            ));
+        }
+        hir::BinaryOp::NotEqual => {
+            return Ok(ConstValue::Bool(
+                left_real != right_real || left_imag != right_imag,
+            ));
+        }
+        _ => {
+            return Err(Diagnostic::unsupported(
+                "exact complex constant operation is not implemented",
+                source,
+            ));
+        }
+    };
+    Ok(ConstValue::Complex {
+        real: real.to_string(),
+        imag: imag.to_string(),
+    })
 }
 
 pub(super) fn coerce_expr(
@@ -169,9 +231,17 @@ pub(super) fn is_assignable(actual: &Ty, expected: &Ty) -> bool {
         (Ty::Untyped(UntypedTy::Bool), Ty::Bool)
             | (
                 Ty::Untyped(UntypedTy::Int),
-                Ty::Int(_) | Ty::Uint(_) | Ty::Float(_) | Ty::Complex(_)
+                Ty::Untyped(UntypedTy::Float)
+                    | Ty::Untyped(UntypedTy::Complex)
+                    | Ty::Int(_)
+                    | Ty::Uint(_)
+                    | Ty::Float(_)
+                    | Ty::Complex(_)
             )
-            | (Ty::Untyped(UntypedTy::Float), Ty::Float(_) | Ty::Complex(_))
+            | (
+                Ty::Untyped(UntypedTy::Float),
+                Ty::Untyped(UntypedTy::Complex) | Ty::Float(_) | Ty::Complex(_)
+            )
             | (Ty::Untyped(UntypedTy::Complex), Ty::Complex(_))
             | (Ty::Untyped(UntypedTy::String), Ty::String)
     )
@@ -182,10 +252,10 @@ pub(super) fn common_operand_type(left: &Ty, right: &Ty) -> Option<Ty> {
         return Some(left.default_typed());
     }
     if is_assignable(left, right) {
-        return Some(right.clone());
+        return Some(right.default_typed());
     }
     if is_assignable(right, left) {
-        return Some(left.clone());
+        return Some(left.default_typed());
     }
     None
 }

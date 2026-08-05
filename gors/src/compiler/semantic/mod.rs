@@ -121,7 +121,7 @@ pub(super) fn lower_constant(
             ));
         }
     };
-    let (raw_ty, value) = eval_constant(expression, constants, source)?;
+    let (raw_ty, value) = eval_constant(expression, constants, source, syntax.iota)?;
     let ty = syntax
         .explicit_type
         .as_ref()
@@ -277,6 +277,7 @@ pub(super) fn eval_constant(
     expression: &ExprSyntax,
     constants: &BTreeMap<String, ConstantSymbol>,
     source: SourceRef,
+    iota: u64,
 ) -> Result<(Ty, ConstValue), Diagnostic> {
     match &expression.kind {
         ExprSyntaxKind::Literal { token, spelling } => match *token {
@@ -298,7 +299,7 @@ pub(super) fn eval_constant(
                 Ok((
                     Ty::Untyped(UntypedTy::Complex),
                     ConstValue::Complex {
-                        real: "0.0".into(),
+                        real: "0".into(),
                         imag,
                     },
                 ))
@@ -327,6 +328,11 @@ pub(super) fn eval_constant(
                     Ty::Untyped(UntypedTy::Bool),
                     ConstValue::Bool(ident.name.as_ref() == "true"),
                 ))
+            } else if ident.name.as_ref() == "iota" {
+                Ok((
+                    Ty::Untyped(UntypedTy::Int),
+                    ConstValue::Int(iota.to_string()),
+                ))
             } else {
                 Err(Diagnostic::semantic(
                     format!("{} is not a constant", ident.name),
@@ -335,8 +341,8 @@ pub(super) fn eval_constant(
             }
         }
         ExprSyntaxKind::Binary { left, token, right } => {
-            let (left_ty, left) = eval_constant(left, constants, source)?;
-            let (right_ty, right) = eval_constant(right, constants, source)?;
+            let (left_ty, left) = eval_constant(left, constants, source, iota)?;
+            let (right_ty, right) = eval_constant(right, constants, source, iota)?;
             let op = lower_binary_op(*token).ok_or_else(|| {
                 Diagnostic::unsupported(
                     format!("constant operator {token:?} is not implemented"),
@@ -374,9 +380,9 @@ pub(super) fn eval_constant(
             };
             Ok((result_ty, value))
         }
-        ExprSyntaxKind::Paren(expression) => eval_constant(expression, constants, source),
+        ExprSyntaxKind::Paren(expression) => eval_constant(expression, constants, source, iota),
         ExprSyntaxKind::Unary { token, expression } => {
-            let (ty, value) = eval_constant(expression, constants, source)?;
+            let (ty, value) = eval_constant(expression, constants, source, iota)?;
             match (*token, value) {
                 (crate::token::Token::ADD, value) => Ok((ty, value)),
                 (crate::token::Token::SUB, ConstValue::Int(value)) => {

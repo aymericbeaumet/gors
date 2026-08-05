@@ -514,10 +514,12 @@ fn verify_constant_type(value: &ConstValue, ty: &Ty) -> Result<(), Diagnostic> {
         (ConstValue::Bool(_), Ty::Bool)
             | (ConstValue::Int(_), Ty::Int(IntTy::Int))
             | (ConstValue::Float(_), Ty::Float(FloatTy::Float64))
+            | (ConstValue::Int(_), Ty::Float(FloatTy::Float64))
             | (
                 ConstValue::Complex { .. },
                 Ty::Complex(ComplexTy::Complex128)
             )
+            | (ConstValue::Int(_), Ty::Complex(ComplexTy::Complex128))
             | (ConstValue::String(_), Ty::String)
     )
     .then_some(())

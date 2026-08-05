@@ -274,6 +274,7 @@ pub fn project_constant(
     explicit_type: Option<&ast::Expr<'_>>,
     value: Option<&ast::Expr<'_>>,
     arity_mismatch: bool,
+    iota: u64,
     source_len: TextSize,
 ) -> Result<ProjectedConstantSyntax, ProjectionError> {
     let mut projector = StructuralProjector::new(SyntaxSourceRegion::Constant);
@@ -298,6 +299,7 @@ pub fn project_constant(
             name,
             explicit_type,
             value,
+            iota,
         },
         layout: ConstantLayout::new(declaration, source_len, projector.finish()),
     })

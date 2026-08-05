@@ -45,7 +45,7 @@ impl FunctionLowerer {
         let source = SourceRef::node(node);
         let mut lowered = match &expr.kind {
             ExprSyntaxKind::Literal { .. } => {
-                let (ty, value) = eval_constant(expr, &self.constants, source)?;
+                let (ty, value) = eval_constant(expr, &self.constants, source, 0)?;
                 hir::Expr {
                     node,
                     kind: hir::ExprKind::Constant(value),
@@ -245,6 +245,37 @@ impl FunctionLowerer {
                     ));
                 };
                 let name = callee_ident.name.as_ref();
+                if matches!(name, "real" | "imag") {
+                    let [argument] = arguments.as_ref() else {
+                        return Err(Diagnostic::semantic(
+                            format!("call to {name} requires exactly one argument"),
+                            source,
+                        ));
+                    };
+                    let argument = self.lower_expr(argument, None)?;
+                    let Some(ConstValue::Complex { real, imag }) = expr_constant(&argument) else {
+                        return Err(Diagnostic::unsupported(
+                            format!("{name} of a non-constant complex value is not implemented"),
+                            source,
+                        ));
+                    };
+                    let mut component = hir::Expr {
+                        node,
+                        kind: hir::ExprKind::Constant(ConstValue::Float(if name == "real" {
+                            real.clone()
+                        } else {
+                            imag.clone()
+                        })),
+                        ty: Ty::Untyped(UntypedTy::Float),
+                        category: hir::ValueCategory::Constant,
+                        effects: argument.effects,
+                        source,
+                    };
+                    if let Some(expected) = expected {
+                        coerce_expr(&mut component, expected, source)?;
+                    }
+                    return Ok(component);
+                }
                 let (callee, params, results) = if self.lookup_local(name).is_some() {
                     return Err(Diagnostic::unsupported(
                         format!(

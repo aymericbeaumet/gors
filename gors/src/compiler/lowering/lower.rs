@@ -420,6 +420,26 @@ fn lower_constant(value: ConstValue, ty: &Ty) -> Result<out::Constant, Diagnosti
             .map(f64::to_bits)
             .map(out::Constant::F64)
             .ok_or_else(|| Diagnostic::backend(format!("invalid Go float64 constant: {value}"))),
+        (ConstValue::Int(value), Ty::Float(FloatTy::Float64)) => value
+            .parse::<f64>()
+            .ok()
+            .filter(|value| value.is_finite())
+            .map(f64::to_bits)
+            .map(out::Constant::F64)
+            .ok_or_else(|| {
+                Diagnostic::backend(format!("invalid Go integer-to-float constant: {value}"))
+            }),
+        (ConstValue::Int(value), Ty::Complex(ComplexTy::Complex128)) => value
+            .parse::<f64>()
+            .ok()
+            .filter(|value| value.is_finite())
+            .map(|real| out::Constant::Complex128 {
+                real: real.to_bits(),
+                imag: 0.0_f64.to_bits(),
+            })
+            .ok_or_else(|| {
+                Diagnostic::backend(format!("invalid Go integer-to-complex constant: {value}"))
+            }),
         (ConstValue::Complex { real, imag }, Ty::Complex(ComplexTy::Complex128)) => {
             let real = parse_go_float(&real)
                 .ok_or_else(|| Diagnostic::backend("invalid real complex128 component"))?;
