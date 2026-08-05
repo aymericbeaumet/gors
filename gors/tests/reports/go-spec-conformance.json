@@ -13,9 +13,9 @@
     "groupCount": 15,
     "passingGroupCount": 1,
     "caseCount": 211,
-    "passingCaseCount": 48,
-    "unsupportedCaseCount": 163,
-    "fixtureCount": 23
+    "passingCaseCount": 49,
+    "unsupportedCaseCount": 162,
+    "fixtureCount": 24
   },
   "groups": [
     {
@@ -1241,14 +1241,16 @@
       "id": "expressions",
       "title": "Expressions",
       "subtitle": "",
-      "fixtures": [],
+      "fixtures": [
+        "expressions_variadic_spread"
+      ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 29,
-        "passingCaseCount": 0,
-        "unsupportedCaseCount": 29,
-        "fixtureCount": 0
+        "passingCaseCount": 1,
+        "unsupportedCaseCount": 28,
+        "fixtureCount": 1
       },
       "cases": [
         {
@@ -1301,9 +1303,14 @@
           "title": "Variadic parameters accept slice spread arguments",
           "subtitle": "Passing arguments to ... parameters",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: expressions_variadic_spread."
+          "status": "passing",
+          "fixtures": [
+            "expressions_variadic_spread"
+          ],
+          "freshFixtures": [
+            "expressions_variadic_spread"
+          ],
+          "reason": ""
         },
         {
           "id": "expr-primary",

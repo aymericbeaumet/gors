@@ -87,6 +87,7 @@ pub enum ConstValue {
 pub struct Signature {
     pub params: Vec<Ty>,
     pub results: Vec<Ty>,
+    pub variadic: bool,
 }
 
 impl Ty {

@@ -45,6 +45,7 @@ pub struct IdentSyntax {
 pub struct FieldSyntax {
     pub(crate) names: Option<Arc<[IdentSyntax]>>,
     pub(crate) ty: Option<ExprSyntax>,
+    pub(crate) variadic: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

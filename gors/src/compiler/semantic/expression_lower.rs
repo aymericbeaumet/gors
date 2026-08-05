@@ -339,7 +339,7 @@ impl FunctionLowerer {
                     }
                     return Ok(component);
                 }
-                let (callee, params, results) = if self.lookup_local(name).is_some() {
+                let (callee, params, results, variadic) = if self.lookup_local(name).is_some() {
                     return Err(Diagnostic::unsupported(
                         format!(
                             "calling local value {name} requires function-value HIR and is not implemented"
@@ -351,6 +351,7 @@ impl FunctionLowerer {
                         hir::Callee::Function(symbol.id),
                         symbol.signature.params,
                         symbol.signature.results,
+                        symbol.signature.variadic,
                     )
                 } else if self.constants.contains_key(name) {
                     return Err(Diagnostic::semantic(
@@ -359,9 +360,24 @@ impl FunctionLowerer {
                     ));
                 } else {
                     match name {
-                        "print" => (hir::Callee::Builtin(hir::Builtin::Print), vec![], vec![]),
-                        "println" => (hir::Callee::Builtin(hir::Builtin::Println), vec![], vec![]),
-                        "panic" => (hir::Callee::Builtin(hir::Builtin::Panic), vec![], vec![]),
+                        "print" => (
+                            hir::Callee::Builtin(hir::Builtin::Print),
+                            vec![],
+                            vec![],
+                            false,
+                        ),
+                        "println" => (
+                            hir::Callee::Builtin(hir::Builtin::Println),
+                            vec![],
+                            vec![],
+                            false,
+                        ),
+                        "panic" => (
+                            hir::Callee::Builtin(hir::Builtin::Panic),
+                            vec![],
+                            vec![],
+                            false,
+                        ),
                         name => {
                             return Err(Diagnostic::semantic(
                                 format!("undefined function {name}"),
@@ -371,6 +387,18 @@ impl FunctionLowerer {
                     }
                 };
                 match callee {
+                    hir::Callee::Function(_) if *spread && !variadic => {
+                        return Err(Diagnostic::semantic(
+                            "... is only valid when calling a variadic function",
+                            source,
+                        ));
+                    }
+                    hir::Callee::Function(_) if variadic && !*spread => {
+                        return Err(Diagnostic::unsupported(
+                            "individual variadic arguments require slice-pack lowering",
+                            source,
+                        ));
+                    }
                     hir::Callee::Function(_) if arguments.len() != params.len() => {
                         return Err(Diagnostic::semantic(
                             format!(
@@ -387,6 +415,12 @@ impl FunctionLowerer {
                                 "call to panic has {} arguments; expected 1",
                                 arguments.len()
                             ),
+                            source,
+                        ));
+                    }
+                    hir::Callee::Builtin(_) if *spread => {
+                        return Err(Diagnostic::semantic(
+                            "... is not valid for this built-in call",
                             source,
                         ));
                     }

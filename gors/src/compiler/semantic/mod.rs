@@ -73,7 +73,7 @@ pub(super) fn lower_signature(
             source,
         ));
     }
-    let params = field_types(&header.params, type_aliases, source)?;
+    let (params, variadic) = parameter_types(&header.params, type_aliases, source)?;
     let results = header
         .results
         .as_ref()
@@ -98,7 +98,11 @@ pub(super) fn lower_signature(
             source,
         ));
     }
-    Ok(Signature { params, results })
+    Ok(Signature {
+        params,
+        results,
+        variadic,
+    })
 }
 
 pub(super) fn lower_constant(
@@ -244,6 +248,12 @@ fn field_types(
 ) -> Result<Vec<Ty>, Diagnostic> {
     let mut result = Vec::new();
     for field in &*fields.fields {
+        if field.variadic {
+            return Err(Diagnostic::semantic(
+                "result parameters cannot be variadic",
+                source,
+            ));
+        }
         let type_expression = field
             .ty
             .as_ref()
@@ -253,6 +263,35 @@ fn field_types(
         result.extend(std::iter::repeat_n(ty, count));
     }
     Ok(result)
+}
+
+fn parameter_types(
+    fields: &FieldListSyntax,
+    type_aliases: &BTreeMap<String, Ty>,
+    source: SourceRef,
+) -> Result<(Vec<Ty>, bool), Diagnostic> {
+    let mut result = Vec::new();
+    let mut variadic = false;
+    for (index, field) in fields.fields.iter().enumerate() {
+        let type_expression = field
+            .ty
+            .as_ref()
+            .ok_or_else(|| Diagnostic::backend("signature field has no type"))?;
+        let mut ty = lower_type(type_expression, type_aliases, source)?;
+        let count = field.names.as_ref().map_or(1, |names| names.len());
+        if field.variadic {
+            if variadic || index + 1 != fields.fields.len() || count != 1 {
+                return Err(Diagnostic::semantic(
+                    "a variadic parameter must be the final single parameter",
+                    source,
+                ));
+            }
+            variadic = true;
+            ty = Ty::Slice(Box::new(ty));
+        }
+        result.extend(std::iter::repeat_n(ty, count));
+    }
+    Ok((result, variadic))
 }
 
 pub(super) fn lower_type(

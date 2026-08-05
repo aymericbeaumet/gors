@@ -153,6 +153,7 @@ pub(super) fn source_ref(encoder: &mut Encoder, source: SourceRef) {
 pub(super) fn signature(encoder: &mut Encoder, value: &Signature) {
     encoder.field(b"params", |encoder| encoder.sequence(&value.params, ty));
     encoder.field(b"results", |encoder| encoder.sequence(&value.results, ty));
+    encoder.field(b"variadic", |encoder| encoder.bool(value.variadic));
 }
 
 pub(super) fn ty(encoder: &mut Encoder, value: &Ty) {

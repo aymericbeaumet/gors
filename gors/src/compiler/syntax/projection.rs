@@ -403,6 +403,22 @@ impl StructuralProjector {
             .list
             .iter()
             .map(|field| {
+                let (ty, variadic) = match field.type_.as_ref() {
+                    Some(ast::Expr::Ellipsis(ellipsis)) => (
+                        ellipsis
+                            .elt
+                            .as_deref()
+                            .map(|expression| self.expression(expression))
+                            .transpose()?,
+                        true,
+                    ),
+                    expression => (
+                        expression
+                            .map(|expression| self.expression(expression))
+                            .transpose()?,
+                        false,
+                    ),
+                };
                 Ok(FieldSyntax {
                     names: field
                         .names
@@ -415,11 +431,8 @@ impl StructuralProjector {
                                 .map(Arc::from)
                         })
                         .transpose()?,
-                    ty: field
-                        .type_
-                        .as_ref()
-                        .map(|expression| self.expression(expression))
-                        .transpose()?,
+                    ty,
+                    variadic,
                 })
             })
             .collect::<Result<Vec<_>, ProjectionError>>()?;
