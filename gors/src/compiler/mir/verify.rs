@@ -326,6 +326,12 @@ impl Function {
                         }
                         self.verify_call_destinations(destinations, &signature.results)?;
                     }
+                    hir::Callee::Closure(id) => {
+                        return Err(Diagnostic::backend(format!(
+                            "local function {} survived MIR inlining",
+                            id.0
+                        )));
+                    }
                     hir::Callee::Builtin(builtin) => {
                         let results = match builtin {
                             hir::Builtin::Print | hir::Builtin::Println => {

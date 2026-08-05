@@ -2,7 +2,8 @@
 
 use super::Fingerprint;
 use super::encoder::{
-    Encoder, block_id, const_value, def_id, hir_effects, local_id, signature, source_ref, ty,
+    Encoder, block_id, closure_id, const_value, def_id, hir_effects, local_id, signature,
+    source_ref, ty,
 };
 use crate::compiler::{hir, mir};
 
@@ -239,6 +240,9 @@ fn encode_callee(encoder: &mut Encoder, callee: hir::Callee) {
     match callee {
         hir::Callee::Function(id) => {
             encoder.variant(b"function", |encoder| def_id(encoder, id));
+        }
+        hir::Callee::Closure(id) => {
+            encoder.variant(b"closure", |encoder| closure_id(encoder, id));
         }
         hir::Callee::Builtin(builtin) => encoder.variant(b"builtin", |encoder| {
             encoder.variant(

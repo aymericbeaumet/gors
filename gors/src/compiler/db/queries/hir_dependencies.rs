@@ -8,6 +8,9 @@ use crate::compiler::ids::DefId;
 pub(super) fn direct_callees(function: &hir::Function) -> BTreeSet<DefId> {
     let mut callees = BTreeSet::new();
     collect_block_callees(&function.body, &mut callees);
+    for closure in &function.closures {
+        collect_block_callees(&closure.body, &mut callees);
+    }
     callees
 }
 
@@ -85,7 +88,10 @@ fn collect_statement_callees(statement: &hir::Stmt, callees: &mut BTreeSet<DefId
                 collect_statement_callees(statement, callees);
             }
         }
-        hir::StmtKind::Goto(_) | hir::StmtKind::Break(_) | hir::StmtKind::Continue(_) => {}
+        hir::StmtKind::ClosureBinding(_)
+        | hir::StmtKind::Goto(_)
+        | hir::StmtKind::Break(_)
+        | hir::StmtKind::Continue(_) => {}
     }
 }
 

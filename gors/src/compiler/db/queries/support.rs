@@ -300,6 +300,32 @@ impl PackageReferenceCollector {
                     self.expression(argument);
                 }
             }
+            ExprSyntaxKind::FunctionLiteral {
+                params,
+                results,
+                body,
+                ..
+            } => {
+                for field in &*params.fields {
+                    if let Some(ty) = &field.ty {
+                        self.expression(ty);
+                    }
+                }
+                if let Some(results) = results {
+                    for field in &*results.fields {
+                        if let Some(ty) = &field.ty {
+                            self.expression(ty);
+                        }
+                    }
+                }
+                self.scopes.push(BTreeSet::new());
+                self.bind_fields(params);
+                if let Some(results) = results {
+                    self.bind_fields(results);
+                }
+                self.block(body, false);
+                self.scopes.pop();
+            }
             ExprSyntaxKind::Selector { base, .. } => self.expression(base),
             ExprSyntaxKind::ArrayType { length, element } => {
                 if let Some(length) = length {
@@ -353,6 +379,22 @@ fn collect_all_expression_names(expression: &ExprSyntax, names: &mut BTreeSet<St
             collect_all_expression_names(callee, names);
             for argument in &**arguments {
                 collect_all_expression_names(argument, names);
+            }
+        }
+        ExprSyntaxKind::FunctionLiteral {
+            params, results, ..
+        } => {
+            for field in &*params.fields {
+                if let Some(ty) = &field.ty {
+                    collect_all_expression_names(ty, names);
+                }
+            }
+            if let Some(results) = results {
+                for field in &*results.fields {
+                    if let Some(ty) = &field.ty {
+                        collect_all_expression_names(ty, names);
+                    }
+                }
             }
         }
         ExprSyntaxKind::Selector { base, .. } => collect_all_expression_names(base, names),

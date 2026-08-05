@@ -58,7 +58,14 @@ impl FunctionLowerer {
             }
             ExprSyntaxKind::Ident(ident) => {
                 let name = ident.name.as_ref();
-                if let Some(local) = self.lookup_local(name) {
+                if self.lookup_closure(name).is_some() {
+                    return Err(Diagnostic::unsupported(
+                        format!(
+                            "local function {name} is non-escaping and can only be called directly"
+                        ),
+                        source,
+                    ));
+                } else if let Some(local) = self.lookup_local(name) {
                     let ty = self.place_ty(hir::Place::Local(local))?.clone();
                     self.local_expr(node, local, ty)
                 } else if let Some(constant) = self.constants.get(name).cloned() {
@@ -377,7 +384,19 @@ impl FunctionLowerer {
                     }
                     return Ok(component);
                 }
-                let (callee, params, results, variadic) = if self.lookup_local(name).is_some() {
+                let (callee, params, results, variadic) = if let Some(id) =
+                    self.lookup_closure(name)
+                {
+                    let closure = self.closures.get(id.index() as usize).ok_or_else(|| {
+                        Diagnostic::backend(format!("unknown local function {name}"))
+                    })?;
+                    (
+                        hir::Callee::Closure(id),
+                        closure.signature.params.clone(),
+                        closure.signature.results.clone(),
+                        closure.signature.variadic,
+                    )
+                } else if self.lookup_local(name).is_some() {
                     return Err(Diagnostic::unsupported(
                         format!(
                             "calling local value {name} requires function-value HIR and is not implemented"
@@ -431,19 +450,21 @@ impl FunctionLowerer {
                     }
                 };
                 match callee {
-                    hir::Callee::Function(_) if *spread && !variadic => {
+                    hir::Callee::Function(_) | hir::Callee::Closure(_) if *spread && !variadic => {
                         return Err(Diagnostic::semantic(
                             "... is only valid when calling a variadic function",
                             source,
                         ));
                     }
-                    hir::Callee::Function(_) if variadic && !*spread => {
+                    hir::Callee::Function(_) | hir::Callee::Closure(_) if variadic && !*spread => {
                         return Err(Diagnostic::unsupported(
                             "individual variadic arguments require slice-pack lowering",
                             source,
                         ));
                     }
-                    hir::Callee::Function(_) if arguments.len() != params.len() => {
+                    hir::Callee::Function(_) | hir::Callee::Closure(_)
+                        if arguments.len() != params.len() =>
+                    {
                         return Err(Diagnostic::semantic(
                             format!(
                                 "call has {} arguments; expected {}",
@@ -517,6 +538,12 @@ impl FunctionLowerer {
                     effects,
                     source,
                 }
+            }
+            ExprSyntaxKind::FunctionLiteral { .. } => {
+                return Err(Diagnostic::unsupported(
+                    "function literals currently require a non-escaping short declaration",
+                    source,
+                ));
             }
             ExprSyntaxKind::Selector { .. } => {
                 return Err(Diagnostic::unsupported(

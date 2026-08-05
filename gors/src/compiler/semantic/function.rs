@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use super::{ConstantSymbol, FunctionSymbol};
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
-use crate::compiler::ids::{DefId, LocalId, NodeId};
+use crate::compiler::ids::{ClosureId, DefId, LocalId, NodeId};
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{BlockSyntax, FieldListSyntax, SyntaxSource};
 use crate::compiler::types::{Signature, Ty};
@@ -19,12 +19,15 @@ pub(super) struct FunctionLowerer {
     pub(super) signature: Signature,
     pub(super) locals: Vec<hir::Local>,
     pub(super) scopes: Vec<BTreeMap<String, LocalId>>,
+    pub(super) closures: Vec<hir::Closure>,
+    pub(super) closure_scopes: Vec<BTreeMap<String, ClosureId>>,
     pub(super) named_results: Vec<Option<LocalId>>,
     pub(super) loop_labels: Vec<Option<String>>,
     pub(super) declared_labels: std::collections::BTreeSet<String>,
     pub(super) referenced_gotos: BTreeMap<String, SourceRef>,
     pub(super) defer_registration_depth: usize,
     pub(super) inside_deferred_closure: bool,
+    pub(super) inside_local_closure: bool,
     pub(super) source_plan: Vec<(SourceRef, SyntaxSource)>,
 }
 
@@ -57,6 +60,16 @@ impl FunctionLowerer {
         let id = LocalId(index);
         let source = SourceRef::local(self.owner, id);
         if let Some(name) = name.as_ref().filter(|name| name.as_str() != "_") {
+            if self
+                .closure_scopes
+                .last()
+                .is_some_and(|scope| scope.contains_key(name))
+            {
+                return Err(Diagnostic::semantic(
+                    format!("{name} redeclared in this block"),
+                    source,
+                ));
+            }
             let scope = self
                 .scopes
                 .last_mut()
@@ -165,12 +178,51 @@ impl FunctionLowerer {
             .and_then(|scope| scope.get(name).copied())
     }
 
+    pub(super) fn lookup_closure(&self, name: &str) -> Option<ClosureId> {
+        for (locals, closures) in self.scopes.iter().zip(&self.closure_scopes).rev() {
+            if locals.contains_key(name) {
+                return None;
+            }
+            if let Some(id) = closures.get(name) {
+                return Some(*id);
+            }
+        }
+        None
+    }
+
+    pub(super) fn bind_closure(
+        &mut self,
+        name: &str,
+        id: ClosureId,
+        source: SourceRef,
+    ) -> Result<(), Diagnostic> {
+        if self.lookup_current_local(name).is_some() {
+            return Err(Diagnostic::semantic(
+                format!("{name} redeclared in this block"),
+                source,
+            ));
+        }
+        let scope = self
+            .closure_scopes
+            .last_mut()
+            .ok_or_else(|| Diagnostic::backend("function has no closure scope"))?;
+        if scope.insert(name.to_owned(), id).is_some() {
+            return Err(Diagnostic::semantic(
+                format!("{name} redeclared in this block"),
+                source,
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) fn push_scope(&mut self) {
         self.scopes.push(BTreeMap::new());
+        self.closure_scopes.push(BTreeMap::new());
     }
 
     pub(super) fn pop_scope(&mut self) {
         self.scopes.pop();
+        self.closure_scopes.pop();
     }
 
     pub(super) fn lower_block(

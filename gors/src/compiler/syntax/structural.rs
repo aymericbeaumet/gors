@@ -209,6 +209,12 @@ pub enum ExprSyntaxKind {
         arguments: Arc<[ExprSyntax]>,
         spread: bool,
     },
+    FunctionLiteral {
+        has_type_parameters: bool,
+        params: FieldListSyntax,
+        results: Option<FieldListSyntax>,
+        body: BlockSyntax,
+    },
     Selector {
         base: Box<ExprSyntax>,
         member: IdentSyntax,

@@ -4,7 +4,9 @@ use sha2::{Digest, Sha256};
 
 use super::Fingerprint;
 use crate::compiler::hir;
-use crate::compiler::ids::{BasicBlockId, DefId, LocalId, NodeId, PackageId, QualifiedDefId};
+use crate::compiler::ids::{
+    BasicBlockId, ClosureId, DefId, LocalId, NodeId, PackageId, QualifiedDefId,
+};
 use crate::compiler::provenance::{SourceRef, SourceRefKind};
 use crate::compiler::types::{
     ComplexTy, ConstValue, FloatTy, IntTy, Signature, Ty, UintTy, UntypedTy,
@@ -128,6 +130,10 @@ pub(super) fn node_id(encoder: &mut Encoder, value: NodeId) {
 }
 
 pub(super) fn local_id(encoder: &mut Encoder, value: LocalId) {
+    encoder.u32(value.index());
+}
+
+pub(super) fn closure_id(encoder: &mut Encoder, value: ClosureId) {
     encoder.u32(value.index());
 }
 

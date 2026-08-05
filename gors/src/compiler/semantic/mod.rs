@@ -1,5 +1,6 @@
 //! Definition-demanded name resolution and type checking over owned syntax.
 
+mod closures;
 mod expression_lower;
 mod expressions;
 mod function;
@@ -184,12 +185,15 @@ pub(super) fn lower_function(
         signature: signature.clone(),
         locals: Vec::new(),
         scopes: vec![BTreeMap::new()],
+        closures: Vec::new(),
+        closure_scopes: vec![BTreeMap::new()],
         named_results: Vec::new(),
         loop_labels: Vec::new(),
         declared_labels: BTreeSet::new(),
         referenced_gotos: BTreeMap::new(),
         defer_registration_depth: 0,
         inside_deferred_closure: false,
+        inside_local_closure: false,
         source_plan: initial_source_plan,
     };
     let lowered = (|| {
@@ -225,6 +229,7 @@ pub(super) fn lower_function(
                 params,
                 named_results: lowerer.named_results,
                 locals: lowerer.locals,
+                closures: lowerer.closures,
                 body,
                 source: SourceRef::definition(definition),
             },
@@ -477,6 +482,7 @@ pub(super) fn eval_constant(
             }
         }
         ExprSyntaxKind::Call { .. }
+        | ExprSyntaxKind::FunctionLiteral { .. }
         | ExprSyntaxKind::Selector { .. }
         | ExprSyntaxKind::ArrayType { .. }
         | ExprSyntaxKind::CompositeLiteral { .. }

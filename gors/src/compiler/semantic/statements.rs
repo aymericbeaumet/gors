@@ -84,9 +84,9 @@ impl FunctionLowerer {
                 arguments,
                 spread,
             } => {
-                if self.inside_deferred_closure {
+                if self.inside_deferred_closure || self.inside_local_closure {
                     return Err(Diagnostic::unsupported(
-                        "nested defer statements are not yet implemented",
+                        "defer statements in function literals are not yet implemented",
                         source,
                     ));
                 }
@@ -258,6 +258,12 @@ impl FunctionLowerer {
                 body,
             } => {
                 let label = label.as_ref().map(|label| label.name.to_string());
+                if self.inside_local_closure && label.is_some() {
+                    return Err(Diagnostic::unsupported(
+                        "labeled loops in local function literals are not yet implemented",
+                        source,
+                    ));
+                }
                 if let Some(label) = &label
                     && !self.declared_labels.insert(label.clone())
                 {
@@ -299,9 +305,9 @@ impl FunctionLowerer {
                 return self.lower_switch(stmt, init.as_deref(), tag.as_ref(), cases, source);
             }
             StmtSyntaxKind::Labeled { label, statement } => {
-                if self.inside_deferred_closure {
+                if self.inside_deferred_closure || self.inside_local_closure {
                     return Err(Diagnostic::unsupported(
-                        "labels in deferred function literals are not yet implemented",
+                        "labels in function literals are not yet implemented",
                         source,
                     ));
                 }
@@ -318,9 +324,11 @@ impl FunctionLowerer {
                 }
             }
             StmtSyntaxKind::Branch { token, label } => {
-                if self.inside_deferred_closure {
+                if self.inside_deferred_closure
+                    || self.inside_local_closure && (*token == Token::GOTO || label.is_some())
+                {
                     return Err(Diagnostic::unsupported(
-                        "branch statements in deferred function literals are not yet implemented",
+                        "labeled branches in function literals are not yet implemented",
                         source,
                     ));
                 }
@@ -631,6 +639,9 @@ impl FunctionLowerer {
         right: &[ExprSyntax],
         source: SourceRef,
     ) -> Result<hir::StmtKind, Diagnostic> {
+        if let Some(binding) = self.try_lower_closure_binding(left, token, right, source) {
+            return binding;
+        }
         if let (
             [
                 ExprSyntax {

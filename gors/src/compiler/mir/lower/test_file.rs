@@ -5,7 +5,7 @@ use super::FunctionLowerer;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 
-pub(super) fn lower_file(file: &hir::File) -> Result<File, Vec<Diagnostic>> {
+pub(in crate::compiler::mir) fn lower_file(file: &hir::File) -> Result<File, Vec<Diagnostic>> {
     let mut functions = Vec::new();
     let mut diagnostics = Vec::new();
     for function in &file.functions {

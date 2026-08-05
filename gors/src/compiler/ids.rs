@@ -162,6 +162,20 @@ impl LocalId {
     }
 }
 
+/// Dense identity of one non-escaping function literal within its owner.
+///
+/// Like [`LocalId`], this is revision-local and cannot be used as a query or
+/// persistent cache key.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ClosureId(pub u32);
+
+impl ClosureId {
+    /// Canonical owner-local index for compiler-owned encodings.
+    pub(in crate::compiler) const fn index(self) -> u32 {
+        self.0
+    }
+}
+
 /// Dense index into one MIR or Rust-IR function's block table.
 ///
 /// Like [`LocalId`], this is an owner-local stage index, never a persistent

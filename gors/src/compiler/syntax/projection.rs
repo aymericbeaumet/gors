@@ -762,7 +762,17 @@ impl StructuralProjector {
                     .into(),
             },
             ast::Expr::Ellipsis(_) => ExprSyntaxKind::Unsupported("ellipsis"),
-            ast::Expr::FuncLit(_) => ExprSyntaxKind::Unsupported("function literal"),
+            ast::Expr::FuncLit(function) => ExprSyntaxKind::FunctionLiteral {
+                has_type_parameters: function.type_.type_params.is_some(),
+                params: self.field_list(&function.type_.params)?,
+                results: function
+                    .type_
+                    .results
+                    .as_ref()
+                    .map(|fields| self.field_list(fields))
+                    .transpose()?,
+                body: self.block(&function.body)?,
+            },
             ast::Expr::FuncType(_) => ExprSyntaxKind::Unsupported("function type"),
             ast::Expr::IndexExpr(expression) => ExprSyntaxKind::Index {
                 base: Box::new(self.expression(&expression.x)?),

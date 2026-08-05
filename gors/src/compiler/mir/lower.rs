@@ -1,5 +1,6 @@
 //! Evaluation-order-explicit lowering from typed HIR to MIR.
 
+mod closures;
 mod flow;
 mod panic_cleanup;
 #[cfg(test)]
@@ -16,7 +17,7 @@ use super::{
 };
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
-use crate::compiler::ids::{BasicBlockId, LocalId};
+use crate::compiler::ids::{BasicBlockId, ClosureId, LocalId};
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::types::{ConstValue, Ty};
 use std::collections::BTreeMap;
@@ -36,6 +37,9 @@ struct FunctionLowerer {
     loops: Vec<LoopTargets>,
     labels: BTreeMap<String, BasicBlockId>,
     named_results: Vec<Option<LocalId>>,
+    closures: Vec<hir::Closure>,
+    closure_returns: Vec<ClosureReturn>,
+    active_closures: Vec<ClosureId>,
     deferred: Vec<hir::Block>,
     all_deferred: Vec<DeferredAction>,
     defer_flags: Vec<LocalId>,
@@ -47,6 +51,13 @@ struct FunctionLowerer {
 struct DeferredAction {
     registered: LocalId,
     body: hir::Block,
+}
+
+#[derive(Clone)]
+struct ClosureReturn {
+    destinations: Vec<Place>,
+    target: BasicBlockId,
+    named_results: Vec<Option<LocalId>>,
 }
 
 #[derive(Clone)]
@@ -89,6 +100,9 @@ impl FunctionLowerer {
             loops: Vec::new(),
             labels: BTreeMap::new(),
             named_results: hir.named_results.clone(),
+            closures: hir.closures.clone(),
+            closure_returns: Vec::new(),
+            active_closures: Vec::new(),
             deferred: Vec::new(),
             all_deferred: Vec::new(),
             defer_flags: Vec::new(),
@@ -522,12 +536,19 @@ impl FunctionLowerer {
             hir::StmtKind::Expr(expr) => {
                 let _ = self.lower_expr(expr)?;
             }
+            hir::StmtKind::ClosureBinding(_) => {}
             hir::StmtKind::Defer {
                 parameters,
                 values,
                 body,
             } => self.register_defer(parameters, values, body, statement.source)?,
-            hir::StmtKind::Return(values) => self.lower_return(values, statement.source)?,
+            hir::StmtKind::Return(values) => {
+                if self.closure_returns.is_empty() {
+                    self.lower_return(values, statement.source)?;
+                } else {
+                    self.lower_closure_return(values, statement.source)?;
+                }
+            }
             hir::StmtKind::Block(block) => self.lower_block(block)?,
             hir::StmtKind::If {
                 init,
@@ -852,6 +873,23 @@ impl FunctionLowerer {
                 Ok(Operand::Read(place))
             }
             hir::ExprKind::Call { callee, args } => {
+                if let hir::Callee::Closure(id) = callee {
+                    if matches!(expr.ty, Ty::Tuple(_)) {
+                        return Err(Diagnostic::backend(
+                            "tuple-valued local function call bypassed tuple lowering",
+                        ));
+                    }
+                    let destination = (expr.ty != Ty::Unit).then(|| Place {
+                        local: self.new_temp(expr.ty.clone()),
+                    });
+                    self.lower_closure_call(
+                        *id,
+                        args,
+                        destination.into_iter().collect(),
+                        expr.source,
+                    )?;
+                    return Ok(destination.map_or(Operand::Unit, Operand::Read));
+                }
                 let mut operands = Vec::new();
                 for arg in args {
                     let operand = self.lower_expr(arg)?;
@@ -880,41 +918,6 @@ impl FunctionLowerer {
                 Ok(destination.map_or(Operand::Unit, Operand::Read))
             }
         }
-    }
-
-    fn lower_call_into(
-        &mut self,
-        expr: &hir::Expr,
-        destinations: Vec<Place>,
-    ) -> Result<(), Diagnostic> {
-        let hir::ExprKind::Call { callee, args } = &expr.kind else {
-            return Err(Diagnostic::backend(
-                "tuple-valued non-call reached MIR call lowering",
-            ));
-        };
-        let mut operands = Vec::with_capacity(args.len());
-        for argument in args {
-            let operand = self.lower_expr(argument)?;
-            operands.push(self.materialize(
-                operand,
-                argument.ty.clone(),
-                Provenance::Source(argument.source),
-            )?);
-        }
-        let provenance = Provenance::Source(expr.source);
-        let target = self.new_block(provenance.clone());
-        self.terminate(make_terminator(
-            TerminatorKind::Call {
-                callee: *callee,
-                args: operands,
-                destinations,
-                target,
-            },
-            call_effects(),
-            provenance,
-        ))?;
-        self.current = target;
-        Ok(())
     }
 
     fn lower_short_circuit(

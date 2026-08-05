@@ -496,6 +496,28 @@ fn generated_multiple_results_preserve_call_and_return_arity() {
 }
 
 #[test]
+fn generated_local_functions_capture_mutable_state_and_return_directly() {
+    let run = compile_and_run(
+        r#"
+            package main
+            func main() {
+                total := 0
+                add := func(value int) (result int) {
+                    total = total + value
+                    result = total
+                    return
+                }
+                println(add(2), add(3))
+                add(4)
+                println(total)
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"2 5\n9\n");
+}
+
+#[test]
 fn generated_deferred_closures_capture_arguments_and_update_named_results() {
     let run = compile_and_run(
         r#"

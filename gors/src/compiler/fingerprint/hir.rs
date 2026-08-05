@@ -2,7 +2,8 @@
 
 use super::Fingerprint;
 use super::encoder::{
-    Encoder, const_value, def_id, hir_effects, local_id, node_id, signature, source_ref, ty,
+    Encoder, closure_id, const_value, def_id, hir_effects, local_id, node_id, signature,
+    source_ref, ty,
 };
 use crate::compiler::hir;
 
@@ -66,10 +67,30 @@ fn encode_function(encoder: &mut Encoder, function: &hir::Function) {
     encoder.field(b"locals", |encoder| {
         encoder.sequence(&function.locals, encode_local);
     });
+    encoder.field(b"closures", |encoder| {
+        encoder.sequence(&function.closures, encode_closure);
+    });
     encoder.field(b"body", |encoder| {
         encode_block(encoder, &function.body);
     });
     encoder.field(b"source", |encoder| source_ref(encoder, function.source));
+}
+
+fn encode_closure(encoder: &mut Encoder, closure: &hir::Closure) {
+    encoder.field(b"id", |encoder| closure_id(encoder, closure.id));
+    encoder.field(b"signature", |encoder| {
+        signature(encoder, &closure.signature);
+    });
+    encoder.field(b"parameters", |encoder| {
+        encoder.sequence(&closure.params, |encoder, id| local_id(encoder, *id));
+    });
+    encoder.field(b"named-results", |encoder| {
+        encoder.sequence(&closure.named_results, |encoder, result| {
+            encoder.option(result.as_ref(), |encoder, id| local_id(encoder, *id));
+        });
+    });
+    encoder.field(b"body", |encoder| encode_block(encoder, &closure.body));
+    encoder.field(b"source", |encoder| source_ref(encoder, closure.source));
 }
 
 fn encode_local(encoder: &mut Encoder, local: &hir::Local) {
@@ -155,6 +176,9 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
             encoder.variant(b"expression", |encoder| {
                 encode_expression(encoder, expression)
             });
+        }
+        hir::StmtKind::ClosureBinding(id) => {
+            encoder.variant(b"closure-binding", |encoder| closure_id(encoder, *id));
         }
         hir::StmtKind::Defer {
             parameters,
@@ -385,6 +409,9 @@ fn encode_callee(encoder: &mut Encoder, callee: hir::Callee) {
     match callee {
         hir::Callee::Function(id) => {
             encoder.variant(b"function", |encoder| def_id(encoder, id));
+        }
+        hir::Callee::Closure(id) => {
+            encoder.variant(b"closure", |encoder| closure_id(encoder, id));
         }
         hir::Callee::Builtin(builtin) => {
             encoder.variant(b"builtin", |encoder| encode_builtin(encoder, builtin));

@@ -1,6 +1,6 @@
 //! Typed, source-shaped high-level IR.
 
-use super::ids::{DefId, LocalId, NodeId};
+use super::ids::{ClosureId, DefId, LocalId, NodeId};
 use super::provenance::SourceRef;
 use super::types::{ConstValue, Signature, Ty};
 
@@ -29,6 +29,17 @@ pub struct Function {
     pub params: Vec<LocalId>,
     pub named_results: Vec<Option<LocalId>>,
     pub locals: Vec<Local>,
+    pub closures: Vec<Closure>,
+    pub body: Block,
+    pub source: SourceRef,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Closure {
+    pub id: ClosureId,
+    pub signature: Signature,
+    pub params: Vec<LocalId>,
+    pub named_results: Vec<Option<LocalId>>,
     pub body: Block,
     pub source: SourceRef,
 }
@@ -85,6 +96,7 @@ pub enum StmtKind {
         value: Expr,
     },
     Expr(Expr),
+    ClosureBinding(ClosureId),
     Defer {
         parameters: Vec<LocalId>,
         values: Vec<Expr>,
@@ -185,6 +197,7 @@ pub enum ExprKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Callee {
     Function(DefId),
+    Closure(ClosureId),
     Builtin(Builtin),
 }
 

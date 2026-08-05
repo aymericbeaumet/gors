@@ -226,6 +226,12 @@ fn lower_terminator(
                 destinations: destinations.into_iter().map(lower_place).collect(),
                 next,
             },
+            hir::Callee::Closure(id) => {
+                return Err(Diagnostic::backend(format!(
+                    "local function {} survived MIR inlining",
+                    id.0
+                )));
+            }
             hir::Callee::Builtin(builtin @ (hir::Builtin::Print | hir::Builtin::Println)) => {
                 return lower_print_call(
                     builtin,
