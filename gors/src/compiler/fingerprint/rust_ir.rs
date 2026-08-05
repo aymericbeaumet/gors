@@ -243,6 +243,15 @@ fn encode_constant(encoder: &mut Encoder, constant: &rust_ir::Constant) {
         rust_ir::Constant::I64(value) => {
             encoder.variant(b"i64", |encoder| encoder.i64(*value));
         }
+        rust_ir::Constant::F64(bits) => {
+            encoder.variant(b"f64-bits", |encoder| encoder.u64(*bits));
+        }
+        rust_ir::Constant::Complex128 { real, imag } => {
+            encoder.variant(b"complex128-bits", |encoder| {
+                encoder.field(b"real", |encoder| encoder.u64(*real));
+                encoder.field(b"imag", |encoder| encoder.u64(*imag));
+            });
+        }
         rust_ir::Constant::RuntimeStaticBytes { op, bytes } => {
             encoder.variant(b"runtime-static-bytes", |encoder| {
                 encoder.field(b"operation", |encoder| encode_runtime_op(encoder, *op));
@@ -343,6 +352,8 @@ fn encode_type(encoder: &mut Encoder, ty: rust_ir::RustType) {
             rust_ir::RustType::Unit => b"unit",
             rust_ir::RustType::Bool => b"bool",
             rust_ir::RustType::I64 => b"i64",
+            rust_ir::RustType::F64 => b"f64",
+            rust_ir::RustType::Complex128 => b"complex128",
             rust_ir::RustType::GoString => b"go-string",
         },
         |_| {},

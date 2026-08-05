@@ -188,6 +188,8 @@ pub enum ReadOp {
 pub enum Constant {
     Bool(bool),
     I64(i64),
+    F64(u64),
+    Complex128 { real: u64, imag: u64 },
     RuntimeStaticBytes { op: RuntimeOp, bytes: Vec<u8> },
 }
 
@@ -228,6 +230,8 @@ pub enum RustType {
     Unit,
     Bool,
     I64,
+    F64,
+    Complex128,
     GoString,
 }
 
@@ -235,7 +239,9 @@ impl RustType {
     #[must_use]
     pub fn conservative_read_op(self) -> Option<ReadOp> {
         match self {
-            Self::Bool | Self::I64 => Some(ReadOp::ProvenInitializedCopy),
+            Self::Bool | Self::I64 | Self::F64 | Self::Complex128 => {
+                Some(ReadOp::ProvenInitializedCopy)
+            }
             Self::GoString => Some(ReadOp::ProvenInitializedClone),
             Self::Unit => None,
         }
@@ -243,7 +249,9 @@ impl RustType {
 
     pub(super) fn read_op_for_liveness(self, live_after: bool) -> Option<ReadOp> {
         match self {
-            Self::Bool | Self::I64 => Some(ReadOp::ProvenInitializedCopy),
+            Self::Bool | Self::I64 | Self::F64 | Self::Complex128 => {
+                Some(ReadOp::ProvenInitializedCopy)
+            }
             Self::GoString if live_after => Some(ReadOp::ProvenInitializedClone),
             Self::GoString => Some(ReadOp::ProvenLastUseMove),
             Self::Unit => None,
@@ -253,11 +261,13 @@ impl RustType {
     pub(super) fn supports_read_op(self, op: ReadOp) -> bool {
         matches!(
             (self, op),
-            (Self::Bool | Self::I64, ReadOp::ProvenInitializedCopy)
-                | (
-                    Self::GoString,
-                    ReadOp::ProvenInitializedClone | ReadOp::ProvenLastUseMove
-                )
+            (
+                Self::Bool | Self::I64 | Self::F64 | Self::Complex128,
+                ReadOp::ProvenInitializedCopy
+            ) | (
+                Self::GoString,
+                ReadOp::ProvenInitializedClone | ReadOp::ProvenLastUseMove
+            )
         )
     }
 }

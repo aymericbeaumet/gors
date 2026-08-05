@@ -354,6 +354,8 @@ fn emit_primitive_op(operation: PrimitiveOp, args: &[syn::Expr]) -> Result<syn::
     let expression = match (operation, args) {
         (BoolNot | IntBitNot, [value]) => syn::parse_quote! { !(#value) },
         (IntWrappingNeg, [value]) => syn::parse_quote! { (#value).wrapping_neg() },
+        (FloatNeg, [value]) => syn::parse_quote! { -(#value) },
+        (ComplexNeg, [value]) => syn::parse_quote! { [-(#value)[0], -(#value)[1]] },
         (IntBitAnd, [left, right]) => syn::parse_quote! { (#left) & (#right) },
         (IntBitOr, [left, right]) => syn::parse_quote! { (#left) | (#right) },
         (IntBitXor, [left, right]) => syn::parse_quote! { (#left) ^ (#right) },
@@ -367,20 +369,53 @@ fn emit_primitive_op(operation: PrimitiveOp, args: &[syn::Expr]) -> Result<syn::
         (IntWrappingMul, [left, right]) => {
             syn::parse_quote! { (#left).wrapping_mul(#right) }
         }
-        (BoolEqual | IntEqual | StringEqual, [left, right]) => {
+        (FloatAdd, [left, right]) => syn::parse_quote! { (#left) + (#right) },
+        (FloatSub, [left, right]) => syn::parse_quote! { (#left) - (#right) },
+        (FloatMul, [left, right]) => syn::parse_quote! { (#left) * (#right) },
+        (FloatDiv, [left, right]) => syn::parse_quote! { (#left) / (#right) },
+        (ComplexAdd, [left, right]) => {
+            syn::parse_quote! { [(#left)[0] + (#right)[0], (#left)[1] + (#right)[1]] }
+        }
+        (ComplexSub, [left, right]) => {
+            syn::parse_quote! { [(#left)[0] - (#right)[0], (#left)[1] - (#right)[1]] }
+        }
+        (ComplexMul, [left, right]) => syn::parse_quote! {
+            [
+                (#left)[0] * (#right)[0] - (#left)[1] * (#right)[1],
+                (#left)[0] * (#right)[1] + (#left)[1] * (#right)[0],
+            ]
+        },
+        (ComplexDiv, [left, right]) => syn::parse_quote! {
+            {
+                let __gors_denominator = (#right)[0] * (#right)[0] + (#right)[1] * (#right)[1];
+                [
+                    ((#left)[0] * (#right)[0] + (#left)[1] * (#right)[1]) / __gors_denominator,
+                    ((#left)[1] * (#right)[0] - (#left)[0] * (#right)[1]) / __gors_denominator,
+                ]
+            }
+        },
+        (BoolEqual | IntEqual | FloatEqual | StringEqual, [left, right]) => {
             syn::parse_quote! { (#left) == (#right) }
         }
-        (BoolNotEqual | IntNotEqual | StringNotEqual, [left, right]) => {
+        (BoolNotEqual | IntNotEqual | FloatNotEqual | StringNotEqual, [left, right]) => {
             syn::parse_quote! { (#left) != (#right) }
         }
-        (IntLess | StringLess, [left, right]) => syn::parse_quote! { (#left) < (#right) },
-        (IntLessEqual | StringLessEqual, [left, right]) => {
+        (ComplexEqual, [left, right]) => syn::parse_quote! {
+            (#left)[0] == (#right)[0] && (#left)[1] == (#right)[1]
+        },
+        (ComplexNotEqual, [left, right]) => syn::parse_quote! {
+            (#left)[0] != (#right)[0] || (#left)[1] != (#right)[1]
+        },
+        (IntLess | FloatLess | StringLess, [left, right]) => {
+            syn::parse_quote! { (#left) < (#right) }
+        }
+        (IntLessEqual | FloatLessEqual | StringLessEqual, [left, right]) => {
             syn::parse_quote! { (#left) <= (#right) }
         }
-        (IntGreater | StringGreater, [left, right]) => {
+        (IntGreater | FloatGreater | StringGreater, [left, right]) => {
             syn::parse_quote! { (#left) > (#right) }
         }
-        (IntGreaterEqual | StringGreaterEqual, [left, right]) => {
+        (IntGreaterEqual | FloatGreaterEqual | StringGreaterEqual, [left, right]) => {
             syn::parse_quote! { (#left) >= (#right) }
         }
         (operation, _) => {
@@ -460,6 +495,20 @@ fn emit_constant(value: &Constant) -> Result<syn::Expr, Diagnostic> {
                 })
             }
         }
+        Constant::F64(bits) => {
+            let bits = syn::LitInt::new(&format!("{bits}u64"), Span::mixed_site());
+            Ok(syn::parse_quote! { ::std::primitive::f64::from_bits(#bits) })
+        }
+        Constant::Complex128 { real, imag } => {
+            let real = syn::LitInt::new(&format!("{real}u64"), Span::mixed_site());
+            let imag = syn::LitInt::new(&format!("{imag}u64"), Span::mixed_site());
+            Ok(syn::parse_quote! {
+                [
+                    ::std::primitive::f64::from_bits(#real),
+                    ::std::primitive::f64::from_bits(#imag),
+                ]
+            })
+        }
         Constant::RuntimeStaticBytes { op, bytes } => {
             let bytes = syn::LitByteStr::new(bytes, Span::mixed_site());
             Ok(emit_runtime_call(*op, vec![syn::parse_quote! { #bytes }]))
@@ -486,6 +535,8 @@ fn emit_type(ty: &RustType) -> Result<syn::Type, Diagnostic> {
         RustType::Bool => syn::parse_quote! { bool },
         RustType::GoString => syn::parse_quote! { ::#runtime_crate::GoString },
         RustType::I64 => syn::parse_quote! { i64 },
+        RustType::F64 => syn::parse_quote! { f64 },
+        RustType::Complex128 => syn::parse_quote! { [f64; 2] },
     })
 }
 

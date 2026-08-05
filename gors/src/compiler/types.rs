@@ -12,6 +12,7 @@ pub enum Ty {
     Int(IntTy),
     Uint(UintTy),
     Float(FloatTy),
+    Complex(ComplexTy),
     String,
     Tuple(Vec<Ty>),
     Untyped(UntypedTy),
@@ -43,10 +44,17 @@ pub enum FloatTy {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ComplexTy {
+    Complex64,
+    Complex128,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum UntypedTy {
     Bool,
     Int,
     Float,
+    Complex,
     String,
 }
 
@@ -59,6 +67,11 @@ pub enum ConstValue {
     /// The original exact Go spelling; parsing to `f64` is an emitter concern
     /// only after the semantic layer has selected float32/float64.
     Float(String),
+    /// Exact real and imaginary component spellings.
+    Complex {
+        real: String,
+        imag: String,
+    },
     /// Go strings are bytes, not Rust UTF-8 strings.
     String(Vec<u8>),
 }
@@ -75,6 +88,7 @@ impl Ty {
             Self::Untyped(UntypedTy::Bool) => Self::Bool,
             Self::Untyped(UntypedTy::Int) => Self::Int(IntTy::Int),
             Self::Untyped(UntypedTy::Float) => Self::Float(FloatTy::Float64),
+            Self::Untyped(UntypedTy::Complex) => Self::Complex(ComplexTy::Complex128),
             Self::Untyped(UntypedTy::String) => Self::String,
             other => other.clone(),
         }
@@ -86,7 +100,8 @@ impl Ty {
             Self::Int(_)
                 | Self::Uint(_)
                 | Self::Float(_)
-                | Self::Untyped(UntypedTy::Int | UntypedTy::Float)
+                | Self::Complex(_)
+                | Self::Untyped(UntypedTy::Int | UntypedTy::Float | UntypedTy::Complex)
         )
     }
 
@@ -100,7 +115,14 @@ impl Ty {
     /// Values the bootstrap backend can currently execute without relying on
     /// target-dependent or incomplete numeric semantics.
     pub fn is_bootstrap_value(&self) -> bool {
-        matches!(self, Self::Bool | Self::Int(IntTy::Int) | Self::String)
+        matches!(
+            self,
+            Self::Bool
+                | Self::Int(IntTy::Int)
+                | Self::Float(FloatTy::Float64)
+                | Self::Complex(ComplexTy::Complex128)
+                | Self::String
+        )
     }
 
     pub fn zero(&self) -> Option<ConstValue> {
@@ -108,6 +130,10 @@ impl Ty {
             Self::Bool => Some(ConstValue::Bool(false)),
             Self::Int(_) | Self::Uint(_) => Some(ConstValue::Int("0".into())),
             Self::Float(_) => Some(ConstValue::Float("0.0".into())),
+            Self::Complex(_) => Some(ConstValue::Complex {
+                real: "0.0".into(),
+                imag: "0.0".into(),
+            }),
             Self::String => Some(ConstValue::String(Vec::new())),
             Self::Unit | Self::Tuple(_) | Self::Untyped(_) => None,
         }
@@ -130,10 +156,69 @@ impl ConstValue {
                 };
                 value >= BigInt::from(i64::MIN) && value <= BigInt::from(i64::MAX)
             }
+            (Self::Float(value), Ty::Untyped(UntypedTy::Float)) => parse_go_float(value).is_some(),
+            (Self::Float(value), Ty::Float(FloatTy::Float64)) => parse_go_float(value).is_some(),
+            (
+                Self::Complex { real, imag },
+                Ty::Untyped(UntypedTy::Complex) | Ty::Complex(ComplexTy::Complex128),
+            ) => parse_go_float(real).is_some() && parse_go_float(imag).is_some(),
             // Narrow integers, unsigned integers, and floating-point values
             // remain in the semantic algebra for the next frontier, but are
             // deliberately not executable yet.
             _ => false,
+        }
+    }
+}
+
+pub(crate) fn parse_go_float(spelling: &str) -> Option<f64> {
+    let spelling = spelling.replace('_', "");
+    let unsigned = spelling
+        .strip_prefix('+')
+        .or_else(|| spelling.strip_prefix('-'))
+        .unwrap_or(&spelling);
+    let sign = if spelling.starts_with('-') { -1.0 } else { 1.0 };
+    if let Some(hexadecimal) = unsigned
+        .strip_prefix("0x")
+        .or_else(|| unsigned.strip_prefix("0X"))
+    {
+        let (significand, exponent) = hexadecimal.split_once(['p', 'P'])?;
+        let exponent = exponent.parse::<i32>().ok()?;
+        let (integer, fraction) = significand.split_once('.').unwrap_or((significand, ""));
+        if integer.is_empty() && fraction.is_empty() {
+            return None;
+        }
+        let mut value = 0.0;
+        for digit in integer.chars() {
+            value = value * 16.0 + f64::from(digit.to_digit(16)?);
+        }
+        let mut place = 1.0 / 16.0;
+        for digit in fraction.chars() {
+            value += f64::from(digit.to_digit(16)?) * place;
+            place /= 16.0;
+        }
+        let value = sign * value * 2.0_f64.powi(exponent);
+        value.is_finite().then_some(value)
+    } else {
+        let value = spelling.parse::<f64>().ok()?;
+        value.is_finite().then_some(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_go_float;
+
+    #[test]
+    fn parses_decimal_and_hexadecimal_go_float_literals() {
+        for (spelling, expected) in [
+            ("1.25", 1.25),
+            ("1.5e1", 15.0),
+            ("0x1p-2", 0.25),
+            ("0x1.Fp+0", 1.9375),
+            ("0X.8P+0", 0.5),
+            ("-0x1p+2", -4.0),
+        ] {
+            assert_eq!(parse_go_float(spelling), Some(expected), "{spelling}");
         }
     }
 }

@@ -34,6 +34,24 @@ pub enum PrimitiveOp {
     IntWrappingSub,
     IntWrappingMul,
     IntWrappingNeg,
+    FloatAdd,
+    FloatSub,
+    FloatMul,
+    FloatDiv,
+    FloatNeg,
+    FloatEqual,
+    FloatNotEqual,
+    FloatLess,
+    FloatLessEqual,
+    FloatGreater,
+    FloatGreaterEqual,
+    ComplexAdd,
+    ComplexSub,
+    ComplexMul,
+    ComplexDiv,
+    ComplexNeg,
+    ComplexEqual,
+    ComplexNotEqual,
 }
 
 /// Stable compact identity of one directly emitted operation.
@@ -75,6 +93,24 @@ impl PrimitiveOp {
         Self::IntWrappingSub,
         Self::IntWrappingMul,
         Self::IntWrappingNeg,
+        Self::FloatAdd,
+        Self::FloatSub,
+        Self::FloatMul,
+        Self::FloatDiv,
+        Self::FloatNeg,
+        Self::FloatEqual,
+        Self::FloatNotEqual,
+        Self::FloatLess,
+        Self::FloatLessEqual,
+        Self::FloatGreater,
+        Self::FloatGreaterEqual,
+        Self::ComplexAdd,
+        Self::ComplexSub,
+        Self::ComplexMul,
+        Self::ComplexDiv,
+        Self::ComplexNeg,
+        Self::ComplexEqual,
+        Self::ComplexNotEqual,
     ];
 
     /// Exact typed signature for this directly emitted operation.
@@ -93,6 +129,27 @@ impl PrimitiveOp {
                 RuntimeSignature::new(TWO_I64_PARAMETERS, RuntimeType::I64)
             }
             Self::IntWrappingNeg => RuntimeSignature::new(I64_PARAMETER, RuntimeType::I64),
+            Self::FloatAdd | Self::FloatSub | Self::FloatMul | Self::FloatDiv => {
+                RuntimeSignature::new(TWO_F64_PARAMETERS, RuntimeType::F64)
+            }
+            Self::FloatNeg => RuntimeSignature::new(F64_PARAMETER, RuntimeType::F64),
+            Self::FloatEqual
+            | Self::FloatNotEqual
+            | Self::FloatLess
+            | Self::FloatLessEqual
+            | Self::FloatGreater
+            | Self::FloatGreaterEqual => {
+                RuntimeSignature::new(TWO_F64_PARAMETERS, RuntimeType::Bool)
+            }
+            Self::ComplexAdd | Self::ComplexSub | Self::ComplexMul | Self::ComplexDiv => {
+                RuntimeSignature::new(TWO_COMPLEX128_PARAMETERS, RuntimeType::Complex128)
+            }
+            Self::ComplexNeg => {
+                RuntimeSignature::new(COMPLEX128_PARAMETER, RuntimeType::Complex128)
+            }
+            Self::ComplexEqual | Self::ComplexNotEqual => {
+                RuntimeSignature::new(TWO_COMPLEX128_PARAMETERS, RuntimeType::Bool)
+            }
             Self::IntEqual
             | Self::IntNotEqual
             | Self::IntLess
@@ -140,6 +197,24 @@ impl PrimitiveOp {
             Self::IntWrappingSub => "int-wrapping-sub",
             Self::IntWrappingMul => "int-wrapping-mul",
             Self::IntWrappingNeg => "int-wrapping-neg",
+            Self::FloatAdd => "float-add",
+            Self::FloatSub => "float-sub",
+            Self::FloatMul => "float-mul",
+            Self::FloatDiv => "float-div",
+            Self::FloatNeg => "float-neg",
+            Self::FloatEqual => "float-equal",
+            Self::FloatNotEqual => "float-not-equal",
+            Self::FloatLess => "float-less",
+            Self::FloatLessEqual => "float-less-equal",
+            Self::FloatGreater => "float-greater",
+            Self::FloatGreaterEqual => "float-greater-equal",
+            Self::ComplexAdd => "complex-add",
+            Self::ComplexSub => "complex-sub",
+            Self::ComplexMul => "complex-mul",
+            Self::ComplexDiv => "complex-div",
+            Self::ComplexNeg => "complex-neg",
+            Self::ComplexEqual => "complex-equal",
+            Self::ComplexNotEqual => "complex-not-equal",
         }
     }
 
@@ -159,6 +234,24 @@ impl PrimitiveOp {
             Self::IntWrappingSub => 22,
             Self::IntWrappingMul => 23,
             Self::IntWrappingNeg => 24,
+            Self::FloatAdd => 25,
+            Self::FloatSub => 26,
+            Self::FloatMul => 27,
+            Self::FloatDiv => 28,
+            Self::FloatNeg => 29,
+            Self::FloatEqual => 30,
+            Self::FloatNotEqual => 31,
+            Self::FloatLess => 32,
+            Self::FloatLessEqual => 33,
+            Self::FloatGreater => 34,
+            Self::FloatGreaterEqual => 35,
+            Self::ComplexAdd => 36,
+            Self::ComplexSub => 37,
+            Self::ComplexMul => 38,
+            Self::ComplexDiv => 39,
+            Self::ComplexNeg => 40,
+            Self::ComplexEqual => 41,
+            Self::ComplexNotEqual => 42,
             Self::IntEqual => 9,
             Self::IntNotEqual => 10,
             Self::IntLess => 11,
@@ -190,6 +283,8 @@ pub enum RuntimeType {
     GoString,
     ByteSlice,
     StaticByteSlice,
+    F64,
+    Complex128,
 }
 
 impl RuntimeType {
@@ -201,6 +296,8 @@ impl RuntimeType {
             Self::GoString => 4,
             Self::ByteSlice => 5,
             Self::StaticByteSlice => 6,
+            Self::F64 => 7,
+            Self::Complex128 => 8,
         }
     }
 
@@ -247,6 +344,11 @@ const BOOL_PARAMETER: &[RuntimeType] = &[RuntimeType::Bool];
 const TWO_BOOL_PARAMETERS: &[RuntimeType] = &[RuntimeType::Bool, RuntimeType::Bool];
 const I64_PARAMETER: &[RuntimeType] = &[RuntimeType::I64];
 const TWO_I64_PARAMETERS: &[RuntimeType] = &[RuntimeType::I64, RuntimeType::I64];
+const F64_PARAMETER: &[RuntimeType] = &[RuntimeType::F64];
+const TWO_F64_PARAMETERS: &[RuntimeType] = &[RuntimeType::F64, RuntimeType::F64];
+const COMPLEX128_PARAMETER: &[RuntimeType] = &[RuntimeType::Complex128];
+const TWO_COMPLEX128_PARAMETERS: &[RuntimeType] =
+    &[RuntimeType::Complex128, RuntimeType::Complex128];
 const GO_STRING_PARAMETER: &[RuntimeType] = &[RuntimeType::GoString];
 const TWO_GO_STRING_PARAMETERS: &[RuntimeType] = &[RuntimeType::GoString, RuntimeType::GoString];
 const NO_CAPABILITIES: &[TargetCapability] = &[];

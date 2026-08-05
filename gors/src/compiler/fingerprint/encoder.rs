@@ -6,7 +6,9 @@ use super::Fingerprint;
 use crate::compiler::hir;
 use crate::compiler::ids::{BasicBlockId, DefId, LocalId, NodeId, PackageId, QualifiedDefId};
 use crate::compiler::provenance::{SourceRef, SourceRefKind};
-use crate::compiler::types::{ConstValue, FloatTy, IntTy, Signature, Ty, UintTy, UntypedTy};
+use crate::compiler::types::{
+    ComplexTy, ConstValue, FloatTy, IntTy, Signature, Ty, UintTy, UntypedTy,
+};
 
 const FORMAT_MAGIC: &[u8] = b"gors-stage-product";
 const SCHEMA_VERSION: u32 = 2;
@@ -160,6 +162,7 @@ pub(super) fn ty(encoder: &mut Encoder, value: &Ty) {
         Ty::Int(value) => encoder.variant(b"int", |encoder| int_ty(encoder, *value)),
         Ty::Uint(value) => encoder.variant(b"uint", |encoder| uint_ty(encoder, *value)),
         Ty::Float(value) => encoder.variant(b"float", |encoder| float_ty(encoder, *value)),
+        Ty::Complex(value) => encoder.variant(b"complex", |encoder| complex_ty(encoder, *value)),
         Ty::String => encoder.variant(b"string", |_| {}),
         Ty::Tuple(values) => {
             encoder.variant(b"tuple", |encoder| encoder.sequence(values, ty));
@@ -207,12 +210,23 @@ fn float_ty(encoder: &mut Encoder, value: FloatTy) {
     );
 }
 
+fn complex_ty(encoder: &mut Encoder, value: ComplexTy) {
+    encoder.variant(
+        match value {
+            ComplexTy::Complex64 => b"complex64",
+            ComplexTy::Complex128 => b"complex128",
+        },
+        |_| {},
+    );
+}
+
 fn untyped_ty(encoder: &mut Encoder, value: UntypedTy) {
     encoder.variant(
         match value {
             UntypedTy::Bool => b"bool",
             UntypedTy::Int => b"int",
             UntypedTy::Float => b"float",
+            UntypedTy::Complex => b"complex",
             UntypedTy::String => b"string",
         },
         |_| {},
@@ -230,6 +244,10 @@ pub(super) fn const_value(encoder: &mut Encoder, value: &ConstValue) {
         ConstValue::Float(value) => {
             encoder.variant(b"exact-float", |encoder| encoder.string(value));
         }
+        ConstValue::Complex { real, imag } => encoder.variant(b"exact-complex", |encoder| {
+            encoder.field(b"real", |encoder| encoder.string(real));
+            encoder.field(b"imag", |encoder| encoder.string(imag));
+        }),
         ConstValue::String(value) => {
             encoder.variant(b"go-string-bytes", |encoder| encoder.blob(value));
         }

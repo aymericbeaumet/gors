@@ -337,6 +337,31 @@ fn primitive_signatures_are_complete_and_exact() {
             | PrimitiveOp::IntGreaterEqual => {
                 (&[RuntimeType::I64, RuntimeType::I64], RuntimeType::Bool)
             }
+            PrimitiveOp::FloatNeg => (&[RuntimeType::F64], RuntimeType::F64),
+            PrimitiveOp::FloatAdd
+            | PrimitiveOp::FloatSub
+            | PrimitiveOp::FloatMul
+            | PrimitiveOp::FloatDiv => (&[RuntimeType::F64, RuntimeType::F64], RuntimeType::F64),
+            PrimitiveOp::FloatEqual
+            | PrimitiveOp::FloatNotEqual
+            | PrimitiveOp::FloatLess
+            | PrimitiveOp::FloatLessEqual
+            | PrimitiveOp::FloatGreater
+            | PrimitiveOp::FloatGreaterEqual => {
+                (&[RuntimeType::F64, RuntimeType::F64], RuntimeType::Bool)
+            }
+            PrimitiveOp::ComplexNeg => (&[RuntimeType::Complex128], RuntimeType::Complex128),
+            PrimitiveOp::ComplexAdd
+            | PrimitiveOp::ComplexSub
+            | PrimitiveOp::ComplexMul
+            | PrimitiveOp::ComplexDiv => (
+                &[RuntimeType::Complex128, RuntimeType::Complex128],
+                RuntimeType::Complex128,
+            ),
+            PrimitiveOp::ComplexEqual | PrimitiveOp::ComplexNotEqual => (
+                &[RuntimeType::Complex128, RuntimeType::Complex128],
+                RuntimeType::Bool,
+            ),
             PrimitiveOp::StringEqual
             | PrimitiveOp::StringNotEqual
             | PrimitiveOp::StringLess

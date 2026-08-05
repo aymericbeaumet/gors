@@ -13,9 +13,9 @@
     "groupCount": 15,
     "passingGroupCount": 0,
     "caseCount": 211,
-    "passingCaseCount": 17,
-    "unsupportedCaseCount": 194,
-    "fixtureCount": 16
+    "passingCaseCount": 33,
+    "unsupportedCaseCount": 178,
+    "fixtureCount": 17
   },
   "groups": [
     {
@@ -129,14 +129,16 @@
       "id": "lexical-elements",
       "title": "Lexical elements",
       "subtitle": "",
-      "fixtures": [],
+      "fixtures": [
+        "lexical_elements"
+      ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 18,
-        "passingCaseCount": 0,
-        "unsupportedCaseCount": 18,
-        "fixtureCount": 0
+        "passingCaseCount": 16,
+        "unsupportedCaseCount": 2,
+        "fixtureCount": 1
       },
       "cases": [
         {
@@ -144,9 +146,14 @@
           "title": "Line and block comments are ignored outside literals",
           "subtitle": "Comments",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: lexical_elements."
+          "status": "passing",
+          "fixtures": [
+            "lexical_elements"
+          ],
+          "freshFixtures": [
+            "lexical_elements"
+          ],
+          "reason": ""
         },
         {
           "id": "lexical-tokens",
@@ -154,143 +161,223 @@
           "subtitle": "Tokens",
           "kind": "spec-test",
           "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: lexical_elements, spec_section_edgecases."
+          "fixtures": [
+            "lexical_elements"
+          ],
+          "freshFixtures": [
+            "lexical_elements"
+          ],
+          "reason": "Fresh fixture execution did not pass for: spec_section_edgecases."
         },
         {
           "id": "lexical-semicolons",
           "title": "Automatic semicolon insertion accepts idiomatic newlines",
           "subtitle": "Semicolons",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: lexical_elements."
+          "status": "passing",
+          "fixtures": [
+            "lexical_elements"
+          ],
+          "freshFixtures": [
+            "lexical_elements"
+          ],
+          "reason": ""
         },
         {
           "id": "lexical-identifiers",
           "title": "Identifiers name variables, functions, packages, types, and fields",
           "subtitle": "Identifiers",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: lexical_elements."
+          "status": "passing",
+          "fixtures": [
+            "lexical_elements"
+          ],
+          "freshFixtures": [
+            "lexical_elements"
+          ],
+          "reason": ""
         },
         {
           "id": "lexical-keywords",
           "title": "Reserved keywords parse in declarations and statements",
           "subtitle": "Keywords",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: lexical_elements."
+          "status": "passing",
+          "fixtures": [
+            "lexical_elements"
+          ],
+          "freshFixtures": [
+            "lexical_elements"
+          ],
+          "reason": ""
         },
         {
           "id": "lexical-operators-punctuation",
           "title": "Operators and punctuation are tokenized with longest-match rules",
           "subtitle": "Operators and punctuation",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: lexical_elements."
+          "status": "passing",
+          "fixtures": [
+            "lexical_elements"
+          ],
+          "freshFixtures": [
+            "lexical_elements"
+          ],
+          "reason": ""
         },
         {
           "id": "lexical-integer-literals",
           "title": "Integer literals support decimal values and separators in executable code",
           "subtitle": "Integer literals",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: lexical_elements."
+          "status": "passing",
+          "fixtures": [
+            "lexical_elements"
+          ],
+          "freshFixtures": [
+            "lexical_elements"
+          ],
+          "reason": ""
         },
         {
           "id": "lexical-integer-base-prefixes",
           "title": "Integer literals support binary, octal, and hexadecimal prefixes",
           "subtitle": "Integer literals",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: lexical_elements."
+          "status": "passing",
+          "fixtures": [
+            "lexical_elements"
+          ],
+          "freshFixtures": [
+            "lexical_elements"
+          ],
+          "reason": ""
         },
         {
           "id": "lexical-uppercase-base-prefixes",
           "title": "Integer literals accept uppercase base prefixes",
           "subtitle": "Integer literals",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: lexical_elements."
+          "status": "passing",
+          "fixtures": [
+            "lexical_elements"
+          ],
+          "freshFixtures": [
+            "lexical_elements"
+          ],
+          "reason": ""
         },
         {
           "id": "lexical-floating-literals",
           "title": "Decimal floating-point literals compile and execute",
           "subtitle": "Floating-point literals",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: lexical_elements."
+          "status": "passing",
+          "fixtures": [
+            "lexical_elements"
+          ],
+          "freshFixtures": [
+            "lexical_elements"
+          ],
+          "reason": ""
         },
         {
           "id": "lexical-floating-exponents",
           "title": "Decimal and hexadecimal floating-point exponents compile and execute",
           "subtitle": "Floating-point literals",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: lexical_elements."
+          "status": "passing",
+          "fixtures": [
+            "lexical_elements"
+          ],
+          "freshFixtures": [
+            "lexical_elements"
+          ],
+          "reason": ""
         },
         {
           "id": "lexical-hex-floating-literals",
           "title": "Hexadecimal floating-point literals compile and execute",
           "subtitle": "Floating-point literals",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: lexical_elements."
+          "status": "passing",
+          "fixtures": [
+            "lexical_elements"
+          ],
+          "freshFixtures": [
+            "lexical_elements"
+          ],
+          "reason": ""
         },
         {
           "id": "lexical-imaginary-literals",
           "title": "Imaginary literals lower to complex values",
           "subtitle": "Imaginary literals",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: lexical_elements."
+          "status": "passing",
+          "fixtures": [
+            "lexical_elements"
+          ],
+          "freshFixtures": [
+            "lexical_elements"
+          ],
+          "reason": ""
         },
         {
           "id": "lexical-rune-literals",
           "title": "Rune literals and escapes lower to rune values",
           "subtitle": "Rune literals",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: lexical_elements."
+          "status": "passing",
+          "fixtures": [
+            "lexical_elements"
+          ],
+          "freshFixtures": [
+            "lexical_elements"
+          ],
+          "reason": ""
         },
         {
           "id": "lexical-rune-escape-forms",
           "title": "Rune literals accept escaped Unicode and byte forms",
           "subtitle": "Rune literals",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: lexical_elements."
+          "status": "passing",
+          "fixtures": [
+            "lexical_elements"
+          ],
+          "freshFixtures": [
+            "lexical_elements"
+          ],
+          "reason": ""
         },
         {
           "id": "lexical-string-literals",
           "title": "Interpreted string literals and escapes preserve Go values",
           "subtitle": "String literals",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: lexical_elements."
+          "status": "passing",
+          "fixtures": [
+            "lexical_elements"
+          ],
+          "freshFixtures": [
+            "lexical_elements"
+          ],
+          "reason": ""
         },
         {
           "id": "lexical-raw-string-literals",
           "title": "Raw string literals preserve content except carriage returns",
           "subtitle": "String literals",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: lexical_elements."
+          "status": "passing",
+          "fixtures": [
+            "lexical_elements"
+          ],
+          "freshFixtures": [
+            "lexical_elements"
+          ],
+          "reason": ""
         },
         {
           "id": "lexical-string-byte-escapes",

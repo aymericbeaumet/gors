@@ -128,9 +128,10 @@ fn operand_effects(operand: &Operand) -> Effects {
             ..Effects::default()
         },
         Operand::Constant(Constant::RuntimeStaticBytes { op, .. }) => runtime_effects(*op),
-        Operand::Constant(Constant::Bool(_) | Constant::I64(_)) | Operand::Unit => {
-            Effects::default()
-        }
+        Operand::Constant(
+            Constant::Bool(_) | Constant::I64(_) | Constant::F64(_) | Constant::Complex128 { .. },
+        )
+        | Operand::Unit => Effects::default(),
     }
 }
 

@@ -10,7 +10,7 @@ use crate::compiler::hir;
 use crate::compiler::ids::{LocalId, NodeId};
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{ExprSyntax, ExprSyntaxKind};
-use crate::compiler::types::{ConstValue, IntTy, Ty, UntypedTy};
+use crate::compiler::types::{ComplexTy, ConstValue, FloatTy, IntTy, Ty, UntypedTy};
 
 impl FunctionLowerer {
     pub(super) fn local_expr(&self, node: NodeId, local: LocalId, ty: Ty) -> hir::Expr {
@@ -44,13 +44,7 @@ impl FunctionLowerer {
         let node = self.alloc_node(expr.source)?;
         let source = SourceRef::node(node);
         let mut lowered = match &expr.kind {
-            ExprSyntaxKind::Literal { token, .. } => {
-                if *token == Token::FLOAT {
-                    return Err(Diagnostic::unsupported(
-                        "floating-point literals are outside the bootstrap bool/int/string runtime frontier",
-                        source,
-                    ));
-                }
+            ExprSyntaxKind::Literal { .. } => {
                 let (ty, value) = eval_constant(expr, &self.constants, source)?;
                 hir::Expr {
                     node,
@@ -110,7 +104,23 @@ impl FunctionLowerer {
                 ensure_bootstrap_value_type(&operand_ty, source)?;
                 let op = match *token {
                     Token::ADD if operand_ty == Ty::Int(IntTy::Int) => hir::UnaryOp::Positive,
+                    Token::ADD
+                        if matches!(
+                            operand_ty,
+                            Ty::Float(FloatTy::Float64) | Ty::Complex(ComplexTy::Complex128)
+                        ) =>
+                    {
+                        hir::UnaryOp::Positive
+                    }
                     Token::SUB if operand_ty == Ty::Int(IntTy::Int) => hir::UnaryOp::Negative,
+                    Token::SUB
+                        if matches!(
+                            operand_ty,
+                            Ty::Float(FloatTy::Float64) | Ty::Complex(ComplexTy::Complex128)
+                        ) =>
+                    {
+                        hir::UnaryOp::Negative
+                    }
                     Token::NOT if is_bool(&operand_ty) => hir::UnaryOp::Not,
                     Token::XOR if operand_ty == Ty::Int(IntTy::Int) => hir::UnaryOp::BitNot,
                     _ => {

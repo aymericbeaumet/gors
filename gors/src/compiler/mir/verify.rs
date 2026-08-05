@@ -10,7 +10,7 @@ use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::{BasicBlockId, DefId, LocalId};
 use crate::compiler::provenance::SourceRef;
-use crate::compiler::types::{ConstValue, IntTy, Signature, Ty};
+use crate::compiler::types::{ComplexTy, ConstValue, FloatTy, IntTy, Signature, Ty};
 
 impl File {
     #[cfg(test)]
@@ -491,7 +491,15 @@ fn call_effects() -> hir::Effects {
 }
 
 fn verify_bootstrap_type(ty: &Ty, context: &str) -> Result<(), Diagnostic> {
-    if matches!(ty, Ty::Unit | Ty::Bool | Ty::Int(IntTy::Int) | Ty::String) {
+    if matches!(
+        ty,
+        Ty::Unit
+            | Ty::Bool
+            | Ty::Int(IntTy::Int)
+            | Ty::Float(FloatTy::Float64)
+            | Ty::Complex(ComplexTy::Complex128)
+            | Ty::String
+    ) {
         Ok(())
     } else {
         Err(Diagnostic::backend(format!(
@@ -505,6 +513,11 @@ fn verify_constant_type(value: &ConstValue, ty: &Ty) -> Result<(), Diagnostic> {
         (value, ty),
         (ConstValue::Bool(_), Ty::Bool)
             | (ConstValue::Int(_), Ty::Int(IntTy::Int))
+            | (ConstValue::Float(_), Ty::Float(FloatTy::Float64))
+            | (
+                ConstValue::Complex { .. },
+                Ty::Complex(ComplexTy::Complex128)
+            )
             | (ConstValue::String(_), Ty::String)
     )
     .then_some(())
@@ -530,15 +543,21 @@ fn verify_binary_types(
     result: &Ty,
 ) -> Result<(), Diagnostic> {
     let int = Ty::Int(IntTy::Int);
+    let float = Ty::Float(FloatTy::Float64);
+    let complex = Ty::Complex(ComplexTy::Complex128);
     let valid = match op {
         hir::BinaryOp::Add => {
             (left == &int && right == &int && result == &int)
+                || (left == &float && right == &float && result == &float)
+                || (left == &complex && right == &complex && result == &complex)
                 || (left == &Ty::String && right == &Ty::String && result == &Ty::String)
         }
-        hir::BinaryOp::Sub
-        | hir::BinaryOp::Mul
-        | hir::BinaryOp::Div
-        | hir::BinaryOp::Rem
+        hir::BinaryOp::Sub | hir::BinaryOp::Mul | hir::BinaryOp::Div => {
+            (left == &int && right == &int && result == &int)
+                || (left == &float && right == &float && result == &float)
+                || (left == &complex && right == &complex && result == &complex)
+        }
+        hir::BinaryOp::Rem
         | hir::BinaryOp::BitAnd
         | hir::BinaryOp::BitOr
         | hir::BinaryOp::BitXor
@@ -547,14 +566,26 @@ fn verify_binary_types(
         | hir::BinaryOp::AndNot => left == &int && right == &int && result == &int,
         hir::BinaryOp::Equal | hir::BinaryOp::NotEqual => {
             left == right
-                && matches!(left, Ty::Bool | Ty::Int(IntTy::Int) | Ty::String)
+                && matches!(
+                    left,
+                    Ty::Bool
+                        | Ty::Int(IntTy::Int)
+                        | Ty::Float(FloatTy::Float64)
+                        | Ty::Complex(ComplexTy::Complex128)
+                        | Ty::String
+                )
                 && result == &Ty::Bool
         }
         hir::BinaryOp::Less
         | hir::BinaryOp::LessEqual
         | hir::BinaryOp::Greater
         | hir::BinaryOp::GreaterEqual => {
-            left == right && matches!(left, Ty::Int(IntTy::Int) | Ty::String) && result == &Ty::Bool
+            left == right
+                && matches!(
+                    left,
+                    Ty::Int(IntTy::Int) | Ty::Float(FloatTy::Float64) | Ty::String
+                )
+                && result == &Ty::Bool
         }
         hir::BinaryOp::LogicalAnd | hir::BinaryOp::LogicalOr => {
             left == &Ty::Bool && right == &Ty::Bool && result == &Ty::Bool

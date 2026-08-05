@@ -4,7 +4,9 @@ use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::mir;
 use crate::compiler::rust_ir as out;
-use crate::compiler::types::{ConstValue, IntTy, Signature as GoSignature, Ty};
+use crate::compiler::types::{
+    ComplexTy, ConstValue, FloatTy, IntTy, Signature as GoSignature, Ty, parse_go_float,
+};
 use gors_runtime_abi::{PrimitiveOp, RuntimeOp};
 
 #[cfg(test)]
@@ -240,6 +242,11 @@ fn lower_panic_call(
         out::RustType::Bool => RuntimeOp::PanicBool,
         out::RustType::I64 => RuntimeOp::PanicI64,
         out::RustType::GoString => RuntimeOp::PanicGoString,
+        out::RustType::F64 | out::RustType::Complex128 => {
+            return Err(Diagnostic::backend(
+                "unsupported numeric panic payload reached Rust lowering",
+            ));
+        }
         out::RustType::Unit => {
             return Err(Diagnostic::backend(
                 "unit value reached Rust panic representation lowering",
@@ -290,6 +297,11 @@ fn lower_print_call(
             out::RustType::Bool => RuntimeOp::PrintBool,
             out::RustType::I64 => RuntimeOp::PrintI64,
             out::RustType::GoString => RuntimeOp::PrintGoString,
+            out::RustType::F64 | out::RustType::Complex128 => {
+                return Err(Diagnostic::backend(
+                    "numeric print operation reached lowering without a runtime ABI operation",
+                ));
+            }
             out::RustType::Unit => {
                 return Err(Diagnostic::backend(
                     "unit value reached Rust print representation lowering",
@@ -404,6 +416,20 @@ fn lower_constant(value: ConstValue, ty: &Ty) -> Result<out::Constant, Diagnosti
             op: RuntimeOp::GoStringFromStatic,
             bytes,
         }),
+        (ConstValue::Float(value), Ty::Float(FloatTy::Float64)) => parse_go_float(&value)
+            .map(f64::to_bits)
+            .map(out::Constant::F64)
+            .ok_or_else(|| Diagnostic::backend(format!("invalid Go float64 constant: {value}"))),
+        (ConstValue::Complex { real, imag }, Ty::Complex(ComplexTy::Complex128)) => {
+            let real = parse_go_float(&real)
+                .ok_or_else(|| Diagnostic::backend("invalid real complex128 component"))?;
+            let imag = parse_go_float(&imag)
+                .ok_or_else(|| Diagnostic::backend("invalid imaginary complex128 component"))?;
+            Ok(out::Constant::Complex128 {
+                real: real.to_bits(),
+                imag: imag.to_bits(),
+            })
+        }
         (value, ty) => Err(Diagnostic::backend(format!(
             "invalid constant reached Rust lowering: {value:?} as {ty:?}"
         ))),
@@ -417,8 +443,16 @@ fn lower_unary_op(
 ) -> Result<Option<out::ValueOp>, Diagnostic> {
     let lowered = match (op, operand, result) {
         (hir::UnaryOp::Positive, out::RustType::I64, out::RustType::I64) => None,
+        (hir::UnaryOp::Positive, out::RustType::F64, out::RustType::F64)
+        | (hir::UnaryOp::Positive, out::RustType::Complex128, out::RustType::Complex128) => None,
         (hir::UnaryOp::Negative, out::RustType::I64, out::RustType::I64) => {
             Some(out::ValueOp::Primitive(PrimitiveOp::IntWrappingNeg))
+        }
+        (hir::UnaryOp::Negative, out::RustType::F64, out::RustType::F64) => {
+            Some(out::ValueOp::Primitive(PrimitiveOp::FloatNeg))
+        }
+        (hir::UnaryOp::Negative, out::RustType::Complex128, out::RustType::Complex128) => {
+            Some(out::ValueOp::Primitive(PrimitiveOp::ComplexNeg))
         }
         (hir::UnaryOp::Not, out::RustType::Bool, out::RustType::Bool) => {
             Some(out::ValueOp::Primitive(PrimitiveOp::BoolNot))
@@ -442,7 +476,7 @@ fn lower_binary_op(
     result: out::RustType,
 ) -> Result<out::ValueOp, Diagnostic> {
     use hir::BinaryOp as Go;
-    use out::RustType::{Bool, GoString, I64};
+    use out::RustType::{Bool, Complex128, F64, GoString, I64};
     use out::ValueOp::{Primitive, Runtime};
     let lowered = match (op, left, right, result) {
         (Go::Add, I64, I64, I64) => Primitive(PrimitiveOp::IntWrappingAdd),
@@ -464,6 +498,22 @@ fn lower_binary_op(
         (Go::LessEqual, I64, I64, Bool) => Primitive(PrimitiveOp::IntLessEqual),
         (Go::Greater, I64, I64, Bool) => Primitive(PrimitiveOp::IntGreater),
         (Go::GreaterEqual, I64, I64, Bool) => Primitive(PrimitiveOp::IntGreaterEqual),
+        (Go::Add, F64, F64, F64) => Primitive(PrimitiveOp::FloatAdd),
+        (Go::Sub, F64, F64, F64) => Primitive(PrimitiveOp::FloatSub),
+        (Go::Mul, F64, F64, F64) => Primitive(PrimitiveOp::FloatMul),
+        (Go::Div, F64, F64, F64) => Primitive(PrimitiveOp::FloatDiv),
+        (Go::Equal, F64, F64, Bool) => Primitive(PrimitiveOp::FloatEqual),
+        (Go::NotEqual, F64, F64, Bool) => Primitive(PrimitiveOp::FloatNotEqual),
+        (Go::Less, F64, F64, Bool) => Primitive(PrimitiveOp::FloatLess),
+        (Go::LessEqual, F64, F64, Bool) => Primitive(PrimitiveOp::FloatLessEqual),
+        (Go::Greater, F64, F64, Bool) => Primitive(PrimitiveOp::FloatGreater),
+        (Go::GreaterEqual, F64, F64, Bool) => Primitive(PrimitiveOp::FloatGreaterEqual),
+        (Go::Add, Complex128, Complex128, Complex128) => Primitive(PrimitiveOp::ComplexAdd),
+        (Go::Sub, Complex128, Complex128, Complex128) => Primitive(PrimitiveOp::ComplexSub),
+        (Go::Mul, Complex128, Complex128, Complex128) => Primitive(PrimitiveOp::ComplexMul),
+        (Go::Div, Complex128, Complex128, Complex128) => Primitive(PrimitiveOp::ComplexDiv),
+        (Go::Equal, Complex128, Complex128, Bool) => Primitive(PrimitiveOp::ComplexEqual),
+        (Go::NotEqual, Complex128, Complex128, Bool) => Primitive(PrimitiveOp::ComplexNotEqual),
         (Go::Add, GoString, GoString, GoString) => Runtime(RuntimeOp::ConcatGoStrings),
         (Go::Equal, GoString, GoString, Bool) => Primitive(PrimitiveOp::StringEqual),
         (Go::NotEqual, GoString, GoString, Bool) => Primitive(PrimitiveOp::StringNotEqual),
@@ -485,6 +535,8 @@ fn lower_type(ty: &Ty) -> Result<out::RustType, Diagnostic> {
         Ty::Unit => Ok(out::RustType::Unit),
         Ty::Bool => Ok(out::RustType::Bool),
         Ty::Int(IntTy::Int) => Ok(out::RustType::I64),
+        Ty::Float(FloatTy::Float64) => Ok(out::RustType::F64),
+        Ty::Complex(ComplexTy::Complex128) => Ok(out::RustType::Complex128),
         Ty::String => Ok(out::RustType::GoString),
         unsupported => Err(Diagnostic::backend(format!(
             "unsupported Go type reached Rust lowering: {unsupported:?}"

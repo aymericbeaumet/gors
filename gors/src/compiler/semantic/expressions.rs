@@ -8,7 +8,7 @@ use crate::token::Token;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::provenance::SourceRef;
-use crate::compiler::types::{ConstValue, IntTy, Ty, UntypedTy};
+use crate::compiler::types::{ComplexTy, ConstValue, FloatTy, IntTy, Ty, UntypedTy};
 
 pub(super) fn default_expr_type(
     mut expr: hir::Expr,
@@ -40,6 +40,16 @@ pub(super) fn fold_constant_unary(
             ConstValue::Int((-value).to_string())
         }
         (hir::UnaryOp::Not, ConstValue::Bool(value)) => ConstValue::Bool(!value),
+        (hir::UnaryOp::Positive, ConstValue::Float(_) | ConstValue::Complex { .. }) => {
+            value.clone()
+        }
+        (hir::UnaryOp::Negative, ConstValue::Float(value)) => {
+            ConstValue::Float(negate_number_spelling(value))
+        }
+        (hir::UnaryOp::Negative, ConstValue::Complex { real, imag }) => ConstValue::Complex {
+            real: negate_number_spelling(real),
+            imag: negate_number_spelling(imag),
+        },
         (hir::UnaryOp::BitNot, ConstValue::Int(value)) => {
             let value = BigInt::parse_bytes(value.as_bytes(), 10)
                 .ok_or_else(|| Diagnostic::semantic("invalid exact integer constant", source))?;
@@ -159,9 +169,10 @@ pub(super) fn is_assignable(actual: &Ty, expected: &Ty) -> bool {
         (Ty::Untyped(UntypedTy::Bool), Ty::Bool)
             | (
                 Ty::Untyped(UntypedTy::Int),
-                Ty::Int(_) | Ty::Uint(_) | Ty::Float(_)
+                Ty::Int(_) | Ty::Uint(_) | Ty::Float(_) | Ty::Complex(_)
             )
-            | (Ty::Untyped(UntypedTy::Float), Ty::Float(_))
+            | (Ty::Untyped(UntypedTy::Float), Ty::Float(_) | Ty::Complex(_))
+            | (Ty::Untyped(UntypedTy::Complex), Ty::Complex(_))
             | (Ty::Untyped(UntypedTy::String), Ty::String)
     )
 }
@@ -201,7 +212,7 @@ pub(super) fn ensure_bootstrap_value_type(ty: &Ty, source: SourceRef) -> Result<
         Ok(())
     } else {
         Err(Diagnostic::unsupported(
-            format!("type {ty:?} is outside the bootstrap bool/int/string runtime frontier"),
+            format!("type {ty:?} is not yet in the executable value set"),
             source,
         ))
     }
@@ -214,18 +225,33 @@ pub(super) fn validate_binary_operator(
 ) -> Result<(), Diagnostic> {
     let valid = match op {
         hir::BinaryOp::LogicalAnd | hir::BinaryOp::LogicalOr => *ty == Ty::Bool,
-        hir::BinaryOp::Equal | hir::BinaryOp::NotEqual => {
-            matches!(ty, Ty::Bool | Ty::Int(IntTy::Int) | Ty::String)
-        }
+        hir::BinaryOp::Equal | hir::BinaryOp::NotEqual => matches!(
+            ty,
+            Ty::Bool
+                | Ty::Int(IntTy::Int)
+                | Ty::Float(FloatTy::Float64)
+                | Ty::Complex(ComplexTy::Complex128)
+                | Ty::String
+        ),
         hir::BinaryOp::Less
         | hir::BinaryOp::LessEqual
         | hir::BinaryOp::Greater
-        | hir::BinaryOp::GreaterEqual => matches!(ty, Ty::Int(IntTy::Int) | Ty::String),
-        hir::BinaryOp::Add => matches!(ty, Ty::Int(IntTy::Int) | Ty::String),
-        hir::BinaryOp::Sub
-        | hir::BinaryOp::Mul
-        | hir::BinaryOp::Div
-        | hir::BinaryOp::Rem
+        | hir::BinaryOp::GreaterEqual => matches!(
+            ty,
+            Ty::Int(IntTy::Int) | Ty::Float(FloatTy::Float64) | Ty::String
+        ),
+        hir::BinaryOp::Add => matches!(
+            ty,
+            Ty::Int(IntTy::Int)
+                | Ty::Float(FloatTy::Float64)
+                | Ty::Complex(ComplexTy::Complex128)
+                | Ty::String
+        ),
+        hir::BinaryOp::Sub | hir::BinaryOp::Mul | hir::BinaryOp::Div => matches!(
+            ty,
+            Ty::Int(IntTy::Int) | Ty::Float(FloatTy::Float64) | Ty::Complex(ComplexTy::Complex128)
+        ),
+        hir::BinaryOp::Rem
         | hir::BinaryOp::BitAnd
         | hir::BinaryOp::BitOr
         | hir::BinaryOp::BitXor
@@ -241,6 +267,12 @@ pub(super) fn validate_binary_operator(
             source,
         ))
     }
+}
+
+fn negate_number_spelling(value: &str) -> String {
+    value
+        .strip_prefix('-')
+        .map_or_else(|| format!("-{value}"), str::to_string)
 }
 
 pub(super) fn assignment_binary_op(op: hir::AssignOp) -> hir::BinaryOp {

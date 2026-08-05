@@ -430,6 +430,8 @@ fn rust_type_from_runtime(ty: RuntimeType, context: &str) -> Result<RustType, Di
         RuntimeType::Unit => Ok(RustType::Unit),
         RuntimeType::Bool => Ok(RustType::Bool),
         RuntimeType::I64 => Ok(RustType::I64),
+        RuntimeType::F64 => Ok(RustType::F64),
+        RuntimeType::Complex128 => Ok(RustType::Complex128),
         RuntimeType::GoString => Ok(RustType::GoString),
         RuntimeType::ByteSlice | RuntimeType::StaticByteSlice => Err(Diagnostic::backend(format!(
             "Rust IR {context} requires ABI-only operand type {ty:?}"
@@ -441,6 +443,8 @@ fn constant_type(constant: &Constant) -> Result<RustType, Diagnostic> {
     match constant {
         Constant::Bool(_) => Ok(RustType::Bool),
         Constant::I64(_) => Ok(RustType::I64),
+        Constant::F64(_) => Ok(RustType::F64),
+        Constant::Complex128 { .. } => Ok(RustType::Complex128),
         Constant::RuntimeStaticBytes { op, .. } => {
             let signature = op.signature();
             if signature.parameters() == [RuntimeType::StaticByteSlice]

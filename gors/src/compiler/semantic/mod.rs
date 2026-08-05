@@ -289,6 +289,20 @@ pub(super) fn eval_constant(
                 Ty::Untyped(UntypedTy::Float),
                 ConstValue::Float(spelling.replace('_', "")),
             )),
+            crate::token::Token::IMAG => {
+                let component = spelling
+                    .strip_suffix('i')
+                    .ok_or_else(|| Diagnostic::semantic("invalid imaginary literal", source))?;
+                let imag =
+                    parse_go_integer(component).unwrap_or_else(|| component.replace('_', ""));
+                Ok((
+                    Ty::Untyped(UntypedTy::Complex),
+                    ConstValue::Complex {
+                        real: "0.0".into(),
+                        imag,
+                    },
+                ))
+            }
             crate::token::Token::STRING => parse_go_string(spelling)
                 .map(|value| (Ty::Untyped(UntypedTy::String), ConstValue::String(value)))
                 .ok_or_else(|| Diagnostic::semantic("invalid string literal", source)),
@@ -377,6 +391,13 @@ pub(super) fn eval_constant(
                         .map_or_else(|| format!("-{value}"), str::to_string);
                     Ok((ty, ConstValue::Float(value)))
                 }
+                (crate::token::Token::SUB, ConstValue::Complex { real, imag }) => Ok((
+                    ty,
+                    ConstValue::Complex {
+                        real: negate_number_spelling(&real),
+                        imag: negate_number_spelling(&imag),
+                    },
+                )),
                 (crate::token::Token::NOT, ConstValue::Bool(value)) => {
                     Ok((ty, ConstValue::Bool(!value)))
                 }
@@ -393,4 +414,10 @@ pub(super) fn eval_constant(
             source,
         )),
     }
+}
+
+fn negate_number_spelling(value: &str) -> String {
+    value
+        .strip_prefix('-')
+        .map_or_else(|| format!("-{value}"), str::to_string)
 }
