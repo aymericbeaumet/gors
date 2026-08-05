@@ -1,5 +1,6 @@
 use gors_runtime::{
-    GoInt, GoSliceI64, GoString, concat_go_strings, go_slice_i64_from_static, go_slice_i64_index,
+    GoInt, GoSliceI64, GoString, concat_go_strings, go_slice_i64_append, go_slice_i64_cap,
+    go_slice_i64_from_static, go_slice_i64_index, go_slice_i64_len, go_slice_i64_make,
     go_slice_i64_range, go_slice_i64_set, go_string_from_bytes, go_string_from_static, int_div,
     int_rem, int_shl, int_shr, panic_bool, panic_go_string, panic_i64, print_bool, print_go_string,
     print_i64, print_newline, print_space,
@@ -120,6 +121,26 @@ fn implementation_surface(operation: RuntimeOp) -> RuntimeSurface {
             go_slice_i64_set,
             fn(GoSliceI64, GoInt, GoInt),
             [RuntimeType::GoSliceI64, RuntimeType::I64, RuntimeType::I64] -> RuntimeType::Unit
+        ),
+        RuntimeOp::GoSliceI64Make => runtime_surface!(
+            go_slice_i64_make,
+            fn(GoInt, GoInt) -> GoSliceI64,
+            [RuntimeType::I64, RuntimeType::I64] -> RuntimeType::GoSliceI64
+        ),
+        RuntimeOp::GoSliceI64Len => runtime_surface!(
+            go_slice_i64_len,
+            fn(GoSliceI64) -> GoInt,
+            [RuntimeType::GoSliceI64] -> RuntimeType::I64
+        ),
+        RuntimeOp::GoSliceI64Cap => runtime_surface!(
+            go_slice_i64_cap,
+            fn(GoSliceI64) -> GoInt,
+            [RuntimeType::GoSliceI64] -> RuntimeType::I64
+        ),
+        RuntimeOp::GoSliceI64Append => runtime_surface!(
+            go_slice_i64_append,
+            fn(GoSliceI64, GoInt) -> GoSliceI64,
+            [RuntimeType::GoSliceI64, RuntimeType::I64] -> RuntimeType::GoSliceI64
         ),
     }
 }

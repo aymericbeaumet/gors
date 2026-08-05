@@ -236,6 +236,10 @@ fn encode_callee(encoder: &mut Encoder, callee: hir::Callee) {
                     hir::Builtin::SliceI64Index => b"slice-i64-index",
                     hir::Builtin::SliceI64Range => b"slice-i64-range",
                     hir::Builtin::SliceI64Set => b"slice-i64-set",
+                    hir::Builtin::SliceI64Make => b"slice-i64-make",
+                    hir::Builtin::SliceI64Len => b"slice-i64-len",
+                    hir::Builtin::SliceI64Cap => b"slice-i64-cap",
+                    hir::Builtin::SliceI64Append => b"slice-i64-append",
                 },
                 |_| {},
             );

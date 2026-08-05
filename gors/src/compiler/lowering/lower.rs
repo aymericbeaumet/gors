@@ -227,12 +227,20 @@ fn lower_terminator(
             hir::Callee::Builtin(
                 builtin @ (hir::Builtin::SliceI64Index
                 | hir::Builtin::SliceI64Range
-                | hir::Builtin::SliceI64Set),
+                | hir::Builtin::SliceI64Set
+                | hir::Builtin::SliceI64Make
+                | hir::Builtin::SliceI64Len
+                | hir::Builtin::SliceI64Cap
+                | hir::Builtin::SliceI64Append),
             ) => out::TerminatorKind::Call {
                 target: out::CallTarget::Runtime(match builtin {
                     hir::Builtin::SliceI64Index => RuntimeOp::GoSliceI64Index,
                     hir::Builtin::SliceI64Range => RuntimeOp::GoSliceI64Range,
                     hir::Builtin::SliceI64Set => RuntimeOp::GoSliceI64Set,
+                    hir::Builtin::SliceI64Make => RuntimeOp::GoSliceI64Make,
+                    hir::Builtin::SliceI64Len => RuntimeOp::GoSliceI64Len,
+                    hir::Builtin::SliceI64Cap => RuntimeOp::GoSliceI64Cap,
+                    hir::Builtin::SliceI64Append => RuntimeOp::GoSliceI64Append,
                     hir::Builtin::Print | hir::Builtin::Println | hir::Builtin::Panic => {
                         return Err(Diagnostic::backend(
                             "non-slice builtin reached slice representation lowering",

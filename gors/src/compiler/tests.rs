@@ -447,6 +447,29 @@ fn generated_integer_slices_preserve_backing_array_aliases() {
 }
 
 #[test]
+fn generated_integer_slice_append_respects_capacity() {
+    let run = compile_and_run(
+        r#"
+            package main
+            func main() {
+                base := make([]int, 2, 4)
+                base[0] = 1
+                base[1] = 2
+                shared := append(base[:1], 9)
+                detached := append(base[:1:1], 7)
+                detached[0] = 8
+                println(len(shared), cap(shared), base[0], base[1])
+                println(len(detached), cap(detached), detached[0], detached[1])
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"2 4 1 9\n2 2 8 7\n");
+    assert!(run.rust.contains("go_slice_i64_make"), "{}", run.rust);
+    assert!(run.rust.contains("go_slice_i64_append"), "{}", run.rust);
+}
+
+#[test]
 fn def_id_function_names_cannot_collide_with_rust_keywords() {
     let run = compile_and_run(
         r#"

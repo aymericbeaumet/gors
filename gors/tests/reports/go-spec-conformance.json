@@ -13,9 +13,9 @@
     "groupCount": 15,
     "passingGroupCount": 1,
     "caseCount": 211,
-    "passingCaseCount": 44,
-    "unsupportedCaseCount": 167,
-    "fixtureCount": 21
+    "passingCaseCount": 45,
+    "unsupportedCaseCount": 166,
+    "fixtureCount": 22
   },
   "groups": [
     {
@@ -645,6 +645,7 @@
       "fixtures": [
         "_negative/types_interface_method_sets",
         "named_numeric_types",
+        "slice_capacity_and_append",
         "types_aliases",
         "types_slice_alias_mutation"
       ],
@@ -652,9 +653,9 @@
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 30,
-        "passingCaseCount": 4,
-        "unsupportedCaseCount": 26,
-        "fixtureCount": 4
+        "passingCaseCount": 5,
+        "unsupportedCaseCount": 25,
+        "fixtureCount": 5
       },
       "cases": [
         {
@@ -762,9 +763,14 @@
           "title": "Slice capacity governs reslicing, append reuse, and backing-array detachment",
           "subtitle": "Slice types",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: slice_capacity_and_append."
+          "status": "passing",
+          "fixtures": [
+            "slice_capacity_and_append"
+          ],
+          "freshFixtures": [
+            "slice_capacity_and_append"
+          ],
+          "reason": ""
         },
         {
           "id": "types-structs",

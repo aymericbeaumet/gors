@@ -44,6 +44,79 @@ pub fn go_slice_i64_from_static(values: &'static [GoInt]) -> GoSliceI64 {
     }
 }
 
+/// Allocate a zero-initialized `[]int` with an explicit Go length and capacity.
+/// A capacity of `-1` selects the requested length, matching two-argument
+/// `make([]int, len)`.
+#[must_use]
+pub fn go_slice_i64_make(len: GoInt, capacity: GoInt) -> GoSliceI64 {
+    let Ok(len) = usize::try_from(len) else {
+        slice_bounds_out_of_range();
+    };
+    let capacity = if capacity == -1 {
+        len
+    } else {
+        usize::try_from(capacity).unwrap_or_else(|_| slice_bounds_out_of_range())
+    };
+    if len > capacity {
+        slice_bounds_out_of_range();
+    }
+    GoSliceI64 {
+        storage: Arc::new(RwLock::new(vec![0; capacity])),
+        start: 0,
+        len,
+        capacity,
+    }
+}
+
+/// Return a `[]int` length as the compiler's fixed-width Go `int`.
+#[must_use]
+pub fn go_slice_i64_len(slice: GoSliceI64) -> GoInt {
+    GoInt::try_from(slice.len).unwrap_or_else(|_| slice_bounds_out_of_range())
+}
+
+/// Return a `[]int` capacity as the compiler's fixed-width Go `int`.
+#[must_use]
+pub fn go_slice_i64_cap(slice: GoSliceI64) -> GoInt {
+    GoInt::try_from(slice.capacity).unwrap_or_else(|_| slice_bounds_out_of_range())
+}
+
+/// Append one element, reusing the backing array exactly when capacity permits.
+#[must_use]
+#[allow(clippy::indexing_slicing)] // The slice header invariants validate the write position.
+pub fn go_slice_i64_append(mut slice: GoSliceI64, value: GoInt) -> GoSliceI64 {
+    if slice.len < slice.capacity {
+        let absolute = slice.start.saturating_add(slice.len);
+        let mut storage = slice
+            .storage
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        storage[absolute] = value;
+        drop(storage);
+        slice.len = slice.len.saturating_add(1);
+        return slice;
+    }
+
+    let required = slice.len.saturating_add(1);
+    let capacity = slice.capacity.saturating_mul(2).max(required).max(1);
+    let mut values = Vec::with_capacity(capacity);
+    {
+        let storage = slice
+            .storage
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let end = slice.start.saturating_add(slice.len);
+        values.extend_from_slice(&storage[slice.start..end]);
+    }
+    values.push(value);
+    values.resize(capacity, 0);
+    GoSliceI64 {
+        storage: Arc::new(RwLock::new(values)),
+        start: 0,
+        len: required,
+        capacity,
+    }
+}
+
 /// Read one `[]int` element with Go bounds checking.
 #[must_use]
 #[allow(clippy::indexing_slicing)] // The explicit Go bounds check validates this index.

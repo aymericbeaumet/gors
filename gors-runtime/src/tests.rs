@@ -71,6 +71,24 @@ fn integer_slices_are_send_and_sync() {
 }
 
 #[test]
+fn integer_slice_append_reuses_or_detaches_by_capacity() {
+    let base = go_slice_i64_make(2, 4);
+    go_slice_i64_set(base.clone(), 0, 1);
+    go_slice_i64_set(base.clone(), 1, 2);
+
+    let shared = go_slice_i64_append(go_slice_i64_range(base.clone(), 0, 1, -1), 9);
+    assert_eq!(go_slice_i64_len(shared.clone()), 2);
+    assert_eq!(go_slice_i64_cap(shared), 4);
+    assert_eq!(go_slice_i64_index(base.clone(), 1), 9);
+
+    let limited = go_slice_i64_append(go_slice_i64_range(base.clone(), 0, 1, 1), 7);
+    go_slice_i64_set(limited.clone(), 0, 8);
+    assert!(go_slice_i64_cap(limited.clone()) >= 2);
+    assert_eq!(go_slice_i64_index(limited, 1), 7);
+    assert_eq!(go_slice_i64_index(base, 0), 1);
+}
+
+#[test]
 fn integer_slice_bounds_fail_at_the_runtime_boundary() {
     let values = go_slice_i64_from_static(&[1, 2, 3]);
 

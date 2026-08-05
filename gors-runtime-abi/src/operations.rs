@@ -365,6 +365,7 @@ const GO_SLICE_I64_RANGE: &[RuntimeType] = &[
 ];
 const GO_SLICE_I64_SET: &[RuntimeType] =
     &[RuntimeType::GoSliceI64, RuntimeType::I64, RuntimeType::I64];
+const GO_SLICE_I64_PARAMETER: &[RuntimeType] = &[RuntimeType::GoSliceI64];
 const NO_CAPABILITIES: &[TargetCapability] = &[];
 const STANDARD_IO_CAPABILITY: &[TargetCapability] = &[StandardIo];
 const NO_GO_PANICS: &[GoPanicCondition] = &[];
@@ -396,6 +397,10 @@ pub enum RuntimeOp {
     GoSliceI64Index,
     GoSliceI64Range,
     GoSliceI64Set,
+    GoSliceI64Make,
+    GoSliceI64Len,
+    GoSliceI64Cap,
+    GoSliceI64Append,
 }
 
 /// Stable compact identity of one runtime ABI operation.
@@ -451,6 +456,10 @@ impl RuntimeOp {
         Self::GoSliceI64Index,
         Self::GoSliceI64Range,
         Self::GoSliceI64Set,
+        Self::GoSliceI64Make,
+        Self::GoSliceI64Len,
+        Self::GoSliceI64Cap,
+        Self::GoSliceI64Append,
     ];
 
     /// Stable exported Rust symbol assigned to this ABI operation.
@@ -476,6 +485,10 @@ impl RuntimeOp {
             Self::GoSliceI64Index => "go_slice_i64_index",
             Self::GoSliceI64Range => "go_slice_i64_range",
             Self::GoSliceI64Set => "go_slice_i64_set",
+            Self::GoSliceI64Make => "go_slice_i64_make",
+            Self::GoSliceI64Len => "go_slice_i64_len",
+            Self::GoSliceI64Cap => "go_slice_i64_cap",
+            Self::GoSliceI64Append => "go_slice_i64_append",
         }
     }
 
@@ -514,6 +527,15 @@ impl RuntimeOp {
                 RuntimeSignature::new(GO_SLICE_I64_RANGE, RuntimeType::GoSliceI64)
             }
             Self::GoSliceI64Set => RuntimeSignature::new(GO_SLICE_I64_SET, RuntimeType::Unit),
+            Self::GoSliceI64Make => {
+                RuntimeSignature::new(TWO_I64_PARAMETERS, RuntimeType::GoSliceI64)
+            }
+            Self::GoSliceI64Len | Self::GoSliceI64Cap => {
+                RuntimeSignature::new(GO_SLICE_I64_PARAMETER, RuntimeType::I64)
+            }
+            Self::GoSliceI64Append => {
+                RuntimeSignature::new(GO_SLICE_I64_AND_INDEX, RuntimeType::GoSliceI64)
+            }
         }
     }
 
@@ -539,7 +561,11 @@ impl RuntimeOp {
             Self::GoSliceI64FromStatic
             | Self::GoSliceI64Index
             | Self::GoSliceI64Range
-            | Self::GoSliceI64Set => NO_CAPABILITIES,
+            | Self::GoSliceI64Set
+            | Self::GoSliceI64Make
+            | Self::GoSliceI64Len
+            | Self::GoSliceI64Cap
+            | Self::GoSliceI64Append => NO_CAPABILITIES,
         }
     }
 
@@ -617,6 +643,24 @@ impl RuntimeOp {
                 HostIoEffect::None,
                 INDEX_OUT_OF_RANGE,
             ),
+            Self::GoSliceI64Make => RuntimeEffects::new(
+                AllocationEffect::MayAllocate,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                SLICE_BOUNDS_OUT_OF_RANGE,
+            ),
+            Self::GoSliceI64Len | Self::GoSliceI64Cap => RuntimeEffects::new(
+                AllocationEffect::None,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                NO_GO_PANICS,
+            ),
+            Self::GoSliceI64Append => RuntimeEffects::new(
+                AllocationEffect::MayAllocate,
+                ArgumentMutationEffect::MayMutateOwnedArgument,
+                HostIoEffect::None,
+                NO_GO_PANICS,
+            ),
         }
     }
 
@@ -643,6 +687,10 @@ impl RuntimeOp {
             Self::GoSliceI64Index => 22,
             Self::GoSliceI64Range => 23,
             Self::GoSliceI64Set => 24,
+            Self::GoSliceI64Make => 25,
+            Self::GoSliceI64Len => 26,
+            Self::GoSliceI64Cap => 27,
+            Self::GoSliceI64Append => 28,
         })
     }
 
@@ -683,6 +731,10 @@ impl TryFrom<u16> for RuntimeOp {
             22 => Ok(Self::GoSliceI64Index),
             23 => Ok(Self::GoSliceI64Range),
             24 => Ok(Self::GoSliceI64Set),
+            25 => Ok(Self::GoSliceI64Make),
+            26 => Ok(Self::GoSliceI64Len),
+            27 => Ok(Self::GoSliceI64Cap),
+            28 => Ok(Self::GoSliceI64Append),
             unknown => Err(UnknownRuntimeOpId(unknown)),
         }
     }

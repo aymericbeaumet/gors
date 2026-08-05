@@ -247,6 +247,9 @@ impl FunctionLowerer {
                     ));
                 };
                 let name = callee_ident.name.as_ref();
+                if matches!(name, "make" | "len" | "cap" | "append") {
+                    return self.lower_slice_builtin_call(name, arguments, node, source, expected);
+                }
                 if self.type_aliases.contains_key(name)
                     || matches!(name, "bool" | "string" | "int" | "float64" | "complex128")
                 {
@@ -487,7 +490,7 @@ impl FunctionLowerer {
                 }
                 let element_ty = element.as_ref().clone();
                 let index = self.lower_expr(index, Some(&Ty::Int(IntTy::Int)))?;
-                let effects = slice_runtime_effects(&[&base, &index], false);
+                let effects = slice_runtime_effects(&[&base, &index], false, false, true);
                 hir::Expr {
                     node,
                     kind: hir::ExprKind::Call {
@@ -523,7 +526,8 @@ impl FunctionLowerer {
                 let low = self.lower_optional_slice_bound(low.as_deref(), expr.source)?;
                 let high = self.lower_optional_slice_bound(high.as_deref(), expr.source)?;
                 let max = self.lower_optional_slice_bound(max.as_deref(), expr.source)?;
-                let effects = slice_runtime_effects(&[&base, &low, &high, &max], false);
+                let effects =
+                    slice_runtime_effects(&[&base, &low, &high, &max], false, false, true);
                 hir::Expr {
                     node,
                     kind: hir::ExprKind::Call {
@@ -573,13 +577,126 @@ impl FunctionLowerer {
             source: SourceRef::node(node),
         })
     }
+
+    fn lower_slice_builtin_call(
+        &mut self,
+        name: &str,
+        arguments: &[ExprSyntax],
+        node: NodeId,
+        source: SourceRef,
+        expected: Option<&Ty>,
+    ) -> Result<hir::Expr, Diagnostic> {
+        let slice_ty = Ty::Slice(Box::new(Ty::Int(IntTy::Int)));
+        let (builtin, args, ty, allocates, writes, panics) = match name {
+            "make" => {
+                let (declared_syntax, len_syntax, cap_syntax) = match arguments {
+                    [declared, len] => (declared, len, None),
+                    [declared, len, cap] => (declared, len, Some(cap)),
+                    _ => {
+                        return Err(Diagnostic::semantic(
+                            "make([]int, len[, cap]) requires two or three arguments",
+                            source,
+                        ));
+                    }
+                };
+                let declared = lower_type(declared_syntax, &self.type_aliases, source)?;
+                if declared != slice_ty {
+                    return Err(Diagnostic::unsupported(
+                        "make currently supports []int values",
+                        source,
+                    ));
+                }
+                let len = self.lower_expr(len_syntax, Some(&Ty::Int(IntTy::Int)))?;
+                let cap = if let Some(cap) = cap_syntax {
+                    self.lower_expr(cap, Some(&Ty::Int(IntTy::Int)))?
+                } else {
+                    self.lower_optional_slice_bound(None, declared_syntax.source)?
+                };
+                (
+                    hir::Builtin::SliceI64Make,
+                    vec![len, cap],
+                    slice_ty,
+                    true,
+                    false,
+                    true,
+                )
+            }
+            "len" | "cap" => {
+                let [value] = arguments else {
+                    return Err(Diagnostic::semantic(
+                        format!("{name} requires exactly one argument"),
+                        source,
+                    ));
+                };
+                let value = self.lower_expr(value, Some(&slice_ty))?;
+                (
+                    if name == "len" {
+                        hir::Builtin::SliceI64Len
+                    } else {
+                        hir::Builtin::SliceI64Cap
+                    },
+                    vec![value],
+                    Ty::Int(IntTy::Int),
+                    false,
+                    false,
+                    false,
+                )
+            }
+            "append" => {
+                let [slice, value] = arguments else {
+                    return Err(Diagnostic::semantic(
+                        "append currently requires one []int value and one int element",
+                        source,
+                    ));
+                };
+                let slice = self.lower_expr(slice, Some(&slice_ty))?;
+                let value = self.lower_expr(value, Some(&Ty::Int(IntTy::Int)))?;
+                (
+                    hir::Builtin::SliceI64Append,
+                    vec![slice, value],
+                    slice_ty,
+                    true,
+                    true,
+                    false,
+                )
+            }
+            _ => {
+                return Err(Diagnostic::backend(
+                    "non-slice builtin reached slice lowering",
+                ));
+            }
+        };
+        let argument_refs = args.iter().collect::<Vec<_>>();
+        let effects = slice_runtime_effects(&argument_refs, writes, allocates, panics);
+        let mut lowered = hir::Expr {
+            node,
+            kind: hir::ExprKind::Call {
+                callee: hir::Callee::Builtin(builtin),
+                args,
+            },
+            ty,
+            category: hir::ValueCategory::Value,
+            effects,
+            source,
+        };
+        if let Some(expected) = expected {
+            coerce_expr(&mut lowered, expected, source)?;
+        }
+        Ok(lowered)
+    }
 }
 
-fn slice_runtime_effects(arguments: &[&hir::Expr], writes: bool) -> hir::Effects {
+fn slice_runtime_effects(
+    arguments: &[&hir::Expr],
+    writes: bool,
+    allocates: bool,
+    panics: bool,
+) -> hir::Effects {
     arguments.iter().fold(
         hir::Effects {
             may_call: true,
-            may_panic: true,
+            may_allocate: allocates,
+            may_panic: panics,
             may_write: writes,
             ..hir::Effects::default()
         },

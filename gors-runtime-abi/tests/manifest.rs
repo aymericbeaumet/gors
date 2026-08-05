@@ -152,7 +152,9 @@ fn runtime_effect_metadata_is_complete_and_exact() {
         let expected_allocation = match operation {
             RuntimeOp::GoStringFromBytes
             | RuntimeOp::ConcatGoStrings
-            | RuntimeOp::GoSliceI64FromStatic => AllocationEffect::MayAllocate,
+            | RuntimeOp::GoSliceI64FromStatic
+            | RuntimeOp::GoSliceI64Make
+            | RuntimeOp::GoSliceI64Append => AllocationEffect::MayAllocate,
             RuntimeOp::GoStringFromStatic
             | RuntimeOp::IntDiv
             | RuntimeOp::IntRem
@@ -168,10 +170,12 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::PanicGoString
             | RuntimeOp::GoSliceI64Index
             | RuntimeOp::GoSliceI64Range
-            | RuntimeOp::GoSliceI64Set => AllocationEffect::None,
+            | RuntimeOp::GoSliceI64Set
+            | RuntimeOp::GoSliceI64Len
+            | RuntimeOp::GoSliceI64Cap => AllocationEffect::None,
         };
         let expected_argument_mutation = match operation {
-            RuntimeOp::ConcatGoStrings | RuntimeOp::GoSliceI64Set => {
+            RuntimeOp::ConcatGoStrings | RuntimeOp::GoSliceI64Set | RuntimeOp::GoSliceI64Append => {
                 ArgumentMutationEffect::MayMutateOwnedArgument
             }
             RuntimeOp::GoStringFromBytes
@@ -190,7 +194,10 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::PanicGoString
             | RuntimeOp::GoSliceI64FromStatic
             | RuntimeOp::GoSliceI64Index
-            | RuntimeOp::GoSliceI64Range => ArgumentMutationEffect::None,
+            | RuntimeOp::GoSliceI64Range
+            | RuntimeOp::GoSliceI64Make
+            | RuntimeOp::GoSliceI64Len
+            | RuntimeOp::GoSliceI64Cap => ArgumentMutationEffect::None,
         };
         let expected_host_io = match operation {
             RuntimeOp::PrintBool
@@ -211,7 +218,11 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceI64FromStatic
             | RuntimeOp::GoSliceI64Index
             | RuntimeOp::GoSliceI64Range
-            | RuntimeOp::GoSliceI64Set => HostIoEffect::None,
+            | RuntimeOp::GoSliceI64Set
+            | RuntimeOp::GoSliceI64Make
+            | RuntimeOp::GoSliceI64Len
+            | RuntimeOp::GoSliceI64Cap
+            | RuntimeOp::GoSliceI64Append => HostIoEffect::None,
         };
         let expected_panics: &[GoPanicCondition] = match operation {
             RuntimeOp::IntDiv | RuntimeOp::IntRem => &[GoPanicCondition::IntegerDivideByZero],
@@ -222,7 +233,9 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             RuntimeOp::GoSliceI64Index | RuntimeOp::GoSliceI64Set => {
                 &[GoPanicCondition::IndexOutOfRange]
             }
-            RuntimeOp::GoSliceI64Range => &[GoPanicCondition::SliceBoundsOutOfRange],
+            RuntimeOp::GoSliceI64Range | RuntimeOp::GoSliceI64Make => {
+                &[GoPanicCondition::SliceBoundsOutOfRange]
+            }
             RuntimeOp::GoStringFromBytes
             | RuntimeOp::GoStringFromStatic
             | RuntimeOp::ConcatGoStrings
@@ -231,7 +244,10 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::PrintSpace
             | RuntimeOp::PrintNewline
             | RuntimeOp::PrintGoString
-            | RuntimeOp::GoSliceI64FromStatic => &[],
+            | RuntimeOp::GoSliceI64FromStatic
+            | RuntimeOp::GoSliceI64Len
+            | RuntimeOp::GoSliceI64Cap
+            | RuntimeOp::GoSliceI64Append => &[],
         };
 
         assert_eq!(effects.allocation(), expected_allocation, "{operation:?}");
@@ -440,6 +456,17 @@ fn runtime_signatures_are_complete_and_exact() {
             RuntimeOp::GoSliceI64Set => (
                 &[RuntimeType::GoSliceI64, RuntimeType::I64, RuntimeType::I64],
                 RuntimeType::Unit,
+            ),
+            RuntimeOp::GoSliceI64Make => (
+                &[RuntimeType::I64, RuntimeType::I64],
+                RuntimeType::GoSliceI64,
+            ),
+            RuntimeOp::GoSliceI64Len | RuntimeOp::GoSliceI64Cap => {
+                (&[RuntimeType::GoSliceI64], RuntimeType::I64)
+            }
+            RuntimeOp::GoSliceI64Append => (
+                &[RuntimeType::GoSliceI64, RuntimeType::I64],
+                RuntimeType::GoSliceI64,
             ),
         };
 

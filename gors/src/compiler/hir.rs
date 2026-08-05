@@ -177,6 +177,10 @@ pub enum Builtin {
     SliceI64Index,
     SliceI64Range,
     SliceI64Set,
+    SliceI64Make,
+    SliceI64Len,
+    SliceI64Cap,
+    SliceI64Append,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

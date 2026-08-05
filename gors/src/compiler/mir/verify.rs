@@ -322,6 +322,26 @@ impl Function {
                                 )?;
                                 Vec::new()
                             }
+                            hir::Builtin::SliceI64Make => {
+                                if argument_types != [Ty::Int(IntTy::Int), Ty::Int(IntTy::Int)] {
+                                    return Err(Diagnostic::backend(format!(
+                                        "invalid MIR slice make argument types: {argument_types:?}"
+                                    )));
+                                }
+                                vec![Ty::Slice(Box::new(Ty::Int(IntTy::Int)))]
+                            }
+                            hir::Builtin::SliceI64Len | hir::Builtin::SliceI64Cap => {
+                                if argument_types != [Ty::Slice(Box::new(Ty::Int(IntTy::Int)))] {
+                                    return Err(Diagnostic::backend(format!(
+                                        "invalid MIR slice len/cap argument types: {argument_types:?}"
+                                    )));
+                                }
+                                vec![Ty::Int(IntTy::Int)]
+                            }
+                            hir::Builtin::SliceI64Append => {
+                                verify_slice_call_arguments(&argument_types, 2, "slice append")?;
+                                vec![Ty::Slice(Box::new(Ty::Int(IntTy::Int)))]
+                            }
                         };
                         self.verify_call_destination(destination, &results)?;
                     }
