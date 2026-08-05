@@ -7,6 +7,7 @@ mod expressions;
 mod function;
 mod ranges;
 mod statements;
+mod switches;
 
 use std::collections::{BTreeMap, BTreeSet};
 

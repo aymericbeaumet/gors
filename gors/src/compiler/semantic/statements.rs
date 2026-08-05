@@ -427,8 +427,9 @@ impl FunctionLowerer {
 
         let mut default = None;
         let mut branches = Vec::new();
+        let mut bodies = self.lower_switch_case_bodies(cases, source)?;
         for case in cases {
-            let body = self.lower_block(&case.body, true)?;
+            let body = bodies.remove(0);
             if case.expressions.is_empty() {
                 if default.replace((case.source, body)).is_some() {
                     self.pop_scope();

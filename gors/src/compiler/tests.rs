@@ -560,6 +560,30 @@ fn generated_slice_range_evaluates_once_and_continues_through_post() {
 }
 
 #[test]
+fn generated_expression_switch_fallthrough_skips_the_next_case_test() {
+    let run = compile_and_run(
+        r#"
+            package main
+            func main() {
+                value := 1
+                switch value {
+                case 1:
+                    value++
+                    fallthrough
+                case 99:
+                    value += 10
+                default:
+                    value = 0
+                }
+                println(value)
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"12\n");
+}
+
+#[test]
 fn generated_deferred_closures_capture_arguments_and_update_named_results() {
     let run = compile_and_run(
         r#"
