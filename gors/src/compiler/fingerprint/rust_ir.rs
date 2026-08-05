@@ -381,6 +381,7 @@ fn encode_type(encoder: &mut Encoder, ty: rust_ir::RustType) {
             rust_ir::RustType::GoString => b"go-string",
             rust_ir::RustType::GoSliceI64 => b"go-slice-i64",
             rust_ir::RustType::GoSliceU8 => b"go-slice-u8",
+            rust_ir::RustType::GoMapStringI64 => b"go-map-string-i64",
         },
         |_| {},
     );

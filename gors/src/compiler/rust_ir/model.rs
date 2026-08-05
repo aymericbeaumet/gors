@@ -248,6 +248,7 @@ pub enum RustType {
     GoString,
     GoSliceI64,
     GoSliceU8,
+    GoMapStringI64,
 }
 
 impl RustType {
@@ -257,7 +258,7 @@ impl RustType {
             Self::Bool | Self::I64 | Self::F64 | Self::Complex128 => {
                 Some(ReadOp::ProvenInitializedCopy)
             }
-            Self::GoString | Self::GoSliceI64 | Self::GoSliceU8 => {
+            Self::GoString | Self::GoSliceI64 | Self::GoSliceU8 | Self::GoMapStringI64 => {
                 Some(ReadOp::ProvenInitializedClone)
             }
             Self::Unit => None,
@@ -269,10 +270,14 @@ impl RustType {
             Self::Bool | Self::I64 | Self::F64 | Self::Complex128 => {
                 Some(ReadOp::ProvenInitializedCopy)
             }
-            Self::GoString | Self::GoSliceI64 | Self::GoSliceU8 if live_after => {
+            Self::GoString | Self::GoSliceI64 | Self::GoSliceU8 | Self::GoMapStringI64
+                if live_after =>
+            {
                 Some(ReadOp::ProvenInitializedClone)
             }
-            Self::GoString | Self::GoSliceI64 | Self::GoSliceU8 => Some(ReadOp::ProvenLastUseMove),
+            Self::GoString | Self::GoSliceI64 | Self::GoSliceU8 | Self::GoMapStringI64 => {
+                Some(ReadOp::ProvenLastUseMove)
+            }
             Self::Unit => None,
         }
     }
@@ -284,7 +289,7 @@ impl RustType {
                 Self::Bool | Self::I64 | Self::F64 | Self::Complex128,
                 ReadOp::ProvenInitializedCopy
             ) | (
-                Self::GoString | Self::GoSliceI64 | Self::GoSliceU8,
+                Self::GoString | Self::GoSliceI64 | Self::GoSliceU8 | Self::GoMapStringI64,
                 ReadOp::ProvenInitializedClone | ReadOp::ProvenLastUseMove
             )
         )

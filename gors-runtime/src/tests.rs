@@ -51,6 +51,61 @@ fn strings_are_send_and_sync() {
 }
 
 #[test]
+fn maps_preserve_nil_and_shared_reference_semantics() {
+    let nil_map = go_map_string_i64_nil();
+    let missing = go_string_from_static(b"missing");
+    assert!(go_map_string_i64_is_nil(nil_map.clone()));
+    assert_eq!(go_map_string_i64_len(nil_map.clone()), 0);
+    assert_eq!(go_map_string_i64_get(nil_map.clone(), missing.clone()), 0);
+    assert!(!go_map_string_i64_contains(
+        nil_map.clone(),
+        missing.clone()
+    ));
+    go_map_string_i64_delete(nil_map.clone(), missing);
+    go_map_string_i64_clear(nil_map.clone());
+    assert!(
+        std::panic::catch_unwind(|| {
+            go_map_string_i64_set(nil_map, go_string_from_static(b"key"), 1);
+        })
+        .is_err()
+    );
+
+    let original = go_map_string_i64_make();
+    let alias = original.clone();
+    go_map_string_i64_set(alias, go_string_from_static(b"value"), 42);
+    assert_eq!(
+        go_map_string_i64_get(original.clone(), go_string_from_static(b"value")),
+        42
+    );
+    assert_eq!(go_map_string_i64_len(original.clone()), 1);
+    assert_eq!(go_map_string_i64_key_at(original, 0).as_bytes(), b"value");
+}
+
+#[test]
+fn maps_delete_clear_and_order_keys_by_bytes() {
+    let map = go_map_string_i64_make();
+    go_map_string_i64_set(map.clone(), go_string_from_static(b"b"), 2);
+    go_map_string_i64_set(map.clone(), go_string_from_static(b"a"), 1);
+    assert_eq!(go_map_string_i64_key_at(map.clone(), 0).as_bytes(), b"a");
+    assert_eq!(go_map_string_i64_key_at(map.clone(), 1).as_bytes(), b"b");
+
+    go_map_string_i64_delete(map.clone(), go_string_from_static(b"a"));
+    assert!(!go_map_string_i64_contains(
+        map.clone(),
+        go_string_from_static(b"a")
+    ));
+    go_map_string_i64_clear(map.clone());
+    assert_eq!(go_map_string_i64_len(map), 0);
+}
+
+#[test]
+fn maps_are_send_and_sync() {
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    assert_send_sync::<GoMapStringI64>();
+}
+
+#[test]
 fn integer_slices_share_backing_storage_across_reslices() {
     let values = go_slice_i64_from_static(&[1, 2, 3]);
     let alias = go_slice_i64_range(values.clone(), 1, -1, -1);

@@ -69,6 +69,7 @@ pub enum GoPanicCondition {
     ExplicitPanic,
     IndexOutOfRange,
     SliceBoundsOutOfRange,
+    NilMapAssignment,
 }
 
 impl GoPanicCondition {
@@ -79,6 +80,7 @@ impl GoPanicCondition {
             Self::ExplicitPanic => 3,
             Self::IndexOutOfRange => 4,
             Self::SliceBoundsOutOfRange => 5,
+            Self::NilMapAssignment => 6,
         }
     }
 }

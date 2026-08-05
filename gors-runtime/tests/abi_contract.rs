@@ -1,11 +1,14 @@
 use gors_runtime::{
-    GoInt, GoSliceI64, GoSliceU8, GoString, concat_go_strings, go_slice_i64_append,
-    go_slice_i64_cap, go_slice_i64_clear, go_slice_i64_copy, go_slice_i64_from_static,
-    go_slice_i64_index, go_slice_i64_len, go_slice_i64_make, go_slice_i64_range, go_slice_i64_set,
-    go_slice_u8_append_slice, go_slice_u8_append_string, go_slice_u8_copy_string,
-    go_slice_u8_from_static, go_string_from_bytes, go_string_from_slice_u8, go_string_from_static,
-    int_div, int_rem, int_shl, int_shr, panic_bool, panic_go_string, panic_i64, print_bool,
-    print_go_string, print_i64, print_newline, print_space,
+    GoInt, GoMapStringI64, GoSliceI64, GoSliceU8, GoString, concat_go_strings,
+    go_map_string_i64_clear, go_map_string_i64_contains, go_map_string_i64_delete,
+    go_map_string_i64_get, go_map_string_i64_is_nil, go_map_string_i64_key_at,
+    go_map_string_i64_len, go_map_string_i64_make, go_map_string_i64_nil, go_map_string_i64_set,
+    go_slice_i64_append, go_slice_i64_cap, go_slice_i64_clear, go_slice_i64_copy,
+    go_slice_i64_from_static, go_slice_i64_index, go_slice_i64_len, go_slice_i64_make,
+    go_slice_i64_range, go_slice_i64_set, go_slice_u8_append_slice, go_slice_u8_append_string,
+    go_slice_u8_copy_string, go_slice_u8_from_static, go_string_from_bytes,
+    go_string_from_slice_u8, go_string_from_static, int_div, int_rem, int_shl, int_shr, panic_bool,
+    panic_go_string, panic_i64, print_bool, print_go_string, print_i64, print_newline, print_space,
 };
 use gors_runtime_abi::{RuntimeOp, RuntimeType};
 
@@ -178,6 +181,56 @@ fn implementation_surface(operation: RuntimeOp) -> RuntimeSurface {
             go_slice_i64_copy,
             fn(GoSliceI64, GoSliceI64) -> GoInt,
             [RuntimeType::GoSliceI64, RuntimeType::GoSliceI64] -> RuntimeType::I64
+        ),
+        RuntimeOp::GoMapStringI64Nil => runtime_surface!(
+            go_map_string_i64_nil,
+            fn() -> GoMapStringI64,
+            [] -> RuntimeType::GoMapStringI64
+        ),
+        RuntimeOp::GoMapStringI64Make => runtime_surface!(
+            go_map_string_i64_make,
+            fn() -> GoMapStringI64,
+            [] -> RuntimeType::GoMapStringI64
+        ),
+        RuntimeOp::GoMapStringI64Len => runtime_surface!(
+            go_map_string_i64_len,
+            fn(GoMapStringI64) -> GoInt,
+            [RuntimeType::GoMapStringI64] -> RuntimeType::I64
+        ),
+        RuntimeOp::GoMapStringI64Get => runtime_surface!(
+            go_map_string_i64_get,
+            fn(GoMapStringI64, GoString) -> GoInt,
+            [RuntimeType::GoMapStringI64, RuntimeType::GoString] -> RuntimeType::I64
+        ),
+        RuntimeOp::GoMapStringI64Contains => runtime_surface!(
+            go_map_string_i64_contains,
+            fn(GoMapStringI64, GoString) -> bool,
+            [RuntimeType::GoMapStringI64, RuntimeType::GoString] -> RuntimeType::Bool
+        ),
+        RuntimeOp::GoMapStringI64Set => runtime_surface!(
+            go_map_string_i64_set,
+            fn(GoMapStringI64, GoString, GoInt),
+            [RuntimeType::GoMapStringI64, RuntimeType::GoString, RuntimeType::I64] -> RuntimeType::Unit
+        ),
+        RuntimeOp::GoMapStringI64Delete => runtime_surface!(
+            go_map_string_i64_delete,
+            fn(GoMapStringI64, GoString),
+            [RuntimeType::GoMapStringI64, RuntimeType::GoString] -> RuntimeType::Unit
+        ),
+        RuntimeOp::GoMapStringI64Clear => runtime_surface!(
+            go_map_string_i64_clear,
+            fn(GoMapStringI64),
+            [RuntimeType::GoMapStringI64] -> RuntimeType::Unit
+        ),
+        RuntimeOp::GoMapStringI64IsNil => runtime_surface!(
+            go_map_string_i64_is_nil,
+            fn(GoMapStringI64) -> bool,
+            [RuntimeType::GoMapStringI64] -> RuntimeType::Bool
+        ),
+        RuntimeOp::GoMapStringI64KeyAt => runtime_surface!(
+            go_map_string_i64_key_at,
+            fn(GoMapStringI64, GoInt) -> GoString,
+            [RuntimeType::GoMapStringI64, RuntimeType::I64] -> RuntimeType::GoString
         ),
     }
 }

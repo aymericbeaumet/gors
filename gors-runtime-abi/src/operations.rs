@@ -288,6 +288,7 @@ pub enum RuntimeType {
     GoSliceI64,
     StaticI64Slice,
     GoSliceU8,
+    GoMapStringI64,
 }
 
 impl RuntimeType {
@@ -304,6 +305,7 @@ impl RuntimeType {
             Self::GoSliceI64 => 9,
             Self::StaticI64Slice => 10,
             Self::GoSliceU8 => 11,
+            Self::GoMapStringI64 => 12,
         }
     }
 
@@ -374,6 +376,16 @@ const GO_SLICE_U8_PARAMETER: &[RuntimeType] = &[RuntimeType::GoSliceU8];
 const TWO_GO_SLICE_U8_PARAMETERS: &[RuntimeType] =
     &[RuntimeType::GoSliceU8, RuntimeType::GoSliceU8];
 const GO_SLICE_U8_AND_STRING: &[RuntimeType] = &[RuntimeType::GoSliceU8, RuntimeType::GoString];
+const GO_MAP_STRING_I64_PARAMETER: &[RuntimeType] = &[RuntimeType::GoMapStringI64];
+const GO_MAP_STRING_I64_AND_KEY: &[RuntimeType] =
+    &[RuntimeType::GoMapStringI64, RuntimeType::GoString];
+const GO_MAP_STRING_I64_AND_INDEX: &[RuntimeType] =
+    &[RuntimeType::GoMapStringI64, RuntimeType::I64];
+const GO_MAP_STRING_I64_SET: &[RuntimeType] = &[
+    RuntimeType::GoMapStringI64,
+    RuntimeType::GoString,
+    RuntimeType::I64,
+];
 const NO_CAPABILITIES: &[TargetCapability] = &[];
 const STANDARD_IO_CAPABILITY: &[TargetCapability] = &[StandardIo];
 const NO_GO_PANICS: &[GoPanicCondition] = &[];
@@ -382,6 +394,7 @@ const NEGATIVE_SHIFT_AMOUNT: &[GoPanicCondition] = &[GoPanicCondition::NegativeS
 const EXPLICIT_PANIC: &[GoPanicCondition] = &[GoPanicCondition::ExplicitPanic];
 const INDEX_OUT_OF_RANGE: &[GoPanicCondition] = &[GoPanicCondition::IndexOutOfRange];
 const SLICE_BOUNDS_OUT_OF_RANGE: &[GoPanicCondition] = &[GoPanicCondition::SliceBoundsOutOfRange];
+const NIL_MAP_ASSIGNMENT: &[GoPanicCondition] = &[GoPanicCondition::NilMapAssignment];
 
 /// Operations that require an exact symbol from the versioned runtime ABI.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -416,6 +429,16 @@ pub enum RuntimeOp {
     GoSliceI64Clear,
     GoStringFromSliceU8,
     GoSliceI64Copy,
+    GoMapStringI64Nil,
+    GoMapStringI64Make,
+    GoMapStringI64Len,
+    GoMapStringI64Get,
+    GoMapStringI64Contains,
+    GoMapStringI64Set,
+    GoMapStringI64Delete,
+    GoMapStringI64Clear,
+    GoMapStringI64IsNil,
+    GoMapStringI64KeyAt,
 }
 
 /// Stable compact identity of one runtime ABI operation.
@@ -482,6 +505,16 @@ impl RuntimeOp {
         Self::GoSliceI64Clear,
         Self::GoStringFromSliceU8,
         Self::GoSliceI64Copy,
+        Self::GoMapStringI64Nil,
+        Self::GoMapStringI64Make,
+        Self::GoMapStringI64Len,
+        Self::GoMapStringI64Get,
+        Self::GoMapStringI64Contains,
+        Self::GoMapStringI64Set,
+        Self::GoMapStringI64Delete,
+        Self::GoMapStringI64Clear,
+        Self::GoMapStringI64IsNil,
+        Self::GoMapStringI64KeyAt,
     ];
 
     /// Stable exported Rust symbol assigned to this ABI operation.
@@ -518,6 +551,16 @@ impl RuntimeOp {
             Self::GoSliceI64Clear => "go_slice_i64_clear",
             Self::GoStringFromSliceU8 => "go_string_from_slice_u8",
             Self::GoSliceI64Copy => "go_slice_i64_copy",
+            Self::GoMapStringI64Nil => "go_map_string_i64_nil",
+            Self::GoMapStringI64Make => "go_map_string_i64_make",
+            Self::GoMapStringI64Len => "go_map_string_i64_len",
+            Self::GoMapStringI64Get => "go_map_string_i64_get",
+            Self::GoMapStringI64Contains => "go_map_string_i64_contains",
+            Self::GoMapStringI64Set => "go_map_string_i64_set",
+            Self::GoMapStringI64Delete => "go_map_string_i64_delete",
+            Self::GoMapStringI64Clear => "go_map_string_i64_clear",
+            Self::GoMapStringI64IsNil => "go_map_string_i64_is_nil",
+            Self::GoMapStringI64KeyAt => "go_map_string_i64_key_at",
         }
     }
 
@@ -586,6 +629,33 @@ impl RuntimeOp {
             Self::GoSliceI64Copy => {
                 RuntimeSignature::new(TWO_GO_SLICE_I64_PARAMETERS, RuntimeType::I64)
             }
+            Self::GoMapStringI64Nil | Self::GoMapStringI64Make => {
+                RuntimeSignature::new(NO_PARAMETERS, RuntimeType::GoMapStringI64)
+            }
+            Self::GoMapStringI64Len => {
+                RuntimeSignature::new(GO_MAP_STRING_I64_PARAMETER, RuntimeType::I64)
+            }
+            Self::GoMapStringI64Get => {
+                RuntimeSignature::new(GO_MAP_STRING_I64_AND_KEY, RuntimeType::I64)
+            }
+            Self::GoMapStringI64Contains => {
+                RuntimeSignature::new(GO_MAP_STRING_I64_AND_KEY, RuntimeType::Bool)
+            }
+            Self::GoMapStringI64IsNil => {
+                RuntimeSignature::new(GO_MAP_STRING_I64_PARAMETER, RuntimeType::Bool)
+            }
+            Self::GoMapStringI64Set => {
+                RuntimeSignature::new(GO_MAP_STRING_I64_SET, RuntimeType::Unit)
+            }
+            Self::GoMapStringI64Delete => {
+                RuntimeSignature::new(GO_MAP_STRING_I64_AND_KEY, RuntimeType::Unit)
+            }
+            Self::GoMapStringI64Clear => {
+                RuntimeSignature::new(GO_MAP_STRING_I64_PARAMETER, RuntimeType::Unit)
+            }
+            Self::GoMapStringI64KeyAt => {
+                RuntimeSignature::new(GO_MAP_STRING_I64_AND_INDEX, RuntimeType::GoString)
+            }
         }
     }
 
@@ -622,7 +692,17 @@ impl RuntimeOp {
             | Self::GoSliceU8CopyString
             | Self::GoSliceI64Clear
             | Self::GoStringFromSliceU8
-            | Self::GoSliceI64Copy => NO_CAPABILITIES,
+            | Self::GoSliceI64Copy
+            | Self::GoMapStringI64Nil
+            | Self::GoMapStringI64Make
+            | Self::GoMapStringI64Len
+            | Self::GoMapStringI64Get
+            | Self::GoMapStringI64Contains
+            | Self::GoMapStringI64Set
+            | Self::GoMapStringI64Delete
+            | Self::GoMapStringI64Clear
+            | Self::GoMapStringI64IsNil
+            | Self::GoMapStringI64KeyAt => NO_CAPABILITIES,
         }
     }
 
@@ -738,6 +818,40 @@ impl RuntimeOp {
                     NO_GO_PANICS,
                 )
             }
+            Self::GoMapStringI64Nil
+            | Self::GoMapStringI64Len
+            | Self::GoMapStringI64Get
+            | Self::GoMapStringI64Contains
+            | Self::GoMapStringI64IsNil => RuntimeEffects::new(
+                AllocationEffect::None,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                NO_GO_PANICS,
+            ),
+            Self::GoMapStringI64Make => RuntimeEffects::new(
+                AllocationEffect::MayAllocate,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                NO_GO_PANICS,
+            ),
+            Self::GoMapStringI64Set => RuntimeEffects::new(
+                AllocationEffect::MayAllocate,
+                ArgumentMutationEffect::MayMutateOwnedArgument,
+                HostIoEffect::None,
+                NIL_MAP_ASSIGNMENT,
+            ),
+            Self::GoMapStringI64Delete | Self::GoMapStringI64Clear => RuntimeEffects::new(
+                AllocationEffect::None,
+                ArgumentMutationEffect::MayMutateOwnedArgument,
+                HostIoEffect::None,
+                NO_GO_PANICS,
+            ),
+            Self::GoMapStringI64KeyAt => RuntimeEffects::new(
+                AllocationEffect::None,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                INDEX_OUT_OF_RANGE,
+            ),
         }
     }
 
@@ -775,6 +889,16 @@ impl RuntimeOp {
             Self::GoSliceI64Clear => 33,
             Self::GoStringFromSliceU8 => 34,
             Self::GoSliceI64Copy => 35,
+            Self::GoMapStringI64Nil => 36,
+            Self::GoMapStringI64Make => 37,
+            Self::GoMapStringI64Len => 38,
+            Self::GoMapStringI64Get => 39,
+            Self::GoMapStringI64Contains => 40,
+            Self::GoMapStringI64Set => 41,
+            Self::GoMapStringI64Delete => 42,
+            Self::GoMapStringI64Clear => 43,
+            Self::GoMapStringI64IsNil => 44,
+            Self::GoMapStringI64KeyAt => 45,
         })
     }
 
@@ -826,6 +950,16 @@ impl TryFrom<u16> for RuntimeOp {
             33 => Ok(Self::GoSliceI64Clear),
             34 => Ok(Self::GoStringFromSliceU8),
             35 => Ok(Self::GoSliceI64Copy),
+            36 => Ok(Self::GoMapStringI64Nil),
+            37 => Ok(Self::GoMapStringI64Make),
+            38 => Ok(Self::GoMapStringI64Len),
+            39 => Ok(Self::GoMapStringI64Get),
+            40 => Ok(Self::GoMapStringI64Contains),
+            41 => Ok(Self::GoMapStringI64Set),
+            42 => Ok(Self::GoMapStringI64Delete),
+            43 => Ok(Self::GoMapStringI64Clear),
+            44 => Ok(Self::GoMapStringI64IsNil),
+            45 => Ok(Self::GoMapStringI64KeyAt),
             unknown => Err(UnknownRuntimeOpId(unknown)),
         }
     }
