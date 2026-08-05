@@ -301,6 +301,22 @@ impl FunctionLowerer {
                     body,
                 }
             }
+            StmtSyntaxKind::Range {
+                label,
+                key,
+                value,
+                token,
+                expression,
+                body,
+            } => self.lower_range(
+                label.as_ref(),
+                key.as_ref(),
+                value.as_ref(),
+                *token,
+                expression,
+                body,
+                source,
+            )?,
             StmtSyntaxKind::Switch { init, tag, cases } => {
                 return self.lower_switch(stmt, init.as_deref(), tag.as_ref(), cases, source);
             }

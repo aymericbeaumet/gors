@@ -556,12 +556,16 @@ impl StructuralProjector {
                     let label = self.ident(&statement.label)?;
                     self.for_statement(for_statement, Some(label))?
                 }
+                ast::Stmt::RangeStmt(range_statement) => {
+                    let label = self.ident(&statement.label)?;
+                    self.range_statement(range_statement, Some(label))?
+                }
                 statement_body => StmtSyntaxKind::Labeled {
                     label: self.ident(&statement.label)?,
                     statement: Box::new(self.statement(statement_body)?),
                 },
             },
-            ast::Stmt::RangeStmt(_) => StmtSyntaxKind::Unsupported("range statement"),
+            ast::Stmt::RangeStmt(statement) => self.range_statement(statement, None)?,
             ast::Stmt::SelectStmt(_) => StmtSyntaxKind::Unsupported("select statement"),
             ast::Stmt::SendStmt(_) => StmtSyntaxKind::Unsupported("send statement"),
             ast::Stmt::SwitchStmt(statement) => self.switch_statement(statement)?,
@@ -592,6 +596,29 @@ impl StructuralProjector {
                 .as_deref()
                 .map(|statement| self.statement(statement).map(Box::new))
                 .transpose()?,
+            body: self.block(&statement.body)?,
+        })
+    }
+
+    fn range_statement(
+        &mut self,
+        statement: &ast::RangeStmt<'_>,
+        label: Option<IdentSyntax>,
+    ) -> Result<StmtSyntaxKind, ProjectionError> {
+        Ok(StmtSyntaxKind::Range {
+            label,
+            key: statement
+                .key
+                .as_ref()
+                .map(|expression| self.expression(expression))
+                .transpose()?,
+            value: statement
+                .value
+                .as_ref()
+                .map(|expression| self.expression(expression))
+                .transpose()?,
+            token: statement.tok,
+            expression: self.expression(&statement.x)?,
             body: self.block(&statement.body)?,
         })
     }

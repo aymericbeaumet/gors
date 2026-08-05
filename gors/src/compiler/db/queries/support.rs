@@ -244,6 +244,26 @@ impl PackageReferenceCollector {
                 }
                 self.scopes.pop();
             }
+            StmtSyntaxKind::Range {
+                key,
+                value,
+                token,
+                expression,
+                body,
+                ..
+            } => {
+                self.expression(expression);
+                self.scopes.push(BTreeSet::new());
+                if *token == Some(Token::DEFINE) {
+                    for target in [key, value].into_iter().flatten() {
+                        if let ExprSyntaxKind::Ident(ident) = &target.kind {
+                            self.bind(Arc::clone(&ident.name));
+                        }
+                    }
+                }
+                self.block(body, true);
+                self.scopes.pop();
+            }
             StmtSyntaxKind::Switch { init, tag, cases } => {
                 self.scopes.push(BTreeSet::new());
                 if let Some(init) = init {

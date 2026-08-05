@@ -265,6 +265,29 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
                 encode_block(encoder, body);
             });
         }),
+        hir::StmtKind::Range {
+            label,
+            key,
+            value,
+            expression,
+            body,
+        } => encoder.variant(b"range", |encoder| {
+            encoder.field(b"label", |encoder| {
+                encoder.option(label.as_ref(), |encoder, label| encoder.string(label));
+            });
+            encoder.field(b"key", |encoder| {
+                encoder.option(key.as_ref(), |encoder, place| encode_place(encoder, *place));
+            });
+            encoder.field(b"value", |encoder| {
+                encoder.option(value.as_ref(), |encoder, place| {
+                    encode_place(encoder, *place)
+                });
+            });
+            encoder.field(b"expression", |encoder| {
+                encode_expression(encoder, expression);
+            });
+            encoder.field(b"body", |encoder| encode_block(encoder, body));
+        }),
         hir::StmtKind::Block(block) => {
             encoder.variant(b"block", |encoder| {
                 encode_block(encoder, block);

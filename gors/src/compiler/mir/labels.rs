@@ -6,7 +6,9 @@ use crate::compiler::provenance::SourceRef;
 pub(super) fn statement_declares_label(statement: &hir::Stmt) -> bool {
     matches!(
         &statement.kind,
-        hir::StmtKind::Label { .. } | hir::StmtKind::For { label: Some(_), .. }
+        hir::StmtKind::Label { .. }
+            | hir::StmtKind::For { label: Some(_), .. }
+            | hir::StmtKind::Range { label: Some(_), .. }
     )
 }
 
@@ -23,6 +25,12 @@ pub(super) fn collect_labels(block: &hir::Block, labels: &mut Vec<(String, Sourc
                 }
             }
             hir::StmtKind::For { label, .. } => {
+                if let Some(label) = label {
+                    labels.push((label.clone(), statement.source));
+                }
+                collect_statement_labels(statement, labels);
+            }
+            hir::StmtKind::Range { label, .. } => {
                 if let Some(label) = label {
                     labels.push((label.clone(), statement.source));
                 }
@@ -60,6 +68,7 @@ fn collect_statement_labels(statement: &hir::Stmt, labels: &mut Vec<(String, Sou
             }
             collect_labels(body, labels);
         }
+        hir::StmtKind::Range { body, .. } => collect_labels(body, labels),
         hir::StmtKind::Block(block) => collect_labels(block, labels),
         hir::StmtKind::Label {
             name,

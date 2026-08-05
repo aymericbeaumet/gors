@@ -5,6 +5,7 @@ mod closures;
 mod expression_lower;
 mod expressions;
 mod function;
+mod ranges;
 mod statements;
 
 use std::collections::{BTreeMap, BTreeSet};

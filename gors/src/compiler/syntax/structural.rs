@@ -143,6 +143,14 @@ pub enum StmtSyntaxKind {
         post: Option<Box<StmtSyntax>>,
         body: BlockSyntax,
     },
+    Range {
+        label: Option<IdentSyntax>,
+        key: Option<ExprSyntax>,
+        value: Option<ExprSyntax>,
+        token: Option<Token>,
+        expression: ExprSyntax,
+        body: BlockSyntax,
+    },
     Switch {
         init: Option<Box<StmtSyntax>>,
         tag: Option<ExprSyntax>,

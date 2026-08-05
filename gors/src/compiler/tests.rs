@@ -534,6 +534,32 @@ fn generated_parallel_assignments_freeze_dynamic_targets_before_writes() {
 }
 
 #[test]
+fn generated_slice_range_evaluates_once_and_continues_through_post() {
+    let run = compile_and_run(
+        r#"
+            package main
+            func main() {
+                calls := 0
+                values := func() []int {
+                    calls++
+                    return []int{2, 3}
+                }
+                total := 0
+                for index, value := range values() {
+                    if index == 0 {
+                        continue
+                    }
+                    total += value
+                }
+                println(calls, total)
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"1 3\n");
+}
+
+#[test]
 fn generated_deferred_closures_capture_arguments_and_update_named_results() {
     let run = compile_and_run(
         r#"

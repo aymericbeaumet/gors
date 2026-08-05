@@ -122,6 +122,13 @@ pub enum StmtKind {
         post: Option<Box<Stmt>>,
         body: Block,
     },
+    Range {
+        label: Option<String>,
+        key: Option<Place>,
+        value: Option<Place>,
+        expression: Expr,
+        body: Block,
+    },
     Block(Block),
     Label {
         name: String,

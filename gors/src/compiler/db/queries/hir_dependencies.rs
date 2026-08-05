@@ -96,6 +96,12 @@ fn collect_statement_callees(statement: &hir::Stmt, callees: &mut BTreeSet<DefId
             }
             collect_block_callees(body, callees);
         }
+        hir::StmtKind::Range {
+            expression, body, ..
+        } => {
+            collect_expression_callees(expression, callees);
+            collect_block_callees(body, callees);
+        }
         hir::StmtKind::Block(block) => collect_block_callees(block, callees),
         hir::StmtKind::Label { statement, .. } => {
             if let Some(statement) = statement {
