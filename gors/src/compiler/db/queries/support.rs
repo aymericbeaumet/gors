@@ -269,6 +269,35 @@ impl PackageReferenceCollector {
                 }
             }
             ExprSyntaxKind::Selector { base, .. } => self.expression(base),
+            ExprSyntaxKind::ArrayType { length, element } => {
+                if let Some(length) = length {
+                    self.expression(length);
+                }
+                self.expression(element);
+            }
+            ExprSyntaxKind::CompositeLiteral { ty, elements } => {
+                if let Some(ty) = ty {
+                    self.expression(ty);
+                }
+                for element in &**elements {
+                    self.expression(element);
+                }
+            }
+            ExprSyntaxKind::Index { base, index } => {
+                self.expression(base);
+                self.expression(index);
+            }
+            ExprSyntaxKind::Slice {
+                base,
+                low,
+                high,
+                max,
+            } => {
+                self.expression(base);
+                for bound in [low, high, max].into_iter().flatten() {
+                    self.expression(bound);
+                }
+            }
             ExprSyntaxKind::Literal { .. } | ExprSyntaxKind::Unsupported(_) => {}
         }
     }
@@ -293,6 +322,35 @@ fn collect_all_expression_names(expression: &ExprSyntax, names: &mut BTreeSet<St
             }
         }
         ExprSyntaxKind::Selector { base, .. } => collect_all_expression_names(base, names),
+        ExprSyntaxKind::ArrayType { length, element } => {
+            if let Some(length) = length {
+                collect_all_expression_names(length, names);
+            }
+            collect_all_expression_names(element, names);
+        }
+        ExprSyntaxKind::CompositeLiteral { ty, elements } => {
+            if let Some(ty) = ty {
+                collect_all_expression_names(ty, names);
+            }
+            for element in &**elements {
+                collect_all_expression_names(element, names);
+            }
+        }
+        ExprSyntaxKind::Index { base, index } => {
+            collect_all_expression_names(base, names);
+            collect_all_expression_names(index, names);
+        }
+        ExprSyntaxKind::Slice {
+            base,
+            low,
+            high,
+            max,
+        } => {
+            collect_all_expression_names(base, names);
+            for bound in [low, high, max].into_iter().flatten() {
+                collect_all_expression_names(bound, names);
+            }
+        }
         ExprSyntaxKind::Literal { .. } | ExprSyntaxKind::Unsupported(_) => {}
     }
 }

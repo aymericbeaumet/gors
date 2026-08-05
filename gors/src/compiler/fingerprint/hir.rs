@@ -215,6 +215,17 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
         hir::StmtKind::Continue(label) => encoder.variant(b"continue", |encoder| {
             encoder.option(label.as_ref(), |encoder, label| encoder.string(label));
         }),
+        hir::StmtKind::SliceAssign {
+            slice,
+            index,
+            op,
+            value,
+        } => encoder.variant(b"slice-assign", |encoder| {
+            encoder.field(b"slice", |encoder| encode_expression(encoder, slice));
+            encoder.field(b"index", |encoder| encode_expression(encoder, index));
+            encoder.field(b"operation", |encoder| encode_assign_op(encoder, *op));
+            encoder.field(b"value", |encoder| encode_expression(encoder, value));
+        }),
     }
 }
 
@@ -311,6 +322,11 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
         hir::ExprKind::Conversion { value } => encoder.variant(b"conversion", |encoder| {
             encode_expression(encoder, value);
         }),
+        hir::ExprKind::SliceLiteralI64(elements) => {
+            encoder.variant(b"slice-literal-i64", |encoder| {
+                encoder.sequence(elements, |encoder, element| encoder.i64(*element));
+            });
+        }
         hir::ExprKind::Call { callee, args } => encoder.variant(b"call", |encoder| {
             encoder.field(b"callee", |encoder| encode_callee(encoder, *callee));
             encoder.field(b"arguments", |encoder| {
@@ -339,6 +355,9 @@ fn encode_builtin(encoder: &mut Encoder, builtin: hir::Builtin) {
             hir::Builtin::Print => b"print",
             hir::Builtin::Println => b"println",
             hir::Builtin::Panic => b"panic",
+            hir::Builtin::SliceI64Index => b"slice-i64-index",
+            hir::Builtin::SliceI64Range => b"slice-i64-range",
+            hir::Builtin::SliceI64Set => b"slice-i64-set",
         },
         |_| {},
     );

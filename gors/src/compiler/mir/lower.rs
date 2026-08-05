@@ -343,6 +343,86 @@ impl FunctionLowerer {
                     provenance,
                 ))?;
             }
+            hir::StmtKind::SliceAssign {
+                slice,
+                index,
+                op,
+                value,
+            } => {
+                let provenance = Provenance::Source(statement.source);
+                let slice_operand = self.lower_expr(slice)?;
+                let slice_operand = self.materialize(
+                    slice_operand,
+                    slice.ty.clone(),
+                    Provenance::Source(slice.source),
+                )?;
+                let index_operand = self.lower_expr(index)?;
+                let index_operand = self.materialize(
+                    index_operand,
+                    index.ty.clone(),
+                    Provenance::Source(index.source),
+                )?;
+
+                let assigned = if *op == hir::AssignOp::Set {
+                    let value_operand = self.lower_expr(value)?;
+                    self.materialize(
+                        value_operand,
+                        value.ty.clone(),
+                        Provenance::Source(value.source),
+                    )?
+                } else {
+                    let old = Place {
+                        local: self.new_temp(value.ty.clone()),
+                    };
+                    let after_index = self.new_block(provenance.clone());
+                    self.terminate(make_terminator(
+                        TerminatorKind::Call {
+                            callee: hir::Callee::Builtin(hir::Builtin::SliceI64Index),
+                            args: vec![slice_operand.clone(), index_operand.clone()],
+                            destination: Some(old),
+                            target: after_index,
+                        },
+                        call_effects(),
+                        provenance.clone(),
+                    ))?;
+                    self.current = after_index;
+                    let value_operand = self.lower_expr(value)?;
+                    let value_operand = self.materialize(
+                        value_operand,
+                        value.ty.clone(),
+                        Provenance::Source(value.source),
+                    )?;
+                    let result = Place {
+                        local: self.new_temp(value.ty.clone()),
+                    };
+                    let binary_op = assignment_binary_op(*op);
+                    let binary = make_rvalue(
+                        RvalueKind::Binary {
+                            op: binary_op,
+                            left: Operand::Read(old),
+                            right: value_operand,
+                            ty: value.ty.clone(),
+                        },
+                        binary_effects(binary_op, &value.ty),
+                        provenance.clone(),
+                    );
+                    self.push_statement(make_statement(result, binary, provenance.clone()))?;
+                    Operand::Read(result)
+                };
+
+                let after_set = self.new_block(provenance.clone());
+                self.terminate(make_terminator(
+                    TerminatorKind::Call {
+                        callee: hir::Callee::Builtin(hir::Builtin::SliceI64Set),
+                        args: vec![slice_operand, index_operand, assigned],
+                        destination: None,
+                        target: after_set,
+                    },
+                    call_effects(),
+                    provenance,
+                ))?;
+                self.current = after_set;
+            }
             hir::StmtKind::Expr(expr) => {
                 let _ = self.lower_expr(expr)?;
             }
@@ -584,6 +664,18 @@ impl FunctionLowerer {
         match &expr.kind {
             hir::ExprKind::Constant(value) | hir::ExprKind::GlobalConstant(_, value) => {
                 Ok(Operand::Constant(value.clone(), expr.ty.clone()))
+            }
+            hir::ExprKind::SliceLiteralI64(elements) => {
+                let result = self.new_temp(expr.ty.clone());
+                let place = Place { local: result };
+                let provenance = Provenance::Source(expr.source);
+                let value = make_rvalue(
+                    RvalueKind::SliceLiteralI64(elements.clone()),
+                    expr.effects,
+                    provenance.clone(),
+                );
+                self.push_statement(make_statement(place, value, provenance))?;
+                Ok(Operand::Read(place))
             }
             hir::ExprKind::Local(local) => Ok(Operand::Read(Place { local: *local })),
             hir::ExprKind::Unary { op, operand } => {
@@ -828,6 +920,7 @@ fn collect_statement_labels(statement: &hir::Stmt, labels: &mut Vec<(String, Sou
         }
         hir::StmtKind::Let { .. }
         | hir::StmtKind::Assign { .. }
+        | hir::StmtKind::SliceAssign { .. }
         | hir::StmtKind::Expr(_)
         | hir::StmtKind::Return(_)
         | hir::StmtKind::Goto(_)

@@ -285,6 +285,8 @@ pub enum RuntimeType {
     StaticByteSlice,
     F64,
     Complex128,
+    GoSliceI64,
+    StaticI64Slice,
 }
 
 impl RuntimeType {
@@ -298,6 +300,8 @@ impl RuntimeType {
             Self::StaticByteSlice => 6,
             Self::F64 => 7,
             Self::Complex128 => 8,
+            Self::GoSliceI64 => 9,
+            Self::StaticI64Slice => 10,
         }
     }
 
@@ -351,12 +355,24 @@ const TWO_COMPLEX128_PARAMETERS: &[RuntimeType] =
     &[RuntimeType::Complex128, RuntimeType::Complex128];
 const GO_STRING_PARAMETER: &[RuntimeType] = &[RuntimeType::GoString];
 const TWO_GO_STRING_PARAMETERS: &[RuntimeType] = &[RuntimeType::GoString, RuntimeType::GoString];
+const STATIC_I64_SLICE_PARAMETER: &[RuntimeType] = &[RuntimeType::StaticI64Slice];
+const GO_SLICE_I64_AND_INDEX: &[RuntimeType] = &[RuntimeType::GoSliceI64, RuntimeType::I64];
+const GO_SLICE_I64_RANGE: &[RuntimeType] = &[
+    RuntimeType::GoSliceI64,
+    RuntimeType::I64,
+    RuntimeType::I64,
+    RuntimeType::I64,
+];
+const GO_SLICE_I64_SET: &[RuntimeType] =
+    &[RuntimeType::GoSliceI64, RuntimeType::I64, RuntimeType::I64];
 const NO_CAPABILITIES: &[TargetCapability] = &[];
 const STANDARD_IO_CAPABILITY: &[TargetCapability] = &[StandardIo];
 const NO_GO_PANICS: &[GoPanicCondition] = &[];
 const INTEGER_DIVIDE_BY_ZERO: &[GoPanicCondition] = &[GoPanicCondition::IntegerDivideByZero];
 const NEGATIVE_SHIFT_AMOUNT: &[GoPanicCondition] = &[GoPanicCondition::NegativeShiftAmount];
 const EXPLICIT_PANIC: &[GoPanicCondition] = &[GoPanicCondition::ExplicitPanic];
+const INDEX_OUT_OF_RANGE: &[GoPanicCondition] = &[GoPanicCondition::IndexOutOfRange];
+const SLICE_BOUNDS_OUT_OF_RANGE: &[GoPanicCondition] = &[GoPanicCondition::SliceBoundsOutOfRange];
 
 /// Operations that require an exact symbol from the versioned runtime ABI.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -376,6 +392,10 @@ pub enum RuntimeOp {
     PanicBool,
     PanicI64,
     PanicGoString,
+    GoSliceI64FromStatic,
+    GoSliceI64Index,
+    GoSliceI64Range,
+    GoSliceI64Set,
 }
 
 /// Stable compact identity of one runtime ABI operation.
@@ -427,6 +447,10 @@ impl RuntimeOp {
         Self::PanicBool,
         Self::PanicI64,
         Self::PanicGoString,
+        Self::GoSliceI64FromStatic,
+        Self::GoSliceI64Index,
+        Self::GoSliceI64Range,
+        Self::GoSliceI64Set,
     ];
 
     /// Stable exported Rust symbol assigned to this ABI operation.
@@ -448,6 +472,10 @@ impl RuntimeOp {
             Self::PanicBool => "panic_bool",
             Self::PanicI64 => "panic_i64",
             Self::PanicGoString => "panic_go_string",
+            Self::GoSliceI64FromStatic => "go_slice_i64_from_static",
+            Self::GoSliceI64Index => "go_slice_i64_index",
+            Self::GoSliceI64Range => "go_slice_i64_range",
+            Self::GoSliceI64Set => "go_slice_i64_set",
         }
     }
 
@@ -476,6 +504,16 @@ impl RuntimeOp {
             Self::PanicBool => RuntimeSignature::new(BOOL_PARAMETER, RuntimeType::Unit),
             Self::PanicI64 => RuntimeSignature::new(I64_PARAMETER, RuntimeType::Unit),
             Self::PanicGoString => RuntimeSignature::new(GO_STRING_PARAMETER, RuntimeType::Unit),
+            Self::GoSliceI64FromStatic => {
+                RuntimeSignature::new(STATIC_I64_SLICE_PARAMETER, RuntimeType::GoSliceI64)
+            }
+            Self::GoSliceI64Index => {
+                RuntimeSignature::new(GO_SLICE_I64_AND_INDEX, RuntimeType::I64)
+            }
+            Self::GoSliceI64Range => {
+                RuntimeSignature::new(GO_SLICE_I64_RANGE, RuntimeType::GoSliceI64)
+            }
+            Self::GoSliceI64Set => RuntimeSignature::new(GO_SLICE_I64_SET, RuntimeType::Unit),
         }
     }
 
@@ -498,6 +536,10 @@ impl RuntimeOp {
             | Self::PanicBool
             | Self::PanicI64
             | Self::PanicGoString => NO_CAPABILITIES,
+            Self::GoSliceI64FromStatic
+            | Self::GoSliceI64Index
+            | Self::GoSliceI64Range
+            | Self::GoSliceI64Set => NO_CAPABILITIES,
         }
     }
 
@@ -551,6 +593,30 @@ impl RuntimeOp {
                 HostIoEffect::None,
                 EXPLICIT_PANIC,
             ),
+            Self::GoSliceI64FromStatic => RuntimeEffects::new(
+                AllocationEffect::MayAllocate,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                NO_GO_PANICS,
+            ),
+            Self::GoSliceI64Index => RuntimeEffects::new(
+                AllocationEffect::None,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                INDEX_OUT_OF_RANGE,
+            ),
+            Self::GoSliceI64Range => RuntimeEffects::new(
+                AllocationEffect::None,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                SLICE_BOUNDS_OUT_OF_RANGE,
+            ),
+            Self::GoSliceI64Set => RuntimeEffects::new(
+                AllocationEffect::None,
+                ArgumentMutationEffect::MayMutateOwnedArgument,
+                HostIoEffect::None,
+                INDEX_OUT_OF_RANGE,
+            ),
         }
     }
 
@@ -573,6 +639,10 @@ impl RuntimeOp {
             Self::PanicBool => 18,
             Self::PanicI64 => 19,
             Self::PanicGoString => 20,
+            Self::GoSliceI64FromStatic => 21,
+            Self::GoSliceI64Index => 22,
+            Self::GoSliceI64Range => 23,
+            Self::GoSliceI64Set => 24,
         })
     }
 
@@ -609,6 +679,10 @@ impl TryFrom<u16> for RuntimeOp {
             18 => Ok(Self::PanicBool),
             19 => Ok(Self::PanicI64),
             20 => Ok(Self::PanicGoString),
+            21 => Ok(Self::GoSliceI64FromStatic),
+            22 => Ok(Self::GoSliceI64Index),
+            23 => Ok(Self::GoSliceI64Range),
+            24 => Ok(Self::GoSliceI64Set),
             unknown => Err(UnknownRuntimeOpId(unknown)),
         }
     }

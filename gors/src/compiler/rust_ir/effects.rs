@@ -127,7 +127,9 @@ fn operand_effects(operand: &Operand) -> Effects {
             may_write: true,
             ..Effects::default()
         },
-        Operand::Constant(Constant::RuntimeStaticBytes { op, .. }) => runtime_effects(*op),
+        Operand::Constant(
+            Constant::RuntimeStaticBytes { op, .. } | Constant::RuntimeStaticI64s { op, .. },
+        ) => runtime_effects(*op),
         Operand::Constant(
             Constant::Bool(_) | Constant::I64(_) | Constant::F64(_) | Constant::Complex128 { .. },
         )

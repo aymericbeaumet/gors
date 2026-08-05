@@ -99,6 +99,12 @@ pub enum StmtKind {
     Goto(String),
     Break(Option<String>),
     Continue(Option<String>),
+    SliceAssign {
+        slice: Expr,
+        index: Expr,
+        op: AssignOp,
+        value: Expr,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -150,6 +156,7 @@ pub enum ExprKind {
     Conversion {
         value: Box<Expr>,
     },
+    SliceLiteralI64(Vec<i64>),
     Call {
         callee: Callee,
         args: Vec<Expr>,
@@ -167,6 +174,9 @@ pub enum Builtin {
     Print,
     Println,
     Panic,
+    SliceI64Index,
+    SliceI64Range,
+    SliceI64Set,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

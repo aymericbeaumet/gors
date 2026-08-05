@@ -171,6 +171,7 @@ pub(super) fn ty(encoder: &mut Encoder, value: &Ty) {
             encoder.field(b"underlying", |encoder| ty(encoder, underlying));
         }),
         Ty::String => encoder.variant(b"string", |_| {}),
+        Ty::Slice(element) => encoder.variant(b"slice", |encoder| ty(encoder, element)),
         Ty::Tuple(values) => {
             encoder.variant(b"tuple", |encoder| encoder.sequence(values, ty));
         }

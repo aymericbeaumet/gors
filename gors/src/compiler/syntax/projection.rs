@@ -693,18 +693,59 @@ impl StructuralProjector {
                 base: Box::new(self.expression(&expression.x)?),
                 member: self.ident(&expression.sel)?,
             },
-            ast::Expr::ArrayType(_) => ExprSyntaxKind::Unsupported("array or slice type"),
+            ast::Expr::ArrayType(expression) => ExprSyntaxKind::ArrayType {
+                length: expression
+                    .len
+                    .as_ref()
+                    .map(|length| self.expression(length).map(Box::new))
+                    .transpose()?,
+                element: Box::new(self.expression(&expression.elt)?),
+            },
             ast::Expr::ChanType(_) => ExprSyntaxKind::Unsupported("channel type"),
-            ast::Expr::CompositeLit(_) => ExprSyntaxKind::Unsupported("composite literal"),
+            ast::Expr::CompositeLit(expression) => ExprSyntaxKind::CompositeLiteral {
+                ty: expression
+                    .type_
+                    .as_ref()
+                    .map(|ty| self.expression(ty).map(Box::new))
+                    .transpose()?,
+                elements: expression
+                    .elts
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|element| self.expression(element))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into(),
+            },
             ast::Expr::Ellipsis(_) => ExprSyntaxKind::Unsupported("ellipsis"),
             ast::Expr::FuncLit(_) => ExprSyntaxKind::Unsupported("function literal"),
             ast::Expr::FuncType(_) => ExprSyntaxKind::Unsupported("function type"),
-            ast::Expr::IndexExpr(_) => ExprSyntaxKind::Unsupported("index expression"),
+            ast::Expr::IndexExpr(expression) => ExprSyntaxKind::Index {
+                base: Box::new(self.expression(&expression.x)?),
+                index: Box::new(self.expression(&expression.index)?),
+            },
             ast::Expr::IndexListExpr(_) => ExprSyntaxKind::Unsupported("generic index expression"),
             ast::Expr::InterfaceType(_) => ExprSyntaxKind::Unsupported("interface type"),
             ast::Expr::KeyValueExpr(_) => ExprSyntaxKind::Unsupported("key-value expression"),
             ast::Expr::MapType(_) => ExprSyntaxKind::Unsupported("map type"),
-            ast::Expr::SliceExpr(_) => ExprSyntaxKind::Unsupported("slice expression"),
+            ast::Expr::SliceExpr(expression) => ExprSyntaxKind::Slice {
+                base: Box::new(self.expression(&expression.x)?),
+                low: expression
+                    .low
+                    .as_ref()
+                    .map(|bound| self.expression(bound).map(Box::new))
+                    .transpose()?,
+                high: expression
+                    .high
+                    .as_ref()
+                    .map(|bound| self.expression(bound).map(Box::new))
+                    .transpose()?,
+                max: expression
+                    .max
+                    .as_ref()
+                    .map(|bound| self.expression(bound).map(Box::new))
+                    .transpose()?,
+            },
             ast::Expr::StarExpr(_) => ExprSyntaxKind::Unsupported("pointer expression"),
             ast::Expr::StructType(_) => ExprSyntaxKind::Unsupported("struct type"),
             ast::Expr::TypeAssertExpr(_) => ExprSyntaxKind::Unsupported("type assertion"),

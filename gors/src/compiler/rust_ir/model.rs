@@ -191,6 +191,7 @@ pub enum Constant {
     F64(u64),
     Complex128 { real: u64, imag: u64 },
     RuntimeStaticBytes { op: RuntimeOp, bytes: Vec<u8> },
+    RuntimeStaticI64s { op: RuntimeOp, values: Vec<i64> },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -233,6 +234,7 @@ pub enum RustType {
     F64,
     Complex128,
     GoString,
+    GoSliceI64,
 }
 
 impl RustType {
@@ -242,7 +244,7 @@ impl RustType {
             Self::Bool | Self::I64 | Self::F64 | Self::Complex128 => {
                 Some(ReadOp::ProvenInitializedCopy)
             }
-            Self::GoString => Some(ReadOp::ProvenInitializedClone),
+            Self::GoString | Self::GoSliceI64 => Some(ReadOp::ProvenInitializedClone),
             Self::Unit => None,
         }
     }
@@ -252,8 +254,8 @@ impl RustType {
             Self::Bool | Self::I64 | Self::F64 | Self::Complex128 => {
                 Some(ReadOp::ProvenInitializedCopy)
             }
-            Self::GoString if live_after => Some(ReadOp::ProvenInitializedClone),
-            Self::GoString => Some(ReadOp::ProvenLastUseMove),
+            Self::GoString | Self::GoSliceI64 if live_after => Some(ReadOp::ProvenInitializedClone),
+            Self::GoString | Self::GoSliceI64 => Some(ReadOp::ProvenLastUseMove),
             Self::Unit => None,
         }
     }
@@ -265,7 +267,7 @@ impl RustType {
                 Self::Bool | Self::I64 | Self::F64 | Self::Complex128,
                 ReadOp::ProvenInitializedCopy
             ) | (
-                Self::GoString,
+                Self::GoString | Self::GoSliceI64,
                 ReadOp::ProvenInitializedClone | ReadOp::ProvenLastUseMove
             )
         )

@@ -258,6 +258,14 @@ fn encode_constant(encoder: &mut Encoder, constant: &rust_ir::Constant) {
                 encoder.field(b"bytes", |encoder| encoder.blob(bytes));
             });
         }
+        rust_ir::Constant::RuntimeStaticI64s { op, values } => {
+            encoder.variant(b"runtime-static-i64s", |encoder| {
+                encoder.field(b"operation", |encoder| encode_runtime_op(encoder, *op));
+                encoder.field(b"values", |encoder| {
+                    encoder.sequence(values, |encoder, value| encoder.i64(*value));
+                });
+            });
+        }
     }
 }
 
@@ -355,6 +363,7 @@ fn encode_type(encoder: &mut Encoder, ty: rust_ir::RustType) {
             rust_ir::RustType::F64 => b"f64",
             rust_ir::RustType::Complex128 => b"complex128",
             rust_ir::RustType::GoString => b"go-string",
+            rust_ir::RustType::GoSliceI64 => b"go-slice-i64",
         },
         |_| {},
     );

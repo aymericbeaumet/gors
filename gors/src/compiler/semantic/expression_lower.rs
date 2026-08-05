@@ -426,6 +426,122 @@ impl FunctionLowerer {
                     source,
                 ));
             }
+            ExprSyntaxKind::CompositeLiteral { ty, elements } => {
+                let Some(ty) = ty else {
+                    return Err(Diagnostic::unsupported(
+                        "elided composite literal types require an enclosing composite type",
+                        source,
+                    ));
+                };
+                let literal_ty = lower_type(ty, &self.type_aliases, source)?;
+                let Ty::Slice(element_ty) = literal_ty.underlying() else {
+                    return Err(Diagnostic::unsupported(
+                        "this composite literal type is not yet implemented",
+                        source,
+                    ));
+                };
+                if element_ty.underlying() != &Ty::Int(IntTy::Int) {
+                    return Err(Diagnostic::unsupported(
+                        "slice literals currently require int elements",
+                        source,
+                    ));
+                }
+                let mut values = Vec::with_capacity(elements.len());
+                for element in &**elements {
+                    let element = self.lower_expr(element, Some(element_ty))?;
+                    let Some(ConstValue::Int(value)) = expr_constant(&element) else {
+                        return Err(Diagnostic::unsupported(
+                            "dynamic slice literal elements are not yet implemented",
+                            source,
+                        ));
+                    };
+                    values.push(value.parse::<i64>().map_err(|_| {
+                        Diagnostic::semantic("slice literal element is outside Go int", source)
+                    })?);
+                }
+                hir::Expr {
+                    node,
+                    kind: hir::ExprKind::SliceLiteralI64(values),
+                    ty: literal_ty,
+                    category: hir::ValueCategory::Value,
+                    effects: hir::Effects {
+                        may_allocate: true,
+                        ..hir::Effects::default()
+                    },
+                    source,
+                }
+            }
+            ExprSyntaxKind::Index { base, index } => {
+                let base = self.lower_expr(base, None)?;
+                let Ty::Slice(element) = base.ty.underlying() else {
+                    return Err(Diagnostic::semantic(
+                        "indexing requires a slice value",
+                        source,
+                    ));
+                };
+                if element.underlying() != &Ty::Int(IntTy::Int) {
+                    return Err(Diagnostic::unsupported(
+                        "indexing currently supports []int values",
+                        source,
+                    ));
+                }
+                let element_ty = element.as_ref().clone();
+                let index = self.lower_expr(index, Some(&Ty::Int(IntTy::Int)))?;
+                let effects = slice_runtime_effects(&[&base, &index], false);
+                hir::Expr {
+                    node,
+                    kind: hir::ExprKind::Call {
+                        callee: hir::Callee::Builtin(hir::Builtin::SliceI64Index),
+                        args: vec![base, index],
+                    },
+                    ty: element_ty,
+                    category: hir::ValueCategory::Value,
+                    effects,
+                    source,
+                }
+            }
+            ExprSyntaxKind::Slice {
+                base,
+                low,
+                high,
+                max,
+            } => {
+                let base = self.lower_expr(base, None)?;
+                let Ty::Slice(element) = base.ty.underlying() else {
+                    return Err(Diagnostic::semantic(
+                        "slicing requires a slice value",
+                        source,
+                    ));
+                };
+                if element.underlying() != &Ty::Int(IntTy::Int) {
+                    return Err(Diagnostic::unsupported(
+                        "reslicing currently supports []int values",
+                        source,
+                    ));
+                }
+                let slice_ty = Ty::Slice(element.clone());
+                let low = self.lower_optional_slice_bound(low.as_deref(), expr.source)?;
+                let high = self.lower_optional_slice_bound(high.as_deref(), expr.source)?;
+                let max = self.lower_optional_slice_bound(max.as_deref(), expr.source)?;
+                let effects = slice_runtime_effects(&[&base, &low, &high, &max], false);
+                hir::Expr {
+                    node,
+                    kind: hir::ExprKind::Call {
+                        callee: hir::Callee::Builtin(hir::Builtin::SliceI64Range),
+                        args: vec![base, low, high, max],
+                    },
+                    ty: slice_ty,
+                    category: hir::ValueCategory::Value,
+                    effects,
+                    source,
+                }
+            }
+            ExprSyntaxKind::ArrayType { .. } => {
+                return Err(Diagnostic::semantic(
+                    "a slice type is not a value expression",
+                    source,
+                ));
+            }
             ExprSyntaxKind::Unsupported(kind) => {
                 return Err(Diagnostic::unsupported(
                     format!("expression {kind} is not implemented by the HIR/MIR backend"),
@@ -438,4 +554,35 @@ impl FunctionLowerer {
         }
         Ok(lowered)
     }
+
+    fn lower_optional_slice_bound(
+        &mut self,
+        bound: Option<&ExprSyntax>,
+        syntax_source: crate::compiler::syntax::SyntaxSource,
+    ) -> Result<hir::Expr, Diagnostic> {
+        if let Some(bound) = bound {
+            return self.lower_expr(bound, Some(&Ty::Int(IntTy::Int)));
+        }
+        let node = self.alloc_node(syntax_source)?;
+        Ok(hir::Expr {
+            node,
+            kind: hir::ExprKind::Constant(ConstValue::Int("-1".into())),
+            ty: Ty::Int(IntTy::Int),
+            category: hir::ValueCategory::Constant,
+            effects: hir::Effects::default(),
+            source: SourceRef::node(node),
+        })
+    }
+}
+
+fn slice_runtime_effects(arguments: &[&hir::Expr], writes: bool) -> hir::Effects {
+    arguments.iter().fold(
+        hir::Effects {
+            may_call: true,
+            may_panic: true,
+            may_write: writes,
+            ..hir::Effects::default()
+        },
+        |effects, argument| effects.union(argument.effects),
+    )
 }

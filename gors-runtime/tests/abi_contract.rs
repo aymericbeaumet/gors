@@ -1,5 +1,6 @@
 use gors_runtime::{
-    GoInt, GoString, concat_go_strings, go_string_from_bytes, go_string_from_static, int_div,
+    GoInt, GoSliceI64, GoString, concat_go_strings, go_slice_i64_from_static, go_slice_i64_index,
+    go_slice_i64_range, go_slice_i64_set, go_string_from_bytes, go_string_from_static, int_div,
     int_rem, int_shl, int_shr, panic_bool, panic_go_string, panic_i64, print_bool, print_go_string,
     print_i64, print_newline, print_space,
 };
@@ -99,6 +100,26 @@ fn implementation_surface(operation: RuntimeOp) -> RuntimeSurface {
             panic_go_string,
             fn(GoString),
             [RuntimeType::GoString] -> RuntimeType::Unit
+        ),
+        RuntimeOp::GoSliceI64FromStatic => runtime_surface!(
+            go_slice_i64_from_static,
+            fn(&'static [GoInt]) -> GoSliceI64,
+            [RuntimeType::StaticI64Slice] -> RuntimeType::GoSliceI64
+        ),
+        RuntimeOp::GoSliceI64Index => runtime_surface!(
+            go_slice_i64_index,
+            fn(GoSliceI64, GoInt) -> GoInt,
+            [RuntimeType::GoSliceI64, RuntimeType::I64] -> RuntimeType::I64
+        ),
+        RuntimeOp::GoSliceI64Range => runtime_surface!(
+            go_slice_i64_range,
+            fn(GoSliceI64, GoInt, GoInt, GoInt) -> GoSliceI64,
+            [RuntimeType::GoSliceI64, RuntimeType::I64, RuntimeType::I64, RuntimeType::I64] -> RuntimeType::GoSliceI64
+        ),
+        RuntimeOp::GoSliceI64Set => runtime_surface!(
+            go_slice_i64_set,
+            fn(GoSliceI64, GoInt, GoInt),
+            [RuntimeType::GoSliceI64, RuntimeType::I64, RuntimeType::I64] -> RuntimeType::Unit
         ),
     }
 }

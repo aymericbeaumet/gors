@@ -176,6 +176,13 @@ impl Function {
         verify_rvalue_provenance(&rvalue.provenance, self.id)?;
         let (ty, intrinsic) = match &rvalue.kind {
             RvalueKind::Use(operand) => (self.operand_ty(operand)?, hir::Effects::default()),
+            RvalueKind::SliceLiteralI64(_) => (
+                Ty::Slice(Box::new(Ty::Int(IntTy::Int))),
+                hir::Effects {
+                    may_allocate: true,
+                    ..hir::Effects::default()
+                },
+            ),
             RvalueKind::Unary { op, operand, ty } => {
                 let operand_ty = self.operand_ty(operand)?;
                 let expected = match op {
@@ -267,7 +274,7 @@ impl Function {
                         self.verify_call_destination(destination, &signature.results)?;
                     }
                     hir::Callee::Builtin(builtin) => {
-                        match builtin {
+                        let results = match builtin {
                             hir::Builtin::Print | hir::Builtin::Println => {
                                 for ty in &argument_types {
                                     if !matches!(ty, Ty::Bool | Ty::Int(IntTy::Int) | Ty::String) {
@@ -276,6 +283,7 @@ impl Function {
                                         )));
                                     }
                                 }
+                                Vec::new()
                             }
                             hir::Builtin::Panic => {
                                 if argument_types.len() != 1 {
@@ -292,9 +300,30 @@ impl Function {
                                         "panic builtin received an unsupported MIR operand type",
                                     ));
                                 }
+                                Vec::new()
                             }
-                        }
-                        self.verify_call_destination(destination, &[])?;
+                            hir::Builtin::SliceI64Index => {
+                                verify_slice_call_arguments(&argument_types, 2, "slice index")?;
+                                vec![Ty::Int(IntTy::Int)]
+                            }
+                            hir::Builtin::SliceI64Range => {
+                                verify_slice_call_arguments(
+                                    &argument_types,
+                                    4,
+                                    "slice expression",
+                                )?;
+                                vec![Ty::Slice(Box::new(Ty::Int(IntTy::Int)))]
+                            }
+                            hir::Builtin::SliceI64Set => {
+                                verify_slice_call_arguments(
+                                    &argument_types,
+                                    3,
+                                    "slice assignment",
+                                )?;
+                                Vec::new()
+                            }
+                        };
+                        self.verify_call_destination(destination, &results)?;
                     }
                 }
                 call_effects()
@@ -469,7 +498,29 @@ fn rvalue_operands(kind: &RvalueKind) -> Vec<&Operand> {
         | RvalueKind::Unary { operand, .. }
         | RvalueKind::Conversion { operand, .. } => vec![operand],
         RvalueKind::Binary { left, right, .. } => vec![left, right],
+        RvalueKind::SliceLiteralI64(_) => Vec::new(),
     }
+}
+
+fn verify_slice_call_arguments(
+    arguments: &[Ty],
+    expected_len: usize,
+    context: &str,
+) -> Result<(), Diagnostic> {
+    let slice = Ty::Slice(Box::new(Ty::Int(IntTy::Int)));
+    if arguments.len() != expected_len
+        || arguments.first() != Some(&slice)
+        || arguments
+            .get(1..)
+            .unwrap_or_default()
+            .iter()
+            .any(|ty| ty != &Ty::Int(IntTy::Int))
+    {
+        return Err(Diagnostic::backend(format!(
+            "invalid MIR {context} argument types: {arguments:?}"
+        )));
+    }
+    Ok(())
 }
 
 fn terminator_operands(kind: &TerminatorKind) -> Vec<&Operand> {

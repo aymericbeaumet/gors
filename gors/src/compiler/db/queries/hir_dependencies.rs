@@ -27,6 +27,16 @@ fn collect_statement_callees(statement: &hir::Stmt, callees: &mut BTreeSet<DefId
             }
         }
         hir::StmtKind::Expr(expression) => collect_expression_callees(expression, callees),
+        hir::StmtKind::SliceAssign {
+            slice,
+            index,
+            value,
+            ..
+        } => {
+            collect_expression_callees(slice, callees);
+            collect_expression_callees(index, callees);
+            collect_expression_callees(value, callees);
+        }
         hir::StmtKind::If {
             init,
             condition,
@@ -88,6 +98,7 @@ fn collect_expression_callees(expression: &hir::Expr, callees: &mut BTreeSet<Def
         }
         hir::ExprKind::Constant(_)
         | hir::ExprKind::Local(_)
-        | hir::ExprKind::GlobalConstant(..) => {}
+        | hir::ExprKind::GlobalConstant(..)
+        | hir::ExprKind::SliceLiteralI64(_) => {}
     }
 }

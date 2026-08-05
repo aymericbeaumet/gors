@@ -113,6 +113,11 @@ fn encode_rvalue_kind(encoder: &mut Encoder, kind: &mir::RvalueKind) {
         mir::RvalueKind::Use(operand) => {
             encoder.variant(b"use", |encoder| encode_operand(encoder, operand));
         }
+        mir::RvalueKind::SliceLiteralI64(elements) => {
+            encoder.variant(b"slice-literal-i64", |encoder| {
+                encoder.sequence(elements, |encoder, element| encoder.i64(*element));
+            });
+        }
         mir::RvalueKind::Unary {
             op,
             operand,
@@ -228,6 +233,9 @@ fn encode_callee(encoder: &mut Encoder, callee: hir::Callee) {
                     hir::Builtin::Print => b"print",
                     hir::Builtin::Println => b"println",
                     hir::Builtin::Panic => b"panic",
+                    hir::Builtin::SliceI64Index => b"slice-i64-index",
+                    hir::Builtin::SliceI64Range => b"slice-i64-range",
+                    hir::Builtin::SliceI64Set => b"slice-i64-set",
                 },
                 |_| {},
             );

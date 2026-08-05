@@ -260,9 +260,20 @@ pub(super) fn lower_type(
     type_aliases: &BTreeMap<String, Ty>,
     source: SourceRef,
 ) -> Result<Ty, Diagnostic> {
+    if let ExprSyntaxKind::ArrayType {
+        length: None,
+        element,
+    } = &expression.kind
+    {
+        return Ok(Ty::Slice(Box::new(lower_type(
+            element,
+            type_aliases,
+            source,
+        )?)));
+    }
     let ExprSyntaxKind::Ident(ident) = &expression.kind else {
         return Err(Diagnostic::unsupported(
-            "only primitive types are implemented by the HIR/MIR backend",
+            "this Go type is not yet implemented by the typed backend",
             source,
         ));
     };
@@ -433,6 +444,10 @@ pub(super) fn eval_constant(
         }
         ExprSyntaxKind::Call { .. }
         | ExprSyntaxKind::Selector { .. }
+        | ExprSyntaxKind::ArrayType { .. }
+        | ExprSyntaxKind::CompositeLiteral { .. }
+        | ExprSyntaxKind::Index { .. }
+        | ExprSyntaxKind::Slice { .. }
         | ExprSyntaxKind::Unsupported(_) => Err(Diagnostic::unsupported(
             "constant expression is not implemented by the HIR/MIR backend",
             source,

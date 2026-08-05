@@ -13,9 +13,9 @@
     "groupCount": 15,
     "passingGroupCount": 1,
     "caseCount": 211,
-    "passingCaseCount": 43,
-    "unsupportedCaseCount": 168,
-    "fixtureCount": 20
+    "passingCaseCount": 44,
+    "unsupportedCaseCount": 167,
+    "fixtureCount": 21
   },
   "groups": [
     {
@@ -645,15 +645,16 @@
       "fixtures": [
         "_negative/types_interface_method_sets",
         "named_numeric_types",
-        "types_aliases"
+        "types_aliases",
+        "types_slice_alias_mutation"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 30,
-        "passingCaseCount": 3,
-        "unsupportedCaseCount": 27,
-        "fixtureCount": 3
+        "passingCaseCount": 4,
+        "unsupportedCaseCount": 26,
+        "fixtureCount": 4
       },
       "cases": [
         {
@@ -747,9 +748,14 @@
           "title": "Slice expressions share the original backing array",
           "subtitle": "Slice types",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: types_slice_alias_mutation."
+          "status": "passing",
+          "fixtures": [
+            "types_slice_alias_mutation"
+          ],
+          "freshFixtures": [
+            "types_slice_alias_mutation"
+          ],
+          "reason": ""
         },
         {
           "id": "types-slice-capacity-and-append-aliasing",

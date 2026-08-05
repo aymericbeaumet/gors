@@ -203,5 +203,23 @@ pub enum ExprSyntaxKind {
         base: Box<ExprSyntax>,
         member: IdentSyntax,
     },
+    ArrayType {
+        length: Option<Box<ExprSyntax>>,
+        element: Box<ExprSyntax>,
+    },
+    CompositeLiteral {
+        ty: Option<Box<ExprSyntax>>,
+        elements: Arc<[ExprSyntax]>,
+    },
+    Index {
+        base: Box<ExprSyntax>,
+        index: Box<ExprSyntax>,
+    },
+    Slice {
+        base: Box<ExprSyntax>,
+        low: Option<Box<ExprSyntax>>,
+        high: Option<Box<ExprSyntax>>,
+        max: Option<Box<ExprSyntax>>,
+    },
     Unsupported(&'static str),
 }

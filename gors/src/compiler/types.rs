@@ -20,6 +20,7 @@ pub enum Ty {
         underlying: Box<Ty>,
     },
     String,
+    Slice(Box<Ty>),
     Tuple(Vec<Ty>),
     Untyped(UntypedTy),
 }
@@ -138,6 +139,9 @@ impl Ty {
         if let Self::Named { underlying, .. } = self {
             return underlying.is_bootstrap_value();
         }
+        if let Self::Slice(element) = self {
+            return element.underlying() == &Self::Int(IntTy::Int);
+        }
         matches!(
             self,
             Self::Bool
@@ -162,7 +166,7 @@ impl Ty {
             }),
             Self::String => Some(ConstValue::String(Vec::new())),
             Self::Named { underlying, .. } => underlying.zero(),
-            Self::Unit | Self::Tuple(_) | Self::Untyped(_) => None,
+            Self::Unit | Self::Slice(_) | Self::Tuple(_) | Self::Untyped(_) => None,
         }
     }
 }

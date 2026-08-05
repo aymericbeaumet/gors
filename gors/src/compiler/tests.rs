@@ -421,6 +421,32 @@ fn generated_rust_executes_verified_last_use_moves() {
 }
 
 #[test]
+fn generated_integer_slices_preserve_backing_array_aliases() {
+    let run = compile_and_run(
+        r#"
+            package main
+            func main() {
+                values := []int{1, 2, 3}
+                alias := values[1:]
+                alias[0] = 9
+                values[1] = 7
+                alias[1] += 3
+                println(values[0], values[1], values[2], alias[0], alias[1])
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"1 7 6 7 6\n");
+    assert!(
+        run.rust.contains("go_slice_i64_from_static"),
+        "{}",
+        run.rust
+    );
+    assert!(run.rust.contains("go_slice_i64_range"), "{}", run.rust);
+    assert!(run.rust.contains("go_slice_i64_set"), "{}", run.rust);
+}
+
+#[test]
 fn def_id_function_names_cannot_collide_with_rust_keywords() {
     let run = compile_and_run(
         r#"

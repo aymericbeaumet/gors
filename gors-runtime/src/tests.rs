@@ -51,6 +51,35 @@ fn strings_are_send_and_sync() {
 }
 
 #[test]
+fn integer_slices_share_backing_storage_across_reslices() {
+    let values = go_slice_i64_from_static(&[1, 2, 3]);
+    let alias = go_slice_i64_range(values.clone(), 1, -1, -1);
+
+    go_slice_i64_set(alias.clone(), 0, 9);
+    assert_eq!(go_slice_i64_index(values.clone(), 1), 9);
+
+    go_slice_i64_set(values, 1, 7);
+    assert_eq!(go_slice_i64_index(alias.clone(), 0), 7);
+    assert_eq!(go_slice_i64_index(alias, 1), 3);
+}
+
+#[test]
+fn integer_slices_are_send_and_sync() {
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    assert_send_sync::<GoSliceI64>();
+}
+
+#[test]
+fn integer_slice_bounds_fail_at_the_runtime_boundary() {
+    let values = go_slice_i64_from_static(&[1, 2, 3]);
+
+    assert!(std::panic::catch_unwind(|| go_slice_i64_index(values.clone(), 3)).is_err());
+    assert!(std::panic::catch_unwind(|| go_slice_i64_set(values.clone(), -1, 0)).is_err());
+    assert!(std::panic::catch_unwind(|| go_slice_i64_range(values.clone(), 2, 1, -1)).is_err());
+}
+
+#[test]
 fn static_strings_do_not_create_shared_heap_storage() {
     let value = go_string_from_static(b"literal");
 

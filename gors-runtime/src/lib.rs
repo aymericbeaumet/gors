@@ -13,13 +13,112 @@
 use std::cmp::Ordering;
 use std::hash::{Hash, Hasher};
 use std::io::Write as _;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 /// The fixed-width representation of Go `int` for the bootstrap target.
 ///
 /// The initial backend deliberately targets the 64-bit Go data model on every
 /// Rust host, including wasm32, instead of inheriting Rust's pointer width.
 pub type GoInt = i64;
+
+/// A Go `[]int` header backed by shared mutable array storage.
+///
+/// Cloning this value copies only the slice header. Indexing and reslicing
+/// therefore preserve Go's backing-array aliasing rules.
+#[derive(Clone, Debug)]
+pub struct GoSliceI64 {
+    storage: Arc<RwLock<Vec<GoInt>>>,
+    start: usize,
+    len: usize,
+    capacity: usize,
+}
+
+/// Construct a `[]int` value from compiler-emitted literal elements.
+#[must_use]
+pub fn go_slice_i64_from_static(values: &'static [GoInt]) -> GoSliceI64 {
+    GoSliceI64 {
+        storage: Arc::new(RwLock::new(values.to_vec())),
+        start: 0,
+        len: values.len(),
+        capacity: values.len(),
+    }
+}
+
+/// Read one `[]int` element with Go bounds checking.
+#[must_use]
+#[allow(clippy::indexing_slicing)] // The explicit Go bounds check validates this index.
+pub fn go_slice_i64_index(slice: GoSliceI64, index: GoInt) -> GoInt {
+    let index = slice_index(index, slice.len);
+    let absolute = slice.start.saturating_add(index);
+    let storage = slice
+        .storage
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    storage[absolute]
+}
+
+/// Produce a two- or three-index subslice while retaining the backing array.
+///
+/// `-1` denotes an omitted source bound; Go source indices are non-negative,
+/// so the sentinel cannot collide with a valid bound.
+#[must_use]
+pub fn go_slice_i64_range(slice: GoSliceI64, low: GoInt, high: GoInt, max: GoInt) -> GoSliceI64 {
+    let low = optional_slice_bound(low, 0);
+    let high = optional_slice_bound(high, slice.len);
+    let max = optional_slice_bound(max, slice.capacity);
+    if low > high || high > max || max > slice.capacity {
+        slice_bounds_out_of_range();
+    }
+    GoSliceI64 {
+        storage: slice.storage,
+        start: slice.start.saturating_add(low),
+        len: high.saturating_sub(low),
+        capacity: max.saturating_sub(low),
+    }
+}
+
+/// Assign one `[]int` element through its shared backing array.
+#[allow(clippy::indexing_slicing)] // The explicit Go bounds check validates this index.
+pub fn go_slice_i64_set(slice: GoSliceI64, index: GoInt, value: GoInt) {
+    let index = slice_index(index, slice.len);
+    let absolute = slice.start.saturating_add(index);
+    let mut storage = slice
+        .storage
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    storage[absolute] = value;
+}
+
+fn slice_index(index: GoInt, len: usize) -> usize {
+    let Ok(index) = usize::try_from(index) else {
+        index_out_of_range();
+    };
+    if index >= len {
+        index_out_of_range();
+    }
+    index
+}
+
+fn optional_slice_bound(bound: GoInt, default: usize) -> usize {
+    if bound == -1 {
+        return default;
+    }
+    usize::try_from(bound).unwrap_or_else(|_| slice_bounds_out_of_range())
+}
+
+#[cold]
+#[inline(never)]
+#[allow(clippy::panic)] // This is the Go language panic boundary, not an invariant failure.
+fn index_out_of_range() -> ! {
+    std::panic::panic_any("runtime error: index out of range")
+}
+
+#[cold]
+#[inline(never)]
+#[allow(clippy::panic)] // This is the Go language panic boundary, not an invariant failure.
+fn slice_bounds_out_of_range() -> ! {
+    std::panic::panic_any("runtime error: slice bounds out of range")
+}
 
 /// An immutable Go string containing arbitrary bytes.
 ///

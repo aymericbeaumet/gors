@@ -67,6 +67,8 @@ pub enum GoPanicCondition {
     IntegerDivideByZero,
     NegativeShiftAmount,
     ExplicitPanic,
+    IndexOutOfRange,
+    SliceBoundsOutOfRange,
 }
 
 impl GoPanicCondition {
@@ -75,6 +77,8 @@ impl GoPanicCondition {
             Self::IntegerDivideByZero => 1,
             Self::NegativeShiftAmount => 2,
             Self::ExplicitPanic => 3,
+            Self::IndexOutOfRange => 4,
+            Self::SliceBoundsOutOfRange => 5,
         }
     }
 }

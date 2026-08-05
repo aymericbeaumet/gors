@@ -63,6 +63,7 @@ pub struct Rvalue {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RvalueKind {
     Use(Operand),
+    SliceLiteralI64(Vec<i64>),
     Unary {
         op: hir::UnaryOp,
         operand: Operand,

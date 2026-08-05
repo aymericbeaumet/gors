@@ -513,6 +513,16 @@ fn emit_constant(value: &Constant) -> Result<syn::Expr, Diagnostic> {
             let bytes = syn::LitByteStr::new(bytes, Span::mixed_site());
             Ok(emit_runtime_call(*op, vec![syn::parse_quote! { #bytes }]))
         }
+        Constant::RuntimeStaticI64s { op, values } => {
+            let values = values
+                .iter()
+                .map(|value| emit_constant(&Constant::I64(*value)))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(emit_runtime_call(
+                *op,
+                vec![syn::parse_quote! { &[#(#values),*] }],
+            ))
+        }
     }
 }
 
@@ -537,6 +547,7 @@ fn emit_type(ty: &RustType) -> Result<syn::Type, Diagnostic> {
         RustType::I64 => syn::parse_quote! { i64 },
         RustType::F64 => syn::parse_quote! { f64 },
         RustType::Complex128 => syn::parse_quote! { [f64; 2] },
+        RustType::GoSliceI64 => syn::parse_quote! { ::#runtime_crate::GoSliceI64 },
     })
 }
 

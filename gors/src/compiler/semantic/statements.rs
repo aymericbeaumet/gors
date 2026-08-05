@@ -514,6 +514,49 @@ impl FunctionLowerer {
         right: &[ExprSyntax],
         source: SourceRef,
     ) -> Result<hir::StmtKind, Diagnostic> {
+        if let (
+            [
+                ExprSyntax {
+                    kind: ExprSyntaxKind::Index { base, index },
+                    ..
+                },
+            ],
+            [value],
+        ) = (left, right)
+        {
+            if token == Token::DEFINE {
+                return Err(Diagnostic::semantic(
+                    "short declaration target must be an identifier",
+                    source,
+                ));
+            }
+            let slice = self.lower_expr(base, None)?;
+            let Ty::Slice(element) = slice.ty.underlying() else {
+                return Err(Diagnostic::semantic(
+                    "indexed assignment requires a slice value",
+                    source,
+                ));
+            };
+            if element.underlying() != &Ty::Int(IntTy::Int) {
+                return Err(Diagnostic::unsupported(
+                    "indexed assignment currently supports []int values",
+                    source,
+                ));
+            }
+            let element_ty = element.as_ref().clone();
+            let index = self.lower_expr(index, Some(&Ty::Int(IntTy::Int)))?;
+            let value = self.lower_expr(value, Some(&element_ty))?;
+            let op = assignment_op(token, source)?;
+            if op != hir::AssignOp::Set {
+                validate_binary_operator(assignment_binary_op(op), &element_ty, source)?;
+            }
+            return Ok(hir::StmtKind::SliceAssign {
+                slice,
+                index,
+                op,
+                value,
+            });
+        }
         if left.len() != right.len() {
             return Err(Diagnostic::unsupported(
                 "multi-result assignment is not implemented by the HIR/MIR backend",
@@ -608,26 +651,7 @@ impl FunctionLowerer {
                 }),
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let op = match token {
-            Token::ASSIGN => hir::AssignOp::Set,
-            Token::ADD_ASSIGN => hir::AssignOp::Add,
-            Token::SUB_ASSIGN => hir::AssignOp::Sub,
-            Token::MUL_ASSIGN => hir::AssignOp::Mul,
-            Token::QUO_ASSIGN => hir::AssignOp::Div,
-            Token::REM_ASSIGN => hir::AssignOp::Rem,
-            Token::AND_ASSIGN => hir::AssignOp::BitAnd,
-            Token::OR_ASSIGN => hir::AssignOp::BitOr,
-            Token::XOR_ASSIGN => hir::AssignOp::BitXor,
-            Token::SHL_ASSIGN => hir::AssignOp::Shl,
-            Token::SHR_ASSIGN => hir::AssignOp::Shr,
-            Token::AND_NOT_ASSIGN => hir::AssignOp::AndNot,
-            _ => {
-                return Err(Diagnostic::semantic(
-                    format!("invalid assignment operator {token:?}"),
-                    source,
-                ));
-            }
-        };
+        let op = assignment_op(token, source)?;
         if op != hir::AssignOp::Set && destinations.len() != 1 {
             return Err(Diagnostic::semantic(
                 "compound assignment requires one destination and one value",
@@ -685,5 +709,26 @@ impl FunctionLowerer {
                 "blank identifier unexpectedly required an inferred type",
             )),
         }
+    }
+}
+
+fn assignment_op(token: Token, source: SourceRef) -> Result<hir::AssignOp, Diagnostic> {
+    match token {
+        Token::ASSIGN => Ok(hir::AssignOp::Set),
+        Token::ADD_ASSIGN => Ok(hir::AssignOp::Add),
+        Token::SUB_ASSIGN => Ok(hir::AssignOp::Sub),
+        Token::MUL_ASSIGN => Ok(hir::AssignOp::Mul),
+        Token::QUO_ASSIGN => Ok(hir::AssignOp::Div),
+        Token::REM_ASSIGN => Ok(hir::AssignOp::Rem),
+        Token::AND_ASSIGN => Ok(hir::AssignOp::BitAnd),
+        Token::OR_ASSIGN => Ok(hir::AssignOp::BitOr),
+        Token::XOR_ASSIGN => Ok(hir::AssignOp::BitXor),
+        Token::SHL_ASSIGN => Ok(hir::AssignOp::Shl),
+        Token::SHR_ASSIGN => Ok(hir::AssignOp::Shr),
+        Token::AND_NOT_ASSIGN => Ok(hir::AssignOp::AndNot),
+        _ => Err(Diagnostic::semantic(
+            format!("invalid assignment operator {token:?}"),
+            source,
+        )),
     }
 }

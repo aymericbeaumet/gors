@@ -433,9 +433,12 @@ fn rust_type_from_runtime(ty: RuntimeType, context: &str) -> Result<RustType, Di
         RuntimeType::F64 => Ok(RustType::F64),
         RuntimeType::Complex128 => Ok(RustType::Complex128),
         RuntimeType::GoString => Ok(RustType::GoString),
-        RuntimeType::ByteSlice | RuntimeType::StaticByteSlice => Err(Diagnostic::backend(format!(
-            "Rust IR {context} requires ABI-only operand type {ty:?}"
-        ))),
+        RuntimeType::GoSliceI64 => Ok(RustType::GoSliceI64),
+        RuntimeType::ByteSlice | RuntimeType::StaticByteSlice | RuntimeType::StaticI64Slice => {
+            Err(Diagnostic::backend(format!(
+                "Rust IR {context} requires ABI-only operand type {ty:?}"
+            )))
+        }
     }
 }
 
@@ -456,6 +459,18 @@ fn constant_type(constant: &Constant) -> Result<RustType, Diagnostic> {
                     "Rust IR static bytes use runtime operation {op:?} with incompatible signature {:?} -> {:?}",
                     signature.parameters(),
                     signature.result()
+                )))
+            }
+        }
+        Constant::RuntimeStaticI64s { op, .. } => {
+            let signature = op.signature();
+            if signature.parameters() == [RuntimeType::StaticI64Slice]
+                && signature.result() == RuntimeType::GoSliceI64
+            {
+                Ok(RustType::GoSliceI64)
+            } else {
+                Err(Diagnostic::backend(format!(
+                    "Rust IR static int slice uses runtime operation {op:?} with an incompatible signature"
                 )))
             }
         }
@@ -517,7 +532,10 @@ fn collect_value_runtime_operation(operation: ValueOp, operations: &mut Vec<Runt
 }
 
 fn collect_operand_runtime_operations(operand: &Operand, operations: &mut Vec<RuntimeOp>) {
-    if let Operand::Constant(Constant::RuntimeStaticBytes { op, .. }) = operand {
+    if let Operand::Constant(
+        Constant::RuntimeStaticBytes { op, .. } | Constant::RuntimeStaticI64s { op, .. },
+    ) = operand
+    {
         operations.push(*op);
     }
 }
