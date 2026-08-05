@@ -13,9 +13,9 @@
     "groupCount": 15,
     "passingGroupCount": 1,
     "caseCount": 211,
-    "passingCaseCount": 55,
-    "unsupportedCaseCount": 156,
-    "fixtureCount": 28
+    "passingCaseCount": 58,
+    "unsupportedCaseCount": 153,
+    "fixtureCount": 29
   },
   "groups": [
     {
@@ -1527,6 +1527,7 @@
       "subtitle": "",
       "fixtures": [
         "assignment_evaluation_order",
+        "control_flow_evaluation",
         "declarations_and_scope_labels",
         "defer_lifo_and_arguments",
         "return_statements",
@@ -1537,9 +1538,9 @@
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 46,
-        "passingCaseCount": 8,
-        "unsupportedCaseCount": 38,
-        "fixtureCount": 6
+        "passingCaseCount": 11,
+        "unsupportedCaseCount": 35,
+        "fixtureCount": 7
       },
       "cases": [
         {
@@ -1698,9 +1699,14 @@
           "title": "Switch tags evaluate once and case expressions are tested in source order before default",
           "subtitle": "Switch statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: control_flow_evaluation."
+          "status": "passing",
+          "fixtures": [
+            "control_flow_evaluation"
+          ],
+          "freshFixtures": [
+            "control_flow_evaluation"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-fallthrough",
@@ -1797,9 +1803,14 @@
           "title": "continue in a for-clause loop executes the post statement before the next condition",
           "subtitle": "Continue statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: control_flow_evaluation."
+          "status": "passing",
+          "fixtures": [
+            "control_flow_evaluation"
+          ],
+          "freshFixtures": [
+            "control_flow_evaluation"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-range",
@@ -1869,9 +1880,14 @@
           "title": "A non-constant range expression is evaluated exactly once before iteration",
           "subtitle": "For statements with range clause",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: control_flow_evaluation."
+          "status": "passing",
+          "fixtures": [
+            "control_flow_evaluation"
+          ],
+          "freshFixtures": [
+            "control_flow_evaluation"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-range-invalid-utf8-string",
