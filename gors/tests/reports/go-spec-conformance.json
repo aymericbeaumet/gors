@@ -13,9 +13,9 @@
     "groupCount": 15,
     "passingGroupCount": 1,
     "caseCount": 211,
-    "passingCaseCount": 49,
-    "unsupportedCaseCount": 162,
-    "fixtureCount": 24
+    "passingCaseCount": 53,
+    "unsupportedCaseCount": 158,
+    "fixtureCount": 26
   },
   "groups": [
     {
@@ -1527,6 +1527,8 @@
       "subtitle": "",
       "fixtures": [
         "declarations_and_scope_labels",
+        "defer_lifo_and_arguments",
+        "return_statements",
         "statements_forward_goto",
         "switch_statements"
       ],
@@ -1534,9 +1536,9 @@
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 46,
-        "passingCaseCount": 3,
-        "unsupportedCaseCount": 43,
-        "fixtureCount": 3
+        "passingCaseCount": 7,
+        "unsupportedCaseCount": 39,
+        "fixtureCount": 5
       },
       "cases": [
         {
@@ -1545,8 +1547,13 @@
           "subtitle": "Terminating statements",
           "kind": "spec-test",
           "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: statements, return_statements, spec_section_edgecases."
+          "fixtures": [
+            "return_statements"
+          ],
+          "freshFixtures": [
+            "return_statements"
+          ],
+          "reason": "Fresh fixture execution did not pass for: statements, spec_section_edgecases."
         },
         {
           "id": "stmt-empty",
@@ -1892,9 +1899,14 @@
           "title": "Deferred calls save arguments immediately, run in reverse order, and may update named results",
           "subtitle": "Defer statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: defer_lifo_and_arguments."
+          "status": "passing",
+          "fixtures": [
+            "defer_lifo_and_arguments"
+          ],
+          "freshFixtures": [
+            "defer_lifo_and_arguments"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-return",
@@ -1910,27 +1922,42 @@
           "title": "return statements may return the result of one multi-valued call",
           "subtitle": "Return statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: return_statements."
+          "status": "passing",
+          "fixtures": [
+            "return_statements"
+          ],
+          "freshFixtures": [
+            "return_statements"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-return-named-empty",
           "title": "empty return statements return current named result parameters",
           "subtitle": "Return statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: return_statements."
+          "status": "passing",
+          "fixtures": [
+            "return_statements"
+          ],
+          "freshFixtures": [
+            "return_statements"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-return-deferred-named-results",
           "title": "deferred calls run after result parameters are set by return",
           "subtitle": "Return statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: return_statements."
+          "status": "passing",
+          "fixtures": [
+            "return_statements"
+          ],
+          "freshFixtures": [
+            "return_statements"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-branch",

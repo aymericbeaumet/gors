@@ -496,6 +496,25 @@ fn generated_multiple_results_preserve_call_and_return_arity() {
 }
 
 #[test]
+fn generated_deferred_closures_capture_arguments_and_update_named_results() {
+    let run = compile_and_run(
+        r#"
+            package main
+            func deferred() (result int) {
+                value := 1
+                defer func(saved int) { result = result*10 + saved }(value)
+                value = 2
+                defer func(saved int) { result = result*10 + saved }(value)
+                return 3
+            }
+            func main() { println(deferred()) }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"321\n");
+}
+
+#[test]
 fn def_id_function_names_cannot_collide_with_rust_keywords() {
     let run = compile_and_run(
         r#"

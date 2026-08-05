@@ -172,6 +172,36 @@ impl PackageReferenceCollector {
             // Assignment and increment targets must already be locals. They
             // are not package references even when the statement is invalid.
             StmtSyntaxKind::IncDec { .. } => {}
+            StmtSyntaxKind::Defer {
+                params,
+                results,
+                body,
+                arguments,
+                ..
+            } => {
+                for argument in &**arguments {
+                    self.expression(argument);
+                }
+                for field in &*params.fields {
+                    if let Some(ty) = &field.ty {
+                        self.expression(ty);
+                    }
+                }
+                if let Some(results) = results {
+                    for field in &*results.fields {
+                        if let Some(ty) = &field.ty {
+                            self.expression(ty);
+                        }
+                    }
+                }
+                self.scopes.push(BTreeSet::new());
+                self.bind_fields(params);
+                if let Some(results) = results {
+                    self.bind_fields(results);
+                }
+                self.block(body, false);
+                self.scopes.pop();
+            }
             StmtSyntaxKind::Return(expressions) => {
                 for expression in &**expressions {
                     self.expression(expression);

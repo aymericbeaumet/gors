@@ -85,6 +85,11 @@ pub enum StmtKind {
         value: Expr,
     },
     Expr(Expr),
+    Defer {
+        parameters: Vec<LocalId>,
+        values: Vec<Expr>,
+        body: Block,
+    },
     Return(Vec<Expr>),
     If {
         init: Option<Box<Stmt>>,

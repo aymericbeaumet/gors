@@ -6,7 +6,7 @@ use crate::token::Token;
 
 use super::FunctionLowerer;
 use super::expressions::*;
-use super::lower_type;
+use super::{lower_type, parameter_types};
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::provenance::SourceRef;
@@ -76,7 +76,89 @@ impl FunctionLowerer {
                     values: vec![one],
                 }
             }
+            StmtSyntaxKind::Defer {
+                has_type_parameters,
+                params,
+                results,
+                body,
+                arguments,
+                spread,
+            } => {
+                if self.inside_deferred_closure {
+                    return Err(Diagnostic::unsupported(
+                        "nested defer statements are not yet implemented",
+                        source,
+                    ));
+                }
+                if self.defer_registration_depth != 0 {
+                    return Err(Diagnostic::unsupported(
+                        "defer statements in conditional, loop, or nested blocks are not yet implemented",
+                        source,
+                    ));
+                }
+                if *has_type_parameters {
+                    return Err(Diagnostic::unsupported(
+                        "generic deferred function literals are not implemented",
+                        source,
+                    ));
+                }
+                if results
+                    .as_ref()
+                    .is_some_and(|results| !results.fields.is_empty())
+                {
+                    return Err(Diagnostic::unsupported(
+                        "result-bearing deferred function literals are not yet implemented",
+                        source,
+                    ));
+                }
+                let (parameter_types, variadic) =
+                    parameter_types(params, &self.type_aliases, source)?;
+                if variadic || *spread {
+                    return Err(Diagnostic::unsupported(
+                        "variadic deferred function literals are not yet implemented",
+                        source,
+                    ));
+                }
+                if parameter_types.len() != arguments.len() {
+                    return Err(Diagnostic::semantic(
+                        format!(
+                            "deferred call has {} arguments; function requires {}",
+                            arguments.len(),
+                            parameter_types.len()
+                        ),
+                        source,
+                    ));
+                }
+                let values = arguments
+                    .iter()
+                    .zip(&parameter_types)
+                    .map(|(argument, expected)| self.lower_expr(argument, Some(expected)))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                self.push_scope();
+                let parameters = self.declare_field_bindings(
+                    params,
+                    &parameter_types,
+                    hir::LocalKind::Temporary,
+                )?;
+                let previous_inside = self.inside_deferred_closure;
+                self.inside_deferred_closure = true;
+                let body = self.lower_block(body, false);
+                self.inside_deferred_closure = previous_inside;
+                self.pop_scope();
+                hir::StmtKind::Defer {
+                    parameters,
+                    values,
+                    body: body?,
+                }
+            }
             StmtSyntaxKind::Return(results) => {
+                if self.inside_deferred_closure {
+                    return Err(Diagnostic::unsupported(
+                        "return statements in deferred function literals are not yet implemented",
+                        source,
+                    ));
+                }
                 let values = if results.is_empty() && !self.named_results.is_empty() {
                     let named_results = self.named_results.clone();
                     let mut values = Vec::new();
@@ -217,6 +299,12 @@ impl FunctionLowerer {
                 return self.lower_switch(stmt, init.as_deref(), tag.as_ref(), cases, source);
             }
             StmtSyntaxKind::Labeled { label, statement } => {
+                if self.inside_deferred_closure {
+                    return Err(Diagnostic::unsupported(
+                        "labels in deferred function literals are not yet implemented",
+                        source,
+                    ));
+                }
                 let label = label.name.to_string();
                 if !self.declared_labels.insert(label.clone()) {
                     return Err(Diagnostic::semantic(
@@ -230,6 +318,12 @@ impl FunctionLowerer {
                 }
             }
             StmtSyntaxKind::Branch { token, label } => {
+                if self.inside_deferred_closure {
+                    return Err(Diagnostic::unsupported(
+                        "branch statements in deferred function literals are not yet implemented",
+                        source,
+                    ));
+                }
                 let label = label.as_ref().map(|label| label.name.to_string());
                 let target_exists = label.as_ref().map_or_else(
                     || !self.loop_labels.is_empty(),

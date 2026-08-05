@@ -519,7 +519,37 @@ impl StructuralProjector {
             },
             ast::Stmt::CaseClause(_) => StmtSyntaxKind::Unsupported("case clause"),
             ast::Stmt::CommClause(_) => StmtSyntaxKind::Unsupported("communication clause"),
-            ast::Stmt::DeferStmt(_) => StmtSyntaxKind::Unsupported("defer statement"),
+            ast::Stmt::DeferStmt(statement) => {
+                let ast::Expr::FuncLit(function) = statement.call.fun.as_ref() else {
+                    return Ok(StmtSyntax {
+                        source,
+                        kind: StmtSyntaxKind::Unsupported(
+                            "defer call whose callee is not a function literal",
+                        ),
+                    });
+                };
+                StmtSyntaxKind::Defer {
+                    has_type_parameters: function.type_.type_params.is_some(),
+                    params: self.field_list(&function.type_.params)?,
+                    results: function
+                        .type_
+                        .results
+                        .as_ref()
+                        .map(|fields| self.field_list(fields))
+                        .transpose()?,
+                    body: self.block(&function.body)?,
+                    arguments: statement
+                        .call
+                        .args
+                        .as_deref()
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|argument| self.expression(argument))
+                        .collect::<Result<Vec<_>, _>>()?
+                        .into(),
+                    spread: statement.call.ellipsis.is_some(),
+                }
+            }
             ast::Stmt::GoStmt(_) => StmtSyntaxKind::Unsupported("go statement"),
             ast::Stmt::LabeledStmt(statement) => match statement.stmt.as_ref() {
                 ast::Stmt::ForStmt(for_statement) => {

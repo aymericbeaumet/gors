@@ -30,6 +30,12 @@ fn collect_statement_callees(statement: &hir::Stmt, callees: &mut BTreeSet<DefId
             collect_expression_callees(value, callees);
         }
         hir::StmtKind::Expr(expression) => collect_expression_callees(expression, callees),
+        hir::StmtKind::Defer { values, body, .. } => {
+            for value in values {
+                collect_expression_callees(value, callees);
+            }
+            collect_block_callees(body, callees);
+        }
         hir::StmtKind::SliceAssign {
             slice,
             index,

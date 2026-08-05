@@ -1,5 +1,7 @@
 //! Evaluation-order-explicit lowering from typed HIR to MIR.
 
+mod flow;
+
 #[cfg(test)]
 use super::File;
 use super::construct::{
@@ -30,6 +32,8 @@ struct FunctionLowerer {
     current: BasicBlockId,
     loops: Vec<LoopTargets>,
     labels: BTreeMap<String, BasicBlockId>,
+    named_results: Vec<Option<LocalId>>,
+    deferred: Vec<hir::Block>,
 }
 
 #[derive(Clone)]
@@ -91,6 +95,8 @@ impl FunctionLowerer {
             current: BasicBlockId(0),
             loops: Vec::new(),
             labels: BTreeMap::new(),
+            named_results: hir.named_results.clone(),
+            deferred: Vec::new(),
         };
 
         let mut labels = Vec::new();
@@ -123,11 +129,14 @@ impl FunctionLowerer {
         lowerer.lower_block(&hir.body)?;
         if !lowerer.is_terminated(lowerer.current)? {
             if hir.signature.results.is_empty() {
-                lowerer.terminate(make_terminator(
-                    TerminatorKind::Return(Vec::new()),
-                    hir::Effects::default(),
-                    Provenance::Synthetic(SyntheticOrigin::ImplicitReturn),
-                ))?;
+                lowerer.lower_deferred()?;
+                if !lowerer.is_terminated(lowerer.current)? {
+                    lowerer.terminate(make_terminator(
+                        TerminatorKind::Return(Vec::new()),
+                        hir::Effects::default(),
+                        Provenance::Synthetic(SyntheticOrigin::ImplicitReturn),
+                    ))?;
+                }
             } else {
                 return Err(Diagnostic::backend(format!(
                     "function {} can reach its end without returning",
@@ -457,27 +466,17 @@ impl FunctionLowerer {
             hir::StmtKind::Expr(expr) => {
                 let _ = self.lower_expr(expr)?;
             }
-            hir::StmtKind::Return(values) => {
-                if let [value] = values.as_slice()
-                    && let Ty::Tuple(component_types) = &value.ty
-                {
-                    let destinations = component_types
-                        .iter()
-                        .map(|ty| Place {
-                            local: self.new_temp(ty.clone()),
-                        })
-                        .collect::<Vec<_>>();
-                    self.lower_call_into(value, destinations.clone())?;
-                    self.terminate(make_terminator(
-                        TerminatorKind::Return(
-                            destinations.into_iter().map(Operand::Read).collect(),
-                        ),
-                        hir::Effects::default(),
-                        Provenance::Source(statement.source),
-                    ))?;
-                    return Ok(());
+            hir::StmtKind::Defer {
+                parameters,
+                values,
+                body,
+            } => {
+                if parameters.len() != values.len() {
+                    return Err(Diagnostic::backend(
+                        "deferred HIR call argument arity changed before MIR lowering",
+                    ));
                 }
-                let mut operands = Vec::new();
+                let mut operands = Vec::with_capacity(values.len());
                 for value in values {
                     let operand = self.lower_expr(value)?;
                     operands.push(self.materialize(
@@ -486,11 +485,68 @@ impl FunctionLowerer {
                         Provenance::Source(value.source),
                     )?);
                 }
-                self.terminate(make_terminator(
-                    TerminatorKind::Return(operands),
-                    hir::Effects::default(),
-                    Provenance::Source(statement.source),
-                ))?;
+                for (parameter, operand) in parameters.iter().zip(operands) {
+                    let parameter_ty = self.local_ty(*parameter)?.clone();
+                    let operand_ty = operand_ty(&operand, &self.locals)?;
+                    if parameter_ty != operand_ty {
+                        return Err(Diagnostic::backend(
+                            "deferred HIR call argument type changed before MIR lowering",
+                        ));
+                    }
+                    let provenance = Provenance::Source(statement.source);
+                    let value = make_rvalue(
+                        RvalueKind::Use(operand),
+                        hir::Effects::default(),
+                        provenance.clone(),
+                    );
+                    self.push_statement(make_statement(
+                        Place { local: *parameter },
+                        value,
+                        provenance,
+                    ))?;
+                }
+                self.deferred.push(body.clone());
+            }
+            hir::StmtKind::Return(values) => {
+                let operands = self.lower_return_values(values)?;
+                let returned = if self.named_results.is_empty() {
+                    operands
+                } else {
+                    if self.named_results.len() != operands.len() {
+                        return Err(Diagnostic::backend(
+                            "named-result arity changed before MIR lowering",
+                        ));
+                    }
+                    let mut returned = Vec::with_capacity(operands.len());
+                    let named_results = self.named_results.clone();
+                    for (named_result, operand) in named_results.into_iter().zip(operands) {
+                        if let Some(local) = named_result {
+                            let provenance = Provenance::Source(statement.source);
+                            let value = make_rvalue(
+                                RvalueKind::Use(operand),
+                                hir::Effects::default(),
+                                provenance.clone(),
+                            );
+                            self.push_statement(make_statement(
+                                Place { local },
+                                value,
+                                provenance,
+                            ))?;
+                            returned.push(Operand::Read(Place { local }));
+                        } else {
+                            returned.push(operand);
+                        }
+                    }
+                    returned
+                };
+                self.lower_deferred()?;
+                if !self.is_terminated(self.current)? {
+                    self.terminate(make_terminator(
+                        TerminatorKind::Return(returned),
+                        hir::Effects::default(),
+                        Provenance::Source(statement.source),
+                    ))?;
+                }
             }
             hir::StmtKind::Block(block) => self.lower_block(block)?,
             hir::StmtKind::If {
@@ -687,26 +743,6 @@ impl FunctionLowerer {
                 ))?;
             }
         }
-        Ok(())
-    }
-
-    fn label_target(&self, label: &str) -> Result<BasicBlockId, Diagnostic> {
-        self.labels
-            .get(label)
-            .copied()
-            .ok_or_else(|| Diagnostic::backend(format!("unknown HIR label {label}")))
-    }
-
-    fn enter_label(&mut self, label: &str, source: SourceRef) -> Result<(), Diagnostic> {
-        let target = self.label_target(label)?;
-        if self.current != target && !self.is_terminated(self.current)? {
-            self.terminate(make_terminator(
-                TerminatorKind::Goto(target),
-                hir::Effects::default(),
-                Provenance::Source(source),
-            ))?;
-        }
-        self.current = target;
         Ok(())
     }
 

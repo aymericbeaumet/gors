@@ -121,6 +121,14 @@ pub enum StmtSyntaxKind {
         expression: ExprSyntax,
         token: Token,
     },
+    Defer {
+        has_type_parameters: bool,
+        params: FieldListSyntax,
+        results: Option<FieldListSyntax>,
+        body: BlockSyntax,
+        arguments: Arc<[ExprSyntax]>,
+        spread: bool,
+    },
     Return(Arc<[ExprSyntax]>),
     If {
         init: Option<Box<StmtSyntax>>,

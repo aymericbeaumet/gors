@@ -188,6 +188,8 @@ pub(super) fn lower_function(
         loop_labels: Vec::new(),
         declared_labels: BTreeSet::new(),
         referenced_gotos: BTreeMap::new(),
+        defer_registration_depth: 0,
+        inside_deferred_closure: false,
         source_plan: initial_source_plan,
     };
     let lowered = (|| {

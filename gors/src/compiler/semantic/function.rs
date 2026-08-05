@@ -23,6 +23,8 @@ pub(super) struct FunctionLowerer {
     pub(super) loop_labels: Vec<Option<String>>,
     pub(super) declared_labels: std::collections::BTreeSet<String>,
     pub(super) referenced_gotos: BTreeMap<String, SourceRef>,
+    pub(super) defer_registration_depth: usize,
+    pub(super) inside_deferred_closure: bool,
     pub(super) source_plan: Vec<(SourceRef, SyntaxSource)>,
 }
 
@@ -178,6 +180,7 @@ impl FunctionLowerer {
     ) -> Result<hir::Block, Diagnostic> {
         if introduce_scope {
             self.push_scope();
+            self.defer_registration_depth += 1;
         }
         let mut stmts = Vec::new();
         for stmt in &*block.statements {
@@ -186,6 +189,7 @@ impl FunctionLowerer {
             }
         }
         if introduce_scope {
+            self.defer_registration_depth -= 1;
             self.pop_scope();
         }
         let node = self.alloc_node(block.source)?;
