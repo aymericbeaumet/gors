@@ -200,6 +200,15 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
                 encode_block(encoder, block);
             });
         }
+        hir::StmtKind::Label { name, statement } => encoder.variant(b"label", |encoder| {
+            encoder.field(b"name", |encoder| encoder.string(name));
+            encoder.field(b"statement", |encoder| {
+                encoder.option(statement.as_deref(), |encoder, statement| {
+                    encode_statement(encoder, statement);
+                });
+            });
+        }),
+        hir::StmtKind::Goto(label) => encoder.variant(b"goto", |encoder| encoder.string(label)),
         hir::StmtKind::Break(label) => encoder.variant(b"break", |encoder| {
             encoder.option(label.as_ref(), |encoder, label| encoder.string(label));
         }),

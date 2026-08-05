@@ -21,6 +21,7 @@ pub(super) struct FunctionLowerer {
     pub(super) named_results: Vec<Option<LocalId>>,
     pub(super) loop_labels: Vec<Option<String>>,
     pub(super) declared_labels: std::collections::BTreeSet<String>,
+    pub(super) referenced_gotos: BTreeMap<String, SourceRef>,
     pub(super) source_plan: Vec<(SourceRef, SyntaxSource)>,
 }
 

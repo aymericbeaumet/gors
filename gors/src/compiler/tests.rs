@@ -266,6 +266,29 @@ fn expression_switch_evaluates_its_tag_once() {
 }
 
 #[test]
+fn goto_uses_predeclared_forward_and_backward_targets() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            func main() {
+                total := 0
+                goto Start
+                total = 100
+            Start:
+                total++
+                if total < 3 {
+                    goto Start
+                }
+                println(total)
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"3\n");
+}
+
+#[test]
 fn generated_rust_preserves_arbitrary_string_bytes() {
     let run = compile_and_run(
         r#"

@@ -185,6 +185,7 @@ pub(super) fn lower_function(
         named_results: Vec::new(),
         loop_labels: Vec::new(),
         declared_labels: BTreeSet::new(),
+        referenced_gotos: BTreeMap::new(),
         source_plan: initial_source_plan,
     };
     let lowered = (|| {
@@ -197,7 +198,18 @@ pub(super) fn lower_function(
             || Ok(Vec::new()),
             |results| lowerer.declare_result_bindings(results, &signature.results),
         )?;
-        lowerer.lower_block(body, false).map(|body| (params, body))
+        let body = lowerer.lower_block(body, false)?;
+        if let Some((label, source)) = lowerer
+            .referenced_gotos
+            .iter()
+            .find(|(label, _)| !lowerer.declared_labels.contains(*label))
+        {
+            return Err(Diagnostic::semantic(
+                format!("goto target {label} is not defined"),
+                *source,
+            ));
+        }
+        Ok((params, body))
     })();
     match lowered {
         Ok((params, body)) => Ok(LoweredFunction {

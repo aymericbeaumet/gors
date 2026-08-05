@@ -126,6 +126,10 @@ pub enum StmtSyntaxKind {
         tag: Option<ExprSyntax>,
         cases: Arc<[SwitchCaseSyntax]>,
     },
+    Labeled {
+        label: IdentSyntax,
+        statement: Box<StmtSyntax>,
+    },
     Branch {
         token: Token,
         label: Option<IdentSyntax>,

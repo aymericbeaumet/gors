@@ -13,9 +13,9 @@
     "groupCount": 15,
     "passingGroupCount": 0,
     "caseCount": 211,
-    "passingCaseCount": 16,
-    "unsupportedCaseCount": 195,
-    "fixtureCount": 15
+    "passingCaseCount": 17,
+    "unsupportedCaseCount": 194,
+    "fixtureCount": 16
   },
   "groups": [
     {
@@ -1357,15 +1357,16 @@
       "subtitle": "",
       "fixtures": [
         "declarations_and_scope_labels",
+        "statements_forward_goto",
         "switch_statements"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 46,
-        "passingCaseCount": 2,
-        "unsupportedCaseCount": 44,
-        "fixtureCount": 2
+        "passingCaseCount": 3,
+        "unsupportedCaseCount": 43,
+        "fixtureCount": 3
       },
       "cases": [
         {
@@ -1793,9 +1794,14 @@
           "title": "Arbitrary forward goto lowers across complex statement graphs",
           "subtitle": "Goto statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: statements_forward_goto."
+          "status": "passing",
+          "fixtures": [
+            "statements_forward_goto"
+          ],
+          "freshFixtures": [
+            "statements_forward_goto"
+          ],
+          "reason": ""
         }
       ]
     },

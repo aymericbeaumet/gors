@@ -230,6 +230,7 @@ impl PackageReferenceCollector {
                 }
                 self.scopes.pop();
             }
+            StmtSyntaxKind::Labeled { statement, .. } => self.statement(statement),
         }
     }
 

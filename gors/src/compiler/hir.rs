@@ -92,6 +92,11 @@ pub enum StmtKind {
         body: Block,
     },
     Block(Block),
+    Label {
+        name: String,
+        statement: Option<Box<Stmt>>,
+    },
+    Goto(String),
     Break(Option<String>),
     Continue(Option<String>),
 }

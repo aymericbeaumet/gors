@@ -193,6 +193,19 @@ impl FunctionLowerer {
             StmtSyntaxKind::Switch { init, tag, cases } => {
                 return self.lower_switch(stmt, init.as_deref(), tag.as_ref(), cases, source);
             }
+            StmtSyntaxKind::Labeled { label, statement } => {
+                let label = label.name.to_string();
+                if !self.declared_labels.insert(label.clone()) {
+                    return Err(Diagnostic::semantic(
+                        format!("label {label} already defined"),
+                        source,
+                    ));
+                }
+                hir::StmtKind::Label {
+                    name: label,
+                    statement: self.lower_stmt(statement)?.map(Box::new),
+                }
+            }
             StmtSyntaxKind::Branch { token, label } => {
                 let label = label.as_ref().map(|label| label.name.to_string());
                 let target_exists = label.as_ref().map_or_else(
@@ -207,6 +220,13 @@ impl FunctionLowerer {
                 match token {
                     Token::BREAK if target_exists => hir::StmtKind::Break(label),
                     Token::CONTINUE if target_exists => hir::StmtKind::Continue(label),
+                    Token::GOTO if label.is_some() => {
+                        let Some(label) = label else {
+                            return Err(Diagnostic::backend("goto label disappeared"));
+                        };
+                        self.referenced_gotos.entry(label.clone()).or_insert(source);
+                        hir::StmtKind::Goto(label)
+                    }
                     _ => {
                         return Err(Diagnostic::unsupported(
                             "branch does not target a supported enclosing for loop",

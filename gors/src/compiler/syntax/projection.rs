@@ -488,7 +488,10 @@ impl StructuralProjector {
                     let label = self.ident(&statement.label)?;
                     self.for_statement(for_statement, Some(label))?
                 }
-                _ => StmtSyntaxKind::Unsupported("label on a non-for statement"),
+                statement_body => StmtSyntaxKind::Labeled {
+                    label: self.ident(&statement.label)?,
+                    statement: Box::new(self.statement(statement_body)?),
+                },
             },
             ast::Stmt::RangeStmt(_) => StmtSyntaxKind::Unsupported("range statement"),
             ast::Stmt::SelectStmt(_) => StmtSyntaxKind::Unsupported("select statement"),

@@ -15,6 +15,7 @@ use crate::compiler::hir;
 use crate::compiler::ids::{BasicBlockId, LocalId};
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::types::{ConstValue, Ty};
+use std::collections::BTreeMap;
 
 struct BlockBuilder {
     provenance: Provenance,
@@ -27,6 +28,7 @@ struct FunctionLowerer {
     blocks: Vec<BlockBuilder>,
     current: BasicBlockId,
     loops: Vec<LoopTargets>,
+    labels: BTreeMap<String, BasicBlockId>,
 }
 
 #[derive(Clone)]
@@ -87,7 +89,19 @@ impl FunctionLowerer {
             }],
             current: BasicBlockId(0),
             loops: Vec::new(),
+            labels: BTreeMap::new(),
         };
+
+        let mut labels = Vec::new();
+        collect_labels(&hir.body, &mut labels);
+        for (label, source) in labels {
+            let target = lowerer.new_block(Provenance::Source(source));
+            if lowerer.labels.insert(label.clone(), target).is_some() {
+                return Err(Diagnostic::backend(format!(
+                    "duplicate HIR label {label} reached MIR lowering"
+                )));
+            }
+        }
 
         // Named Go results exist and contain their zero values at function
         // entry, even when the function exits via a bare return.
@@ -235,8 +249,8 @@ impl FunctionLowerer {
 
     fn lower_block(&mut self, block: &hir::Block) -> Result<(), Diagnostic> {
         for statement in &block.stmts {
-            if self.is_terminated(self.current)? {
-                break;
+            if self.is_terminated(self.current)? && !statement_declares_label(statement) {
+                continue;
             }
             self.lower_statement(statement)?;
         }
@@ -414,6 +428,9 @@ impl FunctionLowerer {
                 post,
                 body,
             } => {
+                if let Some(label) = label {
+                    self.enter_label(label, statement.source)?;
+                }
                 if let Some(init) = init {
                     self.lower_statement(init)?;
                 }
@@ -487,6 +504,23 @@ impl FunctionLowerer {
                     ))?;
                 }
             }
+            hir::StmtKind::Label {
+                name,
+                statement: body,
+            } => {
+                self.enter_label(name, statement.source)?;
+                if let Some(body) = body {
+                    self.lower_statement(body)?;
+                }
+            }
+            hir::StmtKind::Goto(label) => {
+                let target = self.label_target(label)?;
+                self.terminate(make_terminator(
+                    TerminatorKind::Goto(target),
+                    hir::Effects::default(),
+                    Provenance::Source(statement.source),
+                ))?;
+            }
             hir::StmtKind::Break(label) => {
                 let targets = match label {
                     Some(label) => self
@@ -523,6 +557,26 @@ impl FunctionLowerer {
                 ))?;
             }
         }
+        Ok(())
+    }
+
+    fn label_target(&self, label: &str) -> Result<BasicBlockId, Diagnostic> {
+        self.labels
+            .get(label)
+            .copied()
+            .ok_or_else(|| Diagnostic::backend(format!("unknown HIR label {label}")))
+    }
+
+    fn enter_label(&mut self, label: &str, source: SourceRef) -> Result<(), Diagnostic> {
+        let target = self.label_target(label)?;
+        if self.current != target && !self.is_terminated(self.current)? {
+            self.terminate(make_terminator(
+                TerminatorKind::Goto(target),
+                hir::Effects::default(),
+                Provenance::Source(source),
+            ))?;
+        }
+        self.current = target;
         Ok(())
     }
 
@@ -683,5 +737,82 @@ impl FunctionLowerer {
         ))?;
         self.current = join;
         Ok(Operand::Read(result))
+    }
+}
+
+fn statement_declares_label(statement: &hir::Stmt) -> bool {
+    matches!(
+        &statement.kind,
+        hir::StmtKind::Label { .. } | hir::StmtKind::For { label: Some(_), .. }
+    )
+}
+
+fn collect_labels(block: &hir::Block, labels: &mut Vec<(String, SourceRef)>) {
+    for statement in &block.stmts {
+        match &statement.kind {
+            hir::StmtKind::Label {
+                name,
+                statement: body,
+            } => {
+                labels.push((name.clone(), statement.source));
+                if let Some(body) = body {
+                    collect_statement_labels(body, labels);
+                }
+            }
+            hir::StmtKind::For { label, .. } => {
+                if let Some(label) = label {
+                    labels.push((label.clone(), statement.source));
+                }
+                collect_statement_labels(statement, labels);
+            }
+            _ => collect_statement_labels(statement, labels),
+        }
+    }
+}
+
+fn collect_statement_labels(statement: &hir::Stmt, labels: &mut Vec<(String, SourceRef)>) {
+    match &statement.kind {
+        hir::StmtKind::If {
+            init,
+            then_block,
+            else_branch,
+            ..
+        } => {
+            if let Some(init) = init {
+                collect_statement_labels(init, labels);
+            }
+            collect_labels(then_block, labels);
+            if let Some(else_branch) = else_branch {
+                collect_statement_labels(else_branch, labels);
+            }
+        }
+        hir::StmtKind::For {
+            init, post, body, ..
+        } => {
+            if let Some(init) = init {
+                collect_statement_labels(init, labels);
+            }
+            if let Some(post) = post {
+                collect_statement_labels(post, labels);
+            }
+            collect_labels(body, labels);
+        }
+        hir::StmtKind::Block(block) => collect_labels(block, labels),
+        hir::StmtKind::Label {
+            name,
+            statement: body,
+        } => {
+            labels.push((name.clone(), statement.source));
+            if let Some(body) = body {
+                collect_statement_labels(body, labels);
+            }
+        }
+        hir::StmtKind::Let { .. }
+        | hir::StmtKind::Assign { .. }
+        | hir::StmtKind::Expr(_)
+        | hir::StmtKind::Return(_)
+        | hir::StmtKind::Goto(_)
+        | hir::StmtKind::Break(_)
+        | hir::StmtKind::Continue(_) => {}
     }
 }
