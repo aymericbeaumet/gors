@@ -109,6 +109,19 @@ fn byte_slice_copy_uses_the_shorter_visible_length() {
 }
 
 #[test]
+fn integer_slice_copy_is_overlap_safe() {
+    let values = go_slice_i64_from_static(&[1, 2, 3, 4]);
+    let destination = go_slice_i64_range(values.clone(), 1, 4, -1);
+    let source = go_slice_i64_range(values.clone(), 0, 3, -1);
+
+    assert_eq!(go_slice_i64_copy(destination, source), 3);
+    assert_eq!(go_slice_i64_index(values.clone(), 0), 1);
+    assert_eq!(go_slice_i64_index(values.clone(), 1), 1);
+    assert_eq!(go_slice_i64_index(values.clone(), 2), 2);
+    assert_eq!(go_slice_i64_index(values, 3), 3);
+}
+
+#[test]
 fn clear_updates_only_the_visible_integer_slice() {
     let values = go_slice_i64_from_static(&[1, 2, 3, 4]);
     go_slice_i64_clear(go_slice_i64_range(values.clone(), 1, 3, -1));

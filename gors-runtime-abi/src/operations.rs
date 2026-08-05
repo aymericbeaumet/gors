@@ -368,6 +368,8 @@ const GO_SLICE_I64_RANGE: &[RuntimeType] = &[
 const GO_SLICE_I64_SET: &[RuntimeType] =
     &[RuntimeType::GoSliceI64, RuntimeType::I64, RuntimeType::I64];
 const GO_SLICE_I64_PARAMETER: &[RuntimeType] = &[RuntimeType::GoSliceI64];
+const TWO_GO_SLICE_I64_PARAMETERS: &[RuntimeType] =
+    &[RuntimeType::GoSliceI64, RuntimeType::GoSliceI64];
 const GO_SLICE_U8_PARAMETER: &[RuntimeType] = &[RuntimeType::GoSliceU8];
 const TWO_GO_SLICE_U8_PARAMETERS: &[RuntimeType] =
     &[RuntimeType::GoSliceU8, RuntimeType::GoSliceU8];
@@ -413,6 +415,7 @@ pub enum RuntimeOp {
     GoSliceU8CopyString,
     GoSliceI64Clear,
     GoStringFromSliceU8,
+    GoSliceI64Copy,
 }
 
 /// Stable compact identity of one runtime ABI operation.
@@ -478,6 +481,7 @@ impl RuntimeOp {
         Self::GoSliceU8CopyString,
         Self::GoSliceI64Clear,
         Self::GoStringFromSliceU8,
+        Self::GoSliceI64Copy,
     ];
 
     /// Stable exported Rust symbol assigned to this ABI operation.
@@ -513,6 +517,7 @@ impl RuntimeOp {
             Self::GoSliceU8CopyString => "go_slice_u8_copy_string",
             Self::GoSliceI64Clear => "go_slice_i64_clear",
             Self::GoStringFromSliceU8 => "go_string_from_slice_u8",
+            Self::GoSliceI64Copy => "go_slice_i64_copy",
         }
     }
 
@@ -578,6 +583,9 @@ impl RuntimeOp {
             Self::GoStringFromSliceU8 => {
                 RuntimeSignature::new(GO_SLICE_U8_PARAMETER, RuntimeType::GoString)
             }
+            Self::GoSliceI64Copy => {
+                RuntimeSignature::new(TWO_GO_SLICE_I64_PARAMETERS, RuntimeType::I64)
+            }
         }
     }
 
@@ -613,7 +621,8 @@ impl RuntimeOp {
             | Self::GoSliceU8AppendString
             | Self::GoSliceU8CopyString
             | Self::GoSliceI64Clear
-            | Self::GoStringFromSliceU8 => NO_CAPABILITIES,
+            | Self::GoStringFromSliceU8
+            | Self::GoSliceI64Copy => NO_CAPABILITIES,
         }
     }
 
@@ -721,12 +730,14 @@ impl RuntimeOp {
                 HostIoEffect::None,
                 NO_GO_PANICS,
             ),
-            Self::GoSliceU8CopyString | Self::GoSliceI64Clear => RuntimeEffects::new(
-                AllocationEffect::None,
-                ArgumentMutationEffect::MayMutateOwnedArgument,
-                HostIoEffect::None,
-                NO_GO_PANICS,
-            ),
+            Self::GoSliceU8CopyString | Self::GoSliceI64Clear | Self::GoSliceI64Copy => {
+                RuntimeEffects::new(
+                    AllocationEffect::None,
+                    ArgumentMutationEffect::MayMutateOwnedArgument,
+                    HostIoEffect::None,
+                    NO_GO_PANICS,
+                )
+            }
         }
     }
 
@@ -763,6 +774,7 @@ impl RuntimeOp {
             Self::GoSliceU8CopyString => 32,
             Self::GoSliceI64Clear => 33,
             Self::GoStringFromSliceU8 => 34,
+            Self::GoSliceI64Copy => 35,
         })
     }
 
@@ -813,6 +825,7 @@ impl TryFrom<u16> for RuntimeOp {
             32 => Ok(Self::GoSliceU8CopyString),
             33 => Ok(Self::GoSliceI64Clear),
             34 => Ok(Self::GoStringFromSliceU8),
+            35 => Ok(Self::GoSliceI64Copy),
             unknown => Err(UnknownRuntimeOpId(unknown)),
         }
     }

@@ -93,11 +93,11 @@ fn current_contract_identity_is_sha256_of_canonical_bytes() {
 
     assert_eq!(manifest.schema().get(), 2);
     assert_eq!(manifest.contract(), CURRENT_CONTRACT_VERSION);
-    assert_eq!(manifest.contract(), ContractVersion::new(2, 0, 0));
+    assert_eq!(manifest.contract(), ContractVersion::new(2, 1, 0));
     assert_eq!(manifest.identity().as_bytes(), &expected);
     assert_eq!(
         manifest.identity().to_string(),
-        "bf9f363d574bdbac76a3220a787c4fbae3ea1cb3e55b78091a946aeaf0acb10f",
+        "eb38401c77ded404d3f00fb1fb899c69e6a770c3675feb5f7d868dff84b94620",
         "the canonical runtime contract changed; review the ABI diff and bump its semantic version before accepting a new identity",
     );
 }
@@ -178,7 +178,8 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceI64Len
             | RuntimeOp::GoSliceI64Cap
             | RuntimeOp::GoSliceU8CopyString
-            | RuntimeOp::GoSliceI64Clear => AllocationEffect::None,
+            | RuntimeOp::GoSliceI64Clear
+            | RuntimeOp::GoSliceI64Copy => AllocationEffect::None,
         };
         let expected_argument_mutation = match operation {
             RuntimeOp::ConcatGoStrings
@@ -187,7 +188,8 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceU8AppendSlice
             | RuntimeOp::GoSliceU8AppendString
             | RuntimeOp::GoSliceU8CopyString
-            | RuntimeOp::GoSliceI64Clear => ArgumentMutationEffect::MayMutateOwnedArgument,
+            | RuntimeOp::GoSliceI64Clear
+            | RuntimeOp::GoSliceI64Copy => ArgumentMutationEffect::MayMutateOwnedArgument,
             RuntimeOp::GoStringFromBytes
             | RuntimeOp::GoStringFromStatic
             | RuntimeOp::IntDiv
@@ -240,7 +242,8 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceU8AppendString
             | RuntimeOp::GoSliceU8CopyString
             | RuntimeOp::GoSliceI64Clear
-            | RuntimeOp::GoStringFromSliceU8 => HostIoEffect::None,
+            | RuntimeOp::GoStringFromSliceU8
+            | RuntimeOp::GoSliceI64Copy => HostIoEffect::None,
         };
         let expected_panics: &[GoPanicCondition] = match operation {
             RuntimeOp::IntDiv | RuntimeOp::IntRem => &[GoPanicCondition::IntegerDivideByZero],
@@ -271,7 +274,8 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceU8AppendString
             | RuntimeOp::GoSliceU8CopyString
             | RuntimeOp::GoSliceI64Clear
-            | RuntimeOp::GoStringFromSliceU8 => &[],
+            | RuntimeOp::GoStringFromSliceU8
+            | RuntimeOp::GoSliceI64Copy => &[],
         };
 
         assert_eq!(effects.allocation(), expected_allocation, "{operation:?}");
@@ -509,6 +513,10 @@ fn runtime_signatures_are_complete_and_exact() {
             ),
             RuntimeOp::GoSliceI64Clear => (&[RuntimeType::GoSliceI64], RuntimeType::Unit),
             RuntimeOp::GoStringFromSliceU8 => (&[RuntimeType::GoSliceU8], RuntimeType::GoString),
+            RuntimeOp::GoSliceI64Copy => (
+                &[RuntimeType::GoSliceI64, RuntimeType::GoSliceI64],
+                RuntimeType::I64,
+            ),
         };
 
         assert_eq!(

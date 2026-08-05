@@ -534,6 +534,24 @@ fn generated_parallel_assignments_freeze_dynamic_targets_before_writes() {
 }
 
 #[test]
+fn generated_integer_slice_copy_preserves_overlap_semantics() {
+    let run = compile_and_run(
+        r#"
+            package main
+            func main() {
+                values := []int{1, 2, 3, 4}
+                clone := make([]int, len(values))
+                count := copy(clone, values)
+                copy(values[1:], values[:3])
+                println(count, clone[3], values[0], values[1], values[2], values[3])
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"4 4 1 1 2 3\n");
+}
+
+#[test]
 fn generated_slice_range_evaluates_once_and_continues_through_post() {
     let run = compile_and_run(
         r#"

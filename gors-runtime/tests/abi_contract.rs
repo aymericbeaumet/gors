@@ -1,7 +1,7 @@
 use gors_runtime::{
     GoInt, GoSliceI64, GoSliceU8, GoString, concat_go_strings, go_slice_i64_append,
-    go_slice_i64_cap, go_slice_i64_clear, go_slice_i64_from_static, go_slice_i64_index,
-    go_slice_i64_len, go_slice_i64_make, go_slice_i64_range, go_slice_i64_set,
+    go_slice_i64_cap, go_slice_i64_clear, go_slice_i64_copy, go_slice_i64_from_static,
+    go_slice_i64_index, go_slice_i64_len, go_slice_i64_make, go_slice_i64_range, go_slice_i64_set,
     go_slice_u8_append_slice, go_slice_u8_append_string, go_slice_u8_copy_string,
     go_slice_u8_from_static, go_string_from_bytes, go_string_from_slice_u8, go_string_from_static,
     int_div, int_rem, int_shl, int_shr, panic_bool, panic_go_string, panic_i64, print_bool,
@@ -173,6 +173,11 @@ fn implementation_surface(operation: RuntimeOp) -> RuntimeSurface {
             go_string_from_slice_u8,
             fn(GoSliceU8) -> GoString,
             [RuntimeType::GoSliceU8] -> RuntimeType::GoString
+        ),
+        RuntimeOp::GoSliceI64Copy => runtime_surface!(
+            go_slice_i64_copy,
+            fn(GoSliceI64, GoSliceI64) -> GoInt,
+            [RuntimeType::GoSliceI64, RuntimeType::GoSliceI64] -> RuntimeType::I64
         ),
     }
 }

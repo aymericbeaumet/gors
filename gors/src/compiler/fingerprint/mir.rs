@@ -260,6 +260,7 @@ fn encode_callee(encoder: &mut Encoder, callee: hir::Callee) {
                     hir::Builtin::SliceU8AppendSlice => b"slice-u8-append-slice",
                     hir::Builtin::SliceU8AppendString => b"slice-u8-append-string",
                     hir::Builtin::SliceU8CopyString => b"slice-u8-copy-string",
+                    hir::Builtin::SliceI64Copy => b"slice-i64-copy",
                     hir::Builtin::SliceI64Clear => b"slice-i64-clear",
                     hir::Builtin::StringFromSliceU8 => b"string-from-slice-u8",
                 },

@@ -175,6 +175,33 @@ pub fn go_slice_u8_copy_string(destination: GoSliceU8, source: GoString) -> GoIn
     GoInt::try_from(count).unwrap_or_else(|_| slice_bounds_out_of_range())
 }
 
+/// Copy integer elements between slices with Go's overlap-safe semantics.
+pub fn go_slice_i64_copy(destination: GoSliceI64, source: GoSliceI64) -> GoInt {
+    let count = destination.len.min(source.len);
+    let source_values = {
+        let storage = source
+            .storage
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let end = source.start.saturating_add(count);
+        storage
+            .get(source.start..end)
+            .unwrap_or_else(|| slice_bounds_out_of_range())
+            .to_vec()
+    };
+    let mut storage = destination
+        .storage
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let end = destination.start.saturating_add(count);
+    let target = storage
+        .get_mut(destination.start..end)
+        .unwrap_or_else(|| slice_bounds_out_of_range());
+    target.copy_from_slice(&source_values);
+    drop(storage);
+    GoInt::try_from(count).unwrap_or_else(|_| slice_bounds_out_of_range())
+}
+
 /// Assign the element zero value throughout an integer slice.
 pub fn go_slice_i64_clear(slice: GoSliceI64) {
     let mut storage = slice

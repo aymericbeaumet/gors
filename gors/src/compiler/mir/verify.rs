@@ -427,6 +427,19 @@ impl Function {
                                     )))]
                                 }
                             }
+                            hir::Builtin::SliceI64Copy => {
+                                if argument_types
+                                    != [
+                                        Ty::Slice(Box::new(Ty::Int(IntTy::Int))),
+                                        Ty::Slice(Box::new(Ty::Int(IntTy::Int))),
+                                    ]
+                                {
+                                    return Err(Diagnostic::backend(format!(
+                                        "invalid MIR slice copy arguments: {argument_types:?}"
+                                    )));
+                                }
+                                vec![Ty::Int(IntTy::Int)]
+                            }
                             hir::Builtin::SliceI64Clear => {
                                 if argument_types != [Ty::Slice(Box::new(Ty::Int(IntTy::Int)))] {
                                     return Err(Diagnostic::backend(format!(

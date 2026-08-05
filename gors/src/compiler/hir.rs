@@ -236,6 +236,7 @@ pub enum Builtin {
     SliceU8AppendSlice,
     SliceU8AppendString,
     SliceU8CopyString,
+    SliceI64Copy,
     SliceI64Clear,
     StringFromSliceU8,
 }

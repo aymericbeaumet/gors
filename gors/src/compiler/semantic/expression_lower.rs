@@ -839,10 +839,25 @@ impl FunctionLowerer {
                 if spread {
                     return Err(Diagnostic::semantic("copy does not accept ...", source));
                 }
-                let destination = self.lower_expr(destination, Some(&byte_slice_ty))?;
-                let source_value = self.lower_expr(source_value, Some(&Ty::String))?;
+                let destination = self.lower_expr(destination, None)?;
+                let (builtin, source_value) = if destination.ty == slice_ty {
+                    (
+                        hir::Builtin::SliceI64Copy,
+                        self.lower_expr(source_value, Some(&slice_ty))?,
+                    )
+                } else if destination.ty == byte_slice_ty {
+                    (
+                        hir::Builtin::SliceU8CopyString,
+                        self.lower_expr(source_value, Some(&Ty::String))?,
+                    )
+                } else {
+                    return Err(Diagnostic::semantic(
+                        "copy currently supports []int slices or a []byte destination and string source",
+                        source,
+                    ));
+                };
                 (
-                    hir::Builtin::SliceU8CopyString,
+                    builtin,
                     vec![destination, source_value],
                     Ty::Int(IntTy::Int),
                     false,

@@ -259,6 +259,7 @@ fn lower_terminator(
                 | hir::Builtin::SliceU8AppendSlice
                 | hir::Builtin::SliceU8AppendString
                 | hir::Builtin::SliceU8CopyString
+                | hir::Builtin::SliceI64Copy
                 | hir::Builtin::SliceI64Clear
                 | hir::Builtin::StringFromSliceU8),
             ) => out::TerminatorKind::Call {
@@ -273,6 +274,7 @@ fn lower_terminator(
                     hir::Builtin::SliceU8AppendSlice => RuntimeOp::GoSliceU8AppendSlice,
                     hir::Builtin::SliceU8AppendString => RuntimeOp::GoSliceU8AppendString,
                     hir::Builtin::SliceU8CopyString => RuntimeOp::GoSliceU8CopyString,
+                    hir::Builtin::SliceI64Copy => RuntimeOp::GoSliceI64Copy,
                     hir::Builtin::SliceI64Clear => RuntimeOp::GoSliceI64Clear,
                     hir::Builtin::StringFromSliceU8 => RuntimeOp::GoStringFromSliceU8,
                     hir::Builtin::Print | hir::Builtin::Println | hir::Builtin::Panic => {
