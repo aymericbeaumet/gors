@@ -25,8 +25,8 @@ checked-in oracle exactly.
 
 The driver is recorded as `gors-build-production-v1`. Raw command evidence must
 contain exactly one direct `gors build` child and one direct `go build` child
-per measured side. Result validation rejects the removed output-directory,
-`.gors-link.json`, generated-`main.rs`, `--extern`, and external-rustc paths.
+per measured side. Result validation rejects output-directory,
+`.gors-link.json`, generated-`main.rs`, `--extern`, and external-rustc drivers.
 
 ## Corpus and scenarios
 

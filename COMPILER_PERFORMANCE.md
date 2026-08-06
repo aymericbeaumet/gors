@@ -194,9 +194,9 @@ those products and source content independently of presentation state.
 `ProgramInput` is the production syntax-unvalidated manifest. Each
 `SourceFileInput` owns a reference-counted snapshot; the tracked file projection
 creates a temporary AST borrowing one snapshot while the query executes and
-publishes no self-reference or `'static` fiction. The parser-owned program and
-package graph were deleted with no compatibility shim. The red-green database
-tracks the owned per-definition structure. Parsing/projection remains
+publishes no self-reference or `'static` fiction. Program and package
+composition belong exclusively to the red-green database, which tracks owned
+per-definition structure. Parsing/projection remains
 file-granular, but typed signatures, constants, HIR, MIR, and Rust IR are
 demanded per definition. A trivia edit executes `FileProjection` and may
 replace physical layouts/source tables while semantic and IR query bodies stay
@@ -516,7 +516,7 @@ architecture described here:
   catalog builds currently force a conservative cross-invocation miss because
   the entry snapshot does not yet prove the full reachable dependency closure;
   publishing that closure is required before warm module-cache promotion;
-- the runtime sidecar/link hard cut is complete for native artifacts. Compiler
+- the native runtime sidecar/link boundary is complete. Compiler
   and printer products carry only the target-neutral dependency, while the CLI
   verifies and materializes one fixed-recipe precompiled rlib, publishes its
   exact schema-2 producer, compatibility, provider, and link identities, and
@@ -551,7 +551,7 @@ architecture described here:
   publication. Its portable production policy is `opt-level=2`, LTO disabled,
   debug info disabled, `target-cpu=generic`, and an empty requested target
   feature set. Performance result schema v4 invokes that command directly and
-  rejects the deleted generated-source/link-descriptor/external-rustc driver.
+  rejects any generated-source/link-descriptor/external-rustc driver.
   This makes new end-to-end evidence structurally promotable, but no scenario
   has yet met the statistical acceptance threshold;
 - no single global scheduler, cancellation generation, memory budget, or
@@ -579,8 +579,8 @@ plan's formatted-token name matching is not provenance-correct, however, and
 must be replaced by exact emitter anchors before source maps become cached query
 products.
 
-Do not rename any of these mechanisms to "incremental compilation." Replace
-them at the owning boundary and delete the obsolete path in the same change.
+Do not rename any of these mechanisms to "incremental compilation." Improve
+them at the owning boundary and keep one canonical implementation.
 
 ## Delivery order
 

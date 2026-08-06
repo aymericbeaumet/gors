@@ -54,9 +54,9 @@ outside the semantic model receive a structured source diagnostic.
   validates the fixed-width physical byte domain but deliberately does not
   validate Go syntax, so syntax errors remain parse-query outputs. A projection
   creates one temporary AST borrowing only that file's immutable snapshot and
-  publishes owned semantic products. The parser-owned `ParsedProgram` and
-  package-graph layer were deleted; do not recreate either a package-wide AST
-  or a parser-side program model.
+  publishes owned semantic products. The parser exposes neither a
+  `ParsedProgram` nor a package graph; package-wide ASTs and parser-side program
+  models are forbidden.
 
 ### Typed HIR
 
@@ -171,7 +171,7 @@ Rust representation lowering selects an exact typed ABI operation in Rust IR.
 Every operation is documented and tested independently. Stdlib packages remain
 Go source compiled through the same frontend as user packages.
 
-That Rust-IR selection is the hard-cut boundary. Rust IR carries canonical
+Rust-IR operation selection is the canonical runtime boundary. Rust IR carries
 `PrimitiveOp` and `RuntimeOp` values from `gors-runtime-abi`; do not add
 compiler-local operation shadows, print plans, signature tables, effect tables,
 or runtime-symbol matches. Print intrinsics expand into ordered single-operation
@@ -534,8 +534,8 @@ physical zero-width `TextRange`, and a separate adjusted filename plus typed
 success and failure and exposes it as an ordinary query output; it never
 rescans or reconstructs line directives.
 
-Semantic provenance has completed its hard cut. HIR, Go MIR, and Rust IR retain
-only compact, owner-scoped `SourceRef` values. A separately tracked,
+Semantic provenance is explicit throughout the pipeline. HIR, Go MIR, and Rust
+IR retain only compact, owner-scoped `SourceRef` values. A separately tracked,
 revision-local `DefinitionSourceTable` maps those references to physical
 `FileRange` values for the current source revision; it is not embedded in a
 semantic stage product. Moving tokens with whitespace or comments may replace
@@ -553,9 +553,9 @@ table and applies the `//line` coordinate map and current presentation path only
 when publishing a user-facing diagnostic. Source maps instead consume physical
 source ranges and physical line/byte-column coordinates; `//line` projection is
 display-only and must never rewrite source-map origins. `SourceSpan`,
-`FunctionProvenance`, the old `compiler::db::provenance` module, and arithmetic
-function-relative rebasing were deleted. Do not recreate them, collapse these
-domains again, or restore an AST-only parse compatibility entry point.
+`FunctionProvenance`, a `compiler::db::provenance` side channel, and arithmetic
+function-relative rebasing are forbidden. Keep these domains separate and keep
+parsing behind the query-owned file projection.
 
 The file projection owns decoded direct-import occurrences, structured invalid
 imports, and owned source comments from its one ephemeral parse. Those products
@@ -614,12 +614,13 @@ resolved-import product, including an explicit empty product. Default bindings
 store the target package's actual parsed package-clause name; named, blank, and
 dot bindings remain distinct. Exact no-op installs must not call a Salsa setter
 or synthesize rollback snapshots.
-Do not restore the deleted O(all-active-files) snapshot/rollback path or an
-all-`program.packages()` installation loop. Missing packages, catalog failures,
-and package cycles abort the same transaction and preserve both the preceding
-database revision and its published package DAG. A successful admission
-publishes the pure `compiler::package_dag` result with dependency-first ready
-layers for later parallel semantic work.
+Admission must journal only changed reachable files; an
+all-`program.packages()` installation loop or O(all-active-files) rollback
+snapshot is forbidden. Missing packages, catalog failures, and package cycles
+abort the same transaction and preserve both the preceding database revision
+and its published package DAG. A successful admission publishes the pure
+`compiler::package_dag` result with dependency-first ready layers for later
+parallel semantic work.
 
 The raw filesystem workspace loader requires an explicit caller-owned
 `WorkspaceKey`; it must never synthesize an ad-hoc identity from a checkout
@@ -630,10 +631,9 @@ module import path; explicit file lists remain `PackageKey::CommandLine` while
 sharing the local-module dependency catalog.
 
 The raw workspace loader deliberately performs no recursive module or import
-discovery. The deleted parser package graph has no compatibility shim. Rebuild
-module resolution as query-owned manifest expansion from decoded direct-import
-facts and resolver source metadata; never reintroduce parser recursion or a
-second pre-query parse.
+discovery. Module resolution is query-owned manifest expansion from decoded
+direct-import facts and resolver source metadata; parser recursion and a second
+pre-query parse are forbidden.
 
 Canonical decoded package identities live in the frontend-neutral
 `gors::import_path::CanonicalImportPath`; parser import-literal decoding must
@@ -649,9 +649,10 @@ converts and memoizes immutable `PackageInputManifest` values, reports external
 imports as unowned, and preserves concrete local loading failures through the
 catalog error chain. `ProgramInput` owns that adapter and the session admits its
 reachable closure from query-owned direct-import occurrences without another
-parse. There is no GORSPATH compatibility path. Until the compiler publishes a
-closed reachable-input snapshot for the CLI manifest, module-catalog builds
-must conservatively bypass cross-invocation generated-artifact cache admission;
+parse. Module discovery is `go.mod` based; GORSPATH is unsupported. Until the
+compiler publishes a closed reachable-input snapshot for the CLI manifest,
+module-catalog builds must conservatively bypass cross-invocation
+generated-artifact cache admission;
 an entry-only snapshot is not sufficient evidence for a cache hit.
 
 Source mappings and diagnostics are ordinary explicit outputs. The current
@@ -682,37 +683,40 @@ repository therefore makes no faster-than-Go claim and enforces no earned
 latency budget yet; correctness, determinism, and invalidation assertions still
 apply while measurements remain trend evidence.
 
-## Initial migration frontier
+## Executable coverage frontier
 
-The first authoritative backend slice intentionally supports a narrow executable
-subset:
+The production pipeline currently executes this focused, fully verified subset:
 
 - one source file in one package, with no imports;
-- primitive `bool`, 64-bit bootstrap `int`, and byte-string values;
-- exact scalar constants;
-- free functions, parameters, named results, and locals;
-- direct function calls and print or println intrinsics;
-- scalar expressions, assignments, returns, if, for, break, and continue.
+- `bool`, 64-bit `int`, `float64`, `complex128`, byte-string values, named
+  numeric types, aliases, `[]int`, `[]byte`, and `map[string]int`;
+- exact typed and untyped constants, including `iota` and complex constants;
+- free functions, direct non-escaping closures, parameters, multiple and named
+  results, locals, defer, panic, and recover;
+- explicit-order assignments, calls, slice and map built-ins, expression
+  switches, labels, goto, range over slices and maps, and structured loops;
+- print and println intrinsics through the versioned runtime ABI.
 
-The current executable claim covers non-panicking scalar executions only.
+Supported control flow and typed panic/recover behavior are executable today.
 Dynamic division or remainder by zero and negative dynamic shifts still reach
-Rust `panic_any`; replace that bootstrap boundary with versioned Go
-panic/process semantics and process-level differential tests before claiming
-those faulting executions as compliant.
+Rust `panic_any`; give those faults versioned Go panic/process semantics and
+process-level differential tests before counting their failure presentation as
+compliant.
 
-This is a bootstrap frontier, not a compatibility claim. Until implemented in
-HIR and MIR, expect explicit failures for:
+The remaining frontier receives precise source diagnostics until its semantics
+are represented in HIR and MIR:
 
 - multi-file and imported package compilation, including the Go stdlib;
 - package variables, declared composite types, methods, and generics;
-- arrays, slices, maps, structs, pointers, interfaces, and function values;
-- range, switch, type switch, select, labels, closures, defer, panic/recover,
-  goroutines, and channels;
+- arrays, structs, pointers, interfaces, escaping function values, and type
+  switches;
+- string, integer, channel, and iterator-function ranges; select, goroutines,
+  and channels;
 - unsafe and host-resource integration.
 
-Narrow integer types, unsigned integers, and floating-point values are also
-explicitly unsupported until their exact Go conversion, overflow, comparison,
-and runtime representation rules exist in HIR and MIR.
+Narrow and unsigned integer execution remains explicit coverage work until its
+exact Go conversion, overflow, comparison, and representation rules are present
+throughout HIR, MIR, and Rust IR.
 
 The existing Go-spec, stdlib, repository, and arbitrary-program fixtures are a
 prioritized coverage map and differential oracle. Only complete, unfiltered
@@ -872,7 +876,7 @@ Semantic work must not move beyond verified Rust IR:
 
     rg -ni 'post.?syn|rust.?ast.?pass|ast.?to.?syn|fallback.?lower' gors/src
 
-Mixed or arithmetically rebased semantic provenance must remain deleted:
+Mixed or arithmetically rebased semantic provenance is forbidden:
 
     rg -n 'SourceSpan|FunctionProvenance|make_function_relative|rebase_function_diagnostic' gors/src/compiler
 
@@ -932,5 +936,4 @@ Development order is:
    immediately when earned; after promotion they are mandatory acceptance
    criteria.
 
-Compatibility is measured against Go behavior, not against Rust emitted by the
-deleted compiler.
+Compatibility is measured exclusively against Go behavior.
