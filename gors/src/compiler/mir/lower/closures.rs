@@ -99,15 +99,10 @@ impl FunctionLowerer {
         }
         for (result, ty) in closure.named_results.iter().zip(&closure.signature.results) {
             if let Some(result) = result {
-                let zero = ty.zero().ok_or_else(|| {
-                    Diagnostic::backend(format!(
-                        "local function named result {ty:?} has no zero value"
-                    ))
-                })?;
-                self.assign_closure_place(
+                self.lower_zero_value(
                     Place { local: *result },
-                    Operand::Constant(zero, ty.clone()),
-                    source,
+                    ty.clone(),
+                    Provenance::Source(source),
                 )?;
             }
         }

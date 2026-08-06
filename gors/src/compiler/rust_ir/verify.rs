@@ -626,7 +626,9 @@ fn verify_source_provenance(
 ) -> Result<(), Diagnostic> {
     match provenance {
         Provenance::Source(source) => verify_source_ref(*source, owner, context),
-        Provenance::Synthetic(SyntheticOrigin::PanicCleanupDispatch) => Ok(()),
+        Provenance::Synthetic(
+            SyntheticOrigin::PanicCleanupDispatch | SyntheticOrigin::ZeroValueCall,
+        ) => Ok(()),
         Provenance::Synthetic(origin) => Err(Diagnostic::backend(format!(
             "synthetic provenance {origin:?} is invalid for {context}"
         ))),
@@ -663,7 +665,9 @@ fn verify_terminator_provenance(provenance: &Provenance, owner: DefId) -> Result
     match provenance {
         Provenance::Source(source) => verify_source_ref(*source, owner, "terminator"),
         Provenance::Synthetic(
-            SyntheticOrigin::ImplicitReturn | SyntheticOrigin::PanicCleanupDispatch,
+            SyntheticOrigin::ImplicitReturn
+            | SyntheticOrigin::PanicCleanupDispatch
+            | SyntheticOrigin::ZeroValueCall,
         ) => Ok(()),
         Provenance::Synthetic(other) => Err(Diagnostic::backend(format!(
             "synthetic provenance {other:?} is invalid for a terminator"

@@ -21,6 +21,7 @@ pub enum Ty {
     },
     String,
     Slice(Box<Ty>),
+    Map(Box<Ty>, Box<Ty>),
     Tuple(Vec<Ty>),
     Untyped(UntypedTy),
 }
@@ -146,6 +147,10 @@ impl Ty {
                 Self::Int(IntTy::Int) | Self::Uint(UintTy::Uint8)
             );
         }
+        if let Self::Map(key, value) = self {
+            return key.underlying() == &Self::String
+                && value.underlying() == &Self::Int(IntTy::Int);
+        }
         if let Self::Tuple(elements) = self {
             return elements.iter().all(Self::is_bootstrap_value);
         }
@@ -173,7 +178,9 @@ impl Ty {
             }),
             Self::String => Some(ConstValue::String(Vec::new())),
             Self::Named { underlying, .. } => underlying.zero(),
-            Self::Unit | Self::Slice(_) | Self::Tuple(_) | Self::Untyped(_) => None,
+            Self::Unit | Self::Slice(_) | Self::Map(_, _) | Self::Tuple(_) | Self::Untyped(_) => {
+                None
+            }
         }
     }
 }

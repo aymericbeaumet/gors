@@ -595,20 +595,7 @@ impl FunctionLowerer {
                 .map(|name| {
                     let node = self.alloc_node(name.source)?;
                     let source = SourceRef::node(node);
-                    let value = ty.zero().ok_or_else(|| {
-                        Diagnostic::unsupported(
-                            format!("zero value for {ty:?} is not implemented"),
-                            source,
-                        )
-                    })?;
-                    Ok(hir::Expr {
-                        node,
-                        kind: hir::ExprKind::Constant(value),
-                        ty: ty.clone(),
-                        category: hir::ValueCategory::Constant,
-                        effects: hir::Effects::default(),
-                        source,
-                    })
+                    self.zero_value_expr(node, source, ty.clone())
                 })
                 .collect::<Result<Vec<_>, Diagnostic>>()?
         } else {
@@ -664,48 +651,9 @@ impl FunctionLowerer {
         {
             return assignment;
         }
-        if let (
-            [
-                ExprSyntax {
-                    kind: ExprSyntaxKind::Index { base, index },
-                    ..
-                },
-            ],
-            [value],
-        ) = (left, right)
+        if let Some(assignment) = self.try_lower_single_index_assignment(left, token, right, source)
         {
-            if token == Token::DEFINE {
-                return Err(Diagnostic::semantic(
-                    "short declaration target must be an identifier",
-                    source,
-                ));
-            }
-            let slice = self.lower_expr(base, None)?;
-            let Ty::Slice(element) = slice.ty.underlying() else {
-                return Err(Diagnostic::semantic(
-                    "indexed assignment requires a slice value",
-                    source,
-                ));
-            };
-            if element.underlying() != &Ty::Int(IntTy::Int) {
-                return Err(Diagnostic::unsupported(
-                    "indexed assignment currently supports []int values",
-                    source,
-                ));
-            }
-            let element_ty = element.as_ref().clone();
-            let index = self.lower_expr(index, Some(&Ty::Int(IntTy::Int)))?;
-            let value = self.lower_expr(value, Some(&element_ty))?;
-            let op = assignment_op(token, source)?;
-            if op != hir::AssignOp::Set {
-                validate_binary_operator(assignment_binary_op(op), &element_ty, source)?;
-            }
-            return Ok(hir::StmtKind::SliceAssign {
-                slice,
-                index,
-                op,
-                value,
-            });
+            return assignment;
         }
         if left.len() != right.len() {
             if let [value] = right {
@@ -976,7 +924,7 @@ impl FunctionLowerer {
     }
 }
 
-fn assignment_op(token: Token, source: SourceRef) -> Result<hir::AssignOp, Diagnostic> {
+pub(super) fn assignment_op(token: Token, source: SourceRef) -> Result<hir::AssignOp, Diagnostic> {
     match token {
         Token::ASSIGN => Ok(hir::AssignOp::Set),
         Token::ADD_ASSIGN => Ok(hir::AssignOp::Add),

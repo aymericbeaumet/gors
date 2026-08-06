@@ -263,6 +263,14 @@ fn encode_callee(encoder: &mut Encoder, callee: hir::Callee) {
                     hir::Builtin::SliceI64Copy => b"slice-i64-copy",
                     hir::Builtin::SliceI64Clear => b"slice-i64-clear",
                     hir::Builtin::StringFromSliceU8 => b"string-from-slice-u8",
+                    hir::Builtin::MapStringI64Nil => b"map-string-i64-nil",
+                    hir::Builtin::MapStringI64Make => b"map-string-i64-make",
+                    hir::Builtin::MapStringI64Len => b"map-string-i64-len",
+                    hir::Builtin::MapStringI64Get => b"map-string-i64-get",
+                    hir::Builtin::MapStringI64Set => b"map-string-i64-set",
+                    hir::Builtin::MapStringI64Delete => b"map-string-i64-delete",
+                    hir::Builtin::MapStringI64Clear => b"map-string-i64-clear",
+                    hir::Builtin::MapStringI64IsNil => b"map-string-i64-is-nil",
                 },
                 |_| {},
             );
@@ -334,6 +342,7 @@ fn encode_provenance(encoder: &mut Encoder, provenance: &mir::Provenance) {
                         mir::SyntheticOrigin::PanicCleanupInitialization => {
                             b"panic-cleanup-initialization"
                         }
+                        mir::SyntheticOrigin::ZeroValueCall => b"zero-value-call",
                         mir::SyntheticOrigin::PanicCleanupDispatch => b"panic-cleanup-dispatch",
                         mir::SyntheticOrigin::ImplicitReturn => b"implicit-return",
                     },

@@ -647,6 +647,43 @@ fn generated_deferred_recover_consumes_the_active_panic() {
 }
 
 #[test]
+fn generated_maps_preserve_nil_and_shared_reference_semantics() {
+    let run = compile_and_run(
+        r#"
+            package main
+            func nilWritePanics() (panicked bool) {
+                defer func() { panicked = recover() != nil }()
+                var values map[string]int
+                values["missing"] = 1
+                return false
+            }
+            func main() {
+                original := map[string]int{"value": 1, "delete": 2}
+                alias := original
+                alias["value"] = 42
+                delete(original, "delete")
+                if original["value"] != 42 || len(alias) != 1 {
+                    panic("map identity changed")
+                }
+                clear(alias)
+                var nilMap map[string]int
+                delete(nilMap, "missing")
+                clear(nilMap)
+                if nilMap != nil || nilMap["missing"] != 0 || len(nilMap) != 0 {
+                    panic("nil map behavior changed")
+                }
+                if !nilWritePanics() { panic("nil map write did not panic") }
+                println("maps: ok")
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"maps: ok\n");
+    assert!(run.rust.contains("GoMapStringI64"), "{}", run.rust);
+    assert!(run.rust.contains("go_map_string_i64_set"), "{}", run.rust);
+}
+
+#[test]
 fn def_id_function_names_cannot_collide_with_rust_keywords() {
     let run = compile_and_run(
         r#"

@@ -11,6 +11,7 @@ enum PreparedTarget {
     Local(Place),
     Discard,
     SliceIndex { slice: Operand, index: Operand },
+    MapIndex { map: Operand, key: Operand },
 }
 
 impl FunctionLowerer {
@@ -47,6 +48,24 @@ impl FunctionLowerer {
                     PreparedTarget::SliceIndex {
                         slice: slice_operand,
                         index: index_operand,
+                    }
+                }
+                hir::AssignTarget::MapIndex { map, key } => {
+                    let map_operand = self.lower_expr(map)?;
+                    let map_operand = self.materialize(
+                        map_operand,
+                        map.ty.clone(),
+                        Provenance::Source(map.source),
+                    )?;
+                    let key_operand = self.lower_expr(key)?;
+                    let key_operand = self.materialize(
+                        key_operand,
+                        key.ty.clone(),
+                        Provenance::Source(key.source),
+                    )?;
+                    PreparedTarget::MapIndex {
+                        map: map_operand,
+                        key: key_operand,
                     }
                 }
             });
@@ -88,6 +107,14 @@ impl FunctionLowerer {
                         provenance,
                     ))?;
                     self.current = target;
+                }
+                PreparedTarget::MapIndex { map, key } => {
+                    self.emit_map_call(
+                        hir::Builtin::MapStringI64Set,
+                        vec![map, key, operand],
+                        Vec::new(),
+                        source,
+                    )?;
                 }
             }
         }

@@ -261,7 +261,15 @@ fn lower_terminator(
                 | hir::Builtin::SliceU8CopyString
                 | hir::Builtin::SliceI64Copy
                 | hir::Builtin::SliceI64Clear
-                | hir::Builtin::StringFromSliceU8),
+                | hir::Builtin::StringFromSliceU8
+                | hir::Builtin::MapStringI64Nil
+                | hir::Builtin::MapStringI64Make
+                | hir::Builtin::MapStringI64Len
+                | hir::Builtin::MapStringI64Get
+                | hir::Builtin::MapStringI64Set
+                | hir::Builtin::MapStringI64Delete
+                | hir::Builtin::MapStringI64Clear
+                | hir::Builtin::MapStringI64IsNil),
             ) => out::TerminatorKind::Call {
                 target: out::CallTarget::Runtime(match builtin {
                     hir::Builtin::SliceI64Index => RuntimeOp::GoSliceI64Index,
@@ -277,6 +285,14 @@ fn lower_terminator(
                     hir::Builtin::SliceI64Copy => RuntimeOp::GoSliceI64Copy,
                     hir::Builtin::SliceI64Clear => RuntimeOp::GoSliceI64Clear,
                     hir::Builtin::StringFromSliceU8 => RuntimeOp::GoStringFromSliceU8,
+                    hir::Builtin::MapStringI64Nil => RuntimeOp::GoMapStringI64Nil,
+                    hir::Builtin::MapStringI64Make => RuntimeOp::GoMapStringI64Make,
+                    hir::Builtin::MapStringI64Len => RuntimeOp::GoMapStringI64Len,
+                    hir::Builtin::MapStringI64Get => RuntimeOp::GoMapStringI64Get,
+                    hir::Builtin::MapStringI64Set => RuntimeOp::GoMapStringI64Set,
+                    hir::Builtin::MapStringI64Delete => RuntimeOp::GoMapStringI64Delete,
+                    hir::Builtin::MapStringI64Clear => RuntimeOp::GoMapStringI64Clear,
+                    hir::Builtin::MapStringI64IsNil => RuntimeOp::GoMapStringI64IsNil,
                     hir::Builtin::Print | hir::Builtin::Println | hir::Builtin::Panic => {
                         return Err(Diagnostic::backend(
                             "non-slice builtin reached slice representation lowering",
@@ -677,6 +693,11 @@ fn lower_type(ty: &Ty) -> Result<out::RustType, Diagnostic> {
         {
             Ok(out::RustType::GoSliceU8)
         }
+        Ty::Map(key, value)
+            if key.underlying() == &Ty::String && value.underlying() == &Ty::Int(IntTy::Int) =>
+        {
+            Ok(out::RustType::GoMapStringI64)
+        }
         unsupported => Err(Diagnostic::backend(format!(
             "unsupported Go type reached Rust lowering: {unsupported:?}"
         ))),
@@ -712,6 +733,9 @@ fn lower_provenance(provenance: mir::Provenance) -> out::Provenance {
         }
         mir::Provenance::Synthetic(mir::SyntheticOrigin::PanicCleanupInitialization) => {
             out::Provenance::Synthetic(out::SyntheticOrigin::PanicCleanupInitialization)
+        }
+        mir::Provenance::Synthetic(mir::SyntheticOrigin::ZeroValueCall) => {
+            out::Provenance::Synthetic(out::SyntheticOrigin::ZeroValueCall)
         }
         mir::Provenance::Synthetic(mir::SyntheticOrigin::PanicCleanupDispatch) => {
             out::Provenance::Synthetic(out::SyntheticOrigin::PanicCleanupDispatch)

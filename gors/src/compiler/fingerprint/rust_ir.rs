@@ -423,6 +423,7 @@ fn encode_provenance(encoder: &mut Encoder, provenance: &rust_ir::Provenance) {
                         rust_ir::SyntheticOrigin::PanicCleanupInitialization => {
                             b"panic-cleanup-initialization"
                         }
+                        rust_ir::SyntheticOrigin::ZeroValueCall => b"zero-value-call",
                         rust_ir::SyntheticOrigin::PanicCleanupDispatch => b"panic-cleanup-dispatch",
                         rust_ir::SyntheticOrigin::ImplicitReturn => b"implicit-return",
                     },

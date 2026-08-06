@@ -5,6 +5,7 @@ mod closures;
 mod expression_lower;
 mod expressions;
 mod function;
+mod maps;
 mod ranges;
 mod statements;
 mod switches;
@@ -314,6 +315,12 @@ pub(super) fn lower_type(
             source,
         )?)));
     }
+    if let ExprSyntaxKind::MapType { key, value } = &expression.kind {
+        return Ok(Ty::Map(
+            Box::new(lower_type(key, type_aliases, source)?),
+            Box::new(lower_type(value, type_aliases, source)?),
+        ));
+    }
     let ExprSyntaxKind::Ident(ident) = &expression.kind else {
         return Err(Diagnostic::unsupported(
             "this Go type is not yet implemented by the typed backend",
@@ -488,6 +495,8 @@ pub(super) fn eval_constant(
         | ExprSyntaxKind::FunctionLiteral { .. }
         | ExprSyntaxKind::Selector { .. }
         | ExprSyntaxKind::ArrayType { .. }
+        | ExprSyntaxKind::MapType { .. }
+        | ExprSyntaxKind::KeyValue { .. }
         | ExprSyntaxKind::CompositeLiteral { .. }
         | ExprSyntaxKind::Index { .. }
         | ExprSyntaxKind::Slice { .. }

@@ -323,6 +323,7 @@ pub enum Provenance {
 pub enum SyntheticOrigin {
     NamedResultInitialization,
     PanicCleanupInitialization,
+    ZeroValueCall,
     PanicCleanupDispatch,
     ImplicitReturn,
 }

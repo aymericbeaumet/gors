@@ -807,8 +807,14 @@ impl StructuralProjector {
             },
             ast::Expr::IndexListExpr(_) => ExprSyntaxKind::Unsupported("generic index expression"),
             ast::Expr::InterfaceType(_) => ExprSyntaxKind::Unsupported("interface type"),
-            ast::Expr::KeyValueExpr(_) => ExprSyntaxKind::Unsupported("key-value expression"),
-            ast::Expr::MapType(_) => ExprSyntaxKind::Unsupported("map type"),
+            ast::Expr::KeyValueExpr(expression) => ExprSyntaxKind::KeyValue {
+                key: Box::new(self.expression(&expression.key)?),
+                value: Box::new(self.expression(&expression.value)?),
+            },
+            ast::Expr::MapType(expression) => ExprSyntaxKind::MapType {
+                key: Box::new(self.expression(&expression.key)?),
+                value: Box::new(self.expression(&expression.value)?),
+            },
             ast::Expr::SliceExpr(expression) => ExprSyntaxKind::Slice {
                 base: Box::new(self.expression(&expression.x)?),
                 low: expression

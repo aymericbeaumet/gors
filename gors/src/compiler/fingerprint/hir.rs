@@ -319,6 +319,13 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
             encoder.field(b"operation", |encoder| encode_assign_op(encoder, *op));
             encoder.field(b"value", |encoder| encode_expression(encoder, value));
         }),
+        hir::StmtKind::MapAssign { map, key, value } => {
+            encoder.variant(b"map-assign", |encoder| {
+                encoder.field(b"map", |encoder| encode_expression(encoder, map));
+                encoder.field(b"key", |encoder| encode_expression(encoder, key));
+                encoder.field(b"value", |encoder| encode_expression(encoder, value));
+            });
+        }
     }
 }
 
@@ -332,6 +339,12 @@ fn encode_assignment_target(encoder: &mut Encoder, target: &hir::AssignTarget) {
             encoder.variant(b"slice-index", |encoder| {
                 encoder.field(b"slice", |encoder| encode_expression(encoder, slice));
                 encoder.field(b"index", |encoder| encode_expression(encoder, index));
+            });
+        }
+        hir::AssignTarget::MapIndex { map, key } => {
+            encoder.variant(b"map-index", |encoder| {
+                encoder.field(b"map", |encoder| encode_expression(encoder, map));
+                encoder.field(b"key", |encoder| encode_expression(encoder, key));
             });
         }
     }
@@ -443,6 +456,14 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
         hir::ExprKind::SliceLiteralU8(elements) => {
             encoder.variant(b"slice-literal-u8", |encoder| encoder.blob(elements));
         }
+        hir::ExprKind::MapLiteralStringI64(entries) => {
+            encoder.variant(b"map-literal-string-i64", |encoder| {
+                encoder.sequence(entries, |encoder, (key, value)| {
+                    encoder.field(b"key", |encoder| encode_expression(encoder, key));
+                    encoder.field(b"value", |encoder| encode_expression(encoder, value));
+                });
+            });
+        }
         hir::ExprKind::Call { callee, args } => encoder.variant(b"call", |encoder| {
             encoder.field(b"callee", |encoder| encode_callee(encoder, *callee));
             encoder.field(b"arguments", |encoder| {
@@ -487,6 +508,14 @@ fn encode_builtin(encoder: &mut Encoder, builtin: hir::Builtin) {
             hir::Builtin::SliceI64Copy => b"slice-i64-copy",
             hir::Builtin::SliceI64Clear => b"slice-i64-clear",
             hir::Builtin::StringFromSliceU8 => b"string-from-slice-u8",
+            hir::Builtin::MapStringI64Nil => b"map-string-i64-nil",
+            hir::Builtin::MapStringI64Make => b"map-string-i64-make",
+            hir::Builtin::MapStringI64Len => b"map-string-i64-len",
+            hir::Builtin::MapStringI64Get => b"map-string-i64-get",
+            hir::Builtin::MapStringI64Set => b"map-string-i64-set",
+            hir::Builtin::MapStringI64Delete => b"map-string-i64-delete",
+            hir::Builtin::MapStringI64Clear => b"map-string-i64-clear",
+            hir::Builtin::MapStringI64IsNil => b"map-string-i64-is-nil",
         },
         |_| {},
     );

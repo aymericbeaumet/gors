@@ -207,6 +207,24 @@ impl FunctionLowerer {
                     }
                     return Ok(recovered);
                 }
+                if matches!(token, Token::EQL | Token::NEQ) {
+                    let map = if is_nil_identifier(left) {
+                        Some(right.as_ref())
+                    } else if is_nil_identifier(right) {
+                        Some(left.as_ref())
+                    } else {
+                        None
+                    };
+                    if let Some(map) = map {
+                        return self.lower_map_nil_comparison(
+                            map,
+                            *token == Token::EQL,
+                            node,
+                            source,
+                            expected,
+                        );
+                    }
+                }
                 let mut left = self.lower_expr(left, None)?;
                 let mut right = self.lower_expr(right, None)?;
                 let op = lower_binary_op(*token).ok_or_else(|| {
@@ -296,7 +314,22 @@ impl FunctionLowerer {
                     ));
                 };
                 let name = callee_ident.name.as_ref();
-                if matches!(name, "make" | "len" | "cap" | "append" | "copy" | "clear") {
+                if name == "make" {
+                    return self
+                        .lower_make_builtin_call(arguments, *spread, node, source, expected);
+                }
+                if name == "len" {
+                    return self.lower_len_builtin_call(arguments, *spread, node, source, expected);
+                }
+                if name == "clear" {
+                    return self
+                        .lower_clear_builtin_call(arguments, *spread, node, source, expected);
+                }
+                if name == "delete" {
+                    return self
+                        .lower_delete_builtin_call(arguments, *spread, node, source, expected);
+                }
+                if matches!(name, "cap" | "append" | "copy") {
                     return self.lower_slice_builtin_call(
                         name, arguments, *spread, node, source, expected,
                     );
@@ -559,6 +592,9 @@ impl FunctionLowerer {
                     ));
                 };
                 let literal_ty = lower_type(ty, &self.type_aliases, source)?;
+                if matches!(literal_ty.underlying(), Ty::Map(_, _)) {
+                    return self.lower_map_literal(literal_ty, elements, node, source);
+                }
                 let Ty::Slice(element_ty) = literal_ty.underlying() else {
                     return Err(Diagnostic::unsupported(
                         "this composite literal type is not yet implemented",
@@ -617,6 +653,9 @@ impl FunctionLowerer {
             }
             ExprSyntaxKind::Index { base, index } => {
                 let base = self.lower_expr(base, None)?;
+                if matches!(base.ty.underlying(), Ty::Map(_, _)) {
+                    return self.lower_map_index(base, index, node, source, expected);
+                }
                 let Ty::Slice(element) = base.ty.underlying() else {
                     return Err(Diagnostic::semantic(
                         "indexing requires a slice value",
@@ -681,9 +720,15 @@ impl FunctionLowerer {
                     source,
                 }
             }
-            ExprSyntaxKind::ArrayType { .. } => {
+            ExprSyntaxKind::ArrayType { .. } | ExprSyntaxKind::MapType { .. } => {
                 return Err(Diagnostic::semantic(
-                    "a slice type is not a value expression",
+                    "a container type is not a value expression",
+                    source,
+                ));
+            }
+            ExprSyntaxKind::KeyValue { .. } => {
+                return Err(Diagnostic::semantic(
+                    "key: value syntax requires a composite literal",
                     source,
                 ));
             }
@@ -719,7 +764,7 @@ impl FunctionLowerer {
         })
     }
 
-    fn lower_slice_builtin_call(
+    pub(super) fn lower_slice_builtin_call(
         &mut self,
         name: &str,
         arguments: &[ExprSyntax],
@@ -764,20 +809,16 @@ impl FunctionLowerer {
                     true,
                 )
             }
-            "len" | "cap" => {
+            "cap" => {
                 let [value] = arguments else {
                     return Err(Diagnostic::semantic(
-                        format!("{name} requires exactly one argument"),
+                        "cap requires exactly one argument",
                         source,
                     ));
                 };
                 let value = self.lower_expr(value, Some(&slice_ty))?;
                 (
-                    if name == "len" {
-                        hir::Builtin::SliceI64Len
-                    } else {
-                        hir::Builtin::SliceI64Cap
-                    },
+                    hir::Builtin::SliceI64Cap,
                     vec![value],
                     Ty::Int(IntTy::Int),
                     false,
@@ -860,26 +901,6 @@ impl FunctionLowerer {
                     builtin,
                     vec![destination, source_value],
                     Ty::Int(IntTy::Int),
-                    false,
-                    true,
-                    false,
-                )
-            }
-            "clear" => {
-                let [value] = arguments else {
-                    return Err(Diagnostic::semantic(
-                        "clear requires exactly one slice argument",
-                        source,
-                    ));
-                };
-                if spread {
-                    return Err(Diagnostic::semantic("clear does not accept ...", source));
-                }
-                let value = self.lower_expr(value, Some(&slice_ty))?;
-                (
-                    hir::Builtin::SliceI64Clear,
-                    vec![value],
-                    Ty::Unit,
                     false,
                     true,
                     false,

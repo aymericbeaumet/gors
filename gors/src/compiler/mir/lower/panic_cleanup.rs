@@ -87,23 +87,12 @@ impl FunctionLowerer {
             .map(|local| (local.id, local.ty.clone(), local.kind))
             .collect::<Vec<_>>();
         for (local, ty, kind) in locals {
-            let zero = ty.zero().ok_or_else(|| {
-                Diagnostic::unsupported(
-                    format!("defer cleanup for local type {ty:?} requires a zero representation"),
-                    function.source,
-                )
-            })?;
             let provenance = Provenance::Synthetic(if kind == hir::LocalKind::NamedResult {
                 SyntheticOrigin::NamedResultInitialization
             } else {
                 SyntheticOrigin::PanicCleanupInitialization
             });
-            let value = make_rvalue(
-                RvalueKind::Use(Operand::Constant(zero, ty)),
-                hir::Effects::default(),
-                provenance.clone(),
-            );
-            self.push_statement(make_statement(Place { local }, value, provenance))?;
+            self.lower_zero_value(Place { local }, ty, provenance)?;
         }
         Ok(())
     }
@@ -148,15 +137,11 @@ impl FunctionLowerer {
             if let Some(local) = function.named_results.get(index).copied().flatten() {
                 returned.push(Operand::Read(Place { local }));
             } else {
-                let zero = ty.zero().ok_or_else(|| {
-                    Diagnostic::unsupported(
-                        format!(
-                            "panic recovery for result type {ty:?} requires a zero representation"
-                        ),
-                        function.source,
-                    )
-                })?;
-                returned.push(Operand::Constant(zero, ty.clone()));
+                let zero = Place {
+                    local: self.new_temp(ty.clone()),
+                };
+                self.lower_zero_value(zero, ty.clone(), provenance.clone())?;
+                returned.push(Operand::Read(zero));
             }
         }
         self.terminate(make_terminator(

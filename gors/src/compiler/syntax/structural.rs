@@ -231,6 +231,14 @@ pub enum ExprSyntaxKind {
         length: Option<Box<ExprSyntax>>,
         element: Box<ExprSyntax>,
     },
+    MapType {
+        key: Box<ExprSyntax>,
+        value: Box<ExprSyntax>,
+    },
+    KeyValue {
+        key: Box<ExprSyntax>,
+        value: Box<ExprSyntax>,
+    },
     CompositeLiteral {
         ty: Option<Box<ExprSyntax>>,
         elements: Arc<[ExprSyntax]>,

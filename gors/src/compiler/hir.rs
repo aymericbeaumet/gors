@@ -143,6 +143,11 @@ pub enum StmtKind {
         op: AssignOp,
         value: Expr,
     },
+    MapAssign {
+        map: Expr,
+        key: Expr,
+        value: Expr,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -150,6 +155,7 @@ pub enum AssignTarget {
     Local(LocalId),
     Discard,
     SliceIndex { slice: Expr, index: Expr },
+    MapIndex { map: Expr, key: Expr },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -208,6 +214,7 @@ pub enum ExprKind {
     },
     SliceLiteralI64(Vec<i64>),
     SliceLiteralU8(Vec<u8>),
+    MapLiteralStringI64(Vec<(Expr, Expr)>),
     Call {
         callee: Callee,
         args: Vec<Expr>,
@@ -239,6 +246,14 @@ pub enum Builtin {
     SliceI64Copy,
     SliceI64Clear,
     StringFromSliceU8,
+    MapStringI64Nil,
+    MapStringI64Make,
+    MapStringI64Len,
+    MapStringI64Get,
+    MapStringI64Set,
+    MapStringI64Delete,
+    MapStringI64Clear,
+    MapStringI64IsNil,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

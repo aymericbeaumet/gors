@@ -4,6 +4,7 @@ mod assignments;
 mod closures;
 mod expressions;
 mod flow;
+mod maps;
 mod panic_cleanup;
 mod ranges;
 #[cfg(test)]
@@ -121,6 +122,7 @@ impl FunctionLowerer {
                 _ => None,
             })
             .collect::<Vec<_>>();
+        let mut panic_dispatch = None;
         let body_entry = if deferred_bodies.is_empty() {
             None
         } else {
@@ -134,6 +136,7 @@ impl FunctionLowerer {
             let active = lowerer.new_temp(Ty::Bool);
             lowerer.recover_active = Some(active);
             lowerer.initialize_panic_cleanup_locals(hir)?;
+            panic_dispatch = Some(lowerer.current);
             let body_entry = lowerer.new_block(Provenance::Source(hir.body.source));
             lowerer.current = body_entry;
             Some(body_entry)
@@ -161,20 +164,11 @@ impl FunctionLowerer {
         if body_entry.is_none() {
             for result in hir.named_results.iter().flatten() {
                 let ty = lowerer.local_ty(*result)?.clone();
-                let value = ty.zero().ok_or_else(|| {
-                    Diagnostic::backend(format!("no MIR zero value for named result {ty:?}"))
-                })?;
-                let provenance = Provenance::Synthetic(SyntheticOrigin::NamedResultInitialization);
-                let value = make_rvalue(
-                    RvalueKind::Use(Operand::Constant(value, ty)),
-                    hir::Effects::default(),
-                    provenance.clone(),
-                );
-                lowerer.push_statement(make_statement(
+                lowerer.lower_zero_value(
                     Place { local: *result },
-                    value,
-                    provenance,
-                ))?;
+                    ty,
+                    Provenance::Synthetic(SyntheticOrigin::NamedResultInitialization),
+                )?;
             }
         }
 
@@ -197,24 +191,26 @@ impl FunctionLowerer {
             }
         }
 
-        let panic_cleanup =
-            if let (Some(body_entry), Some(active)) = (body_entry, lowerer.recover_active) {
-                let cleanup = lowerer.build_panic_cleanup(hir, active)?;
-                lowerer.retarget_body_panics(cleanup.entry);
-                lowerer.current = BasicBlockId(0);
-                lowerer.terminate(make_terminator(
-                    TerminatorKind::SwitchBool {
-                        condition: Operand::Constant(ConstValue::Bool(false), Ty::Bool),
-                        then_target: cleanup.entry,
-                        else_target: body_entry,
-                    },
-                    hir::Effects::default(),
-                    Provenance::Synthetic(SyntheticOrigin::PanicCleanupDispatch),
-                ))?;
-                Some(cleanup)
-            } else {
-                None
-            };
+        let panic_cleanup = if let (Some(body_entry), Some(active)) =
+            (body_entry, lowerer.recover_active)
+        {
+            let cleanup = lowerer.build_panic_cleanup(hir, active)?;
+            lowerer.retarget_body_panics(cleanup.entry);
+            lowerer.current = panic_dispatch
+                .ok_or_else(|| Diagnostic::backend("defer cleanup has no entry dispatch block"))?;
+            lowerer.terminate(make_terminator(
+                TerminatorKind::SwitchBool {
+                    condition: Operand::Constant(ConstValue::Bool(false), Ty::Bool),
+                    then_target: cleanup.entry,
+                    else_target: body_entry,
+                },
+                hir::Effects::default(),
+                Provenance::Synthetic(SyntheticOrigin::PanicCleanupDispatch),
+            ))?;
+            Some(cleanup)
+        } else {
+            None
+        };
 
         let blocks = lowerer
             .blocks
@@ -539,6 +535,9 @@ impl FunctionLowerer {
                 ))?;
                 self.current = after_set;
             }
+            hir::StmtKind::MapAssign { map, key, value } => {
+                self.lower_map_assignment(map, key, value, statement.source)?;
+            }
             hir::StmtKind::Expr(expr) => {
                 let _ = self.lower_expr(expr)?;
             }
@@ -795,6 +794,9 @@ impl FunctionLowerer {
                 );
                 self.push_statement(make_statement(place, value, provenance))?;
                 Ok(Operand::Read(place))
+            }
+            hir::ExprKind::MapLiteralStringI64(entries) => {
+                self.lower_map_literal(entries, &expr.ty, expr.source)
             }
             hir::ExprKind::Local(local) => Ok(Operand::Read(Place { local: *local })),
             hir::ExprKind::RecoverCompareNil { equal } => {

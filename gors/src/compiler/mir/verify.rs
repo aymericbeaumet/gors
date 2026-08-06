@@ -460,6 +460,58 @@ impl Function {
                                 }
                                 vec![Ty::String]
                             }
+                            hir::Builtin::MapStringI64Nil | hir::Builtin::MapStringI64Make => {
+                                verify_map_call_arguments(&argument_types, &[], "map creation")?;
+                                vec![map_string_i64_ty()]
+                            }
+                            hir::Builtin::MapStringI64Len => {
+                                verify_map_call_arguments(
+                                    &argument_types,
+                                    &[map_string_i64_ty()],
+                                    "map len",
+                                )?;
+                                vec![Ty::Int(IntTy::Int)]
+                            }
+                            hir::Builtin::MapStringI64Get => {
+                                verify_map_call_arguments(
+                                    &argument_types,
+                                    &[map_string_i64_ty(), Ty::String],
+                                    "map lookup",
+                                )?;
+                                vec![Ty::Int(IntTy::Int)]
+                            }
+                            hir::Builtin::MapStringI64Set => {
+                                verify_map_call_arguments(
+                                    &argument_types,
+                                    &[map_string_i64_ty(), Ty::String, Ty::Int(IntTy::Int)],
+                                    "map assignment",
+                                )?;
+                                Vec::new()
+                            }
+                            hir::Builtin::MapStringI64Delete => {
+                                verify_map_call_arguments(
+                                    &argument_types,
+                                    &[map_string_i64_ty(), Ty::String],
+                                    "map delete",
+                                )?;
+                                Vec::new()
+                            }
+                            hir::Builtin::MapStringI64Clear => {
+                                verify_map_call_arguments(
+                                    &argument_types,
+                                    &[map_string_i64_ty()],
+                                    "map clear",
+                                )?;
+                                Vec::new()
+                            }
+                            hir::Builtin::MapStringI64IsNil => {
+                                verify_map_call_arguments(
+                                    &argument_types,
+                                    &[map_string_i64_ty()],
+                                    "map nil comparison",
+                                )?;
+                                vec![Ty::Bool]
+                            }
                         };
                         self.verify_call_destinations(destinations, &results)?;
                     }
@@ -540,7 +592,9 @@ fn verify_source_provenance(
 ) -> Result<(), Diagnostic> {
     match provenance {
         Provenance::Source(source) => verify_source_ref(*source, owner, context),
-        Provenance::Synthetic(SyntheticOrigin::PanicCleanupDispatch) => Ok(()),
+        Provenance::Synthetic(
+            SyntheticOrigin::PanicCleanupDispatch | SyntheticOrigin::ZeroValueCall,
+        ) => Ok(()),
         Provenance::Synthetic(origin) => Err(Diagnostic::backend(format!(
             "synthetic provenance {origin:?} is invalid for {context}"
         ))),
@@ -577,7 +631,9 @@ fn verify_terminator_provenance(provenance: &Provenance, owner: DefId) -> Result
     match provenance {
         Provenance::Source(source) => verify_source_ref(*source, owner, "terminator"),
         Provenance::Synthetic(
-            SyntheticOrigin::ImplicitReturn | SyntheticOrigin::PanicCleanupDispatch,
+            SyntheticOrigin::ImplicitReturn
+            | SyntheticOrigin::PanicCleanupDispatch
+            | SyntheticOrigin::ZeroValueCall,
         ) => Ok(()),
         Provenance::Synthetic(other) => Err(Diagnostic::backend(format!(
             "synthetic provenance {other:?} is invalid for a terminator"
@@ -671,6 +727,23 @@ fn verify_byte_slice_call_arguments(
 ) -> Result<(), Diagnostic> {
     let byte_slice = Ty::Slice(Box::new(Ty::Uint(crate::compiler::types::UintTy::Uint8)));
     if arguments != [byte_slice, second.clone()] {
+        return Err(Diagnostic::backend(format!(
+            "invalid MIR {context} argument types: {arguments:?}"
+        )));
+    }
+    Ok(())
+}
+
+fn map_string_i64_ty() -> Ty {
+    Ty::Map(Box::new(Ty::String), Box::new(Ty::Int(IntTy::Int)))
+}
+
+fn verify_map_call_arguments(
+    arguments: &[Ty],
+    expected: &[Ty],
+    context: &str,
+) -> Result<(), Diagnostic> {
+    if arguments != expected {
         return Err(Diagnostic::backend(format!(
             "invalid MIR {context} argument types: {arguments:?}"
         )));

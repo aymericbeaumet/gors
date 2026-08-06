@@ -37,9 +37,16 @@ fn collect_statement_callees(statement: &hir::Stmt, callees: &mut BTreeSet<DefId
             values,
         } => {
             for destination in destinations {
-                if let hir::AssignTarget::SliceIndex { slice, index } = destination {
-                    collect_expression_callees(slice, callees);
-                    collect_expression_callees(index, callees);
+                match destination {
+                    hir::AssignTarget::SliceIndex { slice, index } => {
+                        collect_expression_callees(slice, callees);
+                        collect_expression_callees(index, callees);
+                    }
+                    hir::AssignTarget::MapIndex { map, key } => {
+                        collect_expression_callees(map, callees);
+                        collect_expression_callees(key, callees);
+                    }
+                    hir::AssignTarget::Local(_) | hir::AssignTarget::Discard => {}
                 }
             }
             for value in values {
@@ -61,6 +68,11 @@ fn collect_statement_callees(statement: &hir::Stmt, callees: &mut BTreeSet<DefId
         } => {
             collect_expression_callees(slice, callees);
             collect_expression_callees(index, callees);
+            collect_expression_callees(value, callees);
+        }
+        hir::StmtKind::MapAssign { map, key, value } => {
+            collect_expression_callees(map, callees);
+            collect_expression_callees(key, callees);
             collect_expression_callees(value, callees);
         }
         hir::StmtKind::If {
@@ -129,6 +141,12 @@ fn collect_expression_callees(expression: &hir::Expr, callees: &mut BTreeSet<Def
             }
             for argument in args {
                 collect_expression_callees(argument, callees);
+            }
+        }
+        hir::ExprKind::MapLiteralStringI64(entries) => {
+            for (key, value) in entries {
+                collect_expression_callees(key, callees);
+                collect_expression_callees(value, callees);
             }
         }
         hir::ExprKind::Constant(_)

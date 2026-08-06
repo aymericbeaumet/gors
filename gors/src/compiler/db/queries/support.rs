@@ -353,6 +353,10 @@ impl PackageReferenceCollector {
                 }
                 self.expression(element);
             }
+            ExprSyntaxKind::MapType { key, value } | ExprSyntaxKind::KeyValue { key, value } => {
+                self.expression(key);
+                self.expression(value);
+            }
             ExprSyntaxKind::CompositeLiteral { ty, elements } => {
                 if let Some(ty) = ty {
                     self.expression(ty);
@@ -423,6 +427,10 @@ fn collect_all_expression_names(expression: &ExprSyntax, names: &mut BTreeSet<St
                 collect_all_expression_names(length, names);
             }
             collect_all_expression_names(element, names);
+        }
+        ExprSyntaxKind::MapType { key, value } | ExprSyntaxKind::KeyValue { key, value } => {
+            collect_all_expression_names(key, names);
+            collect_all_expression_names(value, names);
         }
         ExprSyntaxKind::CompositeLiteral { ty, elements } => {
             if let Some(ty) = ty {
