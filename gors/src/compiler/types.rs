@@ -122,6 +122,7 @@ pub enum ConstValue {
 pub enum StaticValue {
     Constant(ConstValue),
     Struct(Vec<StaticValue>),
+    Slice(Vec<StaticValue>),
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -154,6 +155,25 @@ impl Ty {
             }
             other => other,
         }
+    }
+
+    /// Canonical runtime identity for values stored behind a Go interface.
+    #[must_use]
+    pub fn dynamic_type_identity(&self) -> Option<Vec<u8>> {
+        let identity = match self {
+            Self::Bool => "builtin:bool".to_owned(),
+            Self::Int(IntTy::Int) => "builtin:int".to_owned(),
+            Self::String => "builtin:string".to_owned(),
+            Self::Named { definition, .. } => format!("named:{definition}"),
+            Self::LocalNamed { identity, .. } => format!("local-named:{identity}"),
+            Self::Pointer(element) => match element.as_ref() {
+                Self::Named { definition, .. } => format!("pointer:named:{definition}"),
+                Self::LocalNamed { identity, .. } => format!("pointer:local-named:{identity}"),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        Some(identity.into_bytes())
     }
 
     pub fn default_typed(&self) -> Ty {
@@ -222,7 +242,10 @@ impl Ty {
         if let Self::Slice(element) = self {
             return matches!(
                 element.underlying(),
-                Self::Bool | Self::Int(IntTy::Int | IntTy::Int32) | Self::Uint(UintTy::Uint8)
+                Self::Bool
+                    | Self::Int(IntTy::Int | IntTy::Int32)
+                    | Self::Uint(UintTy::Uint8)
+                    | Self::String
             ) || element.bootstrap_i64_struct_fields().is_some();
         }
         if let Self::Pointer(element) = self {
@@ -393,7 +416,10 @@ impl StaticValue {
                         .zip(fields)
                         .all(|(value, field)| value.is_representable_as(&field.ty))
             }
-            (Self::Struct(_), _) => false,
+            (Self::Slice(values), Ty::Slice(element)) => values
+                .iter()
+                .all(|value| value.is_representable_as(element)),
+            (Self::Struct(_) | Self::Slice(_), _) => false,
         }
     }
 }

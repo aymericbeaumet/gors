@@ -591,14 +591,17 @@ impl FunctionLowerer {
                     Ty::Slice(element) if element.underlying() == &Ty::Bool => {
                         (hir::Builtin::SliceBoolIndex, element.as_ref().clone())
                     }
-                    Ty::Slice(element) if element.bootstrap_i64_struct_fields().is_some() => {
+                    Ty::Slice(element)
+                        if matches!(element.underlying(), Ty::String)
+                            || element.bootstrap_i64_struct_fields().is_some() =>
+                    {
                         let element_ty = element.as_ref().clone();
-                        let type_identity = super::interfaces::dynamic_type_identity(&element_ty)
-                            .ok_or_else(|| {
-                            Diagnostic::backend(
-                                "aggregate slice element omitted its dynamic type identity",
-                            )
-                        })?;
+                        let type_identity =
+                            element_ty.dynamic_type_identity().ok_or_else(|| {
+                                Diagnostic::backend(
+                                    "aggregate slice element omitted its dynamic type identity",
+                                )
+                            })?;
                         let index = self.lower_expr(index, Some(&Ty::Int(IntTy::Int)))?;
                         let effects = slice_runtime_effects(&[&base, &index], false, false, true);
                         return Ok(hir::Expr {

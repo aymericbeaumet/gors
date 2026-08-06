@@ -2,7 +2,6 @@
 
 use super::FunctionLowerer;
 use super::expressions::expr_constant;
-use super::interfaces::dynamic_type_identity;
 use super::pointers::pointer_effects;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
@@ -93,7 +92,8 @@ impl FunctionLowerer {
             matches!(element_ty.underlying(), Ty::Int(IntTy::Int | IntTy::Int32));
         let byte_elements = element_ty.underlying() == &Ty::Uint(UintTy::Uint8);
         let boolean_elements = element_ty.underlying() == &Ty::Bool;
-        let aggregate_elements = element_ty.bootstrap_i64_struct_fields().is_some();
+        let aggregate_elements = matches!(element_ty.underlying(), Ty::String)
+            || element_ty.bootstrap_i64_struct_fields().is_some();
         if !integer_elements && !byte_elements && !boolean_elements && !aggregate_elements {
             return Err(Diagnostic::unsupported(
                 "slice literal element type has no executable representation",
@@ -105,7 +105,7 @@ impl FunctionLowerer {
                 .iter()
                 .map(|element| self.lower_expr(element, Some(element_ty)))
                 .collect::<Result<Vec<_>, _>>()?;
-            let type_identity = dynamic_type_identity(element_ty).ok_or_else(|| {
+            let type_identity = element_ty.dynamic_type_identity().ok_or_else(|| {
                 Diagnostic::backend("aggregate slice element omitted its dynamic type identity")
             })?;
             let effects = lowered_elements

@@ -315,7 +315,7 @@ impl FunctionLowerer {
                 source,
             )?,
             StmtSyntaxKind::Switch { init, tag, cases } => {
-                return self.lower_switch(stmt, init.as_deref(), tag.as_ref(), cases, source);
+                return self.lower_switch(stmt, init.as_deref(), tag.as_ref(), cases, None, source);
             }
             StmtSyntaxKind::TypeSwitch {
                 init,
@@ -349,6 +349,16 @@ impl FunctionLowerer {
                         format!("label {label} already defined"),
                         source,
                     ));
+                }
+                if let StmtSyntaxKind::Switch { init, tag, cases } = &statement.kind {
+                    return self.lower_switch(
+                        statement,
+                        init.as_deref(),
+                        tag.as_ref(),
+                        cases,
+                        Some(&label),
+                        source,
+                    );
                 }
                 hir::StmtKind::Label {
                     name: label,
@@ -408,6 +418,7 @@ impl FunctionLowerer {
         init: Option<&StmtSyntax>,
         tag: Option<&ExprSyntax>,
         cases: &[SwitchCaseSyntax],
+        redundant_break_label: Option<&str>,
         source: SourceRef,
     ) -> Result<Option<hir::Stmt>, Diagnostic> {
         self.push_scope();
@@ -443,7 +454,7 @@ impl FunctionLowerer {
 
         let mut default = None;
         let mut branches = Vec::new();
-        let mut bodies = self.lower_switch_case_bodies(cases, source)?;
+        let mut bodies = self.lower_switch_case_bodies(cases, redundant_break_label, source)?;
         for case in cases {
             let body = bodies.remove(0);
             if case.expressions.is_empty() {

@@ -753,6 +753,11 @@ fn encode_static_value(encoder: &mut Encoder, value: &crate::compiler::types::St
                 encoder.sequence(fields, encode_static_value);
             });
         }
+        crate::compiler::types::StaticValue::Slice(elements) => {
+            encoder.variant(b"slice", |encoder| {
+                encoder.sequence(elements, encode_static_value);
+            });
+        }
     }
 }
 

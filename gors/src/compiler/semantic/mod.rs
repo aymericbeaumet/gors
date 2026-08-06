@@ -164,12 +164,6 @@ pub(super) fn lower_signature(
         .map(|fields| field_types(fields, type_aliases, source))
         .transpose()?
         .unwrap_or_default();
-    if header.receiver.is_none() && header.name.name.as_ref() == "init" {
-        return Err(Diagnostic::unsupported(
-            "package init functions are not implemented by the HIR/MIR backend",
-            source,
-        ));
-    }
     if header.receiver.is_none()
         && header.name.name.as_ref() == "main"
         && (!params.is_empty() || !results.is_empty())
@@ -244,6 +238,8 @@ pub(super) fn lower_variable(
     syntax: &VariableSyntax,
     constants: &BTreeMap<String, ConstantSymbol>,
     type_aliases: &BTreeMap<String, Ty>,
+    static_functions: &BTreeMap<String, Arc<FunctionBodySyntax>>,
+    package_initializers: &[Arc<FunctionBodySyntax>],
 ) -> Result<TypedVariable, Diagnostic> {
     let source = SourceRef::definition(definition);
     let explicit_ty = syntax
@@ -251,10 +247,14 @@ pub(super) fn lower_variable(
         .as_ref()
         .map(|ty| lower_type(ty, type_aliases, source))
         .transpose()?;
-    let (raw_ty, value) = match &syntax.value {
-        VariableValueSyntax::Expression(expression) => {
-            static_values::evaluate_initializer(expression, constants, type_aliases, source)?
-        }
+    let (raw_ty, mut value) = match &syntax.value {
+        VariableValueSyntax::Expression(expression) => static_values::evaluate_initializer(
+            expression,
+            constants,
+            type_aliases,
+            static_functions,
+            source,
+        )?,
         VariableValueSyntax::Zero => {
             let ty = explicit_ty.clone().ok_or_else(|| {
                 Diagnostic::semantic(
@@ -290,6 +290,22 @@ pub(super) fn lower_variable(
             ),
             source,
         ));
+    }
+    static_values::apply_package_initializers(
+        syntax.name.name.as_ref(),
+        &ty,
+        &mut value,
+        package_initializers,
+        constants,
+        type_aliases,
+        static_functions,
+        source,
+    )?;
+    if !value.is_representable_as(&ty) {
+        return Err(Diagnostic::backend(format!(
+            "initialized package variable {} no longer matches {ty:?}",
+            syntax.name.name
+        )));
     }
     Ok(TypedVariable {
         id: definition,

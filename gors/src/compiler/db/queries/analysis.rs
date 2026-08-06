@@ -231,6 +231,10 @@ pub(in crate::compiler::db) fn package_analysis_product(
                 definitions_by_digest.insert(id, (key.clone(), file));
             }
 
+            if function.receiver_type(db).is_none() && name.as_ref() == "init" {
+                continue;
+            }
+
             if is_exported(&name) {
                 exported_signatures.push(signature_product(db, function).as_ref().clone());
             }

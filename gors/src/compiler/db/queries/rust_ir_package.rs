@@ -46,6 +46,9 @@ pub(in crate::compiler::db) fn rust_ir_package_product(
         projected.sort_by_key(|function| function.id(db));
         for function in projected {
             db.unwind_if_revision_cancelled();
+            if function.receiver_type(db).is_none() && function.name(db).as_ref() == "init" {
+                continue;
+            }
             if crate::compiler::syntax::function_is_generic(function.signature(db).structure()) {
                 continue;
             }

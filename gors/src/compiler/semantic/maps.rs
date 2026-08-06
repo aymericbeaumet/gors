@@ -3,7 +3,6 @@
 use super::FunctionLowerer;
 use super::channels::{channel_effects, int_channel_parts};
 use super::expressions::{coerce_expr, expr_constant};
-use super::interfaces::dynamic_type_identity;
 use super::lower_type;
 use super::pointers::{int_pointer_ty, pointer_effects};
 use crate::compiler::Diagnostic;
@@ -190,7 +189,7 @@ impl FunctionLowerer {
             entries.push((key, value));
         }
         let kind = if let Some(value_ty) = aggregate_value {
-            let type_identity = dynamic_type_identity(&value_ty).ok_or_else(|| {
+            let type_identity = value_ty.dynamic_type_identity().ok_or_else(|| {
                 Diagnostic::backend("aggregate map value omitted its dynamic type identity")
             })?;
             hir::ExprKind::AggregateMapLiteral {
@@ -227,7 +226,7 @@ impl FunctionLowerer {
             }
         };
         let aggregate_identity = (result_ty.bootstrap_i64_struct_fields().is_some())
-            .then(|| dynamic_type_identity(&result_ty))
+            .then(|| result_ty.dynamic_type_identity())
             .flatten();
         if result_ty.underlying() != &Ty::Int(IntTy::Int) && aggregate_identity.is_none() {
             return Err(Diagnostic::unsupported(
@@ -374,7 +373,10 @@ impl FunctionLowerer {
             Ty::Slice(element) if element.underlying() == &Ty::Uint(UintTy::Uint8) => {
                 hir::Builtin::SliceU8Len
             }
-            Ty::Slice(element) if element.bootstrap_i64_struct_fields().is_some() => {
+            Ty::Slice(element)
+                if matches!(element.underlying(), Ty::String)
+                    || element.bootstrap_i64_struct_fields().is_some() =>
+            {
                 hir::Builtin::AggregateSliceLen
             }
             Ty::String => hir::Builtin::StringLen,

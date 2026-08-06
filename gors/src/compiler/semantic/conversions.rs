@@ -89,6 +89,11 @@ impl FunctionLowerer {
                 effects,
                 source,
             }
+        } else if let hir::ExprKind::Constant(value) = &argument.kind
+            && value.is_representable_as(&target)
+        {
+            argument.ty = target;
+            argument
         } else if is_assignable(&argument.ty, &target) {
             coerce_expr(&mut argument, &target, source)?;
             argument

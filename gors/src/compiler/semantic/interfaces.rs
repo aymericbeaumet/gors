@@ -151,7 +151,7 @@ impl FunctionLowerer {
                 source,
             ));
         }
-        let type_identity = dynamic_type_identity(&asserted_ty).ok_or_else(|| {
+        let type_identity = asserted_ty.dynamic_type_identity().ok_or_else(|| {
             Diagnostic::unsupported(
                 format!("type assertions do not yet support {asserted_ty:?}"),
                 source,
@@ -314,7 +314,7 @@ impl FunctionLowerer {
                 source,
             ));
         }
-        let type_identity = dynamic_type_identity(&value.ty).ok_or_else(|| {
+        let type_identity = value.ty.dynamic_type_identity().ok_or_else(|| {
             Diagnostic::unsupported(
                 format!(
                     "interface values do not yet support dynamic type {:?}",
@@ -380,7 +380,7 @@ impl FunctionLowerer {
                 source,
             ));
         }
-        let type_identity = dynamic_type_identity(actual).ok_or_else(|| {
+        let type_identity = actual.dynamic_type_identity().ok_or_else(|| {
             Diagnostic::unsupported(
                 format!("interface values do not yet support dynamic type {actual:?}"),
                 source,
@@ -461,7 +461,7 @@ impl FunctionLowerer {
                 {
                     continue;
                 }
-                let Some(type_identity) = dynamic_type_identity(&dynamic_ty) else {
+                let Some(type_identity) = dynamic_ty.dynamic_type_identity() else {
                     continue;
                 };
                 candidates.insert(
@@ -524,23 +524,6 @@ fn receiver_definition(ty: &Ty) -> Option<(crate::compiler::ids::DefId, bool)> {
         },
         _ => None,
     }
-}
-
-pub(super) fn dynamic_type_identity(ty: &Ty) -> Option<Vec<u8>> {
-    let identity = match ty {
-        Ty::Bool => "builtin:bool".to_owned(),
-        Ty::Int(crate::compiler::types::IntTy::Int) => "builtin:int".to_owned(),
-        Ty::String => "builtin:string".to_owned(),
-        Ty::Named { definition, .. } => format!("named:{definition}"),
-        Ty::LocalNamed { identity, .. } => format!("local-named:{identity}"),
-        Ty::Pointer(element) => match element.as_ref() {
-            Ty::Named { definition, .. } => format!("pointer:named:{definition}"),
-            Ty::LocalNamed { identity, .. } => format!("pointer:local-named:{identity}"),
-            _ => return None,
-        },
-        _ => return None,
-    };
-    Some(identity.into_bytes())
 }
 
 fn supports_dynamic_interface_type(ty: &Ty) -> bool {

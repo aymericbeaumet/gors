@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use super::support::{check_semantic_barrier, semantic_build_dependency, semantic_failure};
 use super::{
-    Db, PackageInput, VariableProjection, package_constant_named_product,
+    Db, PackageInput, VariableProjection, file_projection, package_constant_named_product,
     package_type_aliases_product, package_variable_named_product, typed_constant_product,
 };
 use crate::compiler::Diagnostic;
@@ -53,11 +53,32 @@ pub(in crate::compiler::db) fn typed_variable_product(
     }
 
     let type_aliases = package_type_aliases_product(db, input)?;
+    let mut static_functions = BTreeMap::new();
+    let mut package_initializers = Vec::new();
+    let mut sources = input.sources(db).iter().copied().collect::<Vec<_>>();
+    sources.sort_by_key(|source| source.file(db));
+    for source in sources {
+        let mut functions = file_projection(db, source).functions(db);
+        functions.sort_by_key(|function| function.id(db));
+        for function in functions {
+            if function.receiver_type(db).is_some() {
+                continue;
+            }
+            let body = Arc::new(function.body(db).structure().clone());
+            if function.name(db).as_ref() == "init" {
+                package_initializers.push(body);
+            } else {
+                static_functions.insert(function.name(db).to_string(), body);
+            }
+        }
+    }
     super::super::super::semantic::lower_variable(
         definition,
         &variable.syntax(db),
         &constants,
         &type_aliases,
+        &static_functions,
+        &package_initializers,
     )
     .map(Arc::new)
     .map_err(|diagnostic| semantic_failure(definition, diagnostic))
