@@ -305,7 +305,7 @@ impl FunctionLowerer {
         }
     }
 
-    pub(super) fn try_lower_parallel_index_assignment(
+    pub(super) fn try_lower_parallel_dynamic_assignment(
         &mut self,
         left: &[ExprSyntax],
         token: Token,
@@ -317,7 +317,7 @@ impl FunctionLowerer {
             || left.len() != right.len()
             || !left
                 .iter()
-                .any(|expression| matches!(expression.kind, ExprSyntaxKind::Index { .. }))
+                .any(|expression| !matches!(expression.kind, ExprSyntaxKind::Ident(_)))
         {
             return None;
         }
@@ -463,6 +463,87 @@ impl FunctionLowerer {
                             ));
                         }
                     }
+                }
+                ExprSyntaxKind::Unary {
+                    token: Token::MUL,
+                    expression: pointer,
+                } => {
+                    let pointer = self.lower_expr(pointer, None)?;
+                    let Ty::Pointer(element) = pointer.ty.underlying() else {
+                        return Err(Diagnostic::semantic(
+                            "indirect assignment requires a pointer",
+                            source,
+                        ));
+                    };
+                    if element.underlying() != &Ty::Int(IntTy::Int) {
+                        return Err(Diagnostic::unsupported(
+                            "parallel pointer assignment currently supports *int",
+                            source,
+                        ));
+                    }
+                    let destination_ty = element.as_ref().clone();
+                    destinations.push(hir::AssignTarget::Pointer {
+                        pointer,
+                        set: hir::Builtin::PointerI64Set,
+                    });
+                    destination_types.push(Some(destination_ty));
+                }
+                ExprSyntaxKind::Selector { base, member } => {
+                    let node = self.alloc_node(expression.source)?;
+                    let target = self.lower_selector(base, member, node, source)?;
+                    let destination_ty = target.ty.clone();
+                    match target.kind {
+                        hir::ExprKind::StructField { structure, field } => {
+                            let hir::ExprKind::Local(structure) = structure.kind else {
+                                return Err(Diagnostic::unsupported(
+                                    "parallel struct field assignment currently requires a local struct",
+                                    source,
+                                ));
+                            };
+                            destinations.push(hir::AssignTarget::StructField { structure, field });
+                        }
+                        hir::ExprKind::Call {
+                            callee: hir::Callee::Builtin(hir::Builtin::PointerStructI64Get),
+                            args,
+                        } => {
+                            let mut args = args.into_iter();
+                            let pointer = args.next().ok_or_else(|| {
+                                Diagnostic::backend("pointer field selector omitted its receiver")
+                            })?;
+                            let index = args.next().ok_or_else(|| {
+                                Diagnostic::backend(
+                                    "pointer field selector omitted its field index",
+                                )
+                            })?;
+                            if args.next().is_some() {
+                                return Err(Diagnostic::backend(
+                                    "pointer field selector has excess operands",
+                                ));
+                            }
+                            let hir::ExprKind::Constant(crate::compiler::types::ConstValue::Int(
+                                index,
+                            )) = index.kind
+                            else {
+                                return Err(Diagnostic::backend(
+                                    "pointer field selector has a dynamic field index",
+                                ));
+                            };
+                            let field = index.parse::<u32>().map_err(|_| {
+                                Diagnostic::backend("pointer field selector index does not fit u32")
+                            })?;
+                            destinations.push(hir::AssignTarget::PointerStructField {
+                                pointer,
+                                field,
+                                set: hir::Builtin::PointerStructI64Set,
+                            });
+                        }
+                        _ => {
+                            return Err(Diagnostic::backend(
+                                "struct selector assignment did not lower to a field",
+                            ));
+                        }
+                    }
+                    destination_types.push(Some(destination_ty));
                 }
                 _ => {
                     return Err(Diagnostic::unsupported(

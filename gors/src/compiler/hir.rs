@@ -193,6 +193,19 @@ pub enum AssignTarget {
         map: Expr,
         key: Expr,
     },
+    Pointer {
+        pointer: Expr,
+        set: Builtin,
+    },
+    StructField {
+        structure: LocalId,
+        field: u32,
+    },
+    PointerStructField {
+        pointer: Expr,
+        field: u32,
+        set: Builtin,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

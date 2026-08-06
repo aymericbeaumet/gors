@@ -1,8 +1,9 @@
 //! Explicit two-phase lowering for assignments with dynamic destinations.
 
-use super::super::construct::{call_effects, make_terminator};
-use super::super::{Operand, Place, Provenance, TerminatorKind};
+use super::super::construct::{call_effects, make_rvalue, make_statement, make_terminator};
+use super::super::{Operand, Place, Provenance, RvalueKind, TerminatorKind};
 use super::FunctionLowerer;
+use super::pointers::int_constant_operand;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::LocalId;
@@ -20,6 +21,19 @@ enum PreparedTarget {
     MapIndex {
         map: Operand,
         key: Operand,
+    },
+    Pointer {
+        pointer: Operand,
+        set: hir::Builtin,
+    },
+    StructField {
+        structure: LocalId,
+        field: u32,
+    },
+    PointerStructField {
+        pointer: Operand,
+        field: u32,
+        set: hir::Builtin,
     },
 }
 
@@ -135,6 +149,41 @@ impl FunctionLowerer {
                         key: key_operand,
                     }
                 }
+                hir::AssignTarget::Pointer { pointer, set } => {
+                    let pointer_operand = self.lower_expr(pointer)?;
+                    let pointer_operand = self.materialize(
+                        pointer_operand,
+                        pointer.ty.clone(),
+                        Provenance::Source(pointer.source),
+                    )?;
+                    PreparedTarget::Pointer {
+                        pointer: pointer_operand,
+                        set: *set,
+                    }
+                }
+                hir::AssignTarget::StructField { structure, field } => {
+                    PreparedTarget::StructField {
+                        structure: *structure,
+                        field: *field,
+                    }
+                }
+                hir::AssignTarget::PointerStructField {
+                    pointer,
+                    field,
+                    set,
+                } => {
+                    let pointer_operand = self.lower_expr(pointer)?;
+                    let pointer_operand = self.materialize(
+                        pointer_operand,
+                        pointer.ty.clone(),
+                        Provenance::Source(pointer.source),
+                    )?;
+                    PreparedTarget::PointerStructField {
+                        pointer: pointer_operand,
+                        field: *field,
+                        set: *set,
+                    }
+                }
             });
         }
         Ok(prepared)
@@ -181,6 +230,50 @@ impl FunctionLowerer {
                         vec![map, key, operand],
                         Vec::new(),
                         source,
+                    )?;
+                }
+                PreparedTarget::Pointer { pointer, set } => {
+                    self.emit_pointer_call(
+                        set,
+                        vec![pointer, operand],
+                        Vec::new(),
+                        Provenance::Source(source),
+                    )?;
+                }
+                PreparedTarget::StructField { structure, field } => {
+                    let structure_ty = self.local_ty(structure)?.clone();
+                    let structure_operand = self.read_semantic_local(structure, source)?;
+                    let structure_operand = self.materialize(
+                        structure_operand,
+                        structure_ty.clone(),
+                        Provenance::Source(source),
+                    )?;
+                    let result = Place {
+                        local: self.new_temp(structure_ty),
+                    };
+                    let provenance = Provenance::Source(source);
+                    let updated = make_rvalue(
+                        RvalueKind::StructSet {
+                            structure: structure_operand,
+                            field,
+                            value: operand,
+                        },
+                        hir::Effects::default(),
+                        provenance.clone(),
+                    );
+                    self.push_statement(make_statement(result, updated, provenance.clone()))?;
+                    self.write_semantic_local(structure, Operand::Read(result), provenance, false)?;
+                }
+                PreparedTarget::PointerStructField {
+                    pointer,
+                    field,
+                    set,
+                } => {
+                    self.emit_pointer_call(
+                        set,
+                        vec![pointer, int_constant_operand(field as usize), operand],
+                        Vec::new(),
+                        Provenance::Source(source),
                     )?;
                 }
             }

@@ -145,7 +145,13 @@ fn collect_assignment_target_callees(
                 collect_expression_callees(map, callees);
                 collect_expression_callees(key, callees);
             }
-            hir::AssignTarget::Local(_) | hir::AssignTarget::Discard => {}
+            hir::AssignTarget::Pointer { pointer, .. }
+            | hir::AssignTarget::PointerStructField { pointer, .. } => {
+                collect_expression_callees(pointer, callees);
+            }
+            hir::AssignTarget::Local(_)
+            | hir::AssignTarget::Discard
+            | hir::AssignTarget::StructField { .. } => {}
         }
     }
 }

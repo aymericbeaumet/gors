@@ -545,7 +545,13 @@ fn collect_statement_addresses(statement: &hir::Stmt, addressed: &mut BTreeSet<L
                         collect_expr_addresses(map, addressed);
                         collect_expr_addresses(key, addressed);
                     }
-                    hir::AssignTarget::Local(_) | hir::AssignTarget::Discard => {}
+                    hir::AssignTarget::Pointer { pointer, .. }
+                    | hir::AssignTarget::PointerStructField { pointer, .. } => {
+                        collect_expr_addresses(pointer, addressed);
+                    }
+                    hir::AssignTarget::Local(_)
+                    | hir::AssignTarget::Discard
+                    | hir::AssignTarget::StructField { .. } => {}
                 }
             }
             collect_expr_addresses(value, addressed);
@@ -564,7 +570,13 @@ fn collect_statement_addresses(statement: &hir::Stmt, addressed: &mut BTreeSet<L
                         collect_expr_addresses(map, addressed);
                         collect_expr_addresses(key, addressed);
                     }
-                    hir::AssignTarget::Local(_) | hir::AssignTarget::Discard => {}
+                    hir::AssignTarget::Pointer { pointer, .. }
+                    | hir::AssignTarget::PointerStructField { pointer, .. } => {
+                        collect_expr_addresses(pointer, addressed);
+                    }
+                    hir::AssignTarget::Local(_)
+                    | hir::AssignTarget::Discard
+                    | hir::AssignTarget::StructField { .. } => {}
                 }
             }
             collect_expression_addresses(values, addressed);

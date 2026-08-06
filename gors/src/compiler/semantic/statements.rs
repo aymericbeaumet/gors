@@ -648,7 +648,7 @@ impl FunctionLowerer {
             return binding;
         }
         if let Some(assignment) =
-            self.try_lower_parallel_index_assignment(left, token, right, source)
+            self.try_lower_parallel_dynamic_assignment(left, token, right, source)
         {
             return assignment;
         }
@@ -704,7 +704,7 @@ impl FunctionLowerer {
                 if token == Token::ASSIGN
                     && left
                         .iter()
-                        .any(|expression| matches!(expression.kind, ExprSyntaxKind::Index { .. }))
+                        .any(|expression| !matches!(expression.kind, ExprSyntaxKind::Ident(_)))
                 {
                     return self.lower_parallel_tuple_assignment(left, value, source);
                 }

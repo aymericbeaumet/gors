@@ -412,6 +412,27 @@ fn encode_assignment_target(encoder: &mut Encoder, target: &hir::AssignTarget) {
                 encoder.field(b"key", |encoder| encode_expression(encoder, key));
             });
         }
+        hir::AssignTarget::Pointer { pointer, set } => {
+            encoder.variant(b"pointer", |encoder| {
+                encoder.field(b"pointer", |encoder| encode_expression(encoder, pointer));
+                encoder.field(b"set", |encoder| encode_builtin(encoder, *set));
+            });
+        }
+        hir::AssignTarget::StructField { structure, field } => {
+            encoder.variant(b"struct-field", |encoder| {
+                encoder.field(b"structure", |encoder| local_id(encoder, *structure));
+                encoder.field(b"field", |encoder| encoder.u32(*field));
+            });
+        }
+        hir::AssignTarget::PointerStructField {
+            pointer,
+            field,
+            set,
+        } => encoder.variant(b"pointer-struct-field", |encoder| {
+            encoder.field(b"pointer", |encoder| encode_expression(encoder, pointer));
+            encoder.field(b"field", |encoder| encoder.u32(*field));
+            encoder.field(b"set", |encoder| encode_builtin(encoder, *set));
+        }),
     }
 }
 
