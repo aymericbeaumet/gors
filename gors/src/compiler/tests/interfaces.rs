@@ -101,3 +101,25 @@ fn interface_method_calls_dispatch_to_value_and_pointer_receivers() {
         run.rust
     );
 }
+
+#[test]
+fn multi_result_assignments_box_interface_destinations_before_writes() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            func pair() (int, int) { return 7, 8 }
+
+            func main() {
+                var boxed any
+                number := 0
+                boxed, number = pair()
+                println(boxed != nil)
+                println(number)
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"true\n8\n");
+    assert!(run.rust.contains("go_interface_box_i64"), "{}", run.rust);
+}

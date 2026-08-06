@@ -86,6 +86,7 @@ pub enum StmtKind {
     LetTuple {
         destinations: Vec<Place>,
         value: Expr,
+        coercions: Vec<ValueCoercion>,
     },
     Assign {
         destinations: Vec<Place>,
@@ -95,6 +96,7 @@ pub enum StmtKind {
     AssignTuple {
         destinations: Vec<Place>,
         value: Expr,
+        coercions: Vec<ValueCoercion>,
     },
     /// Dynamic left-hand-side operands are evaluated before all right-hand
     /// sides, then destinations are written from left to right.
@@ -161,6 +163,13 @@ pub enum StmtKind {
         key: Expr,
         value: Expr,
     },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ValueCoercion {
+    Identity,
+    Representation { target: Ty },
+    Interface { target: Ty, type_identity: Vec<u8> },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

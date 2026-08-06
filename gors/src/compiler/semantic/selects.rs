@@ -187,6 +187,7 @@ impl FunctionLowerer {
                     hir::Place::Local(status_local),
                 ],
                 value: receive,
+                coercions: vec![hir::ValueCoercion::Identity, hir::ValueCoercion::Identity],
             },
             source: SourceRef::node(init_node),
         };
@@ -238,7 +239,7 @@ impl FunctionLowerer {
         if left.len() == 2 {
             component_types.push(Ty::Bool);
         }
-        let (destinations, declares) =
+        let (destinations, coercions, declares) =
             self.lower_multi_result_destinations(left, token, &component_types, source)?;
         let value_node = self.alloc_node(syntax_source)?;
         let mut values = vec![self.local_expr(value_node, value_local, element_ty)];
@@ -250,6 +251,13 @@ impl FunctionLowerer {
                 syntax_source,
             )?);
         }
+        let values = values
+            .into_iter()
+            .zip(&coercions)
+            .map(|(value, coercion)| {
+                self.apply_assignment_value_coercion(value, coercion, syntax_source)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(hir::Stmt {
             node,
             kind: if declares {

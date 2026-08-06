@@ -108,22 +108,44 @@ impl FunctionLowerer {
             value.ty.clone(),
             Provenance::Source(value.source),
         )?;
+        self.box_interface_operand(
+            value_operand,
+            &value.ty,
+            type_identity,
+            interface_ty,
+            source,
+        )
+    }
+
+    pub(super) fn box_interface_operand(
+        &mut self,
+        value_operand: Operand,
+        value_ty: &Ty,
+        type_identity: &[u8],
+        interface_ty: &Ty,
+        source: SourceRef,
+    ) -> Result<Operand, Diagnostic> {
+        if !matches!(interface_ty.underlying(), Ty::Interface(_)) {
+            return Err(Diagnostic::backend(
+                "interface boxing has a non-interface result type",
+            ));
+        }
         let identity = Operand::Constant(ConstValue::String(type_identity.to_vec()), Ty::String);
-        let (builtin, payload) = match value.ty.underlying() {
+        let (builtin, payload) = match value_ty.underlying() {
             Ty::Bool => (hir::Builtin::InterfaceBoxBool, value_operand),
             Ty::Int(IntTy::Int) => (hir::Builtin::InterfaceBoxI64, value_operand),
             Ty::String => (hir::Builtin::InterfaceBoxGoString, value_operand),
-            Ty::Struct(_) if value.ty.bootstrap_i64_struct_fields().is_some() => (
+            Ty::Struct(_) if value_ty.bootstrap_i64_struct_fields().is_some() => (
                 hir::Builtin::InterfaceBoxStructI64,
-                self.snapshot_interface_struct(value_operand, &value.ty, source)?,
+                self.snapshot_interface_struct(value_operand, value_ty, source)?,
             ),
-            Ty::Pointer(_) if value.ty.bootstrap_i64_struct_pointer_fields().is_some() => {
+            Ty::Pointer(_) if value_ty.bootstrap_i64_struct_pointer_fields().is_some() => {
                 (hir::Builtin::InterfaceBoxPointerStructI64, value_operand)
             }
             _ => {
                 return Err(Diagnostic::backend(format!(
                     "unsupported interface dynamic value type {:?}",
-                    value.ty
+                    value_ty
                 )));
             }
         };

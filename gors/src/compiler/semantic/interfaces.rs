@@ -8,7 +8,9 @@ use crate::compiler::syntax::{ExprSyntax, SyntaxSource};
 use crate::compiler::types::{InterfaceMethod, Signature, Ty};
 
 use super::FunctionLowerer;
-use super::expressions::{default_expr_type, ensure_bootstrap_value_type};
+use super::expressions::{
+    coerce_expr, default_expr_type, ensure_bootstrap_value_type, is_assignable,
+};
 
 pub(super) fn error_interface_ty() -> Ty {
     Ty::Interface(vec![InterfaceMethod {
@@ -203,6 +205,75 @@ impl FunctionLowerer {
             effects,
             source: SourceRef::node(node),
         })
+    }
+
+    pub(super) fn assignment_value_coercion(
+        &self,
+        actual: &Ty,
+        expected: &Ty,
+        source: SourceRef,
+    ) -> Result<hir::ValueCoercion, Diagnostic> {
+        if actual == expected {
+            return Ok(hir::ValueCoercion::Identity);
+        }
+        let Ty::Interface(expected_methods) = expected.underlying() else {
+            if is_assignable(actual, expected) {
+                return Ok(hir::ValueCoercion::Representation {
+                    target: expected.clone(),
+                });
+            }
+            return Err(Diagnostic::semantic(
+                format!("type {actual:?} is not assignable to {expected:?}"),
+                source,
+            ));
+        };
+        if let Ty::Interface(actual_methods) = actual.underlying() {
+            if !interface_contains(actual_methods, expected_methods) {
+                return Err(Diagnostic::semantic(
+                    format!("type {actual:?} is not assignable to {expected:?}"),
+                    source,
+                ));
+            }
+            return Ok(hir::ValueCoercion::Representation {
+                target: expected.clone(),
+            });
+        }
+        ensure_bootstrap_value_type(actual, source)?;
+        if !self.concrete_implements(actual, expected_methods) {
+            return Err(Diagnostic::semantic(
+                format!("type {actual:?} does not implement {expected:?}"),
+                source,
+            ));
+        }
+        let type_identity = dynamic_type_identity(actual).ok_or_else(|| {
+            Diagnostic::unsupported(
+                format!("interface values do not yet support dynamic type {actual:?}"),
+                source,
+            )
+        })?;
+        Ok(hir::ValueCoercion::Interface {
+            target: expected.clone(),
+            type_identity,
+        })
+    }
+
+    pub(super) fn apply_assignment_value_coercion(
+        &mut self,
+        mut value: hir::Expr,
+        coercion: &hir::ValueCoercion,
+        syntax_source: SyntaxSource,
+    ) -> Result<hir::Expr, Diagnostic> {
+        match coercion {
+            hir::ValueCoercion::Identity => Ok(value),
+            hir::ValueCoercion::Representation { target } => {
+                let source = value.source;
+                coerce_expr(&mut value, target, source)?;
+                Ok(value)
+            }
+            hir::ValueCoercion::Interface { target, .. } => {
+                self.coerce_interface_value(value, target, syntax_source)
+            }
+        }
     }
 
     pub(super) fn concrete_implements(&self, concrete: &Ty, required: &[InterfaceMethod]) -> bool {

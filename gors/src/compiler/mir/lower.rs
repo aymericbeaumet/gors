@@ -351,11 +351,13 @@ impl FunctionLowerer {
             hir::StmtKind::LetTuple {
                 destinations,
                 value,
-            } => self.lower_tuple_assignment(destinations, value, true)?,
+                coercions,
+            } => self.lower_tuple_assignment(destinations, value, coercions, true)?,
             hir::StmtKind::AssignTuple {
                 destinations,
                 value,
-            } => self.lower_tuple_assignment(destinations, value, false)?,
+                coercions,
+            } => self.lower_tuple_assignment(destinations, value, coercions, false)?,
             hir::StmtKind::ParallelAssign {
                 destinations,
                 values,

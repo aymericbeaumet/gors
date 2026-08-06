@@ -374,6 +374,7 @@ impl FunctionLowerer {
         &mut self,
         destinations: &[hir::Place],
         value: &hir::Expr,
+        coercions: &[hir::ValueCoercion],
         initialize: bool,
     ) -> Result<(), Diagnostic> {
         let Ty::Tuple(component_types) = &value.ty else {
@@ -386,6 +387,11 @@ impl FunctionLowerer {
                 "multi-result HIR assignment arity changed before MIR lowering",
             ));
         }
+        if coercions.len() != component_types.len() {
+            return Err(Diagnostic::backend(
+                "multi-result HIR assignment coercion arity changed before MIR lowering",
+            ));
+        }
         let temporary_results = component_types
             .iter()
             .map(|ty| Place {
@@ -393,17 +399,63 @@ impl FunctionLowerer {
             })
             .collect::<Vec<_>>();
         self.lower_call_into(value, temporary_results.clone())?;
-        for (destination, result) in destinations.iter().zip(temporary_results) {
+        let mut assigned_operands = Vec::with_capacity(temporary_results.len());
+        for ((result, source_ty), coercion) in temporary_results
+            .into_iter()
+            .zip(component_types)
+            .zip(coercions)
+        {
+            assigned_operands.push(self.lower_value_coercion(
+                Operand::Read(result),
+                source_ty,
+                coercion,
+                value.source,
+            )?);
+        }
+        for (destination, operand) in destinations.iter().zip(assigned_operands) {
             if let hir::Place::Local(local) = destination {
                 self.write_semantic_local(
                     *local,
-                    Operand::Read(result),
+                    operand,
                     Provenance::Source(value.source),
                     initialize,
                 )?;
             }
         }
         Ok(())
+    }
+
+    fn lower_value_coercion(
+        &mut self,
+        operand: Operand,
+        source_ty: &Ty,
+        coercion: &hir::ValueCoercion,
+        source: SourceRef,
+    ) -> Result<Operand, Diagnostic> {
+        match coercion {
+            hir::ValueCoercion::Identity => Ok(operand),
+            hir::ValueCoercion::Representation { target } => {
+                let result = Place {
+                    local: self.new_temp(target.clone()),
+                };
+                let provenance = Provenance::Source(source);
+                let value = make_rvalue(
+                    RvalueKind::Conversion {
+                        operand,
+                        from: source_ty.clone(),
+                        ty: target.clone(),
+                    },
+                    hir::Effects::default(),
+                    provenance.clone(),
+                );
+                self.push_statement(make_statement(result, value, provenance))?;
+                Ok(Operand::Read(result))
+            }
+            hir::ValueCoercion::Interface {
+                target,
+                type_identity,
+            } => self.box_interface_operand(operand, source_ty, type_identity, target, source),
+        }
     }
 
     pub(super) fn lower_compound_local_assignment(

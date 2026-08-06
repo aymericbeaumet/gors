@@ -1,7 +1,9 @@
 //! Typed preparation of assignments with dynamic left-hand-side operands.
 
+use std::collections::BTreeSet;
+
 use super::FunctionLowerer;
-use super::expressions::{default_expr_type, is_assignable};
+use super::expressions::{default_expr_type, ensure_bootstrap_value_type, is_assignable};
 use super::maps::string_i64_map_ty;
 use super::statements::assignment_op;
 use crate::compiler::Diagnostic;
@@ -12,6 +14,116 @@ use crate::compiler::types::{IntTy, Ty};
 use crate::token::Token;
 
 impl FunctionLowerer {
+    pub(super) fn lower_multi_result_destinations(
+        &mut self,
+        left: &[ExprSyntax],
+        token: Token,
+        component_types: &[Ty],
+        source: SourceRef,
+    ) -> Result<(Vec<hir::Place>, Vec<hir::ValueCoercion>, bool), Diagnostic> {
+        if component_types.len() != left.len() {
+            return Err(Diagnostic::semantic(
+                format!(
+                    "assignment has {} destinations and {} result values",
+                    left.len(),
+                    component_types.len()
+                ),
+                source,
+            ));
+        }
+        if token == Token::DEFINE {
+            let mut names = BTreeSet::new();
+            let mut destinations = Vec::with_capacity(left.len());
+            let mut coercions = Vec::with_capacity(left.len());
+            let mut introduced = false;
+            for ((expression, ty), index) in left
+                .iter()
+                .zip(component_types)
+                .zip(0..component_types.len())
+            {
+                let ExprSyntaxKind::Ident(name) = &expression.kind else {
+                    return Err(Diagnostic::semantic(
+                        "short declaration target must be an identifier",
+                        source,
+                    ));
+                };
+                if name.name.as_ref() != "_" && !names.insert(name.name.as_ref()) {
+                    return Err(Diagnostic::semantic(
+                        format!("{} appears more than once on the left of :=", name.name),
+                        source,
+                    ));
+                }
+                if name.name.as_ref() == "_" {
+                    destinations.push(hir::Place::Discard);
+                    coercions.push(hir::ValueCoercion::Identity);
+                } else if let Some(local) = self.lookup_current_local(&name.name) {
+                    let destination_ty = self.place_ty(hir::Place::Local(local))?;
+                    let coercion = self
+                        .assignment_value_coercion(ty, destination_ty, source)
+                        .map_err(|_| {
+                            Diagnostic::semantic(
+                                format!(
+                                    "result {index} of type {ty:?} is not assignable to {destination_ty:?}"
+                                ),
+                                source,
+                            )
+                        })?;
+                    destinations.push(hir::Place::Local(local));
+                    coercions.push(coercion);
+                } else {
+                    introduced = true;
+                    ensure_bootstrap_value_type(ty, source)?;
+                    let local = self.alloc_local(
+                        Some(name.name.to_string()),
+                        ty.clone(),
+                        hir::LocalKind::Variable,
+                        name.source,
+                    )?;
+                    destinations.push(hir::Place::Local(local));
+                    coercions.push(hir::ValueCoercion::Identity);
+                }
+            }
+            if !introduced {
+                return Err(Diagnostic::semantic(
+                    "short declaration introduces no new variables",
+                    source,
+                ));
+            }
+            return Ok((destinations, coercions, true));
+        }
+        if token != Token::ASSIGN {
+            return Err(Diagnostic::semantic(
+                "multi-result assignment requires = or :=",
+                source,
+            ));
+        }
+        let destinations = left
+            .iter()
+            .map(|expression| self.lower_place(expression, source))
+            .collect::<Result<Vec<_>, _>>()?;
+        let coercions = destinations
+            .iter()
+            .zip(component_types)
+            .enumerate()
+            .map(|(index, (destination, result_ty))| match destination {
+                hir::Place::Discard => Ok(hir::ValueCoercion::Identity),
+                hir::Place::Local(_) => {
+                    let destination_ty = self.place_ty(*destination)?;
+                    self.assignment_value_coercion(result_ty, destination_ty, source)
+                        .map_err(|_| {
+                            Diagnostic::semantic(
+                                format!(
+                                    "result {index} of type {result_ty:?} is not assignable to {destination_ty:?}"
+                                ),
+                                source,
+                            )
+                        })
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((destinations, coercions, false))
+    }
+
     pub(super) fn try_lower_single_struct_field_assignment(
         &mut self,
         left: &[ExprSyntax],

@@ -145,11 +145,15 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
         hir::StmtKind::LetTuple {
             destinations,
             value,
+            coercions,
         } => encoder.variant(b"let-tuple", |encoder| {
             encoder.field(b"destinations", |encoder| {
                 encoder.sequence(destinations, |encoder, place| encode_place(encoder, *place));
             });
             encoder.field(b"value", |encoder| encode_expression(encoder, value));
+            encoder.field(b"coercions", |encoder| {
+                encoder.sequence(coercions, encode_value_coercion);
+            });
         }),
         hir::StmtKind::Assign {
             destinations,
@@ -169,11 +173,15 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
         hir::StmtKind::AssignTuple {
             destinations,
             value,
+            coercions,
         } => encoder.variant(b"assign-tuple", |encoder| {
             encoder.field(b"destinations", |encoder| {
                 encoder.sequence(destinations, |encoder, place| encode_place(encoder, *place));
             });
             encoder.field(b"value", |encoder| encode_expression(encoder, value));
+            encoder.field(b"coercions", |encoder| {
+                encoder.sequence(coercions, encode_value_coercion);
+            });
         }),
         hir::StmtKind::ParallelAssign {
             destinations,
@@ -351,6 +359,22 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
                 encoder.field(b"value", |encoder| encode_expression(encoder, value));
             });
         }
+    }
+}
+
+fn encode_value_coercion(encoder: &mut Encoder, coercion: &hir::ValueCoercion) {
+    match coercion {
+        hir::ValueCoercion::Identity => encoder.variant(b"identity", |_| {}),
+        hir::ValueCoercion::Representation { target } => {
+            encoder.variant(b"representation", |encoder| ty(encoder, target));
+        }
+        hir::ValueCoercion::Interface {
+            target,
+            type_identity,
+        } => encoder.variant(b"interface", |encoder| {
+            encoder.field(b"target", |encoder| ty(encoder, target));
+            encoder.field(b"type-identity", |encoder| encoder.blob(type_identity));
+        }),
     }
 }
 
