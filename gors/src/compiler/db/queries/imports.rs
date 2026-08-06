@@ -5,16 +5,17 @@ use std::sync::Arc;
 
 use super::support::{PackageReferences, function_source, semantic_failure};
 use super::{
-    Db, FunctionProjection, PackageInput, package_constant_named_product,
-    package_function_named_product, package_function_product, typed_constant_product,
-    typed_signature_product,
+    Db, FunctionProjection, PackageInput, file_projection, package_constant_named_product,
+    package_function_named_product, package_function_product, package_type_aliases_product,
+    typed_constant_product, typed_signature_product,
 };
 use crate::compiler::Diagnostic;
 use crate::compiler::db::ResolvedImportBinding;
 use crate::compiler::db::products::StageFailure;
 use crate::compiler::ids::{PackageId, QualifiedDefId};
 use crate::compiler::provenance::SourceRef;
-use crate::compiler::semantic::{ConstantSymbol, FunctionSymbol, FunctionSymbols};
+use crate::compiler::semantic::{ConstantSymbol, FunctionSymbol, FunctionSymbols, MethodSymbol};
+use crate::compiler::types::Ty;
 
 pub(super) fn function_dependency<'db>(
     db: &'db dyn Db,
@@ -48,6 +49,7 @@ pub(super) fn function_symbols(
     let mut symbols = FunctionSymbols {
         functions: BTreeMap::new(),
         qualified_functions: BTreeMap::new(),
+        methods: BTreeMap::new(),
         constants: BTreeMap::new(),
         qualified_constants: BTreeMap::new(),
     };
@@ -59,6 +61,13 @@ pub(super) fn function_symbols(
         definition,
         &mut symbols,
         false,
+    )?;
+    add_method_symbols(
+        db,
+        input,
+        &references.method_names,
+        definition,
+        &mut symbols,
     )?;
 
     let source = function_source(db, input, function)?;
@@ -133,6 +142,59 @@ pub(super) fn function_symbols(
     }
 
     Ok(symbols)
+}
+
+fn add_method_symbols(
+    db: &dyn Db,
+    input: PackageInput,
+    names: &BTreeSet<Arc<str>>,
+    caller: crate::compiler::ids::DefId,
+    symbols: &mut FunctionSymbols,
+) -> Result<(), Arc<StageFailure>> {
+    if names.is_empty() {
+        return Ok(());
+    }
+    let types = package_type_aliases_product(db, input)?;
+    let mut sources = input.sources(db).iter().copied().collect::<Vec<_>>();
+    sources.sort_by_key(|source| source.file(db));
+    for source in sources {
+        for method in file_projection(db, source).functions(db) {
+            let name = method.name(db);
+            let Some(receiver) = method.receiver_type(db) else {
+                continue;
+            };
+            if !names.contains(&name) {
+                continue;
+            }
+            let Some(Ty::Named { definition, .. }) = types.get(receiver.as_ref()) else {
+                return Err(semantic_failure(
+                    caller,
+                    Diagnostic::semantic(
+                        format!("method receiver type {receiver} is not a defined type"),
+                        SourceRef::definition(caller),
+                    ),
+                ));
+            };
+            let signature = typed_signature_product(db, input, method)?;
+            let key = (*definition, name.to_string());
+            let symbol = MethodSymbol {
+                id: QualifiedDefId::new(input.package(db), method.id(db)),
+                signature: signature.signature().clone(),
+                pointer_receiver: method.pointer_receiver(db),
+            };
+            if symbols
+                .methods
+                .insert(key, symbol.clone())
+                .is_some_and(|previous| previous.id != symbol.id)
+            {
+                return Err(semantic_failure(
+                    caller,
+                    Diagnostic::backend("ambiguous receiver-qualified method identity"),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -1,7 +1,7 @@
 //! Exact struct literal and direct-field expression lowering.
 
 use super::FunctionLowerer;
-use super::expressions::ensure_bootstrap_value_type;
+use super::expressions::{coerce_expr, ensure_bootstrap_value_type};
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::NodeId;
@@ -10,6 +10,129 @@ use crate::compiler::syntax::{ExprSyntax, ExprSyntaxKind, IdentSyntax, SyntaxSou
 use crate::compiler::types::{StructField, Ty};
 
 impl FunctionLowerer {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn lower_selector_call(
+        &mut self,
+        base: &ExprSyntax,
+        member: &IdentSyntax,
+        arguments: &[ExprSyntax],
+        spread: bool,
+        node: NodeId,
+        source: SourceRef,
+        expected: Option<&Ty>,
+        allow_discarded_call_result: bool,
+    ) -> Result<hir::Expr, Diagnostic> {
+        if let ExprSyntaxKind::Ident(package) = &base.kind
+            && self.lookup_local(&package.name).is_none()
+        {
+            return self.lower_imported_selector_call(
+                base,
+                member,
+                arguments,
+                spread,
+                node,
+                source,
+                expected,
+                allow_discarded_call_result,
+            );
+        }
+        let mut receiver = self.lower_expr(base, None)?;
+        let definition = named_receiver_definition(&receiver.ty).ok_or_else(|| {
+            Diagnostic::semantic(
+                format!("type {:?} has no method {}", receiver.ty, member.name),
+                source,
+            )
+        })?;
+        let symbol = self
+            .methods
+            .get(&(definition, member.name.to_string()))
+            .cloned()
+            .ok_or_else(|| {
+                Diagnostic::semantic(
+                    format!("type {:?} has no method {}", receiver.ty, member.name),
+                    source,
+                )
+            })?;
+        if symbol.pointer_receiver {
+            return Err(Diagnostic::unsupported(
+                "pointer-receiver method calls are not yet represented",
+                source,
+            ));
+        }
+        let Some((receiver_ty, params)) = symbol.signature.params.split_first() else {
+            return Err(Diagnostic::backend("method signature omitted its receiver"));
+        };
+        if spread && !symbol.signature.variadic {
+            return Err(Diagnostic::semantic(
+                "... is only valid when calling a variadic method",
+                source,
+            ));
+        }
+        if symbol.signature.variadic && !spread {
+            return Err(Diagnostic::unsupported(
+                "individual variadic arguments require slice-pack lowering",
+                source,
+            ));
+        }
+        if arguments.len() != params.len() {
+            return Err(Diagnostic::semantic(
+                format!(
+                    "method call has {} arguments; expected {}",
+                    arguments.len(),
+                    params.len()
+                ),
+                source,
+            ));
+        }
+        coerce_expr(&mut receiver, receiver_ty, source)?;
+        let mut args = Vec::with_capacity(arguments.len().saturating_add(1));
+        args.push(receiver);
+        args.extend(
+            arguments
+                .iter()
+                .zip(params)
+                .map(|(argument, expected)| self.lower_expr(argument, Some(expected)))
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+        let ty = match symbol.signature.results.as_slice() {
+            [] => Ty::Unit,
+            [single] => single.clone(),
+            many => Ty::Tuple(many.to_vec()),
+        };
+        if ty == Ty::Unit && !allow_discarded_call_result {
+            return Err(Diagnostic::unsupported(
+                "a no-result method call cannot be used as a value",
+                source,
+            ));
+        }
+        let effects = args.iter().fold(
+            hir::Effects {
+                may_call: true,
+                may_allocate: true,
+                may_block: true,
+                may_panic: true,
+                may_write: true,
+                ..hir::Effects::default()
+            },
+            |effects, argument| effects.union(argument.effects),
+        );
+        let mut lowered = hir::Expr {
+            node,
+            kind: hir::ExprKind::Call {
+                callee: hir::Callee::Function(symbol.id),
+                args,
+            },
+            ty,
+            category: hir::ValueCategory::Value,
+            effects,
+            source,
+        };
+        if let Some(expected) = expected {
+            coerce_expr(&mut lowered, expected, source)?;
+        }
+        Ok(lowered)
+    }
+
     pub(super) fn lower_selector(
         &mut self,
         base: &ExprSyntax,
@@ -174,4 +297,15 @@ fn struct_fields(ty: &Ty) -> Option<&[StructField]> {
         return None;
     };
     Some(fields)
+}
+
+fn named_receiver_definition(ty: &Ty) -> Option<crate::compiler::ids::DefId> {
+    match ty {
+        Ty::Named { definition, .. } => Some(*definition),
+        Ty::Pointer(element) => match element.as_ref() {
+            Ty::Named { definition, .. } => Some(*definition),
+            _ => None,
+        },
+        _ => None,
+    }
 }

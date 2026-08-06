@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use super::{ConstantSymbol, FunctionSymbol};
+use super::{ConstantSymbol, FunctionSymbol, MethodSymbol};
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::{ClosureId, DefId, LocalId, NodeId};
@@ -15,6 +15,7 @@ pub(super) struct FunctionLowerer {
     pub(super) next_node: u32,
     pub(super) functions: BTreeMap<String, FunctionSymbol>,
     pub(super) qualified_functions: BTreeMap<(String, String), FunctionSymbol>,
+    pub(super) methods: BTreeMap<(DefId, String), MethodSymbol>,
     pub(super) constants: BTreeMap<String, ConstantSymbol>,
     pub(super) qualified_constants: BTreeMap<(String, String), ConstantSymbol>,
     pub(super) type_aliases: BTreeMap<String, Ty>,

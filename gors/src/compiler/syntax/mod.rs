@@ -26,3 +26,4 @@ pub(crate) use projection::{
     ProjectedConstantSyntax, ProjectedFunctionSyntax, project_constant, project_function,
     project_type_alias, project_type_definition,
 };
+pub(crate) use structural::method_receiver;

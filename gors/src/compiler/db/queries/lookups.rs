@@ -43,7 +43,34 @@ pub(in crate::compiler::db) fn package_function_named_product<'db>(
         if let Some(function) = file_projection(db, source)
             .functions(db)
             .into_iter()
-            .find(|function| function.name(db) == name)
+            .find(|function| function.receiver_type(db).is_none() && function.name(db) == name)
+        {
+            return Some(function);
+        }
+    }
+    None
+}
+
+#[salsa::tracked(returns(copy))]
+pub(in crate::compiler::db) fn package_method_named_product<'db>(
+    db: &'db dyn Db,
+    input: PackageInput,
+    receiver: Arc<str>,
+    name: Arc<str>,
+) -> Option<FunctionProjection<'db>> {
+    db.query_telemetry()
+        .record_query(QueryKind::PackageFunctionLookup);
+    let mut sources = input.sources(db).iter().copied().collect::<Vec<_>>();
+    sources.sort_by_key(|source| source.file(db));
+    for source in sources {
+        if let Some(function) =
+            file_projection(db, source)
+                .functions(db)
+                .into_iter()
+                .find(|function| {
+                    function.receiver_type(db).as_ref() == Some(&receiver)
+                        && function.name(db) == name
+                })
         {
             return Some(function);
         }

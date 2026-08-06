@@ -45,7 +45,6 @@ impl File {
         }
 
         let mut local_signatures = BTreeMap::new();
-        let mut names = BTreeSet::new();
         let mut symbols = BTreeSet::new();
         for function in &self.functions {
             function.verify_artifact_plan()?;
@@ -59,12 +58,6 @@ impl File {
                 return Err(Diagnostic::backend(format!(
                     "duplicate Rust IR function DefId {}",
                     function.id
-                )));
-            }
-            if !names.insert(function.name.as_str()) {
-                return Err(Diagnostic::backend(format!(
-                    "duplicate Rust IR function name {}",
-                    function.name
                 )));
             }
             if !symbols.insert(function.artifact.symbol.as_str()) {

@@ -15,10 +15,11 @@ pub(super) use analysis::{
 use hir_dependencies::direct_callees;
 pub(super) use lookups::{
     package_constant_named_product, package_function_named_product, package_function_product,
+    package_method_named_product,
 };
 use support::{
-    check_semantic_barrier, collect_constant_references, function_file, package_references_in_body,
-    semantic_build_dependency, semantic_failure,
+    check_semantic_barrier, collect_constant_references, function_definition_key, function_file,
+    package_references_in_body, semantic_build_dependency, semantic_failure,
 };
 pub(super) use type_aliases::{
     TypeAliasProjection, TypeDefinitionProjection, package_type_aliases_product,
@@ -100,6 +101,12 @@ pub(super) struct FunctionProjection<'db> {
     #[tracked]
     #[returns(clone)]
     pub(super) package_name: Arc<str>,
+    #[tracked]
+    #[returns(clone)]
+    pub(super) receiver_type: Option<Arc<str>>,
+    #[tracked]
+    #[returns(copy)]
+    pub(super) pointer_receiver: bool,
     #[tracked]
     #[returns(clone)]
     pub(super) signature: Arc<FunctionSignature>,
@@ -239,6 +246,7 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
         None
     };
     let mut seen = BTreeSet::<Arc<str>>::new();
+    let mut seen_methods = BTreeSet::<DefinitionKey>::new();
     let mut projected_functions = Vec::new();
     let mut projected_constants = Vec::new();
     let mut projected_type_aliases = Vec::new();
@@ -248,16 +256,6 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
         match declaration {
             ast::Decl::FuncDecl(function) => {
                 let name: Arc<str> = Arc::from(function.name.name);
-                if !seen.insert(Arc::clone(&name)) {
-                    issues.push(FileIssue::DuplicateDefinition(name));
-                    continue;
-                }
-                let key = DefinitionKey::package_named(
-                    package_id,
-                    DefinitionKind::Function,
-                    function.name.name,
-                );
-                let id = key.id();
                 let ProjectedFunctionSyntax {
                     anchor,
                     layout,
@@ -275,6 +273,17 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
                         continue;
                     }
                 };
+                let (key, receiver_type, pointer_receiver) =
+                    function_definition_key(package_id, &structural_header);
+                let duplicate = receiver_type.as_ref().map_or_else(
+                    || !seen.insert(Arc::clone(&name)),
+                    |_| !seen_methods.insert(key.clone()),
+                );
+                if duplicate {
+                    issues.push(FileIssue::DuplicateDefinition(name));
+                    continue;
+                }
+                let id = key.id();
                 let signature = Arc::new(FunctionSignature::new(
                     id,
                     Arc::clone(&name),
@@ -292,6 +301,8 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
                     id,
                     key,
                     name,
+                    receiver_type,
+                    pointer_receiver,
                     signature,
                     Arc::new(FunctionBody::new(
                         id,
@@ -412,7 +423,7 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
             ast::Decl::GenDecl(_) => {}
         }
     }
-    projected_functions.sort_by_key(|(id, _, _, _, _, _)| *id);
+    projected_functions.sort_by_key(|(id, _, _, _, _, _, _, _)| *id);
     projected_constants.sort_by_key(|(id, _, _, _, _, _)| *id);
     projected_type_aliases.sort_by_key(|(id, _, _, _)| *id);
     projected_type_definitions.sort_by_key(|(id, _, _, _)| *id);
@@ -420,19 +431,23 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
 
     let functions = projected_functions
         .into_iter()
-        .map(|(id, key, name, signature, body, layout)| {
-            FunctionProjection::new(
-                db,
-                id,
-                key,
-                name,
-                Arc::clone(&declared_package),
-                signature,
-                body,
-                layout,
-                semantic_barrier.clone(),
-            )
-        })
+        .map(
+            |(id, key, name, receiver_type, pointer_receiver, signature, body, layout)| {
+                FunctionProjection::new(
+                    db,
+                    id,
+                    key,
+                    name,
+                    Arc::clone(&declared_package),
+                    receiver_type,
+                    pointer_receiver,
+                    signature,
+                    body,
+                    layout,
+                    semantic_barrier.clone(),
+                )
+            },
+        )
         .collect();
     let constants = projected_constants
         .into_iter()
@@ -810,7 +825,7 @@ pub(super) fn rust_signature_dependencies_product(
 #[salsa::tracked(returns(copy))]
 pub(super) fn executable_role_product(db: &dyn Db, function: FunctionProjection<'_>) -> bool {
     db.query_telemetry().record_query(QueryKind::ExecutableRole);
-    function.package_name(db).as_ref() == "main"
+    function.package_name(db).as_ref() == "main" && function.receiver_type(db).is_none()
 }
 
 /// Complete provenance-free invalidation inputs for one Rust-IR function root.

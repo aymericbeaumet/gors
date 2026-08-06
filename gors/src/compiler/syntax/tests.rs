@@ -197,6 +197,8 @@ fn headers_preserve_receivers_and_aggregate_type_structure() {
         ),
         "Add",
     );
+    assert_eq!(method.anchor, SyntaxAnchor::named_method("Counter", "Add"));
+    assert_ne!(method.anchor, SyntaxAnchor::named_function("Add"));
     let receiver = method
         .structural_header
         .receiver

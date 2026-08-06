@@ -44,6 +44,13 @@ pub(super) struct FunctionSymbol {
 }
 
 #[derive(Clone)]
+pub(super) struct MethodSymbol {
+    pub(super) id: QualifiedDefId,
+    pub(super) signature: Signature,
+    pub(super) pointer_receiver: bool,
+}
+
+#[derive(Clone)]
 pub(super) struct ConstantSymbol {
     pub(super) id: QualifiedDefId,
     pub(super) ty: Ty,
@@ -53,6 +60,7 @@ pub(super) struct ConstantSymbol {
 pub(super) struct FunctionSymbols {
     pub(super) functions: BTreeMap<String, FunctionSymbol>,
     pub(super) qualified_functions: BTreeMap<(String, String), FunctionSymbol>,
+    pub(super) methods: BTreeMap<(DefId, String), MethodSymbol>,
     pub(super) constants: BTreeMap<String, ConstantSymbol>,
     pub(super) qualified_constants: BTreeMap<(String, String), ConstantSymbol>,
 }
@@ -83,32 +91,41 @@ pub(super) fn lower_signature(
     type_aliases: &BTreeMap<String, Ty>,
 ) -> Result<Signature, Diagnostic> {
     let source = SourceRef::definition(definition);
-    if header.receiver.is_some() {
-        return Err(Diagnostic::unsupported(
-            "methods are not implemented by the HIR/MIR backend",
-            source,
-        ));
-    }
     if header.has_type_parameters {
         return Err(Diagnostic::unsupported(
             "generic functions are not implemented by the HIR/MIR backend",
             source,
         ));
     }
-    let (params, variadic) = parameter_types(&header.params, type_aliases, source)?;
+    let mut params = Vec::new();
+    if let Some(receiver) = &header.receiver {
+        let (receiver, receiver_variadic) = parameter_types(receiver, type_aliases, source)?;
+        if receiver_variadic || receiver.len() != 1 {
+            return Err(Diagnostic::semantic(
+                "a method must declare exactly one non-variadic receiver",
+                source,
+            ));
+        }
+        params.extend(receiver);
+    }
+    let (ordinary_params, variadic) = parameter_types(&header.params, type_aliases, source)?;
+    params.extend(ordinary_params);
     let results = header
         .results
         .as_ref()
         .map(|fields| field_types(fields, type_aliases, source))
         .transpose()?
         .unwrap_or_default();
-    if header.name.name.as_ref() == "init" {
+    if header.receiver.is_none() && header.name.name.as_ref() == "init" {
         return Err(Diagnostic::unsupported(
             "package init functions are not implemented by the HIR/MIR backend",
             source,
         ));
     }
-    if header.name.name.as_ref() == "main" && (!params.is_empty() || !results.is_empty()) {
+    if header.receiver.is_none()
+        && header.name.name.as_ref() == "main"
+        && (!params.is_empty() || !results.is_empty())
+    {
         return Err(Diagnostic::semantic(
             "func main must have no parameters and no results",
             source,
@@ -201,6 +218,7 @@ pub(super) fn lower_function(
         next_node: 1,
         functions: symbols.functions,
         qualified_functions: symbols.qualified_functions,
+        methods: symbols.methods,
         constants: symbols.constants,
         qualified_constants: symbols.qualified_constants,
         type_aliases,
@@ -219,11 +237,25 @@ pub(super) fn lower_function(
         source_plan: initial_source_plan,
     };
     let lowered = (|| {
-        let params = lowerer.declare_field_bindings(
+        let receiver_count = usize::from(header.receiver.is_some());
+        let (receiver_types, parameter_types) =
+            signature
+                .params
+                .split_at_checked(receiver_count)
+                .ok_or_else(|| Diagnostic::backend("method signature omitted its receiver type"))?;
+        let mut params = Vec::new();
+        if let Some(receiver) = &header.receiver {
+            params.extend(lowerer.declare_field_bindings(
+                receiver,
+                receiver_types,
+                hir::LocalKind::Parameter,
+            )?);
+        }
+        params.extend(lowerer.declare_field_bindings(
             &header.params,
-            &signature.params,
+            parameter_types,
             hir::LocalKind::Parameter,
-        )?;
+        )?);
         lowerer.named_results = header.results.as_ref().map_or_else(
             || Ok(Vec::new()),
             |results| lowerer.declare_result_bindings(results, &signature.results),

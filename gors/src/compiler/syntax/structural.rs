@@ -63,6 +63,28 @@ pub struct FunctionHeaderSyntax {
     pub(crate) results: Option<FieldListSyntax>,
 }
 
+pub fn method_receiver(header: &FunctionHeaderSyntax) -> Option<(&str, bool)> {
+    let receiver = header.receiver.as_ref()?;
+    let [field] = receiver.fields.as_ref() else {
+        return None;
+    };
+    let mut ty = field.ty.as_ref()?;
+    let pointer = if let ExprSyntaxKind::Unary {
+        token: Token::MUL,
+        expression,
+    } = &ty.kind
+    {
+        ty = expression;
+        true
+    } else {
+        false
+    };
+    let ExprSyntaxKind::Ident(receiver) = &ty.kind else {
+        return None;
+    };
+    Some((receiver.name.as_ref(), pointer))
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FunctionBodySyntax {
     pub(crate) block: Option<BlockSyntax>,

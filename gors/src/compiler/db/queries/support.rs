@@ -6,7 +6,9 @@ use std::sync::Arc;
 use super::{Db, FunctionProjection, PackageInput, SourceInput, file_projection};
 use crate::compiler::Diagnostic;
 use crate::compiler::db::products::{CompilerStage, StageFailure};
-use crate::compiler::ids::{DefId, FileId};
+use crate::compiler::ids::{
+    DefId, DefinitionKey, DefinitionKind, FileId, PackageId, ReceiverIdentity,
+};
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{
     BlockSyntax, ConstantSyntax, ConstantValueSyntax, DeclSyntax, ExprSyntax, ExprSyntaxKind,
@@ -29,6 +31,28 @@ pub(super) fn semantic_build_dependency(
     })?;
     let _go_version = build.go_version(db);
     Ok(())
+}
+
+pub(super) fn function_definition_key(
+    package: PackageId,
+    header: &FunctionHeaderSyntax,
+) -> (DefinitionKey, Option<Arc<str>>, bool) {
+    if let Some((receiver, pointer)) = crate::compiler::syntax::method_receiver(header) {
+        (
+            DefinitionKey::method(
+                ReceiverIdentity::named(package, receiver),
+                &*header.name.name,
+            ),
+            Some(Arc::from(receiver)),
+            pointer,
+        )
+    } else {
+        (
+            DefinitionKey::package_named(package, DefinitionKind::Function, &*header.name.name),
+            None,
+            false,
+        )
+    }
 }
 
 pub(super) fn check_semantic_barrier(
@@ -96,6 +120,7 @@ pub(super) fn collect_constant_references(syntax: &ConstantSyntax, names: &mut B
 pub(super) struct PackageReferences {
     pub(super) unqualified: BTreeSet<Arc<str>>,
     pub(super) qualified: BTreeSet<(Arc<str>, Arc<str>)>,
+    pub(super) method_names: BTreeSet<Arc<str>>,
 }
 
 /// Collect package-level names referenced by a body after lexical shadowing.
@@ -107,7 +132,11 @@ pub(super) fn package_references_in_body(
         scopes: vec![BTreeSet::new()],
         unqualified: BTreeSet::new(),
         qualified: BTreeSet::new(),
+        method_names: BTreeSet::new(),
     };
+    if let Some(receiver) = &header.receiver {
+        collector.bind_fields(receiver);
+    }
     collector.bind_fields(&header.params);
     if let Some(results) = &header.results {
         collector.bind_fields(results);
@@ -118,6 +147,7 @@ pub(super) fn package_references_in_body(
     PackageReferences {
         unqualified: collector.unqualified,
         qualified: collector.qualified,
+        method_names: collector.method_names,
     }
 }
 
@@ -125,6 +155,7 @@ struct PackageReferenceCollector {
     scopes: Vec<BTreeSet<Arc<str>>>,
     unqualified: BTreeSet<Arc<str>>,
     qualified: BTreeSet<(Arc<str>, Arc<str>)>,
+    method_names: BTreeSet<Arc<str>>,
 }
 
 impl PackageReferenceCollector {
@@ -392,6 +423,7 @@ impl PackageReferenceCollector {
                     self.qualified
                         .insert((Arc::clone(&ident.name), Arc::clone(&member.name)));
                 } else {
+                    self.method_names.insert(Arc::clone(&member.name));
                     self.expression(base);
                 }
             }

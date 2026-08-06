@@ -34,7 +34,6 @@ impl File {
     #[cfg(test)]
     pub(super) fn verify(&self) -> Result<(), Diagnostic> {
         let mut signatures = BTreeMap::new();
-        let mut names = BTreeSet::new();
         for function in &self.functions {
             if signatures
                 .insert(
@@ -48,12 +47,6 @@ impl File {
                     function.id
                 )));
             }
-            if !names.insert(function.name.as_str()) {
-                return Err(Diagnostic::backend(format!(
-                    "duplicate MIR function name {}",
-                    function.name
-                )));
-            }
         }
         self.verify_with_signatures(&signatures)
     }
@@ -62,19 +55,12 @@ impl File {
         &self,
         signatures: &BTreeMap<QualifiedDefId, Signature>,
     ) -> Result<(), Diagnostic> {
-        let mut names = BTreeSet::new();
         let mut definitions = BTreeSet::new();
         for function in &self.functions {
             if !definitions.insert(function.id) {
                 return Err(Diagnostic::backend(format!(
                     "duplicate MIR function DefId {}",
                     function.id
-                )));
-            }
-            if !names.insert(function.name.as_str()) {
-                return Err(Diagnostic::backend(format!(
-                    "duplicate MIR function name {}",
-                    function.name
                 )));
             }
             let owner = QualifiedDefId::new(self.package_id, function.id);

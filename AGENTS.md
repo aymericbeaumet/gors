@@ -451,10 +451,11 @@ structural function and constant syntax plus canonical header/body token
 streams. Semantic queries never retain or revisit the AST or raw source.
 Revision-local physical ranges live only in `FunctionLayout` and
 `ConstantLayout`; successful semantic lowering publishes a physical-free source
-plan which the presentation query joins to the current layout. The current
-`SyntaxAnchor` is declaration kind plus unique package-level name; it contains
-no offset, traversal ordinal, or token index, and repeated `init` remains
-rejected until a structural disambiguator exists. Demand queries independently
+plan which the presentation query joins to the current layout. Package-function
+`SyntaxAnchor`s use the package-level name, while method anchors use the named
+receiver and method name. Neither form contains an offset, traversal ordinal,
+or token index, and repeated `init` remains rejected until a structural
+disambiguator exists. Demand queries independently
 type function headers, package constants, and function bodies before reaching
 function-relative typed HIR, per-definition
 verified MIR, mandatory normalized/reverified MIR, configured verified Rust IR,

@@ -314,7 +314,7 @@ impl FunctionLowerer {
                 spread,
             } => {
                 if let ExprSyntaxKind::Selector { base, member } = &callee.kind {
-                    return self.lower_imported_selector_call(
+                    return self.lower_selector_call(
                         base,
                         member,
                         arguments,

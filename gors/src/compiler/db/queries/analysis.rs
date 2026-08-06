@@ -105,6 +105,7 @@ pub(in crate::compiler::db) fn package_analysis_product(
     let mut definitions_by_digest =
         BTreeMap::<DefId, (crate::compiler::ids::DefinitionKey, FileId)>::new();
     let mut declarations_by_name = BTreeMap::<Arc<str>, FileId>::new();
+    let mut method_declarations = BTreeMap::<crate::compiler::ids::DefinitionKey, FileId>::new();
 
     for source in sources {
         db.unwind_if_revision_cancelled();
@@ -188,7 +189,12 @@ pub(in crate::compiler::db) fn package_analysis_product(
             let key = function.key(db);
             let name = function.name(db);
 
-            if let Some(first_file) = declarations_by_name.insert(Arc::clone(&name), file) {
+            let first_file = if key.is_package_level() {
+                declarations_by_name.insert(Arc::clone(&name), file)
+            } else {
+                method_declarations.insert(key.clone(), file)
+            };
+            if let Some(first_file) = first_file {
                 issues.push(PackageIssue::DuplicateDefinition {
                     name: Arc::clone(&name),
                     first_file,

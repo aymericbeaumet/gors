@@ -202,6 +202,7 @@ impl CompilerDatabase {
             .ingredient::<queries::package_type_aliases_product>()
             .ingredient::<queries::package_function_product>()
             .ingredient::<queries::package_function_named_product>()
+            .ingredient::<queries::package_method_named_product>()
             .ingredient::<queries::package_constant_named_product>()
             .ingredient::<queries::mir_signature_dependencies_product>()
             .ingredient::<queries::verified_mir_product>()

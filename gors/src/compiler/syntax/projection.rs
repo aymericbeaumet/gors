@@ -10,6 +10,7 @@ use crate::parser::TokenObservation;
 use crate::source::{TextRange, TextSize};
 use crate::token::{Position, Token};
 
+use super::method_receiver;
 use super::{
     BlockSyntax, ChannelDirectionSyntax, ConstantLayout, ConstantSyntax, ConstantValueSyntax,
     DeclSyntax, ExprSyntax, ExprSyntaxKind, FieldListSyntax, FieldSyntax, FunctionBodySyntax,
@@ -53,6 +54,7 @@ pub enum ProjectionError {
     InvalidChannelDirection,
     InvalidSelectBody,
     MissingTypeName,
+    InvalidMethodReceiver,
     OffsetOutsideTextDomain { offset: usize },
     ReversedRange { start: usize, end: usize },
 }
@@ -79,6 +81,9 @@ impl fmt::Display for ProjectionError {
                 formatter.write_str("parser produced a select body without communication clauses")
             }
             Self::MissingTypeName => formatter.write_str("parser produced a type without a name"),
+            Self::InvalidMethodReceiver => {
+                formatter.write_str("parser produced an invalid method receiver")
+            }
             Self::OffsetOutsideTextDomain { offset } => {
                 write!(
                     formatter,
@@ -116,9 +121,16 @@ pub fn project_function(
             observation.byte_offset() == declaration_start && observation.token() == Token::FUNC
         })
         .ok_or(ProjectionError::MissingFunctionToken)?;
-    let anchor = SyntaxAnchor::named_function(function.name.name);
     let mut header_projector = StructuralProjector::new(SyntaxSourceRegion::Header);
     let structural_header = header_projector.function_header(function)?;
+    let anchor = match (
+        &structural_header.receiver,
+        method_receiver(&structural_header),
+    ) {
+        (None, _) => SyntaxAnchor::named_function(function.name.name),
+        (Some(_), Some((receiver, _))) => SyntaxAnchor::named_method(receiver, function.name.name),
+        (Some(_), None) => return Err(ProjectionError::InvalidMethodReceiver),
+    };
     let header_sources = header_projector.finish();
     let mut body_projector = StructuralProjector::new(SyntaxSourceRegion::Body);
     let structural_body = FunctionBodySyntax {

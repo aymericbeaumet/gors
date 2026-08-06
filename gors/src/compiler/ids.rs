@@ -320,6 +320,11 @@ impl DefinitionKey {
         }
     }
 
+    #[must_use]
+    pub(crate) fn is_package_level(&self) -> bool {
+        matches!(&self.namespace, DefinitionNamespace::Package)
+    }
+
     pub fn disambiguated_package_definition(
         package: PackageId,
         kind: DefinitionKind,
