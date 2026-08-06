@@ -9,7 +9,8 @@ use crate::compiler::ids::{
 };
 use crate::compiler::provenance::{SourceRef, SourceRefKind};
 use crate::compiler::types::{
-    ChannelDir, ComplexTy, ConstValue, FloatTy, IntTy, Signature, Ty, UintTy, UntypedTy,
+    ChannelDir, ComplexTy, ConstValue, FloatTy, IntTy, InterfaceMethod, Signature, StructField, Ty,
+    UintTy, UntypedTy,
 };
 
 const FORMAT_MAGIC: &[u8] = b"gors-stage-product";
@@ -177,6 +178,13 @@ pub(super) fn ty(encoder: &mut Encoder, value: &Ty) {
             encoder.field(b"definition", |encoder| def_id(encoder, *definition));
             encoder.field(b"underlying", |encoder| ty(encoder, underlying));
         }),
+        Ty::Struct(fields) => {
+            encoder.variant(b"struct", |encoder| encoder.sequence(fields, struct_field));
+        }
+        Ty::Interface(methods) => encoder.variant(b"interface", |encoder| {
+            encoder.sequence(methods, interface_method);
+        }),
+        Ty::Function(value) => encoder.variant(b"function", |encoder| signature(encoder, value)),
         Ty::String => encoder.variant(b"string", |_| {}),
         Ty::Pointer(element) => encoder.variant(b"pointer", |encoder| ty(encoder, element)),
         Ty::Array(length, element) => encoder.variant(b"array", |encoder| {
@@ -199,6 +207,20 @@ pub(super) fn ty(encoder: &mut Encoder, value: &Ty) {
             encoder.variant(b"untyped", |encoder| untyped_ty(encoder, *value));
         }
     }
+}
+
+fn struct_field(encoder: &mut Encoder, value: &StructField) {
+    encoder.field(b"name", |encoder| encoder.string(&value.name));
+    encoder.field(b"type", |encoder| ty(encoder, &value.ty));
+    encoder.field(b"embedded", |encoder| encoder.bool(value.embedded));
+    encoder.field(b"tag", |encoder| {
+        encoder.option(value.tag.as_ref(), |encoder, value| encoder.string(value));
+    });
+}
+
+fn interface_method(encoder: &mut Encoder, value: &InterfaceMethod) {
+    encoder.field(b"name", |encoder| encoder.string(&value.name));
+    encoder.field(b"signature", |encoder| signature(encoder, &value.signature));
 }
 
 fn channel_dir(encoder: &mut Encoder, direction: ChannelDir) {

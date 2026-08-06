@@ -730,9 +730,12 @@ impl FunctionLowerer {
             }
             ExprSyntaxKind::ArrayType { .. }
             | ExprSyntaxKind::MapType { .. }
-            | ExprSyntaxKind::ChannelType { .. } => {
+            | ExprSyntaxKind::ChannelType { .. }
+            | ExprSyntaxKind::FunctionType { .. }
+            | ExprSyntaxKind::StructType { .. }
+            | ExprSyntaxKind::InterfaceType { .. } => {
                 return Err(Diagnostic::semantic(
-                    "a container type is not a value expression",
+                    "a type is not a value expression",
                     source,
                 ));
             }

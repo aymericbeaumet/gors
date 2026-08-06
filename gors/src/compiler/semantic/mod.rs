@@ -31,7 +31,9 @@ use super::syntax::{
     ChannelDirectionSyntax, ConstantSyntax, ConstantValueSyntax, ExprSyntax, ExprSyntaxKind,
     FieldListSyntax, FunctionBodySyntax, FunctionHeaderSyntax, SyntaxSource,
 };
-use super::types::{ChannelDir, ConstValue, IntTy, Signature, Ty, UntypedTy};
+use super::types::{
+    ChannelDir, ConstValue, IntTy, InterfaceMethod, Signature, StructField, Ty, UntypedTy,
+};
 
 #[derive(Clone)]
 pub(super) struct FunctionSymbol {
@@ -79,7 +81,7 @@ pub(super) fn lower_signature(
     type_aliases: &BTreeMap<String, Ty>,
 ) -> Result<Signature, Diagnostic> {
     let source = SourceRef::definition(definition);
-    if header.has_receiver {
+    if header.receiver.is_some() {
         return Err(Diagnostic::unsupported(
             "methods are not implemented by the HIR/MIR backend",
             source,
@@ -356,6 +358,112 @@ pub(super) fn lower_type(
             source,
         )?)));
     }
+    if let ExprSyntaxKind::FunctionType {
+        has_type_parameters,
+        params,
+        results,
+    } = &expression.kind
+    {
+        if *has_type_parameters {
+            return Err(Diagnostic::unsupported(
+                "generic function types are not yet implemented",
+                source,
+            ));
+        }
+        let (params, variadic) = parameter_types(params, type_aliases, source)?;
+        let results = results
+            .as_ref()
+            .map(|results| field_types(results, type_aliases, source))
+            .transpose()?
+            .unwrap_or_default();
+        return Ok(Ty::Function(Signature {
+            params,
+            results,
+            variadic,
+        }));
+    }
+    if let ExprSyntaxKind::StructType { fields } = &expression.kind {
+        let mut lowered = Vec::new();
+        for field in &*fields.fields {
+            if field.variadic {
+                return Err(Diagnostic::semantic(
+                    "struct fields cannot be variadic",
+                    source,
+                ));
+            }
+            let syntax = field
+                .ty
+                .as_ref()
+                .ok_or_else(|| Diagnostic::backend("struct field has no type"))?;
+            let ty = lower_type(syntax, type_aliases, source)?;
+            let tag = field.tag.as_ref().map(ToString::to_string);
+            if let Some(names) = &field.names {
+                lowered.extend(names.iter().map(|name| StructField {
+                    name: name.name.to_string(),
+                    ty: ty.clone(),
+                    embedded: false,
+                    tag: tag.clone(),
+                }));
+            } else {
+                lowered.push(StructField {
+                    name: embedded_field_name(syntax).ok_or_else(|| {
+                        Diagnostic::semantic("invalid embedded struct field type", source)
+                    })?,
+                    ty,
+                    embedded: true,
+                    tag,
+                });
+            }
+        }
+        return Ok(Ty::Struct(lowered));
+    }
+    if let ExprSyntaxKind::InterfaceType { methods } = &expression.kind {
+        let mut lowered = BTreeMap::<String, Signature>::new();
+        for field in &*methods.fields {
+            let syntax = field
+                .ty
+                .as_ref()
+                .ok_or_else(|| Diagnostic::backend("interface element has no type"))?;
+            if let Some(names) = &field.names {
+                let Ty::Function(signature) = lower_type(syntax, type_aliases, source)? else {
+                    return Err(Diagnostic::semantic(
+                        "interface methods require function signatures",
+                        source,
+                    ));
+                };
+                for name in &**names {
+                    if lowered
+                        .insert(name.name.to_string(), signature.clone())
+                        .is_some()
+                    {
+                        return Err(Diagnostic::semantic(
+                            format!("duplicate interface method {}", name.name),
+                            source,
+                        ));
+                    }
+                }
+            } else {
+                let embedded = lower_type(syntax, type_aliases, source)?;
+                let Ty::Interface(methods) = embedded.underlying() else {
+                    return Err(Diagnostic::unsupported(
+                        "interface type-set elements are not yet implemented",
+                        source,
+                    ));
+                };
+                for method in methods {
+                    lowered
+                        .entry(method.name.clone())
+                        .or_insert_with(|| method.signature.clone());
+                }
+            }
+        }
+        return Ok(Ty::Interface(
+            lowered
+                .into_iter()
+                .map(|(name, signature)| InterfaceMethod { name, signature })
+                .collect(),
+        ));
+    }
     let ExprSyntaxKind::Ident(ident) = &expression.kind else {
         return Err(Diagnostic::unsupported(
             "this Go type is not yet implemented by the typed backend",
@@ -383,6 +491,18 @@ pub(super) fn lower_type(
                 source,
             )
         }),
+    }
+}
+
+fn embedded_field_name(expression: &ExprSyntax) -> Option<String> {
+    match &expression.kind {
+        ExprSyntaxKind::Ident(ident) => Some(ident.name.to_string()),
+        ExprSyntaxKind::Unary {
+            token: crate::token::Token::MUL,
+            expression,
+        } => embedded_field_name(expression),
+        ExprSyntaxKind::Selector { member, .. } => Some(member.name.to_string()),
+        _ => None,
     }
 }
 
@@ -528,10 +648,13 @@ pub(super) fn eval_constant(
         }
         ExprSyntaxKind::Call { .. }
         | ExprSyntaxKind::FunctionLiteral { .. }
+        | ExprSyntaxKind::FunctionType { .. }
         | ExprSyntaxKind::Selector { .. }
         | ExprSyntaxKind::ArrayType { .. }
         | ExprSyntaxKind::MapType { .. }
         | ExprSyntaxKind::ChannelType { .. }
+        | ExprSyntaxKind::StructType { .. }
+        | ExprSyntaxKind::InterfaceType { .. }
         | ExprSyntaxKind::KeyValue { .. }
         | ExprSyntaxKind::CompositeLiteral { .. }
         | ExprSyntaxKind::Index { .. }

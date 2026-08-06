@@ -1,6 +1,6 @@
 //! Package-wide type-alias resolution over owned declaration projections.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use super::{Db, PackageInput, file_projection, semantic_failure};
@@ -8,7 +8,9 @@ use crate::compiler::Diagnostic;
 use crate::compiler::db::products::{CompilerStage, StageFailure, StageResult};
 use crate::compiler::ids::{DefId, DefinitionKey};
 use crate::compiler::provenance::SourceRef;
-use crate::compiler::syntax::{ExprSyntax, TypeAliasSyntax, TypeDefinitionSyntax};
+use crate::compiler::syntax::{
+    ExprSyntax, ExprSyntaxKind, FieldListSyntax, TypeAliasSyntax, TypeDefinitionSyntax,
+};
 use crate::compiler::types::Ty;
 
 #[salsa::tracked]
@@ -106,6 +108,23 @@ fn resolve_type_name<'db>(
     if let Some(start) = stack.iter().position(|entry| entry == name) {
         let mut path = stack.iter().skip(start).cloned().collect::<Vec<_>>();
         path.push(name.to_owned());
+        if is_definition
+            || stack
+                .iter()
+                .skip(start)
+                .any(|entry| definitions.contains_key(entry))
+        {
+            return Err(semantic_failure(
+                definition,
+                Diagnostic::unsupported(
+                    format!(
+                        "recursive named types are not yet represented by the typed backend: {}",
+                        path.join(" -> ")
+                    ),
+                    SourceRef::definition(definition),
+                ),
+            ));
+        }
         return Err(semantic_failure(
             definition,
             Diagnostic::semantic(
@@ -116,19 +135,14 @@ fn resolve_type_name<'db>(
     }
 
     stack.push(name.to_owned());
-    if let crate::compiler::syntax::ExprSyntaxKind::Ident(target) = &expression.kind
-        && (projections.contains_key(target.name.as_ref())
-            || definitions.contains_key(target.name.as_ref()))
-    {
-        let target_ty = resolve_type_name(
-            db,
-            target.name.as_ref(),
-            projections,
-            definitions,
-            resolved,
-            stack,
-        )?;
-        resolved.insert(target.name.to_string(), target_ty);
+    let mut dependencies = BTreeSet::new();
+    collect_type_dependencies(&expression, &mut dependencies);
+    for dependency in dependencies {
+        if projections.contains_key(&dependency) || definitions.contains_key(&dependency) {
+            let target_ty =
+                resolve_type_name(db, &dependency, projections, definitions, resolved, stack)?;
+            resolved.insert(dependency, target_ty);
+        }
     }
     let target = lower_declaration_target(&expression, resolved, definition)?;
     let ty = if is_definition {
@@ -142,6 +156,54 @@ fn resolve_type_name<'db>(
     stack.pop();
     resolved.insert(name.to_owned(), ty.clone());
     Ok(ty)
+}
+
+fn collect_type_dependencies(expression: &ExprSyntax, dependencies: &mut BTreeSet<String>) {
+    match &expression.kind {
+        ExprSyntaxKind::Ident(ident) => {
+            dependencies.insert(ident.name.to_string());
+        }
+        ExprSyntaxKind::Paren(expression) | ExprSyntaxKind::Unary { expression, .. } => {
+            collect_type_dependencies(expression, dependencies);
+        }
+        ExprSyntaxKind::ArrayType { element, .. } | ExprSyntaxKind::ChannelType { element, .. } => {
+            collect_type_dependencies(element, dependencies);
+        }
+        ExprSyntaxKind::MapType { key, value } => {
+            collect_type_dependencies(key, dependencies);
+            collect_type_dependencies(value, dependencies);
+        }
+        ExprSyntaxKind::FunctionType {
+            params, results, ..
+        } => {
+            collect_field_type_dependencies(params, dependencies);
+            if let Some(results) = results {
+                collect_field_type_dependencies(results, dependencies);
+            }
+        }
+        ExprSyntaxKind::StructType { fields }
+        | ExprSyntaxKind::InterfaceType { methods: fields } => {
+            collect_field_type_dependencies(fields, dependencies);
+        }
+        ExprSyntaxKind::Selector { .. }
+        | ExprSyntaxKind::Literal { .. }
+        | ExprSyntaxKind::Binary { .. }
+        | ExprSyntaxKind::Call { .. }
+        | ExprSyntaxKind::FunctionLiteral { .. }
+        | ExprSyntaxKind::KeyValue { .. }
+        | ExprSyntaxKind::CompositeLiteral { .. }
+        | ExprSyntaxKind::Index { .. }
+        | ExprSyntaxKind::Slice { .. }
+        | ExprSyntaxKind::Unsupported(_) => {}
+    }
+}
+
+fn collect_field_type_dependencies(fields: &FieldListSyntax, dependencies: &mut BTreeSet<String>) {
+    for field in &*fields.fields {
+        if let Some(ty) = &field.ty {
+            collect_type_dependencies(ty, dependencies);
+        }
+    }
 }
 
 fn lower_declaration_target(

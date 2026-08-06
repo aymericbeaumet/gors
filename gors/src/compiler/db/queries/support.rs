@@ -10,7 +10,7 @@ use crate::compiler::ids::{DefId, FileId};
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{
     BlockSyntax, ConstantSyntax, ConstantValueSyntax, DeclSyntax, ExprSyntax, ExprSyntaxKind,
-    FunctionBodySyntax, FunctionHeaderSyntax, StmtSyntax, StmtSyntaxKind,
+    FieldListSyntax, FunctionBodySyntax, FunctionHeaderSyntax, StmtSyntax, StmtSyntaxKind,
 };
 use crate::token::Token;
 
@@ -377,6 +377,14 @@ impl PackageReferenceCollector {
                 self.block(body, false);
                 self.scopes.pop();
             }
+            ExprSyntaxKind::FunctionType {
+                params, results, ..
+            } => {
+                self.field_type_expressions(params);
+                if let Some(results) = results {
+                    self.field_type_expressions(results);
+                }
+            }
             ExprSyntaxKind::Selector { base, member } => {
                 if let ExprSyntaxKind::Ident(ident) = &base.kind
                     && !self.is_bound(&ident.name)
@@ -398,6 +406,10 @@ impl PackageReferenceCollector {
                 self.expression(value);
             }
             ExprSyntaxKind::ChannelType { element, .. } => self.expression(element),
+            ExprSyntaxKind::StructType { fields }
+            | ExprSyntaxKind::InterfaceType { methods: fields } => {
+                self.field_type_expressions(fields);
+            }
             ExprSyntaxKind::CompositeLiteral { ty, elements } => {
                 if let Some(ty) = ty {
                     self.expression(ty);
@@ -424,6 +436,14 @@ impl PackageReferenceCollector {
             ExprSyntaxKind::Literal { .. } | ExprSyntaxKind::Unsupported(_) => {}
         }
     }
+
+    fn field_type_expressions(&mut self, fields: &FieldListSyntax) {
+        for field in &*fields.fields {
+            if let Some(ty) = &field.ty {
+                self.expression(ty);
+            }
+        }
+    }
 }
 
 fn collect_all_expression_names(expression: &ExprSyntax, names: &mut BTreeSet<String>) {
@@ -448,18 +468,13 @@ fn collect_all_expression_names(expression: &ExprSyntax, names: &mut BTreeSet<St
         }
         ExprSyntaxKind::FunctionLiteral {
             params, results, ..
+        }
+        | ExprSyntaxKind::FunctionType {
+            params, results, ..
         } => {
-            for field in &*params.fields {
-                if let Some(ty) = &field.ty {
-                    collect_all_expression_names(ty, names);
-                }
-            }
+            collect_field_type_names(params, names);
             if let Some(results) = results {
-                for field in &*results.fields {
-                    if let Some(ty) = &field.ty {
-                        collect_all_expression_names(ty, names);
-                    }
-                }
+                collect_field_type_names(results, names);
             }
         }
         ExprSyntaxKind::Selector { base, .. } => collect_all_expression_names(base, names),
@@ -475,6 +490,10 @@ fn collect_all_expression_names(expression: &ExprSyntax, names: &mut BTreeSet<St
         }
         ExprSyntaxKind::ChannelType { element, .. } => {
             collect_all_expression_names(element, names);
+        }
+        ExprSyntaxKind::StructType { fields }
+        | ExprSyntaxKind::InterfaceType { methods: fields } => {
+            collect_field_type_names(fields, names);
         }
         ExprSyntaxKind::CompositeLiteral { ty, elements } => {
             if let Some(ty) = ty {
@@ -500,5 +519,13 @@ fn collect_all_expression_names(expression: &ExprSyntax, names: &mut BTreeSet<St
             }
         }
         ExprSyntaxKind::Literal { .. } | ExprSyntaxKind::Unsupported(_) => {}
+    }
+}
+
+fn collect_field_type_names(fields: &FieldListSyntax, names: &mut BTreeSet<String>) {
+    for field in &*fields.fields {
+        if let Some(ty) = &field.ty {
+            collect_all_expression_names(ty, names);
+        }
     }
 }

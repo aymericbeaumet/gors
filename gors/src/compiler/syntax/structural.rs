@@ -46,6 +46,7 @@ pub struct FieldSyntax {
     pub(crate) names: Option<Arc<[IdentSyntax]>>,
     pub(crate) ty: Option<ExprSyntax>,
     pub(crate) variadic: bool,
+    pub(crate) tag: Option<Arc<str>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -56,7 +57,7 @@ pub struct FieldListSyntax {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FunctionHeaderSyntax {
     pub(crate) name: IdentSyntax,
-    pub(crate) has_receiver: bool,
+    pub(crate) receiver: Option<FieldListSyntax>,
     pub(crate) has_type_parameters: bool,
     pub(crate) params: FieldListSyntax,
     pub(crate) results: Option<FieldListSyntax>,
@@ -237,6 +238,11 @@ pub enum ExprSyntaxKind {
         results: Option<FieldListSyntax>,
         body: BlockSyntax,
     },
+    FunctionType {
+        has_type_parameters: bool,
+        params: FieldListSyntax,
+        results: Option<FieldListSyntax>,
+    },
     Selector {
         base: Box<ExprSyntax>,
         member: IdentSyntax,
@@ -252,6 +258,12 @@ pub enum ExprSyntaxKind {
     ChannelType {
         direction: ChannelDirectionSyntax,
         element: Box<ExprSyntax>,
+    },
+    StructType {
+        fields: FieldListSyntax,
+    },
+    InterfaceType {
+        methods: FieldListSyntax,
     },
     KeyValue {
         key: Box<ExprSyntax>,

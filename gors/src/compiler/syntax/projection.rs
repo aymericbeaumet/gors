@@ -1,5 +1,7 @@
 //! One-pass projection from parser observations into owned function syntax.
 
+mod positions;
+
 use std::fmt;
 use std::sync::Arc;
 
@@ -15,6 +17,7 @@ use super::{
     StmtSyntax, StmtSyntaxKind, SwitchCaseSyntax, SyntaxAnchor, SyntaxSource, SyntaxSourceRegion,
     TypeAliasSyntax, TypeDefinitionSyntax, ValueSpecSyntax,
 };
+use positions::{expression_position, statement_position};
 
 pub struct ProjectedFunctionSyntax {
     pub(crate) anchor: SyntaxAnchor,
@@ -391,7 +394,11 @@ impl StructuralProjector {
     ) -> Result<FunctionHeaderSyntax, ProjectionError> {
         Ok(FunctionHeaderSyntax {
             name: self.ident(&function.name)?,
-            has_receiver: function.recv.is_some(),
+            receiver: function
+                .recv
+                .as_ref()
+                .map(|receiver| self.field_list(receiver))
+                .transpose()?,
             has_type_parameters: function.type_.type_params.is_some(),
             params: self.field_list(&function.type_.params)?,
             results: function
@@ -441,6 +448,7 @@ impl StructuralProjector {
                         .transpose()?,
                     ty,
                     variadic,
+                    tag: field.tag.as_ref().map(|tag| Arc::from(tag.value)),
                 })
             })
             .collect::<Result<Vec<_>, ProjectionError>>()?;
@@ -862,13 +870,30 @@ impl StructuralProjector {
                     .transpose()?,
                 body: self.block(&function.body)?,
             },
-            ast::Expr::FuncType(_) => ExprSyntaxKind::Unsupported("function type"),
+            ast::Expr::FuncType(function) => ExprSyntaxKind::FunctionType {
+                has_type_parameters: function.type_params.is_some(),
+                params: self.field_list(&function.params)?,
+                results: function
+                    .results
+                    .as_ref()
+                    .map(|fields| self.field_list(fields))
+                    .transpose()?,
+            },
             ast::Expr::IndexExpr(expression) => ExprSyntaxKind::Index {
                 base: Box::new(self.expression(&expression.x)?),
                 index: Box::new(self.expression(&expression.index)?),
             },
             ast::Expr::IndexListExpr(_) => ExprSyntaxKind::Unsupported("generic index expression"),
-            ast::Expr::InterfaceType(_) => ExprSyntaxKind::Unsupported("interface type"),
+            ast::Expr::InterfaceType(interface) => ExprSyntaxKind::InterfaceType {
+                methods: interface
+                    .methods
+                    .as_ref()
+                    .map(|methods| self.field_list(methods))
+                    .transpose()?
+                    .unwrap_or_else(|| FieldListSyntax {
+                        fields: Arc::from([]),
+                    }),
+            },
             ast::Expr::KeyValueExpr(expression) => ExprSyntaxKind::KeyValue {
                 key: Box::new(self.expression(&expression.key)?),
                 value: Box::new(self.expression(&expression.value)?),
@@ -899,7 +924,16 @@ impl StructuralProjector {
                 token: Token::MUL,
                 expression: Box::new(self.expression(&expression.x)?),
             },
-            ast::Expr::StructType(_) => ExprSyntaxKind::Unsupported("struct type"),
+            ast::Expr::StructType(structure) => ExprSyntaxKind::StructType {
+                fields: structure
+                    .fields
+                    .as_ref()
+                    .map(|fields| self.field_list(fields))
+                    .transpose()?
+                    .unwrap_or_else(|| FieldListSyntax {
+                        fields: Arc::from([]),
+                    }),
+            },
             ast::Expr::TypeAssertExpr(_) => ExprSyntaxKind::Unsupported("type assertion"),
         };
         Ok(ExprSyntax { source, kind })
@@ -918,56 +952,4 @@ fn text_range(start: usize, end: usize) -> Result<TextRange, ProjectionError> {
         start: start.to_usize(),
         end: end.to_usize(),
     })
-}
-
-fn expression_position<'a>(expression: &'a ast::Expr<'a>) -> Position<'a> {
-    match expression {
-        ast::Expr::ArrayType(expression) => expression.lbrack,
-        ast::Expr::BasicLit(expression) => expression.value_pos,
-        ast::Expr::BinaryExpr(expression) => expression.op_pos,
-        ast::Expr::CallExpr(expression) => expression.lparen,
-        ast::Expr::ChanType(expression) => expression.begin,
-        ast::Expr::CompositeLit(expression) => expression.lbrace,
-        ast::Expr::Ellipsis(expression) => expression.ellipsis,
-        ast::Expr::FuncLit(expression) => expression.type_.func.unwrap_or_default(),
-        ast::Expr::FuncType(expression) => expression.func.unwrap_or_default(),
-        ast::Expr::Ident(expression) => expression.name_pos,
-        ast::Expr::IndexExpr(expression) => expression.lbrack,
-        ast::Expr::IndexListExpr(expression) => expression.lbrack,
-        ast::Expr::InterfaceType(expression) => expression.interface,
-        ast::Expr::KeyValueExpr(expression) => expression.colon,
-        ast::Expr::MapType(expression) => expression.map,
-        ast::Expr::ParenExpr(expression) => expression.lparen,
-        ast::Expr::SelectorExpr(expression) => expression.sel.name_pos,
-        ast::Expr::SliceExpr(expression) => expression.lbrack,
-        ast::Expr::StarExpr(expression) => expression.star,
-        ast::Expr::StructType(expression) => expression.struct_,
-        ast::Expr::TypeAssertExpr(expression) => expression.lparen,
-        ast::Expr::UnaryExpr(expression) => expression.op_pos,
-    }
-}
-
-fn statement_position<'a>(statement: &'a ast::Stmt<'a>) -> Position<'a> {
-    match statement {
-        ast::Stmt::AssignStmt(statement) => statement.tok_pos,
-        ast::Stmt::BlockStmt(statement) => statement.lbrace,
-        ast::Stmt::BranchStmt(statement) => statement.tok_pos,
-        ast::Stmt::CaseClause(statement) => statement.case,
-        ast::Stmt::CommClause(statement) => statement.case,
-        ast::Stmt::DeclStmt(statement) => statement.decl.tok_pos,
-        ast::Stmt::DeferStmt(statement) => statement.defer,
-        ast::Stmt::EmptyStmt(statement) => statement.semicolon,
-        ast::Stmt::ExprStmt(statement) => expression_position(&statement.x),
-        ast::Stmt::ForStmt(statement) => statement.for_,
-        ast::Stmt::GoStmt(statement) => statement.go,
-        ast::Stmt::IfStmt(statement) => statement.if_,
-        ast::Stmt::IncDecStmt(statement) => statement.tok_pos,
-        ast::Stmt::LabeledStmt(statement) => statement.colon,
-        ast::Stmt::RangeStmt(statement) => statement.for_,
-        ast::Stmt::ReturnStmt(statement) => statement.return_,
-        ast::Stmt::SelectStmt(statement) => statement.select,
-        ast::Stmt::SendStmt(statement) => statement.arrow,
-        ast::Stmt::SwitchStmt(statement) => statement.switch,
-        ast::Stmt::TypeSwitchStmt(statement) => statement.switch,
-    }
 }

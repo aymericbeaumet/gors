@@ -173,6 +173,74 @@ fn aliases_of_defined_types_preserve_the_definition_identity() {
 }
 
 #[test]
+fn aggregate_and_function_types_enter_typed_signatures() {
+    use gors::compiler::types::{IntTy, Ty};
+
+    let mut db = CompilerDatabase::default();
+    let file = install(
+        &mut db,
+        "main.go",
+        concat!(
+            "package main\n",
+            "type Counter struct { Value int `json:\"value\"` }\n",
+            "type Line struct { Points []Counter }\n",
+            "type Reader interface { Read() int }\n",
+            "func consume(value Line, callback func(int) string, reader Reader) {}\n",
+        ),
+    );
+    let consume = function_id(&db, file, "consume");
+    let signature = db.typed_signature(file, consume).unwrap();
+    let [counter, callback, reader] = signature.signature().params.as_slice() else {
+        panic!("consume should have three parameters")
+    };
+
+    let Ty::Named { underlying, .. } = counter else {
+        panic!("Line should retain its defined-type identity")
+    };
+    let Ty::Struct(fields) = underlying.as_ref() else {
+        panic!("Line should retain its exact struct layout")
+    };
+    let [field] = fields.as_slice() else {
+        panic!("Line should retain one field")
+    };
+    assert_eq!(field.name, "Points");
+    let Ty::Slice(counter) = &field.ty else {
+        panic!("Line.Points should retain its slice element type")
+    };
+    let Ty::Named { underlying, .. } = counter.as_ref() else {
+        panic!("Line.Points should retain Counter's defined-type identity")
+    };
+    let Ty::Struct(fields) = underlying.as_ref() else {
+        panic!("Counter should retain its exact struct layout")
+    };
+    let [field] = fields.as_slice() else {
+        panic!("Counter should retain one field")
+    };
+    assert_eq!(field.name, "Value");
+    assert_eq!(field.ty, Ty::Int(IntTy::Int));
+    assert_eq!(field.tag.as_deref(), Some("`json:\"value\"`"));
+
+    let Ty::Function(callback) = callback else {
+        panic!("callback should retain its function signature")
+    };
+    assert_eq!(callback.params, [Ty::Int(IntTy::Int)]);
+    assert_eq!(callback.results, [Ty::String]);
+
+    let Ty::Named { underlying, .. } = reader else {
+        panic!("Reader should retain its defined-type identity")
+    };
+    let Ty::Interface(methods) = underlying.as_ref() else {
+        panic!("Reader should retain its exact method set")
+    };
+    let [method] = methods.as_slice() else {
+        panic!("Reader should retain one method")
+    };
+    assert_eq!(method.name, "Read");
+    assert!(method.signature.params.is_empty());
+    assert_eq!(method.signature.results, [Ty::Int(IntTy::Int)]);
+}
+
+#[test]
 fn constant_cycles_fail_deterministically() {
     let mut db = CompilerDatabase::default();
     let file = install(

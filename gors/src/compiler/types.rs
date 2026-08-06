@@ -19,6 +19,9 @@ pub enum Ty {
         definition: DefId,
         underlying: Box<Ty>,
     },
+    Struct(Vec<StructField>),
+    Interface(Vec<InterfaceMethod>),
+    Function(Signature),
     String,
     Pointer(Box<Ty>),
     Array(u64, Box<Ty>),
@@ -106,11 +109,25 @@ pub enum ConstValue {
     String(Vec<u8>),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Signature {
     pub params: Vec<Ty>,
     pub results: Vec<Ty>,
     pub variadic: bool,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct StructField {
+    pub name: String,
+    pub ty: Ty,
+    pub embedded: bool,
+    pub tag: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct InterfaceMethod {
+    pub name: String,
+    pub signature: Signature,
 }
 
 impl Ty {
@@ -208,6 +225,7 @@ impl Ty {
                 imag: "0.0".into(),
             }),
             Self::String => Some(ConstValue::String(Vec::new())),
+            Self::Struct(_) | Self::Interface(_) | Self::Function(_) => None,
             Self::Named { underlying, .. } => underlying.zero(),
             Self::Unit
             | Self::Pointer(_)
