@@ -1,5 +1,6 @@
 //! One-pass projection from parser observations into owned function syntax.
 
+mod local_types;
 mod positions;
 
 use std::fmt;
@@ -14,7 +15,7 @@ use super::method_receiver;
 use super::{
     BlockSyntax, ChannelDirectionSyntax, ConstantLayout, ConstantSyntax, ConstantValueSyntax,
     DeclSyntax, ExprSyntax, ExprSyntaxKind, FieldListSyntax, FieldSyntax, FunctionBodySyntax,
-    FunctionHeaderSyntax, FunctionLayout, IdentSyntax, ProjectedConstantSyntax,
+    FunctionHeaderSyntax, FunctionLayout, IdentSyntax, LocalTypeSyntax, ProjectedConstantSyntax,
     ProjectedFunctionSyntax, ProjectedVariableSyntax, SelectCaseSyntax, SemanticTokenStream,
     StmtSyntax, StmtSyntaxKind, SwitchCaseSyntax, SyntaxAnchor, SyntaxSource, SyntaxSourceRegion,
     TypeAliasSyntax, TypeDefinitionSyntax, ValueSpecSyntax, VariableLayout, VariableSyntax,
@@ -762,21 +763,22 @@ impl StructuralProjector {
         declaration: &ast::GenDecl<'_>,
     ) -> Result<DeclSyntax, ProjectionError> {
         let source = self.source(&declaration.tok_pos)?;
-        let mut contains_non_value_spec = false;
+        let mut contains_import_spec = false;
         let mut specs = Vec::new();
+        let mut type_specs = Vec::new();
         for spec in &declaration.specs {
             match spec {
                 ast::Spec::ValueSpec(spec) => specs.push(self.value_spec(spec)?),
-                ast::Spec::ImportSpec(_) | ast::Spec::TypeSpec(_) => {
-                    contains_non_value_spec = true;
-                }
+                ast::Spec::TypeSpec(spec) => type_specs.push(self.local_type_spec(spec)?),
+                ast::Spec::ImportSpec(_) => contains_import_spec = true,
             }
         }
         Ok(DeclSyntax {
             source,
             token: declaration.tok,
             specs: specs.into(),
-            contains_non_value_spec,
+            type_specs: type_specs.into(),
+            contains_import_spec,
         })
     }
 

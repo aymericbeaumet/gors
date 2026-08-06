@@ -287,7 +287,7 @@ pub(super) fn is_assignable(actual: &Ty, expected: &Ty) -> bool {
     if actual == expected {
         return true;
     }
-    if let Ty::Named { underlying, .. } = expected
+    if let Ty::Named { underlying, .. } | Ty::LocalNamed { underlying, .. } = expected
         && matches!(actual, Ty::Untyped(_))
     {
         return is_assignable(actual, underlying);

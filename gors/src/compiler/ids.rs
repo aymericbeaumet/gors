@@ -168,6 +168,36 @@ impl LocalId {
     }
 }
 
+/// Dense identity of a named type declared inside one function.
+///
+/// This identity is deliberately revision-local and may only travel inside
+/// its owning function's HIR and IR products. It is not a query or CAS key.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct LocalTypeId {
+    owner: DefId,
+    local: u32,
+}
+
+impl LocalTypeId {
+    pub(super) const fn owner_local(owner: DefId, local: u32) -> Self {
+        Self { owner, local }
+    }
+
+    pub(in crate::compiler) const fn owner(self) -> DefId {
+        self.owner
+    }
+
+    pub(in crate::compiler) const fn local_index(self) -> u32 {
+        self.local
+    }
+}
+
+impl fmt::Display for LocalTypeId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}:{}", self.owner, self.local)
+    }
+}
+
 /// Dense identity of one non-escaping function literal within its owner.
 ///
 /// Like [`LocalId`], this is revision-local and cannot be used as a query or

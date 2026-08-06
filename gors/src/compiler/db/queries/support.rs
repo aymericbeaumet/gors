@@ -356,6 +356,10 @@ impl PackageReferenceCollector {
     }
 
     fn declaration(&mut self, declaration: &DeclSyntax) {
+        for spec in &*declaration.type_specs {
+            self.bind(Arc::clone(&spec.name.name));
+            self.expression(&spec.target);
+        }
         for spec in &*declaration.specs {
             // Go evaluates a ValueSpec's RHS before introducing its names.
             if let Some(values) = &spec.values {

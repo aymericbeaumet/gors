@@ -5,7 +5,7 @@
 
 use num_bigint::BigInt;
 
-use super::ids::DefId;
+use super::ids::{DefId, LocalTypeId};
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum Ty {
@@ -17,6 +17,10 @@ pub enum Ty {
     Complex(ComplexTy),
     Named {
         definition: DefId,
+        underlying: Box<Ty>,
+    },
+    LocalNamed {
+        identity: LocalTypeId,
         underlying: Box<Ty>,
     },
     Struct(Vec<StructField>),
@@ -134,7 +138,9 @@ impl Ty {
     #[must_use]
     pub fn underlying(&self) -> &Ty {
         match self {
-            Self::Named { underlying, .. } => underlying.underlying(),
+            Self::Named { underlying, .. } | Self::LocalNamed { underlying, .. } => {
+                underlying.underlying()
+            }
             other => other,
         }
     }
@@ -151,7 +157,7 @@ impl Ty {
     }
 
     pub fn is_numeric(&self) -> bool {
-        if let Self::Named { underlying, .. } = self {
+        if let Self::Named { underlying, .. } | Self::LocalNamed { underlying, .. } = self {
             return underlying.is_numeric();
         }
         matches!(
@@ -165,7 +171,7 @@ impl Ty {
     }
 
     pub fn is_integer(&self) -> bool {
-        if let Self::Named { underlying, .. } = self {
+        if let Self::Named { underlying, .. } | Self::LocalNamed { underlying, .. } = self {
             return underlying.is_integer();
         }
         matches!(
@@ -199,7 +205,7 @@ impl Ty {
     /// Values the bootstrap backend can currently execute without relying on
     /// target-dependent or incomplete numeric semantics.
     pub fn is_bootstrap_value(&self) -> bool {
-        if let Self::Named { underlying, .. } = self {
+        if let Self::Named { underlying, .. } | Self::LocalNamed { underlying, .. } = self {
             return underlying.is_bootstrap_value();
         }
         if let Self::Slice(element) = self {
@@ -259,7 +265,7 @@ impl Ty {
     }
 
     pub fn zero(&self) -> Option<ConstValue> {
-        if let Self::Named { underlying, .. } = self {
+        if let Self::Named { underlying, .. } | Self::LocalNamed { underlying, .. } = self {
             return underlying.zero();
         }
         match self.default_typed() {
@@ -272,7 +278,9 @@ impl Ty {
             }),
             Self::String => Some(ConstValue::String(Vec::new())),
             Self::Struct(_) | Self::Interface(_) | Self::Function(_) => None,
-            Self::Named { underlying, .. } => underlying.zero(),
+            Self::Named { underlying, .. } | Self::LocalNamed { underlying, .. } => {
+                underlying.zero()
+            }
             Self::Unit
             | Self::Pointer(_)
             | Self::Array(_, _)
@@ -289,7 +297,7 @@ impl ConstValue {
     /// Whether this exact Go constant can be materialized as `ty` by the
     /// current target's bootstrap representation.
     pub fn is_representable_as(&self, ty: &Ty) -> bool {
-        if let Ty::Named { underlying, .. } = ty {
+        if let Ty::Named { underlying, .. } | Ty::LocalNamed { underlying, .. } = ty {
             return self.is_representable_as(underlying);
         }
         match (self, ty) {

@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use super::Fingerprint;
 use crate::compiler::hir;
 use crate::compiler::ids::{
-    BasicBlockId, ClosureId, DefId, LocalId, NodeId, PackageId, QualifiedDefId,
+    BasicBlockId, ClosureId, DefId, LocalId, LocalTypeId, NodeId, PackageId, QualifiedDefId,
 };
 use crate::compiler::provenance::{SourceRef, SourceRefKind};
 use crate::compiler::types::{
@@ -134,6 +134,11 @@ pub(super) fn local_id(encoder: &mut Encoder, value: LocalId) {
     encoder.u32(value.index());
 }
 
+pub(super) fn local_type_id(encoder: &mut Encoder, value: LocalTypeId) {
+    encoder.field(b"owner", |encoder| def_id(encoder, value.owner()));
+    encoder.field(b"local", |encoder| encoder.u32(value.local_index()));
+}
+
 pub(super) fn closure_id(encoder: &mut Encoder, value: ClosureId) {
     encoder.u32(value.index());
 }
@@ -176,6 +181,13 @@ pub(super) fn ty(encoder: &mut Encoder, value: &Ty) {
             underlying,
         } => encoder.variant(b"named", |encoder| {
             encoder.field(b"definition", |encoder| def_id(encoder, *definition));
+            encoder.field(b"underlying", |encoder| ty(encoder, underlying));
+        }),
+        Ty::LocalNamed {
+            identity,
+            underlying,
+        } => encoder.variant(b"local-named", |encoder| {
+            encoder.field(b"identity", |encoder| local_type_id(encoder, *identity));
             encoder.field(b"underlying", |encoder| ty(encoder, underlying));
         }),
         Ty::Struct(fields) => {

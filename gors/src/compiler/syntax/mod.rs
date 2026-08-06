@@ -17,9 +17,9 @@ pub use stream::SemanticTokenStream;
 pub use structural::{
     BlockSyntax, ChannelDirectionSyntax, ConstantSyntax, ConstantValueSyntax, DeclSyntax,
     ExprSyntax, ExprSyntaxKind, FieldListSyntax, FieldSyntax, FunctionBodySyntax,
-    FunctionHeaderSyntax, IdentSyntax, SelectCaseSyntax, StmtSyntax, StmtSyntaxKind,
-    SwitchCaseSyntax, SyntaxSource, SyntaxSourceRegion, TypeAliasSyntax, TypeDefinitionSyntax,
-    ValueSpecSyntax, VariableSyntax, VariableValueSyntax,
+    FunctionHeaderSyntax, IdentSyntax, LocalTypeSyntax, SelectCaseSyntax, StmtSyntax,
+    StmtSyntaxKind, SwitchCaseSyntax, SyntaxSource, SyntaxSourceRegion, TypeAliasSyntax,
+    TypeDefinitionSyntax, ValueSpecSyntax, VariableSyntax, VariableValueSyntax,
 };
 pub use token::SemanticToken;
 

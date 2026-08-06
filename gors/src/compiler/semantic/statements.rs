@@ -11,8 +11,8 @@ use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{
-    DeclSyntax, ExprSyntax, ExprSyntaxKind, StmtSyntax, StmtSyntaxKind, SwitchCaseSyntax,
-    SyntaxSource, ValueSpecSyntax,
+    DeclSyntax, ExprSyntax, ExprSyntaxKind, LocalTypeSyntax, StmtSyntax, StmtSyntaxKind,
+    SwitchCaseSyntax, SyntaxSource, ValueSpecSyntax,
 };
 use crate::compiler::types::{ConstValue, IntTy, Ty};
 
@@ -538,13 +538,16 @@ impl FunctionLowerer {
                 source,
             ));
         }
+        if declaration.token == Token::TYPE {
+            return self.lower_local_type_declaration(declaration, source);
+        }
         if declaration.token != Token::VAR {
             return Err(Diagnostic::unsupported(
-                "local type and import declarations are not implemented",
+                "local import declarations are not implemented",
                 source,
             ));
         }
-        if declaration.contains_non_value_spec {
+        if declaration.contains_import_spec || !declaration.type_specs.is_empty() {
             return Err(Diagnostic::semantic(
                 "value declaration contains a non-value specification",
                 source,
@@ -561,6 +564,53 @@ impl FunctionLowerer {
             stmts: statements,
             source: SourceRef::node(node),
         }))
+    }
+
+    fn lower_local_type_declaration(
+        &mut self,
+        declaration: &DeclSyntax,
+        source: SourceRef,
+    ) -> Result<hir::StmtKind, Diagnostic> {
+        if declaration.contains_import_spec || !declaration.specs.is_empty() {
+            return Err(Diagnostic::semantic(
+                "type declaration contains a non-type specification",
+                source,
+            ));
+        }
+        for spec in &*declaration.type_specs {
+            self.lower_local_type_spec(spec, source)?;
+        }
+        let node = self.alloc_node(declaration.source)?;
+        Ok(hir::StmtKind::Block(hir::Block {
+            node,
+            stmts: Vec::new(),
+            source: SourceRef::node(node),
+        }))
+    }
+
+    fn lower_local_type_spec(
+        &mut self,
+        spec: &LocalTypeSyntax,
+        declaration_source: SourceRef,
+    ) -> Result<(), Diagnostic> {
+        if spec.has_type_parameters {
+            return Err(Diagnostic::unsupported(
+                "generic local type declarations are not yet implemented",
+                declaration_source,
+            ));
+        }
+        let target = lower_type(&spec.target, &self.type_aliases, declaration_source)?;
+        ensure_bootstrap_value_type(&target, declaration_source)?;
+        let ty = if spec.alias {
+            target
+        } else {
+            Ty::LocalNamed {
+                identity: self.alloc_local_type_identity()?,
+                underlying: Box::new(target.underlying().clone()),
+            }
+        };
+        let node = self.alloc_node(spec.name.source)?;
+        self.bind_local_type(spec.name.name.to_string(), ty, SourceRef::node(node))
     }
 
     fn lower_value_spec(

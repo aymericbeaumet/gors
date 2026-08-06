@@ -159,7 +159,10 @@ pub(super) fn function_symbols(
 
 fn collect_interface_method_names(ty: &Ty, names: &mut BTreeSet<Arc<str>>) {
     match ty {
-        Ty::Named { underlying, .. } | Ty::Pointer(underlying) | Ty::Slice(underlying) => {
+        Ty::Named { underlying, .. }
+        | Ty::LocalNamed { underlying, .. }
+        | Ty::Pointer(underlying)
+        | Ty::Slice(underlying) => {
             collect_interface_method_names(underlying, names);
         }
         Ty::Array(_, element) | Ty::Channel(_, element) => {

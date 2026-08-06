@@ -452,7 +452,7 @@ impl Function {
                                 hir::Builtin::Print | hir::Builtin::Println => {
                                     for ty in &argument_types {
                                         if !matches!(
-                                            ty,
+                                            ty.underlying(),
                                             Ty::Bool | Ty::Int(IntTy::Int) | Ty::String
                                         ) {
                                             return Err(Diagnostic::backend(format!(

@@ -491,8 +491,10 @@ pub(super) fn dynamic_type_identity(ty: &Ty) -> Option<Vec<u8>> {
         Ty::Int(crate::compiler::types::IntTy::Int) => "builtin:int".to_owned(),
         Ty::String => "builtin:string".to_owned(),
         Ty::Named { definition, .. } => format!("named:{definition}"),
+        Ty::LocalNamed { identity, .. } => format!("local-named:{identity}"),
         Ty::Pointer(element) => match element.as_ref() {
             Ty::Named { definition, .. } => format!("pointer:named:{definition}"),
+            Ty::LocalNamed { identity, .. } => format!("pointer:local-named:{identity}"),
             _ => return None,
         },
         _ => return None,

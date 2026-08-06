@@ -295,6 +295,7 @@ pub(super) fn lower_function(
     let mut lowerer = FunctionLowerer {
         owner: definition,
         next_node: 1,
+        next_local_type: 0,
         functions: symbols.functions,
         qualified_functions: symbols.qualified_functions,
         methods: symbols.methods,
@@ -303,6 +304,7 @@ pub(super) fn lower_function(
         variables: symbols.variables,
         qualified_variables: symbols.qualified_variables,
         type_aliases,
+        type_scope_changes: vec![BTreeMap::new()],
         signature: signature.clone(),
         locals: Vec::new(),
         scopes: vec![BTreeMap::new()],

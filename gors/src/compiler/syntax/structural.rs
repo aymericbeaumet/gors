@@ -231,7 +231,8 @@ pub struct DeclSyntax {
     pub(crate) source: SyntaxSource,
     pub(crate) token: Token,
     pub(crate) specs: Arc<[ValueSpecSyntax]>,
-    pub(crate) contains_non_value_spec: bool,
+    pub(crate) type_specs: Arc<[LocalTypeSyntax]>,
+    pub(crate) contains_import_spec: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -239,6 +240,14 @@ pub struct ValueSpecSyntax {
     pub(crate) names: Arc<[IdentSyntax]>,
     pub(crate) explicit_type: Option<ExprSyntax>,
     pub(crate) values: Option<Arc<[ExprSyntax]>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocalTypeSyntax {
+    pub(crate) name: IdentSyntax,
+    pub(crate) alias: bool,
+    pub(crate) has_type_parameters: bool,
+    pub(crate) target: ExprSyntax,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
