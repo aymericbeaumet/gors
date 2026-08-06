@@ -455,8 +455,8 @@ plan which the presentation query joins to the current layout. Package-function
 `SyntaxAnchor`s use the package-level name, while method anchors use the named
 receiver and method name. Neither form contains an offset, traversal ordinal,
 or token index, and repeated `init` remains rejected until a structural
-disambiguator exists. Demand queries independently
-type function headers, package constants, and function bodies before reaching
+disambiguator exists. Demand queries independently type function headers,
+package constants, package variables, and function bodies before reaching
 function-relative typed HIR, per-definition
 verified MIR, mandatory normalized/reverified MIR, configured verified Rust IR,
 and deterministic package Rust-IR assembly. Function verification reads only
@@ -466,8 +466,12 @@ Lexical reference collection respects parameter, named-result, declaration,
 short-declaration, and nested control-flow scopes, so shadowed names do not
 create false package dependencies. Package-constant dependencies resolve by
 stable name across the complete package, permit forward and cross-file
-references, and reject cycles with a deterministic path. Exported constant
-type/value semantics participate in the package public-API fingerprint.
+references, and reject cycles with a deterministic path. Package variables
+have distinct stable declarations and typed initializer queries; immutable
+reads materialize exact constant or zero initial values, while mutation and
+address-taking remain rejected until global storage lowering exists. Exported
+constant and variable type/value semantics participate in the package
+public-API fingerprint.
 Production program
 compilation delegates to `CompilerSession`; convenience functions create a
 short-lived session, while the browser worker retains one explicitly across

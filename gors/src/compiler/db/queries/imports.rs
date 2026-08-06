@@ -7,14 +7,17 @@ use super::support::{PackageReferences, function_source, semantic_failure};
 use super::{
     Db, FunctionProjection, PackageInput, file_projection, package_constant_named_product,
     package_function_named_product, package_function_product, package_type_aliases_product,
-    typed_constant_product, typed_signature_product,
+    package_variable_named_product, typed_constant_product, typed_signature_product,
+    typed_variable_product,
 };
 use crate::compiler::Diagnostic;
 use crate::compiler::db::ResolvedImportBinding;
 use crate::compiler::db::products::StageFailure;
 use crate::compiler::ids::{PackageId, QualifiedDefId};
 use crate::compiler::provenance::SourceRef;
-use crate::compiler::semantic::{ConstantSymbol, FunctionSymbol, FunctionSymbols, MethodSymbol};
+use crate::compiler::semantic::{
+    ConstantSymbol, FunctionSymbol, FunctionSymbols, MethodSymbol, VariableSymbol,
+};
 use crate::compiler::types::Ty;
 
 pub(super) fn function_dependency<'db>(
@@ -52,6 +55,8 @@ pub(super) fn function_symbols(
         methods: BTreeMap::new(),
         constants: BTreeMap::new(),
         qualified_constants: BTreeMap::new(),
+        variables: BTreeMap::new(),
+        qualified_variables: BTreeMap::new(),
     };
     add_unqualified_symbols(
         db,
@@ -236,6 +241,19 @@ fn add_unqualified_symbols(
                 caller,
             )?;
         }
+        if let Some(projection) = package_variable_named_product(db, input, Arc::clone(name)) {
+            let typed = typed_variable_product(db, input, projection)?;
+            insert_variable(
+                &mut symbols.variables,
+                name.to_string(),
+                VariableSymbol {
+                    id: QualifiedDefId::new(package, typed.id),
+                    ty: typed.ty.clone(),
+                    value: typed.value.clone(),
+                },
+                caller,
+            )?;
+        }
     }
     Ok(())
 }
@@ -279,6 +297,16 @@ fn add_qualified_symbol(
                 value: typed.value.clone(),
             },
         );
+    } else if let Some(projection) = package_variable_named_product(db, input, Arc::clone(member)) {
+        let typed = typed_variable_product(db, input, projection)?;
+        symbols.qualified_variables.insert(
+            key,
+            VariableSymbol {
+                id: QualifiedDefId::new(package, typed.id),
+                ty: typed.ty.clone(),
+                value: typed.value.clone(),
+            },
+        );
     }
     Ok(())
 }
@@ -305,6 +333,21 @@ fn insert_constant(
     caller: crate::compiler::ids::DefId,
 ) -> Result<(), Arc<StageFailure>> {
     if constants
+        .insert(name.clone(), symbol.clone())
+        .is_some_and(|previous| previous.id != symbol.id)
+    {
+        return Err(ambiguous_name(caller, &name));
+    }
+    Ok(())
+}
+
+fn insert_variable(
+    variables: &mut BTreeMap<String, VariableSymbol>,
+    name: String,
+    symbol: VariableSymbol,
+    caller: crate::compiler::ids::DefId,
+) -> Result<(), Arc<StageFailure>> {
+    if variables
         .insert(name.clone(), symbol.clone())
         .is_some_and(|previous| previous.id != symbol.id)
     {

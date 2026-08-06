@@ -2,6 +2,7 @@ use super::*;
 
 mod channels;
 mod structs;
+mod variables;
 
 struct GeneratedRun {
     rust: String,

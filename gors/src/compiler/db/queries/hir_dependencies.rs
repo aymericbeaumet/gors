@@ -169,6 +169,7 @@ fn collect_expression_callees(expression: &hir::Expr, callees: &mut BTreeSet<Qua
         hir::ExprKind::Constant(_)
         | hir::ExprKind::Local(_)
         | hir::ExprKind::GlobalConstant(..)
+        | hir::ExprKind::GlobalVariable(..)
         | hir::ExprKind::RecoverCompareNil { .. }
         | hir::ExprKind::SliceLiteralI64(_)
         | hir::ExprKind::SliceLiteralU8(_)

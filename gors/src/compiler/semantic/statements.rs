@@ -944,6 +944,12 @@ impl FunctionLowerer {
         if ident.name.as_ref() == "_" {
             return Ok(hir::Place::Discard);
         }
+        if self.variables.contains_key(ident.name.as_ref()) {
+            return Err(Diagnostic::unsupported(
+                "package variable mutation requires global storage lowering",
+                source,
+            ));
+        }
         self.lookup_local(&ident.name)
             .map(hir::Place::Local)
             .ok_or_else(|| {

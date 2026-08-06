@@ -77,6 +77,18 @@ impl FunctionLowerer {
                         effects: hir::Effects::default(),
                         source,
                     }
+                } else if let Some(variable) = self.variables.get(name).cloned() {
+                    hir::Expr {
+                        node,
+                        kind: hir::ExprKind::GlobalVariable(variable.id, variable.value),
+                        ty: variable.ty,
+                        category: hir::ValueCategory::Value,
+                        effects: hir::Effects {
+                            may_read: true,
+                            ..hir::Effects::default()
+                        },
+                        source,
+                    }
                 } else if self.functions.contains_key(name) {
                     return Err(Diagnostic::unsupported(
                         format!("function value {name} is not implemented by the HIR/MIR backend"),

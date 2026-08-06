@@ -31,7 +31,8 @@ use super::ids::{DefId, NodeId, QualifiedDefId};
 use super::provenance::SourceRef;
 use super::syntax::{
     ChannelDirectionSyntax, ConstantSyntax, ConstantValueSyntax, ExprSyntax, ExprSyntaxKind,
-    FieldListSyntax, FunctionBodySyntax, FunctionHeaderSyntax, SyntaxSource,
+    FieldListSyntax, FunctionBodySyntax, FunctionHeaderSyntax, SyntaxSource, VariableSyntax,
+    VariableValueSyntax,
 };
 use super::types::{
     ChannelDir, ConstValue, IntTy, InterfaceMethod, Signature, StructField, Ty, UntypedTy,
@@ -57,16 +58,33 @@ pub(super) struct ConstantSymbol {
     pub(super) value: ConstValue,
 }
 
+#[derive(Clone)]
+pub(super) struct VariableSymbol {
+    pub(super) id: QualifiedDefId,
+    pub(super) ty: Ty,
+    pub(super) value: ConstValue,
+}
+
 pub(super) struct FunctionSymbols {
     pub(super) functions: BTreeMap<String, FunctionSymbol>,
     pub(super) qualified_functions: BTreeMap<(String, String), FunctionSymbol>,
     pub(super) methods: BTreeMap<(DefId, String), MethodSymbol>,
     pub(super) constants: BTreeMap<String, ConstantSymbol>,
     pub(super) qualified_constants: BTreeMap<(String, String), ConstantSymbol>,
+    pub(super) variables: BTreeMap<String, VariableSymbol>,
+    pub(super) qualified_variables: BTreeMap<(String, String), VariableSymbol>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct TypedConstant {
+    pub(super) id: DefId,
+    pub(super) name: String,
+    pub(super) ty: Ty,
+    pub(super) value: ConstValue,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct TypedVariable {
     pub(super) id: DefId,
     pub(super) name: String,
     pub(super) ty: Ty,
@@ -191,6 +209,66 @@ pub(super) fn lower_constant(
     })
 }
 
+pub(super) fn lower_variable(
+    definition: DefId,
+    syntax: &VariableSyntax,
+    constants: &BTreeMap<String, ConstantSymbol>,
+    type_aliases: &BTreeMap<String, Ty>,
+) -> Result<TypedVariable, Diagnostic> {
+    let source = SourceRef::definition(definition);
+    let explicit_ty = syntax
+        .explicit_type
+        .as_ref()
+        .map(|ty| lower_type(ty, type_aliases, source))
+        .transpose()?;
+    let (raw_ty, value) = match &syntax.value {
+        VariableValueSyntax::Expression(expression) => {
+            eval_constant(expression, constants, source, 0)?
+        }
+        VariableValueSyntax::Zero => {
+            let ty = explicit_ty.clone().ok_or_else(|| {
+                Diagnostic::semantic(
+                    format!(
+                        "variable {} has neither a type nor an initializer",
+                        syntax.name.name
+                    ),
+                    source,
+                )
+            })?;
+            let value = ty.zero().ok_or_else(|| {
+                Diagnostic::unsupported(
+                    format!("zero value for package variable type {ty:?} is not implemented"),
+                    source,
+                )
+            })?;
+            (ty, value)
+        }
+        VariableValueSyntax::ArityMismatch => {
+            return Err(Diagnostic::unsupported(
+                "multi-valued package variable initializers are not yet represented",
+                source,
+            ));
+        }
+    };
+    let ty = explicit_ty.unwrap_or_else(|| raw_ty.default_typed());
+    ensure_bootstrap_value_type(&ty, source)?;
+    if !is_assignable(&raw_ty, &ty) || !value.is_representable_as(&ty) {
+        return Err(Diagnostic::semantic(
+            format!(
+                "initializer for package variable {} is not assignable to {ty:?}",
+                syntax.name.name
+            ),
+            source,
+        ));
+    }
+    Ok(TypedVariable {
+        id: definition,
+        name: syntax.name.name.to_string(),
+        ty,
+        value,
+    })
+}
+
 pub(super) fn lower_function(
     definition: DefId,
     header: &FunctionHeaderSyntax,
@@ -221,6 +299,8 @@ pub(super) fn lower_function(
         methods: symbols.methods,
         constants: symbols.constants,
         qualified_constants: symbols.qualified_constants,
+        variables: symbols.variables,
+        qualified_variables: symbols.qualified_variables,
         type_aliases,
         signature: signature.clone(),
         locals: Vec::new(),

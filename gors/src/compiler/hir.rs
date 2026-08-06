@@ -202,6 +202,7 @@ pub enum ExprKind {
     Constant(ConstValue),
     Local(LocalId),
     GlobalConstant(QualifiedDefId, ConstValue),
+    GlobalVariable(QualifiedDefId, ConstValue),
     Binary {
         op: BinaryOp,
         left: Box<Expr>,

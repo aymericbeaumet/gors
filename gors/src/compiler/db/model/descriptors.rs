@@ -77,6 +77,41 @@ impl ConstantDescriptor {
     }
 }
 
+/// Stable package variable identity and display name in one file index.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct VariableDescriptor {
+    pub(super) id: DefId,
+    pub(super) file: FileId,
+    pub(super) name: Arc<str>,
+    key: DefinitionKey,
+}
+
+impl VariableDescriptor {
+    pub(in crate::compiler::db) fn new(file: FileId, key: DefinitionKey, name: Arc<str>) -> Self {
+        Self {
+            id: key.id(),
+            file,
+            name,
+            key,
+        }
+    }
+
+    #[must_use]
+    pub const fn id(&self) -> DefId {
+        self.id
+    }
+
+    #[must_use]
+    pub const fn file(&self) -> FileId {
+        self.file
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
 /// Stable package type-alias identity and target name in one file index.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct TypeAliasDescriptor {

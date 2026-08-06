@@ -5,8 +5,10 @@ mod constant_eval;
 mod hir_dependencies;
 mod imports;
 mod lookups;
+mod rust_ir_package;
 mod support;
 mod type_aliases;
+mod variable_eval;
 
 pub(super) use analysis::{
     body_product, file_analysis_product, package_analysis_product, public_api_product,
@@ -15,27 +17,31 @@ pub(super) use analysis::{
 use hir_dependencies::direct_callees;
 pub(super) use lookups::{
     package_constant_named_product, package_function_named_product, package_function_product,
-    package_method_named_product,
+    package_method_named_product, package_variable_named_product,
 };
+pub(super) use rust_ir_package::rust_ir_package_product;
 use support::{
-    check_semantic_barrier, collect_constant_references, function_definition_key, function_file,
-    package_references_in_body, semantic_build_dependency, semantic_failure,
+    check_semantic_barrier, collect_constant_references, collect_variable_references,
+    function_definition_key, function_file, package_references_in_body, semantic_build_dependency,
+    semantic_failure,
 };
 pub(super) use type_aliases::{
     TypeAliasProjection, TypeDefinitionProjection, package_type_aliases_product,
 };
+pub(super) use variable_eval::{typed_variable_product, variable_source_table_product};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::ast;
-use crate::compiler::fingerprint::{fingerprint_parts, rust_ir_root_inputs};
+use crate::compiler::fingerprint::rust_ir_root_inputs;
 use crate::compiler::input::SourceContent;
 use crate::compiler::provenance::{DefinitionSourceTable, FileRange, SourceRef};
 use crate::compiler::syntax::{
     ConstantLayout, ConstantSyntax, FunctionLayout, ProjectedConstantSyntax,
-    ProjectedFunctionSyntax, project_constant, project_function, project_type_alias,
-    project_type_definition,
+    ProjectedFunctionSyntax, ProjectedVariableSyntax, VariableLayout, VariableSyntax,
+    project_constant, project_function, project_type_alias, project_type_definition,
+    project_variable,
 };
 use crate::compiler::{Diagnostic, lowering, mir, rust_ir};
 use crate::source::SourceCoordinateMap;
@@ -45,7 +51,7 @@ use super::model::{FileIssue, FunctionBody, FunctionSignature, ParseFailure, Run
 use super::products::{
     CompilerStage, MirSignatureDependencies, NormalizedMirFunction, RustSignatureDependencies,
     SemanticFunctionProduct, StageFailure, StageResult, TypedFunctionSignature, TypedHirFunction,
-    VerifiedMirFunction, VerifiedRustIrFunction, VerifiedRustIrPackage,
+    VerifiedMirFunction, VerifiedRustIrFunction,
 };
 use super::resolved_imports::ResolvedImportsInput;
 use super::source_metadata::{FileComments, FileImports};
@@ -146,6 +152,30 @@ pub(super) struct ConstantProjection<'db> {
 }
 
 #[salsa::tracked]
+pub(super) struct VariableProjection<'db> {
+    #[returns(copy)]
+    pub(super) id: DefId,
+    #[tracked]
+    #[returns(clone)]
+    pub(super) key: DefinitionKey,
+    #[tracked]
+    #[returns(clone)]
+    pub(super) name: Arc<str>,
+    #[tracked]
+    #[returns(clone)]
+    pub(super) syntax: Arc<VariableSyntax>,
+    #[tracked]
+    #[returns(clone)]
+    pub(super) layout: Arc<VariableLayout>,
+    #[tracked]
+    #[returns(clone)]
+    pub(super) dependencies: Arc<[Arc<str>]>,
+    #[tracked]
+    #[returns(clone)]
+    pub(super) semantic_barrier: Option<Arc<str>>,
+}
+
+#[salsa::tracked]
 pub(super) struct FileFacts<'db> {
     #[returns(copy)]
     pub(super) file: FileId,
@@ -173,6 +203,9 @@ pub(super) struct FileFacts<'db> {
     #[tracked]
     #[returns(clone)]
     pub(super) constants: Vec<ConstantProjection<'db>>,
+    #[tracked]
+    #[returns(clone)]
+    pub(super) variables: Vec<VariableProjection<'db>>,
     #[tracked]
     #[returns(clone)]
     pub(super) type_aliases: Vec<TypeAliasProjection<'db>>,
@@ -211,6 +244,7 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
+                Vec::new(),
                 Some(ParseFailure::new(error.message(), error.physical_range())),
                 Vec::new(),
             );
@@ -228,7 +262,6 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
             "invalid import declarations cannot enter semantic analysis",
         ))
     } else if parsed.decls.iter().any(|declaration| match declaration {
-        ast::Decl::GenDecl(declaration) if declaration.tok == crate::token::Token::VAR => true,
         ast::Decl::GenDecl(declaration) if declaration.tok == crate::token::Token::TYPE => {
             declaration.specs.iter().any(|spec| {
                 !matches!(
@@ -240,7 +273,7 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
         _ => false,
     }) {
         Some(Arc::from(
-            "package variables and declared types are not implemented by the semantic query pipeline",
+            "generic type declarations are not yet represented by semantic queries",
         ))
     } else {
         None
@@ -249,6 +282,7 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
     let mut seen_methods = BTreeSet::<DefinitionKey>::new();
     let mut projected_functions = Vec::new();
     let mut projected_constants = Vec::new();
+    let mut projected_variables = Vec::new();
     let mut projected_type_aliases = Vec::new();
     let mut projected_type_definitions = Vec::new();
     let mut issues = Vec::new();
@@ -373,6 +407,59 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
                     }
                 }
             }
+            ast::Decl::GenDecl(declaration) if declaration.tok == crate::token::Token::VAR => {
+                for spec in &declaration.specs {
+                    let ast::Spec::ValueSpec(spec) = spec else {
+                        continue;
+                    };
+                    let values = spec.values.as_deref().unwrap_or_default();
+                    let arity_mismatch = !values.is_empty() && values.len() != spec.names.len();
+                    for (index, name) in spec.names.iter().enumerate() {
+                        let owned_name: Arc<str> = Arc::from(name.name);
+                        if !seen.insert(Arc::clone(&owned_name)) {
+                            issues.push(FileIssue::DuplicateDefinition(owned_name));
+                            continue;
+                        }
+                        let key = DefinitionKey::package_named(
+                            package_id,
+                            DefinitionKind::Variable,
+                            name.name,
+                        );
+                        let id = key.id();
+                        let ProjectedVariableSyntax { syntax, layout } = match project_variable(
+                            name,
+                            spec.type_.as_ref(),
+                            values.get(index),
+                            arity_mismatch,
+                            content.text_len(),
+                        ) {
+                            Ok(projected) => projected,
+                            Err(error) => {
+                                issues.push(FileIssue::VariableProjectionFailure {
+                                    name: owned_name,
+                                    message: Arc::from(error.to_string()),
+                                });
+                                continue;
+                            }
+                        };
+                        let mut referenced = BTreeSet::new();
+                        collect_variable_references(&syntax, &mut referenced);
+                        let dependencies = referenced
+                            .into_iter()
+                            .filter(|name| !matches!(name.as_str(), "true" | "false"))
+                            .map(Arc::<str>::from)
+                            .collect::<Vec<_>>();
+                        projected_variables.push((
+                            id,
+                            key,
+                            Arc::clone(&owned_name),
+                            Arc::new(syntax),
+                            Arc::new(layout),
+                            Arc::<[Arc<str>]>::from(dependencies),
+                        ));
+                    }
+                }
+            }
             ast::Decl::GenDecl(declaration) if declaration.tok == crate::token::Token::TYPE => {
                 for spec in &declaration.specs {
                     let ast::Spec::TypeSpec(spec) = spec else {
@@ -425,6 +512,7 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
     }
     projected_functions.sort_by_key(|(id, _, _, _, _, _, _, _)| *id);
     projected_constants.sort_by_key(|(id, _, _, _, _, _)| *id);
+    projected_variables.sort_by_key(|(id, _, _, _, _, _)| *id);
     projected_type_aliases.sort_by_key(|(id, _, _, _)| *id);
     projected_type_definitions.sort_by_key(|(id, _, _, _)| *id);
     issues.sort();
@@ -464,6 +552,21 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
             )
         })
         .collect();
+    let variables = projected_variables
+        .into_iter()
+        .map(|(id, key, name, syntax, layout, dependencies)| {
+            VariableProjection::new(
+                db,
+                id,
+                key,
+                name,
+                syntax,
+                layout,
+                dependencies,
+                semantic_barrier.clone(),
+            )
+        })
+        .collect();
     let type_aliases = projected_type_aliases
         .into_iter()
         .map(|(id, key, name, syntax)| TypeAliasProjection::new(db, id, key, name, syntax))
@@ -483,6 +586,7 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
         comments,
         functions,
         constants,
+        variables,
         type_aliases,
         type_definitions,
         None,
@@ -800,7 +904,7 @@ pub(super) fn rust_signature_dependencies_product(
     function: FunctionProjection<'_>,
 ) -> StageResult<RustSignatureDependencies> {
     let go_signatures = mir_signature_dependencies_product(db, input, function)?;
-    let representation_key = representation_key(db)?;
+    let representation_key = rust_ir_package::representation_key(db)?;
     let signatures = go_signatures
         .signatures
         .iter()
@@ -828,12 +932,8 @@ pub(super) fn executable_role_product(db: &dyn Db, function: FunctionProjection<
     function.package_name(db).as_ref() == "main" && function.receiver_type(db).is_none()
 }
 
-/// Complete provenance-free invalidation inputs for one Rust-IR function root.
-///
-/// Keeping this as a tracked query lets the retained session decide which
-/// independent roots need a worker without first evaluating those Rust-IR
-/// roots serially. Direct-callee ABI changes and representation changes are
-/// part of the digest even when this function's own HIR stays unchanged.
+/// Complete provenance-free invalidation inputs for one Rust-IR function root,
+/// including direct-callee ABI and representation changes.
 #[salsa::tracked(returns(clone))]
 pub(super) fn rust_ir_root_inputs_product(
     db: &dyn Db,
@@ -846,7 +946,7 @@ pub(super) fn rust_ir_root_inputs_product(
     db.unwind_if_revision_cancelled();
     let signatures = mir_signature_dependencies_product(db, input, function)?;
     db.unwind_if_revision_cancelled();
-    let representation_key = representation_key(db)?;
+    let representation_key = rust_ir_package::representation_key(db)?;
     let executable_package = executable_role_product(db, function);
     Ok(Arc::new(rust_ir_root_inputs(
         hir.function(),
@@ -895,87 +995,4 @@ pub(super) fn verified_rust_ir_product(
         signatures.representation_key,
         runtime_requirement,
     )))
-}
-
-#[salsa::tracked(returns(clone))]
-pub(super) fn rust_ir_package_product(
-    db: &dyn Db,
-    input: PackageInput,
-) -> StageResult<VerifiedRustIrPackage> {
-    db.query_telemetry().record_query(QueryKind::RustIrPackage);
-    let analysis = package_analysis_product(db, input);
-    let mut functions = Vec::new();
-    let mut signatures = BTreeMap::new();
-    let mut runtime_requirement = rust_ir::RuntimeRequirement::default();
-    let mut sources = input.sources(db).iter().copied().collect::<Vec<_>>();
-    sources.sort_by_key(|source| source.file(db));
-    for source in sources {
-        let facts = file_projection(db, source);
-        let mut constants = facts.constants(db);
-        constants.sort_by_key(|constant| constant.id(db));
-        for constant in constants {
-            db.unwind_if_revision_cancelled();
-            typed_constant_product(db, input, constant)?;
-        }
-        let mut projected = facts.functions(db);
-        projected.sort_by_key(|function| function.id(db));
-        for function in projected {
-            db.unwind_if_revision_cancelled();
-            let dependencies = rust_signature_dependencies_product(db, input, function)?;
-            signatures.extend(
-                dependencies
-                    .signatures
-                    .iter()
-                    .map(|(definition, signature)| (*definition, signature.clone())),
-            );
-            let verified = verified_rust_ir_product(db, input, function)?;
-            runtime_requirement = runtime_requirement.union(verified.runtime_requirement());
-            functions.push(verified.function().clone());
-        }
-    }
-    functions.sort_by_key(|function| function.id);
-    let file = rust_ir::File {
-        package_id: input.package(db),
-        package: analysis.package_name().to_string(),
-        functions,
-    };
-    let verified_runtime_requirement = rust_ir::verify_with_signatures(&file, &signatures)
-        .map_err(|diagnostic| {
-            Arc::new(StageFailure::one(
-                CompilerStage::RustRepresentation,
-                diagnostic,
-            ))
-        })?;
-    if verified_runtime_requirement != runtime_requirement {
-        return Err(Arc::new(StageFailure::one(
-            CompilerStage::RustRepresentation,
-            Diagnostic::backend(format!(
-                "Rust IR package runtime requirement mismatch: function products derived {runtime_requirement:?}, package verification derived {verified_runtime_requirement:?}"
-            )),
-        )));
-    }
-    let representation_key = representation_key(db)?;
-    Ok(Arc::new(VerifiedRustIrPackage::new(
-        file,
-        representation_key,
-        runtime_requirement,
-    )))
-}
-
-fn representation_key(
-    db: &dyn Db,
-) -> Result<super::super::fingerprint::Fingerprint, Arc<StageFailure>> {
-    let build = db.query_build_input().ok_or_else(|| {
-        Arc::new(StageFailure::one(
-            CompilerStage::RustRepresentation,
-            Diagnostic::backend(
-                "compiler build config is missing from Rust representation lowering",
-            ),
-        ))
-    })?;
-    let runtime_abi = build.runtime_abi(db);
-    Ok(fingerprint_parts(
-        b"rust-representation-config",
-        &[runtime_abi.as_bytes()],
-    ))
 }

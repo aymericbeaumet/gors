@@ -15,6 +15,8 @@ pub enum FileIssue {
     FunctionProjectionFailure { name: Arc<str>, message: Arc<str> },
     /// A parsed constant could not be projected into owned semantic syntax.
     ConstantProjectionFailure { name: Arc<str>, message: Arc<str> },
+    /// A parsed variable could not be projected into owned semantic syntax.
+    VariableProjectionFailure { name: Arc<str>, message: Arc<str> },
     /// A parsed type declaration could not be projected into owned semantic syntax.
     TypeProjectionFailure { name: Arc<str>, message: Arc<str> },
 }
@@ -59,6 +61,12 @@ pub enum PackageIssue {
     },
     /// One parsed constant could not be projected into owned semantic syntax.
     ConstantProjectionFailure {
+        file: FileId,
+        name: Arc<str>,
+        message: Arc<str>,
+    },
+    /// One parsed variable could not be projected into owned semantic syntax.
+    VariableProjectionFailure {
         file: FileId,
         name: Arc<str>,
         message: Arc<str>,

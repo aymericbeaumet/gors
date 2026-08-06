@@ -14,25 +14,13 @@ use super::method_receiver;
 use super::{
     BlockSyntax, ChannelDirectionSyntax, ConstantLayout, ConstantSyntax, ConstantValueSyntax,
     DeclSyntax, ExprSyntax, ExprSyntaxKind, FieldListSyntax, FieldSyntax, FunctionBodySyntax,
-    FunctionHeaderSyntax, FunctionLayout, IdentSyntax, SelectCaseSyntax, SemanticTokenStream,
+    FunctionHeaderSyntax, FunctionLayout, IdentSyntax, ProjectedConstantSyntax,
+    ProjectedFunctionSyntax, ProjectedVariableSyntax, SelectCaseSyntax, SemanticTokenStream,
     StmtSyntax, StmtSyntaxKind, SwitchCaseSyntax, SyntaxAnchor, SyntaxSource, SyntaxSourceRegion,
-    TypeAliasSyntax, TypeDefinitionSyntax, ValueSpecSyntax,
+    TypeAliasSyntax, TypeDefinitionSyntax, ValueSpecSyntax, VariableLayout, VariableSyntax,
+    VariableValueSyntax,
 };
 use positions::{expression_position, statement_position};
-
-pub struct ProjectedFunctionSyntax {
-    pub(crate) anchor: SyntaxAnchor,
-    pub(crate) layout: FunctionLayout,
-    pub(crate) header: SemanticTokenStream,
-    pub(crate) body: Option<SemanticTokenStream>,
-    pub(crate) structural_header: FunctionHeaderSyntax,
-    pub(crate) structural_body: FunctionBodySyntax,
-}
-
-pub struct ProjectedConstantSyntax {
-    pub(crate) syntax: ConstantSyntax,
-    pub(crate) layout: ConstantLayout,
-}
 
 struct FunctionProjectionParts {
     anchor: SyntaxAnchor,
@@ -328,6 +316,37 @@ pub fn project_constant(
             iota,
         },
         layout: ConstantLayout::new(declaration, source_len, projector.finish()),
+    })
+}
+
+pub fn project_variable(
+    name: &ast::Ident<'_>,
+    explicit_type: Option<&ast::Expr<'_>>,
+    value: Option<&ast::Expr<'_>>,
+    arity_mismatch: bool,
+    source_len: TextSize,
+) -> Result<ProjectedVariableSyntax, ProjectionError> {
+    let mut projector = StructuralProjector::new(SyntaxSourceRegion::Variable);
+    let name = projector.ident(name)?;
+    let declaration = projector.range(name.source)?;
+    let explicit_type = explicit_type
+        .map(|expression| projector.expression(expression))
+        .transpose()?;
+    let value = if arity_mismatch {
+        VariableValueSyntax::ArityMismatch
+    } else {
+        value
+            .map(|expression| projector.expression(expression))
+            .transpose()?
+            .map_or(VariableValueSyntax::Zero, VariableValueSyntax::Expression)
+    };
+    Ok(ProjectedVariableSyntax {
+        syntax: VariableSyntax {
+            name,
+            explicit_type,
+            value,
+        },
+        layout: VariableLayout::new(declaration, source_len, projector.finish()),
     })
 }
 

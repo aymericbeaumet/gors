@@ -10,6 +10,7 @@ pub enum SyntaxSourceRegion {
     Header,
     Body,
     Constant,
+    Variable,
 }
 
 /// Trivia-independent source identity inside one owned declaration.
@@ -99,6 +100,13 @@ pub struct ConstantSyntax {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VariableSyntax {
+    pub(crate) name: IdentSyntax,
+    pub(crate) explicit_type: Option<ExprSyntax>,
+    pub(crate) value: VariableValueSyntax,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TypeAliasSyntax {
     pub(crate) name: IdentSyntax,
     pub(crate) target: ExprSyntax,
@@ -114,6 +122,13 @@ pub struct TypeDefinitionSyntax {
 pub enum ConstantValueSyntax {
     Expression(ExprSyntax),
     ImplicitOrIota,
+    ArityMismatch,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum VariableValueSyntax {
+    Expression(ExprSyntax),
+    Zero,
     ArityMismatch,
 }
 

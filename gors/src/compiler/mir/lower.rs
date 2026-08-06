@@ -778,7 +778,9 @@ impl FunctionLowerer {
 
     fn lower_expr(&mut self, expr: &hir::Expr) -> Result<Operand, Diagnostic> {
         match &expr.kind {
-            hir::ExprKind::Constant(value) | hir::ExprKind::GlobalConstant(_, value) => {
+            hir::ExprKind::Constant(value)
+            | hir::ExprKind::GlobalConstant(_, value)
+            | hir::ExprKind::GlobalVariable(_, value) => {
                 Ok(Operand::Constant(value.clone(), expr.ty.clone()))
             }
             hir::ExprKind::SliceLiteralI64(elements) => {

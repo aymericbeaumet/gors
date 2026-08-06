@@ -13,6 +13,7 @@ use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{
     BlockSyntax, ConstantSyntax, ConstantValueSyntax, DeclSyntax, ExprSyntax, ExprSyntaxKind,
     FieldListSyntax, FunctionBodySyntax, FunctionHeaderSyntax, StmtSyntax, StmtSyntaxKind,
+    VariableSyntax, VariableValueSyntax,
 };
 use crate::token::Token;
 
@@ -117,6 +118,12 @@ pub(super) fn collect_constant_references(syntax: &ConstantSyntax, names: &mut B
     }
 }
 
+pub(super) fn collect_variable_references(syntax: &VariableSyntax, names: &mut BTreeSet<String>) {
+    if let VariableValueSyntax::Expression(expression) = &syntax.value {
+        collect_all_expression_names(expression, names);
+    }
+}
+
 pub(super) struct PackageReferences {
     pub(super) unqualified: BTreeSet<Arc<str>>,
     pub(super) qualified: BTreeSet<(Arc<str>, Arc<str>)>,
@@ -215,11 +222,13 @@ impl PackageReferenceCollector {
                             self.bind(Arc::clone(&ident.name));
                         }
                     }
+                } else {
+                    for expression in &**left {
+                        self.expression(expression);
+                    }
                 }
             }
-            // Assignment and increment targets must already be locals. They
-            // are not package references even when the statement is invalid.
-            StmtSyntaxKind::IncDec { .. } => {}
+            StmtSyntaxKind::IncDec { expression, .. } => self.expression(expression),
             StmtSyntaxKind::Send { channel, value } => {
                 self.expression(channel);
                 self.expression(value);

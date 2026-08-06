@@ -2,7 +2,9 @@
 
 use std::sync::Arc;
 
-use super::{ConstantProjection, Db, FunctionProjection, PackageInput, file_projection};
+use super::{
+    ConstantProjection, Db, FunctionProjection, PackageInput, VariableProjection, file_projection,
+};
 use crate::compiler::db::telemetry::QueryKind;
 use crate::compiler::ids::DefId;
 
@@ -95,6 +97,28 @@ pub(in crate::compiler::db) fn package_constant_named_product<'db>(
             .find(|constant| constant.name(db) == name)
         {
             return Some(constant);
+        }
+    }
+    None
+}
+
+#[salsa::tracked(returns(copy))]
+pub(in crate::compiler::db) fn package_variable_named_product<'db>(
+    db: &'db dyn Db,
+    input: PackageInput,
+    name: Arc<str>,
+) -> Option<VariableProjection<'db>> {
+    db.query_telemetry()
+        .record_query(QueryKind::PackageVariableLookup);
+    let mut sources = input.sources(db).iter().copied().collect::<Vec<_>>();
+    sources.sort_by_key(|source| source.file(db));
+    for source in sources {
+        if let Some(variable) = file_projection(db, source)
+            .variables(db)
+            .into_iter()
+            .find(|variable| variable.name(db) == name)
+        {
+            return Some(variable);
         }
     }
     None

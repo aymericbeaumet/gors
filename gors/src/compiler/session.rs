@@ -520,6 +520,10 @@ impl CompilerSession {
                     .constants()
                     .iter()
                     .any(|constant| constant.id() == definition)
+                || analysis
+                    .variables()
+                    .iter()
+                    .any(|variable| variable.id() == definition)
             {
                 return self.database.definition_source_table(file, definition).ok();
             }
@@ -612,6 +616,19 @@ impl CompilerSession {
                     code: "GORS2003",
                     message: format!(
                         "could not project constant {name:?} into owned semantic syntax: {message}"
+                    ),
+                    file: self.source_path_or_empty(*file),
+                    line: 0,
+                    column: 0,
+                },
+                PackageIssue::VariableProjectionFailure {
+                    file,
+                    name,
+                    message,
+                } => CompilerDiagnostic {
+                    code: "GORS2003",
+                    message: format!(
+                        "could not project variable {name:?} into owned semantic syntax: {message}"
                     ),
                     file: self.source_path_or_empty(*file),
                     line: 0,

@@ -82,6 +82,19 @@ impl FunctionLowerer {
                 source,
             });
         }
+        if let Some(variable) = self.qualified_variables.get(&key).cloned() {
+            return Ok(hir::Expr {
+                node,
+                kind: hir::ExprKind::GlobalVariable(variable.id, variable.value),
+                ty: variable.ty,
+                category: hir::ValueCategory::Value,
+                effects: hir::Effects {
+                    may_read: true,
+                    ..hir::Effects::default()
+                },
+                source,
+            });
+        }
         if self.qualified_functions.contains_key(&key) {
             return Err(Diagnostic::unsupported(
                 format!("function value {}.{} is not implemented", key.0, key.1),

@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use super::{ConstantSymbol, FunctionSymbol, MethodSymbol};
+use super::{ConstantSymbol, FunctionSymbol, MethodSymbol, VariableSymbol};
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::{ClosureId, DefId, LocalId, NodeId};
@@ -18,6 +18,8 @@ pub(super) struct FunctionLowerer {
     pub(super) methods: BTreeMap<(DefId, String), MethodSymbol>,
     pub(super) constants: BTreeMap<String, ConstantSymbol>,
     pub(super) qualified_constants: BTreeMap<(String, String), ConstantSymbol>,
+    pub(super) variables: BTreeMap<String, VariableSymbol>,
+    pub(super) qualified_variables: BTreeMap<(String, String), VariableSymbol>,
     pub(super) type_aliases: BTreeMap<String, Ty>,
     pub(super) signature: Signature,
     pub(super) locals: Vec<hir::Local>,

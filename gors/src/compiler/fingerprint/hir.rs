@@ -437,6 +437,12 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
                 encoder.field(b"value", |encoder| const_value(encoder, value));
             });
         }
+        hir::ExprKind::GlobalVariable(id, value) => {
+            encoder.variant(b"global-variable", |encoder| {
+                encoder.field(b"id", |encoder| qualified_def_id(encoder, *id));
+                encoder.field(b"value", |encoder| const_value(encoder, value));
+            });
+        }
         hir::ExprKind::Binary { op, left, right } => {
             encoder.variant(b"binary", |encoder| {
                 encoder.field(b"operation", |encoder| encode_binary_op(encoder, *op));
