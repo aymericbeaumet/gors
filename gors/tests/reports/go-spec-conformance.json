@@ -13,9 +13,9 @@
     "groupCount": 15,
     "passingGroupCount": 1,
     "caseCount": 211,
-    "passingCaseCount": 58,
-    "unsupportedCaseCount": 153,
-    "fixtureCount": 29
+    "passingCaseCount": 63,
+    "unsupportedCaseCount": 148,
+    "fixtureCount": 31
   },
   "groups": [
     {
@@ -644,6 +644,7 @@
       "subtitle": "",
       "fixtures": [
         "_negative/types_interface_method_sets",
+        "map_lookup_and_nil",
         "named_numeric_types",
         "slice_capacity_and_append",
         "types_aliases",
@@ -653,9 +654,9 @@
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 30,
-        "passingCaseCount": 5,
-        "unsupportedCaseCount": 25,
-        "fixtureCount": 5
+        "passingCaseCount": 6,
+        "unsupportedCaseCount": 24,
+        "fixtureCount": 6
       },
       "cases": [
         {
@@ -908,9 +909,14 @@
           "title": "Map lookup distinguishes present zero values from missing keys and nil maps remain readable",
           "subtitle": "Map types",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: map_lookup_and_nil."
+          "status": "passing",
+          "fixtures": [
+            "map_lookup_and_nil"
+          ],
+          "freshFixtures": [
+            "map_lookup_and_nil"
+          ],
+          "reason": ""
         },
         {
           "id": "types-channels",
@@ -961,15 +967,16 @@
       "subtitle": "",
       "fixtures": [
         "_negative/properties_non_comparable",
+        "map_reference_and_nil_write",
         "named_numeric_types"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 8,
-        "passingCaseCount": 1,
-        "unsupportedCaseCount": 7,
-        "fixtureCount": 2
+        "passingCaseCount": 2,
+        "unsupportedCaseCount": 6,
+        "fixtureCount": 3
       },
       "cases": [
         {
@@ -986,9 +993,14 @@
           "title": "Assigned map values share the same underlying map data",
           "subtitle": "Representation of values",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: map_reference_and_nil_write."
+          "status": "passing",
+          "fixtures": [
+            "map_reference_and_nil_write"
+          ],
+          "freshFixtures": [
+            "map_reference_and_nil_write"
+          ],
+          "reason": ""
         },
         {
           "id": "properties-underlying-types",
@@ -1242,15 +1254,16 @@
       "title": "Expressions",
       "subtitle": "",
       "fixtures": [
-        "expressions_variadic_spread"
+        "expressions_variadic_spread",
+        "map_reference_and_nil_write"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 29,
-        "passingCaseCount": 1,
-        "unsupportedCaseCount": 28,
-        "fixtureCount": 1
+        "passingCaseCount": 2,
+        "unsupportedCaseCount": 27,
+        "fixtureCount": 2
       },
       "cases": [
         {
@@ -1353,9 +1366,14 @@
           "title": "Assigning an element through a nil map causes a run-time panic",
           "subtitle": "Index expressions",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: map_reference_and_nil_write."
+          "status": "passing",
+          "fixtures": [
+            "map_reference_and_nil_write"
+          ],
+          "freshFixtures": [
+            "map_reference_and_nil_write"
+          ],
+          "reason": ""
         },
         {
           "id": "expr-slice",
@@ -2030,15 +2048,16 @@
       "subtitle": "",
       "fixtures": [
         "append_copy_clear_builtins",
-        "built_in_panic_recover"
+        "built_in_panic_recover",
+        "map_lookup_and_nil"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 17,
-        "passingCaseCount": 4,
-        "unsupportedCaseCount": 13,
-        "fixtureCount": 2
+        "passingCaseCount": 6,
+        "unsupportedCaseCount": 11,
+        "fixtureCount": 3
       },
       "cases": [
         {
@@ -2128,18 +2147,28 @@
           "title": "Deleting a missing key from a nil map is a no-op",
           "subtitle": "Deletion of map elements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: map_lookup_and_nil."
+          "status": "passing",
+          "fixtures": [
+            "map_lookup_and_nil"
+          ],
+          "freshFixtures": [
+            "map_lookup_and_nil"
+          ],
+          "reason": ""
         },
         {
           "id": "builtin-clear-nil-map-noop",
           "title": "Clearing a nil map is a no-op",
           "subtitle": "Clear",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: map_lookup_and_nil."
+          "status": "passing",
+          "fixtures": [
+            "map_lookup_and_nil"
+          ],
+          "freshFixtures": [
+            "map_lookup_and_nil"
+          ],
+          "reason": ""
         },
         {
           "id": "builtin-clear-slice",
