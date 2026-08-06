@@ -155,6 +155,22 @@ impl FunctionLowerer {
                     body: body?,
                 }
             }
+            StmtSyntaxKind::Go {
+                has_type_parameters,
+                params,
+                results,
+                body,
+                arguments,
+                spread,
+            } => self.lower_empty_goroutine(
+                *has_type_parameters,
+                params,
+                results.as_ref(),
+                body,
+                arguments,
+                *spread,
+                source,
+            )?,
             StmtSyntaxKind::Return(results) => {
                 if self.inside_deferred_closure {
                     return Err(Diagnostic::unsupported(

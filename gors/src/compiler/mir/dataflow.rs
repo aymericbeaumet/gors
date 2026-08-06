@@ -135,7 +135,9 @@ impl Function {
                     self.transfer_operand(value, state, check_reads)?;
                 }
             }
-            TerminatorKind::Goto(_) | TerminatorKind::Unreachable => {}
+            TerminatorKind::Goto(_)
+            | TerminatorKind::SpawnEmpty { .. }
+            | TerminatorKind::Unreachable => {}
         }
         Ok(())
     }
@@ -236,7 +238,9 @@ impl Function {
 
 fn block_successors(terminator: &Terminator) -> Vec<BasicBlockId> {
     match &terminator.kind {
-        TerminatorKind::Goto(target) | TerminatorKind::Call { target, .. } => vec![*target],
+        TerminatorKind::Goto(target)
+        | TerminatorKind::Call { target, .. }
+        | TerminatorKind::SpawnEmpty { target } => vec![*target],
         TerminatorKind::SwitchBool {
             then_target,
             else_target,

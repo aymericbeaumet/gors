@@ -241,7 +241,9 @@ fn rewrite_terminator_boolean_reads(
                 rewrite_boolean_read(argument, constants);
             }
         }
-        TerminatorKind::Goto(_) | TerminatorKind::Unreachable => {}
+        TerminatorKind::Goto(_)
+        | TerminatorKind::SpawnEmpty { .. }
+        | TerminatorKind::Unreachable => {}
     }
     refresh_terminator_read_effect(terminator);
 }
@@ -353,7 +355,9 @@ fn refresh_terminator_read_effect(terminator: &mut Terminator) {
         TerminatorKind::Call { args, .. } | TerminatorKind::Return(args) => {
             args.iter().any(operand_reads)
         }
-        TerminatorKind::Goto(_) | TerminatorKind::Unreachable => false,
+        TerminatorKind::Goto(_)
+        | TerminatorKind::SpawnEmpty { .. }
+        | TerminatorKind::Unreachable => false,
     };
 }
 
@@ -399,7 +403,9 @@ fn remove_unreachable_blocks(function: &mut mir::Function) -> Result<(), Diagnos
                 pending.push_back(*then_target);
                 pending.push_back(*else_target);
             }
-            TerminatorKind::Call { target, .. } => pending.push_back(*target),
+            TerminatorKind::Call { target, .. } | TerminatorKind::SpawnEmpty { target } => {
+                pending.push_back(*target);
+            }
             TerminatorKind::Return(_) | TerminatorKind::Unreachable => {}
         }
     }
@@ -457,7 +463,9 @@ fn remap_terminator(
             *then_target = remapped_block(*then_target, remap)?;
             *else_target = remapped_block(*else_target, remap)?;
         }
-        TerminatorKind::Call { target, .. } => *target = remapped_block(*target, remap)?,
+        TerminatorKind::Call { target, .. } | TerminatorKind::SpawnEmpty { target } => {
+            *target = remapped_block(*target, remap)?;
+        }
         TerminatorKind::Return(_) | TerminatorKind::Unreachable => {}
     }
     if let PanicEdge::Cleanup(target) = &mut terminator.panic {

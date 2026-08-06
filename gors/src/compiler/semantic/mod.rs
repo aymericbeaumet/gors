@@ -9,6 +9,7 @@ mod composites;
 mod expression_lower;
 mod expressions;
 mod function;
+mod goroutines;
 mod imports;
 mod interfaces;
 mod maps;

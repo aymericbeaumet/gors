@@ -239,6 +239,13 @@ impl PackageReferenceCollector {
                 body,
                 arguments,
                 ..
+            }
+            | StmtSyntaxKind::Go {
+                params,
+                results,
+                body,
+                arguments,
+                ..
             } => {
                 for argument in &**arguments {
                     self.expression(argument);

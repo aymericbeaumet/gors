@@ -89,6 +89,15 @@ impl FunctionLowerer {
             .map(|local| (local.id, local.ty.clone(), local.kind))
             .collect::<Vec<_>>();
         for (local, ty, kind) in locals {
+            // Cleanup storage needs a synthetic zero only when MIR can express
+            // one. Other checked slots remain uninitialized, and Rust-IR
+            // dataflow proves that no cleanup path reads them before a write.
+            // Named results are always returned by cleanup and therefore must
+            // have an exact Go zero representation.
+            if kind != hir::LocalKind::NamedResult && !super::maps::has_mir_zero_representation(&ty)
+            {
+                continue;
+            }
             let provenance = Provenance::Synthetic(if kind == hir::LocalKind::NamedResult {
                 SyntheticOrigin::NamedResultInitialization
             } else {

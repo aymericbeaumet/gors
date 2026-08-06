@@ -250,6 +250,23 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
             });
             encoder.field(b"body", |encoder| encode_block(encoder, body));
         }),
+        hir::StmtKind::Go {
+            parameters,
+            values,
+            body,
+        } => encoder.variant(b"go", |encoder| {
+            encoder.field(b"parameters", |encoder| {
+                encoder.sequence(parameters, |encoder, parameter| {
+                    local_id(encoder, *parameter);
+                });
+            });
+            encoder.field(b"values", |encoder| {
+                encoder.sequence(values, |encoder, expression| {
+                    encode_expression(encoder, expression);
+                });
+            });
+            encoder.field(b"body", |encoder| encode_block(encoder, body));
+        }),
         hir::StmtKind::Return(values) => encoder.variant(b"return", |encoder| {
             encoder.sequence(values, |encoder, expression| {
                 encode_expression(encoder, expression);

@@ -1,5 +1,6 @@
 //! One-pass projection from parser observations into owned function syntax.
 
+mod go_statements;
 mod local_types;
 mod positions;
 mod type_switches;
@@ -601,7 +602,7 @@ impl StructuralProjector {
                     spread: statement.call.ellipsis.is_some(),
                 }
             }
-            ast::Stmt::GoStmt(_) => StmtSyntaxKind::Unsupported("go statement"),
+            ast::Stmt::GoStmt(statement) => self.go_statement(statement)?,
             ast::Stmt::LabeledStmt(statement) => match statement.stmt.as_ref() {
                 ast::Stmt::ForStmt(for_statement) => {
                     let label = self.ident(&statement.label)?;

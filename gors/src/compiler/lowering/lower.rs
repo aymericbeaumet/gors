@@ -484,6 +484,7 @@ fn lower_terminator(
                 next,
             },
         },
+        mir::TerminatorKind::SpawnEmpty { target } => out::TerminatorKind::Goto(target),
         mir::TerminatorKind::Return(values) => out::TerminatorKind::Return(
             values
                 .into_iter()

@@ -5,6 +5,7 @@ mod assignments;
 mod closures;
 mod expressions;
 mod flow;
+mod goroutines;
 mod interfaces;
 mod maps;
 mod panic_cleanup;
@@ -524,6 +525,11 @@ impl FunctionLowerer {
                 values,
                 body,
             } => self.register_defer(parameters, values, body, statement.source)?,
+            hir::StmtKind::Go {
+                parameters,
+                values,
+                body,
+            } => self.lower_empty_goroutine(parameters, values, body, statement.source)?,
             hir::StmtKind::Return(values) => {
                 if self.closure_returns.is_empty() {
                     self.lower_return(values, statement.source)?;

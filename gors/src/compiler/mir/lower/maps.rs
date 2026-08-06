@@ -200,6 +200,21 @@ impl FunctionLowerer {
     }
 }
 
+pub(super) fn has_mir_zero_representation(ty: &Ty) -> bool {
+    ty.zero().is_some()
+        || matches!(
+            ty.underlying(),
+            Ty::Array(_, element)
+                if element.underlying()
+                    == &Ty::Int(crate::compiler::types::IntTy::Int)
+        )
+        || is_string_i64_map(ty)
+        || matches!(ty.underlying(), Ty::Interface(_))
+        || is_int_pointer(ty)
+        || ty.bootstrap_i64_struct_pointer_fields().is_some()
+        || is_int_channel(ty)
+}
+
 fn is_int_pointer(ty: &Ty) -> bool {
     matches!(
         ty.underlying(),

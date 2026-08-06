@@ -583,7 +583,7 @@ fn collect_statement_addresses(statement: &hir::Stmt, addressed: &mut BTreeSet<L
         }
         hir::StmtKind::Expr(expression) => collect_expr_addresses(expression, addressed),
         hir::StmtKind::ClosureBinding(_) => {}
-        hir::StmtKind::Defer { values, body, .. } => {
+        hir::StmtKind::Defer { values, body, .. } | hir::StmtKind::Go { values, body, .. } => {
             collect_expression_addresses(values, addressed);
             collect_block_addresses(body, addressed);
         }

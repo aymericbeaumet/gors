@@ -127,6 +127,11 @@ pub enum StmtKind {
         values: Vec<Expr>,
         body: Block,
     },
+    Go {
+        parameters: Vec<LocalId>,
+        values: Vec<Expr>,
+        body: Block,
+    },
     Return(Vec<Expr>),
     If {
         init: Option<Box<Stmt>>,

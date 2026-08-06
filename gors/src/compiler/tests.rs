@@ -3,6 +3,7 @@ use super::*;
 mod arrays;
 mod assignments;
 mod channels;
+mod goroutines;
 mod interfaces;
 mod local_types;
 mod pointers;

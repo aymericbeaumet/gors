@@ -163,6 +163,10 @@ pub enum TerminatorKind {
         destinations: Vec<Place>,
         target: BasicBlockId,
     },
+    /// Start a proven-empty goroutine after its call operands were evaluated.
+    SpawnEmpty {
+        target: BasicBlockId,
+    },
     Return(Vec<Operand>),
     Unreachable,
 }

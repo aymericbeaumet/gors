@@ -87,6 +87,7 @@ fn collect_statement_labels(statement: &hir::Stmt, labels: &mut Vec<(String, Sou
         | hir::StmtKind::ParallelAssign { .. }
         | hir::StmtKind::ClosureBinding(_)
         | hir::StmtKind::Defer { .. }
+        | hir::StmtKind::Go { .. }
         | hir::StmtKind::SliceAssign { .. }
         | hir::StmtKind::ArrayAssign { .. }
         | hir::StmtKind::StructFieldAssign { .. }

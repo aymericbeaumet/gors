@@ -50,7 +50,7 @@ fn collect_statement_callees(statement: &hir::Stmt, callees: &mut BTreeSet<Quali
             }
         }
         hir::StmtKind::Expr(expression) => collect_expression_callees(expression, callees),
-        hir::StmtKind::Defer { values, body, .. } => {
+        hir::StmtKind::Defer { values, body, .. } | hir::StmtKind::Go { values, body, .. } => {
             for value in values {
                 collect_expression_callees(value, callees);
             }

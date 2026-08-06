@@ -108,7 +108,9 @@ pub(super) fn make_terminator(
         TerminatorKind::Call { args, .. } | TerminatorKind::Return(args) => {
             args.iter().any(operand_reads)
         }
-        TerminatorKind::Goto(_) | TerminatorKind::Unreachable => false,
+        TerminatorKind::Goto(_)
+        | TerminatorKind::SpawnEmpty { .. }
+        | TerminatorKind::Unreachable => false,
     };
     let effects = intrinsic_effects.union(hir::Effects {
         may_read,
@@ -140,6 +142,14 @@ pub(super) fn call_effects() -> hir::Effects {
         may_block: true,
         may_panic: true,
         may_write: true,
+        ..hir::Effects::default()
+    }
+}
+
+pub(super) fn spawn_empty_effects() -> hir::Effects {
+    hir::Effects {
+        may_call: true,
+        may_allocate: true,
         ..hir::Effects::default()
     }
 }

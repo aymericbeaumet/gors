@@ -307,6 +307,9 @@ fn encode_terminator_kind(encoder: &mut Encoder, kind: &mir::TerminatorKind) {
             });
             encoder.field(b"target", |encoder| block_id(encoder, *target));
         }),
+        mir::TerminatorKind::SpawnEmpty { target } => {
+            encoder.variant(b"spawn-empty", |encoder| block_id(encoder, *target));
+        }
         mir::TerminatorKind::Return(values) => encoder.variant(b"return", |encoder| {
             encoder.sequence(values, encode_operand);
         }),
