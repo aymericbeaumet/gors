@@ -1,7 +1,6 @@
 //! Typed lowering for directly called, non-escaping function literals.
 
-use super::expressions::coerce_expr;
-use super::{FunctionLowerer, field_types, parameter_types};
+use super::{FunctionLowerer, field_types, lower_type, parameter_types};
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::ClosureId;
@@ -37,6 +36,27 @@ impl FunctionLowerer {
         {
             if name.name.as_ref() == "_" || self.is_local_struct_field(base, &member.name) {
                 return None;
+            }
+            if !self.selector_base_refers_to_local(base)
+                && let Ok(receiver_ty) = lower_type(base, &self.type_aliases, source)
+                && self
+                    .resolve_method_symbol(&receiver_ty, &member.name, source)
+                    .is_ok()
+            {
+                return Some(if token == Token::DEFINE {
+                    self.lower_method_expression_binding(
+                        name,
+                        receiver_ty,
+                        member,
+                        *method_source,
+                        source,
+                    )
+                } else {
+                    Err(Diagnostic::unsupported(
+                        "method expressions currently require a non-escaping short declaration",
+                        source,
+                    ))
+                });
             }
             let is_non_value_identifier = matches!(&base.kind, ExprSyntaxKind::Ident(base) if self.lookup_local(&base.name).is_none());
             if !is_non_value_identifier {
@@ -109,6 +129,129 @@ impl FunctionLowerer {
         fields.is_some_and(|fields| fields.iter().any(|field| field.name == member))
     }
 
+    fn selector_base_refers_to_local(&self, base: &ExprSyntax) -> bool {
+        match &base.kind {
+            ExprSyntaxKind::Ident(base) => self.lookup_local(&base.name).is_some(),
+            ExprSyntaxKind::Paren(base) => self.selector_base_refers_to_local(base),
+            _ => false,
+        }
+    }
+
+    fn lower_method_expression_binding(
+        &mut self,
+        name: &IdentSyntax,
+        expression_receiver_ty: Ty,
+        member: &IdentSyntax,
+        method_source: SyntaxSource,
+        source: SourceRef,
+    ) -> Result<hir::StmtKind, Diagnostic> {
+        if self.inside_local_closure {
+            return Err(Diagnostic::unsupported(
+                "method expressions inside local function literals are not yet implemented",
+                source,
+            ));
+        }
+        let symbol = self.resolve_method_symbol(&expression_receiver_ty, &member.name, source)?;
+        if symbol.pointer_receiver && !matches!(expression_receiver_ty.underlying(), Ty::Pointer(_))
+        {
+            return Err(Diagnostic::semantic(
+                format!(
+                    "type {expression_receiver_ty:?} has no method expression {}",
+                    member.name
+                ),
+                source,
+            ));
+        }
+        if symbol.signature.variadic {
+            return Err(Diagnostic::unsupported(
+                "variadic method expressions are not yet implemented",
+                source,
+            ));
+        }
+        let Some((method_receiver_ty, params)) = symbol.signature.params.split_first() else {
+            return Err(Diagnostic::backend("method signature omitted its receiver"));
+        };
+        let mut closure_types = Vec::with_capacity(params.len().saturating_add(1));
+        closure_types.push(expression_receiver_ty.clone());
+        closure_types.extend_from_slice(params);
+        let closure_id = ClosureId(
+            u32::try_from(self.closures.len())
+                .map_err(|_| Diagnostic::backend("function exceeds the local closure ID space"))?,
+        );
+        let closure_params = closure_types
+            .iter()
+            .map(|ty| self.alloc_local(None, ty.clone(), hir::LocalKind::Parameter, member.source))
+            .collect::<Result<Vec<_>, _>>()?;
+        let Some((receiver_parameter, argument_parameters)) = closure_params.split_first() else {
+            return Err(Diagnostic::backend(
+                "method expression closure omitted its receiver parameter",
+            ));
+        };
+
+        let receiver_node = self.alloc_node(member.source)?;
+        let receiver = self.local_expr(receiver_node, *receiver_parameter, expression_receiver_ty);
+        let receiver = self.adjust_method_receiver(
+            receiver,
+            method_receiver_ty,
+            symbol.pointer_receiver,
+            member.source,
+            source,
+        )?;
+        let mut arguments = Vec::with_capacity(closure_params.len());
+        arguments.push(receiver);
+        for (parameter, parameter_ty) in argument_parameters.iter().zip(params) {
+            let parameter_node = self.alloc_node(member.source)?;
+            arguments.push(self.local_expr(parameter_node, *parameter, parameter_ty.clone()));
+        }
+        let result_ty = match symbol.signature.results.as_slice() {
+            [] => Ty::Unit,
+            [single] => single.clone(),
+            many => Ty::Tuple(many.to_vec()),
+        };
+        let call_node = self.alloc_node(method_source)?;
+        let call_source = SourceRef::node(call_node);
+        let call = hir::Expr {
+            node: call_node,
+            kind: hir::ExprKind::Call {
+                callee: hir::Callee::Function(symbol.id),
+                args: arguments,
+            },
+            ty: result_ty.clone(),
+            category: hir::ValueCategory::Value,
+            effects: method_call_effects(),
+            source: call_source,
+        };
+        let statement_node = self.alloc_node(method_source)?;
+        let statement = hir::Stmt {
+            node: statement_node,
+            kind: if result_ty == Ty::Unit {
+                hir::StmtKind::Expr(call)
+            } else {
+                hir::StmtKind::Return(vec![call])
+            },
+            source: SourceRef::node(statement_node),
+        };
+        let block_node = self.alloc_node(method_source)?;
+        self.closures.push(hir::Closure {
+            id: closure_id,
+            signature: Signature {
+                params: closure_types,
+                results: symbol.signature.results,
+                variadic: false,
+            },
+            params: closure_params,
+            named_results: Vec::new(),
+            body: hir::Block {
+                node: block_node,
+                stmts: vec![statement],
+                source: SourceRef::node(block_node),
+            },
+            source: call_source,
+        });
+        self.bind_closure(&name.name, closure_id, source)?;
+        Ok(hir::StmtKind::ClosureBinding(closure_id))
+    }
+
     fn lower_method_value_binding(
         &mut self,
         name: &IdentSyntax,
@@ -130,18 +273,18 @@ impl FunctionLowerer {
             ));
         }
 
-        let mut receiver = self.lower_expr(base, None)?;
+        let receiver = self.lower_expr(base, None)?;
         let symbol = self.resolve_method_symbol(&receiver.ty, &member.name, source)?;
-        if symbol.pointer_receiver {
-            return Err(Diagnostic::unsupported(
-                "pointer-receiver method values are not yet represented",
-                source,
-            ));
-        }
         let Some((receiver_ty, params)) = symbol.signature.params.split_first() else {
             return Err(Diagnostic::backend("method signature omitted its receiver"));
         };
-        coerce_expr(&mut receiver, receiver_ty, source)?;
+        let receiver = self.adjust_method_receiver(
+            receiver,
+            receiver_ty,
+            symbol.pointer_receiver,
+            base.source,
+            source,
+        )?;
         let capture = self.alloc_local(
             None,
             receiver_ty.clone(),
@@ -184,14 +327,7 @@ impl FunctionLowerer {
             },
             ty: result_ty.clone(),
             category: hir::ValueCategory::Value,
-            effects: hir::Effects {
-                may_call: true,
-                may_allocate: true,
-                may_block: true,
-                may_panic: true,
-                may_write: true,
-                may_read: true,
-            },
+            effects: method_call_effects(),
             source: call_source,
         };
         let statement_node = self.alloc_node(method_source)?;
@@ -319,5 +455,16 @@ impl FunctionLowerer {
         });
         self.bind_closure(&name.name, id, source)?;
         Ok(hir::StmtKind::ClosureBinding(id))
+    }
+}
+
+fn method_call_effects() -> hir::Effects {
+    hir::Effects {
+        may_call: true,
+        may_allocate: true,
+        may_block: true,
+        may_panic: true,
+        may_write: true,
+        may_read: true,
     }
 }

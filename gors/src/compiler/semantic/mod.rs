@@ -434,6 +434,9 @@ pub(super) fn lower_type(
     type_aliases: &BTreeMap<String, Ty>,
     source: SourceRef,
 ) -> Result<Ty, Diagnostic> {
+    if let ExprSyntaxKind::Paren(expression) = &expression.kind {
+        return lower_type(expression, type_aliases, source);
+    }
     if let ExprSyntaxKind::ArrayType { length, element } = &expression.kind {
         return match length {
             None => Ok(Ty::Slice(Box::new(lower_type(

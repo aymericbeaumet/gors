@@ -37,14 +37,8 @@ impl FunctionLowerer {
                 allow_discarded_call_result,
             );
         }
-        let mut receiver = self.lower_expr(base, None)?;
+        let receiver = self.lower_expr(base, None)?;
         let symbol = self.resolve_method_symbol(&receiver.ty, &member.name, source)?;
-        if symbol.pointer_receiver {
-            return Err(Diagnostic::unsupported(
-                "pointer-receiver method calls are not yet represented",
-                source,
-            ));
-        }
         let Some((receiver_ty, params)) = symbol.signature.params.split_first() else {
             return Err(Diagnostic::backend("method signature omitted its receiver"));
         };
@@ -70,7 +64,13 @@ impl FunctionLowerer {
                 source,
             ));
         }
-        coerce_expr(&mut receiver, receiver_ty, source)?;
+        let receiver = self.adjust_method_receiver(
+            receiver,
+            receiver_ty,
+            symbol.pointer_receiver,
+            base.source,
+            source,
+        )?;
         let mut args = Vec::with_capacity(arguments.len().saturating_add(1));
         args.push(receiver);
         args.extend(
@@ -134,6 +134,57 @@ impl FunctionLowerer {
             .ok_or_else(|| {
                 Diagnostic::semantic(format!("type {receiver:?} has no method {name}"), source)
             })
+    }
+
+    pub(super) fn adjust_method_receiver(
+        &mut self,
+        mut receiver: hir::Expr,
+        receiver_ty: &Ty,
+        pointer_receiver: bool,
+        syntax_source: SyntaxSource,
+        source: SourceRef,
+    ) -> Result<hir::Expr, Diagnostic> {
+        if receiver.ty == *receiver_ty {
+            coerce_expr(&mut receiver, receiver_ty, source)?;
+            return Ok(receiver);
+        }
+        if pointer_receiver
+            && let Ty::Pointer(element) = receiver_ty.underlying()
+            && receiver.ty == **element
+            && let hir::ExprKind::Local(local) = &receiver.kind
+        {
+            let node = self.alloc_node(syntax_source)?;
+            return Ok(hir::Expr {
+                node,
+                kind: hir::ExprKind::AddressOfLocal(*local),
+                ty: receiver_ty.clone(),
+                category: hir::ValueCategory::Value,
+                effects: hir::Effects {
+                    may_allocate: true,
+                    may_read: true,
+                    ..hir::Effects::default()
+                },
+                source: SourceRef::node(node),
+            });
+        }
+        if !pointer_receiver
+            && receiver_ty.bootstrap_i64_struct_fields().is_some()
+            && let Ty::Pointer(element) = receiver.ty.underlying()
+            && **element == *receiver_ty
+        {
+            let effects = pointer_effects(&[&receiver], false, false, true);
+            let node = self.alloc_node(syntax_source)?;
+            return Ok(hir::Expr {
+                node,
+                kind: hir::ExprKind::PointerStructValue(Box::new(receiver)),
+                ty: receiver_ty.clone(),
+                category: hir::ValueCategory::Value,
+                effects,
+                source: SourceRef::node(node),
+            });
+        }
+        coerce_expr(&mut receiver, receiver_ty, source)?;
+        Ok(receiver)
     }
 
     pub(super) fn lower_selector(

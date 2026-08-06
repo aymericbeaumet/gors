@@ -132,3 +132,77 @@ fn generated_value_method_values_capture_the_receiver_copy() {
 
     assert_eq!(run.stderr, b"method-values: ok\n");
 }
+
+#[test]
+fn generated_method_expressions_adapt_value_and_pointer_receivers() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            type Counter struct { Value int }
+
+            func (counter Counter) Read(delta int) int {
+                return counter.Value + delta
+            }
+
+            func (counter *Counter) Add(delta int) int {
+                counter.Value += delta
+                return counter.Value
+            }
+
+            func main() {
+                read := Counter.Read
+                parenthesized := (Counter).Read
+                add := (*Counter).Add
+                readPointer := (*Counter).Read
+                value := Counter{Value: 3}
+                pointer := &Counter{Value: 10}
+                if read(value, 4) != 7 || parenthesized(value, 5) != 8 {
+                    panic("value method expression changed")
+                }
+                if add(pointer, 2) != 12 || pointer.Value != 12 {
+                    panic("pointer method expression changed")
+                }
+                if readPointer(pointer, 6) != 18 || pointer.Value != 12 {
+                    panic("pointer-to-value method expression changed")
+                }
+                println("method-expressions: ok")
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"method-expressions: ok\n");
+}
+
+#[test]
+fn generated_pointer_method_values_capture_explicit_and_implicit_addresses() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            type Counter struct { Value int }
+
+            func (counter *Counter) Add(delta int) int {
+                counter.Value += delta
+                return counter.Value
+            }
+
+            func main() {
+                pointer := &Counter{Value: 2}
+                savedPointer := pointer.Add
+                pointer.Value = 4
+                addressable := Counter{Value: 7}
+                savedAddress := addressable.Add
+                if savedPointer(3) != 7 || pointer.Value != 7 {
+                    panic("explicit pointer method value changed")
+                }
+                if savedAddress(2) != 9 || addressable.Value != 9 {
+                    panic("implicit address method value changed")
+                }
+                println("pointer-method-values: ok")
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"pointer-method-values: ok\n");
+}
