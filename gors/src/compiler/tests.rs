@@ -6,6 +6,7 @@ mod channels;
 mod interfaces;
 mod local_types;
 mod pointers;
+mod slices;
 mod structs;
 mod variables;
 

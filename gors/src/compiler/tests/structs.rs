@@ -74,6 +74,38 @@ fn generated_integer_structs_support_local_field_updates() {
 }
 
 #[test]
+fn generated_mixed_structs_preserve_field_types_and_value_copies() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            type Bag struct { Values []int }
+
+            func (bag Bag) At(index int) int {
+                return bag.Values[index]
+            }
+
+            func main() {
+                bag := Bag{Values: []int{1, 2, 3}}
+                duplicate := bag
+                duplicate.Values = []int{7, 8}
+                if bag.At(0) != 1 || bag.At(2) != 3 || duplicate.At(1) != 8 {
+                    panic("mixed struct field or value copy changed")
+                }
+                println("mixed-structs: ok")
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"mixed-structs: ok\n");
+    assert!(
+        run.rust.contains("(::__gors_runtime::GoSliceI64,)"),
+        "{}",
+        run.rust
+    );
+}
+
+#[test]
 fn generated_integer_structs_support_value_methods_and_go_namespaces() {
     let run = compile_and_run(
         r#"

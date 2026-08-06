@@ -101,19 +101,39 @@ impl FunctionLowerer {
             });
         }
         let mut values = Vec::with_capacity(elements.len());
+        let mut lowered_elements = Vec::with_capacity(elements.len());
+        let mut dynamic = false;
         for element in elements {
             let element = self.lower_expr(element, Some(element_ty))?;
-            let Some(ConstValue::Int(value)) = expr_constant(&element) else {
+            if let Some(ConstValue::Int(value)) = expr_constant(&element) {
+                values.push(value.parse::<i64>().map_err(|_| {
+                    Diagnostic::semantic("slice literal element is outside Go int", source)
+                })?);
+            } else if byte_elements {
                 return Err(Diagnostic::unsupported(
-                    "dynamic slice literal elements are not yet implemented",
+                    "dynamic byte slice literal elements are not yet implemented",
                     source,
                 ));
-            };
-            values.push(value.parse::<i64>().map_err(|_| {
-                Diagnostic::semantic("slice literal element is outside Go int", source)
-            })?);
+            } else {
+                dynamic = true;
+            }
+            lowered_elements.push(element);
         }
-        let kind = if byte_elements {
+        let effects = lowered_elements
+            .iter()
+            .fold(hir::Effects::default(), |effects, element| {
+                effects.union(element.effects)
+            })
+            .union(hir::Effects {
+                may_call: dynamic,
+                may_allocate: true,
+                may_write: dynamic,
+                may_panic: dynamic,
+                ..hir::Effects::default()
+            });
+        let kind = if dynamic {
+            hir::ExprKind::DynamicSliceLiteralI64(lowered_elements)
+        } else if byte_elements {
             hir::ExprKind::SliceLiteralU8(
                 values
                     .into_iter()
@@ -135,10 +155,7 @@ impl FunctionLowerer {
             kind,
             ty: literal_ty,
             category: hir::ValueCategory::Value,
-            effects: hir::Effects {
-                may_allocate: true,
-                ..hir::Effects::default()
-            },
+            effects,
             source,
         })
     }

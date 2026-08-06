@@ -690,6 +690,9 @@ fn collect_expr_addresses(expression: &hir::Expr, addressed: &mut BTreeSet<Local
             collect_expr_addresses(index, addressed);
         }
         hir::ExprKind::ArrayLen { array, .. } => collect_expr_addresses(array, addressed),
+        hir::ExprKind::DynamicSliceLiteralI64(elements) => {
+            collect_expression_addresses(elements, addressed);
+        }
         hir::ExprKind::StructLiteral(fields) => collect_expression_addresses(fields, addressed),
         hir::ExprKind::ArrayLiteral(elements) => {
             for (_, element) in elements {

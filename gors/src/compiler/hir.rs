@@ -276,6 +276,7 @@ pub enum ExprKind {
         equal: bool,
     },
     SliceLiteralI64(Vec<i64>),
+    DynamicSliceLiteralI64(Vec<Expr>),
     SliceLiteralU8(Vec<u8>),
     SliceLiteralBool(Vec<bool>),
     ArrayLiteralI64(Vec<i64>),

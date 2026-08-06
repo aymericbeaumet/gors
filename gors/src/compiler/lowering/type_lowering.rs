@@ -56,6 +56,12 @@ pub(super) fn lower_type(ty: &Ty) -> Result<RustType, Diagnostic> {
                 |_| Diagnostic::backend("struct representation length does not fit u64"),
             )?))
         }
+        Ty::Struct(fields) => Ok(RustType::Struct(
+            fields
+                .iter()
+                .map(|field| lower_type(&field.ty))
+                .collect::<Result<Vec<_>, _>>()?,
+        )),
         unsupported => Err(Diagnostic::backend(format!(
             "unsupported Go type reached Rust lowering: {unsupported:?}"
         ))),

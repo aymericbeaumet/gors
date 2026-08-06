@@ -129,7 +129,8 @@ fn emit_function(
                 .locals
                 .get(local.0 as usize)
                 .ok_or_else(|| Diagnostic::backend(format!("invalid parameter local {}", local.0)))?
-                .ty;
+                .ty
+                .clone();
             let ty = emit_type(&ty)?;
             Ok::<syn::FnArg, Diagnostic>(syn::parse_quote! { #ident: #ty })
         })
@@ -607,6 +608,36 @@ fn emit_rvalue(rvalue: &Rvalue, function: &rust_ir::Function) -> Result<syn::Exp
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(syn::parse_quote! { [#(#elements),*] })
         }
+        RvalueKind::StructLiteral { fields, .. } => {
+            let fields = fields
+                .iter()
+                .map(|field| emit_operand(field, function))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(syn::parse_quote! { (#(#fields,)*) })
+        }
+        RvalueKind::StructField { structure, field } => {
+            let structure = emit_operand(structure, function)?;
+            let field = syn::Index::from(usize::try_from(*field).map_err(|_| {
+                Diagnostic::backend("verified struct field index does not fit usize")
+            })?);
+            Ok(syn::parse_quote! { (#structure).#field })
+        }
+        RvalueKind::StructSet {
+            structure,
+            field,
+            value,
+        } => {
+            let structure = emit_operand(structure, function)?;
+            let field = syn::Index::from(usize::try_from(*field).map_err(|_| {
+                Diagnostic::backend("verified struct field index does not fit usize")
+            })?);
+            let value = emit_operand(value, function)?;
+            Ok(syn::parse_quote! {{
+                let mut __gors_structure = #structure;
+                __gors_structure.#field = #value;
+                __gors_structure
+            }})
+        }
         RvalueKind::StructLiteralI64(fields) => {
             let fields = fields
                 .iter()
@@ -935,6 +966,13 @@ fn emit_type(ty: &RustType) -> Result<syn::Type, Diagnostic> {
         RustType::ArrayGoString(length) => {
             let length = syn::LitInt::new(&length.to_string(), Span::mixed_site());
             syn::parse_quote! { [::#runtime_crate::GoString; #length] }
+        }
+        RustType::Struct(fields) => {
+            let fields = fields
+                .iter()
+                .map(emit_type)
+                .collect::<Result<Vec<_>, _>>()?;
+            syn::parse_quote! { (#(#fields,)*) }
         }
         RustType::StructI64(length) => {
             let length = syn::LitInt::new(&length.to_string(), Span::mixed_site());

@@ -398,6 +398,9 @@ fn value_op_mut<'a>(
                 | rust_ir::RvalueKind::ArraySetI64 { .. }
                 | rust_ir::RvalueKind::ArraySet { .. }
                 | rust_ir::RvalueKind::ArrayLiteral { .. }
+                | rust_ir::RvalueKind::StructLiteral { .. }
+                | rust_ir::RvalueKind::StructField { .. }
+                | rust_ir::RvalueKind::StructSet { .. }
                 | rust_ir::RvalueKind::StructLiteralI64(_)
                 | rust_ir::RvalueKind::StructFieldI64 { .. }
                 | rust_ir::RvalueKind::StructSetI64 { .. }
@@ -468,13 +471,18 @@ fn rvalue_runtime_static_op_mut(
         rust_ir::RvalueKind::ArrayLiteral { elements, .. } => elements
             .iter_mut()
             .find_map(|element| operand_runtime_static_op_mut(element, expected)),
-        rust_ir::RvalueKind::StructLiteralI64(fields) => fields
+        rust_ir::RvalueKind::StructLiteral { fields, .. }
+        | rust_ir::RvalueKind::StructLiteralI64(fields) => fields
             .iter_mut()
             .find_map(|field| operand_runtime_static_op_mut(field, expected)),
-        rust_ir::RvalueKind::StructFieldI64 { structure, .. } => {
+        rust_ir::RvalueKind::StructField { structure, .. }
+        | rust_ir::RvalueKind::StructFieldI64 { structure, .. } => {
             operand_runtime_static_op_mut(structure, expected)
         }
-        rust_ir::RvalueKind::StructSetI64 {
+        rust_ir::RvalueKind::StructSet {
+            structure, value, ..
+        }
+        | rust_ir::RvalueKind::StructSetI64 {
             structure, value, ..
         } => operand_runtime_static_op_mut(structure, expected)
             .or_else(|| operand_runtime_static_op_mut(value, expected)),

@@ -1,5 +1,7 @@
 //! Mandatory conversion from normalized Go MIR to explicit Rust IR.
 
+mod aggregates;
+
 use super::type_lowering::lower_type;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
@@ -199,65 +201,16 @@ fn lower_rvalue(rvalue: mir::Rvalue, locals: &[out::LocalDecl]) -> Result<out::R
             value: lower_operand(value, locals)?,
         },
         mir::RvalueKind::StructLiteral { fields, ty } => {
-            let out::RustType::StructI64(length) = lower_type(&ty)? else {
-                return Err(Diagnostic::backend(
-                    "non-integer struct reached integer struct representation lowering",
-                ));
-            };
-            if fields.len()
-                != usize::try_from(length).map_err(|_| {
-                    Diagnostic::backend("struct representation length does not fit usize")
-                })?
-            {
-                return Err(Diagnostic::backend(
-                    "struct field count changed during representation lowering",
-                ));
-            }
-            out::RvalueKind::StructLiteralI64(
-                fields
-                    .into_iter()
-                    .map(|field| lower_operand(field, locals))
-                    .collect::<Result<Vec<_>, _>>()?,
-            )
+            aggregates::lower_struct_literal(fields, ty, locals)?
         }
         mir::RvalueKind::StructField { structure, field } => {
-            let out::RustType::StructI64(length) = mir_operand_type(&structure, locals)? else {
-                return Err(Diagnostic::backend(
-                    "non-integer struct reached integer field representation lowering",
-                ));
-            };
-            if u64::from(field) >= length {
-                return Err(Diagnostic::backend(
-                    "struct field index is outside its representation",
-                ));
-            }
-            out::RvalueKind::StructFieldI64 {
-                structure: lower_operand(structure, locals)?,
-                field,
-            }
+            aggregates::lower_struct_field(structure, field, locals)?
         }
         mir::RvalueKind::StructSet {
             structure,
             field,
             value,
-        } => {
-            let out::RustType::StructI64(length) = mir_operand_type(&structure, locals)? else {
-                return Err(Diagnostic::backend(
-                    "non-integer struct reached integer field update lowering",
-                ));
-            };
-            if u64::from(field) >= length || mir_operand_type(&value, locals)? != out::RustType::I64
-            {
-                return Err(Diagnostic::backend(
-                    "invalid integer struct field update reached representation lowering",
-                ));
-            }
-            out::RvalueKind::StructSetI64 {
-                structure: lower_operand(structure, locals)?,
-                field,
-                value: lower_operand(value, locals)?,
-            }
-        }
+        } => aggregates::lower_struct_set(structure, field, value, locals)?,
         mir::RvalueKind::Unary { op, operand, ty } => {
             let operand_ty = mir_operand_type(&operand, locals)?;
             let operand = lower_operand(operand, locals)?;
@@ -571,6 +524,7 @@ fn lower_panic_call(
         | out::RustType::ArrayBool(_)
         | out::RustType::ArrayF64(_)
         | out::RustType::ArrayGoString(_)
+        | out::RustType::Struct(_)
         | out::RustType::StructI64(_)
         | out::RustType::GoSliceI64
         | out::RustType::GoSliceU8
@@ -642,6 +596,7 @@ fn lower_print_call(
             | out::RustType::ArrayBool(_)
             | out::RustType::ArrayF64(_)
             | out::RustType::ArrayGoString(_)
+            | out::RustType::Struct(_)
             | out::RustType::StructI64(_)
             | out::RustType::GoSliceI64
             | out::RustType::GoSliceU8
@@ -752,7 +707,7 @@ fn lower_panic_edge(edge: mir::PanicEdge, effects: out::Effects) -> out::PanicEd
     }
 }
 
-fn lower_operand(
+pub(super) fn lower_operand(
     operand: mir::Operand,
     locals: &[out::LocalDecl],
 ) -> Result<out::Operand, Diagnostic> {
@@ -940,12 +895,12 @@ fn lower_binary_op(
     Ok(lowered)
 }
 
-fn mir_operand_type(
+pub(super) fn mir_operand_type(
     operand: &mir::Operand,
     locals: &[out::LocalDecl],
 ) -> Result<out::RustType, Diagnostic> {
     match operand {
-        mir::Operand::Read(place) => Ok(local(locals, place.local)?.ty),
+        mir::Operand::Read(place) => Ok(local(locals, place.local)?.ty.clone()),
         mir::Operand::Constant(_, ty) => lower_type(ty),
         mir::Operand::Unit => Ok(out::RustType::Unit),
     }

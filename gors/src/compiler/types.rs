@@ -238,9 +238,7 @@ impl Ty {
             return true;
         }
         if let Self::Struct(fields) = self {
-            return fields
-                .iter()
-                .all(|field| field.ty.underlying() == &Self::Int(IntTy::Int));
+            return fields.iter().all(|field| field.ty.is_bootstrap_value());
         }
         matches!(
             self,

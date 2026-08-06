@@ -127,7 +127,11 @@ impl Function {
         reachable: &BTreeSet<BasicBlockId>,
     ) -> Result<BTreeMap<BasicBlockId, Vec<ReadOp>>, Diagnostic> {
         let live_inputs = self.live_inputs(reachable)?;
-        let local_types = self.locals.iter().map(|local| local.ty).collect::<Vec<_>>();
+        let local_types = self
+            .locals
+            .iter()
+            .map(|local| local.ty.clone())
+            .collect::<Vec<_>>();
         let mut plans = BTreeMap::new();
         for block_id in reachable {
             let block = self.block(*block_id)?;
@@ -344,16 +348,21 @@ impl Function {
             RvalueKind::ArrayLiteral {
                 elements: fields, ..
             }
+            | RvalueKind::StructLiteral { fields, .. }
             | RvalueKind::StructLiteralI64(fields) => {
                 for field in fields {
                     self.transfer_operand(field, state, check_reads)?;
                 }
                 Ok(())
             }
-            RvalueKind::StructFieldI64 { structure, .. } => {
+            RvalueKind::StructField { structure, .. }
+            | RvalueKind::StructFieldI64 { structure, .. } => {
                 self.transfer_operand(structure, state, check_reads)
             }
-            RvalueKind::StructSetI64 {
+            RvalueKind::StructSet {
+                structure, value, ..
+            }
+            | RvalueKind::StructSetI64 {
                 structure, value, ..
             } => {
                 self.transfer_operand(structure, state, check_reads)?;
@@ -466,13 +475,18 @@ fn add_rvalue_uses_backwards(rvalue: &Rvalue, live: &mut BTreeSet<LocalId>) {
         RvalueKind::ArrayLiteral {
             elements: fields, ..
         }
+        | RvalueKind::StructLiteral { fields, .. }
         | RvalueKind::StructLiteralI64(fields) => {
             for field in fields.iter().rev() {
                 add_operand_use(field, live);
             }
         }
-        RvalueKind::StructFieldI64 { structure, .. } => add_operand_use(structure, live),
-        RvalueKind::StructSetI64 {
+        RvalueKind::StructField { structure, .. }
+        | RvalueKind::StructFieldI64 { structure, .. } => add_operand_use(structure, live),
+        RvalueKind::StructSet {
+            structure, value, ..
+        }
+        | RvalueKind::StructSetI64 {
             structure, value, ..
         } => {
             add_operand_use(value, live);
@@ -557,16 +571,21 @@ fn plan_rvalue_backwards(
         RvalueKind::ArrayLiteral {
             elements: fields, ..
         }
+        | RvalueKind::StructLiteral { fields, .. }
         | RvalueKind::StructLiteralI64(fields) => {
             for field in fields.iter().rev() {
                 plan_operand_backwards(field, live, local_types, reverse_plan)?;
             }
             Ok(())
         }
-        RvalueKind::StructFieldI64 { structure, .. } => {
+        RvalueKind::StructField { structure, .. }
+        | RvalueKind::StructFieldI64 { structure, .. } => {
             plan_operand_backwards(structure, live, local_types, reverse_plan)
         }
-        RvalueKind::StructSetI64 {
+        RvalueKind::StructSet {
+            structure, value, ..
+        }
+        | RvalueKind::StructSetI64 {
             structure, value, ..
         } => {
             plan_operand_backwards(value, live, local_types, reverse_plan)?;
@@ -637,14 +656,21 @@ fn apply_rvalue_plan(
         RvalueKind::ArrayLiteral {
             elements: fields, ..
         }
+        | RvalueKind::StructLiteral { fields, .. }
         | RvalueKind::StructLiteralI64(fields) => {
             for field in fields {
                 apply_operand_plan(field, plan, cursor)?;
             }
             Ok(())
         }
-        RvalueKind::StructFieldI64 { structure, .. } => apply_operand_plan(structure, plan, cursor),
-        RvalueKind::StructSetI64 {
+        RvalueKind::StructField { structure, .. }
+        | RvalueKind::StructFieldI64 { structure, .. } => {
+            apply_operand_plan(structure, plan, cursor)
+        }
+        RvalueKind::StructSet {
+            structure, value, ..
+        }
+        | RvalueKind::StructSetI64 {
             structure, value, ..
         } => {
             apply_operand_plan(structure, plan, cursor)?;
@@ -726,15 +752,20 @@ fn collect_rvalue_reads(rvalue: &Rvalue, reads: &mut Vec<(LocalId, ReadOp)>) {
         RvalueKind::ArrayLiteral {
             elements: fields, ..
         }
+        | RvalueKind::StructLiteral { fields, .. }
         | RvalueKind::StructLiteralI64(fields) => {
             for field in fields {
                 collect_operand_read(field, reads);
             }
         }
-        RvalueKind::StructFieldI64 { structure, .. } => {
+        RvalueKind::StructField { structure, .. }
+        | RvalueKind::StructFieldI64 { structure, .. } => {
             collect_operand_read(structure, reads);
         }
-        RvalueKind::StructSetI64 {
+        RvalueKind::StructSet {
+            structure, value, ..
+        }
+        | RvalueKind::StructSetI64 {
             structure, value, ..
         } => {
             collect_operand_read(structure, reads);

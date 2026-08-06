@@ -593,6 +593,11 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
                 encoder.sequence(elements, |encoder, element| encoder.i64(*element));
             });
         }
+        hir::ExprKind::DynamicSliceLiteralI64(elements) => {
+            encoder.variant(b"dynamic-slice-literal-i64", |encoder| {
+                encoder.sequence(elements, encode_expression);
+            });
+        }
         hir::ExprKind::SliceLiteralU8(elements) => {
             encoder.variant(b"slice-literal-u8", |encoder| encoder.blob(elements));
         }

@@ -188,6 +188,19 @@ pub enum RvalueKind {
         elements: Vec<Operand>,
         ty: RustType,
     },
+    StructLiteral {
+        fields: Vec<Operand>,
+        ty: RustType,
+    },
+    StructField {
+        structure: Operand,
+        field: u32,
+    },
+    StructSet {
+        structure: Operand,
+        field: u32,
+        value: Operand,
+    },
     StructLiteralI64(Vec<Operand>),
     StructFieldI64 {
         structure: Operand,
@@ -278,7 +291,7 @@ pub enum CallTarget {
     Runtime(RuntimeOp),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RustType {
     Unit,
     Bool,
@@ -298,24 +311,29 @@ pub enum RustType {
     ArrayBool(u64),
     ArrayF64(u64),
     ArrayGoString(u64),
+    Struct(Vec<RustType>),
     StructI64(u64),
 }
 
 impl RustType {
     #[must_use]
-    pub(in crate::compiler) fn scalar_array_parts(self) -> Option<(u64, Self)> {
+    pub(in crate::compiler) fn scalar_array_parts(&self) -> Option<(u64, Self)> {
         match self {
-            Self::ArrayBool(length) => Some((length, Self::Bool)),
-            Self::ArrayI64(length) => Some((length, Self::I64)),
-            Self::ArrayF64(length) => Some((length, Self::F64)),
-            Self::ArrayGoString(length) => Some((length, Self::GoString)),
+            Self::ArrayBool(length) => Some((*length, Self::Bool)),
+            Self::ArrayI64(length) => Some((*length, Self::I64)),
+            Self::ArrayF64(length) => Some((*length, Self::F64)),
+            Self::ArrayGoString(length) => Some((*length, Self::GoString)),
             _ => None,
         }
     }
 
     #[must_use]
-    pub fn conservative_read_op(self) -> Option<ReadOp> {
+    pub fn conservative_read_op(&self) -> Option<ReadOp> {
         match self {
+            Self::Struct(fields) if fields.iter().all(Self::is_copy) => {
+                Some(ReadOp::ProvenInitializedCopy)
+            }
+            Self::Struct(_) => Some(ReadOp::ProvenInitializedClone),
             Self::Bool
             | Self::I64
             | Self::F64
@@ -338,8 +356,13 @@ impl RustType {
         }
     }
 
-    pub(super) fn read_op_for_liveness(self, live_after: bool) -> Option<ReadOp> {
+    pub(super) fn read_op_for_liveness(&self, live_after: bool) -> Option<ReadOp> {
         match self {
+            Self::Struct(fields) if fields.iter().all(Self::is_copy) => {
+                Some(ReadOp::ProvenInitializedCopy)
+            }
+            Self::Struct(_) if live_after => Some(ReadOp::ProvenInitializedClone),
+            Self::Struct(_) => Some(ReadOp::ProvenLastUseMove),
             Self::Bool
             | Self::I64
             | Self::F64
@@ -376,33 +399,52 @@ impl RustType {
         }
     }
 
-    pub(super) fn supports_read_op(self, op: ReadOp) -> bool {
-        matches!(
-            (self, op),
-            (
-                Self::Bool
-                    | Self::I64
-                    | Self::F64
-                    | Self::Complex128
-                    | Self::ArrayBool(_)
-                    | Self::ArrayF64(_)
-                    | Self::ArrayI64(_)
-                    | Self::StructI64(_),
-                ReadOp::ProvenInitializedCopy
-            ) | (
-                Self::GoString
-                    | Self::GoSliceI64
-                    | Self::GoSliceU8
-                    | Self::GoSliceBool
-                    | Self::GoMapStringI64
-                    | Self::GoPointerI64
-                    | Self::GoPointerStructI64
-                    | Self::GoInterface
-                    | Self::GoChannelI64
-                    | Self::ArrayGoString(_),
+    pub(super) fn supports_read_op(&self, op: ReadOp) -> bool {
+        match self {
+            Self::Struct(fields) if fields.iter().all(Self::is_copy) => {
+                op == ReadOp::ProvenInitializedCopy
+            }
+            Self::Struct(_) => matches!(
+                op,
                 ReadOp::ProvenInitializedClone | ReadOp::ProvenLastUseMove
-            )
-        )
+            ),
+            Self::Bool
+            | Self::I64
+            | Self::F64
+            | Self::Complex128
+            | Self::ArrayBool(_)
+            | Self::ArrayF64(_)
+            | Self::ArrayI64(_)
+            | Self::StructI64(_) => op == ReadOp::ProvenInitializedCopy,
+            Self::GoString
+            | Self::GoSliceI64
+            | Self::GoSliceU8
+            | Self::GoSliceBool
+            | Self::GoMapStringI64
+            | Self::GoPointerI64
+            | Self::GoPointerStructI64
+            | Self::GoInterface
+            | Self::GoChannelI64
+            | Self::ArrayGoString(_) => matches!(
+                op,
+                ReadOp::ProvenInitializedClone | ReadOp::ProvenLastUseMove
+            ),
+            Self::Unit => false,
+        }
+    }
+
+    fn is_copy(&self) -> bool {
+        matches!(
+            self,
+            Self::Bool
+                | Self::I64
+                | Self::F64
+                | Self::Complex128
+                | Self::ArrayBool(_)
+                | Self::ArrayF64(_)
+                | Self::ArrayI64(_)
+                | Self::StructI64(_)
+        ) || matches!(self, Self::Struct(fields) if fields.iter().all(Self::is_copy))
     }
 }
 

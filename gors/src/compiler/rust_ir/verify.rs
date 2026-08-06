@@ -1,5 +1,7 @@
 //! Verification for explicit Rust representation, ABI, storage, and control plans.
 
+mod structs;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::*;
@@ -169,7 +171,7 @@ impl Function {
                     "Rust IR parameter {position} has the wrong slot initializer"
                 )));
             }
-            verify_same(local.ty, *expected, "parameter")?;
+            verify_same(local.ty.clone(), expected.clone(), "parameter")?;
         }
         for (index, block) in self.blocks.iter().enumerate() {
             if block.id.0 as usize != index {
@@ -387,12 +389,27 @@ impl Function {
                 for element in elements {
                     verify_same(
                         self.operand_ty(element)?,
-                        element_ty,
+                        element_ty.clone(),
                         "scalar array literal element",
                     )?;
                 }
-                *ty
+                ty.clone()
             }
+            RvalueKind::StructLiteral { fields, ty } => {
+                let fields = fields
+                    .iter()
+                    .map(|field| self.operand_ty(field))
+                    .collect::<Result<Vec<_>, _>>()?;
+                structs::verify_literal(fields, ty)?
+            }
+            RvalueKind::StructField { structure, field } => {
+                structs::verify_field(self.operand_ty(structure)?, *field)?
+            }
+            RvalueKind::StructSet {
+                structure,
+                field,
+                value,
+            } => structs::verify_set(self.operand_ty(structure)?, *field, self.operand_ty(value)?)?,
             RvalueKind::StructLiteralI64(fields) => {
                 for field in fields {
                     verify_same(
@@ -522,7 +539,7 @@ impl Function {
                     ));
                 }
                 for (value, expected) in values.iter().zip(&self.signature.results) {
-                    verify_same(self.operand_ty(value)?, *expected, "return value")?;
+                    verify_same(self.operand_ty(value)?, expected.clone(), "return value")?;
                 }
             }
             TerminatorKind::Unreachable => {}
@@ -548,7 +565,11 @@ impl Function {
             )));
         }
         for (destination, result) in destinations.iter().zip(results) {
-            verify_same(self.place_ty(*destination)?, *result, "call destination")?;
+            verify_same(
+                self.place_ty(*destination)?,
+                result.clone(),
+                "call destination",
+            )?;
         }
         Ok(())
     }
@@ -566,7 +587,7 @@ impl Function {
     }
 
     fn place_ty(&self, place: Place) -> Result<RustType, Diagnostic> {
-        self.local(place.local).map(|local| local.ty)
+        self.local(place.local).map(|local| local.ty.clone())
     }
 
     fn operand_ty(&self, operand: &Operand) -> Result<RustType, Diagnostic> {
@@ -619,14 +640,13 @@ fn verify_operation_arguments(
             signature.parameters().len()
         )));
     }
-    for (position, (actual, expected)) in arguments
-        .iter()
-        .copied()
-        .zip(signature.parameters().iter().copied())
-        .enumerate()
-    {
-        let expected = rust_type_from_runtime(expected, context)?;
-        verify_same(actual, expected, &format!("{context} argument {position}"))?;
+    for (position, (actual, expected)) in arguments.iter().zip(signature.parameters()).enumerate() {
+        let expected = rust_type_from_runtime(*expected, context)?;
+        verify_same(
+            actual.clone(),
+            expected,
+            &format!("{context} argument {position}"),
+        )?;
     }
     Ok(())
 }
@@ -774,7 +794,10 @@ fn collect_rvalue_runtime_operations(rvalue: &Rvalue, operations: &mut Vec<Runti
             collect_operand_runtime_operations(index, operations);
             collect_operand_runtime_operations(value, operations);
         }
-        RvalueKind::ArrayLiteral { elements, .. } => {
+        RvalueKind::ArrayLiteral { elements, .. }
+        | RvalueKind::StructLiteral {
+            fields: elements, ..
+        } => {
             for element in elements {
                 collect_operand_runtime_operations(element, operations);
             }
@@ -784,10 +807,14 @@ fn collect_rvalue_runtime_operations(rvalue: &Rvalue, operations: &mut Vec<Runti
                 collect_operand_runtime_operations(field, operations);
             }
         }
-        RvalueKind::StructFieldI64 { structure, .. } => {
+        RvalueKind::StructField { structure, .. }
+        | RvalueKind::StructFieldI64 { structure, .. } => {
             collect_operand_runtime_operations(structure, operations);
         }
-        RvalueKind::StructSetI64 {
+        RvalueKind::StructSet {
+            structure, value, ..
+        }
+        | RvalueKind::StructSetI64 {
             structure, value, ..
         } => {
             collect_operand_runtime_operations(structure, operations);

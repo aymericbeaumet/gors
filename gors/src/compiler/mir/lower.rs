@@ -10,6 +10,7 @@ mod maps;
 mod panic_cleanup;
 mod pointers;
 mod ranges;
+mod slices;
 mod structs;
 #[cfg(test)]
 mod test_file;
@@ -759,6 +760,9 @@ impl FunctionLowerer {
                 );
                 self.push_statement(make_statement(place, value, provenance))?;
                 Ok(Operand::Read(place))
+            }
+            hir::ExprKind::DynamicSliceLiteralI64(elements) => {
+                self.lower_dynamic_i64_slice_literal(elements, &expr.ty, expr.source)
             }
             hir::ExprKind::SliceLiteralU8(elements) => {
                 let result = self.new_temp(expr.ty.clone());
