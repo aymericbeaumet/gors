@@ -3,8 +3,8 @@
 use super::{
     CLOSE_CHANNEL_PANICS, EXPLICIT_PANIC, INDEX_OUT_OF_RANGE, INTEGER_DIVIDE_BY_ZERO,
     NEGATIVE_CHANNEL_CAPACITY, NEGATIVE_SHIFT_AMOUNT, NIL_MAP_ASSIGNMENT, NIL_POINTER_DEREFERENCE,
-    NO_CAPABILITIES, NO_GO_PANICS, RuntimeOp, SEND_ON_CLOSED_CHANNEL, SLICE_BOUNDS_OUT_OF_RANGE,
-    STANDARD_IO_CAPABILITY,
+    NIL_POINTER_OR_INDEX_OUT_OF_RANGE, NO_CAPABILITIES, NO_GO_PANICS, RuntimeOp,
+    SEND_ON_CLOSED_CHANNEL, SLICE_BOUNDS_OUT_OF_RANGE, STANDARD_IO_CAPABILITY,
 };
 use crate::effects::{
     AllocationEffect, ArgumentMutationEffect, BlockingEffect, HostIoEffect, RuntimeEffects,
@@ -61,6 +61,12 @@ impl RuntimeOp {
             | Self::GoPointerI64Get
             | Self::GoPointerI64Set
             | Self::GoPointerI64IsNil
+            | Self::GoPointerStructI64Nil
+            | Self::GoPointerStructI64New
+            | Self::GoPointerStructI64Get
+            | Self::GoPointerStructI64Set
+            | Self::GoPointerStructI64IsNil
+            | Self::GoPointerStructI64Equal
             | Self::GoChannelI64Nil
             | Self::GoChannelI64Make
             | Self::GoChannelI64Len
@@ -195,7 +201,10 @@ impl RuntimeOp {
             | Self::GoMapStringI64Contains
             | Self::GoMapStringI64IsNil
             | Self::GoPointerI64Nil
-            | Self::GoPointerI64IsNil => RuntimeEffects::new(
+            | Self::GoPointerI64IsNil
+            | Self::GoPointerStructI64Nil
+            | Self::GoPointerStructI64IsNil
+            | Self::GoPointerStructI64Equal => RuntimeEffects::new(
                 AllocationEffect::None,
                 ArgumentMutationEffect::None,
                 HostIoEffect::None,
@@ -236,6 +245,24 @@ impl RuntimeOp {
                 ArgumentMutationEffect::MayMutateOwnedArgument,
                 HostIoEffect::None,
                 NIL_POINTER_DEREFERENCE,
+            ),
+            Self::GoPointerStructI64New => RuntimeEffects::new(
+                AllocationEffect::MayAllocate,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                INDEX_OUT_OF_RANGE,
+            ),
+            Self::GoPointerStructI64Get => RuntimeEffects::new(
+                AllocationEffect::None,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                NIL_POINTER_OR_INDEX_OUT_OF_RANGE,
+            ),
+            Self::GoPointerStructI64Set => RuntimeEffects::new(
+                AllocationEffect::None,
+                ArgumentMutationEffect::MayMutateOwnedArgument,
+                HostIoEffect::None,
+                NIL_POINTER_OR_INDEX_OUT_OF_RANGE,
             ),
             Self::GoChannelI64Nil
             | Self::GoChannelI64Len

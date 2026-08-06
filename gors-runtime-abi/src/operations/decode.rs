@@ -64,6 +64,12 @@ impl TryFrom<u16> for RuntimeOp {
             60 => Ok(Self::GoStringLen),
             61 => Ok(Self::GoChannelI64TrySend),
             62 => Ok(Self::GoChannelI64TryReceive),
+            63 => Ok(Self::GoPointerStructI64Nil),
+            64 => Ok(Self::GoPointerStructI64New),
+            65 => Ok(Self::GoPointerStructI64Get),
+            66 => Ok(Self::GoPointerStructI64Set),
+            67 => Ok(Self::GoPointerStructI64IsNil),
+            68 => Ok(Self::GoPointerStructI64Equal),
             unknown => Err(UnknownRuntimeOpId(unknown)),
         }
     }

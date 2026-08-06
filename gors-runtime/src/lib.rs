@@ -631,6 +631,83 @@ pub fn go_pointer_i64_is_nil(pointer: GoPointerI64) -> bool {
     pointer.storage.is_none()
 }
 
+/// A nullable pointer to an integer-field Go struct.
+///
+/// The field vector is private runtime storage. Cloning the pointer preserves
+/// pointee identity, while compiler-generated struct values remain fixed Rust
+/// arrays with Go value-copy semantics.
+#[derive(Clone, Debug, Default)]
+pub struct GoPointerStructI64 {
+    storage: Option<Arc<RwLock<Box<[GoInt]>>>>,
+}
+
+/// Construct the nil pointer-to-integer-struct value.
+#[must_use]
+pub fn go_pointer_struct_i64_nil() -> GoPointerStructI64 {
+    GoPointerStructI64::default()
+}
+
+/// Allocate a zero-initialized integer-field struct with `field_count` fields.
+#[must_use]
+pub fn go_pointer_struct_i64_new(field_count: GoInt) -> GoPointerStructI64 {
+    let field_count = usize::try_from(field_count).unwrap_or_else(|_| pointer_struct_bounds());
+    GoPointerStructI64 {
+        storage: Some(Arc::new(RwLock::new(
+            vec![0; field_count].into_boxed_slice(),
+        ))),
+    }
+}
+
+/// Read one field through a pointer-to-integer-struct value.
+#[must_use]
+pub fn go_pointer_struct_i64_get(pointer: GoPointerStructI64, field: GoInt) -> GoInt {
+    let Some(storage) = pointer.storage else {
+        nil_pointer_dereference();
+    };
+    let field = usize::try_from(field).unwrap_or_else(|_| pointer_struct_bounds());
+    let fields = storage
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *fields.get(field).unwrap_or_else(|| pointer_struct_bounds())
+}
+
+/// Assign one field through a pointer-to-integer-struct value.
+pub fn go_pointer_struct_i64_set(pointer: GoPointerStructI64, field: GoInt, value: GoInt) {
+    let Some(storage) = pointer.storage else {
+        nil_pointer_dereference();
+    };
+    let field = usize::try_from(field).unwrap_or_else(|_| pointer_struct_bounds());
+    let mut fields = storage
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *fields
+        .get_mut(field)
+        .unwrap_or_else(|| pointer_struct_bounds()) = value;
+}
+
+/// Report whether a pointer-to-integer-struct value is nil.
+#[must_use]
+pub fn go_pointer_struct_i64_is_nil(pointer: GoPointerStructI64) -> bool {
+    pointer.storage.is_none()
+}
+
+/// Compare pointer identity, including equality between two nil pointers.
+#[must_use]
+pub fn go_pointer_struct_i64_equal(left: GoPointerStructI64, right: GoPointerStructI64) -> bool {
+    match (left.storage, right.storage) {
+        (None, None) => true,
+        (Some(left), Some(right)) => Arc::ptr_eq(&left, &right),
+        (None, Some(_)) | (Some(_), None) => false,
+    }
+}
+
+#[cold]
+#[inline(never)]
+#[allow(clippy::panic)] // This is a checked runtime pointer-field boundary.
+fn pointer_struct_bounds() -> ! {
+    std::panic::resume_unwind(Box::new("runtime error: struct field index out of range"))
+}
+
 #[cold]
 #[inline(never)]
 #[allow(clippy::panic)] // This is the Go language panic boundary, not an invariant failure.

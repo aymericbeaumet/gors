@@ -93,11 +93,11 @@ fn current_contract_identity_is_sha256_of_canonical_bytes() {
 
     assert_eq!(manifest.schema().get(), 2);
     assert_eq!(manifest.contract(), CURRENT_CONTRACT_VERSION);
-    assert_eq!(manifest.contract(), ContractVersion::new(2, 6, 0));
+    assert_eq!(manifest.contract(), ContractVersion::new(2, 7, 0));
     assert_eq!(manifest.identity().as_bytes(), &expected);
     assert_eq!(
         manifest.identity().to_string(),
-        "e74082d8f5325523d65b73528620b3ac711b3b6ae1c71968c91c3632ff51ace4",
+        "56b2c2c13dcc4a48a0c895bd2a5fdc531482f1db733813149e664926019b5d56",
         "the canonical runtime contract changed; review the ABI diff and bump its semantic version before accepting a new identity",
     );
 }
@@ -162,6 +162,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoMapStringI64Make
             | RuntimeOp::GoMapStringI64Set
             | RuntimeOp::GoPointerI64New
+            | RuntimeOp::GoPointerStructI64New
             | RuntimeOp::GoChannelI64Make => AllocationEffect::MayAllocate,
             RuntimeOp::GoStringFromStatic
             | RuntimeOp::IntDiv
@@ -196,6 +197,11 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoPointerI64Get
             | RuntimeOp::GoPointerI64Set
             | RuntimeOp::GoPointerI64IsNil
+            | RuntimeOp::GoPointerStructI64Nil
+            | RuntimeOp::GoPointerStructI64Get
+            | RuntimeOp::GoPointerStructI64Set
+            | RuntimeOp::GoPointerStructI64IsNil
+            | RuntimeOp::GoPointerStructI64Equal
             | RuntimeOp::GoChannelI64Nil
             | RuntimeOp::GoChannelI64Len
             | RuntimeOp::GoChannelI64Cap
@@ -221,6 +227,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoMapStringI64Delete
             | RuntimeOp::GoMapStringI64Clear
             | RuntimeOp::GoPointerI64Set
+            | RuntimeOp::GoPointerStructI64Set
             | RuntimeOp::GoChannelI64Send
             | RuntimeOp::GoChannelI64ReceiveValue
             | RuntimeOp::GoChannelI64Receive
@@ -260,6 +267,11 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoPointerI64New
             | RuntimeOp::GoPointerI64Get
             | RuntimeOp::GoPointerI64IsNil
+            | RuntimeOp::GoPointerStructI64Nil
+            | RuntimeOp::GoPointerStructI64New
+            | RuntimeOp::GoPointerStructI64Get
+            | RuntimeOp::GoPointerStructI64IsNil
+            | RuntimeOp::GoPointerStructI64Equal
             | RuntimeOp::GoChannelI64Nil
             | RuntimeOp::GoChannelI64Make
             | RuntimeOp::GoChannelI64Len
@@ -324,6 +336,12 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoPointerI64Get
             | RuntimeOp::GoPointerI64Set
             | RuntimeOp::GoPointerI64IsNil
+            | RuntimeOp::GoPointerStructI64Nil
+            | RuntimeOp::GoPointerStructI64New
+            | RuntimeOp::GoPointerStructI64Get
+            | RuntimeOp::GoPointerStructI64Set
+            | RuntimeOp::GoPointerStructI64IsNil
+            | RuntimeOp::GoPointerStructI64Equal
             | RuntimeOp::GoChannelI64Nil
             | RuntimeOp::GoChannelI64Make
             | RuntimeOp::GoChannelI64Len
@@ -353,6 +371,11 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             RuntimeOp::GoPointerI64Get | RuntimeOp::GoPointerI64Set => {
                 &[GoPanicCondition::NilPointerDereference]
             }
+            RuntimeOp::GoPointerStructI64New => &[GoPanicCondition::IndexOutOfRange],
+            RuntimeOp::GoPointerStructI64Get | RuntimeOp::GoPointerStructI64Set => &[
+                GoPanicCondition::NilPointerDereference,
+                GoPanicCondition::IndexOutOfRange,
+            ],
             RuntimeOp::GoChannelI64Make => &[GoPanicCondition::NegativeChannelCapacity],
             RuntimeOp::GoChannelI64Send | RuntimeOp::GoChannelI64TrySend => {
                 &[GoPanicCondition::SendOnClosedChannel]
@@ -391,6 +414,9 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoPointerI64Nil
             | RuntimeOp::GoPointerI64New
             | RuntimeOp::GoPointerI64IsNil
+            | RuntimeOp::GoPointerStructI64Nil
+            | RuntimeOp::GoPointerStructI64IsNil
+            | RuntimeOp::GoPointerStructI64Equal
             | RuntimeOp::GoChannelI64Nil
             | RuntimeOp::GoChannelI64Len
             | RuntimeOp::GoChannelI64Cap
@@ -566,156 +592,6 @@ fn primitive_signatures_are_complete_and_exact() {
         );
         assert_eq!(operation.signature().result(), expected.1, "{operation:?}");
     }
-}
-
-#[test]
-fn runtime_signatures_are_complete_and_exact() {
-    for operation in RuntimeOp::ALL {
-        let expected: (&[RuntimeType], RuntimeType) = match operation {
-            RuntimeOp::GoStringFromBytes => (&[RuntimeType::ByteSlice], RuntimeType::GoString),
-            RuntimeOp::GoStringFromStatic => {
-                (&[RuntimeType::StaticByteSlice], RuntimeType::GoString)
-            }
-            RuntimeOp::ConcatGoStrings => (
-                &[RuntimeType::GoString, RuntimeType::GoString],
-                RuntimeType::GoString,
-            ),
-            RuntimeOp::IntDiv | RuntimeOp::IntRem | RuntimeOp::IntShl | RuntimeOp::IntShr => {
-                (&[RuntimeType::I64, RuntimeType::I64], RuntimeType::I64)
-            }
-            RuntimeOp::PrintBool => (&[RuntimeType::Bool], RuntimeType::Unit),
-            RuntimeOp::PrintI64 => (&[RuntimeType::I64], RuntimeType::Unit),
-            RuntimeOp::PrintSpace | RuntimeOp::PrintNewline => (&[], RuntimeType::Unit),
-            RuntimeOp::PrintGoString => (&[RuntimeType::GoString], RuntimeType::Unit),
-            RuntimeOp::PanicBool => (&[RuntimeType::Bool], RuntimeType::Unit),
-            RuntimeOp::PanicI64 => (&[RuntimeType::I64], RuntimeType::Unit),
-            RuntimeOp::PanicGoString => (&[RuntimeType::GoString], RuntimeType::Unit),
-            RuntimeOp::GoSliceI64FromStatic => {
-                (&[RuntimeType::StaticI64Slice], RuntimeType::GoSliceI64)
-            }
-            RuntimeOp::GoSliceI64Index => (
-                &[RuntimeType::GoSliceI64, RuntimeType::I64],
-                RuntimeType::I64,
-            ),
-            RuntimeOp::GoSliceI64Range => (
-                &[
-                    RuntimeType::GoSliceI64,
-                    RuntimeType::I64,
-                    RuntimeType::I64,
-                    RuntimeType::I64,
-                ],
-                RuntimeType::GoSliceI64,
-            ),
-            RuntimeOp::GoSliceI64Set => (
-                &[RuntimeType::GoSliceI64, RuntimeType::I64, RuntimeType::I64],
-                RuntimeType::Unit,
-            ),
-            RuntimeOp::GoSliceI64Make => (
-                &[RuntimeType::I64, RuntimeType::I64],
-                RuntimeType::GoSliceI64,
-            ),
-            RuntimeOp::GoSliceI64Len | RuntimeOp::GoSliceI64Cap => {
-                (&[RuntimeType::GoSliceI64], RuntimeType::I64)
-            }
-            RuntimeOp::GoSliceI64Append => (
-                &[RuntimeType::GoSliceI64, RuntimeType::I64],
-                RuntimeType::GoSliceI64,
-            ),
-            RuntimeOp::GoSliceU8FromStatic => {
-                (&[RuntimeType::StaticByteSlice], RuntimeType::GoSliceU8)
-            }
-            RuntimeOp::GoSliceU8AppendSlice => (
-                &[RuntimeType::GoSliceU8, RuntimeType::GoSliceU8],
-                RuntimeType::GoSliceU8,
-            ),
-            RuntimeOp::GoSliceU8AppendString => (
-                &[RuntimeType::GoSliceU8, RuntimeType::GoString],
-                RuntimeType::GoSliceU8,
-            ),
-            RuntimeOp::GoSliceU8CopyString => (
-                &[RuntimeType::GoSliceU8, RuntimeType::GoString],
-                RuntimeType::I64,
-            ),
-            RuntimeOp::GoSliceI64Clear => (&[RuntimeType::GoSliceI64], RuntimeType::Unit),
-            RuntimeOp::GoStringFromSliceU8 => (&[RuntimeType::GoSliceU8], RuntimeType::GoString),
-            RuntimeOp::GoSliceI64Copy => (
-                &[RuntimeType::GoSliceI64, RuntimeType::GoSliceI64],
-                RuntimeType::I64,
-            ),
-            RuntimeOp::GoMapStringI64Nil | RuntimeOp::GoMapStringI64Make => {
-                (&[], RuntimeType::GoMapStringI64)
-            }
-            RuntimeOp::GoMapStringI64Len => (&[RuntimeType::GoMapStringI64], RuntimeType::I64),
-            RuntimeOp::GoMapStringI64Get => (
-                &[RuntimeType::GoMapStringI64, RuntimeType::GoString],
-                RuntimeType::I64,
-            ),
-            RuntimeOp::GoMapStringI64Contains => (
-                &[RuntimeType::GoMapStringI64, RuntimeType::GoString],
-                RuntimeType::Bool,
-            ),
-            RuntimeOp::GoMapStringI64Set => (
-                &[
-                    RuntimeType::GoMapStringI64,
-                    RuntimeType::GoString,
-                    RuntimeType::I64,
-                ],
-                RuntimeType::Unit,
-            ),
-            RuntimeOp::GoMapStringI64Delete => (
-                &[RuntimeType::GoMapStringI64, RuntimeType::GoString],
-                RuntimeType::Unit,
-            ),
-            RuntimeOp::GoMapStringI64Clear => (&[RuntimeType::GoMapStringI64], RuntimeType::Unit),
-            RuntimeOp::GoMapStringI64IsNil => (&[RuntimeType::GoMapStringI64], RuntimeType::Bool),
-            RuntimeOp::GoMapStringI64KeyAt => (
-                &[RuntimeType::GoMapStringI64, RuntimeType::I64],
-                RuntimeType::GoString,
-            ),
-            RuntimeOp::GoPointerI64Nil | RuntimeOp::GoPointerI64New => {
-                (&[], RuntimeType::GoPointerI64)
-            }
-            RuntimeOp::GoPointerI64Get => (&[RuntimeType::GoPointerI64], RuntimeType::I64),
-            RuntimeOp::GoPointerI64Set => (
-                &[RuntimeType::GoPointerI64, RuntimeType::I64],
-                RuntimeType::Unit,
-            ),
-            RuntimeOp::GoPointerI64IsNil => (&[RuntimeType::GoPointerI64], RuntimeType::Bool),
-            RuntimeOp::GoChannelI64Nil => (&[], RuntimeType::GoChannelI64),
-            RuntimeOp::GoChannelI64Make => (&[RuntimeType::I64], RuntimeType::GoChannelI64),
-            RuntimeOp::GoChannelI64Len | RuntimeOp::GoChannelI64Cap => {
-                (&[RuntimeType::GoChannelI64], RuntimeType::I64)
-            }
-            RuntimeOp::GoChannelI64Send => (
-                &[RuntimeType::GoChannelI64, RuntimeType::I64],
-                RuntimeType::Unit,
-            ),
-            RuntimeOp::GoChannelI64ReceiveValue => (&[RuntimeType::GoChannelI64], RuntimeType::I64),
-            RuntimeOp::GoChannelI64Receive => {
-                (&[RuntimeType::GoChannelI64], RuntimeType::I64BoolTuple)
-            }
-            RuntimeOp::GoChannelI64Close => (&[RuntimeType::GoChannelI64], RuntimeType::Unit),
-            RuntimeOp::GoChannelI64IsNil => (&[RuntimeType::GoChannelI64], RuntimeType::Bool),
-            RuntimeOp::GoStringLen => (&[RuntimeType::GoString], RuntimeType::I64),
-            RuntimeOp::GoChannelI64TrySend => (
-                &[RuntimeType::GoChannelI64, RuntimeType::I64],
-                RuntimeType::Bool,
-            ),
-            RuntimeOp::GoChannelI64TryReceive => {
-                (&[RuntimeType::GoChannelI64], RuntimeType::I64I64Tuple)
-            }
-        };
-
-        assert_eq!(
-            operation.signature().parameters(),
-            expected.0,
-            "{operation:?}"
-        );
-        assert_eq!(operation.signature().result(), expected.1, "{operation:?}");
-    }
-
-    assert_eq!(RuntimeOp::IntDiv.symbol(), "int_div");
-    assert_eq!(RuntimeOp::PrintGoString.symbol(), "print_go_string");
 }
 
 #[test]

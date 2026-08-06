@@ -336,6 +336,7 @@ pub enum RuntimeType {
     I64BoolTuple,
     /// ABI-only aggregate returned by nonblocking integer channel receive.
     I64I64Tuple,
+    GoPointerStructI64,
 }
 
 impl RuntimeType {
@@ -357,6 +358,7 @@ impl RuntimeType {
             Self::GoChannelI64 => 14,
             Self::I64BoolTuple => 15,
             Self::I64I64Tuple => 16,
+            Self::GoPointerStructI64 => 17,
         }
     }
 
@@ -439,6 +441,18 @@ const GO_MAP_STRING_I64_SET: &[RuntimeType] = &[
 ];
 const GO_POINTER_I64_PARAMETER: &[RuntimeType] = &[RuntimeType::GoPointerI64];
 const GO_POINTER_I64_SET: &[RuntimeType] = &[RuntimeType::GoPointerI64, RuntimeType::I64];
+const GO_POINTER_STRUCT_I64_PARAMETER: &[RuntimeType] = &[RuntimeType::GoPointerStructI64];
+const TWO_GO_POINTER_STRUCT_I64_PARAMETERS: &[RuntimeType] = &[
+    RuntimeType::GoPointerStructI64,
+    RuntimeType::GoPointerStructI64,
+];
+const GO_POINTER_STRUCT_I64_AND_INDEX: &[RuntimeType] =
+    &[RuntimeType::GoPointerStructI64, RuntimeType::I64];
+const GO_POINTER_STRUCT_I64_SET: &[RuntimeType] = &[
+    RuntimeType::GoPointerStructI64,
+    RuntimeType::I64,
+    RuntimeType::I64,
+];
 const GO_CHANNEL_I64_PARAMETER: &[RuntimeType] = &[RuntimeType::GoChannelI64];
 const GO_CHANNEL_I64_SEND: &[RuntimeType] = &[RuntimeType::GoChannelI64, RuntimeType::I64];
 const NO_CAPABILITIES: &[TargetCapability] = &[];
@@ -451,6 +465,10 @@ const INDEX_OUT_OF_RANGE: &[GoPanicCondition] = &[GoPanicCondition::IndexOutOfRa
 const SLICE_BOUNDS_OUT_OF_RANGE: &[GoPanicCondition] = &[GoPanicCondition::SliceBoundsOutOfRange];
 const NIL_MAP_ASSIGNMENT: &[GoPanicCondition] = &[GoPanicCondition::NilMapAssignment];
 const NIL_POINTER_DEREFERENCE: &[GoPanicCondition] = &[GoPanicCondition::NilPointerDereference];
+const NIL_POINTER_OR_INDEX_OUT_OF_RANGE: &[GoPanicCondition] = &[
+    GoPanicCondition::NilPointerDereference,
+    GoPanicCondition::IndexOutOfRange,
+];
 const NEGATIVE_CHANNEL_CAPACITY: &[GoPanicCondition] = &[GoPanicCondition::NegativeChannelCapacity];
 const SEND_ON_CLOSED_CHANNEL: &[GoPanicCondition] = &[GoPanicCondition::SendOnClosedChannel];
 const CLOSE_CHANNEL_PANICS: &[GoPanicCondition] = &[
@@ -518,6 +536,12 @@ pub enum RuntimeOp {
     GoStringLen,
     GoChannelI64TrySend,
     GoChannelI64TryReceive,
+    GoPointerStructI64Nil,
+    GoPointerStructI64New,
+    GoPointerStructI64Get,
+    GoPointerStructI64Set,
+    GoPointerStructI64IsNil,
+    GoPointerStructI64Equal,
 }
 
 /// Stable compact identity of one runtime ABI operation.
@@ -611,6 +635,12 @@ impl RuntimeOp {
         Self::GoStringLen,
         Self::GoChannelI64TrySend,
         Self::GoChannelI64TryReceive,
+        Self::GoPointerStructI64Nil,
+        Self::GoPointerStructI64New,
+        Self::GoPointerStructI64Get,
+        Self::GoPointerStructI64Set,
+        Self::GoPointerStructI64IsNil,
+        Self::GoPointerStructI64Equal,
     ];
 
     /// Stable exported Rust symbol assigned to this ABI operation.
@@ -674,6 +704,12 @@ impl RuntimeOp {
             Self::GoStringLen => "go_string_len",
             Self::GoChannelI64TrySend => "go_channel_i64_try_send",
             Self::GoChannelI64TryReceive => "go_channel_i64_try_receive",
+            Self::GoPointerStructI64Nil => "go_pointer_struct_i64_nil",
+            Self::GoPointerStructI64New => "go_pointer_struct_i64_new",
+            Self::GoPointerStructI64Get => "go_pointer_struct_i64_get",
+            Self::GoPointerStructI64Set => "go_pointer_struct_i64_set",
+            Self::GoPointerStructI64IsNil => "go_pointer_struct_i64_is_nil",
+            Self::GoPointerStructI64Equal => "go_pointer_struct_i64_equal",
         }
     }
 
@@ -808,6 +844,24 @@ impl RuntimeOp {
             Self::GoChannelI64TryReceive => {
                 RuntimeSignature::new(GO_CHANNEL_I64_PARAMETER, RuntimeType::I64I64Tuple)
             }
+            Self::GoPointerStructI64Nil => {
+                RuntimeSignature::new(NO_PARAMETERS, RuntimeType::GoPointerStructI64)
+            }
+            Self::GoPointerStructI64New => {
+                RuntimeSignature::new(I64_PARAMETER, RuntimeType::GoPointerStructI64)
+            }
+            Self::GoPointerStructI64Get => {
+                RuntimeSignature::new(GO_POINTER_STRUCT_I64_AND_INDEX, RuntimeType::I64)
+            }
+            Self::GoPointerStructI64Set => {
+                RuntimeSignature::new(GO_POINTER_STRUCT_I64_SET, RuntimeType::Unit)
+            }
+            Self::GoPointerStructI64IsNil => {
+                RuntimeSignature::new(GO_POINTER_STRUCT_I64_PARAMETER, RuntimeType::Bool)
+            }
+            Self::GoPointerStructI64Equal => {
+                RuntimeSignature::new(TWO_GO_POINTER_STRUCT_I64_PARAMETERS, RuntimeType::Bool)
+            }
         }
     }
 
@@ -872,6 +926,12 @@ impl RuntimeOp {
             Self::GoStringLen => 60,
             Self::GoChannelI64TrySend => 61,
             Self::GoChannelI64TryReceive => 62,
+            Self::GoPointerStructI64Nil => 63,
+            Self::GoPointerStructI64New => 64,
+            Self::GoPointerStructI64Get => 65,
+            Self::GoPointerStructI64Set => 66,
+            Self::GoPointerStructI64IsNil => 67,
+            Self::GoPointerStructI64Equal => 68,
         })
     }
 

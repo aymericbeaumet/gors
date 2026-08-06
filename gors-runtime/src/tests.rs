@@ -122,10 +122,28 @@ fn pointers_preserve_nil_and_shared_pointee_semantics() {
 }
 
 #[test]
+fn struct_pointers_preserve_identity_fields_and_nil_panics() {
+    let nil_pointer = go_pointer_struct_i64_nil();
+    assert!(go_pointer_struct_i64_is_nil(nil_pointer.clone()));
+    assert!(
+        std::panic::catch_unwind(|| { go_pointer_struct_i64_get(nil_pointer.clone(), 0) }).is_err()
+    );
+
+    let pointer = go_pointer_struct_i64_new(2);
+    let alias = pointer.clone();
+    let distinct = go_pointer_struct_i64_new(2);
+    assert!(go_pointer_struct_i64_equal(pointer.clone(), alias.clone()));
+    assert!(!go_pointer_struct_i64_equal(pointer.clone(), distinct));
+    go_pointer_struct_i64_set(alias, 1, 42);
+    assert_eq!(go_pointer_struct_i64_get(pointer, 1), 42);
+}
+
+#[test]
 fn pointers_are_send_and_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
 
     assert_send_sync::<GoPointerI64>();
+    assert_send_sync::<GoPointerStructI64>();
 }
 
 #[test]
