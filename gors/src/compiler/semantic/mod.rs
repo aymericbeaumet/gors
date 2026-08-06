@@ -11,6 +11,7 @@ mod maps;
 mod numeric_builtins;
 mod pointers;
 mod ranges;
+mod selects;
 mod statements;
 mod switches;
 

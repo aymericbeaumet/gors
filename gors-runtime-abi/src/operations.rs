@@ -334,6 +334,8 @@ pub enum RuntimeType {
     GoChannelI64,
     /// ABI-only aggregate returned by comma-ok integer channel receive.
     I64BoolTuple,
+    /// ABI-only aggregate returned by nonblocking integer channel receive.
+    I64I64Tuple,
 }
 
 impl RuntimeType {
@@ -354,6 +356,7 @@ impl RuntimeType {
             Self::GoPointerI64 => 13,
             Self::GoChannelI64 => 14,
             Self::I64BoolTuple => 15,
+            Self::I64I64Tuple => 16,
         }
     }
 
@@ -513,6 +516,8 @@ pub enum RuntimeOp {
     GoChannelI64Close,
     GoChannelI64IsNil,
     GoStringLen,
+    GoChannelI64TrySend,
+    GoChannelI64TryReceive,
 }
 
 /// Stable compact identity of one runtime ABI operation.
@@ -604,6 +609,8 @@ impl RuntimeOp {
         Self::GoChannelI64Close,
         Self::GoChannelI64IsNil,
         Self::GoStringLen,
+        Self::GoChannelI64TrySend,
+        Self::GoChannelI64TryReceive,
     ];
 
     /// Stable exported Rust symbol assigned to this ABI operation.
@@ -665,6 +672,8 @@ impl RuntimeOp {
             Self::GoChannelI64Close => "go_channel_i64_close",
             Self::GoChannelI64IsNil => "go_channel_i64_is_nil",
             Self::GoStringLen => "go_string_len",
+            Self::GoChannelI64TrySend => "go_channel_i64_try_send",
+            Self::GoChannelI64TryReceive => "go_channel_i64_try_receive",
         }
     }
 
@@ -793,6 +802,12 @@ impl RuntimeOp {
                 RuntimeSignature::new(GO_CHANNEL_I64_PARAMETER, RuntimeType::Bool)
             }
             Self::GoStringLen => RuntimeSignature::new(GO_STRING_PARAMETER, RuntimeType::I64),
+            Self::GoChannelI64TrySend => {
+                RuntimeSignature::new(GO_CHANNEL_I64_SEND, RuntimeType::Bool)
+            }
+            Self::GoChannelI64TryReceive => {
+                RuntimeSignature::new(GO_CHANNEL_I64_PARAMETER, RuntimeType::I64I64Tuple)
+            }
         }
     }
 
@@ -855,6 +870,8 @@ impl RuntimeOp {
             Self::GoChannelI64Close => 58,
             Self::GoChannelI64IsNil => 59,
             Self::GoStringLen => 60,
+            Self::GoChannelI64TrySend => 61,
+            Self::GoChannelI64TryReceive => 62,
         })
     }
 

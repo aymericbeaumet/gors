@@ -562,6 +562,8 @@ fn encode_builtin(encoder: &mut Encoder, builtin: hir::Builtin) {
             hir::Builtin::ChannelI64Receive => b"channel-i64-receive",
             hir::Builtin::ChannelI64Close => b"channel-i64-close",
             hir::Builtin::ChannelI64IsNil => b"channel-i64-is-nil",
+            hir::Builtin::ChannelI64TrySend => b"channel-i64-try-send",
+            hir::Builtin::ChannelI64TryReceive => b"channel-i64-try-receive",
         },
         |_| {},
     );

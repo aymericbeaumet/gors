@@ -184,6 +184,22 @@ fn channels_are_send_and_sync() {
 }
 
 #[test]
+fn channel_select_operations_report_readiness_without_blocking() {
+    let nil = go_channel_i64_nil();
+    assert!(!go_channel_i64_try_send(nil.clone(), 1));
+    assert_eq!(go_channel_i64_try_receive(nil), (0, 0));
+
+    let channel = go_channel_i64_make(1);
+    assert_eq!(go_channel_i64_try_receive(channel.clone()), (0, 0));
+    assert!(go_channel_i64_try_send(channel.clone(), 7));
+    assert!(!go_channel_i64_try_send(channel.clone(), 8));
+    assert_eq!(go_channel_i64_try_receive(channel.clone()), (7, 2));
+    go_channel_i64_close(channel.clone());
+    assert_eq!(go_channel_i64_try_receive(channel.clone()), (0, 1));
+    assert!(std::panic::catch_unwind(|| go_channel_i64_try_send(channel, 9)).is_err());
+}
+
+#[test]
 fn integer_slices_share_backing_storage_across_reslices() {
     let values = go_slice_i64_from_static(&[1, 2, 3]);
     let alias = go_slice_i64_range(values.clone(), 1, -1, -1);

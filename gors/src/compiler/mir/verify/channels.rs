@@ -16,6 +16,8 @@ pub(super) fn is_channel_builtin(builtin: hir::Builtin) -> bool {
             | hir::Builtin::ChannelI64Receive
             | hir::Builtin::ChannelI64Close
             | hir::Builtin::ChannelI64IsNil
+            | hir::Builtin::ChannelI64TrySend
+            | hir::Builtin::ChannelI64TryReceive
     )
 }
 
@@ -97,6 +99,32 @@ pub(super) fn verify_channel_call(
             };
             verify_int_channel(channel, "channel nil comparison")?;
             Ok(vec![Ty::Bool])
+        }
+        hir::Builtin::ChannelI64TrySend => {
+            let [channel, value] = arguments else {
+                return Err(shape_error("channel select send", arguments, destinations));
+            };
+            let (direction, element) = verify_int_channel(channel, "channel select send")?;
+            if !direction.can_send() || value != element {
+                return Err(shape_error("channel select send", arguments, destinations));
+            }
+            Ok(vec![Ty::Bool])
+        }
+        hir::Builtin::ChannelI64TryReceive => {
+            let [channel] = arguments else {
+                return Err(shape_error(
+                    "channel select receive",
+                    arguments,
+                    destinations,
+                ));
+            };
+            let (direction, element) = verify_int_channel(channel, "channel select receive")?;
+            if !direction.can_receive() {
+                return Err(Diagnostic::backend(
+                    "send-only channel reached MIR select receive",
+                ));
+            }
+            Ok(vec![element.clone(), Ty::Int(IntTy::Int)])
         }
         _ => Err(Diagnostic::backend(
             "non-channel builtin reached channel MIR verification",

@@ -174,6 +174,75 @@ impl FunctionLowerer {
         }))
     }
 
+    pub(super) fn lower_channel_try_send(
+        &mut self,
+        channel: &ExprSyntax,
+        value: &ExprSyntax,
+        node: NodeId,
+        source: SourceRef,
+    ) -> Result<hir::Expr, Diagnostic> {
+        let channel = self.lower_expr(channel, None)?;
+        let Some((direction, element)) = int_channel_parts(&channel.ty) else {
+            return Err(Diagnostic::semantic(
+                "select send requires a channel carrying int values",
+                source,
+            ));
+        };
+        if !direction.can_send() {
+            return Err(Diagnostic::semantic(
+                "cannot send to a receive-only channel",
+                source,
+            ));
+        }
+        let value = self.lower_expr(value, Some(element))?;
+        let effects = channel_effects(&[&channel, &value], true, false, false, true);
+        Ok(hir::Expr {
+            node,
+            kind: hir::ExprKind::Call {
+                callee: hir::Callee::Builtin(hir::Builtin::ChannelI64TrySend),
+                args: vec![channel, value],
+            },
+            ty: Ty::Bool,
+            category: hir::ValueCategory::Value,
+            effects,
+            source,
+        })
+    }
+
+    pub(super) fn lower_channel_try_receive(
+        &mut self,
+        expression: &ExprSyntax,
+        node: NodeId,
+        source: SourceRef,
+    ) -> Result<hir::Expr, Diagnostic> {
+        let channel = self.lower_expr(expression, None)?;
+        let Some((direction, element)) = int_channel_parts(&channel.ty) else {
+            return Err(Diagnostic::semantic(
+                "select receive requires a channel carrying int values",
+                source,
+            ));
+        };
+        if !direction.can_receive() {
+            return Err(Diagnostic::semantic(
+                "cannot receive from a send-only channel",
+                source,
+            ));
+        }
+        let ty = Ty::Tuple(vec![element.clone(), Ty::Int(IntTy::Int)]);
+        let effects = channel_effects(&[&channel], true, false, false, false);
+        Ok(hir::Expr {
+            node,
+            kind: hir::ExprKind::Call {
+                callee: hir::Callee::Builtin(hir::Builtin::ChannelI64TryReceive),
+                args: vec![channel],
+            },
+            ty,
+            category: hir::ValueCategory::Value,
+            effects,
+            source,
+        })
+    }
+
     pub(super) fn lower_channel_cap_builtin_call(
         &mut self,
         arguments: &[ExprSyntax],

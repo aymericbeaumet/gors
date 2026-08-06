@@ -660,7 +660,9 @@ impl Function {
                                 | hir::Builtin::ChannelI64ReceiveValue
                                 | hir::Builtin::ChannelI64Receive
                                 | hir::Builtin::ChannelI64Close
-                                | hir::Builtin::ChannelI64IsNil => {
+                                | hir::Builtin::ChannelI64IsNil
+                                | hir::Builtin::ChannelI64TrySend
+                                | hir::Builtin::ChannelI64TryReceive => {
                                     return Err(Diagnostic::backend(
                                         "channel builtin bypassed dedicated MIR verification",
                                     ));

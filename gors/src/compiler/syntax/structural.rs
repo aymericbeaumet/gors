@@ -160,6 +160,9 @@ pub enum StmtSyntaxKind {
         tag: Option<ExprSyntax>,
         cases: Arc<[SwitchCaseSyntax]>,
     },
+    Select {
+        cases: Arc<[SelectCaseSyntax]>,
+    },
     Labeled {
         label: IdentSyntax,
         statement: Box<StmtSyntax>,
@@ -175,6 +178,13 @@ pub enum StmtSyntaxKind {
 pub struct SwitchCaseSyntax {
     pub(crate) source: SyntaxSource,
     pub(crate) expressions: Arc<[ExprSyntax]>,
+    pub(crate) body: BlockSyntax,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SelectCaseSyntax {
+    pub(crate) source: SyntaxSource,
+    pub(crate) communication: Option<Box<StmtSyntax>>,
     pub(crate) body: BlockSyntax,
 }
 

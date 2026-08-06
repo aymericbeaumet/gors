@@ -323,6 +323,9 @@ impl FunctionLowerer {
             StmtSyntaxKind::Switch { init, tag, cases } => {
                 return self.lower_switch(stmt, init.as_deref(), tag.as_ref(), cases, source);
             }
+            StmtSyntaxKind::Select { cases } => {
+                return self.lower_select(node, cases, source);
+            }
             StmtSyntaxKind::Labeled { label, statement } => {
                 if self.inside_deferred_closure || self.inside_local_closure {
                     return Err(Diagnostic::unsupported(
@@ -639,6 +642,105 @@ impl FunctionLowerer {
         })
     }
 
+    pub(super) fn lower_multi_result_destinations(
+        &mut self,
+        left: &[ExprSyntax],
+        token: Token,
+        component_types: &[Ty],
+        source: SourceRef,
+    ) -> Result<(Vec<hir::Place>, bool), Diagnostic> {
+        if component_types.len() != left.len() {
+            return Err(Diagnostic::semantic(
+                format!(
+                    "assignment has {} destinations and {} result values",
+                    left.len(),
+                    component_types.len()
+                ),
+                source,
+            ));
+        }
+        if token == Token::DEFINE {
+            let mut names = BTreeSet::new();
+            let mut destinations = Vec::with_capacity(left.len());
+            let mut introduced = false;
+            for ((expression, ty), index) in left
+                .iter()
+                .zip(component_types)
+                .zip(0..component_types.len())
+            {
+                let ExprSyntaxKind::Ident(name) = &expression.kind else {
+                    return Err(Diagnostic::semantic(
+                        "short declaration target must be an identifier",
+                        source,
+                    ));
+                };
+                if name.name.as_ref() != "_" && !names.insert(name.name.as_ref()) {
+                    return Err(Diagnostic::semantic(
+                        format!("{} appears more than once on the left of :=", name.name),
+                        source,
+                    ));
+                }
+                if name.name.as_ref() == "_" {
+                    destinations.push(hir::Place::Discard);
+                } else if let Some(local) = self.lookup_current_local(&name.name) {
+                    let destination_ty = self.place_ty(hir::Place::Local(local))?;
+                    if !is_assignable(ty, destination_ty) {
+                        return Err(Diagnostic::semantic(
+                            format!(
+                                "result {index} of type {ty:?} is not assignable to {destination_ty:?}"
+                            ),
+                            source,
+                        ));
+                    }
+                    destinations.push(hir::Place::Local(local));
+                } else {
+                    introduced = true;
+                    ensure_bootstrap_value_type(ty, source)?;
+                    let local = self.alloc_local(
+                        Some(name.name.to_string()),
+                        ty.clone(),
+                        hir::LocalKind::Variable,
+                        name.source,
+                    )?;
+                    destinations.push(hir::Place::Local(local));
+                }
+            }
+            if !introduced {
+                return Err(Diagnostic::semantic(
+                    "short declaration introduces no new variables",
+                    source,
+                ));
+            }
+            return Ok((destinations, true));
+        }
+        if token != Token::ASSIGN {
+            return Err(Diagnostic::semantic(
+                "multi-result assignment requires = or :=",
+                source,
+            ));
+        }
+        let destinations = left
+            .iter()
+            .map(|expression| self.lower_place(expression, source))
+            .collect::<Result<Vec<_>, _>>()?;
+        for (index, (destination, result_ty)) in
+            destinations.iter().zip(component_types).enumerate()
+        {
+            if let hir::Place::Local(_) = destination {
+                let destination_ty = self.place_ty(*destination)?;
+                if !is_assignable(result_ty, destination_ty) {
+                    return Err(Diagnostic::semantic(
+                        format!(
+                            "result {index} of type {result_ty:?} is not assignable to {destination_ty:?}"
+                        ),
+                        source,
+                    ));
+                }
+            }
+        }
+        Ok((destinations, false))
+    }
+
     fn lower_assignment(
         &mut self,
         left: &[ExprSyntax],
@@ -695,91 +797,18 @@ impl FunctionLowerer {
                         "tuple-valued non-call reached multi-result assignment",
                     ));
                 }
-                if token == Token::DEFINE {
-                    let mut names = BTreeSet::new();
-                    let mut destinations = Vec::with_capacity(left.len());
-                    let mut introduced = false;
-                    for ((expression, ty), index) in left
-                        .iter()
-                        .zip(component_types)
-                        .zip(0..component_types.len())
-                    {
-                        let ExprSyntaxKind::Ident(name) = &expression.kind else {
-                            return Err(Diagnostic::semantic(
-                                "short declaration target must be an identifier",
-                                source,
-                            ));
-                        };
-                        if name.name.as_ref() != "_" && !names.insert(name.name.as_ref()) {
-                            return Err(Diagnostic::semantic(
-                                format!("{} appears more than once on the left of :=", name.name),
-                                source,
-                            ));
-                        }
-                        if name.name.as_ref() == "_" {
-                            destinations.push(hir::Place::Discard);
-                        } else if let Some(local) = self.lookup_current_local(&name.name) {
-                            let destination_ty = self.place_ty(hir::Place::Local(local))?;
-                            if !is_assignable(ty, destination_ty) {
-                                return Err(Diagnostic::semantic(
-                                    format!(
-                                        "result {index} of type {ty:?} is not assignable to {destination_ty:?}"
-                                    ),
-                                    source,
-                                ));
-                            }
-                            destinations.push(hir::Place::Local(local));
-                        } else {
-                            introduced = true;
-                            ensure_bootstrap_value_type(ty, source)?;
-                            let local = self.alloc_local(
-                                Some(name.name.to_string()),
-                                ty.clone(),
-                                hir::LocalKind::Variable,
-                                name.source,
-                            )?;
-                            destinations.push(hir::Place::Local(local));
-                        }
-                    }
-                    if !introduced {
-                        return Err(Diagnostic::semantic(
-                            "short declaration introduces no new variables",
-                            source,
-                        ));
-                    }
-                    return Ok(hir::StmtKind::LetTuple {
+                let (destinations, declares) =
+                    self.lower_multi_result_destinations(left, token, component_types, source)?;
+                return Ok(if declares {
+                    hir::StmtKind::LetTuple {
                         destinations,
                         value,
-                    });
-                }
-                if token != Token::ASSIGN {
-                    return Err(Diagnostic::semantic(
-                        "multi-result assignment requires = or :=",
-                        source,
-                    ));
-                }
-                let destinations = left
-                    .iter()
-                    .map(|expression| self.lower_place(expression, source))
-                    .collect::<Result<Vec<_>, _>>()?;
-                for (index, (destination, result_ty)) in
-                    destinations.iter().zip(component_types).enumerate()
-                {
-                    if let hir::Place::Local(_) = destination {
-                        let destination_ty = self.place_ty(*destination)?;
-                        if !is_assignable(result_ty, destination_ty) {
-                            return Err(Diagnostic::semantic(
-                                format!(
-                                    "result {index} of type {result_ty:?} is not assignable to {destination_ty:?}"
-                                ),
-                                source,
-                            ));
-                        }
                     }
-                }
-                return Ok(hir::StmtKind::AssignTuple {
-                    destinations,
-                    value,
+                } else {
+                    hir::StmtKind::AssignTuple {
+                        destinations,
+                        value,
+                    }
                 });
             }
             return Err(Diagnostic::unsupported(

@@ -177,6 +177,59 @@ pub fn go_channel_i64_is_nil(channel: GoChannelI64) -> bool {
     channel.inner.is_none()
 }
 
+/// Attempt a send for a `select` case without waiting for readiness.
+///
+/// A closed channel remains a ready send case and therefore raises the normal
+/// Go panic. A nil or currently unavailable channel returns `false`.
+pub fn go_channel_i64_try_send(channel: GoChannelI64, value: GoInt) -> bool {
+    let Some(inner) = channel.inner else {
+        return false;
+    };
+    let mut state = lock(&inner.state);
+    if state.closed {
+        send_on_closed_channel();
+    }
+    if state.capacity == 0 {
+        if state.waiting_receivers == 0 || state.rendezvous.is_some() {
+            return false;
+        }
+        state.rendezvous = Some(value);
+        drop(state);
+        inner.changed.notify_all();
+        return true;
+    }
+    if state.values.len() == state.capacity {
+        return false;
+    }
+    state.values.push_back(value);
+    drop(state);
+    inner.changed.notify_all();
+    true
+}
+
+/// Attempt a receive for a `select` case without waiting for readiness.
+///
+/// The status is `0` when no communication is ready, `1` for a selected
+/// closed-and-drained receive, and `2` when a value was received.
+#[must_use]
+pub fn go_channel_i64_try_receive(channel: GoChannelI64) -> (GoInt, GoInt) {
+    let Some(inner) = channel.inner else {
+        return (0, 0);
+    };
+    let mut state = lock(&inner.state);
+    let value = if state.capacity == 0 {
+        state.rendezvous.take()
+    } else {
+        state.values.pop_front()
+    };
+    if let Some(value) = value {
+        drop(state);
+        inner.changed.notify_all();
+        return (value, 2);
+    }
+    if state.closed { (0, 1) } else { (0, 0) }
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }

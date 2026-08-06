@@ -15,7 +15,8 @@ mod channels;
 pub use channels::{
     GoChannelI64, go_channel_i64_cap, go_channel_i64_close, go_channel_i64_is_nil,
     go_channel_i64_len, go_channel_i64_make, go_channel_i64_nil, go_channel_i64_receive,
-    go_channel_i64_receive_value, go_channel_i64_send,
+    go_channel_i64_receive_value, go_channel_i64_send, go_channel_i64_try_receive,
+    go_channel_i64_try_send,
 };
 
 use std::cmp::Ordering;

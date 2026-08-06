@@ -289,6 +289,8 @@ pub enum Builtin {
     ChannelI64Receive,
     ChannelI64Close,
     ChannelI64IsNil,
+    ChannelI64TrySend,
+    ChannelI64TryReceive,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

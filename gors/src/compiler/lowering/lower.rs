@@ -303,7 +303,9 @@ fn lower_terminator(
                 | hir::Builtin::ChannelI64ReceiveValue
                 | hir::Builtin::ChannelI64Receive
                 | hir::Builtin::ChannelI64Close
-                | hir::Builtin::ChannelI64IsNil),
+                | hir::Builtin::ChannelI64IsNil
+                | hir::Builtin::ChannelI64TrySend
+                | hir::Builtin::ChannelI64TryReceive),
             ) => out::TerminatorKind::Call {
                 target: out::CallTarget::Runtime(match builtin {
                     hir::Builtin::SliceI64Index => RuntimeOp::GoSliceI64Index,
@@ -344,6 +346,8 @@ fn lower_terminator(
                     hir::Builtin::ChannelI64Receive => RuntimeOp::GoChannelI64Receive,
                     hir::Builtin::ChannelI64Close => RuntimeOp::GoChannelI64Close,
                     hir::Builtin::ChannelI64IsNil => RuntimeOp::GoChannelI64IsNil,
+                    hir::Builtin::ChannelI64TrySend => RuntimeOp::GoChannelI64TrySend,
+                    hir::Builtin::ChannelI64TryReceive => RuntimeOp::GoChannelI64TryReceive,
                     hir::Builtin::MapStringI64Lookup => {
                         return Err(Diagnostic::backend(
                             "map comma-ok lookup survived MIR expansion",

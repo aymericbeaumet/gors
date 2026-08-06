@@ -11,8 +11,8 @@ use crate::token::{Position, Token};
 use super::{
     BlockSyntax, ChannelDirectionSyntax, ConstantLayout, ConstantSyntax, ConstantValueSyntax,
     DeclSyntax, ExprSyntax, ExprSyntaxKind, FieldListSyntax, FieldSyntax, FunctionBodySyntax,
-    FunctionHeaderSyntax, FunctionLayout, IdentSyntax, SemanticTokenStream, StmtSyntax,
-    StmtSyntaxKind, SwitchCaseSyntax, SyntaxAnchor, SyntaxSource, SyntaxSourceRegion,
+    FunctionHeaderSyntax, FunctionLayout, IdentSyntax, SelectCaseSyntax, SemanticTokenStream,
+    StmtSyntax, StmtSyntaxKind, SwitchCaseSyntax, SyntaxAnchor, SyntaxSource, SyntaxSourceRegion,
     TypeAliasSyntax, TypeDefinitionSyntax, ValueSpecSyntax,
 };
 
@@ -48,6 +48,7 @@ pub enum ProjectionError {
     MissingBodylessTerminator,
     InvalidSwitchBody,
     InvalidChannelDirection,
+    InvalidSelectBody,
     MissingTypeName,
     OffsetOutsideTextDomain { offset: usize },
     ReversedRange { start: usize, end: usize },
@@ -70,6 +71,9 @@ impl fmt::Display for ProjectionError {
             }
             Self::InvalidChannelDirection => {
                 formatter.write_str("parser produced an invalid channel direction")
+            }
+            Self::InvalidSelectBody => {
+                formatter.write_str("parser produced a select body without communication clauses")
             }
             Self::MissingTypeName => formatter.write_str("parser produced a type without a name"),
             Self::OffsetOutsideTextDomain { offset } => {
@@ -570,7 +574,7 @@ impl StructuralProjector {
                 },
             },
             ast::Stmt::RangeStmt(statement) => self.range_statement(statement, None)?,
-            ast::Stmt::SelectStmt(_) => StmtSyntaxKind::Unsupported("select statement"),
+            ast::Stmt::SelectStmt(statement) => self.select_statement(statement)?,
             ast::Stmt::SendStmt(statement) => StmtSyntaxKind::Send {
                 channel: self.expression(&statement.chan)?,
                 value: self.expression(&statement.value)?,
@@ -675,6 +679,41 @@ impl StructuralProjector {
         Ok(StmtSyntaxKind::Switch {
             init,
             tag,
+            cases: cases.into(),
+        })
+    }
+
+    fn select_statement(
+        &mut self,
+        statement: &ast::SelectStmt<'_>,
+    ) -> Result<StmtSyntaxKind, ProjectionError> {
+        let mut cases = Vec::new();
+        for statement in &statement.body.list {
+            let ast::Stmt::CommClause(case) = statement else {
+                return Err(ProjectionError::InvalidSelectBody);
+            };
+            let source = self.source(&case.case)?;
+            let communication = case
+                .comm
+                .as_deref()
+                .map(|communication| self.statement(communication).map(Box::new))
+                .transpose()?;
+            let body_source = self.source(&case.colon)?;
+            let body = case
+                .body
+                .iter()
+                .map(|statement| self.statement(statement))
+                .collect::<Result<Vec<_>, _>>()?;
+            cases.push(SelectCaseSyntax {
+                source,
+                communication,
+                body: BlockSyntax {
+                    source: body_source,
+                    statements: body.into(),
+                },
+            });
+        }
+        Ok(StmtSyntaxKind::Select {
             cases: cases.into(),
         })
     }

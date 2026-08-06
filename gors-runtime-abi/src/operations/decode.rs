@@ -62,6 +62,8 @@ impl TryFrom<u16> for RuntimeOp {
             58 => Ok(Self::GoChannelI64Close),
             59 => Ok(Self::GoChannelI64IsNil),
             60 => Ok(Self::GoStringLen),
+            61 => Ok(Self::GoChannelI64TrySend),
+            62 => Ok(Self::GoChannelI64TryReceive),
             unknown => Err(UnknownRuntimeOpId(unknown)),
         }
     }

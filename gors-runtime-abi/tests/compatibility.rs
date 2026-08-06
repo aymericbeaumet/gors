@@ -1,11 +1,19 @@
 use std::error::Error;
 
 use gors_runtime_abi::{
-    DataWidth, Endianness, RustRlibCompatibility, TargetModel, TargetModelError,
+    DataWidth, Endianness, ImplementationHash, RustRlibCompatibility, TargetModel, TargetModelError,
 };
 
 fn target_model(triple: &str) -> Result<TargetModel, TargetModelError> {
     TargetModel::new(triple, DataWidth::Bits32, Endianness::Little)
+}
+
+#[test]
+fn implementation_hash_uses_sha256_and_hex_display() {
+    assert_eq!(
+        ImplementationHash::sha256(b"").to_string(),
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    );
 }
 
 #[test]

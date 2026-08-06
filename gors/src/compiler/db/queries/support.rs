@@ -284,6 +284,16 @@ impl PackageReferenceCollector {
                 }
                 self.scopes.pop();
             }
+            StmtSyntaxKind::Select { cases } => {
+                for case in &**cases {
+                    self.scopes.push(BTreeSet::new());
+                    if let Some(communication) = &case.communication {
+                        self.statement(communication);
+                    }
+                    self.block(&case.body, false);
+                    self.scopes.pop();
+                }
+            }
             StmtSyntaxKind::Labeled { statement, .. } => self.statement(statement),
         }
     }

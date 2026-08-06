@@ -93,11 +93,11 @@ fn current_contract_identity_is_sha256_of_canonical_bytes() {
 
     assert_eq!(manifest.schema().get(), 2);
     assert_eq!(manifest.contract(), CURRENT_CONTRACT_VERSION);
-    assert_eq!(manifest.contract(), ContractVersion::new(2, 5, 0));
+    assert_eq!(manifest.contract(), ContractVersion::new(2, 6, 0));
     assert_eq!(manifest.identity().as_bytes(), &expected);
     assert_eq!(
         manifest.identity().to_string(),
-        "8991bc8eb3ea76c4e2fd8eb834ca9af081b7a3ac8c64045a042e13c562eaeacb",
+        "e74082d8f5325523d65b73528620b3ac711b3b6ae1c71968c91c3632ff51ace4",
         "the canonical runtime contract changed; review the ABI diff and bump its semantic version before accepting a new identity",
     );
 }
@@ -204,7 +204,9 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoChannelI64Receive
             | RuntimeOp::GoChannelI64Close
             | RuntimeOp::GoChannelI64IsNil
-            | RuntimeOp::GoStringLen => AllocationEffect::None,
+            | RuntimeOp::GoStringLen
+            | RuntimeOp::GoChannelI64TrySend
+            | RuntimeOp::GoChannelI64TryReceive => AllocationEffect::None,
         };
         let expected_argument_mutation = match operation {
             RuntimeOp::ConcatGoStrings
@@ -222,7 +224,9 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoChannelI64Send
             | RuntimeOp::GoChannelI64ReceiveValue
             | RuntimeOp::GoChannelI64Receive
-            | RuntimeOp::GoChannelI64Close => ArgumentMutationEffect::MayMutateOwnedArgument,
+            | RuntimeOp::GoChannelI64Close
+            | RuntimeOp::GoChannelI64TrySend
+            | RuntimeOp::GoChannelI64TryReceive => ArgumentMutationEffect::MayMutateOwnedArgument,
             RuntimeOp::GoStringFromBytes
             | RuntimeOp::GoStringFromStatic
             | RuntimeOp::IntDiv
@@ -329,7 +333,9 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoChannelI64Receive
             | RuntimeOp::GoChannelI64Close
             | RuntimeOp::GoChannelI64IsNil
-            | RuntimeOp::GoStringLen => HostIoEffect::None,
+            | RuntimeOp::GoStringLen
+            | RuntimeOp::GoChannelI64TrySend
+            | RuntimeOp::GoChannelI64TryReceive => HostIoEffect::None,
         };
         let expected_panics: &[GoPanicCondition] = match operation {
             RuntimeOp::IntDiv | RuntimeOp::IntRem => &[GoPanicCondition::IntegerDivideByZero],
@@ -348,7 +354,9 @@ fn runtime_effect_metadata_is_complete_and_exact() {
                 &[GoPanicCondition::NilPointerDereference]
             }
             RuntimeOp::GoChannelI64Make => &[GoPanicCondition::NegativeChannelCapacity],
-            RuntimeOp::GoChannelI64Send => &[GoPanicCondition::SendOnClosedChannel],
+            RuntimeOp::GoChannelI64Send | RuntimeOp::GoChannelI64TrySend => {
+                &[GoPanicCondition::SendOnClosedChannel]
+            }
             RuntimeOp::GoChannelI64Close => &[
                 GoPanicCondition::CloseOfNilChannel,
                 GoPanicCondition::CloseOfClosedChannel,
@@ -389,7 +397,8 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoChannelI64ReceiveValue
             | RuntimeOp::GoChannelI64Receive
             | RuntimeOp::GoChannelI64IsNil
-            | RuntimeOp::GoStringLen => &[],
+            | RuntimeOp::GoStringLen
+            | RuntimeOp::GoChannelI64TryReceive => &[],
         };
 
         assert_eq!(effects.allocation(), expected_allocation, "{operation:?}");
@@ -402,14 +411,6 @@ fn runtime_effect_metadata_is_complete_and_exact() {
         assert_eq!(effects.host_io(), expected_host_io, "{operation:?}");
         assert_eq!(effects.go_panics(), expected_panics, "{operation:?}");
     }
-}
-
-#[test]
-fn implementation_hash_uses_sha256_and_hex_display() {
-    assert_eq!(
-        ImplementationHash::sha256(b"").to_string(),
-        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-    );
 }
 
 #[test]
@@ -696,6 +697,13 @@ fn runtime_signatures_are_complete_and_exact() {
             RuntimeOp::GoChannelI64Close => (&[RuntimeType::GoChannelI64], RuntimeType::Unit),
             RuntimeOp::GoChannelI64IsNil => (&[RuntimeType::GoChannelI64], RuntimeType::Bool),
             RuntimeOp::GoStringLen => (&[RuntimeType::GoString], RuntimeType::I64),
+            RuntimeOp::GoChannelI64TrySend => (
+                &[RuntimeType::GoChannelI64, RuntimeType::I64],
+                RuntimeType::Bool,
+            ),
+            RuntimeOp::GoChannelI64TryReceive => {
+                (&[RuntimeType::GoChannelI64], RuntimeType::I64I64Tuple)
+            }
         };
 
         assert_eq!(

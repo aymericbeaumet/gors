@@ -496,6 +496,7 @@ fn rust_types_from_runtime_result(
     match ty {
         RuntimeType::Unit => Ok(Vec::new()),
         RuntimeType::I64BoolTuple => Ok(vec![RustType::I64, RustType::Bool]),
+        RuntimeType::I64I64Tuple => Ok(vec![RustType::I64, RustType::I64]),
         ty => rust_type_from_runtime(ty, context).map(|ty| vec![ty]),
     }
 }
@@ -516,7 +517,8 @@ fn rust_type_from_runtime(ty: RuntimeType, context: &str) -> Result<RustType, Di
         RuntimeType::ByteSlice
         | RuntimeType::StaticByteSlice
         | RuntimeType::StaticI64Slice
-        | RuntimeType::I64BoolTuple => Err(Diagnostic::backend(format!(
+        | RuntimeType::I64BoolTuple
+        | RuntimeType::I64I64Tuple => Err(Diagnostic::backend(format!(
             "Rust IR {context} requires ABI-only operand type {ty:?}"
         ))),
     }

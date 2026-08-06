@@ -70,7 +70,9 @@ impl RuntimeOp {
             | Self::GoChannelI64Receive
             | Self::GoChannelI64Close
             | Self::GoChannelI64IsNil
-            | Self::GoStringLen => NO_CAPABILITIES,
+            | Self::GoStringLen
+            | Self::GoChannelI64TrySend
+            | Self::GoChannelI64TryReceive => NO_CAPABILITIES,
         }
     }
 
@@ -270,6 +272,18 @@ impl RuntimeOp {
                 ArgumentMutationEffect::MayMutateOwnedArgument,
                 HostIoEffect::None,
                 CLOSE_CHANNEL_PANICS,
+            ),
+            Self::GoChannelI64TrySend => RuntimeEffects::new(
+                AllocationEffect::None,
+                ArgumentMutationEffect::MayMutateOwnedArgument,
+                HostIoEffect::None,
+                SEND_ON_CLOSED_CHANNEL,
+            ),
+            Self::GoChannelI64TryReceive => RuntimeEffects::new(
+                AllocationEffect::None,
+                ArgumentMutationEffect::MayMutateOwnedArgument,
+                HostIoEffect::None,
+                NO_GO_PANICS,
             ),
         }
     }
