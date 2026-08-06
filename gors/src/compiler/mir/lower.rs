@@ -473,6 +473,20 @@ impl FunctionLowerer {
             } => {
                 self.lower_array_assignment_stmt(*array, index, *op, value, statement.source)?;
             }
+            hir::StmtKind::StructFieldAssign {
+                structure,
+                field,
+                op,
+                value,
+            } => {
+                self.lower_struct_field_assignment_stmt(
+                    *structure,
+                    *field,
+                    *op,
+                    value,
+                    statement.source,
+                )?;
+            }
             hir::StmtKind::MapAssign { map, key, value } => {
                 self.lower_map_assignment(map, key, value, statement.source)?;
             }

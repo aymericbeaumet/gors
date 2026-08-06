@@ -232,6 +232,9 @@ fn rvalue_operands(kind: &RvalueKind) -> Vec<&Operand> {
         }
         | RvalueKind::StructLiteralI64(fields) => fields.iter().collect(),
         RvalueKind::StructFieldI64 { structure, .. } => vec![structure],
+        RvalueKind::StructSetI64 {
+            structure, value, ..
+        } => vec![structure, value],
         RvalueKind::RecoverCompareNil { .. } => Vec::new(),
     }
 }

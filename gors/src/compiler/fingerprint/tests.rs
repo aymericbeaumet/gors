@@ -400,6 +400,7 @@ fn value_op_mut<'a>(
                 | rust_ir::RvalueKind::ArrayLiteral { .. }
                 | rust_ir::RvalueKind::StructLiteralI64(_)
                 | rust_ir::RvalueKind::StructFieldI64 { .. }
+                | rust_ir::RvalueKind::StructSetI64 { .. }
                 | rust_ir::RvalueKind::AggregateEqualI64 { .. }
                 | rust_ir::RvalueKind::Binary { .. } => {}
             }
@@ -473,6 +474,10 @@ fn rvalue_runtime_static_op_mut(
         rust_ir::RvalueKind::StructFieldI64 { structure, .. } => {
             operand_runtime_static_op_mut(structure, expected)
         }
+        rust_ir::RvalueKind::StructSetI64 {
+            structure, value, ..
+        } => operand_runtime_static_op_mut(structure, expected)
+            .or_else(|| operand_runtime_static_op_mut(value, expected)),
         rust_ir::RvalueKind::RecoverCompareNil { .. } => None,
     }
 }

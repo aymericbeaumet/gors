@@ -12,6 +12,63 @@ use crate::compiler::types::{IntTy, Ty};
 use crate::token::Token;
 
 impl FunctionLowerer {
+    pub(super) fn try_lower_single_struct_field_assignment(
+        &mut self,
+        left: &[ExprSyntax],
+        token: Token,
+        right: &[ExprSyntax],
+        source: SourceRef,
+    ) -> Option<Result<hir::StmtKind, Diagnostic>> {
+        let (
+            [
+                ExprSyntax {
+                    kind: ExprSyntaxKind::Selector { base, member },
+                    ..
+                },
+            ],
+            [value],
+        ) = (left, right)
+        else {
+            return None;
+        };
+        Some((|| {
+            if token == Token::DEFINE {
+                return Err(Diagnostic::semantic(
+                    "short declaration target must be an identifier",
+                    source,
+                ));
+            }
+            let node = self.alloc_node(base.source)?;
+            let target = self.lower_selector(base, member, node, source)?;
+            let hir::ExprKind::StructField { structure, field } = target.kind else {
+                return Err(Diagnostic::backend(
+                    "struct selector assignment did not lower to a field",
+                ));
+            };
+            let hir::ExprKind::Local(structure) = structure.kind else {
+                return Err(Diagnostic::unsupported(
+                    "struct field assignment currently requires a local struct variable",
+                    source,
+                ));
+            };
+            let value = self.lower_expr(value, Some(&target.ty))?;
+            let op = assignment_op(token, source)?;
+            if op != hir::AssignOp::Set {
+                super::expressions::validate_binary_operator(
+                    super::expressions::assignment_binary_op(op),
+                    &target.ty,
+                    source,
+                )?;
+            }
+            Ok(hir::StmtKind::StructFieldAssign {
+                structure,
+                field,
+                op,
+                value,
+            })
+        })())
+    }
+
     pub(super) fn try_lower_single_index_assignment(
         &mut self,
         left: &[ExprSyntax],

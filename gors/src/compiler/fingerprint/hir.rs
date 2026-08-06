@@ -333,6 +333,17 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
             encoder.field(b"operation", |encoder| encode_assign_op(encoder, *op));
             encoder.field(b"value", |encoder| encode_expression(encoder, value));
         }),
+        hir::StmtKind::StructFieldAssign {
+            structure,
+            field,
+            op,
+            value,
+        } => encoder.variant(b"struct-field-assign", |encoder| {
+            encoder.field(b"structure", |encoder| local_id(encoder, *structure));
+            encoder.field(b"field", |encoder| encoder.u32(*field));
+            encoder.field(b"operation", |encoder| encode_assign_op(encoder, *op));
+            encoder.field(b"value", |encoder| encode_expression(encoder, value));
+        }),
         hir::StmtKind::MapAssign { map, key, value } => {
             encoder.variant(b"map-assign", |encoder| {
                 encoder.field(b"map", |encoder| encode_expression(encoder, map));

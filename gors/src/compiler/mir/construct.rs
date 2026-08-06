@@ -77,6 +77,9 @@ pub(super) fn make_rvalue(
         RvalueKind::ArrayLiteral { elements, .. } => elements.iter().any(operand_reads),
         RvalueKind::StructLiteral { fields, .. } => fields.iter().any(operand_reads),
         RvalueKind::StructField { structure, .. } => operand_reads(structure),
+        RvalueKind::StructSet {
+            structure, value, ..
+        } => operand_reads(structure) || operand_reads(value),
         RvalueKind::RecoverCompareNil { .. } => true,
         RvalueKind::SliceLiteralI64(_)
         | RvalueKind::SliceLiteralU8(_)

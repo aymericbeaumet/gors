@@ -229,6 +229,28 @@ fn lower_rvalue(rvalue: mir::Rvalue, locals: &[out::LocalDecl]) -> Result<out::R
                 field,
             }
         }
+        mir::RvalueKind::StructSet {
+            structure,
+            field,
+            value,
+        } => {
+            let out::RustType::StructI64(length) = mir_operand_type(&structure, locals)? else {
+                return Err(Diagnostic::backend(
+                    "non-integer struct reached integer field update lowering",
+                ));
+            };
+            if u64::from(field) >= length || mir_operand_type(&value, locals)? != out::RustType::I64
+            {
+                return Err(Diagnostic::backend(
+                    "invalid integer struct field update reached representation lowering",
+                ));
+            }
+            out::RvalueKind::StructSetI64 {
+                structure: lower_operand(structure, locals)?,
+                field,
+                value: lower_operand(value, locals)?,
+            }
+        }
         mir::RvalueKind::Unary { op, operand, ty } => {
             let operand_ty = mir_operand_type(&operand, locals)?;
             let operand = lower_operand(operand, locals)?;

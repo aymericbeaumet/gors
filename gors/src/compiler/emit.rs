@@ -621,6 +621,22 @@ fn emit_rvalue(rvalue: &Rvalue, function: &rust_ir::Function) -> Result<syn::Exp
             })?);
             Ok(syn::parse_quote! { (#structure)[#field] })
         }
+        RvalueKind::StructSetI64 {
+            structure,
+            field,
+            value,
+        } => {
+            let structure = emit_operand(structure, function)?;
+            let field = syn::Index::from(usize::try_from(*field).map_err(|_| {
+                Diagnostic::backend("verified struct field index does not fit usize")
+            })?);
+            let value = emit_operand(value, function)?;
+            Ok(syn::parse_quote! {{
+                let mut __gors_structure = #structure;
+                __gors_structure[#field] = #value;
+                __gors_structure
+            }})
+        }
         RvalueKind::AggregateEqualI64 { left, right, equal } => {
             let left = emit_operand(left, function)?;
             let right = emit_operand(right, function)?;

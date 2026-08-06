@@ -39,6 +39,41 @@ fn generated_integer_structs_support_literals_copies_and_field_reads() {
 }
 
 #[test]
+fn generated_integer_structs_support_local_field_updates() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            type Counter struct { Value int }
+
+            func (counter Counter) Added(delta int) int {
+                counter.Value += delta
+                return counter.Value
+            }
+
+            func main() {
+                counter := Counter{Value: 3}
+                counter.Value = 5
+                counter.Value += 2
+                counter.Value *= 3
+                duplicate := counter
+                duplicate.Value -= 1
+                if counter.Value != 21 || duplicate.Value != 20 {
+                    panic("struct field update or value copy changed")
+                }
+                if counter.Added(4) != 25 || counter.Value != 21 {
+                    panic("value receiver field update escaped its copy")
+                }
+                println("struct-updates: ok")
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"struct-updates: ok\n");
+    assert!(run.rust.contains("__gors_structure"), "{}", run.rust);
+}
+
+#[test]
 fn generated_integer_structs_support_value_methods_and_go_namespaces() {
     let run = compile_and_run(
         r#"

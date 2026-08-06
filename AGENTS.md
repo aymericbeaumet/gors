@@ -698,12 +698,15 @@ apply while measurements remain trend evidence.
 
 The production pipeline currently executes this focused, fully verified subset:
 
-- one source file in one package, with no imports;
+- source packages and resolved Go-source imports within the executable type
+  subset;
 - `bool`, 64-bit `int`, `float64`, `complex128`, byte-string values, named
-  numeric types, aliases, `[]int`, `[]byte`, and `map[string]int`;
+  numeric types, aliases, `[]int`, `[]byte`, `map[string]int`, `*int`,
+  `chan int`, scalar fixed arrays, and integer-field structs;
 - exact typed and untyped constants, including `iota` and complex constants;
-- free functions, direct non-escaping closures, parameters, multiple and named
-  results, locals, defer, panic, and recover;
+- free functions, value methods and method values, direct non-escaping
+  closures, parameters, multiple and named results, locals, immutable package
+  variable reads, defer, panic, and recover;
 - explicit-order assignments, calls, slice and map built-ins, expression
   switches, labels, goto, range over slices and maps, and structured loops;
 - print and println intrinsics through the versioned runtime ABI.
@@ -717,10 +720,10 @@ compliant.
 The remaining frontier receives precise source diagnostics until its semantics
 are represented in HIR and MIR:
 
-- multi-file and imported package compilation, including the Go stdlib;
-- package variables, declared composite types, methods, and generics;
-- arrays, structs, pointers, interfaces, escaping function values, and type
-  switches;
+- broader Go stdlib coverage and package initialization;
+- mutable package variables, broader aggregate representations, struct
+  pointers, pointer-receiver methods, interfaces, and generics;
+- escaping function values and type switches;
 - string, integer, channel, and iterator-function ranges; select, goroutines,
   and channels;
 - unsafe and host-resource integration.

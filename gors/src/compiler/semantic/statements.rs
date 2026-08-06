@@ -760,6 +760,11 @@ impl FunctionLowerer {
         {
             return assignment;
         }
+        if let Some(assignment) =
+            self.try_lower_single_struct_field_assignment(left, token, right, source)
+        {
+            return assignment;
+        }
         if let Some(assignment) = self.try_lower_pointer_assignment(left, token, right, source) {
             return assignment;
         }

@@ -353,6 +353,12 @@ impl Function {
             RvalueKind::StructFieldI64 { structure, .. } => {
                 self.transfer_operand(structure, state, check_reads)
             }
+            RvalueKind::StructSetI64 {
+                structure, value, ..
+            } => {
+                self.transfer_operand(structure, state, check_reads)?;
+                self.transfer_operand(value, state, check_reads)
+            }
             RvalueKind::RecoverCompareNil {
                 state: recovery_state,
                 ..
@@ -466,6 +472,12 @@ fn add_rvalue_uses_backwards(rvalue: &Rvalue, live: &mut BTreeSet<LocalId>) {
             }
         }
         RvalueKind::StructFieldI64 { structure, .. } => add_operand_use(structure, live),
+        RvalueKind::StructSetI64 {
+            structure, value, ..
+        } => {
+            add_operand_use(value, live);
+            add_operand_use(structure, live);
+        }
         RvalueKind::RecoverCompareNil { state, .. } => {
             live.insert(state.local);
         }
@@ -554,6 +566,12 @@ fn plan_rvalue_backwards(
         RvalueKind::StructFieldI64 { structure, .. } => {
             plan_operand_backwards(structure, live, local_types, reverse_plan)
         }
+        RvalueKind::StructSetI64 {
+            structure, value, ..
+        } => {
+            plan_operand_backwards(value, live, local_types, reverse_plan)?;
+            plan_operand_backwards(structure, live, local_types, reverse_plan)
+        }
         RvalueKind::RecoverCompareNil { state, .. } => {
             live.insert(state.local);
             Ok(())
@@ -626,6 +644,12 @@ fn apply_rvalue_plan(
             Ok(())
         }
         RvalueKind::StructFieldI64 { structure, .. } => apply_operand_plan(structure, plan, cursor),
+        RvalueKind::StructSetI64 {
+            structure, value, ..
+        } => {
+            apply_operand_plan(structure, plan, cursor)?;
+            apply_operand_plan(value, plan, cursor)
+        }
         RvalueKind::RecoverCompareNil { .. } => Ok(()),
     }
 }
@@ -709,6 +733,12 @@ fn collect_rvalue_reads(rvalue: &Rvalue, reads: &mut Vec<(LocalId, ReadOp)>) {
         }
         RvalueKind::StructFieldI64 { structure, .. } => {
             collect_operand_read(structure, reads);
+        }
+        RvalueKind::StructSetI64 {
+            structure, value, ..
+        } => {
+            collect_operand_read(structure, reads);
+            collect_operand_read(value, reads);
         }
         RvalueKind::RecoverCompareNil { .. } => {}
     }

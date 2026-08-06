@@ -21,6 +21,10 @@ pub(in crate::compiler) fn rvalue_effects(kind: &RvalueKind) -> Effects {
         | RvalueKind::StructLiteralI64(_)
         | RvalueKind::StructFieldI64 { .. }
         | RvalueKind::AggregateEqualI64 { .. } => Effects::default(),
+        RvalueKind::StructSetI64 { .. } => Effects {
+            may_write: true,
+            ..Effects::default()
+        },
         RvalueKind::Unary { op, .. } | RvalueKind::Binary { op, .. } => value_op_effects(*op),
         RvalueKind::RecoverCompareNil { .. } => Effects {
             may_read: true,
@@ -71,6 +75,9 @@ pub(in crate::compiler) fn rvalue_effects(kind: &RvalueKind) -> Effects {
             })
         }
         RvalueKind::StructFieldI64 { structure, .. } => operand_effects(structure),
+        RvalueKind::StructSetI64 {
+            structure, value, ..
+        } => union(operand_effects(structure), operand_effects(value)),
         RvalueKind::AggregateEqualI64 { left, right, .. } => {
             union(operand_effects(left), operand_effects(right))
         }

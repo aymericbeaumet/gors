@@ -197,6 +197,12 @@ impl Function {
             RvalueKind::StructField { structure, .. } => {
                 self.transfer_operand(structure, state, check_reads)
             }
+            RvalueKind::StructSet {
+                structure, value, ..
+            } => {
+                self.transfer_operand(structure, state, check_reads)?;
+                self.transfer_operand(value, state, check_reads)
+            }
             RvalueKind::RecoverCompareNil {
                 state: recovery_state,
                 ..

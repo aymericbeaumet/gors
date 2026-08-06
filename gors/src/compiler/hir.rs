@@ -150,6 +150,12 @@ pub enum StmtKind {
         op: AssignOp,
         value: Expr,
     },
+    StructFieldAssign {
+        structure: LocalId,
+        field: u32,
+        op: AssignOp,
+        value: Expr,
+    },
     MapAssign {
         map: Expr,
         key: Expr,

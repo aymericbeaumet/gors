@@ -419,6 +419,29 @@ impl Function {
                 }
                 RustType::I64
             }
+            RvalueKind::StructSetI64 {
+                structure,
+                field,
+                value,
+            } => {
+                let structure = self.operand_ty(structure)?;
+                let RustType::StructI64(length) = structure else {
+                    return Err(Diagnostic::backend(format!(
+                        "Rust IR field update has a non-struct operand: {structure:?}"
+                    )));
+                };
+                if u64::from(*field) >= length {
+                    return Err(Diagnostic::backend(format!(
+                        "Rust IR struct field update {field} is outside {length} fields"
+                    )));
+                }
+                verify_same(
+                    self.operand_ty(value)?,
+                    RustType::I64,
+                    "struct field update",
+                )?;
+                structure
+            }
             RvalueKind::AggregateEqualI64 { left, right, .. } => {
                 let left = self.operand_ty(left)?;
                 let right = self.operand_ty(right)?;
@@ -747,6 +770,12 @@ fn collect_rvalue_runtime_operations(rvalue: &Rvalue, operations: &mut Vec<Runti
         }
         RvalueKind::StructFieldI64 { structure, .. } => {
             collect_operand_runtime_operations(structure, operations);
+        }
+        RvalueKind::StructSetI64 {
+            structure, value, ..
+        } => {
+            collect_operand_runtime_operations(structure, operations);
+            collect_operand_runtime_operations(value, operations);
         }
         RvalueKind::AggregateEqualI64 { left, right, .. } => {
             collect_operand_runtime_operations(left, operations);

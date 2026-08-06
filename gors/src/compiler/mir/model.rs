@@ -104,6 +104,11 @@ pub enum RvalueKind {
         structure: Operand,
         field: u32,
     },
+    StructSet {
+        structure: Operand,
+        field: u32,
+        value: Operand,
+    },
     Unary {
         op: hir::UnaryOp,
         operand: Operand,

@@ -780,6 +780,10 @@ fn rvalue_read_op_mut(rvalue: &mut Rvalue, expected: ReadOp) -> Option<&mut Read
             .iter_mut()
             .find_map(|field| operand_read_op_mut(field, expected)),
         RvalueKind::StructFieldI64 { structure, .. } => operand_read_op_mut(structure, expected),
+        RvalueKind::StructSetI64 {
+            structure, value, ..
+        } => operand_read_op_mut(structure, expected)
+            .or_else(|| operand_read_op_mut(value, expected)),
         RvalueKind::RecoverCompareNil { .. } => None,
     }
 }

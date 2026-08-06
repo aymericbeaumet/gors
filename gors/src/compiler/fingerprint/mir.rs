@@ -192,6 +192,15 @@ fn encode_rvalue_kind(encoder: &mut Encoder, kind: &mir::RvalueKind) {
                 encoder.field(b"field", |encoder| encoder.u32(*field));
             });
         }
+        mir::RvalueKind::StructSet {
+            structure,
+            field,
+            value,
+        } => encoder.variant(b"struct-set", |encoder| {
+            encoder.field(b"structure", |encoder| encode_operand(encoder, structure));
+            encoder.field(b"field", |encoder| encoder.u32(*field));
+            encoder.field(b"value", |encoder| encode_operand(encoder, value));
+        }),
         mir::RvalueKind::Unary {
             op,
             operand,

@@ -193,6 +193,11 @@ pub enum RvalueKind {
         structure: Operand,
         field: u32,
     },
+    StructSetI64 {
+        structure: Operand,
+        field: u32,
+        value: Operand,
+    },
     AggregateEqualI64 {
         left: Operand,
         right: Operand,
