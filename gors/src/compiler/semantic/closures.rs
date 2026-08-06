@@ -12,6 +12,94 @@ use crate::compiler::types::{Signature, Ty};
 use crate::token::Token;
 
 impl FunctionLowerer {
+    pub(super) fn lower_snapshot_function_capture(
+        &mut self,
+        expression: &ExprSyntax,
+        expected: &Ty,
+        source: SourceRef,
+    ) -> Result<hir::Expr, Diagnostic> {
+        let ExprSyntaxKind::FunctionLiteral {
+            has_type_parameters,
+            params,
+            results,
+            body,
+        } = &expression.kind
+        else {
+            return Err(Diagnostic::semantic(
+                "function-slice append requires a function literal",
+                source,
+            ));
+        };
+        if *has_type_parameters {
+            return Err(Diagnostic::unsupported(
+                "generic function literals are not implemented",
+                source,
+            ));
+        }
+        let (params, variadic) = parameter_types(params, &self.type_aliases, source)?;
+        let results = results
+            .as_ref()
+            .map(|results| field_types(results, &self.type_aliases, source))
+            .transpose()?
+            .unwrap_or_default();
+        let signature = Signature {
+            params,
+            results,
+            variadic,
+        };
+        if expected != &Ty::Function(signature) {
+            return Err(Diagnostic::semantic(
+                "function literal does not match the slice element type",
+                source,
+            ));
+        }
+        let result_ty = expected.snapshot_function_result().ok_or_else(|| {
+            Diagnostic::unsupported(
+                "escaping function literals require a supported representation pattern",
+                source,
+            )
+        })?;
+        let [statement] = body.statements.as_ref() else {
+            return Err(Diagnostic::unsupported(
+                "escaping function literal must contain one return statement",
+                source,
+            ));
+        };
+        let crate::compiler::syntax::StmtSyntaxKind::Return(values) = &statement.kind else {
+            return Err(Diagnostic::unsupported(
+                "escaping function literal must contain one return statement",
+                source,
+            ));
+        };
+        let [value] = values.as_ref() else {
+            return Err(Diagnostic::unsupported(
+                "escaping function literal must return one captured value",
+                source,
+            ));
+        };
+        let ExprSyntaxKind::Ident(name) = &value.kind else {
+            return Err(Diagnostic::unsupported(
+                "escaping function literal must return one captured iteration variable",
+                source,
+            ));
+        };
+        let local = self.lookup_local(&name.name).ok_or_else(|| {
+            Diagnostic::semantic(format!("undefined captured variable {}", name.name), source)
+        })?;
+        if !self
+            .iteration_capture_scopes
+            .iter()
+            .rev()
+            .any(|scope| scope.contains(&local))
+        {
+            return Err(Diagnostic::unsupported(
+                "escaping closure capture is not a stable per-iteration variable",
+                source,
+            ));
+        }
+        self.lower_expr(value, Some(result_ty))
+    }
+
     pub(super) fn try_lower_closure_binding(
         &mut self,
         left: &[ExprSyntax],

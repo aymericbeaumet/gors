@@ -26,11 +26,12 @@ use arrays::{
 };
 use channels::{is_channel_builtin, verify_channel_call};
 use containers::{
-    is_aggregate_container_builtin, map_string_i64_ty, verify_aggregate_container_call,
-    verify_bool_slice_call, verify_byte_slice_call_arguments, verify_byte_slice_integer_arguments,
-    verify_map_call_arguments, verify_slice_call_arguments, verify_slice_value_arguments,
+    is_aggregate_container_builtin, is_representation_slice_builtin, map_string_i64_ty,
+    verify_aggregate_container_call, verify_bool_slice_call, verify_byte_slice_call_arguments,
+    verify_byte_slice_integer_arguments, verify_map_call_arguments,
+    verify_representation_slice_call, verify_slice_call_arguments, verify_slice_value_arguments,
 };
-use effects::{read_effects, verify_effects, verify_panic_edge};
+use effects::{binary_effects, call_effects, read_effects, verify_effects, verify_panic_edge};
 use interfaces::{is_interface_builtin, verify_interface_call};
 use pointers::{is_pointer_builtin, verify_pointer_call};
 use provenance::{
@@ -461,6 +462,16 @@ impl Function {
                                 .map(|destination| self.place_ty(*destination).cloned())
                                 .collect::<Result<Vec<_>, _>>()?;
                             verify_interface_call(*builtin, &argument_types, &destination_types)?
+                        } else if is_representation_slice_builtin(*builtin) {
+                            let destination_types = destinations
+                                .iter()
+                                .map(|destination| self.place_ty(*destination).cloned())
+                                .collect::<Result<Vec<_>, _>>()?;
+                            verify_representation_slice_call(
+                                *builtin,
+                                &argument_types,
+                                &destination_types,
+                            )?
                         } else if matches!(
                             builtin,
                             hir::Builtin::SliceBoolIndex | hir::Builtin::SliceBoolSet
@@ -840,6 +851,20 @@ impl Function {
                                         "bool slice builtin bypassed dedicated MIR verification",
                                     ));
                                 }
+                                hir::Builtin::SliceI64Nil
+                                | hir::Builtin::SliceI64IsNil
+                                | hir::Builtin::SliceU8Nil
+                                | hir::Builtin::SliceU8IsNil
+                                | hir::Builtin::SliceBoolNil
+                                | hir::Builtin::SliceBoolIsNil
+                                | hir::Builtin::AggregateSliceNil
+                                | hir::Builtin::AggregateSliceIsNil
+                                | hir::Builtin::SnapshotFunctionSliceAppend
+                                | hir::Builtin::SnapshotFunctionSliceCall => {
+                                    return Err(Diagnostic::backend(
+                                        "slice representation builtin bypassed dedicated MIR verification",
+                                    ));
+                                }
                                 hir::Builtin::AggregateSliceMake
                                 | hir::Builtin::AggregateSliceLen
                                 | hir::Builtin::AggregateSliceIndexTagged
@@ -970,27 +995,5 @@ fn terminator_operands(kind: &TerminatorKind) -> Vec<&Operand> {
         TerminatorKind::Goto(_)
         | TerminatorKind::SpawnEmpty { .. }
         | TerminatorKind::Unreachable => Vec::new(),
-    }
-}
-
-fn binary_effects(op: hir::BinaryOp, result: &Ty) -> hir::Effects {
-    hir::Effects {
-        may_allocate: op == hir::BinaryOp::Add && result == &Ty::String,
-        may_panic: matches!(
-            op,
-            hir::BinaryOp::Div | hir::BinaryOp::Rem | hir::BinaryOp::Shl | hir::BinaryOp::Shr
-        ),
-        ..hir::Effects::default()
-    }
-}
-
-fn call_effects() -> hir::Effects {
-    hir::Effects {
-        may_call: true,
-        may_allocate: true,
-        may_block: true,
-        may_panic: true,
-        may_write: true,
-        ..hir::Effects::default()
     }
 }

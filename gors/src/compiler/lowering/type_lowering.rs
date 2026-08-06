@@ -21,6 +21,9 @@ pub(super) fn lower_type(ty: &Ty) -> Result<RustType, Diagnostic> {
         {
             Ok(RustType::GoSliceI64)
         }
+        Ty::Slice(element) if element.snapshot_function_result().is_some() => {
+            Ok(RustType::GoSliceI64)
+        }
         Ty::Slice(element) if element.underlying() == &Ty::Uint(UintTy::Uint8) => {
             Ok(RustType::GoSliceU8)
         }

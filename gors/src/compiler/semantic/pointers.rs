@@ -353,7 +353,26 @@ impl FunctionLowerer {
         expected: Option<&Ty>,
     ) -> Result<hir::Expr, Diagnostic> {
         let value = self.lower_expr(expression, None)?;
-        let builtin = if value.ty.underlying() == string_i64_map_ty().underlying() {
+        let builtin = if let Ty::Slice(element) = value.ty.underlying() {
+            if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32))
+                || element.snapshot_function_result().is_some()
+            {
+                hir::Builtin::SliceI64IsNil
+            } else if element.underlying() == &Ty::Uint(crate::compiler::types::UintTy::Uint8) {
+                hir::Builtin::SliceU8IsNil
+            } else if element.underlying() == &Ty::Bool {
+                hir::Builtin::SliceBoolIsNil
+            } else if matches!(element.underlying(), Ty::String)
+                || element.bootstrap_i64_struct_fields().is_some()
+            {
+                hir::Builtin::AggregateSliceIsNil
+            } else {
+                return Err(Diagnostic::semantic(
+                    "nil comparison requires a represented slice type",
+                    source,
+                ));
+            }
+        } else if value.ty.underlying() == string_i64_map_ty().underlying() {
             hir::Builtin::MapStringI64IsNil
         } else if matches!(value.ty.underlying(), Ty::Interface(_)) {
             hir::Builtin::InterfaceIsNil

@@ -96,6 +96,24 @@ impl FunctionLowerer {
         }
         let zero_builtin = if is_string_i64_map(&ty) {
             Some(hir::Builtin::MapStringI64Nil)
+        } else if let Ty::Slice(element) = ty.underlying() {
+            if matches!(
+                element.underlying(),
+                Ty::Int(crate::compiler::types::IntTy::Int | crate::compiler::types::IntTy::Int32)
+            ) || element.snapshot_function_result().is_some()
+            {
+                Some(hir::Builtin::SliceI64Nil)
+            } else if element.underlying() == &Ty::Uint(crate::compiler::types::UintTy::Uint8) {
+                Some(hir::Builtin::SliceU8Nil)
+            } else if element.underlying() == &Ty::Bool {
+                Some(hir::Builtin::SliceBoolNil)
+            } else if matches!(element.underlying(), Ty::String)
+                || element.bootstrap_i64_struct_fields().is_some()
+            {
+                Some(hir::Builtin::AggregateSliceNil)
+            } else {
+                None
+            }
         } else if matches!(ty.underlying(), Ty::Interface(_)) {
             Some(hir::Builtin::InterfaceNil)
         } else if is_int_pointer(&ty) {

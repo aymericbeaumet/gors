@@ -5,7 +5,6 @@ use crate::token::Token;
 use super::FunctionLowerer;
 use super::eval_constant;
 use super::expressions::*;
-use super::lower_type;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::{LocalId, NodeId};
@@ -338,6 +337,42 @@ impl FunctionLowerer {
                 arguments,
                 spread,
             } => {
+                if let ExprSyntaxKind::Index { base, index } = &callee.kind
+                    && arguments.is_empty()
+                    && !spread
+                {
+                    let slice = self.lower_expr(base, None)?;
+                    if let Some(function) = slice.ty.snapshot_function_slice_element() {
+                        let result_ty =
+                            function
+                                .snapshot_function_result()
+                                .cloned()
+                                .ok_or_else(|| {
+                                    Diagnostic::backend(
+                                        "snapshot function slice lost its result type",
+                                    )
+                                })?;
+                        let index = self.lower_expr(index, Some(&Ty::Int(IntTy::Int)))?;
+                        let effects = slice_runtime_effects(&[&slice, &index], false, false, true);
+                        let mut call = hir::Expr {
+                            node,
+                            kind: hir::ExprKind::Call {
+                                callee: hir::Callee::Builtin(
+                                    hir::Builtin::SnapshotFunctionSliceCall,
+                                ),
+                                args: vec![slice, index],
+                            },
+                            ty: result_ty,
+                            category: hir::ValueCategory::Value,
+                            effects,
+                            source,
+                        };
+                        if let Some(expected) = expected {
+                            coerce_expr(&mut call, expected, source)?;
+                        }
+                        return Ok(call);
+                    }
+                }
                 if let ExprSyntaxKind::Selector { base, member } = &callee.kind {
                     return self.lower_selector_call(
                         base,
@@ -724,7 +759,7 @@ impl FunctionLowerer {
         Ok(lowered)
     }
 
-    fn lower_optional_slice_bound(
+    pub(super) fn lower_optional_slice_bound(
         &mut self,
         bound: Option<&ExprSyntax>,
         syntax_source: crate::compiler::syntax::SyntaxSource,
@@ -741,187 +776,6 @@ impl FunctionLowerer {
             effects: hir::Effects::default(),
             source: SourceRef::node(node),
         })
-    }
-
-    pub(super) fn lower_slice_builtin_call(
-        &mut self,
-        name: &str,
-        arguments: &[ExprSyntax],
-        spread: bool,
-        node: NodeId,
-        source: SourceRef,
-        expected: Option<&Ty>,
-    ) -> Result<hir::Expr, Diagnostic> {
-        let slice_ty = Ty::Slice(Box::new(Ty::Int(IntTy::Int)));
-        let byte_slice_ty = Ty::Slice(Box::new(Ty::Uint(UintTy::Uint8)));
-        let (builtin, args, ty, allocates, writes, panics) = match name {
-            "make" => {
-                let (declared_syntax, len_syntax, cap_syntax) = match arguments {
-                    [declared, len] => (declared, len, None),
-                    [declared, len, cap] => (declared, len, Some(cap)),
-                    _ => {
-                        return Err(Diagnostic::semantic(
-                            "make([]int, len[, cap]) requires two or three arguments",
-                            source,
-                        ));
-                    }
-                };
-                let declared = lower_type(declared_syntax, &self.type_aliases, source)?;
-                if declared != slice_ty {
-                    return Err(Diagnostic::unsupported(
-                        "make currently supports []int values",
-                        source,
-                    ));
-                }
-                let len = self.lower_expr(len_syntax, Some(&Ty::Int(IntTy::Int)))?;
-                let cap = if let Some(cap) = cap_syntax {
-                    self.lower_expr(cap, Some(&Ty::Int(IntTy::Int)))?
-                } else {
-                    self.lower_optional_slice_bound(None, declared_syntax.source)?
-                };
-                (
-                    hir::Builtin::SliceI64Make,
-                    vec![len, cap],
-                    slice_ty,
-                    true,
-                    false,
-                    true,
-                )
-            }
-            "cap" => {
-                let [value] = arguments else {
-                    return Err(Diagnostic::semantic(
-                        "cap requires exactly one argument",
-                        source,
-                    ));
-                };
-                let value = self.lower_expr(value, Some(&slice_ty))?;
-                (
-                    hir::Builtin::SliceI64Cap,
-                    vec![value],
-                    Ty::Int(IntTy::Int),
-                    false,
-                    false,
-                    false,
-                )
-            }
-            "append" => {
-                let [slice, value] = arguments else {
-                    return Err(Diagnostic::semantic(
-                        "append currently requires one []int value and one int element",
-                        source,
-                    ));
-                };
-                if spread {
-                    let slice = self.lower_expr(slice, Some(&byte_slice_ty))?;
-                    let mut value = self.lower_expr(value, None)?;
-                    if value.ty == Ty::Untyped(UntypedTy::String) {
-                        coerce_expr(&mut value, &Ty::String, source)?;
-                    }
-                    let builtin = match value.ty {
-                        Ty::String => hir::Builtin::SliceU8AppendString,
-                        ref ty if ty == &byte_slice_ty => hir::Builtin::SliceU8AppendSlice,
-                        _ => {
-                            return Err(Diagnostic::semantic(
-                                "[]byte append spread requires a string or []byte source",
-                                source,
-                            ));
-                        }
-                    };
-                    (
-                        builtin,
-                        vec![slice, value],
-                        byte_slice_ty,
-                        true,
-                        true,
-                        false,
-                    )
-                } else {
-                    let slice = self.lower_expr(slice, None)?;
-                    let Ty::Slice(element) = slice.ty.underlying() else {
-                        return Err(Diagnostic::semantic(
-                            "append requires a slice as its first argument",
-                            source,
-                        ));
-                    };
-                    if !matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) {
-                        return Err(Diagnostic::unsupported(
-                            "non-spread append currently supports int and rune slices",
-                            source,
-                        ));
-                    }
-                    let element_ty = element.as_ref().clone();
-                    let result_ty = slice.ty.clone();
-                    let value = self.lower_expr(value, Some(&element_ty))?;
-                    (
-                        hir::Builtin::SliceI64Append,
-                        vec![slice, value],
-                        result_ty,
-                        true,
-                        true,
-                        false,
-                    )
-                }
-            }
-            "copy" => {
-                let [destination, source_value] = arguments else {
-                    return Err(Diagnostic::semantic(
-                        "copy currently requires a []byte destination and string source",
-                        source,
-                    ));
-                };
-                if spread {
-                    return Err(Diagnostic::semantic("copy does not accept ...", source));
-                }
-                let destination = self.lower_expr(destination, None)?;
-                let (builtin, source_value) = if destination.ty == slice_ty {
-                    (
-                        hir::Builtin::SliceI64Copy,
-                        self.lower_expr(source_value, Some(&slice_ty))?,
-                    )
-                } else if destination.ty == byte_slice_ty {
-                    (
-                        hir::Builtin::SliceU8CopyString,
-                        self.lower_expr(source_value, Some(&Ty::String))?,
-                    )
-                } else {
-                    return Err(Diagnostic::semantic(
-                        "copy currently supports []int slices or a []byte destination and string source",
-                        source,
-                    ));
-                };
-                (
-                    builtin,
-                    vec![destination, source_value],
-                    Ty::Int(IntTy::Int),
-                    false,
-                    true,
-                    false,
-                )
-            }
-            _ => {
-                return Err(Diagnostic::backend(
-                    "non-slice builtin reached slice lowering",
-                ));
-            }
-        };
-        let argument_refs = args.iter().collect::<Vec<_>>();
-        let effects = slice_runtime_effects(&argument_refs, writes, allocates, panics);
-        let mut lowered = hir::Expr {
-            node,
-            kind: hir::ExprKind::Call {
-                callee: hir::Callee::Builtin(builtin),
-                args,
-            },
-            ty,
-            category: hir::ValueCategory::Value,
-            effects,
-            source,
-        };
-        if let Some(expected) = expected {
-            coerce_expr(&mut lowered, expected, source)?;
-        }
-        Ok(lowered)
     }
 }
 

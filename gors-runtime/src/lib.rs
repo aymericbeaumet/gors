@@ -14,6 +14,7 @@ mod byte_ranges;
 mod channels;
 mod interface_containers;
 mod interfaces;
+mod slice_identity;
 mod string_runes;
 
 pub use byte_ranges::{
@@ -28,14 +29,19 @@ pub use channels::{
 pub use interface_containers::{
     GoMapStringInterface, GoSliceInterface, go_map_string_interface_contains,
     go_map_string_interface_get, go_map_string_interface_len, go_map_string_interface_make,
-    go_map_string_interface_set, go_slice_interface_index, go_slice_interface_len,
-    go_slice_interface_make, go_slice_interface_set,
+    go_map_string_interface_set, go_slice_interface_index, go_slice_interface_is_nil,
+    go_slice_interface_len, go_slice_interface_make, go_slice_interface_nil,
+    go_slice_interface_set,
 };
 pub use interfaces::{
     GoInterface, go_interface_box_bool, go_interface_box_go_string, go_interface_box_i64,
     go_interface_box_pointer_struct_i64, go_interface_box_struct_i64, go_interface_is_nil,
     go_interface_is_type, go_interface_nil, go_interface_struct_i64_get, go_interface_unbox_bool,
     go_interface_unbox_go_string, go_interface_unbox_i64, go_interface_unbox_pointer_struct_i64,
+};
+pub use slice_identity::{
+    go_slice_bool_is_nil, go_slice_bool_nil, go_slice_i64_is_nil, go_slice_i64_nil,
+    go_slice_u8_is_nil, go_slice_u8_nil,
 };
 pub use string_runes::{
     go_string_from_slice_runes, go_string_range_count, go_string_range_index_at,
@@ -64,6 +70,7 @@ pub struct GoSlice<T> {
     start: usize,
     len: usize,
     capacity: usize,
+    nil: bool,
 }
 
 pub type GoSliceI64 = GoSlice<GoInt>;
@@ -78,6 +85,7 @@ pub fn go_slice_bool_from_static(values: &'static [bool]) -> GoSliceBool {
         start: 0,
         len: values.len(),
         capacity: values.len(),
+        nil: false,
     }
 }
 
@@ -89,6 +97,7 @@ pub fn go_slice_i64_from_static(values: &'static [GoInt]) -> GoSliceI64 {
         start: 0,
         len: values.len(),
         capacity: values.len(),
+        nil: false,
     }
 }
 
@@ -113,6 +122,7 @@ pub fn go_slice_i64_make(len: GoInt, capacity: GoInt) -> GoSliceI64 {
         start: 0,
         len,
         capacity,
+        nil: false,
     }
 }
 
@@ -162,6 +172,7 @@ pub fn go_slice_i64_append(mut slice: GoSliceI64, value: GoInt) -> GoSliceI64 {
         start: 0,
         len: required,
         capacity,
+        nil: false,
     }
 }
 
@@ -173,6 +184,7 @@ pub fn go_slice_u8_from_static(values: &'static [u8]) -> GoSliceU8 {
         start: 0,
         len: values.len(),
         capacity: values.len(),
+        nil: false,
     }
 }
 
@@ -315,6 +327,7 @@ fn append_u8_values(mut slice: GoSliceU8, values: &[u8]) -> GoSliceU8 {
         start: 0,
         len: required,
         capacity,
+        nil: false,
     }
 }
 
@@ -352,6 +365,7 @@ fn go_slice_range<T>(slice: GoSlice<T>, low: GoInt, high: GoInt, max: GoInt) -> 
         start: slice.start.saturating_add(low),
         len: high.saturating_sub(low),
         capacity: max.saturating_sub(low),
+        nil: slice.nil,
     }
 }
 

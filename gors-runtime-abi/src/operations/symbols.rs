@@ -104,6 +104,14 @@ impl RuntimeOp {
             Self::GoStringRangeCount => "go_string_range_count",
             Self::GoStringRangeIndexAt => "go_string_range_index_at",
             Self::GoStringRangeRuneAt => "go_string_range_rune_at",
+            Self::GoSliceI64Nil => "go_slice_i64_nil",
+            Self::GoSliceI64IsNil => "go_slice_i64_is_nil",
+            Self::GoSliceU8Nil => "go_slice_u8_nil",
+            Self::GoSliceU8IsNil => "go_slice_u8_is_nil",
+            Self::GoSliceBoolNil => "go_slice_bool_nil",
+            Self::GoSliceBoolIsNil => "go_slice_bool_is_nil",
+            Self::GoSliceInterfaceNil => "go_slice_interface_nil",
+            Self::GoSliceInterfaceIsNil => "go_slice_interface_is_nil",
         }
     }
 }

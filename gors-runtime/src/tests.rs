@@ -421,6 +421,27 @@ fn integer_slice_append_reuses_or_detaches_by_capacity() {
 }
 
 #[test]
+fn slice_headers_preserve_nil_identity_until_allocation() {
+    let integers = go_slice_i64_nil();
+    assert!(go_slice_i64_is_nil(integers.clone()));
+    assert!(go_slice_i64_is_nil(go_slice_i64_range(
+        integers.clone(),
+        0,
+        0,
+        -1,
+    )));
+    assert!(!go_slice_i64_is_nil(go_slice_i64_append(integers, 1)));
+    assert!(!go_slice_i64_is_nil(go_slice_i64_make(0, 0)));
+
+    assert!(go_slice_u8_is_nil(go_slice_u8_nil()));
+    assert!(!go_slice_u8_is_nil(go_slice_u8_from_static(b"")));
+    assert!(go_slice_bool_is_nil(go_slice_bool_nil()));
+    assert!(!go_slice_bool_is_nil(go_slice_bool_from_static(&[])));
+    assert!(go_slice_interface_is_nil(go_slice_interface_nil()));
+    assert!(!go_slice_interface_is_nil(go_slice_interface_make(0, 0)));
+}
+
+#[test]
 fn byte_slice_spreads_and_string_conversion_preserve_bytes() {
     let bytes = go_slice_u8_from_static(b"go");
     let bytes = go_slice_u8_append_string(bytes, go_string_from_static(b"rs"));

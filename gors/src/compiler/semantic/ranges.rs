@@ -81,7 +81,24 @@ impl FunctionLowerer {
                 }
             };
             self.loop_labels.push(label.clone());
+            let assigned_in_body = super::iteration::assigned_names_in_block(body);
+            let iteration_captures = [key, value]
+                .into_iter()
+                .flatten()
+                .filter_map(|place| match place {
+                    hir::Place::Local(local) => Some(local),
+                    hir::Place::Discard => None,
+                })
+                .filter(|local| {
+                    self.locals
+                        .get(local.0 as usize)
+                        .and_then(|local| local.name.as_ref())
+                        .is_some_and(|name| !assigned_in_body.contains(name))
+                })
+                .collect();
+            self.iteration_capture_scopes.push(iteration_captures);
             let body = self.lower_block(body, true);
+            self.iteration_capture_scopes.pop();
             self.loop_labels.pop();
             Ok::<_, Diagnostic>((key, value, body?))
         })();

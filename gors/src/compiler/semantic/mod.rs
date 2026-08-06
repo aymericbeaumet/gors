@@ -14,12 +14,14 @@ mod generics;
 mod goroutines;
 mod imports;
 mod interfaces;
+mod iteration;
 mod maps;
 mod numeric_builtins;
 mod pointers;
 mod ranges;
 mod recovery;
 mod selects;
+mod slices;
 mod statements;
 mod static_values;
 mod structs;
@@ -361,6 +363,7 @@ pub(super) fn lower_function(
         closure_scopes: vec![BTreeMap::new()],
         named_results: Vec::new(),
         loop_labels: Vec::new(),
+        iteration_capture_scopes: Vec::new(),
         declared_labels: BTreeSet::new(),
         referenced_gotos: BTreeMap::new(),
         defer_registration_depth: 0,

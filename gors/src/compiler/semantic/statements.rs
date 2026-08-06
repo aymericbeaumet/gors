@@ -6,6 +6,7 @@ use crate::token::Token;
 
 use super::FunctionLowerer;
 use super::expressions::*;
+use super::iteration::assigned_names_in_block;
 use super::{lower_type, parameter_types};
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
@@ -270,18 +271,35 @@ impl FunctionLowerer {
                     ));
                 }
                 self.push_scope();
+                let iteration_local_start = self.locals.len();
                 let init = init
                     .as_deref()
                     .map(|statement| self.lower_stmt(statement))
                     .transpose()?
                     .flatten()
                     .map(Box::new);
+                let assigned_in_body = assigned_names_in_block(body);
+                let iteration_captures = self
+                    .locals
+                    .get(iteration_local_start..)
+                    .ok_or_else(|| Diagnostic::backend("iteration local boundary moved"))?
+                    .iter()
+                    .filter(|local| {
+                        local
+                            .name
+                            .as_ref()
+                            .is_some_and(|name| !assigned_in_body.contains(name))
+                    })
+                    .map(|local| local.id)
+                    .collect();
                 let condition = condition
                     .as_ref()
                     .map(|expression| self.lower_expr(expression, Some(&Ty::Bool)))
                     .transpose()?;
                 self.loop_labels.push(label.clone());
+                self.iteration_capture_scopes.push(iteration_captures);
                 let body = self.lower_block(body, true)?;
+                self.iteration_capture_scopes.pop();
                 let post = post
                     .as_deref()
                     .map(|statement| self.lower_stmt(statement))

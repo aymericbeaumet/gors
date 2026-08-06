@@ -102,6 +102,14 @@ impl RuntimeOp {
             | Self::GoStringRangeCount
             | Self::GoStringRangeIndexAt
             | Self::GoStringRangeRuneAt
+            | Self::GoSliceI64Nil
+            | Self::GoSliceI64IsNil
+            | Self::GoSliceU8Nil
+            | Self::GoSliceU8IsNil
+            | Self::GoSliceBoolNil
+            | Self::GoSliceBoolIsNil
+            | Self::GoSliceInterfaceNil
+            | Self::GoSliceInterfaceIsNil
             | Self::GoChannelI64Nil
             | Self::GoChannelI64Make
             | Self::GoChannelI64Len
@@ -170,6 +178,24 @@ impl RuntimeOp {
             ),
             Self::GoSliceI64FromStatic | Self::GoSliceBoolFromStatic => RuntimeEffects::new(
                 AllocationEffect::MayAllocate,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                NO_GO_PANICS,
+            ),
+            Self::GoSliceI64Nil
+            | Self::GoSliceU8Nil
+            | Self::GoSliceBoolNil
+            | Self::GoSliceInterfaceNil => RuntimeEffects::new(
+                AllocationEffect::MayAllocate,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                NO_GO_PANICS,
+            ),
+            Self::GoSliceI64IsNil
+            | Self::GoSliceU8IsNil
+            | Self::GoSliceBoolIsNil
+            | Self::GoSliceInterfaceIsNil => RuntimeEffects::new(
+                AllocationEffect::None,
                 ArgumentMutationEffect::None,
                 HostIoEffect::None,
                 NO_GO_PANICS,

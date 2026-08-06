@@ -104,6 +104,14 @@ impl TryFrom<u16> for RuntimeOp {
             100 => Ok(Self::GoStringRangeCount),
             101 => Ok(Self::GoStringRangeIndexAt),
             102 => Ok(Self::GoStringRangeRuneAt),
+            103 => Ok(Self::GoSliceI64Nil),
+            104 => Ok(Self::GoSliceI64IsNil),
+            105 => Ok(Self::GoSliceU8Nil),
+            106 => Ok(Self::GoSliceU8IsNil),
+            107 => Ok(Self::GoSliceBoolNil),
+            108 => Ok(Self::GoSliceBoolIsNil),
+            109 => Ok(Self::GoSliceInterfaceNil),
+            110 => Ok(Self::GoSliceInterfaceIsNil),
             unknown => Err(UnknownRuntimeOpId(unknown)),
         }
     }

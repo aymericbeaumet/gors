@@ -104,6 +104,14 @@ impl RuntimeOp {
             Self::GoStringRangeCount => 100,
             Self::GoStringRangeIndexAt => 101,
             Self::GoStringRangeRuneAt => 102,
+            Self::GoSliceI64Nil => 103,
+            Self::GoSliceI64IsNil => 104,
+            Self::GoSliceU8Nil => 105,
+            Self::GoSliceU8IsNil => 106,
+            Self::GoSliceBoolNil => 107,
+            Self::GoSliceBoolIsNil => 108,
+            Self::GoSliceInterfaceNil => 109,
+            Self::GoSliceInterfaceIsNil => 110,
         })
     }
 }

@@ -4,6 +4,173 @@ use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::types::{IntTy, Ty, UintTy};
 
+pub(super) fn is_representation_slice_builtin(builtin: hir::Builtin) -> bool {
+    matches!(
+        builtin,
+        hir::Builtin::SliceI64Nil
+            | hir::Builtin::SliceI64IsNil
+            | hir::Builtin::SliceU8Nil
+            | hir::Builtin::SliceU8IsNil
+            | hir::Builtin::SliceBoolNil
+            | hir::Builtin::SliceBoolIsNil
+            | hir::Builtin::AggregateSliceNil
+            | hir::Builtin::AggregateSliceIsNil
+            | hir::Builtin::SnapshotFunctionSliceAppend
+            | hir::Builtin::SnapshotFunctionSliceCall
+    )
+}
+
+pub(super) fn verify_representation_slice_call(
+    builtin: hir::Builtin,
+    arguments: &[Ty],
+    destinations: &[Ty],
+) -> Result<Vec<Ty>, Diagnostic> {
+    match builtin {
+        hir::Builtin::SliceI64Nil => {
+            let [destination] = destinations else {
+                return Err(Diagnostic::backend(
+                    "integer slice nil operation requires one destination",
+                ));
+            };
+            if !arguments.is_empty()
+                || !matches!(
+                    destination.underlying(),
+                    Ty::Slice(element)
+                        if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32))
+                            || element.snapshot_function_result().is_some()
+                )
+            {
+                return Err(Diagnostic::backend(format!(
+                    "invalid MIR integer slice nil operation: {arguments:?} -> {destinations:?}"
+                )));
+            }
+            Ok(vec![destination.clone()])
+        }
+        hir::Builtin::SliceI64IsNil => {
+            if !matches!(
+                arguments,
+                [Ty::Slice(element)]
+                    if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32))
+                        || element.snapshot_function_result().is_some()
+            ) {
+                return Err(Diagnostic::backend(format!(
+                    "invalid MIR integer slice nil test: {arguments:?}"
+                )));
+            }
+            Ok(vec![Ty::Bool])
+        }
+        hir::Builtin::SliceU8Nil => verify_fixed_slice_nil(
+            arguments,
+            destinations,
+            Ty::Slice(Box::new(Ty::Uint(UintTy::Uint8))),
+            "byte",
+        ),
+        hir::Builtin::SliceU8IsNil => verify_fixed_slice_nil_test(
+            arguments,
+            Ty::Slice(Box::new(Ty::Uint(UintTy::Uint8))),
+            "byte",
+        ),
+        hir::Builtin::SliceBoolNil => verify_fixed_slice_nil(
+            arguments,
+            destinations,
+            Ty::Slice(Box::new(Ty::Bool)),
+            "bool",
+        ),
+        hir::Builtin::SliceBoolIsNil => {
+            verify_fixed_slice_nil_test(arguments, Ty::Slice(Box::new(Ty::Bool)), "bool")
+        }
+        hir::Builtin::AggregateSliceNil => {
+            let [destination] = destinations else {
+                return Err(Diagnostic::backend(
+                    "aggregate slice nil operation requires one destination",
+                ));
+            };
+            if !arguments.is_empty() || !matches!(destination.underlying(), Ty::Slice(_)) {
+                return Err(Diagnostic::backend(format!(
+                    "invalid MIR aggregate slice nil operation: {arguments:?} -> {destinations:?}"
+                )));
+            }
+            Ok(vec![destination.clone()])
+        }
+        hir::Builtin::AggregateSliceIsNil => {
+            if !matches!(arguments, [Ty::Slice(_)]) {
+                return Err(Diagnostic::backend(format!(
+                    "invalid MIR aggregate slice nil test: {arguments:?}"
+                )));
+            }
+            Ok(vec![Ty::Bool])
+        }
+        hir::Builtin::SnapshotFunctionSliceAppend => {
+            let [slice, capture] = arguments else {
+                return Err(Diagnostic::backend(
+                    "snapshot function append has invalid arity",
+                ));
+            };
+            let Some(function) = slice.snapshot_function_slice_element() else {
+                return Err(Diagnostic::backend(
+                    "snapshot function append has a non-function slice",
+                ));
+            };
+            if function.snapshot_function_result() != Some(capture) {
+                return Err(Diagnostic::backend(
+                    "snapshot function append capture type changed",
+                ));
+            }
+            Ok(vec![slice.clone()])
+        }
+        hir::Builtin::SnapshotFunctionSliceCall => {
+            let [slice, index] = arguments else {
+                return Err(Diagnostic::backend(
+                    "snapshot function call has invalid arity",
+                ));
+            };
+            if index != &Ty::Int(IntTy::Int) {
+                return Err(Diagnostic::backend(
+                    "snapshot function call has a non-integer index",
+                ));
+            }
+            let result = slice
+                .snapshot_function_slice_element()
+                .and_then(Ty::snapshot_function_result)
+                .cloned()
+                .ok_or_else(|| {
+                    Diagnostic::backend("snapshot function call has a non-function slice")
+                })?;
+            Ok(vec![result])
+        }
+        _ => Err(Diagnostic::backend(
+            "slice representation verifier received another operation",
+        )),
+    }
+}
+
+fn verify_fixed_slice_nil(
+    arguments: &[Ty],
+    destinations: &[Ty],
+    slice: Ty,
+    name: &str,
+) -> Result<Vec<Ty>, Diagnostic> {
+    if !arguments.is_empty() || destinations != [slice.clone()] {
+        return Err(Diagnostic::backend(format!(
+            "invalid MIR {name} slice nil operation: {arguments:?} -> {destinations:?}"
+        )));
+    }
+    Ok(vec![slice])
+}
+
+fn verify_fixed_slice_nil_test(
+    arguments: &[Ty],
+    slice: Ty,
+    name: &str,
+) -> Result<Vec<Ty>, Diagnostic> {
+    if arguments != [slice] {
+        return Err(Diagnostic::backend(format!(
+            "invalid MIR {name} slice nil test: {arguments:?}"
+        )));
+    }
+    Ok(vec![Ty::Bool])
+}
+
 pub(super) fn verify_slice_call_arguments(
     arguments: &[Ty],
     expected_len: usize,

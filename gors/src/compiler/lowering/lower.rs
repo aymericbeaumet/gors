@@ -1,6 +1,7 @@
 //! Mandatory conversion from normalized Go MIR to explicit Rust IR.
 
 mod aggregates;
+mod control;
 
 use super::type_lowering::lower_type;
 use crate::compiler::Diagnostic;
@@ -11,6 +12,8 @@ use crate::compiler::types::{
     ComplexTy, ConstValue, FloatTy, IntTy, Signature as GoSignature, Ty, UintTy, parse_go_float,
 };
 use gors_runtime_abi::{PrimitiveOp, RuntimeOp};
+
+use control::{finish_terminator, lower_panic_edge};
 
 #[cfg(test)]
 pub(super) fn lower_file(file: mir::File) -> Result<out::File, Diagnostic> {
@@ -334,6 +337,8 @@ fn lower_terminator(
                 | hir::Builtin::SliceI64Range
                 | hir::Builtin::SliceI64Set
                 | hir::Builtin::SliceI64Make
+                | hir::Builtin::SliceI64Nil
+                | hir::Builtin::SliceI64IsNil
                 | hir::Builtin::SliceI64Len
                 | hir::Builtin::SliceI64Cap
                 | hir::Builtin::SliceI64Append
@@ -343,14 +348,22 @@ fn lower_terminator(
                 | hir::Builtin::SliceU8Len
                 | hir::Builtin::SliceU8Index
                 | hir::Builtin::SliceU8Range
+                | hir::Builtin::SliceU8Nil
+                | hir::Builtin::SliceU8IsNil
                 | hir::Builtin::SliceI64Copy
                 | hir::Builtin::SliceI64Clear
                 | hir::Builtin::SliceBoolIndex
                 | hir::Builtin::SliceBoolSet
+                | hir::Builtin::SliceBoolNil
+                | hir::Builtin::SliceBoolIsNil
                 | hir::Builtin::AggregateSliceMake
+                | hir::Builtin::AggregateSliceNil
+                | hir::Builtin::AggregateSliceIsNil
                 | hir::Builtin::AggregateSliceLen
                 | hir::Builtin::AggregateSliceIndexTagged
                 | hir::Builtin::AggregateSliceSetTagged
+                | hir::Builtin::SnapshotFunctionSliceAppend
+                | hir::Builtin::SnapshotFunctionSliceCall
                 | hir::Builtin::StringFromSliceU8
                 | hir::Builtin::StringFromSliceRunes
                 | hir::Builtin::StringLen
@@ -417,6 +430,8 @@ fn lower_terminator(
                     hir::Builtin::SliceI64Range => RuntimeOp::GoSliceI64Range,
                     hir::Builtin::SliceI64Set => RuntimeOp::GoSliceI64Set,
                     hir::Builtin::SliceI64Make => RuntimeOp::GoSliceI64Make,
+                    hir::Builtin::SliceI64Nil => RuntimeOp::GoSliceI64Nil,
+                    hir::Builtin::SliceI64IsNil => RuntimeOp::GoSliceI64IsNil,
                     hir::Builtin::SliceI64Len => RuntimeOp::GoSliceI64Len,
                     hir::Builtin::SliceI64Cap => RuntimeOp::GoSliceI64Cap,
                     hir::Builtin::SliceI64Append => RuntimeOp::GoSliceI64Append,
@@ -426,14 +441,22 @@ fn lower_terminator(
                     hir::Builtin::SliceU8Len => RuntimeOp::GoSliceU8Len,
                     hir::Builtin::SliceU8Index => RuntimeOp::GoSliceU8Index,
                     hir::Builtin::SliceU8Range => RuntimeOp::GoSliceU8Range,
+                    hir::Builtin::SliceU8Nil => RuntimeOp::GoSliceU8Nil,
+                    hir::Builtin::SliceU8IsNil => RuntimeOp::GoSliceU8IsNil,
                     hir::Builtin::SliceI64Copy => RuntimeOp::GoSliceI64Copy,
                     hir::Builtin::SliceI64Clear => RuntimeOp::GoSliceI64Clear,
                     hir::Builtin::SliceBoolIndex => RuntimeOp::GoSliceBoolIndex,
                     hir::Builtin::SliceBoolSet => RuntimeOp::GoSliceBoolSet,
+                    hir::Builtin::SliceBoolNil => RuntimeOp::GoSliceBoolNil,
+                    hir::Builtin::SliceBoolIsNil => RuntimeOp::GoSliceBoolIsNil,
                     hir::Builtin::AggregateSliceMake => RuntimeOp::GoSliceInterfaceMake,
+                    hir::Builtin::AggregateSliceNil => RuntimeOp::GoSliceInterfaceNil,
+                    hir::Builtin::AggregateSliceIsNil => RuntimeOp::GoSliceInterfaceIsNil,
                     hir::Builtin::AggregateSliceLen => RuntimeOp::GoSliceInterfaceLen,
                     hir::Builtin::AggregateSliceIndexTagged => RuntimeOp::GoSliceInterfaceIndex,
                     hir::Builtin::AggregateSliceSetTagged => RuntimeOp::GoSliceInterfaceSet,
+                    hir::Builtin::SnapshotFunctionSliceAppend => RuntimeOp::GoSliceI64Append,
+                    hir::Builtin::SnapshotFunctionSliceCall => RuntimeOp::GoSliceI64Index,
                     hir::Builtin::StringFromSliceU8 => RuntimeOp::GoStringFromSliceU8,
                     hir::Builtin::StringFromSliceRunes => RuntimeOp::GoStringFromSliceRunes,
                     hir::Builtin::StringLen => RuntimeOp::GoStringLen,
@@ -724,30 +747,6 @@ fn lower_print_call(
         provenance,
         panic,
     ))
-}
-
-fn finish_terminator(
-    kind: out::TerminatorKind,
-    provenance: out::Provenance,
-    panic: mir::PanicEdge,
-) -> out::Terminator {
-    let effects = out::terminator_effects(&kind);
-    out::Terminator {
-        kind,
-        effects,
-        panic: lower_panic_edge(panic, effects),
-        provenance,
-    }
-}
-
-fn lower_panic_edge(edge: mir::PanicEdge, effects: out::Effects) -> out::PanicEdge {
-    if !effects.may_panic {
-        return out::PanicEdge::None;
-    }
-    match edge {
-        mir::PanicEdge::Cleanup(target) => out::PanicEdge::Cleanup(target),
-        mir::PanicEdge::None | mir::PanicEdge::Propagate => out::PanicEdge::Propagate,
-    }
 }
 
 pub(super) fn lower_operand(

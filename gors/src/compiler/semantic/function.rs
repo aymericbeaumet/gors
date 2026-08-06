@@ -37,6 +37,7 @@ pub(super) struct FunctionLowerer {
     pub(super) closure_scopes: Vec<BTreeMap<String, ClosureId>>,
     pub(super) named_results: Vec<Option<LocalId>>,
     pub(super) loop_labels: Vec<Option<String>>,
+    pub(super) iteration_capture_scopes: Vec<BTreeSet<LocalId>>,
     pub(super) declared_labels: std::collections::BTreeSet<String>,
     pub(super) referenced_gotos: BTreeMap<String, SourceRef>,
     pub(super) defer_registration_depth: usize,

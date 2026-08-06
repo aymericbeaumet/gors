@@ -64,6 +64,40 @@ impl FunctionLowerer {
         source: SourceRef,
         ty: Ty,
     ) -> Result<hir::Expr, Diagnostic> {
+        let slice_nil = match ty.underlying() {
+            Ty::Slice(element)
+                if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32))
+                    || element.snapshot_function_result().is_some() =>
+            {
+                Some(hir::Builtin::SliceI64Nil)
+            }
+            Ty::Slice(element) if element.underlying() == &Ty::Uint(UintTy::Uint8) => {
+                Some(hir::Builtin::SliceU8Nil)
+            }
+            Ty::Slice(element) if element.underlying() == &Ty::Bool => {
+                Some(hir::Builtin::SliceBoolNil)
+            }
+            Ty::Slice(element)
+                if matches!(element.underlying(), Ty::String)
+                    || element.bootstrap_i64_struct_fields().is_some() =>
+            {
+                Some(hir::Builtin::AggregateSliceNil)
+            }
+            _ => None,
+        };
+        if let Some(builtin) = slice_nil {
+            return Ok(hir::Expr {
+                node,
+                kind: hir::ExprKind::Call {
+                    callee: hir::Callee::Builtin(builtin),
+                    args: Vec::new(),
+                },
+                ty,
+                category: hir::ValueCategory::Value,
+                effects: map_effects(&[], false, true, false),
+                source,
+            });
+        }
         if matches!(ty.underlying(), Ty::Interface(_)) {
             return Ok(hir::Expr {
                 node,

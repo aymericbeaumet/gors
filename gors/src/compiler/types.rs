@@ -147,6 +147,31 @@ pub struct InterfaceMethod {
 }
 
 impl Ty {
+    /// A function shape whose proven capture-only representation can be
+    /// lowered to one copied integer payload.
+    #[must_use]
+    pub fn snapshot_function_result(&self) -> Option<&Ty> {
+        let Self::Function(signature) = self.underlying() else {
+            return None;
+        };
+        if signature.variadic || !signature.params.is_empty() {
+            return None;
+        }
+        let [result] = signature.results.as_slice() else {
+            return None;
+        };
+        matches!(result.underlying(), Self::Int(IntTy::Int)).then_some(result)
+    }
+
+    /// The element type of a slice of capture-only functions.
+    #[must_use]
+    pub fn snapshot_function_slice_element(&self) -> Option<&Ty> {
+        let Self::Slice(element) = self.underlying() else {
+            return None;
+        };
+        element.snapshot_function_result().map(|_| element.as_ref())
+    }
+
     #[must_use]
     pub fn underlying(&self) -> &Ty {
         match self {
@@ -246,7 +271,8 @@ impl Ty {
                     | Self::Int(IntTy::Int | IntTy::Int32)
                     | Self::Uint(UintTy::Uint8)
                     | Self::String
-            ) || element.bootstrap_i64_struct_fields().is_some();
+            ) || element.bootstrap_i64_struct_fields().is_some()
+                || element.snapshot_function_result().is_some();
         }
         if let Self::Pointer(element) = self {
             return element.underlying() == &Self::Int(IntTy::Int)

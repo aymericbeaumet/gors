@@ -36,7 +36,20 @@ pub fn go_slice_interface_make(len: GoInt, capacity: GoInt) -> GoSliceInterface 
         start: 0,
         len,
         capacity,
+        nil: false,
     }
+}
+
+/// Construct a nil interface-backed slice.
+#[must_use]
+pub fn go_slice_interface_nil() -> GoSliceInterface {
+    GoSliceInterface::nil()
+}
+
+/// Report whether an interface-backed slice is nil.
+#[must_use]
+pub fn go_slice_interface_is_nil(slice: GoSliceInterface) -> bool {
+    slice.nil
 }
 
 /// Return an interface-backed slice length.

@@ -381,6 +381,7 @@ const GO_SLICE_I64_PARAMETER: &[RuntimeType] = &[RuntimeType::GoSliceI64];
 const TWO_GO_SLICE_I64_PARAMETERS: &[RuntimeType] =
     &[RuntimeType::GoSliceI64, RuntimeType::GoSliceI64];
 const GO_SLICE_U8_PARAMETER: &[RuntimeType] = &[RuntimeType::GoSliceU8];
+const GO_SLICE_BOOL_PARAMETER: &[RuntimeType] = &[RuntimeType::GoSliceBool];
 const GO_SLICE_U8_AND_INDEX: &[RuntimeType] = &[RuntimeType::GoSliceU8, RuntimeType::I64];
 const GO_SLICE_U8_RANGE: &[RuntimeType] = &[
     RuntimeType::GoSliceU8,
@@ -583,6 +584,14 @@ pub enum RuntimeOp {
     GoStringRangeCount,
     GoStringRangeIndexAt,
     GoStringRangeRuneAt,
+    GoSliceI64Nil,
+    GoSliceI64IsNil,
+    GoSliceU8Nil,
+    GoSliceU8IsNil,
+    GoSliceBoolNil,
+    GoSliceBoolIsNil,
+    GoSliceInterfaceNil,
+    GoSliceInterfaceIsNil,
 }
 
 /// Stable compact identity of one runtime ABI operation.
@@ -693,6 +702,14 @@ impl RuntimeOp {
         Self::GoStringRangeCount,
         Self::GoStringRangeIndexAt,
         Self::GoStringRangeRuneAt,
+        Self::GoSliceI64Nil,
+        Self::GoSliceI64IsNil,
+        Self::GoSliceU8Nil,
+        Self::GoSliceU8IsNil,
+        Self::GoSliceBoolNil,
+        Self::GoSliceBoolIsNil,
+        Self::GoSliceInterfaceNil,
+        Self::GoSliceInterfaceIsNil,
     ];
 
     /// Exact typed call signature at the Rust runtime boundary.
@@ -931,6 +948,22 @@ impl RuntimeOp {
             }
             Self::GoStringRangeIndexAt | Self::GoStringRangeRuneAt => {
                 RuntimeSignature::new(GO_STRING_AND_INDEX, RuntimeType::I64)
+            }
+            Self::GoSliceI64Nil => RuntimeSignature::new(NO_PARAMETERS, RuntimeType::GoSliceI64),
+            Self::GoSliceI64IsNil => {
+                RuntimeSignature::new(GO_SLICE_I64_PARAMETER, RuntimeType::Bool)
+            }
+            Self::GoSliceU8Nil => RuntimeSignature::new(NO_PARAMETERS, RuntimeType::GoSliceU8),
+            Self::GoSliceU8IsNil => RuntimeSignature::new(GO_SLICE_U8_PARAMETER, RuntimeType::Bool),
+            Self::GoSliceBoolNil => RuntimeSignature::new(NO_PARAMETERS, RuntimeType::GoSliceBool),
+            Self::GoSliceBoolIsNil => {
+                RuntimeSignature::new(GO_SLICE_BOOL_PARAMETER, RuntimeType::Bool)
+            }
+            Self::GoSliceInterfaceNil => {
+                RuntimeSignature::new(NO_PARAMETERS, RuntimeType::GoSliceInterface)
+            }
+            Self::GoSliceInterfaceIsNil => {
+                RuntimeSignature::new(GO_SLICE_INTERFACE_PARAMETER, RuntimeType::Bool)
             }
         }
     }

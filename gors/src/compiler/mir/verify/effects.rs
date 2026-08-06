@@ -5,6 +5,31 @@ use crate::compiler::hir;
 
 use super::super::{Operand, PanicEdge};
 
+pub(super) fn call_effects() -> hir::Effects {
+    hir::Effects {
+        may_call: true,
+        may_allocate: true,
+        may_block: true,
+        may_panic: true,
+        may_write: true,
+        ..hir::Effects::default()
+    }
+}
+
+pub(super) fn binary_effects(
+    op: hir::BinaryOp,
+    result: &crate::compiler::types::Ty,
+) -> hir::Effects {
+    hir::Effects {
+        may_allocate: op == hir::BinaryOp::Add && result == &crate::compiler::types::Ty::String,
+        may_panic: matches!(
+            op,
+            hir::BinaryOp::Div | hir::BinaryOp::Rem | hir::BinaryOp::Shl | hir::BinaryOp::Shr
+        ),
+        ..hir::Effects::default()
+    }
+}
+
 pub(super) fn verify_effects(
     actual: hir::Effects,
     expected: hir::Effects,

@@ -96,11 +96,11 @@ fn current_contract_identity_is_sha256_of_canonical_bytes() {
 
     assert_eq!(manifest.schema().get(), 2);
     assert_eq!(manifest.contract(), CURRENT_CONTRACT_VERSION);
-    assert_eq!(manifest.contract(), ContractVersion::new(2, 12, 0));
+    assert_eq!(manifest.contract(), ContractVersion::new(2, 13, 0));
     assert_eq!(manifest.identity().as_bytes(), &expected);
     assert_eq!(
         manifest.identity().to_string(),
-        "54105c8d29e021f2b58fca04bcc0aee24da82ee24f60920eed8720baa0d83cad",
+        "24023bf023dc5d8ee8a6d9d02fc79dbad5445a2ee665cfb39a33023c99797681",
         "the canonical runtime contract changed; review the ABI diff and bump its semantic version before accepting a new identity",
     );
 }
@@ -159,6 +159,10 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceBoolFromStatic
             | RuntimeOp::GoSliceI64Make
             | RuntimeOp::GoSliceInterfaceMake
+            | RuntimeOp::GoSliceI64Nil
+            | RuntimeOp::GoSliceU8Nil
+            | RuntimeOp::GoSliceBoolNil
+            | RuntimeOp::GoSliceInterfaceNil
             | RuntimeOp::GoSliceI64Append
             | RuntimeOp::GoSliceU8FromStatic
             | RuntimeOp::GoSliceU8AppendSlice
@@ -187,6 +191,10 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::PanicI64
             | RuntimeOp::PanicGoString
             | RuntimeOp::GoSliceI64Index
+            | RuntimeOp::GoSliceI64IsNil
+            | RuntimeOp::GoSliceU8IsNil
+            | RuntimeOp::GoSliceBoolIsNil
+            | RuntimeOp::GoSliceInterfaceIsNil
             | RuntimeOp::GoSliceI64Range
             | RuntimeOp::GoSliceI64Set
             | RuntimeOp::GoSliceBoolIndex
@@ -289,6 +297,14 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::PanicI64
             | RuntimeOp::PanicGoString
             | RuntimeOp::GoSliceI64FromStatic
+            | RuntimeOp::GoSliceI64Nil
+            | RuntimeOp::GoSliceI64IsNil
+            | RuntimeOp::GoSliceU8Nil
+            | RuntimeOp::GoSliceU8IsNil
+            | RuntimeOp::GoSliceBoolNil
+            | RuntimeOp::GoSliceBoolIsNil
+            | RuntimeOp::GoSliceInterfaceNil
+            | RuntimeOp::GoSliceInterfaceIsNil
             | RuntimeOp::GoSliceI64Index
             | RuntimeOp::GoSliceBoolFromStatic
             | RuntimeOp::GoSliceBoolIndex
@@ -378,6 +394,14 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::PanicI64
             | RuntimeOp::PanicGoString
             | RuntimeOp::GoSliceI64FromStatic
+            | RuntimeOp::GoSliceI64Nil
+            | RuntimeOp::GoSliceI64IsNil
+            | RuntimeOp::GoSliceU8Nil
+            | RuntimeOp::GoSliceU8IsNil
+            | RuntimeOp::GoSliceBoolNil
+            | RuntimeOp::GoSliceBoolIsNil
+            | RuntimeOp::GoSliceInterfaceNil
+            | RuntimeOp::GoSliceInterfaceIsNil
             | RuntimeOp::GoSliceI64Index
             | RuntimeOp::GoSliceI64Range
             | RuntimeOp::GoSliceI64Set
@@ -520,6 +544,14 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::PrintNewline
             | RuntimeOp::PrintGoString
             | RuntimeOp::GoSliceI64FromStatic
+            | RuntimeOp::GoSliceI64Nil
+            | RuntimeOp::GoSliceI64IsNil
+            | RuntimeOp::GoSliceU8Nil
+            | RuntimeOp::GoSliceU8IsNil
+            | RuntimeOp::GoSliceBoolNil
+            | RuntimeOp::GoSliceBoolIsNil
+            | RuntimeOp::GoSliceInterfaceNil
+            | RuntimeOp::GoSliceInterfaceIsNil
             | RuntimeOp::GoSliceBoolFromStatic
             | RuntimeOp::GoSliceI64Len
             | RuntimeOp::GoSliceI64Cap
