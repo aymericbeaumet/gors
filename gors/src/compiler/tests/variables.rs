@@ -38,3 +38,52 @@ fn package_variable_mutation_waits_for_global_storage_lowering() {
         "{error}"
     );
 }
+
+#[test]
+fn address_taken_integer_locals_share_pointer_backing() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            func update(parameter int) int {
+                pointer := &parameter
+                parameter = 5
+                *pointer = *pointer + 1
+                return parameter
+            }
+
+            func main() {
+                value := 2
+                pointer := &value
+                value, delta := 4, 3
+                alias := pointer
+                *alias = *alias + delta
+                println(value)
+                println(update(1))
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"7\n6\n");
+    assert!(run.rust.contains("go_pointer_i64_new"), "{}", run.rust);
+    assert!(run.rust.contains("go_pointer_i64_get"), "{}", run.rust);
+    assert!(run.rust.contains("go_pointer_i64_set"), "{}", run.rust);
+}
+
+#[test]
+fn nested_address_taking_is_rejected_until_lifetimes_are_explicit() {
+    let error = compile_program(raw_program(
+        "nested-address.go",
+        "nested-address.go",
+        "package main\nfunc main() { value := 1; if true { _ = &value } }\n",
+    ))
+    .err()
+    .expect("nested address-taking must not bypass storage lifetime planning");
+
+    assert!(
+        error
+            .to_string()
+            .contains("address-taking in nested control flow"),
+        "{error}"
+    );
+}

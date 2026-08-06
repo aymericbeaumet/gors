@@ -18,6 +18,69 @@ pub(super) fn int_pointer_ty() -> Ty {
 }
 
 impl FunctionLowerer {
+    pub(super) fn lower_address_of_local(
+        &mut self,
+        expression: &ExprSyntax,
+        node: NodeId,
+        source: SourceRef,
+        expected: Option<&Ty>,
+    ) -> Result<hir::Expr, Diagnostic> {
+        if self.defer_registration_depth != 0
+            || self.inside_deferred_closure
+            || self.inside_local_closure
+        {
+            return Err(Diagnostic::unsupported(
+                "address-taking in nested control flow or function literals is not yet represented",
+                source,
+            ));
+        }
+        let ExprSyntaxKind::Ident(identifier) = &expression.kind else {
+            return Err(Diagnostic::unsupported(
+                "address-taking currently requires a local identifier",
+                source,
+            ));
+        };
+        let Some(local) = self.lookup_local(&identifier.name) else {
+            if self.variables.contains_key(identifier.name.as_ref()) {
+                return Err(Diagnostic::unsupported(
+                    "taking the address of a package variable requires global storage lowering",
+                    source,
+                ));
+            }
+            return Err(Diagnostic::semantic(
+                format!("undefined variable {}", identifier.name),
+                source,
+            ));
+        };
+        let element = self
+            .locals
+            .get(local.0 as usize)
+            .map(|local| local.ty.clone())
+            .ok_or_else(|| Diagnostic::backend(format!("invalid local id {}", local.0)))?;
+        if element.underlying() != &Ty::Int(IntTy::Int) {
+            return Err(Diagnostic::unsupported(
+                "address-taking currently supports integer locals",
+                source,
+            ));
+        }
+        let mut result = hir::Expr {
+            node,
+            kind: hir::ExprKind::AddressOfLocal(local),
+            ty: Ty::Pointer(Box::new(element)),
+            category: hir::ValueCategory::Value,
+            effects: hir::Effects {
+                may_allocate: true,
+                may_read: true,
+                ..hir::Effects::default()
+            },
+            source,
+        };
+        if let Some(expected) = expected {
+            coerce_expr(&mut result, expected, source)?;
+        }
+        Ok(result)
+    }
+
     pub(super) fn lower_new_builtin_call(
         &mut self,
         arguments: &[ExprSyntax],

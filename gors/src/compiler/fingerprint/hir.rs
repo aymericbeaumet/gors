@@ -431,6 +431,9 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
         hir::ExprKind::Local(id) => {
             encoder.variant(b"local", |encoder| local_id(encoder, *id));
         }
+        hir::ExprKind::AddressOfLocal(id) => {
+            encoder.variant(b"address-of-local", |encoder| local_id(encoder, *id));
+        }
         hir::ExprKind::GlobalConstant(id, value) => {
             encoder.variant(b"global-constant", |encoder| {
                 encoder.field(b"id", |encoder| qualified_def_id(encoder, *id));

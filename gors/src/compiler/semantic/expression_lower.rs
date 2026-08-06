@@ -122,6 +122,9 @@ impl FunctionLowerer {
                 if *token == Token::ARROW {
                     return self.lower_channel_receive(expression, false, node, source, expected);
                 }
+                if *token == Token::AND {
+                    return self.lower_address_of_local(expression, node, source, expected);
+                }
                 if *token == Token::MUL {
                     return self.lower_pointer_deref(expression, node, source, expected);
                 }

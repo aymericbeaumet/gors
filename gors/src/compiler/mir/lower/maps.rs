@@ -52,12 +52,12 @@ impl FunctionLowerer {
         provenance: Provenance,
     ) -> Result<(), Diagnostic> {
         if let Some(zero) = ty.zero() {
-            let value = make_rvalue(
-                RvalueKind::Use(Operand::Constant(zero, ty)),
-                hir::Effects::default(),
-                provenance.clone(),
+            return self.write_semantic_local(
+                destination.local,
+                Operand::Constant(zero, ty),
+                provenance,
+                true,
             );
-            return self.push_statement(make_statement(destination, value, provenance));
         }
         if let Ty::Array(length, element) = ty.underlying()
             && element.underlying() == &Ty::Int(crate::compiler::types::IntTy::Int)

@@ -1,14 +1,15 @@
 //! Explicit two-phase lowering for assignments with dynamic destinations.
 
-use super::super::construct::{call_effects, make_rvalue, make_statement, make_terminator};
-use super::super::{Operand, Place, Provenance, RvalueKind, TerminatorKind};
+use super::super::construct::{call_effects, make_terminator};
+use super::super::{Operand, Provenance, TerminatorKind};
 use super::FunctionLowerer;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
+use crate::compiler::ids::LocalId;
 use crate::compiler::provenance::SourceRef;
 
 enum PreparedTarget {
-    Local(Place),
+    Local(LocalId),
     Discard,
     SliceIndex { slice: Operand, index: Operand },
     MapIndex { map: Operand, key: Operand },
@@ -30,7 +31,7 @@ impl FunctionLowerer {
         let mut prepared = Vec::with_capacity(destinations.len());
         for destination in destinations {
             prepared.push(match destination {
-                hir::AssignTarget::Local(local) => PreparedTarget::Local(Place { local: *local }),
+                hir::AssignTarget::Local(local) => PreparedTarget::Local(*local),
                 hir::AssignTarget::Discard => PreparedTarget::Discard,
                 hir::AssignTarget::SliceIndex { slice, index } => {
                     let slice_operand = self.lower_expr(slice)?;
@@ -83,15 +84,12 @@ impl FunctionLowerer {
 
         for (destination, operand) in prepared.into_iter().zip(operands) {
             match destination {
-                PreparedTarget::Local(destination) => {
-                    let provenance = Provenance::Source(source);
-                    let value = make_rvalue(
-                        RvalueKind::Use(operand),
-                        hir::Effects::default(),
-                        provenance.clone(),
-                    );
-                    self.push_statement(make_statement(destination, value, provenance))?;
-                }
+                PreparedTarget::Local(destination) => self.write_semantic_local(
+                    destination,
+                    operand,
+                    Provenance::Source(source),
+                    false,
+                )?,
                 PreparedTarget::Discard => {}
                 PreparedTarget::SliceIndex { slice, index } => {
                     let provenance = Provenance::Source(source);

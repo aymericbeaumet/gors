@@ -472,6 +472,12 @@ reads materialize exact constant or zero initial values, while mutation and
 address-taking remain rejected until global storage lowering exists. Exported
 constant and variable type/value semantics participate in the package
 public-API fingerprint.
+Address-taking of a non-nested integer local is explicit HIR intent. MIR plans
+one shared pointer-backed storage cell for each such local, initializes
+parameters and declarations at their Go sequence points, and routes subsequent
+direct and indirect reads and writes through that cell. Nested control-flow and
+function-literal address-taking remain diagnosed until their lifetime and
+per-iteration storage semantics are represented.
 Production program
 compilation delegates to `CompilerSession`; convenience functions create a
 short-lived session, while the browser worker retains one explicitly across

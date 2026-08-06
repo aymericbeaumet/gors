@@ -7,6 +7,7 @@ mod expressions;
 mod flow;
 mod maps;
 mod panic_cleanup;
+mod pointers;
 mod ranges;
 mod structs;
 #[cfg(test)]
@@ -25,7 +26,7 @@ use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::{BasicBlockId, ClosureId, LocalId};
 use crate::compiler::types::{ConstValue, Ty};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]
 pub(super) use test_file::lower_file;
 
@@ -50,6 +51,8 @@ struct FunctionLowerer {
     defer_flags: Vec<LocalId>,
     next_defer: usize,
     recover_active: Option<LocalId>,
+    addressed_locals: BTreeMap<LocalId, LocalId>,
+    initialized_addressed_locals: BTreeSet<LocalId>,
 }
 
 #[derive(Clone)]
@@ -84,7 +87,7 @@ pub(super) fn lower_function(function: &hir::Function) -> Result<Function, Diagn
 
 impl FunctionLowerer {
     fn lower(hir: &hir::Function) -> Result<Function, Diagnostic> {
-        let locals = hir
+        let mut locals = hir
             .locals
             .iter()
             .map(|local| LocalDecl {
@@ -93,7 +96,8 @@ impl FunctionLowerer {
                 ty: local.ty.clone(),
                 kind: local.kind,
             })
-            .collect();
+            .collect::<Vec<_>>();
+        let addressed_locals = pointers::plan_addressed_locals(hir, &mut locals)?;
         let mut lowerer = Self {
             locals,
             blocks: vec![BlockBuilder {
@@ -113,6 +117,8 @@ impl FunctionLowerer {
             defer_flags: Vec::new(),
             next_defer: 0,
             recover_active: None,
+            addressed_locals,
+            initialized_addressed_locals: BTreeSet::new(),
         };
 
         let deferred_bodies = hir
@@ -161,10 +167,12 @@ impl FunctionLowerer {
             }
         }
 
+        lowerer.initialize_addressed_parameters(&hir.params, hir.source)?;
+
         // Named Go results exist and contain their zero values at function
         // entry, even when the function exits via a bare return.
-        if body_entry.is_none() {
-            for result in hir.named_results.iter().flatten() {
+        for result in hir.named_results.iter().flatten() {
+            if body_entry.is_none() || lowerer.addressed_locals.contains_key(result) {
                 let ty = lowerer.local_ty(*result)?.clone();
                 lowerer.lower_zero_value(
                     Place { local: *result },
@@ -342,33 +350,11 @@ impl FunctionLowerer {
             hir::StmtKind::LetTuple {
                 destinations,
                 value,
-            }
-            | hir::StmtKind::AssignTuple {
+            } => self.lower_tuple_assignment(destinations, value, true)?,
+            hir::StmtKind::AssignTuple {
                 destinations,
                 value,
-            } => {
-                let Ty::Tuple(component_types) = &value.ty else {
-                    return Err(Diagnostic::backend(
-                        "multi-result HIR assignment value is not a tuple",
-                    ));
-                };
-                if destinations.len() != component_types.len() {
-                    return Err(Diagnostic::backend(
-                        "multi-result HIR assignment arity changed before MIR lowering",
-                    ));
-                }
-                let places = destinations
-                    .iter()
-                    .zip(component_types)
-                    .map(|(destination, ty)| match destination {
-                        hir::Place::Local(local) => Place { local: *local },
-                        hir::Place::Discard => Place {
-                            local: self.new_temp(ty.clone()),
-                        },
-                    })
-                    .collect::<Vec<_>>();
-                self.lower_call_into(value, places)?;
-            }
+            } => self.lower_tuple_assignment(destinations, value, false)?,
             hir::StmtKind::ParallelAssign {
                 destinations,
                 values,
@@ -376,37 +362,12 @@ impl FunctionLowerer {
             hir::StmtKind::Let {
                 destinations,
                 values,
-            }
-            | hir::StmtKind::Assign {
+            } => self.lower_local_assignments(destinations, values, statement.source, true)?,
+            hir::StmtKind::Assign {
                 destinations,
                 op: hir::AssignOp::Set,
                 values,
-            } => {
-                let mut operands = Vec::with_capacity(values.len());
-                for value in values {
-                    let operand = self.lower_expr(value)?;
-                    operands.push(self.materialize(
-                        operand,
-                        value.ty.clone(),
-                        Provenance::Source(value.source),
-                    )?);
-                }
-                for (destination, operand) in destinations.iter().zip(operands) {
-                    if let hir::Place::Local(local) = destination {
-                        let provenance = Provenance::Source(statement.source);
-                        let value = make_rvalue(
-                            RvalueKind::Use(operand),
-                            hir::Effects::default(),
-                            provenance.clone(),
-                        );
-                        self.push_statement(make_statement(
-                            Place { local: *local },
-                            value,
-                            provenance,
-                        ))?;
-                    }
-                }
-            }
+            } => self.lower_local_assignments(destinations, values, statement.source, false)?,
             hir::StmtKind::Assign {
                 destinations,
                 op,
@@ -422,40 +383,7 @@ impl FunctionLowerer {
                         "compound assignment must have one operand",
                     ));
                 };
-                // Materialize the old value and RHS independently.  Later
-                // place projections can be prepared before either operation
-                // without changing this write boundary.
-                let ty = self.local_ty(*destination)?.clone();
-                let old = self.materialize(
-                    Operand::Read(Place {
-                        local: *destination,
-                    }),
-                    ty.clone(),
-                    Provenance::Source(statement.source),
-                )?;
-                let rhs = self.lower_expr(value)?;
-                let rhs =
-                    self.materialize(rhs, value.ty.clone(), Provenance::Source(value.source))?;
-                let op = assignment_binary_op(*op);
-                let effects = binary_effects(op, &ty);
-                let provenance = Provenance::Source(statement.source);
-                let value = make_rvalue(
-                    RvalueKind::Binary {
-                        op,
-                        left: old,
-                        right: rhs,
-                        ty,
-                    },
-                    effects,
-                    provenance.clone(),
-                );
-                self.push_statement(make_statement(
-                    Place {
-                        local: *destination,
-                    },
-                    value,
-                    provenance,
-                ))?;
+                self.lower_compound_local_assignment(*destination, *op, value, statement.source)?;
             }
             hir::StmtKind::SliceAssign {
                 slice,
@@ -825,7 +753,10 @@ impl FunctionLowerer {
             hir::ExprKind::MapLiteralStringI64(entries) => {
                 self.lower_map_literal(entries, &expr.ty, expr.source)
             }
-            hir::ExprKind::Local(local) => Ok(Operand::Read(Place { local: *local })),
+            hir::ExprKind::Local(local) => self.read_semantic_local(*local, expr.source),
+            hir::ExprKind::AddressOfLocal(local) => {
+                self.lower_address_of_local_expr(*local, &expr.ty)
+            }
             hir::ExprKind::RecoverCompareNil { equal } => {
                 let state = self.recover_active.ok_or_else(|| {
                     Diagnostic::backend("recover comparison reached a function without cleanup")

@@ -1,7 +1,7 @@
 //! Function-exit and label control-flow helpers.
 
-use super::super::construct::{make_rvalue, make_statement, make_terminator};
-use super::super::{Operand, Place, Provenance, RvalueKind, TerminatorKind};
+use super::super::construct::make_terminator;
+use super::super::{Operand, Place, Provenance, TerminatorKind};
 use super::FunctionLowerer;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
@@ -29,13 +29,8 @@ impl FunctionLowerer {
             for (named_result, operand) in named_results.into_iter().zip(operands) {
                 if let Some(local) = named_result {
                     let provenance = Provenance::Source(source);
-                    let value = make_rvalue(
-                        RvalueKind::Use(operand),
-                        hir::Effects::default(),
-                        provenance.clone(),
-                    );
-                    self.push_statement(make_statement(Place { local }, value, provenance))?;
-                    returned.push(Operand::Read(Place { local }));
+                    self.write_semantic_local(local, operand, provenance, false)?;
+                    returned.push(self.read_semantic_local(local, source)?);
                 } else {
                     returned.push(operand);
                 }

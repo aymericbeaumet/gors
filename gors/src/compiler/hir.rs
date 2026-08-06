@@ -201,6 +201,7 @@ pub struct Expr {
 pub enum ExprKind {
     Constant(ConstValue),
     Local(LocalId),
+    AddressOfLocal(LocalId),
     GlobalConstant(QualifiedDefId, ConstValue),
     GlobalVariable(QualifiedDefId, ConstValue),
     Binary {

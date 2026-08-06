@@ -83,7 +83,9 @@ impl FunctionLowerer {
         let locals = self
             .locals
             .iter()
-            .filter(|local| !parameters.contains(&local.id))
+            .filter(|local| {
+                !parameters.contains(&local.id) && !self.addressed_locals.contains_key(&local.id)
+            })
             .map(|local| (local.id, local.ty.clone(), local.kind))
             .collect::<Vec<_>>();
         for (local, ty, kind) in locals {
@@ -135,7 +137,7 @@ impl FunctionLowerer {
         let mut returned = Vec::with_capacity(function.signature.results.len());
         for (index, ty) in function.signature.results.iter().enumerate() {
             if let Some(local) = function.named_results.get(index).copied().flatten() {
-                returned.push(Operand::Read(Place { local }));
+                returned.push(self.read_semantic_local(local, function.source)?);
             } else {
                 let zero = Place {
                     local: self.new_temp(ty.clone()),
