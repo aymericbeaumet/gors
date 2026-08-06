@@ -97,7 +97,9 @@ impl FunctionLowerer {
         } else if is_assignable(&argument.ty, &target) {
             coerce_expr(&mut argument, &target, source)?;
             argument
-        } else if argument.ty.underlying() == target.underlying() {
+        } else if argument.ty.underlying() == target.underlying()
+            || is_lossless_integer_conversion(&argument.ty, &target)
+        {
             let effects = argument.effects;
             hir::Expr {
                 node,
@@ -123,4 +125,14 @@ impl FunctionLowerer {
         }
         Ok(result)
     }
+}
+
+fn is_lossless_integer_conversion(from: &Ty, to: &Ty) -> bool {
+    matches!(
+        (from.underlying(), to.underlying()),
+        (
+            Ty::Int(IntTy::Int32) | Ty::Uint(UintTy::Uint8),
+            Ty::Int(IntTy::Int)
+        )
+    )
 }

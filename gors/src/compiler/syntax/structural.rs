@@ -117,6 +117,60 @@ pub fn function_is_generic(header: &FunctionHeaderSyntax) -> bool {
     matches!(ty.kind, ExprSyntaxKind::Index { .. })
 }
 
+/// Whether a declaration has the Go range-over-function iterator shape.
+///
+/// These functions are consumed by semantic range lowering, which specializes
+/// the statically known iterator and yield body together. They are therefore
+/// not independent executable roots in the generated Rust package.
+pub fn function_is_range_iterator(header: &FunctionHeaderSyntax) -> bool {
+    if header.receiver.is_some()
+        || header.has_type_parameters
+        || header
+            .results
+            .as_ref()
+            .is_some_and(|results| !results.fields.is_empty())
+    {
+        return false;
+    }
+    let [parameter] = header.params.fields.as_ref() else {
+        return false;
+    };
+    if parameter.variadic || parameter.names.as_ref().map_or(1, |names| names.len()) != 1 {
+        return false;
+    }
+    let Some(ExprSyntax {
+        kind:
+            ExprSyntaxKind::FunctionType {
+                has_type_parameters: false,
+                params,
+                results: Some(results),
+            },
+        ..
+    }) = parameter.ty.as_ref()
+    else {
+        return false;
+    };
+    let yield_arity = params.fields.iter().try_fold(0_usize, |arity, field| {
+        (!field.variadic)
+            .then_some(field.names.as_ref().map_or(1, |names| names.len()))
+            .and_then(|count| arity.checked_add(count))
+    });
+    yield_arity.is_some_and(|arity| arity <= 2)
+        && matches!(
+            results.fields.as_ref(),
+            [FieldSyntax {
+                names,
+                ty: Some(ExprSyntax {
+                    kind: ExprSyntaxKind::Ident(IdentSyntax { name, .. }),
+                    ..
+                }),
+                variadic: false,
+                ..
+            }] if names.as_ref().map_or(1, |names| names.len()) == 1
+                && name.as_ref() == "bool"
+        )
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FunctionBodySyntax {
     pub(crate) block: Option<BlockSyntax>,

@@ -1,6 +1,6 @@
 //! Shared semantic dependency helpers.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use super::{Db, FunctionProjection, PackageInput, SourceInput, file_projection};
@@ -126,8 +126,10 @@ pub(super) fn collect_variable_references(syntax: &VariableSyntax, names: &mut B
 
 pub(super) struct PackageReferences {
     pub(super) unqualified: BTreeSet<Arc<str>>,
+    pub(super) ordinary_unqualified: BTreeSet<Arc<str>>,
     pub(super) qualified: BTreeSet<(Arc<str>, Arc<str>)>,
     pub(super) method_names: BTreeSet<Arc<str>>,
+    pub(super) range_functions: BTreeSet<Arc<str>>,
 }
 
 /// Collect package-level names referenced by a body after lexical shadowing.
@@ -138,8 +140,10 @@ pub(super) fn package_references_in_body(
     let mut collector = PackageReferenceCollector {
         scopes: vec![BTreeSet::new()],
         unqualified: BTreeSet::new(),
+        ordinary_unqualified: BTreeSet::new(),
         qualified: BTreeSet::new(),
         method_names: BTreeSet::new(),
+        range_functions: BTreeSet::new(),
     };
     if let Some(receiver) = &header.receiver {
         collector.bind_fields(receiver);
@@ -153,16 +157,59 @@ pub(super) fn package_references_in_body(
     }
     PackageReferences {
         unqualified: collector.unqualified,
+        ordinary_unqualified: collector.ordinary_unqualified,
         qualified: collector.qualified,
         method_names: collector.method_names,
+        range_functions: collector.range_functions,
     }
+}
+
+/// Non-exported iterator declarations whose only value use in this package is
+/// as a statically specialized range expression.
+pub(super) fn specialized_range_iterator_ids(db: &dyn Db, input: PackageInput) -> BTreeSet<DefId> {
+    let mut declarations = BTreeMap::<Arc<str>, (DefId, bool)>::new();
+    let mut ranged = BTreeSet::<Arc<str>>::new();
+    let mut ordinary = BTreeSet::<Arc<str>>::new();
+    let mut sources = input.sources(db).iter().copied().collect::<Vec<_>>();
+    sources.sort_by_key(|source| source.file(db));
+    for source in sources {
+        for function in file_projection(db, source).functions(db) {
+            let header = function.signature(db);
+            let structure = header.structure();
+            if function.receiver_type(db).is_none() {
+                declarations.insert(
+                    function.name(db),
+                    (
+                        function.id(db),
+                        crate::compiler::syntax::function_is_range_iterator(structure),
+                    ),
+                );
+            }
+            let references = package_references_in_body(structure, function.body(db).structure());
+            ranged.extend(references.range_functions);
+            ordinary.extend(references.ordinary_unqualified);
+        }
+    }
+    ranged
+        .difference(&ordinary)
+        .filter_map(|name| {
+            let (definition, iterator_shape) = declarations.get(name)?;
+            (*iterator_shape && !is_exported_name(name)).then_some(*definition)
+        })
+        .collect()
+}
+
+fn is_exported_name(name: &str) -> bool {
+    name.chars().next().is_some_and(char::is_uppercase)
 }
 
 struct PackageReferenceCollector {
     scopes: Vec<BTreeSet<Arc<str>>>,
     unqualified: BTreeSet<Arc<str>>,
+    ordinary_unqualified: BTreeSet<Arc<str>>,
     qualified: BTreeSet<(Arc<str>, Arc<str>)>,
     method_names: BTreeSet<Arc<str>>,
+    range_functions: BTreeSet<Arc<str>>,
 }
 
 impl PackageReferenceCollector {
@@ -320,7 +367,14 @@ impl PackageReferenceCollector {
                 body,
                 ..
             } => {
-                self.expression(expression);
+                if let ExprSyntaxKind::Ident(identifier) = &expression.kind
+                    && !self.is_bound(&identifier.name)
+                {
+                    self.unqualified.insert(Arc::clone(&identifier.name));
+                    self.range_functions.insert(Arc::clone(&identifier.name));
+                } else {
+                    self.expression(expression);
+                }
                 self.scopes.push(BTreeSet::new());
                 if *token == Some(Token::DEFINE) {
                     for target in [key, value].into_iter().flatten() {
@@ -409,6 +463,7 @@ impl PackageReferenceCollector {
             ExprSyntaxKind::Ident(ident) => {
                 if !self.is_bound(&ident.name) {
                     self.unqualified.insert(Arc::clone(&ident.name));
+                    self.ordinary_unqualified.insert(Arc::clone(&ident.name));
                 }
             }
             ExprSyntaxKind::Paren(expression) | ExprSyntaxKind::Unary { expression, .. } => {

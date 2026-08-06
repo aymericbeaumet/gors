@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 use crate::token::Token;
 
 use super::FunctionLowerer;
+use super::assignments::assignment_op;
 use super::expressions::*;
 use super::iteration::assigned_names_in_block;
 use super::{lower_type, parameter_types};
@@ -173,6 +174,12 @@ impl FunctionLowerer {
                 source,
             )?,
             StmtSyntaxKind::Return(results) => {
+                if self.range_yield_loop_depth.is_some() {
+                    return Err(Diagnostic::unsupported(
+                        "return from a range-over-function body is not yet represented",
+                        source,
+                    ));
+                }
                 if self.inside_deferred_closure {
                     return Err(Diagnostic::unsupported(
                         "return statements in deferred function literals are not yet implemented",
@@ -391,6 +398,25 @@ impl FunctionLowerer {
                         "labeled branches in function literals are not yet implemented",
                         source,
                     ));
+                }
+                if label.is_none()
+                    && self.range_yield_loop_depth == Some(self.loop_labels.len())
+                    && matches!(token, Token::BREAK | Token::CONTINUE)
+                {
+                    let value_node = self.alloc_node(stmt.source)?;
+                    let value = hir::Expr {
+                        node: value_node,
+                        kind: hir::ExprKind::Constant(ConstValue::Bool(*token == Token::CONTINUE)),
+                        ty: Ty::Bool,
+                        category: hir::ValueCategory::Constant,
+                        effects: hir::Effects::default(),
+                        source: SourceRef::node(value_node),
+                    };
+                    return Ok(Some(hir::Stmt {
+                        node,
+                        kind: hir::StmtKind::Return(vec![value]),
+                        source,
+                    }));
                 }
                 let label = label.as_ref().map(|label| label.name.to_string());
                 let target_exists = label.as_ref().map_or_else(
@@ -935,66 +961,5 @@ impl FunctionLowerer {
             op,
             values,
         })
-    }
-
-    pub(super) fn lower_place(
-        &self,
-        expression: &ExprSyntax,
-        source: SourceRef,
-    ) -> Result<hir::Place, Diagnostic> {
-        let ExprSyntaxKind::Ident(ident) = &expression.kind else {
-            return Err(Diagnostic::unsupported(
-                "only local identifier assignment targets are implemented",
-                source,
-            ));
-        };
-        if ident.name.as_ref() == "_" {
-            return Ok(hir::Place::Discard);
-        }
-        if self.variables.contains_key(ident.name.as_ref()) {
-            return Err(Diagnostic::unsupported(
-                "package variable mutation requires global storage lowering",
-                source,
-            ));
-        }
-        self.lookup_local(&ident.name)
-            .map(hir::Place::Local)
-            .ok_or_else(|| {
-                Diagnostic::semantic(format!("undefined variable {}", ident.name), source)
-            })
-    }
-
-    pub(super) fn place_ty(&self, place: hir::Place) -> Result<&Ty, Diagnostic> {
-        match place {
-            hir::Place::Local(id) => self
-                .locals
-                .get(id.0 as usize)
-                .map(|local| &local.ty)
-                .ok_or_else(|| Diagnostic::backend(format!("invalid local id {}", id.0))),
-            hir::Place::Discard => Err(Diagnostic::backend(
-                "blank identifier unexpectedly required an inferred type",
-            )),
-        }
-    }
-}
-
-pub(super) fn assignment_op(token: Token, source: SourceRef) -> Result<hir::AssignOp, Diagnostic> {
-    match token {
-        Token::ASSIGN => Ok(hir::AssignOp::Set),
-        Token::ADD_ASSIGN => Ok(hir::AssignOp::Add),
-        Token::SUB_ASSIGN => Ok(hir::AssignOp::Sub),
-        Token::MUL_ASSIGN => Ok(hir::AssignOp::Mul),
-        Token::QUO_ASSIGN => Ok(hir::AssignOp::Div),
-        Token::REM_ASSIGN => Ok(hir::AssignOp::Rem),
-        Token::AND_ASSIGN => Ok(hir::AssignOp::BitAnd),
-        Token::OR_ASSIGN => Ok(hir::AssignOp::BitOr),
-        Token::XOR_ASSIGN => Ok(hir::AssignOp::BitXor),
-        Token::SHL_ASSIGN => Ok(hir::AssignOp::Shl),
-        Token::SHR_ASSIGN => Ok(hir::AssignOp::Shr),
-        Token::AND_NOT_ASSIGN => Ok(hir::AssignOp::AndNot),
-        _ => Err(Diagnostic::semantic(
-            format!("invalid assignment operator {token:?}"),
-            source,
-        )),
     }
 }

@@ -55,6 +55,8 @@ use super::types::{
 pub(super) struct FunctionSymbol {
     pub(super) id: QualifiedDefId,
     pub(super) signature: Signature,
+    pub(super) range_header: Option<Arc<FunctionHeaderSyntax>>,
+    pub(super) range_body: Option<Arc<FunctionBodySyntax>>,
 }
 
 #[derive(Clone)]
@@ -363,6 +365,7 @@ pub(super) fn lower_function(
         closure_scopes: vec![BTreeMap::new()],
         named_results: Vec::new(),
         loop_labels: Vec::new(),
+        range_yield_loop_depth: None,
         iteration_capture_scopes: Vec::new(),
         declared_labels: BTreeSet::new(),
         referenced_gotos: BTreeMap::new(),

@@ -37,6 +37,10 @@ pub(super) struct FunctionLowerer {
     pub(super) closure_scopes: Vec<BTreeMap<String, ClosureId>>,
     pub(super) named_results: Vec<Option<LocalId>>,
     pub(super) loop_labels: Vec<Option<String>>,
+    /// Loop-stack depth of a specialized range-function yield body. An
+    /// unlabeled branch at exactly this depth controls the iterator callback;
+    /// deeper branches still target their ordinary nested loop.
+    pub(super) range_yield_loop_depth: Option<usize>,
     pub(super) iteration_capture_scopes: Vec<BTreeSet<LocalId>>,
     pub(super) declared_labels: std::collections::BTreeSet<String>,
     pub(super) referenced_gotos: BTreeMap<String, SourceRef>,

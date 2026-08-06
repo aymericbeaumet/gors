@@ -5,7 +5,6 @@ use std::collections::BTreeSet;
 use super::FunctionLowerer;
 use super::expressions::{default_expr_type, ensure_bootstrap_value_type, is_assignable};
 use super::maps::string_i64_map_ty;
-use super::statements::assignment_op;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::provenance::SourceRef;
@@ -560,5 +559,66 @@ impl FunctionLowerer {
             }
         }
         Ok((destinations, destination_types))
+    }
+
+    pub(super) fn lower_place(
+        &self,
+        expression: &ExprSyntax,
+        source: SourceRef,
+    ) -> Result<hir::Place, Diagnostic> {
+        let ExprSyntaxKind::Ident(ident) = &expression.kind else {
+            return Err(Diagnostic::unsupported(
+                "only local identifier assignment targets are implemented",
+                source,
+            ));
+        };
+        if ident.name.as_ref() == "_" {
+            return Ok(hir::Place::Discard);
+        }
+        if self.variables.contains_key(ident.name.as_ref()) {
+            return Err(Diagnostic::unsupported(
+                "package variable mutation requires global storage lowering",
+                source,
+            ));
+        }
+        self.lookup_local(&ident.name)
+            .map(hir::Place::Local)
+            .ok_or_else(|| {
+                Diagnostic::semantic(format!("undefined variable {}", ident.name), source)
+            })
+    }
+
+    pub(super) fn place_ty(&self, place: hir::Place) -> Result<&Ty, Diagnostic> {
+        match place {
+            hir::Place::Local(id) => self
+                .locals
+                .get(id.0 as usize)
+                .map(|local| &local.ty)
+                .ok_or_else(|| Diagnostic::backend(format!("invalid local id {}", id.0))),
+            hir::Place::Discard => Err(Diagnostic::backend(
+                "blank identifier unexpectedly required an inferred type",
+            )),
+        }
+    }
+}
+
+pub(super) fn assignment_op(token: Token, source: SourceRef) -> Result<hir::AssignOp, Diagnostic> {
+    match token {
+        Token::ASSIGN => Ok(hir::AssignOp::Set),
+        Token::ADD_ASSIGN => Ok(hir::AssignOp::Add),
+        Token::SUB_ASSIGN => Ok(hir::AssignOp::Sub),
+        Token::MUL_ASSIGN => Ok(hir::AssignOp::Mul),
+        Token::QUO_ASSIGN => Ok(hir::AssignOp::Div),
+        Token::REM_ASSIGN => Ok(hir::AssignOp::Rem),
+        Token::AND_ASSIGN => Ok(hir::AssignOp::BitAnd),
+        Token::OR_ASSIGN => Ok(hir::AssignOp::BitOr),
+        Token::XOR_ASSIGN => Ok(hir::AssignOp::BitXor),
+        Token::SHL_ASSIGN => Ok(hir::AssignOp::Shl),
+        Token::SHR_ASSIGN => Ok(hir::AssignOp::Shr),
+        Token::AND_NOT_ASSIGN => Ok(hir::AssignOp::AndNot),
+        _ => Err(Diagnostic::semantic(
+            format!("invalid assignment operator {token:?}"),
+            source,
+        )),
     }
 }

@@ -65,6 +65,13 @@ pub(super) fn same_mir_representation(left: &Ty, right: &Ty) -> bool {
             (left.underlying(), right.underlying()),
             (Ty::Channel(_, left), Ty::Channel(_, right)) if left == right
         )
+        || matches!(
+            (left.underlying(), right.underlying()),
+            (
+                Ty::Int(IntTy::Int32) | Ty::Uint(crate::compiler::types::UintTy::Uint8),
+                Ty::Int(IntTy::Int)
+            )
+        )
 }
 
 pub(super) fn verify_binary_types(
@@ -83,6 +90,8 @@ pub(super) fn verify_binary_types(
                 && matches!(
                     underlying,
                     Ty::Int(IntTy::Int)
+                        | Ty::Int(IntTy::Int32)
+                        | Ty::Uint(crate::compiler::types::UintTy::Uint8)
                         | Ty::Float(FloatTy::Float64)
                         | Ty::Complex(ComplexTy::Complex128)
                         | Ty::String

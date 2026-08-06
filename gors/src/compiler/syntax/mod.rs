@@ -30,4 +30,4 @@ pub(crate) use projection::{
     project_constant, project_function, project_type_alias, project_type_definition,
     project_variable,
 };
-pub(crate) use structural::{function_is_generic, method_receiver};
+pub(crate) use structural::{function_is_generic, function_is_range_iterator, method_receiver};

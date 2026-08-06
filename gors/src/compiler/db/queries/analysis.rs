@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use super::support::specialized_range_iterator_ids;
 use super::{
     Db, FileFacts, FunctionProjection, PackageInput, file_projection, package_type_aliases_product,
     typed_constant_product, typed_variable_product,
@@ -95,6 +96,7 @@ pub(in crate::compiler::db) fn package_analysis_product(
     db.query_telemetry()
         .record_query(QueryKind::PackageAnalysis);
     let package = input.package(db);
+    let specialized_range_iterators = specialized_range_iterator_ids(db, input);
     let mut sources = input.sources(db).iter().copied().collect::<Vec<_>>();
     sources.sort_by_key(|source| source.file(db));
 
@@ -231,7 +233,9 @@ pub(in crate::compiler::db) fn package_analysis_product(
                 definitions_by_digest.insert(id, (key.clone(), file));
             }
 
-            if function.receiver_type(db).is_none() && name.as_ref() == "init" {
+            if function.receiver_type(db).is_none()
+                && (name.as_ref() == "init" || specialized_range_iterators.contains(&id))
+            {
                 continue;
             }
 

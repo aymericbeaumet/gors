@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use super::support::specialized_range_iterator_ids;
 use super::{
     Db, PackageInput, file_projection, package_analysis_product,
     rust_signature_dependencies_product, typed_constant_product, typed_variable_product,
@@ -23,6 +24,7 @@ pub(in crate::compiler::db) fn rust_ir_package_product(
 ) -> StageResult<VerifiedRustIrPackage> {
     db.query_telemetry().record_query(QueryKind::RustIrPackage);
     let analysis = package_analysis_product(db, input);
+    let specialized_range_iterators = specialized_range_iterator_ids(db, input);
     let mut functions = Vec::new();
     let mut signatures = BTreeMap::new();
     let mut runtime_requirement = rust_ir::RuntimeRequirement::default();
@@ -46,7 +48,11 @@ pub(in crate::compiler::db) fn rust_ir_package_product(
         projected.sort_by_key(|function| function.id(db));
         for function in projected {
             db.unwind_if_revision_cancelled();
-            if function.receiver_type(db).is_none() && function.name(db).as_ref() == "init" {
+            let name = function.name(db);
+            if function.receiver_type(db).is_none()
+                && (name.as_ref() == "init"
+                    || specialized_range_iterators.contains(&function.id(db)))
+            {
                 continue;
             }
             if crate::compiler::syntax::function_is_generic(function.signature(db).structure()) {

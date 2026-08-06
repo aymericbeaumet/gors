@@ -3,7 +3,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use super::support::{PackageReferences, function_source, semantic_failure};
+use super::support::{
+    PackageReferences, function_source, semantic_failure, specialized_range_iterator_ids,
+};
 use super::{
     Db, FunctionProjection, PackageInput, file_projection, package_constant_named_product,
     package_function_named_product, package_function_product, package_type_aliases_product,
@@ -13,7 +15,7 @@ use super::{
 use crate::compiler::Diagnostic;
 use crate::compiler::db::ResolvedImportBinding;
 use crate::compiler::db::products::StageFailure;
-use crate::compiler::ids::{PackageId, QualifiedDefId};
+use crate::compiler::ids::{DefId, PackageId, QualifiedDefId};
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::semantic::{
     ConstantSymbol, FunctionSymbol, FunctionSymbols, GenericFunctionSymbol, GenericTypeSymbol,
@@ -65,11 +67,14 @@ pub(super) fn function_symbols(
         qualified_variables: BTreeMap::new(),
         intrinsic_packages: BTreeSet::new(),
     };
+    let local_range_iterators = specialized_range_iterator_ids(db, input);
     add_unqualified_symbols(
         db,
         input,
         input.package(db),
         &references.unqualified,
+        &references.range_functions,
+        &local_range_iterators,
         definition,
         &mut symbols,
         false,
@@ -116,11 +121,14 @@ pub(super) fn function_symbols(
         match import.binding() {
             ResolvedImportBinding::Blank { .. } => {}
             ResolvedImportBinding::Dot { .. } => {
+                let range_iterators = specialized_range_iterator_ids(db, target);
                 add_unqualified_symbols(
                     db,
                     target,
                     import.target_package(),
                     &references.unqualified,
+                    &references.range_functions,
+                    &range_iterators,
                     definition,
                     &mut symbols,
                     true,
@@ -336,6 +344,8 @@ fn add_unqualified_symbols(
     input: PackageInput,
     package: PackageId,
     names: &BTreeSet<Arc<str>>,
+    range_names: &BTreeSet<Arc<str>>,
+    range_iterators: &BTreeSet<DefId>,
     caller: crate::compiler::ids::DefId,
     symbols: &mut FunctionSymbols,
     imported: bool,
@@ -365,6 +375,12 @@ fn add_unqualified_symbols(
                     FunctionSymbol {
                         id: QualifiedDefId::new(package, projection.id(db)),
                         signature: typed.signature().clone(),
+                        range_header: (range_names.contains(name)
+                            && range_iterators.contains(&projection.id(db)))
+                        .then(|| Arc::new(header.clone())),
+                        range_body: (range_names.contains(name)
+                            && range_iterators.contains(&projection.id(db)))
+                        .then(|| Arc::new(projection.body(db).structure().clone())),
                     },
                     caller,
                 )?;
@@ -427,6 +443,8 @@ fn add_qualified_symbol(
             FunctionSymbol {
                 id: QualifiedDefId::new(package, projection.id(db)),
                 signature: typed.signature().clone(),
+                range_header: None,
+                range_body: None,
             },
         );
     } else if let Some(projection) = package_constant_named_product(db, input, Arc::clone(member)) {
