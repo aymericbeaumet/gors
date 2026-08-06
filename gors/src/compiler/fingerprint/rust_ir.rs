@@ -251,6 +251,13 @@ fn encode_rvalue_kind(encoder: &mut Encoder, kind: &rust_ir::RvalueKind) {
                 encoder.field(b"field", |encoder| encoder.u32(*field));
             });
         }
+        rust_ir::RvalueKind::AggregateEqualI64 { left, right, equal } => {
+            encoder.variant(b"aggregate-equal-i64", |encoder| {
+                encoder.field(b"left", |encoder| encode_operand(encoder, left));
+                encoder.field(b"right", |encoder| encode_operand(encoder, right));
+                encoder.field(b"equal", |encoder| encoder.bool(*equal));
+            });
+        }
     }
 }
 

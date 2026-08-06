@@ -23,6 +23,9 @@ fn generated_integer_structs_support_literals_copies_and_field_reads() {
                 if sum(duplicate) != 7 || sum(positional) != 11 {
                     panic("struct literal or copy changed")
                 }
+                if keyed != duplicate || keyed == positional {
+                    panic("struct equality changed")
+                }
                 if zero.X != 0 || zero.Y != 0 {
                     panic("struct zero value changed")
                 }

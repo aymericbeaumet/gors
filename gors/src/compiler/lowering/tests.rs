@@ -212,7 +212,8 @@ fn panic_builtin_selects_typed_runtime_operations() {
 fn rvalue_operands(kind: &RvalueKind) -> Vec<&Operand> {
     match kind {
         RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => vec![operand],
-        RvalueKind::Binary { left, right, .. } => vec![left, right],
+        RvalueKind::Binary { left, right, .. }
+        | RvalueKind::AggregateEqualI64 { left, right, .. } => vec![left, right],
         RvalueKind::ArrayIndexI64 { array, index } => vec![array, index],
         RvalueKind::ArraySetI64 {
             array,

@@ -754,7 +754,8 @@ fn rvalue_read_op_mut(rvalue: &mut Rvalue, expected: ReadOp) -> Option<&mut Read
         RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => {
             operand_read_op_mut(operand, expected)
         }
-        RvalueKind::Binary { left, right, .. } => {
+        RvalueKind::Binary { left, right, .. }
+        | RvalueKind::AggregateEqualI64 { left, right, .. } => {
             operand_read_op_mut(left, expected).or_else(|| operand_read_op_mut(right, expected))
         }
         RvalueKind::ArrayIndexI64 { array, index } => {

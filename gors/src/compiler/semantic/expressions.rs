@@ -371,14 +371,16 @@ pub(super) fn validate_binary_operator(
     let ty = ty.underlying();
     let valid = match op {
         hir::BinaryOp::LogicalAnd | hir::BinaryOp::LogicalOr => *ty == Ty::Bool,
-        hir::BinaryOp::Equal | hir::BinaryOp::NotEqual => matches!(
-            ty,
-            Ty::Bool
-                | Ty::Int(IntTy::Int)
-                | Ty::Float(FloatTy::Float64)
-                | Ty::Complex(ComplexTy::Complex128)
-                | Ty::String
-        ),
+        hir::BinaryOp::Equal | hir::BinaryOp::NotEqual => {
+            matches!(
+                ty,
+                Ty::Bool
+                    | Ty::Int(IntTy::Int)
+                    | Ty::Float(FloatTy::Float64)
+                    | Ty::Complex(ComplexTy::Complex128)
+                    | Ty::String
+            ) || ty.is_bootstrap_comparable_aggregate()
+        }
         hir::BinaryOp::Less
         | hir::BinaryOp::LessEqual
         | hir::BinaryOp::Greater

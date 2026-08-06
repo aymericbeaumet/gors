@@ -801,6 +801,9 @@ fn generated_integer_arrays_preserve_value_semantics_and_checked_indexing() {
                 if duplicate[0] != 1 || duplicate[1] != 9 || total != 11 {
                     panic("array copy or range changed")
                 }
+                if original == duplicate || original != [3]int{5, 0, 3} {
+                    panic("array equality changed")
+                }
                 if !outOfBoundsPanics() { panic("array bounds did not panic") }
                 println("arrays: ok")
             }

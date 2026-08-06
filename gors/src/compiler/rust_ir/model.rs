@@ -180,6 +180,11 @@ pub enum RvalueKind {
         structure: Operand,
         field: u32,
     },
+    AggregateEqualI64 {
+        left: Operand,
+        right: Operand,
+        equal: bool,
+    },
     Binary {
         op: ValueOp,
         left: Operand,

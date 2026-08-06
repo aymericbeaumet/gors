@@ -317,7 +317,8 @@ impl Function {
             RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => {
                 self.transfer_operand(operand, state, check_reads)
             }
-            RvalueKind::Binary { left, right, .. } => {
+            RvalueKind::Binary { left, right, .. }
+            | RvalueKind::AggregateEqualI64 { left, right, .. } => {
                 self.transfer_operand(left, state, check_reads)?;
                 self.transfer_operand(right, state, check_reads)
             }
@@ -424,7 +425,8 @@ fn add_rvalue_uses_backwards(rvalue: &Rvalue, live: &mut BTreeSet<LocalId>) {
         RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => {
             add_operand_use(operand, live);
         }
-        RvalueKind::Binary { left, right, .. } => {
+        RvalueKind::Binary { left, right, .. }
+        | RvalueKind::AggregateEqualI64 { left, right, .. } => {
             add_operand_use(right, live);
             add_operand_use(left, live);
         }
@@ -500,7 +502,8 @@ fn plan_rvalue_backwards(
         RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => {
             plan_operand_backwards(operand, live, local_types, reverse_plan)
         }
-        RvalueKind::Binary { left, right, .. } => {
+        RvalueKind::Binary { left, right, .. }
+        | RvalueKind::AggregateEqualI64 { left, right, .. } => {
             plan_operand_backwards(right, live, local_types, reverse_plan)?;
             plan_operand_backwards(left, live, local_types, reverse_plan)
         }
@@ -565,7 +568,8 @@ fn apply_rvalue_plan(
         RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => {
             apply_operand_plan(operand, plan, cursor)
         }
-        RvalueKind::Binary { left, right, .. } => {
+        RvalueKind::Binary { left, right, .. }
+        | RvalueKind::AggregateEqualI64 { left, right, .. } => {
             apply_operand_plan(left, plan, cursor)?;
             apply_operand_plan(right, plan, cursor)
         }
@@ -639,7 +643,8 @@ fn collect_rvalue_reads(rvalue: &Rvalue, reads: &mut Vec<(LocalId, ReadOp)>) {
         RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => {
             collect_operand_read(operand, reads);
         }
-        RvalueKind::Binary { left, right, .. } => {
+        RvalueKind::Binary { left, right, .. }
+        | RvalueKind::AggregateEqualI64 { left, right, .. } => {
             collect_operand_read(left, reads);
             collect_operand_read(right, reads);
         }

@@ -217,6 +217,18 @@ impl Ty {
         )
     }
 
+    /// Aggregate values whose current executable representation preserves Go
+    /// comparability through Rust's fixed-array equality.
+    pub fn is_bootstrap_comparable_aggregate(&self) -> bool {
+        match self.underlying() {
+            Self::Array(_, element) => element.underlying() == &Self::Int(IntTy::Int),
+            Self::Struct(fields) => fields
+                .iter()
+                .all(|field| field.ty.underlying() == &Self::Int(IntTy::Int)),
+            _ => false,
+        }
+    }
+
     pub fn zero(&self) -> Option<ConstValue> {
         if let Self::Named { underlying, .. } = self {
             return underlying.zero();

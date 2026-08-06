@@ -231,10 +231,26 @@ fn lower_rvalue(rvalue: mir::Rvalue, locals: &[out::LocalDecl]) -> Result<out::R
         } => {
             let left_ty = mir_operand_type(&left, locals)?;
             let right_ty = mir_operand_type(&right, locals)?;
-            out::RvalueKind::Binary {
-                op: lower_binary_op(op, left_ty, right_ty, lower_type(&ty)?)?,
-                left: lower_operand(left, locals)?,
-                right: lower_operand(right, locals)?,
+            let result_ty = lower_type(&ty)?;
+            if matches!(op, hir::BinaryOp::Equal | hir::BinaryOp::NotEqual)
+                && left_ty == right_ty
+                && matches!(
+                    left_ty,
+                    out::RustType::ArrayI64(_) | out::RustType::StructI64(_)
+                )
+                && result_ty == out::RustType::Bool
+            {
+                out::RvalueKind::AggregateEqualI64 {
+                    left: lower_operand(left, locals)?,
+                    right: lower_operand(right, locals)?,
+                    equal: op == hir::BinaryOp::Equal,
+                }
+            } else {
+                out::RvalueKind::Binary {
+                    op: lower_binary_op(op, left_ty, right_ty, result_ty)?,
+                    left: lower_operand(left, locals)?,
+                    right: lower_operand(right, locals)?,
+                }
             }
         }
     };

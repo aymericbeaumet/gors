@@ -368,6 +368,17 @@ impl Function {
                 }
                 RustType::I64
             }
+            RvalueKind::AggregateEqualI64 { left, right, .. } => {
+                let left = self.operand_ty(left)?;
+                let right = self.operand_ty(right)?;
+                if left != right || !matches!(left, RustType::ArrayI64(_) | RustType::StructI64(_))
+                {
+                    return Err(Diagnostic::backend(format!(
+                        "invalid Rust IR aggregate equality types: {left:?}, {right:?}"
+                    )));
+                }
+                RustType::Bool
+            }
         };
         verify_effects(rvalue.effects, rvalue_effects(&rvalue.kind), "rvalue")?;
         verify_panic(rvalue.effects, rvalue.panic, "rvalue")?;
@@ -675,6 +686,10 @@ fn collect_rvalue_runtime_operations(rvalue: &Rvalue, operations: &mut Vec<Runti
         }
         RvalueKind::StructFieldI64 { structure, .. } => {
             collect_operand_runtime_operations(structure, operations);
+        }
+        RvalueKind::AggregateEqualI64 { left, right, .. } => {
+            collect_operand_runtime_operations(left, operations);
+            collect_operand_runtime_operations(right, operations);
         }
         RvalueKind::RecoverCompareNil { .. } => {}
     }

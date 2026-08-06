@@ -564,6 +564,15 @@ fn emit_rvalue(rvalue: &Rvalue, function: &rust_ir::Function) -> Result<syn::Exp
             })?);
             Ok(syn::parse_quote! { (#structure)[#field] })
         }
+        RvalueKind::AggregateEqualI64 { left, right, equal } => {
+            let left = emit_operand(left, function)?;
+            let right = emit_operand(right, function)?;
+            if *equal {
+                Ok(syn::parse_quote! { (#left) == (#right) })
+            } else {
+                Ok(syn::parse_quote! { (#left) != (#right) })
+            }
+        }
     }
 }
 

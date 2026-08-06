@@ -397,6 +397,7 @@ fn value_op_mut<'a>(
                 | rust_ir::RvalueKind::ArraySetI64 { .. }
                 | rust_ir::RvalueKind::StructLiteralI64(_)
                 | rust_ir::RvalueKind::StructFieldI64 { .. }
+                | rust_ir::RvalueKind::AggregateEqualI64 { .. }
                 | rust_ir::RvalueKind::Binary { .. } => {}
             }
         }
@@ -435,7 +436,8 @@ fn rvalue_runtime_static_op_mut(
         rust_ir::RvalueKind::Use(operand) | rust_ir::RvalueKind::Unary { operand, .. } => {
             operand_runtime_static_op_mut(operand, expected)
         }
-        rust_ir::RvalueKind::Binary { left, right, .. } => {
+        rust_ir::RvalueKind::Binary { left, right, .. }
+        | rust_ir::RvalueKind::AggregateEqualI64 { left, right, .. } => {
             if let Some(operation) = operand_runtime_static_op_mut(left, expected) {
                 Some(operation)
             } else {

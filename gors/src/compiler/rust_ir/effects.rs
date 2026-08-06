@@ -18,7 +18,8 @@ pub(in crate::compiler) fn rvalue_effects(kind: &RvalueKind) -> Effects {
     let intrinsic = match kind {
         RvalueKind::Use(_)
         | RvalueKind::StructLiteralI64(_)
-        | RvalueKind::StructFieldI64 { .. } => Effects::default(),
+        | RvalueKind::StructFieldI64 { .. }
+        | RvalueKind::AggregateEqualI64 { .. } => Effects::default(),
         RvalueKind::Unary { op, .. } | RvalueKind::Binary { op, .. } => value_op_effects(*op),
         RvalueKind::RecoverCompareNil { .. } => Effects {
             may_read: true,
@@ -59,6 +60,9 @@ pub(in crate::compiler) fn rvalue_effects(kind: &RvalueKind) -> Effects {
             })
         }
         RvalueKind::StructFieldI64 { structure, .. } => operand_effects(structure),
+        RvalueKind::AggregateEqualI64 { left, right, .. } => {
+            union(operand_effects(left), operand_effects(right))
+        }
         RvalueKind::RecoverCompareNil { .. } => Effects::default(),
     };
     union(intrinsic, operands)

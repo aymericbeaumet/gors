@@ -936,14 +936,14 @@ fn verify_binary_types(
         }
         hir::BinaryOp::Equal | hir::BinaryOp::NotEqual => {
             same_operands
-                && matches!(
+                && (matches!(
                     underlying,
                     Ty::Bool
                         | Ty::Int(IntTy::Int)
                         | Ty::Float(FloatTy::Float64)
                         | Ty::Complex(ComplexTy::Complex128)
                         | Ty::String
-                )
+                ) || underlying.is_bootstrap_comparable_aggregate())
                 && result == &Ty::Bool
         }
         hir::BinaryOp::Less
