@@ -33,6 +33,22 @@ outside the semantic model receive a structured source diagnostic.
 - A Go construct not represented by the new semantic model must fail with a
   structured source diagnostic.
 
+### General compilation only
+
+- Every generated artifact must be produced by the general pipeline from the
+  program's parsed source. Production code must never condition compilation
+  behavior on fixture or test identity (names, paths), raw input text
+  patterns, or input digests, and must never ship pre-written Rust output for
+  specific inputs.
+- Name-keyed semantics are limited to what the Go spec mandates: predeclared
+  identifiers and builtins, `package main` and `func main`, `init`, the
+  `unsafe` pseudo-package, and spec-defined shapes such as the range-over-func
+  iterator signature. Decide on resolved identities, never on source text.
+- Embedding compiler inputs (Go SDK source and metadata) is sanctioned;
+  embedding or replaying outputs keyed to specific inputs is not. Caches may
+  only replay artifacts the same pipeline produced earlier under a validated
+  fingerprint.
+
 ### Go AST
 
 - The AST is a parser product, not a backend IR.
@@ -876,6 +892,10 @@ Generated-Rust resolver/cache concepts should be absent:
 
     rg -ni 'resolver.?cache|resolved.?module|partial.?declaration|type.?environment.?cache' gors gors-cli www
 
+Production sources must not reference the differential fixture corpus:
+
+    rg -n 'tests/fixtures|go_spec/|go_stdlib/|go_programs/|go_repositories/' gors/src gors-cli/src gors-runtime/src gors-runtime-abi/src www/wasm www/src --glob '!tests.rs'
+
 Mixed cache/action identities and host-native terminal codegen should be
 absent from production compiler, CLI, and performance paths:
 
@@ -919,6 +939,9 @@ Also inspect all unsupported diagnostics before claiming support:
 - Never infer semantics from generated Rust identifiers, doc markers, or syn
   tree shape.
 - Never add a stdlib-package-name conditional to codegen.
+- Never condition compilation on fixture names, test paths, input text
+  patterns, or input digests; fixtures gain support only through general
+  pipeline improvements.
 - Never publish conformance percentages from filtered runs.
 - Remove obsolete modules, tests, configuration, and documentation in the same
   change that replaces them.
