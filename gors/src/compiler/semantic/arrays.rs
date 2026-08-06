@@ -1,4 +1,4 @@
-//! Typed lowering for fixed-size Go arrays of bootstrap integer values.
+//! Typed lowering for fixed-size Go arrays of executable scalar values.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -9,8 +9,8 @@ use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::NodeId;
 use crate::compiler::provenance::SourceRef;
-use crate::compiler::syntax::{ExprSyntax, ExprSyntaxKind};
-use crate::compiler::types::{ConstValue, IntTy, Ty};
+use crate::compiler::syntax::{ExprSyntax, ExprSyntaxKind, SyntaxSource};
+use crate::compiler::types::{ConstValue, FloatTy, IntTy, Ty};
 use crate::token::Token;
 
 const MAX_BOOTSTRAP_ARRAY_LENGTH: u64 = 1_048_576;
@@ -57,28 +57,71 @@ fn array_length(expression: &ExprSyntax, source: SourceRef) -> Result<u64, Diagn
 }
 
 impl FunctionLowerer {
+    pub(super) fn infer_array_literal_length(
+        &self,
+        elements: &[ExprSyntax],
+        source: SourceRef,
+    ) -> Result<u64, Diagnostic> {
+        let mut next_index = 0_u64;
+        let mut length = 0_u64;
+        for element in elements {
+            let index = match &element.kind {
+                ExprSyntaxKind::KeyValue { key, .. } => {
+                    let (_, key) = super::eval_constant(key, &self.constants, source, 0)?;
+                    let ConstValue::Int(key) = key else {
+                        return Err(Diagnostic::semantic(
+                            "array literal index must be an integer constant",
+                            source,
+                        ));
+                    };
+                    key.parse::<u64>().map_err(|_| {
+                        Diagnostic::semantic("array literal index is outside u64", source)
+                    })?
+                }
+                _ => next_index,
+            };
+            next_index = index.checked_add(1).ok_or_else(|| {
+                Diagnostic::semantic("array literal index exceeds the type domain", source)
+            })?;
+            length = length.max(next_index);
+        }
+        if length > MAX_BOOTSTRAP_ARRAY_LENGTH {
+            return Err(Diagnostic::unsupported(
+                format!(
+                    "array length {length} exceeds the current implementation limit of {MAX_BOOTSTRAP_ARRAY_LENGTH}"
+                ),
+                source,
+            ));
+        }
+        Ok(length)
+    }
+
     pub(super) fn lower_array_literal(
         &mut self,
         literal_ty: Ty,
         elements: &[ExprSyntax],
         node: NodeId,
+        syntax_source: SyntaxSource,
         source: SourceRef,
         expected: Option<&Ty>,
     ) -> Result<hir::Expr, Diagnostic> {
-        let Ty::Array(length, element_ty) = literal_ty.underlying() else {
-            return Err(Diagnostic::backend(
-                "array literal lowering received a non-array type",
-            ));
+        let (length, element_ty) = match literal_ty.underlying() {
+            Ty::Array(length, element_ty) => (*length, element_ty.as_ref().clone()),
+            _ => {
+                return Err(Diagnostic::backend(
+                    "array literal lowering received a non-array type",
+                ));
+            }
         };
-        if element_ty.underlying() != &Ty::Int(IntTy::Int) {
+        if !is_scalar_array_element(&element_ty) {
             return Err(Diagnostic::unsupported(
-                "array literals currently require int elements",
+                "array literals currently require bool, int, float64, or string elements",
                 source,
             ));
         }
-        let length = usize::try_from(*length)
+        let length = usize::try_from(length)
             .map_err(|_| Diagnostic::unsupported("array length does not fit this host", source))?;
-        let mut values = vec![0; length];
+        let mut values = Vec::with_capacity(length);
         let mut initialized = BTreeSet::new();
         let mut next_index = 0usize;
         for element in elements {
@@ -110,28 +153,60 @@ impl FunctionLowerer {
                     source,
                 ));
             }
-            let value = self.lower_expr(value, Some(element_ty))?;
-            let Some(ConstValue::Int(value)) = expr_constant(&value) else {
-                return Err(Diagnostic::unsupported(
-                    "dynamic array literal elements are not yet implemented",
-                    source,
-                ));
-            };
-            let value = value.parse::<i64>().map_err(|_| {
-                Diagnostic::semantic("array literal element is outside Go int", source)
-            })?;
-            let slot = values.get_mut(index).ok_or_else(|| {
-                Diagnostic::backend("validated array literal index is outside its storage")
-            })?;
-            *slot = value;
             next_index = index.saturating_add(1);
+            let index = u64::try_from(index)
+                .map_err(|_| Diagnostic::backend("array literal index does not fit u64"))?;
+            values.push((index, self.lower_expr(value, Some(&element_ty))?));
         }
+        for index in 0..length {
+            if initialized.contains(&index) {
+                continue;
+            }
+            let node = self.alloc_node(syntax_source)?;
+            let value = self.zero_value_expr(node, SourceRef::node(node), element_ty.clone())?;
+            values.push((
+                u64::try_from(index)
+                    .map_err(|_| Diagnostic::backend("array literal index does not fit u64"))?,
+                value,
+            ));
+        }
+        let effects = values
+            .iter()
+            .fold(hir::Effects::default(), |effects, (_, value)| {
+                effects.union(value.effects)
+            });
+        let integer_constants = if element_ty.underlying() == &Ty::Int(IntTy::Int) {
+            let mut constants = vec![0_i64; length];
+            for (index, value) in &values {
+                let Some(ConstValue::Int(value)) = expr_constant(value) else {
+                    constants.clear();
+                    break;
+                };
+                let Some(value) = value.parse::<i64>().ok() else {
+                    constants.clear();
+                    break;
+                };
+                let index = usize::try_from(*index).map_err(|_| {
+                    Diagnostic::backend("verified array literal index does not fit usize")
+                })?;
+                let slot = constants.get_mut(index).ok_or_else(|| {
+                    Diagnostic::backend("verified array literal index is outside its length")
+                })?;
+                *slot = value;
+            }
+            (!constants.is_empty() || length == 0).then_some(constants)
+        } else {
+            None
+        };
         let mut result = hir::Expr {
             node,
-            kind: hir::ExprKind::ArrayLiteralI64(values),
+            kind: integer_constants.map_or_else(
+                || hir::ExprKind::ArrayLiteral(values),
+                hir::ExprKind::ArrayLiteralI64,
+            ),
             ty: literal_ty,
             category: hir::ValueCategory::Value,
-            effects: hir::Effects::default(),
+            effects,
             source,
         };
         if let Some(expected) = expected {
@@ -153,9 +228,9 @@ impl FunctionLowerer {
                 "array index lowering received a non-array value",
             ));
         };
-        if element.underlying() != &Ty::Int(IntTy::Int) {
+        if !is_scalar_array_element(element) {
             return Err(Diagnostic::unsupported(
-                "array indexing currently supports int elements",
+                "array indexing currently supports scalar elements",
                 source,
             ));
         }
@@ -167,9 +242,16 @@ impl FunctionLowerer {
         });
         let mut result = hir::Expr {
             node,
-            kind: hir::ExprKind::ArrayIndexI64 {
-                array: Box::new(array),
-                index: Box::new(index),
+            kind: if result_ty.underlying() == &Ty::Int(IntTy::Int) {
+                hir::ExprKind::ArrayIndexI64 {
+                    array: Box::new(array),
+                    index: Box::new(index),
+                }
+            } else {
+                hir::ExprKind::ArrayIndex {
+                    array: Box::new(array),
+                    index: Box::new(index),
+                }
             },
             ty: result_ty,
             category: hir::ValueCategory::Value,
@@ -230,9 +312,9 @@ impl FunctionLowerer {
                 "array assignment lowering received a non-array value",
             ));
         };
-        if element.underlying() != &Ty::Int(IntTy::Int) {
+        if !is_scalar_array_element(element) {
             return Err(Diagnostic::unsupported(
-                "array assignment currently supports int elements",
+                "array assignment currently supports scalar elements",
                 source,
             ));
         }
@@ -254,4 +336,11 @@ impl FunctionLowerer {
             value,
         })
     }
+}
+
+pub(super) fn is_scalar_array_element(ty: &Ty) -> bool {
+    matches!(
+        ty.underlying(),
+        Ty::Bool | Ty::Int(IntTy::Int) | Ty::Float(FloatTy::Float64) | Ty::String
+    )
 }

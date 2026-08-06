@@ -231,6 +231,12 @@ fn encode_rvalue_kind(encoder: &mut Encoder, kind: &rust_ir::RvalueKind) {
                 encoder.field(b"index", |encoder| encode_operand(encoder, index));
             });
         }
+        rust_ir::RvalueKind::ArrayIndex { array, index } => {
+            encoder.variant(b"array-index", |encoder| {
+                encoder.field(b"array", |encoder| encode_operand(encoder, array));
+                encoder.field(b"index", |encoder| encode_operand(encoder, index));
+            });
+        }
         rust_ir::RvalueKind::ArraySetI64 {
             array,
             index,
@@ -240,6 +246,23 @@ fn encode_rvalue_kind(encoder: &mut Encoder, kind: &rust_ir::RvalueKind) {
             encoder.field(b"index", |encoder| encode_operand(encoder, index));
             encoder.field(b"value", |encoder| encode_operand(encoder, value));
         }),
+        rust_ir::RvalueKind::ArraySet {
+            array,
+            index,
+            value,
+        } => encoder.variant(b"array-set", |encoder| {
+            encoder.field(b"array", |encoder| encode_operand(encoder, array));
+            encoder.field(b"index", |encoder| encode_operand(encoder, index));
+            encoder.field(b"value", |encoder| encode_operand(encoder, value));
+        }),
+        rust_ir::RvalueKind::ArrayLiteral { elements, ty } => {
+            encoder.variant(b"array-literal", |encoder| {
+                encoder.field(b"elements", |encoder| {
+                    encoder.sequence(elements, encode_operand);
+                });
+                encoder.field(b"type", |encoder| encode_type(encoder, *ty));
+            });
+        }
         rust_ir::RvalueKind::StructLiteralI64(fields) => {
             encoder.variant(b"struct-literal-i64", |encoder| {
                 encoder.sequence(fields, encode_operand);
@@ -428,6 +451,15 @@ fn encode_type(encoder: &mut Encoder, ty: rust_ir::RustType) {
         rust_ir::RustType::GoChannelI64 => encoder.variant(b"go-channel-i64", |_| {}),
         rust_ir::RustType::ArrayI64(length) => {
             encoder.variant(b"array-i64", |encoder| encoder.u64(length));
+        }
+        rust_ir::RustType::ArrayBool(length) => {
+            encoder.variant(b"array-bool", |encoder| encoder.u64(length));
+        }
+        rust_ir::RustType::ArrayF64(length) => {
+            encoder.variant(b"array-f64", |encoder| encoder.u64(length));
+        }
+        rust_ir::RustType::ArrayGoString(length) => {
+            encoder.variant(b"array-go-string", |encoder| encoder.u64(length));
         }
         rust_ir::RustType::StructI64(length) => {
             encoder.variant(b"struct-i64", |encoder| encoder.u64(length));

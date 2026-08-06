@@ -63,11 +63,18 @@ pub(super) fn make_rvalue(
         | RvalueKind::Conversion { operand, .. } => operand_reads(operand),
         RvalueKind::Binary { left, right, .. } => operand_reads(left) || operand_reads(right),
         RvalueKind::ArrayIndexI64 { array, index } => operand_reads(array) || operand_reads(index),
+        RvalueKind::ArrayIndex { array, index } => operand_reads(array) || operand_reads(index),
         RvalueKind::ArraySetI64 {
             array,
             index,
             value,
         } => operand_reads(array) || operand_reads(index) || operand_reads(value),
+        RvalueKind::ArraySet {
+            array,
+            index,
+            value,
+        } => operand_reads(array) || operand_reads(index) || operand_reads(value),
+        RvalueKind::ArrayLiteral { elements, .. } => elements.iter().any(operand_reads),
         RvalueKind::StructLiteral { fields, .. } => fields.iter().any(operand_reads),
         RvalueKind::StructField { structure, .. } => operand_reads(structure),
         RvalueKind::RecoverCompareNil { .. } => true,

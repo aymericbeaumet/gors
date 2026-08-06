@@ -738,8 +738,14 @@ impl FunctionLowerer {
             hir::ExprKind::ArrayLiteralI64(elements) => {
                 self.lower_array_literal_expr(elements, &expr.ty, expr.source)
             }
+            hir::ExprKind::ArrayLiteral(elements) => {
+                self.lower_scalar_array_literal_expr(elements, &expr.ty, expr.source)
+            }
             hir::ExprKind::ArrayIndexI64 { array, index } => {
                 self.lower_array_index_expr(array, index, &expr.ty, expr.source)
+            }
+            hir::ExprKind::ArrayIndex { array, index } => {
+                self.lower_scalar_array_index_expr(array, index, &expr.ty, expr.source)
             }
             hir::ExprKind::ArrayLen { array, length } => {
                 self.lower_array_len_expr(array, *length, expr.source)

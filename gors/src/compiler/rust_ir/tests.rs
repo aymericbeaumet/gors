@@ -758,17 +758,25 @@ fn rvalue_read_op_mut(rvalue: &mut Rvalue, expected: ReadOp) -> Option<&mut Read
         | RvalueKind::AggregateEqualI64 { left, right, .. } => {
             operand_read_op_mut(left, expected).or_else(|| operand_read_op_mut(right, expected))
         }
-        RvalueKind::ArrayIndexI64 { array, index } => {
+        RvalueKind::ArrayIndexI64 { array, index } | RvalueKind::ArrayIndex { array, index } => {
             operand_read_op_mut(array, expected).or_else(|| operand_read_op_mut(index, expected))
         }
         RvalueKind::ArraySetI64 {
             array,
             index,
             value,
+        }
+        | RvalueKind::ArraySet {
+            array,
+            index,
+            value,
         } => operand_read_op_mut(array, expected)
             .or_else(|| operand_read_op_mut(index, expected))
             .or_else(|| operand_read_op_mut(value, expected)),
-        RvalueKind::StructLiteralI64(fields) => fields
+        RvalueKind::ArrayLiteral {
+            elements: fields, ..
+        }
+        | RvalueKind::StructLiteralI64(fields) => fields
             .iter_mut()
             .find_map(|field| operand_read_op_mut(field, expected)),
         RvalueKind::StructFieldI64 { structure, .. } => operand_read_op_mut(structure, expected),

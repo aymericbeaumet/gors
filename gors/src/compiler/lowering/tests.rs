@@ -214,13 +214,23 @@ fn rvalue_operands(kind: &RvalueKind) -> Vec<&Operand> {
         RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => vec![operand],
         RvalueKind::Binary { left, right, .. }
         | RvalueKind::AggregateEqualI64 { left, right, .. } => vec![left, right],
-        RvalueKind::ArrayIndexI64 { array, index } => vec![array, index],
+        RvalueKind::ArrayIndexI64 { array, index } | RvalueKind::ArrayIndex { array, index } => {
+            vec![array, index]
+        }
         RvalueKind::ArraySetI64 {
             array,
             index,
             value,
+        }
+        | RvalueKind::ArraySet {
+            array,
+            index,
+            value,
         } => vec![array, index, value],
-        RvalueKind::StructLiteralI64(fields) => fields.iter().collect(),
+        RvalueKind::ArrayLiteral {
+            elements: fields, ..
+        }
+        | RvalueKind::StructLiteralI64(fields) => fields.iter().collect(),
         RvalueKind::StructFieldI64 { structure, .. } => vec![structure],
         RvalueKind::RecoverCompareNil { .. } => Vec::new(),
     }

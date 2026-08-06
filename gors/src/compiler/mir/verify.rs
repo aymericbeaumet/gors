@@ -17,7 +17,9 @@ use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::{BasicBlockId, LocalId, QualifiedDefId};
 use crate::compiler::types::{ComplexTy, ConstValue, FloatTy, IntTy, Signature, Ty};
-use arrays::{verify_array_index, verify_array_literal, verify_array_set};
+use arrays::{
+    verify_array_index, verify_array_literal, verify_array_set, verify_scalar_array_literal,
+};
 use channels::{is_channel_builtin, verify_channel_call};
 use containers::{
     map_string_i64_ty, verify_byte_slice_call_arguments, verify_map_call_arguments,
@@ -241,10 +243,29 @@ impl Function {
                 },
             ),
             RvalueKind::ArrayLiteralI64(values) => verify_array_literal(values)?,
+            RvalueKind::ArrayLiteral { elements, ty } => verify_scalar_array_literal(
+                elements
+                    .iter()
+                    .map(|element| self.operand_ty(element))
+                    .collect::<Result<Vec<_>, _>>()?,
+                ty,
+            )?,
             RvalueKind::ArrayIndexI64 { array, index } => {
                 verify_array_index(self.operand_ty(array)?, self.operand_ty(index)?)?
             }
+            RvalueKind::ArrayIndex { array, index } => {
+                verify_array_index(self.operand_ty(array)?, self.operand_ty(index)?)?
+            }
             RvalueKind::ArraySetI64 {
+                array,
+                index,
+                value,
+            } => verify_array_set(
+                self.operand_ty(array)?,
+                self.operand_ty(index)?,
+                self.operand_ty(value)?,
+            )?,
+            RvalueKind::ArraySet {
                 array,
                 index,
                 value,
@@ -787,11 +808,18 @@ fn rvalue_operands(kind: &RvalueKind) -> Vec<&Operand> {
         | RvalueKind::Conversion { operand, .. } => vec![operand],
         RvalueKind::Binary { left, right, .. } => vec![left, right],
         RvalueKind::ArrayIndexI64 { array, index } => vec![array, index],
+        RvalueKind::ArrayIndex { array, index } => vec![array, index],
         RvalueKind::ArraySetI64 {
             array,
             index,
             value,
         } => vec![array, index, value],
+        RvalueKind::ArraySet {
+            array,
+            index,
+            value,
+        } => vec![array, index, value],
+        RvalueKind::ArrayLiteral { elements, .. } => elements.iter().collect(),
         RvalueKind::StructLiteral { fields, .. } => fields.iter().collect(),
         RvalueKind::StructField { structure, .. } => vec![structure],
         RvalueKind::RecoverCompareNil { .. } => Vec::new(),

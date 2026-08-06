@@ -322,11 +322,17 @@ impl Function {
                 self.transfer_operand(left, state, check_reads)?;
                 self.transfer_operand(right, state, check_reads)
             }
-            RvalueKind::ArrayIndexI64 { array, index } => {
+            RvalueKind::ArrayIndexI64 { array, index }
+            | RvalueKind::ArrayIndex { array, index } => {
                 self.transfer_operand(array, state, check_reads)?;
                 self.transfer_operand(index, state, check_reads)
             }
             RvalueKind::ArraySetI64 {
+                array,
+                index,
+                value,
+            }
+            | RvalueKind::ArraySet {
                 array,
                 index,
                 value,
@@ -335,7 +341,10 @@ impl Function {
                 self.transfer_operand(index, state, check_reads)?;
                 self.transfer_operand(value, state, check_reads)
             }
-            RvalueKind::StructLiteralI64(fields) => {
+            RvalueKind::ArrayLiteral {
+                elements: fields, ..
+            }
+            | RvalueKind::StructLiteralI64(fields) => {
                 for field in fields {
                     self.transfer_operand(field, state, check_reads)?;
                 }
@@ -430,11 +439,16 @@ fn add_rvalue_uses_backwards(rvalue: &Rvalue, live: &mut BTreeSet<LocalId>) {
             add_operand_use(right, live);
             add_operand_use(left, live);
         }
-        RvalueKind::ArrayIndexI64 { array, index } => {
+        RvalueKind::ArrayIndexI64 { array, index } | RvalueKind::ArrayIndex { array, index } => {
             add_operand_use(index, live);
             add_operand_use(array, live);
         }
         RvalueKind::ArraySetI64 {
+            array,
+            index,
+            value,
+        }
+        | RvalueKind::ArraySet {
             array,
             index,
             value,
@@ -443,7 +457,10 @@ fn add_rvalue_uses_backwards(rvalue: &Rvalue, live: &mut BTreeSet<LocalId>) {
             add_operand_use(index, live);
             add_operand_use(array, live);
         }
-        RvalueKind::StructLiteralI64(fields) => {
+        RvalueKind::ArrayLiteral {
+            elements: fields, ..
+        }
+        | RvalueKind::StructLiteralI64(fields) => {
             for field in fields.iter().rev() {
                 add_operand_use(field, live);
             }
@@ -507,11 +524,16 @@ fn plan_rvalue_backwards(
             plan_operand_backwards(right, live, local_types, reverse_plan)?;
             plan_operand_backwards(left, live, local_types, reverse_plan)
         }
-        RvalueKind::ArrayIndexI64 { array, index } => {
+        RvalueKind::ArrayIndexI64 { array, index } | RvalueKind::ArrayIndex { array, index } => {
             plan_operand_backwards(index, live, local_types, reverse_plan)?;
             plan_operand_backwards(array, live, local_types, reverse_plan)
         }
         RvalueKind::ArraySetI64 {
+            array,
+            index,
+            value,
+        }
+        | RvalueKind::ArraySet {
             array,
             index,
             value,
@@ -520,7 +542,10 @@ fn plan_rvalue_backwards(
             plan_operand_backwards(index, live, local_types, reverse_plan)?;
             plan_operand_backwards(array, live, local_types, reverse_plan)
         }
-        RvalueKind::StructLiteralI64(fields) => {
+        RvalueKind::ArrayLiteral {
+            elements: fields, ..
+        }
+        | RvalueKind::StructLiteralI64(fields) => {
             for field in fields.iter().rev() {
                 plan_operand_backwards(field, live, local_types, reverse_plan)?;
             }
@@ -573,11 +598,16 @@ fn apply_rvalue_plan(
             apply_operand_plan(left, plan, cursor)?;
             apply_operand_plan(right, plan, cursor)
         }
-        RvalueKind::ArrayIndexI64 { array, index } => {
+        RvalueKind::ArrayIndexI64 { array, index } | RvalueKind::ArrayIndex { array, index } => {
             apply_operand_plan(array, plan, cursor)?;
             apply_operand_plan(index, plan, cursor)
         }
         RvalueKind::ArraySetI64 {
+            array,
+            index,
+            value,
+        }
+        | RvalueKind::ArraySet {
             array,
             index,
             value,
@@ -586,7 +616,10 @@ fn apply_rvalue_plan(
             apply_operand_plan(index, plan, cursor)?;
             apply_operand_plan(value, plan, cursor)
         }
-        RvalueKind::StructLiteralI64(fields) => {
+        RvalueKind::ArrayLiteral {
+            elements: fields, ..
+        }
+        | RvalueKind::StructLiteralI64(fields) => {
             for field in fields {
                 apply_operand_plan(field, plan, cursor)?;
             }
@@ -648,11 +681,16 @@ fn collect_rvalue_reads(rvalue: &Rvalue, reads: &mut Vec<(LocalId, ReadOp)>) {
             collect_operand_read(left, reads);
             collect_operand_read(right, reads);
         }
-        RvalueKind::ArrayIndexI64 { array, index } => {
+        RvalueKind::ArrayIndexI64 { array, index } | RvalueKind::ArrayIndex { array, index } => {
             collect_operand_read(array, reads);
             collect_operand_read(index, reads);
         }
         RvalueKind::ArraySetI64 {
+            array,
+            index,
+            value,
+        }
+        | RvalueKind::ArraySet {
             array,
             index,
             value,
@@ -661,7 +699,10 @@ fn collect_rvalue_reads(rvalue: &Rvalue, reads: &mut Vec<(LocalId, ReadOp)>) {
             collect_operand_read(index, reads);
             collect_operand_read(value, reads);
         }
-        RvalueKind::StructLiteralI64(fields) => {
+        RvalueKind::ArrayLiteral {
+            elements: fields, ..
+        }
+        | RvalueKind::StructLiteralI64(fields) => {
             for field in fields {
                 collect_operand_read(field, reads);
             }

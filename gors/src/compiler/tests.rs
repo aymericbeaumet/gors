@@ -1,5 +1,6 @@
 use super::*;
 
+mod arrays;
 mod channels;
 mod structs;
 mod variables;

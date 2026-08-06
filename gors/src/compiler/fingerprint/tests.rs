@@ -394,7 +394,10 @@ fn value_op_mut<'a>(
                 | rust_ir::RvalueKind::Unary { .. }
                 | rust_ir::RvalueKind::RecoverCompareNil { .. }
                 | rust_ir::RvalueKind::ArrayIndexI64 { .. }
+                | rust_ir::RvalueKind::ArrayIndex { .. }
                 | rust_ir::RvalueKind::ArraySetI64 { .. }
+                | rust_ir::RvalueKind::ArraySet { .. }
+                | rust_ir::RvalueKind::ArrayLiteral { .. }
                 | rust_ir::RvalueKind::StructLiteralI64(_)
                 | rust_ir::RvalueKind::StructFieldI64 { .. }
                 | rust_ir::RvalueKind::AggregateEqualI64 { .. }
@@ -444,7 +447,8 @@ fn rvalue_runtime_static_op_mut(
                 operand_runtime_static_op_mut(right, expected)
             }
         }
-        rust_ir::RvalueKind::ArrayIndexI64 { array, index } => {
+        rust_ir::RvalueKind::ArrayIndexI64 { array, index }
+        | rust_ir::RvalueKind::ArrayIndex { array, index } => {
             operand_runtime_static_op_mut(array, expected)
                 .or_else(|| operand_runtime_static_op_mut(index, expected))
         }
@@ -452,9 +456,17 @@ fn rvalue_runtime_static_op_mut(
             array,
             index,
             value,
+        }
+        | rust_ir::RvalueKind::ArraySet {
+            array,
+            index,
+            value,
         } => operand_runtime_static_op_mut(array, expected)
             .or_else(|| operand_runtime_static_op_mut(index, expected))
             .or_else(|| operand_runtime_static_op_mut(value, expected)),
+        rust_ir::RvalueKind::ArrayLiteral { elements, .. } => elements
+            .iter_mut()
+            .find_map(|element| operand_runtime_static_op_mut(element, expected)),
         rust_ir::RvalueKind::StructLiteralI64(fields) => fields
             .iter_mut()
             .find_map(|field| operand_runtime_static_op_mut(field, expected)),

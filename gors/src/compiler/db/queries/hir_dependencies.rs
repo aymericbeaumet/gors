@@ -157,10 +157,19 @@ fn collect_expression_callees(expression: &hir::Expr, callees: &mut BTreeSet<Qua
             collect_expression_callees(array, callees);
             collect_expression_callees(index, callees);
         }
+        hir::ExprKind::ArrayIndex { array, index } => {
+            collect_expression_callees(array, callees);
+            collect_expression_callees(index, callees);
+        }
         hir::ExprKind::ArrayLen { array, .. } => collect_expression_callees(array, callees),
         hir::ExprKind::StructLiteral(fields) => {
             for field in fields {
                 collect_expression_callees(field, callees);
+            }
+        }
+        hir::ExprKind::ArrayLiteral(elements) => {
+            for (_, element) in elements {
+                collect_expression_callees(element, callees);
             }
         }
         hir::ExprKind::StructField { structure, .. } => {

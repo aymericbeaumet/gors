@@ -224,7 +224,12 @@ pub enum ExprKind {
     SliceLiteralI64(Vec<i64>),
     SliceLiteralU8(Vec<u8>),
     ArrayLiteralI64(Vec<i64>),
+    ArrayLiteral(Vec<(u64, Expr)>),
     ArrayIndexI64 {
+        array: Box<Expr>,
+        index: Box<Expr>,
+    },
+    ArrayIndex {
         array: Box<Expr>,
         index: Box<Expr>,
     },

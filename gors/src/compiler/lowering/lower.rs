@@ -150,7 +150,26 @@ fn lower_rvalue(rvalue: mir::Rvalue, locals: &[out::LocalDecl]) -> Result<out::R
         mir::RvalueKind::ArrayLiteralI64(elements) => out::RvalueKind::Use(out::Operand::Constant(
             out::Constant::StaticI64Array(elements),
         )),
+        mir::RvalueKind::ArrayLiteral { elements, ty } => {
+            let ty = lower_type(&ty)?;
+            if ty.scalar_array_parts().is_none() {
+                return Err(Diagnostic::backend(
+                    "non-scalar array reached scalar array representation lowering",
+                ));
+            }
+            out::RvalueKind::ArrayLiteral {
+                elements: elements
+                    .into_iter()
+                    .map(|element| lower_operand(element, locals))
+                    .collect::<Result<Vec<_>, _>>()?,
+                ty,
+            }
+        }
         mir::RvalueKind::ArrayIndexI64 { array, index } => out::RvalueKind::ArrayIndexI64 {
+            array: lower_operand(array, locals)?,
+            index: lower_operand(index, locals)?,
+        },
+        mir::RvalueKind::ArrayIndex { array, index } => out::RvalueKind::ArrayIndex {
             array: lower_operand(array, locals)?,
             index: lower_operand(index, locals)?,
         },
@@ -159,6 +178,15 @@ fn lower_rvalue(rvalue: mir::Rvalue, locals: &[out::LocalDecl]) -> Result<out::R
             index,
             value,
         } => out::RvalueKind::ArraySetI64 {
+            array: lower_operand(array, locals)?,
+            index: lower_operand(index, locals)?,
+            value: lower_operand(value, locals)?,
+        },
+        mir::RvalueKind::ArraySet {
+            array,
+            index,
+            value,
+        } => out::RvalueKind::ArraySet {
             array: lower_operand(array, locals)?,
             index: lower_operand(index, locals)?,
             value: lower_operand(value, locals)?,
@@ -459,6 +487,9 @@ fn lower_panic_call(
         out::RustType::F64
         | out::RustType::Complex128
         | out::RustType::ArrayI64(_)
+        | out::RustType::ArrayBool(_)
+        | out::RustType::ArrayF64(_)
+        | out::RustType::ArrayGoString(_)
         | out::RustType::StructI64(_)
         | out::RustType::GoSliceI64
         | out::RustType::GoSliceU8
@@ -524,6 +555,9 @@ fn lower_print_call(
             out::RustType::F64
             | out::RustType::Complex128
             | out::RustType::ArrayI64(_)
+            | out::RustType::ArrayBool(_)
+            | out::RustType::ArrayF64(_)
+            | out::RustType::ArrayGoString(_)
             | out::RustType::StructI64(_)
             | out::RustType::GoSliceI64
             | out::RustType::GoSliceU8
@@ -849,6 +883,15 @@ fn lower_type(ty: &Ty) -> Result<out::RustType, Diagnostic> {
         }
         Ty::Array(length, element) if element.underlying() == &Ty::Int(IntTy::Int) => {
             Ok(out::RustType::ArrayI64(*length))
+        }
+        Ty::Array(length, element) if element.underlying() == &Ty::Bool => {
+            Ok(out::RustType::ArrayBool(*length))
+        }
+        Ty::Array(length, element) if element.underlying() == &Ty::Float(FloatTy::Float64) => {
+            Ok(out::RustType::ArrayF64(*length))
+        }
+        Ty::Array(length, element) if element.underlying() == &Ty::String => {
+            Ok(out::RustType::ArrayGoString(*length))
         }
         Ty::Struct(fields)
             if fields

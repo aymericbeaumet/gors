@@ -170,10 +170,23 @@ pub enum RvalueKind {
         array: Operand,
         index: Operand,
     },
+    ArrayIndex {
+        array: Operand,
+        index: Operand,
+    },
     ArraySetI64 {
         array: Operand,
         index: Operand,
         value: Operand,
+    },
+    ArraySet {
+        array: Operand,
+        index: Operand,
+        value: Operand,
+    },
+    ArrayLiteral {
+        elements: Vec<Operand>,
+        ty: RustType,
     },
     StructLiteralI64(Vec<Operand>),
     StructFieldI64 {
@@ -273,10 +286,24 @@ pub enum RustType {
     GoPointerI64,
     GoChannelI64,
     ArrayI64(u64),
+    ArrayBool(u64),
+    ArrayF64(u64),
+    ArrayGoString(u64),
     StructI64(u64),
 }
 
 impl RustType {
+    #[must_use]
+    pub(in crate::compiler) fn scalar_array_parts(self) -> Option<(u64, Self)> {
+        match self {
+            Self::ArrayBool(length) => Some((length, Self::Bool)),
+            Self::ArrayI64(length) => Some((length, Self::I64)),
+            Self::ArrayF64(length) => Some((length, Self::F64)),
+            Self::ArrayGoString(length) => Some((length, Self::GoString)),
+            _ => None,
+        }
+    }
+
     #[must_use]
     pub fn conservative_read_op(self) -> Option<ReadOp> {
         match self {
@@ -284,6 +311,8 @@ impl RustType {
             | Self::I64
             | Self::F64
             | Self::Complex128
+            | Self::ArrayBool(_)
+            | Self::ArrayF64(_)
             | Self::ArrayI64(_)
             | Self::StructI64(_) => Some(ReadOp::ProvenInitializedCopy),
             Self::GoString
@@ -291,7 +320,8 @@ impl RustType {
             | Self::GoSliceU8
             | Self::GoMapStringI64
             | Self::GoPointerI64
-            | Self::GoChannelI64 => Some(ReadOp::ProvenInitializedClone),
+            | Self::GoChannelI64
+            | Self::ArrayGoString(_) => Some(ReadOp::ProvenInitializedClone),
             Self::Unit => None,
         }
     }
@@ -302,6 +332,8 @@ impl RustType {
             | Self::I64
             | Self::F64
             | Self::Complex128
+            | Self::ArrayBool(_)
+            | Self::ArrayF64(_)
             | Self::ArrayI64(_)
             | Self::StructI64(_) => Some(ReadOp::ProvenInitializedCopy),
             Self::GoString
@@ -310,6 +342,7 @@ impl RustType {
             | Self::GoMapStringI64
             | Self::GoPointerI64
             | Self::GoChannelI64
+            | Self::ArrayGoString(_)
                 if live_after =>
             {
                 Some(ReadOp::ProvenInitializedClone)
@@ -319,7 +352,8 @@ impl RustType {
             | Self::GoSliceU8
             | Self::GoMapStringI64
             | Self::GoPointerI64
-            | Self::GoChannelI64 => Some(ReadOp::ProvenLastUseMove),
+            | Self::GoChannelI64
+            | Self::ArrayGoString(_) => Some(ReadOp::ProvenLastUseMove),
             Self::Unit => None,
         }
     }
@@ -332,6 +366,8 @@ impl RustType {
                     | Self::I64
                     | Self::F64
                     | Self::Complex128
+                    | Self::ArrayBool(_)
+                    | Self::ArrayF64(_)
                     | Self::ArrayI64(_)
                     | Self::StructI64(_),
                 ReadOp::ProvenInitializedCopy
@@ -341,7 +377,8 @@ impl RustType {
                     | Self::GoSliceU8
                     | Self::GoMapStringI64
                     | Self::GoPointerI64
-                    | Self::GoChannelI64,
+                    | Self::GoChannelI64
+                    | Self::ArrayGoString(_),
                 ReadOp::ProvenInitializedClone | ReadOp::ProvenLastUseMove
             )
         )

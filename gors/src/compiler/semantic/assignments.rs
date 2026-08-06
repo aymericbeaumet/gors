@@ -50,7 +50,7 @@ impl FunctionLowerer {
         }
         let container = self.lower_expr(base, None)?;
         match container.ty.underlying() {
-            Ty::Array(_, element) if element.underlying() == &Ty::Int(IntTy::Int) => {
+            Ty::Array(_, element) if super::arrays::is_scalar_array_element(element) => {
                 self.lower_array_assignment(container, index, token, value, source)
             }
             Ty::Slice(element) if element.underlying() == &Ty::Int(IntTy::Int) => {

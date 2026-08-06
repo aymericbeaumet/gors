@@ -484,8 +484,22 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
                 encoder.sequence(elements, |encoder, element| encoder.i64(*element));
             });
         }
+        hir::ExprKind::ArrayLiteral(elements) => {
+            encoder.variant(b"array-literal", |encoder| {
+                encoder.sequence(elements, |encoder, (index, element)| {
+                    encoder.field(b"index", |encoder| encoder.u64(*index));
+                    encoder.field(b"value", |encoder| encode_expression(encoder, element));
+                });
+            });
+        }
         hir::ExprKind::ArrayIndexI64 { array, index } => {
             encoder.variant(b"array-index-i64", |encoder| {
+                encoder.field(b"array", |encoder| encode_expression(encoder, array));
+                encoder.field(b"index", |encoder| encode_expression(encoder, index));
+            });
+        }
+        hir::ExprKind::ArrayIndex { array, index } => {
+            encoder.variant(b"array-index", |encoder| {
                 encoder.field(b"array", |encoder| encode_expression(encoder, array));
                 encoder.field(b"index", |encoder| encode_expression(encoder, index));
             });

@@ -17,6 +17,7 @@ pub(in crate::compiler) fn statement_effects(value: &Rvalue) -> Effects {
 pub(in crate::compiler) fn rvalue_effects(kind: &RvalueKind) -> Effects {
     let intrinsic = match kind {
         RvalueKind::Use(_)
+        | RvalueKind::ArrayLiteral { .. }
         | RvalueKind::StructLiteralI64(_)
         | RvalueKind::StructFieldI64 { .. }
         | RvalueKind::AggregateEqualI64 { .. } => Effects::default(),
@@ -26,12 +27,12 @@ pub(in crate::compiler) fn rvalue_effects(kind: &RvalueKind) -> Effects {
             may_write: true,
             ..Effects::default()
         },
-        RvalueKind::ArrayIndexI64 { .. } => Effects {
+        RvalueKind::ArrayIndexI64 { .. } | RvalueKind::ArrayIndex { .. } => Effects {
             may_call: true,
             may_panic: true,
             ..Effects::default()
         },
-        RvalueKind::ArraySetI64 { .. } => Effects {
+        RvalueKind::ArraySetI64 { .. } | RvalueKind::ArraySet { .. } => Effects {
             may_write: true,
             may_call: true,
             may_panic: true,
@@ -43,10 +44,15 @@ pub(in crate::compiler) fn rvalue_effects(kind: &RvalueKind) -> Effects {
         RvalueKind::Binary { left, right, .. } => {
             union(operand_effects(left), operand_effects(right))
         }
-        RvalueKind::ArrayIndexI64 { array, index } => {
+        RvalueKind::ArrayIndexI64 { array, index } | RvalueKind::ArrayIndex { array, index } => {
             union(operand_effects(array), operand_effects(index))
         }
         RvalueKind::ArraySetI64 {
+            array,
+            index,
+            value,
+        }
+        | RvalueKind::ArraySet {
             array,
             index,
             value,
@@ -54,6 +60,11 @@ pub(in crate::compiler) fn rvalue_effects(kind: &RvalueKind) -> Effects {
             union(operand_effects(array), operand_effects(index)),
             operand_effects(value),
         ),
+        RvalueKind::ArrayLiteral { elements, .. } => elements
+            .iter()
+            .fold(Effects::default(), |effects, element| {
+                union(effects, operand_effects(element))
+            }),
         RvalueKind::StructLiteralI64(fields) => {
             fields.iter().fold(Effects::default(), |effects, field| {
                 union(effects, operand_effects(field))

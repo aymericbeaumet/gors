@@ -183,6 +183,10 @@ fn rewrite_rvalue_boolean_reads(rvalue: &mut Rvalue, constants: &BTreeMap<LocalI
             rewrite_boolean_read(array, constants);
             rewrite_boolean_read(index, constants);
         }
+        RvalueKind::ArrayIndex { array, index } => {
+            rewrite_boolean_read(array, constants);
+            rewrite_boolean_read(index, constants);
+        }
         RvalueKind::ArraySetI64 {
             array,
             index,
@@ -191,6 +195,20 @@ fn rewrite_rvalue_boolean_reads(rvalue: &mut Rvalue, constants: &BTreeMap<LocalI
             rewrite_boolean_read(array, constants);
             rewrite_boolean_read(index, constants);
             rewrite_boolean_read(value, constants);
+        }
+        RvalueKind::ArraySet {
+            array,
+            index,
+            value,
+        } => {
+            rewrite_boolean_read(array, constants);
+            rewrite_boolean_read(index, constants);
+            rewrite_boolean_read(value, constants);
+        }
+        RvalueKind::ArrayLiteral { elements, .. } => {
+            for element in elements {
+                rewrite_boolean_read(element, constants);
+            }
         }
         RvalueKind::StructLiteral { fields, .. } => {
             for field in fields {
@@ -261,11 +279,18 @@ fn refresh_rvalue_effects(rvalue: &mut Rvalue) {
         | RvalueKind::Conversion { operand, .. } => operand_reads(operand),
         RvalueKind::Binary { left, right, .. } => operand_reads(left) || operand_reads(right),
         RvalueKind::ArrayIndexI64 { array, index } => operand_reads(array) || operand_reads(index),
+        RvalueKind::ArrayIndex { array, index } => operand_reads(array) || operand_reads(index),
         RvalueKind::ArraySetI64 {
             array,
             index,
             value,
         } => operand_reads(array) || operand_reads(index) || operand_reads(value),
+        RvalueKind::ArraySet {
+            array,
+            index,
+            value,
+        } => operand_reads(array) || operand_reads(index) || operand_reads(value),
+        RvalueKind::ArrayLiteral { elements, .. } => elements.iter().any(operand_reads),
         RvalueKind::StructLiteral { fields, .. } => fields.iter().any(operand_reads),
         RvalueKind::StructField { structure, .. } => operand_reads(structure),
         RvalueKind::RecoverCompareNil { .. } => true,
@@ -279,7 +304,9 @@ fn refresh_rvalue_effects(rvalue: &mut Rvalue) {
             op: hir::BinaryOp::Div | hir::BinaryOp::Rem | hir::BinaryOp::Shl | hir::BinaryOp::Shr,
             ..
         } | RvalueKind::ArrayIndexI64 { .. }
+            | RvalueKind::ArrayIndex { .. }
             | RvalueKind::ArraySetI64 { .. }
+            | RvalueKind::ArraySet { .. }
     );
     let may_allocate = matches!(
         &rvalue.kind,

@@ -27,7 +27,22 @@ impl FunctionLowerer {
                 source,
             ));
         };
-        let literal_ty = lower_type(ty, &self.type_aliases, source)?;
+        let literal_ty = match &ty.kind {
+            crate::compiler::syntax::ExprSyntaxKind::ArrayType {
+                length: Some(length),
+                element,
+            } if matches!(
+                length.kind,
+                crate::compiler::syntax::ExprSyntaxKind::Unsupported("ellipsis")
+            ) =>
+            {
+                Ty::Array(
+                    self.infer_array_literal_length(elements, source)?,
+                    Box::new(lower_type(element, &self.type_aliases, source)?),
+                )
+            }
+            _ => lower_type(ty, &self.type_aliases, source)?,
+        };
         if matches!(literal_ty.underlying(), Ty::Struct(_)) {
             return self.lower_struct_literal(literal_ty, elements, node, syntax_source, source);
         }
@@ -35,7 +50,14 @@ impl FunctionLowerer {
             return self.lower_map_literal(literal_ty, elements, node, source);
         }
         if matches!(literal_ty.underlying(), Ty::Array(_, _)) {
-            return self.lower_array_literal(literal_ty, elements, node, source, expected);
+            return self.lower_array_literal(
+                literal_ty,
+                elements,
+                node,
+                syntax_source,
+                source,
+                expected,
+            );
         }
         let Ty::Slice(element_ty) = literal_ty.underlying() else {
             return Err(Diagnostic::unsupported(

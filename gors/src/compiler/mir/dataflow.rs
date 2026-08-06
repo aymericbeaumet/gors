@@ -160,6 +160,10 @@ impl Function {
                 self.transfer_operand(array, state, check_reads)?;
                 self.transfer_operand(index, state, check_reads)
             }
+            RvalueKind::ArrayIndex { array, index } => {
+                self.transfer_operand(array, state, check_reads)?;
+                self.transfer_operand(index, state, check_reads)
+            }
             RvalueKind::ArraySetI64 {
                 array,
                 index,
@@ -168,6 +172,21 @@ impl Function {
                 self.transfer_operand(array, state, check_reads)?;
                 self.transfer_operand(index, state, check_reads)?;
                 self.transfer_operand(value, state, check_reads)
+            }
+            RvalueKind::ArraySet {
+                array,
+                index,
+                value,
+            } => {
+                self.transfer_operand(array, state, check_reads)?;
+                self.transfer_operand(index, state, check_reads)?;
+                self.transfer_operand(value, state, check_reads)
+            }
+            RvalueKind::ArrayLiteral { elements, .. } => {
+                for element in elements {
+                    self.transfer_operand(element, state, check_reads)?;
+                }
+                Ok(())
             }
             RvalueKind::StructLiteral { fields, .. } => {
                 for field in fields {

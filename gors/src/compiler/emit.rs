@@ -520,6 +520,26 @@ fn emit_rvalue(rvalue: &Rvalue, function: &rust_ir::Function) -> Result<syn::Exp
                 })
             }})
         }
+        RvalueKind::ArrayIndex { array, index } => {
+            let array = emit_operand(array, function)?;
+            let index = emit_operand(index, function)?;
+            Ok(syn::parse_quote! {{
+                let __gors_array = #array;
+                let __gors_index_value = #index;
+                let ::std::result::Result::Ok(__gors_index) =
+                    ::std::primitive::usize::try_from(__gors_index_value)
+                else {
+                    ::std::panic::resume_unwind(::std::boxed::Box::new(
+                        "runtime error: index out of range"
+                    ));
+                };
+                __gors_array.get(__gors_index).cloned().unwrap_or_else(|| {
+                    ::std::panic::resume_unwind(::std::boxed::Box::new(
+                        "runtime error: index out of range"
+                    ))
+                })
+            }})
+        }
         RvalueKind::ArraySetI64 {
             array,
             index,
@@ -549,6 +569,43 @@ fn emit_rvalue(rvalue: &Rvalue, function: &rust_ir::Function) -> Result<syn::Exp
                 *__gors_target = __gors_value;
                 __gors_array
             }})
+        }
+        RvalueKind::ArraySet {
+            array,
+            index,
+            value,
+        } => {
+            let array = emit_operand(array, function)?;
+            let index = emit_operand(index, function)?;
+            let value = emit_operand(value, function)?;
+            Ok(syn::parse_quote! {{
+                let mut __gors_array = #array;
+                let __gors_index_value = #index;
+                let __gors_value = #value;
+                let ::std::result::Result::Ok(__gors_index) =
+                    ::std::primitive::usize::try_from(__gors_index_value)
+                else {
+                    ::std::panic::resume_unwind(::std::boxed::Box::new(
+                        "runtime error: index out of range"
+                    ));
+                };
+                let ::std::option::Option::Some(__gors_target) =
+                    __gors_array.get_mut(__gors_index)
+                else {
+                    ::std::panic::resume_unwind(::std::boxed::Box::new(
+                        "runtime error: index out of range"
+                    ));
+                };
+                *__gors_target = __gors_value;
+                __gors_array
+            }})
+        }
+        RvalueKind::ArrayLiteral { elements, .. } => {
+            let elements = elements
+                .iter()
+                .map(|element| emit_operand(element, function))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(syn::parse_quote! { [#(#elements),*] })
         }
         RvalueKind::StructLiteralI64(fields) => {
             let fields = fields
@@ -835,6 +892,18 @@ fn emit_type(ty: &RustType) -> Result<syn::Type, Diagnostic> {
         RustType::ArrayI64(length) => {
             let length = syn::LitInt::new(&length.to_string(), Span::mixed_site());
             syn::parse_quote! { [i64; #length] }
+        }
+        RustType::ArrayBool(length) => {
+            let length = syn::LitInt::new(&length.to_string(), Span::mixed_site());
+            syn::parse_quote! { [bool; #length] }
+        }
+        RustType::ArrayF64(length) => {
+            let length = syn::LitInt::new(&length.to_string(), Span::mixed_site());
+            syn::parse_quote! { [f64; #length] }
+        }
+        RustType::ArrayGoString(length) => {
+            let length = syn::LitInt::new(&length.to_string(), Span::mixed_site());
+            syn::parse_quote! { [::#runtime_crate::GoString; #length] }
         }
         RustType::StructI64(length) => {
             let length = syn::LitInt::new(&length.to_string(), Span::mixed_site());

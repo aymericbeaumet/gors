@@ -74,11 +74,24 @@ pub enum RvalueKind {
     SliceLiteralI64(Vec<i64>),
     SliceLiteralU8(Vec<u8>),
     ArrayLiteralI64(Vec<i64>),
+    ArrayLiteral {
+        elements: Vec<Operand>,
+        ty: Ty,
+    },
     ArrayIndexI64 {
         array: Operand,
         index: Operand,
     },
+    ArrayIndex {
+        array: Operand,
+        index: Operand,
+    },
     ArraySetI64 {
+        array: Operand,
+        index: Operand,
+        value: Operand,
+    },
+    ArraySet {
         array: Operand,
         index: Operand,
         value: Operand,

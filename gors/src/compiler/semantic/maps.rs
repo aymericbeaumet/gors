@@ -239,7 +239,7 @@ impl FunctionLowerer {
             return self.lower_channel_len(value, node, source, expected);
         }
         if let Ty::Array(length, element) = value.ty.underlying()
-            && element.underlying() == &Ty::Int(IntTy::Int)
+            && super::arrays::is_scalar_array_element(element)
         {
             let length = *length;
             return self.lower_array_len(value, length, node, source, expected);

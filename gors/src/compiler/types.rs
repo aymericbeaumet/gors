@@ -190,7 +190,10 @@ impl Ty {
             return element.underlying() == &Self::Int(IntTy::Int);
         }
         if let Self::Array(_, element) = self {
-            return element.underlying() == &Self::Int(IntTy::Int);
+            return matches!(
+                element.underlying(),
+                Self::Bool | Self::Int(IntTy::Int) | Self::Float(FloatTy::Float64) | Self::String
+            );
         }
         if let Self::Map(key, value) = self {
             return key.underlying() == &Self::String

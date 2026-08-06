@@ -324,6 +324,17 @@ impl Function {
                 }
                 RustType::I64
             }
+            RvalueKind::ArrayIndex { array, index } => {
+                let array = self.operand_ty(array)?;
+                let index = self.operand_ty(index)?;
+                let Some((_, element)) = array.scalar_array_parts() else {
+                    return Err(Diagnostic::backend(format!(
+                        "Rust IR scalar array index has a non-array operand: {array:?}"
+                    )));
+                };
+                verify_same(index, RustType::I64, "scalar array index")?;
+                element
+            }
             RvalueKind::ArraySetI64 {
                 array,
                 index,
@@ -341,6 +352,46 @@ impl Function {
                     )));
                 }
                 array
+            }
+            RvalueKind::ArraySet {
+                array,
+                index,
+                value,
+            } => {
+                let array = self.operand_ty(array)?;
+                let index = self.operand_ty(index)?;
+                let value = self.operand_ty(value)?;
+                let Some((_, element)) = array.scalar_array_parts() else {
+                    return Err(Diagnostic::backend(format!(
+                        "Rust IR scalar array update has a non-array operand: {array:?}"
+                    )));
+                };
+                verify_same(index, RustType::I64, "scalar array update index")?;
+                verify_same(value, element, "scalar array update value")?;
+                array
+            }
+            RvalueKind::ArrayLiteral { elements, ty } => {
+                let Some((length, element_ty)) = ty.scalar_array_parts() else {
+                    return Err(Diagnostic::backend(format!(
+                        "Rust IR scalar array literal has a non-array type: {ty:?}"
+                    )));
+                };
+                let actual_length = u64::try_from(elements.len()).map_err(|_| {
+                    Diagnostic::backend("Rust IR scalar array literal length does not fit u64")
+                })?;
+                if actual_length != length {
+                    return Err(Diagnostic::backend(format!(
+                        "Rust IR scalar array literal has {actual_length} elements for length {length}"
+                    )));
+                }
+                for element in elements {
+                    verify_same(
+                        self.operand_ty(element)?,
+                        element_ty,
+                        "scalar array literal element",
+                    )?;
+                }
+                *ty
             }
             RvalueKind::StructLiteralI64(fields) => {
                 for field in fields {
@@ -666,7 +717,7 @@ fn collect_rvalue_runtime_operations(rvalue: &Rvalue, operations: &mut Vec<Runti
             collect_operand_runtime_operations(left, operations);
             collect_operand_runtime_operations(right, operations);
         }
-        RvalueKind::ArrayIndexI64 { array, index } => {
+        RvalueKind::ArrayIndexI64 { array, index } | RvalueKind::ArrayIndex { array, index } => {
             collect_operand_runtime_operations(array, operations);
             collect_operand_runtime_operations(index, operations);
         }
@@ -674,10 +725,20 @@ fn collect_rvalue_runtime_operations(rvalue: &Rvalue, operations: &mut Vec<Runti
             array,
             index,
             value,
+        }
+        | RvalueKind::ArraySet {
+            array,
+            index,
+            value,
         } => {
             collect_operand_runtime_operations(array, operations);
             collect_operand_runtime_operations(index, operations);
             collect_operand_runtime_operations(value, operations);
+        }
+        RvalueKind::ArrayLiteral { elements, .. } => {
+            for element in elements {
+                collect_operand_runtime_operations(element, operations);
+            }
         }
         RvalueKind::StructLiteralI64(fields) => {
             for field in fields {

@@ -136,8 +136,23 @@ fn encode_rvalue_kind(encoder: &mut Encoder, kind: &mir::RvalueKind) {
                 encoder.sequence(elements, |encoder, element| encoder.i64(*element));
             });
         }
+        mir::RvalueKind::ArrayLiteral {
+            elements,
+            ty: literal_ty,
+        } => encoder.variant(b"array-literal", |encoder| {
+            encoder.field(b"elements", |encoder| {
+                encoder.sequence(elements, encode_operand);
+            });
+            encoder.field(b"type", |encoder| ty(encoder, literal_ty));
+        }),
         mir::RvalueKind::ArrayIndexI64 { array, index } => {
             encoder.variant(b"array-index-i64", |encoder| {
+                encoder.field(b"array", |encoder| encode_operand(encoder, array));
+                encoder.field(b"index", |encoder| encode_operand(encoder, index));
+            });
+        }
+        mir::RvalueKind::ArrayIndex { array, index } => {
+            encoder.variant(b"array-index", |encoder| {
                 encoder.field(b"array", |encoder| encode_operand(encoder, array));
                 encoder.field(b"index", |encoder| encode_operand(encoder, index));
             });
@@ -147,6 +162,15 @@ fn encode_rvalue_kind(encoder: &mut Encoder, kind: &mir::RvalueKind) {
             index,
             value,
         } => encoder.variant(b"array-set-i64", |encoder| {
+            encoder.field(b"array", |encoder| encode_operand(encoder, array));
+            encoder.field(b"index", |encoder| encode_operand(encoder, index));
+            encoder.field(b"value", |encoder| encode_operand(encoder, value));
+        }),
+        mir::RvalueKind::ArraySet {
+            array,
+            index,
+            value,
+        } => encoder.variant(b"array-set", |encoder| {
             encoder.field(b"array", |encoder| encode_operand(encoder, array));
             encoder.field(b"index", |encoder| encode_operand(encoder, index));
             encoder.field(b"value", |encoder| encode_operand(encoder, value));
