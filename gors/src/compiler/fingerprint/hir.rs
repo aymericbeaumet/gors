@@ -2,8 +2,8 @@
 
 use super::Fingerprint;
 use super::encoder::{
-    Encoder, closure_id, const_value, def_id, hir_effects, local_id, node_id, signature,
-    source_ref, ty,
+    Encoder, closure_id, const_value, def_id, hir_effects, local_id, node_id, package_id,
+    qualified_def_id, signature, source_ref, ty,
 };
 use crate::compiler::hir;
 
@@ -32,6 +32,9 @@ pub fn hir_constant(constant: &hir::Constant) -> Fingerprint {
 }
 
 fn encode_file(encoder: &mut Encoder, file: &hir::File) {
+    encoder.field(b"package-id", |encoder| {
+        package_id(encoder, file.package_id)
+    });
     encoder.field(b"package", |encoder| encoder.string(&file.package));
     encoder.field(b"constants", |encoder| {
         encoder.sequence(&file.constants, encode_constant);
@@ -430,7 +433,7 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
         }
         hir::ExprKind::GlobalConstant(id, value) => {
             encoder.variant(b"global-constant", |encoder| {
-                encoder.field(b"id", |encoder| def_id(encoder, *id));
+                encoder.field(b"id", |encoder| qualified_def_id(encoder, *id));
                 encoder.field(b"value", |encoder| const_value(encoder, value));
             });
         }
@@ -506,7 +509,7 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
 fn encode_callee(encoder: &mut Encoder, callee: hir::Callee) {
     match callee {
         hir::Callee::Function(id) => {
-            encoder.variant(b"function", |encoder| def_id(encoder, id));
+            encoder.variant(b"function", |encoder| qualified_def_id(encoder, id));
         }
         hir::Callee::Closure(id) => {
             encoder.variant(b"closure", |encoder| closure_id(encoder, id));

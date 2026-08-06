@@ -3,9 +3,9 @@
 use std::collections::BTreeSet;
 
 use crate::compiler::hir;
-use crate::compiler::ids::DefId;
+use crate::compiler::ids::QualifiedDefId;
 
-pub(super) fn direct_callees(function: &hir::Function) -> BTreeSet<DefId> {
+pub(super) fn direct_callees(function: &hir::Function) -> BTreeSet<QualifiedDefId> {
     let mut callees = BTreeSet::new();
     collect_block_callees(&function.body, &mut callees);
     for closure in &function.closures {
@@ -14,13 +14,13 @@ pub(super) fn direct_callees(function: &hir::Function) -> BTreeSet<DefId> {
     callees
 }
 
-fn collect_block_callees(block: &hir::Block, callees: &mut BTreeSet<DefId>) {
+fn collect_block_callees(block: &hir::Block, callees: &mut BTreeSet<QualifiedDefId>) {
     for statement in &block.stmts {
         collect_statement_callees(statement, callees);
     }
 }
 
-fn collect_statement_callees(statement: &hir::Stmt, callees: &mut BTreeSet<DefId>) {
+fn collect_statement_callees(statement: &hir::Stmt, callees: &mut BTreeSet<QualifiedDefId>) {
     match &statement.kind {
         hir::StmtKind::Let { values, .. }
         | hir::StmtKind::Assign { values, .. }
@@ -131,7 +131,7 @@ fn collect_statement_callees(statement: &hir::Stmt, callees: &mut BTreeSet<DefId
     }
 }
 
-fn collect_expression_callees(expression: &hir::Expr, callees: &mut BTreeSet<DefId>) {
+fn collect_expression_callees(expression: &hir::Expr, callees: &mut BTreeSet<QualifiedDefId>) {
     match &expression.kind {
         hir::ExprKind::Binary { left, right, .. } => {
             collect_expression_callees(left, callees);

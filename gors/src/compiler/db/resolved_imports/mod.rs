@@ -14,6 +14,7 @@ use crate::compiler::ids::{FileId, PackageId};
 use crate::compiler::provenance::FileRange;
 use crate::import_path::CanonicalImportPath;
 
+use super::queries::PackageInput;
 use super::{DirectImport, ImportBinding};
 
 pub(in crate::compiler) use mutation::ResolvedImportInputMutation;
@@ -278,4 +279,6 @@ pub(super) struct ResolvedImportsInput {
     pub(super) file: FileId,
     #[returns(clone)]
     pub(super) value: Arc<ResolvedFileImports>,
+    #[returns(clone)]
+    pub(super) targets: Arc<[(PackageId, PackageInput)]>,
 }

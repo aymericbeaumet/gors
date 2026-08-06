@@ -3,15 +3,15 @@
 use std::collections::BTreeMap;
 
 use super::Fingerprint;
-use super::encoder::{Encoder, def_id, signature};
+use super::encoder::{Encoder, qualified_def_id, signature};
 use super::hir::hir_function;
 use crate::compiler::hir;
-use crate::compiler::ids::DefId;
+use crate::compiler::ids::QualifiedDefId;
 use crate::compiler::types::Signature;
 
 pub(in crate::compiler) fn rust_ir_root_inputs(
     function: &hir::Function,
-    signatures: &BTreeMap<DefId, Signature>,
+    signatures: &BTreeMap<QualifiedDefId, Signature>,
     representation_key: Fingerprint,
     executable_package: bool,
 ) -> Fingerprint {
@@ -23,7 +23,9 @@ pub(in crate::compiler) fn rust_ir_root_inputs(
     encoder.field(b"signatures", |encoder| {
         let signatures = signatures.iter().collect::<Vec<_>>();
         encoder.sequence(&signatures, |encoder, (definition, value)| {
-            encoder.field(b"definition", |encoder| def_id(encoder, **definition));
+            encoder.field(b"definition", |encoder| {
+                qualified_def_id(encoder, **definition)
+            });
             encoder.field(b"signature", |encoder| signature(encoder, value));
         });
     });

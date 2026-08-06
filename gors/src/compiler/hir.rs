@@ -1,11 +1,12 @@
 //! Typed, source-shaped high-level IR.
 
-use super::ids::{ClosureId, DefId, LocalId, NodeId};
+use super::ids::{ClosureId, DefId, LocalId, NodeId, PackageId, QualifiedDefId};
 use super::provenance::SourceRef;
 use super::types::{ConstValue, Signature, Ty};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct File {
+    pub package_id: PackageId,
     pub package: String,
     pub constants: Vec<Constant>,
     pub functions: Vec<Function>,
@@ -200,7 +201,7 @@ pub struct Expr {
 pub enum ExprKind {
     Constant(ConstValue),
     Local(LocalId),
-    GlobalConstant(DefId, ConstValue),
+    GlobalConstant(QualifiedDefId, ConstValue),
     Binary {
         op: BinaryOp,
         left: Box<Expr>,
@@ -238,7 +239,7 @@ pub enum ExprKind {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Callee {
-    Function(DefId),
+    Function(QualifiedDefId),
     Closure(ClosureId),
     Builtin(Builtin),
 }

@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use super::{Db, FunctionProjection, PackageInput, file_projection};
+use super::{Db, FunctionProjection, PackageInput, SourceInput, file_projection};
 use crate::compiler::Diagnostic;
 use crate::compiler::db::products::{CompilerStage, StageFailure};
 use crate::compiler::ids::{DefId, FileId};
@@ -59,17 +59,24 @@ pub(super) fn function_file(
     input: PackageInput,
     function: FunctionProjection<'_>,
 ) -> Result<FileId, Arc<StageFailure>> {
+    function_source(db, input, function).map(|source| source.file(db))
+}
+
+pub(super) fn function_source(
+    db: &dyn Db,
+    input: PackageInput,
+    function: FunctionProjection<'_>,
+) -> Result<SourceInput, Arc<StageFailure>> {
     let definition = function.id(db);
     input
         .sources(db)
         .iter()
         .copied()
-        .find_map(|source| {
-            file_projection(db, source)
+        .find(|source| {
+            file_projection(db, *source)
                 .functions(db)
                 .into_iter()
                 .any(|candidate| candidate.id(db) == definition)
-                .then(|| source.file(db))
         })
         .ok_or_else(|| {
             Arc::new(StageFailure::one_for_definition(
@@ -86,14 +93,20 @@ pub(super) fn collect_constant_references(syntax: &ConstantSyntax, names: &mut B
     }
 }
 
+pub(super) struct PackageReferences {
+    pub(super) unqualified: BTreeSet<Arc<str>>,
+    pub(super) qualified: BTreeSet<(Arc<str>, Arc<str>)>,
+}
+
 /// Collect package-level names referenced by a body after lexical shadowing.
-pub(super) fn referenced_names_in_body(
+pub(super) fn package_references_in_body(
     header: &FunctionHeaderSyntax,
     body: &FunctionBodySyntax,
-) -> BTreeSet<Arc<str>> {
+) -> PackageReferences {
     let mut collector = PackageReferenceCollector {
         scopes: vec![BTreeSet::new()],
-        referenced: BTreeSet::new(),
+        unqualified: BTreeSet::new(),
+        qualified: BTreeSet::new(),
     };
     collector.bind_fields(&header.params);
     if let Some(results) = &header.results {
@@ -102,12 +115,16 @@ pub(super) fn referenced_names_in_body(
     if let Some(body) = &body.block {
         collector.block(body, false);
     }
-    collector.referenced
+    PackageReferences {
+        unqualified: collector.unqualified,
+        qualified: collector.qualified,
+    }
 }
 
 struct PackageReferenceCollector {
     scopes: Vec<BTreeSet<Arc<str>>>,
-    referenced: BTreeSet<Arc<str>>,
+    unqualified: BTreeSet<Arc<str>>,
+    qualified: BTreeSet<(Arc<str>, Arc<str>)>,
 }
 
 impl PackageReferenceCollector {
@@ -316,7 +333,7 @@ impl PackageReferenceCollector {
         match &expression.kind {
             ExprSyntaxKind::Ident(ident) => {
                 if !self.is_bound(&ident.name) {
-                    self.referenced.insert(Arc::clone(&ident.name));
+                    self.unqualified.insert(Arc::clone(&ident.name));
                 }
             }
             ExprSyntaxKind::Paren(expression) | ExprSyntaxKind::Unary { expression, .. } => {
@@ -360,7 +377,16 @@ impl PackageReferenceCollector {
                 self.block(body, false);
                 self.scopes.pop();
             }
-            ExprSyntaxKind::Selector { base, .. } => self.expression(base),
+            ExprSyntaxKind::Selector { base, member } => {
+                if let ExprSyntaxKind::Ident(ident) = &base.kind
+                    && !self.is_bound(&ident.name)
+                {
+                    self.qualified
+                        .insert((Arc::clone(&ident.name), Arc::clone(&member.name)));
+                } else {
+                    self.expression(base);
+                }
+            }
             ExprSyntaxKind::ArrayType { length, element } => {
                 if let Some(length) = length {
                     self.expression(length);

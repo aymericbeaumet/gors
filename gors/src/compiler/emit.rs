@@ -9,21 +9,98 @@ use std::collections::BTreeMap;
 use proc_macro2::Span;
 
 use super::Diagnostic;
+use super::ids::{PackageId, QualifiedDefId};
 use super::rust_ir::{
-    self, CallTarget, Constant, ControlFlowPlan, DefId, LocalId, Operand, Place, PrimitiveOp,
-    ReadOp, RuntimeOp, RustLinkage, RustSymbol, RustType, Rvalue, RvalueKind, SlotInitialization,
+    self, CallTarget, Constant, ControlFlowPlan, LocalId, Operand, Place, PrimitiveOp, ReadOp,
+    RuntimeOp, RustLinkage, RustSymbol, RustType, Rvalue, RvalueKind, SlotInitialization,
     Statement, StorageClass, StoreOp, Terminator, TerminatorKind, ValueOp,
 };
 
+pub(super) fn emit_program(
+    entry: PackageId,
+    packages: &BTreeMap<PackageId, (Option<String>, rust_ir::File)>,
+) -> Result<(syn::File, BTreeMap<String, syn::File>), Diagnostic> {
+    let mut function_paths = BTreeMap::new();
+    let mut module_owners = BTreeMap::<String, PackageId>::new();
+    for (package, (module, file)) in packages {
+        if file.package_id != *package {
+            return Err(Diagnostic::backend(
+                "Rust IR package identity disagrees with program assembly",
+            ));
+        }
+        let module_ident = module
+            .as_ref()
+            .map(|module| syn::Ident::new(module, Span::mixed_site()));
+        if let Some(module) = module {
+            if let Some(previous) = module_owners.insert(module.clone(), *package)
+                && previous != *package
+            {
+                return Err(Diagnostic::backend(format!(
+                    "generated Rust module {module} names more than one package"
+                )));
+            }
+        } else if *package != entry {
+            return Err(Diagnostic::backend(
+                "a dependency Rust IR package has no generated module name",
+            ));
+        }
+        for function in &file.functions {
+            let function_ident = function_ident(&function.artifact.symbol);
+            let path = if let Some(module_ident) = &module_ident {
+                syn::parse_quote! { crate::#module_ident::#function_ident }
+            } else {
+                syn::parse_quote! { #function_ident }
+            };
+            let definition = QualifiedDefId::new(*package, function.id);
+            if function_paths.insert(definition, path).is_some() {
+                return Err(Diagnostic::backend(format!(
+                    "duplicate emitted function identity {definition}"
+                )));
+            }
+        }
+    }
+
+    let mut entry_file = None;
+    let mut modules = BTreeMap::new();
+    for (package, (module, file)) in packages {
+        let emitted = emit_file_with_paths(file, &function_paths)?;
+        if *package == entry {
+            entry_file = Some(emitted);
+        } else {
+            let module = module.clone().ok_or_else(|| {
+                Diagnostic::backend("dependency package lost its generated module name")
+            })?;
+            modules.insert(module, emitted);
+        }
+    }
+    entry_file
+        .map(|entry| (entry, modules))
+        .ok_or_else(|| Diagnostic::backend("program assembly omitted its entry package"))
+}
+
+#[cfg(test)]
 pub(super) fn emit_file(file: &rust_ir::File) -> Result<syn::File, Diagnostic> {
-    let function_names = file
+    let function_paths = file
         .functions
         .iter()
-        .map(|function| (function.id, function_ident(&function.artifact.symbol)))
+        .map(|function| {
+            let ident = function_ident(&function.artifact.symbol);
+            (
+                QualifiedDefId::new(file.package_id, function.id),
+                syn::parse_quote! { #ident },
+            )
+        })
         .collect::<BTreeMap<_, _>>();
+    emit_file_with_paths(file, &function_paths)
+}
+
+pub(super) fn emit_file_with_paths(
+    file: &rust_ir::File,
+    function_paths: &BTreeMap<QualifiedDefId, syn::Path>,
+) -> Result<syn::File, Diagnostic> {
     let mut items = Vec::new();
     for function in &file.functions {
-        items.push(syn::Item::Fn(emit_function(function, &function_names)?));
+        items.push(syn::Item::Fn(emit_function(function, function_paths)?));
     }
     Ok(syn::File {
         shebang: None,
@@ -34,11 +111,9 @@ pub(super) fn emit_file(file: &rust_ir::File) -> Result<syn::File, Diagnostic> {
 
 fn emit_function(
     function: &rust_ir::Function,
-    function_names: &BTreeMap<DefId, syn::Ident>,
+    function_paths: &BTreeMap<QualifiedDefId, syn::Path>,
 ) -> Result<syn::ItemFn, Diagnostic> {
-    let name = function_names.get(&function.id).cloned().ok_or_else(|| {
-        Diagnostic::backend(format!("missing Rust symbol for DefId {}", function.id))
-    })?;
+    let name = function_ident(&function.artifact.symbol);
     let parameter_idents = function
         .parameters
         .iter()
@@ -92,13 +167,13 @@ fn emit_function(
 
     let control_flow = match &function.control_flow {
         ControlFlowPlan::StructuredLinear { order } => {
-            emit_structured_linear(function, function_names, order)?
+            emit_structured_linear(function, function_paths, order)?
         }
-        ControlFlowPlan::PcDispatchU32 => emit_pc_dispatch(function, function_names)?,
+        ControlFlowPlan::PcDispatchU32 => emit_pc_dispatch(function, function_paths)?,
     };
 
     let body: syn::Block = if let Some(cleanup) = function.panic_cleanup {
-        let cleanup_flow = emit_pc_dispatch_from(function, function_names, cleanup.entry.0)?;
+        let cleanup_flow = emit_pc_dispatch_from(function, function_paths, cleanup.entry.0)?;
         let active = slot_ident(cleanup.active);
         syn::parse_quote! {{
             #(#initializers)*
@@ -166,7 +241,7 @@ fn emit_function(
 
 fn emit_structured_linear(
     function: &rust_ir::Function,
-    function_names: &BTreeMap<DefId, syn::Ident>,
+    function_names: &BTreeMap<QualifiedDefId, syn::Path>,
     order: &[rust_ir::BasicBlockId],
 ) -> Result<Vec<syn::Stmt>, Diagnostic> {
     let mut emitted = Vec::new();
@@ -221,14 +296,14 @@ fn emit_structured_linear(
 
 fn emit_pc_dispatch(
     function: &rust_ir::Function,
-    function_names: &BTreeMap<DefId, syn::Ident>,
+    function_names: &BTreeMap<QualifiedDefId, syn::Path>,
 ) -> Result<Vec<syn::Stmt>, Diagnostic> {
     emit_pc_dispatch_from(function, function_names, function.entry.0)
 }
 
 fn emit_pc_dispatch_from(
     function: &rust_ir::Function,
-    function_names: &BTreeMap<DefId, syn::Ident>,
+    function_names: &BTreeMap<QualifiedDefId, syn::Path>,
     entry: u32,
 ) -> Result<Vec<syn::Stmt>, Diagnostic> {
     let pc = syn::Ident::new("__gors_pc", Span::mixed_site());
@@ -280,7 +355,7 @@ fn emit_statement(
 fn emit_terminator(
     terminator: &Terminator,
     function: &rust_ir::Function,
-    function_names: &BTreeMap<DefId, syn::Ident>,
+    function_names: &BTreeMap<QualifiedDefId, syn::Path>,
     pc: &syn::Ident,
 ) -> Result<syn::Expr, Diagnostic> {
     match &terminator.kind {
@@ -380,7 +455,7 @@ fn emit_call_writes(call: syn::Expr, destinations: &[rust_ir::Place]) -> Vec<syn
 fn emit_call(
     target: &CallTarget,
     args: Vec<syn::Expr>,
-    function_names: &BTreeMap<DefId, syn::Ident>,
+    function_names: &BTreeMap<QualifiedDefId, syn::Path>,
 ) -> Result<syn::Expr, Diagnostic> {
     match target {
         CallTarget::Function(id) => {

@@ -313,6 +313,18 @@ impl FunctionLowerer {
                 arguments,
                 spread,
             } => {
+                if let ExprSyntaxKind::Selector { base, member } = &callee.kind {
+                    return self.lower_imported_selector_call(
+                        base,
+                        member,
+                        arguments,
+                        *spread,
+                        node,
+                        source,
+                        expected,
+                        allow_discarded_call_result,
+                    );
+                }
                 let ExprSyntaxKind::Ident(callee_ident) = &callee.kind else {
                     return Err(Diagnostic::unsupported(
                         "only direct calls are implemented by the HIR/MIR backend",
@@ -571,11 +583,8 @@ impl FunctionLowerer {
                     source,
                 ));
             }
-            ExprSyntaxKind::Selector { .. } => {
-                return Err(Diagnostic::unsupported(
-                    "selector resolution is not implemented by the HIR/MIR backend",
-                    source,
-                ));
+            ExprSyntaxKind::Selector { base, member } => {
+                self.lower_imported_selector(base, member, node, source)?
             }
             ExprSyntaxKind::CompositeLiteral { ty, elements } => {
                 let Some(ty) = ty else {

@@ -117,6 +117,12 @@ impl QualifiedDefId {
     }
 }
 
+impl fmt::Display for QualifiedDefId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{:?}/{}", self.package, self.definition)
+    }
+}
+
 /// Dense identity of one HIR node within a stable definition owner.
 ///
 /// This pair is unique and deterministic for one rebuilt function, but the

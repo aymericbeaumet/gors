@@ -45,6 +45,12 @@ enum ResolvedImportInputMutationKind {
     Updated {
         input: ResolvedImportsInput,
         previous: Arc<ResolvedFileImports>,
+        previous_targets: Arc<
+            [(
+                crate::compiler::ids::PackageId,
+                super::super::queries::PackageInput,
+            )],
+        >,
     },
     Inserted {
         file: FileId,
@@ -112,20 +118,35 @@ impl CompilerDatabase {
         resolved: Arc<ResolvedFileImports>,
     ) -> Result<(ResolvedImportsUpdate, Option<ResolvedImportInputMutation>), QueryError> {
         let file = resolved.file();
-        if !self.sources.contains_key(&file) {
-            return Err(QueryError::UnknownFile(file));
-        }
-        if let Some(import) = resolved
+        let source = self
+            .sources
+            .get(&file)
+            .copied()
+            .ok_or(QueryError::UnknownFile(file))?;
+        let mut targets = resolved
             .imports()
             .iter()
-            .find(|import| !self.packages.contains_key(&import.target_package()))
-        {
-            return Err(QueryError::UnknownPackage(import.target_package()));
-        }
+            .map(|import| {
+                self.packages
+                    .get(&import.target_package())
+                    .copied()
+                    .map(|input| (import.target_package(), input))
+                    .ok_or_else(|| QueryError::UnknownPackage(import.target_package()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        targets.sort_by_key(|(package, _)| *package);
+        targets.dedup_by_key(|(package, _)| *package);
+        let targets: Arc<
+            [(
+                crate::compiler::ids::PackageId,
+                super::super::queries::PackageInput,
+            )],
+        > = targets.into();
 
         if let Some(input) = self.resolved_imports.get(&file).copied() {
             let previous = input.value(self);
-            if previous.as_ref() == resolved.as_ref() {
+            let previous_targets = input.targets(self);
+            if previous.as_ref() == resolved.as_ref() && previous_targets == targets {
                 return Ok((
                     ResolvedImportsUpdate {
                         file,
@@ -136,6 +157,7 @@ impl CompilerDatabase {
                 ));
             }
             input.set_value(self).to(resolved);
+            input.set_targets(self).to(targets);
             return Ok((
                 ResolvedImportsUpdate {
                     file,
@@ -143,12 +165,18 @@ impl CompilerDatabase {
                     inserted: false,
                 },
                 Some(ResolvedImportInputMutation {
-                    kind: ResolvedImportInputMutationKind::Updated { input, previous },
+                    kind: ResolvedImportInputMutationKind::Updated {
+                        input,
+                        previous,
+                        previous_targets,
+                    },
                 }),
             ));
         }
 
-        let input = ResolvedImportsInput::new(self, file, resolved);
+        let input = source.resolved_imports(self);
+        input.set_value(self).to(resolved);
+        input.set_targets(self).to(targets);
         self.resolved_imports.insert(file, input);
         Ok((
             ResolvedImportsUpdate {
@@ -191,6 +219,7 @@ impl CompilerDatabase {
                 input
                     .set_value(self)
                     .to(Arc::new(ResolvedFileImports::empty(file)));
+                input.set_targets(self).to(Arc::from([]));
             }
         }
     }
@@ -202,14 +231,20 @@ impl CompilerDatabase {
     ) {
         for mutation in mutations {
             match mutation.kind {
-                ResolvedImportInputMutationKind::Updated { input, previous } => {
+                ResolvedImportInputMutationKind::Updated {
+                    input,
+                    previous,
+                    previous_targets,
+                } => {
                     input.set_value(self).to(previous);
+                    input.set_targets(self).to(previous_targets);
                 }
                 ResolvedImportInputMutationKind::Inserted { file, input } => {
                     self.resolved_imports.remove(&file);
                     input
                         .set_value(self)
                         .to(Arc::new(ResolvedFileImports::empty(file)));
+                    input.set_targets(self).to(Arc::from([]));
                 }
                 ResolvedImportInputMutationKind::Removed {
                     file,

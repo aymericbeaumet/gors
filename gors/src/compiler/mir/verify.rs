@@ -5,17 +5,17 @@ mod channels;
 mod containers;
 mod effects;
 mod pointers;
+mod provenance;
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
-    File, Function, LocalDecl, Operand, PanicEdge, Place, Provenance, Rvalue, RvalueKind,
-    Statement, SyntheticOrigin, Terminator, TerminatorKind,
+    File, Function, LocalDecl, Operand, PanicEdge, Place, Rvalue, RvalueKind, Statement,
+    Terminator, TerminatorKind,
 };
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
-use crate::compiler::ids::{BasicBlockId, DefId, LocalId};
-use crate::compiler::provenance::SourceRef;
+use crate::compiler::ids::{BasicBlockId, LocalId, QualifiedDefId};
 use crate::compiler::types::{ComplexTy, ConstValue, FloatTy, IntTy, Signature, Ty};
 use arrays::{verify_array_index, verify_array_literal, verify_array_set};
 use channels::{is_channel_builtin, verify_channel_call};
@@ -25,6 +25,10 @@ use containers::{
 };
 use effects::{read_effects, verify_effects, verify_panic_edge};
 use pointers::verify_int_pointer_type;
+use provenance::{
+    verify_rvalue_provenance, verify_source_provenance, verify_source_ref,
+    verify_statement_provenance, verify_terminator_provenance,
+};
 
 impl File {
     #[cfg(test)]
@@ -33,7 +37,10 @@ impl File {
         let mut names = BTreeSet::new();
         for function in &self.functions {
             if signatures
-                .insert(function.id, function.signature.clone())
+                .insert(
+                    QualifiedDefId::new(self.package_id, function.id),
+                    function.signature.clone(),
+                )
                 .is_some()
             {
                 return Err(Diagnostic::backend(format!(
@@ -53,7 +60,7 @@ impl File {
 
     pub(super) fn verify_with_signatures(
         &self,
-        signatures: &BTreeMap<DefId, Signature>,
+        signatures: &BTreeMap<QualifiedDefId, Signature>,
     ) -> Result<(), Diagnostic> {
         let mut names = BTreeSet::new();
         let mut definitions = BTreeSet::new();
@@ -70,7 +77,8 @@ impl File {
                     function.name
                 )));
             }
-            match signatures.get(&function.id) {
+            let owner = QualifiedDefId::new(self.package_id, function.id);
+            match signatures.get(&owner) {
                 Some(signature) if signature == &function.signature => {}
                 Some(_) => {
                     return Err(Diagnostic::backend(format!(
@@ -94,9 +102,16 @@ impl File {
 impl Function {
     pub(super) fn verify_with_signatures(
         &self,
-        signatures: &BTreeMap<DefId, Signature>,
+        owner: QualifiedDefId,
+        signatures: &BTreeMap<QualifiedDefId, Signature>,
     ) -> Result<(), Diagnostic> {
-        match signatures.get(&self.id) {
+        if owner.definition() != self.id {
+            return Err(Diagnostic::backend(format!(
+                "MIR owner {owner:?} does not identify function DefId {}",
+                self.id
+            )));
+        }
+        match signatures.get(&owner) {
             Some(signature) if signature == &self.signature => {}
             Some(_) => {
                 return Err(Diagnostic::backend(format!(
@@ -114,7 +129,7 @@ impl Function {
         self.verify(signatures)
     }
 
-    fn verify(&self, signatures: &BTreeMap<DefId, Signature>) -> Result<(), Diagnostic> {
+    fn verify(&self, signatures: &BTreeMap<QualifiedDefId, Signature>) -> Result<(), Diagnostic> {
         verify_source_ref(self.source, self.id, "function")?;
         for ty in self.signature.params.iter().chain(&self.signature.results) {
             verify_bootstrap_type(ty, "function signature")?;
@@ -322,7 +337,7 @@ impl Function {
     fn verify_terminator(
         &self,
         terminator: &Terminator,
-        signatures: &BTreeMap<DefId, Signature>,
+        signatures: &BTreeMap<QualifiedDefId, Signature>,
     ) -> Result<(), Diagnostic> {
         verify_terminator_provenance(&terminator.provenance, self.id)?;
         let intrinsic = match &terminator.kind {
@@ -739,71 +754,6 @@ impl Function {
             Operand::Unit => Ok(Ty::Unit),
         }
     }
-}
-
-fn verify_source_provenance(
-    provenance: &Provenance,
-    owner: DefId,
-    context: &str,
-) -> Result<(), Diagnostic> {
-    match provenance {
-        Provenance::Source(source) => verify_source_ref(*source, owner, context),
-        Provenance::Synthetic(
-            SyntheticOrigin::PanicCleanupDispatch | SyntheticOrigin::ZeroValueCall,
-        ) => Ok(()),
-        Provenance::Synthetic(origin) => Err(Diagnostic::backend(format!(
-            "synthetic provenance {origin:?} is invalid for {context}"
-        ))),
-    }
-}
-
-fn verify_statement_provenance(provenance: &Provenance, owner: DefId) -> Result<(), Diagnostic> {
-    match provenance {
-        Provenance::Source(source) => verify_source_ref(*source, owner, "statement"),
-        Provenance::Synthetic(
-            SyntheticOrigin::NamedResultInitialization
-            | SyntheticOrigin::PanicCleanupInitialization,
-        ) => Ok(()),
-        Provenance::Synthetic(other) => Err(Diagnostic::backend(format!(
-            "synthetic provenance {other:?} is invalid for a statement"
-        ))),
-    }
-}
-
-fn verify_rvalue_provenance(provenance: &Provenance, owner: DefId) -> Result<(), Diagnostic> {
-    match provenance {
-        Provenance::Source(source) => verify_source_ref(*source, owner, "rvalue"),
-        Provenance::Synthetic(
-            SyntheticOrigin::NamedResultInitialization
-            | SyntheticOrigin::PanicCleanupInitialization,
-        ) => Ok(()),
-        Provenance::Synthetic(other) => Err(Diagnostic::backend(format!(
-            "synthetic provenance {other:?} is invalid for an rvalue"
-        ))),
-    }
-}
-
-fn verify_terminator_provenance(provenance: &Provenance, owner: DefId) -> Result<(), Diagnostic> {
-    match provenance {
-        Provenance::Source(source) => verify_source_ref(*source, owner, "terminator"),
-        Provenance::Synthetic(
-            SyntheticOrigin::ImplicitReturn
-            | SyntheticOrigin::PanicCleanupDispatch
-            | SyntheticOrigin::ZeroValueCall,
-        ) => Ok(()),
-        Provenance::Synthetic(other) => Err(Diagnostic::backend(format!(
-            "synthetic provenance {other:?} is invalid for a terminator"
-        ))),
-    }
-}
-
-fn verify_source_ref(source: SourceRef, owner: DefId, context: &str) -> Result<(), Diagnostic> {
-    (source.owner() == owner).then_some(()).ok_or_else(|| {
-        Diagnostic::backend(format!(
-            "MIR {context} source reference is owned by DefId {}, expected {owner}",
-            source.owner()
-        ))
-    })
 }
 
 fn rvalue_operands(kind: &RvalueKind) -> Vec<&Operand> {

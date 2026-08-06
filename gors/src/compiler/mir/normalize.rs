@@ -10,7 +10,9 @@ use crate::compiler::Diagnostic;
 #[cfg(test)]
 use crate::compiler::VerifiedMir;
 use crate::compiler::hir;
-use crate::compiler::ids::{BasicBlockId, LocalId};
+#[cfg(test)]
+use crate::compiler::ids::QualifiedDefId;
+use crate::compiler::ids::{BasicBlockId, LocalId, PackageId};
 use crate::compiler::mir::{
     self, Operand, PanicEdge, Provenance, Rvalue, RvalueKind, SyntheticOrigin, Terminator,
     TerminatorKind,
@@ -27,12 +29,14 @@ pub(super) fn normalize(input: VerifiedMir) -> Result<VerifiedMir, Vec<Diagnosti
 
 pub(super) fn normalize_function(
     function: mir::Function,
+    package: PackageId,
     signatures: &mir::SignatureIndex,
 ) -> Result<mir::Function, Vec<Diagnostic>> {
     let boolean_control_flow = BooleanControlFlow;
     let unreachable_blocks = UnreachableBlocks;
     let passes: [&dyn MirPass; 2] = [&boolean_control_flow, &unreachable_blocks];
     let mut file = mir::File {
+        package_id: package,
         package: String::new(),
         functions: vec![function],
     };
@@ -63,7 +67,12 @@ impl<'a> PassManager<'a> {
         let signatures = file
             .functions
             .iter()
-            .map(|function| (function.id, function.signature.clone()))
+            .map(|function| {
+                (
+                    QualifiedDefId::new(file.package_id, function.id),
+                    function.signature.clone(),
+                )
+            })
             .collect();
         self.run_file(&mut file, &signatures)?;
         Ok(VerifiedMir::from_verified(file))

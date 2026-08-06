@@ -13,6 +13,7 @@ use gors_runtime_abi::{PrimitiveOp, RuntimeOp};
 pub(super) fn lower_file(file: mir::File) -> Result<out::File, Diagnostic> {
     let executable_package = file.package == "main";
     Ok(out::File {
+        package_id: file.package_id,
         package: file.package,
         functions: file
             .functions

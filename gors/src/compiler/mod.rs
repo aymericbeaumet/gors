@@ -145,6 +145,7 @@ pub(crate) fn lower_to_hir(filename: &str, source: &str) -> Result<hir::File, Ve
         .collect::<Result<Vec<_>, _>>()?;
     functions.sort_by_key(|function| function.id);
     Ok(hir::File {
+        package_id: database.package_for_file(file).map_err(query_diagnostics)?,
         package: analysis.package().to_string(),
         constants: Vec::new(),
         functions,

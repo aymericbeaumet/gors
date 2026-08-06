@@ -7,6 +7,7 @@ mod closures;
 mod expression_lower;
 mod expressions;
 mod function;
+mod imports;
 mod maps;
 mod numeric_builtins;
 mod pointers;
@@ -24,7 +25,7 @@ use function::FunctionLowerer;
 
 use super::Diagnostic;
 use super::hir;
-use super::ids::{DefId, NodeId};
+use super::ids::{DefId, NodeId, QualifiedDefId};
 use super::provenance::SourceRef;
 use super::syntax::{
     ChannelDirectionSyntax, ConstantSyntax, ConstantValueSyntax, ExprSyntax, ExprSyntaxKind,
@@ -34,15 +35,22 @@ use super::types::{ChannelDir, ConstValue, IntTy, Signature, Ty, UntypedTy};
 
 #[derive(Clone)]
 pub(super) struct FunctionSymbol {
-    pub(super) id: DefId,
+    pub(super) id: QualifiedDefId,
     pub(super) signature: Signature,
 }
 
 #[derive(Clone)]
 pub(super) struct ConstantSymbol {
-    pub(super) id: DefId,
+    pub(super) id: QualifiedDefId,
     pub(super) ty: Ty,
     pub(super) value: ConstValue,
+}
+
+pub(super) struct FunctionSymbols {
+    pub(super) functions: BTreeMap<String, FunctionSymbol>,
+    pub(super) qualified_functions: BTreeMap<(String, String), FunctionSymbol>,
+    pub(super) constants: BTreeMap<String, ConstantSymbol>,
+    pub(super) qualified_constants: BTreeMap<(String, String), ConstantSymbol>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -167,8 +175,7 @@ pub(super) fn lower_function(
     header: &FunctionHeaderSyntax,
     body: &FunctionBodySyntax,
     signature: Signature,
-    functions: BTreeMap<String, FunctionSymbol>,
-    constants: BTreeMap<String, ConstantSymbol>,
+    symbols: FunctionSymbols,
     type_aliases: BTreeMap<String, Ty>,
 ) -> Result<LoweredFunction, FunctionLoweringFailure> {
     let node = NodeId::owner_local(definition, 0);
@@ -188,8 +195,10 @@ pub(super) fn lower_function(
     let mut lowerer = FunctionLowerer {
         owner: definition,
         next_node: 1,
-        functions,
-        constants,
+        functions: symbols.functions,
+        qualified_functions: symbols.qualified_functions,
+        constants: symbols.constants,
+        qualified_constants: symbols.qualified_constants,
         type_aliases,
         signature: signature.clone(),
         locals: Vec::new(),

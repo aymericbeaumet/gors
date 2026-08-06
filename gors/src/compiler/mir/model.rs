@@ -1,12 +1,13 @@
 //! Typed MIR data model.
 
 use crate::compiler::hir;
-use crate::compiler::ids::{BasicBlockId, DefId, LocalId};
+use crate::compiler::ids::{BasicBlockId, DefId, LocalId, PackageId};
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::types::{ConstValue, Signature, Ty};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct File {
+    pub package_id: PackageId,
     pub package: String,
     pub functions: Vec<Function>,
 }

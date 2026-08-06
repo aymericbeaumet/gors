@@ -1,7 +1,9 @@
 //! Canonical encoding of explicit Rust representation IR.
 
 use super::Fingerprint;
-use super::encoder::{Encoder, block_id, def_id, local_id, source_ref};
+use super::encoder::{
+    Encoder, block_id, def_id, local_id, package_id, qualified_def_id, source_ref,
+};
 use crate::compiler::rust_ir;
 use gors_runtime_abi::{PrimitiveOp, RuntimeOp, RuntimeRequirement};
 
@@ -34,6 +36,9 @@ pub(in crate::compiler) fn runtime_requirement(requirement: &RuntimeRequirement)
 }
 
 fn encode_file(encoder: &mut Encoder, file: &rust_ir::File) {
+    encoder.field(b"package-id", |encoder| {
+        package_id(encoder, file.package_id)
+    });
     encoder.field(b"package", |encoder| encoder.string(&file.package));
     encoder.field(b"functions", |encoder| {
         encoder.sequence(&file.functions, encode_function);
@@ -361,7 +366,7 @@ fn encode_terminator_kind(encoder: &mut Encoder, kind: &rust_ir::TerminatorKind)
 fn encode_call_target(encoder: &mut Encoder, target: &rust_ir::CallTarget) {
     match target {
         rust_ir::CallTarget::Function(id) => {
-            encoder.variant(b"function", |encoder| def_id(encoder, *id));
+            encoder.variant(b"function", |encoder| qualified_def_id(encoder, *id));
         }
         rust_ir::CallTarget::Runtime(operation) => {
             encoder.variant(b"runtime", |encoder| {

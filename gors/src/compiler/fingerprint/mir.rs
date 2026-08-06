@@ -2,8 +2,8 @@
 
 use super::Fingerprint;
 use super::encoder::{
-    Encoder, block_id, closure_id, const_value, def_id, hir_effects, local_id, signature,
-    source_ref, ty,
+    Encoder, block_id, closure_id, const_value, def_id, hir_effects, local_id, package_id,
+    qualified_def_id, signature, source_ref, ty,
 };
 use crate::compiler::{hir, mir};
 
@@ -24,6 +24,9 @@ pub fn mir_function(function: &mir::Function) -> Fingerprint {
 }
 
 fn encode_file(encoder: &mut Encoder, file: &mir::File) {
+    encoder.field(b"package-id", |encoder| {
+        package_id(encoder, file.package_id)
+    });
     encoder.field(b"package", |encoder| encoder.string(&file.package));
     encoder.field(b"functions", |encoder| {
         encoder.sequence(&file.functions, encode_function);
@@ -259,7 +262,7 @@ fn encode_terminator_kind(encoder: &mut Encoder, kind: &mir::TerminatorKind) {
 fn encode_callee(encoder: &mut Encoder, callee: hir::Callee) {
     match callee {
         hir::Callee::Function(id) => {
-            encoder.variant(b"function", |encoder| def_id(encoder, id));
+            encoder.variant(b"function", |encoder| qualified_def_id(encoder, id));
         }
         hir::Callee::Closure(id) => {
             encoder.variant(b"closure", |encoder| closure_id(encoder, id));

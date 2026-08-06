@@ -4,11 +4,30 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::*;
 use crate::compiler::Diagnostic;
+use crate::compiler::ids::QualifiedDefId;
 use crate::compiler::provenance::SourceRef;
 use gors_runtime_abi::{RuntimeSignature, RuntimeType};
 
 impl File {
+    #[cfg(test)]
     pub(super) fn verify(&self) -> Result<RuntimeRequirement, Diagnostic> {
+        let signatures = self
+            .functions
+            .iter()
+            .map(|function| {
+                (
+                    QualifiedDefId::new(self.package_id, function.id),
+                    function.signature.clone(),
+                )
+            })
+            .collect();
+        self.verify_with_signatures(&signatures)
+    }
+
+    pub(super) fn verify_with_signatures(
+        &self,
+        signatures: &BTreeMap<QualifiedDefId, Signature>,
+    ) -> Result<RuntimeRequirement, Diagnostic> {
         let entrypoints = self
             .functions
             .iter()
@@ -25,13 +44,16 @@ impl File {
             ));
         }
 
-        let mut signatures = BTreeMap::new();
+        let mut local_signatures = BTreeMap::new();
         let mut names = BTreeSet::new();
         let mut symbols = BTreeSet::new();
         for function in &self.functions {
             function.verify_artifact_plan()?;
-            if signatures
-                .insert(function.id, function.signature.clone())
+            if local_signatures
+                .insert(
+                    QualifiedDefId::new(self.package_id, function.id),
+                    function.signature.clone(),
+                )
                 .is_some()
             {
                 return Err(Diagnostic::backend(format!(
@@ -52,9 +74,18 @@ impl File {
                 )));
             }
         }
+        for (definition, signature) in &local_signatures {
+            if signatures.get(definition) != Some(signature) {
+                return Err(Diagnostic::backend(format!(
+                    "Rust IR signature index disagrees with function {:?}",
+                    definition
+                )));
+            }
+        }
         let mut requirement = RuntimeRequirement::default();
         for function in &self.functions {
-            requirement = requirement.union(&verify_function(function, &signatures)?);
+            let owner = QualifiedDefId::new(self.package_id, function.id);
+            requirement = requirement.union(&verify_function(function, owner, signatures)?);
         }
         Ok(requirement)
     }
@@ -62,10 +93,17 @@ impl File {
 
 pub(super) fn verify_function(
     function: &Function,
-    signatures: &BTreeMap<DefId, Signature>,
+    owner: QualifiedDefId,
+    signatures: &BTreeMap<QualifiedDefId, Signature>,
 ) -> Result<RuntimeRequirement, Diagnostic> {
     function.verify_artifact_plan()?;
-    let Some(indexed) = signatures.get(&function.id) else {
+    if owner.definition() != function.id {
+        return Err(Diagnostic::backend(format!(
+            "Rust IR owner {owner:?} does not identify function DefId {}",
+            function.id
+        )));
+    }
+    let Some(indexed) = signatures.get(&owner) else {
         return Err(Diagnostic::backend(format!(
             "Rust IR signature index is missing function DefId {}",
             function.id
@@ -83,7 +121,7 @@ pub(super) fn verify_function(
 impl Function {
     fn verify(
         &self,
-        signatures: &BTreeMap<DefId, Signature>,
+        signatures: &BTreeMap<QualifiedDefId, Signature>,
     ) -> Result<RuntimeRequirement, Diagnostic> {
         verify_source_ref(self.source, self.id, "function")?;
         if self.entry.0 as usize >= self.blocks.len() {
@@ -320,7 +358,7 @@ impl Function {
     fn verify_terminator(
         &self,
         terminator: &Terminator,
-        signatures: &BTreeMap<DefId, Signature>,
+        signatures: &BTreeMap<QualifiedDefId, Signature>,
     ) -> Result<(), Diagnostic> {
         verify_terminator_provenance(&terminator.provenance, self.id)?;
         match &terminator.kind {

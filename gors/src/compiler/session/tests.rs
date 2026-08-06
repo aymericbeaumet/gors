@@ -448,7 +448,7 @@ fn source_map_plan_owns_entry_comments_across_session_revisions() {
 }
 
 #[test]
-fn reachable_catalog_dependency_is_admitted_before_backend_import_rejection() {
+fn reachable_catalog_dependency_compiles_through_its_declared_package_name() {
     let entry = super::super::input::PackageKey::command_line();
     let dependency = super::super::input::PackageKey::import_path("example/dependency").unwrap();
     let entry_manifest = PackageInputManifest::new(
@@ -456,7 +456,7 @@ fn reachable_catalog_dependency_is_admitted_before_backend_import_rejection() {
         [super::super::input::SourceFileInput::from_source(
             "main.go",
             "/checkout/main.go",
-            "package main\nimport \"example/dependency\"\nfunc main() {}\n",
+            "package main\nimport \"example/dependency\"\nfunc main() { if actualname.Value() != 1 { panic(\"dependency\") } }\n",
         )
         .unwrap()],
     )
@@ -475,13 +475,10 @@ fn reachable_catalog_dependency_is_admitted_before_backend_import_rejection() {
     let input = ProgramInput::new(test_workspace(), entry_manifest, catalog.clone()).unwrap();
     let mut session = CompilerSession::default();
 
-    let error = session
-        .compile_program(input)
-        .err()
-        .expect("the bootstrap boundary must reject direct imports");
+    let compiled = session.compile_program(input).unwrap();
 
-    assert_eq!(error.diagnostics().first().unwrap().code, "GORS2001");
-    assert!(error.to_string().contains("imports are not implemented"));
+    assert_eq!(compiled.modules.len(), 1);
+    assert!(compiled.modules.contains_key("example__dependency"));
     assert_eq!(catalog.request_count(), 1);
     assert_eq!(session.database().active_files().len(), 2);
     let packages = session
@@ -551,12 +548,9 @@ fn recursively_admits_only_reachable_packages_in_dependency_first_layers() {
     let input = ProgramInput::new(test_workspace(), entry, catalog.clone()).unwrap();
     let mut session = CompilerSession::default();
 
-    let error = session
-        .compile_program(input)
-        .err()
-        .expect("backend import support must remain gated after graph admission");
+    let compiled = session.compile_program(input).unwrap();
 
-    assert_eq!(error.diagnostics().first().unwrap().code, "GORS2001");
+    assert_eq!(compiled.modules.len(), 2);
     assert_eq!(catalog.request_count(), 2);
     let dag = session.admitted_package_dag().unwrap();
     assert_eq!(dag.nodes().len(), 3);

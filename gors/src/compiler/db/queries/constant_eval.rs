@@ -69,7 +69,7 @@ fn evaluate(
         constants.insert(
             typed.name.clone(),
             ConstantSymbol {
-                id: typed.id,
+                id: crate::compiler::ids::QualifiedDefId::new(input.package(db), typed.id),
                 ty: typed.ty.clone(),
                 value: typed.value.clone(),
             },

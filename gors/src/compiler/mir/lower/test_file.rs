@@ -16,6 +16,7 @@ pub(in crate::compiler::mir) fn lower_file(file: &hir::File) -> Result<File, Vec
     }
     if diagnostics.is_empty() {
         Ok(File {
+            package_id: file.package_id,
             package: file.package.clone(),
             functions,
         })

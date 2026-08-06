@@ -1,11 +1,12 @@
 //! Explicit Rust representation IR consumed mechanically by syntax emission.
 
-use crate::compiler::ids::{BasicBlockId, DefId, LocalId};
+use crate::compiler::ids::{BasicBlockId, DefId, LocalId, PackageId, QualifiedDefId};
 use crate::compiler::provenance::SourceRef;
 use gors_runtime_abi::{PrimitiveOp, RuntimeOp};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct File {
+    pub package_id: PackageId,
     pub package: String,
     pub functions: Vec<Function>,
 }
@@ -244,7 +245,7 @@ pub enum TerminatorKind {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CallTarget {
-    Function(DefId),
+    Function(QualifiedDefId),
     Runtime(RuntimeOp),
 }
 

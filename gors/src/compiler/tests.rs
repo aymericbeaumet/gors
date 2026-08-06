@@ -882,15 +882,18 @@ fn basic_program_uses_the_hir_mir_pipeline() {
 }
 
 #[test]
-fn imports_fail_before_partial_codegen() {
+fn unresolved_package_selectors_fail_before_codegen() {
     let source = "package main\nimport \"fmt\"\nfunc main() { fmt.Println(1) }\n";
     let result = compile_file("main.go", source);
-    assert!(result.is_err(), "imports must be a semantic diagnostic");
+    assert!(
+        result.is_err(),
+        "unresolved imports must be a semantic diagnostic"
+    );
     let errors = result.err().unwrap();
     assert!(
-        errors
-            .iter()
-            .any(|error| error.message.contains("imported packages")),
+        errors.iter().any(|error| error
+            .message
+            .contains("undefined package function fmt.Println")),
         "{errors:?}"
     );
 }

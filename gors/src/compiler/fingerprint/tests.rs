@@ -314,16 +314,20 @@ fn stage_fingerprints_exclude_presentation_paths() {
 
 #[test]
 fn stage_domains_separate_analogous_file_payloads() {
+    let package_id = lower_stages("package main\nfunc main() {}\n").0.package_id;
     let hir = hir::File {
+        package_id,
         package: "main".into(),
         constants: Vec::new(),
         functions: Vec::new(),
     };
     let mir = mir::File {
+        package_id,
         package: "main".into(),
         functions: Vec::new(),
     };
     let rust_ir = rust_ir::File {
+        package_id,
         package: "main".into(),
         functions: Vec::new(),
     };
