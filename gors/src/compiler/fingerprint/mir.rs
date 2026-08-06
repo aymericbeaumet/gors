@@ -151,6 +151,23 @@ fn encode_rvalue_kind(encoder: &mut Encoder, kind: &mir::RvalueKind) {
             encoder.field(b"index", |encoder| encode_operand(encoder, index));
             encoder.field(b"value", |encoder| encode_operand(encoder, value));
         }),
+        mir::RvalueKind::StructLiteral {
+            fields,
+            ty: literal_ty,
+        } => {
+            encoder.variant(b"struct-literal", |encoder| {
+                encoder.field(b"fields", |encoder| {
+                    encoder.sequence(fields, encode_operand);
+                });
+                encoder.field(b"type", |encoder| ty(encoder, literal_ty));
+            });
+        }
+        mir::RvalueKind::StructField { structure, field } => {
+            encoder.variant(b"struct-field", |encoder| {
+                encoder.field(b"structure", |encoder| encode_operand(encoder, structure));
+                encoder.field(b"field", |encoder| encoder.u32(*field));
+            });
+        }
         mir::RvalueKind::Unary {
             op,
             operand,

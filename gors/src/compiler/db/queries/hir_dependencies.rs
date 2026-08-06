@@ -158,6 +158,14 @@ fn collect_expression_callees(expression: &hir::Expr, callees: &mut BTreeSet<Qua
             collect_expression_callees(index, callees);
         }
         hir::ExprKind::ArrayLen { array, .. } => collect_expression_callees(array, callees),
+        hir::ExprKind::StructLiteral(fields) => {
+            for field in fields {
+                collect_expression_callees(field, callees);
+            }
+        }
+        hir::ExprKind::StructField { structure, .. } => {
+            collect_expression_callees(structure, callees);
+        }
         hir::ExprKind::Constant(_)
         | hir::ExprKind::Local(_)
         | hir::ExprKind::GlobalConstant(..)

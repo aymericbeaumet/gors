@@ -240,6 +240,17 @@ fn encode_rvalue_kind(encoder: &mut Encoder, kind: &rust_ir::RvalueKind) {
             encoder.field(b"index", |encoder| encode_operand(encoder, index));
             encoder.field(b"value", |encoder| encode_operand(encoder, value));
         }),
+        rust_ir::RvalueKind::StructLiteralI64(fields) => {
+            encoder.variant(b"struct-literal-i64", |encoder| {
+                encoder.sequence(fields, encode_operand);
+            });
+        }
+        rust_ir::RvalueKind::StructFieldI64 { structure, field } => {
+            encoder.variant(b"struct-field-i64", |encoder| {
+                encoder.field(b"structure", |encoder| encode_operand(encoder, structure));
+                encoder.field(b"field", |encoder| encoder.u32(*field));
+            });
+        }
     }
 }
 
@@ -410,6 +421,9 @@ fn encode_type(encoder: &mut Encoder, ty: rust_ir::RustType) {
         rust_ir::RustType::GoChannelI64 => encoder.variant(b"go-channel-i64", |_| {}),
         rust_ir::RustType::ArrayI64(length) => {
             encoder.variant(b"array-i64", |encoder| encoder.u64(length));
+        }
+        rust_ir::RustType::StructI64(length) => {
+            encoder.variant(b"struct-i64", |encoder| encoder.u64(length));
         }
     }
 }

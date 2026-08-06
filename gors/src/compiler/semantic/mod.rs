@@ -4,6 +4,7 @@ mod arrays;
 mod assignments;
 mod channels;
 mod closures;
+mod composites;
 mod expression_lower;
 mod expressions;
 mod function;
@@ -14,6 +15,7 @@ mod pointers;
 mod ranges;
 mod selects;
 mod statements;
+mod structs;
 mod switches;
 
 use std::collections::{BTreeMap, BTreeSet};

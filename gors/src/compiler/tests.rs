@@ -1,6 +1,7 @@
 use super::*;
 
 mod channels;
+mod structs;
 
 struct GeneratedRun {
     rust: String,

@@ -192,6 +192,12 @@ fn rewrite_rvalue_boolean_reads(rvalue: &mut Rvalue, constants: &BTreeMap<LocalI
             rewrite_boolean_read(index, constants);
             rewrite_boolean_read(value, constants);
         }
+        RvalueKind::StructLiteral { fields, .. } => {
+            for field in fields {
+                rewrite_boolean_read(field, constants);
+            }
+        }
+        RvalueKind::StructField { structure, .. } => rewrite_boolean_read(structure, constants),
         RvalueKind::RecoverCompareNil { .. } => {}
         RvalueKind::SliceLiteralI64(_)
         | RvalueKind::SliceLiteralU8(_)
@@ -260,6 +266,8 @@ fn refresh_rvalue_effects(rvalue: &mut Rvalue) {
             index,
             value,
         } => operand_reads(array) || operand_reads(index) || operand_reads(value),
+        RvalueKind::StructLiteral { fields, .. } => fields.iter().any(operand_reads),
+        RvalueKind::StructField { structure, .. } => operand_reads(structure),
         RvalueKind::RecoverCompareNil { .. } => true,
         RvalueKind::SliceLiteralI64(_)
         | RvalueKind::SliceLiteralU8(_)

@@ -169,6 +169,15 @@ impl Function {
                 self.transfer_operand(index, state, check_reads)?;
                 self.transfer_operand(value, state, check_reads)
             }
+            RvalueKind::StructLiteral { fields, .. } => {
+                for field in fields {
+                    self.transfer_operand(field, state, check_reads)?;
+                }
+                Ok(())
+            }
+            RvalueKind::StructField { structure, .. } => {
+                self.transfer_operand(structure, state, check_reads)
+            }
             RvalueKind::RecoverCompareNil {
                 state: recovery_state,
                 ..

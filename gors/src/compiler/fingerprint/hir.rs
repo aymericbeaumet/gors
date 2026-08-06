@@ -487,6 +487,19 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
                 encoder.field(b"length", |encoder| encoder.u64(*length));
             });
         }
+        hir::ExprKind::StructLiteral(fields) => {
+            encoder.variant(b"struct-literal", |encoder| {
+                encoder.sequence(fields, encode_expression);
+            });
+        }
+        hir::ExprKind::StructField { structure, field } => {
+            encoder.variant(b"struct-field", |encoder| {
+                encoder.field(b"structure", |encoder| {
+                    encode_expression(encoder, structure);
+                });
+                encoder.field(b"field", |encoder| encoder.u32(*field));
+            });
+        }
         hir::ExprKind::MapLiteralStringI64(entries) => {
             encoder.variant(b"map-literal-string-i64", |encoder| {
                 encoder.sequence(entries, |encoder, (key, value)| {

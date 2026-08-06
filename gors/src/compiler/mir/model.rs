@@ -83,6 +83,14 @@ pub enum RvalueKind {
         index: Operand,
         value: Operand,
     },
+    StructLiteral {
+        fields: Vec<Operand>,
+        ty: Ty,
+    },
+    StructField {
+        structure: Operand,
+        field: u32,
+    },
     Unary {
         op: hir::UnaryOp,
         operand: Operand,

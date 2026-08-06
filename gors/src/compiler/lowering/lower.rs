@@ -163,6 +163,44 @@ fn lower_rvalue(rvalue: mir::Rvalue, locals: &[out::LocalDecl]) -> Result<out::R
             index: lower_operand(index, locals)?,
             value: lower_operand(value, locals)?,
         },
+        mir::RvalueKind::StructLiteral { fields, ty } => {
+            let out::RustType::StructI64(length) = lower_type(&ty)? else {
+                return Err(Diagnostic::backend(
+                    "non-integer struct reached integer struct representation lowering",
+                ));
+            };
+            if fields.len()
+                != usize::try_from(length).map_err(|_| {
+                    Diagnostic::backend("struct representation length does not fit usize")
+                })?
+            {
+                return Err(Diagnostic::backend(
+                    "struct field count changed during representation lowering",
+                ));
+            }
+            out::RvalueKind::StructLiteralI64(
+                fields
+                    .into_iter()
+                    .map(|field| lower_operand(field, locals))
+                    .collect::<Result<Vec<_>, _>>()?,
+            )
+        }
+        mir::RvalueKind::StructField { structure, field } => {
+            let out::RustType::StructI64(length) = mir_operand_type(&structure, locals)? else {
+                return Err(Diagnostic::backend(
+                    "non-integer struct reached integer field representation lowering",
+                ));
+            };
+            if u64::from(field) >= length {
+                return Err(Diagnostic::backend(
+                    "struct field index is outside its representation",
+                ));
+            }
+            out::RvalueKind::StructFieldI64 {
+                structure: lower_operand(structure, locals)?,
+                field,
+            }
+        }
         mir::RvalueKind::Unary { op, operand, ty } => {
             let operand_ty = mir_operand_type(&operand, locals)?;
             let operand = lower_operand(operand, locals)?;
@@ -405,6 +443,7 @@ fn lower_panic_call(
         out::RustType::F64
         | out::RustType::Complex128
         | out::RustType::ArrayI64(_)
+        | out::RustType::StructI64(_)
         | out::RustType::GoSliceI64
         | out::RustType::GoSliceU8
         | out::RustType::GoMapStringI64
@@ -469,6 +508,7 @@ fn lower_print_call(
             out::RustType::F64
             | out::RustType::Complex128
             | out::RustType::ArrayI64(_)
+            | out::RustType::StructI64(_)
             | out::RustType::GoSliceI64
             | out::RustType::GoSliceU8
             | out::RustType::GoMapStringI64
@@ -793,6 +833,17 @@ fn lower_type(ty: &Ty) -> Result<out::RustType, Diagnostic> {
         }
         Ty::Array(length, element) if element.underlying() == &Ty::Int(IntTy::Int) => {
             Ok(out::RustType::ArrayI64(*length))
+        }
+        Ty::Struct(fields)
+            if fields
+                .iter()
+                .all(|field| field.ty.underlying() == &Ty::Int(IntTy::Int)) =>
+        {
+            Ok(out::RustType::StructI64(
+                u64::try_from(fields.len()).map_err(|_| {
+                    Diagnostic::backend("struct representation length does not fit u64")
+                })?,
+            ))
         }
         unsupported => Err(Diagnostic::backend(format!(
             "unsupported Go type reached Rust lowering: {unsupported:?}"

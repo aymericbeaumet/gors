@@ -230,6 +230,11 @@ pub enum ExprKind {
         array: Box<Expr>,
         length: u64,
     },
+    StructLiteral(Vec<Expr>),
+    StructField {
+        structure: Box<Expr>,
+        field: u32,
+    },
     MapLiteralStringI64(Vec<(Expr, Expr)>),
     Call {
         callee: Callee,

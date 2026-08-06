@@ -550,6 +550,20 @@ fn emit_rvalue(rvalue: &Rvalue, function: &rust_ir::Function) -> Result<syn::Exp
                 __gors_array
             }})
         }
+        RvalueKind::StructLiteralI64(fields) => {
+            let fields = fields
+                .iter()
+                .map(|field| emit_operand(field, function))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(syn::parse_quote! { [#(#fields),*] })
+        }
+        RvalueKind::StructFieldI64 { structure, field } => {
+            let structure = emit_operand(structure, function)?;
+            let field = syn::Index::from(usize::try_from(*field).map_err(|_| {
+                Diagnostic::backend("verified struct field index does not fit usize")
+            })?);
+            Ok(syn::parse_quote! { (#structure)[#field] })
+        }
     }
 }
 
@@ -810,6 +824,10 @@ fn emit_type(ty: &RustType) -> Result<syn::Type, Diagnostic> {
         RustType::GoPointerI64 => syn::parse_quote! { ::#runtime_crate::GoPointerI64 },
         RustType::GoChannelI64 => syn::parse_quote! { ::#runtime_crate::GoChannelI64 },
         RustType::ArrayI64(length) => {
+            let length = syn::LitInt::new(&length.to_string(), Span::mixed_site());
+            syn::parse_quote! { [i64; #length] }
+        }
+        RustType::StructI64(length) => {
             let length = syn::LitInt::new(&length.to_string(), Span::mixed_site());
             syn::parse_quote! { [i64; #length] }
         }

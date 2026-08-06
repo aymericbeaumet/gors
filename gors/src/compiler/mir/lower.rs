@@ -8,6 +8,7 @@ mod flow;
 mod maps;
 mod panic_cleanup;
 mod ranges;
+mod structs;
 #[cfg(test)]
 mod test_file;
 
@@ -812,6 +813,12 @@ impl FunctionLowerer {
             }
             hir::ExprKind::ArrayLen { array, length } => {
                 self.lower_array_len_expr(array, *length, expr.source)
+            }
+            hir::ExprKind::StructLiteral(fields) => {
+                self.lower_struct_literal_expr(fields, &expr.ty, expr.source)
+            }
+            hir::ExprKind::StructField { structure, field } => {
+                self.lower_struct_field_expr(structure, *field, &expr.ty, expr.source)
             }
             hir::ExprKind::MapLiteralStringI64(entries) => {
                 self.lower_map_literal(entries, &expr.ty, expr.source)

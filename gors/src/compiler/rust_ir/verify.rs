@@ -349,6 +349,32 @@ impl Function {
                 }
                 array
             }
+            RvalueKind::StructLiteralI64(fields) => {
+                for field in fields {
+                    verify_same(
+                        self.operand_ty(field)?,
+                        RustType::I64,
+                        "struct literal field",
+                    )?;
+                }
+                RustType::StructI64(u64::try_from(fields.len()).map_err(|_| {
+                    Diagnostic::backend("Rust IR struct field count does not fit u64")
+                })?)
+            }
+            RvalueKind::StructFieldI64 { structure, field } => {
+                let structure = self.operand_ty(structure)?;
+                let RustType::StructI64(length) = structure else {
+                    return Err(Diagnostic::backend(format!(
+                        "Rust IR field read has a non-struct operand: {structure:?}"
+                    )));
+                };
+                if u64::from(*field) >= length {
+                    return Err(Diagnostic::backend(format!(
+                        "Rust IR struct field index {field} is outside {length} fields"
+                    )));
+                }
+                RustType::I64
+            }
         };
         verify_effects(rvalue.effects, rvalue_effects(&rvalue.kind), "rvalue")?;
         verify_panic(rvalue.effects, rvalue.panic, "rvalue")?;
@@ -648,6 +674,14 @@ fn collect_rvalue_runtime_operations(rvalue: &Rvalue, operations: &mut Vec<Runti
             collect_operand_runtime_operations(array, operations);
             collect_operand_runtime_operations(index, operations);
             collect_operand_runtime_operations(value, operations);
+        }
+        RvalueKind::StructLiteralI64(fields) => {
+            for field in fields {
+                collect_operand_runtime_operations(field, operations);
+            }
+        }
+        RvalueKind::StructFieldI64 { structure, .. } => {
+            collect_operand_runtime_operations(structure, operations);
         }
         RvalueKind::RecoverCompareNil { .. } => {}
     }

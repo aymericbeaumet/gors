@@ -267,6 +267,44 @@ impl Function {
                 self.operand_ty(index)?,
                 self.operand_ty(value)?,
             )?,
+            RvalueKind::StructLiteral { fields, ty } => {
+                let Ty::Struct(definitions) = ty.underlying() else {
+                    return Err(Diagnostic::backend(
+                        "MIR struct literal has a non-struct type",
+                    ));
+                };
+                if fields.len() != definitions.len() {
+                    return Err(Diagnostic::backend(
+                        "MIR struct literal field count does not match its type",
+                    ));
+                }
+                for (field, definition) in fields.iter().zip(definitions) {
+                    verify_same_type(
+                        &self.operand_ty(field)?,
+                        &definition.ty,
+                        "struct literal field",
+                    )?;
+                }
+                (ty.clone(), hir::Effects::default())
+            }
+            RvalueKind::StructField { structure, field } => {
+                let structure = self.operand_ty(structure)?;
+                let Ty::Struct(fields) = structure.underlying() else {
+                    return Err(Diagnostic::backend(
+                        "MIR field read has a non-struct operand",
+                    ));
+                };
+                let field = fields
+                    .get(usize::try_from(*field).map_err(|_| {
+                        Diagnostic::backend("MIR struct field index does not fit usize")
+                    })?)
+                    .ok_or_else(|| {
+                        Diagnostic::backend(format!(
+                            "MIR struct field index {field} is out of bounds"
+                        ))
+                    })?;
+                (field.ty.clone(), hir::Effects::default())
+            }
             RvalueKind::Unary { op, operand, ty } => {
                 let operand_ty = self.operand_ty(operand)?;
                 let valid = match op {
@@ -768,6 +806,8 @@ fn rvalue_operands(kind: &RvalueKind) -> Vec<&Operand> {
             index,
             value,
         } => vec![array, index, value],
+        RvalueKind::StructLiteral { fields, .. } => fields.iter().collect(),
+        RvalueKind::StructField { structure, .. } => vec![structure],
         RvalueKind::RecoverCompareNil { .. } => Vec::new(),
         RvalueKind::SliceLiteralI64(_)
         | RvalueKind::SliceLiteralU8(_)

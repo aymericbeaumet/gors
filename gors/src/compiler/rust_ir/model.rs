@@ -175,6 +175,11 @@ pub enum RvalueKind {
         index: Operand,
         value: Operand,
     },
+    StructLiteralI64(Vec<Operand>),
+    StructFieldI64 {
+        structure: Operand,
+        field: u32,
+    },
     Binary {
         op: ValueOp,
         left: Operand,
@@ -263,15 +268,19 @@ pub enum RustType {
     GoPointerI64,
     GoChannelI64,
     ArrayI64(u64),
+    StructI64(u64),
 }
 
 impl RustType {
     #[must_use]
     pub fn conservative_read_op(self) -> Option<ReadOp> {
         match self {
-            Self::Bool | Self::I64 | Self::F64 | Self::Complex128 | Self::ArrayI64(_) => {
-                Some(ReadOp::ProvenInitializedCopy)
-            }
+            Self::Bool
+            | Self::I64
+            | Self::F64
+            | Self::Complex128
+            | Self::ArrayI64(_)
+            | Self::StructI64(_) => Some(ReadOp::ProvenInitializedCopy),
             Self::GoString
             | Self::GoSliceI64
             | Self::GoSliceU8
@@ -284,9 +293,12 @@ impl RustType {
 
     pub(super) fn read_op_for_liveness(self, live_after: bool) -> Option<ReadOp> {
         match self {
-            Self::Bool | Self::I64 | Self::F64 | Self::Complex128 | Self::ArrayI64(_) => {
-                Some(ReadOp::ProvenInitializedCopy)
-            }
+            Self::Bool
+            | Self::I64
+            | Self::F64
+            | Self::Complex128
+            | Self::ArrayI64(_)
+            | Self::StructI64(_) => Some(ReadOp::ProvenInitializedCopy),
             Self::GoString
             | Self::GoSliceI64
             | Self::GoSliceU8
@@ -311,7 +323,12 @@ impl RustType {
         matches!(
             (self, op),
             (
-                Self::Bool | Self::I64 | Self::F64 | Self::Complex128 | Self::ArrayI64(_),
+                Self::Bool
+                    | Self::I64
+                    | Self::F64
+                    | Self::Complex128
+                    | Self::ArrayI64(_)
+                    | Self::StructI64(_),
                 ReadOp::ProvenInitializedCopy
             ) | (
                 Self::GoString

@@ -202,6 +202,11 @@ impl Ty {
         if let Self::Tuple(elements) = self {
             return elements.iter().all(Self::is_bootstrap_value);
         }
+        if let Self::Struct(fields) = self {
+            return fields
+                .iter()
+                .all(|field| field.ty.underlying() == &Self::Int(IntTy::Int));
+        }
         matches!(
             self,
             Self::Bool

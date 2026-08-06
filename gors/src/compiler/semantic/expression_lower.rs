@@ -584,78 +584,16 @@ impl FunctionLowerer {
                 ));
             }
             ExprSyntaxKind::Selector { base, member } => {
-                self.lower_imported_selector(base, member, node, source)?
+                self.lower_selector(base, member, node, source)?
             }
-            ExprSyntaxKind::CompositeLiteral { ty, elements } => {
-                let Some(ty) = ty else {
-                    return Err(Diagnostic::unsupported(
-                        "elided composite literal types require an enclosing composite type",
-                        source,
-                    ));
-                };
-                let literal_ty = lower_type(ty, &self.type_aliases, source)?;
-                if matches!(literal_ty.underlying(), Ty::Map(_, _)) {
-                    return self.lower_map_literal(literal_ty, elements, node, source);
-                }
-                if matches!(literal_ty.underlying(), Ty::Array(_, _)) {
-                    return self.lower_array_literal(literal_ty, elements, node, source, expected);
-                }
-                let Ty::Slice(element_ty) = literal_ty.underlying() else {
-                    return Err(Diagnostic::unsupported(
-                        "this composite literal type is not yet implemented",
-                        source,
-                    ));
-                };
-                let integer_elements = element_ty.underlying() == &Ty::Int(IntTy::Int);
-                let byte_elements = element_ty.underlying() == &Ty::Uint(UintTy::Uint8);
-                if !integer_elements && !byte_elements {
-                    return Err(Diagnostic::unsupported(
-                        "slice literals currently require int or byte elements",
-                        source,
-                    ));
-                }
-                let mut values = Vec::with_capacity(elements.len());
-                for element in &**elements {
-                    let element = self.lower_expr(element, Some(element_ty))?;
-                    let Some(ConstValue::Int(value)) = expr_constant(&element) else {
-                        return Err(Diagnostic::unsupported(
-                            "dynamic slice literal elements are not yet implemented",
-                            source,
-                        ));
-                    };
-                    values.push(value.parse::<i64>().map_err(|_| {
-                        Diagnostic::semantic("slice literal element is outside Go int", source)
-                    })?);
-                }
-                let kind = if byte_elements {
-                    hir::ExprKind::SliceLiteralU8(
-                        values
-                            .into_iter()
-                            .map(|value| {
-                                u8::try_from(value).map_err(|_| {
-                                    Diagnostic::semantic(
-                                        "byte slice literal element is outside byte range",
-                                        source,
-                                    )
-                                })
-                            })
-                            .collect::<Result<Vec<_>, _>>()?,
-                    )
-                } else {
-                    hir::ExprKind::SliceLiteralI64(values)
-                };
-                hir::Expr {
-                    node,
-                    kind,
-                    ty: literal_ty,
-                    category: hir::ValueCategory::Value,
-                    effects: hir::Effects {
-                        may_allocate: true,
-                        ..hir::Effects::default()
-                    },
-                    source,
-                }
-            }
+            ExprSyntaxKind::CompositeLiteral { ty, elements } => self.lower_composite_literal(
+                ty.as_deref(),
+                elements,
+                node,
+                expr.source,
+                source,
+                expected,
+            )?,
             ExprSyntaxKind::Index { base, index } => {
                 let base = self.lower_expr(base, None)?;
                 if matches!(base.ty.underlying(), Ty::Map(_, _)) {

@@ -68,6 +68,8 @@ pub(super) fn make_rvalue(
             index,
             value,
         } => operand_reads(array) || operand_reads(index) || operand_reads(value),
+        RvalueKind::StructLiteral { fields, .. } => fields.iter().any(operand_reads),
+        RvalueKind::StructField { structure, .. } => operand_reads(structure),
         RvalueKind::RecoverCompareNil { .. } => true,
         RvalueKind::SliceLiteralI64(_)
         | RvalueKind::SliceLiteralU8(_)
