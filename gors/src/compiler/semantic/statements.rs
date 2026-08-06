@@ -318,6 +318,22 @@ impl FunctionLowerer {
             StmtSyntaxKind::Switch { init, tag, cases } => {
                 return self.lower_switch(stmt, init.as_deref(), tag.as_ref(), cases, source);
             }
+            StmtSyntaxKind::TypeSwitch {
+                init,
+                binding,
+                expression,
+                cases,
+            } => {
+                return self.lower_type_switch(
+                    node,
+                    init.as_deref(),
+                    binding.as_ref(),
+                    expression,
+                    cases,
+                    stmt.source,
+                    source,
+                );
+            }
             StmtSyntaxKind::Select { cases } => {
                 return self.lower_select(node, cases, source);
             }

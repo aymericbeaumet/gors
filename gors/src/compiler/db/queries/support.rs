@@ -341,6 +341,30 @@ impl PackageReferenceCollector {
                 }
                 self.scopes.pop();
             }
+            StmtSyntaxKind::TypeSwitch {
+                init,
+                binding,
+                expression,
+                cases,
+            } => {
+                self.scopes.push(BTreeSet::new());
+                if let Some(init) = init {
+                    self.statement(init);
+                }
+                self.expression(expression);
+                for case in &**cases {
+                    for expression in &*case.expressions {
+                        self.expression(expression);
+                    }
+                    self.scopes.push(BTreeSet::new());
+                    if let Some(binding) = binding {
+                        self.bind(Arc::clone(&binding.name));
+                    }
+                    self.block(&case.body, false);
+                    self.scopes.pop();
+                }
+                self.scopes.pop();
+            }
             StmtSyntaxKind::Select { cases } => {
                 for case in &**cases {
                     self.scopes.push(BTreeSet::new());

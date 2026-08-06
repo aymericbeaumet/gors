@@ -51,7 +51,78 @@ impl FunctionLowerer {
             Diagnostic::semantic("x.(type) is only valid in a type switch", source)
         })?;
         let interface = self.lower_expr(value, None)?;
-        let Ty::Interface(required_methods) = interface.ty.underlying() else {
+        self.build_interface_type_assertion(interface, asserted, comma_ok, node, source)
+    }
+
+    pub(super) fn build_interface_type_assertion(
+        &mut self,
+        interface: hir::Expr,
+        asserted: &ExprSyntax,
+        comma_ok: bool,
+        node: NodeId,
+        source: SourceRef,
+    ) -> Result<hir::Expr, Diagnostic> {
+        let (asserted_ty, type_identity) =
+            self.interface_case_identity(&interface.ty, asserted, source)?;
+        let identity = self.interface_identity_expr(asserted.source, type_identity)?;
+        let effects = interface.effects.union(hir::Effects {
+            may_call: true,
+            may_panic: !comma_ok,
+            ..hir::Effects::default()
+        });
+        let ty = if comma_ok {
+            Ty::Tuple(vec![asserted_ty, Ty::Bool])
+        } else {
+            asserted_ty
+        };
+        Ok(hir::Expr {
+            node,
+            kind: hir::ExprKind::Call {
+                callee: hir::Callee::Builtin(hir::Builtin::InterfaceAssert),
+                args: vec![interface, identity],
+            },
+            ty,
+            category: hir::ValueCategory::Value,
+            effects,
+            source,
+        })
+    }
+
+    pub(super) fn build_interface_type_test(
+        &mut self,
+        interface: hir::Expr,
+        asserted: &ExprSyntax,
+        node: NodeId,
+        source: SourceRef,
+    ) -> Result<(Ty, hir::Expr), Diagnostic> {
+        let (asserted_ty, type_identity) =
+            self.interface_case_identity(&interface.ty, asserted, source)?;
+        let identity = self.interface_identity_expr(asserted.source, type_identity)?;
+        let effects = interface.effects.union(hir::Effects {
+            may_call: true,
+            ..hir::Effects::default()
+        });
+        let test = hir::Expr {
+            node,
+            kind: hir::ExprKind::Call {
+                callee: hir::Callee::Builtin(hir::Builtin::InterfaceIsType),
+                args: vec![interface, identity],
+            },
+            ty: Ty::Bool,
+            category: hir::ValueCategory::Value,
+            effects,
+            source,
+        };
+        Ok((asserted_ty, test))
+    }
+
+    fn interface_case_identity(
+        &self,
+        interface_ty: &Ty,
+        asserted: &ExprSyntax,
+        source: SourceRef,
+    ) -> Result<(Ty, Vec<u8>), Diagnostic> {
+        let Ty::Interface(required_methods) = interface_ty.underlying() else {
             return Err(Diagnostic::semantic(
                 "type assertion requires an interface value",
                 source,
@@ -75,7 +146,7 @@ impl FunctionLowerer {
             return Err(Diagnostic::semantic(
                 format!(
                     "impossible type assertion: {asserted_ty:?} does not implement {:?}",
-                    interface.ty
+                    interface_ty
                 ),
                 source,
             ));
@@ -86,35 +157,22 @@ impl FunctionLowerer {
                 source,
             )
         })?;
-        let identity_node = self.alloc_node(asserted.source)?;
-        let identity = hir::Expr {
+        Ok((asserted_ty, type_identity))
+    }
+
+    fn interface_identity_expr(
+        &mut self,
+        syntax_source: SyntaxSource,
+        type_identity: Vec<u8>,
+    ) -> Result<hir::Expr, Diagnostic> {
+        let identity_node = self.alloc_node(syntax_source)?;
+        Ok(hir::Expr {
             node: identity_node,
             kind: hir::ExprKind::Constant(ConstValue::String(type_identity)),
             ty: Ty::String,
             category: hir::ValueCategory::Constant,
             effects: hir::Effects::default(),
             source: SourceRef::node(identity_node),
-        };
-        let effects = interface.effects.union(hir::Effects {
-            may_call: true,
-            may_panic: !comma_ok,
-            ..hir::Effects::default()
-        });
-        let ty = if comma_ok {
-            Ty::Tuple(vec![asserted_ty, Ty::Bool])
-        } else {
-            asserted_ty
-        };
-        Ok(hir::Expr {
-            node,
-            kind: hir::ExprKind::Call {
-                callee: hir::Callee::Builtin(hir::Builtin::InterfaceAssert),
-                args: vec![interface, identity],
-            },
-            ty,
-            category: hir::ValueCategory::Value,
-            effects,
-            source,
         })
     }
 

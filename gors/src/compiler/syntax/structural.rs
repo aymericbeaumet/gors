@@ -198,6 +198,12 @@ pub enum StmtSyntaxKind {
         tag: Option<ExprSyntax>,
         cases: Arc<[SwitchCaseSyntax]>,
     },
+    TypeSwitch {
+        init: Option<Box<StmtSyntax>>,
+        binding: Option<IdentSyntax>,
+        expression: ExprSyntax,
+        cases: Arc<[SwitchCaseSyntax]>,
+    },
     Select {
         cases: Arc<[SelectCaseSyntax]>,
     },

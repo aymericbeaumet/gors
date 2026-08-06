@@ -20,6 +20,7 @@ mod statements;
 mod static_values;
 mod structs;
 mod switches;
+mod type_switches;
 
 use std::collections::{BTreeMap, BTreeSet};
 

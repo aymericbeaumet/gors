@@ -2,6 +2,7 @@
 
 mod local_types;
 mod positions;
+mod type_switches;
 
 use std::fmt;
 use std::sync::Arc;
@@ -40,6 +41,7 @@ pub enum ProjectionError {
     MissingBodyBrace,
     MissingBodylessTerminator,
     InvalidSwitchBody,
+    InvalidTypeSwitchGuard,
     InvalidChannelDirection,
     InvalidSelectBody,
     MissingTypeName,
@@ -63,6 +65,7 @@ impl fmt::Display for ProjectionError {
             Self::InvalidSwitchBody => {
                 formatter.write_str("parser produced a non-case statement in a switch body")
             }
+            Self::InvalidTypeSwitchGuard => formatter.write_str("invalid parser type-switch guard"),
             Self::InvalidChannelDirection => {
                 formatter.write_str("parser produced an invalid channel direction")
             }
@@ -620,7 +623,7 @@ impl StructuralProjector {
                 value: self.expression(&statement.value)?,
             },
             ast::Stmt::SwitchStmt(statement) => self.switch_statement(statement)?,
-            ast::Stmt::TypeSwitchStmt(_) => StmtSyntaxKind::Unsupported("type switch statement"),
+            ast::Stmt::TypeSwitchStmt(statement) => self.type_switch_statement(statement)?,
         };
         Ok(StmtSyntax { source, kind })
     }

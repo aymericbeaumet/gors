@@ -123,3 +123,40 @@ fn multi_result_assignments_box_interface_destinations_before_writes() {
     assert_eq!(run.stderr, b"true\n8\n");
     assert!(run.rust.contains("go_interface_box_i64"), "{}", run.rust);
 }
+
+#[test]
+fn type_switches_bind_concrete_and_interface_case_values() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            type Marker struct { Value int }
+
+            func classify(value any) int {
+                switch dynamic := value.(type) {
+                case int:
+                    return dynamic + 1
+                case nil:
+                    if dynamic == nil { return 0 }
+                    return -10
+                case bool, string:
+                    if dynamic != nil { return 2 }
+                    return -20
+                default:
+                    if dynamic != nil { return 3 }
+                    return -30
+                }
+            }
+
+            func main() {
+                var empty any
+                println(classify(4), classify(empty), classify(true), classify(Marker{Value: 1}))
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"5 0 2 3\n");
+    assert!(run.rust.contains("go_interface_is_type"), "{}", run.rust);
+    assert!(run.rust.contains("go_interface_unbox_i64"), "{}", run.rust);
+    assert!(run.rust.contains("go_interface_is_nil"), "{}", run.rust);
+}
