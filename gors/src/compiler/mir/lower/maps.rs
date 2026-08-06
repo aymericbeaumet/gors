@@ -59,6 +59,19 @@ impl FunctionLowerer {
             );
             return self.push_statement(make_statement(destination, value, provenance));
         }
+        if let Ty::Array(length, element) = ty.underlying()
+            && element.underlying() == &Ty::Int(crate::compiler::types::IntTy::Int)
+        {
+            let length = usize::try_from(*length).map_err(|_| {
+                Diagnostic::backend("verified bootstrap array length does not fit usize")
+            })?;
+            let value = make_rvalue(
+                RvalueKind::ArrayLiteralI64(vec![0; length]),
+                hir::Effects::default(),
+                provenance.clone(),
+            );
+            return self.push_statement(make_statement(destination, value, provenance));
+        }
         let zero_builtin = if is_string_i64_map(&ty) {
             Some(hir::Builtin::MapStringI64Nil)
         } else if is_int_pointer(&ty) {

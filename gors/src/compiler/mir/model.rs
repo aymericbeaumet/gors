@@ -72,6 +72,16 @@ pub enum RvalueKind {
     Use(Operand),
     SliceLiteralI64(Vec<i64>),
     SliceLiteralU8(Vec<u8>),
+    ArrayLiteralI64(Vec<i64>),
+    ArrayIndexI64 {
+        array: Operand,
+        index: Operand,
+    },
+    ArraySetI64 {
+        array: Operand,
+        index: Operand,
+        value: Operand,
+    },
     Unary {
         op: hir::UnaryOp,
         operand: Operand,

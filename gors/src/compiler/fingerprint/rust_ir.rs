@@ -220,6 +220,21 @@ fn encode_rvalue_kind(encoder: &mut Encoder, kind: &rust_ir::RvalueKind) {
                 encoder.field(b"right", |encoder| encode_operand(encoder, right));
             });
         }
+        rust_ir::RvalueKind::ArrayIndexI64 { array, index } => {
+            encoder.variant(b"array-index-i64", |encoder| {
+                encoder.field(b"array", |encoder| encode_operand(encoder, array));
+                encoder.field(b"index", |encoder| encode_operand(encoder, index));
+            });
+        }
+        rust_ir::RvalueKind::ArraySetI64 {
+            array,
+            index,
+            value,
+        } => encoder.variant(b"array-set-i64", |encoder| {
+            encoder.field(b"array", |encoder| encode_operand(encoder, array));
+            encoder.field(b"index", |encoder| encode_operand(encoder, index));
+            encoder.field(b"value", |encoder| encode_operand(encoder, value));
+        }),
     }
 }
 
@@ -262,6 +277,11 @@ fn encode_constant(encoder: &mut Encoder, constant: &rust_ir::Constant) {
             encoder.variant(b"complex128-bits", |encoder| {
                 encoder.field(b"real", |encoder| encoder.u64(*real));
                 encoder.field(b"imag", |encoder| encoder.u64(*imag));
+            });
+        }
+        rust_ir::Constant::StaticI64Array(values) => {
+            encoder.variant(b"static-i64-array", |encoder| {
+                encoder.sequence(values, |encoder, value| encoder.i64(*value));
             });
         }
         rust_ir::Constant::RuntimeStaticBytes { op, bytes } => {
@@ -371,21 +391,21 @@ fn encode_runtime_op(encoder: &mut Encoder, operation: RuntimeOp) {
 }
 
 fn encode_type(encoder: &mut Encoder, ty: rust_ir::RustType) {
-    encoder.variant(
-        match ty {
-            rust_ir::RustType::Unit => b"unit",
-            rust_ir::RustType::Bool => b"bool",
-            rust_ir::RustType::I64 => b"i64",
-            rust_ir::RustType::F64 => b"f64",
-            rust_ir::RustType::Complex128 => b"complex128",
-            rust_ir::RustType::GoString => b"go-string",
-            rust_ir::RustType::GoSliceI64 => b"go-slice-i64",
-            rust_ir::RustType::GoSliceU8 => b"go-slice-u8",
-            rust_ir::RustType::GoMapStringI64 => b"go-map-string-i64",
-            rust_ir::RustType::GoPointerI64 => b"go-pointer-i64",
-        },
-        |_| {},
-    );
+    match ty {
+        rust_ir::RustType::Unit => encoder.variant(b"unit", |_| {}),
+        rust_ir::RustType::Bool => encoder.variant(b"bool", |_| {}),
+        rust_ir::RustType::I64 => encoder.variant(b"i64", |_| {}),
+        rust_ir::RustType::F64 => encoder.variant(b"f64", |_| {}),
+        rust_ir::RustType::Complex128 => encoder.variant(b"complex128", |_| {}),
+        rust_ir::RustType::GoString => encoder.variant(b"go-string", |_| {}),
+        rust_ir::RustType::GoSliceI64 => encoder.variant(b"go-slice-i64", |_| {}),
+        rust_ir::RustType::GoSliceU8 => encoder.variant(b"go-slice-u8", |_| {}),
+        rust_ir::RustType::GoMapStringI64 => encoder.variant(b"go-map-string-i64", |_| {}),
+        rust_ir::RustType::GoPointerI64 => encoder.variant(b"go-pointer-i64", |_| {}),
+        rust_ir::RustType::ArrayI64(length) => {
+            encoder.variant(b"array-i64", |encoder| encoder.u64(length));
+        }
+    }
 }
 
 fn encode_effects(encoder: &mut Encoder, effects: rust_ir::Effects) {

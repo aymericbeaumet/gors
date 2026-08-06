@@ -146,6 +146,22 @@ fn lower_rvalue(rvalue: mir::Rvalue, locals: &[out::LocalDecl]) -> Result<out::R
                 values: elements,
             }))
         }
+        mir::RvalueKind::ArrayLiteralI64(elements) => out::RvalueKind::Use(out::Operand::Constant(
+            out::Constant::StaticI64Array(elements),
+        )),
+        mir::RvalueKind::ArrayIndexI64 { array, index } => out::RvalueKind::ArrayIndexI64 {
+            array: lower_operand(array, locals)?,
+            index: lower_operand(index, locals)?,
+        },
+        mir::RvalueKind::ArraySetI64 {
+            array,
+            index,
+            value,
+        } => out::RvalueKind::ArraySetI64 {
+            array: lower_operand(array, locals)?,
+            index: lower_operand(index, locals)?,
+            value: lower_operand(value, locals)?,
+        },
         mir::RvalueKind::Unary { op, operand, ty } => {
             let operand_ty = mir_operand_type(&operand, locals)?;
             let operand = lower_operand(operand, locals)?;
@@ -363,6 +379,7 @@ fn lower_panic_call(
         out::RustType::GoString => RuntimeOp::PanicGoString,
         out::RustType::F64
         | out::RustType::Complex128
+        | out::RustType::ArrayI64(_)
         | out::RustType::GoSliceI64
         | out::RustType::GoSliceU8
         | out::RustType::GoMapStringI64
@@ -425,6 +442,7 @@ fn lower_print_call(
             out::RustType::GoString => RuntimeOp::PrintGoString,
             out::RustType::F64
             | out::RustType::Complex128
+            | out::RustType::ArrayI64(_)
             | out::RustType::GoSliceI64
             | out::RustType::GoSliceU8
             | out::RustType::GoMapStringI64
@@ -742,6 +760,9 @@ fn lower_type(ty: &Ty) -> Result<out::RustType, Diagnostic> {
         }
         Ty::Pointer(element) if element.underlying() == &Ty::Int(IntTy::Int) => {
             Ok(out::RustType::GoPointerI64)
+        }
+        Ty::Array(length, element) if element.underlying() == &Ty::Int(IntTy::Int) => {
+            Ok(out::RustType::ArrayI64(*length))
         }
         unsupported => Err(Diagnostic::backend(format!(
             "unsupported Go type reached Rust lowering: {unsupported:?}"

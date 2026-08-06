@@ -12,6 +12,7 @@ use crate::compiler::types::{ConstValue, IntTy, Ty};
 
 #[derive(Clone, Copy)]
 enum RangeKind {
+    Array(u64),
     Slice,
     Map,
 }
@@ -32,6 +33,9 @@ impl FunctionLowerer {
         }
         let provenance = Provenance::Source(source);
         let range_kind = match expression.ty.underlying() {
+            Ty::Array(length, element) if element.underlying() == &Ty::Int(IntTy::Int) => {
+                RangeKind::Array(*length)
+            }
             Ty::Slice(element) if element.underlying() == &Ty::Int(IntTy::Int) => RangeKind::Slice,
             Ty::Map(key, value)
                 if key.underlying() == &Ty::String
@@ -55,21 +59,42 @@ impl FunctionLowerer {
         let length = Place {
             local: self.new_temp(Ty::Int(IntTy::Int)),
         };
-        let after_length = self.new_block(provenance.clone());
-        self.terminate(make_terminator(
-            TerminatorKind::Call {
-                callee: hir::Callee::Builtin(match range_kind {
-                    RangeKind::Slice => hir::Builtin::SliceI64Len,
-                    RangeKind::Map => hir::Builtin::MapStringI64Len,
-                }),
-                args: vec![container.clone()],
-                destinations: vec![length],
-                target: after_length,
-            },
-            call_effects(),
-            provenance.clone(),
-        ))?;
-        self.current = after_length;
+        if let RangeKind::Array(array_length) = range_kind {
+            let array_length = i64::try_from(array_length).map_err(|_| {
+                Diagnostic::backend("verified bootstrap array length does not fit Go int")
+            })?;
+            let value = make_rvalue(
+                RvalueKind::Use(Operand::Constant(
+                    ConstValue::Int(array_length.to_string()),
+                    Ty::Int(IntTy::Int),
+                )),
+                hir::Effects::default(),
+                provenance.clone(),
+            );
+            self.push_statement(make_statement(length, value, provenance.clone()))?;
+        } else {
+            let after_length = self.new_block(provenance.clone());
+            let builtin = match range_kind {
+                RangeKind::Slice => hir::Builtin::SliceI64Len,
+                RangeKind::Map => hir::Builtin::MapStringI64Len,
+                RangeKind::Array(_) => {
+                    return Err(Diagnostic::backend(
+                        "array range length unexpectedly reached runtime lowering",
+                    ));
+                }
+            };
+            self.terminate(make_terminator(
+                TerminatorKind::Call {
+                    callee: hir::Callee::Builtin(builtin),
+                    args: vec![container.clone()],
+                    destinations: vec![length],
+                    target: after_length,
+                },
+                call_effects(),
+                provenance.clone(),
+            ))?;
+            self.current = after_length;
+        }
 
         let index = Place {
             local: self.new_temp(Ty::Int(IntTy::Int)),
@@ -127,6 +152,29 @@ impl FunctionLowerer {
         });
         self.current = body_target;
         match range_kind {
+            RangeKind::Array(_) => {
+                if let Some(hir::Place::Local(local)) = key {
+                    self.assign_range_local(Place { local }, Operand::Read(index), source)?;
+                }
+                if let Some(hir::Place::Local(local)) = value {
+                    let value = make_rvalue(
+                        RvalueKind::ArrayIndexI64 {
+                            array: container,
+                            index: Operand::Read(index),
+                        },
+                        hir::Effects {
+                            may_panic: true,
+                            ..hir::Effects::default()
+                        },
+                        provenance.clone(),
+                    );
+                    self.push_statement(make_statement(
+                        Place { local },
+                        value,
+                        provenance.clone(),
+                    ))?;
+                }
+            }
             RangeKind::Slice => {
                 if let Some(hir::Place::Local(local)) = key {
                     self.assign_range_local(Place { local }, Operand::Read(index), source)?;

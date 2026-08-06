@@ -218,6 +218,12 @@ impl FunctionLowerer {
             return Err(Diagnostic::semantic("len does not accept ...", source));
         }
         let value = self.lower_expr(value, None)?;
+        if let Ty::Array(length, element) = value.ty.underlying()
+            && element.underlying() == &Ty::Int(IntTy::Int)
+        {
+            let length = *length;
+            return self.lower_array_len(value, length, node, source, expected);
+        }
         let builtin = match value.ty.underlying() {
             Ty::Map(key, element)
                 if key.underlying() == &Ty::String

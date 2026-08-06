@@ -1,5 +1,7 @@
 //! Structural, semantic-effect, provenance, and call-ABI MIR verification.
 
+mod arrays;
+mod containers;
 mod pointers;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -13,6 +15,11 @@ use crate::compiler::hir;
 use crate::compiler::ids::{BasicBlockId, DefId, LocalId};
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::types::{ComplexTy, ConstValue, FloatTy, IntTy, Signature, Ty};
+use arrays::{verify_array_index, verify_array_literal, verify_array_set};
+use containers::{
+    map_string_i64_ty, verify_byte_slice_call_arguments, verify_map_call_arguments,
+    verify_slice_call_arguments,
+};
 use pointers::verify_int_pointer_type;
 
 impl File {
@@ -228,6 +235,19 @@ impl Function {
                     ..hir::Effects::default()
                 },
             ),
+            RvalueKind::ArrayLiteralI64(values) => verify_array_literal(values)?,
+            RvalueKind::ArrayIndexI64 { array, index } => {
+                verify_array_index(self.operand_ty(array)?, self.operand_ty(index)?)?
+            }
+            RvalueKind::ArraySetI64 {
+                array,
+                index,
+                value,
+            } => verify_array_set(
+                self.operand_ty(array)?,
+                self.operand_ty(index)?,
+                self.operand_ty(value)?,
+            )?,
             RvalueKind::Unary { op, operand, ty } => {
                 let operand_ty = self.operand_ty(operand)?;
                 let valid = match op {
@@ -780,61 +800,17 @@ fn rvalue_operands(kind: &RvalueKind) -> Vec<&Operand> {
         | RvalueKind::Unary { operand, .. }
         | RvalueKind::Conversion { operand, .. } => vec![operand],
         RvalueKind::Binary { left, right, .. } => vec![left, right],
+        RvalueKind::ArrayIndexI64 { array, index } => vec![array, index],
+        RvalueKind::ArraySetI64 {
+            array,
+            index,
+            value,
+        } => vec![array, index, value],
         RvalueKind::RecoverCompareNil { .. } => Vec::new(),
-        RvalueKind::SliceLiteralI64(_) | RvalueKind::SliceLiteralU8(_) => Vec::new(),
+        RvalueKind::SliceLiteralI64(_)
+        | RvalueKind::SliceLiteralU8(_)
+        | RvalueKind::ArrayLiteralI64(_) => Vec::new(),
     }
-}
-
-fn verify_slice_call_arguments(
-    arguments: &[Ty],
-    expected_len: usize,
-    context: &str,
-) -> Result<(), Diagnostic> {
-    let slice = Ty::Slice(Box::new(Ty::Int(IntTy::Int)));
-    if arguments.len() != expected_len
-        || arguments.first() != Some(&slice)
-        || arguments
-            .get(1..)
-            .unwrap_or_default()
-            .iter()
-            .any(|ty| ty != &Ty::Int(IntTy::Int))
-    {
-        return Err(Diagnostic::backend(format!(
-            "invalid MIR {context} argument types: {arguments:?}"
-        )));
-    }
-    Ok(())
-}
-
-fn verify_byte_slice_call_arguments(
-    arguments: &[Ty],
-    second: &Ty,
-    context: &str,
-) -> Result<(), Diagnostic> {
-    let byte_slice = Ty::Slice(Box::new(Ty::Uint(crate::compiler::types::UintTy::Uint8)));
-    if arguments != [byte_slice, second.clone()] {
-        return Err(Diagnostic::backend(format!(
-            "invalid MIR {context} argument types: {arguments:?}"
-        )));
-    }
-    Ok(())
-}
-
-fn map_string_i64_ty() -> Ty {
-    Ty::Map(Box::new(Ty::String), Box::new(Ty::Int(IntTy::Int)))
-}
-
-fn verify_map_call_arguments(
-    arguments: &[Ty],
-    expected: &[Ty],
-    context: &str,
-) -> Result<(), Diagnostic> {
-    if arguments != expected {
-        return Err(Diagnostic::backend(format!(
-            "invalid MIR {context} argument types: {arguments:?}"
-        )));
-    }
-    Ok(())
 }
 
 fn terminator_operands(kind: &TerminatorKind) -> Vec<&Operand> {

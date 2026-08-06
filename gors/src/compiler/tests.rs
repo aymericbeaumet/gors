@@ -773,6 +773,43 @@ fn generated_maps_support_comma_ok_and_key_value_ranges() {
 }
 
 #[test]
+fn generated_integer_arrays_preserve_value_semantics_and_checked_indexing() {
+    let run = compile_and_run(
+        r#"
+            package main
+            func outOfBoundsPanics() (panicked bool) {
+                defer func() { panicked = recover() != nil }()
+                values := [2]int{1, 2}
+                _ = values[2]
+                return false
+            }
+            func main() {
+                original := [3]int{1, 2: 3}
+                duplicate := original
+                duplicate[1] = 9
+                original[0] += 4
+                total := 0
+                for index, value := range original {
+                    total += index + value
+                }
+                if len(original) != 3 || original[0] != 5 || original[1] != 0 {
+                    panic("array values changed")
+                }
+                if duplicate[0] != 1 || duplicate[1] != 9 || total != 11 {
+                    panic("array copy or range changed")
+                }
+                if !outOfBoundsPanics() { panic("array bounds did not panic") }
+                println("arrays: ok")
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"arrays: ok\n");
+    assert!(run.rust.contains("[i64; 3]"), "{}", run.rust);
+    assert!(run.rust.contains(".get("), "{}", run.rust);
+}
+
+#[test]
 fn generated_integer_pointers_preserve_nil_and_shared_pointee_semantics() {
     let run = compile_and_run(
         r#"

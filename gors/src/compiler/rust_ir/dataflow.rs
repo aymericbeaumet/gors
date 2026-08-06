@@ -321,6 +321,19 @@ impl Function {
                 self.transfer_operand(left, state, check_reads)?;
                 self.transfer_operand(right, state, check_reads)
             }
+            RvalueKind::ArrayIndexI64 { array, index } => {
+                self.transfer_operand(array, state, check_reads)?;
+                self.transfer_operand(index, state, check_reads)
+            }
+            RvalueKind::ArraySetI64 {
+                array,
+                index,
+                value,
+            } => {
+                self.transfer_operand(array, state, check_reads)?;
+                self.transfer_operand(index, state, check_reads)?;
+                self.transfer_operand(value, state, check_reads)
+            }
             RvalueKind::RecoverCompareNil {
                 state: recovery_state,
                 ..
@@ -406,6 +419,19 @@ fn add_rvalue_uses_backwards(rvalue: &Rvalue, live: &mut BTreeSet<LocalId>) {
             add_operand_use(right, live);
             add_operand_use(left, live);
         }
+        RvalueKind::ArrayIndexI64 { array, index } => {
+            add_operand_use(index, live);
+            add_operand_use(array, live);
+        }
+        RvalueKind::ArraySetI64 {
+            array,
+            index,
+            value,
+        } => {
+            add_operand_use(value, live);
+            add_operand_use(index, live);
+            add_operand_use(array, live);
+        }
         RvalueKind::RecoverCompareNil { state, .. } => {
             live.insert(state.local);
         }
@@ -463,6 +489,19 @@ fn plan_rvalue_backwards(
             plan_operand_backwards(right, live, local_types, reverse_plan)?;
             plan_operand_backwards(left, live, local_types, reverse_plan)
         }
+        RvalueKind::ArrayIndexI64 { array, index } => {
+            plan_operand_backwards(index, live, local_types, reverse_plan)?;
+            plan_operand_backwards(array, live, local_types, reverse_plan)
+        }
+        RvalueKind::ArraySetI64 {
+            array,
+            index,
+            value,
+        } => {
+            plan_operand_backwards(value, live, local_types, reverse_plan)?;
+            plan_operand_backwards(index, live, local_types, reverse_plan)?;
+            plan_operand_backwards(array, live, local_types, reverse_plan)
+        }
         RvalueKind::RecoverCompareNil { state, .. } => {
             live.insert(state.local);
             Ok(())
@@ -505,6 +544,19 @@ fn apply_rvalue_plan(
         RvalueKind::Binary { left, right, .. } => {
             apply_operand_plan(left, plan, cursor)?;
             apply_operand_plan(right, plan, cursor)
+        }
+        RvalueKind::ArrayIndexI64 { array, index } => {
+            apply_operand_plan(array, plan, cursor)?;
+            apply_operand_plan(index, plan, cursor)
+        }
+        RvalueKind::ArraySetI64 {
+            array,
+            index,
+            value,
+        } => {
+            apply_operand_plan(array, plan, cursor)?;
+            apply_operand_plan(index, plan, cursor)?;
+            apply_operand_plan(value, plan, cursor)
         }
         RvalueKind::RecoverCompareNil { .. } => Ok(()),
     }
@@ -559,6 +611,19 @@ fn collect_rvalue_reads(rvalue: &Rvalue, reads: &mut Vec<(LocalId, ReadOp)>) {
         RvalueKind::Binary { left, right, .. } => {
             collect_operand_read(left, reads);
             collect_operand_read(right, reads);
+        }
+        RvalueKind::ArrayIndexI64 { array, index } => {
+            collect_operand_read(array, reads);
+            collect_operand_read(index, reads);
+        }
+        RvalueKind::ArraySetI64 {
+            array,
+            index,
+            value,
+        } => {
+            collect_operand_read(array, reads);
+            collect_operand_read(index, reads);
+            collect_operand_read(value, reads);
         }
         RvalueKind::RecoverCompareNil { .. } => {}
     }

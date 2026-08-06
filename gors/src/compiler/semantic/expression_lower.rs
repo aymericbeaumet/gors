@@ -575,6 +575,9 @@ impl FunctionLowerer {
                 if matches!(literal_ty.underlying(), Ty::Map(_, _)) {
                     return self.lower_map_literal(literal_ty, elements, node, source);
                 }
+                if matches!(literal_ty.underlying(), Ty::Array(_, _)) {
+                    return self.lower_array_literal(literal_ty, elements, node, source, expected);
+                }
                 let Ty::Slice(element_ty) = literal_ty.underlying() else {
                     return Err(Diagnostic::unsupported(
                         "this composite literal type is not yet implemented",
@@ -635,6 +638,9 @@ impl FunctionLowerer {
                 let base = self.lower_expr(base, None)?;
                 if matches!(base.ty.underlying(), Ty::Map(_, _)) {
                     return self.lower_map_index(base, index, node, source, expected);
+                }
+                if matches!(base.ty.underlying(), Ty::Array(_, _)) {
+                    return self.lower_array_index(base, index, node, source, expected);
                 }
                 let Ty::Slice(element) = base.ty.underlying() else {
                     return Err(Diagnostic::semantic(

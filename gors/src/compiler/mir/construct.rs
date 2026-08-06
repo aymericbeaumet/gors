@@ -62,8 +62,16 @@ pub(super) fn make_rvalue(
         | RvalueKind::Unary { operand, .. }
         | RvalueKind::Conversion { operand, .. } => operand_reads(operand),
         RvalueKind::Binary { left, right, .. } => operand_reads(left) || operand_reads(right),
+        RvalueKind::ArrayIndexI64 { array, index } => operand_reads(array) || operand_reads(index),
+        RvalueKind::ArraySetI64 {
+            array,
+            index,
+            value,
+        } => operand_reads(array) || operand_reads(index) || operand_reads(value),
         RvalueKind::RecoverCompareNil { .. } => true,
-        RvalueKind::SliceLiteralI64(_) | RvalueKind::SliceLiteralU8(_) => false,
+        RvalueKind::SliceLiteralI64(_)
+        | RvalueKind::SliceLiteralU8(_)
+        | RvalueKind::ArrayLiteralI64(_) => false,
     };
     let effects = intrinsic_effects.union(hir::Effects {
         may_read,

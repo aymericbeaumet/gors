@@ -389,6 +389,8 @@ fn value_op_mut<'a>(
                 rust_ir::RvalueKind::Use(_)
                 | rust_ir::RvalueKind::Unary { .. }
                 | rust_ir::RvalueKind::RecoverCompareNil { .. }
+                | rust_ir::RvalueKind::ArrayIndexI64 { .. }
+                | rust_ir::RvalueKind::ArraySetI64 { .. }
                 | rust_ir::RvalueKind::Binary { .. } => {}
             }
         }
@@ -434,6 +436,17 @@ fn rvalue_runtime_static_op_mut(
                 operand_runtime_static_op_mut(right, expected)
             }
         }
+        rust_ir::RvalueKind::ArrayIndexI64 { array, index } => {
+            operand_runtime_static_op_mut(array, expected)
+                .or_else(|| operand_runtime_static_op_mut(index, expected))
+        }
+        rust_ir::RvalueKind::ArraySetI64 {
+            array,
+            index,
+            value,
+        } => operand_runtime_static_op_mut(array, expected)
+            .or_else(|| operand_runtime_static_op_mut(index, expected))
+            .or_else(|| operand_runtime_static_op_mut(value, expected)),
         rust_ir::RvalueKind::RecoverCompareNil { .. } => None,
     }
 }

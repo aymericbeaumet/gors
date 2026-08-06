@@ -165,6 +165,15 @@ pub enum RvalueKind {
         state: Place,
         equal: bool,
     },
+    ArrayIndexI64 {
+        array: Operand,
+        index: Operand,
+    },
+    ArraySetI64 {
+        array: Operand,
+        index: Operand,
+        value: Operand,
+    },
     Binary {
         op: ValueOp,
         left: Operand,
@@ -201,6 +210,7 @@ pub enum Constant {
     I64(i64),
     F64(u64),
     Complex128 { real: u64, imag: u64 },
+    StaticI64Array(Vec<i64>),
     RuntimeStaticBytes { op: RuntimeOp, bytes: Vec<u8> },
     RuntimeStaticI64s { op: RuntimeOp, values: Vec<i64> },
     RuntimeStaticU8s { op: RuntimeOp, values: Vec<u8> },
@@ -250,13 +260,14 @@ pub enum RustType {
     GoSliceU8,
     GoMapStringI64,
     GoPointerI64,
+    ArrayI64(u64),
 }
 
 impl RustType {
     #[must_use]
     pub fn conservative_read_op(self) -> Option<ReadOp> {
         match self {
-            Self::Bool | Self::I64 | Self::F64 | Self::Complex128 => {
+            Self::Bool | Self::I64 | Self::F64 | Self::Complex128 | Self::ArrayI64(_) => {
                 Some(ReadOp::ProvenInitializedCopy)
             }
             Self::GoString
@@ -270,7 +281,7 @@ impl RustType {
 
     pub(super) fn read_op_for_liveness(self, live_after: bool) -> Option<ReadOp> {
         match self {
-            Self::Bool | Self::I64 | Self::F64 | Self::Complex128 => {
+            Self::Bool | Self::I64 | Self::F64 | Self::Complex128 | Self::ArrayI64(_) => {
                 Some(ReadOp::ProvenInitializedCopy)
             }
             Self::GoString
@@ -295,7 +306,7 @@ impl RustType {
         matches!(
             (self, op),
             (
-                Self::Bool | Self::I64 | Self::F64 | Self::Complex128,
+                Self::Bool | Self::I64 | Self::F64 | Self::Complex128 | Self::ArrayI64(_),
                 ReadOp::ProvenInitializedCopy
             ) | (
                 Self::GoString

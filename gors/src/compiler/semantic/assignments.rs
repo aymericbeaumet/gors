@@ -50,6 +50,9 @@ impl FunctionLowerer {
         }
         let container = self.lower_expr(base, None)?;
         match container.ty.underlying() {
+            Ty::Array(_, element) if element.underlying() == &Ty::Int(IntTy::Int) => {
+                self.lower_array_assignment(container, index, token, value, source)
+            }
             Ty::Slice(element) if element.underlying() == &Ty::Int(IntTy::Int) => {
                 let element_ty = element.as_ref().clone();
                 let index = self.lower_expr(index, Some(&Ty::Int(IntTy::Int)))?;

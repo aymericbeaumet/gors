@@ -143,6 +143,12 @@ pub enum StmtKind {
         op: AssignOp,
         value: Expr,
     },
+    ArrayAssign {
+        array: LocalId,
+        index: Expr,
+        op: AssignOp,
+        value: Expr,
+    },
     MapAssign {
         map: Expr,
         key: Expr,
@@ -214,6 +220,15 @@ pub enum ExprKind {
     },
     SliceLiteralI64(Vec<i64>),
     SliceLiteralU8(Vec<u8>),
+    ArrayLiteralI64(Vec<i64>),
+    ArrayIndexI64 {
+        array: Box<Expr>,
+        index: Box<Expr>,
+    },
+    ArrayLen {
+        array: Box<Expr>,
+        length: u64,
+    },
     MapLiteralStringI64(Vec<(Expr, Expr)>),
     Call {
         callee: Callee,

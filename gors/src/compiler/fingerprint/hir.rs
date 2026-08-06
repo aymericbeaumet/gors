@@ -319,6 +319,17 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
             encoder.field(b"operation", |encoder| encode_assign_op(encoder, *op));
             encoder.field(b"value", |encoder| encode_expression(encoder, value));
         }),
+        hir::StmtKind::ArrayAssign {
+            array,
+            index,
+            op,
+            value,
+        } => encoder.variant(b"array-assign", |encoder| {
+            encoder.field(b"array", |encoder| local_id(encoder, *array));
+            encoder.field(b"index", |encoder| encode_expression(encoder, index));
+            encoder.field(b"operation", |encoder| encode_assign_op(encoder, *op));
+            encoder.field(b"value", |encoder| encode_expression(encoder, value));
+        }),
         hir::StmtKind::MapAssign { map, key, value } => {
             encoder.variant(b"map-assign", |encoder| {
                 encoder.field(b"map", |encoder| encode_expression(encoder, map));
@@ -455,6 +466,23 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
         }
         hir::ExprKind::SliceLiteralU8(elements) => {
             encoder.variant(b"slice-literal-u8", |encoder| encoder.blob(elements));
+        }
+        hir::ExprKind::ArrayLiteralI64(elements) => {
+            encoder.variant(b"array-literal-i64", |encoder| {
+                encoder.sequence(elements, |encoder, element| encoder.i64(*element));
+            });
+        }
+        hir::ExprKind::ArrayIndexI64 { array, index } => {
+            encoder.variant(b"array-index-i64", |encoder| {
+                encoder.field(b"array", |encoder| encode_expression(encoder, array));
+                encoder.field(b"index", |encoder| encode_expression(encoder, index));
+            });
+        }
+        hir::ExprKind::ArrayLen { array, length } => {
+            encoder.variant(b"array-len", |encoder| {
+                encoder.field(b"array", |encoder| encode_expression(encoder, array));
+                encoder.field(b"length", |encoder| encoder.u64(*length));
+            });
         }
         hir::ExprKind::MapLiteralStringI64(entries) => {
             encoder.variant(b"map-literal-string-i64", |encoder| {

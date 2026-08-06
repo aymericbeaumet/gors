@@ -1,5 +1,6 @@
 //! Definition-demanded name resolution and type checking over owned syntax.
 
+mod arrays;
 mod assignments;
 mod closures;
 mod expression_lower;
@@ -306,16 +307,15 @@ pub(super) fn lower_type(
     type_aliases: &BTreeMap<String, Ty>,
     source: SourceRef,
 ) -> Result<Ty, Diagnostic> {
-    if let ExprSyntaxKind::ArrayType {
-        length: None,
-        element,
-    } = &expression.kind
-    {
-        return Ok(Ty::Slice(Box::new(lower_type(
-            element,
-            type_aliases,
-            source,
-        )?)));
+    if let ExprSyntaxKind::ArrayType { length, element } = &expression.kind {
+        return match length {
+            None => Ok(Ty::Slice(Box::new(lower_type(
+                element,
+                type_aliases,
+                source,
+            )?))),
+            Some(length) => arrays::lower_array_type(length, element, type_aliases, source),
+        };
     }
     if let ExprSyntaxKind::MapType { key, value } = &expression.kind {
         return Ok(Ty::Map(

@@ -128,6 +128,26 @@ fn encode_rvalue_kind(encoder: &mut Encoder, kind: &mir::RvalueKind) {
         mir::RvalueKind::SliceLiteralU8(elements) => {
             encoder.variant(b"slice-literal-u8", |encoder| encoder.blob(elements));
         }
+        mir::RvalueKind::ArrayLiteralI64(elements) => {
+            encoder.variant(b"array-literal-i64", |encoder| {
+                encoder.sequence(elements, |encoder, element| encoder.i64(*element));
+            });
+        }
+        mir::RvalueKind::ArrayIndexI64 { array, index } => {
+            encoder.variant(b"array-index-i64", |encoder| {
+                encoder.field(b"array", |encoder| encode_operand(encoder, array));
+                encoder.field(b"index", |encoder| encode_operand(encoder, index));
+            });
+        }
+        mir::RvalueKind::ArraySetI64 {
+            array,
+            index,
+            value,
+        } => encoder.variant(b"array-set-i64", |encoder| {
+            encoder.field(b"array", |encoder| encode_operand(encoder, array));
+            encoder.field(b"index", |encoder| encode_operand(encoder, index));
+            encoder.field(b"value", |encoder| encode_operand(encoder, value));
+        }),
         mir::RvalueKind::Unary {
             op,
             operand,

@@ -25,6 +25,9 @@ impl FunctionLowerer {
     ) -> Result<hir::StmtKind, Diagnostic> {
         let expression = self.lower_expr(range_expression, None)?;
         let (key_ty, value_ty) = match expression.ty.underlying() {
+            Ty::Array(_, element) if element.underlying() == &Ty::Int(IntTy::Int) => {
+                (Ty::Int(IntTy::Int), element.as_ref().clone())
+            }
             Ty::Slice(element) if element.underlying() == &Ty::Int(IntTy::Int) => {
                 (Ty::Int(IntTy::Int), element.as_ref().clone())
             }

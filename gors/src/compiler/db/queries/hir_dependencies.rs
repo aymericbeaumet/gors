@@ -70,6 +70,10 @@ fn collect_statement_callees(statement: &hir::Stmt, callees: &mut BTreeSet<DefId
             collect_expression_callees(index, callees);
             collect_expression_callees(value, callees);
         }
+        hir::StmtKind::ArrayAssign { index, value, .. } => {
+            collect_expression_callees(index, callees);
+            collect_expression_callees(value, callees);
+        }
         hir::StmtKind::MapAssign { map, key, value } => {
             collect_expression_callees(map, callees);
             collect_expression_callees(key, callees);
@@ -149,11 +153,17 @@ fn collect_expression_callees(expression: &hir::Expr, callees: &mut BTreeSet<Def
                 collect_expression_callees(value, callees);
             }
         }
+        hir::ExprKind::ArrayIndexI64 { array, index } => {
+            collect_expression_callees(array, callees);
+            collect_expression_callees(index, callees);
+        }
+        hir::ExprKind::ArrayLen { array, .. } => collect_expression_callees(array, callees),
         hir::ExprKind::Constant(_)
         | hir::ExprKind::Local(_)
         | hir::ExprKind::GlobalConstant(..)
         | hir::ExprKind::RecoverCompareNil { .. }
         | hir::ExprKind::SliceLiteralI64(_)
-        | hir::ExprKind::SliceLiteralU8(_) => {}
+        | hir::ExprKind::SliceLiteralU8(_)
+        | hir::ExprKind::ArrayLiteralI64(_) => {}
     }
 }

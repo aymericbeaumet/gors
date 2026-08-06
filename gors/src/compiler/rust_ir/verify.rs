@@ -283,6 +283,34 @@ impl Function {
                 let right = self.operand_ty(right)?;
                 verify_value_operation(*op, &[left, right], "binary operation")?
             }
+            RvalueKind::ArrayIndexI64 { array, index } => {
+                let array = self.operand_ty(array)?;
+                let index = self.operand_ty(index)?;
+                if !matches!(array, RustType::ArrayI64(_)) || index != RustType::I64 {
+                    return Err(Diagnostic::backend(format!(
+                        "invalid Rust IR array index types: {array:?}[{index:?}]"
+                    )));
+                }
+                RustType::I64
+            }
+            RvalueKind::ArraySetI64 {
+                array,
+                index,
+                value,
+            } => {
+                let array = self.operand_ty(array)?;
+                let index = self.operand_ty(index)?;
+                let value = self.operand_ty(value)?;
+                if !matches!(array, RustType::ArrayI64(_))
+                    || index != RustType::I64
+                    || value != RustType::I64
+                {
+                    return Err(Diagnostic::backend(format!(
+                        "invalid Rust IR array update types: {array:?}[{index:?}] = {value:?}"
+                    )));
+                }
+                array
+            }
         };
         verify_effects(rvalue.effects, rvalue_effects(&rvalue.kind), "rvalue")?;
         verify_panic(rvalue.effects, rvalue.panic, "rvalue")?;
@@ -484,6 +512,10 @@ fn constant_type(constant: &Constant) -> Result<RustType, Diagnostic> {
         Constant::I64(_) => Ok(RustType::I64),
         Constant::F64(_) => Ok(RustType::F64),
         Constant::Complex128 { .. } => Ok(RustType::Complex128),
+        Constant::StaticI64Array(values) => Ok(RustType::ArrayI64(
+            u64::try_from(values.len())
+                .map_err(|_| Diagnostic::backend("Rust IR array length does not fit u64"))?,
+        )),
         Constant::RuntimeStaticBytes { op, .. } => {
             let signature = op.signature();
             if signature.parameters() == [RuntimeType::StaticByteSlice]
@@ -547,6 +579,19 @@ fn collect_rvalue_runtime_operations(rvalue: &Rvalue, operations: &mut Vec<Runti
             collect_value_runtime_operation(*op, operations);
             collect_operand_runtime_operations(left, operations);
             collect_operand_runtime_operations(right, operations);
+        }
+        RvalueKind::ArrayIndexI64 { array, index } => {
+            collect_operand_runtime_operations(array, operations);
+            collect_operand_runtime_operations(index, operations);
+        }
+        RvalueKind::ArraySetI64 {
+            array,
+            index,
+            value,
+        } => {
+            collect_operand_runtime_operations(array, operations);
+            collect_operand_runtime_operations(index, operations);
+            collect_operand_runtime_operations(value, operations);
         }
         RvalueKind::RecoverCompareNil { .. } => {}
     }

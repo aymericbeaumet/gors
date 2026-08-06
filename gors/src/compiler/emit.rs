@@ -425,6 +425,56 @@ fn emit_rvalue(rvalue: &Rvalue, function: &rust_ir::Function) -> Result<syn::Exp
             let right = emit_operand(right, function)?;
             emit_value_op(*op, vec![left, right])
         }
+        RvalueKind::ArrayIndexI64 { array, index } => {
+            let array = emit_operand(array, function)?;
+            let index = emit_operand(index, function)?;
+            Ok(syn::parse_quote! {{
+                let __gors_array = #array;
+                let __gors_index_value = #index;
+                let ::std::result::Result::Ok(__gors_index) =
+                    ::std::primitive::usize::try_from(__gors_index_value)
+                else {
+                    ::std::panic::resume_unwind(::std::boxed::Box::new(
+                        "runtime error: index out of range"
+                    ));
+                };
+                *__gors_array.get(__gors_index).unwrap_or_else(|| {
+                    ::std::panic::resume_unwind(::std::boxed::Box::new(
+                        "runtime error: index out of range"
+                    ))
+                })
+            }})
+        }
+        RvalueKind::ArraySetI64 {
+            array,
+            index,
+            value,
+        } => {
+            let array = emit_operand(array, function)?;
+            let index = emit_operand(index, function)?;
+            let value = emit_operand(value, function)?;
+            Ok(syn::parse_quote! {{
+                let mut __gors_array = #array;
+                let __gors_index_value = #index;
+                let __gors_value = #value;
+                let ::std::result::Result::Ok(__gors_index) =
+                    ::std::primitive::usize::try_from(__gors_index_value)
+                else {
+                    ::std::panic::resume_unwind(::std::boxed::Box::new(
+                        "runtime error: index out of range"
+                    ));
+                };
+                let ::std::option::Option::Some(__gors_target) =
+                    __gors_array.get_mut(__gors_index)
+                else {
+                    ::std::panic::resume_unwind(::std::boxed::Box::new(
+                        "runtime error: index out of range"
+                    ));
+                };
+                *__gors_target = __gors_value;
+                __gors_array
+            }})
+        }
     }
 }
 
@@ -630,6 +680,13 @@ fn emit_constant(value: &Constant) -> Result<syn::Expr, Diagnostic> {
                 ]
             })
         }
+        Constant::StaticI64Array(values) => {
+            let values = values
+                .iter()
+                .map(|value| emit_constant(&Constant::I64(*value)))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(syn::parse_quote! { [#(#values),*] })
+        }
         Constant::RuntimeStaticBytes { op, bytes } => {
             let bytes = syn::LitByteStr::new(bytes, Span::mixed_site());
             Ok(emit_runtime_call(*op, vec![syn::parse_quote! { #bytes }]))
@@ -676,6 +733,10 @@ fn emit_type(ty: &RustType) -> Result<syn::Type, Diagnostic> {
         RustType::GoSliceU8 => syn::parse_quote! { ::#runtime_crate::GoSliceU8 },
         RustType::GoMapStringI64 => syn::parse_quote! { ::#runtime_crate::GoMapStringI64 },
         RustType::GoPointerI64 => syn::parse_quote! { ::#runtime_crate::GoPointerI64 },
+        RustType::ArrayI64(length) => {
+            let length = syn::LitInt::new(&length.to_string(), Span::mixed_site());
+            syn::parse_quote! { [i64; #length] }
+        }
     })
 }
 

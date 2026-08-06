@@ -21,12 +21,34 @@ pub(in crate::compiler) fn rvalue_effects(kind: &RvalueKind) -> Effects {
             may_write: true,
             ..Effects::default()
         },
+        RvalueKind::ArrayIndexI64 { .. } => Effects {
+            may_call: true,
+            may_panic: true,
+            ..Effects::default()
+        },
+        RvalueKind::ArraySetI64 { .. } => Effects {
+            may_write: true,
+            may_call: true,
+            may_panic: true,
+            ..Effects::default()
+        },
     };
     let operands = match kind {
         RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => operand_effects(operand),
         RvalueKind::Binary { left, right, .. } => {
             union(operand_effects(left), operand_effects(right))
         }
+        RvalueKind::ArrayIndexI64 { array, index } => {
+            union(operand_effects(array), operand_effects(index))
+        }
+        RvalueKind::ArraySetI64 {
+            array,
+            index,
+            value,
+        } => union(
+            union(operand_effects(array), operand_effects(index)),
+            operand_effects(value),
+        ),
         RvalueKind::RecoverCompareNil { .. } => Effects::default(),
     };
     union(intrinsic, operands)
@@ -134,7 +156,11 @@ fn operand_effects(operand: &Operand) -> Effects {
             | Constant::RuntimeStaticU8s { op, .. },
         ) => runtime_effects(*op),
         Operand::Constant(
-            Constant::Bool(_) | Constant::I64(_) | Constant::F64(_) | Constant::Complex128 { .. },
+            Constant::Bool(_)
+            | Constant::I64(_)
+            | Constant::F64(_)
+            | Constant::Complex128 { .. }
+            | Constant::StaticI64Array(_),
         )
         | Operand::Unit => Effects::default(),
     }

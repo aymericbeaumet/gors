@@ -1,5 +1,6 @@
 //! Evaluation-order-explicit lowering from typed HIR to MIR.
 
+mod arrays;
 mod assignments;
 mod closures;
 mod expressions;
@@ -535,6 +536,14 @@ impl FunctionLowerer {
                 ))?;
                 self.current = after_set;
             }
+            hir::StmtKind::ArrayAssign {
+                array,
+                index,
+                op,
+                value,
+            } => {
+                self.lower_array_assignment_stmt(*array, index, *op, value, statement.source)?;
+            }
             hir::StmtKind::MapAssign { map, key, value } => {
                 self.lower_map_assignment(map, key, value, statement.source)?;
             }
@@ -794,6 +803,15 @@ impl FunctionLowerer {
                 );
                 self.push_statement(make_statement(place, value, provenance))?;
                 Ok(Operand::Read(place))
+            }
+            hir::ExprKind::ArrayLiteralI64(elements) => {
+                self.lower_array_literal_expr(elements, &expr.ty, expr.source)
+            }
+            hir::ExprKind::ArrayIndexI64 { array, index } => {
+                self.lower_array_index_expr(array, index, &expr.ty, expr.source)
+            }
+            hir::ExprKind::ArrayLen { array, length } => {
+                self.lower_array_len_expr(array, *length, expr.source)
             }
             hir::ExprKind::MapLiteralStringI64(entries) => {
                 self.lower_map_literal(entries, &expr.ty, expr.source)
