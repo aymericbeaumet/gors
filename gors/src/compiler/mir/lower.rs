@@ -156,12 +156,6 @@ impl FunctionLowerer {
 
         let mut labels = Vec::new();
         collect_labels(&hir.body, &mut labels);
-        if body_entry.is_some() && !labels.is_empty() {
-            return Err(Diagnostic::unsupported(
-                "functions combining defer with labels are not yet implemented",
-                hir.source,
-            ));
-        }
         for (label, source) in labels {
             let target = lowerer.new_block(Provenance::Source(source));
             if lowerer.labels.insert(label.clone(), target).is_some() {
