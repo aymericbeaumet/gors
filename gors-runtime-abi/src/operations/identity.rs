@@ -95,6 +95,11 @@ impl RuntimeOp {
             Self::GoMapStringInterfaceGet => 91,
             Self::GoMapStringInterfaceContains => 92,
             Self::GoMapStringInterfaceSet => 93,
+            Self::GoSliceU8Len => 94,
+            Self::GoSliceU8Index => 95,
+            Self::GoSliceU8Range => 96,
+            Self::GoStringIndex => 97,
+            Self::GoStringRange => 98,
         })
     }
 }

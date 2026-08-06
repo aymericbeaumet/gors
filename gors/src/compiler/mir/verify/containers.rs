@@ -39,6 +39,27 @@ pub(super) fn verify_byte_slice_call_arguments(
     Ok(())
 }
 
+pub(super) fn verify_byte_slice_integer_arguments(
+    arguments: &[Ty],
+    expected_len: usize,
+    context: &str,
+) -> Result<(), Diagnostic> {
+    let byte_slice = Ty::Slice(Box::new(Ty::Uint(UintTy::Uint8)));
+    if arguments.len() != expected_len
+        || arguments.first() != Some(&byte_slice)
+        || arguments
+            .get(1..)
+            .unwrap_or_default()
+            .iter()
+            .any(|ty| ty != &Ty::Int(IntTy::Int))
+    {
+        return Err(Diagnostic::backend(format!(
+            "invalid MIR {context} argument types: {arguments:?}"
+        )));
+    }
+    Ok(())
+}
+
 pub(super) fn verify_bool_slice_call(
     builtin: hir::Builtin,
     arguments: &[Ty],

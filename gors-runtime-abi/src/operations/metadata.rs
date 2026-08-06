@@ -93,6 +93,11 @@ impl RuntimeOp {
             | Self::GoMapStringInterfaceGet
             | Self::GoMapStringInterfaceContains
             | Self::GoMapStringInterfaceSet
+            | Self::GoSliceU8Len
+            | Self::GoSliceU8Index
+            | Self::GoSliceU8Range
+            | Self::GoStringIndex
+            | Self::GoStringRange
             | Self::GoChannelI64Nil
             | Self::GoChannelI64Make
             | Self::GoChannelI64Len
@@ -165,20 +170,24 @@ impl RuntimeOp {
                 HostIoEffect::None,
                 NO_GO_PANICS,
             ),
-            Self::GoSliceI64Index | Self::GoSliceBoolIndex | Self::GoSliceInterfaceIndex => {
+            Self::GoSliceI64Index
+            | Self::GoSliceU8Index
+            | Self::GoSliceBoolIndex
+            | Self::GoSliceInterfaceIndex
+            | Self::GoStringIndex => RuntimeEffects::new(
+                AllocationEffect::None,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                INDEX_OUT_OF_RANGE,
+            ),
+            Self::GoSliceI64Range | Self::GoSliceU8Range | Self::GoStringRange => {
                 RuntimeEffects::new(
                     AllocationEffect::None,
                     ArgumentMutationEffect::None,
                     HostIoEffect::None,
-                    INDEX_OUT_OF_RANGE,
+                    SLICE_BOUNDS_OUT_OF_RANGE,
                 )
             }
-            Self::GoSliceI64Range => RuntimeEffects::new(
-                AllocationEffect::None,
-                ArgumentMutationEffect::None,
-                HostIoEffect::None,
-                SLICE_BOUNDS_OUT_OF_RANGE,
-            ),
             Self::GoSliceI64Set | Self::GoSliceBoolSet | Self::GoSliceInterfaceSet => {
                 RuntimeEffects::new(
                     AllocationEffect::None,
@@ -193,14 +202,15 @@ impl RuntimeOp {
                 HostIoEffect::None,
                 SLICE_BOUNDS_OUT_OF_RANGE,
             ),
-            Self::GoSliceI64Len | Self::GoSliceI64Cap | Self::GoSliceInterfaceLen => {
-                RuntimeEffects::new(
-                    AllocationEffect::None,
-                    ArgumentMutationEffect::None,
-                    HostIoEffect::None,
-                    NO_GO_PANICS,
-                )
-            }
+            Self::GoSliceI64Len
+            | Self::GoSliceI64Cap
+            | Self::GoSliceU8Len
+            | Self::GoSliceInterfaceLen => RuntimeEffects::new(
+                AllocationEffect::None,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                NO_GO_PANICS,
+            ),
             Self::GoSliceI64Append => RuntimeEffects::new(
                 AllocationEffect::MayAllocate,
                 ArgumentMutationEffect::MayMutateOwnedArgument,

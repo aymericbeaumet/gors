@@ -34,6 +34,12 @@ impl FunctionLowerer {
         expected: Option<&Ty>,
     ) -> Result<hir::Expr, Diagnostic> {
         if let Some(expected) = expected
+            && is_nil_identifier(expr)
+        {
+            let node = self.alloc_node(expr.source)?;
+            return self.zero_value_expr(node, SourceRef::node(node), expected.clone());
+        }
+        if let Some(expected) = expected
             && matches!(expected.underlying(), Ty::Interface(_))
         {
             let value = self.lower_expr_inner(expr, None, false)?;
@@ -199,7 +205,8 @@ impl FunctionLowerer {
             }
             ExprSyntaxKind::Binary { left, token, right } => {
                 if matches!(token, Token::EQL | Token::NEQ)
-                    && let Some((arguments, spread)) = recover_nil_comparison(left, right)
+                    && let Some((arguments, spread)) =
+                        super::recovery::recover_nil_comparison(left, right)
                 {
                     if spread || !arguments.is_empty() {
                         return Err(Diagnostic::semantic(
@@ -207,34 +214,12 @@ impl FunctionLowerer {
                             source,
                         ));
                     }
-                    let equal = *token == Token::EQL;
-                    let mut recovered = if !self.inside_deferred_closure {
-                        hir::Expr {
-                            node,
-                            kind: hir::ExprKind::Constant(ConstValue::Bool(equal)),
-                            ty: Ty::Bool,
-                            category: hir::ValueCategory::Constant,
-                            effects: hir::Effects::default(),
-                            source,
-                        }
-                    } else {
-                        hir::Expr {
-                            node,
-                            kind: hir::ExprKind::RecoverCompareNil { equal },
-                            ty: Ty::Bool,
-                            category: hir::ValueCategory::Value,
-                            effects: hir::Effects {
-                                may_read: true,
-                                may_write: true,
-                                ..hir::Effects::default()
-                            },
-                            source,
-                        }
-                    };
-                    if let Some(expected) = expected {
-                        coerce_expr(&mut recovered, expected, source)?;
-                    }
-                    return Ok(recovered);
+                    return self.lower_recover_nil_comparison(
+                        node,
+                        source,
+                        *token == Token::EQL,
+                        expected,
+                    );
                 }
                 if matches!(token, Token::EQL | Token::NEQ) {
                     let map = if is_nil_identifier(left) {
@@ -637,45 +622,47 @@ impl FunctionLowerer {
                 if matches!(base.ty.underlying(), Ty::Array(_, _)) {
                     return self.lower_array_index(base, index, node, source, expected);
                 }
-                let Ty::Slice(element) = base.ty.underlying() else {
-                    return Err(Diagnostic::semantic(
-                        "indexing requires a slice value",
-                        source,
-                    ));
-                };
-                let builtin = if element.underlying() == &Ty::Int(IntTy::Int) {
-                    hir::Builtin::SliceI64Index
-                } else if element.underlying() == &Ty::Bool {
-                    hir::Builtin::SliceBoolIndex
-                } else if element.bootstrap_i64_struct_fields().is_some() {
-                    let element_ty = element.as_ref().clone();
-                    let type_identity = super::interfaces::dynamic_type_identity(&element_ty)
-                        .ok_or_else(|| {
+                let (builtin, element_ty) = match base.ty.underlying() {
+                    Ty::String => (hir::Builtin::StringIndex, Ty::Uint(UintTy::Uint8)),
+                    Ty::Slice(element) if element.underlying() == &Ty::Int(IntTy::Int) => {
+                        (hir::Builtin::SliceI64Index, element.as_ref().clone())
+                    }
+                    Ty::Slice(element) if element.underlying() == &Ty::Uint(UintTy::Uint8) => {
+                        (hir::Builtin::SliceU8Index, element.as_ref().clone())
+                    }
+                    Ty::Slice(element) if element.underlying() == &Ty::Bool => {
+                        (hir::Builtin::SliceBoolIndex, element.as_ref().clone())
+                    }
+                    Ty::Slice(element) if element.bootstrap_i64_struct_fields().is_some() => {
+                        let element_ty = element.as_ref().clone();
+                        let type_identity = super::interfaces::dynamic_type_identity(&element_ty)
+                            .ok_or_else(|| {
                             Diagnostic::backend(
                                 "aggregate slice element omitted its dynamic type identity",
                             )
                         })?;
-                    let index = self.lower_expr(index, Some(&Ty::Int(IntTy::Int)))?;
-                    let effects = slice_runtime_effects(&[&base, &index], false, false, true);
-                    return Ok(hir::Expr {
-                        node,
-                        kind: hir::ExprKind::AggregateSliceIndex {
-                            slice: Box::new(base),
-                            index: Box::new(index),
-                            type_identity,
-                        },
-                        ty: element_ty,
-                        category: hir::ValueCategory::Value,
-                        effects,
-                        source,
-                    });
-                } else {
-                    return Err(Diagnostic::unsupported(
-                        "indexing currently supports []bool and []int values",
-                        source,
-                    ));
+                        let index = self.lower_expr(index, Some(&Ty::Int(IntTy::Int)))?;
+                        let effects = slice_runtime_effects(&[&base, &index], false, false, true);
+                        return Ok(hir::Expr {
+                            node,
+                            kind: hir::ExprKind::AggregateSliceIndex {
+                                slice: Box::new(base),
+                                index: Box::new(index),
+                                type_identity,
+                            },
+                            ty: element_ty,
+                            category: hir::ValueCategory::Value,
+                            effects,
+                            source,
+                        });
+                    }
+                    ty => {
+                        return Err(Diagnostic::unsupported(
+                            format!("indexing is not yet implemented for {ty:?}"),
+                            source,
+                        ));
+                    }
                 };
-                let element_ty = element.as_ref().clone();
                 let index = self.lower_expr(index, Some(&Ty::Int(IntTy::Int)))?;
                 let effects = slice_runtime_effects(&[&base, &index], false, false, true);
                 hir::Expr {
@@ -697,31 +684,49 @@ impl FunctionLowerer {
                 max,
             } => {
                 let base = self.lower_expr(base, None)?;
-                let Ty::Slice(element) = base.ty.underlying() else {
-                    return Err(Diagnostic::semantic(
-                        "slicing requires a slice value",
-                        source,
-                    ));
-                };
-                if element.underlying() != &Ty::Int(IntTy::Int) {
-                    return Err(Diagnostic::unsupported(
-                        "reslicing currently supports []int values",
-                        source,
-                    ));
-                }
-                let slice_ty = Ty::Slice(element.clone());
                 let low = self.lower_optional_slice_bound(low.as_deref(), expr.source)?;
                 let high = self.lower_optional_slice_bound(high.as_deref(), expr.source)?;
-                let max = self.lower_optional_slice_bound(max.as_deref(), expr.source)?;
+                let (builtin, ty, args) = match base.ty.underlying() {
+                    Ty::String => {
+                        if max.is_some() {
+                            return Err(Diagnostic::semantic(
+                                "three-index slicing requires a slice value",
+                                source,
+                            ));
+                        }
+                        (hir::Builtin::StringRange, Ty::String, vec![base, low, high])
+                    }
+                    Ty::Slice(element)
+                        if matches!(
+                            element.underlying(),
+                            Ty::Int(IntTy::Int) | Ty::Uint(UintTy::Uint8)
+                        ) =>
+                    {
+                        let builtin = if element.underlying() == &Ty::Int(IntTy::Int) {
+                            hir::Builtin::SliceI64Range
+                        } else {
+                            hir::Builtin::SliceU8Range
+                        };
+                        let ty = Ty::Slice(element.clone());
+                        let max = self.lower_optional_slice_bound(max.as_deref(), expr.source)?;
+                        (builtin, ty, vec![base, low, high, max])
+                    }
+                    ty => {
+                        return Err(Diagnostic::unsupported(
+                            format!("slicing is not yet implemented for {ty:?}"),
+                            source,
+                        ));
+                    }
+                };
                 let effects =
-                    slice_runtime_effects(&[&base, &low, &high, &max], false, false, true);
+                    slice_runtime_effects(&args.iter().collect::<Vec<_>>(), false, false, true);
                 hir::Expr {
                     node,
                     kind: hir::ExprKind::Call {
-                        callee: hir::Callee::Builtin(hir::Builtin::SliceI64Range),
-                        args: vec![base, low, high, max],
+                        callee: hir::Callee::Builtin(builtin),
+                        args,
                     },
-                    ty: slice_ty,
+                    ty,
                     category: hir::ValueCategory::Value,
                     effects,
                     source,
@@ -942,30 +947,6 @@ impl FunctionLowerer {
         }
         Ok(lowered)
     }
-}
-
-fn recover_nil_comparison<'a>(
-    left: &'a ExprSyntax,
-    right: &'a ExprSyntax,
-) -> Option<(&'a [ExprSyntax], bool)> {
-    recover_call(left)
-        .filter(|_| is_nil_identifier(right))
-        .or_else(|| recover_call(right).filter(|_| is_nil_identifier(left)))
-}
-
-fn recover_call(expression: &ExprSyntax) -> Option<(&[ExprSyntax], bool)> {
-    let ExprSyntaxKind::Call {
-        callee,
-        arguments,
-        spread,
-    } = &expression.kind
-    else {
-        return None;
-    };
-    let ExprSyntaxKind::Ident(callee) = &callee.kind else {
-        return None;
-    };
-    (callee.name.as_ref() == "recover").then_some((arguments, *spread))
 }
 
 fn is_nil_identifier(expression: &ExprSyntax) -> bool {

@@ -11,7 +11,7 @@ use crate::compiler::hir;
 use crate::compiler::ids::NodeId;
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{ExprSyntax, ExprSyntaxKind};
-use crate::compiler::types::{ConstValue, IntTy, Ty, UntypedTy};
+use crate::compiler::types::{ConstValue, IntTy, Ty, UintTy, UntypedTy};
 
 pub(super) fn string_i64_map_ty() -> Ty {
     Ty::Map(Box::new(Ty::String), Box::new(Ty::Int(IntTy::Int)))
@@ -354,6 +354,9 @@ impl FunctionLowerer {
             }
             Ty::Slice(element) if element.underlying() == &Ty::Int(IntTy::Int) => {
                 hir::Builtin::SliceI64Len
+            }
+            Ty::Slice(element) if element.underlying() == &Ty::Uint(UintTy::Uint8) => {
+                hir::Builtin::SliceU8Len
             }
             Ty::Slice(element) if element.bootstrap_i64_struct_fields().is_some() => {
                 hir::Builtin::AggregateSliceLen

@@ -17,6 +17,7 @@ mod maps;
 mod numeric_builtins;
 mod pointers;
 mod ranges;
+mod recovery;
 mod selects;
 mod statements;
 mod static_values;

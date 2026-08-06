@@ -8,7 +8,7 @@ use crate::compiler::hir;
 use crate::compiler::mir;
 use crate::compiler::rust_ir as out;
 use crate::compiler::types::{
-    ComplexTy, ConstValue, FloatTy, IntTy, Signature as GoSignature, Ty, parse_go_float,
+    ComplexTy, ConstValue, FloatTy, IntTy, Signature as GoSignature, Ty, UintTy, parse_go_float,
 };
 use gors_runtime_abi::{PrimitiveOp, RuntimeOp};
 
@@ -340,6 +340,9 @@ fn lower_terminator(
                 | hir::Builtin::SliceU8AppendSlice
                 | hir::Builtin::SliceU8AppendString
                 | hir::Builtin::SliceU8CopyString
+                | hir::Builtin::SliceU8Len
+                | hir::Builtin::SliceU8Index
+                | hir::Builtin::SliceU8Range
                 | hir::Builtin::SliceI64Copy
                 | hir::Builtin::SliceI64Clear
                 | hir::Builtin::SliceBoolIndex
@@ -350,6 +353,8 @@ fn lower_terminator(
                 | hir::Builtin::AggregateSliceSetTagged
                 | hir::Builtin::StringFromSliceU8
                 | hir::Builtin::StringLen
+                | hir::Builtin::StringIndex
+                | hir::Builtin::StringRange
                 | hir::Builtin::MapStringI64Nil
                 | hir::Builtin::MapStringI64Make
                 | hir::Builtin::MapStringI64Len
@@ -414,6 +419,9 @@ fn lower_terminator(
                     hir::Builtin::SliceU8AppendSlice => RuntimeOp::GoSliceU8AppendSlice,
                     hir::Builtin::SliceU8AppendString => RuntimeOp::GoSliceU8AppendString,
                     hir::Builtin::SliceU8CopyString => RuntimeOp::GoSliceU8CopyString,
+                    hir::Builtin::SliceU8Len => RuntimeOp::GoSliceU8Len,
+                    hir::Builtin::SliceU8Index => RuntimeOp::GoSliceU8Index,
+                    hir::Builtin::SliceU8Range => RuntimeOp::GoSliceU8Range,
                     hir::Builtin::SliceI64Copy => RuntimeOp::GoSliceI64Copy,
                     hir::Builtin::SliceI64Clear => RuntimeOp::GoSliceI64Clear,
                     hir::Builtin::SliceBoolIndex => RuntimeOp::GoSliceBoolIndex,
@@ -424,6 +432,8 @@ fn lower_terminator(
                     hir::Builtin::AggregateSliceSetTagged => RuntimeOp::GoSliceInterfaceSet,
                     hir::Builtin::StringFromSliceU8 => RuntimeOp::GoStringFromSliceU8,
                     hir::Builtin::StringLen => RuntimeOp::GoStringLen,
+                    hir::Builtin::StringIndex => RuntimeOp::GoStringIndex,
+                    hir::Builtin::StringRange => RuntimeOp::GoStringRange,
                     hir::Builtin::MapStringI64Nil => RuntimeOp::GoMapStringI64Nil,
                     hir::Builtin::MapStringI64Make => RuntimeOp::GoMapStringI64Make,
                     hir::Builtin::MapStringI64Len => RuntimeOp::GoMapStringI64Len,
@@ -758,7 +768,7 @@ pub(super) fn lower_operand(
 fn lower_constant(value: ConstValue, ty: &Ty) -> Result<out::Constant, Diagnostic> {
     match (value, ty.underlying()) {
         (ConstValue::Bool(value), Ty::Bool) => Ok(out::Constant::Bool(value)),
-        (ConstValue::Int(value), Ty::Int(IntTy::Int)) => value
+        (ConstValue::Int(value), Ty::Int(IntTy::Int) | Ty::Uint(UintTy::Uint8)) => value
             .parse::<i64>()
             .map(out::Constant::I64)
             .map_err(|_| Diagnostic::backend(format!("Go int is outside Rust IR i64: {value}"))),

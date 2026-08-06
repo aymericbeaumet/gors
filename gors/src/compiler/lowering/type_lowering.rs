@@ -9,7 +9,7 @@ pub(super) fn lower_type(ty: &Ty) -> Result<RustType, Diagnostic> {
     match ty.underlying() {
         Ty::Unit => Ok(RustType::Unit),
         Ty::Bool => Ok(RustType::Bool),
-        Ty::Int(IntTy::Int) => Ok(RustType::I64),
+        Ty::Int(IntTy::Int) | Ty::Uint(UintTy::Uint8) => Ok(RustType::I64),
         Ty::Float(FloatTy::Float64) => Ok(RustType::F64),
         Ty::Complex(ComplexTy::Complex128) => Ok(RustType::Complex128),
         Ty::String => Ok(RustType::GoString),

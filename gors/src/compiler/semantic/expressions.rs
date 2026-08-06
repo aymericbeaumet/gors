@@ -376,6 +376,7 @@ pub(super) fn validate_binary_operator(
                 ty,
                 Ty::Bool
                     | Ty::Int(IntTy::Int)
+                    | Ty::Uint(crate::compiler::types::UintTy::Uint8)
                     | Ty::Float(FloatTy::Float64)
                     | Ty::Complex(ComplexTy::Complex128)
                     | Ty::String
@@ -386,7 +387,10 @@ pub(super) fn validate_binary_operator(
         | hir::BinaryOp::Greater
         | hir::BinaryOp::GreaterEqual => matches!(
             ty,
-            Ty::Int(IntTy::Int) | Ty::Float(FloatTy::Float64) | Ty::String
+            Ty::Int(IntTy::Int)
+                | Ty::Uint(crate::compiler::types::UintTy::Uint8)
+                | Ty::Float(FloatTy::Float64)
+                | Ty::String
         ),
         hir::BinaryOp::Add => matches!(
             ty,

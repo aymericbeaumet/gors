@@ -20,15 +20,15 @@ use super::{
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::{BasicBlockId, LocalId, QualifiedDefId};
-use crate::compiler::types::{ComplexTy, FloatTy, IntTy, Signature, Ty};
+use crate::compiler::types::{ComplexTy, FloatTy, IntTy, Signature, Ty, UintTy};
 use arrays::{
     verify_array_index, verify_array_literal, verify_array_set, verify_scalar_array_literal,
 };
 use channels::{is_channel_builtin, verify_channel_call};
 use containers::{
     is_aggregate_container_builtin, map_string_i64_ty, verify_aggregate_container_call,
-    verify_bool_slice_call, verify_byte_slice_call_arguments, verify_map_call_arguments,
-    verify_slice_call_arguments,
+    verify_bool_slice_call, verify_byte_slice_call_arguments, verify_byte_slice_integer_arguments,
+    verify_map_call_arguments, verify_slice_call_arguments,
 };
 use effects::{read_effects, verify_effects, verify_panic_edge};
 use interfaces::{is_interface_builtin, verify_interface_call};
@@ -569,6 +569,30 @@ impl Function {
                                         )))]
                                     }
                                 }
+                                hir::Builtin::SliceU8Len => {
+                                    verify_byte_slice_integer_arguments(
+                                        &argument_types,
+                                        1,
+                                        "byte slice len",
+                                    )?;
+                                    vec![Ty::Int(IntTy::Int)]
+                                }
+                                hir::Builtin::SliceU8Index => {
+                                    verify_byte_slice_integer_arguments(
+                                        &argument_types,
+                                        2,
+                                        "byte slice index",
+                                    )?;
+                                    vec![Ty::Uint(UintTy::Uint8)]
+                                }
+                                hir::Builtin::SliceU8Range => {
+                                    verify_byte_slice_integer_arguments(
+                                        &argument_types,
+                                        4,
+                                        "byte slice expression",
+                                    )?;
+                                    vec![Ty::Slice(Box::new(Ty::Uint(UintTy::Uint8)))]
+                                }
                                 hir::Builtin::SliceI64Copy => {
                                     if argument_types
                                         != [
@@ -610,6 +634,24 @@ impl Function {
                                         )));
                                     }
                                     vec![Ty::Int(IntTy::Int)]
+                                }
+                                hir::Builtin::StringIndex => {
+                                    if argument_types != [Ty::String, Ty::Int(IntTy::Int)] {
+                                        return Err(Diagnostic::backend(format!(
+                                            "invalid MIR string index arguments: {argument_types:?}"
+                                        )));
+                                    }
+                                    vec![Ty::Uint(UintTy::Uint8)]
+                                }
+                                hir::Builtin::StringRange => {
+                                    if argument_types
+                                        != [Ty::String, Ty::Int(IntTy::Int), Ty::Int(IntTy::Int)]
+                                    {
+                                        return Err(Diagnostic::backend(format!(
+                                            "invalid MIR string slice arguments: {argument_types:?}"
+                                        )));
+                                    }
+                                    vec![Ty::String]
                                 }
                                 hir::Builtin::MapStringI64Nil | hir::Builtin::MapStringI64Make => {
                                     verify_map_call_arguments(

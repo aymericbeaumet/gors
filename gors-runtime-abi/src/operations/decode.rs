@@ -95,6 +95,11 @@ impl TryFrom<u16> for RuntimeOp {
             91 => Ok(Self::GoMapStringInterfaceGet),
             92 => Ok(Self::GoMapStringInterfaceContains),
             93 => Ok(Self::GoMapStringInterfaceSet),
+            94 => Ok(Self::GoSliceU8Len),
+            95 => Ok(Self::GoSliceU8Index),
+            96 => Ok(Self::GoSliceU8Range),
+            97 => Ok(Self::GoStringIndex),
+            98 => Ok(Self::GoStringRange),
             unknown => Err(UnknownRuntimeOpId(unknown)),
         }
     }

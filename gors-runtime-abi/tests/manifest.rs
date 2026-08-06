@@ -93,11 +93,11 @@ fn current_contract_identity_is_sha256_of_canonical_bytes() {
 
     assert_eq!(manifest.schema().get(), 2);
     assert_eq!(manifest.contract(), CURRENT_CONTRACT_VERSION);
-    assert_eq!(manifest.contract(), ContractVersion::new(2, 10, 0));
+    assert_eq!(manifest.contract(), ContractVersion::new(2, 11, 0));
     assert_eq!(manifest.identity().as_bytes(), &expected);
     assert_eq!(
         manifest.identity().to_string(),
-        "c8a209cf8c151d0cdf24e0fbc1a02357eea887c25ee5d5b45be0a29402e59b8d",
+        "776432317bf9399d72788f5fc8fedf6bb9c4650339220d3e271d83182f90cb11",
         "the canonical runtime contract changed; review the ABI diff and bump its semantic version before accepting a new identity",
     );
 }
@@ -236,6 +236,11 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoChannelI64Close
             | RuntimeOp::GoChannelI64IsNil
             | RuntimeOp::GoStringLen
+            | RuntimeOp::GoSliceU8Len
+            | RuntimeOp::GoSliceU8Index
+            | RuntimeOp::GoSliceU8Range
+            | RuntimeOp::GoStringIndex
+            | RuntimeOp::GoStringRange
             | RuntimeOp::GoChannelI64TrySend
             | RuntimeOp::GoChannelI64TryReceive => AllocationEffect::None,
         };
@@ -327,7 +332,12 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoChannelI64Len
             | RuntimeOp::GoChannelI64Cap
             | RuntimeOp::GoChannelI64IsNil
-            | RuntimeOp::GoStringLen => ArgumentMutationEffect::None,
+            | RuntimeOp::GoStringLen
+            | RuntimeOp::GoSliceU8Len
+            | RuntimeOp::GoSliceU8Index
+            | RuntimeOp::GoSliceU8Range
+            | RuntimeOp::GoStringIndex
+            | RuntimeOp::GoStringRange => ArgumentMutationEffect::None,
         };
         let expected_blocking = match operation {
             RuntimeOp::PrintBool
@@ -427,6 +437,11 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoChannelI64Close
             | RuntimeOp::GoChannelI64IsNil
             | RuntimeOp::GoStringLen
+            | RuntimeOp::GoSliceU8Len
+            | RuntimeOp::GoSliceU8Index
+            | RuntimeOp::GoSliceU8Range
+            | RuntimeOp::GoStringIndex
+            | RuntimeOp::GoStringRange
             | RuntimeOp::GoChannelI64TrySend
             | RuntimeOp::GoChannelI64TryReceive => HostIoEffect::None,
         };
@@ -437,6 +452,8 @@ fn runtime_effect_metadata_is_complete_and_exact() {
                 &[GoPanicCondition::ExplicitPanic]
             }
             RuntimeOp::GoSliceI64Index
+            | RuntimeOp::GoSliceU8Index
+            | RuntimeOp::GoStringIndex
             | RuntimeOp::GoSliceI64Set
             | RuntimeOp::GoSliceBoolIndex
             | RuntimeOp::GoSliceBoolSet
@@ -444,6 +461,8 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceInterfaceSet
             | RuntimeOp::GoMapStringI64KeyAt => &[GoPanicCondition::IndexOutOfRange],
             RuntimeOp::GoSliceI64Range
+            | RuntimeOp::GoSliceU8Range
+            | RuntimeOp::GoStringRange
             | RuntimeOp::GoSliceI64Make
             | RuntimeOp::GoSliceInterfaceMake => &[GoPanicCondition::SliceBoundsOutOfRange],
             RuntimeOp::GoMapStringI64Set | RuntimeOp::GoMapStringInterfaceSet => {
@@ -529,6 +548,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoChannelI64Receive
             | RuntimeOp::GoChannelI64IsNil
             | RuntimeOp::GoStringLen
+            | RuntimeOp::GoSliceU8Len
             | RuntimeOp::GoChannelI64TryReceive => &[],
         };
 

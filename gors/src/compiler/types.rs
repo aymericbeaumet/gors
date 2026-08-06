@@ -256,6 +256,7 @@ impl Ty {
             self,
             Self::Bool
                 | Self::Int(IntTy::Int)
+                | Self::Uint(UintTy::Uint8)
                 | Self::Float(FloatTy::Float64)
                 | Self::Complex(ComplexTy::Complex128)
                 | Self::String

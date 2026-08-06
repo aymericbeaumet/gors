@@ -3,6 +3,7 @@
 mod decode;
 mod identity;
 mod metadata;
+mod symbols;
 mod value_types;
 
 use crate::effects::GoPanicCondition;
@@ -380,9 +381,19 @@ const GO_SLICE_I64_PARAMETER: &[RuntimeType] = &[RuntimeType::GoSliceI64];
 const TWO_GO_SLICE_I64_PARAMETERS: &[RuntimeType] =
     &[RuntimeType::GoSliceI64, RuntimeType::GoSliceI64];
 const GO_SLICE_U8_PARAMETER: &[RuntimeType] = &[RuntimeType::GoSliceU8];
+const GO_SLICE_U8_AND_INDEX: &[RuntimeType] = &[RuntimeType::GoSliceU8, RuntimeType::I64];
+const GO_SLICE_U8_RANGE: &[RuntimeType] = &[
+    RuntimeType::GoSliceU8,
+    RuntimeType::I64,
+    RuntimeType::I64,
+    RuntimeType::I64,
+];
 const TWO_GO_SLICE_U8_PARAMETERS: &[RuntimeType] =
     &[RuntimeType::GoSliceU8, RuntimeType::GoSliceU8];
 const GO_SLICE_U8_AND_STRING: &[RuntimeType] = &[RuntimeType::GoSliceU8, RuntimeType::GoString];
+const GO_STRING_AND_INDEX: &[RuntimeType] = &[RuntimeType::GoString, RuntimeType::I64];
+const GO_STRING_RANGE: &[RuntimeType] =
+    &[RuntimeType::GoString, RuntimeType::I64, RuntimeType::I64];
 const GO_MAP_STRING_I64_PARAMETER: &[RuntimeType] = &[RuntimeType::GoMapStringI64];
 const GO_MAP_STRING_I64_AND_KEY: &[RuntimeType] =
     &[RuntimeType::GoMapStringI64, RuntimeType::GoString];
@@ -563,6 +574,11 @@ pub enum RuntimeOp {
     GoMapStringInterfaceGet,
     GoMapStringInterfaceContains,
     GoMapStringInterfaceSet,
+    GoSliceU8Len,
+    GoSliceU8Index,
+    GoSliceU8Range,
+    GoStringIndex,
+    GoStringRange,
 }
 
 /// Stable compact identity of one runtime ABI operation.
@@ -664,102 +680,12 @@ impl RuntimeOp {
         Self::GoMapStringInterfaceGet,
         Self::GoMapStringInterfaceContains,
         Self::GoMapStringInterfaceSet,
+        Self::GoSliceU8Len,
+        Self::GoSliceU8Index,
+        Self::GoSliceU8Range,
+        Self::GoStringIndex,
+        Self::GoStringRange,
     ];
-
-    /// Stable exported Rust symbol assigned to this ABI operation.
-    #[must_use]
-    pub const fn symbol(self) -> &'static str {
-        match self {
-            Self::GoStringFromBytes => "go_string_from_bytes",
-            Self::GoStringFromStatic => "go_string_from_static",
-            Self::ConcatGoStrings => "concat_go_strings",
-            Self::IntDiv => "int_div",
-            Self::IntRem => "int_rem",
-            Self::IntShl => "int_shl",
-            Self::IntShr => "int_shr",
-            Self::PrintBool => "print_bool",
-            Self::PrintI64 => "print_i64",
-            Self::PrintSpace => "print_space",
-            Self::PrintNewline => "print_newline",
-            Self::PrintGoString => "print_go_string",
-            Self::PanicBool => "panic_bool",
-            Self::PanicI64 => "panic_i64",
-            Self::PanicGoString => "panic_go_string",
-            Self::GoSliceI64FromStatic => "go_slice_i64_from_static",
-            Self::GoSliceI64Index => "go_slice_i64_index",
-            Self::GoSliceI64Range => "go_slice_i64_range",
-            Self::GoSliceI64Set => "go_slice_i64_set",
-            Self::GoSliceI64Make => "go_slice_i64_make",
-            Self::GoSliceI64Len => "go_slice_i64_len",
-            Self::GoSliceI64Cap => "go_slice_i64_cap",
-            Self::GoSliceI64Append => "go_slice_i64_append",
-            Self::GoSliceU8FromStatic => "go_slice_u8_from_static",
-            Self::GoSliceU8AppendSlice => "go_slice_u8_append_slice",
-            Self::GoSliceU8AppendString => "go_slice_u8_append_string",
-            Self::GoSliceU8CopyString => "go_slice_u8_copy_string",
-            Self::GoSliceI64Clear => "go_slice_i64_clear",
-            Self::GoStringFromSliceU8 => "go_string_from_slice_u8",
-            Self::GoSliceI64Copy => "go_slice_i64_copy",
-            Self::GoMapStringI64Nil => "go_map_string_i64_nil",
-            Self::GoMapStringI64Make => "go_map_string_i64_make",
-            Self::GoMapStringI64Len => "go_map_string_i64_len",
-            Self::GoMapStringI64Get => "go_map_string_i64_get",
-            Self::GoMapStringI64Contains => "go_map_string_i64_contains",
-            Self::GoMapStringI64Set => "go_map_string_i64_set",
-            Self::GoMapStringI64Delete => "go_map_string_i64_delete",
-            Self::GoMapStringI64Clear => "go_map_string_i64_clear",
-            Self::GoMapStringI64IsNil => "go_map_string_i64_is_nil",
-            Self::GoMapStringI64KeyAt => "go_map_string_i64_key_at",
-            Self::GoPointerI64Nil => "go_pointer_i64_nil",
-            Self::GoPointerI64New => "go_pointer_i64_new",
-            Self::GoPointerI64Get => "go_pointer_i64_get",
-            Self::GoPointerI64Set => "go_pointer_i64_set",
-            Self::GoPointerI64IsNil => "go_pointer_i64_is_nil",
-            Self::GoChannelI64Nil => "go_channel_i64_nil",
-            Self::GoChannelI64Make => "go_channel_i64_make",
-            Self::GoChannelI64Len => "go_channel_i64_len",
-            Self::GoChannelI64Cap => "go_channel_i64_cap",
-            Self::GoChannelI64Send => "go_channel_i64_send",
-            Self::GoChannelI64ReceiveValue => "go_channel_i64_receive_value",
-            Self::GoChannelI64Receive => "go_channel_i64_receive",
-            Self::GoChannelI64Close => "go_channel_i64_close",
-            Self::GoChannelI64IsNil => "go_channel_i64_is_nil",
-            Self::GoStringLen => "go_string_len",
-            Self::GoChannelI64TrySend => "go_channel_i64_try_send",
-            Self::GoChannelI64TryReceive => "go_channel_i64_try_receive",
-            Self::GoPointerStructI64Nil => "go_pointer_struct_i64_nil",
-            Self::GoPointerStructI64New => "go_pointer_struct_i64_new",
-            Self::GoPointerStructI64Get => "go_pointer_struct_i64_get",
-            Self::GoPointerStructI64Set => "go_pointer_struct_i64_set",
-            Self::GoPointerStructI64IsNil => "go_pointer_struct_i64_is_nil",
-            Self::GoPointerStructI64Equal => "go_pointer_struct_i64_equal",
-            Self::GoInterfaceNil => "go_interface_nil",
-            Self::GoInterfaceBoxBool => "go_interface_box_bool",
-            Self::GoInterfaceBoxI64 => "go_interface_box_i64",
-            Self::GoInterfaceBoxGoString => "go_interface_box_go_string",
-            Self::GoInterfaceBoxStructI64 => "go_interface_box_struct_i64",
-            Self::GoInterfaceBoxPointerStructI64 => "go_interface_box_pointer_struct_i64",
-            Self::GoInterfaceIsNil => "go_interface_is_nil",
-            Self::GoInterfaceIsType => "go_interface_is_type",
-            Self::GoInterfaceUnboxBool => "go_interface_unbox_bool",
-            Self::GoInterfaceUnboxI64 => "go_interface_unbox_i64",
-            Self::GoInterfaceUnboxGoString => "go_interface_unbox_go_string",
-            Self::GoInterfaceStructI64Get => "go_interface_struct_i64_get",
-            Self::GoInterfaceUnboxPointerStructI64 => "go_interface_unbox_pointer_struct_i64",
-            Self::GoSliceBoolFromStatic => "go_slice_bool_from_static",
-            Self::GoSliceBoolIndex => "go_slice_bool_index",
-            Self::GoSliceBoolSet => "go_slice_bool_set",
-            Self::GoSliceInterfaceMake => "go_slice_interface_make",
-            Self::GoSliceInterfaceLen => "go_slice_interface_len",
-            Self::GoSliceInterfaceIndex => "go_slice_interface_index",
-            Self::GoSliceInterfaceSet => "go_slice_interface_set",
-            Self::GoMapStringInterfaceMake => "go_map_string_interface_make",
-            Self::GoMapStringInterfaceLen => "go_map_string_interface_len",
-            Self::GoMapStringInterfaceGet => "go_map_string_interface_get",
-            Self::GoMapStringInterfaceContains => "go_map_string_interface_contains",
-            Self::GoMapStringInterfaceSet => "go_map_string_interface_set",
-        }
-    }
 
     /// Exact typed call signature at the Rust runtime boundary.
     #[must_use]
@@ -982,6 +908,13 @@ impl RuntimeOp {
             Self::GoMapStringInterfaceSet => {
                 RuntimeSignature::new(GO_MAP_STRING_INTERFACE_SET, RuntimeType::Unit)
             }
+            Self::GoSliceU8Len => RuntimeSignature::new(GO_SLICE_U8_PARAMETER, RuntimeType::I64),
+            Self::GoSliceU8Index => RuntimeSignature::new(GO_SLICE_U8_AND_INDEX, RuntimeType::I64),
+            Self::GoSliceU8Range => {
+                RuntimeSignature::new(GO_SLICE_U8_RANGE, RuntimeType::GoSliceU8)
+            }
+            Self::GoStringIndex => RuntimeSignature::new(GO_STRING_AND_INDEX, RuntimeType::I64),
+            Self::GoStringRange => RuntimeSignature::new(GO_STRING_RANGE, RuntimeType::GoString),
         }
     }
 

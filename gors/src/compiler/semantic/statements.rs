@@ -240,30 +240,13 @@ impl FunctionLowerer {
                 condition,
                 then_block,
                 else_branch,
-            } => {
-                self.push_scope();
-                let init = init
-                    .as_deref()
-                    .map(|statement| self.lower_stmt(statement))
-                    .transpose()?
-                    .flatten()
-                    .map(Box::new);
-                let condition = self.lower_expr(condition, Some(&Ty::Bool))?;
-                let then_block = self.lower_block(then_block, true)?;
-                let else_branch = else_branch
-                    .as_deref()
-                    .map(|statement| self.lower_stmt(statement))
-                    .transpose()?
-                    .flatten()
-                    .map(Box::new);
-                self.pop_scope();
-                hir::StmtKind::If {
-                    init,
-                    condition,
-                    then_block,
-                    else_branch,
-                }
-            }
+            } => self.lower_if_statement(
+                init.as_deref(),
+                condition,
+                then_block,
+                else_branch.as_deref(),
+                source,
+            )?,
             StmtSyntaxKind::For {
                 label,
                 init,

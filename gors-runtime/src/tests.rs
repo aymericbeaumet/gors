@@ -11,6 +11,31 @@ fn strings_preserve_arbitrary_bytes() {
 }
 
 #[test]
+fn byte_slices_and_strings_preserve_bounds_and_ranges() {
+    let bytes = go_slice_u8_from_static(&[0xff, b'a', b'b']);
+    assert_eq!(go_slice_u8_len(bytes.clone()), 3);
+    assert_eq!(go_slice_u8_index(bytes.clone(), 0), 0xff);
+    let tail = go_slice_u8_range(bytes, 1, -1, -1);
+    assert_eq!(go_slice_u8_len(tail.clone()), 2);
+    assert_eq!(go_slice_u8_index(tail, 0), GoInt::from(b'a'));
+
+    let string = go_string_from_static(&[0xff, b'a', b'b']);
+    assert_eq!(go_string_index(string.clone(), 0), 0xff);
+    assert_eq!(go_string_range(string, 1, -1).as_bytes(), b"ab");
+}
+
+#[test]
+fn byte_slices_and_strings_reject_invalid_bounds() {
+    let bytes = go_slice_u8_from_static(&[1]);
+    assert!(std::panic::catch_unwind(|| go_slice_u8_index(bytes.clone(), 1)).is_err());
+    assert!(std::panic::catch_unwind(|| go_slice_u8_range(bytes, 0, 2, -1)).is_err());
+
+    let string = go_string_from_static(b"x");
+    assert!(std::panic::catch_unwind(|| go_string_index(string.clone(), 1)).is_err());
+    assert!(std::panic::catch_unwind(|| go_string_range(string, 1, 0)).is_err());
+}
+
+#[test]
 #[allow(clippy::panic)]
 fn string_clones_share_backing_storage() {
     let value = go_string_from_bytes(b"shared");

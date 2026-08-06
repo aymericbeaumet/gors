@@ -10,10 +10,14 @@
 // subset of its operations. Generated source never embeds or recompiles it.
 #![allow(dead_code)]
 
+mod byte_ranges;
 mod channels;
 mod interface_containers;
 mod interfaces;
 
+pub use byte_ranges::{
+    go_slice_u8_index, go_slice_u8_len, go_slice_u8_range, go_string_index, go_string_range,
+};
 pub use channels::{
     GoChannelI64, go_channel_i64_cap, go_channel_i64_close, go_channel_i64_is_nil,
     go_channel_i64_len, go_channel_i64_make, go_channel_i64_nil, go_channel_i64_receive,
@@ -328,13 +332,17 @@ pub fn go_slice_i64_index(slice: GoSliceI64, index: GoInt) -> GoInt {
 /// so the sentinel cannot collide with a valid bound.
 #[must_use]
 pub fn go_slice_i64_range(slice: GoSliceI64, low: GoInt, high: GoInt, max: GoInt) -> GoSliceI64 {
+    go_slice_range(slice, low, high, max)
+}
+
+fn go_slice_range<T>(slice: GoSlice<T>, low: GoInt, high: GoInt, max: GoInt) -> GoSlice<T> {
     let low = optional_slice_bound(low, 0);
     let high = optional_slice_bound(high, slice.len);
     let max = optional_slice_bound(max, slice.capacity);
     if low > high || high > max || max > slice.capacity {
         slice_bounds_out_of_range();
     }
-    GoSliceI64 {
+    GoSlice {
         storage: slice.storage,
         start: slice.start.saturating_add(low),
         len: high.saturating_sub(low),
