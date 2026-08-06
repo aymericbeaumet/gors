@@ -223,6 +223,9 @@ impl ConstValue {
                 parse_go_float(value).is_some()
             }
             (Self::Float(value), Ty::Float(FloatTy::Float64)) => parse_go_float(value).is_some(),
+            (Self::Float(value), Ty::Complex(ComplexTy::Complex128)) => {
+                parse_go_float(value).is_some()
+            }
             (
                 Self::Complex { real, imag },
                 Ty::Untyped(UntypedTy::Complex) | Ty::Complex(ComplexTy::Complex128),

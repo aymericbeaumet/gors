@@ -334,6 +334,11 @@ impl FunctionLowerer {
                         name, arguments, *spread, node, source, expected,
                     );
                 }
+                if matches!(name, "min" | "max" | "complex" | "real" | "imag") {
+                    return self.lower_numeric_builtin_call(
+                        name, arguments, *spread, node, source, expected,
+                    );
+                }
                 if self.type_aliases.contains_key(name)
                     || matches!(name, "bool" | "string" | "int" | "float64" | "complex128")
                 {
@@ -385,37 +390,6 @@ impl FunctionLowerer {
                         ));
                     }
                     return Ok(argument);
-                }
-                if matches!(name, "real" | "imag") {
-                    let [argument] = arguments.as_ref() else {
-                        return Err(Diagnostic::semantic(
-                            format!("call to {name} requires exactly one argument"),
-                            source,
-                        ));
-                    };
-                    let argument = self.lower_expr(argument, None)?;
-                    let Some(ConstValue::Complex { real, imag }) = expr_constant(&argument) else {
-                        return Err(Diagnostic::unsupported(
-                            format!("{name} of a non-constant complex value is not implemented"),
-                            source,
-                        ));
-                    };
-                    let mut component = hir::Expr {
-                        node,
-                        kind: hir::ExprKind::Constant(ConstValue::Float(if name == "real" {
-                            real.clone()
-                        } else {
-                            imag.clone()
-                        })),
-                        ty: Ty::Untyped(UntypedTy::Float),
-                        category: hir::ValueCategory::Constant,
-                        effects: argument.effects,
-                        source,
-                    };
-                    if let Some(expected) = expected {
-                        coerce_expr(&mut component, expected, source)?;
-                    }
-                    return Ok(component);
                 }
                 let (callee, params, results, variadic) = if let Some(id) =
                     self.lookup_closure(name)

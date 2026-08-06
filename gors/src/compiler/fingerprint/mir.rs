@@ -288,6 +288,8 @@ fn encode_unary_op(encoder: &mut Encoder, op: hir::UnaryOp) {
             hir::UnaryOp::Negative => b"negative",
             hir::UnaryOp::Not => b"not",
             hir::UnaryOp::BitNot => b"bit-not",
+            hir::UnaryOp::Real => b"real",
+            hir::UnaryOp::Imag => b"imaginary",
         },
         |_| {},
     );
@@ -315,6 +317,9 @@ fn encode_binary_op(encoder: &mut Encoder, op: hir::BinaryOp) {
             hir::BinaryOp::GreaterEqual => b"greater-equal",
             hir::BinaryOp::LogicalAnd => b"logical-and",
             hir::BinaryOp::LogicalOr => b"logical-or",
+            hir::BinaryOp::Min => b"minimum",
+            hir::BinaryOp::Max => b"maximum",
+            hir::BinaryOp::Complex => b"complex",
         },
         |_| {},
     );

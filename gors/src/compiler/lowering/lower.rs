@@ -576,6 +576,15 @@ fn lower_constant(value: ConstValue, ty: &Ty) -> Result<out::Constant, Diagnosti
             .ok_or_else(|| {
                 Diagnostic::backend(format!("invalid Go integer-to-complex constant: {value}"))
             }),
+        (ConstValue::Float(value), Ty::Complex(ComplexTy::Complex128)) => parse_go_float(&value)
+            .filter(|value| value.is_finite())
+            .map(|real| out::Constant::Complex128 {
+                real: real.to_bits(),
+                imag: 0.0_f64.to_bits(),
+            })
+            .ok_or_else(|| {
+                Diagnostic::backend(format!("invalid Go float-to-complex constant: {value}"))
+            }),
         (ConstValue::Complex { real, imag }, Ty::Complex(ComplexTy::Complex128)) => {
             let real = parse_go_float(&real)
                 .ok_or_else(|| Diagnostic::backend("invalid real complex128 component"))?;
@@ -616,6 +625,12 @@ fn lower_unary_op(
         (hir::UnaryOp::BitNot, out::RustType::I64, out::RustType::I64) => {
             Some(out::ValueOp::Primitive(PrimitiveOp::IntBitNot))
         }
+        (hir::UnaryOp::Real, out::RustType::Complex128, out::RustType::F64) => {
+            Some(out::ValueOp::Primitive(PrimitiveOp::ComplexReal))
+        }
+        (hir::UnaryOp::Imag, out::RustType::Complex128, out::RustType::F64) => {
+            Some(out::ValueOp::Primitive(PrimitiveOp::ComplexImag))
+        }
         invalid => {
             return Err(Diagnostic::backend(format!(
                 "invalid unary representation lowering: {invalid:?}"
@@ -654,6 +669,8 @@ fn lower_binary_op(
         (Go::LessEqual, I64, I64, Bool) => Primitive(PrimitiveOp::IntLessEqual),
         (Go::Greater, I64, I64, Bool) => Primitive(PrimitiveOp::IntGreater),
         (Go::GreaterEqual, I64, I64, Bool) => Primitive(PrimitiveOp::IntGreaterEqual),
+        (Go::Min, I64, I64, I64) => Primitive(PrimitiveOp::IntMin),
+        (Go::Max, I64, I64, I64) => Primitive(PrimitiveOp::IntMax),
         (Go::Add, F64, F64, F64) => Primitive(PrimitiveOp::FloatAdd),
         (Go::Sub, F64, F64, F64) => Primitive(PrimitiveOp::FloatSub),
         (Go::Mul, F64, F64, F64) => Primitive(PrimitiveOp::FloatMul),
@@ -664,6 +681,9 @@ fn lower_binary_op(
         (Go::LessEqual, F64, F64, Bool) => Primitive(PrimitiveOp::FloatLessEqual),
         (Go::Greater, F64, F64, Bool) => Primitive(PrimitiveOp::FloatGreater),
         (Go::GreaterEqual, F64, F64, Bool) => Primitive(PrimitiveOp::FloatGreaterEqual),
+        (Go::Min, F64, F64, F64) => Primitive(PrimitiveOp::FloatMin),
+        (Go::Max, F64, F64, F64) => Primitive(PrimitiveOp::FloatMax),
+        (Go::Complex, F64, F64, Complex128) => Primitive(PrimitiveOp::ComplexFromParts),
         (Go::Add, Complex128, Complex128, Complex128) => Primitive(PrimitiveOp::ComplexAdd),
         (Go::Sub, Complex128, Complex128, Complex128) => Primitive(PrimitiveOp::ComplexSub),
         (Go::Mul, Complex128, Complex128, Complex128) => Primitive(PrimitiveOp::ComplexMul),

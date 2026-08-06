@@ -227,14 +227,30 @@ impl Function {
             ),
             RvalueKind::Unary { op, operand, ty } => {
                 let operand_ty = self.operand_ty(operand)?;
-                let expected = match op {
-                    hir::UnaryOp::Positive | hir::UnaryOp::Negative | hir::UnaryOp::BitNot => {
-                        Ty::Int(IntTy::Int)
+                let valid = match op {
+                    hir::UnaryOp::Positive | hir::UnaryOp::Negative => {
+                        operand_ty == *ty
+                            && matches!(
+                                operand_ty.underlying(),
+                                Ty::Int(IntTy::Int)
+                                    | Ty::Float(FloatTy::Float64)
+                                    | Ty::Complex(ComplexTy::Complex128)
+                            )
                     }
-                    hir::UnaryOp::Not => Ty::Bool,
+                    hir::UnaryOp::Not => operand_ty == Ty::Bool && *ty == Ty::Bool,
+                    hir::UnaryOp::BitNot => {
+                        operand_ty.underlying() == &Ty::Int(IntTy::Int) && operand_ty == *ty
+                    }
+                    hir::UnaryOp::Real | hir::UnaryOp::Imag => {
+                        operand_ty.underlying() == &Ty::Complex(ComplexTy::Complex128)
+                            && *ty == Ty::Float(FloatTy::Float64)
+                    }
                 };
-                verify_same_type(&operand_ty, &expected, "unary operand")?;
-                verify_same_type(ty, &expected, "unary result")?;
+                if !valid {
+                    return Err(Diagnostic::backend(format!(
+                        "invalid MIR unary operation {op:?}: {operand_ty:?} -> {ty:?}"
+                    )));
+                }
                 (ty.clone(), hir::Effects::default())
             }
             RvalueKind::Conversion { operand, from, ty } => {
@@ -825,6 +841,7 @@ fn verify_constant_type(value: &ConstValue, ty: &Ty) -> Result<(), Diagnostic> {
                 Ty::Complex(ComplexTy::Complex128)
             )
             | (ConstValue::Int(_), Ty::Complex(ComplexTy::Complex128))
+            | (ConstValue::Float(_), Ty::Complex(ComplexTy::Complex128))
             | (ConstValue::String(_), Ty::String)
     )
     .then_some(())
@@ -873,6 +890,19 @@ fn verify_binary_types(
                         | Ty::Float(FloatTy::Float64)
                         | Ty::Complex(ComplexTy::Complex128)
                 )
+        }
+        hir::BinaryOp::Min | hir::BinaryOp::Max => {
+            same_operands
+                && same_result
+                && matches!(
+                    underlying,
+                    Ty::Int(IntTy::Int) | Ty::Float(FloatTy::Float64)
+                )
+        }
+        hir::BinaryOp::Complex => {
+            same_operands
+                && *underlying == Ty::Float(FloatTy::Float64)
+                && result == &Ty::Complex(ComplexTy::Complex128)
         }
         hir::BinaryOp::Rem
         | hir::BinaryOp::BitAnd

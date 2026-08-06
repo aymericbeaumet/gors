@@ -93,11 +93,11 @@ fn current_contract_identity_is_sha256_of_canonical_bytes() {
 
     assert_eq!(manifest.schema().get(), 2);
     assert_eq!(manifest.contract(), CURRENT_CONTRACT_VERSION);
-    assert_eq!(manifest.contract(), ContractVersion::new(2, 2, 0));
+    assert_eq!(manifest.contract(), ContractVersion::new(2, 3, 0));
     assert_eq!(manifest.identity().as_bytes(), &expected);
     assert_eq!(
         manifest.identity().to_string(),
-        "3e5ebadfa17dd752b7dd068ddb349df05d6e21b107d597a1533372e8dc545ed4",
+        "0e741e9a26e0efa1bd9cabb31ccf6b35b1c9cb66b32f30cc5d74443c577b050c",
         "the canonical runtime contract changed; review the ABI diff and bump its semantic version before accepting a new identity",
     );
 }
@@ -426,9 +426,9 @@ fn primitive_signatures_are_complete_and_exact() {
             | PrimitiveOp::IntAndNot
             | PrimitiveOp::IntWrappingAdd
             | PrimitiveOp::IntWrappingSub
-            | PrimitiveOp::IntWrappingMul => {
-                (&[RuntimeType::I64, RuntimeType::I64], RuntimeType::I64)
-            }
+            | PrimitiveOp::IntWrappingMul
+            | PrimitiveOp::IntMin
+            | PrimitiveOp::IntMax => (&[RuntimeType::I64, RuntimeType::I64], RuntimeType::I64),
             PrimitiveOp::IntEqual
             | PrimitiveOp::IntNotEqual
             | PrimitiveOp::IntLess
@@ -441,7 +441,9 @@ fn primitive_signatures_are_complete_and_exact() {
             PrimitiveOp::FloatAdd
             | PrimitiveOp::FloatSub
             | PrimitiveOp::FloatMul
-            | PrimitiveOp::FloatDiv => (&[RuntimeType::F64, RuntimeType::F64], RuntimeType::F64),
+            | PrimitiveOp::FloatDiv
+            | PrimitiveOp::FloatMin
+            | PrimitiveOp::FloatMax => (&[RuntimeType::F64, RuntimeType::F64], RuntimeType::F64),
             PrimitiveOp::FloatEqual
             | PrimitiveOp::FloatNotEqual
             | PrimitiveOp::FloatLess
@@ -462,6 +464,13 @@ fn primitive_signatures_are_complete_and_exact() {
                 &[RuntimeType::Complex128, RuntimeType::Complex128],
                 RuntimeType::Bool,
             ),
+            PrimitiveOp::ComplexFromParts => (
+                &[RuntimeType::F64, RuntimeType::F64],
+                RuntimeType::Complex128,
+            ),
+            PrimitiveOp::ComplexReal | PrimitiveOp::ComplexImag => {
+                (&[RuntimeType::Complex128], RuntimeType::F64)
+            }
             PrimitiveOp::StringEqual
             | PrimitiveOp::StringNotEqual
             | PrimitiveOp::StringLess

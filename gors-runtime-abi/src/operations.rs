@@ -1,5 +1,7 @@
 //! Stable native and runtime operation catalogs.
 
+mod decode;
+
 use crate::effects::{
     AllocationEffect, ArgumentMutationEffect, GoPanicCondition, HostIoEffect, RuntimeEffects,
 };
@@ -52,6 +54,13 @@ pub enum PrimitiveOp {
     ComplexNeg,
     ComplexEqual,
     ComplexNotEqual,
+    IntMin,
+    IntMax,
+    FloatMin,
+    FloatMax,
+    ComplexFromParts,
+    ComplexReal,
+    ComplexImag,
 }
 
 /// Stable compact identity of one directly emitted operation.
@@ -111,6 +120,13 @@ impl PrimitiveOp {
         Self::ComplexNeg,
         Self::ComplexEqual,
         Self::ComplexNotEqual,
+        Self::IntMin,
+        Self::IntMax,
+        Self::FloatMin,
+        Self::FloatMax,
+        Self::ComplexFromParts,
+        Self::ComplexReal,
+        Self::ComplexImag,
     ];
 
     /// Exact typed signature for this directly emitted operation.
@@ -149,6 +165,18 @@ impl PrimitiveOp {
             }
             Self::ComplexEqual | Self::ComplexNotEqual => {
                 RuntimeSignature::new(TWO_COMPLEX128_PARAMETERS, RuntimeType::Bool)
+            }
+            Self::IntMin | Self::IntMax => {
+                RuntimeSignature::new(TWO_I64_PARAMETERS, RuntimeType::I64)
+            }
+            Self::FloatMin | Self::FloatMax => {
+                RuntimeSignature::new(TWO_F64_PARAMETERS, RuntimeType::F64)
+            }
+            Self::ComplexFromParts => {
+                RuntimeSignature::new(TWO_F64_PARAMETERS, RuntimeType::Complex128)
+            }
+            Self::ComplexReal | Self::ComplexImag => {
+                RuntimeSignature::new(COMPLEX128_PARAMETER, RuntimeType::F64)
             }
             Self::IntEqual
             | Self::IntNotEqual
@@ -215,6 +243,13 @@ impl PrimitiveOp {
             Self::ComplexNeg => "complex-neg",
             Self::ComplexEqual => "complex-equal",
             Self::ComplexNotEqual => "complex-not-equal",
+            Self::IntMin => "int-min",
+            Self::IntMax => "int-max",
+            Self::FloatMin => "float-min",
+            Self::FloatMax => "float-max",
+            Self::ComplexFromParts => "complex-from-parts",
+            Self::ComplexReal => "complex-real",
+            Self::ComplexImag => "complex-imag",
         }
     }
 
@@ -252,6 +287,13 @@ impl PrimitiveOp {
             Self::ComplexNeg => 40,
             Self::ComplexEqual => 41,
             Self::ComplexNotEqual => 42,
+            Self::IntMin => 43,
+            Self::IntMax => 44,
+            Self::FloatMin => 45,
+            Self::FloatMax => 46,
+            Self::ComplexFromParts => 47,
+            Self::ComplexReal => 48,
+            Self::ComplexImag => 49,
             Self::IntEqual => 9,
             Self::IntNotEqual => 10,
             Self::IntLess => 11,
@@ -911,56 +953,6 @@ impl RuntimeOp {
         encoder.count(requirements.len());
         for requirement in requirements {
             encoder.u16(requirement.canonical_tag());
-        }
-    }
-}
-
-impl TryFrom<u16> for RuntimeOp {
-    type Error = UnknownRuntimeOpId;
-
-    fn try_from(value: u16) -> Result<Self, Self::Error> {
-        match value {
-            1 => Ok(Self::GoStringFromBytes),
-            2 => Ok(Self::GoStringFromStatic),
-            3 => Ok(Self::ConcatGoStrings),
-            8 => Ok(Self::IntDiv),
-            9 => Ok(Self::IntRem),
-            10 => Ok(Self::IntShl),
-            11 => Ok(Self::IntShr),
-            13 => Ok(Self::PrintBool),
-            14 => Ok(Self::PrintI64),
-            15 => Ok(Self::PrintSpace),
-            16 => Ok(Self::PrintNewline),
-            17 => Ok(Self::PrintGoString),
-            18 => Ok(Self::PanicBool),
-            19 => Ok(Self::PanicI64),
-            20 => Ok(Self::PanicGoString),
-            21 => Ok(Self::GoSliceI64FromStatic),
-            22 => Ok(Self::GoSliceI64Index),
-            23 => Ok(Self::GoSliceI64Range),
-            24 => Ok(Self::GoSliceI64Set),
-            25 => Ok(Self::GoSliceI64Make),
-            26 => Ok(Self::GoSliceI64Len),
-            27 => Ok(Self::GoSliceI64Cap),
-            28 => Ok(Self::GoSliceI64Append),
-            29 => Ok(Self::GoSliceU8FromStatic),
-            30 => Ok(Self::GoSliceU8AppendSlice),
-            31 => Ok(Self::GoSliceU8AppendString),
-            32 => Ok(Self::GoSliceU8CopyString),
-            33 => Ok(Self::GoSliceI64Clear),
-            34 => Ok(Self::GoStringFromSliceU8),
-            35 => Ok(Self::GoSliceI64Copy),
-            36 => Ok(Self::GoMapStringI64Nil),
-            37 => Ok(Self::GoMapStringI64Make),
-            38 => Ok(Self::GoMapStringI64Len),
-            39 => Ok(Self::GoMapStringI64Get),
-            40 => Ok(Self::GoMapStringI64Contains),
-            41 => Ok(Self::GoMapStringI64Set),
-            42 => Ok(Self::GoMapStringI64Delete),
-            43 => Ok(Self::GoMapStringI64Clear),
-            44 => Ok(Self::GoMapStringI64IsNil),
-            45 => Ok(Self::GoMapStringI64KeyAt),
-            unknown => Err(UnknownRuntimeOpId(unknown)),
         }
     }
 }

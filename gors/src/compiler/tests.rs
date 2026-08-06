@@ -237,6 +237,59 @@ fn package_constants_support_iota_repetition_and_complex_components() {
 }
 
 #[test]
+fn numeric_builtins_lower_constants_and_dynamic_values() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            func bounded(a int, b int, c int) int {
+                return max(a, min(b, c), min(c))
+            }
+
+            func components(r float64, i float64) float64 {
+                value := complex(r, i)
+                return real(value) + imag(value)
+            }
+
+            func main() {
+                if min(9, 4, 7) != 4 || max(9, 4, 7) != 9 || min(2, 1.5) != 1.5 {
+                    panic("constant min/max changed")
+                }
+                if real(complex128(1.5)) != 1.5 || imag(complex128(1.5)) != 0.0 {
+                    panic("converted complex components changed")
+                }
+                if 1.0 / min(float64(0.0), float64(-0.0)) > 0.0 {
+                    panic("constant min lost negative zero")
+                }
+                if bounded(3, 8, 5) != 5 || components(1.5, 2.5) != 4.0 {
+                    panic("dynamic numeric built-in changed")
+                }
+                zero := 0.0
+                negativeZero := -zero
+                if 1.0 / min(zero, negativeZero) > 0.0 {
+                    panic("min lost negative zero")
+                }
+                if 1.0 / max(negativeZero, zero) < 0.0 {
+                    panic("max lost positive zero")
+                }
+                nan := zero / zero
+                minimumNaN := min(1.0, nan)
+                maximumNaN := max(nan, 1.0)
+                if minimumNaN == minimumNaN || maximumNaN == maximumNaN {
+                    panic("min/max did not propagate NaN")
+                }
+                println("numeric-builtins: ok")
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"numeric-builtins: ok\n");
+    for primitive in ["is_nan", "is_sign_negative", "is_sign_positive"] {
+        assert!(run.rust.contains(primitive), "{}", run.rust);
+    }
+}
+
+#[test]
 fn defined_numeric_types_keep_identity_through_operations_and_conversions() {
     let source = r#"
             package main

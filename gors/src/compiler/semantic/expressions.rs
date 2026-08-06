@@ -108,7 +108,10 @@ pub(super) fn fold_constant_binary(
                 hir::BinaryOp::LessEqual => ConstValue::Bool(left <= right),
                 hir::BinaryOp::Greater => ConstValue::Bool(left > right),
                 hir::BinaryOp::GreaterEqual => ConstValue::Bool(left >= right),
+                hir::BinaryOp::Min => ConstValue::Int(left.min(right).to_string()),
+                hir::BinaryOp::Max => ConstValue::Int(left.max(right).to_string()),
                 hir::BinaryOp::LogicalAnd | hir::BinaryOp::LogicalOr => return Ok(None),
+                hir::BinaryOp::Complex => return Ok(None),
             }
         }
         (ConstValue::Bool(left), ConstValue::Bool(right)) => match op {
@@ -118,6 +121,26 @@ pub(super) fn fold_constant_binary(
             hir::BinaryOp::LogicalOr => ConstValue::Bool(*left || *right),
             _ => return Ok(None),
         },
+        (ConstValue::Float(left), ConstValue::Float(right)) => {
+            let Some(choose_left) = fold_float_min_max(op, left, right, source)? else {
+                return Ok(None);
+            };
+            ConstValue::Float(if choose_left {
+                left.clone()
+            } else {
+                right.clone()
+            })
+        }
+        (ConstValue::Int(left), ConstValue::Float(right))
+        | (ConstValue::Float(left), ConstValue::Int(right))
+            if matches!(op, hir::BinaryOp::Min | hir::BinaryOp::Max) =>
+        {
+            let choose_left = fold_float_min_max(op, left, right, source)?.ok_or_else(|| {
+                Diagnostic::backend("numeric min/max did not select an exact constant")
+            })?;
+            let chosen = if choose_left { left } else { right };
+            ConstValue::Float(chosen.clone())
+        }
         (ConstValue::String(left), ConstValue::String(right)) => match op {
             hir::BinaryOp::Add => {
                 let mut result = left.clone();
@@ -151,6 +174,33 @@ pub(super) fn fold_constant_binary(
         _ => return Ok(None),
     };
     Ok(Some(folded))
+}
+
+fn fold_float_min_max(
+    op: hir::BinaryOp,
+    left: &str,
+    right: &str,
+    source: SourceRef,
+) -> Result<Option<bool>, Diagnostic> {
+    if !matches!(op, hir::BinaryOp::Min | hir::BinaryOp::Max) {
+        return Ok(None);
+    }
+    let left = crate::compiler::types::parse_go_float(left)
+        .ok_or_else(|| Diagnostic::semantic("invalid exact numeric constant", source))?;
+    let right = crate::compiler::types::parse_go_float(right)
+        .ok_or_else(|| Diagnostic::semantic("invalid exact numeric constant", source))?;
+    let choose_left = if left == 0.0 && right == 0.0 {
+        if op == hir::BinaryOp::Min {
+            left.is_sign_negative() || !right.is_sign_negative()
+        } else {
+            left.is_sign_positive() || !right.is_sign_positive()
+        }
+    } else if op == hir::BinaryOp::Min {
+        left <= right
+    } else {
+        left >= right
+    };
+    Ok(Some(choose_left))
 }
 
 fn fold_integer_complex(
@@ -327,6 +377,10 @@ pub(super) fn validate_binary_operator(
             ty,
             Ty::Int(IntTy::Int) | Ty::Float(FloatTy::Float64) | Ty::Complex(ComplexTy::Complex128)
         ),
+        hir::BinaryOp::Min | hir::BinaryOp::Max => {
+            matches!(ty, Ty::Int(IntTy::Int) | Ty::Float(FloatTy::Float64))
+        }
+        hir::BinaryOp::Complex => *ty == Ty::Float(FloatTy::Float64),
         hir::BinaryOp::Rem
         | hir::BinaryOp::BitAnd
         | hir::BinaryOp::BitOr

@@ -6,6 +6,7 @@ mod expression_lower;
 mod expressions;
 mod function;
 mod maps;
+mod numeric_builtins;
 mod ranges;
 mod statements;
 mod switches;

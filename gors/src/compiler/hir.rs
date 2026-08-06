@@ -282,6 +282,9 @@ pub enum BinaryOp {
     GreaterEqual,
     LogicalAnd,
     LogicalOr,
+    Min,
+    Max,
+    Complex,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -290,6 +293,8 @@ pub enum UnaryOp {
     Negative,
     Not,
     BitNot,
+    Real,
+    Imag,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

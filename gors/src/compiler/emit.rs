@@ -442,6 +442,8 @@ fn emit_primitive_op(operation: PrimitiveOp, args: &[syn::Expr]) -> Result<syn::
         (IntWrappingNeg, [value]) => syn::parse_quote! { (#value).wrapping_neg() },
         (FloatNeg, [value]) => syn::parse_quote! { -(#value) },
         (ComplexNeg, [value]) => syn::parse_quote! { [-(#value)[0], -(#value)[1]] },
+        (ComplexReal, [value]) => syn::parse_quote! { (#value)[0] },
+        (ComplexImag, [value]) => syn::parse_quote! { (#value)[1] },
         (IntBitAnd, [left, right]) => syn::parse_quote! { (#left) & (#right) },
         (IntBitOr, [left, right]) => syn::parse_quote! { (#left) | (#right) },
         (IntBitXor, [left, right]) => syn::parse_quote! { (#left) ^ (#right) },
@@ -455,10 +457,43 @@ fn emit_primitive_op(operation: PrimitiveOp, args: &[syn::Expr]) -> Result<syn::
         (IntWrappingMul, [left, right]) => {
             syn::parse_quote! { (#left).wrapping_mul(#right) }
         }
+        (IntMin, [left, right]) => syn::parse_quote! {
+            if (#left) < (#right) { #left } else { #right }
+        },
+        (IntMax, [left, right]) => syn::parse_quote! {
+            if (#left) > (#right) { #left } else { #right }
+        },
         (FloatAdd, [left, right]) => syn::parse_quote! { (#left) + (#right) },
         (FloatSub, [left, right]) => syn::parse_quote! { (#left) - (#right) },
         (FloatMul, [left, right]) => syn::parse_quote! { (#left) * (#right) },
         (FloatDiv, [left, right]) => syn::parse_quote! { (#left) / (#right) },
+        (FloatMin, [left, right]) => syn::parse_quote! {
+            if (#left).is_nan() {
+                #left
+            } else if (#right).is_nan() {
+                #right
+            } else if (#left) == 0.0 && (#right) == 0.0 {
+                if (#left).is_sign_negative() { #left } else { #right }
+            } else if (#left) < (#right) {
+                #left
+            } else {
+                #right
+            }
+        },
+        (FloatMax, [left, right]) => syn::parse_quote! {
+            if (#left).is_nan() {
+                #left
+            } else if (#right).is_nan() {
+                #right
+            } else if (#left) == 0.0 && (#right) == 0.0 {
+                if (#left).is_sign_positive() { #left } else { #right }
+            } else if (#left) > (#right) {
+                #left
+            } else {
+                #right
+            }
+        },
+        (ComplexFromParts, [real, imag]) => syn::parse_quote! { [#real, #imag] },
         (ComplexAdd, [left, right]) => {
             syn::parse_quote! { [(#left)[0] + (#right)[0], (#left)[1] + (#right)[1]] }
         }
