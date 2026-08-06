@@ -302,7 +302,7 @@ pub(in crate::compiler::db) fn package_analysis_product(
             if is_exported(&name)
                 && let Ok(typed) = typed_variable_product(db, input, variable)
             {
-                let semantic = crate::compiler::hir::Constant {
+                let semantic = crate::compiler::hir::Variable {
                     id: typed.id,
                     name: typed.name.clone(),
                     ty: typed.ty.clone(),
@@ -311,7 +311,7 @@ pub(in crate::compiler::db) fn package_analysis_product(
                 };
                 exported_variables.push((
                     typed.id,
-                    crate::compiler::fingerprint::hir_constant(&semantic),
+                    crate::compiler::fingerprint::hir_variable(&semantic),
                 ));
             }
             variables.push(VariableDescriptor::new(file, key, name));

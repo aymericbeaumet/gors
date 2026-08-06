@@ -11,6 +11,7 @@ mod panic_cleanup;
 mod pointers;
 mod ranges;
 mod slices;
+mod statics;
 mod structs;
 #[cfg(test)]
 mod test_file;
@@ -744,10 +745,11 @@ impl FunctionLowerer {
 
     fn lower_expr(&mut self, expr: &hir::Expr) -> Result<Operand, Diagnostic> {
         match &expr.kind {
-            hir::ExprKind::Constant(value)
-            | hir::ExprKind::GlobalConstant(_, value)
-            | hir::ExprKind::GlobalVariable(_, value) => {
+            hir::ExprKind::Constant(value) | hir::ExprKind::GlobalConstant(_, value) => {
                 Ok(Operand::Constant(value.clone(), expr.ty.clone()))
+            }
+            hir::ExprKind::GlobalVariable(_, value) => {
+                self.lower_static_value(value, &expr.ty, expr.source)
             }
             hir::ExprKind::SliceLiteralI64(elements) => {
                 let result = self.new_temp(expr.ty.clone());

@@ -17,6 +17,7 @@ mod pointers;
 mod ranges;
 mod selects;
 mod statements;
+mod static_values;
 mod structs;
 mod switches;
 
@@ -37,7 +38,8 @@ use super::syntax::{
     VariableValueSyntax,
 };
 use super::types::{
-    ChannelDir, ConstValue, IntTy, InterfaceMethod, Signature, StructField, Ty, UntypedTy,
+    ChannelDir, ConstValue, IntTy, InterfaceMethod, Signature, StaticValue, StructField, Ty,
+    UntypedTy,
 };
 
 #[derive(Clone)]
@@ -64,7 +66,7 @@ pub(super) struct ConstantSymbol {
 pub(super) struct VariableSymbol {
     pub(super) id: QualifiedDefId,
     pub(super) ty: Ty,
-    pub(super) value: ConstValue,
+    pub(super) value: StaticValue,
 }
 
 pub(super) struct FunctionSymbols {
@@ -90,7 +92,7 @@ pub(super) struct TypedVariable {
     pub(super) id: DefId,
     pub(super) name: String,
     pub(super) ty: Ty,
-    pub(super) value: ConstValue,
+    pub(super) value: StaticValue,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -225,7 +227,7 @@ pub(super) fn lower_variable(
         .transpose()?;
     let (raw_ty, value) = match &syntax.value {
         VariableValueSyntax::Expression(expression) => {
-            eval_constant(expression, constants, source, 0)?
+            static_values::evaluate_initializer(expression, constants, type_aliases, source)?
         }
         VariableValueSyntax::Zero => {
             let ty = explicit_ty.clone().ok_or_else(|| {
@@ -237,7 +239,7 @@ pub(super) fn lower_variable(
                     source,
                 )
             })?;
-            let value = ty.zero().ok_or_else(|| {
+            let value = StaticValue::zero(&ty).ok_or_else(|| {
                 Diagnostic::unsupported(
                     format!("zero value for package variable type {ty:?} is not implemented"),
                     source,

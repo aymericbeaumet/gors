@@ -2,7 +2,7 @@
 
 use super::ids::{ClosureId, DefId, LocalId, NodeId, PackageId, QualifiedDefId};
 use super::provenance::SourceRef;
-use super::types::{ConstValue, Signature, Ty};
+use super::types::{ConstValue, Signature, StaticValue, Ty};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct File {
@@ -18,6 +18,15 @@ pub struct Constant {
     pub name: String,
     pub ty: Ty,
     pub value: ConstValue,
+    pub source: SourceRef,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Variable {
+    pub id: DefId,
+    pub name: String,
+    pub ty: Ty,
+    pub value: StaticValue,
     pub source: SourceRef,
 }
 
@@ -257,7 +266,7 @@ pub enum ExprKind {
         candidates: Vec<InterfaceCallCandidate>,
     },
     GlobalConstant(QualifiedDefId, ConstValue),
-    GlobalVariable(QualifiedDefId, ConstValue),
+    GlobalVariable(QualifiedDefId, StaticValue),
     Binary {
         op: BinaryOp,
         left: Box<Expr>,

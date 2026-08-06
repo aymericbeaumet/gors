@@ -25,6 +25,7 @@ impl FunctionLowerer {
     ) -> Result<hir::Expr, Diagnostic> {
         if let ExprSyntaxKind::Ident(package) = &base.kind
             && self.lookup_local(&package.name).is_none()
+            && !self.variables.contains_key(package.name.as_ref())
         {
             return self.lower_imported_selector_call(
                 base,
@@ -190,6 +191,7 @@ impl FunctionLowerer {
     ) -> Result<hir::Expr, Diagnostic> {
         if let ExprSyntaxKind::Ident(package) = &base.kind
             && self.lookup_local(&package.name).is_none()
+            && !self.variables.contains_key(package.name.as_ref())
         {
             return self.lower_imported_selector(base, member, node, source);
         }

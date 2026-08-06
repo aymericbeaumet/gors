@@ -22,6 +22,33 @@ fn package_variables_materialize_typed_initial_values() {
 }
 
 #[test]
+fn package_struct_variables_materialize_typed_value_copies() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            type Pair struct {
+                Left int
+                Right int
+            }
+
+            var pair = Pair{Right: 4, Left: 3}
+
+            func main() {
+                local := pair
+                local.Left = 8
+                if pair.Left != 3 || pair.Right != 4 || local.Left != 8 {
+                    panic("package struct value copy changed")
+                }
+                println("package-struct: ok")
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"package-struct: ok\n");
+}
+
+#[test]
 fn package_variable_mutation_waits_for_global_storage_lowering() {
     let error = compile_program(raw_program(
         "variables.go",

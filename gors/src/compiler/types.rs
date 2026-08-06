@@ -113,6 +113,17 @@ pub enum ConstValue {
     String(Vec<u8>),
 }
 
+/// A fully evaluated immutable package initializer.
+///
+/// This is distinct from a Go constant: aggregate values are permitted here,
+/// while every leaf still retains its exact constant representation until its
+/// declared Go type is known.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StaticValue {
+    Constant(ConstValue),
+    Struct(Vec<StaticValue>),
+}
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Signature {
     pub params: Vec<Ty>,
@@ -340,6 +351,35 @@ impl ConstValue {
             // remain in the semantic algebra for the next frontier, but are
             // deliberately not executable yet.
             _ => false,
+        }
+    }
+}
+
+impl StaticValue {
+    #[must_use]
+    pub fn zero(ty: &Ty) -> Option<Self> {
+        match ty.underlying() {
+            Ty::Struct(fields) => fields
+                .iter()
+                .map(|field| Self::zero(&field.ty))
+                .collect::<Option<Vec<_>>>()
+                .map(Self::Struct),
+            underlying => underlying.zero().map(Self::Constant),
+        }
+    }
+
+    #[must_use]
+    pub fn is_representable_as(&self, ty: &Ty) -> bool {
+        match (self, ty.underlying()) {
+            (Self::Constant(value), ty) => value.is_representable_as(ty),
+            (Self::Struct(values), Ty::Struct(fields)) => {
+                values.len() == fields.len()
+                    && values
+                        .iter()
+                        .zip(fields)
+                        .all(|(value, field)| value.is_representable_as(&field.ty))
+            }
+            (Self::Struct(_), _) => false,
         }
     }
 }

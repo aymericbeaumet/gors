@@ -31,6 +31,14 @@ pub fn hir_constant(constant: &hir::Constant) -> Fingerprint {
     encoder.finish()
 }
 
+/// Fingerprint one typed immutable package variable independently of siblings.
+#[must_use]
+pub fn hir_variable(variable: &hir::Variable) -> Fingerprint {
+    let mut encoder = Encoder::root(b"hir-variable");
+    encode_variable(&mut encoder, variable);
+    encoder.finish()
+}
+
 fn encode_file(encoder: &mut Encoder, file: &hir::File) {
     encoder.field(b"package-id", |encoder| {
         package_id(encoder, file.package_id)
@@ -50,6 +58,16 @@ fn encode_constant(encoder: &mut Encoder, constant: &hir::Constant) {
     encoder.field(b"type", |encoder| ty(encoder, &constant.ty));
     encoder.field(b"value", |encoder| const_value(encoder, &constant.value));
     encoder.field(b"source", |encoder| source_ref(encoder, constant.source));
+}
+
+fn encode_variable(encoder: &mut Encoder, variable: &hir::Variable) {
+    encoder.field(b"id", |encoder| def_id(encoder, variable.id));
+    encoder.field(b"name", |encoder| encoder.string(&variable.name));
+    encoder.field(b"type", |encoder| ty(encoder, &variable.ty));
+    encoder.field(b"value", |encoder| {
+        encode_static_value(encoder, &variable.value);
+    });
+    encoder.field(b"source", |encoder| source_ref(encoder, variable.source));
 }
 
 fn encode_function(encoder: &mut Encoder, function: &hir::Function) {
@@ -560,7 +578,7 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
         hir::ExprKind::GlobalVariable(id, value) => {
             encoder.variant(b"global-variable", |encoder| {
                 encoder.field(b"id", |encoder| qualified_def_id(encoder, *id));
-                encoder.field(b"value", |encoder| const_value(encoder, value));
+                encoder.field(b"value", |encoder| encode_static_value(encoder, value));
             });
         }
         hir::ExprKind::Binary { op, left, right } => {
@@ -666,6 +684,19 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
                 });
             });
         }),
+    }
+}
+
+fn encode_static_value(encoder: &mut Encoder, value: &crate::compiler::types::StaticValue) {
+    match value {
+        crate::compiler::types::StaticValue::Constant(value) => {
+            encoder.variant(b"constant", |encoder| const_value(encoder, value));
+        }
+        crate::compiler::types::StaticValue::Struct(fields) => {
+            encoder.variant(b"struct", |encoder| {
+                encoder.sequence(fields, encode_static_value);
+            });
+        }
     }
 }
 
