@@ -147,7 +147,9 @@ impl FunctionLowerer {
                 ensure_bootstrap_value_type(&operand_ty, source)?;
                 let operator_ty = operand_ty.underlying();
                 let op = match *token {
-                    Token::ADD if *operator_ty == Ty::Int(IntTy::Int) => hir::UnaryOp::Positive,
+                    Token::ADD if matches!(operator_ty, Ty::Int(IntTy::Int | IntTy::Int32)) => {
+                        hir::UnaryOp::Positive
+                    }
                     Token::ADD
                         if matches!(
                             operator_ty,
@@ -156,7 +158,9 @@ impl FunctionLowerer {
                     {
                         hir::UnaryOp::Positive
                     }
-                    Token::SUB if *operator_ty == Ty::Int(IntTy::Int) => hir::UnaryOp::Negative,
+                    Token::SUB if matches!(operator_ty, Ty::Int(IntTy::Int | IntTy::Int32)) => {
+                        hir::UnaryOp::Negative
+                    }
                     Token::SUB
                         if matches!(
                             operator_ty,
@@ -347,10 +351,8 @@ impl FunctionLowerer {
                     );
                 }
                 let ExprSyntaxKind::Ident(callee_ident) = &callee.kind else {
-                    return Err(Diagnostic::unsupported(
-                        "only direct calls are implemented by the HIR/MIR backend",
-                        source,
-                    ));
+                    return self
+                        .lower_conversion_call(callee, arguments, *spread, node, source, expected);
                 };
                 let name = callee_ident.name.as_ref();
                 if name == "make" {
@@ -394,54 +396,8 @@ impl FunctionLowerer {
                 if self.type_aliases.contains_key(name)
                     || matches!(name, "bool" | "string" | "int" | "float64" | "complex128")
                 {
-                    let [argument] = arguments.as_ref() else {
-                        return Err(Diagnostic::semantic(
-                            format!("conversion to {name} requires exactly one argument"),
-                            source,
-                        ));
-                    };
-                    let target = lower_type(callee, &self.type_aliases, source)?;
-                    let mut argument = self.lower_expr(argument, None)?;
-                    if target == Ty::String
-                        && argument.ty == Ty::Slice(Box::new(Ty::Uint(UintTy::Uint8)))
-                    {
-                        let effects = slice_runtime_effects(&[&argument], false, true, false);
-                        return Ok(hir::Expr {
-                            node,
-                            kind: hir::ExprKind::Call {
-                                callee: hir::Callee::Builtin(hir::Builtin::StringFromSliceU8),
-                                args: vec![argument],
-                            },
-                            ty: Ty::String,
-                            category: hir::ValueCategory::Value,
-                            effects,
-                            source,
-                        });
-                    }
-                    if is_assignable(&argument.ty, &target) {
-                        coerce_expr(&mut argument, &target, source)?;
-                    } else if argument.ty.underlying() == target.underlying() {
-                        let effects = argument.effects;
-                        return Ok(hir::Expr {
-                            node,
-                            kind: hir::ExprKind::Conversion {
-                                value: Box::new(argument),
-                            },
-                            ty: target,
-                            category: hir::ValueCategory::Value,
-                            effects,
-                            source,
-                        });
-                    } else {
-                        return Err(Diagnostic::unsupported(
-                            format!(
-                                "conversion from {:?} to {name} requires a representation change",
-                                argument.ty
-                            ),
-                            source,
-                        ));
-                    }
-                    return Ok(argument);
+                    return self
+                        .lower_conversion_call(callee, arguments, *spread, node, source, expected);
                 }
                 if self.generic_functions.contains_key(name) {
                     return self.lower_generic_function_call(
@@ -624,7 +580,9 @@ impl FunctionLowerer {
                 }
                 let (builtin, element_ty) = match base.ty.underlying() {
                     Ty::String => (hir::Builtin::StringIndex, Ty::Uint(UintTy::Uint8)),
-                    Ty::Slice(element) if element.underlying() == &Ty::Int(IntTy::Int) => {
+                    Ty::Slice(element)
+                        if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) =>
+                    {
                         (hir::Builtin::SliceI64Index, element.as_ref().clone())
                     }
                     Ty::Slice(element) if element.underlying() == &Ty::Uint(UintTy::Uint8) => {
@@ -699,14 +657,15 @@ impl FunctionLowerer {
                     Ty::Slice(element)
                         if matches!(
                             element.underlying(),
-                            Ty::Int(IntTy::Int) | Ty::Uint(UintTy::Uint8)
+                            Ty::Int(IntTy::Int | IntTy::Int32) | Ty::Uint(UintTy::Uint8)
                         ) =>
                     {
-                        let builtin = if element.underlying() == &Ty::Int(IntTy::Int) {
-                            hir::Builtin::SliceI64Range
-                        } else {
-                            hir::Builtin::SliceU8Range
-                        };
+                        let builtin =
+                            if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) {
+                                hir::Builtin::SliceI64Range
+                            } else {
+                                hir::Builtin::SliceU8Range
+                            };
                         let ty = Ty::Slice(element.clone());
                         let max = self.lower_optional_slice_bound(max.as_deref(), expr.source)?;
                         (builtin, ty, vec![base, low, high, max])
@@ -875,12 +834,26 @@ impl FunctionLowerer {
                         false,
                     )
                 } else {
-                    let slice = self.lower_expr(slice, Some(&slice_ty))?;
-                    let value = self.lower_expr(value, Some(&Ty::Int(IntTy::Int)))?;
+                    let slice = self.lower_expr(slice, None)?;
+                    let Ty::Slice(element) = slice.ty.underlying() else {
+                        return Err(Diagnostic::semantic(
+                            "append requires a slice as its first argument",
+                            source,
+                        ));
+                    };
+                    if !matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) {
+                        return Err(Diagnostic::unsupported(
+                            "non-spread append currently supports int and rune slices",
+                            source,
+                        ));
+                    }
+                    let element_ty = element.as_ref().clone();
+                    let result_ty = slice.ty.clone();
+                    let value = self.lower_expr(value, Some(&element_ty))?;
                     (
                         hir::Builtin::SliceI64Append,
                         vec![slice, value],
-                        slice_ty,
+                        result_ty,
                         true,
                         true,
                         false,
@@ -956,7 +929,7 @@ fn is_nil_identifier(expression: &ExprSyntax) -> bool {
     )
 }
 
-fn slice_runtime_effects(
+pub(super) fn slice_runtime_effects(
     arguments: &[&hir::Expr],
     writes: bool,
     allocates: bool,

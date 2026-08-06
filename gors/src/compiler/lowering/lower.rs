@@ -138,7 +138,7 @@ fn lower_rvalue(rvalue: mir::Rvalue, locals: &[out::LocalDecl]) -> Result<out::R
     let panic = rvalue.panic;
     let kind = match rvalue.kind {
         mir::RvalueKind::Use(operand) => out::RvalueKind::Use(lower_operand(operand, locals)?),
-        mir::RvalueKind::SliceLiteralI64(elements) => {
+        mir::RvalueKind::SliceLiteralI64 { elements, .. } => {
             out::RvalueKind::Use(out::Operand::Constant(out::Constant::RuntimeStaticI64s {
                 op: RuntimeOp::GoSliceI64FromStatic,
                 values: elements,
@@ -352,9 +352,13 @@ fn lower_terminator(
                 | hir::Builtin::AggregateSliceIndexTagged
                 | hir::Builtin::AggregateSliceSetTagged
                 | hir::Builtin::StringFromSliceU8
+                | hir::Builtin::StringFromSliceRunes
                 | hir::Builtin::StringLen
                 | hir::Builtin::StringIndex
                 | hir::Builtin::StringRange
+                | hir::Builtin::StringRangeCount
+                | hir::Builtin::StringRangeIndexAt
+                | hir::Builtin::StringRangeRuneAt
                 | hir::Builtin::MapStringI64Nil
                 | hir::Builtin::MapStringI64Make
                 | hir::Builtin::MapStringI64Len
@@ -431,9 +435,13 @@ fn lower_terminator(
                     hir::Builtin::AggregateSliceIndexTagged => RuntimeOp::GoSliceInterfaceIndex,
                     hir::Builtin::AggregateSliceSetTagged => RuntimeOp::GoSliceInterfaceSet,
                     hir::Builtin::StringFromSliceU8 => RuntimeOp::GoStringFromSliceU8,
+                    hir::Builtin::StringFromSliceRunes => RuntimeOp::GoStringFromSliceRunes,
                     hir::Builtin::StringLen => RuntimeOp::GoStringLen,
                     hir::Builtin::StringIndex => RuntimeOp::GoStringIndex,
                     hir::Builtin::StringRange => RuntimeOp::GoStringRange,
+                    hir::Builtin::StringRangeCount => RuntimeOp::GoStringRangeCount,
+                    hir::Builtin::StringRangeIndexAt => RuntimeOp::GoStringRangeIndexAt,
+                    hir::Builtin::StringRangeRuneAt => RuntimeOp::GoStringRangeRuneAt,
                     hir::Builtin::MapStringI64Nil => RuntimeOp::GoMapStringI64Nil,
                     hir::Builtin::MapStringI64Make => RuntimeOp::GoMapStringI64Make,
                     hir::Builtin::MapStringI64Len => RuntimeOp::GoMapStringI64Len,
@@ -768,7 +776,10 @@ pub(super) fn lower_operand(
 fn lower_constant(value: ConstValue, ty: &Ty) -> Result<out::Constant, Diagnostic> {
     match (value, ty.underlying()) {
         (ConstValue::Bool(value), Ty::Bool) => Ok(out::Constant::Bool(value)),
-        (ConstValue::Int(value), Ty::Int(IntTy::Int) | Ty::Uint(UintTy::Uint8)) => value
+        (
+            ConstValue::Int(value),
+            Ty::Int(IntTy::Int | IntTy::Int32) | Ty::Uint(UintTy::Uint8 | UintTy::Uintptr),
+        ) => value
             .parse::<i64>()
             .map(out::Constant::I64)
             .map_err(|_| Diagnostic::backend(format!("Go int is outside Rust IR i64: {value}"))),

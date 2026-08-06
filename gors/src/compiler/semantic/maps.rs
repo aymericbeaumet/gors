@@ -130,6 +130,20 @@ impl FunctionLowerer {
                 source,
             });
         }
+        if let Ty::Struct(fields) = ty.underlying() {
+            let values = fields
+                .iter()
+                .map(|field| self.zero_value_expr(node, source, field.ty.clone()))
+                .collect::<Result<Vec<_>, _>>()?;
+            return Ok(hir::Expr {
+                node,
+                kind: hir::ExprKind::StructLiteral(values),
+                ty,
+                category: hir::ValueCategory::Value,
+                effects: hir::Effects::default(),
+                source,
+            });
+        }
         let value = ty.zero().ok_or_else(|| {
             Diagnostic::unsupported(format!("zero value for {ty:?} is not implemented"), source)
         })?;
@@ -352,7 +366,9 @@ impl FunctionLowerer {
             {
                 hir::Builtin::AggregateMapLen
             }
-            Ty::Slice(element) if element.underlying() == &Ty::Int(IntTy::Int) => {
+            Ty::Slice(element)
+                if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) =>
+            {
                 hir::Builtin::SliceI64Len
             }
             Ty::Slice(element) if element.underlying() == &Ty::Uint(UintTy::Uint8) => {

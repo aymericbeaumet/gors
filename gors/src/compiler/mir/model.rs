@@ -71,7 +71,10 @@ pub struct Rvalue {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RvalueKind {
     Use(Operand),
-    SliceLiteralI64(Vec<i64>),
+    SliceLiteralI64 {
+        elements: Vec<i64>,
+        ty: Ty,
+    },
     SliceLiteralU8(Vec<u8>),
     SliceLiteralBool(Vec<bool>),
     ArrayLiteralI64(Vec<i64>),

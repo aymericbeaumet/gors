@@ -28,9 +28,12 @@ impl FunctionLowerer {
             Ty::Array(_, element) if element.underlying() == &Ty::Int(IntTy::Int) => {
                 (Ty::Int(IntTy::Int), element.as_ref().clone())
             }
-            Ty::Slice(element) if element.underlying() == &Ty::Int(IntTy::Int) => {
+            Ty::Slice(element)
+                if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) =>
+            {
                 (Ty::Int(IntTy::Int), element.as_ref().clone())
             }
+            Ty::String => (Ty::Int(IntTy::Int), Ty::Int(IntTy::Int32)),
             Ty::Map(key, value)
                 if key.underlying() == &Ty::String
                     && value.underlying() == &Ty::Int(IntTy::Int) =>

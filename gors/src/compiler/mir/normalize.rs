@@ -223,7 +223,7 @@ fn rewrite_rvalue_boolean_reads(rvalue: &mut Rvalue, constants: &BTreeMap<LocalI
             rewrite_boolean_read(value, constants);
         }
         RvalueKind::RecoverCompareNil { .. } => {}
-        RvalueKind::SliceLiteralI64(_)
+        RvalueKind::SliceLiteralI64 { .. }
         | RvalueKind::SliceLiteralU8(_)
         | RvalueKind::SliceLiteralBool(_)
         | RvalueKind::ArrayLiteralI64(_) => {}
@@ -306,7 +306,7 @@ fn refresh_rvalue_effects(rvalue: &mut Rvalue) {
             structure, value, ..
         } => operand_reads(structure) || operand_reads(value),
         RvalueKind::RecoverCompareNil { .. } => true,
-        RvalueKind::SliceLiteralI64(_)
+        RvalueKind::SliceLiteralI64 { .. }
         | RvalueKind::SliceLiteralU8(_)
         | RvalueKind::SliceLiteralBool(_)
         | RvalueKind::ArrayLiteralI64(_) => false,
@@ -327,7 +327,7 @@ fn refresh_rvalue_effects(rvalue: &mut Rvalue) {
             op: hir::BinaryOp::Add,
             ty: Ty::String,
             ..
-        } | RvalueKind::SliceLiteralI64(_)
+        } | RvalueKind::SliceLiteralI64 { .. }
             | RvalueKind::SliceLiteralU8(_)
             | RvalueKind::SliceLiteralBool(_)
     );

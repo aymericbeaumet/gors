@@ -100,6 +100,10 @@ impl RuntimeOp {
             Self::GoSliceU8Range => "go_slice_u8_range",
             Self::GoStringIndex => "go_string_index",
             Self::GoStringRange => "go_string_range",
+            Self::GoStringFromSliceRunes => "go_string_from_slice_runes",
+            Self::GoStringRangeCount => "go_string_range_count",
+            Self::GoStringRangeIndexAt => "go_string_range_index_at",
+            Self::GoStringRangeRuneAt => "go_string_range_rune_at",
         }
     }
 }

@@ -240,12 +240,6 @@ impl CompilerSession {
             .first()
             .map(|file| file.original_path.clone())
             .unwrap_or_default();
-        if installed.main_files.len() != 1 {
-            return Err(boundary_error(
-                file,
-                "the bootstrap backend requires exactly one Go source file",
-            ));
-        }
         if analysis.package_name() != "main" {
             return Err(boundary_error(
                 file,

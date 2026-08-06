@@ -20,6 +20,15 @@ pub(super) fn verify_constant_type(value: &ConstValue, ty: &Ty) -> Result<(), Di
         (value, underlying),
         (ConstValue::Bool(_), Ty::Bool)
             | (ConstValue::Int(_), Ty::Int(IntTy::Int))
+            | (ConstValue::Int(_), Ty::Int(IntTy::Int32))
+            | (
+                ConstValue::Int(_),
+                Ty::Uint(crate::compiler::types::UintTy::Uint8)
+            )
+            | (
+                ConstValue::Int(_),
+                Ty::Uint(crate::compiler::types::UintTy::Uintptr)
+            )
             | (ConstValue::Float(_), Ty::Float(FloatTy::Float64))
             | (ConstValue::Int(_), Ty::Float(FloatTy::Float64))
             | (
@@ -117,6 +126,9 @@ pub(super) fn verify_binary_types(
                     underlying,
                     Ty::Bool
                         | Ty::Int(IntTy::Int)
+                        | Ty::Int(IntTy::Int32)
+                        | Ty::Uint(crate::compiler::types::UintTy::Uint8)
+                        | Ty::Uint(crate::compiler::types::UintTy::Uintptr)
                         | Ty::Float(FloatTy::Float64)
                         | Ty::Complex(ComplexTy::Complex128)
                         | Ty::String
@@ -130,7 +142,12 @@ pub(super) fn verify_binary_types(
             same_operands
                 && matches!(
                     underlying,
-                    Ty::Int(IntTy::Int) | Ty::Float(FloatTy::Float64) | Ty::String
+                    Ty::Int(IntTy::Int)
+                        | Ty::Int(IntTy::Int32)
+                        | Ty::Uint(crate::compiler::types::UintTy::Uint8)
+                        | Ty::Uint(crate::compiler::types::UintTy::Uintptr)
+                        | Ty::Float(FloatTy::Float64)
+                        | Ty::String
                 )
                 && result == &Ty::Bool
         }

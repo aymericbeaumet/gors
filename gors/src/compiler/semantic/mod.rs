@@ -6,6 +6,7 @@ mod calls;
 mod channels;
 mod closures;
 mod composites;
+mod conversions;
 mod expression_lower;
 mod expressions;
 mod function;
@@ -24,6 +25,7 @@ mod static_values;
 mod structs;
 mod switches;
 mod type_switches;
+mod unsafe_intrinsics;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -100,6 +102,7 @@ pub(super) struct FunctionSymbols {
     pub(super) qualified_constants: BTreeMap<(String, String), ConstantSymbol>,
     pub(super) variables: BTreeMap<String, VariableSymbol>,
     pub(super) qualified_variables: BTreeMap<(String, String), VariableSymbol>,
+    pub(super) intrinsic_packages: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -332,6 +335,7 @@ pub(super) fn lower_function(
         qualified_constants: symbols.qualified_constants,
         variables: symbols.variables,
         qualified_variables: symbols.qualified_variables,
+        intrinsic_packages: symbols.intrinsic_packages,
         type_aliases,
         type_scope_changes: vec![BTreeMap::new()],
         signature: signature.clone(),
@@ -625,13 +629,14 @@ pub(super) fn lower_type(
         "bool" => Ok(Ty::Bool),
         "string" => Ok(Ty::String),
         "int" => Ok(Ty::Int(IntTy::Int)),
+        "int32" | "rune" => Ok(Ty::Int(IntTy::Int32)),
         "float64" => Ok(Ty::Float(super::types::FloatTy::Float64)),
         "complex128" => Ok(Ty::Complex(super::types::ComplexTy::Complex128)),
         "uint8" | "byte" => Ok(Ty::Uint(super::types::UintTy::Uint8)),
         "any" => Ok(Ty::Interface(Vec::new())),
         "error" => Ok(interfaces::error_interface_ty()),
-        "int8" | "int16" | "int32" | "rune" | "int64" | "uint" | "uint16" | "uint32" | "uint64"
-        | "uintptr" | "float32" | "complex64" => Err(Diagnostic::unsupported(
+        "int8" | "int16" | "int64" | "uint" | "uint16" | "uint32" | "uint64" | "uintptr"
+        | "float32" | "complex64" => Err(Diagnostic::unsupported(
             format!(
                 "type {} is outside the bootstrap bool/int/string runtime frontier",
                 ident.name

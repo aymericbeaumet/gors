@@ -222,7 +222,7 @@ impl Ty {
         if let Self::Slice(element) = self {
             return matches!(
                 element.underlying(),
-                Self::Bool | Self::Int(IntTy::Int) | Self::Uint(UintTy::Uint8)
+                Self::Bool | Self::Int(IntTy::Int | IntTy::Int32) | Self::Uint(UintTy::Uint8)
             ) || element.bootstrap_i64_struct_fields().is_some();
         }
         if let Self::Pointer(element) = self {
@@ -256,7 +256,8 @@ impl Ty {
             self,
             Self::Bool
                 | Self::Int(IntTy::Int)
-                | Self::Uint(UintTy::Uint8)
+                | Self::Int(IntTy::Int32)
+                | Self::Uint(UintTy::Uint8 | UintTy::Uintptr)
                 | Self::Float(FloatTy::Float64)
                 | Self::Complex(ComplexTy::Complex128)
                 | Self::String
@@ -324,11 +325,22 @@ impl ConstValue {
                 };
                 value >= BigInt::from(i64::MIN) && value <= BigInt::from(i64::MAX)
             }
-            (Self::Int(value), Ty::Uint(UintTy::Uint8)) => {
+            (Self::Int(value), Ty::Int(IntTy::Int32)) => {
                 let Some(value) = BigInt::parse_bytes(value.as_bytes(), 10) else {
                     return false;
                 };
-                value >= BigInt::from(u8::MIN) && value <= BigInt::from(u8::MAX)
+                value >= BigInt::from(i32::MIN) && value <= BigInt::from(i32::MAX)
+            }
+            (Self::Int(value), Ty::Uint(UintTy::Uint8 | UintTy::Uintptr)) => {
+                let Some(value) = BigInt::parse_bytes(value.as_bytes(), 10) else {
+                    return false;
+                };
+                let maximum = if ty == &Ty::Uint(UintTy::Uint8) {
+                    BigInt::from(u8::MAX)
+                } else {
+                    BigInt::from(i64::MAX)
+                };
+                value >= BigInt::from(0_u8) && value <= maximum
             }
             (Self::Int(value), Ty::Float(FloatTy::Float64)) => {
                 BigInt::parse_bytes(value.as_bytes(), 10)

@@ -89,7 +89,8 @@ impl FunctionLowerer {
                 source,
             ));
         };
-        let integer_elements = element_ty.underlying() == &Ty::Int(IntTy::Int);
+        let integer_elements =
+            matches!(element_ty.underlying(), Ty::Int(IntTy::Int | IntTy::Int32));
         let byte_elements = element_ty.underlying() == &Ty::Uint(UintTy::Uint8);
         let boolean_elements = element_ty.underlying() == &Ty::Bool;
         let aggregate_elements = element_ty.bootstrap_i64_struct_fields().is_some();

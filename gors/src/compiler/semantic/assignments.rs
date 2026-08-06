@@ -254,7 +254,10 @@ impl FunctionLowerer {
                 self.lower_array_assignment(container, index, token, value, source)
             }
             Ty::Slice(element)
-                if matches!(element.underlying(), Ty::Int(IntTy::Int) | Ty::Bool) =>
+                if matches!(
+                    element.underlying(),
+                    Ty::Int(IntTy::Int | IntTy::Int32) | Ty::Bool
+                ) =>
             {
                 let element_ty = element.as_ref().clone();
                 let set = if element.underlying() == &Ty::Bool {
@@ -430,7 +433,10 @@ impl FunctionLowerer {
                     let container = self.lower_expr(base, None)?;
                     match container.ty.underlying() {
                         Ty::Slice(element)
-                            if matches!(element.underlying(), Ty::Int(IntTy::Int) | Ty::Bool) =>
+                            if matches!(
+                                element.underlying(),
+                                Ty::Int(IntTy::Int | IntTy::Int32) | Ty::Bool
+                            ) =>
                         {
                             let element_ty = element.as_ref().clone();
                             let set = if element.underlying() == &Ty::Bool {

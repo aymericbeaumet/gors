@@ -81,7 +81,7 @@ pub(super) fn make_rvalue(
             structure, value, ..
         } => operand_reads(structure) || operand_reads(value),
         RvalueKind::RecoverCompareNil { .. } => true,
-        RvalueKind::SliceLiteralI64(_)
+        RvalueKind::SliceLiteralI64 { .. }
         | RvalueKind::SliceLiteralU8(_)
         | RvalueKind::SliceLiteralBool(_)
         | RvalueKind::ArrayLiteralI64(_) => false,

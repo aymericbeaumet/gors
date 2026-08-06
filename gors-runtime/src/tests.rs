@@ -36,6 +36,38 @@ fn byte_slices_and_strings_reject_invalid_bounds() {
 }
 
 #[test]
+fn rune_slices_encode_and_string_ranges_decode_go_utf8() {
+    const RUNES: &[GoInt] = &[65, 233, -1, 0xd800, 0x110000];
+    let runes = go_slice_i64_from_static(RUNES);
+    assert_eq!(
+        go_string_from_slice_runes(runes).as_bytes(),
+        "Aé���".as_bytes()
+    );
+
+    let value = go_string_from_static(&[0xff, b'a', 0xc3, 0xbf]);
+    assert_eq!(go_string_range_count(value.clone()), 3);
+    assert_eq!(go_string_range_index_at(value.clone(), 0), 0);
+    assert_eq!(go_string_range_index_at(value.clone(), 1), 1);
+    assert_eq!(go_string_range_index_at(value.clone(), 2), 2);
+    assert_eq!(go_string_range_rune_at(value.clone(), 0), 0xfffd);
+    assert_eq!(
+        go_string_range_rune_at(value.clone(), 1),
+        GoInt::from(u32::from('a'))
+    );
+    assert_eq!(
+        go_string_range_rune_at(value, 2),
+        GoInt::from(u32::from('ÿ'))
+    );
+}
+
+#[test]
+fn string_range_access_rejects_invalid_ordinals() {
+    let value = go_string_from_static(b"x");
+    assert!(std::panic::catch_unwind(|| go_string_range_index_at(value.clone(), -1)).is_err());
+    assert!(std::panic::catch_unwind(|| go_string_range_rune_at(value, 1)).is_err());
+}
+
+#[test]
 #[allow(clippy::panic)]
 fn string_clones_share_backing_storage() {
     let value = go_string_from_bytes(b"shared");

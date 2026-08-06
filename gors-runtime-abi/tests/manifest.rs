@@ -13,6 +13,9 @@ use gors_runtime_abi::{
     TargetCapability, TargetModel, TargetModelError,
 };
 
+#[path = "manifest/link_identity.rs"]
+mod link_identity;
+
 fn target_model(triple: &str) -> Result<TargetModel, TargetModelError> {
     TargetModel::new(triple, DataWidth::Bits32, Endianness::Little)
 }
@@ -93,11 +96,11 @@ fn current_contract_identity_is_sha256_of_canonical_bytes() {
 
     assert_eq!(manifest.schema().get(), 2);
     assert_eq!(manifest.contract(), CURRENT_CONTRACT_VERSION);
-    assert_eq!(manifest.contract(), ContractVersion::new(2, 11, 0));
+    assert_eq!(manifest.contract(), ContractVersion::new(2, 12, 0));
     assert_eq!(manifest.identity().as_bytes(), &expected);
     assert_eq!(
         manifest.identity().to_string(),
-        "776432317bf9399d72788f5fc8fedf6bb9c4650339220d3e271d83182f90cb11",
+        "54105c8d29e021f2b58fca04bcc0aee24da82ee24f60920eed8720baa0d83cad",
         "the canonical runtime contract changed; review the ABI diff and bump its semantic version before accepting a new identity",
     );
 }
@@ -161,6 +164,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceU8AppendSlice
             | RuntimeOp::GoSliceU8AppendString
             | RuntimeOp::GoStringFromSliceU8
+            | RuntimeOp::GoStringFromSliceRunes
             | RuntimeOp::GoMapStringI64Make
             | RuntimeOp::GoMapStringI64Set
             | RuntimeOp::GoMapStringInterfaceMake
@@ -241,6 +245,9 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceU8Range
             | RuntimeOp::GoStringIndex
             | RuntimeOp::GoStringRange
+            | RuntimeOp::GoStringRangeCount
+            | RuntimeOp::GoStringRangeIndexAt
+            | RuntimeOp::GoStringRangeRuneAt
             | RuntimeOp::GoChannelI64TrySend
             | RuntimeOp::GoChannelI64TryReceive => AllocationEffect::None,
         };
@@ -294,6 +301,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceI64Cap
             | RuntimeOp::GoSliceU8FromStatic
             | RuntimeOp::GoStringFromSliceU8
+            | RuntimeOp::GoStringFromSliceRunes
             | RuntimeOp::GoMapStringI64Nil
             | RuntimeOp::GoMapStringI64Make
             | RuntimeOp::GoMapStringInterfaceMake
@@ -337,7 +345,10 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceU8Index
             | RuntimeOp::GoSliceU8Range
             | RuntimeOp::GoStringIndex
-            | RuntimeOp::GoStringRange => ArgumentMutationEffect::None,
+            | RuntimeOp::GoStringRange
+            | RuntimeOp::GoStringRangeCount
+            | RuntimeOp::GoStringRangeIndexAt
+            | RuntimeOp::GoStringRangeRuneAt => ArgumentMutationEffect::None,
         };
         let expected_blocking = match operation {
             RuntimeOp::PrintBool
@@ -387,6 +398,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceU8CopyString
             | RuntimeOp::GoSliceI64Clear
             | RuntimeOp::GoStringFromSliceU8
+            | RuntimeOp::GoStringFromSliceRunes
             | RuntimeOp::GoSliceI64Copy
             | RuntimeOp::GoMapStringI64Nil
             | RuntimeOp::GoMapStringI64Make
@@ -442,6 +454,9 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceU8Range
             | RuntimeOp::GoStringIndex
             | RuntimeOp::GoStringRange
+            | RuntimeOp::GoStringRangeCount
+            | RuntimeOp::GoStringRangeIndexAt
+            | RuntimeOp::GoStringRangeRuneAt
             | RuntimeOp::GoChannelI64TrySend
             | RuntimeOp::GoChannelI64TryReceive => HostIoEffect::None,
         };
@@ -459,7 +474,9 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceBoolSet
             | RuntimeOp::GoSliceInterfaceIndex
             | RuntimeOp::GoSliceInterfaceSet
-            | RuntimeOp::GoMapStringI64KeyAt => &[GoPanicCondition::IndexOutOfRange],
+            | RuntimeOp::GoMapStringI64KeyAt
+            | RuntimeOp::GoStringRangeIndexAt
+            | RuntimeOp::GoStringRangeRuneAt => &[GoPanicCondition::IndexOutOfRange],
             RuntimeOp::GoSliceI64Range
             | RuntimeOp::GoSliceU8Range
             | RuntimeOp::GoStringRange
@@ -514,6 +531,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceU8CopyString
             | RuntimeOp::GoSliceI64Clear
             | RuntimeOp::GoStringFromSliceU8
+            | RuntimeOp::GoStringFromSliceRunes
             | RuntimeOp::GoSliceI64Copy
             | RuntimeOp::GoMapStringI64Nil
             | RuntimeOp::GoMapStringI64Make
@@ -548,6 +566,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoChannelI64Receive
             | RuntimeOp::GoChannelI64IsNil
             | RuntimeOp::GoStringLen
+            | RuntimeOp::GoStringRangeCount
             | RuntimeOp::GoSliceU8Len
             | RuntimeOp::GoChannelI64TryReceive => &[],
         };
@@ -938,60 +957,5 @@ fn link_validation_order_is_schema_contract_target_then_toolchain() -> Result<()
         wrong_toolchain.select(request),
         Err(RuntimeLinkError::CompatibilityMismatch { .. })
     ));
-    Ok(())
-}
-
-#[test]
-fn artifact_and_link_plan_identities_cover_every_selection_dimension() -> Result<(), Box<dyn Error>>
-{
-    let contract = manifest([], [RuntimeOp::IntDiv, RuntimeOp::PrintI64]);
-    let target = target_model("x86_64-unknown-linux-gnu")?;
-    let toolchain = compatibility_identity(b"rustc");
-    let baseline = artifact(
-        &contract,
-        target.clone(),
-        [TargetCapability::StandardIo],
-        toolchain,
-        b"runtime",
-    );
-    let changed_capabilities = artifact(&contract, target.clone(), [], toolchain, b"runtime");
-    let changed_toolchain = artifact(
-        &contract,
-        target.clone(),
-        [TargetCapability::StandardIo],
-        compatibility_identity(b"other rustc"),
-        b"runtime",
-    );
-    let changed_implementation = artifact(
-        &contract,
-        target.clone(),
-        [TargetCapability::StandardIo],
-        toolchain,
-        b"other runtime",
-    );
-    assert_ne!(baseline.identity(), changed_capabilities.identity());
-    assert_ne!(baseline.identity(), changed_toolchain.identity());
-    assert_ne!(baseline.identity(), changed_implementation.identity());
-
-    let div = baseline.select(request(
-        &contract,
-        [RuntimeOp::IntDiv],
-        target.clone(),
-        toolchain,
-    )?)?;
-    let reordered = baseline.select(request(
-        &contract,
-        [RuntimeOp::IntDiv, RuntimeOp::IntDiv],
-        target.clone(),
-        toolchain,
-    )?)?;
-    let print = baseline.select(request(
-        &contract,
-        [RuntimeOp::PrintI64],
-        target,
-        toolchain,
-    )?)?;
-    assert_eq!(div.identity(), reordered.identity());
-    assert_ne!(div.identity(), print.identity());
     Ok(())
 }

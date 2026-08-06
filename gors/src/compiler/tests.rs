@@ -904,7 +904,7 @@ fn unresolved_package_selectors_fail_before_codegen() {
 }
 
 #[test]
-fn program_boundary_rejects_multiple_independent_files() {
+fn program_boundary_compiles_multiple_package_files() {
     let package = input::PackageKey::command_line();
     let manifest = input::PackageInputManifest::new(
         package,
@@ -930,12 +930,8 @@ fn program_boundary_rejects_multiple_independent_files() {
     )
     .unwrap();
 
-    let error = compile_program(program)
-        .err()
-        .expect("multi-file package rejected");
-
-    assert_eq!(error.diagnostics().first().unwrap().code, "GORS2001");
-    assert!(error.to_string().contains("exactly one"), "{error}");
+    let compiled = compile_program(program).expect("multi-file package compiles");
+    assert!(compiled.modules.is_empty());
 }
 
 #[test]

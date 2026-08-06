@@ -1,6 +1,6 @@
 //! Function-local bindings, scopes, and block lowering.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
     ConstantSymbol, FunctionSymbol, GenericFunctionSymbol, GenericTypeSymbol, MethodSymbol,
@@ -27,6 +27,7 @@ pub(super) struct FunctionLowerer {
     pub(super) qualified_constants: BTreeMap<(String, String), ConstantSymbol>,
     pub(super) variables: BTreeMap<String, VariableSymbol>,
     pub(super) qualified_variables: BTreeMap<(String, String), VariableSymbol>,
+    pub(super) intrinsic_packages: BTreeSet<String>,
     pub(super) type_aliases: BTreeMap<String, Ty>,
     pub(super) type_scope_changes: Vec<BTreeMap<String, Option<Ty>>>,
     pub(super) signature: Signature,

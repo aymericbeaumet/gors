@@ -123,9 +123,13 @@ fn encode_rvalue_kind(encoder: &mut Encoder, kind: &mir::RvalueKind) {
         mir::RvalueKind::Use(operand) => {
             encoder.variant(b"use", |encoder| encode_operand(encoder, operand));
         }
-        mir::RvalueKind::SliceLiteralI64(elements) => {
+        mir::RvalueKind::SliceLiteralI64 {
+            elements,
+            ty: slice_ty,
+        } => {
             encoder.variant(b"slice-literal-i64", |encoder| {
                 encoder.sequence(elements, |encoder, element| encoder.i64(*element));
+                ty(encoder, slice_ty);
             });
         }
         mir::RvalueKind::SliceLiteralU8(elements) => {
@@ -353,9 +357,13 @@ fn encode_callee(encoder: &mut Encoder, callee: hir::Callee) {
                     hir::Builtin::AggregateSliceIndexTagged => b"aggregate-slice-index-tagged",
                     hir::Builtin::AggregateSliceSetTagged => b"aggregate-slice-set-tagged",
                     hir::Builtin::StringFromSliceU8 => b"string-from-slice-u8",
+                    hir::Builtin::StringFromSliceRunes => b"string-from-slice-runes",
                     hir::Builtin::StringLen => b"string-len",
                     hir::Builtin::StringIndex => b"string-index",
                     hir::Builtin::StringRange => b"string-range",
+                    hir::Builtin::StringRangeCount => b"string-range-count",
+                    hir::Builtin::StringRangeIndexAt => b"string-range-index-at",
+                    hir::Builtin::StringRangeRuneAt => b"string-range-rune-at",
                     hir::Builtin::MapStringI64Nil => b"map-string-i64-nil",
                     hir::Builtin::MapStringI64Make => b"map-string-i64-make",
                     hir::Builtin::MapStringI64Len => b"map-string-i64-len",

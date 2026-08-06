@@ -8,10 +8,17 @@ pub(super) fn verify_slice_call_arguments(
     arguments: &[Ty],
     expected_len: usize,
     context: &str,
-) -> Result<(), Diagnostic> {
-    let slice = Ty::Slice(Box::new(Ty::Int(IntTy::Int)));
+) -> Result<Ty, Diagnostic> {
+    let element = arguments.first().and_then(|ty| match ty.underlying() {
+        Ty::Slice(element)
+            if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) =>
+        {
+            Some(element.as_ref().clone())
+        }
+        _ => None,
+    });
     if arguments.len() != expected_len
-        || arguments.first() != Some(&slice)
+        || element.is_none()
         || arguments
             .get(1..)
             .unwrap_or_default()
@@ -22,7 +29,32 @@ pub(super) fn verify_slice_call_arguments(
             "invalid MIR {context} argument types: {arguments:?}"
         )));
     }
-    Ok(())
+    element.ok_or_else(|| Diagnostic::backend(format!("invalid MIR {context} slice type")))
+}
+
+pub(super) fn verify_slice_value_arguments(
+    arguments: &[Ty],
+    indexed: bool,
+    context: &str,
+) -> Result<Ty, Diagnostic> {
+    let expected_len = if indexed { 3 } else { 2 };
+    let element = arguments.first().and_then(|ty| match ty.underlying() {
+        Ty::Slice(element)
+            if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) =>
+        {
+            Some(element.as_ref().clone())
+        }
+        _ => None,
+    });
+    let index_valid = !indexed || arguments.get(1) == Some(&Ty::Int(IntTy::Int));
+    if arguments.len() != expected_len || !index_valid || arguments.last() != element.as_ref() {
+        return Err(Diagnostic::backend(format!(
+            "invalid MIR {context} argument types: {arguments:?}"
+        )));
+    }
+    element
+        .map(|element| Ty::Slice(Box::new(element)))
+        .ok_or_else(|| Diagnostic::backend(format!("invalid MIR {context} slice type")))
 }
 
 pub(super) fn verify_byte_slice_call_arguments(

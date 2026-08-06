@@ -34,6 +34,17 @@ impl FunctionLowerer {
                 source,
             ));
         }
+        if self.intrinsic_packages.contains(package.name.as_ref()) {
+            return self.lower_unsafe_intrinsic_call(
+                package.name.as_ref(),
+                member,
+                arguments,
+                spread,
+                node,
+                source,
+                expected,
+            );
+        }
         let key = (package.name.to_string(), member.name.to_string());
         let symbol = self.qualified_functions.get(&key).cloned().ok_or_else(|| {
             Diagnostic::semantic(

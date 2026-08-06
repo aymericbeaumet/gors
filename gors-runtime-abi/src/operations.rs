@@ -579,6 +579,10 @@ pub enum RuntimeOp {
     GoSliceU8Range,
     GoStringIndex,
     GoStringRange,
+    GoStringFromSliceRunes,
+    GoStringRangeCount,
+    GoStringRangeIndexAt,
+    GoStringRangeRuneAt,
 }
 
 /// Stable compact identity of one runtime ABI operation.
@@ -685,6 +689,10 @@ impl RuntimeOp {
         Self::GoSliceU8Range,
         Self::GoStringIndex,
         Self::GoStringRange,
+        Self::GoStringFromSliceRunes,
+        Self::GoStringRangeCount,
+        Self::GoStringRangeIndexAt,
+        Self::GoStringRangeRuneAt,
     ];
 
     /// Exact typed call signature at the Rust runtime boundary.
@@ -915,6 +923,15 @@ impl RuntimeOp {
             }
             Self::GoStringIndex => RuntimeSignature::new(GO_STRING_AND_INDEX, RuntimeType::I64),
             Self::GoStringRange => RuntimeSignature::new(GO_STRING_RANGE, RuntimeType::GoString),
+            Self::GoStringFromSliceRunes => {
+                RuntimeSignature::new(GO_SLICE_I64_PARAMETER, RuntimeType::GoString)
+            }
+            Self::GoStringRangeCount => {
+                RuntimeSignature::new(GO_STRING_PARAMETER, RuntimeType::I64)
+            }
+            Self::GoStringRangeIndexAt | Self::GoStringRangeRuneAt => {
+                RuntimeSignature::new(GO_STRING_AND_INDEX, RuntimeType::I64)
+            }
         }
     }
 

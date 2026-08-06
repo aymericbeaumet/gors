@@ -100,6 +100,10 @@ impl TryFrom<u16> for RuntimeOp {
             96 => Ok(Self::GoSliceU8Range),
             97 => Ok(Self::GoStringIndex),
             98 => Ok(Self::GoStringRange),
+            99 => Ok(Self::GoStringFromSliceRunes),
+            100 => Ok(Self::GoStringRangeCount),
+            101 => Ok(Self::GoStringRangeIndexAt),
+            102 => Ok(Self::GoStringRangeRuneAt),
             unknown => Err(UnknownRuntimeOpId(unknown)),
         }
     }

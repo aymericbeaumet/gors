@@ -22,10 +22,11 @@ use gors_runtime::{
     go_slice_i64_range, go_slice_i64_set, go_slice_interface_index, go_slice_interface_len,
     go_slice_interface_make, go_slice_interface_set, go_slice_u8_append_slice,
     go_slice_u8_append_string, go_slice_u8_copy_string, go_slice_u8_from_static, go_slice_u8_index,
-    go_slice_u8_len, go_slice_u8_range, go_string_from_bytes, go_string_from_slice_u8,
-    go_string_from_static, go_string_index, go_string_len, go_string_range, int_div, int_rem,
-    int_shl, int_shr, panic_bool, panic_go_string, panic_i64, print_bool, print_go_string,
-    print_i64, print_newline, print_space,
+    go_slice_u8_len, go_slice_u8_range, go_string_from_bytes, go_string_from_slice_runes,
+    go_string_from_slice_u8, go_string_from_static, go_string_index, go_string_len,
+    go_string_range, go_string_range_count, go_string_range_index_at, go_string_range_rune_at,
+    int_div, int_rem, int_shl, int_shr, panic_bool, panic_go_string, panic_i64, print_bool,
+    print_go_string, print_i64, print_newline, print_space,
 };
 use gors_runtime_abi::{RuntimeOp, RuntimeType};
 
@@ -513,6 +514,26 @@ fn implementation_surface(operation: RuntimeOp) -> RuntimeSurface {
             go_string_range,
             fn(GoString, GoInt, GoInt) -> GoString,
             [RuntimeType::GoString, RuntimeType::I64, RuntimeType::I64] -> RuntimeType::GoString
+        ),
+        RuntimeOp::GoStringFromSliceRunes => runtime_surface!(
+            go_string_from_slice_runes,
+            fn(GoSliceI64) -> GoString,
+            [RuntimeType::GoSliceI64] -> RuntimeType::GoString
+        ),
+        RuntimeOp::GoStringRangeCount => runtime_surface!(
+            go_string_range_count,
+            fn(GoString) -> GoInt,
+            [RuntimeType::GoString] -> RuntimeType::I64
+        ),
+        RuntimeOp::GoStringRangeIndexAt => runtime_surface!(
+            go_string_range_index_at,
+            fn(GoString, GoInt) -> GoInt,
+            [RuntimeType::GoString, RuntimeType::I64] -> RuntimeType::I64
+        ),
+        RuntimeOp::GoStringRangeRuneAt => runtime_surface!(
+            go_string_range_rune_at,
+            fn(GoString, GoInt) -> GoInt,
+            [RuntimeType::GoString, RuntimeType::I64] -> RuntimeType::I64
         ),
     }
 }

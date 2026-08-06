@@ -209,7 +209,7 @@ impl Function {
                 state: recovery_state,
                 ..
             } => self.transfer_operand(&Operand::Read(*recovery_state), state, check_reads),
-            RvalueKind::SliceLiteralI64(_)
+            RvalueKind::SliceLiteralI64 { .. }
             | RvalueKind::SliceLiteralU8(_)
             | RvalueKind::SliceLiteralBool(_)
             | RvalueKind::ArrayLiteralI64(_) => Ok(()),

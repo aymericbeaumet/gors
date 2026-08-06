@@ -232,6 +232,11 @@ impl FunctionLowerer {
         source: SourceRef,
         expected: Option<&Ty>,
     ) -> Result<hir::Expr, Diagnostic> {
+        if let Some(result) =
+            self.try_lower_unsafe_pointer_roundtrip(expression, node, source, expected)?
+        {
+            return Ok(result);
+        }
         let pointer = self.lower_expr(expression, None)?;
         let Ty::Pointer(element) = pointer.ty.underlying() else {
             return Err(Diagnostic::semantic(

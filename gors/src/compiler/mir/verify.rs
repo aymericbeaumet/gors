@@ -28,7 +28,7 @@ use channels::{is_channel_builtin, verify_channel_call};
 use containers::{
     is_aggregate_container_builtin, map_string_i64_ty, verify_aggregate_container_call,
     verify_bool_slice_call, verify_byte_slice_call_arguments, verify_byte_slice_integer_arguments,
-    verify_map_call_arguments, verify_slice_call_arguments,
+    verify_map_call_arguments, verify_slice_call_arguments, verify_slice_value_arguments,
 };
 use effects::{read_effects, verify_effects, verify_panic_edge};
 use interfaces::{is_interface_builtin, verify_interface_call};
@@ -239,13 +239,25 @@ impl Function {
         verify_rvalue_provenance(&rvalue.provenance, self.id)?;
         let (ty, intrinsic) = match &rvalue.kind {
             RvalueKind::Use(operand) => (self.operand_ty(operand)?, hir::Effects::default()),
-            RvalueKind::SliceLiteralI64(_) => (
-                Ty::Slice(Box::new(Ty::Int(IntTy::Int))),
-                hir::Effects {
-                    may_allocate: true,
-                    ..hir::Effects::default()
-                },
-            ),
+            RvalueKind::SliceLiteralI64 { ty, .. } => {
+                let Ty::Slice(element) = ty.underlying() else {
+                    return Err(Diagnostic::backend(
+                        "integer slice literal MIR omitted its slice type",
+                    ));
+                };
+                if !matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) {
+                    return Err(Diagnostic::backend(format!(
+                        "integer slice literal MIR has unsupported type {ty:?}"
+                    )));
+                }
+                (
+                    ty.clone(),
+                    hir::Effects {
+                        may_allocate: true,
+                        ..hir::Effects::default()
+                    },
+                )
+            }
             RvalueKind::SliceLiteralU8(_) => (
                 Ty::Slice(Box::new(Ty::Uint(crate::compiler::types::UintTy::Uint8))),
                 hir::Effects {
@@ -314,7 +326,7 @@ impl Function {
                         operand_ty == *ty
                             && matches!(
                                 operand_ty.underlying(),
-                                Ty::Int(IntTy::Int)
+                                Ty::Int(IntTy::Int | IntTy::Int32)
                                     | Ty::Float(FloatTy::Float64)
                                     | Ty::Complex(ComplexTy::Complex128)
                             )
@@ -497,21 +509,24 @@ impl Function {
                                     Vec::new()
                                 }
                                 hir::Builtin::SliceI64Index => {
-                                    verify_slice_call_arguments(&argument_types, 2, "slice index")?;
-                                    vec![Ty::Int(IntTy::Int)]
+                                    vec![verify_slice_call_arguments(
+                                        &argument_types,
+                                        2,
+                                        "slice index",
+                                    )?]
                                 }
                                 hir::Builtin::SliceI64Range => {
-                                    verify_slice_call_arguments(
+                                    let element = verify_slice_call_arguments(
                                         &argument_types,
                                         4,
                                         "slice expression",
                                     )?;
-                                    vec![Ty::Slice(Box::new(Ty::Int(IntTy::Int)))]
+                                    vec![Ty::Slice(Box::new(element))]
                                 }
                                 hir::Builtin::SliceI64Set => {
-                                    verify_slice_call_arguments(
+                                    verify_slice_value_arguments(
                                         &argument_types,
-                                        3,
+                                        true,
                                         "slice assignment",
                                     )?;
                                     Vec::new()
@@ -526,8 +541,16 @@ impl Function {
                                     vec![Ty::Slice(Box::new(Ty::Int(IntTy::Int)))]
                                 }
                                 hir::Builtin::SliceI64Len | hir::Builtin::SliceI64Cap => {
-                                    if argument_types != [Ty::Slice(Box::new(Ty::Int(IntTy::Int)))]
-                                    {
+                                    let valid = matches!(
+                                        argument_types.as_slice(),
+                                        [slice]
+                                            if matches!(
+                                                slice.underlying(),
+                                                Ty::Slice(element)
+                                                    if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32))
+                                            )
+                                    );
+                                    if !valid {
                                         return Err(Diagnostic::backend(format!(
                                             "invalid MIR slice len/cap argument types: {argument_types:?}"
                                         )));
@@ -535,12 +558,12 @@ impl Function {
                                     vec![Ty::Int(IntTy::Int)]
                                 }
                                 hir::Builtin::SliceI64Append => {
-                                    verify_slice_call_arguments(
+                                    let slice = verify_slice_value_arguments(
                                         &argument_types,
-                                        2,
+                                        false,
                                         "slice append",
                                     )?;
-                                    vec![Ty::Slice(Box::new(Ty::Int(IntTy::Int)))]
+                                    vec![slice]
                                 }
                                 hir::Builtin::SliceU8AppendSlice => {
                                     verify_byte_slice_call_arguments(
@@ -627,6 +650,16 @@ impl Function {
                                     }
                                     vec![Ty::String]
                                 }
+                                hir::Builtin::StringFromSliceRunes => {
+                                    if argument_types
+                                        != [Ty::Slice(Box::new(Ty::Int(IntTy::Int32)))]
+                                    {
+                                        return Err(Diagnostic::backend(format!(
+                                            "invalid MIR rune slice conversion arguments: {argument_types:?}"
+                                        )));
+                                    }
+                                    vec![Ty::String]
+                                }
                                 hir::Builtin::StringLen => {
                                     if argument_types != [Ty::String] {
                                         return Err(Diagnostic::backend(format!(
@@ -652,6 +685,30 @@ impl Function {
                                         )));
                                     }
                                     vec![Ty::String]
+                                }
+                                hir::Builtin::StringRangeCount => {
+                                    if argument_types != [Ty::String] {
+                                        return Err(Diagnostic::backend(format!(
+                                            "invalid MIR string range count arguments: {argument_types:?}"
+                                        )));
+                                    }
+                                    vec![Ty::Int(IntTy::Int)]
+                                }
+                                hir::Builtin::StringRangeIndexAt => {
+                                    if argument_types != [Ty::String, Ty::Int(IntTy::Int)] {
+                                        return Err(Diagnostic::backend(format!(
+                                            "invalid MIR string range index arguments: {argument_types:?}"
+                                        )));
+                                    }
+                                    vec![Ty::Int(IntTy::Int)]
+                                }
+                                hir::Builtin::StringRangeRuneAt => {
+                                    if argument_types != [Ty::String, Ty::Int(IntTy::Int)] {
+                                        return Err(Diagnostic::backend(format!(
+                                            "invalid MIR string range rune arguments: {argument_types:?}"
+                                        )));
+                                    }
+                                    vec![Ty::Int(IntTy::Int32)]
                                 }
                                 hir::Builtin::MapStringI64Nil | hir::Builtin::MapStringI64Make => {
                                     verify_map_call_arguments(
@@ -899,7 +956,7 @@ fn rvalue_operands(kind: &RvalueKind) -> Vec<&Operand> {
             structure, value, ..
         } => vec![structure, value],
         RvalueKind::RecoverCompareNil { .. } => Vec::new(),
-        RvalueKind::SliceLiteralI64(_)
+        RvalueKind::SliceLiteralI64 { .. }
         | RvalueKind::SliceLiteralU8(_)
         | RvalueKind::SliceLiteralBool(_)
         | RvalueKind::ArrayLiteralI64(_) => Vec::new(),

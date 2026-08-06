@@ -332,10 +332,6 @@ impl SourceMapPlan {
 }
 
 /// Compile raw program inputs into deterministic, self-contained Rust units.
-///
-/// The bootstrap backend deliberately accepts exactly one import-free `main`
-/// source file. Wider package manifests are rejected before lowering until
-/// cross-package semantic indexing is implemented.
 pub fn compile_program(program: input::ProgramInput) -> Result<CompiledProgram, CompilerError> {
     compile_program_impl(program, false).map(|(compiled, _)| compiled)
 }

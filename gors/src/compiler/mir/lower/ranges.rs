@@ -14,6 +14,7 @@ use crate::compiler::types::{ConstValue, IntTy, Ty};
 enum RangeKind {
     Array(u64),
     Slice,
+    String,
     Map,
 }
 
@@ -36,7 +37,12 @@ impl FunctionLowerer {
             Ty::Array(length, element) if element.underlying() == &Ty::Int(IntTy::Int) => {
                 RangeKind::Array(*length)
             }
-            Ty::Slice(element) if element.underlying() == &Ty::Int(IntTy::Int) => RangeKind::Slice,
+            Ty::Slice(element)
+                if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) =>
+            {
+                RangeKind::Slice
+            }
+            Ty::String => RangeKind::String,
             Ty::Map(key, value)
                 if key.underlying() == &Ty::String
                     && value.underlying() == &Ty::Int(IntTy::Int) =>
@@ -76,6 +82,7 @@ impl FunctionLowerer {
             let after_length = self.new_block(provenance.clone());
             let builtin = match range_kind {
                 RangeKind::Slice => hir::Builtin::SliceI64Len,
+                RangeKind::String => hir::Builtin::StringRangeCount,
                 RangeKind::Map => hir::Builtin::MapStringI64Len,
                 RangeKind::Array(_) => {
                     return Err(Diagnostic::backend(
@@ -184,6 +191,40 @@ impl FunctionLowerer {
                     self.terminate(make_terminator(
                         TerminatorKind::Call {
                             callee: hir::Callee::Builtin(hir::Builtin::SliceI64Index),
+                            args: vec![container, Operand::Read(index)],
+                            destinations: vec![Place { local }],
+                            target: after_value,
+                        },
+                        call_effects(),
+                        provenance.clone(),
+                    ))?;
+                    self.current = after_value;
+                }
+            }
+            RangeKind::String => {
+                if let Some(hir::Place::Local(local)) = key {
+                    let range_key = Place {
+                        local: self.new_temp(Ty::Int(IntTy::Int)),
+                    };
+                    let after_key = self.new_block(provenance.clone());
+                    self.terminate(make_terminator(
+                        TerminatorKind::Call {
+                            callee: hir::Callee::Builtin(hir::Builtin::StringRangeIndexAt),
+                            args: vec![container.clone(), Operand::Read(index)],
+                            destinations: vec![range_key],
+                            target: after_key,
+                        },
+                        call_effects(),
+                        provenance.clone(),
+                    ))?;
+                    self.current = after_key;
+                    self.assign_range_local(Place { local }, Operand::Read(range_key), source)?;
+                }
+                if let Some(hir::Place::Local(local)) = value {
+                    let after_value = self.new_block(provenance.clone());
+                    self.terminate(make_terminator(
+                        TerminatorKind::Call {
+                            callee: hir::Callee::Builtin(hir::Builtin::StringRangeRuneAt),
                             args: vec![container, Operand::Read(index)],
                             destinations: vec![Place { local }],
                             target: after_value,

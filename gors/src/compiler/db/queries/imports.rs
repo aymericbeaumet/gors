@@ -63,6 +63,7 @@ pub(super) fn function_symbols(
         qualified_constants: BTreeMap::new(),
         variables: BTreeMap::new(),
         qualified_variables: BTreeMap::new(),
+        intrinsic_packages: BTreeSet::new(),
     };
     add_unqualified_symbols(
         db,
@@ -139,6 +140,10 @@ pub(super) fn function_symbols(
                             SourceRef::definition(definition),
                         ),
                     ));
+                }
+                if import.canonical_path().as_str() == "unsafe" {
+                    symbols.intrinsic_packages.insert(local_name);
+                    continue;
                 }
                 for (base, member) in references
                     .qualified

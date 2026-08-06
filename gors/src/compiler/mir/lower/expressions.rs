@@ -17,7 +17,10 @@ impl FunctionLowerer {
                 };
                 let provenance = Provenance::Source(expr.source);
                 let value = make_rvalue(
-                    RvalueKind::SliceLiteralI64(elements.clone()),
+                    RvalueKind::SliceLiteralI64 {
+                        elements: elements.clone(),
+                        ty: expr.ty.clone(),
+                    },
                     expr.effects,
                     provenance.clone(),
                 );

@@ -14,6 +14,7 @@ mod byte_ranges;
 mod channels;
 mod interface_containers;
 mod interfaces;
+mod string_runes;
 
 pub use byte_ranges::{
     go_slice_u8_index, go_slice_u8_len, go_slice_u8_range, go_string_index, go_string_range,
@@ -35,6 +36,10 @@ pub use interfaces::{
     go_interface_box_pointer_struct_i64, go_interface_box_struct_i64, go_interface_is_nil,
     go_interface_is_type, go_interface_nil, go_interface_struct_i64_get, go_interface_unbox_bool,
     go_interface_unbox_go_string, go_interface_unbox_i64, go_interface_unbox_pointer_struct_i64,
+};
+pub use string_runes::{
+    go_string_from_slice_runes, go_string_range_count, go_string_range_index_at,
+    go_string_range_rune_at,
 };
 
 use std::cmp::Ordering;

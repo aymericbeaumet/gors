@@ -199,6 +199,29 @@ impl FunctionLowerer {
                 "address-of-value HIR expression has a non-pointer type",
             ));
         };
+        if element.underlying() == &Ty::Int(IntTy::Int) && value.ty == **element {
+            let value_operand = self.lower_expr(value)?;
+            let value_operand = self.materialize(
+                value_operand,
+                value.ty.clone(),
+                Provenance::Source(value.source),
+            )?;
+            let pointer = self.new_temp(ty.clone());
+            let provenance = Provenance::Source(source);
+            self.emit_pointer_call(
+                hir::Builtin::PointerI64New,
+                Vec::new(),
+                vec![Place { local: pointer }],
+                provenance.clone(),
+            )?;
+            self.emit_pointer_call(
+                hir::Builtin::PointerI64Set,
+                vec![Operand::Read(Place { local: pointer }), value_operand],
+                Vec::new(),
+                provenance,
+            )?;
+            return Ok(Operand::Read(Place { local: pointer }));
+        }
         if element.bootstrap_i64_struct_fields().is_none() || value.ty != **element {
             return Err(Diagnostic::backend(
                 "address-of-value HIR expression has an invalid integer struct value",
