@@ -701,12 +701,13 @@ pub(super) fn semantic_function_product(
     let body = function.body(db);
     let references =
         package_references_in_body(function.signature(db).structure(), body.structure());
-    let symbols = match imports::function_symbols(db, input, function, &references) {
-        Ok(symbols) => symbols,
-        Err(failure) => {
-            return Arc::new(SemanticFunctionProduct::new(Err(failure), fallback_plan));
-        }
-    };
+    let symbols =
+        match imports::function_symbols(db, input, function, &references, signature.signature()) {
+            Ok(symbols) => symbols,
+            Err(failure) => {
+                return Arc::new(SemanticFunctionProduct::new(Err(failure), fallback_plan));
+            }
+        };
     let type_aliases = match package_type_aliases_product(db, input) {
         Ok(type_aliases) => type_aliases,
         Err(failure) => {

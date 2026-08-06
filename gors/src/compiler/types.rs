@@ -228,6 +228,9 @@ impl Ty {
         if let Self::Tuple(elements) = self {
             return elements.iter().all(Self::is_bootstrap_value);
         }
+        if let Self::Interface(_) = self.underlying() {
+            return true;
+        }
         if let Self::Struct(fields) = self {
             return fields
                 .iter()

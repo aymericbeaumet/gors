@@ -18,7 +18,7 @@ use crate::compiler::provenance::SourceRef;
 use crate::compiler::semantic::{
     ConstantSymbol, FunctionSymbol, FunctionSymbols, MethodSymbol, VariableSymbol,
 };
-use crate::compiler::types::Ty;
+use crate::compiler::types::{Signature, Ty};
 
 pub(super) fn function_dependency<'db>(
     db: &'db dyn Db,
@@ -47,6 +47,7 @@ pub(super) fn function_symbols(
     input: PackageInput,
     function: FunctionProjection<'_>,
     references: &PackageReferences,
+    signature: &Signature,
 ) -> Result<FunctionSymbols, Arc<StageFailure>> {
     let definition = function.id(db);
     let mut symbols = FunctionSymbols {
@@ -67,13 +68,20 @@ pub(super) fn function_symbols(
         &mut symbols,
         false,
     )?;
-    add_method_symbols(
-        db,
-        input,
-        &references.method_names,
-        definition,
-        &mut symbols,
-    )?;
+    let types = package_type_aliases_product(db, input)?;
+    let mut method_names = references.method_names.clone();
+    for ty in signature.params.iter().chain(&signature.results) {
+        collect_interface_method_names(ty, &mut method_names);
+    }
+    for ty in types.values() {
+        collect_interface_method_names(ty, &mut method_names);
+    }
+    for name in &references.unqualified {
+        if name.as_ref() == "error" {
+            method_names.insert(Arc::from("Error"));
+        }
+    }
+    add_method_symbols(db, input, &method_names, definition, &mut symbols)?;
 
     let source = function_source(db, input, function)?;
     let resolved_input = source.resolved_imports(db);
@@ -147,6 +155,57 @@ pub(super) fn function_symbols(
     }
 
     Ok(symbols)
+}
+
+fn collect_interface_method_names(ty: &Ty, names: &mut BTreeSet<Arc<str>>) {
+    match ty {
+        Ty::Named { underlying, .. } | Ty::Pointer(underlying) | Ty::Slice(underlying) => {
+            collect_interface_method_names(underlying, names);
+        }
+        Ty::Array(_, element) | Ty::Channel(_, element) => {
+            collect_interface_method_names(element, names);
+        }
+        Ty::Map(key, value) => {
+            collect_interface_method_names(key, names);
+            collect_interface_method_names(value, names);
+        }
+        Ty::Struct(fields) => {
+            for field in fields {
+                collect_interface_method_names(&field.ty, names);
+            }
+        }
+        Ty::Interface(methods) => {
+            for method in methods {
+                names.insert(Arc::from(method.name.as_str()));
+                for ty in method
+                    .signature
+                    .params
+                    .iter()
+                    .chain(&method.signature.results)
+                {
+                    collect_interface_method_names(ty, names);
+                }
+            }
+        }
+        Ty::Function(signature) => {
+            for ty in signature.params.iter().chain(&signature.results) {
+                collect_interface_method_names(ty, names);
+            }
+        }
+        Ty::Tuple(elements) => {
+            for element in elements {
+                collect_interface_method_names(element, names);
+            }
+        }
+        Ty::Unit
+        | Ty::Bool
+        | Ty::Int(_)
+        | Ty::Uint(_)
+        | Ty::Float(_)
+        | Ty::Complex(_)
+        | Ty::String
+        | Ty::Untyped(_) => {}
+    }
 }
 
 fn add_method_symbols(

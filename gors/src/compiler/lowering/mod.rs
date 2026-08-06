@@ -1,6 +1,7 @@
 //! Mandatory Rust representation lowering.
 
 mod lower;
+mod type_lowering;
 
 use crate::compiler::Diagnostic;
 #[cfg(test)]

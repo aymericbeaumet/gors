@@ -582,7 +582,9 @@ fn collect_expr_addresses(expression: &hir::Expr, addressed: &mut BTreeSet<Local
         hir::ExprKind::AddressOfLocal(local) => {
             addressed.insert(*local);
         }
-        hir::ExprKind::AddressOfValue(value) | hir::ExprKind::PointerStructValue(value) => {
+        hir::ExprKind::AddressOfValue(value)
+        | hir::ExprKind::PointerStructValue(value)
+        | hir::ExprKind::InterfaceValue { value, .. } => {
             collect_expr_addresses(value, addressed);
         }
         hir::ExprKind::Binary { left, right, .. } => {

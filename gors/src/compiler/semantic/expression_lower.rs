@@ -33,6 +33,12 @@ impl FunctionLowerer {
         expr: &ExprSyntax,
         expected: Option<&Ty>,
     ) -> Result<hir::Expr, Diagnostic> {
+        if let Some(expected) = expected
+            && matches!(expected.underlying(), Ty::Interface(_))
+        {
+            let value = self.lower_expr_inner(expr, None, false)?;
+            return self.coerce_interface_value(value, expected, expr.source);
+        }
         self.lower_expr_inner(expr, expected, false)
     }
 

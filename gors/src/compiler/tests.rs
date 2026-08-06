@@ -2,6 +2,7 @@ use super::*;
 
 mod arrays;
 mod channels;
+mod interfaces;
 mod pointers;
 mod structs;
 mod variables;

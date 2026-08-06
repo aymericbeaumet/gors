@@ -56,6 +56,19 @@ impl FunctionLowerer {
         source: SourceRef,
         ty: Ty,
     ) -> Result<hir::Expr, Diagnostic> {
+        if matches!(ty.underlying(), Ty::Interface(_)) {
+            return Ok(hir::Expr {
+                node,
+                kind: hir::ExprKind::Call {
+                    callee: hir::Callee::Builtin(hir::Builtin::InterfaceNil),
+                    args: Vec::new(),
+                },
+                ty,
+                category: hir::ValueCategory::Value,
+                effects: map_effects(&[], false, false, false),
+                source,
+            });
+        }
         if ty.underlying() == int_pointer_ty().underlying() {
             return Ok(hir::Expr {
                 node,

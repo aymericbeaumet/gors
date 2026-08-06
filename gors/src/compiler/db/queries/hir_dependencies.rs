@@ -178,7 +178,9 @@ fn collect_expression_callees(expression: &hir::Expr, callees: &mut BTreeSet<Qua
         hir::ExprKind::StructField { structure, .. } => {
             collect_expression_callees(structure, callees);
         }
-        hir::ExprKind::AddressOfValue(value) | hir::ExprKind::PointerStructValue(value) => {
+        hir::ExprKind::AddressOfValue(value)
+        | hir::ExprKind::PointerStructValue(value)
+        | hir::ExprKind::InterfaceValue { value, .. } => {
             collect_expression_callees(value, callees);
         }
         hir::ExprKind::Constant(_)

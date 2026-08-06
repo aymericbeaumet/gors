@@ -1,5 +1,6 @@
 //! Mandatory conversion from normalized Go MIR to explicit Rust IR.
 
+use super::type_lowering::lower_type;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::mir;
@@ -406,6 +407,19 @@ fn lower_terminator(
                 | hir::Builtin::PointerStructI64Set
                 | hir::Builtin::PointerStructI64IsNil
                 | hir::Builtin::PointerStructI64Equal
+                | hir::Builtin::InterfaceNil
+                | hir::Builtin::InterfaceBoxBool
+                | hir::Builtin::InterfaceBoxI64
+                | hir::Builtin::InterfaceBoxGoString
+                | hir::Builtin::InterfaceBoxStructI64
+                | hir::Builtin::InterfaceBoxPointerStructI64
+                | hir::Builtin::InterfaceIsNil
+                | hir::Builtin::InterfaceIsType
+                | hir::Builtin::InterfaceUnboxBool
+                | hir::Builtin::InterfaceUnboxI64
+                | hir::Builtin::InterfaceUnboxGoString
+                | hir::Builtin::InterfaceStructI64Get
+                | hir::Builtin::InterfaceUnboxPointerStructI64
                 | hir::Builtin::ChannelI64Nil
                 | hir::Builtin::ChannelI64Make
                 | hir::Builtin::ChannelI64Len
@@ -454,6 +468,23 @@ fn lower_terminator(
                     hir::Builtin::PointerStructI64Set => RuntimeOp::GoPointerStructI64Set,
                     hir::Builtin::PointerStructI64IsNil => RuntimeOp::GoPointerStructI64IsNil,
                     hir::Builtin::PointerStructI64Equal => RuntimeOp::GoPointerStructI64Equal,
+                    hir::Builtin::InterfaceNil => RuntimeOp::GoInterfaceNil,
+                    hir::Builtin::InterfaceBoxBool => RuntimeOp::GoInterfaceBoxBool,
+                    hir::Builtin::InterfaceBoxI64 => RuntimeOp::GoInterfaceBoxI64,
+                    hir::Builtin::InterfaceBoxGoString => RuntimeOp::GoInterfaceBoxGoString,
+                    hir::Builtin::InterfaceBoxStructI64 => RuntimeOp::GoInterfaceBoxStructI64,
+                    hir::Builtin::InterfaceBoxPointerStructI64 => {
+                        RuntimeOp::GoInterfaceBoxPointerStructI64
+                    }
+                    hir::Builtin::InterfaceIsNil => RuntimeOp::GoInterfaceIsNil,
+                    hir::Builtin::InterfaceIsType => RuntimeOp::GoInterfaceIsType,
+                    hir::Builtin::InterfaceUnboxBool => RuntimeOp::GoInterfaceUnboxBool,
+                    hir::Builtin::InterfaceUnboxI64 => RuntimeOp::GoInterfaceUnboxI64,
+                    hir::Builtin::InterfaceUnboxGoString => RuntimeOp::GoInterfaceUnboxGoString,
+                    hir::Builtin::InterfaceStructI64Get => RuntimeOp::GoInterfaceStructI64Get,
+                    hir::Builtin::InterfaceUnboxPointerStructI64 => {
+                        RuntimeOp::GoInterfaceUnboxPointerStructI64
+                    }
                     hir::Builtin::ChannelI64Nil => RuntimeOp::GoChannelI64Nil,
                     hir::Builtin::ChannelI64Make => RuntimeOp::GoChannelI64Make,
                     hir::Builtin::ChannelI64Len => RuntimeOp::GoChannelI64Len,
@@ -889,66 +920,6 @@ fn lower_binary_op(
         }
     };
     Ok(lowered)
-}
-
-fn lower_type(ty: &Ty) -> Result<out::RustType, Diagnostic> {
-    let ty = ty.default_typed();
-    match ty.underlying() {
-        Ty::Unit => Ok(out::RustType::Unit),
-        Ty::Bool => Ok(out::RustType::Bool),
-        Ty::Int(IntTy::Int) => Ok(out::RustType::I64),
-        Ty::Float(FloatTy::Float64) => Ok(out::RustType::F64),
-        Ty::Complex(ComplexTy::Complex128) => Ok(out::RustType::Complex128),
-        Ty::String => Ok(out::RustType::GoString),
-        Ty::Slice(element) if element.underlying() == &Ty::Int(IntTy::Int) => {
-            Ok(out::RustType::GoSliceI64)
-        }
-        Ty::Slice(element)
-            if element.underlying() == &Ty::Uint(crate::compiler::types::UintTy::Uint8) =>
-        {
-            Ok(out::RustType::GoSliceU8)
-        }
-        Ty::Map(key, value)
-            if key.underlying() == &Ty::String && value.underlying() == &Ty::Int(IntTy::Int) =>
-        {
-            Ok(out::RustType::GoMapStringI64)
-        }
-        Ty::Pointer(element) if element.underlying() == &Ty::Int(IntTy::Int) => {
-            Ok(out::RustType::GoPointerI64)
-        }
-        Ty::Pointer(element) if element.bootstrap_i64_struct_fields().is_some() => {
-            Ok(out::RustType::GoPointerStructI64)
-        }
-        Ty::Channel(_, element) if element.underlying() == &Ty::Int(IntTy::Int) => {
-            Ok(out::RustType::GoChannelI64)
-        }
-        Ty::Array(length, element) if element.underlying() == &Ty::Int(IntTy::Int) => {
-            Ok(out::RustType::ArrayI64(*length))
-        }
-        Ty::Array(length, element) if element.underlying() == &Ty::Bool => {
-            Ok(out::RustType::ArrayBool(*length))
-        }
-        Ty::Array(length, element) if element.underlying() == &Ty::Float(FloatTy::Float64) => {
-            Ok(out::RustType::ArrayF64(*length))
-        }
-        Ty::Array(length, element) if element.underlying() == &Ty::String => {
-            Ok(out::RustType::ArrayGoString(*length))
-        }
-        Ty::Struct(fields)
-            if fields
-                .iter()
-                .all(|field| field.ty.underlying() == &Ty::Int(IntTy::Int)) =>
-        {
-            Ok(out::RustType::StructI64(
-                u64::try_from(fields.len()).map_err(|_| {
-                    Diagnostic::backend("struct representation length does not fit u64")
-                })?,
-            ))
-        }
-        unsupported => Err(Diagnostic::backend(format!(
-            "unsupported Go type reached Rust lowering: {unsupported:?}"
-        ))),
-    }
 }
 
 fn mir_operand_type(

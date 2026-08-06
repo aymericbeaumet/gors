@@ -5,6 +5,7 @@ mod assignments;
 mod closures;
 mod expressions;
 mod flow;
+mod interfaces;
 mod maps;
 mod panic_cleanup;
 mod pointers;
@@ -783,6 +784,10 @@ impl FunctionLowerer {
             hir::ExprKind::PointerStructValue(pointer) => {
                 self.lower_pointer_struct_value_expr(pointer, &expr.ty, expr.source)
             }
+            hir::ExprKind::InterfaceValue {
+                value,
+                type_identity,
+            } => self.lower_interface_value_expr(value, type_identity, &expr.ty, expr.source),
             hir::ExprKind::RecoverCompareNil { equal } => {
                 let state = self.recover_active.ok_or_else(|| {
                     Diagnostic::backend("recover comparison reached a function without cleanup")

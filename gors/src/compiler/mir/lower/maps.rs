@@ -74,6 +74,8 @@ impl FunctionLowerer {
         }
         let zero_builtin = if is_string_i64_map(&ty) {
             Some(hir::Builtin::MapStringI64Nil)
+        } else if matches!(ty.underlying(), Ty::Interface(_)) {
+            Some(hir::Builtin::InterfaceNil)
         } else if is_int_pointer(&ty) {
             Some(hir::Builtin::PointerI64Nil)
         } else if ty.bootstrap_i64_struct_pointer_fields().is_some() {

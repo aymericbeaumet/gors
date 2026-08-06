@@ -9,6 +9,7 @@ mod expression_lower;
 mod expressions;
 mod function;
 mod imports;
+mod interfaces;
 mod maps;
 mod numeric_builtins;
 mod pointers;
@@ -594,6 +595,8 @@ pub(super) fn lower_type(
         "float64" => Ok(Ty::Float(super::types::FloatTy::Float64)),
         "complex128" => Ok(Ty::Complex(super::types::ComplexTy::Complex128)),
         "uint8" | "byte" => Ok(Ty::Uint(super::types::UintTy::Uint8)),
+        "any" => Ok(Ty::Interface(Vec::new())),
+        "error" => Ok(interfaces::error_interface_ty()),
         "int8" | "int16" | "int32" | "rune" | "int64" | "uint" | "uint16" | "uint32" | "uint64"
         | "uintptr" | "float32" | "complex64" => Err(Diagnostic::unsupported(
             format!(

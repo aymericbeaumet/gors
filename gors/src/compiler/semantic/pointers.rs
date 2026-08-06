@@ -350,6 +350,8 @@ impl FunctionLowerer {
         let value = self.lower_expr(expression, None)?;
         let builtin = if value.ty.underlying() == string_i64_map_ty().underlying() {
             hir::Builtin::MapStringI64IsNil
+        } else if matches!(value.ty.underlying(), Ty::Interface(_)) {
+            hir::Builtin::InterfaceIsNil
         } else if value.ty.underlying() == int_pointer_ty().underlying() {
             hir::Builtin::PointerI64IsNil
         } else if value.ty.bootstrap_i64_struct_pointer_fields().is_some() {

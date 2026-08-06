@@ -455,6 +455,13 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
                 encode_expression(encoder, pointer);
             });
         }
+        hir::ExprKind::InterfaceValue {
+            value,
+            type_identity,
+        } => encoder.variant(b"interface-value", |encoder| {
+            encoder.field(b"value", |encoder| encode_expression(encoder, value));
+            encoder.field(b"type-identity", |encoder| encoder.blob(type_identity));
+        }),
         hir::ExprKind::GlobalConstant(id, value) => {
             encoder.variant(b"global-constant", |encoder| {
                 encoder.field(b"id", |encoder| qualified_def_id(encoder, *id));
@@ -619,6 +626,19 @@ fn encode_builtin(encoder: &mut Encoder, builtin: hir::Builtin) {
             hir::Builtin::PointerStructI64Set => b"pointer-struct-i64-set",
             hir::Builtin::PointerStructI64IsNil => b"pointer-struct-i64-is-nil",
             hir::Builtin::PointerStructI64Equal => b"pointer-struct-i64-equal",
+            hir::Builtin::InterfaceNil => b"interface-nil",
+            hir::Builtin::InterfaceBoxBool => b"interface-box-bool",
+            hir::Builtin::InterfaceBoxI64 => b"interface-box-i64",
+            hir::Builtin::InterfaceBoxGoString => b"interface-box-go-string",
+            hir::Builtin::InterfaceBoxStructI64 => b"interface-box-struct-i64",
+            hir::Builtin::InterfaceBoxPointerStructI64 => b"interface-box-pointer-struct-i64",
+            hir::Builtin::InterfaceIsNil => b"interface-is-nil",
+            hir::Builtin::InterfaceIsType => b"interface-is-type",
+            hir::Builtin::InterfaceUnboxBool => b"interface-unbox-bool",
+            hir::Builtin::InterfaceUnboxI64 => b"interface-unbox-i64",
+            hir::Builtin::InterfaceUnboxGoString => b"interface-unbox-go-string",
+            hir::Builtin::InterfaceStructI64Get => b"interface-struct-i64-get",
+            hir::Builtin::InterfaceUnboxPointerStructI64 => b"interface-unbox-pointer-struct-i64",
             hir::Builtin::ChannelI64Nil => b"channel-i64-nil",
             hir::Builtin::ChannelI64Make => b"channel-i64-make",
             hir::Builtin::ChannelI64Len => b"channel-i64-len",

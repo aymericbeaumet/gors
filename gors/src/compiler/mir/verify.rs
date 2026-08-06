@@ -4,6 +4,7 @@ mod arrays;
 mod channels;
 mod containers;
 mod effects;
+mod interfaces;
 mod pointers;
 mod provenance;
 mod structs;
@@ -27,6 +28,7 @@ use containers::{
     verify_slice_call_arguments,
 };
 use effects::{read_effects, verify_effects, verify_panic_edge};
+use interfaces::{is_interface_builtin, verify_interface_call};
 use pointers::{is_pointer_builtin, verify_pointer_call};
 use provenance::{
     verify_rvalue_provenance, verify_source_provenance, verify_source_ref,
@@ -427,6 +429,12 @@ impl Function {
                                 .map(|destination| self.place_ty(*destination).cloned())
                                 .collect::<Result<Vec<_>, _>>()?;
                             verify_pointer_call(*builtin, &argument_types, &destination_types)?
+                        } else if is_interface_builtin(*builtin) {
+                            let destination_types = destinations
+                                .iter()
+                                .map(|destination| self.place_ty(*destination).cloned())
+                                .collect::<Result<Vec<_>, _>>()?;
+                            verify_interface_call(*builtin, &argument_types, &destination_types)?
                         } else {
                             match builtin {
                                 hir::Builtin::Print | hir::Builtin::Println => {
@@ -679,6 +687,23 @@ impl Function {
                                 | hir::Builtin::PointerStructI64Equal => {
                                     return Err(Diagnostic::backend(
                                         "pointer builtin bypassed dedicated MIR verification",
+                                    ));
+                                }
+                                hir::Builtin::InterfaceNil
+                                | hir::Builtin::InterfaceBoxBool
+                                | hir::Builtin::InterfaceBoxI64
+                                | hir::Builtin::InterfaceBoxGoString
+                                | hir::Builtin::InterfaceBoxStructI64
+                                | hir::Builtin::InterfaceBoxPointerStructI64
+                                | hir::Builtin::InterfaceIsNil
+                                | hir::Builtin::InterfaceIsType
+                                | hir::Builtin::InterfaceUnboxBool
+                                | hir::Builtin::InterfaceUnboxI64
+                                | hir::Builtin::InterfaceUnboxGoString
+                                | hir::Builtin::InterfaceStructI64Get
+                                | hir::Builtin::InterfaceUnboxPointerStructI64 => {
+                                    return Err(Diagnostic::backend(
+                                        "interface builtin bypassed dedicated MIR verification",
                                     ));
                                 }
                             }

@@ -359,6 +359,23 @@ fn encode_callee(encoder: &mut Encoder, callee: hir::Callee) {
                     hir::Builtin::PointerStructI64Set => b"pointer-struct-i64-set",
                     hir::Builtin::PointerStructI64IsNil => b"pointer-struct-i64-is-nil",
                     hir::Builtin::PointerStructI64Equal => b"pointer-struct-i64-equal",
+                    hir::Builtin::InterfaceNil => b"interface-nil",
+                    hir::Builtin::InterfaceBoxBool => b"interface-box-bool",
+                    hir::Builtin::InterfaceBoxI64 => b"interface-box-i64",
+                    hir::Builtin::InterfaceBoxGoString => b"interface-box-go-string",
+                    hir::Builtin::InterfaceBoxStructI64 => b"interface-box-struct-i64",
+                    hir::Builtin::InterfaceBoxPointerStructI64 => {
+                        b"interface-box-pointer-struct-i64"
+                    }
+                    hir::Builtin::InterfaceIsNil => b"interface-is-nil",
+                    hir::Builtin::InterfaceIsType => b"interface-is-type",
+                    hir::Builtin::InterfaceUnboxBool => b"interface-unbox-bool",
+                    hir::Builtin::InterfaceUnboxI64 => b"interface-unbox-i64",
+                    hir::Builtin::InterfaceUnboxGoString => b"interface-unbox-go-string",
+                    hir::Builtin::InterfaceStructI64Get => b"interface-struct-i64-get",
+                    hir::Builtin::InterfaceUnboxPointerStructI64 => {
+                        b"interface-unbox-pointer-struct-i64"
+                    }
                     hir::Builtin::ChannelI64Nil => b"channel-i64-nil",
                     hir::Builtin::ChannelI64Make => b"channel-i64-make",
                     hir::Builtin::ChannelI64Len => b"channel-i64-len",
