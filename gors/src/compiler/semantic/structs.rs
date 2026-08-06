@@ -42,6 +42,7 @@ impl FunctionLowerer {
             return self.lower_interface_selector_call(
                 receiver,
                 &member.name,
+                member.source,
                 arguments,
                 spread,
                 node,
@@ -54,28 +55,6 @@ impl FunctionLowerer {
         let Some((receiver_ty, params)) = symbol.signature.params.split_first() else {
             return Err(Diagnostic::backend("method signature omitted its receiver"));
         };
-        if spread && !symbol.signature.variadic {
-            return Err(Diagnostic::semantic(
-                "... is only valid when calling a variadic method",
-                source,
-            ));
-        }
-        if symbol.signature.variadic && !spread {
-            return Err(Diagnostic::unsupported(
-                "individual variadic arguments require slice-pack lowering",
-                source,
-            ));
-        }
-        if arguments.len() != params.len() {
-            return Err(Diagnostic::semantic(
-                format!(
-                    "method call has {} arguments; expected {}",
-                    arguments.len(),
-                    params.len()
-                ),
-                source,
-            ));
-        }
         let receiver = self.adjust_method_receiver(
             receiver,
             receiver_ty,
@@ -83,15 +62,18 @@ impl FunctionLowerer {
             base.source,
             source,
         )?;
-        let mut args = Vec::with_capacity(arguments.len().saturating_add(1));
+        let lowered_arguments = self.lower_call_arguments(
+            arguments,
+            params,
+            symbol.signature.variadic,
+            spread,
+            member.source,
+            source,
+            "method",
+        )?;
+        let mut args = Vec::with_capacity(lowered_arguments.len().saturating_add(1));
         args.push(receiver);
-        args.extend(
-            arguments
-                .iter()
-                .zip(params)
-                .map(|(argument, expected)| self.lower_expr(argument, Some(expected)))
-                .collect::<Result<Vec<_>, _>>()?,
-        );
+        args.extend(lowered_arguments);
         let ty = match symbol.signature.results.as_slice() {
             [] => Ty::Unit,
             [single] => single.clone(),

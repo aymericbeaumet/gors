@@ -123,6 +123,7 @@ impl FunctionLowerer {
         &mut self,
         receiver: hir::Expr,
         member: &str,
+        member_source: SyntaxSource,
         arguments: &[ExprSyntax],
         spread: bool,
         node: NodeId,
@@ -131,33 +132,15 @@ impl FunctionLowerer {
         allow_discarded_call_result: bool,
     ) -> Result<hir::Expr, Diagnostic> {
         let signature = interface_method_signature(&receiver.ty, member, source)?;
-        if spread && !signature.variadic {
-            return Err(Diagnostic::semantic(
-                "... is only valid when calling a variadic method",
-                source,
-            ));
-        }
-        if signature.variadic && !spread {
-            return Err(Diagnostic::unsupported(
-                "individual variadic arguments require slice-pack lowering",
-                source,
-            ));
-        }
-        if arguments.len() != signature.params.len() {
-            return Err(Diagnostic::semantic(
-                format!(
-                    "method call has {} arguments; expected {}",
-                    arguments.len(),
-                    signature.params.len()
-                ),
-                source,
-            ));
-        }
-        let args = arguments
-            .iter()
-            .zip(&signature.params)
-            .map(|(argument, expected)| self.lower_expr(argument, Some(expected)))
-            .collect::<Result<Vec<_>, _>>()?;
+        let args = self.lower_call_arguments(
+            arguments,
+            &signature.params,
+            signature.variadic,
+            spread,
+            member_source,
+            source,
+            "method",
+        )?;
         self.build_interface_call(
             receiver,
             member,

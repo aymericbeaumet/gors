@@ -522,30 +522,6 @@ impl FunctionLowerer {
                     }
                 };
                 match callee {
-                    hir::Callee::Function(_) | hir::Callee::Closure(_) if *spread && !variadic => {
-                        return Err(Diagnostic::semantic(
-                            "... is only valid when calling a variadic function",
-                            source,
-                        ));
-                    }
-                    hir::Callee::Function(_) | hir::Callee::Closure(_) if variadic && !*spread => {
-                        return Err(Diagnostic::unsupported(
-                            "individual variadic arguments require slice-pack lowering",
-                            source,
-                        ));
-                    }
-                    hir::Callee::Function(_) | hir::Callee::Closure(_)
-                        if arguments.len() != params.len() =>
-                    {
-                        return Err(Diagnostic::semantic(
-                            format!(
-                                "call has {} arguments; expected {}",
-                                arguments.len(),
-                                params.len()
-                            ),
-                            source,
-                        ));
-                    }
                     hir::Callee::Builtin(hir::Builtin::Panic) if arguments.len() != 1 => {
                         return Err(Diagnostic::semantic(
                             format!(
@@ -563,7 +539,17 @@ impl FunctionLowerer {
                     }
                     _ => {}
                 }
-                let args = if matches!(callee, hir::Callee::Builtin(_)) {
+                let args = if matches!(callee, hir::Callee::Function(_) | hir::Callee::Closure(_)) {
+                    self.lower_call_arguments(
+                        arguments,
+                        &params,
+                        variadic,
+                        *spread,
+                        expr.source,
+                        source,
+                        "function",
+                    )?
+                } else {
                     arguments
                         .iter()
                         .map(|argument| {
@@ -572,12 +558,6 @@ impl FunctionLowerer {
                                 default_expr_type(expression, expression_source)
                             })
                         })
-                        .collect::<Result<Vec<_>, _>>()?
-                } else {
-                    arguments
-                        .iter()
-                        .zip(&params)
-                        .map(|(argument, expected)| self.lower_expr(argument, Some(expected)))
                         .collect::<Result<Vec<_>, _>>()?
                 };
                 let ty = match results.as_slice() {

@@ -6,7 +6,7 @@ use super::{FunctionSymbol, hir};
 use crate::compiler::Diagnostic;
 use crate::compiler::ids::NodeId;
 use crate::compiler::provenance::SourceRef;
-use crate::compiler::syntax::{ExprSyntax, ExprSyntaxKind, IdentSyntax};
+use crate::compiler::syntax::{ExprSyntax, ExprSyntaxKind, IdentSyntax, SyntaxSource};
 use crate::compiler::types::Ty;
 
 impl FunctionLowerer {
@@ -45,6 +45,7 @@ impl FunctionLowerer {
             symbol,
             arguments,
             spread,
+            member.source,
             node,
             source,
             expected,
@@ -113,38 +114,21 @@ impl FunctionLowerer {
         symbol: FunctionSymbol,
         arguments: &[ExprSyntax],
         spread: bool,
+        pack_source: SyntaxSource,
         node: NodeId,
         source: SourceRef,
         expected: Option<&Ty>,
         allow_discarded_call_result: bool,
     ) -> Result<hir::Expr, Diagnostic> {
-        if spread && !symbol.signature.variadic {
-            return Err(Diagnostic::semantic(
-                "... is only valid when calling a variadic function",
-                source,
-            ));
-        }
-        if symbol.signature.variadic && !spread {
-            return Err(Diagnostic::unsupported(
-                "individual variadic arguments require slice-pack lowering",
-                source,
-            ));
-        }
-        if arguments.len() != symbol.signature.params.len() {
-            return Err(Diagnostic::semantic(
-                format!(
-                    "call has {} arguments; expected {}",
-                    arguments.len(),
-                    symbol.signature.params.len()
-                ),
-                source,
-            ));
-        }
-        let args = arguments
-            .iter()
-            .zip(&symbol.signature.params)
-            .map(|(argument, expected)| self.lower_expr(argument, Some(expected)))
-            .collect::<Result<Vec<_>, _>>()?;
+        let args = self.lower_call_arguments(
+            arguments,
+            &symbol.signature.params,
+            symbol.signature.variadic,
+            spread,
+            pack_source,
+            source,
+            "function",
+        )?;
         let ty = match symbol.signature.results.as_slice() {
             [] => Ty::Unit,
             [single] => single.clone(),
