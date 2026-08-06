@@ -115,6 +115,13 @@ func main() {
 	accumulator := Accumulator{Total: 4}
 	var dynamicAdder any = &accumulator
 	assertedAdder, assertedAdderOK := dynamicAdder.(Adder)
+	var scalar any = 1
+	convertedScalar, convertedScalarOK := scalar.(interface{})
+	scalarTypeSwitch := false
+	switch scalar.(type) {
+	case interface{}:
+		scalarTypeSwitch = true
+	}
 	assertedAdder.Add(2)
 	typeSwitchTotal := 0
 	switch typedAdder := dynamicAdder.(type) {
@@ -161,11 +168,19 @@ func main() {
 	if !assertedAdderOK || assertedAdder.Sum() != 9 || typeSwitchTotal != 9 {
 		panic("interface assertion changed")
 	}
+	if !convertedScalarOK || convertedScalar == nil || !scalarTypeSwitch {
+		panic("implied interface assertion changed")
+	}
 	if AddOne(&accumulator) != 10 || accumulator.Total != 10 {
 		panic("pointer interface mutation changed")
 	}
 	if function(3) != 5 {
 		panic("function literal changed")
+	}
+	pointerAlias := pointer
+	structValue = Counter{Embedded: Embedded{Name: "updated"}, Value: 5}
+	if pointerAlias.Name != "updated" || pointerAlias.Value != 5 {
+		panic("addressed aggregate reassignment changed")
 	}
 	if nilPointer != nil || nilSlice != nil || nilMap != nil || nilChan != nil {
 		panic("nil typed value changed")

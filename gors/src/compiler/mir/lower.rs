@@ -908,6 +908,23 @@ impl FunctionLowerer {
                 if *callee == hir::Callee::Builtin(hir::Builtin::InterfaceAssert) {
                     return self.lower_interface_assertion_expr(args, &expr.ty, expr.source);
                 }
+                if matches!(
+                    callee,
+                    hir::Callee::Builtin(
+                        hir::Builtin::InterfaceSatisfies | hir::Builtin::InterfaceSatisfiesNonNil
+                    )
+                ) {
+                    if expr.ty != Ty::Bool {
+                        return Err(Diagnostic::backend(
+                            "interface satisfaction value bypassed tuple lowering",
+                        ));
+                    }
+                    return self.lower_interface_satisfaction_test(
+                        args,
+                        *callee == hir::Callee::Builtin(hir::Builtin::InterfaceSatisfiesNonNil),
+                        expr.source,
+                    );
+                }
                 if let hir::Callee::Closure(id) = callee {
                     if matches!(expr.ty, Ty::Tuple(_)) {
                         return Err(Diagnostic::backend(

@@ -106,7 +106,7 @@ impl FunctionLowerer {
         match range_kind {
             RangeKind::Array(array_length) => {
                 let array_length = i64::try_from(array_length).map_err(|_| {
-                    Diagnostic::backend("verified bootstrap array length does not fit Go int")
+                    Diagnostic::backend("verified array length does not fit Go int")
                 })?;
                 let value = make_rvalue(
                     RvalueKind::Use(Operand::Constant(

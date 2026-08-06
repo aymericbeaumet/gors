@@ -1,4 +1,4 @@
-//! MIR call verification for bootstrap integer channel operations.
+//! MIR call verification for integer channel operations.
 
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;

@@ -11,11 +11,11 @@
   },
   "summary": {
     "groupCount": 15,
-    "passingGroupCount": 1,
+    "passingGroupCount": 15,
     "caseCount": 211,
-    "passingCaseCount": 63,
-    "unsupportedCaseCount": 148,
-    "fixtureCount": 31
+    "passingCaseCount": 211,
+    "unsupportedCaseCount": 0,
+    "fixtureCount": 57
   },
   "groups": [
     {
@@ -26,15 +26,16 @@
         "_source_bytes/bom_leading",
         "_source_bytes/bom_middle",
         "_source_bytes/source_nul",
-        "source_code_representation"
+        "source_code_representation",
+        "spec_section_edgecases"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 6,
-        "passingCaseCount": 5,
-        "unsupportedCaseCount": 1,
-        "fixtureCount": 4
+        "passingCaseCount": 6,
+        "unsupportedCaseCount": 0,
+        "fixtureCount": 5
       },
       "cases": [
         {
@@ -84,14 +85,16 @@
           "title": "Unicode letters and digits form identifiers without changing code point identity",
           "subtitle": "Letters and digits",
           "kind": "spec-test",
-          "status": "unsupported",
+          "status": "passing",
           "fixtures": [
-            "source_code_representation"
+            "source_code_representation",
+            "spec_section_edgecases"
           ],
           "freshFixtures": [
-            "source_code_representation"
+            "source_code_representation",
+            "spec_section_edgecases"
           ],
-          "reason": "Fresh fixture execution did not pass for: spec_section_edgecases."
+          "reason": ""
         },
         {
           "id": "source-nul-character",
@@ -130,15 +133,17 @@
       "title": "Lexical elements",
       "subtitle": "",
       "fixtures": [
-        "lexical_elements"
+        "lexical_elements",
+        "spec_section_edgecases",
+        "string_bytes_and_invalid_utf8"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 18,
-        "passingCaseCount": 16,
-        "unsupportedCaseCount": 2,
-        "fixtureCount": 1
+        "passingCaseCount": 18,
+        "unsupportedCaseCount": 0,
+        "fixtureCount": 3
       },
       "cases": [
         {
@@ -160,14 +165,16 @@
           "title": "Tokens are formed from identifiers, keywords, operators, punctuation, and literals",
           "subtitle": "Tokens",
           "kind": "spec-test",
-          "status": "unsupported",
+          "status": "passing",
           "fixtures": [
-            "lexical_elements"
+            "lexical_elements",
+            "spec_section_edgecases"
           ],
           "freshFixtures": [
-            "lexical_elements"
+            "lexical_elements",
+            "spec_section_edgecases"
           ],
-          "reason": "Fresh fixture execution did not pass for: spec_section_edgecases."
+          "reason": ""
         },
         {
           "id": "lexical-semicolons",
@@ -384,9 +391,14 @@
           "title": "Hexadecimal and octal string escapes preserve arbitrary individual bytes",
           "subtitle": "String literals",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: string_bytes_and_invalid_utf8."
+          "status": "passing",
+          "fixtures": [
+            "string_bytes_and_invalid_utf8"
+          ],
+          "freshFixtures": [
+            "string_bytes_and_invalid_utf8"
+          ],
+          "reason": ""
         }
       ]
     },
@@ -554,14 +566,17 @@
       "id": "variables-and-zero-values",
       "title": "Variables and zero values",
       "subtitle": "",
-      "fixtures": [],
+      "fixtures": [
+        "spec_section_edgecases",
+        "variables_and_zero_values"
+      ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 8,
-        "passingCaseCount": 0,
-        "unsupportedCaseCount": 8,
-        "fixtureCount": 0
+        "passingCaseCount": 8,
+        "unsupportedCaseCount": 0,
+        "fixtureCount": 2
       },
       "cases": [
         {
@@ -569,72 +584,114 @@
           "title": "Variables hold typed storage locations that can be read through operands",
           "subtitle": "Variables",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: variables_and_zero_values, spec_section_edgecases."
+          "status": "passing",
+          "fixtures": [
+            "variables_and_zero_values",
+            "spec_section_edgecases"
+          ],
+          "freshFixtures": [
+            "variables_and_zero_values",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
         },
         {
           "id": "vars-var-declarations",
           "title": "var declarations with and without explicit types initialize correctly",
           "subtitle": "Variable declarations",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: variables_and_zero_values."
+          "status": "passing",
+          "fixtures": [
+            "variables_and_zero_values"
+          ],
+          "freshFixtures": [
+            "variables_and_zero_values"
+          ],
+          "reason": ""
         },
         {
           "id": "vars-short-declarations",
           "title": "Short variable declarations infer types and values",
           "subtitle": "Short variable declarations",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: variables_and_zero_values."
+          "status": "passing",
+          "fixtures": [
+            "variables_and_zero_values"
+          ],
+          "freshFixtures": [
+            "variables_and_zero_values"
+          ],
+          "reason": ""
         },
         {
           "id": "vars-short-redeclaration",
           "title": "Short variable declarations may redeclare variables with at least one new name",
           "subtitle": "Short variable declarations",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: variables_and_zero_values."
+          "status": "passing",
+          "fixtures": [
+            "variables_and_zero_values"
+          ],
+          "freshFixtures": [
+            "variables_and_zero_values"
+          ],
+          "reason": ""
         },
         {
           "id": "vars-multiple-assignment",
           "title": "Multiple assignment evaluates right-hand values before assigning left-hand variables",
           "subtitle": "Assignments",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: variables_and_zero_values."
+          "status": "passing",
+          "fixtures": [
+            "variables_and_zero_values"
+          ],
+          "freshFixtures": [
+            "variables_and_zero_values"
+          ],
+          "reason": ""
         },
         {
           "id": "vars-zero-values",
           "title": "Default zero values are emitted for declared variables",
           "subtitle": "The zero value",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: variables_and_zero_values."
+          "status": "passing",
+          "fixtures": [
+            "variables_and_zero_values"
+          ],
+          "freshFixtures": [
+            "variables_and_zero_values"
+          ],
+          "reason": ""
         },
         {
           "id": "vars-blank-identifier",
           "title": "Blank identifier discards values in declarations and assignments",
           "subtitle": "Blank identifier",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: variables_and_zero_values."
+          "status": "passing",
+          "fixtures": [
+            "variables_and_zero_values"
+          ],
+          "freshFixtures": [
+            "variables_and_zero_values"
+          ],
+          "reason": ""
         },
         {
           "id": "vars-addressability",
           "title": "Addressable variables can be mutated through pointers",
           "subtitle": "Address operators",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: variables_and_zero_values."
+          "status": "passing",
+          "fixtures": [
+            "variables_and_zero_values"
+          ],
+          "freshFixtures": [
+            "variables_and_zero_values"
+          ],
+          "reason": ""
         }
       ]
     },
@@ -647,6 +704,8 @@
         "map_lookup_and_nil",
         "named_numeric_types",
         "slice_capacity_and_append",
+        "string_bytes_and_invalid_utf8",
+        "types",
         "types_aliases",
         "types_slice_alias_mutation"
       ],
@@ -654,9 +713,9 @@
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 30,
-        "passingCaseCount": 6,
-        "unsupportedCaseCount": 24,
-        "fixtureCount": 6
+        "passingCaseCount": 30,
+        "unsupportedCaseCount": 0,
+        "fixtureCount": 8
       },
       "cases": [
         {
@@ -664,27 +723,42 @@
           "title": "Boolean values lower to Rust bool behavior",
           "subtitle": "Boolean types",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: types."
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
+            "types"
+          ],
+          "reason": ""
         },
         {
           "id": "types-integers",
           "title": "Signed and unsigned integer operations execute",
           "subtitle": "Numeric types",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: types."
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
+            "types"
+          ],
+          "reason": ""
         },
         {
           "id": "types-floats",
           "title": "Floating-point operations execute",
           "subtitle": "Numeric types",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: types."
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
+            "types"
+          ],
+          "reason": ""
         },
         {
           "id": "types-named-numeric-operators",
@@ -705,45 +779,70 @@
           "title": "complex64 and complex128 values execute through builtin helpers",
           "subtitle": "Numeric types",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: types."
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
+            "types"
+          ],
+          "reason": ""
         },
         {
           "id": "types-strings",
           "title": "Strings support indexing, slicing, concatenation, and conversion",
           "subtitle": "String types",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: types."
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
+            "types"
+          ],
+          "reason": ""
         },
         {
           "id": "types-string-byte-index-and-conversions",
           "title": "String indexing and byte-slice conversions operate on the exact underlying bytes",
           "subtitle": "String types",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: string_bytes_and_invalid_utf8."
+          "status": "passing",
+          "fixtures": [
+            "string_bytes_and_invalid_utf8"
+          ],
+          "freshFixtures": [
+            "string_bytes_and_invalid_utf8"
+          ],
+          "reason": ""
         },
         {
           "id": "types-arrays",
           "title": "Arrays have fixed length and support indexed mutation",
           "subtitle": "Array types",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: types."
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
+            "types"
+          ],
+          "reason": ""
         },
         {
           "id": "types-slices",
           "title": "Slices support len, cap, append, copy, and full-slice expressions",
           "subtitle": "Slice types",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: types."
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
+            "types"
+          ],
+          "reason": ""
         },
         {
           "id": "types-slice-backing-array",
@@ -778,108 +877,168 @@
           "title": "Struct fields, methods, and embedding execute",
           "subtitle": "Struct types",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: types."
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
+            "types"
+          ],
+          "reason": ""
         },
         {
           "id": "types-embedded-fields",
           "title": "Embedded fields promote selectors on the containing struct",
           "subtitle": "Struct types",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: types."
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
+            "types"
+          ],
+          "reason": ""
         },
         {
           "id": "types-struct-tags-pointer-embedding",
           "title": "Struct field tags and pointer embedded fields are accepted",
           "subtitle": "Struct types",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: types."
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
+            "types"
+          ],
+          "reason": ""
         },
         {
           "id": "types-promoted-field-shadowing",
           "title": "Direct fields shadow promoted embedded fields with the same name",
           "subtitle": "Struct types",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: types."
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
+            "types"
+          ],
+          "reason": ""
         },
         {
           "id": "types-pointers",
           "title": "Pointers support nil checks, dereference, and assignment",
           "subtitle": "Pointer types",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: types."
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
+            "types"
+          ],
+          "reason": ""
         },
         {
           "id": "types-nil-composite-values",
           "title": "nil is assignable to pointer, slice, map, channel, function, and interface values",
           "subtitle": "Pointer, slice, map, channel, function, and interface types",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: types."
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
+            "types"
+          ],
+          "reason": ""
         },
         {
           "id": "types-functions",
           "title": "Function values and closures are callable",
           "subtitle": "Function types",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: types."
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
+            "types"
+          ],
+          "reason": ""
         },
         {
           "id": "types-interfaces",
           "title": "Interfaces dispatch methods and support assertions",
           "subtitle": "Interface types",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: types."
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
+            "types"
+          ],
+          "reason": ""
         },
         {
           "id": "types-embedded-interfaces",
           "title": "Embedded interfaces compose method sets",
           "subtitle": "Interface types",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: types."
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
+            "types"
+          ],
+          "reason": ""
         },
         {
           "id": "types-pointer-receiver-interface-methods",
           "title": "Pointer receiver methods satisfy interfaces through pointer values",
           "subtitle": "Method sets",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: types."
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
+            "types"
+          ],
+          "reason": ""
         },
         {
           "id": "types-pointer-receiver-interface-assertions",
           "title": "Type assertions recognize pointer receiver interface method sets",
           "subtitle": "Method sets",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: types."
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
+            "types"
+          ],
+          "reason": ""
         },
         {
           "id": "types-pointer-receiver-interface-type-switch",
           "title": "Type switches match pointer receiver interface method sets",
           "subtitle": "Method sets",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: types."
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
+            "types"
+          ],
+          "reason": ""
         },
         {
           "id": "types-interface-method-sets",
@@ -900,9 +1059,14 @@
           "title": "Maps support literal construction, indexing, mutation, and comma-ok",
           "subtitle": "Map types",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: types."
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
+            "types"
+          ],
+          "reason": ""
         },
         {
           "id": "types-map-zero-value-comma-ok-and-nil",
@@ -923,18 +1087,28 @@
           "title": "Channels support send, receive, buffering, close, and comma-ok",
           "subtitle": "Channel types",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: types."
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
+            "types"
+          ],
+          "reason": ""
         },
         {
           "id": "types-directional-channels",
           "title": "Channel types may restrict values to send-only or receive-only operations",
           "subtitle": "Channel types",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: types."
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
+            "types"
+          ],
+          "reason": ""
         },
         {
           "id": "types-aliases",
@@ -955,9 +1129,14 @@
           "title": "Recursive named types compile and execute",
           "subtitle": "Type declarations",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: types."
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
+            "types"
+          ],
+          "reason": ""
         }
       ]
     },
@@ -968,15 +1147,17 @@
       "fixtures": [
         "_negative/properties_non_comparable",
         "map_reference_and_nil_write",
-        "named_numeric_types"
+        "named_numeric_types",
+        "properties_of_types_and_values",
+        "spec_section_edgecases"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 8,
-        "passingCaseCount": 2,
-        "unsupportedCaseCount": 6,
-        "fixtureCount": 3
+        "passingCaseCount": 8,
+        "unsupportedCaseCount": 0,
+        "fixtureCount": 5
       },
       "cases": [
         {
@@ -984,9 +1165,16 @@
           "title": "Values have concrete runtime representations that preserve observable operations",
           "subtitle": "Representation of values",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: properties_of_types_and_values, spec_section_edgecases."
+          "status": "passing",
+          "fixtures": [
+            "properties_of_types_and_values",
+            "spec_section_edgecases"
+          ],
+          "freshFixtures": [
+            "properties_of_types_and_values",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
         },
         {
           "id": "properties-map-reference-sharing",
@@ -1007,46 +1195,60 @@
           "title": "Defined numeric types use their underlying type for explicit conversions",
           "subtitle": "Underlying types",
           "kind": "spec-test",
-          "status": "unsupported",
+          "status": "passing",
           "fixtures": [
-            "named_numeric_types"
+            "named_numeric_types",
+            "spec_section_edgecases"
           ],
           "freshFixtures": [
-            "named_numeric_types"
+            "named_numeric_types",
+            "spec_section_edgecases"
           ],
-          "reason": "Fresh fixture execution did not pass for: spec_section_edgecases."
+          "reason": ""
         },
         {
           "id": "properties-type-identity",
           "title": "Distinct defined types preserve identity while allowing explicit conversions",
           "subtitle": "Type identity",
           "kind": "spec-test",
-          "status": "unsupported",
+          "status": "passing",
           "fixtures": [
-            "named_numeric_types"
+            "named_numeric_types",
+            "spec_section_edgecases"
           ],
           "freshFixtures": [
-            "named_numeric_types"
+            "named_numeric_types",
+            "spec_section_edgecases"
           ],
-          "reason": "Fresh fixture execution did not pass for: spec_section_edgecases."
+          "reason": ""
         },
         {
           "id": "properties-assignability",
           "title": "Values assign to variables with compatible types",
           "subtitle": "Assignability",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: properties_of_types_and_values."
+          "status": "passing",
+          "fixtures": [
+            "properties_of_types_and_values"
+          ],
+          "freshFixtures": [
+            "properties_of_types_and_values"
+          ],
+          "reason": ""
         },
         {
           "id": "properties-comparability",
           "title": "Comparable values participate in equality and ordering",
           "subtitle": "Comparison operators",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: properties_of_types_and_values."
+          "status": "passing",
+          "fixtures": [
+            "properties_of_types_and_values"
+          ],
+          "freshFixtures": [
+            "properties_of_types_and_values"
+          ],
+          "reason": ""
         },
         {
           "id": "properties-non-comparable",
@@ -1067,9 +1269,14 @@
           "title": "Method expressions and method values preserve receiver semantics",
           "subtitle": "Method sets",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: properties_of_types_and_values."
+          "status": "passing",
+          "fixtures": [
+            "properties_of_types_and_values"
+          ],
+          "freshFixtures": [
+            "properties_of_types_and_values"
+          ],
+          "reason": ""
         }
       ]
     },
@@ -1078,18 +1285,23 @@
       "title": "Declarations and scope",
       "subtitle": "",
       "fixtures": [
+        "declarations_and_scope",
         "declarations_and_scope_blocks",
+        "declarations_and_scope_exported",
         "declarations_and_scope_labels",
         "declarations_and_scope_predeclared",
-        "declarations_and_scope_uniqueness"
+        "declarations_and_scope_uniqueness",
+        "generics",
+        "generics_type_sets",
+        "spec_section_edgecases"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 15,
-        "passingCaseCount": 4,
-        "unsupportedCaseCount": 11,
-        "fixtureCount": 4
+        "passingCaseCount": 15,
+        "unsupportedCaseCount": 0,
+        "fixtureCount": 9
       },
       "cases": [
         {
@@ -1139,9 +1351,14 @@
           "title": "Identifiers starting with a capital letter are exported",
           "subtitle": "Exported identifiers",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: declarations_and_scope_exported."
+          "status": "passing",
+          "fixtures": [
+            "declarations_and_scope_exported"
+          ],
+          "freshFixtures": [
+            "declarations_and_scope_exported"
+          ],
+          "reason": ""
         },
         {
           "id": "decl-uniqueness-of-identifiers",
@@ -1162,90 +1379,144 @@
           "title": "Package clauses define package-level compilation units",
           "subtitle": "Package clause",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: declarations_and_scope."
+          "status": "passing",
+          "fixtures": [
+            "declarations_and_scope"
+          ],
+          "freshFixtures": [
+            "declarations_and_scope"
+          ],
+          "reason": ""
         },
         {
           "id": "decl-imports",
           "title": "Imports resolve local, nested, multi-file, and recursive packages",
           "subtitle": "Import declarations",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: declarations_and_scope."
+          "status": "passing",
+          "fixtures": [
+            "declarations_and_scope"
+          ],
+          "freshFixtures": [
+            "declarations_and_scope"
+          ],
+          "reason": ""
         },
         {
           "id": "decl-const",
           "title": "const declarations define package and local constants",
           "subtitle": "Constant declarations",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: declarations_and_scope."
+          "status": "passing",
+          "fixtures": [
+            "declarations_and_scope"
+          ],
+          "freshFixtures": [
+            "declarations_and_scope"
+          ],
+          "reason": ""
         },
         {
           "id": "decl-type",
           "title": "type declarations define structs, aliases, interfaces, and generic types",
           "subtitle": "Type declarations",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: declarations_and_scope."
+          "status": "passing",
+          "fixtures": [
+            "declarations_and_scope"
+          ],
+          "freshFixtures": [
+            "declarations_and_scope"
+          ],
+          "reason": ""
         },
         {
           "id": "decl-type-parameter-declarations",
           "title": "Type parameter lists declare generic function and type parameters",
           "subtitle": "Type parameter declarations",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: generics, generics_type_sets, spec_section_edgecases."
+          "status": "passing",
+          "fixtures": [
+            "generics",
+            "generics_type_sets",
+            "spec_section_edgecases"
+          ],
+          "freshFixtures": [
+            "generics",
+            "generics_type_sets",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
         },
         {
           "id": "decl-var",
           "title": "var declarations work at package and block scope",
           "subtitle": "Variable declarations",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: declarations_and_scope."
+          "status": "passing",
+          "fixtures": [
+            "declarations_and_scope"
+          ],
+          "freshFixtures": [
+            "declarations_and_scope"
+          ],
+          "reason": ""
         },
         {
           "id": "decl-functions",
           "title": "Functions support parameters, returns, recursion, and shorthand parameter lists",
           "subtitle": "Function declarations",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: declarations_and_scope."
+          "status": "passing",
+          "fixtures": [
+            "declarations_and_scope"
+          ],
+          "freshFixtures": [
+            "declarations_and_scope"
+          ],
+          "reason": ""
         },
         {
           "id": "decl-methods",
           "title": "Methods attach to named receiver types",
           "subtitle": "Method declarations",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: declarations_and_scope."
+          "status": "passing",
+          "fixtures": [
+            "declarations_and_scope"
+          ],
+          "freshFixtures": [
+            "declarations_and_scope"
+          ],
+          "reason": ""
         },
         {
           "id": "decl-scope-shadowing",
           "title": "Nested scopes and shadowing follow Go name resolution",
           "subtitle": "Declarations and scope",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: declarations_and_scope."
+          "status": "passing",
+          "fixtures": [
+            "declarations_and_scope"
+          ],
+          "freshFixtures": [
+            "declarations_and_scope"
+          ],
+          "reason": ""
         },
         {
           "id": "decl-init",
           "title": "init functions run before main after package variable initialization",
           "subtitle": "Program initialization and execution",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: declarations_and_scope."
+          "status": "passing",
+          "fixtures": [
+            "declarations_and_scope"
+          ],
+          "freshFixtures": [
+            "declarations_and_scope"
+          ],
+          "reason": ""
         }
       ]
     },
@@ -1254,16 +1525,26 @@
       "title": "Expressions",
       "subtitle": "",
       "fixtures": [
+        "built_in_functions",
+        "composite_literals",
+        "expressions",
+        "expressions_method_values",
+        "expressions_qualified_identifiers",
         "expressions_variadic_spread",
-        "map_reference_and_nil_write"
+        "generics",
+        "map_reference_and_nil_write",
+        "method_expressions",
+        "method_value_receiver_capture",
+        "spec_section_edgecases",
+        "types"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 29,
-        "passingCaseCount": 2,
-        "unsupportedCaseCount": 27,
-        "fixtureCount": 2
+        "passingCaseCount": 29,
+        "unsupportedCaseCount": 0,
+        "fixtureCount": 12
       },
       "cases": [
         {
@@ -1271,45 +1552,74 @@
           "title": "Expressions combine operands, operators, calls, conversions, and selectors into values",
           "subtitle": "Expressions",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: expressions, spec_section_edgecases."
+          "status": "passing",
+          "fixtures": [
+            "expressions",
+            "spec_section_edgecases"
+          ],
+          "freshFixtures": [
+            "expressions",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
         },
         {
           "id": "expr-operands",
           "title": "Operands include literals, identifiers, and parenthesized expressions",
           "subtitle": "Operands",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: expressions, spec_section_edgecases."
+          "status": "passing",
+          "fixtures": [
+            "expressions",
+            "spec_section_edgecases"
+          ],
+          "freshFixtures": [
+            "expressions",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
         },
         {
           "id": "expr-method-values",
           "title": "Method values bind a receiver and a method",
           "subtitle": "Method values",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: expressions_method_values."
+          "status": "passing",
+          "fixtures": [
+            "expressions_method_values"
+          ],
+          "freshFixtures": [
+            "expressions_method_values"
+          ],
+          "reason": ""
         },
         {
           "id": "expr-interface-method-value-receiver-capture",
           "title": "Method values save value receivers and preserve pointer or interface receiver identity",
           "subtitle": "Method values",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: method_value_receiver_capture."
+          "status": "passing",
+          "fixtures": [
+            "method_value_receiver_capture"
+          ],
+          "freshFixtures": [
+            "method_value_receiver_capture"
+          ],
+          "reason": ""
         },
         {
           "id": "expr-qualified-identifiers",
           "title": "Qualified identifiers access exported package-level declarations",
           "subtitle": "Qualified identifiers",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: expressions_qualified_identifiers."
+          "status": "passing",
+          "fixtures": [
+            "expressions_qualified_identifiers"
+          ],
+          "freshFixtures": [
+            "expressions_qualified_identifiers"
+          ],
+          "reason": ""
         },
         {
           "id": "expr-variadic-spread",
@@ -1330,36 +1640,56 @@
           "title": "Operands, selectors, indexes, slices, calls, and assertions compile",
           "subtitle": "Primary expressions",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: expressions."
+          "status": "passing",
+          "fixtures": [
+            "expressions"
+          ],
+          "freshFixtures": [
+            "expressions"
+          ],
+          "reason": ""
         },
         {
           "id": "expr-selectors",
           "title": "Selector expressions resolve package names, fields, and methods",
           "subtitle": "Selectors",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: expressions."
+          "status": "passing",
+          "fixtures": [
+            "expressions"
+          ],
+          "freshFixtures": [
+            "expressions"
+          ],
+          "reason": ""
         },
         {
           "id": "expr-method-expressions",
           "title": "Method expressions expose value and pointer receivers as functions",
           "subtitle": "Method expressions",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: method_expressions."
+          "status": "passing",
+          "fixtures": [
+            "method_expressions"
+          ],
+          "freshFixtures": [
+            "method_expressions"
+          ],
+          "reason": ""
         },
         {
           "id": "expr-index",
           "title": "Index expressions read and write arrays, slices, strings, and maps",
           "subtitle": "Index expressions",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: expressions."
+          "status": "passing",
+          "fixtures": [
+            "expressions"
+          ],
+          "freshFixtures": [
+            "expressions"
+          ],
+          "reason": ""
         },
         {
           "id": "expr-nil-map-assignment-panics",
@@ -1380,162 +1710,260 @@
           "title": "Slice expressions support two-index and full-slice forms",
           "subtitle": "Slice expressions",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: expressions."
+          "status": "passing",
+          "fixtures": [
+            "expressions"
+          ],
+          "freshFixtures": [
+            "expressions"
+          ],
+          "reason": ""
         },
         {
           "id": "expr-composite-literals",
           "title": "Composite literals construct structs, slices, arrays, and maps",
           "subtitle": "Composite literals",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: expressions."
+          "status": "passing",
+          "fixtures": [
+            "expressions"
+          ],
+          "freshFixtures": [
+            "expressions"
+          ],
+          "reason": ""
         },
         {
           "id": "expr-composite-literal-keyed-elements",
           "title": "Composite literals accept keyed array, struct, and map elements",
           "subtitle": "Composite literals",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: composite_literals."
+          "status": "passing",
+          "fixtures": [
+            "composite_literals"
+          ],
+          "freshFixtures": [
+            "composite_literals"
+          ],
+          "reason": ""
         },
         {
           "id": "expr-composite-literal-elision",
           "title": "Nested composite literals elide repeated element and pointer types",
           "subtitle": "Composite literals",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: composite_literals."
+          "status": "passing",
+          "fixtures": [
+            "composite_literals"
+          ],
+          "freshFixtures": [
+            "composite_literals"
+          ],
+          "reason": ""
         },
         {
           "id": "expr-composite-literal-addresses",
           "title": "Taking the address of a composite literal allocates a distinct variable",
           "subtitle": "Composite literals",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: composite_literals."
+          "status": "passing",
+          "fixtures": [
+            "composite_literals"
+          ],
+          "freshFixtures": [
+            "composite_literals"
+          ],
+          "reason": ""
         },
         {
           "id": "expr-type-assertions",
           "title": "Type assertions support single-value and comma-ok forms",
           "subtitle": "Type assertions",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: expressions."
+          "status": "passing",
+          "fixtures": [
+            "expressions"
+          ],
+          "freshFixtures": [
+            "expressions"
+          ],
+          "reason": ""
         },
         {
           "id": "expr-function-literals",
           "title": "Function literals can be called through function values",
           "subtitle": "Function literals",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: expressions."
+          "status": "passing",
+          "fixtures": [
+            "expressions"
+          ],
+          "freshFixtures": [
+            "expressions"
+          ],
+          "reason": ""
         },
         {
           "id": "expr-calls",
           "title": "Calls handle ordinary, variadic, method, and function-value targets",
           "subtitle": "Calls",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: expressions."
+          "status": "passing",
+          "fixtures": [
+            "expressions"
+          ],
+          "freshFixtures": [
+            "expressions"
+          ],
+          "reason": ""
         },
         {
           "id": "expr-conversions",
           "title": "Conversions handle numeric, string, byte-slice, and rune-slice cases",
           "subtitle": "Conversions",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: expressions."
+          "status": "passing",
+          "fixtures": [
+            "expressions"
+          ],
+          "freshFixtures": [
+            "expressions"
+          ],
+          "reason": ""
         },
         {
           "id": "expr-operators",
           "title": "Arithmetic, logical, unary, and comparison operators execute",
           "subtitle": "Operators",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: expressions."
+          "status": "passing",
+          "fixtures": [
+            "expressions"
+          ],
+          "freshFixtures": [
+            "expressions"
+          ],
+          "reason": ""
         },
         {
           "id": "expr-arithmetic-operators",
           "title": "Arithmetic operators preserve numeric, shift, and bit-clear semantics",
           "subtitle": "Arithmetic operators",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: expressions, spec_section_edgecases."
+          "status": "passing",
+          "fixtures": [
+            "expressions",
+            "spec_section_edgecases"
+          ],
+          "freshFixtures": [
+            "expressions",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
         },
         {
           "id": "expr-bit-clear-and-shifts",
           "title": "Shift and bit clear operators execute with Go precedence",
           "subtitle": "Operators",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: expressions."
+          "status": "passing",
+          "fixtures": [
+            "expressions"
+          ],
+          "freshFixtures": [
+            "expressions"
+          ],
+          "reason": ""
         },
         {
           "id": "expr-string-concat-interface-methods",
           "title": "String concatenation accepts method-call operands",
           "subtitle": "Operators",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: types."
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ],
+          "freshFixtures": [
+            "types"
+          ],
+          "reason": ""
         },
         {
           "id": "expr-logical-operators",
           "title": "Logical operators preserve boolean precedence and short-circuit grouping",
           "subtitle": "Logical operators",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: expressions, spec_section_edgecases."
+          "status": "passing",
+          "fixtures": [
+            "expressions",
+            "spec_section_edgecases"
+          ],
+          "freshFixtures": [
+            "expressions",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
         },
         {
           "id": "expr-receive-operator",
           "title": "Receive expressions read channel values in expression contexts",
           "subtitle": "Receive operator",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: built_in_functions, spec_section_edgecases."
+          "status": "passing",
+          "fixtures": [
+            "built_in_functions",
+            "spec_section_edgecases"
+          ],
+          "freshFixtures": [
+            "built_in_functions",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
         },
         {
           "id": "expr-type-inference",
           "title": "Generic function calls infer omitted type arguments from ordinary arguments",
           "subtitle": "Type inference",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: generics, spec_section_edgecases."
+          "status": "passing",
+          "fixtures": [
+            "generics",
+            "spec_section_edgecases"
+          ],
+          "freshFixtures": [
+            "generics",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
         },
         {
           "id": "expr-precedence",
           "title": "Operator precedence and associativity preserve Go grouping",
           "subtitle": "Operator precedence",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: expressions."
+          "status": "passing",
+          "fixtures": [
+            "expressions"
+          ],
+          "freshFixtures": [
+            "expressions"
+          ],
+          "reason": ""
         },
         {
           "id": "expr-evaluation-order",
           "title": "Evaluation order is preserved for side-effecting expressions",
           "subtitle": "Order of evaluation",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: expressions."
+          "status": "passing",
+          "fixtures": [
+            "expressions"
+          ],
+          "freshFixtures": [
+            "expressions"
+          ],
+          "reason": ""
         }
       ]
     },
@@ -1545,20 +1973,27 @@
       "subtitle": "",
       "fixtures": [
         "assignment_evaluation_order",
+        "assignment_two_phase",
         "control_flow_evaluation",
         "declarations_and_scope_labels",
         "defer_lifo_and_arguments",
+        "for_iteration_variables",
+        "range_statements",
         "return_statements",
+        "select_statements",
+        "spec_section_edgecases",
+        "statements",
         "statements_forward_goto",
+        "string_bytes_and_invalid_utf8",
         "switch_statements"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 46,
-        "passingCaseCount": 11,
-        "unsupportedCaseCount": 35,
-        "fixtureCount": 7
+        "passingCaseCount": 46,
+        "unsupportedCaseCount": 0,
+        "fixtureCount": 14
       },
       "cases": [
         {
@@ -1566,91 +2001,134 @@
           "title": "Return, break, continue, goto, and fallthrough terminate statement lists where permitted",
           "subtitle": "Terminating statements",
           "kind": "spec-test",
-          "status": "unsupported",
+          "status": "passing",
           "fixtures": [
-            "return_statements"
+            "statements",
+            "return_statements",
+            "spec_section_edgecases"
           ],
           "freshFixtures": [
-            "return_statements"
+            "statements",
+            "return_statements",
+            "spec_section_edgecases"
           ],
-          "reason": "Fresh fixture execution did not pass for: statements, spec_section_edgecases."
+          "reason": ""
         },
         {
           "id": "stmt-empty",
           "title": "Explicit empty statements compile without changing control flow",
           "subtitle": "Empty statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: spec_section_edgecases."
+          "status": "passing",
+          "fixtures": [
+            "spec_section_edgecases"
+          ],
+          "freshFixtures": [
+            "spec_section_edgecases"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-expression",
           "title": "Function and method call expressions are valid statements",
           "subtitle": "Expression statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: statements, spec_section_edgecases."
+          "status": "passing",
+          "fixtures": [
+            "statements",
+            "spec_section_edgecases"
+          ],
+          "freshFixtures": [
+            "statements",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-labeled",
           "title": "Labels attach to statements and can be branch targets",
           "subtitle": "Labeled statements",
           "kind": "spec-test",
-          "status": "unsupported",
+          "status": "passing",
           "fixtures": [
-            "declarations_and_scope_labels"
+            "declarations_and_scope_labels",
+            "spec_section_edgecases"
           ],
           "freshFixtures": [
-            "declarations_and_scope_labels"
+            "declarations_and_scope_labels",
+            "spec_section_edgecases"
           ],
-          "reason": "Fresh fixture execution did not pass for: spec_section_edgecases."
+          "reason": ""
         },
         {
           "id": "stmt-empty-expression",
           "title": "Empty and expression statements compile",
           "subtitle": "Statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: statements."
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ],
+          "freshFixtures": [
+            "statements"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-send",
           "title": "Send statements deliver values to channels",
           "subtitle": "Send statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: statements."
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ],
+          "freshFixtures": [
+            "statements"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-inc-dec",
           "title": "Increment and decrement statements mutate variables and indexes",
           "subtitle": "IncDec statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: statements."
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ],
+          "freshFixtures": [
+            "statements"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-assignments",
           "title": "Simple, compound, and multi-value assignments execute",
           "subtitle": "Assignment statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: statements."
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ],
+          "freshFixtures": [
+            "statements"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-assignment-two-phase-index-places",
           "title": "Indexed left-hand operands are evaluated before assignment writes begin",
           "subtitle": "Assignment statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: assignment_two_phase."
+          "status": "passing",
+          "fixtures": [
+            "assignment_two_phase"
+          ],
+          "freshFixtures": [
+            "assignment_two_phase"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-assignment-evaluation-order",
@@ -1671,18 +2149,28 @@
           "title": "if statements support init clauses and nested branches",
           "subtitle": "If statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: statements."
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ],
+          "freshFixtures": [
+            "statements"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-switch",
           "title": "Expression switches support breaks, defaults, and fallthrough",
           "subtitle": "Switch statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: statements."
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ],
+          "freshFixtures": [
+            "statements"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-switch-init-expressionless",
@@ -1731,90 +2219,140 @@
           "title": "fallthrough transfers control to the next expression switch case",
           "subtitle": "Fallthrough statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: statements."
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ],
+          "freshFixtures": [
+            "statements"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-type-switch",
           "title": "Type switches bind matched dynamic values once",
           "subtitle": "Type switch statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: statements."
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ],
+          "freshFixtures": [
+            "statements"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-type-switch-binding",
           "title": "Type switch guards expose the matched dynamic value in case clauses",
           "subtitle": "Type switch statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: statements."
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ],
+          "freshFixtures": [
+            "statements"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-type-switch-nil-case",
           "title": "Type switches match nil interface values with nil cases",
           "subtitle": "Type switch statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: statements."
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ],
+          "freshFixtures": [
+            "statements"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-select",
           "title": "select statements choose channel communication cases",
           "subtitle": "Select statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: statements."
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ],
+          "freshFixtures": [
+            "statements"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-select-send-default",
           "title": "select send cases and default clauses choose ready communications",
           "subtitle": "Select statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: select_statements."
+          "status": "passing",
+          "fixtures": [
+            "select_statements"
+          ],
+          "freshFixtures": [
+            "select_statements"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-select-receive-assignment",
           "title": "select receive cases assign values after communication is chosen",
           "subtitle": "Select statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: select_statements."
+          "status": "passing",
+          "fixtures": [
+            "select_statements"
+          ],
+          "freshFixtures": [
+            "select_statements"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-select-receive-comma-ok",
           "title": "select receive cases bind one or two values from open and closed channels",
           "subtitle": "Select statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: select_statements."
+          "status": "passing",
+          "fixtures": [
+            "select_statements"
+          ],
+          "freshFixtures": [
+            "select_statements"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-for",
           "title": "for loops support clauses, while-style conditions, break, and continue",
           "subtitle": "For statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: statements."
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ],
+          "freshFixtures": [
+            "statements"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-for-per-iteration-variables",
           "title": "Each for-clause iteration has distinct variables captured by closures",
           "subtitle": "For statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: for_iteration_variables."
+          "status": "passing",
+          "fixtures": [
+            "for_iteration_variables"
+          ],
+          "freshFixtures": [
+            "for_iteration_variables"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-for-continue-runs-post",
@@ -1835,63 +2373,98 @@
           "title": "range supports slice and channel iteration in statement bodies",
           "subtitle": "For statements with range clause",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: statements."
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ],
+          "freshFixtures": [
+            "statements"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-range-indexed-map-string",
           "title": "range supports arrays, slices, maps, and strings",
           "subtitle": "For statements with range clause",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: range_statements."
+          "status": "passing",
+          "fixtures": [
+            "range_statements"
+          ],
+          "freshFixtures": [
+            "range_statements"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-range-channel-integer",
           "title": "range supports receive-capable channels and integer values",
           "subtitle": "For statements with range clause",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: range_statements."
+          "status": "passing",
+          "fixtures": [
+            "range_statements"
+          ],
+          "freshFixtures": [
+            "range_statements"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-range-typed-integers",
           "title": "integer range values use the integer range expression or preexisting iteration variable type",
           "subtitle": "For statements with range clause",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: range_statements."
+          "status": "passing",
+          "fixtures": [
+            "range_statements"
+          ],
+          "freshFixtures": [
+            "range_statements"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-range-function",
           "title": "range supports iterator functions with one or two yielded values",
           "subtitle": "For statements with range clause",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: range_statements."
+          "status": "passing",
+          "fixtures": [
+            "range_statements"
+          ],
+          "freshFixtures": [
+            "range_statements"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-range-function-zero-values",
           "title": "range supports iterator functions with zero yielded values",
           "subtitle": "For statements with range clause",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: range_statements."
+          "status": "passing",
+          "fixtures": [
+            "range_statements"
+          ],
+          "freshFixtures": [
+            "range_statements"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-range-per-iteration-variables",
           "title": "Each range iteration has distinct variables captured by closures",
           "subtitle": "For statements with range clause",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: for_iteration_variables."
+          "status": "passing",
+          "fixtures": [
+            "for_iteration_variables"
+          ],
+          "freshFixtures": [
+            "for_iteration_variables"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-range-expression-evaluated-once",
@@ -1912,27 +2485,42 @@
           "title": "Ranging over invalid UTF-8 bytes yields replacement runes and advances one byte",
           "subtitle": "For statements with range clause",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: string_bytes_and_invalid_utf8."
+          "status": "passing",
+          "fixtures": [
+            "string_bytes_and_invalid_utf8"
+          ],
+          "freshFixtures": [
+            "string_bytes_and_invalid_utf8"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-go",
           "title": "go statements start concurrent function execution",
           "subtitle": "Go statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: statements."
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ],
+          "freshFixtures": [
+            "statements"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-defer",
           "title": "defer statements run in last-in-first-out order",
           "subtitle": "Defer statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: statements."
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ],
+          "freshFixtures": [
+            "statements"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-defer-saved-arguments-and-named-result",
@@ -1953,9 +2541,14 @@
           "title": "return statements support explicit and named return values",
           "subtitle": "Return statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: statements."
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ],
+          "freshFixtures": [
+            "statements"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-return-multivalue-call",
@@ -2004,27 +2597,42 @@
           "title": "break and continue target innermost or labeled loops",
           "subtitle": "Break statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: statements."
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ],
+          "freshFixtures": [
+            "statements"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-labeled-continue",
           "title": "continue may target an enclosing labeled for statement",
           "subtitle": "Continue statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: statements."
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ],
+          "freshFixtures": [
+            "statements"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-goto",
           "title": "goto statements target labels without entering invalid scopes",
           "subtitle": "Goto statements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: statements."
+          "status": "passing",
+          "fixtures": [
+            "statements"
+          ],
+          "freshFixtures": [
+            "statements"
+          ],
+          "reason": ""
         },
         {
           "id": "stmt-arbitrary-forward-goto",
@@ -2048,16 +2656,18 @@
       "subtitle": "",
       "fixtures": [
         "append_copy_clear_builtins",
+        "built_in_functions",
         "built_in_panic_recover",
-        "map_lookup_and_nil"
+        "map_lookup_and_nil",
+        "spec_section_edgecases"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 17,
-        "passingCaseCount": 6,
-        "unsupportedCaseCount": 11,
-        "fixtureCount": 3
+        "passingCaseCount": 17,
+        "unsupportedCaseCount": 0,
+        "fixtureCount": 5
       },
       "cases": [
         {
@@ -2065,9 +2675,14 @@
           "title": "append and copy mutate and return slices correctly",
           "subtitle": "Appending to and copying slices",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: built_in_functions."
+          "status": "passing",
+          "fixtures": [
+            "built_in_functions"
+          ],
+          "freshFixtures": [
+            "built_in_functions"
+          ],
+          "reason": ""
         },
         {
           "id": "builtin-append-spread",
@@ -2102,45 +2717,72 @@
           "title": "len and cap report values for strings, arrays, slices, maps, and channels",
           "subtitle": "Length and capacity",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: built_in_functions."
+          "status": "passing",
+          "fixtures": [
+            "built_in_functions"
+          ],
+          "freshFixtures": [
+            "built_in_functions"
+          ],
+          "reason": ""
         },
         {
           "id": "builtin-len-map-channel-string",
           "title": "len reports values for maps, channels, arrays, and strings",
           "subtitle": "Length and capacity",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: built_in_functions."
+          "status": "passing",
+          "fixtures": [
+            "built_in_functions"
+          ],
+          "freshFixtures": [
+            "built_in_functions"
+          ],
+          "reason": ""
         },
         {
           "id": "builtin-make-new",
           "title": "make and new allocate slices, maps, channels, and pointer values",
           "subtitle": "Making slices, maps and channels",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: built_in_functions."
+          "status": "passing",
+          "fixtures": [
+            "built_in_functions"
+          ],
+          "freshFixtures": [
+            "built_in_functions"
+          ],
+          "reason": ""
         },
         {
           "id": "builtin-allocation",
           "title": "new allocates zeroed storage and returns an addressable pointer value",
           "subtitle": "Allocation",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: built_in_functions, spec_section_edgecases."
+          "status": "passing",
+          "fixtures": [
+            "built_in_functions",
+            "spec_section_edgecases"
+          ],
+          "freshFixtures": [
+            "built_in_functions",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
         },
         {
           "id": "builtin-delete-clear",
           "title": "delete and clear update maps and slices",
           "subtitle": "Deletion of map elements",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: built_in_functions."
+          "status": "passing",
+          "fixtures": [
+            "built_in_functions"
+          ],
+          "freshFixtures": [
+            "built_in_functions"
+          ],
+          "reason": ""
         },
         {
           "id": "builtin-delete-nil-map-noop",
@@ -2189,18 +2831,28 @@
           "title": "complex, real, and imag construct and decompose complex values",
           "subtitle": "Manipulating complex numbers",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: built_in_functions."
+          "status": "passing",
+          "fixtures": [
+            "built_in_functions"
+          ],
+          "freshFixtures": [
+            "built_in_functions"
+          ],
+          "reason": ""
         },
         {
           "id": "builtin-max-min",
           "title": "max and min choose ordered values",
           "subtitle": "Min and max",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: built_in_functions."
+          "status": "passing",
+          "fixtures": [
+            "built_in_functions"
+          ],
+          "freshFixtures": [
+            "built_in_functions"
+          ],
+          "reason": ""
         },
         {
           "id": "builtin-panic-recover",
@@ -2221,27 +2873,44 @@
           "title": "print and println emit values",
           "subtitle": "Bootstrapping",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: built_in_functions."
+          "status": "passing",
+          "fixtures": [
+            "built_in_functions"
+          ],
+          "freshFixtures": [
+            "built_in_functions"
+          ],
+          "reason": ""
         },
         {
           "id": "builtin-close",
           "title": "close marks a channel closed and receive observes closure",
           "subtitle": "Close",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: built_in_functions, spec_section_edgecases."
+          "status": "passing",
+          "fixtures": [
+            "built_in_functions",
+            "spec_section_edgecases"
+          ],
+          "freshFixtures": [
+            "built_in_functions",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
         },
         {
           "id": "builtin-close-buffered-channel",
           "title": "Receiving from a closed buffered channel returns queued values before zero values",
           "subtitle": "Close",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: built_in_functions."
+          "status": "passing",
+          "fixtures": [
+            "built_in_functions"
+          ],
+          "freshFixtures": [
+            "built_in_functions"
+          ],
+          "reason": ""
         }
       ]
     },
@@ -2250,15 +2919,18 @@
       "title": "Packages and program initialization",
       "subtitle": "",
       "fixtures": [
-        "program_execution"
+        "packages_and_program_initialization",
+        "packages_import_aliases",
+        "program_execution",
+        "spec_section_edgecases"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 10,
-        "passingCaseCount": 0,
-        "unsupportedCaseCount": 10,
-        "fixtureCount": 1
+        "passingCaseCount": 10,
+        "unsupportedCaseCount": 0,
+        "fixtureCount": 4
       },
       "cases": [
         {
@@ -2266,95 +2938,150 @@
           "title": "A main package with main.main executes",
           "subtitle": "Program execution",
           "kind": "spec-test",
-          "status": "unsupported",
+          "status": "passing",
           "fixtures": [
+            "packages_and_program_initialization",
             "program_execution"
           ],
           "freshFixtures": [
+            "packages_and_program_initialization",
             "program_execution"
           ],
-          "reason": "Fresh fixture execution did not pass for: packages_and_program_initialization."
+          "reason": ""
         },
         {
           "id": "packages-multiple-files",
           "title": "Multiple files in one package compile together",
           "subtitle": "Packages",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: packages_and_program_initialization, spec_section_edgecases."
+          "status": "passing",
+          "fixtures": [
+            "packages_and_program_initialization",
+            "spec_section_edgecases"
+          ],
+          "freshFixtures": [
+            "packages_and_program_initialization",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
         },
         {
           "id": "packages-source-file-organization",
           "title": "A package is built from one or more source files sharing a package name",
           "subtitle": "Source file organization",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: packages_and_program_initialization, spec_section_edgecases."
+          "status": "passing",
+          "fixtures": [
+            "packages_and_program_initialization",
+            "spec_section_edgecases"
+          ],
+          "freshFixtures": [
+            "packages_and_program_initialization",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
         },
         {
           "id": "packages-example-package",
           "title": "Multi-file packages can expose declarations through ordinary imports",
           "subtitle": "An example package",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: packages_and_program_initialization."
+          "status": "passing",
+          "fixtures": [
+            "packages_and_program_initialization"
+          ],
+          "freshFixtures": [
+            "packages_and_program_initialization"
+          ],
+          "reason": ""
         },
         {
           "id": "packages-import-paths",
           "title": "Import paths resolve local packages and nested packages",
           "subtitle": "Import declarations",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: packages_and_program_initialization."
+          "status": "passing",
+          "fixtures": [
+            "packages_and_program_initialization"
+          ],
+          "freshFixtures": [
+            "packages_and_program_initialization"
+          ],
+          "reason": ""
         },
         {
           "id": "packages-stdlib-imports",
           "title": "Standard-library imports resolve through embedded Go source",
           "subtitle": "Import declarations",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: packages_and_program_initialization."
+          "status": "passing",
+          "fixtures": [
+            "packages_and_program_initialization"
+          ],
+          "freshFixtures": [
+            "packages_and_program_initialization"
+          ],
+          "reason": ""
         },
         {
           "id": "packages-import-aliases",
           "title": "Import declarations support explicit package aliases, dot imports, and blank imports",
           "subtitle": "Import declarations",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: packages_import_aliases."
+          "status": "passing",
+          "fixtures": [
+            "packages_import_aliases"
+          ],
+          "freshFixtures": [
+            "packages_import_aliases"
+          ],
+          "reason": ""
         },
         {
           "id": "packages-initialization-order",
           "title": "Package initialization runs dependencies, variables, and init functions in order",
           "subtitle": "Program initialization and execution",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: packages_and_program_initialization, spec_section_edgecases."
+          "status": "passing",
+          "fixtures": [
+            "packages_and_program_initialization",
+            "spec_section_edgecases"
+          ],
+          "freshFixtures": [
+            "packages_and_program_initialization",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
         },
         {
           "id": "packages-package-initialization",
           "title": "Package variables initialize before init functions run",
           "subtitle": "Package initialization",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: packages_and_program_initialization, spec_section_edgecases."
+          "status": "passing",
+          "fixtures": [
+            "packages_and_program_initialization",
+            "spec_section_edgecases"
+          ],
+          "freshFixtures": [
+            "packages_and_program_initialization",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
         },
         {
           "id": "packages-program-initialization",
           "title": "Imported packages initialize before main package execution",
           "subtitle": "Program initialization",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: packages_and_program_initialization."
+          "status": "passing",
+          "fixtures": [
+            "packages_and_program_initialization"
+          ],
+          "freshFixtures": [
+            "packages_and_program_initialization"
+          ],
+          "reason": ""
         }
       ]
     },
@@ -2363,15 +3090,18 @@
       "title": "Generics",
       "subtitle": "",
       "fixtures": [
-        "_negative/generics_constraints"
+        "_negative/generics_constraints",
+        "generics",
+        "generics_type_sets",
+        "spec_section_edgecases"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 10,
-        "passingCaseCount": 1,
-        "unsupportedCaseCount": 9,
-        "fixtureCount": 1
+        "passingCaseCount": 10,
+        "unsupportedCaseCount": 0,
+        "fixtureCount": 4
       },
       "cases": [
         {
@@ -2379,36 +3109,56 @@
           "title": "Generic functions instantiate and execute",
           "subtitle": "Function declarations",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: generics."
+          "status": "passing",
+          "fixtures": [
+            "generics"
+          ],
+          "freshFixtures": [
+            "generics"
+          ],
+          "reason": ""
         },
         {
           "id": "generics-types",
           "title": "Generic named types instantiate and expose methods",
           "subtitle": "Type declarations",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: generics."
+          "status": "passing",
+          "fixtures": [
+            "generics"
+          ],
+          "freshFixtures": [
+            "generics"
+          ],
+          "reason": ""
         },
         {
           "id": "generics-multiple-type-parameters",
           "title": "Generic functions accept and infer multiple type parameters",
           "subtitle": "Function declarations",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: generics."
+          "status": "passing",
+          "fixtures": [
+            "generics"
+          ],
+          "freshFixtures": [
+            "generics"
+          ],
+          "reason": ""
         },
         {
           "id": "generics-receiver-methods",
           "title": "Generic receiver methods keep receiver type parameters",
           "subtitle": "Method declarations",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: generics."
+          "status": "passing",
+          "fixtures": [
+            "generics"
+          ],
+          "freshFixtures": [
+            "generics"
+          ],
+          "reason": ""
         },
         {
           "id": "generics-constraints",
@@ -2429,45 +3179,74 @@
           "title": "Constraint interfaces accept underlying type terms with tilde",
           "subtitle": "Interface types",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: generics_type_sets."
+          "status": "passing",
+          "fixtures": [
+            "generics_type_sets"
+          ],
+          "freshFixtures": [
+            "generics_type_sets"
+          ],
+          "reason": ""
         },
         {
           "id": "generics-named-slice-constraint-range",
           "title": "Generic functions range over parameters constrained by named underlying slice constraints",
           "subtitle": "For statements with range clause",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: generics_type_sets."
+          "status": "passing",
+          "fixtures": [
+            "generics_type_sets"
+          ],
+          "freshFixtures": [
+            "generics_type_sets"
+          ],
+          "reason": ""
         },
         {
           "id": "generics-comparable-constraint",
           "title": "Generic functions accept comparable type parameters in equality expressions",
           "subtitle": "Interface types",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: generics_type_sets."
+          "status": "passing",
+          "fixtures": [
+            "generics_type_sets"
+          ],
+          "freshFixtures": [
+            "generics_type_sets"
+          ],
+          "reason": ""
         },
         {
           "id": "generics-type-inference",
           "title": "Type inference chooses type arguments for generic calls",
           "subtitle": "Instantiations",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: generics."
+          "status": "passing",
+          "fixtures": [
+            "generics"
+          ],
+          "freshFixtures": [
+            "generics"
+          ],
+          "reason": ""
         },
         {
           "id": "generics-type-unification-rules",
           "title": "Type inference unifies generic arguments with type parameter constraints",
           "subtitle": "Type unification rules",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: generics, generics_type_sets, spec_section_edgecases."
+          "status": "passing",
+          "fixtures": [
+            "generics",
+            "generics_type_sets",
+            "spec_section_edgecases"
+          ],
+          "freshFixtures": [
+            "generics",
+            "generics_type_sets",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
         }
       ]
     },
@@ -2475,14 +3254,16 @@
       "id": "errors",
       "title": "Errors",
       "subtitle": "",
-      "fixtures": [],
+      "fixtures": [
+        "errors"
+      ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 1,
-        "passingCaseCount": 0,
-        "unsupportedCaseCount": 1,
-        "fixtureCount": 0
+        "passingCaseCount": 1,
+        "unsupportedCaseCount": 0,
+        "fixtureCount": 1
       },
       "cases": [
         {
@@ -2490,9 +3271,14 @@
           "title": "Predeclared error interface and its nil value",
           "subtitle": "Errors",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: errors."
+          "status": "passing",
+          "fixtures": [
+            "errors"
+          ],
+          "freshFixtures": [
+            "errors"
+          ],
+          "reason": ""
         }
       ]
     },
@@ -2500,14 +3286,16 @@
       "id": "run-time-panics",
       "title": "Run-time panics",
       "subtitle": "",
-      "fixtures": [],
+      "fixtures": [
+        "run_time_panics"
+      ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 1,
-        "passingCaseCount": 0,
-        "unsupportedCaseCount": 1,
-        "fixtureCount": 0
+        "passingCaseCount": 1,
+        "unsupportedCaseCount": 0,
+        "fixtureCount": 1
       },
       "cases": [
         {
@@ -2515,9 +3303,14 @@
           "title": "Implicit run-time panics trigger recovery",
           "subtitle": "Run-time panics",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: run_time_panics."
+          "status": "passing",
+          "fixtures": [
+            "run_time_panics"
+          ],
+          "freshFixtures": [
+            "run_time_panics"
+          ],
+          "reason": ""
         }
       ]
     },
@@ -2525,14 +3318,17 @@
       "id": "system-considerations",
       "title": "System considerations",
       "subtitle": "",
-      "fixtures": [],
+      "fixtures": [
+        "spec_section_edgecases",
+        "system_considerations"
+      ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
         "caseCount": 2,
-        "passingCaseCount": 0,
-        "unsupportedCaseCount": 2,
-        "fixtureCount": 0
+        "passingCaseCount": 2,
+        "unsupportedCaseCount": 0,
+        "fixtureCount": 2
       },
       "cases": [
         {
@@ -2540,18 +3336,30 @@
           "title": "unsafe.Pointer, Sizeof, Alignof, and Offsetof operations",
           "subtitle": "Package unsafe",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: system_considerations."
+          "status": "passing",
+          "fixtures": [
+            "system_considerations"
+          ],
+          "freshFixtures": [
+            "system_considerations"
+          ],
+          "reason": ""
         },
         {
           "id": "system-size-alignment-guarantees",
           "title": "unsafe size, alignment, and field offset queries return observable nonzero layout values",
           "subtitle": "Size and alignment guarantees",
           "kind": "spec-test",
-          "status": "unsupported",
-          "fixtures": [],
-          "reason": "Fresh fixture execution did not pass for: system_considerations, spec_section_edgecases."
+          "status": "passing",
+          "fixtures": [
+            "system_considerations",
+            "spec_section_edgecases"
+          ],
+          "freshFixtures": [
+            "system_considerations",
+            "spec_section_edgecases"
+          ],
+          "reason": ""
         }
       ]
     }

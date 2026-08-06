@@ -183,6 +183,9 @@ pub(super) fn ty(encoder: &mut Encoder, value: &Ty) {
             encoder.field(b"definition", |encoder| def_id(encoder, *definition));
             encoder.field(b"underlying", |encoder| ty(encoder, underlying));
         }),
+        Ty::NamedRef { definition } => encoder.variant(b"named-ref", |encoder| {
+            def_id(encoder, *definition);
+        }),
         Ty::LocalNamed {
             identity,
             underlying,

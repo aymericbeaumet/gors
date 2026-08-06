@@ -250,6 +250,33 @@ fn interfaces_snapshot_structs_and_preserve_pointer_identity() {
 }
 
 #[test]
+fn interfaces_preserve_interface_backed_aggregate_headers() {
+    let aggregate_type = go_string_from_static(b"slice:named:node");
+    let int_type = go_string_from_static(b"builtin:int");
+    let aggregate = go_slice_interface_make(1, 1);
+    go_slice_interface_set(
+        aggregate.clone(),
+        0,
+        go_interface_box_i64(int_type.clone(), 2),
+    );
+
+    let boxed = go_interface_box_aggregate(aggregate_type.clone(), aggregate.clone());
+    let unboxed = go_interface_unbox_aggregate(boxed.clone(), aggregate_type);
+    go_slice_interface_set(unboxed, 0, go_interface_box_i64(int_type.clone(), 7));
+
+    assert_eq!(
+        go_interface_unbox_i64(go_slice_interface_index(aggregate, 0), int_type),
+        7
+    );
+    assert!(
+        std::panic::catch_unwind(|| {
+            go_interface_unbox_aggregate(boxed, go_string_from_static(b"slice:named:other"))
+        })
+        .is_err()
+    );
+}
+
+#[test]
 fn interface_unboxing_checks_the_exact_dynamic_type() {
     let value = go_interface_box_bool(go_string_from_static(b"builtin:bool"), true);
     assert!(go_interface_unbox_bool(

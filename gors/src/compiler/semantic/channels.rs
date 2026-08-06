@@ -1,4 +1,4 @@
-//! Typed lowering for Go channels carrying bootstrap integer values.
+//! Typed lowering for Go channels carrying integer values.
 
 use super::FunctionLowerer;
 use super::expressions::coerce_expr;

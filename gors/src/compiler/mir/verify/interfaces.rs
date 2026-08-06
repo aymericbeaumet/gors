@@ -13,6 +13,7 @@ pub(super) fn is_interface_builtin(builtin: hir::Builtin) -> bool {
             | hir::Builtin::InterfaceBoxGoString
             | hir::Builtin::InterfaceBoxStructI64
             | hir::Builtin::InterfaceBoxPointerStructI64
+            | hir::Builtin::InterfaceBoxAggregate
             | hir::Builtin::InterfaceIsNil
             | hir::Builtin::InterfaceIsType
             | hir::Builtin::InterfaceUnboxBool
@@ -20,6 +21,9 @@ pub(super) fn is_interface_builtin(builtin: hir::Builtin) -> bool {
             | hir::Builtin::InterfaceUnboxGoString
             | hir::Builtin::InterfaceStructI64Get
             | hir::Builtin::InterfaceUnboxPointerStructI64
+            | hir::Builtin::InterfaceUnboxAggregate
+            | hir::Builtin::FunctionNil
+            | hir::Builtin::FunctionIsNil
     )
 }
 
@@ -51,6 +55,9 @@ pub(super) fn verify_interface_call(
         hir::Builtin::InterfaceBoxPointerStructI64 => verify_box(arguments, destinations, |ty| {
             ty.bootstrap_i64_struct_pointer_fields().is_some()
         }),
+        hir::Builtin::InterfaceBoxAggregate => {
+            verify_box(arguments, destinations, is_aggregate_payload)
+        }
         hir::Builtin::InterfaceIsNil => {
             verify_test(arguments, destinations, false, "interface nil test")
         }
@@ -95,6 +102,37 @@ pub(super) fn verify_interface_call(
             |ty| ty.bootstrap_i64_struct_pointer_fields().is_some(),
             "interface struct pointer extraction",
         ),
+        hir::Builtin::InterfaceUnboxAggregate => verify_unbox(
+            arguments,
+            destinations,
+            is_aggregate_payload,
+            "interface aggregate extraction",
+        ),
+        hir::Builtin::FunctionNil => {
+            let ([], [result]) = (arguments, destinations) else {
+                return Err(shape_error("function nil", arguments, destinations));
+            };
+            verify_function(result, "function nil result")?;
+            Ok(vec![result.clone()])
+        }
+        hir::Builtin::FunctionIsNil => {
+            let ([function], [result]) = (arguments, destinations) else {
+                return Err(shape_error(
+                    "function nil comparison",
+                    arguments,
+                    destinations,
+                ));
+            };
+            verify_function(function, "function nil comparison")?;
+            if result != &Ty::Bool {
+                return Err(shape_error(
+                    "function nil comparison",
+                    arguments,
+                    destinations,
+                ));
+            }
+            Ok(vec![Ty::Bool])
+        }
         _ => Err(Diagnostic::backend(
             "non-interface builtin reached interface MIR verification",
         )),
@@ -166,6 +204,25 @@ fn verify_interface(ty: &Ty, context: &str) -> Result<(), Diagnostic> {
             "invalid MIR {context} type: {ty:?}"
         )))
     }
+}
+
+fn verify_function(ty: &Ty, context: &str) -> Result<(), Diagnostic> {
+    if matches!(ty.underlying(), Ty::Function(_)) {
+        Ok(())
+    } else {
+        Err(Diagnostic::backend(format!(
+            "invalid MIR {context} type: {ty:?}"
+        )))
+    }
+}
+
+fn is_aggregate_payload(ty: &Ty) -> bool {
+    matches!(
+        ty.underlying(),
+        Ty::Slice(element)
+            if matches!(element.underlying(), Ty::Interface(_))
+                || element.uses_interface_aggregate_representation()
+    )
 }
 
 fn verify_string(ty: &Ty, context: &str) -> Result<(), Diagnostic> {

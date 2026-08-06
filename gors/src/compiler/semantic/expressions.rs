@@ -284,7 +284,7 @@ pub(super) fn coerce_expr(
 }
 
 pub(super) fn is_assignable(actual: &Ty, expected: &Ty) -> bool {
-    if actual == expected {
+    if same_semantic_type(actual, expected) {
         return true;
     }
     if let Ty::Named { underlying, .. } | Ty::LocalNamed { underlying, .. } = expected
@@ -322,6 +322,37 @@ pub(super) fn is_assignable(actual: &Ty, expected: &Ty) -> bool {
     )
 }
 
+fn same_semantic_type(left: &Ty, right: &Ty) -> bool {
+    if left == right {
+        return true;
+    }
+    match (left, right) {
+        (
+            Ty::Named {
+                definition: left, ..
+            }
+            | Ty::NamedRef { definition: left },
+            Ty::Named {
+                definition: right, ..
+            }
+            | Ty::NamedRef { definition: right },
+        ) => left == right,
+        (Ty::Pointer(left), Ty::Pointer(right)) | (Ty::Slice(left), Ty::Slice(right)) => {
+            same_semantic_type(left, right)
+        }
+        (Ty::Array(left_length, left), Ty::Array(right_length, right)) => {
+            left_length == right_length && same_semantic_type(left, right)
+        }
+        (Ty::Map(left_key, left_value), Ty::Map(right_key, right_value)) => {
+            same_semantic_type(left_key, right_key) && same_semantic_type(left_value, right_value)
+        }
+        (Ty::Channel(left_direction, left), Ty::Channel(right_direction, right)) => {
+            left_direction == right_direction && same_semantic_type(left, right)
+        }
+        _ => false,
+    }
+}
+
 pub(super) fn common_operand_type(left: &Ty, right: &Ty) -> Option<Ty> {
     if left == right {
         return Some(left.default_typed());
@@ -357,7 +388,7 @@ pub(super) fn ensure_bootstrap_value_type(ty: &Ty, source: SourceRef) -> Result<
         Ok(())
     } else {
         Err(Diagnostic::unsupported(
-            format!("type {ty:?} is not yet in the executable value set"),
+            format!("values of type {ty:?} are not yet supported"),
             source,
         ))
     }

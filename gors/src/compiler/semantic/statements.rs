@@ -33,7 +33,10 @@ impl FunctionLowerer {
             StmtSyntaxKind::Block(block) => hir::StmtKind::Block(self.lower_block(block, true)?),
             StmtSyntaxKind::Expr(expression) => {
                 let expression = self.lower_expr_inner(expression, None, true)?;
-                if !matches!(expression.kind, hir::ExprKind::Call { .. }) {
+                if !matches!(
+                    expression.kind,
+                    hir::ExprKind::Call { .. } | hir::ExprKind::InterfaceCall { .. }
+                ) {
                     return Err(Diagnostic::semantic(
                         "expression statement must be a call",
                         source,
@@ -50,7 +53,7 @@ impl FunctionLowerer {
                 let ty = self.place_ty(destination)?.clone();
                 if *ty.underlying() != Ty::Int(IntTy::Int) {
                     return Err(Diagnostic::semantic(
-                        "increment and decrement require an int operand in the bootstrap backend",
+                        "increment and decrement require an int operand",
                         source,
                     ));
                 }
@@ -448,7 +451,7 @@ impl FunctionLowerer {
             }
             StmtSyntaxKind::Unsupported(description) => {
                 return Err(Diagnostic::unsupported(
-                    format!("statement {description} is not implemented by the HIR/MIR backend"),
+                    format!("statement {description} is not yet supported"),
                     source,
                 ));
             }
@@ -604,7 +607,7 @@ impl FunctionLowerer {
     ) -> Result<hir::StmtKind, Diagnostic> {
         if declaration.token == Token::CONST {
             return Err(Diagnostic::unsupported(
-                "local const declarations require immutable HIR bindings and are not implemented",
+                "local const declarations are not yet supported",
                 source,
             ));
         }
@@ -845,7 +848,7 @@ impl FunctionLowerer {
                 });
             }
             return Err(Diagnostic::unsupported(
-                "multi-result assignment is not implemented by the HIR/MIR backend",
+                "this multi-result assignment form is not yet supported",
                 source,
             ));
         }

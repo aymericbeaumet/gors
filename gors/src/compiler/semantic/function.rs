@@ -264,6 +264,23 @@ impl FunctionLowerer {
         Ok(LocalTypeId::owner_local(self.owner, local))
     }
 
+    pub(super) fn expand_named_ref(&self, ty: &Ty) -> Result<Ty, Diagnostic> {
+        let Ty::NamedRef { definition } = ty else {
+            return Ok(ty.clone());
+        };
+        self.type_aliases
+            .values()
+            .find(|candidate| {
+                matches!(candidate, Ty::Named { definition: candidate, .. } if candidate == definition)
+            })
+            .cloned()
+            .ok_or_else(|| {
+                Diagnostic::backend(format!(
+                    "recursive named type {definition} is absent from the package type index"
+                ))
+            })
+    }
+
     pub(super) fn bind_local_type(
         &mut self,
         name: String,

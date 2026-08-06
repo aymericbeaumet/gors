@@ -31,6 +31,9 @@ pub(super) fn plan_addressed_locals(
             .ok_or_else(|| Diagnostic::backend(format!("addressed unknown local {}", local.0)))?;
         if declaration.ty.underlying() != &Ty::Int(IntTy::Int)
             && declaration.ty.bootstrap_i64_struct_fields().is_none()
+            && !declaration
+                .ty
+                .uses_interface_aggregate_pointer_representation()
         {
             return Err(Diagnostic::backend(format!(
                 "addressed local {} has unsupported type {:?}",
@@ -125,6 +128,12 @@ impl FunctionLowerer {
             Ok(Operand::Read(result))
         } else if ty.bootstrap_i64_struct_fields().is_some() {
             self.read_struct_pointer_value(Operand::Read(Place { local: pointer }), &ty, source)
+        } else if ty.uses_interface_aggregate_pointer_representation() {
+            self.read_aggregate_struct_pointer_value(
+                Operand::Read(Place { local: pointer }),
+                &ty,
+                source,
+            )
         } else {
             Err(Diagnostic::backend(format!(
                 "addressed local {} has unsupported read type {ty:?}",
@@ -159,6 +168,8 @@ impl FunctionLowerer {
                 )?;
             } else if ty.bootstrap_i64_struct_fields().is_some() {
                 self.allocate_struct_pointer(pointer, &ty, provenance.clone())?;
+            } else if ty.uses_interface_aggregate_pointer_representation() {
+                return self.initialize_aggregate_struct_pointer(pointer, operand, &ty, provenance);
             } else {
                 return Err(Diagnostic::backend(format!(
                     "addressed local {} has unsupported initialization type {ty:?}",
@@ -180,6 +191,8 @@ impl FunctionLowerer {
             )
         } else if ty.bootstrap_i64_struct_fields().is_some() {
             self.write_struct_pointer_fields(pointer, operand, &ty, provenance)
+        } else if ty.uses_interface_aggregate_pointer_representation() {
+            self.write_aggregate_struct_pointer_fields(pointer, operand, &ty, provenance)
         } else {
             Err(Diagnostic::backend(format!(
                 "addressed local {} has unsupported write type {ty:?}",
@@ -222,6 +235,25 @@ impl FunctionLowerer {
             )?;
             return Ok(Operand::Read(Place { local: pointer }));
         }
+        if element.bootstrap_i64_struct_fields().is_none()
+            && element.uses_interface_aggregate_pointer_representation()
+            && value.ty == **element
+        {
+            let value_operand = self.lower_expr(value)?;
+            let value_operand = self.materialize(
+                value_operand,
+                value.ty.clone(),
+                Provenance::Source(value.source),
+            )?;
+            let pointer = self.new_temp(ty.clone());
+            self.initialize_aggregate_struct_pointer(
+                pointer,
+                value_operand,
+                element,
+                Provenance::Source(source),
+            )?;
+            return Ok(Operand::Read(Place { local: pointer }));
+        }
         if element.bootstrap_i64_struct_fields().is_none() || value.ty != **element {
             return Err(Diagnostic::backend(
                 "address-of-value HIR expression has an invalid integer struct value",
@@ -246,7 +278,9 @@ impl FunctionLowerer {
         ty: &Ty,
         source: SourceRef,
     ) -> Result<Operand, Diagnostic> {
-        if ty.bootstrap_i64_struct_fields().is_none() {
+        if ty.bootstrap_i64_struct_fields().is_none()
+            && !ty.uses_interface_aggregate_pointer_representation()
+        {
             return Err(Diagnostic::backend(
                 "pointer-struct dereference has a non-integer-struct result",
             ));
@@ -257,7 +291,116 @@ impl FunctionLowerer {
             pointer.ty.clone(),
             Provenance::Source(pointer.source),
         )?;
-        self.read_struct_pointer_value(pointer_operand, ty, source)
+        if ty.bootstrap_i64_struct_fields().is_some() {
+            self.read_struct_pointer_value(pointer_operand, ty, source)
+        } else {
+            self.read_aggregate_struct_pointer_value(pointer_operand, ty, source)
+        }
+    }
+
+    fn initialize_aggregate_struct_pointer(
+        &mut self,
+        pointer: LocalId,
+        structure: Operand,
+        ty: &Ty,
+        provenance: Provenance,
+    ) -> Result<(), Diagnostic> {
+        let Provenance::Source(source) = provenance.clone() else {
+            return Err(Diagnostic::backend(
+                "synthetic aggregate pointer initialization has no source provenance",
+            ));
+        };
+        let payload = self.snapshot_interface_aggregate_struct(structure, ty, source)?;
+        let pointer_ty = self.local_ty(pointer)?.clone();
+        let identity = pointer_ty.dynamic_type_identity().ok_or_else(|| {
+            Diagnostic::backend("aggregate pointer omitted its dynamic type identity")
+        })?;
+        self.emit_pointer_call(
+            hir::Builtin::AggregatePointerNew,
+            vec![
+                Operand::Constant(ConstValue::String(identity), Ty::String),
+                payload,
+            ],
+            vec![Place { local: pointer }],
+            provenance,
+        )
+    }
+
+    fn read_aggregate_struct_pointer_value(
+        &mut self,
+        pointer: Operand,
+        ty: &Ty,
+        source: SourceRef,
+    ) -> Result<Operand, Diagnostic> {
+        let pointer_ty = Ty::Pointer(Box::new(ty.clone()));
+        let identity = pointer_ty.dynamic_type_identity().ok_or_else(|| {
+            Diagnostic::backend("aggregate pointer omitted its dynamic type identity")
+        })?;
+        self.unbox_aggregate_struct_with(
+            hir::Builtin::AggregatePointerSnapshot,
+            pointer,
+            &identity,
+            ty,
+            source,
+        )
+    }
+
+    fn write_aggregate_struct_pointer_fields(
+        &mut self,
+        pointer: LocalId,
+        structure: Operand,
+        ty: &Ty,
+        provenance: Provenance,
+    ) -> Result<(), Diagnostic> {
+        let Provenance::Source(source) = provenance.clone() else {
+            return Err(Diagnostic::backend(
+                "synthetic aggregate pointer update has no source provenance",
+            ));
+        };
+        let fields = ty.interface_aggregate_struct_fields().ok_or_else(|| {
+            Diagnostic::backend("aggregate pointer update has an unsupported struct type")
+        })?;
+        let replacement = self.snapshot_interface_aggregate_struct(structure, ty, source)?;
+        let pointer_ty = self.local_ty(pointer)?.clone();
+        let identity = pointer_ty.dynamic_type_identity().ok_or_else(|| {
+            Diagnostic::backend("aggregate pointer omitted its dynamic type identity")
+        })?;
+        let interface_ty = Ty::Interface(Vec::new());
+        let snapshot_ty = Ty::Slice(Box::new(interface_ty.clone()));
+        let current = Place {
+            local: self.new_temp(snapshot_ty),
+        };
+        self.emit_pointer_call(
+            hir::Builtin::AggregatePointerSnapshot,
+            vec![
+                Operand::Read(Place { local: pointer }),
+                Operand::Constant(ConstValue::String(identity), Ty::String),
+            ],
+            vec![current],
+            provenance,
+        )?;
+        for index in 0..fields.len() {
+            let tagged = Place {
+                local: self.new_temp(interface_ty.clone()),
+            };
+            self.emit_pointer_call(
+                hir::Builtin::AggregateSliceIndexTagged,
+                vec![replacement.clone(), int_constant_operand(index)],
+                vec![tagged],
+                Provenance::Source(source),
+            )?;
+            self.emit_pointer_call(
+                hir::Builtin::AggregateSliceSetTagged,
+                vec![
+                    Operand::Read(current),
+                    int_constant_operand(index),
+                    Operand::Read(tagged),
+                ],
+                Vec::new(),
+                Provenance::Source(source),
+            )?;
+        }
+        Ok(())
     }
 
     fn allocate_struct_pointer(

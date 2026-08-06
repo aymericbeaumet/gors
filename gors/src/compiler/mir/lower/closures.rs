@@ -30,6 +30,19 @@ impl FunctionLowerer {
         if *callee == hir::Callee::Builtin(hir::Builtin::InterfaceAssert) {
             return self.lower_interface_assertion_into(args, destinations, expression.source);
         }
+        if matches!(
+            callee,
+            hir::Callee::Builtin(
+                hir::Builtin::InterfaceSatisfies | hir::Builtin::InterfaceSatisfiesNonNil
+            )
+        ) {
+            return self.lower_interface_satisfaction_into(
+                args,
+                destinations,
+                *callee == hir::Callee::Builtin(hir::Builtin::InterfaceSatisfiesNonNil),
+                expression.source,
+            );
+        }
         let mut operands = Vec::with_capacity(args.len());
         for argument in args {
             let operand = self.lower_expr(argument)?;

@@ -3,7 +3,7 @@
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 
-use super::super::{Operand, PanicEdge};
+use super::super::{Operand, PanicEdge, RvalueKind, TerminatorKind};
 
 pub(super) fn call_effects() -> hir::Effects {
     hir::Effects {
@@ -65,5 +65,48 @@ pub(super) fn read_effects<'a>(operands: impl IntoIterator<Item = &'a Operand>) 
             .into_iter()
             .any(|operand| matches!(operand, Operand::Read(_))),
         ..hir::Effects::default()
+    }
+}
+
+pub(super) fn rvalue_operands(kind: &RvalueKind) -> Vec<&Operand> {
+    match kind {
+        RvalueKind::Use(operand)
+        | RvalueKind::Unary { operand, .. }
+        | RvalueKind::Conversion { operand, .. } => vec![operand],
+        RvalueKind::Binary { left, right, .. } => vec![left, right],
+        RvalueKind::ArrayIndexI64 { array, index } | RvalueKind::ArrayIndex { array, index } => {
+            vec![array, index]
+        }
+        RvalueKind::ArraySetI64 {
+            array,
+            index,
+            value,
+        }
+        | RvalueKind::ArraySet {
+            array,
+            index,
+            value,
+        } => vec![array, index, value],
+        RvalueKind::ArrayLiteral { elements, .. } => elements.iter().collect(),
+        RvalueKind::StructLiteral { fields, .. } => fields.iter().collect(),
+        RvalueKind::StructField { structure, .. } => vec![structure],
+        RvalueKind::StructSet {
+            structure, value, ..
+        } => vec![structure, value],
+        RvalueKind::RecoverCompareNil { .. }
+        | RvalueKind::SliceLiteralI64 { .. }
+        | RvalueKind::SliceLiteralU8(_)
+        | RvalueKind::SliceLiteralBool(_)
+        | RvalueKind::ArrayLiteralI64(_) => Vec::new(),
+    }
+}
+
+pub(super) fn terminator_operands(kind: &TerminatorKind) -> Vec<&Operand> {
+    match kind {
+        TerminatorKind::SwitchBool { condition, .. } => vec![condition],
+        TerminatorKind::Call { args, .. } | TerminatorKind::Return(args) => args.iter().collect(),
+        TerminatorKind::Goto(_)
+        | TerminatorKind::SpawnEmpty { .. }
+        | TerminatorKind::Unreachable => Vec::new(),
     }
 }

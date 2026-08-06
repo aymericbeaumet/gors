@@ -104,7 +104,7 @@ impl FunctionLowerer {
                     || self.generic_functions.contains_key(name)
                 {
                     return Err(Diagnostic::unsupported(
-                        format!("function value {name} is not implemented by the HIR/MIR backend"),
+                        format!("function values for {name} are not yet supported"),
                         source,
                     ));
                 } else if matches!(name, "true" | "false") {
@@ -460,9 +460,7 @@ impl FunctionLowerer {
                     )
                 } else if self.lookup_local(name).is_some() {
                     return Err(Diagnostic::unsupported(
-                        format!(
-                            "calling local value {name} requires function-value HIR and is not implemented"
-                        ),
+                        format!("calling the function value {name} is not yet supported"),
                         source,
                     ));
                 } else if let Some(symbol) = self.functions.get(name).cloned() {
@@ -626,17 +624,14 @@ impl FunctionLowerer {
                     Ty::Slice(element) if element.underlying() == &Ty::Bool => {
                         (hir::Builtin::SliceBoolIndex, element.as_ref().clone())
                     }
-                    Ty::Slice(element)
-                        if matches!(element.underlying(), Ty::String)
-                            || element.bootstrap_i64_struct_fields().is_some() =>
-                    {
-                        let element_ty = element.as_ref().clone();
-                        let type_identity =
-                            element_ty.dynamic_type_identity().ok_or_else(|| {
-                                Diagnostic::backend(
-                                    "aggregate slice element omitted its dynamic type identity",
-                                )
-                            })?;
+                    Ty::Slice(element) if element.uses_interface_aggregate_representation() => {
+                        let stored_ty = element.as_ref().clone();
+                        let element_ty = self.expand_named_ref(&stored_ty)?;
+                        let type_identity = stored_ty.dynamic_type_identity().ok_or_else(|| {
+                            Diagnostic::backend(
+                                "aggregate slice element omitted its dynamic type identity",
+                            )
+                        })?;
                         let index = self.lower_expr(index, Some(&Ty::Int(IntTy::Int)))?;
                         let effects = slice_runtime_effects(&[&base, &index], false, false, true);
                         return Ok(hir::Expr {
@@ -748,7 +743,7 @@ impl FunctionLowerer {
             }
             ExprSyntaxKind::Unsupported(kind) => {
                 return Err(Diagnostic::unsupported(
-                    format!("expression {kind} is not implemented by the HIR/MIR backend"),
+                    format!("expression {kind} is not yet supported"),
                     source,
                 ));
             }

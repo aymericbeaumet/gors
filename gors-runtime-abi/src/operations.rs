@@ -433,6 +433,8 @@ const GO_INTERFACE_BOX_STRUCT_I64: &[RuntimeType] =
     &[RuntimeType::GoString, RuntimeType::GoSliceI64];
 const GO_INTERFACE_BOX_POINTER_STRUCT_I64: &[RuntimeType] =
     &[RuntimeType::GoString, RuntimeType::GoPointerStructI64];
+const GO_INTERFACE_BOX_AGGREGATE: &[RuntimeType] =
+    &[RuntimeType::GoString, RuntimeType::GoSliceInterface];
 const STATIC_BOOL_SLICE_PARAMETER: &[RuntimeType] = &[RuntimeType::StaticBoolSlice];
 const GO_SLICE_BOOL_AND_INDEX: &[RuntimeType] = &[RuntimeType::GoSliceBool, RuntimeType::I64];
 const GO_SLICE_BOOL_SET: &[RuntimeType] = &[
@@ -592,6 +594,8 @@ pub enum RuntimeOp {
     GoSliceBoolIsNil,
     GoSliceInterfaceNil,
     GoSliceInterfaceIsNil,
+    GoInterfaceBoxAggregate,
+    GoInterfaceUnboxAggregate,
 }
 
 /// Stable compact identity of one runtime ABI operation.
@@ -710,6 +714,8 @@ impl RuntimeOp {
         Self::GoSliceBoolIsNil,
         Self::GoSliceInterfaceNil,
         Self::GoSliceInterfaceIsNil,
+        Self::GoInterfaceBoxAggregate,
+        Self::GoInterfaceUnboxAggregate,
     ];
 
     /// Exact typed call signature at the Rust runtime boundary.
@@ -964,6 +970,12 @@ impl RuntimeOp {
             }
             Self::GoSliceInterfaceIsNil => {
                 RuntimeSignature::new(GO_SLICE_INTERFACE_PARAMETER, RuntimeType::Bool)
+            }
+            Self::GoInterfaceBoxAggregate => {
+                RuntimeSignature::new(GO_INTERFACE_BOX_AGGREGATE, RuntimeType::GoInterface)
+            }
+            Self::GoInterfaceUnboxAggregate => {
+                RuntimeSignature::new(GO_INTERFACE_AND_TYPE, RuntimeType::GoSliceInterface)
             }
         }
     }

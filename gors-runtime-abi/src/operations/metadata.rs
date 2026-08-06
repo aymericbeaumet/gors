@@ -110,6 +110,8 @@ impl RuntimeOp {
             | Self::GoSliceBoolIsNil
             | Self::GoSliceInterfaceNil
             | Self::GoSliceInterfaceIsNil
+            | Self::GoInterfaceBoxAggregate
+            | Self::GoInterfaceUnboxAggregate
             | Self::GoChannelI64Nil
             | Self::GoChannelI64Make
             | Self::GoChannelI64Len
@@ -365,7 +367,8 @@ impl RuntimeOp {
             Self::GoInterfaceBoxBool
             | Self::GoInterfaceBoxI64
             | Self::GoInterfaceBoxGoString
-            | Self::GoInterfaceBoxPointerStructI64 => RuntimeEffects::new(
+            | Self::GoInterfaceBoxPointerStructI64
+            | Self::GoInterfaceBoxAggregate => RuntimeEffects::new(
                 AllocationEffect::None,
                 ArgumentMutationEffect::None,
                 HostIoEffect::None,
@@ -380,7 +383,8 @@ impl RuntimeOp {
             Self::GoInterfaceUnboxBool
             | Self::GoInterfaceUnboxI64
             | Self::GoInterfaceUnboxGoString
-            | Self::GoInterfaceUnboxPointerStructI64 => RuntimeEffects::new(
+            | Self::GoInterfaceUnboxPointerStructI64
+            | Self::GoInterfaceUnboxAggregate => RuntimeEffects::new(
                 AllocationEffect::None,
                 ArgumentMutationEffect::None,
                 HostIoEffect::None,

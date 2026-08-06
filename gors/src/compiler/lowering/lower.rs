@@ -2,6 +2,7 @@
 
 mod aggregates;
 mod control;
+mod provenance;
 
 use super::type_lowering::lower_type;
 use crate::compiler::Diagnostic;
@@ -14,6 +15,7 @@ use crate::compiler::types::{
 use gors_runtime_abi::{PrimitiveOp, RuntimeOp};
 
 use control::{finish_terminator, lower_panic_edge};
+use provenance::lower_provenance;
 
 #[cfg(test)]
 pub(super) fn lower_file(file: mir::File) -> Result<out::File, Diagnostic> {
@@ -399,20 +401,30 @@ fn lower_terminator(
                 | hir::Builtin::PointerStructI64Set
                 | hir::Builtin::PointerStructI64IsNil
                 | hir::Builtin::PointerStructI64Equal
+                | hir::Builtin::AggregatePointerNil
+                | hir::Builtin::AggregatePointerNew
+                | hir::Builtin::AggregatePointerSnapshot
+                | hir::Builtin::AggregatePointerIsNil
                 | hir::Builtin::InterfaceNil
                 | hir::Builtin::InterfaceBoxBool
                 | hir::Builtin::InterfaceBoxI64
                 | hir::Builtin::InterfaceBoxGoString
                 | hir::Builtin::InterfaceBoxStructI64
                 | hir::Builtin::InterfaceBoxPointerStructI64
+                | hir::Builtin::InterfaceBoxAggregate
                 | hir::Builtin::InterfaceIsNil
                 | hir::Builtin::InterfaceIsType
                 | hir::Builtin::InterfaceAssert
+                | hir::Builtin::InterfaceSatisfies
+                | hir::Builtin::InterfaceSatisfiesNonNil
                 | hir::Builtin::InterfaceUnboxBool
                 | hir::Builtin::InterfaceUnboxI64
                 | hir::Builtin::InterfaceUnboxGoString
                 | hir::Builtin::InterfaceStructI64Get
                 | hir::Builtin::InterfaceUnboxPointerStructI64
+                | hir::Builtin::InterfaceUnboxAggregate
+                | hir::Builtin::FunctionNil
+                | hir::Builtin::FunctionIsNil
                 | hir::Builtin::ChannelI64Nil
                 | hir::Builtin::ChannelI64Make
                 | hir::Builtin::ChannelI64Len
@@ -491,6 +503,10 @@ fn lower_terminator(
                     hir::Builtin::PointerStructI64Set => RuntimeOp::GoPointerStructI64Set,
                     hir::Builtin::PointerStructI64IsNil => RuntimeOp::GoPointerStructI64IsNil,
                     hir::Builtin::PointerStructI64Equal => RuntimeOp::GoPointerStructI64Equal,
+                    hir::Builtin::AggregatePointerNil => RuntimeOp::GoInterfaceNil,
+                    hir::Builtin::AggregatePointerNew => RuntimeOp::GoInterfaceBoxAggregate,
+                    hir::Builtin::AggregatePointerSnapshot => RuntimeOp::GoInterfaceUnboxAggregate,
+                    hir::Builtin::AggregatePointerIsNil => RuntimeOp::GoInterfaceIsNil,
                     hir::Builtin::InterfaceNil => RuntimeOp::GoInterfaceNil,
                     hir::Builtin::InterfaceBoxBool => RuntimeOp::GoInterfaceBoxBool,
                     hir::Builtin::InterfaceBoxI64 => RuntimeOp::GoInterfaceBoxI64,
@@ -499,6 +515,7 @@ fn lower_terminator(
                     hir::Builtin::InterfaceBoxPointerStructI64 => {
                         RuntimeOp::GoInterfaceBoxPointerStructI64
                     }
+                    hir::Builtin::InterfaceBoxAggregate => RuntimeOp::GoInterfaceBoxAggregate,
                     hir::Builtin::InterfaceIsNil => RuntimeOp::GoInterfaceIsNil,
                     hir::Builtin::InterfaceIsType => RuntimeOp::GoInterfaceIsType,
                     hir::Builtin::InterfaceUnboxBool => RuntimeOp::GoInterfaceUnboxBool,
@@ -508,6 +525,9 @@ fn lower_terminator(
                     hir::Builtin::InterfaceUnboxPointerStructI64 => {
                         RuntimeOp::GoInterfaceUnboxPointerStructI64
                     }
+                    hir::Builtin::InterfaceUnboxAggregate => RuntimeOp::GoInterfaceUnboxAggregate,
+                    hir::Builtin::FunctionNil => RuntimeOp::GoInterfaceNil,
+                    hir::Builtin::FunctionIsNil => RuntimeOp::GoInterfaceIsNil,
                     hir::Builtin::ChannelI64Nil => RuntimeOp::GoChannelI64Nil,
                     hir::Builtin::ChannelI64Make => RuntimeOp::GoChannelI64Make,
                     hir::Builtin::ChannelI64Len => RuntimeOp::GoChannelI64Len,
@@ -527,6 +547,16 @@ fn lower_terminator(
                     hir::Builtin::InterfaceAssert => {
                         return Err(Diagnostic::backend(
                             "interface assertion survived MIR expansion",
+                        ));
+                    }
+                    hir::Builtin::InterfaceSatisfies => {
+                        return Err(Diagnostic::backend(
+                            "interface satisfaction assertion survived MIR expansion",
+                        ));
+                    }
+                    hir::Builtin::InterfaceSatisfiesNonNil => {
+                        return Err(Diagnostic::backend(
+                            "implied interface satisfaction survived MIR expansion",
                         ));
                     }
                     hir::Builtin::Print | hir::Builtin::Println | hir::Builtin::Panic => {
@@ -959,25 +989,4 @@ fn local(locals: &[out::LocalDecl], id: out::LocalId) -> Result<&out::LocalDecl,
 
 fn lower_place(place: mir::Place) -> out::Place {
     out::Place { local: place.local }
-}
-
-fn lower_provenance(provenance: mir::Provenance) -> out::Provenance {
-    match provenance {
-        mir::Provenance::Source(source) => out::Provenance::Source(source),
-        mir::Provenance::Synthetic(mir::SyntheticOrigin::NamedResultInitialization) => {
-            out::Provenance::Synthetic(out::SyntheticOrigin::NamedResultInitialization)
-        }
-        mir::Provenance::Synthetic(mir::SyntheticOrigin::PanicCleanupInitialization) => {
-            out::Provenance::Synthetic(out::SyntheticOrigin::PanicCleanupInitialization)
-        }
-        mir::Provenance::Synthetic(mir::SyntheticOrigin::ZeroValueCall) => {
-            out::Provenance::Synthetic(out::SyntheticOrigin::ZeroValueCall)
-        }
-        mir::Provenance::Synthetic(mir::SyntheticOrigin::PanicCleanupDispatch) => {
-            out::Provenance::Synthetic(out::SyntheticOrigin::PanicCleanupDispatch)
-        }
-        mir::Provenance::Synthetic(mir::SyntheticOrigin::ImplicitReturn) => {
-            out::Provenance::Synthetic(out::SyntheticOrigin::ImplicitReturn)
-        }
-    }
 }

@@ -200,7 +200,12 @@ fn type_pattern_matches(
 
 fn is_comparable(ty: &Ty) -> bool {
     match ty.underlying() {
-        Ty::Unit | Ty::Slice(_) | Ty::Map(_, _) | Ty::Function(_) | Ty::Tuple(_) => false,
+        Ty::Unit
+        | Ty::NamedRef { .. }
+        | Ty::Slice(_)
+        | Ty::Map(_, _)
+        | Ty::Function(_)
+        | Ty::Tuple(_) => false,
         Ty::Array(_, element) => is_comparable(element),
         Ty::Struct(fields) => fields.iter().all(|field| is_comparable(&field.ty)),
         Ty::Bool

@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use crate::{
-    GoInt, GoPointerStructI64, GoSliceI64, GoString, go_slice_i64_index, go_slice_i64_len,
+    GoInt, GoPointerStructI64, GoSliceI64, GoSliceInterface, GoString, go_slice_i64_index,
+    go_slice_i64_len,
 };
 
 /// A Go interface pairs one concrete dynamic type with a copied dynamic value.
@@ -26,6 +27,7 @@ enum InterfacePayload {
     GoString(GoString),
     StructI64(Arc<[GoInt]>),
     PointerStructI64(GoPointerStructI64),
+    Aggregate(GoSliceInterface),
 }
 
 /// Construct the nil interface value, which has no dynamic type.
@@ -76,6 +78,16 @@ pub fn go_interface_box_pointer_struct_i64(
     value: GoPointerStructI64,
 ) -> GoInterface {
     boxed(type_identity, InterfacePayload::PointerStructI64(value))
+}
+
+/// Copy an interface-backed aggregate header into an interface.
+///
+/// Struct lowering supplies a fresh slice of tagged field snapshots. Slice
+/// lowering supplies the original header so clones retain the shared backing
+/// array and its Go alias identity.
+#[must_use]
+pub fn go_interface_box_aggregate(type_identity: GoString, value: GoSliceInterface) -> GoInterface {
+    boxed(type_identity, InterfacePayload::Aggregate(value))
 }
 
 /// Report whether an interface has no dynamic type.
@@ -143,6 +155,18 @@ pub fn go_interface_unbox_pointer_struct_i64(
 ) -> GoPointerStructI64 {
     match checked_payload(value, type_identity) {
         InterfacePayload::PointerStructI64(value) => value,
+        _ => type_assertion_failure(),
+    }
+}
+
+/// Extract an interface-backed aggregate after checking its exact dynamic type.
+#[must_use]
+pub fn go_interface_unbox_aggregate(
+    value: GoInterface,
+    type_identity: GoString,
+) -> GoSliceInterface {
+    match checked_payload(value, type_identity) {
+        InterfacePayload::Aggregate(value) => value,
         _ => type_assertion_failure(),
     }
 }

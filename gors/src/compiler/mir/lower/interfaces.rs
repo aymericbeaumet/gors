@@ -204,6 +204,210 @@ impl FunctionLowerer {
         Ok(())
     }
 
+    pub(super) fn lower_interface_satisfaction_into(
+        &mut self,
+        arguments: &[hir::Expr],
+        destinations: Vec<Place>,
+        implied: bool,
+        source: SourceRef,
+    ) -> Result<(), Diagnostic> {
+        let [value_destination, ok_destination] = destinations.as_slice() else {
+            return Err(Diagnostic::backend(
+                "interface satisfaction assertion result arity changed before MIR lowering",
+            ));
+        };
+        let target_ty = self.local_ty(value_destination.local)?.clone();
+        if !matches!(target_ty.underlying(), Ty::Interface(_))
+            || self.local_ty(ok_destination.local)?.underlying() != &Ty::Bool
+        {
+            return Err(Diagnostic::backend(
+                "interface satisfaction assertion lost its interface-and-bool result shape",
+            ));
+        }
+        let (interface, interface_ty, identities) =
+            self.lower_interface_satisfaction_input(arguments)?;
+        let condition = self.lower_interface_satisfaction_condition(
+            interface.clone(),
+            &identities,
+            implied,
+            source,
+        )?;
+
+        let provenance = Provenance::Source(source);
+        let matched = self.new_block(provenance.clone());
+        let mismatched = self.new_block(provenance.clone());
+        let join = self.new_block(provenance.clone());
+        self.terminate(make_terminator(
+            TerminatorKind::SwitchBool {
+                condition,
+                then_target: matched,
+                else_target: mismatched,
+            },
+            hir::Effects::default(),
+            provenance.clone(),
+        ))?;
+
+        self.current = matched;
+        let value = make_rvalue(
+            RvalueKind::Conversion {
+                operand: interface,
+                from: interface_ty,
+                ty: target_ty.clone(),
+            },
+            hir::Effects::default(),
+            provenance.clone(),
+        );
+        self.push_statement(make_statement(
+            *value_destination,
+            value,
+            provenance.clone(),
+        ))?;
+        self.assign_interface_assertion_result(
+            *ok_destination,
+            Operand::Constant(ConstValue::Bool(true), Ty::Bool),
+            provenance.clone(),
+        )?;
+        self.terminate(make_terminator(
+            TerminatorKind::Goto(join),
+            hir::Effects::default(),
+            provenance.clone(),
+        ))?;
+
+        self.current = mismatched;
+        self.lower_zero_value(*value_destination, target_ty, provenance.clone())?;
+        self.assign_interface_assertion_result(
+            *ok_destination,
+            Operand::Constant(ConstValue::Bool(false), Ty::Bool),
+            provenance.clone(),
+        )?;
+        self.terminate(make_terminator(
+            TerminatorKind::Goto(join),
+            hir::Effects::default(),
+            provenance,
+        ))?;
+        self.current = join;
+        Ok(())
+    }
+
+    pub(super) fn lower_interface_satisfaction_test(
+        &mut self,
+        arguments: &[hir::Expr],
+        implied: bool,
+        source: SourceRef,
+    ) -> Result<Operand, Diagnostic> {
+        let (interface, _, identities) = self.lower_interface_satisfaction_input(arguments)?;
+        self.lower_interface_satisfaction_condition(interface, &identities, implied, source)
+    }
+
+    fn lower_interface_satisfaction_input(
+        &mut self,
+        arguments: &[hir::Expr],
+    ) -> Result<(Operand, Ty, Vec<Vec<u8>>), Diagnostic> {
+        let Some((interface, identities)) = arguments.split_first() else {
+            return Err(Diagnostic::backend(
+                "interface satisfaction assertion omitted its interface operand",
+            ));
+        };
+        if !matches!(interface.ty.underlying(), Ty::Interface(_)) {
+            return Err(Diagnostic::backend(
+                "interface satisfaction assertion has a non-interface operand",
+            ));
+        }
+        let interface_ty = interface.ty.clone();
+        let operand = self.lower_expr(interface)?;
+        let operand = self.materialize(
+            operand,
+            interface_ty.clone(),
+            Provenance::Source(interface.source),
+        )?;
+        let identities = identities
+            .iter()
+            .map(|identity| {
+                let hir::ExprKind::Constant(ConstValue::String(identity)) = &identity.kind else {
+                    return Err(Diagnostic::backend(
+                        "interface satisfaction identity is not a constant string",
+                    ));
+                };
+                Ok(identity.clone())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((operand, interface_ty, identities))
+    }
+
+    fn lower_interface_satisfaction_condition(
+        &mut self,
+        interface: Operand,
+        identities: &[Vec<u8>],
+        implied: bool,
+        source: SourceRef,
+    ) -> Result<Operand, Diagnostic> {
+        if implied {
+            if !identities.is_empty() {
+                return Err(Diagnostic::backend(
+                    "statically implied interface satisfaction retained dynamic identities",
+                ));
+            }
+            let is_nil = Place {
+                local: self.new_temp(Ty::Bool),
+            };
+            self.emit_map_call(
+                hir::Builtin::InterfaceIsNil,
+                vec![interface],
+                vec![is_nil],
+                source,
+            )?;
+            let result = Place {
+                local: self.new_temp(Ty::Bool),
+            };
+            let provenance = Provenance::Source(source);
+            let value = make_rvalue(
+                RvalueKind::Unary {
+                    op: hir::UnaryOp::Not,
+                    operand: Operand::Read(is_nil),
+                    ty: Ty::Bool,
+                },
+                hir::Effects::default(),
+                provenance.clone(),
+            );
+            self.push_statement(make_statement(result, value, provenance))?;
+            return Ok(Operand::Read(result));
+        }
+        let mut condition = None;
+        for identity in identities {
+            let matched = Place {
+                local: self.new_temp(Ty::Bool),
+            };
+            self.emit_map_call(
+                hir::Builtin::InterfaceIsType,
+                vec![interface.clone(), type_identity_operand(identity)],
+                vec![matched],
+                source,
+            )?;
+            let matched = Operand::Read(matched);
+            condition = Some(if let Some(left) = condition {
+                let combined = Place {
+                    local: self.new_temp(Ty::Bool),
+                };
+                let provenance = Provenance::Source(source);
+                let value = make_rvalue(
+                    RvalueKind::Binary {
+                        op: hir::BinaryOp::LogicalOr,
+                        left,
+                        right: matched,
+                        ty: Ty::Bool,
+                    },
+                    hir::Effects::default(),
+                    provenance.clone(),
+                );
+                self.push_statement(make_statement(combined, value, provenance))?;
+                Operand::Read(combined)
+            } else {
+                matched
+            });
+        }
+        Ok(condition.unwrap_or(Operand::Constant(ConstValue::Bool(false), Ty::Bool)))
+    }
+
     fn lower_interface_assertion_input(
         &mut self,
         arguments: &[hir::Expr],
@@ -279,6 +483,17 @@ impl FunctionLowerer {
             Ty::Struct(_) if ty.bootstrap_i64_struct_fields().is_some() => {
                 self.unbox_interface_struct(interface, type_identity, ty, source)
             }
+            Ty::Slice(element) if element.uses_interface_aggregate_representation() => self
+                .unbox_interface_scalar(
+                    hir::Builtin::InterfaceUnboxAggregate,
+                    interface,
+                    identity,
+                    ty.clone(),
+                    source,
+                ),
+            Ty::Struct(_) if ty.interface_aggregate_struct_fields().is_some() => {
+                self.unbox_interface_aggregate_struct(interface, type_identity, ty, source)
+            }
             Ty::Pointer(_) if ty.bootstrap_i64_struct_pointer_fields().is_some() => self
                 .unbox_interface_scalar(
                     hir::Builtin::InterfaceUnboxPointerStructI64,
@@ -314,6 +529,13 @@ impl FunctionLowerer {
             Ty::Struct(_) if value_ty.bootstrap_i64_struct_fields().is_some() => (
                 hir::Builtin::InterfaceBoxStructI64,
                 self.snapshot_interface_struct(value_operand, value_ty, source)?,
+            ),
+            Ty::Slice(element) if element.uses_interface_aggregate_representation() => {
+                (hir::Builtin::InterfaceBoxAggregate, value_operand)
+            }
+            Ty::Struct(_) if value_ty.interface_aggregate_struct_fields().is_some() => (
+                hir::Builtin::InterfaceBoxAggregate,
+                self.snapshot_interface_aggregate_struct(value_operand, value_ty, source)?,
             ),
             Ty::Pointer(_) if value_ty.bootstrap_i64_struct_pointer_fields().is_some() => {
                 (hir::Builtin::InterfaceBoxPointerStructI64, value_operand)
@@ -385,6 +607,71 @@ impl FunctionLowerer {
         Ok(Operand::Read(slice))
     }
 
+    pub(super) fn snapshot_interface_aggregate_struct(
+        &mut self,
+        structure: Operand,
+        ty: &Ty,
+        source: SourceRef,
+    ) -> Result<Operand, Diagnostic> {
+        let Some(fields) = ty.interface_aggregate_struct_fields() else {
+            return Err(Diagnostic::backend(
+                "interface aggregate snapshot has an unsupported struct type",
+            ));
+        };
+        let interface_ty = Ty::Interface(Vec::new());
+        let slice_ty = Ty::Slice(Box::new(interface_ty.clone()));
+        let slice = Place {
+            local: self.new_temp(slice_ty),
+        };
+        let length = int_constant_operand(fields.len());
+        self.emit_map_call(
+            hir::Builtin::AggregateSliceMake,
+            vec![length.clone(), length],
+            vec![slice],
+            source,
+        )?;
+        for (index, field) in fields.iter().enumerate() {
+            let field_value = Place {
+                local: self.new_temp(field.ty.clone()),
+            };
+            let provenance = Provenance::Source(source);
+            let read = make_rvalue(
+                RvalueKind::StructField {
+                    structure: structure.clone(),
+                    field: u32::try_from(index).map_err(|_| {
+                        Diagnostic::backend("interface struct field index exceeds u32")
+                    })?,
+                },
+                hir::Effects {
+                    may_read: true,
+                    ..hir::Effects::default()
+                },
+                provenance.clone(),
+            );
+            self.push_statement(make_statement(field_value, read, provenance))?;
+            let identity = field.ty.dynamic_type_identity().ok_or_else(|| {
+                Diagnostic::backend(format!(
+                    "interface aggregate field {:?} omitted its dynamic type identity",
+                    field.ty
+                ))
+            })?;
+            let tagged = self.box_interface_operand(
+                Operand::Read(field_value),
+                &field.ty,
+                &identity,
+                &interface_ty,
+                source,
+            )?;
+            self.emit_map_call(
+                hir::Builtin::AggregateSliceSetTagged,
+                vec![Operand::Read(slice), int_constant_operand(index), tagged],
+                Vec::new(),
+                source,
+            )?;
+        }
+        Ok(Operand::Read(slice))
+    }
+
     fn emit_interface_candidate_call(
         &mut self,
         interface: Operand,
@@ -414,56 +701,12 @@ impl FunctionLowerer {
         candidate: &hir::InterfaceCallCandidate,
         source: SourceRef,
     ) -> Result<Operand, Diagnostic> {
-        let unboxed = match candidate.dynamic_ty.underlying() {
-            Ty::Bool => self.unbox_interface_scalar(
-                hir::Builtin::InterfaceUnboxBool,
-                interface,
-                type_identity_operand(&candidate.type_identity),
-                candidate.dynamic_ty.clone(),
-                source,
-            )?,
-            Ty::Int(IntTy::Int) => self.unbox_interface_scalar(
-                hir::Builtin::InterfaceUnboxI64,
-                interface,
-                type_identity_operand(&candidate.type_identity),
-                candidate.dynamic_ty.clone(),
-                source,
-            )?,
-            Ty::String => self.unbox_interface_scalar(
-                hir::Builtin::InterfaceUnboxGoString,
-                interface,
-                type_identity_operand(&candidate.type_identity),
-                candidate.dynamic_ty.clone(),
-                source,
-            )?,
-            Ty::Struct(_) if candidate.dynamic_ty.bootstrap_i64_struct_fields().is_some() => self
-                .unbox_interface_struct(
-                interface,
-                &candidate.type_identity,
-                &candidate.dynamic_ty,
-                source,
-            )?,
-            Ty::Pointer(_)
-                if candidate
-                    .dynamic_ty
-                    .bootstrap_i64_struct_pointer_fields()
-                    .is_some() =>
-            {
-                self.unbox_interface_scalar(
-                    hir::Builtin::InterfaceUnboxPointerStructI64,
-                    interface,
-                    type_identity_operand(&candidate.type_identity),
-                    candidate.dynamic_ty.clone(),
-                    source,
-                )?
-            }
-            _ => {
-                return Err(Diagnostic::backend(format!(
-                    "unsupported interface dispatch type {:?}",
-                    candidate.dynamic_ty
-                )));
-            }
-        };
+        let unboxed = self.unbox_interface_value(
+            interface,
+            &candidate.type_identity,
+            &candidate.dynamic_ty,
+            source,
+        )?;
         if candidate.dynamic_ty == candidate.receiver_ty {
             return Ok(unboxed);
         }
@@ -525,6 +768,84 @@ impl FunctionLowerer {
                 source,
             )?;
             values.push(Operand::Read(value));
+        }
+        let result = Place {
+            local: self.new_temp(ty.clone()),
+        };
+        let provenance = Provenance::Source(source);
+        let value = make_rvalue(
+            RvalueKind::StructLiteral {
+                fields: values,
+                ty: ty.clone(),
+            },
+            hir::Effects::default(),
+            provenance.clone(),
+        );
+        self.push_statement(make_statement(result, value, provenance))?;
+        Ok(Operand::Read(result))
+    }
+
+    fn unbox_interface_aggregate_struct(
+        &mut self,
+        interface: Operand,
+        type_identity: &[u8],
+        ty: &Ty,
+        source: SourceRef,
+    ) -> Result<Operand, Diagnostic> {
+        self.unbox_aggregate_struct_with(
+            hir::Builtin::InterfaceUnboxAggregate,
+            interface,
+            type_identity,
+            ty,
+            source,
+        )
+    }
+
+    pub(super) fn unbox_aggregate_struct_with(
+        &mut self,
+        builtin: hir::Builtin,
+        interface: Operand,
+        type_identity: &[u8],
+        ty: &Ty,
+        source: SourceRef,
+    ) -> Result<Operand, Diagnostic> {
+        let Some(fields) = ty.interface_aggregate_struct_fields() else {
+            return Err(Diagnostic::backend(
+                "interface aggregate extraction has an unsupported struct type",
+            ));
+        };
+        let interface_ty = Ty::Interface(Vec::new());
+        let snapshot_ty = Ty::Slice(Box::new(interface_ty.clone()));
+        let snapshot = self.unbox_interface_scalar(
+            builtin,
+            interface,
+            type_identity_operand(type_identity),
+            snapshot_ty,
+            source,
+        )?;
+        let mut values = Vec::with_capacity(fields.len());
+        for (index, field) in fields.iter().enumerate() {
+            let tagged = Place {
+                local: self.new_temp(interface_ty.clone()),
+            };
+            self.emit_map_call(
+                hir::Builtin::AggregateSliceIndexTagged,
+                vec![snapshot.clone(), int_constant_operand(index)],
+                vec![tagged],
+                source,
+            )?;
+            let identity = field.ty.dynamic_type_identity().ok_or_else(|| {
+                Diagnostic::backend(format!(
+                    "interface aggregate field {:?} omitted its dynamic type identity",
+                    field.ty
+                ))
+            })?;
+            values.push(self.unbox_interface_value(
+                Operand::Read(tagged),
+                &identity,
+                &field.ty,
+                source,
+            )?);
         }
         let result = Place {
             local: self.new_temp(ty.clone()),

@@ -112,6 +112,8 @@ impl RuntimeOp {
             Self::GoSliceBoolIsNil => 108,
             Self::GoSliceInterfaceNil => 109,
             Self::GoSliceInterfaceIsNil => 110,
+            Self::GoInterfaceBoxAggregate => 111,
+            Self::GoInterfaceUnboxAggregate => 112,
         })
     }
 }

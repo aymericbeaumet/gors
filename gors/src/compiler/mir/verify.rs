@@ -31,7 +31,10 @@ use containers::{
     verify_byte_slice_integer_arguments, verify_map_call_arguments,
     verify_representation_slice_call, verify_slice_call_arguments, verify_slice_value_arguments,
 };
-use effects::{binary_effects, call_effects, read_effects, verify_effects, verify_panic_edge};
+use effects::{
+    binary_effects, call_effects, read_effects, rvalue_operands, terminator_operands,
+    verify_effects, verify_panic_edge,
+};
 use interfaces::{is_interface_builtin, verify_interface_call};
 use pointers::{is_pointer_builtin, verify_pointer_call};
 use provenance::{
@@ -823,7 +826,11 @@ impl Function {
                                 | hir::Builtin::PointerStructI64Get
                                 | hir::Builtin::PointerStructI64Set
                                 | hir::Builtin::PointerStructI64IsNil
-                                | hir::Builtin::PointerStructI64Equal => {
+                                | hir::Builtin::PointerStructI64Equal
+                                | hir::Builtin::AggregatePointerNil
+                                | hir::Builtin::AggregatePointerNew
+                                | hir::Builtin::AggregatePointerSnapshot
+                                | hir::Builtin::AggregatePointerIsNil => {
                                     return Err(Diagnostic::backend(
                                         "pointer builtin bypassed dedicated MIR verification",
                                     ));
@@ -834,14 +841,20 @@ impl Function {
                                 | hir::Builtin::InterfaceBoxGoString
                                 | hir::Builtin::InterfaceBoxStructI64
                                 | hir::Builtin::InterfaceBoxPointerStructI64
+                                | hir::Builtin::InterfaceBoxAggregate
                                 | hir::Builtin::InterfaceIsNil
                                 | hir::Builtin::InterfaceIsType
                                 | hir::Builtin::InterfaceAssert
+                                | hir::Builtin::InterfaceSatisfies
+                                | hir::Builtin::InterfaceSatisfiesNonNil
                                 | hir::Builtin::InterfaceUnboxBool
                                 | hir::Builtin::InterfaceUnboxI64
                                 | hir::Builtin::InterfaceUnboxGoString
                                 | hir::Builtin::InterfaceStructI64Get
-                                | hir::Builtin::InterfaceUnboxPointerStructI64 => {
+                                | hir::Builtin::InterfaceUnboxPointerStructI64
+                                | hir::Builtin::InterfaceUnboxAggregate
+                                | hir::Builtin::FunctionNil
+                                | hir::Builtin::FunctionIsNil => {
                                     return Err(Diagnostic::backend(
                                         "interface builtin bypassed dedicated MIR verification",
                                     ));
@@ -953,47 +966,5 @@ impl Function {
             }
             Operand::Unit => Ok(Ty::Unit),
         }
-    }
-}
-
-fn rvalue_operands(kind: &RvalueKind) -> Vec<&Operand> {
-    match kind {
-        RvalueKind::Use(operand)
-        | RvalueKind::Unary { operand, .. }
-        | RvalueKind::Conversion { operand, .. } => vec![operand],
-        RvalueKind::Binary { left, right, .. } => vec![left, right],
-        RvalueKind::ArrayIndexI64 { array, index } => vec![array, index],
-        RvalueKind::ArrayIndex { array, index } => vec![array, index],
-        RvalueKind::ArraySetI64 {
-            array,
-            index,
-            value,
-        } => vec![array, index, value],
-        RvalueKind::ArraySet {
-            array,
-            index,
-            value,
-        } => vec![array, index, value],
-        RvalueKind::ArrayLiteral { elements, .. } => elements.iter().collect(),
-        RvalueKind::StructLiteral { fields, .. } => fields.iter().collect(),
-        RvalueKind::StructField { structure, .. } => vec![structure],
-        RvalueKind::StructSet {
-            structure, value, ..
-        } => vec![structure, value],
-        RvalueKind::RecoverCompareNil { .. } => Vec::new(),
-        RvalueKind::SliceLiteralI64 { .. }
-        | RvalueKind::SliceLiteralU8(_)
-        | RvalueKind::SliceLiteralBool(_)
-        | RvalueKind::ArrayLiteralI64(_) => Vec::new(),
-    }
-}
-
-fn terminator_operands(kind: &TerminatorKind) -> Vec<&Operand> {
-    match kind {
-        TerminatorKind::SwitchBool { condition, .. } => vec![condition],
-        TerminatorKind::Call { args, .. } | TerminatorKind::Return(args) => args.iter().collect(),
-        TerminatorKind::Goto(_)
-        | TerminatorKind::SpawnEmpty { .. }
-        | TerminatorKind::Unreachable => Vec::new(),
     }
 }

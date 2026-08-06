@@ -683,7 +683,7 @@ func prefix() {
 }
 
 func broken() {
-    switch {}
+    const value = 1
 }
 
 func main() {}
@@ -692,7 +692,7 @@ func main() {}
     let error = session
         .compile_program(program("/checkout/current/main.go", source))
         .err()
-        .expect("switch is outside the bootstrap frontier");
+        .expect("local const should produce a semantic diagnostic");
     let diagnostic = error.diagnostics().first().unwrap();
     assert_eq!(diagnostic.file, "/checkout/current/main.go");
     assert_eq!(diagnostic.line, 8);
@@ -702,17 +702,21 @@ func main() {}
 #[test]
 fn semantic_diagnostics_project_line_directives_only_at_publication() {
     let source =
-        "package main\n//line generated.go:40\nfunc (value int) method() {}\nfunc main() {}\n";
+        "package main\n//line generated.go:40\nfunc unsupported(value int64) {}\nfunc main() {}\n";
     let mut session = CompilerSession::default();
     let error = session
         .compile_program(program("/checkout/current/main.go", source))
         .err()
-        .expect("methods are outside the bootstrap frontier");
+        .expect("unsupported type should produce a semantic diagnostic");
     let diagnostic = error
         .diagnostics()
         .iter()
-        .find(|diagnostic| diagnostic.message.contains("methods are not implemented"))
-        .expect("method diagnostic");
+        .find(|diagnostic| {
+            diagnostic
+                .message
+                .contains("executable support for type int64 is not yet available")
+        })
+        .expect("type diagnostic");
 
     assert_eq!(diagnostic.file, "/checkout/current/generated.go");
     assert_eq!(diagnostic.line, 40);

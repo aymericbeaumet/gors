@@ -93,7 +93,9 @@ impl FunctionLowerer {
         }
         if matches!(expression.kind, ExprSyntaxKind::CompositeLiteral { .. }) {
             let value = self.lower_expr(expression, None)?;
-            if value.ty.bootstrap_i64_struct_fields().is_none() {
+            if value.ty.bootstrap_i64_struct_fields().is_none()
+                && !value.ty.uses_interface_aggregate_pointer_representation()
+            {
                 return Err(Diagnostic::unsupported(
                     "address-taking currently supports integer struct composite literals",
                     source,
@@ -139,6 +141,7 @@ impl FunctionLowerer {
             .ok_or_else(|| Diagnostic::backend(format!("invalid local id {}", local.0)))?;
         if element.underlying() != &Ty::Int(IntTy::Int)
             && element.bootstrap_i64_struct_fields().is_none()
+            && !element.uses_interface_aggregate_pointer_representation()
         {
             return Err(Diagnostic::unsupported(
                 "address-taking currently supports integer and integer-struct locals",
@@ -244,7 +247,9 @@ impl FunctionLowerer {
                 source,
             ));
         };
-        if element.bootstrap_i64_struct_fields().is_some() {
+        if element.bootstrap_i64_struct_fields().is_some()
+            || element.uses_interface_aggregate_pointer_representation()
+        {
             let ty = element.as_ref().clone();
             let effects = pointer_effects(&[&pointer], false, false, true);
             let mut result = hir::Expr {
@@ -362,9 +367,7 @@ impl FunctionLowerer {
                 hir::Builtin::SliceU8IsNil
             } else if element.underlying() == &Ty::Bool {
                 hir::Builtin::SliceBoolIsNil
-            } else if matches!(element.underlying(), Ty::String)
-                || element.bootstrap_i64_struct_fields().is_some()
-            {
+            } else if element.uses_interface_aggregate_representation() {
                 hir::Builtin::AggregateSliceIsNil
             } else {
                 return Err(Diagnostic::semantic(
@@ -376,10 +379,17 @@ impl FunctionLowerer {
             hir::Builtin::MapStringI64IsNil
         } else if matches!(value.ty.underlying(), Ty::Interface(_)) {
             hir::Builtin::InterfaceIsNil
+        } else if matches!(value.ty.underlying(), Ty::Function(_)) {
+            hir::Builtin::FunctionIsNil
         } else if value.ty.underlying() == int_pointer_ty().underlying() {
             hir::Builtin::PointerI64IsNil
         } else if value.ty.bootstrap_i64_struct_pointer_fields().is_some() {
             hir::Builtin::PointerStructI64IsNil
+        } else if matches!(
+            value.ty.underlying(),
+            Ty::Pointer(element) if element.uses_interface_aggregate_pointer_representation()
+        ) {
+            hir::Builtin::AggregatePointerIsNil
         } else if int_channel_parts(&value.ty).is_some() {
             hir::Builtin::ChannelI64IsNil
         } else {

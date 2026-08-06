@@ -268,7 +268,7 @@ impl CompilerDatabase {
     /// Salsa's small input identity remains internal, but the potentially
     /// large source snapshot is replaced before the facade forgets the input.
     /// Parsed ASTs are never retained, so dropping the caller's last `Arc`
-    /// releases the old source bytes independently of every other file.
+    /// releases the previous source bytes independently of every other file.
     pub fn remove_source(&mut self, file: FileId) -> Result<(), QueryError> {
         let mutation = self.remove_source_transactional(file)?;
         self.commit_source_mutations(Some(mutation));

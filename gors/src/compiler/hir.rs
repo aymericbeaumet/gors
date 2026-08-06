@@ -428,22 +428,37 @@ pub enum Builtin {
     PointerStructI64Set,
     PointerStructI64IsNil,
     PointerStructI64Equal,
+    AggregatePointerNil,
+    AggregatePointerNew,
+    AggregatePointerSnapshot,
+    AggregatePointerIsNil,
     InterfaceNil,
     InterfaceBoxBool,
     InterfaceBoxI64,
     InterfaceBoxGoString,
     InterfaceBoxStructI64,
     InterfaceBoxPointerStructI64,
+    InterfaceBoxAggregate,
     InterfaceIsNil,
     InterfaceIsType,
     /// HIR-only type assertion expanded into explicit interface tests and
     /// extraction calls during MIR construction.
     InterfaceAssert,
+    /// HIR-only interface-satisfaction assertion expanded against the
+    /// package's executable dynamic-type set during MIR construction.
+    InterfaceSatisfies,
+    /// HIR-only interface conversion whose source method set statically
+    /// implies the target method set. It succeeds for every non-nil dynamic
+    /// value and is expanded into an explicit nil test during MIR construction.
+    InterfaceSatisfiesNonNil,
     InterfaceUnboxBool,
     InterfaceUnboxI64,
     InterfaceUnboxGoString,
     InterfaceStructI64Get,
     InterfaceUnboxPointerStructI64,
+    InterfaceUnboxAggregate,
+    FunctionNil,
+    FunctionIsNil,
     ChannelI64Nil,
     ChannelI64Make,
     ChannelI64Len,

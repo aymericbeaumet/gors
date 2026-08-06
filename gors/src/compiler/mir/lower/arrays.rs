@@ -164,9 +164,8 @@ impl FunctionLowerer {
         _source: SourceRef,
     ) -> Result<Operand, Diagnostic> {
         let _ = self.lower_expr(array)?;
-        let length = i64::try_from(length).map_err(|_| {
-            Diagnostic::backend("verified bootstrap array length does not fit Go int")
-        })?;
+        let length = i64::try_from(length)
+            .map_err(|_| Diagnostic::backend("verified array length does not fit Go int"))?;
         Ok(Operand::Constant(
             ConstValue::Int(length.to_string()),
             Ty::Int(IntTy::Int),

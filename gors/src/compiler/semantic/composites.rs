@@ -92,8 +92,7 @@ impl FunctionLowerer {
             matches!(element_ty.underlying(), Ty::Int(IntTy::Int | IntTy::Int32));
         let byte_elements = element_ty.underlying() == &Ty::Uint(UintTy::Uint8);
         let boolean_elements = element_ty.underlying() == &Ty::Bool;
-        let aggregate_elements = matches!(element_ty.underlying(), Ty::String)
-            || element_ty.bootstrap_i64_struct_fields().is_some();
+        let aggregate_elements = element_ty.uses_interface_aggregate_representation();
         if !integer_elements && !byte_elements && !boolean_elements && !aggregate_elements {
             return Err(Diagnostic::unsupported(
                 "slice literal element type has no executable representation",

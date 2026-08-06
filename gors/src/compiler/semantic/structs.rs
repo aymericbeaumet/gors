@@ -1,5 +1,7 @@
 //! Exact struct literal and direct-field expression lowering.
 
+use std::collections::HashSet;
+
 use super::expressions::{coerce_expr, ensure_bootstrap_value_type};
 use super::pointers::pointer_effects;
 use super::{FunctionLowerer, MethodSymbol};
@@ -176,7 +178,8 @@ impl FunctionLowerer {
             });
         }
         if !pointer_receiver
-            && receiver_ty.bootstrap_i64_struct_fields().is_some()
+            && (receiver_ty.bootstrap_i64_struct_fields().is_some()
+                || receiver_ty.uses_interface_aggregate_pointer_representation())
             && let Ty::Pointer(element) = receiver.ty.underlying()
             && **element == *receiver_ty
         {
@@ -208,29 +211,77 @@ impl FunctionLowerer {
         {
             return self.lower_imported_selector(base, member, node, source);
         }
-        let structure = self.lower_expr(base, None)?;
+        let mut structure = self.lower_expr(base, None)?;
         ensure_bootstrap_value_type(&structure.ty, source)?;
-        let pointer_structure = structure.ty.bootstrap_i64_struct_pointer_fields().is_some();
-        let fields = struct_fields(&structure.ty).ok_or_else(|| {
-            Diagnostic::semantic(
+        let paths = promoted_field_paths(&structure.ty, member.name.as_ref(), &mut HashSet::new());
+        let Some(minimum_depth) = paths.iter().map(|(path, _)| path.len()).min() else {
+            return Err(Diagnostic::semantic(
                 format!("type {:?} has no field {}", structure.ty, member.name),
                 source,
-            )
+            ));
+        };
+        let mut nearest = paths
+            .into_iter()
+            .filter(|(path, _)| path.len() == minimum_depth);
+        let (path, _) = nearest.next().ok_or_else(|| {
+            Diagnostic::backend("promoted struct field search lost its nearest result")
         })?;
-        let (field, definition) = fields
-            .iter()
-            .enumerate()
-            .find(|(_, field)| field.name == member.name.as_ref())
-            .ok_or_else(|| {
-                Diagnostic::semantic(
-                    format!("type {:?} has no field {}", structure.ty, member.name),
-                    source,
-                )
+        if nearest.next().is_some() {
+            return Err(Diagnostic::semantic(
+                format!("selector {} is ambiguous", member.name),
+                source,
+            ));
+        }
+        for (position, field) in path.iter().copied().enumerate() {
+            let fields = struct_fields(&structure.ty).ok_or_else(|| {
+                Diagnostic::backend("promoted struct field path crossed a non-struct type")
             })?;
-        let field = u32::try_from(field)
-            .map_err(|_| Diagnostic::backend("struct exceeds the field index domain"))?;
-        let field_ty = definition.ty.clone();
-        let effects = if pointer_structure {
+            let field_ty = fields
+                .get(field)
+                .map(|definition| definition.ty.clone())
+                .ok_or_else(|| {
+                    Diagnostic::backend("promoted struct field path is out of bounds")
+                })?;
+            let last = position + 1 == path.len();
+            let step_node = if last {
+                node
+            } else {
+                self.alloc_node(member.source)?
+            };
+            let step_source = if last {
+                source
+            } else {
+                SourceRef::node(step_node)
+            };
+            structure = self.lower_struct_field_step(
+                structure,
+                u32::try_from(field)
+                    .map_err(|_| Diagnostic::backend("struct exceeds the field index domain"))?,
+                field_ty,
+                step_node,
+                step_source,
+                member.source,
+            )?;
+        }
+        Ok(structure)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn lower_struct_field_step(
+        &mut self,
+        structure: hir::Expr,
+        field: u32,
+        field_ty: Ty,
+        node: NodeId,
+        source: SourceRef,
+        syntax_source: SyntaxSource,
+    ) -> Result<hir::Expr, Diagnostic> {
+        let pointer_structure = structure.ty.bootstrap_i64_struct_pointer_fields().is_some();
+        let aggregate_pointer_structure = matches!(
+            structure.ty.underlying(),
+            Ty::Pointer(element) if element.uses_interface_aggregate_pointer_representation()
+        );
+        let effects = if pointer_structure || aggregate_pointer_structure {
             pointer_effects(&[&structure], false, false, true)
         } else {
             structure.effects.union(hir::Effects {
@@ -239,7 +290,7 @@ impl FunctionLowerer {
             })
         };
         let kind = if pointer_structure {
-            let index_node = self.alloc_node(member.source)?;
+            let index_node = self.alloc_node(syntax_source)?;
             hir::ExprKind::Call {
                 callee: hir::Callee::Builtin(hir::Builtin::PointerStructI64Get),
                 args: vec![
@@ -255,6 +306,26 @@ impl FunctionLowerer {
                         source: SourceRef::node(index_node),
                     },
                 ],
+            }
+        } else if aggregate_pointer_structure {
+            let Ty::Pointer(element) = structure.ty.underlying() else {
+                return Err(Diagnostic::backend(
+                    "aggregate pointer selector lost its pointer type",
+                ));
+            };
+            let element_ty = element.as_ref().clone();
+            let dereference_node = self.alloc_node(syntax_source)?;
+            let dereference = hir::Expr {
+                node: dereference_node,
+                kind: hir::ExprKind::PointerStructValue(Box::new(structure)),
+                ty: element_ty,
+                category: hir::ValueCategory::Value,
+                effects,
+                source: SourceRef::node(dereference_node),
+            };
+            hir::ExprKind::StructField {
+                structure: Box::new(dereference),
+                field,
             }
         } else {
             hir::ExprKind::StructField {
@@ -363,28 +434,75 @@ impl FunctionLowerer {
         ty: &Ty,
         syntax_source: SyntaxSource,
     ) -> Result<hir::Expr, Diagnostic> {
-        let value = ty.zero().ok_or_else(|| {
-            Diagnostic::unsupported(
-                format!("zero value for struct field type {ty:?} is not yet implemented"),
-                SourceRef::definition(self.owner),
-            )
-        })?;
         let node = self.alloc_node(syntax_source)?;
-        Ok(hir::Expr {
-            node,
-            kind: hir::ExprKind::Constant(value),
-            ty: ty.clone(),
-            category: hir::ValueCategory::Constant,
-            effects: hir::Effects::default(),
-            source: SourceRef::node(node),
-        })
+        self.zero_value_expr(node, SourceRef::node(node), ty.clone())
+    }
+}
+
+fn promoted_field_paths(
+    ty: &Ty,
+    name: &str,
+    seen: &mut HashSet<crate::compiler::ids::DefId>,
+) -> Vec<(Vec<usize>, Ty)> {
+    let owner = field_owner_definition(ty);
+    if owner.is_some_and(|owner| !seen.insert(owner)) {
+        return Vec::new();
+    }
+    let Some(fields) = struct_fields(ty) else {
+        if let Some(owner) = owner {
+            seen.remove(&owner);
+        }
+        return Vec::new();
+    };
+    let direct = fields
+        .iter()
+        .enumerate()
+        .filter(|(_, field)| field.name == name)
+        .map(|(index, field)| (vec![index], field.ty.clone()))
+        .collect::<Vec<_>>();
+    if !direct.is_empty() {
+        if let Some(owner) = owner {
+            seen.remove(&owner);
+        }
+        return direct;
+    }
+    let mut promoted = Vec::new();
+    for (index, field) in fields
+        .iter()
+        .enumerate()
+        .filter(|(_, field)| field.embedded)
+    {
+        for (path, field_ty) in promoted_field_paths(&field.ty, name, seen) {
+            let mut candidate = Vec::with_capacity(path.len().saturating_add(1));
+            candidate.push(index);
+            candidate.extend(path);
+            promoted.push((candidate, field_ty));
+        }
+    }
+    if let Some(owner) = owner {
+        seen.remove(&owner);
+    }
+    promoted
+}
+
+fn field_owner_definition(ty: &Ty) -> Option<crate::compiler::ids::DefId> {
+    match ty {
+        Ty::Named { definition, .. } => Some(*definition),
+        Ty::Pointer(element) => match element.as_ref() {
+            Ty::Named { definition, .. } => Some(*definition),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
 fn struct_fields(ty: &Ty) -> Option<&[StructField]> {
     match ty.underlying() {
         Ty::Struct(fields) => Some(fields),
-        Ty::Pointer(element) => element.bootstrap_i64_struct_fields(),
+        Ty::Pointer(element) => match element.underlying() {
+            Ty::Struct(fields) => Some(fields),
+            _ => None,
+        },
         _ => None,
     }
 }

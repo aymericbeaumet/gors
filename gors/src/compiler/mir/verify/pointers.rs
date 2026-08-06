@@ -18,6 +18,10 @@ pub(super) fn is_pointer_builtin(builtin: hir::Builtin) -> bool {
             | hir::Builtin::PointerStructI64Set
             | hir::Builtin::PointerStructI64IsNil
             | hir::Builtin::PointerStructI64Equal
+            | hir::Builtin::AggregatePointerNil
+            | hir::Builtin::AggregatePointerNew
+            | hir::Builtin::AggregatePointerSnapshot
+            | hir::Builtin::AggregatePointerIsNil
     )
 }
 
@@ -146,6 +150,61 @@ pub(super) fn verify_pointer_call(
             super::verify_same_type(left, right, "struct pointer equality")?;
             Ok(vec![Ty::Bool])
         }
+        hir::Builtin::AggregatePointerNil => {
+            let ([], [result]) = (arguments, destinations) else {
+                return Err(shape_error(
+                    "aggregate pointer nil value",
+                    arguments,
+                    destinations,
+                ));
+            };
+            verify_aggregate_struct_pointer_type(result, "aggregate pointer nil result")?;
+            Ok(vec![result.clone()])
+        }
+        hir::Builtin::AggregatePointerNew => {
+            let ([identity, snapshot], [result]) = (arguments, destinations) else {
+                return Err(shape_error(
+                    "aggregate pointer creation",
+                    arguments,
+                    destinations,
+                ));
+            };
+            verify_string(identity, "aggregate pointer type identity")?;
+            verify_aggregate_snapshot(snapshot, "aggregate pointer snapshot")?;
+            verify_aggregate_struct_pointer_type(result, "aggregate pointer creation result")?;
+            Ok(vec![result.clone()])
+        }
+        hir::Builtin::AggregatePointerSnapshot => {
+            let ([pointer, identity], [result]) = (arguments, destinations) else {
+                return Err(shape_error(
+                    "aggregate pointer dereference",
+                    arguments,
+                    destinations,
+                ));
+            };
+            verify_aggregate_struct_pointer_type(pointer, "aggregate pointer dereference")?;
+            verify_string(identity, "aggregate pointer type identity")?;
+            verify_aggregate_snapshot(result, "aggregate pointer dereference result")?;
+            Ok(vec![result.clone()])
+        }
+        hir::Builtin::AggregatePointerIsNil => {
+            let ([pointer], [result]) = (arguments, destinations) else {
+                return Err(shape_error(
+                    "aggregate pointer nil comparison",
+                    arguments,
+                    destinations,
+                ));
+            };
+            verify_aggregate_struct_pointer_type(pointer, "aggregate pointer nil comparison")?;
+            if result != &Ty::Bool {
+                return Err(shape_error(
+                    "aggregate pointer nil comparison",
+                    arguments,
+                    destinations,
+                ));
+            }
+            Ok(vec![Ty::Bool])
+        }
         _ => Err(Diagnostic::backend(
             "non-pointer builtin reached pointer MIR verification",
         )),
@@ -172,6 +231,44 @@ fn verify_i64_struct_pointer_type<'a>(
 ) -> Result<&'a [crate::compiler::types::StructField], Diagnostic> {
     ty.bootstrap_i64_struct_pointer_fields()
         .ok_or_else(|| Diagnostic::backend(format!("invalid MIR {context} type: {ty:?}")))
+}
+
+fn verify_aggregate_struct_pointer_type(ty: &Ty, context: &str) -> Result<(), Diagnostic> {
+    let Ty::Pointer(element) = ty.underlying() else {
+        return Err(Diagnostic::backend(format!(
+            "invalid MIR {context} type: {ty:?}"
+        )));
+    };
+    if element.uses_interface_aggregate_pointer_representation() {
+        Ok(())
+    } else {
+        Err(Diagnostic::backend(format!(
+            "invalid MIR {context} element type: {element:?}"
+        )))
+    }
+}
+
+fn verify_aggregate_snapshot(ty: &Ty, context: &str) -> Result<(), Diagnostic> {
+    if matches!(
+        ty.underlying(),
+        Ty::Slice(element) if matches!(element.underlying(), Ty::Interface(_))
+    ) {
+        Ok(())
+    } else {
+        Err(Diagnostic::backend(format!(
+            "invalid MIR {context} type: {ty:?}"
+        )))
+    }
+}
+
+fn verify_string(ty: &Ty, context: &str) -> Result<(), Diagnostic> {
+    if ty.underlying() == &Ty::String {
+        Ok(())
+    } else {
+        Err(Diagnostic::backend(format!(
+            "invalid MIR {context} type: {ty:?}"
+        )))
+    }
 }
 
 fn verify_int(ty: &Ty, context: &str) -> Result<(), Diagnostic> {

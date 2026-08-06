@@ -1,33 +1,32 @@
 # gors [![GitHub Actions](https://github.com/aymericbeaumet/gors/actions/workflows/ci.yml/badge.svg)](https://github.com/aymericbeaumet/gors/actions/workflows/ci.yml)
 
-[gors](https://github.com/aymericbeaumet/gors) is an experimental Go-to-Rust
-compiler written in Rust. It scans and parses Go source, builds typed HIR,
-lowers executable semantics to verified Go MIR, reverifies representation-neutral
-MIR transforms, performs mandatory Rust representation lowering into verified
-Rust IR, and emits formatted Rust source.
+[gors](https://github.com/aymericbeaumet/gors) is a Go-to-Rust compiler written
+in Rust. It preserves Go typing, evaluation order, and control flow through
+independently verified semantic stages, chooses explicit Rust representations,
+and emits formatted, readable Rust source.
 Try it at
 [gors.aymericbeaumet.com](https://gors.aymericbeaumet.com).
 
-The current executable compiler supports import-free programs with primitive
-values, free functions, scalar expressions, assignments, `if`, and `for`.
-Unsupported Go constructs return precise structured diagnostics. Imports,
-composite types, methods, generics, Go-compatible panic process behavior, and
-the Go stdlib are the next major coverage areas. See [the architecture
-roadmap](COMPILER_AUDIT.md), [live conformance dashboard](https://gors.aymericbeaumet.com/conformance),
-and [performance acceptance contract](COMPILER_PERFORMANCE.md).
+Executable differential fixtures compare generated programs with the
+repository-pinned Go toolchain. The reports track Go specification cases and
+exported standard-library symbols without hiding unsupported coverage, and
+unsupported source receives a precise structured diagnostic. See [the
+architecture roadmap](COMPILER_AUDIT.md), [live conformance
+dashboard](https://gors.aymericbeaumet.com/conformance), and [performance
+acceptance contract](COMPILER_PERFORMANCE.md).
 
 ## Components
 
 - Scanner and parser for Go source and AST construction
 - Typed semantic HIR and explicit-order control-flow MIR
-- Mandatory Rust representation lowering; its bootstrap policy copies `Copy`
-  values and conservatively clones owned non-`Copy` values, while later proven
+- Mandatory Rust representation lowering; its conservative ownership policy
+  copies `Copy` values and clones owned non-`Copy` values, while later proven
   move, borrow, ABI, and storage refinements remain owned by the same stage
 - Verified control-flow idiom recognition that emits proven straight-line CFGs
   as ordinary sequential Rust
 - Verified Rust IR consumed by every terminal codegen path
 - Terminal Rust `syn` emitter with no semantic syntax-repair passes
-- Embedded Go SDK source metadata for future generic package compilation
+- Pinned Go SDK package metadata and build-selected source inputs
 - Rust source printer with Go-to-Rust source-map support
 - Typed runtime contract plus one validated precompiled `gors-runtime` sidecar;
   generated Rust never embeds or recompiles runtime source
@@ -147,8 +146,8 @@ make conformance-report
 make conformance-check
 ```
 
-Browser compilation uses the same backend in a persistent single-threaded Wasm
-worker. See [the Wasm notes](www/wasm/readme.md) and
+Browser compilation retains the same compiler pipeline in a persistent
+single-threaded Wasm worker. See [the Wasm notes](www/wasm/readme.md) and
 [fuzzing guide](fuzz/readme.md) for details.
 
 ## License

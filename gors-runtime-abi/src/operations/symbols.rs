@@ -112,6 +112,8 @@ impl RuntimeOp {
             Self::GoSliceBoolIsNil => "go_slice_bool_is_nil",
             Self::GoSliceInterfaceNil => "go_slice_interface_nil",
             Self::GoSliceInterfaceIsNil => "go_slice_interface_is_nil",
+            Self::GoInterfaceBoxAggregate => "go_interface_box_aggregate",
+            Self::GoInterfaceUnboxAggregate => "go_interface_unbox_aggregate",
         }
     }
 }

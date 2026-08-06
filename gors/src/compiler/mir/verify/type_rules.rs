@@ -72,6 +72,10 @@ pub(super) fn same_mir_representation(left: &Ty, right: &Ty) -> bool {
                 Ty::Int(IntTy::Int)
             )
         )
+        || matches!(
+            (left.underlying(), right.underlying()),
+            (Ty::Interface(_), Ty::Interface(_))
+        )
 }
 
 pub(super) fn verify_binary_types(

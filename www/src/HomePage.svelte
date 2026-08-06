@@ -33,10 +33,9 @@ onDestroy(() => {
   <div class="home-route">
     <section class="hero">
       <div class="hero-copy">
-        <p class="eyebrow">Go compiler frontend, Rust backend</p>
         <h1>gors</h1>
         <p class="hero-subtitle">
-          gors is a Go-to-Rust compiler pipeline: it parses real Go source, builds verified semantic IRs, chooses explicit Rust representations, and prints normal Rust code.
+          gors compiles real Go source to readable Rust through a verified semantic pipeline with explicit representation choices.
         </p>
         <div class="hero-actions">
           <button class="install-command" class:copied={installCommandCopied} type="button" title="Copy install command" on:click={copyInstallCommand}>
@@ -48,27 +47,53 @@ onDestroy(() => {
       </div>
 
       <div class="compiler-card" aria-label="Go to Rust compiler pipeline preview">
-        <h2>Backed by a powerful compiler.</h2>
-        <div class="pipeline-flow" aria-hidden="true">
-          <div class="flow-node go-node"><span>Go source</span></div>
-          <span class="flow-arrow"></span>
-          <div class="flow-node"><span>Scanner</span></div>
-          <span class="flow-arrow"></span>
-          <div class="flow-node"><span>Parser</span></div>
-          <span class="flow-arrow"></span>
-          <div class="flow-node go-ast-node"><span>Go AST</span></div>
-          <span class="flow-arrow"></span>
-          <div class="flow-node"><span>Typed HIR</span></div>
-          <span class="flow-arrow"></span>
-          <div class="flow-node rust-ast-node"><span>Go MIR</span></div>
-          <span class="flow-arrow"></span>
-          <div class="flow-node"><span>Rust lowering</span></div>
-          <span class="flow-arrow"></span>
-          <div class="flow-node"><span>Rust IR</span></div>
-          <span class="flow-arrow"></span>
-          <div class="flow-node rust-node"><span>Rust source</span></div>
-          <i class="flow-pulse"></i>
+        <div class="compiler-card-heading">
+          <h2>From Go semantics to readable Rust.</h2>
+          <p>Each verified phase turns Go semantics into an explicit, inspectable compiler product.</p>
         </div>
+
+        <ol class="compiler-pipeline" aria-label="Compiler pipeline">
+          <li class="pipeline-stage frontend-stage">
+            <div class="pipeline-stage-label">
+              <span class="pipeline-stage-number" aria-hidden="true">01</span>
+              <p class="pipeline-stage-kind">Frontend</p>
+            </div>
+            <div class="pipeline-stage-copy">
+              <h3>Parse Go source</h3>
+              <p>Scanner and parser build an ephemeral Go AST.</p>
+            </div>
+          </li>
+          <li class="pipeline-stage semantic-stage">
+            <div class="pipeline-stage-label">
+              <span class="pipeline-stage-number" aria-hidden="true">02</span>
+              <p class="pipeline-stage-kind">Semantics</p>
+            </div>
+            <div class="pipeline-stage-copy">
+              <h3>Type and resolve</h3>
+              <p>Names and exact Go types become typed HIR.</p>
+            </div>
+          </li>
+          <li class="pipeline-stage mir-stage">
+            <div class="pipeline-stage-label">
+              <span class="pipeline-stage-number" aria-hidden="true">03</span>
+              <p class="pipeline-stage-kind">Go MIR</p>
+            </div>
+            <div class="pipeline-stage-copy">
+              <h3>Order and verify</h3>
+              <p>Evaluation order and control flow become verified Go MIR.</p>
+            </div>
+          </li>
+          <li class="pipeline-stage backend-stage">
+            <div class="pipeline-stage-label">
+              <span class="pipeline-stage-number" aria-hidden="true">04</span>
+              <p class="pipeline-stage-kind">Rust backend</p>
+            </div>
+            <div class="pipeline-stage-copy">
+              <h3>Represent and emit</h3>
+              <p>Explicit representation choices become verified Rust IR, then formatted Rust source.</p>
+            </div>
+          </li>
+        </ol>
       </div>
     </section>
 
@@ -79,15 +104,15 @@ onDestroy(() => {
       </article>
       <article>
         <h3>Shared compiler path</h3>
-        <p>Typed HIR, explicit-order Go MIR, mandatory Rust representation lowering, verified Rust IR, terminal emission, and source-map lookup use the same path as the CLI.</p>
+        <p>The playground and CLI share the same verified compiler pipeline and source-map model.</p>
       </article>
       <article>
         <h3>Pinned SDK inputs</h3>
-        <p>The resolver exposes build-selected SDK source metadata only. Package and stdlib lowering return after their semantics exist in HIR and MIR.</p>
+        <p>The resolver selects pinned SDK source inputs, which compile through the same semantic pipeline as user packages.</p>
       </article>
       <article>
         <h3>Measured compatibility</h3>
-        <p>Executable fixtures compare generated programs with the pinned Go toolchain, and unsupported features return structured diagnostics. <a href="/conformance" on:click={(event) => navigateTo("conformance", event)}>Explore the results.</a></p>
+        <p>Every recorded result comes from generated programs compared with the repository-pinned Go toolchain, while unsupported cases stay visible. <a href="/conformance" on:click={(event) => navigateTo("conformance", event)}>Explore the results.</a></p>
       </article>
       <article>
         <h3>Generic stdlib compilation</h3>

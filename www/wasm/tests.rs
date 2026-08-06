@@ -31,7 +31,7 @@ fn rust_token_lookup_uses_utf16_source_map_columns() {
 }
 
 #[test]
-fn supported_bootstrap_build_returns_rust_and_explicit_source_map() {
+fn supported_build_returns_rust_and_explicit_source_map() {
     let input = r#"package main
 
 func add(a int, b int) int {
@@ -182,7 +182,7 @@ fn leading_comment_separator_shifts_downstream_function_mappings() {
 }
 
 #[test]
-fn imports_return_a_structured_unsupported_diagnostic() {
+fn imports_without_a_browser_catalog_return_a_structured_diagnostic() {
     let input = r#"package main
 
 import "fmt"
@@ -197,14 +197,14 @@ func main() {
     assert!(!result.success());
     assert_eq!(result.error_kind(), "compiler");
     assert_eq!(result.error_file(), "main.go");
-    assert_eq!(result.error_line(), 1);
-    assert!(result.error_message().contains("GORS2001"));
+    assert_eq!(result.error_line(), 3);
+    assert!(result.error_message().contains("GORS2004"));
     assert!(
         result
             .error_message()
-            .contains("imports are not implemented by the HIR/MIR backend")
+            .contains("unresolved import \"fmt\": no package catalog owns this canonical path")
     );
-    assert_eq!(result.error_source_line(), "package main");
+    assert_eq!(result.error_source_line(), "import \"fmt\"");
     assert_eq!(result.runtime_dependency_schema_version(), 0);
     assert_eq!(result.runtime_contract_identity(), "");
     assert!(result.get_runtime_operation_ids().is_empty());

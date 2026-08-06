@@ -20,8 +20,10 @@ fn string_aggregate_map_value_ty(ty: &Ty) -> Option<&Ty> {
     let Ty::Map(key, value) = ty.underlying() else {
         return None;
     };
-    (key.underlying() == &Ty::String && value.bootstrap_i64_struct_fields().is_some())
-        .then_some(value)
+    (key.underlying() == &Ty::String
+        && value.bootstrap_i64_struct_fields().is_some()
+        && value.dynamic_type_identity().is_some())
+    .then_some(value)
 }
 
 impl FunctionLowerer {
@@ -77,10 +79,7 @@ impl FunctionLowerer {
             Ty::Slice(element) if element.underlying() == &Ty::Bool => {
                 Some(hir::Builtin::SliceBoolNil)
             }
-            Ty::Slice(element)
-                if matches!(element.underlying(), Ty::String)
-                    || element.bootstrap_i64_struct_fields().is_some() =>
-            {
+            Ty::Slice(element) if element.uses_interface_aggregate_representation() => {
                 Some(hir::Builtin::AggregateSliceNil)
             }
             _ => None,
@@ -111,6 +110,19 @@ impl FunctionLowerer {
                 source,
             });
         }
+        if matches!(ty.underlying(), Ty::Function(_)) {
+            return Ok(hir::Expr {
+                node,
+                kind: hir::ExprKind::Call {
+                    callee: hir::Callee::Builtin(hir::Builtin::FunctionNil),
+                    args: Vec::new(),
+                },
+                ty,
+                category: hir::ValueCategory::Value,
+                effects: map_effects(&[], false, false, false),
+                source,
+            });
+        }
         if ty.underlying() == int_pointer_ty().underlying() {
             return Ok(hir::Expr {
                 node,
@@ -129,6 +141,22 @@ impl FunctionLowerer {
                 node,
                 kind: hir::ExprKind::Call {
                     callee: hir::Callee::Builtin(hir::Builtin::PointerStructI64Nil),
+                    args: Vec::new(),
+                },
+                ty,
+                category: hir::ValueCategory::Value,
+                effects: pointer_effects(&[], false, false, false),
+                source,
+            });
+        }
+        if matches!(
+            ty.underlying(),
+            Ty::Pointer(element) if element.uses_interface_aggregate_pointer_representation()
+        ) {
+            return Ok(hir::Expr {
+                node,
+                kind: hir::ExprKind::Call {
+                    callee: hir::Callee::Builtin(hir::Builtin::AggregatePointerNil),
                     args: Vec::new(),
                 },
                 ty,

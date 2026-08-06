@@ -1,7 +1,7 @@
 //! Mandatory semantic MIR normalization before Rust representation lowering.
 //!
-//! Every pass runs between whole-file verification barriers.  The bootstrap
-//! Normalization deliberately avoids integer folding until typed Go-width
+//! Every pass runs between whole-file verification barriers. Normalization
+//! deliberately avoids integer folding until typed Go-width
 //! arithmetic is represented explicitly.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};

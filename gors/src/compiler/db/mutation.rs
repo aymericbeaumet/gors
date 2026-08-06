@@ -160,8 +160,8 @@ impl CompilerDatabase {
     /// Finalize source mutations after a complete manifest installation.
     ///
     /// Only removals need work at commit: their detached Salsa input is
-    /// tombstoned so the old source bytes can be released. Updates and inserts
-    /// have already published their final values.
+    /// tombstoned so the previous source bytes can be released. Updates and
+    /// inserts have already published their final values.
     pub(in crate::compiler) fn commit_source_mutations(
         &mut self,
         mutations: impl IntoIterator<Item = SourceInputMutation>,

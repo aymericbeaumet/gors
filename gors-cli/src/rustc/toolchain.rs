@@ -20,7 +20,7 @@ const TOOLCHAIN_IDENTITY_DOMAIN: &[u8] = b"gors.terminal-toolchain-v2\0";
 /// Immutable native tools and process environment used by one terminal action.
 ///
 /// The descriptor is safe to reconstruct from a terminal manifest without
-/// touching the historical tools. Before a cache miss executes, the recorded
+/// touching the tool executables. Before a cache miss executes, the recorded
 /// tool revisions and target-libdir snapshot are revalidated. The remaining
 /// path-to-spawn race and dynamically loaded compiler closure are documented
 /// non-hermetic boundaries, not properties hidden by this descriptor.

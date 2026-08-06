@@ -70,7 +70,7 @@ pub fn exercise_ast_snapshot(data: &[u8]) {
     );
 }
 
-/// Exercise generic Go AST to Rust AST lowering and Rust source printing.
+/// Exercise the complete typed compiler pipeline and Rust source printing.
 ///
 /// Compiler errors are valid outcomes for generated programs. Panics, aborts,
 /// and memory-safety failures remain visible to the fuzzing engine.
@@ -97,6 +97,6 @@ pub fn exercise_compiler(data: &[u8]) {
         return;
     };
     if let Err(error) = gors::printer::generate_single(compiled) {
-        panic!("Rust source printing failed after successful lowering: {error}");
+        panic!("Rust source printing failed after successful compilation: {error}");
     }
 }

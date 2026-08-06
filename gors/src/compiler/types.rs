@@ -19,6 +19,11 @@ pub enum Ty {
         definition: DefId,
         underlying: Box<Ty>,
     },
+    /// A finite reference back to a package named type from within its own
+    /// recursively guarded underlying representation.
+    NamedRef {
+        definition: DefId,
+    },
     LocalNamed {
         identity: LocalTypeId,
         underlying: Box<Ty>,
@@ -189,11 +194,20 @@ impl Ty {
             Self::Bool => "builtin:bool".to_owned(),
             Self::Int(IntTy::Int) => "builtin:int".to_owned(),
             Self::String => "builtin:string".to_owned(),
-            Self::Named { definition, .. } => format!("named:{definition}"),
+            Self::Named { definition, .. } | Self::NamedRef { definition } => {
+                format!("named:{definition}")
+            }
             Self::LocalNamed { identity, .. } => format!("local-named:{identity}"),
             Self::Pointer(element) => match element.as_ref() {
                 Self::Named { definition, .. } => format!("pointer:named:{definition}"),
                 Self::LocalNamed { identity, .. } => format!("pointer:local-named:{identity}"),
+                _ => return None,
+            },
+            Self::Slice(element) => match element.as_ref() {
+                Self::Named { definition, .. } | Self::NamedRef { definition } => {
+                    format!("slice:named:{definition}")
+                }
+                Self::LocalNamed { identity, .. } => format!("slice:local-named:{identity}"),
                 _ => return None,
             },
             _ => return None,
@@ -258,8 +272,54 @@ impl Ty {
         element.bootstrap_i64_struct_fields()
     }
 
-    /// Values the bootstrap backend can currently execute without relying on
-    /// target-dependent or incomplete numeric semantics.
+    /// Values stored in the canonical interface-backed aggregate containers.
+    #[must_use]
+    pub fn uses_interface_aggregate_representation(&self) -> bool {
+        self.dynamic_type_identity().is_some()
+            && (matches!(self, Self::String | Self::NamedRef { .. })
+                || self.interface_aggregate_struct_fields().is_some())
+    }
+
+    /// Fields of a struct that can be copied to and reconstructed from the
+    /// canonical tagged aggregate snapshot.
+    #[must_use]
+    pub fn interface_aggregate_struct_fields(&self) -> Option<&[StructField]> {
+        let Self::Struct(fields) = self.underlying() else {
+            return None;
+        };
+        fields
+            .iter()
+            .all(|field| {
+                field.ty.dynamic_type_identity().is_some() && field.ty.supports_interface_payload()
+            })
+            .then_some(fields)
+    }
+
+    /// Whether this exact value has a complete tagged interface payload
+    /// encoding and decoding path.
+    #[must_use]
+    pub fn supports_interface_payload(&self) -> bool {
+        match self.underlying() {
+            Self::Bool | Self::Int(IntTy::Int) | Self::String => true,
+            Self::Struct(_) => self.interface_aggregate_struct_fields().is_some(),
+            Self::Slice(element) => element.uses_interface_aggregate_representation(),
+            Self::Pointer(_) => self.bootstrap_i64_struct_pointer_fields().is_some(),
+            _ => false,
+        }
+    }
+
+    /// Struct values whose pointers retain an identity-bearing tagged aggregate
+    /// snapshot.
+    #[must_use]
+    pub fn uses_interface_aggregate_pointer_representation(&self) -> bool {
+        self.interface_aggregate_struct_fields().is_some()
+            && Self::Pointer(Box::new(self.clone()))
+                .dynamic_type_identity()
+                .is_some()
+    }
+
+    /// Values supported by the current executable representation without
+    /// relying on target-dependent or incomplete numeric semantics.
     pub fn is_bootstrap_value(&self) -> bool {
         if let Self::Named { underlying, .. } | Self::LocalNamed { underlying, .. } = self {
             return underlying.is_bootstrap_value();
@@ -271,12 +331,14 @@ impl Ty {
                     | Self::Int(IntTy::Int | IntTy::Int32)
                     | Self::Uint(UintTy::Uint8)
                     | Self::String
-            ) || element.bootstrap_i64_struct_fields().is_some()
+                    | Self::Interface(_)
+            ) || element.uses_interface_aggregate_representation()
                 || element.snapshot_function_result().is_some();
         }
         if let Self::Pointer(element) = self {
             return element.underlying() == &Self::Int(IntTy::Int)
-                || element.bootstrap_i64_struct_fields().is_some();
+                || element.bootstrap_i64_struct_fields().is_some()
+                || element.uses_interface_aggregate_pointer_representation();
         }
         if let Self::Array(_, element) = self {
             return matches!(
@@ -300,6 +362,12 @@ impl Ty {
         }
         if let Self::Struct(fields) = self {
             return fields.iter().all(|field| field.ty.is_bootstrap_value());
+        }
+        if matches!(self, Self::NamedRef { .. }) {
+            return true;
+        }
+        if matches!(self, Self::Function(_)) {
+            return true;
         }
         matches!(
             self,
@@ -342,6 +410,7 @@ impl Ty {
             Self::Named { underlying, .. } | Self::LocalNamed { underlying, .. } => {
                 underlying.zero()
             }
+            Self::NamedRef { .. } => None,
             Self::Unit
             | Self::Pointer(_)
             | Self::Array(_, _)
@@ -356,7 +425,7 @@ impl Ty {
 
 impl ConstValue {
     /// Whether this exact Go constant can be materialized as `ty` by the
-    /// current target's bootstrap representation.
+    /// current target representation.
     pub fn is_representable_as(&self, ty: &Ty) -> bool {
         if let Ty::Named { underlying, .. } | Ty::LocalNamed { underlying, .. } = ty {
             return self.is_representable_as(underlying);

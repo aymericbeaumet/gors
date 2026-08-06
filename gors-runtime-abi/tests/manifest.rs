@@ -96,11 +96,11 @@ fn current_contract_identity_is_sha256_of_canonical_bytes() {
 
     assert_eq!(manifest.schema().get(), 2);
     assert_eq!(manifest.contract(), CURRENT_CONTRACT_VERSION);
-    assert_eq!(manifest.contract(), ContractVersion::new(2, 13, 0));
+    assert_eq!(manifest.contract(), ContractVersion::new(2, 14, 0));
     assert_eq!(manifest.identity().as_bytes(), &expected);
     assert_eq!(
         manifest.identity().to_string(),
-        "24023bf023dc5d8ee8a6d9d02fc79dbad5445a2ee665cfb39a33023c99797681",
+        "54fba61d5a89d2d4aac86ac1c5ff94646ef04c883b3c20c94e58f3e72156d961",
         "the canonical runtime contract changed; review the ABI diff and bump its semantic version before accepting a new identity",
     );
 }
@@ -232,6 +232,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoInterfaceBoxI64
             | RuntimeOp::GoInterfaceBoxGoString
             | RuntimeOp::GoInterfaceBoxPointerStructI64
+            | RuntimeOp::GoInterfaceBoxAggregate
             | RuntimeOp::GoInterfaceIsNil
             | RuntimeOp::GoInterfaceIsType
             | RuntimeOp::GoInterfaceUnboxBool
@@ -239,6 +240,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoInterfaceUnboxGoString
             | RuntimeOp::GoInterfaceStructI64Get
             | RuntimeOp::GoInterfaceUnboxPointerStructI64
+            | RuntimeOp::GoInterfaceUnboxAggregate
             | RuntimeOp::GoChannelI64Nil
             | RuntimeOp::GoChannelI64Len
             | RuntimeOp::GoChannelI64Cap
@@ -344,6 +346,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoInterfaceBoxGoString
             | RuntimeOp::GoInterfaceBoxStructI64
             | RuntimeOp::GoInterfaceBoxPointerStructI64
+            | RuntimeOp::GoInterfaceBoxAggregate
             | RuntimeOp::GoInterfaceIsNil
             | RuntimeOp::GoInterfaceIsType
             | RuntimeOp::GoInterfaceUnboxBool
@@ -351,6 +354,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoInterfaceUnboxGoString
             | RuntimeOp::GoInterfaceStructI64Get
             | RuntimeOp::GoInterfaceUnboxPointerStructI64
+            | RuntimeOp::GoInterfaceUnboxAggregate
             | RuntimeOp::GoChannelI64Nil
             | RuntimeOp::GoChannelI64Make
             | RuntimeOp::GoChannelI64Len
@@ -456,6 +460,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoInterfaceBoxGoString
             | RuntimeOp::GoInterfaceBoxStructI64
             | RuntimeOp::GoInterfaceBoxPointerStructI64
+            | RuntimeOp::GoInterfaceBoxAggregate
             | RuntimeOp::GoInterfaceIsNil
             | RuntimeOp::GoInterfaceIsType
             | RuntimeOp::GoInterfaceUnboxBool
@@ -463,6 +468,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoInterfaceUnboxGoString
             | RuntimeOp::GoInterfaceStructI64Get
             | RuntimeOp::GoInterfaceUnboxPointerStructI64
+            | RuntimeOp::GoInterfaceUnboxAggregate
             | RuntimeOp::GoChannelI64Nil
             | RuntimeOp::GoChannelI64Make
             | RuntimeOp::GoChannelI64Len
@@ -520,9 +526,8 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             RuntimeOp::GoInterfaceUnboxBool
             | RuntimeOp::GoInterfaceUnboxI64
             | RuntimeOp::GoInterfaceUnboxGoString
-            | RuntimeOp::GoInterfaceUnboxPointerStructI64 => {
-                &[GoPanicCondition::TypeAssertionFailure]
-            }
+            | RuntimeOp::GoInterfaceUnboxPointerStructI64
+            | RuntimeOp::GoInterfaceUnboxAggregate => &[GoPanicCondition::TypeAssertionFailure],
             RuntimeOp::GoInterfaceStructI64Get => &[
                 GoPanicCondition::IndexOutOfRange,
                 GoPanicCondition::TypeAssertionFailure,
@@ -589,6 +594,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoInterfaceBoxGoString
             | RuntimeOp::GoInterfaceBoxStructI64
             | RuntimeOp::GoInterfaceBoxPointerStructI64
+            | RuntimeOp::GoInterfaceBoxAggregate
             | RuntimeOp::GoInterfaceIsNil
             | RuntimeOp::GoInterfaceIsType
             | RuntimeOp::GoChannelI64Nil

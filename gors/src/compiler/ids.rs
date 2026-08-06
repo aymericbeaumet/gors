@@ -128,7 +128,7 @@ impl fmt::Display for QualifiedDefId {
 /// This pair is unique and deterministic for one rebuilt function, but the
 /// dense component is deliberately not a persistent/query identity. Stable
 /// node matching requires reusable incremental syntax identities, which the
-/// bootstrap parser does not yet provide. Keeping the owner explicit prevents
+/// current parser does not yet provide. Keeping the owner explicit prevents
 /// accidental file-global use and keeps unrelated declaration ordering from
 /// perturbing a function's rebuilt nodes.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

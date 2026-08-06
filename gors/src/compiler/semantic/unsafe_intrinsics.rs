@@ -409,7 +409,11 @@ fn type_layout(ty: &Ty) -> Option<Layout> {
                 align: alignment,
             }
         }
-        Ty::Tuple(_) | Ty::Untyped(_) | Ty::Named { .. } | Ty::LocalNamed { .. } => return None,
+        Ty::Tuple(_)
+        | Ty::Untyped(_)
+        | Ty::Named { .. }
+        | Ty::NamedRef { .. }
+        | Ty::LocalNamed { .. } => return None,
     };
     Some(layout)
 }

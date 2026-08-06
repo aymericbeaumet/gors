@@ -145,7 +145,7 @@ pub(super) fn lower_signature(
     let source = SourceRef::definition(definition);
     if header.has_type_parameters {
         return Err(Diagnostic::unsupported(
-            "generic functions are not implemented by the HIR/MIR backend",
+            "generic functions with this declaration form are not yet supported",
             source,
         ));
     }
@@ -168,6 +168,9 @@ pub(super) fn lower_signature(
         .map(|fields| field_types(fields, type_aliases, source))
         .transpose()?
         .unwrap_or_default();
+    for ty in params.iter().chain(&results) {
+        ensure_bootstrap_value_type(ty, source)?;
+    }
     if header.receiver.is_none()
         && header.name.name.as_ref() == "main"
         && (!params.is_empty() || !results.is_empty())
@@ -643,7 +646,7 @@ pub(super) fn lower_type(
     }
     let ExprSyntaxKind::Ident(ident) = &expression.kind else {
         return Err(Diagnostic::unsupported(
-            "this Go type is not yet implemented by the typed backend",
+            "this Go type is not yet supported",
             source,
         ));
     };
@@ -660,16 +663,13 @@ pub(super) fn lower_type(
         "int8" | "int16" | "int64" | "uint" | "uint16" | "uint32" | "uint64" | "uintptr"
         | "float32" | "complex64" => Err(Diagnostic::unsupported(
             format!(
-                "type {} is outside the bootstrap bool/int/string runtime frontier",
+                "executable support for type {} is not yet available",
                 ident.name
             ),
             source,
         )),
         other => type_aliases.get(other).cloned().ok_or_else(|| {
-            Diagnostic::unsupported(
-                format!("type {other} is not implemented by the HIR/MIR backend"),
-                source,
-            )
+            Diagnostic::unsupported(format!("type {other} is not yet supported"), source)
         }),
     }
 }
@@ -771,10 +771,7 @@ pub(super) fn eval_constant(
             ensure_bootstrap_value_type(&operand_ty.default_typed(), source)?;
             validate_binary_operator(op, &operand_ty.default_typed(), source)?;
             let value = fold_constant_binary(op, &left, &right, source)?.ok_or_else(|| {
-                Diagnostic::unsupported(
-                    "constant operation is not implemented by the bootstrap evaluator",
-                    source,
-                )
+                Diagnostic::unsupported("this constant operation is not yet supported", source)
             })?;
             let result_ty = if matches!(
                 op,
@@ -841,7 +838,7 @@ pub(super) fn eval_constant(
         | ExprSyntaxKind::Index { .. }
         | ExprSyntaxKind::Slice { .. }
         | ExprSyntaxKind::Unsupported(_) => Err(Diagnostic::unsupported(
-            "constant expression is not implemented by the HIR/MIR backend",
+            "this constant expression is not yet supported",
             source,
         )),
     }

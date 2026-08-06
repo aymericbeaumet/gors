@@ -1,6 +1,6 @@
 //! Package-wide type-alias resolution over owned declaration projections.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use super::{Db, PackageInput, file_projection, semantic_failure};
@@ -77,6 +77,7 @@ pub(in crate::compiler::db) fn package_type_aliases_product(
             &definitions,
             &mut resolved,
             &mut stack,
+            false,
         )?;
     }
     Ok(Arc::new(resolved))
@@ -109,11 +110,9 @@ fn resolve_type_name<'db>(
     projections: &BTreeMap<String, TypeAliasProjection<'db>>,
     definitions: &BTreeMap<String, TypeDefinitionProjection<'db>>,
     resolved: &mut BTreeMap<String, Ty>,
-    stack: &mut Vec<String>,
+    stack: &mut Vec<(String, bool)>,
+    incoming_guarded: bool,
 ) -> Result<Ty, Arc<StageFailure>> {
-    if let Some(ty) = resolved.get(name) {
-        return Ok(ty.clone());
-    }
     let declaration = projections
         .get(name)
         .copied()
@@ -131,42 +130,56 @@ fn resolve_type_name<'db>(
             ))
         })?;
     let (definition, expression, is_definition) = declaration;
-    if let Some(start) = stack.iter().position(|entry| entry == name) {
-        let mut path = stack.iter().skip(start).cloned().collect::<Vec<_>>();
+    if let Some(start) = stack.iter().position(|(entry, _)| entry == name) {
+        let mut path = stack
+            .iter()
+            .skip(start)
+            .map(|(entry, _)| entry.clone())
+            .collect::<Vec<_>>();
         path.push(name.to_owned());
-        if is_definition
-            || stack
+        let definitions_only = is_definition
+            && stack
                 .iter()
                 .skip(start)
-                .any(|entry| definitions.contains_key(entry))
-        {
-            return Err(semantic_failure(
-                definition,
-                Diagnostic::unsupported(
-                    format!(
-                        "recursive named types are not yet represented by the typed backend: {}",
-                        path.join(" -> ")
-                    ),
-                    SourceRef::definition(definition),
-                ),
-            ));
+                .all(|(entry, _)| definitions.contains_key(entry));
+        let guarded = incoming_guarded
+            || stack
+                .iter()
+                .skip(start.saturating_add(1))
+                .any(|(_, guarded)| *guarded);
+        if definitions_only && guarded {
+            return Ok(Ty::NamedRef { definition });
         }
         return Err(semantic_failure(
             definition,
             Diagnostic::semantic(
-                format!("type declaration cycle: {}", path.join(" -> ")),
+                if definitions_only {
+                    format!("invalid recursive named type: {}", path.join(" -> "))
+                } else {
+                    format!("type declaration cycle: {}", path.join(" -> "))
+                },
                 SourceRef::definition(definition),
             ),
         ));
     }
+    if let Some(ty) = resolved.get(name) {
+        return Ok(ty.clone());
+    }
 
-    stack.push(name.to_owned());
-    let mut dependencies = BTreeSet::new();
-    collect_type_dependencies(&expression, &mut dependencies);
-    for dependency in dependencies {
+    stack.push((name.to_owned(), incoming_guarded));
+    let mut dependencies = BTreeMap::new();
+    collect_type_dependencies(&expression, &mut dependencies, false);
+    for (dependency, guarded) in dependencies {
         if projections.contains_key(&dependency) || definitions.contains_key(&dependency) {
-            let target_ty =
-                resolve_type_name(db, &dependency, projections, definitions, resolved, stack)?;
+            let target_ty = resolve_type_name(
+                db,
+                &dependency,
+                projections,
+                definitions,
+                resolved,
+                stack,
+                guarded,
+            )?;
             resolved.insert(dependency, target_ty);
         }
     }
@@ -184,32 +197,49 @@ fn resolve_type_name<'db>(
     Ok(ty)
 }
 
-fn collect_type_dependencies(expression: &ExprSyntax, dependencies: &mut BTreeSet<String>) {
+fn collect_type_dependencies(
+    expression: &ExprSyntax,
+    dependencies: &mut BTreeMap<String, bool>,
+    guarded: bool,
+) {
     match &expression.kind {
         ExprSyntaxKind::Ident(ident) => {
-            dependencies.insert(ident.name.to_string());
+            dependencies
+                .entry(ident.name.to_string())
+                .and_modify(|existing| *existing &= guarded)
+                .or_insert(guarded);
         }
-        ExprSyntaxKind::Paren(expression) | ExprSyntaxKind::Unary { expression, .. } => {
-            collect_type_dependencies(expression, dependencies);
+        ExprSyntaxKind::Paren(expression) => {
+            collect_type_dependencies(expression, dependencies, guarded);
         }
-        ExprSyntaxKind::ArrayType { element, .. } | ExprSyntaxKind::ChannelType { element, .. } => {
-            collect_type_dependencies(element, dependencies);
+        ExprSyntaxKind::Unary { token, expression } => {
+            collect_type_dependencies(
+                expression,
+                dependencies,
+                guarded || *token == crate::token::Token::MUL,
+            );
+        }
+        ExprSyntaxKind::ArrayType { length, element } => {
+            collect_type_dependencies(element, dependencies, guarded || length.is_none());
+        }
+        ExprSyntaxKind::ChannelType { element, .. } => {
+            collect_type_dependencies(element, dependencies, true);
         }
         ExprSyntaxKind::MapType { key, value } => {
-            collect_type_dependencies(key, dependencies);
-            collect_type_dependencies(value, dependencies);
+            collect_type_dependencies(key, dependencies, true);
+            collect_type_dependencies(value, dependencies, true);
         }
         ExprSyntaxKind::FunctionType {
             params, results, ..
         } => {
-            collect_field_type_dependencies(params, dependencies);
+            collect_field_type_dependencies(params, dependencies, true);
             if let Some(results) = results {
-                collect_field_type_dependencies(results, dependencies);
+                collect_field_type_dependencies(results, dependencies, true);
             }
         }
         ExprSyntaxKind::StructType { fields }
         | ExprSyntaxKind::InterfaceType { methods: fields } => {
-            collect_field_type_dependencies(fields, dependencies);
+            collect_field_type_dependencies(fields, dependencies, guarded);
         }
         ExprSyntaxKind::Selector { .. }
         | ExprSyntaxKind::TypeAssert { .. }
@@ -225,10 +255,14 @@ fn collect_type_dependencies(expression: &ExprSyntax, dependencies: &mut BTreeSe
     }
 }
 
-fn collect_field_type_dependencies(fields: &FieldListSyntax, dependencies: &mut BTreeSet<String>) {
+fn collect_field_type_dependencies(
+    fields: &FieldListSyntax,
+    dependencies: &mut BTreeMap<String, bool>,
+    guarded: bool,
+) {
     for field in &*fields.fields {
         if let Some(ty) = &field.ty {
-            collect_type_dependencies(ty, dependencies);
+            collect_type_dependencies(ty, dependencies, guarded);
         }
     }
 }

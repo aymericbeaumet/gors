@@ -16,6 +16,7 @@ pub(super) fn lower_type(ty: &Ty) -> Result<RustType, Diagnostic> {
         Ty::Complex(ComplexTy::Complex128) => Ok(RustType::Complex128),
         Ty::String => Ok(RustType::GoString),
         Ty::Interface(_) => Ok(RustType::GoInterface),
+        Ty::Function(_) => Ok(RustType::GoInterface),
         Ty::Slice(element)
             if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) =>
         {
@@ -28,10 +29,10 @@ pub(super) fn lower_type(ty: &Ty) -> Result<RustType, Diagnostic> {
             Ok(RustType::GoSliceU8)
         }
         Ty::Slice(element) if element.underlying() == &Ty::Bool => Ok(RustType::GoSliceBool),
-        Ty::Slice(element)
-            if matches!(element.underlying(), Ty::String)
-                || element.bootstrap_i64_struct_fields().is_some() =>
-        {
+        Ty::Slice(element) if matches!(element.underlying(), Ty::Interface(_)) => {
+            Ok(RustType::GoSliceInterface)
+        }
+        Ty::Slice(element) if element.uses_interface_aggregate_representation() => {
             Ok(RustType::GoSliceInterface)
         }
         Ty::Map(key, value)
@@ -49,6 +50,9 @@ pub(super) fn lower_type(ty: &Ty) -> Result<RustType, Diagnostic> {
         }
         Ty::Pointer(element) if element.bootstrap_i64_struct_fields().is_some() => {
             Ok(RustType::GoPointerStructI64)
+        }
+        Ty::Pointer(element) if element.uses_interface_aggregate_pointer_representation() => {
+            Ok(RustType::GoInterface)
         }
         Ty::Channel(_, element) if element.underlying() == &Ty::Int(IntTy::Int) => {
             Ok(RustType::GoChannelI64)

@@ -76,6 +76,29 @@ fn raw_program(logical_path: &str, diagnostic_path: &str, source: &str) -> Progr
 }
 
 #[test]
+fn unsupported_aggregate_payloads_fail_at_their_source_boundary() {
+    for source in [
+        "package main\nfunc main() { value := \"x\"; _ = &value }\n",
+        "package main\ntype Value struct { Items []int }\nfunc main() { value := Value{}; _ = &value }\n",
+        "package main\ntype Value struct { Items []string }\nfunc main() { value := Value{}; _ = &value }\n",
+        "package main\ntype Node struct { Next *Node }\nfunc main() { value := Node{}; _ = &value }\n",
+        "package main\ntype Node struct { Next *Node }\nfunc use(value *Node) {}\nfunc main() {}\n",
+        "package main\nfunc main() { value := &struct { Name string }{}; _ = value }\n",
+        "package main\nfunc main() { values := []struct { Name string }{{Name: \"x\"}}; _ = values }\n",
+        "package main\nfunc main() { values := map[string]struct { X int }{\"a\": {X: 1}}; _ = values }\n",
+    ] {
+        let error = CompilerSession::default()
+            .compile_program(raw_program("main.go", "/checkout/project/main.go", source))
+            .err()
+            .expect("an unsupported pointer payload must be rejected before MIR");
+        let diagnostic = error.diagnostics().first().unwrap();
+        assert_eq!(diagnostic.code, "GORS2001");
+        assert_eq!(diagnostic.file, "/checkout/project/main.go");
+        assert!(diagnostic.line > 0);
+    }
+}
+
+#[test]
 fn install_transaction_rolls_back_updated_inserted_and_stale_inputs() {
     let mut session = CompilerSession::default();
     let workspace = test_workspace();

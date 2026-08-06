@@ -37,7 +37,7 @@ pub(super) type RootInputFingerprints = BTreeMap<RustIrRoot, Fingerprint>;
 
 impl CompilerSession {
     /// Drop removed, renamed, or relocated roots before any early diagnostic
-    /// can leave obsolete readiness attached to this package.
+    /// can leave stale readiness attached to this package.
     pub(super) fn reconcile_ready_roots(&mut self, analysis: &PackageAnalysis) {
         let package = analysis.package();
         let current = analysis

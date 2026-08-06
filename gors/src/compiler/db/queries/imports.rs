@@ -251,6 +251,7 @@ fn collect_interface_method_names(ty: &Ty, names: &mut BTreeSet<Arc<str>>) {
         | Ty::Uint(_)
         | Ty::Float(_)
         | Ty::Complex(_)
+        | Ty::NamedRef { .. }
         | Ty::String
         | Ty::Untyped(_) => {}
     }

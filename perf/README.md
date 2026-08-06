@@ -30,17 +30,17 @@ per measured side. Result validation rejects output-directory,
 
 ## Corpus and scenarios
 
-`corpus/v1` is content-digested and network-free. The bootstrap workload uses
-only the authoritative single-file language frontier. Every workload measures:
+`corpus/v1` is content-digested and network-free. Its initial workload stays
+compact and deterministic. Every workload measures:
 
 - cold build with isolated empty compiler and Go caches;
 - no-op build from a new process after an untimed successful build;
 - leaf implementation edit after an untimed base build, with a required changed
   output sentinel.
 
-Dependency-body and dependency-API edits are machine-readably marked unsupported
-until the authoritative compiler supports imports. They must be added rather
-than silently omitted once that frontier moves.
+Dependency-body and dependency-API edits are machine-readably marked
+unsupported in the current corpus manifest. They must be enabled as
+representative package-DAG scenarios are added rather than silently omitted.
 
 ## Commands
 

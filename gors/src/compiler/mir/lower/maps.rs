@@ -62,9 +62,8 @@ impl FunctionLowerer {
         if let Ty::Array(length, element) = ty.underlying()
             && element.underlying() == &Ty::Int(crate::compiler::types::IntTy::Int)
         {
-            let length = usize::try_from(*length).map_err(|_| {
-                Diagnostic::backend("verified bootstrap array length does not fit usize")
-            })?;
+            let length = usize::try_from(*length)
+                .map_err(|_| Diagnostic::backend("verified array length does not fit usize"))?;
             let value = make_rvalue(
                 RvalueKind::ArrayLiteralI64(vec![0; length]),
                 hir::Effects::default(),
@@ -107,19 +106,24 @@ impl FunctionLowerer {
                 Some(hir::Builtin::SliceU8Nil)
             } else if element.underlying() == &Ty::Bool {
                 Some(hir::Builtin::SliceBoolNil)
-            } else if matches!(element.underlying(), Ty::String)
-                || element.bootstrap_i64_struct_fields().is_some()
-            {
+            } else if element.uses_interface_aggregate_representation() {
                 Some(hir::Builtin::AggregateSliceNil)
             } else {
                 None
             }
         } else if matches!(ty.underlying(), Ty::Interface(_)) {
             Some(hir::Builtin::InterfaceNil)
+        } else if matches!(ty.underlying(), Ty::Function(_)) {
+            Some(hir::Builtin::FunctionNil)
         } else if is_int_pointer(&ty) {
             Some(hir::Builtin::PointerI64Nil)
         } else if ty.bootstrap_i64_struct_pointer_fields().is_some() {
             Some(hir::Builtin::PointerStructI64Nil)
+        } else if matches!(
+            ty.underlying(),
+            Ty::Pointer(element) if element.uses_interface_aggregate_pointer_representation()
+        ) {
+            Some(hir::Builtin::AggregatePointerNil)
         } else if is_int_channel(&ty) {
             Some(hir::Builtin::ChannelI64Nil)
         } else {
@@ -377,6 +381,10 @@ pub(super) fn has_mir_zero_representation(ty: &Ty) -> bool {
         || matches!(ty.underlying(), Ty::Interface(_))
         || is_int_pointer(ty)
         || ty.bootstrap_i64_struct_pointer_fields().is_some()
+        || matches!(
+            ty.underlying(),
+            Ty::Pointer(element) if element.uses_interface_aggregate_pointer_representation()
+        )
         || is_int_channel(ty)
 }
 

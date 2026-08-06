@@ -13,6 +13,13 @@ use super::expressions::{
 };
 use super::lower_type;
 
+struct InterfaceCase {
+    ty: Ty,
+    identities: Vec<Vec<u8>>,
+    satisfaction: bool,
+    implied: bool,
+}
+
 pub(super) fn error_interface_ty() -> Ty {
     Ty::Interface(vec![InterfaceMethod {
         name: "Error".to_owned(),
@@ -62,14 +69,28 @@ impl FunctionLowerer {
         node: NodeId,
         source: SourceRef,
     ) -> Result<hir::Expr, Diagnostic> {
-        let (asserted_ty, type_identity) =
-            self.interface_case_identity(&interface.ty, asserted, source)?;
-        let identity = self.interface_identity_expr(asserted.source, type_identity)?;
+        let InterfaceCase {
+            ty: asserted_ty,
+            identities: type_identities,
+            satisfaction,
+            implied,
+        } = self.interface_case_identities(&interface.ty, asserted, source)?;
+        if satisfaction && !comma_ok {
+            return Err(Diagnostic::unsupported(
+                "single-result assertions to interface types are not yet supported",
+                source,
+            ));
+        }
         let effects = interface.effects.union(hir::Effects {
             may_call: true,
             may_panic: !comma_ok,
             ..hir::Effects::default()
         });
+        let mut args = Vec::with_capacity(type_identities.len().saturating_add(1));
+        args.push(interface);
+        for identity in type_identities {
+            args.push(self.interface_identity_expr(asserted.source, identity)?);
+        }
         let ty = if comma_ok {
             Ty::Tuple(vec![asserted_ty, Ty::Bool])
         } else {
@@ -78,8 +99,16 @@ impl FunctionLowerer {
         Ok(hir::Expr {
             node,
             kind: hir::ExprKind::Call {
-                callee: hir::Callee::Builtin(hir::Builtin::InterfaceAssert),
-                args: vec![interface, identity],
+                callee: hir::Callee::Builtin(if satisfaction {
+                    if implied {
+                        hir::Builtin::InterfaceSatisfiesNonNil
+                    } else {
+                        hir::Builtin::InterfaceSatisfies
+                    }
+                } else {
+                    hir::Builtin::InterfaceAssert
+                }),
+                args,
             },
             ty,
             category: hir::ValueCategory::Value,
@@ -95,18 +124,34 @@ impl FunctionLowerer {
         node: NodeId,
         source: SourceRef,
     ) -> Result<(Ty, hir::Expr), Diagnostic> {
-        let (asserted_ty, type_identity) =
-            self.interface_case_identity(&interface.ty, asserted, source)?;
-        let identity = self.interface_identity_expr(asserted.source, type_identity)?;
+        let InterfaceCase {
+            ty: asserted_ty,
+            identities: type_identities,
+            satisfaction,
+            implied,
+        } = self.interface_case_identities(&interface.ty, asserted, source)?;
         let effects = interface.effects.union(hir::Effects {
             may_call: true,
             ..hir::Effects::default()
         });
+        let mut args = Vec::with_capacity(type_identities.len().saturating_add(1));
+        args.push(interface);
+        for identity in type_identities {
+            args.push(self.interface_identity_expr(asserted.source, identity)?);
+        }
         let test = hir::Expr {
             node,
             kind: hir::ExprKind::Call {
-                callee: hir::Callee::Builtin(hir::Builtin::InterfaceIsType),
-                args: vec![interface, identity],
+                callee: hir::Callee::Builtin(if satisfaction {
+                    if implied {
+                        hir::Builtin::InterfaceSatisfiesNonNil
+                    } else {
+                        hir::Builtin::InterfaceSatisfies
+                    }
+                } else {
+                    hir::Builtin::InterfaceIsType
+                }),
+                args,
             },
             ty: Ty::Bool,
             category: hir::ValueCategory::Value,
@@ -116,12 +161,12 @@ impl FunctionLowerer {
         Ok((asserted_ty, test))
     }
 
-    fn interface_case_identity(
+    fn interface_case_identities(
         &self,
         interface_ty: &Ty,
         asserted: &ExprSyntax,
         source: SourceRef,
-    ) -> Result<(Ty, Vec<u8>), Diagnostic> {
+    ) -> Result<InterfaceCase, Diagnostic> {
         let Ty::Interface(required_methods) = interface_ty.underlying() else {
             return Err(Diagnostic::semantic(
                 "type assertion requires an interface value",
@@ -129,11 +174,36 @@ impl FunctionLowerer {
             ));
         };
         let asserted_ty = lower_type(asserted, &self.type_aliases, source)?;
-        if matches!(asserted_ty.underlying(), Ty::Interface(_)) {
-            return Err(Diagnostic::unsupported(
-                "assertions to interface types require interface satisfaction dispatch",
-                source,
-            ));
+        if let Ty::Interface(asserted_methods) = asserted_ty.underlying() {
+            if interface_method_set_contains(required_methods, asserted_methods) {
+                return Ok(InterfaceCase {
+                    ty: asserted_ty,
+                    identities: Vec::new(),
+                    satisfaction: true,
+                    implied: true,
+                });
+            }
+            let mut identities = std::collections::BTreeSet::new();
+            for ty in self.type_aliases.values() {
+                let Ty::Named { .. } = ty else {
+                    continue;
+                };
+                for dynamic_ty in [ty.clone(), Ty::Pointer(Box::new(ty.clone()))] {
+                    if supports_dynamic_interface_type(&dynamic_ty)
+                        && self.concrete_implements(&dynamic_ty, required_methods)
+                        && self.concrete_implements(&dynamic_ty, asserted_methods)
+                        && let Some(identity) = dynamic_ty.dynamic_type_identity()
+                    {
+                        identities.insert(identity);
+                    }
+                }
+            }
+            return Ok(InterfaceCase {
+                ty: asserted_ty,
+                identities: identities.into_iter().collect(),
+                satisfaction: true,
+                implied: false,
+            });
         }
         ensure_bootstrap_value_type(&asserted_ty, source)?;
         if !supports_dynamic_interface_type(&asserted_ty) {
@@ -157,7 +227,12 @@ impl FunctionLowerer {
                 source,
             )
         })?;
-        Ok((asserted_ty, type_identity))
+        Ok(InterfaceCase {
+            ty: asserted_ty,
+            identities: vec![type_identity],
+            satisfaction: false,
+            implied: false,
+        })
     }
 
     fn interface_identity_expr(
@@ -527,9 +602,11 @@ fn receiver_definition(ty: &Ty) -> Option<(crate::compiler::ids::DefId, bool)> {
 }
 
 fn supports_dynamic_interface_type(ty: &Ty) -> bool {
-    matches!(
-        ty.underlying(),
-        Ty::Bool | Ty::Int(crate::compiler::types::IntTy::Int) | Ty::String
-    ) || ty.bootstrap_i64_struct_fields().is_some()
-        || ty.bootstrap_i64_struct_pointer_fields().is_some()
+    ty.supports_interface_payload()
+}
+
+fn interface_method_set_contains(source: &[InterfaceMethod], target: &[InterfaceMethod]) -> bool {
+    target
+        .iter()
+        .all(|required| source.iter().any(|available| available == required))
 }

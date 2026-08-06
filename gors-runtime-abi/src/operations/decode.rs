@@ -112,6 +112,8 @@ impl TryFrom<u16> for RuntimeOp {
             108 => Ok(Self::GoSliceBoolIsNil),
             109 => Ok(Self::GoSliceInterfaceNil),
             110 => Ok(Self::GoSliceInterfaceIsNil),
+            111 => Ok(Self::GoInterfaceBoxAggregate),
+            112 => Ok(Self::GoInterfaceUnboxAggregate),
             unknown => Err(UnknownRuntimeOpId(unknown)),
         }
     }

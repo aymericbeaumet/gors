@@ -34,10 +34,11 @@ pub use interface_containers::{
     go_slice_interface_set,
 };
 pub use interfaces::{
-    GoInterface, go_interface_box_bool, go_interface_box_go_string, go_interface_box_i64,
-    go_interface_box_pointer_struct_i64, go_interface_box_struct_i64, go_interface_is_nil,
-    go_interface_is_type, go_interface_nil, go_interface_struct_i64_get, go_interface_unbox_bool,
-    go_interface_unbox_go_string, go_interface_unbox_i64, go_interface_unbox_pointer_struct_i64,
+    GoInterface, go_interface_box_aggregate, go_interface_box_bool, go_interface_box_go_string,
+    go_interface_box_i64, go_interface_box_pointer_struct_i64, go_interface_box_struct_i64,
+    go_interface_is_nil, go_interface_is_type, go_interface_nil, go_interface_struct_i64_get,
+    go_interface_unbox_aggregate, go_interface_unbox_bool, go_interface_unbox_go_string,
+    go_interface_unbox_i64, go_interface_unbox_pointer_struct_i64,
 };
 pub use slice_identity::{
     go_slice_bool_is_nil, go_slice_bool_nil, go_slice_i64_is_nil, go_slice_i64_nil,
@@ -54,9 +55,9 @@ use std::hash::{Hash, Hasher};
 use std::io::Write as _;
 use std::sync::{Arc, RwLock};
 
-/// The fixed-width representation of Go `int` for the bootstrap target.
+/// The fixed-width representation of Go `int` for the selected data model.
 ///
-/// The initial backend deliberately targets the 64-bit Go data model on every
+/// The runtime uses the 64-bit Go data model on every
 /// Rust host, including wasm32, instead of inheriting Rust's pointer width.
 pub type GoInt = i64;
 
@@ -939,7 +940,7 @@ pub fn print_bool(value: bool) {
     write_stderr_bytes(if value { b"true" } else { b"false" });
 }
 
-/// Print an exact 64-bit bootstrap Go `int` representation.
+/// Print an exact 64-bit Go `int` representation.
 pub fn print_i64(value: GoInt) {
     let stderr = std::io::stderr();
     let mut output = stderr.lock();

@@ -53,20 +53,23 @@ impl FunctionLowerer {
         ty: &Ty,
         source: SourceRef,
     ) -> Result<Operand, Diagnostic> {
-        let Ty::Slice(element_ty) = ty.underlying() else {
+        let Ty::Slice(_) = ty.underlying() else {
             return Err(Diagnostic::backend(
                 "aggregate slice literal has a non-slice type",
             ));
         };
-        let element_ty = element_ty.as_ref().clone();
         let mut values = Vec::with_capacity(elements.len());
         for element in elements {
             let value = self.lower_expr(element)?;
-            values.push(self.materialize(
-                value,
-                element.ty.clone(),
-                Provenance::Source(element.source),
-            )?);
+            let element_ty = element.ty.clone();
+            values.push((
+                self.materialize(
+                    value,
+                    element_ty.clone(),
+                    Provenance::Source(element.source),
+                )?,
+                element_ty,
+            ));
         }
 
         let slice = Place {
@@ -80,14 +83,9 @@ impl FunctionLowerer {
             source,
         )?;
         let interface_ty = Ty::Interface(Vec::new());
-        for (index, value) in values.into_iter().enumerate() {
-            let tagged = self.box_interface_operand(
-                value,
-                &element_ty,
-                type_identity,
-                &interface_ty,
-                source,
-            )?;
+        for (index, (value, value_ty)) in values.into_iter().enumerate() {
+            let tagged =
+                self.box_interface_operand(value, &value_ty, type_identity, &interface_ty, source)?;
             self.emit_map_call(
                 hir::Builtin::AggregateSliceSetTagged,
                 vec![Operand::Read(slice), int_constant_operand(index), tagged],

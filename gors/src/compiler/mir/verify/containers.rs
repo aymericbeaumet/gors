@@ -353,8 +353,8 @@ fn is_aggregate_slice(ty: &Ty) -> bool {
     matches!(
         ty.underlying(),
         Ty::Slice(element)
-            if matches!(element.underlying(), Ty::String)
-                || element.bootstrap_i64_struct_fields().is_some()
+            if matches!(element.underlying(), Ty::Interface(_))
+                || element.uses_interface_aggregate_representation()
     )
 }
 
