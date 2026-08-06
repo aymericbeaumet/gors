@@ -358,6 +358,16 @@ impl FunctionLowerer {
                 value,
                 coercions,
             } => self.lower_tuple_assignment(destinations, value, coercions, false)?,
+            hir::StmtKind::ParallelAssignTuple {
+                destinations,
+                value,
+                coercions,
+            } => self.lower_parallel_tuple_assignment(
+                destinations,
+                value,
+                coercions,
+                statement.source,
+            )?,
             hir::StmtKind::ParallelAssign {
                 destinations,
                 values,

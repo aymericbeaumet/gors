@@ -330,6 +330,86 @@ impl FunctionLowerer {
         right: &[ExprSyntax],
         source: SourceRef,
     ) -> Result<hir::StmtKind, Diagnostic> {
+        let (destinations, destination_types) =
+            self.lower_parallel_assignment_targets(left, source)?;
+        let values = right
+            .iter()
+            .zip(&destination_types)
+            .map(|(expression, expected)| match expected {
+                Some(expected) => self.lower_expr(expression, Some(expected)),
+                None => self.lower_expr(expression, None).and_then(|expression| {
+                    let value_source = expression.source;
+                    default_expr_type(expression, value_source)
+                }),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        for (index, (value, expected)) in values.iter().zip(&destination_types).enumerate() {
+            if let Some(expected) = expected
+                && !is_assignable(&value.ty, expected)
+            {
+                return Err(Diagnostic::semantic(
+                    format!(
+                        "assignment value {index} of type {:?} is not assignable to {expected:?}",
+                        value.ty
+                    ),
+                    source,
+                ));
+            }
+        }
+        Ok(hir::StmtKind::ParallelAssign {
+            destinations,
+            values,
+        })
+    }
+
+    pub(super) fn lower_parallel_tuple_assignment(
+        &mut self,
+        left: &[ExprSyntax],
+        value: hir::Expr,
+        source: SourceRef,
+    ) -> Result<hir::StmtKind, Diagnostic> {
+        let Ty::Tuple(component_types) = &value.ty else {
+            return Err(Diagnostic::backend(
+                "parallel tuple assignment value is not a tuple",
+            ));
+        };
+        if component_types.len() != left.len() {
+            return Err(Diagnostic::backend(
+                "parallel tuple assignment arity changed during semantic lowering",
+            ));
+        }
+        let (destinations, destination_types) =
+            self.lower_parallel_assignment_targets(left, source)?;
+        let coercions = destination_types
+            .iter()
+            .zip(component_types)
+            .enumerate()
+            .map(|(index, (destination_ty, result_ty))| match destination_ty {
+                None => Ok(hir::ValueCoercion::Identity),
+                Some(destination_ty) => self
+                    .assignment_value_coercion(result_ty, destination_ty, source)
+                    .map_err(|_| {
+                        Diagnostic::semantic(
+                            format!(
+                                "result {index} of type {result_ty:?} is not assignable to {destination_ty:?}"
+                            ),
+                            source,
+                        )
+                    }),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(hir::StmtKind::ParallelAssignTuple {
+            destinations,
+            value,
+            coercions,
+        })
+    }
+
+    fn lower_parallel_assignment_targets(
+        &mut self,
+        left: &[ExprSyntax],
+        source: SourceRef,
+    ) -> Result<(Vec<hir::AssignTarget>, Vec<Option<Ty>>), Diagnostic> {
         let mut destinations = Vec::with_capacity(left.len());
         let mut destination_types = Vec::with_capacity(left.len());
         for expression in left {
@@ -392,34 +472,6 @@ impl FunctionLowerer {
                 }
             }
         }
-
-        let values = right
-            .iter()
-            .zip(&destination_types)
-            .map(|(expression, expected)| match expected {
-                Some(expected) => self.lower_expr(expression, Some(expected)),
-                None => self.lower_expr(expression, None).and_then(|expression| {
-                    let value_source = expression.source;
-                    default_expr_type(expression, value_source)
-                }),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        for (index, (value, expected)) in values.iter().zip(&destination_types).enumerate() {
-            if let Some(expected) = expected
-                && !is_assignable(&value.ty, expected)
-            {
-                return Err(Diagnostic::semantic(
-                    format!(
-                        "assignment value {index} of type {:?} is not assignable to {expected:?}",
-                        value.ty
-                    ),
-                    source,
-                ));
-            }
-        }
-        Ok(hir::StmtKind::ParallelAssign {
-            destinations,
-            values,
-        })
+        Ok((destinations, destination_types))
     }
 }

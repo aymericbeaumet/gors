@@ -183,6 +183,19 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
                 encoder.sequence(coercions, encode_value_coercion);
             });
         }),
+        hir::StmtKind::ParallelAssignTuple {
+            destinations,
+            value,
+            coercions,
+        } => encoder.variant(b"parallel-assign-tuple", |encoder| {
+            encoder.field(b"destinations", |encoder| {
+                encoder.sequence(destinations, encode_assignment_target);
+            });
+            encoder.field(b"value", |encoder| encode_expression(encoder, value));
+            encoder.field(b"coercions", |encoder| {
+                encoder.sequence(coercions, encode_value_coercion);
+            });
+        }),
         hir::StmtKind::ParallelAssign {
             destinations,
             values,

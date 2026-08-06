@@ -698,6 +698,13 @@ impl FunctionLowerer {
                         "tuple-valued non-call reached multi-result assignment",
                     ));
                 }
+                if token == Token::ASSIGN
+                    && left
+                        .iter()
+                        .any(|expression| matches!(expression.kind, ExprSyntaxKind::Index { .. }))
+                {
+                    return self.lower_parallel_tuple_assignment(left, value, source);
+                }
                 let (destinations, coercions, declares) =
                     self.lower_multi_result_destinations(left, token, component_types, source)?;
                 return Ok(if declares {

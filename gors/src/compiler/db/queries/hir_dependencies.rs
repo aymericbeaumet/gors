@@ -32,23 +32,19 @@ fn collect_statement_callees(statement: &hir::Stmt, callees: &mut BTreeSet<Quali
         hir::StmtKind::LetTuple { value, .. } | hir::StmtKind::AssignTuple { value, .. } => {
             collect_expression_callees(value, callees);
         }
+        hir::StmtKind::ParallelAssignTuple {
+            destinations,
+            value,
+            ..
+        } => {
+            collect_assignment_target_callees(destinations, callees);
+            collect_expression_callees(value, callees);
+        }
         hir::StmtKind::ParallelAssign {
             destinations,
             values,
         } => {
-            for destination in destinations {
-                match destination {
-                    hir::AssignTarget::SliceIndex { slice, index, .. } => {
-                        collect_expression_callees(slice, callees);
-                        collect_expression_callees(index, callees);
-                    }
-                    hir::AssignTarget::MapIndex { map, key } => {
-                        collect_expression_callees(map, callees);
-                        collect_expression_callees(key, callees);
-                    }
-                    hir::AssignTarget::Local(_) | hir::AssignTarget::Discard => {}
-                }
-            }
+            collect_assignment_target_callees(destinations, callees);
             for value in values {
                 collect_expression_callees(value, callees);
             }
@@ -103,6 +99,7 @@ fn collect_statement_callees(statement: &hir::Stmt, callees: &mut BTreeSet<Quali
             condition,
             post,
             body,
+            ..
         } => {
             if let Some(init) = init {
                 collect_statement_callees(init, callees);
@@ -131,6 +128,25 @@ fn collect_statement_callees(statement: &hir::Stmt, callees: &mut BTreeSet<Quali
         | hir::StmtKind::Goto(_)
         | hir::StmtKind::Break(_)
         | hir::StmtKind::Continue(_) => {}
+    }
+}
+
+fn collect_assignment_target_callees(
+    destinations: &[hir::AssignTarget],
+    callees: &mut BTreeSet<QualifiedDefId>,
+) {
+    for destination in destinations {
+        match destination {
+            hir::AssignTarget::SliceIndex { slice, index, .. } => {
+                collect_expression_callees(slice, callees);
+                collect_expression_callees(index, callees);
+            }
+            hir::AssignTarget::MapIndex { map, key } => {
+                collect_expression_callees(map, callees);
+                collect_expression_callees(key, callees);
+            }
+            hir::AssignTarget::Local(_) | hir::AssignTarget::Discard => {}
+        }
     }
 }
 

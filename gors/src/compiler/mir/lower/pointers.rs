@@ -425,7 +425,7 @@ impl FunctionLowerer {
         Ok(())
     }
 
-    fn lower_value_coercion(
+    pub(super) fn lower_value_coercion(
         &mut self,
         operand: Operand,
         source_ty: &Ty,
@@ -528,6 +528,26 @@ fn collect_statement_addresses(statement: &hir::Stmt, addressed: &mut BTreeSet<L
             collect_expression_addresses(values, addressed);
         }
         hir::StmtKind::LetTuple { value, .. } | hir::StmtKind::AssignTuple { value, .. } => {
+            collect_expr_addresses(value, addressed);
+        }
+        hir::StmtKind::ParallelAssignTuple {
+            destinations,
+            value,
+            ..
+        } => {
+            for destination in destinations {
+                match destination {
+                    hir::AssignTarget::SliceIndex { slice, index, .. } => {
+                        collect_expr_addresses(slice, addressed);
+                        collect_expr_addresses(index, addressed);
+                    }
+                    hir::AssignTarget::MapIndex { map, key } => {
+                        collect_expr_addresses(map, addressed);
+                        collect_expr_addresses(key, addressed);
+                    }
+                    hir::AssignTarget::Local(_) | hir::AssignTarget::Discard => {}
+                }
+            }
             collect_expr_addresses(value, addressed);
         }
         hir::StmtKind::ParallelAssign {

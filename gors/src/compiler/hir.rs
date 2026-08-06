@@ -98,6 +98,13 @@ pub enum StmtKind {
         value: Expr,
         coercions: Vec<ValueCoercion>,
     },
+    /// Dynamic left-hand-side operands are evaluated before the tuple-valued
+    /// right-hand side, then all result coercions are applied before writes.
+    ParallelAssignTuple {
+        destinations: Vec<AssignTarget>,
+        value: Expr,
+        coercions: Vec<ValueCoercion>,
+    },
     /// Dynamic left-hand-side operands are evaluated before all right-hand
     /// sides, then destinations are written from left to right.
     ParallelAssign {

@@ -1,6 +1,7 @@
 use super::*;
 
 mod arrays;
+mod assignments;
 mod channels;
 mod interfaces;
 mod pointers;
