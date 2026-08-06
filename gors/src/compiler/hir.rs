@@ -250,10 +250,15 @@ pub enum Builtin {
     MapStringI64Make,
     MapStringI64Len,
     MapStringI64Get,
+    /// HIR-only comma-ok lookup expanded into one `get` and one `contains`
+    /// call during explicit-order MIR construction.
+    MapStringI64Lookup,
+    MapStringI64Contains,
     MapStringI64Set,
     MapStringI64Delete,
     MapStringI64Clear,
     MapStringI64IsNil,
+    MapStringI64KeyAt,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -684,6 +684,42 @@ fn generated_maps_preserve_nil_and_shared_reference_semantics() {
 }
 
 #[test]
+fn generated_maps_support_comma_ok_and_key_value_ranges() {
+    let run = compile_and_run(
+        r#"
+            package main
+            func main() {
+                values := map[string]int{"zero": 0, "answer": 42}
+                zero, zeroOK := values["zero"]
+                missing, missingOK := values["missing"]
+                count, total := 0, 0
+                for key, value := range values {
+                    if key == "zero" || key == "answer" { count++ }
+                    total += value
+                }
+                if zero != 0 || !zeroOK || missing != 0 || missingOK {
+                    panic("comma-ok lookup changed")
+                }
+                if count != 2 || total != 42 { panic("map range changed") }
+                println("map-lookup-range: ok")
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"map-lookup-range: ok\n");
+    assert!(
+        run.rust.contains("go_map_string_i64_contains"),
+        "{}",
+        run.rust
+    );
+    assert!(
+        run.rust.contains("go_map_string_i64_key_at"),
+        "{}",
+        run.rust
+    );
+}
+
+#[test]
 fn def_id_function_names_cannot_collide_with_rust_keywords() {
     let run = compile_and_run(
         r#"

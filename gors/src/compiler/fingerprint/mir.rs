@@ -267,10 +267,13 @@ fn encode_callee(encoder: &mut Encoder, callee: hir::Callee) {
                     hir::Builtin::MapStringI64Make => b"map-string-i64-make",
                     hir::Builtin::MapStringI64Len => b"map-string-i64-len",
                     hir::Builtin::MapStringI64Get => b"map-string-i64-get",
+                    hir::Builtin::MapStringI64Lookup => b"map-string-i64-lookup",
+                    hir::Builtin::MapStringI64Contains => b"map-string-i64-contains",
                     hir::Builtin::MapStringI64Set => b"map-string-i64-set",
                     hir::Builtin::MapStringI64Delete => b"map-string-i64-delete",
                     hir::Builtin::MapStringI64Clear => b"map-string-i64-clear",
                     hir::Builtin::MapStringI64IsNil => b"map-string-i64-is-nil",
+                    hir::Builtin::MapStringI64KeyAt => b"map-string-i64-key-at",
                 },
                 |_| {},
             );

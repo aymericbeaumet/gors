@@ -15,6 +15,39 @@ pub(super) fn string_i64_map_ty() -> Ty {
 }
 
 impl FunctionLowerer {
+    pub(super) fn try_lower_map_comma_ok(
+        &mut self,
+        expression: &ExprSyntax,
+    ) -> Option<Result<hir::Expr, Diagnostic>> {
+        let ExprSyntaxKind::Index { base, index } = &expression.kind else {
+            return None;
+        };
+        Some((|| {
+            let node = self.alloc_node(expression.source)?;
+            let source = SourceRef::node(node);
+            let map = self.lower_expr(base, None)?;
+            if map.ty.underlying() != string_i64_map_ty().underlying() {
+                return Err(Diagnostic::semantic(
+                    "comma-ok assignment requires a map lookup",
+                    source,
+                ));
+            }
+            let key = self.lower_expr(index, Some(&Ty::String))?;
+            let effects = map_effects(&[&map, &key], false, false, false);
+            Ok(hir::Expr {
+                node,
+                kind: hir::ExprKind::Call {
+                    callee: hir::Callee::Builtin(hir::Builtin::MapStringI64Lookup),
+                    args: vec![map, key],
+                },
+                ty: Ty::Tuple(vec![Ty::Int(IntTy::Int), Ty::Bool]),
+                category: hir::ValueCategory::Value,
+                effects,
+                source,
+            })
+        })())
+    }
+
     pub(super) fn zero_value_expr(
         &self,
         node: NodeId,

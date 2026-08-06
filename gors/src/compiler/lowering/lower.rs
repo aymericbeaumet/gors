@@ -266,10 +266,13 @@ fn lower_terminator(
                 | hir::Builtin::MapStringI64Make
                 | hir::Builtin::MapStringI64Len
                 | hir::Builtin::MapStringI64Get
+                | hir::Builtin::MapStringI64Lookup
+                | hir::Builtin::MapStringI64Contains
                 | hir::Builtin::MapStringI64Set
                 | hir::Builtin::MapStringI64Delete
                 | hir::Builtin::MapStringI64Clear
-                | hir::Builtin::MapStringI64IsNil),
+                | hir::Builtin::MapStringI64IsNil
+                | hir::Builtin::MapStringI64KeyAt),
             ) => out::TerminatorKind::Call {
                 target: out::CallTarget::Runtime(match builtin {
                     hir::Builtin::SliceI64Index => RuntimeOp::GoSliceI64Index,
@@ -289,10 +292,17 @@ fn lower_terminator(
                     hir::Builtin::MapStringI64Make => RuntimeOp::GoMapStringI64Make,
                     hir::Builtin::MapStringI64Len => RuntimeOp::GoMapStringI64Len,
                     hir::Builtin::MapStringI64Get => RuntimeOp::GoMapStringI64Get,
+                    hir::Builtin::MapStringI64Contains => RuntimeOp::GoMapStringI64Contains,
                     hir::Builtin::MapStringI64Set => RuntimeOp::GoMapStringI64Set,
                     hir::Builtin::MapStringI64Delete => RuntimeOp::GoMapStringI64Delete,
                     hir::Builtin::MapStringI64Clear => RuntimeOp::GoMapStringI64Clear,
                     hir::Builtin::MapStringI64IsNil => RuntimeOp::GoMapStringI64IsNil,
+                    hir::Builtin::MapStringI64KeyAt => RuntimeOp::GoMapStringI64KeyAt,
+                    hir::Builtin::MapStringI64Lookup => {
+                        return Err(Diagnostic::backend(
+                            "map comma-ok lookup survived MIR expansion",
+                        ));
+                    }
                     hir::Builtin::Print | hir::Builtin::Println | hir::Builtin::Panic => {
                         return Err(Diagnostic::backend(
                             "non-slice builtin reached slice representation lowering",

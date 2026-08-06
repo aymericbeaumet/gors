@@ -1,4 +1,4 @@
-//! Typed lowering for slice range statements.
+//! Typed lowering for slice and map range statements.
 
 use std::collections::BTreeSet;
 
@@ -24,19 +24,23 @@ impl FunctionLowerer {
         source: SourceRef,
     ) -> Result<hir::StmtKind, Diagnostic> {
         let expression = self.lower_expr(range_expression, None)?;
-        let Ty::Slice(element) = expression.ty.underlying() else {
-            return Err(Diagnostic::unsupported(
-                "range currently supports slice values",
-                source,
-            ));
+        let (key_ty, value_ty) = match expression.ty.underlying() {
+            Ty::Slice(element) if element.underlying() == &Ty::Int(IntTy::Int) => {
+                (Ty::Int(IntTy::Int), element.as_ref().clone())
+            }
+            Ty::Map(key, value)
+                if key.underlying() == &Ty::String
+                    && value.underlying() == &Ty::Int(IntTy::Int) =>
+            {
+                (key.as_ref().clone(), value.as_ref().clone())
+            }
+            ty => {
+                return Err(Diagnostic::unsupported(
+                    format!("range is not yet implemented for {ty:?}"),
+                    source,
+                ));
+            }
         };
-        if element.underlying() != &Ty::Int(IntTy::Int) {
-            return Err(Diagnostic::unsupported(
-                "range currently supports []int values",
-                source,
-            ));
-        }
-        let element_ty = element.as_ref().clone();
         let label = label.map(|label| label.name.to_string());
         if self.inside_local_closure && label.is_some() {
             return Err(Diagnostic::unsupported(
@@ -58,10 +62,10 @@ impl FunctionLowerer {
             let (key, value) = match token {
                 None if key.is_none() && value.is_none() => (None, None),
                 Some(Token::DEFINE) => {
-                    self.declare_range_bindings(key, value, &element_ty, source)?
+                    self.declare_range_bindings(key, value, &key_ty, &value_ty, source)?
                 }
                 Some(Token::ASSIGN) => {
-                    self.resolve_range_bindings(key, value, &element_ty, source)?
+                    self.resolve_range_bindings(key, value, &key_ty, &value_ty, source)?
                 }
                 _ => {
                     return Err(Diagnostic::semantic(
@@ -90,17 +94,16 @@ impl FunctionLowerer {
         &mut self,
         key: Option<&ExprSyntax>,
         value: Option<&ExprSyntax>,
-        element_ty: &Ty,
+        key_ty: &Ty,
+        value_ty: &Ty,
         source: SourceRef,
     ) -> Result<(Option<hir::Place>, Option<hir::Place>), Diagnostic> {
         let mut names = BTreeSet::new();
         let key = key
-            .map(|target| {
-                self.declare_range_binding(target, &Ty::Int(IntTy::Int), &mut names, source)
-            })
+            .map(|target| self.declare_range_binding(target, key_ty, &mut names, source))
             .transpose()?;
         let value = value
-            .map(|target| self.declare_range_binding(target, element_ty, &mut names, source))
+            .map(|target| self.declare_range_binding(target, value_ty, &mut names, source))
             .transpose()?;
         if !matches!(key, Some(hir::Place::Local(_)))
             && !matches!(value, Some(hir::Place::Local(_)))
@@ -148,14 +151,15 @@ impl FunctionLowerer {
         &self,
         key: Option<&ExprSyntax>,
         value: Option<&ExprSyntax>,
-        element_ty: &Ty,
+        key_ty: &Ty,
+        value_ty: &Ty,
         source: SourceRef,
     ) -> Result<(Option<hir::Place>, Option<hir::Place>), Diagnostic> {
         let key = key
-            .map(|target| self.resolve_range_binding(target, &Ty::Int(IntTy::Int), source))
+            .map(|target| self.resolve_range_binding(target, key_ty, source))
             .transpose()?;
         let value = value
-            .map(|target| self.resolve_range_binding(target, element_ty, source))
+            .map(|target| self.resolve_range_binding(target, value_ty, source))
             .transpose()?;
         Ok((key, value))
     }

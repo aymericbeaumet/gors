@@ -657,7 +657,10 @@ impl FunctionLowerer {
         }
         if left.len() != right.len() {
             if let [value] = right {
-                let value = self.lower_expr(value, None)?;
+                let value = match self.try_lower_map_comma_ok(value) {
+                    Some(value) => value?,
+                    None => self.lower_expr(value, None)?,
+                };
                 let Ty::Tuple(component_types) = &value.ty else {
                     return Err(Diagnostic::semantic(
                         format!(

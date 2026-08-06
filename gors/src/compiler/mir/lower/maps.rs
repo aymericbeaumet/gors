@@ -9,6 +9,42 @@ use crate::compiler::provenance::SourceRef;
 use crate::compiler::types::Ty;
 
 impl FunctionLowerer {
+    pub(super) fn lower_map_lookup_into(
+        &mut self,
+        arguments: &[hir::Expr],
+        destinations: Vec<Place>,
+        source: SourceRef,
+    ) -> Result<(), Diagnostic> {
+        let [map, key] = arguments else {
+            return Err(Diagnostic::backend(
+                "map comma-ok lookup argument arity changed before MIR lowering",
+            ));
+        };
+        let [value_destination, present_destination] = destinations.as_slice() else {
+            return Err(Diagnostic::backend(
+                "map comma-ok lookup result arity changed before MIR lowering",
+            ));
+        };
+        let map_operand = self.lower_expr(map)?;
+        let map_operand =
+            self.materialize(map_operand, map.ty.clone(), Provenance::Source(map.source))?;
+        let key_operand = self.lower_expr(key)?;
+        let key_operand =
+            self.materialize(key_operand, key.ty.clone(), Provenance::Source(key.source))?;
+        self.emit_map_call(
+            hir::Builtin::MapStringI64Get,
+            vec![map_operand.clone(), key_operand.clone()],
+            vec![*value_destination],
+            source,
+        )?;
+        self.emit_map_call(
+            hir::Builtin::MapStringI64Contains,
+            vec![map_operand, key_operand],
+            vec![*present_destination],
+            source,
+        )
+    }
+
     pub(super) fn lower_zero_value(
         &mut self,
         destination: Place,

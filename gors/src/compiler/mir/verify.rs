@@ -480,6 +480,19 @@ impl Function {
                                 )?;
                                 vec![Ty::Int(IntTy::Int)]
                             }
+                            hir::Builtin::MapStringI64Lookup => {
+                                return Err(Diagnostic::backend(
+                                    "map comma-ok lookup survived MIR construction",
+                                ));
+                            }
+                            hir::Builtin::MapStringI64Contains => {
+                                verify_map_call_arguments(
+                                    &argument_types,
+                                    &[map_string_i64_ty(), Ty::String],
+                                    "map membership test",
+                                )?;
+                                vec![Ty::Bool]
+                            }
                             hir::Builtin::MapStringI64Set => {
                                 verify_map_call_arguments(
                                     &argument_types,
@@ -511,6 +524,14 @@ impl Function {
                                     "map nil comparison",
                                 )?;
                                 vec![Ty::Bool]
+                            }
+                            hir::Builtin::MapStringI64KeyAt => {
+                                verify_map_call_arguments(
+                                    &argument_types,
+                                    &[map_string_i64_ty(), Ty::Int(IntTy::Int)],
+                                    "map range key",
+                                )?;
+                                vec![Ty::String]
                             }
                         };
                         self.verify_call_destinations(destinations, &results)?;

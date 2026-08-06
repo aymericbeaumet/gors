@@ -1,4 +1,4 @@
-//! Explicit-order MIR construction for slice range loops.
+//! Explicit-order MIR construction for slice and map range loops.
 
 use super::super::construct::{
     binary_effects, call_effects, make_rvalue, make_statement, make_terminator,
@@ -9,6 +9,12 @@ use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::types::{ConstValue, IntTy, Ty};
+
+#[derive(Clone, Copy)]
+enum RangeKind {
+    Slice,
+    Map,
+}
 
 impl FunctionLowerer {
     #[allow(clippy::too_many_arguments)]
@@ -25,9 +31,23 @@ impl FunctionLowerer {
             self.enter_label(label, source)?;
         }
         let provenance = Provenance::Source(source);
-        let slice = self.lower_expr(expression)?;
-        let slice = self.materialize(
-            slice,
+        let range_kind = match expression.ty.underlying() {
+            Ty::Slice(element) if element.underlying() == &Ty::Int(IntTy::Int) => RangeKind::Slice,
+            Ty::Map(key, value)
+                if key.underlying() == &Ty::String
+                    && value.underlying() == &Ty::Int(IntTy::Int) =>
+            {
+                RangeKind::Map
+            }
+            ty => {
+                return Err(Diagnostic::backend(format!(
+                    "unsupported range type {ty:?} reached MIR lowering"
+                )));
+            }
+        };
+        let container = self.lower_expr(expression)?;
+        let container = self.materialize(
+            container,
             expression.ty.clone(),
             Provenance::Source(expression.source),
         )?;
@@ -38,8 +58,11 @@ impl FunctionLowerer {
         let after_length = self.new_block(provenance.clone());
         self.terminate(make_terminator(
             TerminatorKind::Call {
-                callee: hir::Callee::Builtin(hir::Builtin::SliceI64Len),
-                args: vec![slice.clone()],
+                callee: hir::Callee::Builtin(match range_kind {
+                    RangeKind::Slice => hir::Builtin::SliceI64Len,
+                    RangeKind::Map => hir::Builtin::MapStringI64Len,
+                }),
+                args: vec![container.clone()],
                 destinations: vec![length],
                 target: after_length,
             },
@@ -103,22 +126,64 @@ impl FunctionLowerer {
             break_used: false,
         });
         self.current = body_target;
-        if let Some(hir::Place::Local(local)) = key {
-            self.assign_range_local(Place { local }, Operand::Read(index), source)?;
-        }
-        if let Some(hir::Place::Local(local)) = value {
-            let after_value = self.new_block(provenance.clone());
-            self.terminate(make_terminator(
-                TerminatorKind::Call {
-                    callee: hir::Callee::Builtin(hir::Builtin::SliceI64Index),
-                    args: vec![slice, Operand::Read(index)],
-                    destinations: vec![Place { local }],
-                    target: after_value,
-                },
-                call_effects(),
-                provenance.clone(),
-            ))?;
-            self.current = after_value;
+        match range_kind {
+            RangeKind::Slice => {
+                if let Some(hir::Place::Local(local)) = key {
+                    self.assign_range_local(Place { local }, Operand::Read(index), source)?;
+                }
+                if let Some(hir::Place::Local(local)) = value {
+                    let after_value = self.new_block(provenance.clone());
+                    self.terminate(make_terminator(
+                        TerminatorKind::Call {
+                            callee: hir::Callee::Builtin(hir::Builtin::SliceI64Index),
+                            args: vec![container, Operand::Read(index)],
+                            destinations: vec![Place { local }],
+                            target: after_value,
+                        },
+                        call_effects(),
+                        provenance.clone(),
+                    ))?;
+                    self.current = after_value;
+                }
+            }
+            RangeKind::Map => {
+                let needs_key = matches!(key, Some(hir::Place::Local(_)))
+                    || matches!(value, Some(hir::Place::Local(_)));
+                if needs_key {
+                    let map_key = Place {
+                        local: self.new_temp(Ty::String),
+                    };
+                    let after_key = self.new_block(provenance.clone());
+                    self.terminate(make_terminator(
+                        TerminatorKind::Call {
+                            callee: hir::Callee::Builtin(hir::Builtin::MapStringI64KeyAt),
+                            args: vec![container.clone(), Operand::Read(index)],
+                            destinations: vec![map_key],
+                            target: after_key,
+                        },
+                        call_effects(),
+                        provenance.clone(),
+                    ))?;
+                    self.current = after_key;
+                    if let Some(hir::Place::Local(local)) = key {
+                        self.assign_range_local(Place { local }, Operand::Read(map_key), source)?;
+                    }
+                    if let Some(hir::Place::Local(local)) = value {
+                        let after_value = self.new_block(provenance.clone());
+                        self.terminate(make_terminator(
+                            TerminatorKind::Call {
+                                callee: hir::Callee::Builtin(hir::Builtin::MapStringI64Get),
+                                args: vec![container, Operand::Read(map_key)],
+                                destinations: vec![Place { local }],
+                                target: after_value,
+                            },
+                            call_effects(),
+                            provenance.clone(),
+                        ))?;
+                        self.current = after_value;
+                    }
+                }
+            }
         }
         self.lower_block(body)?;
         if !self.is_terminated(self.current)? {
