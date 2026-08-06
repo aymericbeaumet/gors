@@ -633,6 +633,28 @@ impl FunctionLowerer {
                     hir::Builtin::SliceI64Index
                 } else if element.underlying() == &Ty::Bool {
                     hir::Builtin::SliceBoolIndex
+                } else if element.bootstrap_i64_struct_fields().is_some() {
+                    let element_ty = element.as_ref().clone();
+                    let type_identity = super::interfaces::dynamic_type_identity(&element_ty)
+                        .ok_or_else(|| {
+                            Diagnostic::backend(
+                                "aggregate slice element omitted its dynamic type identity",
+                            )
+                        })?;
+                    let index = self.lower_expr(index, Some(&Ty::Int(IntTy::Int)))?;
+                    let effects = slice_runtime_effects(&[&base, &index], false, false, true);
+                    return Ok(hir::Expr {
+                        node,
+                        kind: hir::ExprKind::AggregateSliceIndex {
+                            slice: Box::new(base),
+                            index: Box::new(index),
+                            type_identity,
+                        },
+                        ty: element_ty,
+                        category: hir::ValueCategory::Value,
+                        effects,
+                        source,
+                    });
                 } else {
                     return Err(Diagnostic::unsupported(
                         "indexing currently supports []bool and []int values",

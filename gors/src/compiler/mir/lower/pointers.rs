@@ -689,8 +689,17 @@ fn collect_expr_addresses(expression: &hir::Expr, addressed: &mut BTreeSet<Local
             collect_expr_addresses(array, addressed);
             collect_expr_addresses(index, addressed);
         }
+        hir::ExprKind::AggregateSliceIndex { slice, index, .. } => {
+            collect_expr_addresses(slice, addressed);
+            collect_expr_addresses(index, addressed);
+        }
+        hir::ExprKind::AggregateMapIndex { map, key, .. } => {
+            collect_expr_addresses(map, addressed);
+            collect_expr_addresses(key, addressed);
+        }
         hir::ExprKind::ArrayLen { array, .. } => collect_expr_addresses(array, addressed),
-        hir::ExprKind::DynamicSliceLiteralI64(elements) => {
+        hir::ExprKind::DynamicSliceLiteralI64(elements)
+        | hir::ExprKind::AggregateSliceLiteral { elements, .. } => {
             collect_expression_addresses(elements, addressed);
         }
         hir::ExprKind::StructLiteral(fields) => collect_expression_addresses(fields, addressed),
@@ -702,7 +711,8 @@ fn collect_expr_addresses(expression: &hir::Expr, addressed: &mut BTreeSet<Local
         hir::ExprKind::StructField { structure, .. } => {
             collect_expr_addresses(structure, addressed);
         }
-        hir::ExprKind::MapLiteralStringI64(entries) => {
+        hir::ExprKind::MapLiteralStringI64(entries)
+        | hir::ExprKind::AggregateMapLiteral { entries, .. } => {
             for (key, value) in entries {
                 collect_expr_addresses(key, addressed);
                 collect_expr_addresses(value, addressed);

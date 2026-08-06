@@ -9,6 +9,67 @@ use crate::compiler::provenance::SourceRef;
 use crate::compiler::types::{ConstValue, Ty};
 
 impl FunctionLowerer {
+    pub(super) fn lower_slice_expr(&mut self, expr: &hir::Expr) -> Result<Operand, Diagnostic> {
+        match &expr.kind {
+            hir::ExprKind::SliceLiteralI64(elements) => {
+                let result = Place {
+                    local: self.new_temp(expr.ty.clone()),
+                };
+                let provenance = Provenance::Source(expr.source);
+                let value = make_rvalue(
+                    RvalueKind::SliceLiteralI64(elements.clone()),
+                    expr.effects,
+                    provenance.clone(),
+                );
+                self.push_statement(make_statement(result, value, provenance))?;
+                Ok(Operand::Read(result))
+            }
+            hir::ExprKind::DynamicSliceLiteralI64(elements) => {
+                self.lower_dynamic_i64_slice_literal(elements, &expr.ty, expr.source)
+            }
+            hir::ExprKind::AggregateSliceLiteral {
+                elements,
+                type_identity,
+            } => self.lower_aggregate_slice_literal(elements, type_identity, &expr.ty, expr.source),
+            hir::ExprKind::AggregateSliceIndex {
+                slice,
+                index,
+                type_identity,
+            } => {
+                self.lower_aggregate_slice_index(slice, index, type_identity, &expr.ty, expr.source)
+            }
+            hir::ExprKind::SliceLiteralU8(elements) => {
+                let result = Place {
+                    local: self.new_temp(expr.ty.clone()),
+                };
+                let provenance = Provenance::Source(expr.source);
+                let value = make_rvalue(
+                    RvalueKind::SliceLiteralU8(elements.clone()),
+                    expr.effects,
+                    provenance.clone(),
+                );
+                self.push_statement(make_statement(result, value, provenance))?;
+                Ok(Operand::Read(result))
+            }
+            hir::ExprKind::SliceLiteralBool(elements) => {
+                let result = Place {
+                    local: self.new_temp(expr.ty.clone()),
+                };
+                let provenance = Provenance::Source(expr.source);
+                let value = make_rvalue(
+                    RvalueKind::SliceLiteralBool(elements.clone()),
+                    expr.effects,
+                    provenance.clone(),
+                );
+                self.push_statement(make_statement(result, value, provenance))?;
+                Ok(Operand::Read(result))
+            }
+            _ => Err(Diagnostic::backend(
+                "non-slice HIR expression reached slice MIR lowering",
+            )),
+        }
+    }
+
     pub(super) fn lower_short_circuit(
         &mut self,
         op: hir::BinaryOp,

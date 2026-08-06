@@ -510,6 +510,11 @@ fn encode_type(encoder: &mut Encoder, ty: &rust_ir::RustType) {
         rust_ir::RustType::ArrayGoString(length) => {
             encoder.variant(b"array-go-string", |encoder| encoder.u64(*length));
         }
+        rust_ir::RustType::ArrayGoPointerStructI64(length) => {
+            encoder.variant(b"array-go-pointer-struct-i64", |encoder| {
+                encoder.u64(*length);
+            });
+        }
         rust_ir::RustType::Struct(fields) => {
             encoder.variant(b"struct", |encoder| {
                 encoder.sequence(fields, encode_type);

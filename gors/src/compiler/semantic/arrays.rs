@@ -113,9 +113,9 @@ impl FunctionLowerer {
                 ));
             }
         };
-        if !is_scalar_array_element(&element_ty) {
+        if !is_executable_array_element(&element_ty) {
             return Err(Diagnostic::unsupported(
-                "array literals currently require bool, int, float64, or string elements",
+                "array literal element type has no executable representation",
                 source,
             ));
         }
@@ -228,9 +228,9 @@ impl FunctionLowerer {
                 "array index lowering received a non-array value",
             ));
         };
-        if !is_scalar_array_element(element) {
+        if !is_executable_array_element(element) {
             return Err(Diagnostic::unsupported(
-                "array indexing currently supports scalar elements",
+                "array element type has no executable index representation",
                 source,
             ));
         }
@@ -312,9 +312,9 @@ impl FunctionLowerer {
                 "array assignment lowering received a non-array value",
             ));
         };
-        if !is_scalar_array_element(element) {
+        if !is_executable_array_element(element) {
             return Err(Diagnostic::unsupported(
-                "array assignment currently supports scalar elements",
+                "array element type has no executable assignment representation",
                 source,
             ));
         }
@@ -343,4 +343,8 @@ pub(super) fn is_scalar_array_element(ty: &Ty) -> bool {
         ty.underlying(),
         Ty::Bool | Ty::Int(IntTy::Int) | Ty::Float(FloatTy::Float64) | Ty::String
     )
+}
+
+pub(super) fn is_executable_array_element(ty: &Ty) -> bool {
+    is_scalar_array_element(ty) || ty.bootstrap_i64_struct_pointer_fields().is_some()
 }

@@ -246,7 +246,7 @@ impl FunctionLowerer {
         self.push_statement(make_statement(destination, value, provenance))
     }
 
-    fn unbox_interface_value(
+    pub(super) fn unbox_interface_value(
         &mut self,
         interface: Operand,
         type_identity: &[u8],

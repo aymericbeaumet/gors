@@ -971,6 +971,10 @@ fn emit_type(ty: &RustType) -> Result<syn::Type, Diagnostic> {
             let length = syn::LitInt::new(&length.to_string(), Span::mixed_site());
             syn::parse_quote! { [::#runtime_crate::GoString; #length] }
         }
+        RustType::ArrayGoPointerStructI64(length) => {
+            let length = syn::LitInt::new(&length.to_string(), Span::mixed_site());
+            syn::parse_quote! { [::#runtime_crate::GoPointerStructI64; #length] }
+        }
         RustType::Struct(fields) => {
             let fields = fields
                 .iter()

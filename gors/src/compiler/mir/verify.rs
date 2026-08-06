@@ -26,8 +26,9 @@ use arrays::{
 };
 use channels::{is_channel_builtin, verify_channel_call};
 use containers::{
-    map_string_i64_ty, verify_bool_slice_call, verify_byte_slice_call_arguments,
-    verify_map_call_arguments, verify_slice_call_arguments,
+    is_aggregate_container_builtin, map_string_i64_ty, verify_aggregate_container_call,
+    verify_bool_slice_call, verify_byte_slice_call_arguments, verify_map_call_arguments,
+    verify_slice_call_arguments,
 };
 use effects::{read_effects, verify_effects, verify_panic_edge};
 use interfaces::{is_interface_builtin, verify_interface_call};
@@ -453,6 +454,16 @@ impl Function {
                             hir::Builtin::SliceBoolIndex | hir::Builtin::SliceBoolSet
                         ) {
                             verify_bool_slice_call(*builtin, &argument_types)?
+                        } else if is_aggregate_container_builtin(*builtin) {
+                            let destination_types = destinations
+                                .iter()
+                                .map(|destination| self.place_ty(*destination).cloned())
+                                .collect::<Result<Vec<_>, _>>()?;
+                            verify_aggregate_container_call(
+                                *builtin,
+                                &argument_types,
+                                &destination_types,
+                            )?
                         } else {
                             match builtin {
                                 hir::Builtin::Print | hir::Builtin::Println => {
@@ -728,6 +739,19 @@ impl Function {
                                 hir::Builtin::SliceBoolIndex | hir::Builtin::SliceBoolSet => {
                                     return Err(Diagnostic::backend(
                                         "bool slice builtin bypassed dedicated MIR verification",
+                                    ));
+                                }
+                                hir::Builtin::AggregateSliceMake
+                                | hir::Builtin::AggregateSliceLen
+                                | hir::Builtin::AggregateSliceIndexTagged
+                                | hir::Builtin::AggregateSliceSetTagged
+                                | hir::Builtin::AggregateMapMake
+                                | hir::Builtin::AggregateMapLen
+                                | hir::Builtin::AggregateMapGetTagged
+                                | hir::Builtin::AggregateMapContains
+                                | hir::Builtin::AggregateMapSetTagged => {
+                                    return Err(Diagnostic::backend(
+                                        "aggregate container builtin bypassed dedicated MIR verification",
                                     ));
                                 }
                             }

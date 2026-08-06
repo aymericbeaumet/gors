@@ -69,7 +69,7 @@ fn is_scalar_element(ty: &Ty) -> bool {
     matches!(
         ty.underlying(),
         Ty::Bool | Ty::Int(IntTy::Int) | Ty::Float(FloatTy::Float64) | Ty::String
-    )
+    ) || ty.bootstrap_i64_struct_pointer_fields().is_some()
 }
 
 fn array_effects() -> hir::Effects {

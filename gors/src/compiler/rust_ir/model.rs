@@ -313,6 +313,7 @@ pub enum RustType {
     ArrayBool(u64),
     ArrayF64(u64),
     ArrayGoString(u64),
+    ArrayGoPointerStructI64(u64),
     Struct(Vec<RustType>),
     StructI64(u64),
 }
@@ -325,6 +326,7 @@ impl RustType {
             Self::ArrayI64(length) => Some((*length, Self::I64)),
             Self::ArrayF64(length) => Some((*length, Self::F64)),
             Self::ArrayGoString(length) => Some((*length, Self::GoString)),
+            Self::ArrayGoPointerStructI64(length) => Some((*length, Self::GoPointerStructI64)),
             _ => None,
         }
     }
@@ -356,6 +358,7 @@ impl RustType {
             | Self::GoInterface
             | Self::GoChannelI64
             | Self::ArrayGoString(_) => Some(ReadOp::ProvenInitializedClone),
+            Self::ArrayGoPointerStructI64(_) => Some(ReadOp::ProvenInitializedClone),
             Self::Unit => None,
         }
     }
@@ -387,6 +390,7 @@ impl RustType {
             | Self::GoInterface
             | Self::GoChannelI64
             | Self::ArrayGoString(_)
+            | Self::ArrayGoPointerStructI64(_)
                 if live_after =>
             {
                 Some(ReadOp::ProvenInitializedClone)
@@ -403,6 +407,7 @@ impl RustType {
             | Self::GoInterface
             | Self::GoChannelI64
             | Self::ArrayGoString(_) => Some(ReadOp::ProvenLastUseMove),
+            Self::ArrayGoPointerStructI64(_) => Some(ReadOp::ProvenLastUseMove),
             Self::Unit => None,
         }
     }
@@ -436,6 +441,10 @@ impl RustType {
             | Self::GoInterface
             | Self::GoChannelI64
             | Self::ArrayGoString(_) => matches!(
+                op,
+                ReadOp::ProvenInitializedClone | ReadOp::ProvenLastUseMove
+            ),
+            Self::ArrayGoPointerStructI64(_) => matches!(
                 op,
                 ReadOp::ProvenInitializedClone | ReadOp::ProvenLastUseMove
             ),

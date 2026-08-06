@@ -72,6 +72,28 @@ impl FunctionLowerer {
             );
             return self.push_statement(make_statement(destination, value, provenance));
         }
+        if let Some(fields) = ty.bootstrap_i64_struct_fields() {
+            let values = fields
+                .iter()
+                .map(|field| {
+                    field
+                        .ty
+                        .zero()
+                        .map(|value| Operand::Constant(value, field.ty.clone()))
+                        .ok_or_else(|| {
+                            Diagnostic::backend(
+                                "integer struct field has no scalar zero representation",
+                            )
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let value = make_rvalue(
+                RvalueKind::StructLiteral { fields: values, ty },
+                hir::Effects::default(),
+                provenance.clone(),
+            );
+            return self.push_statement(make_statement(destination, value, provenance));
+        }
         let zero_builtin = if is_string_i64_map(&ty) {
             Some(hir::Builtin::MapStringI64Nil)
         } else if matches!(ty.underlying(), Ty::Interface(_)) {
@@ -137,6 +159,131 @@ impl FunctionLowerer {
                 source,
             )?;
         }
+        Ok(Operand::Read(result))
+    }
+
+    pub(super) fn lower_aggregate_map_literal(
+        &mut self,
+        entries: &[(hir::Expr, hir::Expr)],
+        type_identity: &[u8],
+        ty: &Ty,
+        source: SourceRef,
+    ) -> Result<Operand, Diagnostic> {
+        let Ty::Map(_, value_ty) = ty.underlying() else {
+            return Err(Diagnostic::backend(
+                "aggregate map literal has a non-map type",
+            ));
+        };
+        let value_ty = value_ty.as_ref().clone();
+        let mut values = Vec::with_capacity(entries.len());
+        for (key, value) in entries {
+            let key_operand = self.lower_expr(key)?;
+            let key_operand =
+                self.materialize(key_operand, key.ty.clone(), Provenance::Source(key.source))?;
+            let value_operand = self.lower_expr(value)?;
+            let value_operand = self.materialize(
+                value_operand,
+                value.ty.clone(),
+                Provenance::Source(value.source),
+            )?;
+            values.push((key_operand, value_operand));
+        }
+        let result = Place {
+            local: self.new_temp(ty.clone()),
+        };
+        self.emit_map_call(
+            hir::Builtin::AggregateMapMake,
+            Vec::new(),
+            vec![result],
+            source,
+        )?;
+        let interface_ty = Ty::Interface(Vec::new());
+        for (key, value) in values {
+            let tagged =
+                self.box_interface_operand(value, &value_ty, type_identity, &interface_ty, source)?;
+            self.emit_map_call(
+                hir::Builtin::AggregateMapSetTagged,
+                vec![Operand::Read(result), key, tagged],
+                Vec::new(),
+                source,
+            )?;
+        }
+        Ok(Operand::Read(result))
+    }
+
+    pub(super) fn lower_aggregate_map_index(
+        &mut self,
+        map: &hir::Expr,
+        key: &hir::Expr,
+        type_identity: &[u8],
+        result_ty: &Ty,
+        source: SourceRef,
+    ) -> Result<Operand, Diagnostic> {
+        let map_operand = self.lower_expr(map)?;
+        let map_operand =
+            self.materialize(map_operand, map.ty.clone(), Provenance::Source(map.source))?;
+        let key_operand = self.lower_expr(key)?;
+        let key_operand =
+            self.materialize(key_operand, key.ty.clone(), Provenance::Source(key.source))?;
+        let present = Place {
+            local: self.new_temp(Ty::Bool),
+        };
+        self.emit_map_call(
+            hir::Builtin::AggregateMapContains,
+            vec![map_operand.clone(), key_operand.clone()],
+            vec![present],
+            source,
+        )?;
+
+        let provenance = Provenance::Source(source);
+        let matched = self.new_block(provenance.clone());
+        let missing = self.new_block(provenance.clone());
+        let join = self.new_block(provenance.clone());
+        self.terminate(make_terminator(
+            TerminatorKind::SwitchBool {
+                condition: Operand::Read(present),
+                then_target: matched,
+                else_target: missing,
+            },
+            hir::Effects::default(),
+            provenance.clone(),
+        ))?;
+
+        let result = Place {
+            local: self.new_temp(result_ty.clone()),
+        };
+        self.current = matched;
+        let tagged = Place {
+            local: self.new_temp(Ty::Interface(Vec::new())),
+        };
+        self.emit_map_call(
+            hir::Builtin::AggregateMapGetTagged,
+            vec![map_operand, key_operand],
+            vec![tagged],
+            source,
+        )?;
+        let value =
+            self.unbox_interface_value(Operand::Read(tagged), type_identity, result_ty, source)?;
+        let value = make_rvalue(
+            RvalueKind::Use(value),
+            hir::Effects::default(),
+            provenance.clone(),
+        );
+        self.push_statement(make_statement(result, value, provenance.clone()))?;
+        self.terminate(make_terminator(
+            TerminatorKind::Goto(join),
+            hir::Effects::default(),
+            provenance.clone(),
+        ))?;
+
+        self.current = missing;
+        self.lower_zero_value(result, result_ty.clone(), provenance.clone())?;
+        self.terminate(make_terminator(
+            TerminatorKind::Goto(join),
+            hir::Effects::default(),
+            provenance,
+        ))?;
+        self.current = join;
         Ok(Operand::Read(result))
     }
 

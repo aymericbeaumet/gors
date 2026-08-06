@@ -344,6 +344,10 @@ fn lower_terminator(
                 | hir::Builtin::SliceI64Clear
                 | hir::Builtin::SliceBoolIndex
                 | hir::Builtin::SliceBoolSet
+                | hir::Builtin::AggregateSliceMake
+                | hir::Builtin::AggregateSliceLen
+                | hir::Builtin::AggregateSliceIndexTagged
+                | hir::Builtin::AggregateSliceSetTagged
                 | hir::Builtin::StringFromSliceU8
                 | hir::Builtin::StringLen
                 | hir::Builtin::MapStringI64Nil
@@ -357,6 +361,11 @@ fn lower_terminator(
                 | hir::Builtin::MapStringI64Clear
                 | hir::Builtin::MapStringI64IsNil
                 | hir::Builtin::MapStringI64KeyAt
+                | hir::Builtin::AggregateMapMake
+                | hir::Builtin::AggregateMapLen
+                | hir::Builtin::AggregateMapGetTagged
+                | hir::Builtin::AggregateMapContains
+                | hir::Builtin::AggregateMapSetTagged
                 | hir::Builtin::PointerI64Nil
                 | hir::Builtin::PointerI64New
                 | hir::Builtin::PointerI64Get
@@ -409,6 +418,10 @@ fn lower_terminator(
                     hir::Builtin::SliceI64Clear => RuntimeOp::GoSliceI64Clear,
                     hir::Builtin::SliceBoolIndex => RuntimeOp::GoSliceBoolIndex,
                     hir::Builtin::SliceBoolSet => RuntimeOp::GoSliceBoolSet,
+                    hir::Builtin::AggregateSliceMake => RuntimeOp::GoSliceInterfaceMake,
+                    hir::Builtin::AggregateSliceLen => RuntimeOp::GoSliceInterfaceLen,
+                    hir::Builtin::AggregateSliceIndexTagged => RuntimeOp::GoSliceInterfaceIndex,
+                    hir::Builtin::AggregateSliceSetTagged => RuntimeOp::GoSliceInterfaceSet,
                     hir::Builtin::StringFromSliceU8 => RuntimeOp::GoStringFromSliceU8,
                     hir::Builtin::StringLen => RuntimeOp::GoStringLen,
                     hir::Builtin::MapStringI64Nil => RuntimeOp::GoMapStringI64Nil,
@@ -421,6 +434,11 @@ fn lower_terminator(
                     hir::Builtin::MapStringI64Clear => RuntimeOp::GoMapStringI64Clear,
                     hir::Builtin::MapStringI64IsNil => RuntimeOp::GoMapStringI64IsNil,
                     hir::Builtin::MapStringI64KeyAt => RuntimeOp::GoMapStringI64KeyAt,
+                    hir::Builtin::AggregateMapMake => RuntimeOp::GoMapStringInterfaceMake,
+                    hir::Builtin::AggregateMapLen => RuntimeOp::GoMapStringInterfaceLen,
+                    hir::Builtin::AggregateMapGetTagged => RuntimeOp::GoMapStringInterfaceGet,
+                    hir::Builtin::AggregateMapContains => RuntimeOp::GoMapStringInterfaceContains,
+                    hir::Builtin::AggregateMapSetTagged => RuntimeOp::GoMapStringInterfaceSet,
                     hir::Builtin::PointerI64Nil => RuntimeOp::GoPointerI64Nil,
                     hir::Builtin::PointerI64New => RuntimeOp::GoPointerI64New,
                     hir::Builtin::PointerI64Get => RuntimeOp::GoPointerI64Get,
@@ -525,6 +543,7 @@ fn lower_panic_call(
         | out::RustType::ArrayBool(_)
         | out::RustType::ArrayF64(_)
         | out::RustType::ArrayGoString(_)
+        | out::RustType::ArrayGoPointerStructI64(_)
         | out::RustType::Struct(_)
         | out::RustType::StructI64(_)
         | out::RustType::GoSliceI64
@@ -599,6 +618,7 @@ fn lower_print_call(
             | out::RustType::ArrayBool(_)
             | out::RustType::ArrayF64(_)
             | out::RustType::ArrayGoString(_)
+            | out::RustType::ArrayGoPointerStructI64(_)
             | out::RustType::Struct(_)
             | out::RustType::StructI64(_)
             | out::RustType::GoSliceI64

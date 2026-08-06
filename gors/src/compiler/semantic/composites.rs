@@ -2,7 +2,9 @@
 
 use super::FunctionLowerer;
 use super::expressions::expr_constant;
+use super::interfaces::dynamic_type_identity;
 use super::lower_type;
+use super::pointers::pointer_effects;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::NodeId;
@@ -21,28 +23,51 @@ impl FunctionLowerer {
         source: SourceRef,
         expected: Option<&Ty>,
     ) -> Result<hir::Expr, Diagnostic> {
-        let Some(ty) = ty else {
-            return Err(Diagnostic::unsupported(
-                "elided composite literal types require an enclosing composite type",
-                source,
-            ));
-        };
-        let literal_ty = match &ty.kind {
-            crate::compiler::syntax::ExprSyntaxKind::ArrayType {
-                length: Some(length),
-                element,
-            } if matches!(
-                length.kind,
-                crate::compiler::syntax::ExprSyntaxKind::Unsupported("ellipsis")
-            ) =>
-            {
-                Ty::Array(
-                    self.infer_array_literal_length(elements, source)?,
-                    Box::new(lower_type(element, &self.type_aliases, source)?),
+        let literal_ty = match ty {
+            Some(ty) => match &ty.kind {
+                crate::compiler::syntax::ExprSyntaxKind::ArrayType {
+                    length: Some(length),
+                    element,
+                } if matches!(
+                    length.kind,
+                    crate::compiler::syntax::ExprSyntaxKind::Unsupported("ellipsis")
+                ) =>
+                {
+                    Ty::Array(
+                        self.infer_array_literal_length(elements, source)?,
+                        Box::new(lower_type(element, &self.type_aliases, source)?),
+                    )
+                }
+                _ => lower_type(ty, &self.type_aliases, source)?,
+            },
+            None => expected.cloned().ok_or_else(|| {
+                Diagnostic::semantic(
+                    "elided composite literal requires an enclosing composite type",
+                    source,
                 )
-            }
-            _ => lower_type(ty, &self.type_aliases, source)?,
+            })?,
         };
+        if let Ty::Pointer(element) = literal_ty.underlying()
+            && element.bootstrap_i64_struct_fields().is_some()
+        {
+            let value_node = self.alloc_node(syntax_source)?;
+            let value = self.lower_struct_literal(
+                element.as_ref().clone(),
+                elements,
+                value_node,
+                syntax_source,
+                SourceRef::node(value_node),
+            )?;
+            let effects = pointer_effects(&[&value], true, true, false);
+            return Ok(hir::Expr {
+                node,
+                kind: hir::ExprKind::AddressOfValue(Box::new(value)),
+                ty: literal_ty,
+                category: hir::ValueCategory::Value,
+                effects,
+                source,
+            });
+        }
         if matches!(literal_ty.underlying(), Ty::Struct(_)) {
             return self.lower_struct_literal(literal_ty, elements, node, syntax_source, source);
         }
@@ -68,11 +93,44 @@ impl FunctionLowerer {
         let integer_elements = element_ty.underlying() == &Ty::Int(IntTy::Int);
         let byte_elements = element_ty.underlying() == &Ty::Uint(UintTy::Uint8);
         let boolean_elements = element_ty.underlying() == &Ty::Bool;
-        if !integer_elements && !byte_elements && !boolean_elements {
+        let aggregate_elements = element_ty.bootstrap_i64_struct_fields().is_some();
+        if !integer_elements && !byte_elements && !boolean_elements && !aggregate_elements {
             return Err(Diagnostic::unsupported(
-                "slice literals currently require bool, int, or byte elements",
+                "slice literal element type has no executable representation",
                 source,
             ));
+        }
+        if aggregate_elements {
+            let lowered_elements = elements
+                .iter()
+                .map(|element| self.lower_expr(element, Some(element_ty)))
+                .collect::<Result<Vec<_>, _>>()?;
+            let type_identity = dynamic_type_identity(element_ty).ok_or_else(|| {
+                Diagnostic::backend("aggregate slice element omitted its dynamic type identity")
+            })?;
+            let effects = lowered_elements
+                .iter()
+                .fold(hir::Effects::default(), |effects, element| {
+                    effects.union(element.effects)
+                })
+                .union(hir::Effects {
+                    may_call: true,
+                    may_allocate: true,
+                    may_write: true,
+                    may_panic: true,
+                    ..hir::Effects::default()
+                });
+            return Ok(hir::Expr {
+                node,
+                kind: hir::ExprKind::AggregateSliceLiteral {
+                    elements: lowered_elements,
+                    type_identity,
+                },
+                ty: literal_ty,
+                category: hir::ValueCategory::Value,
+                effects,
+                source,
+            });
         }
         if boolean_elements {
             let values = elements

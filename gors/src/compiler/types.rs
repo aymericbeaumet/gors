@@ -223,7 +223,7 @@ impl Ty {
             return matches!(
                 element.underlying(),
                 Self::Bool | Self::Int(IntTy::Int) | Self::Uint(UintTy::Uint8)
-            );
+            ) || element.bootstrap_i64_struct_fields().is_some();
         }
         if let Self::Pointer(element) = self {
             return element.underlying() == &Self::Int(IntTy::Int)
@@ -233,11 +233,12 @@ impl Ty {
             return matches!(
                 element.underlying(),
                 Self::Bool | Self::Int(IntTy::Int) | Self::Float(FloatTy::Float64) | Self::String
-            );
+            ) || element.bootstrap_i64_struct_pointer_fields().is_some();
         }
         if let Self::Map(key, value) = self {
             return key.underlying() == &Self::String
-                && value.underlying() == &Self::Int(IntTy::Int);
+                && (value.underlying() == &Self::Int(IntTy::Int)
+                    || value.bootstrap_i64_struct_fields().is_some());
         }
         if let Self::Channel(_, element) = self {
             return element.underlying() == &Self::Int(IntTy::Int);

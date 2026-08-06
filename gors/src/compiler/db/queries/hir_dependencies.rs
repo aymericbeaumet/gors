@@ -172,7 +172,8 @@ fn collect_expression_callees(expression: &hir::Expr, callees: &mut BTreeSet<Qua
                 collect_expression_callees(argument, callees);
             }
         }
-        hir::ExprKind::MapLiteralStringI64(entries) => {
+        hir::ExprKind::MapLiteralStringI64(entries)
+        | hir::ExprKind::AggregateMapLiteral { entries, .. } => {
             for (key, value) in entries {
                 collect_expression_callees(key, callees);
                 collect_expression_callees(value, callees);
@@ -186,8 +187,17 @@ fn collect_expression_callees(expression: &hir::Expr, callees: &mut BTreeSet<Qua
             collect_expression_callees(array, callees);
             collect_expression_callees(index, callees);
         }
+        hir::ExprKind::AggregateSliceIndex { slice, index, .. } => {
+            collect_expression_callees(slice, callees);
+            collect_expression_callees(index, callees);
+        }
+        hir::ExprKind::AggregateMapIndex { map, key, .. } => {
+            collect_expression_callees(map, callees);
+            collect_expression_callees(key, callees);
+        }
         hir::ExprKind::ArrayLen { array, .. } => collect_expression_callees(array, callees),
-        hir::ExprKind::DynamicSliceLiteralI64(elements) => {
+        hir::ExprKind::DynamicSliceLiteralI64(elements)
+        | hir::ExprKind::AggregateSliceLiteral { elements, .. } => {
             for element in elements {
                 collect_expression_callees(element, callees);
             }

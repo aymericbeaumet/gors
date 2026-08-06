@@ -751,45 +751,12 @@ impl FunctionLowerer {
             hir::ExprKind::GlobalVariable(_, value) => {
                 self.lower_static_value(value, &expr.ty, expr.source)
             }
-            hir::ExprKind::SliceLiteralI64(elements) => {
-                let result = self.new_temp(expr.ty.clone());
-                let place = Place { local: result };
-                let provenance = Provenance::Source(expr.source);
-                let value = make_rvalue(
-                    RvalueKind::SliceLiteralI64(elements.clone()),
-                    expr.effects,
-                    provenance.clone(),
-                );
-                self.push_statement(make_statement(place, value, provenance))?;
-                Ok(Operand::Read(place))
-            }
-            hir::ExprKind::DynamicSliceLiteralI64(elements) => {
-                self.lower_dynamic_i64_slice_literal(elements, &expr.ty, expr.source)
-            }
-            hir::ExprKind::SliceLiteralU8(elements) => {
-                let result = self.new_temp(expr.ty.clone());
-                let place = Place { local: result };
-                let provenance = Provenance::Source(expr.source);
-                let value = make_rvalue(
-                    RvalueKind::SliceLiteralU8(elements.clone()),
-                    expr.effects,
-                    provenance.clone(),
-                );
-                self.push_statement(make_statement(place, value, provenance))?;
-                Ok(Operand::Read(place))
-            }
-            hir::ExprKind::SliceLiteralBool(elements) => {
-                let result = self.new_temp(expr.ty.clone());
-                let place = Place { local: result };
-                let provenance = Provenance::Source(expr.source);
-                let value = make_rvalue(
-                    RvalueKind::SliceLiteralBool(elements.clone()),
-                    expr.effects,
-                    provenance.clone(),
-                );
-                self.push_statement(make_statement(place, value, provenance))?;
-                Ok(Operand::Read(place))
-            }
+            hir::ExprKind::SliceLiteralI64(_)
+            | hir::ExprKind::DynamicSliceLiteralI64(_)
+            | hir::ExprKind::AggregateSliceLiteral { .. }
+            | hir::ExprKind::AggregateSliceIndex { .. }
+            | hir::ExprKind::SliceLiteralU8(_)
+            | hir::ExprKind::SliceLiteralBool(_) => self.lower_slice_expr(expr),
             hir::ExprKind::ArrayLiteralI64(elements) => {
                 self.lower_array_literal_expr(elements, &expr.ty, expr.source)
             }
@@ -814,6 +781,15 @@ impl FunctionLowerer {
             hir::ExprKind::MapLiteralStringI64(entries) => {
                 self.lower_map_literal(entries, &expr.ty, expr.source)
             }
+            hir::ExprKind::AggregateMapLiteral {
+                entries,
+                type_identity,
+            } => self.lower_aggregate_map_literal(entries, type_identity, &expr.ty, expr.source),
+            hir::ExprKind::AggregateMapIndex {
+                map,
+                key,
+                type_identity,
+            } => self.lower_aggregate_map_index(map, key, type_identity, &expr.ty, expr.source),
             hir::ExprKind::Local(local) => self.read_semantic_local(*local, expr.source),
             hir::ExprKind::AddressOfLocal(local) => {
                 self.lower_address_of_local_expr(*local, &expr.ty)

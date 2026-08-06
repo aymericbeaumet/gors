@@ -633,6 +633,24 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
                 encoder.sequence(elements, encode_expression);
             });
         }
+        hir::ExprKind::AggregateSliceLiteral {
+            elements,
+            type_identity,
+        } => encoder.variant(b"aggregate-slice-literal", |encoder| {
+            encoder.field(b"elements", |encoder| {
+                encoder.sequence(elements, encode_expression);
+            });
+            encoder.field(b"type-identity", |encoder| encoder.blob(type_identity));
+        }),
+        hir::ExprKind::AggregateSliceIndex {
+            slice,
+            index,
+            type_identity,
+        } => encoder.variant(b"aggregate-slice-index", |encoder| {
+            encoder.field(b"slice", |encoder| encode_expression(encoder, slice));
+            encoder.field(b"index", |encoder| encode_expression(encoder, index));
+            encoder.field(b"type-identity", |encoder| encoder.blob(type_identity));
+        }),
         hir::ExprKind::SliceLiteralU8(elements) => {
             encoder.variant(b"slice-literal-u8", |encoder| encoder.blob(elements));
         }
@@ -693,6 +711,27 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
                 });
             });
         }
+        hir::ExprKind::AggregateMapLiteral {
+            entries,
+            type_identity,
+        } => encoder.variant(b"aggregate-map-literal", |encoder| {
+            encoder.field(b"entries", |encoder| {
+                encoder.sequence(entries, |encoder, (key, value)| {
+                    encoder.field(b"key", |encoder| encode_expression(encoder, key));
+                    encoder.field(b"value", |encoder| encode_expression(encoder, value));
+                });
+            });
+            encoder.field(b"type-identity", |encoder| encoder.blob(type_identity));
+        }),
+        hir::ExprKind::AggregateMapIndex {
+            map,
+            key,
+            type_identity,
+        } => encoder.variant(b"aggregate-map-index", |encoder| {
+            encoder.field(b"map", |encoder| encode_expression(encoder, map));
+            encoder.field(b"key", |encoder| encode_expression(encoder, key));
+            encoder.field(b"type-identity", |encoder| encoder.blob(type_identity));
+        }),
         hir::ExprKind::Call { callee, args } => encoder.variant(b"call", |encoder| {
             encoder.field(b"callee", |encoder| encode_callee(encoder, *callee));
             encoder.field(b"arguments", |encoder| {
@@ -751,6 +790,10 @@ fn encode_builtin(encoder: &mut Encoder, builtin: hir::Builtin) {
             hir::Builtin::SliceI64Clear => b"slice-i64-clear",
             hir::Builtin::SliceBoolIndex => b"slice-bool-index",
             hir::Builtin::SliceBoolSet => b"slice-bool-set",
+            hir::Builtin::AggregateSliceMake => b"aggregate-slice-make",
+            hir::Builtin::AggregateSliceLen => b"aggregate-slice-len",
+            hir::Builtin::AggregateSliceIndexTagged => b"aggregate-slice-index-tagged",
+            hir::Builtin::AggregateSliceSetTagged => b"aggregate-slice-set-tagged",
             hir::Builtin::StringFromSliceU8 => b"string-from-slice-u8",
             hir::Builtin::StringLen => b"string-len",
             hir::Builtin::MapStringI64Nil => b"map-string-i64-nil",
@@ -764,6 +807,11 @@ fn encode_builtin(encoder: &mut Encoder, builtin: hir::Builtin) {
             hir::Builtin::MapStringI64Clear => b"map-string-i64-clear",
             hir::Builtin::MapStringI64IsNil => b"map-string-i64-is-nil",
             hir::Builtin::MapStringI64KeyAt => b"map-string-i64-key-at",
+            hir::Builtin::AggregateMapMake => b"aggregate-map-make",
+            hir::Builtin::AggregateMapLen => b"aggregate-map-len",
+            hir::Builtin::AggregateMapGetTagged => b"aggregate-map-get-tagged",
+            hir::Builtin::AggregateMapContains => b"aggregate-map-contains",
+            hir::Builtin::AggregateMapSetTagged => b"aggregate-map-set-tagged",
             hir::Builtin::PointerI64Nil => b"pointer-i64-nil",
             hir::Builtin::PointerI64New => b"pointer-i64-new",
             hir::Builtin::PointerI64Get => b"pointer-i64-get",
