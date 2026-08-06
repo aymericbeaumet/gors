@@ -462,6 +462,34 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
             encoder.field(b"value", |encoder| encode_expression(encoder, value));
             encoder.field(b"type-identity", |encoder| encoder.blob(type_identity));
         }),
+        hir::ExprKind::InterfaceCall {
+            receiver,
+            args,
+            candidates,
+        } => encoder.variant(b"interface-call", |encoder| {
+            encoder.field(b"receiver", |encoder| {
+                encode_expression(encoder, receiver);
+            });
+            encoder.field(b"arguments", |encoder| {
+                encoder.sequence(args, encode_expression);
+            });
+            encoder.field(b"candidates", |encoder| {
+                encoder.sequence(candidates, |encoder, candidate| {
+                    encoder.field(b"type-identity", |encoder| {
+                        encoder.blob(&candidate.type_identity);
+                    });
+                    encoder.field(b"dynamic-type", |encoder| {
+                        ty(encoder, &candidate.dynamic_ty);
+                    });
+                    encoder.field(b"receiver-type", |encoder| {
+                        ty(encoder, &candidate.receiver_ty);
+                    });
+                    encoder.field(b"function", |encoder| {
+                        qualified_def_id(encoder, candidate.function);
+                    });
+                });
+            });
+        }),
         hir::ExprKind::GlobalConstant(id, value) => {
             encoder.variant(b"global-constant", |encoder| {
                 encoder.field(b"id", |encoder| qualified_def_id(encoder, *id));

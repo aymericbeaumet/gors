@@ -274,6 +274,15 @@ impl FunctionLowerer {
         }
 
         let receiver = self.lower_expr(base, None)?;
+        if matches!(receiver.ty.underlying(), Ty::Interface(_)) {
+            return self.lower_interface_method_value_binding(
+                name,
+                receiver,
+                member,
+                method_source,
+                source,
+            );
+        }
         let symbol = self.resolve_method_symbol(&receiver.ty, &member.name, source)?;
         let Some((receiver_ty, params)) = symbol.signature.params.split_first() else {
             return Err(Diagnostic::backend("method signature omitted its receiver"));
@@ -348,6 +357,95 @@ impl FunctionLowerer {
                 results: symbol.signature.results,
                 variadic: symbol.signature.variadic,
             },
+            params: closure_params,
+            named_results: Vec::new(),
+            body: hir::Block {
+                node: block_node,
+                stmts: vec![statement],
+                source: SourceRef::node(block_node),
+            },
+            source: call_source,
+        });
+        self.bind_closure(&name.name, closure_id, source)?;
+        Ok(hir::StmtKind::Let {
+            destinations: vec![hir::Place::Local(capture)],
+            values: vec![receiver],
+        })
+    }
+
+    fn lower_interface_method_value_binding(
+        &mut self,
+        name: &IdentSyntax,
+        receiver: hir::Expr,
+        member: &IdentSyntax,
+        method_source: SyntaxSource,
+        source: SourceRef,
+    ) -> Result<hir::StmtKind, Diagnostic> {
+        let signature =
+            super::interfaces::interface_method_signature(&receiver.ty, &member.name, source)?;
+        if signature.variadic {
+            return Err(Diagnostic::unsupported(
+                "variadic interface method values are not yet implemented",
+                source,
+            ));
+        }
+        let capture_ty = receiver.ty.clone();
+        let capture = self.alloc_local(
+            None,
+            capture_ty.clone(),
+            hir::LocalKind::Variable,
+            method_source,
+        )?;
+        let closure_id = ClosureId(
+            u32::try_from(self.closures.len())
+                .map_err(|_| Diagnostic::backend("function exceeds the local closure ID space"))?,
+        );
+        let closure_params = signature
+            .params
+            .iter()
+            .map(|parameter_ty| {
+                self.alloc_local(
+                    None,
+                    parameter_ty.clone(),
+                    hir::LocalKind::Parameter,
+                    member.source,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let receiver_node = self.alloc_node(method_source)?;
+        let captured_receiver = self.local_expr(receiver_node, capture, capture_ty);
+        let mut arguments = Vec::with_capacity(closure_params.len());
+        for (parameter, parameter_ty) in closure_params.iter().zip(&signature.params) {
+            let parameter_node = self.alloc_node(member.source)?;
+            arguments.push(self.local_expr(parameter_node, *parameter, parameter_ty.clone()));
+        }
+        let call_node = self.alloc_node(method_source)?;
+        let call_source = SourceRef::node(call_node);
+        let call = self.build_interface_call(
+            captured_receiver,
+            &member.name,
+            arguments,
+            call_node,
+            call_source,
+            None,
+            true,
+        )?;
+        let result_ty = call.ty.clone();
+        let statement_node = self.alloc_node(method_source)?;
+        let statement = hir::Stmt {
+            node: statement_node,
+            kind: if result_ty == Ty::Unit {
+                hir::StmtKind::Expr(call)
+            } else {
+                hir::StmtKind::Return(vec![call])
+            },
+            source: SourceRef::node(statement_node),
+        };
+        let block_node = self.alloc_node(method_source)?;
+        self.closures.push(hir::Closure {
+            id: closure_id,
+            signature,
             params: closure_params,
             named_results: Vec::new(),
             body: hir::Block {

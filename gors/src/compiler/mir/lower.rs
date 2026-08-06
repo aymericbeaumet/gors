@@ -788,6 +788,11 @@ impl FunctionLowerer {
                 value,
                 type_identity,
             } => self.lower_interface_value_expr(value, type_identity, &expr.ty, expr.source),
+            hir::ExprKind::InterfaceCall {
+                receiver,
+                args,
+                candidates,
+            } => self.lower_interface_call_expr(receiver, args, candidates, &expr.ty, expr.source),
             hir::ExprKind::RecoverCompareNil { equal } => {
                 let state = self.recover_active.ok_or_else(|| {
                     Diagnostic::backend("recover comparison reached a function without cleanup")

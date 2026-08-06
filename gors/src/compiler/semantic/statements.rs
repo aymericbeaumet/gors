@@ -182,26 +182,21 @@ impl FunctionLowerer {
                     }
                     values
                 } else if let [result] = &**results {
-                    let value = self.lower_expr(result, None)?;
-                    match &value.ty {
-                        Ty::Tuple(types) if types == &self.signature.results => vec![value],
-                        _ if self.signature.results.len() == 1 => {
-                            let expected =
-                                self.signature.results.first().cloned().ok_or_else(|| {
-                                    Diagnostic::backend("single return result disappeared")
-                                })?;
-                            let mut value = value;
-                            coerce_expr(&mut value, &expected, source)?;
-                            vec![value]
-                        }
-                        _ => {
-                            return Err(Diagnostic::semantic(
-                                format!(
-                                    "return has 1 value; function requires {}",
-                                    self.signature.results.len()
-                                ),
-                                source,
-                            ));
+                    if let [expected] = self.signature.results.as_slice() {
+                        vec![self.lower_expr(result, Some(&expected.clone()))?]
+                    } else {
+                        let value = self.lower_expr(result, None)?;
+                        match &value.ty {
+                            Ty::Tuple(types) if types == &self.signature.results => vec![value],
+                            _ => {
+                                return Err(Diagnostic::semantic(
+                                    format!(
+                                        "return has 1 value; function requires {}",
+                                        self.signature.results.len()
+                                    ),
+                                    source,
+                                ));
+                            }
                         }
                     }
                 } else {

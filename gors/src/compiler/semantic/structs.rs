@@ -38,6 +38,18 @@ impl FunctionLowerer {
             );
         }
         let receiver = self.lower_expr(base, None)?;
+        if matches!(receiver.ty.underlying(), Ty::Interface(_)) {
+            return self.lower_interface_selector_call(
+                receiver,
+                &member.name,
+                arguments,
+                spread,
+                node,
+                source,
+                expected,
+                allow_discarded_call_result,
+            );
+        }
         let symbol = self.resolve_method_symbol(&receiver.ty, &member.name, source)?;
         let Some((receiver_ty, params)) = symbol.signature.params.split_first() else {
             return Err(Diagnostic::backend("method signature omitted its receiver"));

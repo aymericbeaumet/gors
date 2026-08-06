@@ -183,6 +183,17 @@ fn collect_expression_callees(expression: &hir::Expr, callees: &mut BTreeSet<Qua
         | hir::ExprKind::InterfaceValue { value, .. } => {
             collect_expression_callees(value, callees);
         }
+        hir::ExprKind::InterfaceCall {
+            receiver,
+            args,
+            candidates,
+        } => {
+            collect_expression_callees(receiver, callees);
+            for argument in args {
+                collect_expression_callees(argument, callees);
+            }
+            callees.extend(candidates.iter().map(|candidate| candidate.function));
+        }
         hir::ExprKind::Constant(_)
         | hir::ExprKind::Local(_)
         | hir::ExprKind::AddressOfLocal(_)

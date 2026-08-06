@@ -214,6 +214,11 @@ pub enum ExprKind {
         value: Box<Expr>,
         type_identity: Vec<u8>,
     },
+    InterfaceCall {
+        receiver: Box<Expr>,
+        args: Vec<Expr>,
+        candidates: Vec<InterfaceCallCandidate>,
+    },
     GlobalConstant(QualifiedDefId, ConstValue),
     GlobalVariable(QualifiedDefId, ConstValue),
     Binary {
@@ -259,6 +264,14 @@ pub enum ExprKind {
         callee: Callee,
         args: Vec<Expr>,
     },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InterfaceCallCandidate {
+    pub type_identity: Vec<u8>,
+    pub dynamic_ty: Ty,
+    pub receiver_ty: Ty,
+    pub function: QualifiedDefId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

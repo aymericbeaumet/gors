@@ -254,7 +254,7 @@ impl FunctionLowerer {
         )
     }
 
-    fn read_struct_pointer_value(
+    pub(super) fn read_struct_pointer_value(
         &mut self,
         pointer: Operand,
         ty: &Ty,
@@ -586,6 +586,10 @@ fn collect_expr_addresses(expression: &hir::Expr, addressed: &mut BTreeSet<Local
         | hir::ExprKind::PointerStructValue(value)
         | hir::ExprKind::InterfaceValue { value, .. } => {
             collect_expr_addresses(value, addressed);
+        }
+        hir::ExprKind::InterfaceCall { receiver, args, .. } => {
+            collect_expr_addresses(receiver, addressed);
+            collect_expression_addresses(args, addressed);
         }
         hir::ExprKind::Binary { left, right, .. } => {
             collect_expr_addresses(left, addressed);

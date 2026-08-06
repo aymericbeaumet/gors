@@ -2,8 +2,9 @@
 
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
+use crate::compiler::ids::NodeId;
 use crate::compiler::provenance::SourceRef;
-use crate::compiler::syntax::SyntaxSource;
+use crate::compiler::syntax::{ExprSyntax, SyntaxSource};
 use crate::compiler::types::{InterfaceMethod, Signature, Ty};
 
 use super::FunctionLowerer;
@@ -21,6 +22,129 @@ pub(super) fn error_interface_ty() -> Ty {
 }
 
 impl FunctionLowerer {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn lower_interface_selector_call(
+        &mut self,
+        receiver: hir::Expr,
+        member: &str,
+        arguments: &[ExprSyntax],
+        spread: bool,
+        node: NodeId,
+        source: SourceRef,
+        expected: Option<&Ty>,
+        allow_discarded_call_result: bool,
+    ) -> Result<hir::Expr, Diagnostic> {
+        let signature = interface_method_signature(&receiver.ty, member, source)?;
+        if spread && !signature.variadic {
+            return Err(Diagnostic::semantic(
+                "... is only valid when calling a variadic method",
+                source,
+            ));
+        }
+        if signature.variadic && !spread {
+            return Err(Diagnostic::unsupported(
+                "individual variadic arguments require slice-pack lowering",
+                source,
+            ));
+        }
+        if arguments.len() != signature.params.len() {
+            return Err(Diagnostic::semantic(
+                format!(
+                    "method call has {} arguments; expected {}",
+                    arguments.len(),
+                    signature.params.len()
+                ),
+                source,
+            ));
+        }
+        let args = arguments
+            .iter()
+            .zip(&signature.params)
+            .map(|(argument, expected)| self.lower_expr(argument, Some(expected)))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.build_interface_call(
+            receiver,
+            member,
+            args,
+            node,
+            source,
+            expected,
+            allow_discarded_call_result,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn build_interface_call(
+        &mut self,
+        receiver: hir::Expr,
+        member: &str,
+        args: Vec<hir::Expr>,
+        node: NodeId,
+        source: SourceRef,
+        expected: Option<&Ty>,
+        allow_discarded_call_result: bool,
+    ) -> Result<hir::Expr, Diagnostic> {
+        let signature = interface_method_signature(&receiver.ty, member, source)?;
+        if args.len() != signature.params.len() {
+            return Err(Diagnostic::backend(
+                "interface call argument arity changed during semantic lowering",
+            ));
+        }
+        if args
+            .iter()
+            .zip(&signature.params)
+            .any(|(argument, expected)| &argument.ty != expected)
+        {
+            return Err(Diagnostic::backend(
+                "interface call argument type changed during semantic lowering",
+            ));
+        }
+        let candidates = self.interface_call_candidates(&receiver.ty, member, source)?;
+        let ty = match signature.results.as_slice() {
+            [] => Ty::Unit,
+            [single] => single.clone(),
+            _ => {
+                return Err(Diagnostic::unsupported(
+                    "multi-result interface method values require tuple dispatch lowering",
+                    source,
+                ));
+            }
+        };
+        if ty == Ty::Unit && !allow_discarded_call_result {
+            return Err(Diagnostic::unsupported(
+                "a no-result method call cannot be used as a value",
+                source,
+            ));
+        }
+        let effects = args.iter().fold(
+            receiver.effects.union(hir::Effects {
+                may_call: true,
+                may_allocate: true,
+                may_block: true,
+                may_panic: true,
+                may_write: true,
+                ..hir::Effects::default()
+            }),
+            |effects, argument| effects.union(argument.effects),
+        );
+        let mut lowered = hir::Expr {
+            node,
+            kind: hir::ExprKind::InterfaceCall {
+                receiver: Box::new(receiver),
+                args,
+                candidates,
+            },
+            ty,
+            category: hir::ValueCategory::Value,
+            effects,
+            source,
+        };
+        if let Some(expected) = expected {
+            super::expressions::coerce_expr(&mut lowered, expected, source)?;
+        }
+        Ok(lowered)
+    }
+
     pub(super) fn coerce_interface_value(
         &mut self,
         mut value: hir::Expr,
@@ -81,7 +205,7 @@ impl FunctionLowerer {
         })
     }
 
-    fn concrete_implements(&self, concrete: &Ty, required: &[InterfaceMethod]) -> bool {
+    pub(super) fn concrete_implements(&self, concrete: &Ty, required: &[InterfaceMethod]) -> bool {
         if required.is_empty() {
             return true;
         }
@@ -99,6 +223,82 @@ impl FunctionLowerer {
                 })
         })
     }
+
+    fn interface_call_candidates(
+        &self,
+        interface_ty: &Ty,
+        member: &str,
+        source: SourceRef,
+    ) -> Result<Vec<hir::InterfaceCallCandidate>, Diagnostic> {
+        let Ty::Interface(required) = interface_ty.underlying() else {
+            return Err(Diagnostic::backend(
+                "interface dispatch candidate search received a non-interface type",
+            ));
+        };
+        let mut candidates = std::collections::BTreeMap::new();
+        for ty in self.type_aliases.values() {
+            let Ty::Named { definition, .. } = ty else {
+                continue;
+            };
+            let Some(method) = self.methods.get(&(*definition, member.to_owned())) else {
+                continue;
+            };
+            let receiver_ty = method
+                .signature
+                .params
+                .first()
+                .cloned()
+                .ok_or_else(|| Diagnostic::backend("method signature omitted its receiver"))?;
+            for dynamic_ty in [ty.clone(), Ty::Pointer(Box::new(ty.clone()))] {
+                if !supports_dynamic_interface_type(&dynamic_ty)
+                    || !self.concrete_implements(&dynamic_ty, required)
+                {
+                    continue;
+                }
+                let Some(type_identity) = dynamic_type_identity(&dynamic_ty) else {
+                    continue;
+                };
+                candidates.insert(
+                    type_identity.clone(),
+                    hir::InterfaceCallCandidate {
+                        type_identity,
+                        dynamic_ty,
+                        receiver_ty: receiver_ty.clone(),
+                        function: method.id,
+                    },
+                );
+            }
+        }
+        if candidates.is_empty() {
+            return Err(Diagnostic::unsupported(
+                format!("interface method {member} has no executable concrete implementations"),
+                source,
+            ));
+        }
+        Ok(candidates.into_values().collect())
+    }
+}
+
+pub(super) fn interface_method_signature(
+    interface_ty: &Ty,
+    member: &str,
+    source: SourceRef,
+) -> Result<Signature, Diagnostic> {
+    let Ty::Interface(methods) = interface_ty.underlying() else {
+        return Err(Diagnostic::backend(
+            "interface method call has a non-interface receiver",
+        ));
+    };
+    methods
+        .iter()
+        .find(|method| method.name == member)
+        .map(|method| method.signature.clone())
+        .ok_or_else(|| {
+            Diagnostic::semantic(
+                format!("type {interface_ty:?} has no method {member}"),
+                source,
+            )
+        })
 }
 
 fn interface_contains(actual: &[InterfaceMethod], required: &[InterfaceMethod]) -> bool {
@@ -120,7 +320,7 @@ fn receiver_definition(ty: &Ty) -> Option<(crate::compiler::ids::DefId, bool)> {
     }
 }
 
-fn dynamic_type_identity(ty: &Ty) -> Option<Vec<u8>> {
+pub(super) fn dynamic_type_identity(ty: &Ty) -> Option<Vec<u8>> {
     let identity = match ty {
         Ty::Bool => "builtin:bool".to_owned(),
         Ty::Int(crate::compiler::types::IntTy::Int) => "builtin:int".to_owned(),
@@ -133,4 +333,12 @@ fn dynamic_type_identity(ty: &Ty) -> Option<Vec<u8>> {
         _ => return None,
     };
     Some(identity.into_bytes())
+}
+
+fn supports_dynamic_interface_type(ty: &Ty) -> bool {
+    matches!(
+        ty.underlying(),
+        Ty::Bool | Ty::Int(crate::compiler::types::IntTy::Int) | Ty::String
+    ) || ty.bootstrap_i64_struct_fields().is_some()
+        || ty.bootstrap_i64_struct_pointer_fields().is_some()
 }
