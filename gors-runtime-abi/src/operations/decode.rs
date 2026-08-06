@@ -83,6 +83,9 @@ impl TryFrom<u16> for RuntimeOp {
             79 => Ok(Self::GoInterfaceUnboxGoString),
             80 => Ok(Self::GoInterfaceStructI64Get),
             81 => Ok(Self::GoInterfaceUnboxPointerStructI64),
+            82 => Ok(Self::GoSliceBoolFromStatic),
+            83 => Ok(Self::GoSliceBoolIndex),
+            84 => Ok(Self::GoSliceBoolSet),
             unknown => Err(UnknownRuntimeOpId(unknown)),
         }
     }

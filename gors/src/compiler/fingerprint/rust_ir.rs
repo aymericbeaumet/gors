@@ -353,6 +353,14 @@ fn encode_constant(encoder: &mut Encoder, constant: &rust_ir::Constant) {
                 });
             });
         }
+        rust_ir::Constant::RuntimeStaticBools { op, values } => {
+            encoder.variant(b"runtime-static-bools", |encoder| {
+                encoder.field(b"operation", |encoder| encode_runtime_op(encoder, *op));
+                encoder.field(b"values", |encoder| {
+                    encoder.sequence(values, |encoder, value| encoder.bool(*value));
+                });
+            });
+        }
         rust_ir::Constant::RuntimeStaticU8s { op, values } => {
             encoder.variant(b"runtime-static-u8s", |encoder| {
                 encoder.field(b"operation", |encoder| encode_runtime_op(encoder, *op));
@@ -455,6 +463,7 @@ fn encode_type(encoder: &mut Encoder, ty: rust_ir::RustType) {
         rust_ir::RustType::GoString => encoder.variant(b"go-string", |_| {}),
         rust_ir::RustType::GoSliceI64 => encoder.variant(b"go-slice-i64", |_| {}),
         rust_ir::RustType::GoSliceU8 => encoder.variant(b"go-slice-u8", |_| {}),
+        rust_ir::RustType::GoSliceBool => encoder.variant(b"go-slice-bool", |_| {}),
         rust_ir::RustType::GoMapStringI64 => encoder.variant(b"go-map-string-i64", |_| {}),
         rust_ir::RustType::GoPointerI64 => encoder.variant(b"go-pointer-i64", |_| {}),
         rust_ir::RustType::GoPointerStructI64 => {

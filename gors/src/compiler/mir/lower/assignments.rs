@@ -11,8 +11,15 @@ use crate::compiler::provenance::SourceRef;
 enum PreparedTarget {
     Local(LocalId),
     Discard,
-    SliceIndex { slice: Operand, index: Operand },
-    MapIndex { map: Operand, key: Operand },
+    SliceIndex {
+        slice: Operand,
+        index: Operand,
+        set: hir::Builtin,
+    },
+    MapIndex {
+        map: Operand,
+        key: Operand,
+    },
 }
 
 impl FunctionLowerer {
@@ -33,7 +40,7 @@ impl FunctionLowerer {
             prepared.push(match destination {
                 hir::AssignTarget::Local(local) => PreparedTarget::Local(*local),
                 hir::AssignTarget::Discard => PreparedTarget::Discard,
-                hir::AssignTarget::SliceIndex { slice, index } => {
+                hir::AssignTarget::SliceIndex { slice, index, set } => {
                     let slice_operand = self.lower_expr(slice)?;
                     let slice_operand = self.materialize(
                         slice_operand,
@@ -49,6 +56,7 @@ impl FunctionLowerer {
                     PreparedTarget::SliceIndex {
                         slice: slice_operand,
                         index: index_operand,
+                        set: *set,
                     }
                 }
                 hir::AssignTarget::MapIndex { map, key } => {
@@ -91,12 +99,12 @@ impl FunctionLowerer {
                     false,
                 )?,
                 PreparedTarget::Discard => {}
-                PreparedTarget::SliceIndex { slice, index } => {
+                PreparedTarget::SliceIndex { slice, index, set } => {
                     let provenance = Provenance::Source(source);
                     let target = self.new_block(provenance.clone());
                     self.terminate(make_terminator(
                         TerminatorKind::Call {
-                            callee: hir::Callee::Builtin(hir::Builtin::SliceI64Set),
+                            callee: hir::Callee::Builtin(set),
                             args: vec![slice, index, operand],
                             destinations: Vec::new(),
                             target,

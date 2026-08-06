@@ -507,6 +507,29 @@ fn generated_integer_slices_preserve_backing_array_aliases() {
 }
 
 #[test]
+fn generated_boolean_slices_preserve_index_and_assignment_semantics() {
+    let run = compile_and_run(
+        r#"
+            package main
+            func main() {
+                flags := []bool{false, true}
+                flags[0] = true
+                println(flags[0])
+                println(flags[1])
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"true\ntrue\n");
+    assert!(
+        run.rust.contains("go_slice_bool_from_static"),
+        "{}",
+        run.rust
+    );
+    assert!(run.rust.contains("go_slice_bool_set"), "{}", run.rust);
+}
+
+#[test]
 fn generated_integer_slice_append_respects_capacity() {
     let run = compile_and_run(
         r#"

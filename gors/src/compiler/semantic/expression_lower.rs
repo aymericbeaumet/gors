@@ -642,19 +642,23 @@ impl FunctionLowerer {
                         source,
                     ));
                 };
-                if element.underlying() != &Ty::Int(IntTy::Int) {
+                let builtin = if element.underlying() == &Ty::Int(IntTy::Int) {
+                    hir::Builtin::SliceI64Index
+                } else if element.underlying() == &Ty::Bool {
+                    hir::Builtin::SliceBoolIndex
+                } else {
                     return Err(Diagnostic::unsupported(
-                        "indexing currently supports []int values",
+                        "indexing currently supports []bool and []int values",
                         source,
                     ));
-                }
+                };
                 let element_ty = element.as_ref().clone();
                 let index = self.lower_expr(index, Some(&Ty::Int(IntTy::Int)))?;
                 let effects = slice_runtime_effects(&[&base, &index], false, false, true);
                 hir::Expr {
                     node,
                     kind: hir::ExprKind::Call {
-                        callee: hir::Callee::Builtin(hir::Builtin::SliceI64Index),
+                        callee: hir::Callee::Builtin(builtin),
                         args: vec![base, index],
                     },
                     ty: element_ty,

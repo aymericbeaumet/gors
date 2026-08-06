@@ -26,6 +26,8 @@ impl RuntimeType {
             Self::I64I64Tuple => 16,
             Self::GoPointerStructI64 => 17,
             Self::GoInterface => 18,
+            Self::StaticBoolSlice => 19,
+            Self::GoSliceBool => 20,
         }
     }
 

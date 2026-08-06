@@ -52,6 +52,18 @@ pub struct GoSlice<T> {
 
 pub type GoSliceI64 = GoSlice<GoInt>;
 pub type GoSliceU8 = GoSlice<u8>;
+pub type GoSliceBool = GoSlice<bool>;
+
+/// Construct a `[]bool` value from compiler-emitted literal elements.
+#[must_use]
+pub fn go_slice_bool_from_static(values: &'static [bool]) -> GoSliceBool {
+    GoSliceBool {
+        storage: Arc::new(RwLock::new(values.to_vec())),
+        start: 0,
+        len: values.len(),
+        capacity: values.len(),
+    }
+}
 
 /// Construct a `[]int` value from compiler-emitted literal elements.
 #[must_use]
@@ -326,6 +338,31 @@ pub fn go_slice_i64_range(slice: GoSliceI64, low: GoInt, high: GoInt, max: GoInt
 /// Assign one `[]int` element through its shared backing array.
 #[allow(clippy::indexing_slicing)] // The explicit Go bounds check validates this index.
 pub fn go_slice_i64_set(slice: GoSliceI64, index: GoInt, value: GoInt) {
+    let index = slice_index(index, slice.len);
+    let absolute = slice.start.saturating_add(index);
+    let mut storage = slice
+        .storage
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    storage[absolute] = value;
+}
+
+/// Read one `[]bool` element with Go bounds checking.
+#[must_use]
+#[allow(clippy::indexing_slicing)] // The explicit Go bounds check validates this index.
+pub fn go_slice_bool_index(slice: GoSliceBool, index: GoInt) -> bool {
+    let index = slice_index(index, slice.len);
+    let absolute = slice.start.saturating_add(index);
+    let storage = slice
+        .storage
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    storage[absolute]
+}
+
+/// Assign one `[]bool` element through its shared backing array.
+#[allow(clippy::indexing_slicing)] // The explicit Go bounds check validates this index.
+pub fn go_slice_bool_set(slice: GoSliceBool, index: GoInt, value: bool) {
     let index = slice_index(index, slice.len);
     let absolute = slice.start.saturating_add(index);
     let mut storage = slice

@@ -24,8 +24,8 @@ use arrays::{
 };
 use channels::{is_channel_builtin, verify_channel_call};
 use containers::{
-    map_string_i64_ty, verify_byte_slice_call_arguments, verify_map_call_arguments,
-    verify_slice_call_arguments,
+    map_string_i64_ty, verify_bool_slice_call, verify_byte_slice_call_arguments,
+    verify_map_call_arguments, verify_slice_call_arguments,
 };
 use effects::{read_effects, verify_effects, verify_panic_edge};
 use interfaces::{is_interface_builtin, verify_interface_call};
@@ -246,6 +246,13 @@ impl Function {
                     ..hir::Effects::default()
                 },
             ),
+            RvalueKind::SliceLiteralBool(_) => (
+                Ty::Slice(Box::new(Ty::Bool)),
+                hir::Effects {
+                    may_allocate: true,
+                    ..hir::Effects::default()
+                },
+            ),
             RvalueKind::ArrayLiteralI64(values) => verify_array_literal(values)?,
             RvalueKind::ArrayLiteral { elements, ty } => verify_scalar_array_literal(
                 elements
@@ -435,6 +442,11 @@ impl Function {
                                 .map(|destination| self.place_ty(*destination).cloned())
                                 .collect::<Result<Vec<_>, _>>()?;
                             verify_interface_call(*builtin, &argument_types, &destination_types)?
+                        } else if matches!(
+                            builtin,
+                            hir::Builtin::SliceBoolIndex | hir::Builtin::SliceBoolSet
+                        ) {
+                            verify_bool_slice_call(*builtin, &argument_types)?
                         } else {
                             match builtin {
                                 hir::Builtin::Print | hir::Builtin::Println => {
@@ -706,6 +718,11 @@ impl Function {
                                         "interface builtin bypassed dedicated MIR verification",
                                     ));
                                 }
+                                hir::Builtin::SliceBoolIndex | hir::Builtin::SliceBoolSet => {
+                                    return Err(Diagnostic::backend(
+                                        "bool slice builtin bypassed dedicated MIR verification",
+                                    ));
+                                }
                             }
                         };
                         self.verify_call_destinations(destinations, &results)?;
@@ -807,6 +824,7 @@ fn rvalue_operands(kind: &RvalueKind) -> Vec<&Operand> {
         RvalueKind::RecoverCompareNil { .. } => Vec::new(),
         RvalueKind::SliceLiteralI64(_)
         | RvalueKind::SliceLiteralU8(_)
+        | RvalueKind::SliceLiteralBool(_)
         | RvalueKind::ArrayLiteralI64(_) => Vec::new(),
     }
 }

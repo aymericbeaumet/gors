@@ -225,6 +225,7 @@ fn rewrite_rvalue_boolean_reads(rvalue: &mut Rvalue, constants: &BTreeMap<LocalI
         RvalueKind::RecoverCompareNil { .. } => {}
         RvalueKind::SliceLiteralI64(_)
         | RvalueKind::SliceLiteralU8(_)
+        | RvalueKind::SliceLiteralBool(_)
         | RvalueKind::ArrayLiteralI64(_) => {}
     }
 }
@@ -305,6 +306,7 @@ fn refresh_rvalue_effects(rvalue: &mut Rvalue) {
         RvalueKind::RecoverCompareNil { .. } => true,
         RvalueKind::SliceLiteralI64(_)
         | RvalueKind::SliceLiteralU8(_)
+        | RvalueKind::SliceLiteralBool(_)
         | RvalueKind::ArrayLiteralI64(_) => false,
     };
     let may_panic = matches!(
@@ -325,6 +327,7 @@ fn refresh_rvalue_effects(rvalue: &mut Rvalue) {
             ..
         } | RvalueKind::SliceLiteralI64(_)
             | RvalueKind::SliceLiteralU8(_)
+            | RvalueKind::SliceLiteralBool(_)
     );
     let recover = matches!(rvalue.kind, RvalueKind::RecoverCompareNil { .. });
     rvalue.effects = hir::Effects {

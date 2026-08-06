@@ -81,6 +81,9 @@ impl RuntimeOp {
             | Self::GoInterfaceUnboxGoString
             | Self::GoInterfaceStructI64Get
             | Self::GoInterfaceUnboxPointerStructI64
+            | Self::GoSliceBoolFromStatic
+            | Self::GoSliceBoolIndex
+            | Self::GoSliceBoolSet
             | Self::GoChannelI64Nil
             | Self::GoChannelI64Make
             | Self::GoChannelI64Len
@@ -147,13 +150,13 @@ impl RuntimeOp {
                 HostIoEffect::None,
                 EXPLICIT_PANIC,
             ),
-            Self::GoSliceI64FromStatic => RuntimeEffects::new(
+            Self::GoSliceI64FromStatic | Self::GoSliceBoolFromStatic => RuntimeEffects::new(
                 AllocationEffect::MayAllocate,
                 ArgumentMutationEffect::None,
                 HostIoEffect::None,
                 NO_GO_PANICS,
             ),
-            Self::GoSliceI64Index => RuntimeEffects::new(
+            Self::GoSliceI64Index | Self::GoSliceBoolIndex => RuntimeEffects::new(
                 AllocationEffect::None,
                 ArgumentMutationEffect::None,
                 HostIoEffect::None,
@@ -165,7 +168,7 @@ impl RuntimeOp {
                 HostIoEffect::None,
                 SLICE_BOUNDS_OUT_OF_RANGE,
             ),
-            Self::GoSliceI64Set => RuntimeEffects::new(
+            Self::GoSliceI64Set | Self::GoSliceBoolSet => RuntimeEffects::new(
                 AllocationEffect::None,
                 ArgumentMutationEffect::MayMutateOwnedArgument,
                 HostIoEffect::None,

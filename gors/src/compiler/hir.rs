@@ -143,6 +143,7 @@ pub enum StmtKind {
     SliceAssign {
         slice: Expr,
         index: Expr,
+        set: Builtin,
         op: AssignOp,
         value: Expr,
     },
@@ -176,8 +177,15 @@ pub enum ValueCoercion {
 pub enum AssignTarget {
     Local(LocalId),
     Discard,
-    SliceIndex { slice: Expr, index: Expr },
-    MapIndex { map: Expr, key: Expr },
+    SliceIndex {
+        slice: Expr,
+        index: Expr,
+        set: Builtin,
+    },
+    MapIndex {
+        map: Expr,
+        key: Expr,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -249,6 +257,7 @@ pub enum ExprKind {
     },
     SliceLiteralI64(Vec<i64>),
     SliceLiteralU8(Vec<u8>),
+    SliceLiteralBool(Vec<bool>),
     ArrayLiteralI64(Vec<i64>),
     ArrayLiteral(Vec<(u64, Expr)>),
     ArrayIndexI64 {
@@ -307,6 +316,8 @@ pub enum Builtin {
     SliceU8CopyString,
     SliceI64Copy,
     SliceI64Clear,
+    SliceBoolIndex,
+    SliceBoolSet,
     StringFromSliceU8,
     StringLen,
     MapStringI64Nil,

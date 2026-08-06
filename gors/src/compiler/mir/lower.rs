@@ -391,6 +391,7 @@ impl FunctionLowerer {
             hir::StmtKind::SliceAssign {
                 slice,
                 index,
+                set,
                 op,
                 value,
             } => {
@@ -416,13 +417,22 @@ impl FunctionLowerer {
                         Provenance::Source(value.source),
                     )?
                 } else {
+                    let get = match set {
+                        hir::Builtin::SliceI64Set => hir::Builtin::SliceI64Index,
+                        hir::Builtin::SliceBoolSet => hir::Builtin::SliceBoolIndex,
+                        _ => {
+                            return Err(Diagnostic::backend(
+                                "slice assignment selected a non-slice runtime operation",
+                            ));
+                        }
+                    };
                     let old = Place {
                         local: self.new_temp(value.ty.clone()),
                     };
                     let after_index = self.new_block(provenance.clone());
                     self.terminate(make_terminator(
                         TerminatorKind::Call {
-                            callee: hir::Callee::Builtin(hir::Builtin::SliceI64Index),
+                            callee: hir::Callee::Builtin(get),
                             args: vec![slice_operand.clone(), index_operand.clone()],
                             destinations: vec![old],
                             target: after_index,
@@ -458,7 +468,7 @@ impl FunctionLowerer {
                 let after_set = self.new_block(provenance.clone());
                 self.terminate(make_terminator(
                     TerminatorKind::Call {
-                        callee: hir::Callee::Builtin(hir::Builtin::SliceI64Set),
+                        callee: hir::Callee::Builtin(*set),
                         args: vec![slice_operand, index_operand, assigned],
                         destinations: Vec::new(),
                         target: after_set,
@@ -746,6 +756,18 @@ impl FunctionLowerer {
                 let provenance = Provenance::Source(expr.source);
                 let value = make_rvalue(
                     RvalueKind::SliceLiteralU8(elements.clone()),
+                    expr.effects,
+                    provenance.clone(),
+                );
+                self.push_statement(make_statement(place, value, provenance))?;
+                Ok(Operand::Read(place))
+            }
+            hir::ExprKind::SliceLiteralBool(elements) => {
+                let result = self.new_temp(expr.ty.clone());
+                let place = Place { local: result };
+                let provenance = Provenance::Source(expr.source);
+                let value = make_rvalue(
+                    RvalueKind::SliceLiteralBool(elements.clone()),
                     expr.effects,
                     provenance.clone(),
                 );

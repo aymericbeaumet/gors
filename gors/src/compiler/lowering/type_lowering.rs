@@ -20,6 +20,7 @@ pub(super) fn lower_type(ty: &Ty) -> Result<RustType, Diagnostic> {
         Ty::Slice(element) if element.underlying() == &Ty::Uint(UintTy::Uint8) => {
             Ok(RustType::GoSliceU8)
         }
+        Ty::Slice(element) if element.underlying() == &Ty::Bool => Ok(RustType::GoSliceBool),
         Ty::Map(key, value)
             if key.underlying() == &Ty::String && value.underlying() == &Ty::Int(IntTy::Int) =>
         {

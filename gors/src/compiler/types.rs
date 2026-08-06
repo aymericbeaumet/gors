@@ -205,7 +205,7 @@ impl Ty {
         if let Self::Slice(element) = self {
             return matches!(
                 element.underlying(),
-                Self::Int(IntTy::Int) | Self::Uint(UintTy::Uint8)
+                Self::Bool | Self::Int(IntTy::Int) | Self::Uint(UintTy::Uint8)
             );
         }
         if let Self::Pointer(element) = self {

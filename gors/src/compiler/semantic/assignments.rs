@@ -253,8 +253,15 @@ impl FunctionLowerer {
             Ty::Array(_, element) if super::arrays::is_scalar_array_element(element) => {
                 self.lower_array_assignment(container, index, token, value, source)
             }
-            Ty::Slice(element) if element.underlying() == &Ty::Int(IntTy::Int) => {
+            Ty::Slice(element)
+                if matches!(element.underlying(), Ty::Int(IntTy::Int) | Ty::Bool) =>
+            {
                 let element_ty = element.as_ref().clone();
+                let set = if element.underlying() == &Ty::Bool {
+                    hir::Builtin::SliceBoolSet
+                } else {
+                    hir::Builtin::SliceI64Set
+                };
                 let index = self.lower_expr(index, Some(&Ty::Int(IntTy::Int)))?;
                 let value = self.lower_expr(value, Some(&element_ty))?;
                 let op = assignment_op(token, source)?;
@@ -268,6 +275,7 @@ impl FunctionLowerer {
                 Ok(hir::StmtKind::SliceAssign {
                     slice: container,
                     index,
+                    set,
                     op,
                     value,
                 })
@@ -291,7 +299,7 @@ impl FunctionLowerer {
                 })
             }
             _ => Err(Diagnostic::semantic(
-                "indexed assignment requires []int or map[string]int",
+                "indexed assignment requires []bool, []int, or map[string]int",
                 source,
             )),
         }
@@ -341,12 +349,20 @@ impl FunctionLowerer {
                 ExprSyntaxKind::Index { base, index } => {
                     let container = self.lower_expr(base, None)?;
                     match container.ty.underlying() {
-                        Ty::Slice(element) if element.underlying() == &Ty::Int(IntTy::Int) => {
+                        Ty::Slice(element)
+                            if matches!(element.underlying(), Ty::Int(IntTy::Int) | Ty::Bool) =>
+                        {
                             let element_ty = element.as_ref().clone();
+                            let set = if element.underlying() == &Ty::Bool {
+                                hir::Builtin::SliceBoolSet
+                            } else {
+                                hir::Builtin::SliceI64Set
+                            };
                             let index = self.lower_expr(index, Some(&Ty::Int(IntTy::Int)))?;
                             destinations.push(hir::AssignTarget::SliceIndex {
                                 slice: container,
                                 index,
+                                set,
                             });
                             destination_types.push(Some(element_ty));
                         }
@@ -362,7 +378,7 @@ impl FunctionLowerer {
                         }
                         _ => {
                             return Err(Diagnostic::semantic(
-                                "indexed assignment requires []int or map[string]int",
+                                "indexed assignment requires []bool, []int, or map[string]int",
                                 source,
                             ));
                         }

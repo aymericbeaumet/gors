@@ -131,6 +131,11 @@ fn encode_rvalue_kind(encoder: &mut Encoder, kind: &mir::RvalueKind) {
         mir::RvalueKind::SliceLiteralU8(elements) => {
             encoder.variant(b"slice-literal-u8", |encoder| encoder.blob(elements));
         }
+        mir::RvalueKind::SliceLiteralBool(elements) => {
+            encoder.variant(b"slice-literal-bool", |encoder| {
+                encoder.sequence(elements, |encoder, element| encoder.bool(*element));
+            });
+        }
         mir::RvalueKind::ArrayLiteralI64(elements) => {
             encoder.variant(b"array-literal-i64", |encoder| {
                 encoder.sequence(elements, |encoder, element| encoder.i64(*element));
@@ -335,6 +340,8 @@ fn encode_callee(encoder: &mut Encoder, callee: hir::Callee) {
                     hir::Builtin::SliceU8CopyString => b"slice-u8-copy-string",
                     hir::Builtin::SliceI64Copy => b"slice-i64-copy",
                     hir::Builtin::SliceI64Clear => b"slice-i64-clear",
+                    hir::Builtin::SliceBoolIndex => b"slice-bool-index",
+                    hir::Builtin::SliceBoolSet => b"slice-bool-set",
                     hir::Builtin::StringFromSliceU8 => b"string-from-slice-u8",
                     hir::Builtin::StringLen => b"string-len",
                     hir::Builtin::MapStringI64Nil => b"map-string-i64-nil",

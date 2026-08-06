@@ -83,6 +83,7 @@ pub(super) fn make_rvalue(
         RvalueKind::RecoverCompareNil { .. } => true,
         RvalueKind::SliceLiteralI64(_)
         | RvalueKind::SliceLiteralU8(_)
+        | RvalueKind::SliceLiteralBool(_)
         | RvalueKind::ArrayLiteralI64(_) => false,
     };
     let effects = intrinsic_effects.union(hir::Effects {

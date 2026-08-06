@@ -38,7 +38,7 @@ fn collect_statement_callees(statement: &hir::Stmt, callees: &mut BTreeSet<Quali
         } => {
             for destination in destinations {
                 match destination {
-                    hir::AssignTarget::SliceIndex { slice, index } => {
+                    hir::AssignTarget::SliceIndex { slice, index, .. } => {
                         collect_expression_callees(slice, callees);
                         collect_expression_callees(index, callees);
                     }
@@ -202,6 +202,7 @@ fn collect_expression_callees(expression: &hir::Expr, callees: &mut BTreeSet<Qua
         | hir::ExprKind::RecoverCompareNil { .. }
         | hir::ExprKind::SliceLiteralI64(_)
         | hir::ExprKind::SliceLiteralU8(_)
+        | hir::ExprKind::SliceLiteralBool(_)
         | hir::ExprKind::ArrayLiteralI64(_) => {}
     }
 }

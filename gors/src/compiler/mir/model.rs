@@ -73,6 +73,7 @@ pub enum RvalueKind {
     Use(Operand),
     SliceLiteralI64(Vec<i64>),
     SliceLiteralU8(Vec<u8>),
+    SliceLiteralBool(Vec<bool>),
     ArrayLiteralI64(Vec<i64>),
     ArrayLiteral {
         elements: Vec<Operand>,

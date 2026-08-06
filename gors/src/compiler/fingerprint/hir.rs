@@ -322,11 +322,13 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
         hir::StmtKind::SliceAssign {
             slice,
             index,
+            set,
             op,
             value,
         } => encoder.variant(b"slice-assign", |encoder| {
             encoder.field(b"slice", |encoder| encode_expression(encoder, slice));
             encoder.field(b"index", |encoder| encode_expression(encoder, index));
+            encoder.field(b"set", |encoder| encode_builtin(encoder, *set));
             encoder.field(b"operation", |encoder| encode_assign_op(encoder, *op));
             encoder.field(b"value", |encoder| encode_expression(encoder, value));
         }),
@@ -384,10 +386,11 @@ fn encode_assignment_target(encoder: &mut Encoder, target: &hir::AssignTarget) {
             encoder.variant(b"local", |encoder| local_id(encoder, *id));
         }
         hir::AssignTarget::Discard => encoder.variant(b"discard", |_| {}),
-        hir::AssignTarget::SliceIndex { slice, index } => {
+        hir::AssignTarget::SliceIndex { slice, index, set } => {
             encoder.variant(b"slice-index", |encoder| {
                 encoder.field(b"slice", |encoder| encode_expression(encoder, slice));
                 encoder.field(b"index", |encoder| encode_expression(encoder, index));
+                encoder.field(b"set", |encoder| encode_builtin(encoder, *set));
             });
         }
         hir::AssignTarget::MapIndex { map, key } => {
@@ -559,6 +562,11 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
         hir::ExprKind::SliceLiteralU8(elements) => {
             encoder.variant(b"slice-literal-u8", |encoder| encoder.blob(elements));
         }
+        hir::ExprKind::SliceLiteralBool(elements) => {
+            encoder.variant(b"slice-literal-bool", |encoder| {
+                encoder.sequence(elements, |encoder, element| encoder.bool(*element));
+            });
+        }
         hir::ExprKind::ArrayLiteralI64(elements) => {
             encoder.variant(b"array-literal-i64", |encoder| {
                 encoder.sequence(elements, |encoder, element| encoder.i64(*element));
@@ -654,6 +662,8 @@ fn encode_builtin(encoder: &mut Encoder, builtin: hir::Builtin) {
             hir::Builtin::SliceU8CopyString => b"slice-u8-copy-string",
             hir::Builtin::SliceI64Copy => b"slice-i64-copy",
             hir::Builtin::SliceI64Clear => b"slice-i64-clear",
+            hir::Builtin::SliceBoolIndex => b"slice-bool-index",
+            hir::Builtin::SliceBoolSet => b"slice-bool-set",
             hir::Builtin::StringFromSliceU8 => b"string-from-slice-u8",
             hir::Builtin::StringLen => b"string-len",
             hir::Builtin::MapStringI64Nil => b"map-string-i64-nil",

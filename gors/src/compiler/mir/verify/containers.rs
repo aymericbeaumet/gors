@@ -1,6 +1,7 @@
 //! MIR verification helpers for slice and map runtime operations.
 
 use crate::compiler::Diagnostic;
+use crate::compiler::hir;
 use crate::compiler::types::{IntTy, Ty, UintTy};
 
 pub(super) fn verify_slice_call_arguments(
@@ -36,6 +37,28 @@ pub(super) fn verify_byte_slice_call_arguments(
         )));
     }
     Ok(())
+}
+
+pub(super) fn verify_bool_slice_call(
+    builtin: hir::Builtin,
+    arguments: &[Ty],
+) -> Result<Vec<Ty>, Diagnostic> {
+    let slice = Ty::Slice(Box::new(Ty::Bool));
+    let (expected, results) = match builtin {
+        hir::Builtin::SliceBoolIndex => (vec![slice, Ty::Int(IntTy::Int)], vec![Ty::Bool]),
+        hir::Builtin::SliceBoolSet => (vec![slice, Ty::Int(IntTy::Int), Ty::Bool], Vec::new()),
+        _ => {
+            return Err(Diagnostic::backend(
+                "bool slice verifier received a non-bool-slice operation",
+            ));
+        }
+    };
+    if arguments != expected {
+        return Err(Diagnostic::backend(format!(
+            "invalid MIR bool slice arguments: {arguments:?}"
+        )));
+    }
+    Ok(results)
 }
 
 pub(super) fn map_string_i64_ty() -> Ty {

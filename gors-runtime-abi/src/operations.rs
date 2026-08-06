@@ -1,6 +1,7 @@
 //! Stable native and runtime operation catalogs.
 
 mod decode;
+mod identity;
 mod metadata;
 mod value_types;
 
@@ -338,6 +339,8 @@ pub enum RuntimeType {
     I64I64Tuple,
     GoPointerStructI64,
     GoInterface,
+    StaticBoolSlice,
+    GoSliceBool,
 }
 
 /// Complete function signature for one runtime operation.
@@ -416,6 +419,13 @@ const GO_INTERFACE_BOX_STRUCT_I64: &[RuntimeType] =
     &[RuntimeType::GoString, RuntimeType::GoSliceI64];
 const GO_INTERFACE_BOX_POINTER_STRUCT_I64: &[RuntimeType] =
     &[RuntimeType::GoString, RuntimeType::GoPointerStructI64];
+const STATIC_BOOL_SLICE_PARAMETER: &[RuntimeType] = &[RuntimeType::StaticBoolSlice];
+const GO_SLICE_BOOL_AND_INDEX: &[RuntimeType] = &[RuntimeType::GoSliceBool, RuntimeType::I64];
+const GO_SLICE_BOOL_SET: &[RuntimeType] = &[
+    RuntimeType::GoSliceBool,
+    RuntimeType::I64,
+    RuntimeType::Bool,
+];
 const GO_CHANNEL_I64_PARAMETER: &[RuntimeType] = &[RuntimeType::GoChannelI64];
 const GO_CHANNEL_I64_SEND: &[RuntimeType] = &[RuntimeType::GoChannelI64, RuntimeType::I64];
 const NO_CAPABILITIES: &[TargetCapability] = &[];
@@ -523,6 +533,9 @@ pub enum RuntimeOp {
     GoInterfaceUnboxGoString,
     GoInterfaceStructI64Get,
     GoInterfaceUnboxPointerStructI64,
+    GoSliceBoolFromStatic,
+    GoSliceBoolIndex,
+    GoSliceBoolSet,
 }
 
 /// Stable compact identity of one runtime ABI operation.
@@ -612,6 +625,9 @@ impl RuntimeOp {
         Self::GoInterfaceUnboxGoString,
         Self::GoInterfaceStructI64Get,
         Self::GoInterfaceUnboxPointerStructI64,
+        Self::GoSliceBoolFromStatic,
+        Self::GoSliceBoolIndex,
+        Self::GoSliceBoolSet,
     ];
 
     /// Stable exported Rust symbol assigned to this ABI operation.
@@ -694,6 +710,9 @@ impl RuntimeOp {
             Self::GoInterfaceUnboxGoString => "go_interface_unbox_go_string",
             Self::GoInterfaceStructI64Get => "go_interface_struct_i64_get",
             Self::GoInterfaceUnboxPointerStructI64 => "go_interface_unbox_pointer_struct_i64",
+            Self::GoSliceBoolFromStatic => "go_slice_bool_from_static",
+            Self::GoSliceBoolIndex => "go_slice_bool_index",
+            Self::GoSliceBoolSet => "go_slice_bool_set",
         }
     }
 
@@ -884,90 +903,14 @@ impl RuntimeOp {
             Self::GoInterfaceUnboxPointerStructI64 => {
                 RuntimeSignature::new(GO_INTERFACE_AND_TYPE, RuntimeType::GoPointerStructI64)
             }
+            Self::GoSliceBoolFromStatic => {
+                RuntimeSignature::new(STATIC_BOOL_SLICE_PARAMETER, RuntimeType::GoSliceBool)
+            }
+            Self::GoSliceBoolIndex => {
+                RuntimeSignature::new(GO_SLICE_BOOL_AND_INDEX, RuntimeType::Bool)
+            }
+            Self::GoSliceBoolSet => RuntimeSignature::new(GO_SLICE_BOOL_SET, RuntimeType::Unit),
         }
-    }
-
-    /// Stable compact identity for canonical encodings and fingerprints.
-    #[must_use]
-    pub const fn id(self) -> RuntimeOpId {
-        RuntimeOpId(match self {
-            Self::GoStringFromBytes => 1,
-            Self::GoStringFromStatic => 2,
-            Self::ConcatGoStrings => 3,
-            Self::IntDiv => 8,
-            Self::IntRem => 9,
-            Self::IntShl => 10,
-            Self::IntShr => 11,
-            Self::PrintBool => 13,
-            Self::PrintI64 => 14,
-            Self::PrintSpace => 15,
-            Self::PrintNewline => 16,
-            Self::PrintGoString => 17,
-            Self::PanicBool => 18,
-            Self::PanicI64 => 19,
-            Self::PanicGoString => 20,
-            Self::GoSliceI64FromStatic => 21,
-            Self::GoSliceI64Index => 22,
-            Self::GoSliceI64Range => 23,
-            Self::GoSliceI64Set => 24,
-            Self::GoSliceI64Make => 25,
-            Self::GoSliceI64Len => 26,
-            Self::GoSliceI64Cap => 27,
-            Self::GoSliceI64Append => 28,
-            Self::GoSliceU8FromStatic => 29,
-            Self::GoSliceU8AppendSlice => 30,
-            Self::GoSliceU8AppendString => 31,
-            Self::GoSliceU8CopyString => 32,
-            Self::GoSliceI64Clear => 33,
-            Self::GoStringFromSliceU8 => 34,
-            Self::GoSliceI64Copy => 35,
-            Self::GoMapStringI64Nil => 36,
-            Self::GoMapStringI64Make => 37,
-            Self::GoMapStringI64Len => 38,
-            Self::GoMapStringI64Get => 39,
-            Self::GoMapStringI64Contains => 40,
-            Self::GoMapStringI64Set => 41,
-            Self::GoMapStringI64Delete => 42,
-            Self::GoMapStringI64Clear => 43,
-            Self::GoMapStringI64IsNil => 44,
-            Self::GoMapStringI64KeyAt => 45,
-            Self::GoPointerI64Nil => 46,
-            Self::GoPointerI64New => 47,
-            Self::GoPointerI64Get => 48,
-            Self::GoPointerI64Set => 49,
-            Self::GoPointerI64IsNil => 50,
-            Self::GoChannelI64Nil => 51,
-            Self::GoChannelI64Make => 52,
-            Self::GoChannelI64Len => 53,
-            Self::GoChannelI64Cap => 54,
-            Self::GoChannelI64Send => 55,
-            Self::GoChannelI64ReceiveValue => 56,
-            Self::GoChannelI64Receive => 57,
-            Self::GoChannelI64Close => 58,
-            Self::GoChannelI64IsNil => 59,
-            Self::GoStringLen => 60,
-            Self::GoChannelI64TrySend => 61,
-            Self::GoChannelI64TryReceive => 62,
-            Self::GoPointerStructI64Nil => 63,
-            Self::GoPointerStructI64New => 64,
-            Self::GoPointerStructI64Get => 65,
-            Self::GoPointerStructI64Set => 66,
-            Self::GoPointerStructI64IsNil => 67,
-            Self::GoPointerStructI64Equal => 68,
-            Self::GoInterfaceNil => 69,
-            Self::GoInterfaceBoxBool => 70,
-            Self::GoInterfaceBoxI64 => 71,
-            Self::GoInterfaceBoxGoString => 72,
-            Self::GoInterfaceBoxStructI64 => 73,
-            Self::GoInterfaceBoxPointerStructI64 => 74,
-            Self::GoInterfaceIsNil => 75,
-            Self::GoInterfaceIsType => 76,
-            Self::GoInterfaceUnboxBool => 77,
-            Self::GoInterfaceUnboxI64 => 78,
-            Self::GoInterfaceUnboxGoString => 79,
-            Self::GoInterfaceStructI64Get => 80,
-            Self::GoInterfaceUnboxPointerStructI64 => 81,
-        })
     }
 
     pub(crate) fn encode(self, encoder: &mut CanonicalEncoder) {

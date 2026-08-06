@@ -653,6 +653,7 @@ fn rust_type_from_runtime(ty: RuntimeType, context: &str) -> Result<RustType, Di
         RuntimeType::GoString => Ok(RustType::GoString),
         RuntimeType::GoSliceI64 => Ok(RustType::GoSliceI64),
         RuntimeType::GoSliceU8 => Ok(RustType::GoSliceU8),
+        RuntimeType::GoSliceBool => Ok(RustType::GoSliceBool),
         RuntimeType::GoMapStringI64 => Ok(RustType::GoMapStringI64),
         RuntimeType::GoPointerI64 => Ok(RustType::GoPointerI64),
         RuntimeType::GoPointerStructI64 => Ok(RustType::GoPointerStructI64),
@@ -661,6 +662,7 @@ fn rust_type_from_runtime(ty: RuntimeType, context: &str) -> Result<RustType, Di
         RuntimeType::ByteSlice
         | RuntimeType::StaticByteSlice
         | RuntimeType::StaticI64Slice
+        | RuntimeType::StaticBoolSlice
         | RuntimeType::I64BoolTuple
         | RuntimeType::I64I64Tuple => Err(Diagnostic::backend(format!(
             "Rust IR {context} requires ABI-only operand type {ty:?}"
@@ -701,6 +703,18 @@ fn constant_type(constant: &Constant) -> Result<RustType, Diagnostic> {
             } else {
                 Err(Diagnostic::backend(format!(
                     "Rust IR static int slice uses runtime operation {op:?} with an incompatible signature"
+                )))
+            }
+        }
+        Constant::RuntimeStaticBools { op, .. } => {
+            let signature = op.signature();
+            if signature.parameters() == [RuntimeType::StaticBoolSlice]
+                && signature.result() == RuntimeType::GoSliceBool
+            {
+                Ok(RustType::GoSliceBool)
+            } else {
+                Err(Diagnostic::backend(format!(
+                    "Rust IR static bool slice uses runtime operation {op:?} with an incompatible signature"
                 )))
             }
         }
@@ -819,6 +833,7 @@ fn collect_operand_runtime_operations(operand: &Operand, operations: &mut Vec<Ru
     if let Operand::Constant(
         Constant::RuntimeStaticBytes { op, .. }
         | Constant::RuntimeStaticI64s { op, .. }
+        | Constant::RuntimeStaticBools { op, .. }
         | Constant::RuntimeStaticU8s { op, .. },
     ) = operand
     {

@@ -185,6 +185,7 @@ fn operand_effects(operand: &Operand) -> Effects {
         Operand::Constant(
             Constant::RuntimeStaticBytes { op, .. }
             | Constant::RuntimeStaticI64s { op, .. }
+            | Constant::RuntimeStaticBools { op, .. }
             | Constant::RuntimeStaticU8s { op, .. },
         ) => runtime_effects(*op),
         Operand::Constant(

@@ -306,6 +306,18 @@ fn integer_slices_are_send_and_sync() {
 }
 
 #[test]
+fn boolean_slices_preserve_shared_mutable_storage() {
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    assert_send_sync::<GoSliceBool>();
+    let values = go_slice_bool_from_static(&[false, true]);
+    let alias = values.clone();
+    go_slice_bool_set(alias, 0, true);
+    assert!(go_slice_bool_index(values.clone(), 0));
+    assert!(go_slice_bool_index(values, 1));
+}
+
+#[test]
 fn integer_slice_append_reuses_or_detaches_by_capacity() {
     let base = go_slice_i64_make(2, 4);
     go_slice_i64_set(base.clone(), 0, 1);

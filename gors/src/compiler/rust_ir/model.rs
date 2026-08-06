@@ -242,6 +242,7 @@ pub enum Constant {
     StaticI64Array(Vec<i64>),
     RuntimeStaticBytes { op: RuntimeOp, bytes: Vec<u8> },
     RuntimeStaticI64s { op: RuntimeOp, values: Vec<i64> },
+    RuntimeStaticBools { op: RuntimeOp, values: Vec<bool> },
     RuntimeStaticU8s { op: RuntimeOp, values: Vec<u8> },
 }
 
@@ -287,6 +288,7 @@ pub enum RustType {
     GoString,
     GoSliceI64,
     GoSliceU8,
+    GoSliceBool,
     GoMapStringI64,
     GoPointerI64,
     GoPointerStructI64,
@@ -325,6 +327,7 @@ impl RustType {
             Self::GoString
             | Self::GoSliceI64
             | Self::GoSliceU8
+            | Self::GoSliceBool
             | Self::GoMapStringI64
             | Self::GoPointerI64
             | Self::GoPointerStructI64
@@ -348,6 +351,7 @@ impl RustType {
             Self::GoString
             | Self::GoSliceI64
             | Self::GoSliceU8
+            | Self::GoSliceBool
             | Self::GoMapStringI64
             | Self::GoPointerI64
             | Self::GoPointerStructI64
@@ -361,6 +365,7 @@ impl RustType {
             Self::GoString
             | Self::GoSliceI64
             | Self::GoSliceU8
+            | Self::GoSliceBool
             | Self::GoMapStringI64
             | Self::GoPointerI64
             | Self::GoPointerStructI64
@@ -388,6 +393,7 @@ impl RustType {
                 Self::GoString
                     | Self::GoSliceI64
                     | Self::GoSliceU8
+                    | Self::GoSliceBool
                     | Self::GoMapStringI64
                     | Self::GoPointerI64
                     | Self::GoPointerStructI64

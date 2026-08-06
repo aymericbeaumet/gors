@@ -67,11 +67,38 @@ impl FunctionLowerer {
         };
         let integer_elements = element_ty.underlying() == &Ty::Int(IntTy::Int);
         let byte_elements = element_ty.underlying() == &Ty::Uint(UintTy::Uint8);
-        if !integer_elements && !byte_elements {
+        let boolean_elements = element_ty.underlying() == &Ty::Bool;
+        if !integer_elements && !byte_elements && !boolean_elements {
             return Err(Diagnostic::unsupported(
-                "slice literals currently require int or byte elements",
+                "slice literals currently require bool, int, or byte elements",
                 source,
             ));
+        }
+        if boolean_elements {
+            let values = elements
+                .iter()
+                .map(|element| {
+                    let element = self.lower_expr(element, Some(element_ty))?;
+                    let Some(ConstValue::Bool(value)) = expr_constant(&element) else {
+                        return Err(Diagnostic::unsupported(
+                            "dynamic slice literal elements are not yet implemented",
+                            source,
+                        ));
+                    };
+                    Ok(*value)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            return Ok(hir::Expr {
+                node,
+                kind: hir::ExprKind::SliceLiteralBool(values),
+                ty: literal_ty,
+                category: hir::ValueCategory::Value,
+                effects: hir::Effects {
+                    may_allocate: true,
+                    ..hir::Effects::default()
+                },
+                source,
+            });
         }
         let mut values = Vec::with_capacity(elements.len());
         for element in elements {

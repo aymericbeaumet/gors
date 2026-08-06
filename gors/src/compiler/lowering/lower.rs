@@ -148,6 +148,12 @@ fn lower_rvalue(rvalue: mir::Rvalue, locals: &[out::LocalDecl]) -> Result<out::R
                 values: elements,
             }))
         }
+        mir::RvalueKind::SliceLiteralBool(elements) => {
+            out::RvalueKind::Use(out::Operand::Constant(out::Constant::RuntimeStaticBools {
+                op: RuntimeOp::GoSliceBoolFromStatic,
+                values: elements,
+            }))
+        }
         mir::RvalueKind::ArrayLiteralI64(elements) => out::RvalueKind::Use(out::Operand::Constant(
             out::Constant::StaticI64Array(elements),
         )),
@@ -383,6 +389,8 @@ fn lower_terminator(
                 | hir::Builtin::SliceU8CopyString
                 | hir::Builtin::SliceI64Copy
                 | hir::Builtin::SliceI64Clear
+                | hir::Builtin::SliceBoolIndex
+                | hir::Builtin::SliceBoolSet
                 | hir::Builtin::StringFromSliceU8
                 | hir::Builtin::StringLen
                 | hir::Builtin::MapStringI64Nil
@@ -445,6 +453,8 @@ fn lower_terminator(
                     hir::Builtin::SliceU8CopyString => RuntimeOp::GoSliceU8CopyString,
                     hir::Builtin::SliceI64Copy => RuntimeOp::GoSliceI64Copy,
                     hir::Builtin::SliceI64Clear => RuntimeOp::GoSliceI64Clear,
+                    hir::Builtin::SliceBoolIndex => RuntimeOp::GoSliceBoolIndex,
+                    hir::Builtin::SliceBoolSet => RuntimeOp::GoSliceBoolSet,
                     hir::Builtin::StringFromSliceU8 => RuntimeOp::GoStringFromSliceU8,
                     hir::Builtin::StringLen => RuntimeOp::GoStringLen,
                     hir::Builtin::MapStringI64Nil => RuntimeOp::GoMapStringI64Nil,
@@ -558,6 +568,7 @@ fn lower_panic_call(
         | out::RustType::StructI64(_)
         | out::RustType::GoSliceI64
         | out::RustType::GoSliceU8
+        | out::RustType::GoSliceBool
         | out::RustType::GoMapStringI64
         | out::RustType::GoPointerI64
         | out::RustType::GoPointerStructI64
@@ -628,6 +639,7 @@ fn lower_print_call(
             | out::RustType::StructI64(_)
             | out::RustType::GoSliceI64
             | out::RustType::GoSliceU8
+            | out::RustType::GoSliceBool
             | out::RustType::GoMapStringI64
             | out::RustType::GoPointerI64
             | out::RustType::GoPointerStructI64

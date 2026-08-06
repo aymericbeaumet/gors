@@ -536,7 +536,7 @@ fn collect_statement_addresses(statement: &hir::Stmt, addressed: &mut BTreeSet<L
         } => {
             for destination in destinations {
                 match destination {
-                    hir::AssignTarget::SliceIndex { slice, index } => {
+                    hir::AssignTarget::SliceIndex { slice, index, .. } => {
                         collect_expr_addresses(slice, addressed);
                         collect_expr_addresses(index, addressed);
                     }
@@ -681,6 +681,7 @@ fn collect_expr_addresses(expression: &hir::Expr, addressed: &mut BTreeSet<Local
         | hir::ExprKind::RecoverCompareNil { .. }
         | hir::ExprKind::SliceLiteralI64(_)
         | hir::ExprKind::SliceLiteralU8(_)
+        | hir::ExprKind::SliceLiteralBool(_)
         | hir::ExprKind::ArrayLiteralI64(_) => {}
     }
 }
