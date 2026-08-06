@@ -4,7 +4,9 @@ use super::{
     CallTarget, Constant, Effects, Operand, PrimitiveOp, ReadOp, RuntimeOp, Rvalue, RvalueKind,
     TerminatorKind, ValueOp,
 };
-use gors_runtime_abi::{AllocationEffect, ArgumentMutationEffect, HostIoEffect, RuntimeType};
+use gors_runtime_abi::{
+    AllocationEffect, ArgumentMutationEffect, BlockingEffect, HostIoEffect, RuntimeType,
+};
 
 pub(in crate::compiler) fn statement_effects(value: &Rvalue) -> Effects {
     let mut effects = value.effects;
@@ -119,7 +121,7 @@ fn runtime_effects(operation: RuntimeOp) -> Effects {
         may_allocate: effects.allocation() == AllocationEffect::MayAllocate,
         may_write: effects.argument_mutation() == ArgumentMutationEffect::MayMutateOwnedArgument
             || host_io,
-        may_block: host_io,
+        may_block: effects.blocking() == BlockingEffect::MayBlock,
         may_panic: !effects.go_panics().is_empty(),
         ..Effects::default()
     }

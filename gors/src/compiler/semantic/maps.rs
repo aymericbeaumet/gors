@@ -1,6 +1,7 @@
 //! Typed lowering for the `map[string]int` runtime representation.
 
 use super::FunctionLowerer;
+use super::channels::{channel_effects, int_channel_parts};
 use super::expressions::coerce_expr;
 use super::lower_type;
 use super::pointers::{int_pointer_ty, pointer_effects};
@@ -78,6 +79,19 @@ impl FunctionLowerer {
                 ty,
                 category: hir::ValueCategory::Value,
                 effects: map_effects(&[], false, false, false),
+                source,
+            });
+        }
+        if int_channel_parts(&ty).is_some() {
+            return Ok(hir::Expr {
+                node,
+                kind: hir::ExprKind::Call {
+                    callee: hir::Callee::Builtin(hir::Builtin::ChannelI64Nil),
+                    args: Vec::new(),
+                },
+                ty,
+                category: hir::ValueCategory::Value,
+                effects: channel_effects(&[], false, false, false, false),
                 source,
             });
         }
@@ -173,6 +187,9 @@ impl FunctionLowerer {
             ));
         };
         let declared = lower_type(declared_syntax, &self.type_aliases, source)?;
+        if int_channel_parts(&declared).is_some() {
+            return self.lower_channel_make(declared, arguments, spread, node, source, expected);
+        }
         if declared.underlying() != string_i64_map_ty().underlying() {
             return self
                 .lower_slice_builtin_call("make", arguments, spread, node, source, expected);
@@ -218,6 +235,9 @@ impl FunctionLowerer {
             return Err(Diagnostic::semantic("len does not accept ...", source));
         }
         let value = self.lower_expr(value, None)?;
+        if int_channel_parts(&value.ty).is_some() {
+            return self.lower_channel_len(value, node, source, expected);
+        }
         if let Ty::Array(length, element) = value.ty.underlying()
             && element.underlying() == &Ty::Int(IntTy::Int)
         {
@@ -234,6 +254,7 @@ impl FunctionLowerer {
             Ty::Slice(element) if element.underlying() == &Ty::Int(IntTy::Int) => {
                 hir::Builtin::SliceI64Len
             }
+            Ty::String => hir::Builtin::StringLen,
             ty => {
                 return Err(Diagnostic::unsupported(
                     format!("len is not yet implemented for {ty:?}"),

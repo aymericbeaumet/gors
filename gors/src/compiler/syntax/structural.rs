@@ -121,6 +121,10 @@ pub enum StmtSyntaxKind {
         expression: ExprSyntax,
         token: Token,
     },
+    Send {
+        channel: ExprSyntax,
+        value: ExprSyntax,
+    },
     Defer {
         has_type_parameters: bool,
         params: FieldListSyntax,
@@ -235,6 +239,10 @@ pub enum ExprSyntaxKind {
         key: Box<ExprSyntax>,
         value: Box<ExprSyntax>,
     },
+    ChannelType {
+        direction: ChannelDirectionSyntax,
+        element: Box<ExprSyntax>,
+    },
     KeyValue {
         key: Box<ExprSyntax>,
         value: Box<ExprSyntax>,
@@ -254,4 +262,11 @@ pub enum ExprSyntaxKind {
         max: Option<Box<ExprSyntax>>,
     },
     Unsupported(&'static str),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChannelDirectionSyntax {
+    SendReceive,
+    SendOnly,
+    ReceiveOnly,
 }

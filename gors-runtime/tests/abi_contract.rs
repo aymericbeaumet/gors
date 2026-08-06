@@ -1,16 +1,19 @@
 use gors_runtime::{
-    GoInt, GoMapStringI64, GoPointerI64, GoSliceI64, GoSliceU8, GoString, concat_go_strings,
-    go_map_string_i64_clear, go_map_string_i64_contains, go_map_string_i64_delete,
-    go_map_string_i64_get, go_map_string_i64_is_nil, go_map_string_i64_key_at,
-    go_map_string_i64_len, go_map_string_i64_make, go_map_string_i64_nil, go_map_string_i64_set,
-    go_pointer_i64_get, go_pointer_i64_is_nil, go_pointer_i64_new, go_pointer_i64_nil,
-    go_pointer_i64_set, go_slice_i64_append, go_slice_i64_cap, go_slice_i64_clear,
-    go_slice_i64_copy, go_slice_i64_from_static, go_slice_i64_index, go_slice_i64_len,
-    go_slice_i64_make, go_slice_i64_range, go_slice_i64_set, go_slice_u8_append_slice,
-    go_slice_u8_append_string, go_slice_u8_copy_string, go_slice_u8_from_static,
-    go_string_from_bytes, go_string_from_slice_u8, go_string_from_static, int_div, int_rem,
-    int_shl, int_shr, panic_bool, panic_go_string, panic_i64, print_bool, print_go_string,
-    print_i64, print_newline, print_space,
+    GoChannelI64, GoInt, GoMapStringI64, GoPointerI64, GoSliceI64, GoSliceU8, GoString,
+    concat_go_strings, go_channel_i64_cap, go_channel_i64_close, go_channel_i64_is_nil,
+    go_channel_i64_len, go_channel_i64_make, go_channel_i64_nil, go_channel_i64_receive,
+    go_channel_i64_receive_value, go_channel_i64_send, go_map_string_i64_clear,
+    go_map_string_i64_contains, go_map_string_i64_delete, go_map_string_i64_get,
+    go_map_string_i64_is_nil, go_map_string_i64_key_at, go_map_string_i64_len,
+    go_map_string_i64_make, go_map_string_i64_nil, go_map_string_i64_set, go_pointer_i64_get,
+    go_pointer_i64_is_nil, go_pointer_i64_new, go_pointer_i64_nil, go_pointer_i64_set,
+    go_slice_i64_append, go_slice_i64_cap, go_slice_i64_clear, go_slice_i64_copy,
+    go_slice_i64_from_static, go_slice_i64_index, go_slice_i64_len, go_slice_i64_make,
+    go_slice_i64_range, go_slice_i64_set, go_slice_u8_append_slice, go_slice_u8_append_string,
+    go_slice_u8_copy_string, go_slice_u8_from_static, go_string_from_bytes,
+    go_string_from_slice_u8, go_string_from_static, go_string_len, int_div, int_rem, int_shl,
+    int_shr, panic_bool, panic_go_string, panic_i64, print_bool, print_go_string, print_i64,
+    print_newline, print_space,
 };
 use gors_runtime_abi::{RuntimeOp, RuntimeType};
 
@@ -258,6 +261,56 @@ fn implementation_surface(operation: RuntimeOp) -> RuntimeSurface {
             go_pointer_i64_is_nil,
             fn(GoPointerI64) -> bool,
             [RuntimeType::GoPointerI64] -> RuntimeType::Bool
+        ),
+        RuntimeOp::GoChannelI64Nil => runtime_surface!(
+            go_channel_i64_nil,
+            fn() -> GoChannelI64,
+            [] -> RuntimeType::GoChannelI64
+        ),
+        RuntimeOp::GoChannelI64Make => runtime_surface!(
+            go_channel_i64_make,
+            fn(GoInt) -> GoChannelI64,
+            [RuntimeType::I64] -> RuntimeType::GoChannelI64
+        ),
+        RuntimeOp::GoChannelI64Len => runtime_surface!(
+            go_channel_i64_len,
+            fn(GoChannelI64) -> GoInt,
+            [RuntimeType::GoChannelI64] -> RuntimeType::I64
+        ),
+        RuntimeOp::GoChannelI64Cap => runtime_surface!(
+            go_channel_i64_cap,
+            fn(GoChannelI64) -> GoInt,
+            [RuntimeType::GoChannelI64] -> RuntimeType::I64
+        ),
+        RuntimeOp::GoChannelI64Send => runtime_surface!(
+            go_channel_i64_send,
+            fn(GoChannelI64, GoInt),
+            [RuntimeType::GoChannelI64, RuntimeType::I64] -> RuntimeType::Unit
+        ),
+        RuntimeOp::GoChannelI64ReceiveValue => runtime_surface!(
+            go_channel_i64_receive_value,
+            fn(GoChannelI64) -> GoInt,
+            [RuntimeType::GoChannelI64] -> RuntimeType::I64
+        ),
+        RuntimeOp::GoChannelI64Receive => runtime_surface!(
+            go_channel_i64_receive,
+            fn(GoChannelI64) -> (GoInt, bool),
+            [RuntimeType::GoChannelI64] -> RuntimeType::I64BoolTuple
+        ),
+        RuntimeOp::GoChannelI64Close => runtime_surface!(
+            go_channel_i64_close,
+            fn(GoChannelI64),
+            [RuntimeType::GoChannelI64] -> RuntimeType::Unit
+        ),
+        RuntimeOp::GoChannelI64IsNil => runtime_surface!(
+            go_channel_i64_is_nil,
+            fn(GoChannelI64) -> bool,
+            [RuntimeType::GoChannelI64] -> RuntimeType::Bool
+        ),
+        RuntimeOp::GoStringLen => runtime_surface!(
+            go_string_len,
+            fn(GoString) -> GoInt,
+            [RuntimeType::GoString] -> RuntimeType::I64
         ),
     }
 }

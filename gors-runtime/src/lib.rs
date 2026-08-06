@@ -10,6 +10,14 @@
 // subset of its operations. Generated source never embeds or recompiles it.
 #![allow(dead_code)]
 
+mod channels;
+
+pub use channels::{
+    GoChannelI64, go_channel_i64_cap, go_channel_i64_close, go_channel_i64_is_nil,
+    go_channel_i64_len, go_channel_i64_make, go_channel_i64_nil, go_channel_i64_receive,
+    go_channel_i64_receive_value, go_channel_i64_send,
+};
+
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
@@ -379,6 +387,15 @@ impl GoString {
             StringStorage::Static(bytes) => &bytes[self.start..end],
             StringStorage::Shared(bytes) => &bytes[self.start..end],
         }
+    }
+}
+
+/// Return a Go string's byte length.
+#[must_use]
+pub fn go_string_len(value: GoString) -> GoInt {
+    match GoInt::try_from(value.len) {
+        Ok(length) => length,
+        Err(_) => std::process::abort(),
     }
 }
 

@@ -76,6 +76,8 @@ impl FunctionLowerer {
             Some(hir::Builtin::MapStringI64Nil)
         } else if is_int_pointer(&ty) {
             Some(hir::Builtin::PointerI64Nil)
+        } else if is_int_channel(&ty) {
+            Some(hir::Builtin::ChannelI64Nil)
         } else {
             None
         };
@@ -208,5 +210,13 @@ fn is_string_i64_map(ty: &Ty) -> bool {
         Ty::Map(key, value)
             if key.underlying() == &Ty::String
                 && value.underlying() == &Ty::Int(crate::compiler::types::IntTy::Int)
+    )
+}
+
+fn is_int_channel(ty: &Ty) -> bool {
+    matches!(
+        ty.underlying(),
+        Ty::Channel(_, element)
+            if element.underlying() == &Ty::Int(crate::compiler::types::IntTy::Int)
     )
 }

@@ -365,16 +365,10 @@ impl Function {
                         self.verify_call_destinations(destinations, &signature.results)?;
                     }
                     CallTarget::Runtime(operation) => {
-                        let result = verify_operation_signature(
-                            operation.signature(),
-                            &argument_types,
-                            "runtime call",
-                        )?;
-                        let results = if result == RustType::Unit {
-                            Vec::new()
-                        } else {
-                            vec![result]
-                        };
+                        let signature = operation.signature();
+                        verify_operation_arguments(signature, &argument_types, "runtime call")?;
+                        let results =
+                            rust_types_from_runtime_result(signature.result(), "runtime call")?;
                         self.verify_call_destinations(destinations, &results)?;
                     }
                 }
@@ -467,6 +461,15 @@ fn verify_operation_signature(
     arguments: &[RustType],
     context: &str,
 ) -> Result<RustType, Diagnostic> {
+    verify_operation_arguments(signature, arguments, context)?;
+    rust_type_from_runtime(signature.result(), context)
+}
+
+fn verify_operation_arguments(
+    signature: RuntimeSignature,
+    arguments: &[RustType],
+    context: &str,
+) -> Result<(), Diagnostic> {
     if arguments.len() != signature.parameters().len() {
         return Err(Diagnostic::backend(format!(
             "Rust IR {context} has {} arguments but its ABI signature requires {}",
@@ -483,7 +486,18 @@ fn verify_operation_signature(
         let expected = rust_type_from_runtime(expected, context)?;
         verify_same(actual, expected, &format!("{context} argument {position}"))?;
     }
-    rust_type_from_runtime(signature.result(), context)
+    Ok(())
+}
+
+fn rust_types_from_runtime_result(
+    ty: RuntimeType,
+    context: &str,
+) -> Result<Vec<RustType>, Diagnostic> {
+    match ty {
+        RuntimeType::Unit => Ok(Vec::new()),
+        RuntimeType::I64BoolTuple => Ok(vec![RustType::I64, RustType::Bool]),
+        ty => rust_type_from_runtime(ty, context).map(|ty| vec![ty]),
+    }
 }
 
 fn rust_type_from_runtime(ty: RuntimeType, context: &str) -> Result<RustType, Diagnostic> {
@@ -498,11 +512,13 @@ fn rust_type_from_runtime(ty: RuntimeType, context: &str) -> Result<RustType, Di
         RuntimeType::GoSliceU8 => Ok(RustType::GoSliceU8),
         RuntimeType::GoMapStringI64 => Ok(RustType::GoMapStringI64),
         RuntimeType::GoPointerI64 => Ok(RustType::GoPointerI64),
-        RuntimeType::ByteSlice | RuntimeType::StaticByteSlice | RuntimeType::StaticI64Slice => {
-            Err(Diagnostic::backend(format!(
-                "Rust IR {context} requires ABI-only operand type {ty:?}"
-            )))
-        }
+        RuntimeType::GoChannelI64 => Ok(RustType::GoChannelI64),
+        RuntimeType::ByteSlice
+        | RuntimeType::StaticByteSlice
+        | RuntimeType::StaticI64Slice
+        | RuntimeType::I64BoolTuple => Err(Diagnostic::backend(format!(
+            "Rust IR {context} requires ABI-only operand type {ty:?}"
+        ))),
     }
 }
 

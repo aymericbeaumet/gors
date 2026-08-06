@@ -268,6 +268,17 @@ pub(super) fn coerce_expr(
             source,
         ));
     }
+    if expr.ty != *expected
+        && matches!(
+            (expr.ty.underlying(), expected.underlying()),
+            (Ty::Channel(_, actual), Ty::Channel(_, expected)) if actual == expected
+        )
+    {
+        let value = expr.clone();
+        expr.kind = hir::ExprKind::Conversion {
+            value: Box::new(value),
+        };
+    }
     expr.ty = expected.clone();
     Ok(())
 }
@@ -280,6 +291,15 @@ pub(super) fn is_assignable(actual: &Ty, expected: &Ty) -> bool {
         && matches!(actual, Ty::Untyped(_))
     {
         return is_assignable(actual, underlying);
+    }
+    if let (
+        Ty::Channel(actual_direction, actual_element),
+        Ty::Channel(expected_direction, expected_element),
+    ) = (actual.underlying(), expected.underlying())
+    {
+        return actual_element == expected_element
+            && (*actual_direction == *expected_direction
+                || *actual_direction == crate::compiler::types::ChannelDir::SendReceive);
     }
     matches!(
         (actual, expected),

@@ -52,6 +52,16 @@ impl TryFrom<u16> for RuntimeOp {
             48 => Ok(Self::GoPointerI64Get),
             49 => Ok(Self::GoPointerI64Set),
             50 => Ok(Self::GoPointerI64IsNil),
+            51 => Ok(Self::GoChannelI64Nil),
+            52 => Ok(Self::GoChannelI64Make),
+            53 => Ok(Self::GoChannelI64Len),
+            54 => Ok(Self::GoChannelI64Cap),
+            55 => Ok(Self::GoChannelI64Send),
+            56 => Ok(Self::GoChannelI64ReceiveValue),
+            57 => Ok(Self::GoChannelI64Receive),
+            58 => Ok(Self::GoChannelI64Close),
+            59 => Ok(Self::GoChannelI64IsNil),
+            60 => Ok(Self::GoStringLen),
             unknown => Err(UnknownRuntimeOpId(unknown)),
         }
     }

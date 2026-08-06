@@ -24,6 +24,22 @@ pub enum ArgumentMutationEffect {
     MayMutateOwnedArgument,
 }
 
+/// Whether a runtime operation may wait for another goroutine or host action.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum BlockingEffect {
+    None,
+    MayBlock,
+}
+
+impl BlockingEffect {
+    const fn canonical_tag(self) -> u8 {
+        match self {
+            Self::None => 1,
+            Self::MayBlock => 2,
+        }
+    }
+}
+
 impl ArgumentMutationEffect {
     const fn canonical_tag(self) -> u8 {
         match self {
@@ -71,6 +87,10 @@ pub enum GoPanicCondition {
     SliceBoundsOutOfRange,
     NilMapAssignment,
     NilPointerDereference,
+    NegativeChannelCapacity,
+    SendOnClosedChannel,
+    CloseOfNilChannel,
+    CloseOfClosedChannel,
 }
 
 impl GoPanicCondition {
@@ -83,6 +103,10 @@ impl GoPanicCondition {
             Self::SliceBoundsOutOfRange => 5,
             Self::NilMapAssignment => 6,
             Self::NilPointerDereference => 7,
+            Self::NegativeChannelCapacity => 8,
+            Self::SendOnClosedChannel => 9,
+            Self::CloseOfNilChannel => 10,
+            Self::CloseOfClosedChannel => 11,
         }
     }
 }
@@ -96,6 +120,7 @@ impl GoPanicCondition {
 pub struct RuntimeEffects {
     allocation: AllocationEffect,
     argument_mutation: ArgumentMutationEffect,
+    blocking: BlockingEffect,
     host_io: HostIoEffect,
     go_panics: &'static [GoPanicCondition],
 }
@@ -110,9 +135,15 @@ impl RuntimeEffects {
         Self {
             allocation,
             argument_mutation,
+            blocking: BlockingEffect::None,
             host_io,
             go_panics,
         }
+    }
+
+    pub(crate) const fn with_blocking(mut self, blocking: BlockingEffect) -> Self {
+        self.blocking = blocking;
+        self
     }
 
     /// Whether the operation may allocate or grow dynamic storage.
@@ -125,6 +156,12 @@ impl RuntimeEffects {
     #[must_use]
     pub const fn argument_mutation(self) -> ArgumentMutationEffect {
         self.argument_mutation
+    }
+
+    /// Whether the operation may wait before it returns.
+    #[must_use]
+    pub const fn blocking(self) -> BlockingEffect {
+        self.blocking
     }
 
     /// Which host output surface the operation writes, if any.
@@ -142,6 +179,7 @@ impl RuntimeEffects {
     pub(crate) fn encode(self, encoder: &mut CanonicalEncoder) {
         encoder.u8(self.allocation.canonical_tag());
         encoder.u8(self.argument_mutation.canonical_tag());
+        encoder.u8(self.blocking.canonical_tag());
         encoder.u8(self.host_io.canonical_tag());
         encoder.count(self.go_panics.len());
         for panic in self.go_panics {

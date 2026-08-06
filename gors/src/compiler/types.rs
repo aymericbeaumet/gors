@@ -24,6 +24,7 @@ pub enum Ty {
     Array(u64, Box<Ty>),
     Slice(Box<Ty>),
     Map(Box<Ty>, Box<Ty>),
+    Channel(ChannelDir, Box<Ty>),
     Tuple(Vec<Ty>),
     Untyped(UntypedTy),
 }
@@ -57,6 +58,25 @@ pub enum FloatTy {
 pub enum ComplexTy {
     Complex64,
     Complex128,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ChannelDir {
+    SendReceive,
+    SendOnly,
+    ReceiveOnly,
+}
+
+impl ChannelDir {
+    #[must_use]
+    pub const fn can_send(self) -> bool {
+        matches!(self, Self::SendReceive | Self::SendOnly)
+    }
+
+    #[must_use]
+    pub const fn can_receive(self) -> bool {
+        matches!(self, Self::SendReceive | Self::ReceiveOnly)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -159,6 +179,9 @@ impl Ty {
             return key.underlying() == &Self::String
                 && value.underlying() == &Self::Int(IntTy::Int);
         }
+        if let Self::Channel(_, element) = self {
+            return element.underlying() == &Self::Int(IntTy::Int);
+        }
         if let Self::Tuple(elements) = self {
             return elements.iter().all(Self::is_bootstrap_value);
         }
@@ -191,6 +214,7 @@ impl Ty {
             | Self::Array(_, _)
             | Self::Slice(_)
             | Self::Map(_, _)
+            | Self::Channel(_, _)
             | Self::Tuple(_)
             | Self::Untyped(_) => None,
         }

@@ -9,7 +9,7 @@ use crate::compiler::ids::{
 };
 use crate::compiler::provenance::{SourceRef, SourceRefKind};
 use crate::compiler::types::{
-    ComplexTy, ConstValue, FloatTy, IntTy, Signature, Ty, UintTy, UntypedTy,
+    ChannelDir, ComplexTy, ConstValue, FloatTy, IntTy, Signature, Ty, UintTy, UntypedTy,
 };
 
 const FORMAT_MAGIC: &[u8] = b"gors-stage-product";
@@ -188,6 +188,10 @@ pub(super) fn ty(encoder: &mut Encoder, value: &Ty) {
             ty(encoder, key);
             ty(encoder, value);
         }),
+        Ty::Channel(direction, element) => encoder.variant(b"channel", |encoder| {
+            encoder.field(b"direction", |encoder| channel_dir(encoder, *direction));
+            encoder.field(b"element", |encoder| ty(encoder, element));
+        }),
         Ty::Tuple(values) => {
             encoder.variant(b"tuple", |encoder| encoder.sequence(values, ty));
         }
@@ -195,6 +199,17 @@ pub(super) fn ty(encoder: &mut Encoder, value: &Ty) {
             encoder.variant(b"untyped", |encoder| untyped_ty(encoder, *value));
         }
     }
+}
+
+fn channel_dir(encoder: &mut Encoder, direction: ChannelDir) {
+    encoder.variant(
+        match direction {
+            ChannelDir::SendReceive => b"send-receive",
+            ChannelDir::SendOnly => b"send-only",
+            ChannelDir::ReceiveOnly => b"receive-only",
+        },
+        |_| {},
+    );
 }
 
 fn int_ty(encoder: &mut Encoder, value: IntTy) {

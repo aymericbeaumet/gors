@@ -172,6 +172,10 @@ impl PackageReferenceCollector {
             // Assignment and increment targets must already be locals. They
             // are not package references even when the statement is invalid.
             StmtSyntaxKind::IncDec { .. } => {}
+            StmtSyntaxKind::Send { channel, value } => {
+                self.expression(channel);
+                self.expression(value);
+            }
             StmtSyntaxKind::Defer {
                 params,
                 results,
@@ -357,6 +361,7 @@ impl PackageReferenceCollector {
                 self.expression(key);
                 self.expression(value);
             }
+            ExprSyntaxKind::ChannelType { element, .. } => self.expression(element),
             ExprSyntaxKind::CompositeLiteral { ty, elements } => {
                 if let Some(ty) = ty {
                     self.expression(ty);
@@ -431,6 +436,9 @@ fn collect_all_expression_names(expression: &ExprSyntax, names: &mut BTreeSet<St
         ExprSyntaxKind::MapType { key, value } | ExprSyntaxKind::KeyValue { key, value } => {
             collect_all_expression_names(key, names);
             collect_all_expression_names(value, names);
+        }
+        ExprSyntaxKind::ChannelType { element, .. } => {
+            collect_all_expression_names(element, names);
         }
         ExprSyntaxKind::CompositeLiteral { ty, elements } => {
             if let Some(ty) = ty {

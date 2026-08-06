@@ -76,6 +76,9 @@ impl FunctionLowerer {
                     values: vec![one],
                 }
             }
+            StmtSyntaxKind::Send { channel, value } => {
+                self.lower_channel_send(channel, value, node, source)?
+            }
             StmtSyntaxKind::Defer {
                 has_type_parameters,
                 params,
@@ -660,9 +663,12 @@ impl FunctionLowerer {
         }
         if left.len() != right.len() {
             if let [value] = right {
-                let value = match self.try_lower_map_comma_ok(value) {
+                let value = match self.try_lower_channel_comma_ok(value) {
                     Some(value) => value?,
-                    None => self.lower_expr(value, None)?,
+                    None => match self.try_lower_map_comma_ok(value) {
+                        Some(value) => value?,
+                        None => self.lower_expr(value, None)?,
+                    },
                 };
                 let Ty::Tuple(component_types) = &value.ty else {
                     return Err(Diagnostic::semantic(

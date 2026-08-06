@@ -1,0 +1,44 @@
+//! MIR effect and panic-edge verification.
+
+use crate::compiler::Diagnostic;
+use crate::compiler::hir;
+
+use super::super::{Operand, PanicEdge};
+
+pub(super) fn verify_effects(
+    actual: hir::Effects,
+    expected: hir::Effects,
+    context: &str,
+) -> Result<(), Diagnostic> {
+    (actual == expected).then_some(()).ok_or_else(|| {
+        Diagnostic::backend(format!(
+            "MIR {context} effect mismatch: expected {expected:?}, found {actual:?}"
+        ))
+    })
+}
+
+pub(super) fn verify_panic_edge(
+    effects: hir::Effects,
+    edge: PanicEdge,
+    context: &str,
+) -> Result<(), Diagnostic> {
+    let valid = if effects.may_panic {
+        matches!(edge, PanicEdge::Propagate | PanicEdge::Cleanup(_))
+    } else {
+        edge == PanicEdge::None
+    };
+    valid.then_some(()).ok_or_else(|| {
+        Diagnostic::backend(format!(
+            "MIR {context} panic edge mismatch for effects {effects:?}: found {edge:?}"
+        ))
+    })
+}
+
+pub(super) fn read_effects<'a>(operands: impl IntoIterator<Item = &'a Operand>) -> hir::Effects {
+    hir::Effects {
+        may_read: operands
+            .into_iter()
+            .any(|operand| matches!(operand, Operand::Read(_))),
+        ..hir::Effects::default()
+    }
+}

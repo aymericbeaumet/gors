@@ -2,6 +2,7 @@
 
 mod arrays;
 mod assignments;
+mod channels;
 mod closures;
 mod expression_lower;
 mod expressions;
@@ -25,10 +26,10 @@ use super::hir;
 use super::ids::{DefId, NodeId};
 use super::provenance::SourceRef;
 use super::syntax::{
-    ConstantSyntax, ConstantValueSyntax, ExprSyntax, ExprSyntaxKind, FieldListSyntax,
-    FunctionBodySyntax, FunctionHeaderSyntax, SyntaxSource,
+    ChannelDirectionSyntax, ConstantSyntax, ConstantValueSyntax, ExprSyntax, ExprSyntaxKind,
+    FieldListSyntax, FunctionBodySyntax, FunctionHeaderSyntax, SyntaxSource,
 };
-use super::types::{ConstValue, IntTy, Signature, Ty, UntypedTy};
+use super::types::{ChannelDir, ConstValue, IntTy, Signature, Ty, UntypedTy};
 
 #[derive(Clone)]
 pub(super) struct FunctionSymbol {
@@ -323,6 +324,17 @@ pub(super) fn lower_type(
             Box::new(lower_type(value, type_aliases, source)?),
         ));
     }
+    if let ExprSyntaxKind::ChannelType { direction, element } = &expression.kind {
+        let direction = match direction {
+            ChannelDirectionSyntax::SendReceive => ChannelDir::SendReceive,
+            ChannelDirectionSyntax::SendOnly => ChannelDir::SendOnly,
+            ChannelDirectionSyntax::ReceiveOnly => ChannelDir::ReceiveOnly,
+        };
+        return Ok(Ty::Channel(
+            direction,
+            Box::new(lower_type(element, type_aliases, source)?),
+        ));
+    }
     if let ExprSyntaxKind::Unary {
         token: crate::token::Token::MUL,
         expression,
@@ -509,6 +521,7 @@ pub(super) fn eval_constant(
         | ExprSyntaxKind::Selector { .. }
         | ExprSyntaxKind::ArrayType { .. }
         | ExprSyntaxKind::MapType { .. }
+        | ExprSyntaxKind::ChannelType { .. }
         | ExprSyntaxKind::KeyValue { .. }
         | ExprSyntaxKind::CompositeLiteral { .. }
         | ExprSyntaxKind::Index { .. }

@@ -331,6 +331,9 @@ pub enum RuntimeType {
     GoSliceU8,
     GoMapStringI64,
     GoPointerI64,
+    GoChannelI64,
+    /// ABI-only aggregate returned by comma-ok integer channel receive.
+    I64BoolTuple,
 }
 
 impl RuntimeType {
@@ -349,6 +352,8 @@ impl RuntimeType {
             Self::GoSliceU8 => 11,
             Self::GoMapStringI64 => 12,
             Self::GoPointerI64 => 13,
+            Self::GoChannelI64 => 14,
+            Self::I64BoolTuple => 15,
         }
     }
 
@@ -431,6 +436,8 @@ const GO_MAP_STRING_I64_SET: &[RuntimeType] = &[
 ];
 const GO_POINTER_I64_PARAMETER: &[RuntimeType] = &[RuntimeType::GoPointerI64];
 const GO_POINTER_I64_SET: &[RuntimeType] = &[RuntimeType::GoPointerI64, RuntimeType::I64];
+const GO_CHANNEL_I64_PARAMETER: &[RuntimeType] = &[RuntimeType::GoChannelI64];
+const GO_CHANNEL_I64_SEND: &[RuntimeType] = &[RuntimeType::GoChannelI64, RuntimeType::I64];
 const NO_CAPABILITIES: &[TargetCapability] = &[];
 const STANDARD_IO_CAPABILITY: &[TargetCapability] = &[StandardIo];
 const NO_GO_PANICS: &[GoPanicCondition] = &[];
@@ -441,6 +448,12 @@ const INDEX_OUT_OF_RANGE: &[GoPanicCondition] = &[GoPanicCondition::IndexOutOfRa
 const SLICE_BOUNDS_OUT_OF_RANGE: &[GoPanicCondition] = &[GoPanicCondition::SliceBoundsOutOfRange];
 const NIL_MAP_ASSIGNMENT: &[GoPanicCondition] = &[GoPanicCondition::NilMapAssignment];
 const NIL_POINTER_DEREFERENCE: &[GoPanicCondition] = &[GoPanicCondition::NilPointerDereference];
+const NEGATIVE_CHANNEL_CAPACITY: &[GoPanicCondition] = &[GoPanicCondition::NegativeChannelCapacity];
+const SEND_ON_CLOSED_CHANNEL: &[GoPanicCondition] = &[GoPanicCondition::SendOnClosedChannel];
+const CLOSE_CHANNEL_PANICS: &[GoPanicCondition] = &[
+    GoPanicCondition::CloseOfNilChannel,
+    GoPanicCondition::CloseOfClosedChannel,
+];
 
 /// Operations that require an exact symbol from the versioned runtime ABI.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -490,6 +503,16 @@ pub enum RuntimeOp {
     GoPointerI64Get,
     GoPointerI64Set,
     GoPointerI64IsNil,
+    GoChannelI64Nil,
+    GoChannelI64Make,
+    GoChannelI64Len,
+    GoChannelI64Cap,
+    GoChannelI64Send,
+    GoChannelI64ReceiveValue,
+    GoChannelI64Receive,
+    GoChannelI64Close,
+    GoChannelI64IsNil,
+    GoStringLen,
 }
 
 /// Stable compact identity of one runtime ABI operation.
@@ -571,6 +594,16 @@ impl RuntimeOp {
         Self::GoPointerI64Get,
         Self::GoPointerI64Set,
         Self::GoPointerI64IsNil,
+        Self::GoChannelI64Nil,
+        Self::GoChannelI64Make,
+        Self::GoChannelI64Len,
+        Self::GoChannelI64Cap,
+        Self::GoChannelI64Send,
+        Self::GoChannelI64ReceiveValue,
+        Self::GoChannelI64Receive,
+        Self::GoChannelI64Close,
+        Self::GoChannelI64IsNil,
+        Self::GoStringLen,
     ];
 
     /// Stable exported Rust symbol assigned to this ABI operation.
@@ -622,6 +655,16 @@ impl RuntimeOp {
             Self::GoPointerI64Get => "go_pointer_i64_get",
             Self::GoPointerI64Set => "go_pointer_i64_set",
             Self::GoPointerI64IsNil => "go_pointer_i64_is_nil",
+            Self::GoChannelI64Nil => "go_channel_i64_nil",
+            Self::GoChannelI64Make => "go_channel_i64_make",
+            Self::GoChannelI64Len => "go_channel_i64_len",
+            Self::GoChannelI64Cap => "go_channel_i64_cap",
+            Self::GoChannelI64Send => "go_channel_i64_send",
+            Self::GoChannelI64ReceiveValue => "go_channel_i64_receive_value",
+            Self::GoChannelI64Receive => "go_channel_i64_receive",
+            Self::GoChannelI64Close => "go_channel_i64_close",
+            Self::GoChannelI64IsNil => "go_channel_i64_is_nil",
+            Self::GoStringLen => "go_string_len",
         }
     }
 
@@ -727,6 +770,29 @@ impl RuntimeOp {
             Self::GoPointerI64IsNil => {
                 RuntimeSignature::new(GO_POINTER_I64_PARAMETER, RuntimeType::Bool)
             }
+            Self::GoChannelI64Nil => {
+                RuntimeSignature::new(NO_PARAMETERS, RuntimeType::GoChannelI64)
+            }
+            Self::GoChannelI64Make => {
+                RuntimeSignature::new(I64_PARAMETER, RuntimeType::GoChannelI64)
+            }
+            Self::GoChannelI64Len | Self::GoChannelI64Cap => {
+                RuntimeSignature::new(GO_CHANNEL_I64_PARAMETER, RuntimeType::I64)
+            }
+            Self::GoChannelI64Send => RuntimeSignature::new(GO_CHANNEL_I64_SEND, RuntimeType::Unit),
+            Self::GoChannelI64ReceiveValue => {
+                RuntimeSignature::new(GO_CHANNEL_I64_PARAMETER, RuntimeType::I64)
+            }
+            Self::GoChannelI64Receive => {
+                RuntimeSignature::new(GO_CHANNEL_I64_PARAMETER, RuntimeType::I64BoolTuple)
+            }
+            Self::GoChannelI64Close => {
+                RuntimeSignature::new(GO_CHANNEL_I64_PARAMETER, RuntimeType::Unit)
+            }
+            Self::GoChannelI64IsNil => {
+                RuntimeSignature::new(GO_CHANNEL_I64_PARAMETER, RuntimeType::Bool)
+            }
+            Self::GoStringLen => RuntimeSignature::new(GO_STRING_PARAMETER, RuntimeType::I64),
         }
     }
 
@@ -779,6 +845,16 @@ impl RuntimeOp {
             Self::GoPointerI64Get => 48,
             Self::GoPointerI64Set => 49,
             Self::GoPointerI64IsNil => 50,
+            Self::GoChannelI64Nil => 51,
+            Self::GoChannelI64Make => 52,
+            Self::GoChannelI64Len => 53,
+            Self::GoChannelI64Cap => 54,
+            Self::GoChannelI64Send => 55,
+            Self::GoChannelI64ReceiveValue => 56,
+            Self::GoChannelI64Receive => 57,
+            Self::GoChannelI64Close => 58,
+            Self::GoChannelI64IsNil => 59,
+            Self::GoStringLen => 60,
         })
     }
 

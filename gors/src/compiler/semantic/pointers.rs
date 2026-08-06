@@ -1,6 +1,7 @@
 //! Typed lowering for Go pointers to bootstrap integer values.
 
 use super::FunctionLowerer;
+use super::channels::int_channel_parts;
 use super::expressions::coerce_expr;
 use super::lower_type;
 use super::maps::string_i64_map_ty;
@@ -172,6 +173,8 @@ impl FunctionLowerer {
             hir::Builtin::MapStringI64IsNil
         } else if value.ty.underlying() == int_pointer_ty().underlying() {
             hir::Builtin::PointerI64IsNil
+        } else if int_channel_parts(&value.ty).is_some() {
+            hir::Builtin::ChannelI64IsNil
         } else {
             return Err(Diagnostic::semantic(
                 "nil comparison requires a nil-capable value",

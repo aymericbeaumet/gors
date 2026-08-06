@@ -261,6 +261,7 @@ pub enum Builtin {
     SliceI64Copy,
     SliceI64Clear,
     StringFromSliceU8,
+    StringLen,
     MapStringI64Nil,
     MapStringI64Make,
     MapStringI64Len,
@@ -279,6 +280,15 @@ pub enum Builtin {
     PointerI64Get,
     PointerI64Set,
     PointerI64IsNil,
+    ChannelI64Nil,
+    ChannelI64Make,
+    ChannelI64Len,
+    ChannelI64Cap,
+    ChannelI64Send,
+    ChannelI64ReceiveValue,
+    ChannelI64Receive,
+    ChannelI64Close,
+    ChannelI64IsNil,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

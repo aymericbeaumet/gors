@@ -1,11 +1,14 @@
 //! Capability and effect metadata for runtime operations.
 
 use super::{
-    EXPLICIT_PANIC, INDEX_OUT_OF_RANGE, INTEGER_DIVIDE_BY_ZERO, NEGATIVE_SHIFT_AMOUNT,
-    NIL_MAP_ASSIGNMENT, NIL_POINTER_DEREFERENCE, NO_CAPABILITIES, NO_GO_PANICS, RuntimeOp,
-    SLICE_BOUNDS_OUT_OF_RANGE, STANDARD_IO_CAPABILITY,
+    CLOSE_CHANNEL_PANICS, EXPLICIT_PANIC, INDEX_OUT_OF_RANGE, INTEGER_DIVIDE_BY_ZERO,
+    NEGATIVE_CHANNEL_CAPACITY, NEGATIVE_SHIFT_AMOUNT, NIL_MAP_ASSIGNMENT, NIL_POINTER_DEREFERENCE,
+    NO_CAPABILITIES, NO_GO_PANICS, RuntimeOp, SEND_ON_CLOSED_CHANNEL, SLICE_BOUNDS_OUT_OF_RANGE,
+    STANDARD_IO_CAPABILITY,
 };
-use crate::effects::{AllocationEffect, ArgumentMutationEffect, HostIoEffect, RuntimeEffects};
+use crate::effects::{
+    AllocationEffect, ArgumentMutationEffect, BlockingEffect, HostIoEffect, RuntimeEffects,
+};
 use crate::target::TargetCapability;
 
 impl RuntimeOp {
@@ -57,7 +60,17 @@ impl RuntimeOp {
             | Self::GoPointerI64New
             | Self::GoPointerI64Get
             | Self::GoPointerI64Set
-            | Self::GoPointerI64IsNil => NO_CAPABILITIES,
+            | Self::GoPointerI64IsNil
+            | Self::GoChannelI64Nil
+            | Self::GoChannelI64Make
+            | Self::GoChannelI64Len
+            | Self::GoChannelI64Cap
+            | Self::GoChannelI64Send
+            | Self::GoChannelI64ReceiveValue
+            | Self::GoChannelI64Receive
+            | Self::GoChannelI64Close
+            | Self::GoChannelI64IsNil
+            | Self::GoStringLen => NO_CAPABILITIES,
         }
     }
 
@@ -98,7 +111,8 @@ impl RuntimeOp {
                 ArgumentMutationEffect::None,
                 HostIoEffect::StandardError,
                 NO_GO_PANICS,
-            ),
+            )
+            .with_blocking(BlockingEffect::MayBlock),
             Self::GoStringFromStatic => RuntimeEffects::new(
                 AllocationEffect::None,
                 ArgumentMutationEffect::None,
@@ -220,6 +234,42 @@ impl RuntimeOp {
                 ArgumentMutationEffect::MayMutateOwnedArgument,
                 HostIoEffect::None,
                 NIL_POINTER_DEREFERENCE,
+            ),
+            Self::GoChannelI64Nil
+            | Self::GoChannelI64Len
+            | Self::GoChannelI64Cap
+            | Self::GoChannelI64IsNil
+            | Self::GoStringLen => RuntimeEffects::new(
+                AllocationEffect::None,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                NO_GO_PANICS,
+            ),
+            Self::GoChannelI64Make => RuntimeEffects::new(
+                AllocationEffect::MayAllocate,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                NEGATIVE_CHANNEL_CAPACITY,
+            ),
+            Self::GoChannelI64Send => RuntimeEffects::new(
+                AllocationEffect::None,
+                ArgumentMutationEffect::MayMutateOwnedArgument,
+                HostIoEffect::None,
+                SEND_ON_CLOSED_CHANNEL,
+            )
+            .with_blocking(BlockingEffect::MayBlock),
+            Self::GoChannelI64ReceiveValue | Self::GoChannelI64Receive => RuntimeEffects::new(
+                AllocationEffect::None,
+                ArgumentMutationEffect::MayMutateOwnedArgument,
+                HostIoEffect::None,
+                NO_GO_PANICS,
+            )
+            .with_blocking(BlockingEffect::MayBlock),
+            Self::GoChannelI64Close => RuntimeEffects::new(
+                AllocationEffect::None,
+                ArgumentMutationEffect::MayMutateOwnedArgument,
+                HostIoEffect::None,
+                CLOSE_CHANNEL_PANICS,
             ),
         }
     }

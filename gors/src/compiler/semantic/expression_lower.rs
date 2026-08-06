@@ -107,6 +107,9 @@ impl FunctionLowerer {
                 return self.lower_expr_inner(expression, expected, allow_discarded_call_result);
             }
             ExprSyntaxKind::Unary { token, expression } => {
+                if *token == Token::ARROW {
+                    return self.lower_channel_receive(expression, false, node, source, expected);
+                }
                 if *token == Token::MUL {
                     return self.lower_pointer_deref(expression, node, source, expected);
                 }
@@ -327,6 +330,16 @@ impl FunctionLowerer {
                 if name == "len" {
                     return self.lower_len_builtin_call(arguments, *spread, node, source, expected);
                 }
+                if name == "cap" {
+                    return self.lower_channel_cap_builtin_call(
+                        arguments, *spread, node, source, expected,
+                    );
+                }
+                if name == "close" {
+                    return self.lower_channel_close_builtin_call(
+                        arguments, *spread, node, source, expected,
+                    );
+                }
                 if name == "clear" {
                     return self
                         .lower_clear_builtin_call(arguments, *spread, node, source, expected);
@@ -335,7 +348,7 @@ impl FunctionLowerer {
                     return self
                         .lower_delete_builtin_call(arguments, *spread, node, source, expected);
                 }
-                if matches!(name, "cap" | "append" | "copy") {
+                if matches!(name, "append" | "copy") {
                     return self.lower_slice_builtin_call(
                         name, arguments, *spread, node, source, expected,
                     );
@@ -706,7 +719,9 @@ impl FunctionLowerer {
                     source,
                 }
             }
-            ExprSyntaxKind::ArrayType { .. } | ExprSyntaxKind::MapType { .. } => {
+            ExprSyntaxKind::ArrayType { .. }
+            | ExprSyntaxKind::MapType { .. }
+            | ExprSyntaxKind::ChannelType { .. } => {
                 return Err(Diagnostic::semantic(
                     "a container type is not a value expression",
                     source,

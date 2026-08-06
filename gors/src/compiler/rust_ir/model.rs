@@ -260,6 +260,7 @@ pub enum RustType {
     GoSliceU8,
     GoMapStringI64,
     GoPointerI64,
+    GoChannelI64,
     ArrayI64(u64),
 }
 
@@ -274,7 +275,8 @@ impl RustType {
             | Self::GoSliceI64
             | Self::GoSliceU8
             | Self::GoMapStringI64
-            | Self::GoPointerI64 => Some(ReadOp::ProvenInitializedClone),
+            | Self::GoPointerI64
+            | Self::GoChannelI64 => Some(ReadOp::ProvenInitializedClone),
             Self::Unit => None,
         }
     }
@@ -289,6 +291,7 @@ impl RustType {
             | Self::GoSliceU8
             | Self::GoMapStringI64
             | Self::GoPointerI64
+            | Self::GoChannelI64
                 if live_after =>
             {
                 Some(ReadOp::ProvenInitializedClone)
@@ -297,7 +300,8 @@ impl RustType {
             | Self::GoSliceI64
             | Self::GoSliceU8
             | Self::GoMapStringI64
-            | Self::GoPointerI64 => Some(ReadOp::ProvenLastUseMove),
+            | Self::GoPointerI64
+            | Self::GoChannelI64 => Some(ReadOp::ProvenLastUseMove),
             Self::Unit => None,
         }
     }
@@ -313,7 +317,8 @@ impl RustType {
                     | Self::GoSliceI64
                     | Self::GoSliceU8
                     | Self::GoMapStringI64
-                    | Self::GoPointerI64,
+                    | Self::GoPointerI64
+                    | Self::GoChannelI64,
                 ReadOp::ProvenInitializedClone | ReadOp::ProvenLastUseMove
             )
         )

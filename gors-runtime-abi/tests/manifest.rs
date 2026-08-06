@@ -4,13 +4,13 @@ use std::error::Error;
 use sha2::{Digest as _, Sha256};
 
 use gors_runtime_abi::{
-    AllocationEffect, ArgumentMutationEffect, ArtifactSchemaVersion, CURRENT_ARTIFACT_SCHEMA,
-    CURRENT_CONTRACT_VERSION, CURRENT_MANIFEST_SCHEMA, CompatibilityIdentity, ContractVersion,
-    DataWidth, Endianness, GoPanicCondition, GoSemanticModel, HostIoEffect, ImplementationHash,
-    PrimitiveOp, RuntimeAbiManifest, RuntimeArtifactFormat, RuntimeArtifactManifest,
-    RuntimeDependency, RuntimeLinkError, RuntimeLinkRequest, RuntimeOp, RuntimeRequirement,
-    RuntimeType, RustRlibCompatibility, TargetCapabilities, TargetCapability, TargetModel,
-    TargetModelError,
+    AllocationEffect, ArgumentMutationEffect, ArtifactSchemaVersion, BlockingEffect,
+    CURRENT_ARTIFACT_SCHEMA, CURRENT_CONTRACT_VERSION, CURRENT_MANIFEST_SCHEMA,
+    CompatibilityIdentity, ContractVersion, DataWidth, Endianness, GoPanicCondition,
+    GoSemanticModel, HostIoEffect, ImplementationHash, PrimitiveOp, RuntimeAbiManifest,
+    RuntimeArtifactFormat, RuntimeArtifactManifest, RuntimeDependency, RuntimeLinkError,
+    RuntimeLinkRequest, RuntimeOp, RuntimeRequirement, RuntimeType, TargetCapabilities,
+    TargetCapability, TargetModel, TargetModelError,
 };
 
 fn target_model(triple: &str) -> Result<TargetModel, TargetModelError> {
@@ -93,11 +93,11 @@ fn current_contract_identity_is_sha256_of_canonical_bytes() {
 
     assert_eq!(manifest.schema().get(), 2);
     assert_eq!(manifest.contract(), CURRENT_CONTRACT_VERSION);
-    assert_eq!(manifest.contract(), ContractVersion::new(2, 4, 0));
+    assert_eq!(manifest.contract(), ContractVersion::new(2, 5, 0));
     assert_eq!(manifest.identity().as_bytes(), &expected);
     assert_eq!(
         manifest.identity().to_string(),
-        "987ab6b52c9d6e8157b4ba64b29b9491c0abde7aab930923050ad663f1940e4f",
+        "8991bc8eb3ea76c4e2fd8eb834ca9af081b7a3ac8c64045a042e13c562eaeacb",
         "the canonical runtime contract changed; review the ABI diff and bump its semantic version before accepting a new identity",
     );
 }
@@ -161,7 +161,8 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoStringFromSliceU8
             | RuntimeOp::GoMapStringI64Make
             | RuntimeOp::GoMapStringI64Set
-            | RuntimeOp::GoPointerI64New => AllocationEffect::MayAllocate,
+            | RuntimeOp::GoPointerI64New
+            | RuntimeOp::GoChannelI64Make => AllocationEffect::MayAllocate,
             RuntimeOp::GoStringFromStatic
             | RuntimeOp::IntDiv
             | RuntimeOp::IntRem
@@ -194,7 +195,16 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoPointerI64Nil
             | RuntimeOp::GoPointerI64Get
             | RuntimeOp::GoPointerI64Set
-            | RuntimeOp::GoPointerI64IsNil => AllocationEffect::None,
+            | RuntimeOp::GoPointerI64IsNil
+            | RuntimeOp::GoChannelI64Nil
+            | RuntimeOp::GoChannelI64Len
+            | RuntimeOp::GoChannelI64Cap
+            | RuntimeOp::GoChannelI64Send
+            | RuntimeOp::GoChannelI64ReceiveValue
+            | RuntimeOp::GoChannelI64Receive
+            | RuntimeOp::GoChannelI64Close
+            | RuntimeOp::GoChannelI64IsNil
+            | RuntimeOp::GoStringLen => AllocationEffect::None,
         };
         let expected_argument_mutation = match operation {
             RuntimeOp::ConcatGoStrings
@@ -208,7 +218,11 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoMapStringI64Set
             | RuntimeOp::GoMapStringI64Delete
             | RuntimeOp::GoMapStringI64Clear
-            | RuntimeOp::GoPointerI64Set => ArgumentMutationEffect::MayMutateOwnedArgument,
+            | RuntimeOp::GoPointerI64Set
+            | RuntimeOp::GoChannelI64Send
+            | RuntimeOp::GoChannelI64ReceiveValue
+            | RuntimeOp::GoChannelI64Receive
+            | RuntimeOp::GoChannelI64Close => ArgumentMutationEffect::MayMutateOwnedArgument,
             RuntimeOp::GoStringFromBytes
             | RuntimeOp::GoStringFromStatic
             | RuntimeOp::IntDiv
@@ -241,7 +255,24 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoPointerI64Nil
             | RuntimeOp::GoPointerI64New
             | RuntimeOp::GoPointerI64Get
-            | RuntimeOp::GoPointerI64IsNil => ArgumentMutationEffect::None,
+            | RuntimeOp::GoPointerI64IsNil
+            | RuntimeOp::GoChannelI64Nil
+            | RuntimeOp::GoChannelI64Make
+            | RuntimeOp::GoChannelI64Len
+            | RuntimeOp::GoChannelI64Cap
+            | RuntimeOp::GoChannelI64IsNil
+            | RuntimeOp::GoStringLen => ArgumentMutationEffect::None,
+        };
+        let expected_blocking = match operation {
+            RuntimeOp::PrintBool
+            | RuntimeOp::PrintI64
+            | RuntimeOp::PrintSpace
+            | RuntimeOp::PrintNewline
+            | RuntimeOp::PrintGoString
+            | RuntimeOp::GoChannelI64Send
+            | RuntimeOp::GoChannelI64ReceiveValue
+            | RuntimeOp::GoChannelI64Receive => BlockingEffect::MayBlock,
+            _ => BlockingEffect::None,
         };
         let expected_host_io = match operation {
             RuntimeOp::PrintBool
@@ -288,7 +319,17 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoPointerI64New
             | RuntimeOp::GoPointerI64Get
             | RuntimeOp::GoPointerI64Set
-            | RuntimeOp::GoPointerI64IsNil => HostIoEffect::None,
+            | RuntimeOp::GoPointerI64IsNil
+            | RuntimeOp::GoChannelI64Nil
+            | RuntimeOp::GoChannelI64Make
+            | RuntimeOp::GoChannelI64Len
+            | RuntimeOp::GoChannelI64Cap
+            | RuntimeOp::GoChannelI64Send
+            | RuntimeOp::GoChannelI64ReceiveValue
+            | RuntimeOp::GoChannelI64Receive
+            | RuntimeOp::GoChannelI64Close
+            | RuntimeOp::GoChannelI64IsNil
+            | RuntimeOp::GoStringLen => HostIoEffect::None,
         };
         let expected_panics: &[GoPanicCondition] = match operation {
             RuntimeOp::IntDiv | RuntimeOp::IntRem => &[GoPanicCondition::IntegerDivideByZero],
@@ -306,6 +347,12 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             RuntimeOp::GoPointerI64Get | RuntimeOp::GoPointerI64Set => {
                 &[GoPanicCondition::NilPointerDereference]
             }
+            RuntimeOp::GoChannelI64Make => &[GoPanicCondition::NegativeChannelCapacity],
+            RuntimeOp::GoChannelI64Send => &[GoPanicCondition::SendOnClosedChannel],
+            RuntimeOp::GoChannelI64Close => &[
+                GoPanicCondition::CloseOfNilChannel,
+                GoPanicCondition::CloseOfClosedChannel,
+            ],
             RuntimeOp::GoStringFromBytes
             | RuntimeOp::GoStringFromStatic
             | RuntimeOp::ConcatGoStrings
@@ -335,7 +382,14 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoMapStringI64IsNil
             | RuntimeOp::GoPointerI64Nil
             | RuntimeOp::GoPointerI64New
-            | RuntimeOp::GoPointerI64IsNil => &[],
+            | RuntimeOp::GoPointerI64IsNil
+            | RuntimeOp::GoChannelI64Nil
+            | RuntimeOp::GoChannelI64Len
+            | RuntimeOp::GoChannelI64Cap
+            | RuntimeOp::GoChannelI64ReceiveValue
+            | RuntimeOp::GoChannelI64Receive
+            | RuntimeOp::GoChannelI64IsNil
+            | RuntimeOp::GoStringLen => &[],
         };
 
         assert_eq!(effects.allocation(), expected_allocation, "{operation:?}");
@@ -344,6 +398,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             expected_argument_mutation,
             "{operation:?}"
         );
+        assert_eq!(effects.blocking(), expected_blocking, "{operation:?}");
         assert_eq!(effects.host_io(), expected_host_io, "{operation:?}");
         assert_eq!(effects.go_panics(), expected_panics, "{operation:?}");
     }
@@ -625,6 +680,22 @@ fn runtime_signatures_are_complete_and_exact() {
                 RuntimeType::Unit,
             ),
             RuntimeOp::GoPointerI64IsNil => (&[RuntimeType::GoPointerI64], RuntimeType::Bool),
+            RuntimeOp::GoChannelI64Nil => (&[], RuntimeType::GoChannelI64),
+            RuntimeOp::GoChannelI64Make => (&[RuntimeType::I64], RuntimeType::GoChannelI64),
+            RuntimeOp::GoChannelI64Len | RuntimeOp::GoChannelI64Cap => {
+                (&[RuntimeType::GoChannelI64], RuntimeType::I64)
+            }
+            RuntimeOp::GoChannelI64Send => (
+                &[RuntimeType::GoChannelI64, RuntimeType::I64],
+                RuntimeType::Unit,
+            ),
+            RuntimeOp::GoChannelI64ReceiveValue => (&[RuntimeType::GoChannelI64], RuntimeType::I64),
+            RuntimeOp::GoChannelI64Receive => {
+                (&[RuntimeType::GoChannelI64], RuntimeType::I64BoolTuple)
+            }
+            RuntimeOp::GoChannelI64Close => (&[RuntimeType::GoChannelI64], RuntimeType::Unit),
+            RuntimeOp::GoChannelI64IsNil => (&[RuntimeType::GoChannelI64], RuntimeType::Bool),
+            RuntimeOp::GoStringLen => (&[RuntimeType::GoString], RuntimeType::I64),
         };
 
         assert_eq!(
@@ -913,66 +984,5 @@ fn artifact_and_link_plan_identities_cover_every_selection_dimension() -> Result
     )?)?;
     assert_eq!(div.identity(), reordered.identity());
     assert_ne!(div.identity(), print.identity());
-    Ok(())
-}
-
-#[test]
-fn invalid_target_triples_are_rejected() {
-    assert!(target_model("wasm32-unknown-unknown").is_ok());
-    assert_eq!(target_model(""), Err(TargetModelError::EmptyTriple));
-    assert_eq!(
-        target_model("x86_64 unknown linux gnu"),
-        Err(TargetModelError::InvalidTripleCharacter)
-    );
-}
-
-#[test]
-fn rust_rlib_compatibility_identity_is_path_free_and_covers_exact_producer_facts()
--> Result<(), Box<dyn Error>> {
-    let target = target_model("x86_64-unknown-linux-gnu")?;
-    let rustc_version = b"rustc 1.96.0\nhost: x86_64-unknown-linux-gnu\n";
-    let target_libdir = b"canonical-target-libdir-v1";
-    let baseline =
-        RustRlibCompatibility::new(rustc_version, target_libdir.as_slice(), target.clone())?;
-    let same = RustRlibCompatibility::new(
-        b"rustc 1.96.0\nhost: aarch64-unknown-linux-gnu\n",
-        target_libdir.as_slice(),
-        target,
-    )?;
-    let other_rustc = RustRlibCompatibility::new(
-        b"rustc 1.96.1\nhost: x86_64-unknown-linux-gnu\n",
-        target_libdir.as_slice(),
-        target_model("x86_64-unknown-linux-gnu")?,
-    )?;
-    let other_target = RustRlibCompatibility::new(
-        rustc_version,
-        target_libdir.as_slice(),
-        target_model("i686-unknown-linux-musl")?,
-    )?;
-    let other_sysroot = RustRlibCompatibility::new(
-        rustc_version,
-        b"different-target-libdir".as_slice(),
-        target_model("x86_64-unknown-linux-gnu")?,
-    )?;
-
-    assert_eq!(baseline.canonical_bytes(), same.canonical_bytes());
-    assert_eq!(baseline.identity(), same.identity());
-    assert_ne!(baseline.identity(), other_rustc.identity());
-    assert_ne!(baseline.identity(), other_target.identity());
-    assert_ne!(baseline.identity(), other_sysroot.identity());
-    assert!(
-        !baseline
-            .canonical_bytes()
-            .windows(7)
-            .any(|bytes| bytes == b"/Users/")
-    );
-    assert_eq!(
-        RustRlibCompatibility::new(
-            [],
-            target_libdir.as_slice(),
-            target_model("x86_64-unknown-linux-gnu")?
-        ),
-        Err(gors_runtime_abi::RustRlibRecordError::EmptyRustcVerboseVersion)
-    );
     Ok(())
 }

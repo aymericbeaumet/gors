@@ -6,6 +6,7 @@ fn strings_preserve_arbitrary_bytes() {
     let value = go_string_from_bytes(&bytes);
 
     assert_eq!(value.as_bytes(), bytes);
+    assert_eq!(go_string_len(value.clone()), 5);
     assert_eq!(value.clone(), value);
 }
 
@@ -125,6 +126,61 @@ fn pointers_are_send_and_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
 
     assert_send_sync::<GoPointerI64>();
+}
+
+#[test]
+fn channels_preserve_buffer_close_and_comma_ok_semantics() {
+    let nil = go_channel_i64_nil();
+    assert!(go_channel_i64_is_nil(nil.clone()));
+    assert_eq!(go_channel_i64_len(nil.clone()), 0);
+    assert_eq!(go_channel_i64_cap(nil), 0);
+
+    let channel = go_channel_i64_make(2);
+    assert!(!go_channel_i64_is_nil(channel.clone()));
+    assert_eq!(go_channel_i64_cap(channel.clone()), 2);
+    go_channel_i64_send(channel.clone(), 11);
+    go_channel_i64_send(channel.clone(), 22);
+    assert_eq!(go_channel_i64_len(channel.clone()), 2);
+
+    go_channel_i64_close(channel.clone());
+    assert_eq!(go_channel_i64_receive(channel.clone()), (11, true));
+    assert_eq!(go_channel_i64_receive_value(channel.clone()), 22);
+    assert_eq!(go_channel_i64_receive(channel.clone()), (0, false));
+    assert!(std::panic::catch_unwind(|| go_channel_i64_send(channel.clone(), 33)).is_err());
+    assert!(std::panic::catch_unwind(|| go_channel_i64_close(channel)).is_err());
+}
+
+#[test]
+fn unbuffered_channels_rendezvous_between_threads() {
+    let channel = go_channel_i64_make(0);
+    let sender = channel.clone();
+    let task = std::thread::spawn(move || go_channel_i64_send(sender, 42));
+
+    assert_eq!(go_channel_i64_receive(channel), (42, true));
+    assert!(task.join().is_ok());
+}
+
+#[test]
+fn closing_channels_wakes_waiting_receivers() {
+    let channel = go_channel_i64_make(0);
+    let receiver = channel.clone();
+    let task = std::thread::spawn(move || go_channel_i64_receive(receiver));
+
+    go_channel_i64_close(channel);
+    assert!(matches!(task.join(), Ok((0, false))));
+}
+
+#[test]
+fn channel_creation_and_close_validate_panics() {
+    assert!(std::panic::catch_unwind(|| go_channel_i64_make(-1)).is_err());
+    assert!(std::panic::catch_unwind(|| go_channel_i64_close(go_channel_i64_nil())).is_err());
+}
+
+#[test]
+fn channels_are_send_and_sync() {
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    assert_send_sync::<GoChannelI64>();
 }
 
 #[test]

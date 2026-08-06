@@ -278,6 +278,7 @@ fn lower_terminator(
                 | hir::Builtin::SliceI64Copy
                 | hir::Builtin::SliceI64Clear
                 | hir::Builtin::StringFromSliceU8
+                | hir::Builtin::StringLen
                 | hir::Builtin::MapStringI64Nil
                 | hir::Builtin::MapStringI64Make
                 | hir::Builtin::MapStringI64Len
@@ -293,7 +294,16 @@ fn lower_terminator(
                 | hir::Builtin::PointerI64New
                 | hir::Builtin::PointerI64Get
                 | hir::Builtin::PointerI64Set
-                | hir::Builtin::PointerI64IsNil),
+                | hir::Builtin::PointerI64IsNil
+                | hir::Builtin::ChannelI64Nil
+                | hir::Builtin::ChannelI64Make
+                | hir::Builtin::ChannelI64Len
+                | hir::Builtin::ChannelI64Cap
+                | hir::Builtin::ChannelI64Send
+                | hir::Builtin::ChannelI64ReceiveValue
+                | hir::Builtin::ChannelI64Receive
+                | hir::Builtin::ChannelI64Close
+                | hir::Builtin::ChannelI64IsNil),
             ) => out::TerminatorKind::Call {
                 target: out::CallTarget::Runtime(match builtin {
                     hir::Builtin::SliceI64Index => RuntimeOp::GoSliceI64Index,
@@ -309,6 +319,7 @@ fn lower_terminator(
                     hir::Builtin::SliceI64Copy => RuntimeOp::GoSliceI64Copy,
                     hir::Builtin::SliceI64Clear => RuntimeOp::GoSliceI64Clear,
                     hir::Builtin::StringFromSliceU8 => RuntimeOp::GoStringFromSliceU8,
+                    hir::Builtin::StringLen => RuntimeOp::GoStringLen,
                     hir::Builtin::MapStringI64Nil => RuntimeOp::GoMapStringI64Nil,
                     hir::Builtin::MapStringI64Make => RuntimeOp::GoMapStringI64Make,
                     hir::Builtin::MapStringI64Len => RuntimeOp::GoMapStringI64Len,
@@ -324,6 +335,15 @@ fn lower_terminator(
                     hir::Builtin::PointerI64Get => RuntimeOp::GoPointerI64Get,
                     hir::Builtin::PointerI64Set => RuntimeOp::GoPointerI64Set,
                     hir::Builtin::PointerI64IsNil => RuntimeOp::GoPointerI64IsNil,
+                    hir::Builtin::ChannelI64Nil => RuntimeOp::GoChannelI64Nil,
+                    hir::Builtin::ChannelI64Make => RuntimeOp::GoChannelI64Make,
+                    hir::Builtin::ChannelI64Len => RuntimeOp::GoChannelI64Len,
+                    hir::Builtin::ChannelI64Cap => RuntimeOp::GoChannelI64Cap,
+                    hir::Builtin::ChannelI64Send => RuntimeOp::GoChannelI64Send,
+                    hir::Builtin::ChannelI64ReceiveValue => RuntimeOp::GoChannelI64ReceiveValue,
+                    hir::Builtin::ChannelI64Receive => RuntimeOp::GoChannelI64Receive,
+                    hir::Builtin::ChannelI64Close => RuntimeOp::GoChannelI64Close,
+                    hir::Builtin::ChannelI64IsNil => RuntimeOp::GoChannelI64IsNil,
                     hir::Builtin::MapStringI64Lookup => {
                         return Err(Diagnostic::backend(
                             "map comma-ok lookup survived MIR expansion",
@@ -383,7 +403,8 @@ fn lower_panic_call(
         | out::RustType::GoSliceI64
         | out::RustType::GoSliceU8
         | out::RustType::GoMapStringI64
-        | out::RustType::GoPointerI64 => {
+        | out::RustType::GoPointerI64
+        | out::RustType::GoChannelI64 => {
             return Err(Diagnostic::backend(
                 "unsupported numeric panic payload reached Rust lowering",
             ));
@@ -446,7 +467,8 @@ fn lower_print_call(
             | out::RustType::GoSliceI64
             | out::RustType::GoSliceU8
             | out::RustType::GoMapStringI64
-            | out::RustType::GoPointerI64 => {
+            | out::RustType::GoPointerI64
+            | out::RustType::GoChannelI64 => {
                 return Err(Diagnostic::backend(
                     "numeric print operation reached lowering without a runtime ABI operation",
                 ));
@@ -760,6 +782,9 @@ fn lower_type(ty: &Ty) -> Result<out::RustType, Diagnostic> {
         }
         Ty::Pointer(element) if element.underlying() == &Ty::Int(IntTy::Int) => {
             Ok(out::RustType::GoPointerI64)
+        }
+        Ty::Channel(_, element) if element.underlying() == &Ty::Int(IntTy::Int) => {
+            Ok(out::RustType::GoChannelI64)
         }
         Ty::Array(length, element) if element.underlying() == &Ty::Int(IntTy::Int) => {
             Ok(out::RustType::ArrayI64(*length))

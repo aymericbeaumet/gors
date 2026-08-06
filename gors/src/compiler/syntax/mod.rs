@@ -14,10 +14,10 @@ pub use anchor::{SyntaxAnchor, SyntaxAnchorKind};
 pub use layout::{ConstantLayout, FunctionLayout};
 pub use stream::SemanticTokenStream;
 pub use structural::{
-    BlockSyntax, ConstantSyntax, ConstantValueSyntax, DeclSyntax, ExprSyntax, ExprSyntaxKind,
-    FieldListSyntax, FieldSyntax, FunctionBodySyntax, FunctionHeaderSyntax, IdentSyntax,
-    StmtSyntax, StmtSyntaxKind, SwitchCaseSyntax, SyntaxSource, SyntaxSourceRegion,
-    TypeAliasSyntax, TypeDefinitionSyntax, ValueSpecSyntax,
+    BlockSyntax, ChannelDirectionSyntax, ConstantSyntax, ConstantValueSyntax, DeclSyntax,
+    ExprSyntax, ExprSyntaxKind, FieldListSyntax, FieldSyntax, FunctionBodySyntax,
+    FunctionHeaderSyntax, IdentSyntax, StmtSyntax, StmtSyntaxKind, SwitchCaseSyntax, SyntaxSource,
+    SyntaxSourceRegion, TypeAliasSyntax, TypeDefinitionSyntax, ValueSpecSyntax,
 };
 pub use token::SemanticToken;
 

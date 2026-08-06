@@ -1,5 +1,7 @@
 use super::*;
 
+mod channels;
+
 struct GeneratedRun {
     rust: String,
     stderr: Vec<u8>,

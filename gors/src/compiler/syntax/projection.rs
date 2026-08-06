@@ -9,11 +9,11 @@ use crate::source::{TextRange, TextSize};
 use crate::token::{Position, Token};
 
 use super::{
-    BlockSyntax, ConstantLayout, ConstantSyntax, ConstantValueSyntax, DeclSyntax, ExprSyntax,
-    ExprSyntaxKind, FieldListSyntax, FieldSyntax, FunctionBodySyntax, FunctionHeaderSyntax,
-    FunctionLayout, IdentSyntax, SemanticTokenStream, StmtSyntax, StmtSyntaxKind, SwitchCaseSyntax,
-    SyntaxAnchor, SyntaxSource, SyntaxSourceRegion, TypeAliasSyntax, TypeDefinitionSyntax,
-    ValueSpecSyntax,
+    BlockSyntax, ChannelDirectionSyntax, ConstantLayout, ConstantSyntax, ConstantValueSyntax,
+    DeclSyntax, ExprSyntax, ExprSyntaxKind, FieldListSyntax, FieldSyntax, FunctionBodySyntax,
+    FunctionHeaderSyntax, FunctionLayout, IdentSyntax, SemanticTokenStream, StmtSyntax,
+    StmtSyntaxKind, SwitchCaseSyntax, SyntaxAnchor, SyntaxSource, SyntaxSourceRegion,
+    TypeAliasSyntax, TypeDefinitionSyntax, ValueSpecSyntax,
 };
 
 pub struct ProjectedFunctionSyntax {
@@ -47,6 +47,7 @@ pub enum ProjectionError {
     MissingBodyBrace,
     MissingBodylessTerminator,
     InvalidSwitchBody,
+    InvalidChannelDirection,
     MissingTypeName,
     OffsetOutsideTextDomain { offset: usize },
     ReversedRange { start: usize, end: usize },
@@ -66,6 +67,9 @@ impl fmt::Display for ProjectionError {
             }
             Self::InvalidSwitchBody => {
                 formatter.write_str("parser produced a non-case statement in a switch body")
+            }
+            Self::InvalidChannelDirection => {
+                formatter.write_str("parser produced an invalid channel direction")
             }
             Self::MissingTypeName => formatter.write_str("parser produced a type without a name"),
             Self::OffsetOutsideTextDomain { offset } => {
@@ -567,7 +571,10 @@ impl StructuralProjector {
             },
             ast::Stmt::RangeStmt(statement) => self.range_statement(statement, None)?,
             ast::Stmt::SelectStmt(_) => StmtSyntaxKind::Unsupported("select statement"),
-            ast::Stmt::SendStmt(_) => StmtSyntaxKind::Unsupported("send statement"),
+            ast::Stmt::SendStmt(statement) => StmtSyntaxKind::Send {
+                channel: self.expression(&statement.chan)?,
+                value: self.expression(&statement.value)?,
+            },
             ast::Stmt::SwitchStmt(statement) => self.switch_statement(statement)?,
             ast::Stmt::TypeSwitchStmt(_) => StmtSyntaxKind::Unsupported("type switch statement"),
         };
@@ -772,7 +779,23 @@ impl StructuralProjector {
                     .transpose()?,
                 element: Box::new(self.expression(&expression.elt)?),
             },
-            ast::Expr::ChanType(_) => ExprSyntaxKind::Unsupported("channel type"),
+            ast::Expr::ChanType(expression) => ExprSyntaxKind::ChannelType {
+                direction: match expression.dir {
+                    direction
+                        if direction == (ast::ChanDir::SEND as u8 | ast::ChanDir::RECV as u8) =>
+                    {
+                        ChannelDirectionSyntax::SendReceive
+                    }
+                    direction if direction == ast::ChanDir::SEND as u8 => {
+                        ChannelDirectionSyntax::SendOnly
+                    }
+                    direction if direction == ast::ChanDir::RECV as u8 => {
+                        ChannelDirectionSyntax::ReceiveOnly
+                    }
+                    _ => return Err(ProjectionError::InvalidChannelDirection),
+                },
+                element: Box::new(self.expression(&expression.value)?),
+            },
             ast::Expr::CompositeLit(expression) => ExprSyntaxKind::CompositeLiteral {
                 ty: expression
                     .type_
