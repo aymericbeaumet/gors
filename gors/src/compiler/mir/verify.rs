@@ -1,5 +1,7 @@
 //! Structural, semantic-effect, provenance, and call-ABI MIR verification.
 
+mod pointers;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
@@ -11,6 +13,7 @@ use crate::compiler::hir;
 use crate::compiler::ids::{BasicBlockId, DefId, LocalId};
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::types::{ComplexTy, ConstValue, FloatTy, IntTy, Signature, Ty};
+use pointers::verify_int_pointer_type;
 
 impl File {
     #[cfg(test)]
@@ -548,6 +551,52 @@ impl Function {
                                     "map range key",
                                 )?;
                                 vec![Ty::String]
+                            }
+                            hir::Builtin::PointerI64Nil | hir::Builtin::PointerI64New => {
+                                let [destination] = destinations.as_slice() else {
+                                    return Err(Diagnostic::backend(format!(
+                                        "invalid MIR pointer creation shape: {argument_types:?} -> {destinations:?}"
+                                    )));
+                                };
+                                if !argument_types.is_empty() {
+                                    return Err(Diagnostic::backend(format!(
+                                        "invalid MIR pointer creation arguments: {argument_types:?}"
+                                    )));
+                                }
+                                let result = self.place_ty(*destination)?.clone();
+                                verify_int_pointer_type(&result, "pointer creation result")?;
+                                vec![result]
+                            }
+                            hir::Builtin::PointerI64Get => {
+                                let [pointer] = argument_types.as_slice() else {
+                                    return Err(Diagnostic::backend(format!(
+                                        "invalid MIR pointer dereference arguments: {argument_types:?}"
+                                    )));
+                                };
+                                vec![
+                                    verify_int_pointer_type(pointer, "pointer dereference")?
+                                        .clone(),
+                                ]
+                            }
+                            hir::Builtin::PointerI64Set => {
+                                let [pointer, value] = argument_types.as_slice() else {
+                                    return Err(Diagnostic::backend(format!(
+                                        "invalid MIR pointer assignment arguments: {argument_types:?}"
+                                    )));
+                                };
+                                let element =
+                                    verify_int_pointer_type(pointer, "pointer assignment")?;
+                                verify_same_type(value, element, "pointer assignment value")?;
+                                Vec::new()
+                            }
+                            hir::Builtin::PointerI64IsNil => {
+                                let [pointer] = argument_types.as_slice() else {
+                                    return Err(Diagnostic::backend(format!(
+                                        "invalid MIR pointer nil comparison arguments: {argument_types:?}"
+                                    )));
+                                };
+                                verify_int_pointer_type(pointer, "pointer nil comparison")?;
+                                vec![Ty::Bool]
                             }
                         };
                         self.verify_call_destinations(destinations, &results)?;

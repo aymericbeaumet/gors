@@ -59,7 +59,14 @@ impl FunctionLowerer {
             );
             return self.push_statement(make_statement(destination, value, provenance));
         }
-        if is_string_i64_map(&ty) {
+        let zero_builtin = if is_string_i64_map(&ty) {
+            Some(hir::Builtin::MapStringI64Nil)
+        } else if is_int_pointer(&ty) {
+            Some(hir::Builtin::PointerI64Nil)
+        } else {
+            None
+        };
+        if let Some(builtin) = zero_builtin {
             let provenance = match provenance {
                 Provenance::Synthetic(
                     super::SyntheticOrigin::NamedResultInitialization
@@ -68,7 +75,7 @@ impl FunctionLowerer {
                 other => other,
             };
             return self.emit_map_call_with_provenance(
-                hir::Builtin::MapStringI64Nil,
+                builtin,
                 Vec::new(),
                 vec![destination],
                 provenance,
@@ -172,6 +179,14 @@ impl FunctionLowerer {
         self.current = target;
         Ok(())
     }
+}
+
+fn is_int_pointer(ty: &Ty) -> bool {
+    matches!(
+        ty.underlying(),
+        Ty::Pointer(element)
+            if element.underlying() == &Ty::Int(crate::compiler::types::IntTy::Int)
+    )
 }
 
 fn is_string_i64_map(ty: &Ty) -> bool {

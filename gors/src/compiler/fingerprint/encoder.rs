@@ -178,6 +178,7 @@ pub(super) fn ty(encoder: &mut Encoder, value: &Ty) {
             encoder.field(b"underlying", |encoder| ty(encoder, underlying));
         }),
         Ty::String => encoder.variant(b"string", |_| {}),
+        Ty::Pointer(element) => encoder.variant(b"pointer", |encoder| ty(encoder, element)),
         Ty::Slice(element) => encoder.variant(b"slice", |encoder| ty(encoder, element)),
         Ty::Map(key, value) => encoder.variant(b"map", |encoder| {
             ty(encoder, key);

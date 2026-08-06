@@ -107,6 +107,9 @@ impl FunctionLowerer {
                 return self.lower_expr_inner(expression, expected, allow_discarded_call_result);
             }
             ExprSyntaxKind::Unary { token, expression } => {
+                if *token == Token::MUL {
+                    return self.lower_pointer_deref(expression, node, source, expected);
+                }
                 let mut operand = self.lower_expr(expression, expected)?;
                 let operand_ty = operand.ty.default_typed();
                 ensure_bootstrap_value_type(&operand_ty, source)?;
@@ -216,7 +219,7 @@ impl FunctionLowerer {
                         None
                     };
                     if let Some(map) = map {
-                        return self.lower_map_nil_comparison(
+                        return self.lower_nil_comparison(
                             map,
                             *token == Token::EQL,
                             node,
@@ -317,6 +320,9 @@ impl FunctionLowerer {
                 if name == "make" {
                     return self
                         .lower_make_builtin_call(arguments, *spread, node, source, expected);
+                }
+                if name == "new" {
+                    return self.lower_new_builtin_call(arguments, *spread, node, source, expected);
                 }
                 if name == "len" {
                     return self.lower_len_builtin_call(arguments, *spread, node, source, expected);

@@ -469,6 +469,7 @@ fn rust_type_from_runtime(ty: RuntimeType, context: &str) -> Result<RustType, Di
         RuntimeType::GoSliceI64 => Ok(RustType::GoSliceI64),
         RuntimeType::GoSliceU8 => Ok(RustType::GoSliceU8),
         RuntimeType::GoMapStringI64 => Ok(RustType::GoMapStringI64),
+        RuntimeType::GoPointerI64 => Ok(RustType::GoPointerI64),
         RuntimeType::ByteSlice | RuntimeType::StaticByteSlice | RuntimeType::StaticI64Slice => {
             Err(Diagnostic::backend(format!(
                 "Rust IR {context} requires ABI-only operand type {ty:?}"

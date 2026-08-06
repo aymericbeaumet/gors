@@ -259,6 +259,11 @@ pub enum Builtin {
     MapStringI64Clear,
     MapStringI64IsNil,
     MapStringI64KeyAt,
+    PointerI64Nil,
+    PointerI64New,
+    PointerI64Get,
+    PointerI64Set,
+    PointerI64IsNil,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

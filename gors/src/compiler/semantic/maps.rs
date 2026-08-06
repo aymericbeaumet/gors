@@ -3,6 +3,7 @@
 use super::FunctionLowerer;
 use super::expressions::coerce_expr;
 use super::lower_type;
+use super::pointers::{int_pointer_ty, pointer_effects};
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::NodeId;
@@ -54,6 +55,19 @@ impl FunctionLowerer {
         source: SourceRef,
         ty: Ty,
     ) -> Result<hir::Expr, Diagnostic> {
+        if ty.underlying() == int_pointer_ty().underlying() {
+            return Ok(hir::Expr {
+                node,
+                kind: hir::ExprKind::Call {
+                    callee: hir::Callee::Builtin(hir::Builtin::PointerI64Nil),
+                    args: Vec::new(),
+                },
+                ty,
+                category: hir::ValueCategory::Value,
+                effects: pointer_effects(&[], false, false, false),
+                source,
+            });
+        }
         if ty.underlying() == string_i64_map_ty().underlying() {
             return Ok(hir::Expr {
                 node,
@@ -78,54 +92,6 @@ impl FunctionLowerer {
             effects: hir::Effects::default(),
             source,
         })
-    }
-
-    pub(super) fn lower_map_nil_comparison(
-        &mut self,
-        expression: &ExprSyntax,
-        equal: bool,
-        node: NodeId,
-        source: SourceRef,
-        expected: Option<&Ty>,
-    ) -> Result<hir::Expr, Diagnostic> {
-        let map = self.lower_expr(expression, None)?;
-        if map.ty.underlying() != string_i64_map_ty().underlying() {
-            return Err(Diagnostic::semantic(
-                "nil comparison currently requires map[string]int",
-                source,
-            ));
-        }
-        let effects = map_effects(&[&map], false, false, false);
-        let call = hir::Expr {
-            node,
-            kind: hir::ExprKind::Call {
-                callee: hir::Callee::Builtin(hir::Builtin::MapStringI64IsNil),
-                args: vec![map],
-            },
-            ty: Ty::Bool,
-            category: hir::ValueCategory::Value,
-            effects,
-            source,
-        };
-        let mut result = if equal {
-            call
-        } else {
-            hir::Expr {
-                node,
-                kind: hir::ExprKind::Unary {
-                    op: hir::UnaryOp::Not,
-                    operand: Box::new(call),
-                },
-                ty: Ty::Bool,
-                category: hir::ValueCategory::Value,
-                effects,
-                source,
-            }
-        };
-        if let Some(expected) = expected {
-            coerce_expr(&mut result, expected, source)?;
-        }
-        Ok(result)
     }
 
     pub(super) fn lower_map_literal(

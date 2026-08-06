@@ -7,6 +7,7 @@ mod expressions;
 mod function;
 mod maps;
 mod numeric_builtins;
+mod pointers;
 mod ranges;
 mod statements;
 mod switches;
@@ -321,6 +322,17 @@ pub(super) fn lower_type(
             Box::new(lower_type(key, type_aliases, source)?),
             Box::new(lower_type(value, type_aliases, source)?),
         ));
+    }
+    if let ExprSyntaxKind::Unary {
+        token: crate::token::Token::MUL,
+        expression,
+    } = &expression.kind
+    {
+        return Ok(Ty::Pointer(Box::new(lower_type(
+            expression,
+            type_aliases,
+            source,
+        )?)));
     }
     let ExprSyntaxKind::Ident(ident) = &expression.kind else {
         return Err(Diagnostic::unsupported(

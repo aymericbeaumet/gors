@@ -93,11 +93,11 @@ fn current_contract_identity_is_sha256_of_canonical_bytes() {
 
     assert_eq!(manifest.schema().get(), 2);
     assert_eq!(manifest.contract(), CURRENT_CONTRACT_VERSION);
-    assert_eq!(manifest.contract(), ContractVersion::new(2, 3, 0));
+    assert_eq!(manifest.contract(), ContractVersion::new(2, 4, 0));
     assert_eq!(manifest.identity().as_bytes(), &expected);
     assert_eq!(
         manifest.identity().to_string(),
-        "0e741e9a26e0efa1bd9cabb31ccf6b35b1c9cb66b32f30cc5d74443c577b050c",
+        "987ab6b52c9d6e8157b4ba64b29b9491c0abde7aab930923050ad663f1940e4f",
         "the canonical runtime contract changed; review the ABI diff and bump its semantic version before accepting a new identity",
     );
 }
@@ -160,7 +160,8 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceU8AppendString
             | RuntimeOp::GoStringFromSliceU8
             | RuntimeOp::GoMapStringI64Make
-            | RuntimeOp::GoMapStringI64Set => AllocationEffect::MayAllocate,
+            | RuntimeOp::GoMapStringI64Set
+            | RuntimeOp::GoPointerI64New => AllocationEffect::MayAllocate,
             RuntimeOp::GoStringFromStatic
             | RuntimeOp::IntDiv
             | RuntimeOp::IntRem
@@ -189,7 +190,11 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoMapStringI64Delete
             | RuntimeOp::GoMapStringI64Clear
             | RuntimeOp::GoMapStringI64IsNil
-            | RuntimeOp::GoMapStringI64KeyAt => AllocationEffect::None,
+            | RuntimeOp::GoMapStringI64KeyAt
+            | RuntimeOp::GoPointerI64Nil
+            | RuntimeOp::GoPointerI64Get
+            | RuntimeOp::GoPointerI64Set
+            | RuntimeOp::GoPointerI64IsNil => AllocationEffect::None,
         };
         let expected_argument_mutation = match operation {
             RuntimeOp::ConcatGoStrings
@@ -202,7 +207,8 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceI64Copy
             | RuntimeOp::GoMapStringI64Set
             | RuntimeOp::GoMapStringI64Delete
-            | RuntimeOp::GoMapStringI64Clear => ArgumentMutationEffect::MayMutateOwnedArgument,
+            | RuntimeOp::GoMapStringI64Clear
+            | RuntimeOp::GoPointerI64Set => ArgumentMutationEffect::MayMutateOwnedArgument,
             RuntimeOp::GoStringFromBytes
             | RuntimeOp::GoStringFromStatic
             | RuntimeOp::IntDiv
@@ -231,7 +237,11 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoMapStringI64Get
             | RuntimeOp::GoMapStringI64Contains
             | RuntimeOp::GoMapStringI64IsNil
-            | RuntimeOp::GoMapStringI64KeyAt => ArgumentMutationEffect::None,
+            | RuntimeOp::GoMapStringI64KeyAt
+            | RuntimeOp::GoPointerI64Nil
+            | RuntimeOp::GoPointerI64New
+            | RuntimeOp::GoPointerI64Get
+            | RuntimeOp::GoPointerI64IsNil => ArgumentMutationEffect::None,
         };
         let expected_host_io = match operation {
             RuntimeOp::PrintBool
@@ -273,7 +283,12 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoMapStringI64Delete
             | RuntimeOp::GoMapStringI64Clear
             | RuntimeOp::GoMapStringI64IsNil
-            | RuntimeOp::GoMapStringI64KeyAt => HostIoEffect::None,
+            | RuntimeOp::GoMapStringI64KeyAt
+            | RuntimeOp::GoPointerI64Nil
+            | RuntimeOp::GoPointerI64New
+            | RuntimeOp::GoPointerI64Get
+            | RuntimeOp::GoPointerI64Set
+            | RuntimeOp::GoPointerI64IsNil => HostIoEffect::None,
         };
         let expected_panics: &[GoPanicCondition] = match operation {
             RuntimeOp::IntDiv | RuntimeOp::IntRem => &[GoPanicCondition::IntegerDivideByZero],
@@ -288,6 +303,9 @@ fn runtime_effect_metadata_is_complete_and_exact() {
                 &[GoPanicCondition::SliceBoundsOutOfRange]
             }
             RuntimeOp::GoMapStringI64Set => &[GoPanicCondition::NilMapAssignment],
+            RuntimeOp::GoPointerI64Get | RuntimeOp::GoPointerI64Set => {
+                &[GoPanicCondition::NilPointerDereference]
+            }
             RuntimeOp::GoStringFromBytes
             | RuntimeOp::GoStringFromStatic
             | RuntimeOp::ConcatGoStrings
@@ -314,7 +332,10 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoMapStringI64Contains
             | RuntimeOp::GoMapStringI64Delete
             | RuntimeOp::GoMapStringI64Clear
-            | RuntimeOp::GoMapStringI64IsNil => &[],
+            | RuntimeOp::GoMapStringI64IsNil
+            | RuntimeOp::GoPointerI64Nil
+            | RuntimeOp::GoPointerI64New
+            | RuntimeOp::GoPointerI64IsNil => &[],
         };
 
         assert_eq!(effects.allocation(), expected_allocation, "{operation:?}");
@@ -595,6 +616,15 @@ fn runtime_signatures_are_complete_and_exact() {
                 &[RuntimeType::GoMapStringI64, RuntimeType::I64],
                 RuntimeType::GoString,
             ),
+            RuntimeOp::GoPointerI64Nil | RuntimeOp::GoPointerI64New => {
+                (&[], RuntimeType::GoPointerI64)
+            }
+            RuntimeOp::GoPointerI64Get => (&[RuntimeType::GoPointerI64], RuntimeType::I64),
+            RuntimeOp::GoPointerI64Set => (
+                &[RuntimeType::GoPointerI64, RuntimeType::I64],
+                RuntimeType::Unit,
+            ),
+            RuntimeOp::GoPointerI64IsNil => (&[RuntimeType::GoPointerI64], RuntimeType::Bool),
         };
 
         assert_eq!(

@@ -106,6 +106,28 @@ fn maps_are_send_and_sync() {
 }
 
 #[test]
+fn pointers_preserve_nil_and_shared_pointee_semantics() {
+    let nil_pointer = go_pointer_i64_nil();
+    assert!(go_pointer_i64_is_nil(nil_pointer.clone()));
+    assert!(std::panic::catch_unwind(|| go_pointer_i64_get(nil_pointer.clone())).is_err());
+    assert!(std::panic::catch_unwind(|| go_pointer_i64_set(nil_pointer, 1)).is_err());
+
+    let pointer = go_pointer_i64_new();
+    let alias = pointer.clone();
+    assert!(!go_pointer_i64_is_nil(pointer.clone()));
+    assert_eq!(go_pointer_i64_get(pointer.clone()), 0);
+    go_pointer_i64_set(alias, 42);
+    assert_eq!(go_pointer_i64_get(pointer), 42);
+}
+
+#[test]
+fn pointers_are_send_and_sync() {
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    assert_send_sync::<GoPointerI64>();
+}
+
+#[test]
 fn integer_slices_share_backing_storage_across_reslices() {
     let values = go_slice_i64_from_static(&[1, 2, 3]);
     let alias = go_slice_i64_range(values.clone(), 1, -1, -1);

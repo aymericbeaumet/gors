@@ -272,7 +272,12 @@ fn lower_terminator(
                 | hir::Builtin::MapStringI64Delete
                 | hir::Builtin::MapStringI64Clear
                 | hir::Builtin::MapStringI64IsNil
-                | hir::Builtin::MapStringI64KeyAt),
+                | hir::Builtin::MapStringI64KeyAt
+                | hir::Builtin::PointerI64Nil
+                | hir::Builtin::PointerI64New
+                | hir::Builtin::PointerI64Get
+                | hir::Builtin::PointerI64Set
+                | hir::Builtin::PointerI64IsNil),
             ) => out::TerminatorKind::Call {
                 target: out::CallTarget::Runtime(match builtin {
                     hir::Builtin::SliceI64Index => RuntimeOp::GoSliceI64Index,
@@ -298,6 +303,11 @@ fn lower_terminator(
                     hir::Builtin::MapStringI64Clear => RuntimeOp::GoMapStringI64Clear,
                     hir::Builtin::MapStringI64IsNil => RuntimeOp::GoMapStringI64IsNil,
                     hir::Builtin::MapStringI64KeyAt => RuntimeOp::GoMapStringI64KeyAt,
+                    hir::Builtin::PointerI64Nil => RuntimeOp::GoPointerI64Nil,
+                    hir::Builtin::PointerI64New => RuntimeOp::GoPointerI64New,
+                    hir::Builtin::PointerI64Get => RuntimeOp::GoPointerI64Get,
+                    hir::Builtin::PointerI64Set => RuntimeOp::GoPointerI64Set,
+                    hir::Builtin::PointerI64IsNil => RuntimeOp::GoPointerI64IsNil,
                     hir::Builtin::MapStringI64Lookup => {
                         return Err(Diagnostic::backend(
                             "map comma-ok lookup survived MIR expansion",
@@ -355,7 +365,8 @@ fn lower_panic_call(
         | out::RustType::Complex128
         | out::RustType::GoSliceI64
         | out::RustType::GoSliceU8
-        | out::RustType::GoMapStringI64 => {
+        | out::RustType::GoMapStringI64
+        | out::RustType::GoPointerI64 => {
             return Err(Diagnostic::backend(
                 "unsupported numeric panic payload reached Rust lowering",
             ));
@@ -416,7 +427,8 @@ fn lower_print_call(
             | out::RustType::Complex128
             | out::RustType::GoSliceI64
             | out::RustType::GoSliceU8
-            | out::RustType::GoMapStringI64 => {
+            | out::RustType::GoMapStringI64
+            | out::RustType::GoPointerI64 => {
                 return Err(Diagnostic::backend(
                     "numeric print operation reached lowering without a runtime ABI operation",
                 ));
@@ -727,6 +739,9 @@ fn lower_type(ty: &Ty) -> Result<out::RustType, Diagnostic> {
             if key.underlying() == &Ty::String && value.underlying() == &Ty::Int(IntTy::Int) =>
         {
             Ok(out::RustType::GoMapStringI64)
+        }
+        Ty::Pointer(element) if element.underlying() == &Ty::Int(IntTy::Int) => {
+            Ok(out::RustType::GoPointerI64)
         }
         unsupported => Err(Diagnostic::backend(format!(
             "unsupported Go type reached Rust lowering: {unsupported:?}"

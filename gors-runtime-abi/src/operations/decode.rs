@@ -47,6 +47,11 @@ impl TryFrom<u16> for RuntimeOp {
             43 => Ok(Self::GoMapStringI64Clear),
             44 => Ok(Self::GoMapStringI64IsNil),
             45 => Ok(Self::GoMapStringI64KeyAt),
+            46 => Ok(Self::GoPointerI64Nil),
+            47 => Ok(Self::GoPointerI64New),
+            48 => Ok(Self::GoPointerI64Get),
+            49 => Ok(Self::GoPointerI64Set),
+            50 => Ok(Self::GoPointerI64IsNil),
             unknown => Err(UnknownRuntimeOpId(unknown)),
         }
     }

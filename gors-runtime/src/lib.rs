@@ -562,6 +562,66 @@ fn map_index_out_of_range() -> ! {
     std::panic::resume_unwind(Box::new("runtime error: map iteration index out of range"))
 }
 
+/// A nullable Go `*int` value with shared mutable pointee identity.
+///
+/// Cloning a non-nil pointer preserves the identity of its allocated storage.
+#[derive(Clone, Debug, Default)]
+pub struct GoPointerI64 {
+    storage: Option<Arc<RwLock<GoInt>>>,
+}
+
+/// Construct the nil `*int` value.
+#[must_use]
+pub fn go_pointer_i64_nil() -> GoPointerI64 {
+    GoPointerI64::default()
+}
+
+/// Allocate a zero-initialized Go `int` and return its address.
+#[must_use]
+pub fn go_pointer_i64_new() -> GoPointerI64 {
+    GoPointerI64 {
+        storage: Some(Arc::new(RwLock::new(0))),
+    }
+}
+
+/// Dereference a Go `*int`, preserving the language's nil-pointer panic.
+#[must_use]
+pub fn go_pointer_i64_get(pointer: GoPointerI64) -> GoInt {
+    let Some(storage) = pointer.storage else {
+        nil_pointer_dereference();
+    };
+    let value = storage
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *value
+}
+
+/// Assign through a Go `*int`, preserving shared pointee identity.
+pub fn go_pointer_i64_set(pointer: GoPointerI64, value: GoInt) {
+    let Some(storage) = pointer.storage else {
+        nil_pointer_dereference();
+    };
+    let mut target = storage
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *target = value;
+}
+
+/// Report whether a Go `*int` value is nil.
+#[must_use]
+pub fn go_pointer_i64_is_nil(pointer: GoPointerI64) -> bool {
+    pointer.storage.is_none()
+}
+
+#[cold]
+#[inline(never)]
+#[allow(clippy::panic)] // This is the Go language panic boundary, not an invariant failure.
+fn nil_pointer_dereference() -> ! {
+    std::panic::resume_unwind(Box::new(
+        "runtime error: invalid memory address or nil pointer dereference",
+    ))
+}
+
 /// Construct a Go string without interpreting its bytes as UTF-8.
 #[must_use]
 pub fn go_string_from_bytes(bytes: &[u8]) -> GoString {

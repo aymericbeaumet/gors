@@ -655,6 +655,9 @@ impl FunctionLowerer {
         {
             return assignment;
         }
+        if let Some(assignment) = self.try_lower_pointer_assignment(left, token, right, source) {
+            return assignment;
+        }
         if left.len() != right.len() {
             if let [value] = right {
                 let value = match self.try_lower_map_comma_ok(value) {

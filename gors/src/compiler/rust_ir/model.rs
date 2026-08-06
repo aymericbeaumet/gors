@@ -249,6 +249,7 @@ pub enum RustType {
     GoSliceI64,
     GoSliceU8,
     GoMapStringI64,
+    GoPointerI64,
 }
 
 impl RustType {
@@ -258,9 +259,11 @@ impl RustType {
             Self::Bool | Self::I64 | Self::F64 | Self::Complex128 => {
                 Some(ReadOp::ProvenInitializedCopy)
             }
-            Self::GoString | Self::GoSliceI64 | Self::GoSliceU8 | Self::GoMapStringI64 => {
-                Some(ReadOp::ProvenInitializedClone)
-            }
+            Self::GoString
+            | Self::GoSliceI64
+            | Self::GoSliceU8
+            | Self::GoMapStringI64
+            | Self::GoPointerI64 => Some(ReadOp::ProvenInitializedClone),
             Self::Unit => None,
         }
     }
@@ -270,14 +273,20 @@ impl RustType {
             Self::Bool | Self::I64 | Self::F64 | Self::Complex128 => {
                 Some(ReadOp::ProvenInitializedCopy)
             }
-            Self::GoString | Self::GoSliceI64 | Self::GoSliceU8 | Self::GoMapStringI64
+            Self::GoString
+            | Self::GoSliceI64
+            | Self::GoSliceU8
+            | Self::GoMapStringI64
+            | Self::GoPointerI64
                 if live_after =>
             {
                 Some(ReadOp::ProvenInitializedClone)
             }
-            Self::GoString | Self::GoSliceI64 | Self::GoSliceU8 | Self::GoMapStringI64 => {
-                Some(ReadOp::ProvenLastUseMove)
-            }
+            Self::GoString
+            | Self::GoSliceI64
+            | Self::GoSliceU8
+            | Self::GoMapStringI64
+            | Self::GoPointerI64 => Some(ReadOp::ProvenLastUseMove),
             Self::Unit => None,
         }
     }
@@ -289,7 +298,11 @@ impl RustType {
                 Self::Bool | Self::I64 | Self::F64 | Self::Complex128,
                 ReadOp::ProvenInitializedCopy
             ) | (
-                Self::GoString | Self::GoSliceI64 | Self::GoSliceU8 | Self::GoMapStringI64,
+                Self::GoString
+                    | Self::GoSliceI64
+                    | Self::GoSliceU8
+                    | Self::GoMapStringI64
+                    | Self::GoPointerI64,
                 ReadOp::ProvenInitializedClone | ReadOp::ProvenLastUseMove
             )
         )

@@ -833,7 +833,10 @@ impl StructuralProjector {
                     .map(|bound| self.expression(bound).map(Box::new))
                     .transpose()?,
             },
-            ast::Expr::StarExpr(_) => ExprSyntaxKind::Unsupported("pointer expression"),
+            ast::Expr::StarExpr(expression) => ExprSyntaxKind::Unary {
+                token: Token::MUL,
+                expression: Box::new(self.expression(&expression.x)?),
+            },
             ast::Expr::StructType(_) => ExprSyntaxKind::Unsupported("struct type"),
             ast::Expr::TypeAssertExpr(_) => ExprSyntaxKind::Unsupported("type assertion"),
         };
