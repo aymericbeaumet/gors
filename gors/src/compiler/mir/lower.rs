@@ -777,6 +777,12 @@ impl FunctionLowerer {
             hir::ExprKind::AddressOfLocal(local) => {
                 self.lower_address_of_local_expr(*local, &expr.ty)
             }
+            hir::ExprKind::AddressOfValue(value) => {
+                self.lower_address_of_value_expr(value, &expr.ty, expr.source)
+            }
+            hir::ExprKind::PointerStructValue(pointer) => {
+                self.lower_pointer_struct_value_expr(pointer, &expr.ty, expr.source)
+            }
             hir::ExprKind::RecoverCompareNil { equal } => {
                 let state = self.recover_active.ok_or_else(|| {
                     Diagnostic::backend("recover comparison reached a function without cleanup")

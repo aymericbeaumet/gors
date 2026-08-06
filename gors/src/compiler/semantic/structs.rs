@@ -1,6 +1,7 @@
 //! Exact struct literal and direct-field expression lowering.
 
 use super::expressions::{coerce_expr, ensure_bootstrap_value_type};
+use super::pointers::pointer_effects;
 use super::{FunctionLowerer, MethodSymbol};
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
@@ -149,6 +150,7 @@ impl FunctionLowerer {
         }
         let structure = self.lower_expr(base, None)?;
         ensure_bootstrap_value_type(&structure.ty, source)?;
+        let pointer_structure = structure.ty.bootstrap_i64_struct_pointer_fields().is_some();
         let fields = struct_fields(&structure.ty).ok_or_else(|| {
             Diagnostic::semantic(
                 format!("type {:?} has no field {}", structure.ty, member.name),
@@ -168,16 +170,41 @@ impl FunctionLowerer {
         let field = u32::try_from(field)
             .map_err(|_| Diagnostic::backend("struct exceeds the field index domain"))?;
         let field_ty = definition.ty.clone();
-        let effects = structure.effects.union(hir::Effects {
-            may_read: true,
-            ..hir::Effects::default()
-        });
-        Ok(hir::Expr {
-            node,
-            kind: hir::ExprKind::StructField {
+        let effects = if pointer_structure {
+            pointer_effects(&[&structure], false, false, true)
+        } else {
+            structure.effects.union(hir::Effects {
+                may_read: true,
+                ..hir::Effects::default()
+            })
+        };
+        let kind = if pointer_structure {
+            let index_node = self.alloc_node(member.source)?;
+            hir::ExprKind::Call {
+                callee: hir::Callee::Builtin(hir::Builtin::PointerStructI64Get),
+                args: vec![
+                    structure,
+                    hir::Expr {
+                        node: index_node,
+                        kind: hir::ExprKind::Constant(crate::compiler::types::ConstValue::Int(
+                            field.to_string(),
+                        )),
+                        ty: Ty::Int(crate::compiler::types::IntTy::Int),
+                        category: hir::ValueCategory::Constant,
+                        effects: hir::Effects::default(),
+                        source: SourceRef::node(index_node),
+                    },
+                ],
+            }
+        } else {
+            hir::ExprKind::StructField {
                 structure: Box::new(structure),
                 field,
-            },
+            }
+        };
+        Ok(hir::Expr {
+            node,
+            kind,
             ty: field_ty,
             category: hir::ValueCategory::Value,
             effects,
@@ -295,10 +322,11 @@ impl FunctionLowerer {
 }
 
 fn struct_fields(ty: &Ty) -> Option<&[StructField]> {
-    let Ty::Struct(fields) = ty.underlying() else {
-        return None;
-    };
-    Some(fields)
+    match ty.underlying() {
+        Ty::Struct(fields) => Some(fields),
+        Ty::Pointer(element) => element.bootstrap_i64_struct_fields(),
+        _ => None,
+    }
 }
 
 fn named_receiver_definition(ty: &Ty) -> Option<crate::compiler::ids::DefId> {

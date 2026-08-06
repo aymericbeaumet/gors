@@ -2,7 +2,7 @@
 
 use super::FunctionLowerer;
 use super::channels::{channel_effects, int_channel_parts};
-use super::expressions::coerce_expr;
+use super::expressions::{coerce_expr, expr_constant};
 use super::lower_type;
 use super::pointers::{int_pointer_ty, pointer_effects};
 use crate::compiler::Diagnostic;
@@ -10,7 +10,7 @@ use crate::compiler::hir;
 use crate::compiler::ids::NodeId;
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{ExprSyntax, ExprSyntaxKind};
-use crate::compiler::types::{IntTy, Ty};
+use crate::compiler::types::{ConstValue, IntTy, Ty, UntypedTy};
 
 pub(super) fn string_i64_map_ty() -> Ty {
     Ty::Map(Box::new(Ty::String), Box::new(Ty::Int(IntTy::Int)))
@@ -61,6 +61,19 @@ impl FunctionLowerer {
                 node,
                 kind: hir::ExprKind::Call {
                     callee: hir::Callee::Builtin(hir::Builtin::PointerI64Nil),
+                    args: Vec::new(),
+                },
+                ty,
+                category: hir::ValueCategory::Value,
+                effects: pointer_effects(&[], false, false, false),
+                source,
+            });
+        }
+        if ty.bootstrap_i64_struct_pointer_fields().is_some() {
+            return Ok(hir::Expr {
+                node,
+                kind: hir::ExprKind::Call {
+                    callee: hir::Callee::Builtin(hir::Builtin::PointerStructI64Nil),
                     args: Vec::new(),
                 },
                 ty,
@@ -235,6 +248,20 @@ impl FunctionLowerer {
             return Err(Diagnostic::semantic("len does not accept ...", source));
         }
         let value = self.lower_expr(value, None)?;
+        if let Some(ConstValue::String(bytes)) = expr_constant(&value) {
+            let mut result = hir::Expr {
+                node,
+                kind: hir::ExprKind::Constant(ConstValue::Int(bytes.len().to_string())),
+                ty: Ty::Untyped(UntypedTy::Int),
+                category: hir::ValueCategory::Constant,
+                effects: hir::Effects::default(),
+                source,
+            };
+            if let Some(expected) = expected {
+                coerce_expr(&mut result, expected, source)?;
+            }
+            return Ok(result);
+        }
         if int_channel_parts(&value.ty).is_some() {
             return self.lower_channel_len(value, node, source, expected);
         }

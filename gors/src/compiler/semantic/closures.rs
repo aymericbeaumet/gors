@@ -35,6 +35,9 @@ impl FunctionLowerer {
             ],
         ) = (left, right)
         {
+            if name.name.as_ref() == "_" || self.is_local_struct_field(base, &member.name) {
+                return None;
+            }
             let is_non_value_identifier = matches!(&base.kind, ExprSyntaxKind::Ident(base) if self.lookup_local(&base.name).is_none());
             if !is_non_value_identifier {
                 return Some(if token == Token::DEFINE {
@@ -86,6 +89,24 @@ impl FunctionLowerer {
                 source,
             ))
         })
+    }
+
+    fn is_local_struct_field(&self, base: &ExprSyntax, member: &str) -> bool {
+        let ExprSyntaxKind::Ident(base) = &base.kind else {
+            return false;
+        };
+        let Some(local) = self.lookup_local(&base.name) else {
+            return false;
+        };
+        let Some(ty) = self.locals.get(local.0 as usize).map(|local| &local.ty) else {
+            return false;
+        };
+        let fields = match ty.underlying() {
+            Ty::Struct(fields) => Some(fields.as_slice()),
+            Ty::Pointer(element) => element.bootstrap_i64_struct_fields(),
+            _ => None,
+        };
+        fields.is_some_and(|fields| fields.iter().any(|field| field.name == member))
     }
 
     fn lower_method_value_binding(

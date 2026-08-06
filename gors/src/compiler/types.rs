@@ -174,6 +174,28 @@ impl Ty {
         )
     }
 
+    /// Fields of a struct whose executable representation is a fixed array of
+    /// Go `int` values.
+    #[must_use]
+    pub fn bootstrap_i64_struct_fields(&self) -> Option<&[StructField]> {
+        let Self::Struct(fields) = self.underlying() else {
+            return None;
+        };
+        fields
+            .iter()
+            .all(|field| field.ty.underlying() == &Self::Int(IntTy::Int))
+            .then_some(fields)
+    }
+
+    /// Fields of the integer struct referenced by an executable Go pointer.
+    #[must_use]
+    pub fn bootstrap_i64_struct_pointer_fields(&self) -> Option<&[StructField]> {
+        let Self::Pointer(element) = self.underlying() else {
+            return None;
+        };
+        element.bootstrap_i64_struct_fields()
+    }
+
     /// Values the bootstrap backend can currently execute without relying on
     /// target-dependent or incomplete numeric semantics.
     pub fn is_bootstrap_value(&self) -> bool {
@@ -187,7 +209,8 @@ impl Ty {
             );
         }
         if let Self::Pointer(element) = self {
-            return element.underlying() == &Self::Int(IntTy::Int);
+            return element.underlying() == &Self::Int(IntTy::Int)
+                || element.bootstrap_i64_struct_fields().is_some();
         }
         if let Self::Array(_, element) = self {
             return matches!(

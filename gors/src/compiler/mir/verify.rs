@@ -27,7 +27,7 @@ use containers::{
     verify_slice_call_arguments,
 };
 use effects::{read_effects, verify_effects, verify_panic_edge};
-use pointers::verify_int_pointer_type;
+use pointers::{is_pointer_builtin, verify_pointer_call};
 use provenance::{
     verify_rvalue_provenance, verify_source_provenance, verify_source_ref,
     verify_statement_provenance, verify_terminator_provenance,
@@ -421,6 +421,12 @@ impl Function {
                                 .map(|destination| self.place_ty(*destination).cloned())
                                 .collect::<Result<Vec<_>, _>>()?;
                             verify_channel_call(*builtin, &argument_types, &destination_types)?
+                        } else if is_pointer_builtin(*builtin) {
+                            let destination_types = destinations
+                                .iter()
+                                .map(|destination| self.place_ty(*destination).cloned())
+                                .collect::<Result<Vec<_>, _>>()?;
+                            verify_pointer_call(*builtin, &argument_types, &destination_types)?
                         } else {
                             match builtin {
                                 hir::Builtin::Print | hir::Builtin::Println => {
@@ -645,52 +651,6 @@ impl Function {
                                     )?;
                                     vec![Ty::String]
                                 }
-                                hir::Builtin::PointerI64Nil | hir::Builtin::PointerI64New => {
-                                    let [destination] = destinations.as_slice() else {
-                                        return Err(Diagnostic::backend(format!(
-                                            "invalid MIR pointer creation shape: {argument_types:?} -> {destinations:?}"
-                                        )));
-                                    };
-                                    if !argument_types.is_empty() {
-                                        return Err(Diagnostic::backend(format!(
-                                            "invalid MIR pointer creation arguments: {argument_types:?}"
-                                        )));
-                                    }
-                                    let result = self.place_ty(*destination)?.clone();
-                                    verify_int_pointer_type(&result, "pointer creation result")?;
-                                    vec![result]
-                                }
-                                hir::Builtin::PointerI64Get => {
-                                    let [pointer] = argument_types.as_slice() else {
-                                        return Err(Diagnostic::backend(format!(
-                                            "invalid MIR pointer dereference arguments: {argument_types:?}"
-                                        )));
-                                    };
-                                    vec![
-                                        verify_int_pointer_type(pointer, "pointer dereference")?
-                                            .clone(),
-                                    ]
-                                }
-                                hir::Builtin::PointerI64Set => {
-                                    let [pointer, value] = argument_types.as_slice() else {
-                                        return Err(Diagnostic::backend(format!(
-                                            "invalid MIR pointer assignment arguments: {argument_types:?}"
-                                        )));
-                                    };
-                                    let element =
-                                        verify_int_pointer_type(pointer, "pointer assignment")?;
-                                    verify_same_type(value, element, "pointer assignment value")?;
-                                    Vec::new()
-                                }
-                                hir::Builtin::PointerI64IsNil => {
-                                    let [pointer] = argument_types.as_slice() else {
-                                        return Err(Diagnostic::backend(format!(
-                                            "invalid MIR pointer nil comparison arguments: {argument_types:?}"
-                                        )));
-                                    };
-                                    verify_int_pointer_type(pointer, "pointer nil comparison")?;
-                                    vec![Ty::Bool]
-                                }
                                 hir::Builtin::ChannelI64Nil
                                 | hir::Builtin::ChannelI64Make
                                 | hir::Builtin::ChannelI64Len
@@ -704,6 +664,21 @@ impl Function {
                                 | hir::Builtin::ChannelI64TryReceive => {
                                     return Err(Diagnostic::backend(
                                         "channel builtin bypassed dedicated MIR verification",
+                                    ));
+                                }
+                                hir::Builtin::PointerI64Nil
+                                | hir::Builtin::PointerI64New
+                                | hir::Builtin::PointerI64Get
+                                | hir::Builtin::PointerI64Set
+                                | hir::Builtin::PointerI64IsNil
+                                | hir::Builtin::PointerStructI64Nil
+                                | hir::Builtin::PointerStructI64New
+                                | hir::Builtin::PointerStructI64Get
+                                | hir::Builtin::PointerStructI64Set
+                                | hir::Builtin::PointerStructI64IsNil
+                                | hir::Builtin::PointerStructI64Equal => {
+                                    return Err(Diagnostic::backend(
+                                        "pointer builtin bypassed dedicated MIR verification",
                                     ));
                                 }
                             }

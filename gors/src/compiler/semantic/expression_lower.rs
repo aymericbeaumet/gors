@@ -248,6 +248,19 @@ impl FunctionLowerer {
                 }
                 let mut left = self.lower_expr(left, None)?;
                 let mut right = self.lower_expr(right, None)?;
+                if matches!(token, Token::EQL | Token::NEQ)
+                    && (left.ty.bootstrap_i64_struct_pointer_fields().is_some()
+                        || right.ty.bootstrap_i64_struct_pointer_fields().is_some())
+                {
+                    return self.lower_struct_pointer_comparison(
+                        left,
+                        right,
+                        *token == Token::EQL,
+                        node,
+                        source,
+                        expected,
+                    );
+                }
                 let op = lower_binary_op(*token).ok_or_else(|| {
                     Diagnostic::unsupported(
                         format!("binary operator {token:?} is not implemented"),

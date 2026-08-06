@@ -40,14 +40,45 @@ impl FunctionLowerer {
             }
             let node = self.alloc_node(base.source)?;
             let target = self.lower_selector(base, member, node, source)?;
-            let hir::ExprKind::StructField { structure, field } = target.kind else {
-                return Err(Diagnostic::backend(
-                    "struct selector assignment did not lower to a field",
-                ));
+            let (structure, field) = match target.kind {
+                hir::ExprKind::StructField { structure, field } => (*structure, field),
+                hir::ExprKind::Call {
+                    callee: hir::Callee::Builtin(hir::Builtin::PointerStructI64Get),
+                    args,
+                } => {
+                    let mut args = args.into_iter();
+                    let structure = args.next().ok_or_else(|| {
+                        Diagnostic::backend("pointer field selector omitted its receiver")
+                    })?;
+                    let index = args.next().ok_or_else(|| {
+                        Diagnostic::backend("pointer field selector omitted its field index")
+                    })?;
+                    if args.next().is_some() {
+                        return Err(Diagnostic::backend(
+                            "pointer field selector has excess operands",
+                        ));
+                    }
+                    let hir::ExprKind::Constant(crate::compiler::types::ConstValue::Int(index)) =
+                        index.kind
+                    else {
+                        return Err(Diagnostic::backend(
+                            "pointer field selector has a dynamic field index",
+                        ));
+                    };
+                    let field = index.parse::<u32>().map_err(|_| {
+                        Diagnostic::backend("pointer field selector index does not fit u32")
+                    })?;
+                    (structure, field)
+                }
+                _ => {
+                    return Err(Diagnostic::backend(
+                        "struct selector assignment did not lower to a field",
+                    ));
+                }
             };
             let hir::ExprKind::Local(structure) = structure.kind else {
                 return Err(Diagnostic::unsupported(
-                    "struct field assignment currently requires a local struct variable",
+                    "struct field assignment currently requires a local struct or struct pointer",
                     source,
                 ));
             };

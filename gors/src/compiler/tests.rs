@@ -2,6 +2,7 @@ use super::*;
 
 mod arrays;
 mod channels;
+mod pointers;
 mod structs;
 mod variables;
 
@@ -815,37 +816,6 @@ fn generated_integer_arrays_preserve_value_semantics_and_checked_indexing() {
     assert_eq!(run.stderr, b"arrays: ok\n");
     assert!(run.rust.contains("[i64; 3]"), "{}", run.rust);
     assert!(run.rust.contains(".get("), "{}", run.rust);
-}
-
-#[test]
-fn generated_integer_pointers_preserve_nil_and_shared_pointee_semantics() {
-    let run = compile_and_run(
-        r#"
-            package main
-            func write(pointer *int, value int) { *pointer = value }
-            func nilReadPanics() (panicked bool) {
-                defer func() { panicked = recover() != nil }()
-                var pointer *int
-                _ = *pointer
-                return false
-            }
-            func main() {
-                pointer := new(int)
-                if pointer == nil || *pointer != 0 { panic("invalid new value") }
-                alias := pointer
-                write(alias, 42)
-                if *pointer != 42 { panic("pointer identity changed") }
-                var nilPointer *int
-                if nilPointer != nil { panic("invalid nil pointer") }
-                if !nilReadPanics() { panic("nil pointer read did not panic") }
-                println("pointers: ok")
-            }
-        "#,
-    );
-
-    assert_eq!(run.stderr, b"pointers: ok\n");
-    assert!(run.rust.contains("GoPointerI64"), "{}", run.rust);
-    assert!(run.rust.contains("go_pointer_i64_set"), "{}", run.rust);
 }
 
 #[test]

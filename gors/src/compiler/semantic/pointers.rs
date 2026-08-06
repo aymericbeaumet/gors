@@ -1,4 +1,4 @@
-//! Typed lowering for Go pointers to bootstrap integer values.
+//! Typed lowering for Go pointers to executable integer values and structs.
 
 use super::FunctionLowerer;
 use super::channels::int_channel_parts;
@@ -18,6 +18,63 @@ pub(super) fn int_pointer_ty() -> Ty {
 }
 
 impl FunctionLowerer {
+    pub(super) fn lower_struct_pointer_comparison(
+        &mut self,
+        mut left: hir::Expr,
+        mut right: hir::Expr,
+        equal: bool,
+        node: NodeId,
+        source: SourceRef,
+        expected: Option<&Ty>,
+    ) -> Result<hir::Expr, Diagnostic> {
+        if left.ty.bootstrap_i64_struct_pointer_fields().is_none()
+            || right.ty.bootstrap_i64_struct_pointer_fields().is_none()
+            || left.ty != right.ty
+        {
+            return Err(Diagnostic::semantic(
+                format!(
+                    "incompatible pointer comparison operands {:?} and {:?}",
+                    left.ty, right.ty
+                ),
+                source,
+            ));
+        }
+        let pointer_ty = left.ty.clone();
+        coerce_expr(&mut left, &pointer_ty, source)?;
+        coerce_expr(&mut right, &pointer_ty, source)?;
+        let effects = pointer_effects(&[&left, &right], false, false, false);
+        let call = hir::Expr {
+            node,
+            kind: hir::ExprKind::Call {
+                callee: hir::Callee::Builtin(hir::Builtin::PointerStructI64Equal),
+                args: vec![left, right],
+            },
+            ty: Ty::Bool,
+            category: hir::ValueCategory::Value,
+            effects,
+            source,
+        };
+        let mut result = if equal {
+            call
+        } else {
+            hir::Expr {
+                node,
+                kind: hir::ExprKind::Unary {
+                    op: hir::UnaryOp::Not,
+                    operand: Box::new(call),
+                },
+                ty: Ty::Bool,
+                category: hir::ValueCategory::Value,
+                effects,
+                source,
+            }
+        };
+        if let Some(expected) = expected {
+            coerce_expr(&mut result, expected, source)?;
+        }
+        Ok(result)
+    }
+
     pub(super) fn lower_address_of_local(
         &mut self,
         expression: &ExprSyntax,
@@ -34,9 +91,32 @@ impl FunctionLowerer {
                 source,
             ));
         }
+        if matches!(expression.kind, ExprSyntaxKind::CompositeLiteral { .. }) {
+            let value = self.lower_expr(expression, None)?;
+            if value.ty.bootstrap_i64_struct_fields().is_none() {
+                return Err(Diagnostic::unsupported(
+                    "address-taking currently supports integer struct composite literals",
+                    source,
+                ));
+            }
+            let ty = Ty::Pointer(Box::new(value.ty.clone()));
+            let effects = pointer_effects(&[&value], true, true, false);
+            let mut result = hir::Expr {
+                node,
+                kind: hir::ExprKind::AddressOfValue(Box::new(value)),
+                ty,
+                category: hir::ValueCategory::Value,
+                effects,
+                source,
+            };
+            if let Some(expected) = expected {
+                coerce_expr(&mut result, expected, source)?;
+            }
+            return Ok(result);
+        }
         let ExprSyntaxKind::Ident(identifier) = &expression.kind else {
             return Err(Diagnostic::unsupported(
-                "address-taking currently requires a local identifier",
+                "address-taking currently requires a local identifier or struct composite literal",
                 source,
             ));
         };
@@ -57,9 +137,11 @@ impl FunctionLowerer {
             .get(local.0 as usize)
             .map(|local| local.ty.clone())
             .ok_or_else(|| Diagnostic::backend(format!("invalid local id {}", local.0)))?;
-        if element.underlying() != &Ty::Int(IntTy::Int) {
+        if element.underlying() != &Ty::Int(IntTy::Int)
+            && element.bootstrap_i64_struct_fields().is_none()
+        {
             return Err(Diagnostic::unsupported(
-                "address-taking currently supports integer locals",
+                "address-taking currently supports integer and integer-struct locals",
                 source,
             ));
         }
@@ -101,18 +183,36 @@ impl FunctionLowerer {
                 source,
             ));
         };
+        let element_source = element.source;
         let element = lower_type(element, &self.type_aliases, source)?;
-        if element.underlying() != &Ty::Int(IntTy::Int) {
+        let (builtin, args) = if element.underlying() == &Ty::Int(IntTy::Int) {
+            (hir::Builtin::PointerI64New, Vec::new())
+        } else if let Some(fields) = element.bootstrap_i64_struct_fields() {
+            let field_count = self.alloc_node(element_source)?;
+            (
+                hir::Builtin::PointerStructI64New,
+                vec![hir::Expr {
+                    node: field_count,
+                    kind: hir::ExprKind::Constant(crate::compiler::types::ConstValue::Int(
+                        fields.len().to_string(),
+                    )),
+                    ty: Ty::Int(IntTy::Int),
+                    category: hir::ValueCategory::Constant,
+                    effects: hir::Effects::default(),
+                    source: SourceRef::node(field_count),
+                }],
+            )
+        } else {
             return Err(Diagnostic::unsupported(
-                "new currently supports int values",
+                "new currently supports int values and integer structs",
                 source,
             ));
-        }
+        };
         let mut result = hir::Expr {
             node,
             kind: hir::ExprKind::Call {
-                callee: hir::Callee::Builtin(hir::Builtin::PointerI64New),
-                args: Vec::new(),
+                callee: hir::Callee::Builtin(builtin),
+                args,
             },
             ty: Ty::Pointer(Box::new(element)),
             category: hir::ValueCategory::Value,
@@ -139,9 +239,25 @@ impl FunctionLowerer {
                 source,
             ));
         };
+        if element.bootstrap_i64_struct_fields().is_some() {
+            let ty = element.as_ref().clone();
+            let effects = pointer_effects(&[&pointer], false, false, true);
+            let mut result = hir::Expr {
+                node,
+                kind: hir::ExprKind::PointerStructValue(Box::new(pointer)),
+                ty,
+                category: hir::ValueCategory::Value,
+                effects,
+                source,
+            };
+            if let Some(expected) = expected {
+                coerce_expr(&mut result, expected, source)?;
+            }
+            return Ok(result);
+        }
         if element.underlying() != &Ty::Int(IntTy::Int) {
             return Err(Diagnostic::unsupported(
-                "pointer dereference currently supports *int",
+                "pointer dereference currently supports *int and integer structs",
                 source,
             ));
         }
@@ -236,6 +352,8 @@ impl FunctionLowerer {
             hir::Builtin::MapStringI64IsNil
         } else if value.ty.underlying() == int_pointer_ty().underlying() {
             hir::Builtin::PointerI64IsNil
+        } else if value.ty.bootstrap_i64_struct_pointer_fields().is_some() {
+            hir::Builtin::PointerStructI64IsNil
         } else if int_channel_parts(&value.ty).is_some() {
             hir::Builtin::ChannelI64IsNil
         } else {

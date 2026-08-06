@@ -76,6 +76,8 @@ impl FunctionLowerer {
             Some(hir::Builtin::MapStringI64Nil)
         } else if is_int_pointer(&ty) {
             Some(hir::Builtin::PointerI64Nil)
+        } else if ty.bootstrap_i64_struct_pointer_fields().is_some() {
+            Some(hir::Builtin::PointerStructI64Nil)
         } else if is_int_channel(&ty) {
             Some(hir::Builtin::ChannelI64Nil)
         } else {

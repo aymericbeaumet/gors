@@ -445,6 +445,16 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
         hir::ExprKind::AddressOfLocal(id) => {
             encoder.variant(b"address-of-local", |encoder| local_id(encoder, *id));
         }
+        hir::ExprKind::AddressOfValue(value) => {
+            encoder.variant(b"address-of-value", |encoder| {
+                encode_expression(encoder, value);
+            });
+        }
+        hir::ExprKind::PointerStructValue(pointer) => {
+            encoder.variant(b"pointer-struct-value", |encoder| {
+                encode_expression(encoder, pointer);
+            });
+        }
         hir::ExprKind::GlobalConstant(id, value) => {
             encoder.variant(b"global-constant", |encoder| {
                 encoder.field(b"id", |encoder| qualified_def_id(encoder, *id));
@@ -603,6 +613,12 @@ fn encode_builtin(encoder: &mut Encoder, builtin: hir::Builtin) {
             hir::Builtin::PointerI64Get => b"pointer-i64-get",
             hir::Builtin::PointerI64Set => b"pointer-i64-set",
             hir::Builtin::PointerI64IsNil => b"pointer-i64-is-nil",
+            hir::Builtin::PointerStructI64Nil => b"pointer-struct-i64-nil",
+            hir::Builtin::PointerStructI64New => b"pointer-struct-i64-new",
+            hir::Builtin::PointerStructI64Get => b"pointer-struct-i64-get",
+            hir::Builtin::PointerStructI64Set => b"pointer-struct-i64-set",
+            hir::Builtin::PointerStructI64IsNil => b"pointer-struct-i64-is-nil",
+            hir::Builtin::PointerStructI64Equal => b"pointer-struct-i64-equal",
             hir::Builtin::ChannelI64Nil => b"channel-i64-nil",
             hir::Builtin::ChannelI64Make => b"channel-i64-make",
             hir::Builtin::ChannelI64Len => b"channel-i64-len",

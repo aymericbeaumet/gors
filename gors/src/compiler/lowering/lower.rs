@@ -400,6 +400,12 @@ fn lower_terminator(
                 | hir::Builtin::PointerI64Get
                 | hir::Builtin::PointerI64Set
                 | hir::Builtin::PointerI64IsNil
+                | hir::Builtin::PointerStructI64Nil
+                | hir::Builtin::PointerStructI64New
+                | hir::Builtin::PointerStructI64Get
+                | hir::Builtin::PointerStructI64Set
+                | hir::Builtin::PointerStructI64IsNil
+                | hir::Builtin::PointerStructI64Equal
                 | hir::Builtin::ChannelI64Nil
                 | hir::Builtin::ChannelI64Make
                 | hir::Builtin::ChannelI64Len
@@ -442,6 +448,12 @@ fn lower_terminator(
                     hir::Builtin::PointerI64Get => RuntimeOp::GoPointerI64Get,
                     hir::Builtin::PointerI64Set => RuntimeOp::GoPointerI64Set,
                     hir::Builtin::PointerI64IsNil => RuntimeOp::GoPointerI64IsNil,
+                    hir::Builtin::PointerStructI64Nil => RuntimeOp::GoPointerStructI64Nil,
+                    hir::Builtin::PointerStructI64New => RuntimeOp::GoPointerStructI64New,
+                    hir::Builtin::PointerStructI64Get => RuntimeOp::GoPointerStructI64Get,
+                    hir::Builtin::PointerStructI64Set => RuntimeOp::GoPointerStructI64Set,
+                    hir::Builtin::PointerStructI64IsNil => RuntimeOp::GoPointerStructI64IsNil,
+                    hir::Builtin::PointerStructI64Equal => RuntimeOp::GoPointerStructI64Equal,
                     hir::Builtin::ChannelI64Nil => RuntimeOp::GoChannelI64Nil,
                     hir::Builtin::ChannelI64Make => RuntimeOp::GoChannelI64Make,
                     hir::Builtin::ChannelI64Len => RuntimeOp::GoChannelI64Len,
@@ -901,6 +913,9 @@ fn lower_type(ty: &Ty) -> Result<out::RustType, Diagnostic> {
         }
         Ty::Pointer(element) if element.underlying() == &Ty::Int(IntTy::Int) => {
             Ok(out::RustType::GoPointerI64)
+        }
+        Ty::Pointer(element) if element.bootstrap_i64_struct_fields().is_some() => {
+            Ok(out::RustType::GoPointerStructI64)
         }
         Ty::Channel(_, element) if element.underlying() == &Ty::Int(IntTy::Int) => {
             Ok(out::RustType::GoChannelI64)
