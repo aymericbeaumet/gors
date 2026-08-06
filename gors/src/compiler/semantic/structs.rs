@@ -52,6 +52,19 @@ impl FunctionLowerer {
                 allow_discarded_call_result,
             );
         }
+        if let Some(lowered) = self.try_lower_generic_method_call(
+            receiver.clone(),
+            &member.name,
+            arguments,
+            spread,
+            node,
+            member.source,
+            source,
+            expected,
+            allow_discarded_call_result,
+        )? {
+            return Ok(lowered);
+        }
         let symbol = self.resolve_method_symbol(&receiver.ty, &member.name, source)?;
         let Some((receiver_ty, params)) = symbol.signature.params.split_first() else {
             return Err(Diagnostic::backend("method signature omitted its receiver"));

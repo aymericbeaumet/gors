@@ -261,20 +261,6 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
         Some(Arc::from(
             "invalid import declarations cannot enter semantic analysis",
         ))
-    } else if parsed.decls.iter().any(|declaration| match declaration {
-        ast::Decl::GenDecl(declaration) if declaration.tok == crate::token::Token::TYPE => {
-            declaration.specs.iter().any(|spec| {
-                !matches!(
-                    spec,
-                    ast::Spec::TypeSpec(spec) if spec.type_params.is_none()
-                )
-            })
-        }
-        _ => false,
-    }) {
-        Some(Arc::from(
-            "generic type declarations are not yet represented by semantic queries",
-        ))
     } else {
         None
     };
@@ -465,9 +451,6 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
                     let ast::Spec::TypeSpec(spec) = spec else {
                         continue;
                     };
-                    if spec.type_params.is_some() {
-                        continue;
-                    }
                     let Some(name) = spec.name.as_ref() else {
                         continue;
                     };

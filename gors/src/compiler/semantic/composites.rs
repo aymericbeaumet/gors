@@ -3,7 +3,6 @@
 use super::FunctionLowerer;
 use super::expressions::expr_constant;
 use super::interfaces::dynamic_type_identity;
-use super::lower_type;
 use super::pointers::pointer_effects;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
@@ -35,10 +34,10 @@ impl FunctionLowerer {
                 {
                     Ty::Array(
                         self.infer_array_literal_length(elements, source)?,
-                        Box::new(lower_type(element, &self.type_aliases, source)?),
+                        Box::new(self.lower_semantic_type(element, source)?),
                     )
                 }
-                _ => lower_type(ty, &self.type_aliases, source)?,
+                _ => self.lower_semantic_type(ty, source)?,
             },
             None => expected.cloned().ok_or_else(|| {
                 Diagnostic::semantic(

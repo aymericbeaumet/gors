@@ -16,8 +16,10 @@ use crate::compiler::db::products::StageFailure;
 use crate::compiler::ids::{PackageId, QualifiedDefId};
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::semantic::{
-    ConstantSymbol, FunctionSymbol, FunctionSymbols, MethodSymbol, VariableSymbol,
+    ConstantSymbol, FunctionSymbol, FunctionSymbols, GenericFunctionSymbol, GenericTypeSymbol,
+    MethodSymbol, VariableSymbol,
 };
+use crate::compiler::syntax::{FieldListSyntax, function_is_generic};
 use crate::compiler::types::{Signature, Ty};
 
 pub(super) fn function_dependency<'db>(
@@ -54,6 +56,9 @@ pub(super) fn function_symbols(
         functions: BTreeMap::new(),
         qualified_functions: BTreeMap::new(),
         methods: BTreeMap::new(),
+        generic_functions: BTreeMap::new(),
+        generic_methods: BTreeMap::new(),
+        generic_types: collect_generic_type_symbols(db, input),
         constants: BTreeMap::new(),
         qualified_constants: BTreeMap::new(),
         variables: BTreeMap::new(),
@@ -157,6 +162,33 @@ pub(super) fn function_symbols(
     Ok(symbols)
 }
 
+fn collect_generic_type_symbols(
+    db: &dyn Db,
+    input: PackageInput,
+) -> BTreeMap<String, GenericTypeSymbol> {
+    let mut result = BTreeMap::new();
+    let mut sources = input.sources(db).iter().copied().collect::<Vec<_>>();
+    sources.sort_by_key(|source| source.file(db));
+    for source in sources {
+        for definition in file_projection(db, source).type_definitions(db) {
+            let syntax = definition.syntax(db);
+            result.insert(
+                definition.name(db).to_string(),
+                GenericTypeSymbol {
+                    id: definition.id(db),
+                    type_parameters: Arc::new(syntax.type_parameters.clone().unwrap_or_else(
+                        || FieldListSyntax {
+                            fields: Arc::from([]),
+                        },
+                    )),
+                    underlying: syntax.underlying.clone(),
+                },
+            );
+        }
+    }
+    result
+}
+
 fn collect_interface_method_names(ty: &Ty, names: &mut BTreeSet<Arc<str>>) {
     match ty {
         Ty::Named { underlying, .. }
@@ -233,6 +265,35 @@ fn add_method_symbols(
             if !names.contains(&name) {
                 continue;
             }
+            let signature_syntax = method.signature(db);
+            let header = signature_syntax.structure();
+            if function_is_generic(header) {
+                let generic_type =
+                    symbols
+                        .generic_types
+                        .get(receiver.as_ref())
+                        .ok_or_else(|| {
+                            semantic_failure(
+                                caller,
+                                Diagnostic::semantic(
+                                    format!(
+                                        "method receiver type {receiver} is not a defined type"
+                                    ),
+                                    SourceRef::definition(caller),
+                                ),
+                            )
+                        })?;
+                symbols.generic_methods.insert(
+                    (generic_type.id, name.to_string()),
+                    GenericFunctionSymbol {
+                        id: QualifiedDefId::new(input.package(db), method.id(db)),
+                        header: Arc::new(header.clone()),
+                        body: Arc::new(method.body(db).structure().clone()),
+                        pointer_receiver: method.pointer_receiver(db),
+                    },
+                );
+                continue;
+            }
             let Some(Ty::Named { definition, .. }) = types.get(receiver.as_ref()) else {
                 return Err(semantic_failure(
                     caller,
@@ -279,16 +340,30 @@ fn add_unqualified_symbols(
             continue;
         }
         if let Some(projection) = package_function_named_product(db, input, Arc::clone(name)) {
-            let typed = typed_signature_product(db, input, projection)?;
-            insert_function(
-                &mut symbols.functions,
-                name.to_string(),
-                FunctionSymbol {
-                    id: QualifiedDefId::new(package, projection.id(db)),
-                    signature: typed.signature().clone(),
-                },
-                caller,
-            )?;
+            let signature_syntax = projection.signature(db);
+            let header = signature_syntax.structure();
+            if function_is_generic(header) {
+                symbols.generic_functions.insert(
+                    name.to_string(),
+                    GenericFunctionSymbol {
+                        id: QualifiedDefId::new(package, projection.id(db)),
+                        header: Arc::new(header.clone()),
+                        body: Arc::new(projection.body(db).structure().clone()),
+                        pointer_receiver: false,
+                    },
+                );
+            } else {
+                let typed = typed_signature_product(db, input, projection)?;
+                insert_function(
+                    &mut symbols.functions,
+                    name.to_string(),
+                    FunctionSymbol {
+                        id: QualifiedDefId::new(package, projection.id(db)),
+                        signature: typed.signature().clone(),
+                    },
+                    caller,
+                )?;
+            }
         }
         if let Some(projection) = package_constant_named_product(db, input, Arc::clone(name)) {
             let typed = typed_constant_product(db, input, projection)?;

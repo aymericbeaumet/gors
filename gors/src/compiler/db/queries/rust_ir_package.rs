@@ -46,6 +46,9 @@ pub(in crate::compiler::db) fn rust_ir_package_product(
         projected.sort_by_key(|function| function.id(db));
         for function in projected {
             db.unwind_if_revision_cancelled();
+            if crate::compiler::syntax::function_is_generic(function.signature(db).structure()) {
+                continue;
+            }
             let dependencies = rust_signature_dependencies_product(db, input, function)?;
             signatures.extend(
                 dependencies

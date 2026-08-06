@@ -9,6 +9,7 @@ mod composites;
 mod expression_lower;
 mod expressions;
 mod function;
+mod generics;
 mod goroutines;
 mod imports;
 mod interfaces;
@@ -24,6 +25,7 @@ mod switches;
 mod type_switches;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use num_bigint::BigInt;
 
@@ -58,6 +60,21 @@ pub(super) struct MethodSymbol {
 }
 
 #[derive(Clone)]
+pub(super) struct GenericFunctionSymbol {
+    pub(super) id: QualifiedDefId,
+    pub(super) header: Arc<FunctionHeaderSyntax>,
+    pub(super) body: Arc<FunctionBodySyntax>,
+    pub(super) pointer_receiver: bool,
+}
+
+#[derive(Clone)]
+pub(super) struct GenericTypeSymbol {
+    pub(super) id: DefId,
+    pub(super) type_parameters: Arc<FieldListSyntax>,
+    pub(super) underlying: ExprSyntax,
+}
+
+#[derive(Clone)]
 pub(super) struct ConstantSymbol {
     pub(super) id: QualifiedDefId,
     pub(super) ty: Ty,
@@ -75,6 +92,9 @@ pub(super) struct FunctionSymbols {
     pub(super) functions: BTreeMap<String, FunctionSymbol>,
     pub(super) qualified_functions: BTreeMap<(String, String), FunctionSymbol>,
     pub(super) methods: BTreeMap<(DefId, String), MethodSymbol>,
+    pub(super) generic_functions: BTreeMap<String, GenericFunctionSymbol>,
+    pub(super) generic_methods: BTreeMap<(DefId, String), GenericFunctionSymbol>,
+    pub(super) generic_types: BTreeMap<String, GenericTypeSymbol>,
     pub(super) constants: BTreeMap<String, ConstantSymbol>,
     pub(super) qualified_constants: BTreeMap<(String, String), ConstantSymbol>,
     pub(super) variables: BTreeMap<String, VariableSymbol>,
@@ -304,6 +324,9 @@ pub(super) fn lower_function(
         functions: symbols.functions,
         qualified_functions: symbols.qualified_functions,
         methods: symbols.methods,
+        generic_functions: symbols.generic_functions,
+        generic_methods: symbols.generic_methods,
+        generic_types: symbols.generic_types,
         constants: symbols.constants,
         qualified_constants: symbols.qualified_constants,
         variables: symbols.variables,
@@ -322,6 +345,8 @@ pub(super) fn lower_function(
         defer_registration_depth: 0,
         inside_deferred_closure: false,
         inside_local_closure: false,
+        active_generic_functions: Vec::new(),
+        source_override: None,
         source_plan: initial_source_plan,
     };
     let lowered = (|| {

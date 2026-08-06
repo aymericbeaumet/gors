@@ -3,7 +3,10 @@
 mod go_statements;
 mod local_types;
 mod positions;
+mod type_declarations;
 mod type_switches;
+
+pub use type_declarations::{project_type_alias, project_type_definition};
 
 use std::fmt;
 use std::sync::Arc;
@@ -20,8 +23,7 @@ use super::{
     FunctionHeaderSyntax, FunctionLayout, IdentSyntax, LocalTypeSyntax, ProjectedConstantSyntax,
     ProjectedFunctionSyntax, ProjectedVariableSyntax, SelectCaseSyntax, SemanticTokenStream,
     StmtSyntax, StmtSyntaxKind, SwitchCaseSyntax, SyntaxAnchor, SyntaxSource, SyntaxSourceRegion,
-    TypeAliasSyntax, TypeDefinitionSyntax, ValueSpecSyntax, VariableLayout, VariableSyntax,
-    VariableValueSyntax,
+    ValueSpecSyntax, VariableLayout, VariableSyntax, VariableValueSyntax,
 };
 use positions::{expression_position, statement_position};
 
@@ -355,26 +357,6 @@ pub fn project_variable(
     })
 }
 
-pub fn project_type_alias(spec: &ast::TypeSpec<'_>) -> Result<TypeAliasSyntax, ProjectionError> {
-    let name = spec.name.as_ref().ok_or(ProjectionError::MissingTypeName)?;
-    let mut projector = StructuralProjector::new(SyntaxSourceRegion::Constant);
-    Ok(TypeAliasSyntax {
-        name: projector.ident(name)?,
-        target: projector.expression(&spec.type_)?,
-    })
-}
-
-pub fn project_type_definition(
-    spec: &ast::TypeSpec<'_>,
-) -> Result<TypeDefinitionSyntax, ProjectionError> {
-    let name = spec.name.as_ref().ok_or(ProjectionError::MissingTypeName)?;
-    let mut projector = StructuralProjector::new(SyntaxSourceRegion::Constant);
-    Ok(TypeDefinitionSyntax {
-        name: projector.ident(name)?,
-        underlying: projector.expression(&spec.type_)?,
-    })
-}
-
 struct StructuralProjector {
     region: SyntaxSourceRegion,
     ranges: Vec<TextRange>,
@@ -436,6 +418,12 @@ impl StructuralProjector {
                 .map(|receiver| self.field_list(receiver))
                 .transpose()?,
             has_type_parameters: function.type_.type_params.is_some(),
+            type_parameters: function
+                .type_
+                .type_params
+                .as_ref()
+                .map(|parameters| self.field_list(parameters))
+                .transpose()?,
             params: self.field_list(&function.type_.params)?,
             results: function
                 .type_

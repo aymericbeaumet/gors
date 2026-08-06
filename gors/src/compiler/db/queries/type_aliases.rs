@@ -55,10 +55,15 @@ pub(in crate::compiler::db) fn package_type_aliases_product(
     for source in sources {
         let facts = file_projection(db, source);
         for alias in facts.type_aliases(db) {
-            projections.insert(alias.name(db).to_string(), alias);
+            if alias.syntax(db).type_parameters.is_none() {
+                projections.insert(alias.name(db).to_string(), alias);
+            }
         }
         for definition in facts.type_definitions(db) {
-            definitions.insert(definition.name(db).to_string(), definition);
+            let syntax = definition.syntax(db);
+            if syntax.type_parameters.is_none() && !is_constraint_type(&syntax.underlying) {
+                definitions.insert(definition.name(db).to_string(), definition);
+            }
         }
     }
 
@@ -75,6 +80,27 @@ pub(in crate::compiler::db) fn package_type_aliases_product(
         )?;
     }
     Ok(Arc::new(resolved))
+}
+
+fn is_constraint_type(expression: &ExprSyntax) -> bool {
+    let ExprSyntaxKind::InterfaceType { methods } = &expression.kind else {
+        return false;
+    };
+    methods.fields.iter().any(|field| {
+        field.names.is_none()
+            && field.ty.as_ref().is_some_and(|ty| {
+                matches!(
+                    ty.kind,
+                    ExprSyntaxKind::Binary {
+                        token: crate::token::Token::OR,
+                        ..
+                    } | ExprSyntaxKind::Unary {
+                        token: crate::token::Token::TILDE,
+                        ..
+                    }
+                ) || matches!(&ty.kind, ExprSyntaxKind::Ident(ident) if ident.name.as_ref() == "comparable")
+            })
+    })
 }
 
 fn resolve_type_name<'db>(

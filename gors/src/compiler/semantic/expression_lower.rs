@@ -95,7 +95,9 @@ impl FunctionLowerer {
                         },
                         source,
                     }
-                } else if self.functions.contains_key(name) {
+                } else if self.functions.contains_key(name)
+                    || self.generic_functions.contains_key(name)
+                {
                     return Err(Diagnostic::unsupported(
                         format!("function value {name} is not implemented by the HIR/MIR backend"),
                         source,
@@ -455,6 +457,18 @@ impl FunctionLowerer {
                         ));
                     }
                     return Ok(argument);
+                }
+                if self.generic_functions.contains_key(name) {
+                    return self.lower_generic_function_call(
+                        name,
+                        arguments,
+                        *spread,
+                        node,
+                        expr.source,
+                        source,
+                        expected,
+                        allow_discarded_call_result,
+                    );
                 }
                 let (callee, params, results, variadic) = if let Some(id) =
                     self.lookup_closure(name)

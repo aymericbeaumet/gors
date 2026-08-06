@@ -60,6 +60,7 @@ pub struct FunctionHeaderSyntax {
     pub(crate) name: IdentSyntax,
     pub(crate) receiver: Option<FieldListSyntax>,
     pub(crate) has_type_parameters: bool,
+    pub(crate) type_parameters: Option<FieldListSyntax>,
     pub(crate) params: FieldListSyntax,
     pub(crate) results: Option<FieldListSyntax>,
 }
@@ -80,10 +81,40 @@ pub fn method_receiver(header: &FunctionHeaderSyntax) -> Option<(&str, bool)> {
     } else {
         false
     };
-    let ExprSyntaxKind::Ident(receiver) = &ty.kind else {
-        return None;
+    let receiver = match &ty.kind {
+        ExprSyntaxKind::Ident(receiver) => receiver,
+        ExprSyntaxKind::Index { base, .. } => {
+            let ExprSyntaxKind::Ident(receiver) = &base.kind else {
+                return None;
+            };
+            receiver
+        }
+        _ => return None,
     };
     Some((receiver.name.as_ref(), pointer))
+}
+
+pub fn function_is_generic(header: &FunctionHeaderSyntax) -> bool {
+    if header.has_type_parameters {
+        return true;
+    }
+    let Some(receiver) = &header.receiver else {
+        return false;
+    };
+    let [field] = receiver.fields.as_ref() else {
+        return false;
+    };
+    let Some(mut ty) = field.ty.as_ref() else {
+        return false;
+    };
+    if let ExprSyntaxKind::Unary {
+        token: Token::MUL,
+        expression,
+    } = &ty.kind
+    {
+        ty = expression;
+    }
+    matches!(ty.kind, ExprSyntaxKind::Index { .. })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -109,12 +140,14 @@ pub struct VariableSyntax {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TypeAliasSyntax {
     pub(crate) name: IdentSyntax,
+    pub(crate) type_parameters: Option<FieldListSyntax>,
     pub(crate) target: ExprSyntax,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TypeDefinitionSyntax {
     pub(crate) name: IdentSyntax,
+    pub(crate) type_parameters: Option<FieldListSyntax>,
     pub(crate) underlying: ExprSyntax,
 }
 

@@ -513,6 +513,19 @@ impl CompilerDatabase {
             .map_err(QueryError::StageFailure)
     }
 
+    /// Whether a declaration is instantiated into its caller instead of
+    /// owning a standalone executable Rust-IR root.
+    pub(in crate::compiler) fn is_generic_function(
+        &self,
+        file: FileId,
+        function: DefId,
+    ) -> Result<bool, QueryError> {
+        let function = self.function_projection(file, function)?;
+        Ok(crate::compiler::syntax::function_is_generic(
+            function.signature(self).structure(),
+        ))
+    }
+
     /// Assemble a complete verified Rust IR package from tracked definitions.
     pub fn verified_rust_ir_package(
         &self,

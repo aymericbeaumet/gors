@@ -2,7 +2,10 @@
 
 use std::collections::BTreeMap;
 
-use super::{ConstantSymbol, FunctionSymbol, MethodSymbol, VariableSymbol};
+use super::{
+    ConstantSymbol, FunctionSymbol, GenericFunctionSymbol, GenericTypeSymbol, MethodSymbol,
+    VariableSymbol,
+};
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::{ClosureId, DefId, LocalId, LocalTypeId, NodeId};
@@ -17,6 +20,9 @@ pub(super) struct FunctionLowerer {
     pub(super) functions: BTreeMap<String, FunctionSymbol>,
     pub(super) qualified_functions: BTreeMap<(String, String), FunctionSymbol>,
     pub(super) methods: BTreeMap<(DefId, String), MethodSymbol>,
+    pub(super) generic_functions: BTreeMap<String, GenericFunctionSymbol>,
+    pub(super) generic_methods: BTreeMap<(DefId, String), GenericFunctionSymbol>,
+    pub(super) generic_types: BTreeMap<String, GenericTypeSymbol>,
     pub(super) constants: BTreeMap<String, ConstantSymbol>,
     pub(super) qualified_constants: BTreeMap<(String, String), ConstantSymbol>,
     pub(super) variables: BTreeMap<String, VariableSymbol>,
@@ -35,6 +41,8 @@ pub(super) struct FunctionLowerer {
     pub(super) defer_registration_depth: usize,
     pub(super) inside_deferred_closure: bool,
     pub(super) inside_local_closure: bool,
+    pub(super) active_generic_functions: Vec<crate::compiler::ids::QualifiedDefId>,
+    pub(super) source_override: Option<SyntaxSource>,
     pub(super) source_plan: Vec<(SourceRef, SyntaxSource)>,
 }
 
@@ -51,7 +59,10 @@ impl FunctionLowerer {
             .checked_add(1)
             .ok_or_else(|| Diagnostic::backend("function exceeds the HIR node ID space"))?;
         let node = NodeId::owner_local(self.owner, local);
-        self.source_plan.push((SourceRef::node(node), source));
+        self.source_plan.push((
+            SourceRef::node(node),
+            self.source_override.unwrap_or(source),
+        ));
         Ok(node)
     }
 
@@ -105,7 +116,8 @@ impl FunctionLowerer {
             kind,
             source,
         });
-        self.source_plan.push((source, syntax_source));
+        self.source_plan
+            .push((source, self.source_override.unwrap_or(syntax_source)));
         Ok(id)
     }
 
