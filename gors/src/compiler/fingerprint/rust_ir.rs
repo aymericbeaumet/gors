@@ -487,7 +487,11 @@ fn encode_type(encoder: &mut Encoder, ty: &rust_ir::RustType) {
         rust_ir::RustType::GoSliceI64 => encoder.variant(b"go-slice-i64", |_| {}),
         rust_ir::RustType::GoSliceU8 => encoder.variant(b"go-slice-u8", |_| {}),
         rust_ir::RustType::GoSliceBool => encoder.variant(b"go-slice-bool", |_| {}),
+        rust_ir::RustType::GoSliceInterface => encoder.variant(b"go-slice-interface", |_| {}),
         rust_ir::RustType::GoMapStringI64 => encoder.variant(b"go-map-string-i64", |_| {}),
+        rust_ir::RustType::GoMapStringInterface => {
+            encoder.variant(b"go-map-string-interface", |_| {});
+        }
         rust_ir::RustType::GoPointerI64 => encoder.variant(b"go-pointer-i64", |_| {}),
         rust_ir::RustType::GoPointerStructI64 => {
             encoder.variant(b"go-pointer-struct-i64", |_| {});

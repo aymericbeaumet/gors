@@ -86,6 +86,15 @@ impl RuntimeOp {
             Self::GoSliceBoolFromStatic => 82,
             Self::GoSliceBoolIndex => 83,
             Self::GoSliceBoolSet => 84,
+            Self::GoSliceInterfaceMake => 85,
+            Self::GoSliceInterfaceLen => 86,
+            Self::GoSliceInterfaceIndex => 87,
+            Self::GoSliceInterfaceSet => 88,
+            Self::GoMapStringInterfaceMake => 89,
+            Self::GoMapStringInterfaceLen => 90,
+            Self::GoMapStringInterfaceGet => 91,
+            Self::GoMapStringInterfaceContains => 92,
+            Self::GoMapStringInterfaceSet => 93,
         })
     }
 }

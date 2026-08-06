@@ -84,6 +84,15 @@ impl RuntimeOp {
             | Self::GoSliceBoolFromStatic
             | Self::GoSliceBoolIndex
             | Self::GoSliceBoolSet
+            | Self::GoSliceInterfaceMake
+            | Self::GoSliceInterfaceLen
+            | Self::GoSliceInterfaceIndex
+            | Self::GoSliceInterfaceSet
+            | Self::GoMapStringInterfaceMake
+            | Self::GoMapStringInterfaceLen
+            | Self::GoMapStringInterfaceGet
+            | Self::GoMapStringInterfaceContains
+            | Self::GoMapStringInterfaceSet
             | Self::GoChannelI64Nil
             | Self::GoChannelI64Make
             | Self::GoChannelI64Len
@@ -156,36 +165,42 @@ impl RuntimeOp {
                 HostIoEffect::None,
                 NO_GO_PANICS,
             ),
-            Self::GoSliceI64Index | Self::GoSliceBoolIndex => RuntimeEffects::new(
-                AllocationEffect::None,
-                ArgumentMutationEffect::None,
-                HostIoEffect::None,
-                INDEX_OUT_OF_RANGE,
-            ),
+            Self::GoSliceI64Index | Self::GoSliceBoolIndex | Self::GoSliceInterfaceIndex => {
+                RuntimeEffects::new(
+                    AllocationEffect::None,
+                    ArgumentMutationEffect::None,
+                    HostIoEffect::None,
+                    INDEX_OUT_OF_RANGE,
+                )
+            }
             Self::GoSliceI64Range => RuntimeEffects::new(
                 AllocationEffect::None,
                 ArgumentMutationEffect::None,
                 HostIoEffect::None,
                 SLICE_BOUNDS_OUT_OF_RANGE,
             ),
-            Self::GoSliceI64Set | Self::GoSliceBoolSet => RuntimeEffects::new(
-                AllocationEffect::None,
-                ArgumentMutationEffect::MayMutateOwnedArgument,
-                HostIoEffect::None,
-                INDEX_OUT_OF_RANGE,
-            ),
-            Self::GoSliceI64Make => RuntimeEffects::new(
+            Self::GoSliceI64Set | Self::GoSliceBoolSet | Self::GoSliceInterfaceSet => {
+                RuntimeEffects::new(
+                    AllocationEffect::None,
+                    ArgumentMutationEffect::MayMutateOwnedArgument,
+                    HostIoEffect::None,
+                    INDEX_OUT_OF_RANGE,
+                )
+            }
+            Self::GoSliceI64Make | Self::GoSliceInterfaceMake => RuntimeEffects::new(
                 AllocationEffect::MayAllocate,
                 ArgumentMutationEffect::None,
                 HostIoEffect::None,
                 SLICE_BOUNDS_OUT_OF_RANGE,
             ),
-            Self::GoSliceI64Len | Self::GoSliceI64Cap => RuntimeEffects::new(
-                AllocationEffect::None,
-                ArgumentMutationEffect::None,
-                HostIoEffect::None,
-                NO_GO_PANICS,
-            ),
+            Self::GoSliceI64Len | Self::GoSliceI64Cap | Self::GoSliceInterfaceLen => {
+                RuntimeEffects::new(
+                    AllocationEffect::None,
+                    ArgumentMutationEffect::None,
+                    HostIoEffect::None,
+                    NO_GO_PANICS,
+                )
+            }
             Self::GoSliceI64Append => RuntimeEffects::new(
                 AllocationEffect::MayAllocate,
                 ArgumentMutationEffect::MayMutateOwnedArgument,
@@ -217,6 +232,9 @@ impl RuntimeOp {
             | Self::GoMapStringI64Get
             | Self::GoMapStringI64Contains
             | Self::GoMapStringI64IsNil
+            | Self::GoMapStringInterfaceLen
+            | Self::GoMapStringInterfaceGet
+            | Self::GoMapStringInterfaceContains
             | Self::GoPointerI64Nil
             | Self::GoPointerI64IsNil
             | Self::GoPointerStructI64Nil
@@ -227,13 +245,15 @@ impl RuntimeOp {
                 HostIoEffect::None,
                 NO_GO_PANICS,
             ),
-            Self::GoMapStringI64Make | Self::GoPointerI64New => RuntimeEffects::new(
-                AllocationEffect::MayAllocate,
-                ArgumentMutationEffect::None,
-                HostIoEffect::None,
-                NO_GO_PANICS,
-            ),
-            Self::GoMapStringI64Set => RuntimeEffects::new(
+            Self::GoMapStringI64Make | Self::GoMapStringInterfaceMake | Self::GoPointerI64New => {
+                RuntimeEffects::new(
+                    AllocationEffect::MayAllocate,
+                    ArgumentMutationEffect::None,
+                    HostIoEffect::None,
+                    NO_GO_PANICS,
+                )
+            }
+            Self::GoMapStringI64Set | Self::GoMapStringInterfaceSet => RuntimeEffects::new(
                 AllocationEffect::MayAllocate,
                 ArgumentMutationEffect::MayMutateOwnedArgument,
                 HostIoEffect::None,

@@ -341,6 +341,8 @@ pub enum RuntimeType {
     GoInterface,
     StaticBoolSlice,
     GoSliceBool,
+    GoSliceInterface,
+    GoMapStringInterface,
 }
 
 /// Complete function signature for one runtime operation.
@@ -425,6 +427,22 @@ const GO_SLICE_BOOL_SET: &[RuntimeType] = &[
     RuntimeType::GoSliceBool,
     RuntimeType::I64,
     RuntimeType::Bool,
+];
+const GO_SLICE_INTERFACE_PARAMETER: &[RuntimeType] = &[RuntimeType::GoSliceInterface];
+const GO_SLICE_INTERFACE_AND_INDEX: &[RuntimeType] =
+    &[RuntimeType::GoSliceInterface, RuntimeType::I64];
+const GO_SLICE_INTERFACE_SET: &[RuntimeType] = &[
+    RuntimeType::GoSliceInterface,
+    RuntimeType::I64,
+    RuntimeType::GoInterface,
+];
+const GO_MAP_STRING_INTERFACE_PARAMETER: &[RuntimeType] = &[RuntimeType::GoMapStringInterface];
+const GO_MAP_STRING_INTERFACE_AND_KEY: &[RuntimeType] =
+    &[RuntimeType::GoMapStringInterface, RuntimeType::GoString];
+const GO_MAP_STRING_INTERFACE_SET: &[RuntimeType] = &[
+    RuntimeType::GoMapStringInterface,
+    RuntimeType::GoString,
+    RuntimeType::GoInterface,
 ];
 const GO_CHANNEL_I64_PARAMETER: &[RuntimeType] = &[RuntimeType::GoChannelI64];
 const GO_CHANNEL_I64_SEND: &[RuntimeType] = &[RuntimeType::GoChannelI64, RuntimeType::I64];
@@ -536,6 +554,15 @@ pub enum RuntimeOp {
     GoSliceBoolFromStatic,
     GoSliceBoolIndex,
     GoSliceBoolSet,
+    GoSliceInterfaceMake,
+    GoSliceInterfaceLen,
+    GoSliceInterfaceIndex,
+    GoSliceInterfaceSet,
+    GoMapStringInterfaceMake,
+    GoMapStringInterfaceLen,
+    GoMapStringInterfaceGet,
+    GoMapStringInterfaceContains,
+    GoMapStringInterfaceSet,
 }
 
 /// Stable compact identity of one runtime ABI operation.
@@ -628,6 +655,15 @@ impl RuntimeOp {
         Self::GoSliceBoolFromStatic,
         Self::GoSliceBoolIndex,
         Self::GoSliceBoolSet,
+        Self::GoSliceInterfaceMake,
+        Self::GoSliceInterfaceLen,
+        Self::GoSliceInterfaceIndex,
+        Self::GoSliceInterfaceSet,
+        Self::GoMapStringInterfaceMake,
+        Self::GoMapStringInterfaceLen,
+        Self::GoMapStringInterfaceGet,
+        Self::GoMapStringInterfaceContains,
+        Self::GoMapStringInterfaceSet,
     ];
 
     /// Stable exported Rust symbol assigned to this ABI operation.
@@ -713,6 +749,15 @@ impl RuntimeOp {
             Self::GoSliceBoolFromStatic => "go_slice_bool_from_static",
             Self::GoSliceBoolIndex => "go_slice_bool_index",
             Self::GoSliceBoolSet => "go_slice_bool_set",
+            Self::GoSliceInterfaceMake => "go_slice_interface_make",
+            Self::GoSliceInterfaceLen => "go_slice_interface_len",
+            Self::GoSliceInterfaceIndex => "go_slice_interface_index",
+            Self::GoSliceInterfaceSet => "go_slice_interface_set",
+            Self::GoMapStringInterfaceMake => "go_map_string_interface_make",
+            Self::GoMapStringInterfaceLen => "go_map_string_interface_len",
+            Self::GoMapStringInterfaceGet => "go_map_string_interface_get",
+            Self::GoMapStringInterfaceContains => "go_map_string_interface_contains",
+            Self::GoMapStringInterfaceSet => "go_map_string_interface_set",
         }
     }
 
@@ -910,6 +955,33 @@ impl RuntimeOp {
                 RuntimeSignature::new(GO_SLICE_BOOL_AND_INDEX, RuntimeType::Bool)
             }
             Self::GoSliceBoolSet => RuntimeSignature::new(GO_SLICE_BOOL_SET, RuntimeType::Unit),
+            Self::GoSliceInterfaceMake => {
+                RuntimeSignature::new(TWO_I64_PARAMETERS, RuntimeType::GoSliceInterface)
+            }
+            Self::GoSliceInterfaceLen => {
+                RuntimeSignature::new(GO_SLICE_INTERFACE_PARAMETER, RuntimeType::I64)
+            }
+            Self::GoSliceInterfaceIndex => {
+                RuntimeSignature::new(GO_SLICE_INTERFACE_AND_INDEX, RuntimeType::GoInterface)
+            }
+            Self::GoSliceInterfaceSet => {
+                RuntimeSignature::new(GO_SLICE_INTERFACE_SET, RuntimeType::Unit)
+            }
+            Self::GoMapStringInterfaceMake => {
+                RuntimeSignature::new(NO_PARAMETERS, RuntimeType::GoMapStringInterface)
+            }
+            Self::GoMapStringInterfaceLen => {
+                RuntimeSignature::new(GO_MAP_STRING_INTERFACE_PARAMETER, RuntimeType::I64)
+            }
+            Self::GoMapStringInterfaceGet => {
+                RuntimeSignature::new(GO_MAP_STRING_INTERFACE_AND_KEY, RuntimeType::GoInterface)
+            }
+            Self::GoMapStringInterfaceContains => {
+                RuntimeSignature::new(GO_MAP_STRING_INTERFACE_AND_KEY, RuntimeType::Bool)
+            }
+            Self::GoMapStringInterfaceSet => {
+                RuntimeSignature::new(GO_MAP_STRING_INTERFACE_SET, RuntimeType::Unit)
+            }
         }
     }
 

@@ -93,11 +93,11 @@ fn current_contract_identity_is_sha256_of_canonical_bytes() {
 
     assert_eq!(manifest.schema().get(), 2);
     assert_eq!(manifest.contract(), CURRENT_CONTRACT_VERSION);
-    assert_eq!(manifest.contract(), ContractVersion::new(2, 9, 0));
+    assert_eq!(manifest.contract(), ContractVersion::new(2, 10, 0));
     assert_eq!(manifest.identity().as_bytes(), &expected);
     assert_eq!(
         manifest.identity().to_string(),
-        "077d2e135789c51665b00fe6d58e789fe4373397c61314265f1172bb72221fb0",
+        "c8a209cf8c151d0cdf24e0fbc1a02357eea887c25ee5d5b45be0a29402e59b8d",
         "the canonical runtime contract changed; review the ABI diff and bump its semantic version before accepting a new identity",
     );
 }
@@ -155,6 +155,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceI64FromStatic
             | RuntimeOp::GoSliceBoolFromStatic
             | RuntimeOp::GoSliceI64Make
+            | RuntimeOp::GoSliceInterfaceMake
             | RuntimeOp::GoSliceI64Append
             | RuntimeOp::GoSliceU8FromStatic
             | RuntimeOp::GoSliceU8AppendSlice
@@ -162,6 +163,8 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoStringFromSliceU8
             | RuntimeOp::GoMapStringI64Make
             | RuntimeOp::GoMapStringI64Set
+            | RuntimeOp::GoMapStringInterfaceMake
+            | RuntimeOp::GoMapStringInterfaceSet
             | RuntimeOp::GoPointerI64New
             | RuntimeOp::GoPointerStructI64New
             | RuntimeOp::GoInterfaceBoxStructI64
@@ -184,6 +187,9 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceI64Set
             | RuntimeOp::GoSliceBoolIndex
             | RuntimeOp::GoSliceBoolSet
+            | RuntimeOp::GoSliceInterfaceLen
+            | RuntimeOp::GoSliceInterfaceIndex
+            | RuntimeOp::GoSliceInterfaceSet
             | RuntimeOp::GoSliceI64Len
             | RuntimeOp::GoSliceI64Cap
             | RuntimeOp::GoSliceU8CopyString
@@ -197,6 +203,9 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoMapStringI64Clear
             | RuntimeOp::GoMapStringI64IsNil
             | RuntimeOp::GoMapStringI64KeyAt
+            | RuntimeOp::GoMapStringInterfaceLen
+            | RuntimeOp::GoMapStringInterfaceGet
+            | RuntimeOp::GoMapStringInterfaceContains
             | RuntimeOp::GoPointerI64Nil
             | RuntimeOp::GoPointerI64Get
             | RuntimeOp::GoPointerI64Set
@@ -234,6 +243,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             RuntimeOp::ConcatGoStrings
             | RuntimeOp::GoSliceI64Set
             | RuntimeOp::GoSliceBoolSet
+            | RuntimeOp::GoSliceInterfaceSet
             | RuntimeOp::GoSliceI64Append
             | RuntimeOp::GoSliceU8AppendSlice
             | RuntimeOp::GoSliceU8AppendString
@@ -241,6 +251,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceI64Clear
             | RuntimeOp::GoSliceI64Copy
             | RuntimeOp::GoMapStringI64Set
+            | RuntimeOp::GoMapStringInterfaceSet
             | RuntimeOp::GoMapStringI64Delete
             | RuntimeOp::GoMapStringI64Clear
             | RuntimeOp::GoPointerI64Set
@@ -271,15 +282,22 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceBoolIndex
             | RuntimeOp::GoSliceI64Range
             | RuntimeOp::GoSliceI64Make
+            | RuntimeOp::GoSliceInterfaceMake
+            | RuntimeOp::GoSliceInterfaceLen
+            | RuntimeOp::GoSliceInterfaceIndex
             | RuntimeOp::GoSliceI64Len
             | RuntimeOp::GoSliceI64Cap
             | RuntimeOp::GoSliceU8FromStatic
             | RuntimeOp::GoStringFromSliceU8
             | RuntimeOp::GoMapStringI64Nil
             | RuntimeOp::GoMapStringI64Make
+            | RuntimeOp::GoMapStringInterfaceMake
             | RuntimeOp::GoMapStringI64Len
             | RuntimeOp::GoMapStringI64Get
             | RuntimeOp::GoMapStringI64Contains
+            | RuntimeOp::GoMapStringInterfaceLen
+            | RuntimeOp::GoMapStringInterfaceGet
+            | RuntimeOp::GoMapStringInterfaceContains
             | RuntimeOp::GoMapStringI64IsNil
             | RuntimeOp::GoMapStringI64KeyAt
             | RuntimeOp::GoPointerI64Nil
@@ -345,6 +363,10 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceBoolFromStatic
             | RuntimeOp::GoSliceBoolIndex
             | RuntimeOp::GoSliceBoolSet
+            | RuntimeOp::GoSliceInterfaceMake
+            | RuntimeOp::GoSliceInterfaceLen
+            | RuntimeOp::GoSliceInterfaceIndex
+            | RuntimeOp::GoSliceInterfaceSet
             | RuntimeOp::GoSliceI64Make
             | RuntimeOp::GoSliceI64Len
             | RuntimeOp::GoSliceI64Cap
@@ -366,6 +388,11 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoMapStringI64Clear
             | RuntimeOp::GoMapStringI64IsNil
             | RuntimeOp::GoMapStringI64KeyAt
+            | RuntimeOp::GoMapStringInterfaceMake
+            | RuntimeOp::GoMapStringInterfaceLen
+            | RuntimeOp::GoMapStringInterfaceGet
+            | RuntimeOp::GoMapStringInterfaceContains
+            | RuntimeOp::GoMapStringInterfaceSet
             | RuntimeOp::GoPointerI64Nil
             | RuntimeOp::GoPointerI64New
             | RuntimeOp::GoPointerI64Get
@@ -413,11 +440,15 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceI64Set
             | RuntimeOp::GoSliceBoolIndex
             | RuntimeOp::GoSliceBoolSet
+            | RuntimeOp::GoSliceInterfaceIndex
+            | RuntimeOp::GoSliceInterfaceSet
             | RuntimeOp::GoMapStringI64KeyAt => &[GoPanicCondition::IndexOutOfRange],
-            RuntimeOp::GoSliceI64Range | RuntimeOp::GoSliceI64Make => {
-                &[GoPanicCondition::SliceBoundsOutOfRange]
+            RuntimeOp::GoSliceI64Range
+            | RuntimeOp::GoSliceI64Make
+            | RuntimeOp::GoSliceInterfaceMake => &[GoPanicCondition::SliceBoundsOutOfRange],
+            RuntimeOp::GoMapStringI64Set | RuntimeOp::GoMapStringInterfaceSet => {
+                &[GoPanicCondition::NilMapAssignment]
             }
-            RuntimeOp::GoMapStringI64Set => &[GoPanicCondition::NilMapAssignment],
             RuntimeOp::GoPointerI64Get | RuntimeOp::GoPointerI64Set => {
                 &[GoPanicCondition::NilPointerDereference]
             }
@@ -457,6 +488,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceI64Len
             | RuntimeOp::GoSliceI64Cap
             | RuntimeOp::GoSliceI64Append
+            | RuntimeOp::GoSliceInterfaceLen
             | RuntimeOp::GoSliceU8FromStatic
             | RuntimeOp::GoSliceU8AppendSlice
             | RuntimeOp::GoSliceU8AppendString
@@ -469,6 +501,10 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoMapStringI64Len
             | RuntimeOp::GoMapStringI64Get
             | RuntimeOp::GoMapStringI64Contains
+            | RuntimeOp::GoMapStringInterfaceMake
+            | RuntimeOp::GoMapStringInterfaceLen
+            | RuntimeOp::GoMapStringInterfaceGet
+            | RuntimeOp::GoMapStringInterfaceContains
             | RuntimeOp::GoMapStringI64Delete
             | RuntimeOp::GoMapStringI64Clear
             | RuntimeOp::GoMapStringI64IsNil

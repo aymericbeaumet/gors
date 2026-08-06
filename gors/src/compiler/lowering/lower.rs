@@ -530,7 +530,9 @@ fn lower_panic_call(
         | out::RustType::GoSliceI64
         | out::RustType::GoSliceU8
         | out::RustType::GoSliceBool
+        | out::RustType::GoSliceInterface
         | out::RustType::GoMapStringI64
+        | out::RustType::GoMapStringInterface
         | out::RustType::GoPointerI64
         | out::RustType::GoPointerStructI64
         | out::RustType::GoInterface
@@ -602,7 +604,9 @@ fn lower_print_call(
             | out::RustType::GoSliceI64
             | out::RustType::GoSliceU8
             | out::RustType::GoSliceBool
+            | out::RustType::GoSliceInterface
             | out::RustType::GoMapStringI64
+            | out::RustType::GoMapStringInterface
             | out::RustType::GoPointerI64
             | out::RustType::GoPointerStructI64
             | out::RustType::GoInterface

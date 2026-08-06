@@ -11,6 +11,7 @@
 #![allow(dead_code)]
 
 mod channels;
+mod interface_containers;
 mod interfaces;
 
 pub use channels::{
@@ -18,6 +19,12 @@ pub use channels::{
     go_channel_i64_len, go_channel_i64_make, go_channel_i64_nil, go_channel_i64_receive,
     go_channel_i64_receive_value, go_channel_i64_send, go_channel_i64_try_receive,
     go_channel_i64_try_send,
+};
+pub use interface_containers::{
+    GoMapStringInterface, GoSliceInterface, go_map_string_interface_contains,
+    go_map_string_interface_get, go_map_string_interface_len, go_map_string_interface_make,
+    go_map_string_interface_set, go_slice_interface_index, go_slice_interface_len,
+    go_slice_interface_make, go_slice_interface_set,
 };
 pub use interfaces::{
     GoInterface, go_interface_box_bool, go_interface_box_go_string, go_interface_box_i64,

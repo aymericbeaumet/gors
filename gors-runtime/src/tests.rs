@@ -318,6 +318,34 @@ fn boolean_slices_preserve_shared_mutable_storage() {
 }
 
 #[test]
+fn interface_backed_containers_preserve_tagged_values_and_identity() {
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    assert_send_sync::<GoSliceInterface>();
+    assert_send_sync::<GoMapStringInterface>();
+
+    let identity = go_string_from_static(b"named:point");
+    let value = go_interface_box_i64(identity.clone(), 7);
+    let slice = go_slice_interface_make(1, 1);
+    go_slice_interface_set(slice.clone(), 0, value.clone());
+    assert_eq!(go_slice_interface_len(slice.clone()), 1);
+    assert_eq!(
+        go_interface_unbox_i64(go_slice_interface_index(slice, 0), identity.clone()),
+        7
+    );
+
+    let map = go_map_string_interface_make();
+    let key = go_string_from_static(b"point");
+    go_map_string_interface_set(map.clone(), key.clone(), value);
+    assert_eq!(go_map_string_interface_len(map.clone()), 1);
+    assert!(go_map_string_interface_contains(map.clone(), key.clone()));
+    assert_eq!(
+        go_interface_unbox_i64(go_map_string_interface_get(map, key), identity),
+        7
+    );
+}
+
+#[test]
 fn integer_slice_append_reuses_or_detaches_by_capacity() {
     let base = go_slice_i64_make(2, 4);
     go_slice_i64_set(base.clone(), 0, 1);
