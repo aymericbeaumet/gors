@@ -436,6 +436,12 @@ impl PackageReferenceCollector {
                     self.expression(base);
                 }
             }
+            ExprSyntaxKind::TypeAssert { value, asserted } => {
+                self.expression(value);
+                if let Some(asserted) = asserted {
+                    self.expression(asserted);
+                }
+            }
             ExprSyntaxKind::ArrayType { length, element } => {
                 if let Some(length) = length {
                     self.expression(length);
@@ -519,6 +525,12 @@ fn collect_all_expression_names(expression: &ExprSyntax, names: &mut BTreeSet<St
             }
         }
         ExprSyntaxKind::Selector { base, .. } => collect_all_expression_names(base, names),
+        ExprSyntaxKind::TypeAssert { value, asserted } => {
+            collect_all_expression_names(value, names);
+            if let Some(asserted) = asserted {
+                collect_all_expression_names(asserted, names);
+            }
+        }
         ExprSyntaxKind::ArrayType { length, element } => {
             if let Some(length) = length {
                 collect_all_expression_names(length, names);

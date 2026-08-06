@@ -923,6 +923,9 @@ impl FunctionLowerer {
                 Ok(Operand::Read(place))
             }
             hir::ExprKind::Call { callee, args } => {
+                if *callee == hir::Callee::Builtin(hir::Builtin::InterfaceAssert) {
+                    return self.lower_interface_assertion_expr(args, &expr.ty, expr.source);
+                }
                 if let hir::Callee::Closure(id) = callee {
                     if matches!(expr.ty, Ty::Tuple(_)) {
                         return Err(Diagnostic::backend(

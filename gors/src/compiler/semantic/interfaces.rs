@@ -4,13 +4,14 @@ use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::NodeId;
 use crate::compiler::provenance::SourceRef;
-use crate::compiler::syntax::{ExprSyntax, SyntaxSource};
-use crate::compiler::types::{InterfaceMethod, Signature, Ty};
+use crate::compiler::syntax::{ExprSyntax, ExprSyntaxKind, SyntaxSource};
+use crate::compiler::types::{ConstValue, InterfaceMethod, Signature, Ty};
 
 use super::FunctionLowerer;
 use super::expressions::{
     coerce_expr, default_expr_type, ensure_bootstrap_value_type, is_assignable,
 };
+use super::lower_type;
 
 pub(super) fn error_interface_ty() -> Ty {
     Ty::Interface(vec![InterfaceMethod {
@@ -24,6 +25,99 @@ pub(super) fn error_interface_ty() -> Ty {
 }
 
 impl FunctionLowerer {
+    pub(super) fn try_lower_interface_comma_ok(
+        &mut self,
+        expression: &ExprSyntax,
+    ) -> Option<Result<hir::Expr, Diagnostic>> {
+        let ExprSyntaxKind::TypeAssert { value, asserted } = &expression.kind else {
+            return None;
+        };
+        Some((|| {
+            let node = self.alloc_node(expression.source)?;
+            let source = SourceRef::node(node);
+            self.lower_interface_type_assertion(value, asserted.as_deref(), true, node, source)
+        })())
+    }
+
+    pub(super) fn lower_interface_type_assertion(
+        &mut self,
+        value: &ExprSyntax,
+        asserted: Option<&ExprSyntax>,
+        comma_ok: bool,
+        node: NodeId,
+        source: SourceRef,
+    ) -> Result<hir::Expr, Diagnostic> {
+        let asserted = asserted.ok_or_else(|| {
+            Diagnostic::semantic("x.(type) is only valid in a type switch", source)
+        })?;
+        let interface = self.lower_expr(value, None)?;
+        let Ty::Interface(required_methods) = interface.ty.underlying() else {
+            return Err(Diagnostic::semantic(
+                "type assertion requires an interface value",
+                source,
+            ));
+        };
+        let asserted_ty = lower_type(asserted, &self.type_aliases, source)?;
+        if matches!(asserted_ty.underlying(), Ty::Interface(_)) {
+            return Err(Diagnostic::unsupported(
+                "assertions to interface types require interface satisfaction dispatch",
+                source,
+            ));
+        }
+        ensure_bootstrap_value_type(&asserted_ty, source)?;
+        if !supports_dynamic_interface_type(&asserted_ty) {
+            return Err(Diagnostic::unsupported(
+                format!("type assertions do not yet support {asserted_ty:?}"),
+                source,
+            ));
+        }
+        if !self.concrete_implements(&asserted_ty, required_methods) {
+            return Err(Diagnostic::semantic(
+                format!(
+                    "impossible type assertion: {asserted_ty:?} does not implement {:?}",
+                    interface.ty
+                ),
+                source,
+            ));
+        }
+        let type_identity = dynamic_type_identity(&asserted_ty).ok_or_else(|| {
+            Diagnostic::unsupported(
+                format!("type assertions do not yet support {asserted_ty:?}"),
+                source,
+            )
+        })?;
+        let identity_node = self.alloc_node(asserted.source)?;
+        let identity = hir::Expr {
+            node: identity_node,
+            kind: hir::ExprKind::Constant(ConstValue::String(type_identity)),
+            ty: Ty::String,
+            category: hir::ValueCategory::Constant,
+            effects: hir::Effects::default(),
+            source: SourceRef::node(identity_node),
+        };
+        let effects = interface.effects.union(hir::Effects {
+            may_call: true,
+            may_panic: !comma_ok,
+            ..hir::Effects::default()
+        });
+        let ty = if comma_ok {
+            Ty::Tuple(vec![asserted_ty, Ty::Bool])
+        } else {
+            asserted_ty
+        };
+        Ok(hir::Expr {
+            node,
+            kind: hir::ExprKind::Call {
+                callee: hir::Callee::Builtin(hir::Builtin::InterfaceAssert),
+                args: vec![interface, identity],
+            },
+            ty,
+            category: hir::ValueCategory::Value,
+            effects,
+            source,
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn lower_interface_selector_call(
         &mut self,

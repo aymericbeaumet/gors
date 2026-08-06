@@ -709,6 +709,7 @@ fn encode_builtin(encoder: &mut Encoder, builtin: hir::Builtin) {
             hir::Builtin::InterfaceBoxPointerStructI64 => b"interface-box-pointer-struct-i64",
             hir::Builtin::InterfaceIsNil => b"interface-is-nil",
             hir::Builtin::InterfaceIsType => b"interface-is-type",
+            hir::Builtin::InterfaceAssert => b"interface-assert",
             hir::Builtin::InterfaceUnboxBool => b"interface-unbox-bool",
             hir::Builtin::InterfaceUnboxI64 => b"interface-unbox-i64",
             hir::Builtin::InterfaceUnboxGoString => b"interface-unbox-go-string",

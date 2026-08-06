@@ -620,6 +620,13 @@ impl FunctionLowerer {
             ExprSyntaxKind::Selector { base, member } => {
                 self.lower_selector(base, member, node, source)?
             }
+            ExprSyntaxKind::TypeAssert { value, asserted } => self.lower_interface_type_assertion(
+                value,
+                asserted.as_deref(),
+                false,
+                node,
+                source,
+            )?,
             ExprSyntaxKind::CompositeLiteral { ty, elements } => self.lower_composite_literal(
                 ty.as_deref(),
                 elements,

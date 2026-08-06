@@ -186,6 +186,7 @@ fn collect_type_dependencies(expression: &ExprSyntax, dependencies: &mut BTreeSe
             collect_field_type_dependencies(fields, dependencies);
         }
         ExprSyntaxKind::Selector { .. }
+        | ExprSyntaxKind::TypeAssert { .. }
         | ExprSyntaxKind::Literal { .. }
         | ExprSyntaxKind::Binary { .. }
         | ExprSyntaxKind::Call { .. }

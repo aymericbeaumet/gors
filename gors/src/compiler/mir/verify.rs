@@ -709,6 +709,7 @@ impl Function {
                                 | hir::Builtin::InterfaceBoxPointerStructI64
                                 | hir::Builtin::InterfaceIsNil
                                 | hir::Builtin::InterfaceIsType
+                                | hir::Builtin::InterfaceAssert
                                 | hir::Builtin::InterfaceUnboxBool
                                 | hir::Builtin::InterfaceUnboxI64
                                 | hir::Builtin::InterfaceUnboxGoString

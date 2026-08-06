@@ -284,6 +284,10 @@ pub enum ExprSyntaxKind {
         base: Box<ExprSyntax>,
         member: IdentSyntax,
     },
+    TypeAssert {
+        value: Box<ExprSyntax>,
+        asserted: Option<Box<ExprSyntax>>,
+    },
     ArrayType {
         length: Option<Box<ExprSyntax>>,
         element: Box<ExprSyntax>,

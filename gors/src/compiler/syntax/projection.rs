@@ -965,7 +965,14 @@ impl StructuralProjector {
                         fields: Arc::from([]),
                     }),
             },
-            ast::Expr::TypeAssertExpr(_) => ExprSyntaxKind::Unsupported("type assertion"),
+            ast::Expr::TypeAssertExpr(expression) => ExprSyntaxKind::TypeAssert {
+                value: Box::new(self.expression(&expression.x)?),
+                asserted: expression
+                    .type_
+                    .as_ref()
+                    .map(|asserted| self.expression(asserted).map(Box::new))
+                    .transpose()?,
+            },
         };
         Ok(ExprSyntax { source, kind })
     }

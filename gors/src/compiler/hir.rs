@@ -359,6 +359,9 @@ pub enum Builtin {
     InterfaceBoxPointerStructI64,
     InterfaceIsNil,
     InterfaceIsType,
+    /// HIR-only type assertion expanded into explicit interface tests and
+    /// extraction calls during MIR construction.
+    InterfaceAssert,
     InterfaceUnboxBool,
     InterfaceUnboxI64,
     InterfaceUnboxGoString,

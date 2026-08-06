@@ -423,6 +423,7 @@ fn lower_terminator(
                 | hir::Builtin::InterfaceBoxPointerStructI64
                 | hir::Builtin::InterfaceIsNil
                 | hir::Builtin::InterfaceIsType
+                | hir::Builtin::InterfaceAssert
                 | hir::Builtin::InterfaceUnboxBool
                 | hir::Builtin::InterfaceUnboxI64
                 | hir::Builtin::InterfaceUnboxGoString
@@ -509,6 +510,11 @@ fn lower_terminator(
                     hir::Builtin::MapStringI64Lookup => {
                         return Err(Diagnostic::backend(
                             "map comma-ok lookup survived MIR expansion",
+                        ));
+                    }
+                    hir::Builtin::InterfaceAssert => {
+                        return Err(Diagnostic::backend(
+                            "interface assertion survived MIR expansion",
                         ));
                     }
                     hir::Builtin::Print | hir::Builtin::Println | hir::Builtin::Panic => {

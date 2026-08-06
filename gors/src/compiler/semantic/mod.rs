@@ -770,6 +770,7 @@ pub(super) fn eval_constant(
         | ExprSyntaxKind::FunctionLiteral { .. }
         | ExprSyntaxKind::FunctionType { .. }
         | ExprSyntaxKind::Selector { .. }
+        | ExprSyntaxKind::TypeAssert { .. }
         | ExprSyntaxKind::ArrayType { .. }
         | ExprSyntaxKind::MapType { .. }
         | ExprSyntaxKind::ChannelType { .. }

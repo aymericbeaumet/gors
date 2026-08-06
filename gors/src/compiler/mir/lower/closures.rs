@@ -27,6 +27,9 @@ impl FunctionLowerer {
         if *callee == hir::Callee::Builtin(hir::Builtin::MapStringI64Lookup) {
             return self.lower_map_lookup_into(args, destinations, expression.source);
         }
+        if *callee == hir::Callee::Builtin(hir::Builtin::InterfaceAssert) {
+            return self.lower_interface_assertion_into(args, destinations, expression.source);
+        }
         let mut operands = Vec::with_capacity(args.len());
         for argument in args {
             let operand = self.lower_expr(argument)?;
