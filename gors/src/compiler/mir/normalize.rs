@@ -1,7 +1,7 @@
 //! Mandatory semantic MIR normalization before Rust representation lowering.
 //!
-//! Every pass runs between whole-file verification barriers.  The bootstrap
-//! Normalization deliberately avoids integer folding until typed Go-width
+//! Every pass runs between whole-file verification barriers. Normalization
+//! deliberately avoids integer folding until typed Go-width
 //! arithmetic is represented explicitly.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -10,9 +10,12 @@ use crate::compiler::Diagnostic;
 #[cfg(test)]
 use crate::compiler::VerifiedMir;
 use crate::compiler::hir;
-use crate::compiler::ids::{BasicBlockId, LocalId};
+#[cfg(test)]
+use crate::compiler::ids::QualifiedDefId;
+use crate::compiler::ids::{BasicBlockId, LocalId, PackageId};
 use crate::compiler::mir::{
-    self, Operand, PanicEdge, Rvalue, RvalueKind, Terminator, TerminatorKind,
+    self, Operand, PanicEdge, Provenance, Rvalue, RvalueKind, SyntheticOrigin, Terminator,
+    TerminatorKind,
 };
 use crate::compiler::types::{ConstValue, Ty};
 
@@ -26,12 +29,14 @@ pub(super) fn normalize(input: VerifiedMir) -> Result<VerifiedMir, Vec<Diagnosti
 
 pub(super) fn normalize_function(
     function: mir::Function,
+    package: PackageId,
     signatures: &mir::SignatureIndex,
 ) -> Result<mir::Function, Vec<Diagnostic>> {
     let boolean_control_flow = BooleanControlFlow;
     let unreachable_blocks = UnreachableBlocks;
     let passes: [&dyn MirPass; 2] = [&boolean_control_flow, &unreachable_blocks];
     let mut file = mir::File {
+        package_id: package,
         package: String::new(),
         functions: vec![function],
     };
@@ -62,7 +67,12 @@ impl<'a> PassManager<'a> {
         let signatures = file
             .functions
             .iter()
-            .map(|function| (function.id, function.signature.clone()))
+            .map(|function| {
+                (
+                    QualifiedDefId::new(file.package_id, function.id),
+                    function.signature.clone(),
+                )
+            })
             .collect();
         self.run_file(&mut file, &signatures)?;
         Ok(VerifiedMir::from_verified(file))
@@ -141,7 +151,10 @@ fn propagate_block_booleans(function: &mut mir::Function) {
             });
         }
         rewrite_terminator_boolean_reads(&mut block.terminator, &constants);
-        if let TerminatorKind::SwitchBool {
+        if !matches!(
+            block.terminator.provenance,
+            Provenance::Synthetic(SyntheticOrigin::PanicCleanupDispatch)
+        ) && let TerminatorKind::SwitchBool {
             condition: Operand::Constant(ConstValue::Bool(value), Ty::Bool),
             then_target,
             else_target,
@@ -157,13 +170,63 @@ fn propagate_block_booleans(function: &mut mir::Function) {
 
 fn rewrite_rvalue_boolean_reads(rvalue: &mut Rvalue, constants: &BTreeMap<LocalId, bool>) {
     match &mut rvalue.kind {
-        RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => {
+        RvalueKind::Use(operand)
+        | RvalueKind::Unary { operand, .. }
+        | RvalueKind::Conversion { operand, .. } => {
             rewrite_boolean_read(operand, constants);
         }
         RvalueKind::Binary { left, right, .. } => {
             rewrite_boolean_read(left, constants);
             rewrite_boolean_read(right, constants);
         }
+        RvalueKind::ArrayIndexI64 { array, index } => {
+            rewrite_boolean_read(array, constants);
+            rewrite_boolean_read(index, constants);
+        }
+        RvalueKind::ArrayIndex { array, index } => {
+            rewrite_boolean_read(array, constants);
+            rewrite_boolean_read(index, constants);
+        }
+        RvalueKind::ArraySetI64 {
+            array,
+            index,
+            value,
+        } => {
+            rewrite_boolean_read(array, constants);
+            rewrite_boolean_read(index, constants);
+            rewrite_boolean_read(value, constants);
+        }
+        RvalueKind::ArraySet {
+            array,
+            index,
+            value,
+        } => {
+            rewrite_boolean_read(array, constants);
+            rewrite_boolean_read(index, constants);
+            rewrite_boolean_read(value, constants);
+        }
+        RvalueKind::ArrayLiteral { elements, .. } => {
+            for element in elements {
+                rewrite_boolean_read(element, constants);
+            }
+        }
+        RvalueKind::StructLiteral { fields, .. } => {
+            for field in fields {
+                rewrite_boolean_read(field, constants);
+            }
+        }
+        RvalueKind::StructField { structure, .. } => rewrite_boolean_read(structure, constants),
+        RvalueKind::StructSet {
+            structure, value, ..
+        } => {
+            rewrite_boolean_read(structure, constants);
+            rewrite_boolean_read(value, constants);
+        }
+        RvalueKind::RecoverCompareNil { .. } => {}
+        RvalueKind::SliceLiteralI64 { .. }
+        | RvalueKind::SliceLiteralU8(_)
+        | RvalueKind::SliceLiteralBool(_)
+        | RvalueKind::ArrayLiteralI64(_) => {}
     }
 }
 
@@ -178,7 +241,9 @@ fn rewrite_terminator_boolean_reads(
                 rewrite_boolean_read(argument, constants);
             }
         }
-        TerminatorKind::Goto(_) | TerminatorKind::Unreachable => {}
+        TerminatorKind::Goto(_)
+        | TerminatorKind::SpawnEmpty { .. }
+        | TerminatorKind::Unreachable => {}
     }
     refresh_terminator_read_effect(terminator);
 }
@@ -218,15 +283,43 @@ fn fold_boolean_rvalue(rvalue: &Rvalue) -> Option<bool> {
 
 fn refresh_rvalue_effects(rvalue: &mut Rvalue) {
     let may_read = match &rvalue.kind {
-        RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => operand_reads(operand),
+        RvalueKind::Use(operand)
+        | RvalueKind::Unary { operand, .. }
+        | RvalueKind::Conversion { operand, .. } => operand_reads(operand),
         RvalueKind::Binary { left, right, .. } => operand_reads(left) || operand_reads(right),
+        RvalueKind::ArrayIndexI64 { array, index } => operand_reads(array) || operand_reads(index),
+        RvalueKind::ArrayIndex { array, index } => operand_reads(array) || operand_reads(index),
+        RvalueKind::ArraySetI64 {
+            array,
+            index,
+            value,
+        } => operand_reads(array) || operand_reads(index) || operand_reads(value),
+        RvalueKind::ArraySet {
+            array,
+            index,
+            value,
+        } => operand_reads(array) || operand_reads(index) || operand_reads(value),
+        RvalueKind::ArrayLiteral { elements, .. } => elements.iter().any(operand_reads),
+        RvalueKind::StructLiteral { fields, .. } => fields.iter().any(operand_reads),
+        RvalueKind::StructField { structure, .. } => operand_reads(structure),
+        RvalueKind::StructSet {
+            structure, value, ..
+        } => operand_reads(structure) || operand_reads(value),
+        RvalueKind::RecoverCompareNil { .. } => true,
+        RvalueKind::SliceLiteralI64 { .. }
+        | RvalueKind::SliceLiteralU8(_)
+        | RvalueKind::SliceLiteralBool(_)
+        | RvalueKind::ArrayLiteralI64(_) => false,
     };
     let may_panic = matches!(
         &rvalue.kind,
         RvalueKind::Binary {
             op: hir::BinaryOp::Div | hir::BinaryOp::Rem | hir::BinaryOp::Shl | hir::BinaryOp::Shr,
             ..
-        }
+        } | RvalueKind::ArrayIndexI64 { .. }
+            | RvalueKind::ArrayIndex { .. }
+            | RvalueKind::ArraySetI64 { .. }
+            | RvalueKind::ArraySet { .. }
     );
     let may_allocate = matches!(
         &rvalue.kind,
@@ -234,16 +327,23 @@ fn refresh_rvalue_effects(rvalue: &mut Rvalue) {
             op: hir::BinaryOp::Add,
             ty: Ty::String,
             ..
-        }
+        } | RvalueKind::SliceLiteralI64 { .. }
+            | RvalueKind::SliceLiteralU8(_)
+            | RvalueKind::SliceLiteralBool(_)
     );
+    let recover = matches!(rvalue.kind, RvalueKind::RecoverCompareNil { .. });
     rvalue.effects = hir::Effects {
         may_read,
+        may_write: recover,
         may_allocate,
         may_panic,
         ..hir::Effects::default()
     };
     rvalue.panic = if may_panic {
-        PanicEdge::Propagate
+        match rvalue.panic {
+            PanicEdge::Cleanup(target) => PanicEdge::Cleanup(target),
+            PanicEdge::None | PanicEdge::Propagate => PanicEdge::Propagate,
+        }
     } else {
         PanicEdge::None
     };
@@ -255,7 +355,9 @@ fn refresh_terminator_read_effect(terminator: &mut Terminator) {
         TerminatorKind::Call { args, .. } | TerminatorKind::Return(args) => {
             args.iter().any(operand_reads)
         }
-        TerminatorKind::Goto(_) | TerminatorKind::Unreachable => false,
+        TerminatorKind::Goto(_)
+        | TerminatorKind::SpawnEmpty { .. }
+        | TerminatorKind::Unreachable => false,
     };
 }
 
@@ -301,7 +403,9 @@ fn remove_unreachable_blocks(function: &mut mir::Function) -> Result<(), Diagnos
                 pending.push_back(*then_target);
                 pending.push_back(*else_target);
             }
-            TerminatorKind::Call { target, .. } => pending.push_back(*target),
+            TerminatorKind::Call { target, .. } | TerminatorKind::SpawnEmpty { target } => {
+                pending.push_back(*target);
+            }
             TerminatorKind::Return(_) | TerminatorKind::Unreachable => {}
         }
     }
@@ -319,11 +423,19 @@ fn remove_unreachable_blocks(function: &mut mir::Function) -> Result<(), Diagnos
         .cloned()
     {
         block.id = remapped_block(block.id, &remap)?;
+        for statement in &mut block.statements {
+            if let PanicEdge::Cleanup(target) = &mut statement.value.panic {
+                *target = remapped_block(*target, &remap)?;
+            }
+        }
         remap_terminator(&mut block.terminator, &remap)?;
         new_blocks.push(block);
     }
     function.blocks = new_blocks;
     function.entry = new_entry;
+    if let Some(cleanup) = &mut function.panic_cleanup {
+        cleanup.entry = remapped_block(cleanup.entry, &remap)?;
+    }
     Ok(())
 }
 
@@ -351,8 +463,13 @@ fn remap_terminator(
             *then_target = remapped_block(*then_target, remap)?;
             *else_target = remapped_block(*else_target, remap)?;
         }
-        TerminatorKind::Call { target, .. } => *target = remapped_block(*target, remap)?,
+        TerminatorKind::Call { target, .. } | TerminatorKind::SpawnEmpty { target } => {
+            *target = remapped_block(*target, remap)?;
+        }
         TerminatorKind::Return(_) | TerminatorKind::Unreachable => {}
+    }
+    if let PanicEdge::Cleanup(target) = &mut terminator.panic {
+        *target = remapped_block(*target, remap)?;
     }
     Ok(())
 }

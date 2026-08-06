@@ -6,9 +6,9 @@ The fuzz crate has two complementary feedback loops:
 - Coverage-guided `cargo-fuzz` runs for local, scheduled, and manually
   dispatched deeper testing.
 
-The compiler target exercises the generic Go AST to Rust AST lowering and Rust
-source-printing path. It does not contain Rust replacements for Go
-standard-library packages.
+The compiler target exercises the complete typed compiler pipeline through
+verified Rust IR and terminal Rust source printing. It does not contain Rust
+replacements for Go standard-library packages.
 
 ## Fast stable checks
 
@@ -63,12 +63,11 @@ installed nightly explicitly. The libFuzzer binaries are also gated behind the
 | `scanner` | Arbitrary bytes do not panic the Go scanner. |
 | `parser` | Arbitrary bytes do not panic the Go parser. |
 | `roundtrip` | Independent parses produce identical AST snapshots. |
-| `compiler` | Accepted Go ASTs do not panic generic Rust lowering or source printing. |
+| `compiler` | Accepted Go programs do not panic semantic lowering, verification, or source printing. |
 
-`ast::fprint` emits an AST dump, not Go source. The historical roundtrip target
-attempted to parse that dump as Go and therefore reported every accepted seed as
-a false crash. The retained target name preserves the Makefile interface while
-testing the valid determinism property.
+The `roundtrip` target parses each input independently and compares its AST
+snapshots. `ast::fprint` supplies the deterministic diagnostic dump; that dump
+is not reparsed as Go source.
 
 ## Corpus and regressions
 

@@ -1,11 +1,36 @@
 //! Definition-demanded name resolution and type checking over owned syntax.
 
+mod arrays;
+mod assignments;
+mod calls;
+mod channels;
+mod closures;
+mod composites;
+mod conversions;
 mod expression_lower;
 mod expressions;
 mod function;
+mod generics;
+mod goroutines;
+mod imports;
+mod interfaces;
+mod iteration;
+mod maps;
+mod numeric_builtins;
+mod pointers;
+mod ranges;
+mod recovery;
+mod selects;
+mod slices;
 mod statements;
+mod static_values;
+mod structs;
+mod switches;
+mod type_switches;
+mod unsafe_intrinsics;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use num_bigint::BigInt;
 
@@ -14,25 +39,74 @@ use function::FunctionLowerer;
 
 use super::Diagnostic;
 use super::hir;
-use super::ids::{DefId, NodeId};
+use super::ids::{DefId, NodeId, QualifiedDefId};
 use super::provenance::SourceRef;
 use super::syntax::{
-    ConstantSyntax, ConstantValueSyntax, ExprSyntax, ExprSyntaxKind, FieldListSyntax,
-    FunctionBodySyntax, FunctionHeaderSyntax, SyntaxSource,
+    ChannelDirectionSyntax, ConstantSyntax, ConstantValueSyntax, ExprSyntax, ExprSyntaxKind,
+    FieldListSyntax, FunctionBodySyntax, FunctionHeaderSyntax, SyntaxSource, VariableSyntax,
+    VariableValueSyntax,
 };
-use super::types::{ConstValue, IntTy, Signature, Ty, UntypedTy};
+use super::types::{
+    ChannelDir, ConstValue, IntTy, InterfaceMethod, Signature, StaticValue, StructField, Ty,
+    UntypedTy,
+};
 
 #[derive(Clone)]
 pub(super) struct FunctionSymbol {
-    pub(super) id: DefId,
+    pub(super) id: QualifiedDefId,
     pub(super) signature: Signature,
+    pub(super) range_header: Option<Arc<FunctionHeaderSyntax>>,
+    pub(super) range_body: Option<Arc<FunctionBodySyntax>>,
+}
+
+#[derive(Clone)]
+pub(super) struct MethodSymbol {
+    pub(super) id: QualifiedDefId,
+    pub(super) signature: Signature,
+    pub(super) pointer_receiver: bool,
+}
+
+#[derive(Clone)]
+pub(super) struct GenericFunctionSymbol {
+    pub(super) id: QualifiedDefId,
+    pub(super) header: Arc<FunctionHeaderSyntax>,
+    pub(super) body: Arc<FunctionBodySyntax>,
+    pub(super) pointer_receiver: bool,
+}
+
+#[derive(Clone)]
+pub(super) struct GenericTypeSymbol {
+    pub(super) id: DefId,
+    pub(super) type_parameters: Arc<FieldListSyntax>,
+    pub(super) underlying: ExprSyntax,
 }
 
 #[derive(Clone)]
 pub(super) struct ConstantSymbol {
-    pub(super) id: DefId,
+    pub(super) id: QualifiedDefId,
     pub(super) ty: Ty,
     pub(super) value: ConstValue,
+}
+
+#[derive(Clone)]
+pub(super) struct VariableSymbol {
+    pub(super) id: QualifiedDefId,
+    pub(super) ty: Ty,
+    pub(super) value: StaticValue,
+}
+
+pub(super) struct FunctionSymbols {
+    pub(super) functions: BTreeMap<String, FunctionSymbol>,
+    pub(super) qualified_functions: BTreeMap<(String, String), FunctionSymbol>,
+    pub(super) methods: BTreeMap<(DefId, String), MethodSymbol>,
+    pub(super) generic_functions: BTreeMap<String, GenericFunctionSymbol>,
+    pub(super) generic_methods: BTreeMap<(DefId, String), GenericFunctionSymbol>,
+    pub(super) generic_types: BTreeMap<String, GenericTypeSymbol>,
+    pub(super) constants: BTreeMap<String, ConstantSymbol>,
+    pub(super) qualified_constants: BTreeMap<(String, String), ConstantSymbol>,
+    pub(super) variables: BTreeMap<String, VariableSymbol>,
+    pub(super) qualified_variables: BTreeMap<(String, String), VariableSymbol>,
+    pub(super) intrinsic_packages: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -41,6 +115,14 @@ pub(super) struct TypedConstant {
     pub(super) name: String,
     pub(super) ty: Ty,
     pub(super) value: ConstValue,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct TypedVariable {
+    pub(super) id: DefId,
+    pub(super) name: String,
+    pub(super) ty: Ty,
+    pub(super) value: StaticValue,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -58,52 +140,58 @@ pub(super) struct FunctionLoweringFailure {
 pub(super) fn lower_signature(
     definition: DefId,
     header: &FunctionHeaderSyntax,
+    type_aliases: &BTreeMap<String, Ty>,
 ) -> Result<Signature, Diagnostic> {
     let source = SourceRef::definition(definition);
-    if header.has_receiver {
-        return Err(Diagnostic::unsupported(
-            "methods are not implemented by the HIR/MIR backend",
-            source,
-        ));
-    }
     if header.has_type_parameters {
         return Err(Diagnostic::unsupported(
-            "generic functions are not implemented by the HIR/MIR backend",
+            "generic functions with this declaration form are not yet supported",
             source,
         ));
     }
-    let params = field_types(&header.params, source)?;
+    let mut params = Vec::new();
+    if let Some(receiver) = &header.receiver {
+        let (receiver, receiver_variadic) = parameter_types(receiver, type_aliases, source)?;
+        if receiver_variadic || receiver.len() != 1 {
+            return Err(Diagnostic::semantic(
+                "a method must declare exactly one non-variadic receiver",
+                source,
+            ));
+        }
+        params.extend(receiver);
+    }
+    let (ordinary_params, variadic) = parameter_types(&header.params, type_aliases, source)?;
+    params.extend(ordinary_params);
     let results = header
         .results
         .as_ref()
-        .map(|fields| field_types(fields, source))
+        .map(|fields| field_types(fields, type_aliases, source))
         .transpose()?
         .unwrap_or_default();
-    if results.len() > 1 {
-        return Err(Diagnostic::unsupported(
-            "multiple-result functions require explicit expression-arity HIR and are not implemented",
-            source,
-        ));
+    for ty in params.iter().chain(&results) {
+        ensure_bootstrap_value_type(ty, source)?;
     }
-    if header.name.name.as_ref() == "init" {
-        return Err(Diagnostic::unsupported(
-            "package init functions are not implemented by the HIR/MIR backend",
-            source,
-        ));
-    }
-    if header.name.name.as_ref() == "main" && (!params.is_empty() || !results.is_empty()) {
+    if header.receiver.is_none()
+        && header.name.name.as_ref() == "main"
+        && (!params.is_empty() || !results.is_empty())
+    {
         return Err(Diagnostic::semantic(
             "func main must have no parameters and no results",
             source,
         ));
     }
-    Ok(Signature { params, results })
+    Ok(Signature {
+        params,
+        results,
+        variadic,
+    })
 }
 
 pub(super) fn lower_constant(
     definition: DefId,
     syntax: &ConstantSyntax,
     constants: &BTreeMap<String, ConstantSymbol>,
+    type_aliases: &BTreeMap<String, Ty>,
 ) -> Result<TypedConstant, Diagnostic> {
     let source = SourceRef::definition(definition);
     let expression = match &syntax.value {
@@ -121,14 +209,14 @@ pub(super) fn lower_constant(
             ));
         }
     };
-    let (raw_ty, value) = eval_constant(expression, constants, source)?;
+    let (raw_ty, value) = eval_constant(expression, constants, source, syntax.iota)?;
     let ty = syntax
         .explicit_type
         .as_ref()
-        .map(|ty| lower_type(ty, source))
+        .map(|ty| lower_type(ty, type_aliases, source))
         .transpose()?
-        .unwrap_or_else(|| raw_ty.default_typed());
-    ensure_bootstrap_value_type(&ty, source)?;
+        .unwrap_or_else(|| raw_ty.clone());
+    ensure_bootstrap_value_type(&ty.default_typed(), source)?;
     if !is_assignable(&raw_ty, &ty) {
         return Err(Diagnostic::semantic(
             format!("constant {} is not assignable to {ty:?}", syntax.name.name),
@@ -152,13 +240,95 @@ pub(super) fn lower_constant(
     })
 }
 
+pub(super) fn lower_variable(
+    definition: DefId,
+    syntax: &VariableSyntax,
+    constants: &BTreeMap<String, ConstantSymbol>,
+    type_aliases: &BTreeMap<String, Ty>,
+    static_functions: &BTreeMap<String, Arc<FunctionBodySyntax>>,
+    package_initializers: &[Arc<FunctionBodySyntax>],
+) -> Result<TypedVariable, Diagnostic> {
+    let source = SourceRef::definition(definition);
+    let explicit_ty = syntax
+        .explicit_type
+        .as_ref()
+        .map(|ty| lower_type(ty, type_aliases, source))
+        .transpose()?;
+    let (raw_ty, mut value) = match &syntax.value {
+        VariableValueSyntax::Expression(expression) => static_values::evaluate_initializer(
+            expression,
+            constants,
+            type_aliases,
+            static_functions,
+            source,
+        )?,
+        VariableValueSyntax::Zero => {
+            let ty = explicit_ty.clone().ok_or_else(|| {
+                Diagnostic::semantic(
+                    format!(
+                        "variable {} has neither a type nor an initializer",
+                        syntax.name.name
+                    ),
+                    source,
+                )
+            })?;
+            let value = StaticValue::zero(&ty).ok_or_else(|| {
+                Diagnostic::unsupported(
+                    format!("zero value for package variable type {ty:?} is not implemented"),
+                    source,
+                )
+            })?;
+            (ty, value)
+        }
+        VariableValueSyntax::ArityMismatch => {
+            return Err(Diagnostic::unsupported(
+                "multi-valued package variable initializers are not yet represented",
+                source,
+            ));
+        }
+    };
+    let ty = explicit_ty.unwrap_or_else(|| raw_ty.default_typed());
+    ensure_bootstrap_value_type(&ty, source)?;
+    if !is_assignable(&raw_ty, &ty) || !value.is_representable_as(&ty) {
+        return Err(Diagnostic::semantic(
+            format!(
+                "initializer for package variable {} is not assignable to {ty:?}",
+                syntax.name.name
+            ),
+            source,
+        ));
+    }
+    static_values::apply_package_initializers(
+        syntax.name.name.as_ref(),
+        &ty,
+        &mut value,
+        package_initializers,
+        constants,
+        type_aliases,
+        static_functions,
+        source,
+    )?;
+    if !value.is_representable_as(&ty) {
+        return Err(Diagnostic::backend(format!(
+            "initialized package variable {} no longer matches {ty:?}",
+            syntax.name.name
+        )));
+    }
+    Ok(TypedVariable {
+        id: definition,
+        name: syntax.name.name.to_string(),
+        ty,
+        value,
+    })
+}
+
 pub(super) fn lower_function(
     definition: DefId,
     header: &FunctionHeaderSyntax,
     body: &FunctionBodySyntax,
     signature: Signature,
-    functions: BTreeMap<String, FunctionSymbol>,
-    constants: BTreeMap<String, ConstantSymbol>,
+    symbols: FunctionSymbols,
+    type_aliases: BTreeMap<String, Ty>,
 ) -> Result<LoweredFunction, FunctionLoweringFailure> {
     let node = NodeId::owner_local(definition, 0);
     let initial_source_plan = vec![
@@ -177,26 +347,74 @@ pub(super) fn lower_function(
     let mut lowerer = FunctionLowerer {
         owner: definition,
         next_node: 1,
-        functions,
-        constants,
+        next_local_type: 0,
+        functions: symbols.functions,
+        qualified_functions: symbols.qualified_functions,
+        methods: symbols.methods,
+        generic_functions: symbols.generic_functions,
+        generic_methods: symbols.generic_methods,
+        generic_types: symbols.generic_types,
+        constants: symbols.constants,
+        qualified_constants: symbols.qualified_constants,
+        variables: symbols.variables,
+        qualified_variables: symbols.qualified_variables,
+        intrinsic_packages: symbols.intrinsic_packages,
+        type_aliases,
+        type_scope_changes: vec![BTreeMap::new()],
         signature: signature.clone(),
         locals: Vec::new(),
         scopes: vec![BTreeMap::new()],
+        closures: Vec::new(),
+        closure_scopes: vec![BTreeMap::new()],
         named_results: Vec::new(),
-        loop_depth: 0,
+        loop_labels: Vec::new(),
+        range_yield_loop_depth: None,
+        iteration_capture_scopes: Vec::new(),
+        declared_labels: BTreeSet::new(),
+        referenced_gotos: BTreeMap::new(),
+        defer_registration_depth: 0,
+        inside_deferred_closure: false,
+        inside_local_closure: false,
+        active_generic_functions: Vec::new(),
+        source_override: None,
         source_plan: initial_source_plan,
     };
     let lowered = (|| {
-        let params = lowerer.declare_field_bindings(
+        let receiver_count = usize::from(header.receiver.is_some());
+        let (receiver_types, parameter_types) =
+            signature
+                .params
+                .split_at_checked(receiver_count)
+                .ok_or_else(|| Diagnostic::backend("method signature omitted its receiver type"))?;
+        let mut params = Vec::new();
+        if let Some(receiver) = &header.receiver {
+            params.extend(lowerer.declare_field_bindings(
+                receiver,
+                receiver_types,
+                hir::LocalKind::Parameter,
+            )?);
+        }
+        params.extend(lowerer.declare_field_bindings(
             &header.params,
-            &signature.params,
+            parameter_types,
             hir::LocalKind::Parameter,
-        )?;
+        )?);
         lowerer.named_results = header.results.as_ref().map_or_else(
             || Ok(Vec::new()),
             |results| lowerer.declare_result_bindings(results, &signature.results),
         )?;
-        lowerer.lower_block(body, false).map(|body| (params, body))
+        let body = lowerer.lower_block(body, false)?;
+        if let Some((label, source)) = lowerer
+            .referenced_gotos
+            .iter()
+            .find(|(label, _)| !lowerer.declared_labels.contains(*label))
+        {
+            return Err(Diagnostic::semantic(
+                format!("goto target {label} is not defined"),
+                *source,
+            ));
+        }
+        Ok((params, body))
     })();
     match lowered {
         Ok((params, body)) => Ok(LoweredFunction {
@@ -208,6 +426,7 @@ pub(super) fn lower_function(
                 params,
                 named_results: lowerer.named_results,
                 locals: lowerer.locals,
+                closures: lowerer.closures,
                 body,
                 source: SourceRef::definition(definition),
             },
@@ -220,24 +439,214 @@ pub(super) fn lower_function(
     }
 }
 
-fn field_types(fields: &FieldListSyntax, source: SourceRef) -> Result<Vec<Ty>, Diagnostic> {
+fn field_types(
+    fields: &FieldListSyntax,
+    type_aliases: &BTreeMap<String, Ty>,
+    source: SourceRef,
+) -> Result<Vec<Ty>, Diagnostic> {
     let mut result = Vec::new();
     for field in &*fields.fields {
+        if field.variadic {
+            return Err(Diagnostic::semantic(
+                "result parameters cannot be variadic",
+                source,
+            ));
+        }
         let type_expression = field
             .ty
             .as_ref()
             .ok_or_else(|| Diagnostic::backend("signature field has no type"))?;
-        let ty = lower_type(type_expression, source)?;
+        let ty = lower_type(type_expression, type_aliases, source)?;
         let count = field.names.as_ref().map_or(1, |names| names.len());
         result.extend(std::iter::repeat_n(ty, count));
     }
     Ok(result)
 }
 
-fn lower_type(expression: &ExprSyntax, source: SourceRef) -> Result<Ty, Diagnostic> {
+fn parameter_types(
+    fields: &FieldListSyntax,
+    type_aliases: &BTreeMap<String, Ty>,
+    source: SourceRef,
+) -> Result<(Vec<Ty>, bool), Diagnostic> {
+    let mut result = Vec::new();
+    let mut variadic = false;
+    for (index, field) in fields.fields.iter().enumerate() {
+        let type_expression = field
+            .ty
+            .as_ref()
+            .ok_or_else(|| Diagnostic::backend("signature field has no type"))?;
+        let mut ty = lower_type(type_expression, type_aliases, source)?;
+        let count = field.names.as_ref().map_or(1, |names| names.len());
+        if field.variadic {
+            if variadic || index + 1 != fields.fields.len() || count != 1 {
+                return Err(Diagnostic::semantic(
+                    "a variadic parameter must be the final single parameter",
+                    source,
+                ));
+            }
+            variadic = true;
+            ty = Ty::Slice(Box::new(ty));
+        }
+        result.extend(std::iter::repeat_n(ty, count));
+    }
+    Ok((result, variadic))
+}
+
+pub(super) fn lower_type(
+    expression: &ExprSyntax,
+    type_aliases: &BTreeMap<String, Ty>,
+    source: SourceRef,
+) -> Result<Ty, Diagnostic> {
+    if let ExprSyntaxKind::Paren(expression) = &expression.kind {
+        return lower_type(expression, type_aliases, source);
+    }
+    if let ExprSyntaxKind::ArrayType { length, element } = &expression.kind {
+        return match length {
+            None => Ok(Ty::Slice(Box::new(lower_type(
+                element,
+                type_aliases,
+                source,
+            )?))),
+            Some(length) => arrays::lower_array_type(length, element, type_aliases, source),
+        };
+    }
+    if let ExprSyntaxKind::MapType { key, value } = &expression.kind {
+        return Ok(Ty::Map(
+            Box::new(lower_type(key, type_aliases, source)?),
+            Box::new(lower_type(value, type_aliases, source)?),
+        ));
+    }
+    if let ExprSyntaxKind::ChannelType { direction, element } = &expression.kind {
+        let direction = match direction {
+            ChannelDirectionSyntax::SendReceive => ChannelDir::SendReceive,
+            ChannelDirectionSyntax::SendOnly => ChannelDir::SendOnly,
+            ChannelDirectionSyntax::ReceiveOnly => ChannelDir::ReceiveOnly,
+        };
+        return Ok(Ty::Channel(
+            direction,
+            Box::new(lower_type(element, type_aliases, source)?),
+        ));
+    }
+    if let ExprSyntaxKind::Unary {
+        token: crate::token::Token::MUL,
+        expression,
+    } = &expression.kind
+    {
+        return Ok(Ty::Pointer(Box::new(lower_type(
+            expression,
+            type_aliases,
+            source,
+        )?)));
+    }
+    if let ExprSyntaxKind::FunctionType {
+        has_type_parameters,
+        params,
+        results,
+    } = &expression.kind
+    {
+        if *has_type_parameters {
+            return Err(Diagnostic::unsupported(
+                "generic function types are not yet implemented",
+                source,
+            ));
+        }
+        let (params, variadic) = parameter_types(params, type_aliases, source)?;
+        let results = results
+            .as_ref()
+            .map(|results| field_types(results, type_aliases, source))
+            .transpose()?
+            .unwrap_or_default();
+        return Ok(Ty::Function(Signature {
+            params,
+            results,
+            variadic,
+        }));
+    }
+    if let ExprSyntaxKind::StructType { fields } = &expression.kind {
+        let mut lowered = Vec::new();
+        for field in &*fields.fields {
+            if field.variadic {
+                return Err(Diagnostic::semantic(
+                    "struct fields cannot be variadic",
+                    source,
+                ));
+            }
+            let syntax = field
+                .ty
+                .as_ref()
+                .ok_or_else(|| Diagnostic::backend("struct field has no type"))?;
+            let ty = lower_type(syntax, type_aliases, source)?;
+            let tag = field.tag.as_ref().map(ToString::to_string);
+            if let Some(names) = &field.names {
+                lowered.extend(names.iter().map(|name| StructField {
+                    name: name.name.to_string(),
+                    ty: ty.clone(),
+                    embedded: false,
+                    tag: tag.clone(),
+                }));
+            } else {
+                lowered.push(StructField {
+                    name: embedded_field_name(syntax).ok_or_else(|| {
+                        Diagnostic::semantic("invalid embedded struct field type", source)
+                    })?,
+                    ty,
+                    embedded: true,
+                    tag,
+                });
+            }
+        }
+        return Ok(Ty::Struct(lowered));
+    }
+    if let ExprSyntaxKind::InterfaceType { methods } = &expression.kind {
+        let mut lowered = BTreeMap::<String, Signature>::new();
+        for field in &*methods.fields {
+            let syntax = field
+                .ty
+                .as_ref()
+                .ok_or_else(|| Diagnostic::backend("interface element has no type"))?;
+            if let Some(names) = &field.names {
+                let Ty::Function(signature) = lower_type(syntax, type_aliases, source)? else {
+                    return Err(Diagnostic::semantic(
+                        "interface methods require function signatures",
+                        source,
+                    ));
+                };
+                for name in &**names {
+                    if lowered
+                        .insert(name.name.to_string(), signature.clone())
+                        .is_some()
+                    {
+                        return Err(Diagnostic::semantic(
+                            format!("duplicate interface method {}", name.name),
+                            source,
+                        ));
+                    }
+                }
+            } else {
+                let embedded = lower_type(syntax, type_aliases, source)?;
+                let Ty::Interface(methods) = embedded.underlying() else {
+                    return Err(Diagnostic::unsupported(
+                        "interface type-set elements are not yet implemented",
+                        source,
+                    ));
+                };
+                for method in methods {
+                    lowered
+                        .entry(method.name.clone())
+                        .or_insert_with(|| method.signature.clone());
+                }
+            }
+        }
+        return Ok(Ty::Interface(
+            lowered
+                .into_iter()
+                .map(|(name, signature)| InterfaceMethod { name, signature })
+                .collect(),
+        ));
+    }
     let ExprSyntaxKind::Ident(ident) = &expression.kind else {
         return Err(Diagnostic::unsupported(
-            "only primitive types are implemented by the HIR/MIR backend",
+            "this Go type is not yet supported",
             source,
         ));
     };
@@ -245,18 +654,35 @@ fn lower_type(expression: &ExprSyntax, source: SourceRef) -> Result<Ty, Diagnost
         "bool" => Ok(Ty::Bool),
         "string" => Ok(Ty::String),
         "int" => Ok(Ty::Int(IntTy::Int)),
-        "int8" | "int16" | "int32" | "rune" | "int64" | "uint" | "uint8" | "byte" | "uint16"
-        | "uint32" | "uint64" | "uintptr" | "float32" | "float64" => Err(Diagnostic::unsupported(
+        "int32" | "rune" => Ok(Ty::Int(IntTy::Int32)),
+        "float64" => Ok(Ty::Float(super::types::FloatTy::Float64)),
+        "complex128" => Ok(Ty::Complex(super::types::ComplexTy::Complex128)),
+        "uint8" | "byte" => Ok(Ty::Uint(super::types::UintTy::Uint8)),
+        "any" => Ok(Ty::Interface(Vec::new())),
+        "error" => Ok(interfaces::error_interface_ty()),
+        "int8" | "int16" | "int64" | "uint" | "uint16" | "uint32" | "uint64" | "uintptr"
+        | "float32" | "complex64" => Err(Diagnostic::unsupported(
             format!(
-                "type {} is outside the bootstrap bool/int/string runtime frontier",
+                "executable support for type {} is not yet available",
                 ident.name
             ),
             source,
         )),
-        other => Err(Diagnostic::unsupported(
-            format!("type {other} is not implemented by the HIR/MIR backend"),
-            source,
-        )),
+        other => type_aliases.get(other).cloned().ok_or_else(|| {
+            Diagnostic::unsupported(format!("type {other} is not yet supported"), source)
+        }),
+    }
+}
+
+fn embedded_field_name(expression: &ExprSyntax) -> Option<String> {
+    match &expression.kind {
+        ExprSyntaxKind::Ident(ident) => Some(ident.name.to_string()),
+        ExprSyntaxKind::Unary {
+            token: crate::token::Token::MUL,
+            expression,
+        } => embedded_field_name(expression),
+        ExprSyntaxKind::Selector { member, .. } => Some(member.name.to_string()),
+        _ => None,
     }
 }
 
@@ -264,6 +690,7 @@ pub(super) fn eval_constant(
     expression: &ExprSyntax,
     constants: &BTreeMap<String, ConstantSymbol>,
     source: SourceRef,
+    iota: u64,
 ) -> Result<(Ty, ConstValue), Diagnostic> {
     match &expression.kind {
         ExprSyntaxKind::Literal { token, spelling } => match *token {
@@ -276,6 +703,20 @@ pub(super) fn eval_constant(
                 Ty::Untyped(UntypedTy::Float),
                 ConstValue::Float(spelling.replace('_', "")),
             )),
+            crate::token::Token::IMAG => {
+                let component = spelling
+                    .strip_suffix('i')
+                    .ok_or_else(|| Diagnostic::semantic("invalid imaginary literal", source))?;
+                let imag =
+                    parse_go_integer(component).unwrap_or_else(|| component.replace('_', ""));
+                Ok((
+                    Ty::Untyped(UntypedTy::Complex),
+                    ConstValue::Complex {
+                        real: "0".into(),
+                        imag,
+                    },
+                ))
+            }
             crate::token::Token::STRING => parse_go_string(spelling)
                 .map(|value| (Ty::Untyped(UntypedTy::String), ConstValue::String(value)))
                 .ok_or_else(|| Diagnostic::semantic("invalid string literal", source)),
@@ -300,6 +741,11 @@ pub(super) fn eval_constant(
                     Ty::Untyped(UntypedTy::Bool),
                     ConstValue::Bool(ident.name.as_ref() == "true"),
                 ))
+            } else if ident.name.as_ref() == "iota" {
+                Ok((
+                    Ty::Untyped(UntypedTy::Int),
+                    ConstValue::Int(iota.to_string()),
+                ))
             } else {
                 Err(Diagnostic::semantic(
                     format!("{} is not a constant", ident.name),
@@ -308,8 +754,8 @@ pub(super) fn eval_constant(
             }
         }
         ExprSyntaxKind::Binary { left, token, right } => {
-            let (left_ty, left) = eval_constant(left, constants, source)?;
-            let (right_ty, right) = eval_constant(right, constants, source)?;
+            let (left_ty, left) = eval_constant(left, constants, source, iota)?;
+            let (right_ty, right) = eval_constant(right, constants, source, iota)?;
             let op = lower_binary_op(*token).ok_or_else(|| {
                 Diagnostic::unsupported(
                     format!("constant operator {token:?} is not implemented"),
@@ -325,10 +771,7 @@ pub(super) fn eval_constant(
             ensure_bootstrap_value_type(&operand_ty.default_typed(), source)?;
             validate_binary_operator(op, &operand_ty.default_typed(), source)?;
             let value = fold_constant_binary(op, &left, &right, source)?.ok_or_else(|| {
-                Diagnostic::unsupported(
-                    "constant operation is not implemented by the bootstrap evaluator",
-                    source,
-                )
+                Diagnostic::unsupported("this constant operation is not yet supported", source)
             })?;
             let result_ty = if matches!(
                 op,
@@ -347,9 +790,9 @@ pub(super) fn eval_constant(
             };
             Ok((result_ty, value))
         }
-        ExprSyntaxKind::Paren(expression) => eval_constant(expression, constants, source),
+        ExprSyntaxKind::Paren(expression) => eval_constant(expression, constants, source, iota),
         ExprSyntaxKind::Unary { token, expression } => {
-            let (ty, value) = eval_constant(expression, constants, source)?;
+            let (ty, value) = eval_constant(expression, constants, source, iota)?;
             match (*token, value) {
                 (crate::token::Token::ADD, value) => Ok((ty, value)),
                 (crate::token::Token::SUB, ConstValue::Int(value)) => {
@@ -364,6 +807,13 @@ pub(super) fn eval_constant(
                         .map_or_else(|| format!("-{value}"), str::to_string);
                     Ok((ty, ConstValue::Float(value)))
                 }
+                (crate::token::Token::SUB, ConstValue::Complex { real, imag }) => Ok((
+                    ty,
+                    ConstValue::Complex {
+                        real: negate_number_spelling(&real),
+                        imag: negate_number_spelling(&imag),
+                    },
+                )),
                 (crate::token::Token::NOT, ConstValue::Bool(value)) => {
                     Ok((ty, ConstValue::Bool(!value)))
                 }
@@ -374,10 +824,28 @@ pub(super) fn eval_constant(
             }
         }
         ExprSyntaxKind::Call { .. }
+        | ExprSyntaxKind::FunctionLiteral { .. }
+        | ExprSyntaxKind::FunctionType { .. }
         | ExprSyntaxKind::Selector { .. }
+        | ExprSyntaxKind::TypeAssert { .. }
+        | ExprSyntaxKind::ArrayType { .. }
+        | ExprSyntaxKind::MapType { .. }
+        | ExprSyntaxKind::ChannelType { .. }
+        | ExprSyntaxKind::StructType { .. }
+        | ExprSyntaxKind::InterfaceType { .. }
+        | ExprSyntaxKind::KeyValue { .. }
+        | ExprSyntaxKind::CompositeLiteral { .. }
+        | ExprSyntaxKind::Index { .. }
+        | ExprSyntaxKind::Slice { .. }
         | ExprSyntaxKind::Unsupported(_) => Err(Diagnostic::unsupported(
-            "constant expression is not implemented by the HIR/MIR backend",
+            "this constant expression is not yet supported",
             source,
         )),
     }
+}
+
+fn negate_number_spelling(value: &str) -> String {
+    value
+        .strip_prefix('-')
+        .map_or_else(|| format!("-{value}"), str::to_string)
 }

@@ -126,7 +126,7 @@ pub fn generate_multi(
         let dependency_mods = modules.keys().map(String::as_str).collect::<Vec<_>>();
         let wrapper_mod = main_wrapper_module_name(&dependency_mods);
         main_parts.push(format!(
-            "#[path = \"lib.rs\"]\nmod {wrapper_mod};\nuse {wrapper_mod}::*;",
+            "#[path = \"lib.rs\"]\nmod {wrapper_mod};\n#[allow(unused_imports)]\nuse {wrapper_mod}::*;",
         ));
     }
     main_parts.push(generate(entry)?);

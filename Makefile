@@ -9,6 +9,7 @@ rust-all: rust-lint rust-build rust-test
 RUST_TEST_PARTIAL_PROFILE ?= ci
 RUST_TEST_FULL_INTEGRATION_PROFILE ?= release
 RUST_TEST_INTEGRATION_PROFILE ?= $(RUST_TEST_PARTIAL_PROFILE)
+GORS_TEST_FAIL_FAST ?= 1
 
 rust-format:
 	cargo fmt --all
@@ -30,8 +31,8 @@ rust-test-unit:
 rust-test-backend-smoke:
 	@test "$$(cargo run --quiet --package gors-cli -- run fuzz/corpus/compiler/runtime_smoke.go 2>&1)" = "8"
 
-# Migration backlog. These broad suites intentionally remain opt-in until their
-# language features have native HIR and MIR support.
+# Broad compatibility suites stay opt-in because they exercise the complete
+# fixture corpus and pinned Go toolchain.
 rust-test-integration:
 	$(MAKE) rust-test-integration-go-repositories RUST_TEST_INTEGRATION_PROFILE=$(RUST_TEST_FULL_INTEGRATION_PROFILE)
 	$(MAKE) rust-test-integration-go-spec RUST_TEST_INTEGRATION_PROFILE=$(RUST_TEST_FULL_INTEGRATION_PROFILE)
@@ -42,10 +43,10 @@ rust-test-integration-go-repositories:
 	GORS_TEST_FAIL_FAST=1 GORS_TEST_VERBOSE=1 cargo test --profile $(RUST_TEST_INTEGRATION_PROFILE) --package=gors --features test_integration_go_repositories --test test_integration_go_repositories -- --nocapture
 
 rust-test-integration-go-spec:
-	GORS_TEST_FAIL_FAST=1 GORS_TEST_VERBOSE=1 cargo test --profile $(RUST_TEST_INTEGRATION_PROFILE) --package=gors --features test_integration_go_spec --test test_integration_go_spec -- --nocapture
+	GORS_TEST_FAIL_FAST=$(GORS_TEST_FAIL_FAST) GORS_TEST_VERBOSE=1 cargo test --profile $(RUST_TEST_INTEGRATION_PROFILE) --package=gors --features test_integration_go_spec --test test_integration_go_spec -- --nocapture
 
 rust-test-integration-go-stdlib:
-	GORS_TEST_FAIL_FAST=1 GORS_TEST_VERBOSE=1 cargo test --profile $(RUST_TEST_INTEGRATION_PROFILE) --package=gors --features test_integration_go_stdlib --test test_integration_go_stdlib -- --nocapture
+	GORS_TEST_FAIL_FAST=$(GORS_TEST_FAIL_FAST) GORS_TEST_VERBOSE=1 cargo test --profile $(RUST_TEST_INTEGRATION_PROFILE) --package=gors --features test_integration_go_stdlib --test test_integration_go_stdlib -- --nocapture
 
 rust-test-integration-go-programs:
 	GORS_TEST_FAIL_FAST=1 GORS_TEST_VERBOSE=1 cargo test --profile $(RUST_TEST_INTEGRATION_PROFILE) --package=gors --features test_integration_go_programs --test test_integration_go_programs -- --nocapture
@@ -59,8 +60,8 @@ rust-test-integration-go-stdlib-fixture:
 	GORS_TEST_FILTER="$(FIXTURE)" GORS_TEST_FAIL_FAST=1 GORS_TEST_VERBOSE=1 cargo test --profile $(RUST_TEST_INTEGRATION_PROFILE) --package=gors --features test_integration_go_stdlib --test test_integration_go_stdlib run_go_stdlib_generated_rust -- --exact --nocapture
 
 conformance-report:
-	GORS_UPDATE_CONFORMANCE_REPORTS=1 $(MAKE) rust-test-integration-go-spec RUST_TEST_INTEGRATION_PROFILE=$(RUST_TEST_FULL_INTEGRATION_PROFILE)
-	GORS_UPDATE_CONFORMANCE_REPORTS=1 $(MAKE) rust-test-integration-go-stdlib RUST_TEST_INTEGRATION_PROFILE=$(RUST_TEST_FULL_INTEGRATION_PROFILE)
+	GORS_UPDATE_CONFORMANCE_REPORTS=1 $(MAKE) rust-test-integration-go-spec GORS_TEST_FAIL_FAST=0 RUST_TEST_INTEGRATION_PROFILE=$(RUST_TEST_FULL_INTEGRATION_PROFILE)
+	GORS_UPDATE_CONFORMANCE_REPORTS=1 $(MAKE) rust-test-integration-go-stdlib GORS_TEST_FAIL_FAST=0 RUST_TEST_INTEGRATION_PROFILE=$(RUST_TEST_FULL_INTEGRATION_PROFILE)
 
 conformance-check: conformance-report
 	git diff --exit-code -- gors/tests/reports

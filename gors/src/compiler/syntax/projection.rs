@@ -1,5 +1,13 @@
 //! One-pass projection from parser observations into owned function syntax.
 
+mod go_statements;
+mod local_types;
+mod positions;
+mod type_declarations;
+mod type_switches;
+
+pub use type_declarations::{project_type_alias, project_type_definition};
+
 use std::fmt;
 use std::sync::Arc;
 
@@ -8,26 +16,16 @@ use crate::parser::TokenObservation;
 use crate::source::{TextRange, TextSize};
 use crate::token::{Position, Token};
 
+use super::method_receiver;
 use super::{
-    BlockSyntax, ConstantLayout, ConstantSyntax, ConstantValueSyntax, DeclSyntax, ExprSyntax,
-    ExprSyntaxKind, FieldListSyntax, FieldSyntax, FunctionBodySyntax, FunctionHeaderSyntax,
-    FunctionLayout, IdentSyntax, SemanticTokenStream, StmtSyntax, StmtSyntaxKind, SyntaxAnchor,
-    SyntaxSource, SyntaxSourceRegion, ValueSpecSyntax,
+    BlockSyntax, ChannelDirectionSyntax, ConstantLayout, ConstantSyntax, ConstantValueSyntax,
+    DeclSyntax, ExprSyntax, ExprSyntaxKind, FieldListSyntax, FieldSyntax, FunctionBodySyntax,
+    FunctionHeaderSyntax, FunctionLayout, IdentSyntax, LocalTypeSyntax, ProjectedConstantSyntax,
+    ProjectedFunctionSyntax, ProjectedVariableSyntax, SelectCaseSyntax, SemanticTokenStream,
+    StmtSyntax, StmtSyntaxKind, SwitchCaseSyntax, SyntaxAnchor, SyntaxSource, SyntaxSourceRegion,
+    ValueSpecSyntax, VariableLayout, VariableSyntax, VariableValueSyntax,
 };
-
-pub struct ProjectedFunctionSyntax {
-    pub(crate) anchor: SyntaxAnchor,
-    pub(crate) layout: FunctionLayout,
-    pub(crate) header: SemanticTokenStream,
-    pub(crate) body: Option<SemanticTokenStream>,
-    pub(crate) structural_header: FunctionHeaderSyntax,
-    pub(crate) structural_body: FunctionBodySyntax,
-}
-
-pub struct ProjectedConstantSyntax {
-    pub(crate) syntax: ConstantSyntax,
-    pub(crate) layout: ConstantLayout,
-}
+use positions::{expression_position, statement_position};
 
 struct FunctionProjectionParts {
     anchor: SyntaxAnchor,
@@ -45,6 +43,12 @@ pub enum ProjectionError {
     MissingFunctionToken,
     MissingBodyBrace,
     MissingBodylessTerminator,
+    InvalidSwitchBody,
+    InvalidTypeSwitchGuard,
+    InvalidChannelDirection,
+    InvalidSelectBody,
+    MissingTypeName,
+    InvalidMethodReceiver,
     OffsetOutsideTextDomain { offset: usize },
     ReversedRange { start: usize, end: usize },
 }
@@ -60,6 +64,20 @@ impl fmt::Display for ProjectionError {
             }
             Self::MissingBodylessTerminator => {
                 formatter.write_str("parser observations omitted a bodyless declaration terminator")
+            }
+            Self::InvalidSwitchBody => {
+                formatter.write_str("parser produced a non-case statement in a switch body")
+            }
+            Self::InvalidTypeSwitchGuard => formatter.write_str("invalid parser type-switch guard"),
+            Self::InvalidChannelDirection => {
+                formatter.write_str("parser produced an invalid channel direction")
+            }
+            Self::InvalidSelectBody => {
+                formatter.write_str("parser produced a select body without communication clauses")
+            }
+            Self::MissingTypeName => formatter.write_str("parser produced a type without a name"),
+            Self::InvalidMethodReceiver => {
+                formatter.write_str("parser produced an invalid method receiver")
             }
             Self::OffsetOutsideTextDomain { offset } => {
                 write!(
@@ -98,9 +116,16 @@ pub fn project_function(
             observation.byte_offset() == declaration_start && observation.token() == Token::FUNC
         })
         .ok_or(ProjectionError::MissingFunctionToken)?;
-    let anchor = SyntaxAnchor::named_function(function.name.name);
     let mut header_projector = StructuralProjector::new(SyntaxSourceRegion::Header);
     let structural_header = header_projector.function_header(function)?;
+    let anchor = match (
+        &structural_header.receiver,
+        method_receiver(&structural_header),
+    ) {
+        (None, _) => SyntaxAnchor::named_function(function.name.name),
+        (Some(_), Some((receiver, _))) => SyntaxAnchor::named_method(receiver, function.name.name),
+        (Some(_), None) => return Err(ProjectionError::InvalidMethodReceiver),
+    };
     let header_sources = header_projector.finish();
     let mut body_projector = StructuralProjector::new(SyntaxSourceRegion::Body);
     let structural_body = FunctionBodySyntax {
@@ -270,6 +295,7 @@ pub fn project_constant(
     explicit_type: Option<&ast::Expr<'_>>,
     value: Option<&ast::Expr<'_>>,
     arity_mismatch: bool,
+    iota: u64,
     source_len: TextSize,
 ) -> Result<ProjectedConstantSyntax, ProjectionError> {
     let mut projector = StructuralProjector::new(SyntaxSourceRegion::Constant);
@@ -294,8 +320,40 @@ pub fn project_constant(
             name,
             explicit_type,
             value,
+            iota,
         },
         layout: ConstantLayout::new(declaration, source_len, projector.finish()),
+    })
+}
+
+pub fn project_variable(
+    name: &ast::Ident<'_>,
+    explicit_type: Option<&ast::Expr<'_>>,
+    value: Option<&ast::Expr<'_>>,
+    arity_mismatch: bool,
+    source_len: TextSize,
+) -> Result<ProjectedVariableSyntax, ProjectionError> {
+    let mut projector = StructuralProjector::new(SyntaxSourceRegion::Variable);
+    let name = projector.ident(name)?;
+    let declaration = projector.range(name.source)?;
+    let explicit_type = explicit_type
+        .map(|expression| projector.expression(expression))
+        .transpose()?;
+    let value = if arity_mismatch {
+        VariableValueSyntax::ArityMismatch
+    } else {
+        value
+            .map(|expression| projector.expression(expression))
+            .transpose()?
+            .map_or(VariableValueSyntax::Zero, VariableValueSyntax::Expression)
+    };
+    Ok(ProjectedVariableSyntax {
+        syntax: VariableSyntax {
+            name,
+            explicit_type,
+            value,
+        },
+        layout: VariableLayout::new(declaration, source_len, projector.finish()),
     })
 }
 
@@ -354,8 +412,18 @@ impl StructuralProjector {
     ) -> Result<FunctionHeaderSyntax, ProjectionError> {
         Ok(FunctionHeaderSyntax {
             name: self.ident(&function.name)?,
-            has_receiver: function.recv.is_some(),
+            receiver: function
+                .recv
+                .as_ref()
+                .map(|receiver| self.field_list(receiver))
+                .transpose()?,
             has_type_parameters: function.type_.type_params.is_some(),
+            type_parameters: function
+                .type_
+                .type_params
+                .as_ref()
+                .map(|parameters| self.field_list(parameters))
+                .transpose()?,
             params: self.field_list(&function.type_.params)?,
             results: function
                 .type_
@@ -374,6 +442,22 @@ impl StructuralProjector {
             .list
             .iter()
             .map(|field| {
+                let (ty, variadic) = match field.type_.as_ref() {
+                    Some(ast::Expr::Ellipsis(ellipsis)) => (
+                        ellipsis
+                            .elt
+                            .as_deref()
+                            .map(|expression| self.expression(expression))
+                            .transpose()?,
+                        true,
+                    ),
+                    expression => (
+                        expression
+                            .map(|expression| self.expression(expression))
+                            .transpose()?,
+                        false,
+                    ),
+                };
                 Ok(FieldSyntax {
                     names: field
                         .names
@@ -386,11 +470,9 @@ impl StructuralProjector {
                                 .map(Arc::from)
                         })
                         .transpose()?,
-                    ty: field
-                        .type_
-                        .as_ref()
-                        .map(|expression| self.expression(expression))
-                        .transpose()?,
+                    ty,
+                    variadic,
+                    tag: field.tag.as_ref().map(|tag| Arc::from(tag.value)),
                 })
             })
             .collect::<Result<Vec<_>, ProjectionError>>()?;
@@ -466,40 +548,206 @@ impl StructuralProjector {
                     .map(|statement| self.statement(statement).map(Box::new))
                     .transpose()?,
             },
-            ast::Stmt::ForStmt(statement) => StmtSyntaxKind::For {
-                init: statement
-                    .init
-                    .as_deref()
-                    .map(|statement| self.statement(statement).map(Box::new))
-                    .transpose()?,
-                condition: statement
-                    .cond
-                    .as_ref()
-                    .map(|expression| self.expression(expression))
-                    .transpose()?,
-                post: statement
-                    .post
-                    .as_deref()
-                    .map(|statement| self.statement(statement).map(Box::new))
-                    .transpose()?,
-                body: self.block(&statement.body)?,
-            },
+            ast::Stmt::ForStmt(statement) => self.for_statement(statement, None)?,
             ast::Stmt::BranchStmt(statement) => StmtSyntaxKind::Branch {
                 token: statement.tok,
-                has_label: statement.label.is_some(),
+                label: statement
+                    .label
+                    .as_ref()
+                    .map(|label| self.ident(label))
+                    .transpose()?,
             },
             ast::Stmt::CaseClause(_) => StmtSyntaxKind::Unsupported("case clause"),
             ast::Stmt::CommClause(_) => StmtSyntaxKind::Unsupported("communication clause"),
-            ast::Stmt::DeferStmt(_) => StmtSyntaxKind::Unsupported("defer statement"),
-            ast::Stmt::GoStmt(_) => StmtSyntaxKind::Unsupported("go statement"),
-            ast::Stmt::LabeledStmt(_) => StmtSyntaxKind::Unsupported("labeled statement"),
-            ast::Stmt::RangeStmt(_) => StmtSyntaxKind::Unsupported("range statement"),
-            ast::Stmt::SelectStmt(_) => StmtSyntaxKind::Unsupported("select statement"),
-            ast::Stmt::SendStmt(_) => StmtSyntaxKind::Unsupported("send statement"),
-            ast::Stmt::SwitchStmt(_) => StmtSyntaxKind::Unsupported("switch statement"),
-            ast::Stmt::TypeSwitchStmt(_) => StmtSyntaxKind::Unsupported("type switch statement"),
+            ast::Stmt::DeferStmt(statement) => {
+                let ast::Expr::FuncLit(function) = statement.call.fun.as_ref() else {
+                    return Ok(StmtSyntax {
+                        source,
+                        kind: StmtSyntaxKind::Unsupported(
+                            "defer call whose callee is not a function literal",
+                        ),
+                    });
+                };
+                StmtSyntaxKind::Defer {
+                    has_type_parameters: function.type_.type_params.is_some(),
+                    params: self.field_list(&function.type_.params)?,
+                    results: function
+                        .type_
+                        .results
+                        .as_ref()
+                        .map(|fields| self.field_list(fields))
+                        .transpose()?,
+                    body: self.block(&function.body)?,
+                    arguments: statement
+                        .call
+                        .args
+                        .as_deref()
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|argument| self.expression(argument))
+                        .collect::<Result<Vec<_>, _>>()?
+                        .into(),
+                    spread: statement.call.ellipsis.is_some(),
+                }
+            }
+            ast::Stmt::GoStmt(statement) => self.go_statement(statement)?,
+            ast::Stmt::LabeledStmt(statement) => match statement.stmt.as_ref() {
+                ast::Stmt::ForStmt(for_statement) => {
+                    let label = self.ident(&statement.label)?;
+                    self.for_statement(for_statement, Some(label))?
+                }
+                ast::Stmt::RangeStmt(range_statement) => {
+                    let label = self.ident(&statement.label)?;
+                    self.range_statement(range_statement, Some(label))?
+                }
+                statement_body => StmtSyntaxKind::Labeled {
+                    label: self.ident(&statement.label)?,
+                    statement: Box::new(self.statement(statement_body)?),
+                },
+            },
+            ast::Stmt::RangeStmt(statement) => self.range_statement(statement, None)?,
+            ast::Stmt::SelectStmt(statement) => self.select_statement(statement)?,
+            ast::Stmt::SendStmt(statement) => StmtSyntaxKind::Send {
+                channel: self.expression(&statement.chan)?,
+                value: self.expression(&statement.value)?,
+            },
+            ast::Stmt::SwitchStmt(statement) => self.switch_statement(statement)?,
+            ast::Stmt::TypeSwitchStmt(statement) => self.type_switch_statement(statement)?,
         };
         Ok(StmtSyntax { source, kind })
+    }
+
+    fn for_statement(
+        &mut self,
+        statement: &ast::ForStmt<'_>,
+        label: Option<IdentSyntax>,
+    ) -> Result<StmtSyntaxKind, ProjectionError> {
+        Ok(StmtSyntaxKind::For {
+            label,
+            init: statement
+                .init
+                .as_deref()
+                .map(|statement| self.statement(statement).map(Box::new))
+                .transpose()?,
+            condition: statement
+                .cond
+                .as_ref()
+                .map(|expression| self.expression(expression))
+                .transpose()?,
+            post: statement
+                .post
+                .as_deref()
+                .map(|statement| self.statement(statement).map(Box::new))
+                .transpose()?,
+            body: self.block(&statement.body)?,
+        })
+    }
+
+    fn range_statement(
+        &mut self,
+        statement: &ast::RangeStmt<'_>,
+        label: Option<IdentSyntax>,
+    ) -> Result<StmtSyntaxKind, ProjectionError> {
+        Ok(StmtSyntaxKind::Range {
+            label,
+            key: statement
+                .key
+                .as_ref()
+                .map(|expression| self.expression(expression))
+                .transpose()?,
+            value: statement
+                .value
+                .as_ref()
+                .map(|expression| self.expression(expression))
+                .transpose()?,
+            token: statement.tok,
+            expression: self.expression(&statement.x)?,
+            body: self.block(&statement.body)?,
+        })
+    }
+
+    fn switch_statement(
+        &mut self,
+        statement: &ast::SwitchStmt<'_>,
+    ) -> Result<StmtSyntaxKind, ProjectionError> {
+        let init = statement
+            .init
+            .as_deref()
+            .map(|statement| self.statement(statement).map(Box::new))
+            .transpose()?;
+        let tag = statement
+            .tag
+            .as_ref()
+            .map(|expression| self.expression(expression))
+            .transpose()?;
+        let mut cases = Vec::new();
+        for statement in &statement.body.list {
+            let ast::Stmt::CaseClause(case) = statement else {
+                return Err(ProjectionError::InvalidSwitchBody);
+            };
+            let source = self.source(&case.case)?;
+            let expressions = case
+                .list
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .map(|expression| self.expression(expression))
+                .collect::<Result<Vec<_>, _>>()?;
+            let body_source = self.source(&case.colon)?;
+            let body = case
+                .body
+                .iter()
+                .map(|statement| self.statement(statement))
+                .collect::<Result<Vec<_>, _>>()?;
+            cases.push(SwitchCaseSyntax {
+                source,
+                expressions: expressions.into(),
+                body: BlockSyntax {
+                    source: body_source,
+                    statements: body.into(),
+                },
+            });
+        }
+        Ok(StmtSyntaxKind::Switch {
+            init,
+            tag,
+            cases: cases.into(),
+        })
+    }
+
+    fn select_statement(
+        &mut self,
+        statement: &ast::SelectStmt<'_>,
+    ) -> Result<StmtSyntaxKind, ProjectionError> {
+        let mut cases = Vec::new();
+        for statement in &statement.body.list {
+            let ast::Stmt::CommClause(case) = statement else {
+                return Err(ProjectionError::InvalidSelectBody);
+            };
+            let source = self.source(&case.case)?;
+            let communication = case
+                .comm
+                .as_deref()
+                .map(|communication| self.statement(communication).map(Box::new))
+                .transpose()?;
+            let body_source = self.source(&case.colon)?;
+            let body = case
+                .body
+                .iter()
+                .map(|statement| self.statement(statement))
+                .collect::<Result<Vec<_>, _>>()?;
+            cases.push(SelectCaseSyntax {
+                source,
+                communication,
+                body: BlockSyntax {
+                    source: body_source,
+                    statements: body.into(),
+                },
+            });
+        }
+        Ok(StmtSyntaxKind::Select {
+            cases: cases.into(),
+        })
     }
 
     fn declaration(
@@ -507,21 +755,22 @@ impl StructuralProjector {
         declaration: &ast::GenDecl<'_>,
     ) -> Result<DeclSyntax, ProjectionError> {
         let source = self.source(&declaration.tok_pos)?;
-        let mut contains_non_value_spec = false;
+        let mut contains_import_spec = false;
         let mut specs = Vec::new();
+        let mut type_specs = Vec::new();
         for spec in &declaration.specs {
             match spec {
                 ast::Spec::ValueSpec(spec) => specs.push(self.value_spec(spec)?),
-                ast::Spec::ImportSpec(_) | ast::Spec::TypeSpec(_) => {
-                    contains_non_value_spec = true;
-                }
+                ast::Spec::TypeSpec(spec) => type_specs.push(self.local_type_spec(spec)?),
+                ast::Spec::ImportSpec(_) => contains_import_spec = true,
             }
         }
         Ok(DeclSyntax {
             source,
             token: declaration.tok,
             specs: specs.into(),
-            contains_non_value_spec,
+            type_specs: type_specs.into(),
+            contains_import_spec,
         })
     }
 
@@ -588,26 +837,136 @@ impl StructuralProjector {
                     .map(|argument| self.expression(argument))
                     .collect::<Result<Vec<_>, _>>()?
                     .into(),
+                spread: expression.ellipsis.is_some(),
             },
             ast::Expr::SelectorExpr(expression) => ExprSyntaxKind::Selector {
                 base: Box::new(self.expression(&expression.x)?),
                 member: self.ident(&expression.sel)?,
             },
-            ast::Expr::ArrayType(_) => ExprSyntaxKind::Unsupported("array or slice type"),
-            ast::Expr::ChanType(_) => ExprSyntaxKind::Unsupported("channel type"),
-            ast::Expr::CompositeLit(_) => ExprSyntaxKind::Unsupported("composite literal"),
+            ast::Expr::ArrayType(expression) => ExprSyntaxKind::ArrayType {
+                length: expression
+                    .len
+                    .as_ref()
+                    .map(|length| self.expression(length).map(Box::new))
+                    .transpose()?,
+                element: Box::new(self.expression(&expression.elt)?),
+            },
+            ast::Expr::ChanType(expression) => ExprSyntaxKind::ChannelType {
+                direction: match expression.dir {
+                    direction
+                        if direction == (ast::ChanDir::SEND as u8 | ast::ChanDir::RECV as u8) =>
+                    {
+                        ChannelDirectionSyntax::SendReceive
+                    }
+                    direction if direction == ast::ChanDir::SEND as u8 => {
+                        ChannelDirectionSyntax::SendOnly
+                    }
+                    direction if direction == ast::ChanDir::RECV as u8 => {
+                        ChannelDirectionSyntax::ReceiveOnly
+                    }
+                    _ => return Err(ProjectionError::InvalidChannelDirection),
+                },
+                element: Box::new(self.expression(&expression.value)?),
+            },
+            ast::Expr::CompositeLit(expression) => ExprSyntaxKind::CompositeLiteral {
+                ty: expression
+                    .type_
+                    .as_ref()
+                    .map(|ty| self.expression(ty).map(Box::new))
+                    .transpose()?,
+                elements: expression
+                    .elts
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|element| self.expression(element))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into(),
+            },
             ast::Expr::Ellipsis(_) => ExprSyntaxKind::Unsupported("ellipsis"),
-            ast::Expr::FuncLit(_) => ExprSyntaxKind::Unsupported("function literal"),
-            ast::Expr::FuncType(_) => ExprSyntaxKind::Unsupported("function type"),
-            ast::Expr::IndexExpr(_) => ExprSyntaxKind::Unsupported("index expression"),
+            ast::Expr::FuncLit(function) => ExprSyntaxKind::FunctionLiteral {
+                has_type_parameters: function.type_.type_params.is_some(),
+                params: self.field_list(&function.type_.params)?,
+                results: function
+                    .type_
+                    .results
+                    .as_ref()
+                    .map(|fields| self.field_list(fields))
+                    .transpose()?,
+                body: self.block(&function.body)?,
+            },
+            ast::Expr::FuncType(function) => ExprSyntaxKind::FunctionType {
+                has_type_parameters: function.type_params.is_some(),
+                params: self.field_list(&function.params)?,
+                results: function
+                    .results
+                    .as_ref()
+                    .map(|fields| self.field_list(fields))
+                    .transpose()?,
+            },
+            ast::Expr::IndexExpr(expression) => ExprSyntaxKind::Index {
+                base: Box::new(self.expression(&expression.x)?),
+                index: Box::new(self.expression(&expression.index)?),
+            },
             ast::Expr::IndexListExpr(_) => ExprSyntaxKind::Unsupported("generic index expression"),
-            ast::Expr::InterfaceType(_) => ExprSyntaxKind::Unsupported("interface type"),
-            ast::Expr::KeyValueExpr(_) => ExprSyntaxKind::Unsupported("key-value expression"),
-            ast::Expr::MapType(_) => ExprSyntaxKind::Unsupported("map type"),
-            ast::Expr::SliceExpr(_) => ExprSyntaxKind::Unsupported("slice expression"),
-            ast::Expr::StarExpr(_) => ExprSyntaxKind::Unsupported("pointer expression"),
-            ast::Expr::StructType(_) => ExprSyntaxKind::Unsupported("struct type"),
-            ast::Expr::TypeAssertExpr(_) => ExprSyntaxKind::Unsupported("type assertion"),
+            ast::Expr::InterfaceType(interface) => ExprSyntaxKind::InterfaceType {
+                methods: interface
+                    .methods
+                    .as_ref()
+                    .map(|methods| self.field_list(methods))
+                    .transpose()?
+                    .unwrap_or_else(|| FieldListSyntax {
+                        fields: Arc::from([]),
+                    }),
+            },
+            ast::Expr::KeyValueExpr(expression) => ExprSyntaxKind::KeyValue {
+                key: Box::new(self.expression(&expression.key)?),
+                value: Box::new(self.expression(&expression.value)?),
+            },
+            ast::Expr::MapType(expression) => ExprSyntaxKind::MapType {
+                key: Box::new(self.expression(&expression.key)?),
+                value: Box::new(self.expression(&expression.value)?),
+            },
+            ast::Expr::SliceExpr(expression) => ExprSyntaxKind::Slice {
+                base: Box::new(self.expression(&expression.x)?),
+                low: expression
+                    .low
+                    .as_ref()
+                    .map(|bound| self.expression(bound).map(Box::new))
+                    .transpose()?,
+                high: expression
+                    .high
+                    .as_ref()
+                    .map(|bound| self.expression(bound).map(Box::new))
+                    .transpose()?,
+                max: expression
+                    .max
+                    .as_ref()
+                    .map(|bound| self.expression(bound).map(Box::new))
+                    .transpose()?,
+            },
+            ast::Expr::StarExpr(expression) => ExprSyntaxKind::Unary {
+                token: Token::MUL,
+                expression: Box::new(self.expression(&expression.x)?),
+            },
+            ast::Expr::StructType(structure) => ExprSyntaxKind::StructType {
+                fields: structure
+                    .fields
+                    .as_ref()
+                    .map(|fields| self.field_list(fields))
+                    .transpose()?
+                    .unwrap_or_else(|| FieldListSyntax {
+                        fields: Arc::from([]),
+                    }),
+            },
+            ast::Expr::TypeAssertExpr(expression) => ExprSyntaxKind::TypeAssert {
+                value: Box::new(self.expression(&expression.x)?),
+                asserted: expression
+                    .type_
+                    .as_ref()
+                    .map(|asserted| self.expression(asserted).map(Box::new))
+                    .transpose()?,
+            },
         };
         Ok(ExprSyntax { source, kind })
     }
@@ -625,56 +984,4 @@ fn text_range(start: usize, end: usize) -> Result<TextRange, ProjectionError> {
         start: start.to_usize(),
         end: end.to_usize(),
     })
-}
-
-fn expression_position<'a>(expression: &'a ast::Expr<'a>) -> Position<'a> {
-    match expression {
-        ast::Expr::ArrayType(expression) => expression.lbrack,
-        ast::Expr::BasicLit(expression) => expression.value_pos,
-        ast::Expr::BinaryExpr(expression) => expression.op_pos,
-        ast::Expr::CallExpr(expression) => expression.lparen,
-        ast::Expr::ChanType(expression) => expression.begin,
-        ast::Expr::CompositeLit(expression) => expression.lbrace,
-        ast::Expr::Ellipsis(expression) => expression.ellipsis,
-        ast::Expr::FuncLit(expression) => expression.type_.func.unwrap_or_default(),
-        ast::Expr::FuncType(expression) => expression.func.unwrap_or_default(),
-        ast::Expr::Ident(expression) => expression.name_pos,
-        ast::Expr::IndexExpr(expression) => expression.lbrack,
-        ast::Expr::IndexListExpr(expression) => expression.lbrack,
-        ast::Expr::InterfaceType(expression) => expression.interface,
-        ast::Expr::KeyValueExpr(expression) => expression.colon,
-        ast::Expr::MapType(expression) => expression.map,
-        ast::Expr::ParenExpr(expression) => expression.lparen,
-        ast::Expr::SelectorExpr(expression) => expression.sel.name_pos,
-        ast::Expr::SliceExpr(expression) => expression.lbrack,
-        ast::Expr::StarExpr(expression) => expression.star,
-        ast::Expr::StructType(expression) => expression.struct_,
-        ast::Expr::TypeAssertExpr(expression) => expression.lparen,
-        ast::Expr::UnaryExpr(expression) => expression.op_pos,
-    }
-}
-
-fn statement_position<'a>(statement: &'a ast::Stmt<'a>) -> Position<'a> {
-    match statement {
-        ast::Stmt::AssignStmt(statement) => statement.tok_pos,
-        ast::Stmt::BlockStmt(statement) => statement.lbrace,
-        ast::Stmt::BranchStmt(statement) => statement.tok_pos,
-        ast::Stmt::CaseClause(statement) => statement.case,
-        ast::Stmt::CommClause(statement) => statement.case,
-        ast::Stmt::DeclStmt(statement) => statement.decl.tok_pos,
-        ast::Stmt::DeferStmt(statement) => statement.defer,
-        ast::Stmt::EmptyStmt(statement) => statement.semicolon,
-        ast::Stmt::ExprStmt(statement) => expression_position(&statement.x),
-        ast::Stmt::ForStmt(statement) => statement.for_,
-        ast::Stmt::GoStmt(statement) => statement.go,
-        ast::Stmt::IfStmt(statement) => statement.if_,
-        ast::Stmt::IncDecStmt(statement) => statement.tok_pos,
-        ast::Stmt::LabeledStmt(statement) => statement.colon,
-        ast::Stmt::RangeStmt(statement) => statement.for_,
-        ast::Stmt::ReturnStmt(statement) => statement.return_,
-        ast::Stmt::SelectStmt(statement) => statement.select,
-        ast::Stmt::SendStmt(statement) => statement.arrow,
-        ast::Stmt::SwitchStmt(statement) => statement.switch,
-        ast::Stmt::TypeSwitchStmt(statement) => statement.switch,
-    }
 }

@@ -1,14 +1,35 @@
 //! Verification for explicit Rust representation, ABI, storage, and control plans.
 
+mod structs;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::*;
 use crate::compiler::Diagnostic;
+use crate::compiler::ids::QualifiedDefId;
 use crate::compiler::provenance::SourceRef;
 use gors_runtime_abi::{RuntimeSignature, RuntimeType};
 
 impl File {
+    #[cfg(test)]
     pub(super) fn verify(&self) -> Result<RuntimeRequirement, Diagnostic> {
+        let signatures = self
+            .functions
+            .iter()
+            .map(|function| {
+                (
+                    QualifiedDefId::new(self.package_id, function.id),
+                    function.signature.clone(),
+                )
+            })
+            .collect();
+        self.verify_with_signatures(&signatures)
+    }
+
+    pub(super) fn verify_with_signatures(
+        &self,
+        signatures: &BTreeMap<QualifiedDefId, Signature>,
+    ) -> Result<RuntimeRequirement, Diagnostic> {
         let entrypoints = self
             .functions
             .iter()
@@ -25,24 +46,20 @@ impl File {
             ));
         }
 
-        let mut signatures = BTreeMap::new();
-        let mut names = BTreeSet::new();
+        let mut local_signatures = BTreeMap::new();
         let mut symbols = BTreeSet::new();
         for function in &self.functions {
             function.verify_artifact_plan()?;
-            if signatures
-                .insert(function.id, function.signature.clone())
+            if local_signatures
+                .insert(
+                    QualifiedDefId::new(self.package_id, function.id),
+                    function.signature.clone(),
+                )
                 .is_some()
             {
                 return Err(Diagnostic::backend(format!(
                     "duplicate Rust IR function DefId {}",
                     function.id
-                )));
-            }
-            if !names.insert(function.name.as_str()) {
-                return Err(Diagnostic::backend(format!(
-                    "duplicate Rust IR function name {}",
-                    function.name
                 )));
             }
             if !symbols.insert(function.artifact.symbol.as_str()) {
@@ -52,9 +69,18 @@ impl File {
                 )));
             }
         }
+        for (definition, signature) in &local_signatures {
+            if signatures.get(definition) != Some(signature) {
+                return Err(Diagnostic::backend(format!(
+                    "Rust IR signature index disagrees with function {:?}",
+                    definition
+                )));
+            }
+        }
         let mut requirement = RuntimeRequirement::default();
         for function in &self.functions {
-            requirement = requirement.union(&verify_function(function, &signatures)?);
+            let owner = QualifiedDefId::new(self.package_id, function.id);
+            requirement = requirement.union(&verify_function(function, owner, signatures)?);
         }
         Ok(requirement)
     }
@@ -62,10 +88,17 @@ impl File {
 
 pub(super) fn verify_function(
     function: &Function,
-    signatures: &BTreeMap<DefId, Signature>,
+    owner: QualifiedDefId,
+    signatures: &BTreeMap<QualifiedDefId, Signature>,
 ) -> Result<RuntimeRequirement, Diagnostic> {
     function.verify_artifact_plan()?;
-    let Some(indexed) = signatures.get(&function.id) else {
+    if owner.definition() != function.id {
+        return Err(Diagnostic::backend(format!(
+            "Rust IR owner {owner:?} does not identify function DefId {}",
+            function.id
+        )));
+    }
+    let Some(indexed) = signatures.get(&owner) else {
         return Err(Diagnostic::backend(format!(
             "Rust IR signature index is missing function DefId {}",
             function.id
@@ -83,12 +116,9 @@ pub(super) fn verify_function(
 impl Function {
     fn verify(
         &self,
-        signatures: &BTreeMap<DefId, Signature>,
+        signatures: &BTreeMap<QualifiedDefId, Signature>,
     ) -> Result<RuntimeRequirement, Diagnostic> {
         verify_source_ref(self.source, self.id, "function")?;
-        if self.control_flow != ControlFlowPlan::PcDispatchU32 {
-            return Err(Diagnostic::backend("unsupported Rust IR control-flow plan"));
-        }
         if self.entry.0 as usize >= self.blocks.len() {
             return Err(Diagnostic::backend("Rust IR entry block does not exist"));
         }
@@ -141,7 +171,7 @@ impl Function {
                     "Rust IR parameter {position} has the wrong slot initializer"
                 )));
             }
-            verify_same(local.ty, *expected, "parameter")?;
+            verify_same(local.ty.clone(), expected.clone(), "parameter")?;
         }
         for (index, block) in self.blocks.iter().enumerate() {
             if block.id.0 as usize != index {
@@ -156,8 +186,59 @@ impl Function {
             }
             self.verify_terminator(&block.terminator, signatures)?;
         }
+        self.verify_panic_cleanup()?;
+        self.verify_control_flow_plan()?;
         self.verify_storage_dataflow()?;
         Ok(runtime_requirement(self))
+    }
+
+    fn verify_panic_cleanup(&self) -> Result<(), Diagnostic> {
+        if let Some(cleanup) = self.panic_cleanup {
+            self.verify_target(cleanup.entry)?;
+            verify_same(
+                self.place_ty(Place {
+                    local: cleanup.active,
+                })?,
+                RustType::Bool,
+                "panic cleanup state",
+            )?;
+        }
+        for block in &self.blocks {
+            for edge in block
+                .statements
+                .iter()
+                .map(|statement| statement.value.panic)
+                .chain(std::iter::once(block.terminator.panic))
+            {
+                if let PanicEdge::Cleanup(target) = edge
+                    && self.panic_cleanup.map(|cleanup| cleanup.entry) != Some(target)
+                {
+                    return Err(Diagnostic::backend(
+                        "Rust IR panic edge does not target the function cleanup entry",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn verify_control_flow_plan(&self) -> Result<(), Diagnostic> {
+        match &self.control_flow {
+            ControlFlowPlan::PcDispatchU32 => Ok(()),
+            ControlFlowPlan::StructuredLinear { order } => {
+                let expected = super::idiom::recognize_linear_order(self)?.ok_or_else(|| {
+                    Diagnostic::backend(
+                        "Rust IR structured-linear plan does not match a straight-line CFG",
+                    )
+                })?;
+                if order != &expected {
+                    return Err(Diagnostic::backend(
+                        "Rust IR structured-linear plan block order is not canonical",
+                    ));
+                }
+                Ok(())
+            }
+        }
     }
 
     fn verify_artifact_plan(&self) -> Result<(), Diagnostic> {
@@ -222,10 +303,172 @@ impl Function {
                 let operand = self.operand_ty(operand)?;
                 verify_value_operation(*op, &[operand], "unary operation")?
             }
+            RvalueKind::RecoverCompareNil { state, .. } => {
+                verify_same(
+                    self.place_ty(*state)?,
+                    RustType::Bool,
+                    "panic recovery state",
+                )?;
+                RustType::Bool
+            }
             RvalueKind::Binary { op, left, right } => {
                 let left = self.operand_ty(left)?;
                 let right = self.operand_ty(right)?;
                 verify_value_operation(*op, &[left, right], "binary operation")?
+            }
+            RvalueKind::ArrayIndexI64 { array, index } => {
+                let array = self.operand_ty(array)?;
+                let index = self.operand_ty(index)?;
+                if !matches!(array, RustType::ArrayI64(_)) || index != RustType::I64 {
+                    return Err(Diagnostic::backend(format!(
+                        "invalid Rust IR array index types: {array:?}[{index:?}]"
+                    )));
+                }
+                RustType::I64
+            }
+            RvalueKind::ArrayIndex { array, index } => {
+                let array = self.operand_ty(array)?;
+                let index = self.operand_ty(index)?;
+                let Some((_, element)) = array.scalar_array_parts() else {
+                    return Err(Diagnostic::backend(format!(
+                        "Rust IR scalar array index has a non-array operand: {array:?}"
+                    )));
+                };
+                verify_same(index, RustType::I64, "scalar array index")?;
+                element
+            }
+            RvalueKind::ArraySetI64 {
+                array,
+                index,
+                value,
+            } => {
+                let array = self.operand_ty(array)?;
+                let index = self.operand_ty(index)?;
+                let value = self.operand_ty(value)?;
+                if !matches!(array, RustType::ArrayI64(_))
+                    || index != RustType::I64
+                    || value != RustType::I64
+                {
+                    return Err(Diagnostic::backend(format!(
+                        "invalid Rust IR array update types: {array:?}[{index:?}] = {value:?}"
+                    )));
+                }
+                array
+            }
+            RvalueKind::ArraySet {
+                array,
+                index,
+                value,
+            } => {
+                let array = self.operand_ty(array)?;
+                let index = self.operand_ty(index)?;
+                let value = self.operand_ty(value)?;
+                let Some((_, element)) = array.scalar_array_parts() else {
+                    return Err(Diagnostic::backend(format!(
+                        "Rust IR scalar array update has a non-array operand: {array:?}"
+                    )));
+                };
+                verify_same(index, RustType::I64, "scalar array update index")?;
+                verify_same(value, element, "scalar array update value")?;
+                array
+            }
+            RvalueKind::ArrayLiteral { elements, ty } => {
+                let Some((length, element_ty)) = ty.scalar_array_parts() else {
+                    return Err(Diagnostic::backend(format!(
+                        "Rust IR scalar array literal has a non-array type: {ty:?}"
+                    )));
+                };
+                let actual_length = u64::try_from(elements.len()).map_err(|_| {
+                    Diagnostic::backend("Rust IR scalar array literal length does not fit u64")
+                })?;
+                if actual_length != length {
+                    return Err(Diagnostic::backend(format!(
+                        "Rust IR scalar array literal has {actual_length} elements for length {length}"
+                    )));
+                }
+                for element in elements {
+                    verify_same(
+                        self.operand_ty(element)?,
+                        element_ty.clone(),
+                        "scalar array literal element",
+                    )?;
+                }
+                ty.clone()
+            }
+            RvalueKind::StructLiteral { fields, ty } => {
+                let fields = fields
+                    .iter()
+                    .map(|field| self.operand_ty(field))
+                    .collect::<Result<Vec<_>, _>>()?;
+                structs::verify_literal(fields, ty)?
+            }
+            RvalueKind::StructField { structure, field } => {
+                structs::verify_field(self.operand_ty(structure)?, *field)?
+            }
+            RvalueKind::StructSet {
+                structure,
+                field,
+                value,
+            } => structs::verify_set(self.operand_ty(structure)?, *field, self.operand_ty(value)?)?,
+            RvalueKind::StructLiteralI64(fields) => {
+                for field in fields {
+                    verify_same(
+                        self.operand_ty(field)?,
+                        RustType::I64,
+                        "struct literal field",
+                    )?;
+                }
+                RustType::StructI64(u64::try_from(fields.len()).map_err(|_| {
+                    Diagnostic::backend("Rust IR struct field count does not fit u64")
+                })?)
+            }
+            RvalueKind::StructFieldI64 { structure, field } => {
+                let structure = self.operand_ty(structure)?;
+                let RustType::StructI64(length) = structure else {
+                    return Err(Diagnostic::backend(format!(
+                        "Rust IR field read has a non-struct operand: {structure:?}"
+                    )));
+                };
+                if u64::from(*field) >= length {
+                    return Err(Diagnostic::backend(format!(
+                        "Rust IR struct field index {field} is outside {length} fields"
+                    )));
+                }
+                RustType::I64
+            }
+            RvalueKind::StructSetI64 {
+                structure,
+                field,
+                value,
+            } => {
+                let structure = self.operand_ty(structure)?;
+                let RustType::StructI64(length) = structure else {
+                    return Err(Diagnostic::backend(format!(
+                        "Rust IR field update has a non-struct operand: {structure:?}"
+                    )));
+                };
+                if u64::from(*field) >= length {
+                    return Err(Diagnostic::backend(format!(
+                        "Rust IR struct field update {field} is outside {length} fields"
+                    )));
+                }
+                verify_same(
+                    self.operand_ty(value)?,
+                    RustType::I64,
+                    "struct field update",
+                )?;
+                structure
+            }
+            RvalueKind::AggregateEqualI64 { left, right, .. } => {
+                let left = self.operand_ty(left)?;
+                let right = self.operand_ty(right)?;
+                if left != right || !matches!(left, RustType::ArrayI64(_) | RustType::StructI64(_))
+                {
+                    return Err(Diagnostic::backend(format!(
+                        "invalid Rust IR aggregate equality types: {left:?}, {right:?}"
+                    )));
+                }
+                RustType::Bool
             }
         };
         verify_effects(rvalue.effects, rvalue_effects(&rvalue.kind), "rvalue")?;
@@ -236,7 +479,7 @@ impl Function {
     fn verify_terminator(
         &self,
         terminator: &Terminator,
-        signatures: &BTreeMap<DefId, Signature>,
+        signatures: &BTreeMap<QualifiedDefId, Signature>,
     ) -> Result<(), Diagnostic> {
         verify_terminator_provenance(&terminator.provenance, self.id)?;
         match &terminator.kind {
@@ -259,7 +502,7 @@ impl Function {
             TerminatorKind::Call {
                 target,
                 args,
-                destination,
+                destinations,
                 next,
             } => {
                 self.verify_target(*next)?;
@@ -278,20 +521,14 @@ impl Function {
                                 id
                             )));
                         }
-                        self.verify_call_destination(*destination, &signature.results)?;
+                        self.verify_call_destinations(destinations, &signature.results)?;
                     }
                     CallTarget::Runtime(operation) => {
-                        let result = verify_operation_signature(
-                            operation.signature(),
-                            &argument_types,
-                            "runtime call",
-                        )?;
-                        let results = if result == RustType::Unit {
-                            Vec::new()
-                        } else {
-                            vec![result]
-                        };
-                        self.verify_call_destination(*destination, &results)?;
+                        let signature = operation.signature();
+                        verify_operation_arguments(signature, &argument_types, "runtime call")?;
+                        let results =
+                            rust_types_from_runtime_result(signature.result(), "runtime call")?;
+                        self.verify_call_destinations(destinations, &results)?;
                     }
                 }
             }
@@ -302,7 +539,7 @@ impl Function {
                     ));
                 }
                 for (value, expected) in values.iter().zip(&self.signature.results) {
-                    verify_same(self.operand_ty(value)?, *expected, "return value")?;
+                    verify_same(self.operand_ty(value)?, expected.clone(), "return value")?;
                 }
             }
             TerminatorKind::Unreachable => {}
@@ -315,28 +552,26 @@ impl Function {
         verify_panic(terminator.effects, terminator.panic, "terminator")
     }
 
-    fn verify_call_destination(
+    fn verify_call_destinations(
         &self,
-        destination: Option<Place>,
+        destinations: &[Place],
         results: &[RustType],
     ) -> Result<(), Diagnostic> {
-        match (destination, results) {
-            (None, []) => Ok(()),
-            (Some(place), [result]) => {
-                verify_same(self.place_ty(place)?, *result, "call destination")
-            }
-            (None, results) => Err(Diagnostic::backend(format!(
-                "Rust IR call discards {} result value(s)",
+        if destinations.len() != results.len() {
+            return Err(Diagnostic::backend(format!(
+                "Rust IR call has {} destinations for {} result values",
+                destinations.len(),
                 results.len()
-            ))),
-            (Some(_), []) => Err(Diagnostic::backend(
-                "Rust IR no-result call has a destination",
-            )),
-            (Some(_), results) => Err(Diagnostic::backend(format!(
-                "Rust IR lacks a {}-result destination representation",
-                results.len()
-            ))),
+            )));
         }
+        for (destination, result) in destinations.iter().zip(results) {
+            verify_same(
+                self.place_ty(*destination)?,
+                result.clone(),
+                "call destination",
+            )?;
+        }
+        Ok(())
     }
 
     fn verify_target(&self, target: BasicBlockId) -> Result<(), Diagnostic> {
@@ -352,7 +587,7 @@ impl Function {
     }
 
     fn place_ty(&self, place: Place) -> Result<RustType, Diagnostic> {
-        self.local(place.local).map(|local| local.ty)
+        self.local(place.local).map(|local| local.ty.clone())
     }
 
     fn operand_ty(&self, operand: &Operand) -> Result<RustType, Diagnostic> {
@@ -389,6 +624,15 @@ fn verify_operation_signature(
     arguments: &[RustType],
     context: &str,
 ) -> Result<RustType, Diagnostic> {
+    verify_operation_arguments(signature, arguments, context)?;
+    rust_type_from_runtime(signature.result(), context)
+}
+
+fn verify_operation_arguments(
+    signature: RuntimeSignature,
+    arguments: &[RustType],
+    context: &str,
+) -> Result<(), Diagnostic> {
     if arguments.len() != signature.parameters().len() {
         return Err(Diagnostic::backend(format!(
             "Rust IR {context} has {} arguments but its ABI signature requires {}",
@@ -396,16 +640,27 @@ fn verify_operation_signature(
             signature.parameters().len()
         )));
     }
-    for (position, (actual, expected)) in arguments
-        .iter()
-        .copied()
-        .zip(signature.parameters().iter().copied())
-        .enumerate()
-    {
-        let expected = rust_type_from_runtime(expected, context)?;
-        verify_same(actual, expected, &format!("{context} argument {position}"))?;
+    for (position, (actual, expected)) in arguments.iter().zip(signature.parameters()).enumerate() {
+        let expected = rust_type_from_runtime(*expected, context)?;
+        verify_same(
+            actual.clone(),
+            expected,
+            &format!("{context} argument {position}"),
+        )?;
     }
-    rust_type_from_runtime(signature.result(), context)
+    Ok(())
+}
+
+fn rust_types_from_runtime_result(
+    ty: RuntimeType,
+    context: &str,
+) -> Result<Vec<RustType>, Diagnostic> {
+    match ty {
+        RuntimeType::Unit => Ok(Vec::new()),
+        RuntimeType::I64BoolTuple => Ok(vec![RustType::I64, RustType::Bool]),
+        RuntimeType::I64I64Tuple => Ok(vec![RustType::I64, RustType::I64]),
+        ty => rust_type_from_runtime(ty, context).map(|ty| vec![ty]),
+    }
 }
 
 fn rust_type_from_runtime(ty: RuntimeType, context: &str) -> Result<RustType, Diagnostic> {
@@ -413,8 +668,25 @@ fn rust_type_from_runtime(ty: RuntimeType, context: &str) -> Result<RustType, Di
         RuntimeType::Unit => Ok(RustType::Unit),
         RuntimeType::Bool => Ok(RustType::Bool),
         RuntimeType::I64 => Ok(RustType::I64),
+        RuntimeType::F64 => Ok(RustType::F64),
+        RuntimeType::Complex128 => Ok(RustType::Complex128),
         RuntimeType::GoString => Ok(RustType::GoString),
-        RuntimeType::ByteSlice | RuntimeType::StaticByteSlice => Err(Diagnostic::backend(format!(
+        RuntimeType::GoSliceI64 => Ok(RustType::GoSliceI64),
+        RuntimeType::GoSliceU8 => Ok(RustType::GoSliceU8),
+        RuntimeType::GoSliceBool => Ok(RustType::GoSliceBool),
+        RuntimeType::GoSliceInterface => Ok(RustType::GoSliceInterface),
+        RuntimeType::GoMapStringI64 => Ok(RustType::GoMapStringI64),
+        RuntimeType::GoMapStringInterface => Ok(RustType::GoMapStringInterface),
+        RuntimeType::GoPointerI64 => Ok(RustType::GoPointerI64),
+        RuntimeType::GoPointerStructI64 => Ok(RustType::GoPointerStructI64),
+        RuntimeType::GoInterface => Ok(RustType::GoInterface),
+        RuntimeType::GoChannelI64 => Ok(RustType::GoChannelI64),
+        RuntimeType::ByteSlice
+        | RuntimeType::StaticByteSlice
+        | RuntimeType::StaticI64Slice
+        | RuntimeType::StaticBoolSlice
+        | RuntimeType::I64BoolTuple
+        | RuntimeType::I64I64Tuple => Err(Diagnostic::backend(format!(
             "Rust IR {context} requires ABI-only operand type {ty:?}"
         ))),
     }
@@ -424,6 +696,12 @@ fn constant_type(constant: &Constant) -> Result<RustType, Diagnostic> {
     match constant {
         Constant::Bool(_) => Ok(RustType::Bool),
         Constant::I64(_) => Ok(RustType::I64),
+        Constant::F64(_) => Ok(RustType::F64),
+        Constant::Complex128 { .. } => Ok(RustType::Complex128),
+        Constant::StaticI64Array(values) => Ok(RustType::ArrayI64(
+            u64::try_from(values.len())
+                .map_err(|_| Diagnostic::backend("Rust IR array length does not fit u64"))?,
+        )),
         Constant::RuntimeStaticBytes { op, .. } => {
             let signature = op.signature();
             if signature.parameters() == [RuntimeType::StaticByteSlice]
@@ -435,6 +713,42 @@ fn constant_type(constant: &Constant) -> Result<RustType, Diagnostic> {
                     "Rust IR static bytes use runtime operation {op:?} with incompatible signature {:?} -> {:?}",
                     signature.parameters(),
                     signature.result()
+                )))
+            }
+        }
+        Constant::RuntimeStaticI64s { op, .. } => {
+            let signature = op.signature();
+            if signature.parameters() == [RuntimeType::StaticI64Slice]
+                && signature.result() == RuntimeType::GoSliceI64
+            {
+                Ok(RustType::GoSliceI64)
+            } else {
+                Err(Diagnostic::backend(format!(
+                    "Rust IR static int slice uses runtime operation {op:?} with an incompatible signature"
+                )))
+            }
+        }
+        Constant::RuntimeStaticBools { op, .. } => {
+            let signature = op.signature();
+            if signature.parameters() == [RuntimeType::StaticBoolSlice]
+                && signature.result() == RuntimeType::GoSliceBool
+            {
+                Ok(RustType::GoSliceBool)
+            } else {
+                Err(Diagnostic::backend(format!(
+                    "Rust IR static bool slice uses runtime operation {op:?} with an incompatible signature"
+                )))
+            }
+        }
+        Constant::RuntimeStaticU8s { op, .. } => {
+            let signature = op.signature();
+            if signature.parameters() == [RuntimeType::StaticByteSlice]
+                && signature.result() == RuntimeType::GoSliceU8
+            {
+                Ok(RustType::GoSliceU8)
+            } else {
+                Err(Diagnostic::backend(format!(
+                    "Rust IR static byte slice uses runtime operation {op:?} with an incompatible signature"
                 )))
             }
         }
@@ -464,6 +778,55 @@ fn collect_rvalue_runtime_operations(rvalue: &Rvalue, operations: &mut Vec<Runti
             collect_operand_runtime_operations(left, operations);
             collect_operand_runtime_operations(right, operations);
         }
+        RvalueKind::ArrayIndexI64 { array, index } | RvalueKind::ArrayIndex { array, index } => {
+            collect_operand_runtime_operations(array, operations);
+            collect_operand_runtime_operations(index, operations);
+        }
+        RvalueKind::ArraySetI64 {
+            array,
+            index,
+            value,
+        }
+        | RvalueKind::ArraySet {
+            array,
+            index,
+            value,
+        } => {
+            collect_operand_runtime_operations(array, operations);
+            collect_operand_runtime_operations(index, operations);
+            collect_operand_runtime_operations(value, operations);
+        }
+        RvalueKind::ArrayLiteral { elements, .. }
+        | RvalueKind::StructLiteral {
+            fields: elements, ..
+        } => {
+            for element in elements {
+                collect_operand_runtime_operations(element, operations);
+            }
+        }
+        RvalueKind::StructLiteralI64(fields) => {
+            for field in fields {
+                collect_operand_runtime_operations(field, operations);
+            }
+        }
+        RvalueKind::StructField { structure, .. }
+        | RvalueKind::StructFieldI64 { structure, .. } => {
+            collect_operand_runtime_operations(structure, operations);
+        }
+        RvalueKind::StructSet {
+            structure, value, ..
+        }
+        | RvalueKind::StructSetI64 {
+            structure, value, ..
+        } => {
+            collect_operand_runtime_operations(structure, operations);
+            collect_operand_runtime_operations(value, operations);
+        }
+        RvalueKind::AggregateEqualI64 { left, right, .. } => {
+            collect_operand_runtime_operations(left, operations);
+            collect_operand_runtime_operations(right, operations);
+        }
+        RvalueKind::RecoverCompareNil { .. } => {}
     }
 }
 
@@ -496,7 +859,13 @@ fn collect_value_runtime_operation(operation: ValueOp, operations: &mut Vec<Runt
 }
 
 fn collect_operand_runtime_operations(operand: &Operand, operations: &mut Vec<RuntimeOp>) {
-    if let Operand::Constant(Constant::RuntimeStaticBytes { op, .. }) = operand {
+    if let Operand::Constant(
+        Constant::RuntimeStaticBytes { op, .. }
+        | Constant::RuntimeStaticI64s { op, .. }
+        | Constant::RuntimeStaticBools { op, .. }
+        | Constant::RuntimeStaticU8s { op, .. },
+    ) = operand
+    {
         operations.push(*op);
     }
 }
@@ -510,14 +879,14 @@ fn verify_effects(actual: Effects, expected: Effects, context: &str) -> Result<(
 }
 
 fn verify_panic(effects: Effects, edge: PanicEdge, context: &str) -> Result<(), Diagnostic> {
-    let expected = if effects.may_panic {
-        PanicEdge::Propagate
+    let valid = if effects.may_panic {
+        matches!(edge, PanicEdge::Propagate | PanicEdge::Cleanup(_))
     } else {
-        PanicEdge::None
+        edge == PanicEdge::None
     };
-    (edge == expected).then_some(()).ok_or_else(|| {
+    valid.then_some(()).ok_or_else(|| {
         Diagnostic::backend(format!(
-            "Rust IR {context} panic edge mismatch: expected {expected:?}, found {edge:?}"
+            "Rust IR {context} panic edge mismatch for effects {effects:?}: found {edge:?}"
         ))
     })
 }
@@ -537,6 +906,9 @@ fn verify_source_provenance(
 ) -> Result<(), Diagnostic> {
     match provenance {
         Provenance::Source(source) => verify_source_ref(*source, owner, context),
+        Provenance::Synthetic(
+            SyntheticOrigin::PanicCleanupDispatch | SyntheticOrigin::ZeroValueCall,
+        ) => Ok(()),
         Provenance::Synthetic(origin) => Err(Diagnostic::backend(format!(
             "synthetic provenance {origin:?} is invalid for {context}"
         ))),
@@ -546,7 +918,10 @@ fn verify_source_provenance(
 fn verify_statement_provenance(provenance: &Provenance, owner: DefId) -> Result<(), Diagnostic> {
     match provenance {
         Provenance::Source(source) => verify_source_ref(*source, owner, "statement"),
-        Provenance::Synthetic(SyntheticOrigin::NamedResultInitialization) => Ok(()),
+        Provenance::Synthetic(
+            SyntheticOrigin::NamedResultInitialization
+            | SyntheticOrigin::PanicCleanupInitialization,
+        ) => Ok(()),
         Provenance::Synthetic(other) => Err(Diagnostic::backend(format!(
             "synthetic provenance {other:?} is invalid for a statement"
         ))),
@@ -556,7 +931,10 @@ fn verify_statement_provenance(provenance: &Provenance, owner: DefId) -> Result<
 fn verify_rvalue_provenance(provenance: &Provenance, owner: DefId) -> Result<(), Diagnostic> {
     match provenance {
         Provenance::Source(source) => verify_source_ref(*source, owner, "rvalue"),
-        Provenance::Synthetic(SyntheticOrigin::NamedResultInitialization) => Ok(()),
+        Provenance::Synthetic(
+            SyntheticOrigin::NamedResultInitialization
+            | SyntheticOrigin::PanicCleanupInitialization,
+        ) => Ok(()),
         Provenance::Synthetic(other) => Err(Diagnostic::backend(format!(
             "synthetic provenance {other:?} is invalid for an rvalue"
         ))),
@@ -566,7 +944,11 @@ fn verify_rvalue_provenance(provenance: &Provenance, owner: DefId) -> Result<(),
 fn verify_terminator_provenance(provenance: &Provenance, owner: DefId) -> Result<(), Diagnostic> {
     match provenance {
         Provenance::Source(source) => verify_source_ref(*source, owner, "terminator"),
-        Provenance::Synthetic(SyntheticOrigin::ImplicitReturn) => Ok(()),
+        Provenance::Synthetic(
+            SyntheticOrigin::ImplicitReturn
+            | SyntheticOrigin::PanicCleanupDispatch
+            | SyntheticOrigin::ZeroValueCall,
+        ) => Ok(()),
         Provenance::Synthetic(other) => Err(Diagnostic::backend(format!(
             "synthetic provenance {other:?} is invalid for a terminator"
         ))),

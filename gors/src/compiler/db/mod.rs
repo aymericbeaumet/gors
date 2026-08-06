@@ -26,6 +26,7 @@ pub use super::syntax::FunctionLayout;
 use crate::source::SourceCoordinateMap;
 use queries::{
     BuildInput, ConstantProjection, FileFacts, FunctionProjection, PackageInput, SourceInput,
+    TypeAliasProjection, TypeDefinitionProjection, VariableProjection,
 };
 use resolved_imports::ResolvedImportsInput;
 use telemetry::Telemetry;
@@ -34,6 +35,7 @@ pub use super::fingerprint::Fingerprint;
 pub use model::{
     BuildConfig, ConstantDescriptor, FileAnalysis, FileIssue, FunctionBody, FunctionDescriptor,
     FunctionSignature, PackageAnalysis, PackageIssue, ParseFailure, PublicApi, RuntimeAbiId,
+    TypeAliasDescriptor, TypeDefinitionDescriptor, VariableDescriptor,
 };
 pub(in crate::compiler) use mutation::SourceInputMutation;
 pub use products::{
@@ -197,9 +199,14 @@ impl CompilerDatabase {
             .ingredient::<queries::typed_hir_product>()
             .ingredient::<queries::typed_signature_product>()
             .ingredient::<queries::typed_constant_product>()
+            .ingredient::<queries::typed_variable_product>()
+            .ingredient::<queries::package_type_aliases_product>()
             .ingredient::<queries::package_function_product>()
             .ingredient::<queries::package_function_named_product>()
+            .ingredient::<queries::package_method_named_product>()
             .ingredient::<queries::package_constant_named_product>()
+            .ingredient::<queries::package_variable_named_product>()
+            .ingredient::<queries::variable_source_table_product>()
             .ingredient::<queries::mir_signature_dependencies_product>()
             .ingredient::<queries::verified_mir_product>()
             .ingredient::<queries::normalized_mir_product>()
@@ -215,6 +222,9 @@ impl CompilerDatabase {
             .ingredient::<FileFacts<'_>>()
             .ingredient::<FunctionProjection<'_>>()
             .ingredient::<ConstantProjection<'_>>()
+            .ingredient::<VariableProjection<'_>>()
+            .ingredient::<TypeAliasProjection<'_>>()
+            .ingredient::<TypeDefinitionProjection<'_>>()
             .build();
         let mut database = Self {
             storage,
@@ -258,7 +268,7 @@ impl CompilerDatabase {
     /// Salsa's small input identity remains internal, but the potentially
     /// large source snapshot is replaced before the facade forgets the input.
     /// Parsed ASTs are never retained, so dropping the caller's last `Arc`
-    /// releases the old source bytes independently of every other file.
+    /// releases the previous source bytes independently of every other file.
     pub fn remove_source(&mut self, file: FileId) -> Result<(), QueryError> {
         let mutation = self.remove_source_transactional(file)?;
         self.commit_source_mutations(Some(mutation));
@@ -420,8 +430,12 @@ impl CompilerDatabase {
             return queries::definition_source_table_product(self, input, function)
                 .map_err(QueryError::StageFailure);
         }
-        let constant = self.constant_projection(file, function)?;
-        queries::constant_source_table_product(self, file, constant)
+        if let Ok(constant) = self.constant_projection(file, function) {
+            return queries::constant_source_table_product(self, file, constant)
+                .map_err(QueryError::StageFailure);
+        }
+        let variable = self.variable_projection(file, function)?;
+        queries::variable_source_table_product(self, file, variable)
             .map_err(QueryError::StageFailure)
     }
 
@@ -443,8 +457,10 @@ impl CompilerDatabase {
         file: FileId,
         function: DefId,
     ) -> Result<Arc<TypedFunctionSignature>, QueryError> {
+        let package = self.package_for_file(file)?;
+        let input = self.package_input(package)?;
         let function = self.function_projection(file, function)?;
-        queries::typed_signature_product(self, function).map_err(QueryError::StageFailure)
+        queries::typed_signature_product(self, input, function).map_err(QueryError::StageFailure)
     }
 
     /// Demand one stable definition's verified explicit-order Go MIR.
@@ -495,6 +511,19 @@ impl CompilerDatabase {
         queries::rust_ir_root_inputs_product(self, input, function)
             .map(|fingerprint| *fingerprint)
             .map_err(QueryError::StageFailure)
+    }
+
+    /// Whether a declaration is instantiated into its caller instead of
+    /// owning a standalone executable Rust-IR root.
+    pub(in crate::compiler) fn is_generic_function(
+        &self,
+        file: FileId,
+        function: DefId,
+    ) -> Result<bool, QueryError> {
+        let function = self.function_projection(file, function)?;
+        Ok(crate::compiler::syntax::function_is_generic(
+            function.signature(self).structure(),
+        ))
     }
 
     /// Assemble a complete verified Rust IR package from tracked definitions.
@@ -572,6 +601,22 @@ impl CompilerDatabase {
         let facts = self.file_facts(file)?;
         facts
             .constants(self)
+            .into_iter()
+            .find(|candidate| candidate.id(self) == definition)
+            .ok_or(QueryError::UnknownFunction {
+                file,
+                function: definition,
+            })
+    }
+
+    fn variable_projection(
+        &self,
+        file: FileId,
+        definition: DefId,
+    ) -> Result<VariableProjection<'_>, QueryError> {
+        let facts = self.file_facts(file)?;
+        facts
+            .variables(self)
             .into_iter()
             .find(|candidate| candidate.id(self) == definition)
             .ok_or(QueryError::UnknownFunction {

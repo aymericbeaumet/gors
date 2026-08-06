@@ -75,7 +75,7 @@ impl fmt::Display for Fingerprint {
     }
 }
 
-pub use hir::{hir_constant, hir_file, hir_function};
+pub use hir::{hir_constant, hir_file, hir_function, hir_variable};
 pub use mir::{mir_file, mir_function};
 pub(in crate::compiler) use rust_ir::runtime_requirement;
 pub use rust_ir::{rust_ir_file, rust_ir_function};
@@ -106,6 +106,14 @@ pub fn qualified_definition(value: crate::compiler::ids::QualifiedDefId) -> Fing
     encoder.field(b"identity", |encoder| {
         encoder::qualified_def_id(encoder, value)
     });
+    encoder.finish()
+}
+
+/// Fingerprint one exact semantic Go type for declaration and API identities.
+#[must_use]
+pub(in crate::compiler) fn go_type(value: &crate::compiler::types::Ty) -> Fingerprint {
+    let mut encoder = encoder::Encoder::root(b"go-type");
+    encoder.field(b"type", |encoder| encoder::ty(encoder, value));
     encoder.finish()
 }
 

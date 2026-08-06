@@ -314,16 +314,20 @@ fn stage_fingerprints_exclude_presentation_paths() {
 
 #[test]
 fn stage_domains_separate_analogous_file_payloads() {
+    let package_id = lower_stages("package main\nfunc main() {}\n").0.package_id;
     let hir = hir::File {
+        package_id,
         package: "main".into(),
         constants: Vec::new(),
         functions: Vec::new(),
     };
     let mir = mir::File {
+        package_id,
         package: "main".into(),
         functions: Vec::new(),
     };
     let rust_ir = rust_ir::File {
+        package_id,
         package: "main".into(),
         functions: Vec::new(),
     };
@@ -388,6 +392,19 @@ fn value_op_mut<'a>(
                 }
                 rust_ir::RvalueKind::Use(_)
                 | rust_ir::RvalueKind::Unary { .. }
+                | rust_ir::RvalueKind::RecoverCompareNil { .. }
+                | rust_ir::RvalueKind::ArrayIndexI64 { .. }
+                | rust_ir::RvalueKind::ArrayIndex { .. }
+                | rust_ir::RvalueKind::ArraySetI64 { .. }
+                | rust_ir::RvalueKind::ArraySet { .. }
+                | rust_ir::RvalueKind::ArrayLiteral { .. }
+                | rust_ir::RvalueKind::StructLiteral { .. }
+                | rust_ir::RvalueKind::StructField { .. }
+                | rust_ir::RvalueKind::StructSet { .. }
+                | rust_ir::RvalueKind::StructLiteralI64(_)
+                | rust_ir::RvalueKind::StructFieldI64 { .. }
+                | rust_ir::RvalueKind::StructSetI64 { .. }
+                | rust_ir::RvalueKind::AggregateEqualI64 { .. }
                 | rust_ir::RvalueKind::Binary { .. } => {}
             }
         }
@@ -426,13 +443,50 @@ fn rvalue_runtime_static_op_mut(
         rust_ir::RvalueKind::Use(operand) | rust_ir::RvalueKind::Unary { operand, .. } => {
             operand_runtime_static_op_mut(operand, expected)
         }
-        rust_ir::RvalueKind::Binary { left, right, .. } => {
+        rust_ir::RvalueKind::Binary { left, right, .. }
+        | rust_ir::RvalueKind::AggregateEqualI64 { left, right, .. } => {
             if let Some(operation) = operand_runtime_static_op_mut(left, expected) {
                 Some(operation)
             } else {
                 operand_runtime_static_op_mut(right, expected)
             }
         }
+        rust_ir::RvalueKind::ArrayIndexI64 { array, index }
+        | rust_ir::RvalueKind::ArrayIndex { array, index } => {
+            operand_runtime_static_op_mut(array, expected)
+                .or_else(|| operand_runtime_static_op_mut(index, expected))
+        }
+        rust_ir::RvalueKind::ArraySetI64 {
+            array,
+            index,
+            value,
+        }
+        | rust_ir::RvalueKind::ArraySet {
+            array,
+            index,
+            value,
+        } => operand_runtime_static_op_mut(array, expected)
+            .or_else(|| operand_runtime_static_op_mut(index, expected))
+            .or_else(|| operand_runtime_static_op_mut(value, expected)),
+        rust_ir::RvalueKind::ArrayLiteral { elements, .. } => elements
+            .iter_mut()
+            .find_map(|element| operand_runtime_static_op_mut(element, expected)),
+        rust_ir::RvalueKind::StructLiteral { fields, .. }
+        | rust_ir::RvalueKind::StructLiteralI64(fields) => fields
+            .iter_mut()
+            .find_map(|field| operand_runtime_static_op_mut(field, expected)),
+        rust_ir::RvalueKind::StructField { structure, .. }
+        | rust_ir::RvalueKind::StructFieldI64 { structure, .. } => {
+            operand_runtime_static_op_mut(structure, expected)
+        }
+        rust_ir::RvalueKind::StructSet {
+            structure, value, ..
+        }
+        | rust_ir::RvalueKind::StructSetI64 {
+            structure, value, ..
+        } => operand_runtime_static_op_mut(structure, expected)
+            .or_else(|| operand_runtime_static_op_mut(value, expected)),
+        rust_ir::RvalueKind::RecoverCompareNil { .. } => None,
     }
 }
 

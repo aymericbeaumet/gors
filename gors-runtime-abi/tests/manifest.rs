@@ -4,14 +4,17 @@ use std::error::Error;
 use sha2::{Digest as _, Sha256};
 
 use gors_runtime_abi::{
-    AllocationEffect, ArgumentMutationEffect, ArtifactSchemaVersion, CURRENT_ARTIFACT_SCHEMA,
-    CURRENT_CONTRACT_VERSION, CURRENT_MANIFEST_SCHEMA, CompatibilityIdentity, ContractVersion,
-    DataWidth, Endianness, GoPanicCondition, GoSemanticModel, HostIoEffect, ImplementationHash,
-    PrimitiveOp, RuntimeAbiManifest, RuntimeArtifactFormat, RuntimeArtifactManifest,
-    RuntimeDependency, RuntimeLinkError, RuntimeLinkRequest, RuntimeOp, RuntimeRequirement,
-    RuntimeType, RustRlibCompatibility, TargetCapabilities, TargetCapability, TargetModel,
-    TargetModelError,
+    AllocationEffect, ArgumentMutationEffect, ArtifactSchemaVersion, BlockingEffect,
+    CURRENT_ARTIFACT_SCHEMA, CURRENT_CONTRACT_VERSION, CURRENT_MANIFEST_SCHEMA,
+    CompatibilityIdentity, ContractVersion, DataWidth, Endianness, GoPanicCondition,
+    GoSemanticModel, HostIoEffect, ImplementationHash, PrimitiveOp, RuntimeAbiManifest,
+    RuntimeArtifactFormat, RuntimeArtifactManifest, RuntimeDependency, RuntimeLinkError,
+    RuntimeLinkRequest, RuntimeOp, RuntimeRequirement, RuntimeType, TargetCapabilities,
+    TargetCapability, TargetModel, TargetModelError,
 };
+
+#[path = "manifest/link_identity.rs"]
+mod link_identity;
 
 fn target_model(triple: &str) -> Result<TargetModel, TargetModelError> {
     TargetModel::new(triple, DataWidth::Bits32, Endianness::Little)
@@ -93,11 +96,11 @@ fn current_contract_identity_is_sha256_of_canonical_bytes() {
 
     assert_eq!(manifest.schema().get(), 2);
     assert_eq!(manifest.contract(), CURRENT_CONTRACT_VERSION);
-    assert_eq!(manifest.contract(), ContractVersion::new(2, 0, 0));
+    assert_eq!(manifest.contract(), ContractVersion::new(2, 14, 0));
     assert_eq!(manifest.identity().as_bytes(), &expected);
     assert_eq!(
         manifest.identity().to_string(),
-        "bf9f363d574bdbac76a3220a787c4fbae3ea1cb3e55b78091a946aeaf0acb10f",
+        "54fba61d5a89d2d4aac86ac1c5ff94646ef04c883b3c20c94e58f3e72156d961",
         "the canonical runtime contract changed; review the ABI diff and bump its semantic version before accepting a new identity",
     );
 }
@@ -150,9 +153,30 @@ fn runtime_effect_metadata_is_complete_and_exact() {
     for operation in RuntimeOp::ALL {
         let effects = operation.effects();
         let expected_allocation = match operation {
-            RuntimeOp::GoStringFromBytes | RuntimeOp::ConcatGoStrings => {
-                AllocationEffect::MayAllocate
-            }
+            RuntimeOp::GoStringFromBytes
+            | RuntimeOp::ConcatGoStrings
+            | RuntimeOp::GoSliceI64FromStatic
+            | RuntimeOp::GoSliceBoolFromStatic
+            | RuntimeOp::GoSliceI64Make
+            | RuntimeOp::GoSliceInterfaceMake
+            | RuntimeOp::GoSliceI64Nil
+            | RuntimeOp::GoSliceU8Nil
+            | RuntimeOp::GoSliceBoolNil
+            | RuntimeOp::GoSliceInterfaceNil
+            | RuntimeOp::GoSliceI64Append
+            | RuntimeOp::GoSliceU8FromStatic
+            | RuntimeOp::GoSliceU8AppendSlice
+            | RuntimeOp::GoSliceU8AppendString
+            | RuntimeOp::GoStringFromSliceU8
+            | RuntimeOp::GoStringFromSliceRunes
+            | RuntimeOp::GoMapStringI64Make
+            | RuntimeOp::GoMapStringI64Set
+            | RuntimeOp::GoMapStringInterfaceMake
+            | RuntimeOp::GoMapStringInterfaceSet
+            | RuntimeOp::GoPointerI64New
+            | RuntimeOp::GoPointerStructI64New
+            | RuntimeOp::GoInterfaceBoxStructI64
+            | RuntimeOp::GoChannelI64Make => AllocationEffect::MayAllocate,
             RuntimeOp::GoStringFromStatic
             | RuntimeOp::IntDiv
             | RuntimeOp::IntRem
@@ -162,10 +186,104 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::PrintI64
             | RuntimeOp::PrintSpace
             | RuntimeOp::PrintNewline
-            | RuntimeOp::PrintGoString => AllocationEffect::None,
+            | RuntimeOp::PrintGoString
+            | RuntimeOp::PanicBool
+            | RuntimeOp::PanicI64
+            | RuntimeOp::PanicGoString
+            | RuntimeOp::GoSliceI64Index
+            | RuntimeOp::GoSliceI64IsNil
+            | RuntimeOp::GoSliceU8IsNil
+            | RuntimeOp::GoSliceBoolIsNil
+            | RuntimeOp::GoSliceInterfaceIsNil
+            | RuntimeOp::GoSliceI64Range
+            | RuntimeOp::GoSliceI64Set
+            | RuntimeOp::GoSliceBoolIndex
+            | RuntimeOp::GoSliceBoolSet
+            | RuntimeOp::GoSliceInterfaceLen
+            | RuntimeOp::GoSliceInterfaceIndex
+            | RuntimeOp::GoSliceInterfaceSet
+            | RuntimeOp::GoSliceI64Len
+            | RuntimeOp::GoSliceI64Cap
+            | RuntimeOp::GoSliceU8CopyString
+            | RuntimeOp::GoSliceI64Clear
+            | RuntimeOp::GoSliceI64Copy
+            | RuntimeOp::GoMapStringI64Nil
+            | RuntimeOp::GoMapStringI64Len
+            | RuntimeOp::GoMapStringI64Get
+            | RuntimeOp::GoMapStringI64Contains
+            | RuntimeOp::GoMapStringI64Delete
+            | RuntimeOp::GoMapStringI64Clear
+            | RuntimeOp::GoMapStringI64IsNil
+            | RuntimeOp::GoMapStringI64KeyAt
+            | RuntimeOp::GoMapStringInterfaceLen
+            | RuntimeOp::GoMapStringInterfaceGet
+            | RuntimeOp::GoMapStringInterfaceContains
+            | RuntimeOp::GoPointerI64Nil
+            | RuntimeOp::GoPointerI64Get
+            | RuntimeOp::GoPointerI64Set
+            | RuntimeOp::GoPointerI64IsNil
+            | RuntimeOp::GoPointerStructI64Nil
+            | RuntimeOp::GoPointerStructI64Get
+            | RuntimeOp::GoPointerStructI64Set
+            | RuntimeOp::GoPointerStructI64IsNil
+            | RuntimeOp::GoPointerStructI64Equal
+            | RuntimeOp::GoInterfaceNil
+            | RuntimeOp::GoInterfaceBoxBool
+            | RuntimeOp::GoInterfaceBoxI64
+            | RuntimeOp::GoInterfaceBoxGoString
+            | RuntimeOp::GoInterfaceBoxPointerStructI64
+            | RuntimeOp::GoInterfaceBoxAggregate
+            | RuntimeOp::GoInterfaceIsNil
+            | RuntimeOp::GoInterfaceIsType
+            | RuntimeOp::GoInterfaceUnboxBool
+            | RuntimeOp::GoInterfaceUnboxI64
+            | RuntimeOp::GoInterfaceUnboxGoString
+            | RuntimeOp::GoInterfaceStructI64Get
+            | RuntimeOp::GoInterfaceUnboxPointerStructI64
+            | RuntimeOp::GoInterfaceUnboxAggregate
+            | RuntimeOp::GoChannelI64Nil
+            | RuntimeOp::GoChannelI64Len
+            | RuntimeOp::GoChannelI64Cap
+            | RuntimeOp::GoChannelI64Send
+            | RuntimeOp::GoChannelI64ReceiveValue
+            | RuntimeOp::GoChannelI64Receive
+            | RuntimeOp::GoChannelI64Close
+            | RuntimeOp::GoChannelI64IsNil
+            | RuntimeOp::GoStringLen
+            | RuntimeOp::GoSliceU8Len
+            | RuntimeOp::GoSliceU8Index
+            | RuntimeOp::GoSliceU8Range
+            | RuntimeOp::GoStringIndex
+            | RuntimeOp::GoStringRange
+            | RuntimeOp::GoStringRangeCount
+            | RuntimeOp::GoStringRangeIndexAt
+            | RuntimeOp::GoStringRangeRuneAt
+            | RuntimeOp::GoChannelI64TrySend
+            | RuntimeOp::GoChannelI64TryReceive => AllocationEffect::None,
         };
         let expected_argument_mutation = match operation {
-            RuntimeOp::ConcatGoStrings => ArgumentMutationEffect::MayMutateOwnedArgument,
+            RuntimeOp::ConcatGoStrings
+            | RuntimeOp::GoSliceI64Set
+            | RuntimeOp::GoSliceBoolSet
+            | RuntimeOp::GoSliceInterfaceSet
+            | RuntimeOp::GoSliceI64Append
+            | RuntimeOp::GoSliceU8AppendSlice
+            | RuntimeOp::GoSliceU8AppendString
+            | RuntimeOp::GoSliceU8CopyString
+            | RuntimeOp::GoSliceI64Clear
+            | RuntimeOp::GoSliceI64Copy
+            | RuntimeOp::GoMapStringI64Set
+            | RuntimeOp::GoMapStringInterfaceSet
+            | RuntimeOp::GoMapStringI64Delete
+            | RuntimeOp::GoMapStringI64Clear
+            | RuntimeOp::GoPointerI64Set
+            | RuntimeOp::GoPointerStructI64Set
+            | RuntimeOp::GoChannelI64Send
+            | RuntimeOp::GoChannelI64ReceiveValue
+            | RuntimeOp::GoChannelI64Receive
+            | RuntimeOp::GoChannelI64Close
+            | RuntimeOp::GoChannelI64TrySend
+            | RuntimeOp::GoChannelI64TryReceive => ArgumentMutationEffect::MayMutateOwnedArgument,
             RuntimeOp::GoStringFromBytes
             | RuntimeOp::GoStringFromStatic
             | RuntimeOp::IntDiv
@@ -176,7 +294,92 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::PrintI64
             | RuntimeOp::PrintSpace
             | RuntimeOp::PrintNewline
-            | RuntimeOp::PrintGoString => ArgumentMutationEffect::None,
+            | RuntimeOp::PrintGoString
+            | RuntimeOp::PanicBool
+            | RuntimeOp::PanicI64
+            | RuntimeOp::PanicGoString
+            | RuntimeOp::GoSliceI64FromStatic
+            | RuntimeOp::GoSliceI64Nil
+            | RuntimeOp::GoSliceI64IsNil
+            | RuntimeOp::GoSliceU8Nil
+            | RuntimeOp::GoSliceU8IsNil
+            | RuntimeOp::GoSliceBoolNil
+            | RuntimeOp::GoSliceBoolIsNil
+            | RuntimeOp::GoSliceInterfaceNil
+            | RuntimeOp::GoSliceInterfaceIsNil
+            | RuntimeOp::GoSliceI64Index
+            | RuntimeOp::GoSliceBoolFromStatic
+            | RuntimeOp::GoSliceBoolIndex
+            | RuntimeOp::GoSliceI64Range
+            | RuntimeOp::GoSliceI64Make
+            | RuntimeOp::GoSliceInterfaceMake
+            | RuntimeOp::GoSliceInterfaceLen
+            | RuntimeOp::GoSliceInterfaceIndex
+            | RuntimeOp::GoSliceI64Len
+            | RuntimeOp::GoSliceI64Cap
+            | RuntimeOp::GoSliceU8FromStatic
+            | RuntimeOp::GoStringFromSliceU8
+            | RuntimeOp::GoStringFromSliceRunes
+            | RuntimeOp::GoMapStringI64Nil
+            | RuntimeOp::GoMapStringI64Make
+            | RuntimeOp::GoMapStringInterfaceMake
+            | RuntimeOp::GoMapStringI64Len
+            | RuntimeOp::GoMapStringI64Get
+            | RuntimeOp::GoMapStringI64Contains
+            | RuntimeOp::GoMapStringInterfaceLen
+            | RuntimeOp::GoMapStringInterfaceGet
+            | RuntimeOp::GoMapStringInterfaceContains
+            | RuntimeOp::GoMapStringI64IsNil
+            | RuntimeOp::GoMapStringI64KeyAt
+            | RuntimeOp::GoPointerI64Nil
+            | RuntimeOp::GoPointerI64New
+            | RuntimeOp::GoPointerI64Get
+            | RuntimeOp::GoPointerI64IsNil
+            | RuntimeOp::GoPointerStructI64Nil
+            | RuntimeOp::GoPointerStructI64New
+            | RuntimeOp::GoPointerStructI64Get
+            | RuntimeOp::GoPointerStructI64IsNil
+            | RuntimeOp::GoPointerStructI64Equal
+            | RuntimeOp::GoInterfaceNil
+            | RuntimeOp::GoInterfaceBoxBool
+            | RuntimeOp::GoInterfaceBoxI64
+            | RuntimeOp::GoInterfaceBoxGoString
+            | RuntimeOp::GoInterfaceBoxStructI64
+            | RuntimeOp::GoInterfaceBoxPointerStructI64
+            | RuntimeOp::GoInterfaceBoxAggregate
+            | RuntimeOp::GoInterfaceIsNil
+            | RuntimeOp::GoInterfaceIsType
+            | RuntimeOp::GoInterfaceUnboxBool
+            | RuntimeOp::GoInterfaceUnboxI64
+            | RuntimeOp::GoInterfaceUnboxGoString
+            | RuntimeOp::GoInterfaceStructI64Get
+            | RuntimeOp::GoInterfaceUnboxPointerStructI64
+            | RuntimeOp::GoInterfaceUnboxAggregate
+            | RuntimeOp::GoChannelI64Nil
+            | RuntimeOp::GoChannelI64Make
+            | RuntimeOp::GoChannelI64Len
+            | RuntimeOp::GoChannelI64Cap
+            | RuntimeOp::GoChannelI64IsNil
+            | RuntimeOp::GoStringLen
+            | RuntimeOp::GoSliceU8Len
+            | RuntimeOp::GoSliceU8Index
+            | RuntimeOp::GoSliceU8Range
+            | RuntimeOp::GoStringIndex
+            | RuntimeOp::GoStringRange
+            | RuntimeOp::GoStringRangeCount
+            | RuntimeOp::GoStringRangeIndexAt
+            | RuntimeOp::GoStringRangeRuneAt => ArgumentMutationEffect::None,
+        };
+        let expected_blocking = match operation {
+            RuntimeOp::PrintBool
+            | RuntimeOp::PrintI64
+            | RuntimeOp::PrintSpace
+            | RuntimeOp::PrintNewline
+            | RuntimeOp::PrintGoString
+            | RuntimeOp::GoChannelI64Send
+            | RuntimeOp::GoChannelI64ReceiveValue
+            | RuntimeOp::GoChannelI64Receive => BlockingEffect::MayBlock,
+            _ => BlockingEffect::None,
         };
         let expected_host_io = match operation {
             RuntimeOp::PrintBool
@@ -190,11 +393,153 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::IntDiv
             | RuntimeOp::IntRem
             | RuntimeOp::IntShl
-            | RuntimeOp::IntShr => HostIoEffect::None,
+            | RuntimeOp::IntShr
+            | RuntimeOp::PanicBool
+            | RuntimeOp::PanicI64
+            | RuntimeOp::PanicGoString
+            | RuntimeOp::GoSliceI64FromStatic
+            | RuntimeOp::GoSliceI64Nil
+            | RuntimeOp::GoSliceI64IsNil
+            | RuntimeOp::GoSliceU8Nil
+            | RuntimeOp::GoSliceU8IsNil
+            | RuntimeOp::GoSliceBoolNil
+            | RuntimeOp::GoSliceBoolIsNil
+            | RuntimeOp::GoSliceInterfaceNil
+            | RuntimeOp::GoSliceInterfaceIsNil
+            | RuntimeOp::GoSliceI64Index
+            | RuntimeOp::GoSliceI64Range
+            | RuntimeOp::GoSliceI64Set
+            | RuntimeOp::GoSliceBoolFromStatic
+            | RuntimeOp::GoSliceBoolIndex
+            | RuntimeOp::GoSliceBoolSet
+            | RuntimeOp::GoSliceInterfaceMake
+            | RuntimeOp::GoSliceInterfaceLen
+            | RuntimeOp::GoSliceInterfaceIndex
+            | RuntimeOp::GoSliceInterfaceSet
+            | RuntimeOp::GoSliceI64Make
+            | RuntimeOp::GoSliceI64Len
+            | RuntimeOp::GoSliceI64Cap
+            | RuntimeOp::GoSliceI64Append
+            | RuntimeOp::GoSliceU8FromStatic
+            | RuntimeOp::GoSliceU8AppendSlice
+            | RuntimeOp::GoSliceU8AppendString
+            | RuntimeOp::GoSliceU8CopyString
+            | RuntimeOp::GoSliceI64Clear
+            | RuntimeOp::GoStringFromSliceU8
+            | RuntimeOp::GoStringFromSliceRunes
+            | RuntimeOp::GoSliceI64Copy
+            | RuntimeOp::GoMapStringI64Nil
+            | RuntimeOp::GoMapStringI64Make
+            | RuntimeOp::GoMapStringI64Len
+            | RuntimeOp::GoMapStringI64Get
+            | RuntimeOp::GoMapStringI64Contains
+            | RuntimeOp::GoMapStringI64Set
+            | RuntimeOp::GoMapStringI64Delete
+            | RuntimeOp::GoMapStringI64Clear
+            | RuntimeOp::GoMapStringI64IsNil
+            | RuntimeOp::GoMapStringI64KeyAt
+            | RuntimeOp::GoMapStringInterfaceMake
+            | RuntimeOp::GoMapStringInterfaceLen
+            | RuntimeOp::GoMapStringInterfaceGet
+            | RuntimeOp::GoMapStringInterfaceContains
+            | RuntimeOp::GoMapStringInterfaceSet
+            | RuntimeOp::GoPointerI64Nil
+            | RuntimeOp::GoPointerI64New
+            | RuntimeOp::GoPointerI64Get
+            | RuntimeOp::GoPointerI64Set
+            | RuntimeOp::GoPointerI64IsNil
+            | RuntimeOp::GoPointerStructI64Nil
+            | RuntimeOp::GoPointerStructI64New
+            | RuntimeOp::GoPointerStructI64Get
+            | RuntimeOp::GoPointerStructI64Set
+            | RuntimeOp::GoPointerStructI64IsNil
+            | RuntimeOp::GoPointerStructI64Equal
+            | RuntimeOp::GoInterfaceNil
+            | RuntimeOp::GoInterfaceBoxBool
+            | RuntimeOp::GoInterfaceBoxI64
+            | RuntimeOp::GoInterfaceBoxGoString
+            | RuntimeOp::GoInterfaceBoxStructI64
+            | RuntimeOp::GoInterfaceBoxPointerStructI64
+            | RuntimeOp::GoInterfaceBoxAggregate
+            | RuntimeOp::GoInterfaceIsNil
+            | RuntimeOp::GoInterfaceIsType
+            | RuntimeOp::GoInterfaceUnboxBool
+            | RuntimeOp::GoInterfaceUnboxI64
+            | RuntimeOp::GoInterfaceUnboxGoString
+            | RuntimeOp::GoInterfaceStructI64Get
+            | RuntimeOp::GoInterfaceUnboxPointerStructI64
+            | RuntimeOp::GoInterfaceUnboxAggregate
+            | RuntimeOp::GoChannelI64Nil
+            | RuntimeOp::GoChannelI64Make
+            | RuntimeOp::GoChannelI64Len
+            | RuntimeOp::GoChannelI64Cap
+            | RuntimeOp::GoChannelI64Send
+            | RuntimeOp::GoChannelI64ReceiveValue
+            | RuntimeOp::GoChannelI64Receive
+            | RuntimeOp::GoChannelI64Close
+            | RuntimeOp::GoChannelI64IsNil
+            | RuntimeOp::GoStringLen
+            | RuntimeOp::GoSliceU8Len
+            | RuntimeOp::GoSliceU8Index
+            | RuntimeOp::GoSliceU8Range
+            | RuntimeOp::GoStringIndex
+            | RuntimeOp::GoStringRange
+            | RuntimeOp::GoStringRangeCount
+            | RuntimeOp::GoStringRangeIndexAt
+            | RuntimeOp::GoStringRangeRuneAt
+            | RuntimeOp::GoChannelI64TrySend
+            | RuntimeOp::GoChannelI64TryReceive => HostIoEffect::None,
         };
         let expected_panics: &[GoPanicCondition] = match operation {
             RuntimeOp::IntDiv | RuntimeOp::IntRem => &[GoPanicCondition::IntegerDivideByZero],
             RuntimeOp::IntShl | RuntimeOp::IntShr => &[GoPanicCondition::NegativeShiftAmount],
+            RuntimeOp::PanicBool | RuntimeOp::PanicI64 | RuntimeOp::PanicGoString => {
+                &[GoPanicCondition::ExplicitPanic]
+            }
+            RuntimeOp::GoSliceI64Index
+            | RuntimeOp::GoSliceU8Index
+            | RuntimeOp::GoStringIndex
+            | RuntimeOp::GoSliceI64Set
+            | RuntimeOp::GoSliceBoolIndex
+            | RuntimeOp::GoSliceBoolSet
+            | RuntimeOp::GoSliceInterfaceIndex
+            | RuntimeOp::GoSliceInterfaceSet
+            | RuntimeOp::GoMapStringI64KeyAt
+            | RuntimeOp::GoStringRangeIndexAt
+            | RuntimeOp::GoStringRangeRuneAt => &[GoPanicCondition::IndexOutOfRange],
+            RuntimeOp::GoSliceI64Range
+            | RuntimeOp::GoSliceU8Range
+            | RuntimeOp::GoStringRange
+            | RuntimeOp::GoSliceI64Make
+            | RuntimeOp::GoSliceInterfaceMake => &[GoPanicCondition::SliceBoundsOutOfRange],
+            RuntimeOp::GoMapStringI64Set | RuntimeOp::GoMapStringInterfaceSet => {
+                &[GoPanicCondition::NilMapAssignment]
+            }
+            RuntimeOp::GoPointerI64Get | RuntimeOp::GoPointerI64Set => {
+                &[GoPanicCondition::NilPointerDereference]
+            }
+            RuntimeOp::GoPointerStructI64New => &[GoPanicCondition::IndexOutOfRange],
+            RuntimeOp::GoPointerStructI64Get | RuntimeOp::GoPointerStructI64Set => &[
+                GoPanicCondition::NilPointerDereference,
+                GoPanicCondition::IndexOutOfRange,
+            ],
+            RuntimeOp::GoInterfaceUnboxBool
+            | RuntimeOp::GoInterfaceUnboxI64
+            | RuntimeOp::GoInterfaceUnboxGoString
+            | RuntimeOp::GoInterfaceUnboxPointerStructI64
+            | RuntimeOp::GoInterfaceUnboxAggregate => &[GoPanicCondition::TypeAssertionFailure],
+            RuntimeOp::GoInterfaceStructI64Get => &[
+                GoPanicCondition::IndexOutOfRange,
+                GoPanicCondition::TypeAssertionFailure,
+            ],
+            RuntimeOp::GoChannelI64Make => &[GoPanicCondition::NegativeChannelCapacity],
+            RuntimeOp::GoChannelI64Send | RuntimeOp::GoChannelI64TrySend => {
+                &[GoPanicCondition::SendOnClosedChannel]
+            }
+            RuntimeOp::GoChannelI64Close => &[
+                GoPanicCondition::CloseOfNilChannel,
+                GoPanicCondition::CloseOfClosedChannel,
+            ],
             RuntimeOp::GoStringFromBytes
             | RuntimeOp::GoStringFromStatic
             | RuntimeOp::ConcatGoStrings
@@ -202,7 +547,66 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::PrintI64
             | RuntimeOp::PrintSpace
             | RuntimeOp::PrintNewline
-            | RuntimeOp::PrintGoString => &[],
+            | RuntimeOp::PrintGoString
+            | RuntimeOp::GoSliceI64FromStatic
+            | RuntimeOp::GoSliceI64Nil
+            | RuntimeOp::GoSliceI64IsNil
+            | RuntimeOp::GoSliceU8Nil
+            | RuntimeOp::GoSliceU8IsNil
+            | RuntimeOp::GoSliceBoolNil
+            | RuntimeOp::GoSliceBoolIsNil
+            | RuntimeOp::GoSliceInterfaceNil
+            | RuntimeOp::GoSliceInterfaceIsNil
+            | RuntimeOp::GoSliceBoolFromStatic
+            | RuntimeOp::GoSliceI64Len
+            | RuntimeOp::GoSliceI64Cap
+            | RuntimeOp::GoSliceI64Append
+            | RuntimeOp::GoSliceInterfaceLen
+            | RuntimeOp::GoSliceU8FromStatic
+            | RuntimeOp::GoSliceU8AppendSlice
+            | RuntimeOp::GoSliceU8AppendString
+            | RuntimeOp::GoSliceU8CopyString
+            | RuntimeOp::GoSliceI64Clear
+            | RuntimeOp::GoStringFromSliceU8
+            | RuntimeOp::GoStringFromSliceRunes
+            | RuntimeOp::GoSliceI64Copy
+            | RuntimeOp::GoMapStringI64Nil
+            | RuntimeOp::GoMapStringI64Make
+            | RuntimeOp::GoMapStringI64Len
+            | RuntimeOp::GoMapStringI64Get
+            | RuntimeOp::GoMapStringI64Contains
+            | RuntimeOp::GoMapStringInterfaceMake
+            | RuntimeOp::GoMapStringInterfaceLen
+            | RuntimeOp::GoMapStringInterfaceGet
+            | RuntimeOp::GoMapStringInterfaceContains
+            | RuntimeOp::GoMapStringI64Delete
+            | RuntimeOp::GoMapStringI64Clear
+            | RuntimeOp::GoMapStringI64IsNil
+            | RuntimeOp::GoPointerI64Nil
+            | RuntimeOp::GoPointerI64New
+            | RuntimeOp::GoPointerI64IsNil
+            | RuntimeOp::GoPointerStructI64Nil
+            | RuntimeOp::GoPointerStructI64IsNil
+            | RuntimeOp::GoPointerStructI64Equal
+            | RuntimeOp::GoInterfaceNil
+            | RuntimeOp::GoInterfaceBoxBool
+            | RuntimeOp::GoInterfaceBoxI64
+            | RuntimeOp::GoInterfaceBoxGoString
+            | RuntimeOp::GoInterfaceBoxStructI64
+            | RuntimeOp::GoInterfaceBoxPointerStructI64
+            | RuntimeOp::GoInterfaceBoxAggregate
+            | RuntimeOp::GoInterfaceIsNil
+            | RuntimeOp::GoInterfaceIsType
+            | RuntimeOp::GoChannelI64Nil
+            | RuntimeOp::GoChannelI64Len
+            | RuntimeOp::GoChannelI64Cap
+            | RuntimeOp::GoChannelI64ReceiveValue
+            | RuntimeOp::GoChannelI64Receive
+            | RuntimeOp::GoChannelI64IsNil
+            | RuntimeOp::GoStringLen
+            | RuntimeOp::GoStringRangeCount
+            | RuntimeOp::GoSliceU8Len
+            | RuntimeOp::GoChannelI64TryReceive => &[],
         };
 
         assert_eq!(effects.allocation(), expected_allocation, "{operation:?}");
@@ -211,17 +615,10 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             expected_argument_mutation,
             "{operation:?}"
         );
+        assert_eq!(effects.blocking(), expected_blocking, "{operation:?}");
         assert_eq!(effects.host_io(), expected_host_io, "{operation:?}");
         assert_eq!(effects.go_panics(), expected_panics, "{operation:?}");
     }
-}
-
-#[test]
-fn implementation_hash_uses_sha256_and_hex_display() {
-    assert_eq!(
-        ImplementationHash::sha256(b"").to_string(),
-        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-    );
 }
 
 #[test]
@@ -314,9 +711,9 @@ fn primitive_signatures_are_complete_and_exact() {
             | PrimitiveOp::IntAndNot
             | PrimitiveOp::IntWrappingAdd
             | PrimitiveOp::IntWrappingSub
-            | PrimitiveOp::IntWrappingMul => {
-                (&[RuntimeType::I64, RuntimeType::I64], RuntimeType::I64)
-            }
+            | PrimitiveOp::IntWrappingMul
+            | PrimitiveOp::IntMin
+            | PrimitiveOp::IntMax => (&[RuntimeType::I64, RuntimeType::I64], RuntimeType::I64),
             PrimitiveOp::IntEqual
             | PrimitiveOp::IntNotEqual
             | PrimitiveOp::IntLess
@@ -324,6 +721,40 @@ fn primitive_signatures_are_complete_and_exact() {
             | PrimitiveOp::IntGreater
             | PrimitiveOp::IntGreaterEqual => {
                 (&[RuntimeType::I64, RuntimeType::I64], RuntimeType::Bool)
+            }
+            PrimitiveOp::FloatNeg => (&[RuntimeType::F64], RuntimeType::F64),
+            PrimitiveOp::FloatAdd
+            | PrimitiveOp::FloatSub
+            | PrimitiveOp::FloatMul
+            | PrimitiveOp::FloatDiv
+            | PrimitiveOp::FloatMin
+            | PrimitiveOp::FloatMax => (&[RuntimeType::F64, RuntimeType::F64], RuntimeType::F64),
+            PrimitiveOp::FloatEqual
+            | PrimitiveOp::FloatNotEqual
+            | PrimitiveOp::FloatLess
+            | PrimitiveOp::FloatLessEqual
+            | PrimitiveOp::FloatGreater
+            | PrimitiveOp::FloatGreaterEqual => {
+                (&[RuntimeType::F64, RuntimeType::F64], RuntimeType::Bool)
+            }
+            PrimitiveOp::ComplexNeg => (&[RuntimeType::Complex128], RuntimeType::Complex128),
+            PrimitiveOp::ComplexAdd
+            | PrimitiveOp::ComplexSub
+            | PrimitiveOp::ComplexMul
+            | PrimitiveOp::ComplexDiv => (
+                &[RuntimeType::Complex128, RuntimeType::Complex128],
+                RuntimeType::Complex128,
+            ),
+            PrimitiveOp::ComplexEqual | PrimitiveOp::ComplexNotEqual => (
+                &[RuntimeType::Complex128, RuntimeType::Complex128],
+                RuntimeType::Bool,
+            ),
+            PrimitiveOp::ComplexFromParts => (
+                &[RuntimeType::F64, RuntimeType::F64],
+                RuntimeType::Complex128,
+            ),
+            PrimitiveOp::ComplexReal | PrimitiveOp::ComplexImag => {
+                (&[RuntimeType::Complex128], RuntimeType::F64)
             }
             PrimitiveOp::StringEqual
             | PrimitiveOp::StringNotEqual
@@ -343,39 +774,6 @@ fn primitive_signatures_are_complete_and_exact() {
         );
         assert_eq!(operation.signature().result(), expected.1, "{operation:?}");
     }
-}
-
-#[test]
-fn runtime_signatures_are_complete_and_exact() {
-    for operation in RuntimeOp::ALL {
-        let expected: (&[RuntimeType], RuntimeType) = match operation {
-            RuntimeOp::GoStringFromBytes => (&[RuntimeType::ByteSlice], RuntimeType::GoString),
-            RuntimeOp::GoStringFromStatic => {
-                (&[RuntimeType::StaticByteSlice], RuntimeType::GoString)
-            }
-            RuntimeOp::ConcatGoStrings => (
-                &[RuntimeType::GoString, RuntimeType::GoString],
-                RuntimeType::GoString,
-            ),
-            RuntimeOp::IntDiv | RuntimeOp::IntRem | RuntimeOp::IntShl | RuntimeOp::IntShr => {
-                (&[RuntimeType::I64, RuntimeType::I64], RuntimeType::I64)
-            }
-            RuntimeOp::PrintBool => (&[RuntimeType::Bool], RuntimeType::Unit),
-            RuntimeOp::PrintI64 => (&[RuntimeType::I64], RuntimeType::Unit),
-            RuntimeOp::PrintSpace | RuntimeOp::PrintNewline => (&[], RuntimeType::Unit),
-            RuntimeOp::PrintGoString => (&[RuntimeType::GoString], RuntimeType::Unit),
-        };
-
-        assert_eq!(
-            operation.signature().parameters(),
-            expected.0,
-            "{operation:?}"
-        );
-        assert_eq!(operation.signature().result(), expected.1, "{operation:?}");
-    }
-
-    assert_eq!(RuntimeOp::IntDiv.symbol(), "int_div");
-    assert_eq!(RuntimeOp::PrintGoString.symbol(), "print_go_string");
 }
 
 #[test]
@@ -597,121 +995,5 @@ fn link_validation_order_is_schema_contract_target_then_toolchain() -> Result<()
         wrong_toolchain.select(request),
         Err(RuntimeLinkError::CompatibilityMismatch { .. })
     ));
-    Ok(())
-}
-
-#[test]
-fn artifact_and_link_plan_identities_cover_every_selection_dimension() -> Result<(), Box<dyn Error>>
-{
-    let contract = manifest([], [RuntimeOp::IntDiv, RuntimeOp::PrintI64]);
-    let target = target_model("x86_64-unknown-linux-gnu")?;
-    let toolchain = compatibility_identity(b"rustc");
-    let baseline = artifact(
-        &contract,
-        target.clone(),
-        [TargetCapability::StandardIo],
-        toolchain,
-        b"runtime",
-    );
-    let changed_capabilities = artifact(&contract, target.clone(), [], toolchain, b"runtime");
-    let changed_toolchain = artifact(
-        &contract,
-        target.clone(),
-        [TargetCapability::StandardIo],
-        compatibility_identity(b"other rustc"),
-        b"runtime",
-    );
-    let changed_implementation = artifact(
-        &contract,
-        target.clone(),
-        [TargetCapability::StandardIo],
-        toolchain,
-        b"other runtime",
-    );
-    assert_ne!(baseline.identity(), changed_capabilities.identity());
-    assert_ne!(baseline.identity(), changed_toolchain.identity());
-    assert_ne!(baseline.identity(), changed_implementation.identity());
-
-    let div = baseline.select(request(
-        &contract,
-        [RuntimeOp::IntDiv],
-        target.clone(),
-        toolchain,
-    )?)?;
-    let reordered = baseline.select(request(
-        &contract,
-        [RuntimeOp::IntDiv, RuntimeOp::IntDiv],
-        target.clone(),
-        toolchain,
-    )?)?;
-    let print = baseline.select(request(
-        &contract,
-        [RuntimeOp::PrintI64],
-        target,
-        toolchain,
-    )?)?;
-    assert_eq!(div.identity(), reordered.identity());
-    assert_ne!(div.identity(), print.identity());
-    Ok(())
-}
-
-#[test]
-fn invalid_target_triples_are_rejected() {
-    assert!(target_model("wasm32-unknown-unknown").is_ok());
-    assert_eq!(target_model(""), Err(TargetModelError::EmptyTriple));
-    assert_eq!(
-        target_model("x86_64 unknown linux gnu"),
-        Err(TargetModelError::InvalidTripleCharacter)
-    );
-}
-
-#[test]
-fn rust_rlib_compatibility_identity_is_path_free_and_covers_exact_producer_facts()
--> Result<(), Box<dyn Error>> {
-    let target = target_model("x86_64-unknown-linux-gnu")?;
-    let rustc_version = b"rustc 1.96.0\nhost: x86_64-unknown-linux-gnu\n";
-    let target_libdir = b"canonical-target-libdir-v1";
-    let baseline =
-        RustRlibCompatibility::new(rustc_version, target_libdir.as_slice(), target.clone())?;
-    let same = RustRlibCompatibility::new(
-        b"rustc 1.96.0\nhost: aarch64-unknown-linux-gnu\n",
-        target_libdir.as_slice(),
-        target,
-    )?;
-    let other_rustc = RustRlibCompatibility::new(
-        b"rustc 1.96.1\nhost: x86_64-unknown-linux-gnu\n",
-        target_libdir.as_slice(),
-        target_model("x86_64-unknown-linux-gnu")?,
-    )?;
-    let other_target = RustRlibCompatibility::new(
-        rustc_version,
-        target_libdir.as_slice(),
-        target_model("i686-unknown-linux-musl")?,
-    )?;
-    let other_sysroot = RustRlibCompatibility::new(
-        rustc_version,
-        b"different-target-libdir".as_slice(),
-        target_model("x86_64-unknown-linux-gnu")?,
-    )?;
-
-    assert_eq!(baseline.canonical_bytes(), same.canonical_bytes());
-    assert_eq!(baseline.identity(), same.identity());
-    assert_ne!(baseline.identity(), other_rustc.identity());
-    assert_ne!(baseline.identity(), other_target.identity());
-    assert_ne!(baseline.identity(), other_sysroot.identity());
-    assert!(
-        !baseline
-            .canonical_bytes()
-            .windows(7)
-            .any(|bytes| bytes == b"/Users/")
-    );
-    assert_eq!(
-        RustRlibCompatibility::new(
-            [],
-            target_libdir.as_slice(),
-            target_model("x86_64-unknown-linux-gnu")?
-        ),
-        Err(gors_runtime_abi::RustRlibRecordError::EmptyRustcVerboseVersion)
-    );
     Ok(())
 }

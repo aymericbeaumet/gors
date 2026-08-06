@@ -105,7 +105,7 @@ RUN for svc in devfs dmesg mdev hwdrivers; do rc-update add $svc sysinit; done &
 # manifest, exact rlib payload, and external link before publishing rootfs.
 RUN /usr/local/bin/gors-runtime-publish && \
     /usr/local/bin/gors-runtime-verify && \
-    /usr/local/bin/gors-warmup
+    /usr/local/bin/gors-warmup --smoke
 
 RUN printf '%s\n' \
       '::once:/usr/local/bin/gors-warmup > /dev/ttyS0' \
@@ -132,7 +132,7 @@ RUN find /usr/lib/rustlib -name '*.so' -exec strip --strip-unneeded {} + 2>/dev/
 # only provider identity again from the final filesystem, then prove it links.
 RUN /usr/local/bin/gors-runtime-publish && \
     /usr/local/bin/gors-runtime-verify && \
-    /usr/local/bin/gors-warmup && \
+    /usr/local/bin/gors-warmup --smoke && \
     rm -f /usr/local/bin/gors-runtime-publish
 
 ENTRYPOINT ["/bin/sh"]

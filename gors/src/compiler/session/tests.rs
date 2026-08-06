@@ -76,6 +76,29 @@ fn raw_program(logical_path: &str, diagnostic_path: &str, source: &str) -> Progr
 }
 
 #[test]
+fn unsupported_aggregate_payloads_fail_at_their_source_boundary() {
+    for source in [
+        "package main\nfunc main() { value := \"x\"; _ = &value }\n",
+        "package main\ntype Value struct { Items []int }\nfunc main() { value := Value{}; _ = &value }\n",
+        "package main\ntype Value struct { Items []string }\nfunc main() { value := Value{}; _ = &value }\n",
+        "package main\ntype Node struct { Next *Node }\nfunc main() { value := Node{}; _ = &value }\n",
+        "package main\ntype Node struct { Next *Node }\nfunc use(value *Node) {}\nfunc main() {}\n",
+        "package main\nfunc main() { value := &struct { Name string }{}; _ = value }\n",
+        "package main\nfunc main() { values := []struct { Name string }{{Name: \"x\"}}; _ = values }\n",
+        "package main\nfunc main() { values := map[string]struct { X int }{\"a\": {X: 1}}; _ = values }\n",
+    ] {
+        let error = CompilerSession::default()
+            .compile_program(raw_program("main.go", "/checkout/project/main.go", source))
+            .err()
+            .expect("an unsupported pointer payload must be rejected before MIR");
+        let diagnostic = error.diagnostics().first().unwrap();
+        assert_eq!(diagnostic.code, "GORS2001");
+        assert_eq!(diagnostic.file, "/checkout/project/main.go");
+        assert!(diagnostic.line > 0);
+    }
+}
+
+#[test]
 fn install_transaction_rolls_back_updated_inserted_and_stale_inputs() {
     let mut session = CompilerSession::default();
     let workspace = test_workspace();
@@ -448,7 +471,7 @@ fn source_map_plan_owns_entry_comments_across_session_revisions() {
 }
 
 #[test]
-fn reachable_catalog_dependency_is_admitted_before_backend_import_rejection() {
+fn reachable_catalog_dependency_compiles_through_its_declared_package_name() {
     let entry = super::super::input::PackageKey::command_line();
     let dependency = super::super::input::PackageKey::import_path("example/dependency").unwrap();
     let entry_manifest = PackageInputManifest::new(
@@ -456,7 +479,7 @@ fn reachable_catalog_dependency_is_admitted_before_backend_import_rejection() {
         [super::super::input::SourceFileInput::from_source(
             "main.go",
             "/checkout/main.go",
-            "package main\nimport \"example/dependency\"\nfunc main() {}\n",
+            "package main\nimport \"example/dependency\"\nfunc main() { if actualname.Value() != 1 { panic(\"dependency\") } }\n",
         )
         .unwrap()],
     )
@@ -475,13 +498,10 @@ fn reachable_catalog_dependency_is_admitted_before_backend_import_rejection() {
     let input = ProgramInput::new(test_workspace(), entry_manifest, catalog.clone()).unwrap();
     let mut session = CompilerSession::default();
 
-    let error = session
-        .compile_program(input)
-        .err()
-        .expect("the bootstrap boundary must reject direct imports");
+    let compiled = session.compile_program(input).unwrap();
 
-    assert_eq!(error.diagnostics().first().unwrap().code, "GORS2001");
-    assert!(error.to_string().contains("imports are not implemented"));
+    assert_eq!(compiled.modules.len(), 1);
+    assert!(compiled.modules.contains_key("example__dependency"));
     assert_eq!(catalog.request_count(), 1);
     assert_eq!(session.database().active_files().len(), 2);
     let packages = session
@@ -551,12 +571,9 @@ fn recursively_admits_only_reachable_packages_in_dependency_first_layers() {
     let input = ProgramInput::new(test_workspace(), entry, catalog.clone()).unwrap();
     let mut session = CompilerSession::default();
 
-    let error = session
-        .compile_program(input)
-        .err()
-        .expect("backend import support must remain gated after graph admission");
+    let compiled = session.compile_program(input).unwrap();
 
-    assert_eq!(error.diagnostics().first().unwrap().code, "GORS2001");
+    assert_eq!(compiled.modules.len(), 2);
     assert_eq!(catalog.request_count(), 2);
     let dag = session.admitted_package_dag().unwrap();
     assert_eq!(dag.nodes().len(), 3);

@@ -4,7 +4,7 @@
 # Evolving coverage corpora; reviewed regressions are promoted into /corpus/.
 /work-corpus/
 
-# Legacy AFL output may still exist in long-lived worktrees.
+# Optional AFL-compatible workspace output.
 /out/
 /sync/
 /crashes/

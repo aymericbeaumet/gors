@@ -9,15 +9,16 @@ use crate::compiler::fingerprint::{Fingerprint, fingerprint_parts};
 pub enum SyntaxAnchorKind {
     /// A package-level Go function declaration.
     Function,
+    /// A receiver-qualified Go method declaration.
+    Method,
 }
 
 /// A stable declaration anchor independent of layout and traversal order.
 ///
-/// The current frontier supports unique package-level function names, so a
-/// function anchor is the declaration kind plus its exact Go name. It never
-/// contains a byte offset, token ordinal, or AST traversal index. Repeated
-/// `init` declarations remain rejected until a reusable structural
-/// disambiguator exists.
+/// Package functions are anchored by name. Methods are anchored by their named
+/// receiver and method name. Neither form contains a byte offset, token
+/// ordinal, or AST traversal index. Repeated `init` declarations remain
+/// rejected until a reusable structural disambiguator exists.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SyntaxAnchor {
     kind: SyntaxAnchorKind,
@@ -34,6 +35,21 @@ impl SyntaxAnchor {
         Self {
             kind: SyntaxAnchorKind::Function,
             name,
+            fingerprint,
+        }
+    }
+
+    /// Construct the stable anchor for one receiver-qualified method.
+    #[must_use]
+    pub fn named_method(receiver: &str, name: &str) -> Self {
+        let qualified: Arc<str> = Arc::from(format!("{receiver}.{name}"));
+        let fingerprint = fingerprint_parts(
+            b"syntax-anchor-method-v1",
+            &[receiver.as_bytes(), name.as_bytes()],
+        );
+        Self {
+            kind: SyntaxAnchorKind::Method,
+            name: qualified,
             fingerprint,
         }
     }

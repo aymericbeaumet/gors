@@ -22,9 +22,8 @@ use super::session::CompilerSession;
 const MIN_PARALLEL_TASKS: usize = 8;
 
 #[cfg(not(target_family = "wasm"))]
-// Lowering is still recursive, so keep an explicit compiler stack policy while
-// avoiding the excessive virtual-memory reservation of the legacy 16 MiB
-// workers. Deep recursion should move to explicit worklists, not larger stacks.
+// Lowering is still recursive, so keep a bounded compiler stack policy.
+// Deep recursion should move to explicit worklists, not larger stacks.
 const COMPILER_WORKER_STACK_SIZE_BYTES: usize = 4 * 1024 * 1024;
 
 /// One explicit compiler-wide job budget and its lazily created native pool.

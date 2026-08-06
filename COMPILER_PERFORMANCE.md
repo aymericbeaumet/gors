@@ -1,6 +1,6 @@
 # Compiler performance architecture and acceptance contract
 
-Date: 2026-07-22
+Date: 2026-08-06
 Status: architecture target; no competitive performance claim has been earned
 Comparator: the hermetic Go compiler pinned by `.go-version`
 
@@ -11,12 +11,13 @@ programs faster than the pinned Go compiler, both on the first cold build and
 on recurring warm builds. Performance is a design constraint while language
 support is added, not a cleanup phase after stdlib compliance.
 
-No current result satisfies that claim. The authoritative backend is still a
-single-file bootstrap. The CLI now separates generated-Rust reuse from exact
-terminal executable reuse, but it has no cross-process semantic query CAS, and
-the Rust source plus rustc path has not been shown capable of winning an
-equivalent end-to-end comparison. Until the contract below is satisfied, use
-"target" rather than "faster than Go" in project material.
+No current result satisfies that claim. The production compiler owns the
+verified end-to-end semantic pipeline, and the CLI separates generated-Rust
+reuse from exact terminal executable reuse. It does not yet have a
+cross-process semantic query CAS, and the Rust source plus rustc path has not
+been shown capable of winning an equivalent end-to-end comparison. Until the
+contract below is satisfied, use "target" rather than "faster than Go" in
+project material.
 
 `perf/acceptance-v1.json` currently contains zero promoted scenarios. The
 acceptance gate therefore validates its schema but enforces no earned latency
@@ -194,9 +195,9 @@ those products and source content independently of presentation state.
 `ProgramInput` is the production syntax-unvalidated manifest. Each
 `SourceFileInput` owns a reference-counted snapshot; the tracked file projection
 creates a temporary AST borrowing one snapshot while the query executes and
-publishes no self-reference or `'static` fiction. The parser-owned program and
-package graph were deleted with no compatibility shim. The red-green database
-tracks the owned per-definition structure. Parsing/projection remains
+publishes no self-reference or `'static` fiction. Program and package
+composition belong exclusively to the red-green database, which tracks owned
+per-definition structure. Parsing/projection remains
 file-granular, but typed signatures, constants, HIR, MIR, and Rust IR are
 demanded per definition. A trivia edit executes `FileProjection` and may
 replace physical layouts/source tables while semantic and IR query bodies stay
@@ -407,7 +408,7 @@ descriptor.
 
 ## Terminal Rust feasibility gate
 
-Rust source is an inspectable bootstrap target, but rustc and linking may impose
+Rust source is an inspectable terminal target, but rustc and linking may impose
 a cold or edited-build floor above the entire Go build. Optimizing the gors
 frontend cannot overcome that floor. This must be tested before full stdlib
 compliance, not discovered afterward.
@@ -429,11 +430,9 @@ certification cycles, either:
 
 On failure, do not spend successive milestones micro-optimizing emission. Build
 a direct fast object or machine-code backend, with Cranelift as the initial
-candidate, from the same verified Rust IR and versioned runtime ABI. This is a
-terminal codegen replacement, not a second parser, type checker, HIR, Go MIR,
-Rust representation lowering, or semantic fallback. The backend must consume
-the Rust IR's explicit ABI and ownership decisions and pass the same
-differential and verifier gates.
+candidate, from the same verified Rust IR and versioned runtime ABI. This
+changes only terminal codegen: it consumes the Rust IR's explicit ABI and
+ownership decisions and passes the same differential and verifier gates.
 
 An evidence-backed alternative such as a persistent compiler service,
 precompiled runtime, package-granular object CAS, and a faster rustc codegen
@@ -444,8 +443,7 @@ not determine semantics or be counted as the competitive production path.
 
 ## Current implementation gaps
 
-The following current mechanisms are useful bootstrap behavior but are not the
-architecture described here:
+The production foundations below identify the remaining architecture work:
 
 - compiler input storage separates canonical semantic `SourceContent` from user-facing
   physical paths. An unchanged checkout-root move preserves all semantic
@@ -476,8 +474,8 @@ architecture described here:
   and synthetic anchors. The session resolves and applies `//line` plus the
   current presentation path only when publishing diagnostics, while source maps
   use physical source positions. The remaining provenance gap is terminal exact
-  emission anchors: the bootstrap source map still covers function landmarks
-  through formatted-token matching;
+  emission anchors: the current source map covers function landmarks through
+  formatted-token matching;
 - workspace, package, file, and definition IDs are stable; node, local, and
   basic-block IDs are still revision-local dense indexes and cannot be
   persistent query or CAS keys;
@@ -516,7 +514,7 @@ architecture described here:
   catalog builds currently force a conservative cross-invocation miss because
   the entry snapshot does not yet prove the full reachable dependency closure;
   publishing that closure is required before warm module-cache promotion;
-- the runtime sidecar/link hard cut is complete for native artifacts. Compiler
+- the native runtime sidecar/link boundary is complete. Compiler
   and printer products carry only the target-neutral dependency, while the CLI
   verifies and materializes one fixed-recipe precompiled rlib, publishes its
   exact schema-2 producer, compatibility, provider, and link identities, and
@@ -551,7 +549,7 @@ architecture described here:
   publication. Its portable production policy is `opt-level=2`, LTO disabled,
   debug info disabled, `target-cpu=generic`, and an empty requested target
   feature set. Performance result schema v4 invokes that command directly and
-  rejects the deleted generated-source/link-descriptor/external-rustc driver.
+  rejects any generated-source/link-descriptor/external-rustc driver.
   This makes new end-to-end evidence structurally promotable, but no scenario
   has yet met the statistical acceptance threshold;
 - no single global scheduler, cancellation generation, memory budget, or
@@ -570,7 +568,7 @@ runtime and terminal-rustc feasibility decision; reachable content-addressed
 SDK shards; and enough generic language and package support to benchmark real
 stdlib work.
 
-Some cutover foundations already point in the correct direction: source mapping
+Several foundations already point in the correct direction: source mapping
 is an explicit `SourceMapPlan`, `CompiledProgram` separates its entry from a
 deterministic module map, and the printer has no output cache or post-syn
 ordering transform. Preserve those explicit value boundaries as they move into
@@ -579,8 +577,8 @@ plan's formatted-token name matching is not provenance-correct, however, and
 must be replaced by exact emitter anchors before source maps become cached query
 products.
 
-Do not rename any of these mechanisms to "incremental compilation." Replace
-them at the owning boundary and delete the obsolete path in the same change.
+Do not rename any of these mechanisms to "incremental compilation." Improve
+them at the owning boundary and keep one canonical implementation.
 
 ## Delivery order
 

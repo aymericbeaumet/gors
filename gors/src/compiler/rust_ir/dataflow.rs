@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use super::{
     BasicBlock, BasicBlockId, Function, LocalId, Operand, ReadOp, RustType, Rvalue, RvalueKind,
-    SlotInitialization, Terminator, TerminatorKind, panic_edge, rvalue_effects, statement_effects,
+    SlotInitialization, Terminator, TerminatorKind, rvalue_effects, statement_effects,
     terminator_effects,
 };
 use crate::compiler::Diagnostic;
@@ -127,7 +127,11 @@ impl Function {
         reachable: &BTreeSet<BasicBlockId>,
     ) -> Result<BTreeMap<BasicBlockId, Vec<ReadOp>>, Diagnostic> {
         let live_inputs = self.live_inputs(reachable)?;
-        let local_types = self.locals.iter().map(|local| local.ty).collect::<Vec<_>>();
+        let local_types = self
+            .locals
+            .iter()
+            .map(|local| local.ty.clone())
+            .collect::<Vec<_>>();
         let mut plans = BTreeMap::new();
         for block_id in reachable {
             let block = self.block(*block_id)?;
@@ -149,6 +153,13 @@ impl Function {
                 )?;
             }
             reverse_plan.reverse();
+            if self.panic_cleanup.is_some() {
+                for operation in &mut reverse_plan {
+                    if *operation == ReadOp::ProvenLastUseMove {
+                        *operation = ReadOp::ProvenInitializedClone;
+                    }
+                }
+            }
             plans.insert(*block_id, reverse_plan);
         }
         Ok(plans)
@@ -281,12 +292,12 @@ impl Function {
                 self.transfer_operand(condition, state, check_reads)?;
             }
             TerminatorKind::Call {
-                args, destination, ..
+                args, destinations, ..
             } => {
                 for argument in args {
                     self.transfer_operand(argument, state, check_reads)?;
                 }
-                if let Some(destination) = destination {
+                for destination in destinations {
                     state.insert(destination.local);
                 }
             }
@@ -310,9 +321,64 @@ impl Function {
             RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => {
                 self.transfer_operand(operand, state, check_reads)
             }
-            RvalueKind::Binary { left, right, .. } => {
+            RvalueKind::Binary { left, right, .. }
+            | RvalueKind::AggregateEqualI64 { left, right, .. } => {
                 self.transfer_operand(left, state, check_reads)?;
                 self.transfer_operand(right, state, check_reads)
+            }
+            RvalueKind::ArrayIndexI64 { array, index }
+            | RvalueKind::ArrayIndex { array, index } => {
+                self.transfer_operand(array, state, check_reads)?;
+                self.transfer_operand(index, state, check_reads)
+            }
+            RvalueKind::ArraySetI64 {
+                array,
+                index,
+                value,
+            }
+            | RvalueKind::ArraySet {
+                array,
+                index,
+                value,
+            } => {
+                self.transfer_operand(array, state, check_reads)?;
+                self.transfer_operand(index, state, check_reads)?;
+                self.transfer_operand(value, state, check_reads)
+            }
+            RvalueKind::ArrayLiteral {
+                elements: fields, ..
+            }
+            | RvalueKind::StructLiteral { fields, .. }
+            | RvalueKind::StructLiteralI64(fields) => {
+                for field in fields {
+                    self.transfer_operand(field, state, check_reads)?;
+                }
+                Ok(())
+            }
+            RvalueKind::StructField { structure, .. }
+            | RvalueKind::StructFieldI64 { structure, .. } => {
+                self.transfer_operand(structure, state, check_reads)
+            }
+            RvalueKind::StructSet {
+                structure, value, ..
+            }
+            | RvalueKind::StructSetI64 {
+                structure, value, ..
+            } => {
+                self.transfer_operand(structure, state, check_reads)?;
+                self.transfer_operand(value, state, check_reads)
+            }
+            RvalueKind::RecoverCompareNil {
+                state: recovery_state,
+                ..
+            } => {
+                if check_reads && !state.contains(&recovery_state.local) {
+                    return Err(Diagnostic::backend(format!(
+                        "Rust IR reads panic recovery local {} before initialization",
+                        recovery_state.local.0
+                    )));
+                }
+                Ok(())
             }
         }
     }
@@ -360,9 +426,9 @@ fn add_terminator_uses_backwards(terminator: &Terminator, live: &mut BTreeSet<Lo
     match &terminator.kind {
         TerminatorKind::SwitchBool { condition, .. } => add_operand_use(condition, live),
         TerminatorKind::Call {
-            args, destination, ..
+            args, destinations, ..
         } => {
-            if let Some(destination) = destination {
+            for destination in destinations {
                 live.remove(&destination.local);
             }
             for argument in args.iter().rev() {
@@ -383,9 +449,51 @@ fn add_rvalue_uses_backwards(rvalue: &Rvalue, live: &mut BTreeSet<LocalId>) {
         RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => {
             add_operand_use(operand, live);
         }
-        RvalueKind::Binary { left, right, .. } => {
+        RvalueKind::Binary { left, right, .. }
+        | RvalueKind::AggregateEqualI64 { left, right, .. } => {
             add_operand_use(right, live);
             add_operand_use(left, live);
+        }
+        RvalueKind::ArrayIndexI64 { array, index } | RvalueKind::ArrayIndex { array, index } => {
+            add_operand_use(index, live);
+            add_operand_use(array, live);
+        }
+        RvalueKind::ArraySetI64 {
+            array,
+            index,
+            value,
+        }
+        | RvalueKind::ArraySet {
+            array,
+            index,
+            value,
+        } => {
+            add_operand_use(value, live);
+            add_operand_use(index, live);
+            add_operand_use(array, live);
+        }
+        RvalueKind::ArrayLiteral {
+            elements: fields, ..
+        }
+        | RvalueKind::StructLiteral { fields, .. }
+        | RvalueKind::StructLiteralI64(fields) => {
+            for field in fields.iter().rev() {
+                add_operand_use(field, live);
+            }
+        }
+        RvalueKind::StructField { structure, .. }
+        | RvalueKind::StructFieldI64 { structure, .. } => add_operand_use(structure, live),
+        RvalueKind::StructSet {
+            structure, value, ..
+        }
+        | RvalueKind::StructSetI64 {
+            structure, value, ..
+        } => {
+            add_operand_use(value, live);
+            add_operand_use(structure, live);
+        }
+        RvalueKind::RecoverCompareNil { state, .. } => {
+            live.insert(state.local);
         }
     }
 }
@@ -407,9 +515,9 @@ fn plan_terminator_backwards(
             plan_operand_backwards(condition, live, local_types, reverse_plan)
         }
         TerminatorKind::Call {
-            args, destination, ..
+            args, destinations, ..
         } => {
-            if let Some(destination) = destination {
+            for destination in destinations {
                 live.remove(&destination.local);
             }
             for argument in args.iter().rev() {
@@ -437,9 +545,55 @@ fn plan_rvalue_backwards(
         RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => {
             plan_operand_backwards(operand, live, local_types, reverse_plan)
         }
-        RvalueKind::Binary { left, right, .. } => {
+        RvalueKind::Binary { left, right, .. }
+        | RvalueKind::AggregateEqualI64 { left, right, .. } => {
             plan_operand_backwards(right, live, local_types, reverse_plan)?;
             plan_operand_backwards(left, live, local_types, reverse_plan)
+        }
+        RvalueKind::ArrayIndexI64 { array, index } | RvalueKind::ArrayIndex { array, index } => {
+            plan_operand_backwards(index, live, local_types, reverse_plan)?;
+            plan_operand_backwards(array, live, local_types, reverse_plan)
+        }
+        RvalueKind::ArraySetI64 {
+            array,
+            index,
+            value,
+        }
+        | RvalueKind::ArraySet {
+            array,
+            index,
+            value,
+        } => {
+            plan_operand_backwards(value, live, local_types, reverse_plan)?;
+            plan_operand_backwards(index, live, local_types, reverse_plan)?;
+            plan_operand_backwards(array, live, local_types, reverse_plan)
+        }
+        RvalueKind::ArrayLiteral {
+            elements: fields, ..
+        }
+        | RvalueKind::StructLiteral { fields, .. }
+        | RvalueKind::StructLiteralI64(fields) => {
+            for field in fields.iter().rev() {
+                plan_operand_backwards(field, live, local_types, reverse_plan)?;
+            }
+            Ok(())
+        }
+        RvalueKind::StructField { structure, .. }
+        | RvalueKind::StructFieldI64 { structure, .. } => {
+            plan_operand_backwards(structure, live, local_types, reverse_plan)
+        }
+        RvalueKind::StructSet {
+            structure, value, ..
+        }
+        | RvalueKind::StructSetI64 {
+            structure, value, ..
+        } => {
+            plan_operand_backwards(value, live, local_types, reverse_plan)?;
+            plan_operand_backwards(structure, live, local_types, reverse_plan)
+        }
+        RvalueKind::RecoverCompareNil { state, .. } => {
+            live.insert(state.local);
+            Ok(())
         }
     }
 }
@@ -476,10 +630,53 @@ fn apply_rvalue_plan(
         RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => {
             apply_operand_plan(operand, plan, cursor)
         }
-        RvalueKind::Binary { left, right, .. } => {
+        RvalueKind::Binary { left, right, .. }
+        | RvalueKind::AggregateEqualI64 { left, right, .. } => {
             apply_operand_plan(left, plan, cursor)?;
             apply_operand_plan(right, plan, cursor)
         }
+        RvalueKind::ArrayIndexI64 { array, index } | RvalueKind::ArrayIndex { array, index } => {
+            apply_operand_plan(array, plan, cursor)?;
+            apply_operand_plan(index, plan, cursor)
+        }
+        RvalueKind::ArraySetI64 {
+            array,
+            index,
+            value,
+        }
+        | RvalueKind::ArraySet {
+            array,
+            index,
+            value,
+        } => {
+            apply_operand_plan(array, plan, cursor)?;
+            apply_operand_plan(index, plan, cursor)?;
+            apply_operand_plan(value, plan, cursor)
+        }
+        RvalueKind::ArrayLiteral {
+            elements: fields, ..
+        }
+        | RvalueKind::StructLiteral { fields, .. }
+        | RvalueKind::StructLiteralI64(fields) => {
+            for field in fields {
+                apply_operand_plan(field, plan, cursor)?;
+            }
+            Ok(())
+        }
+        RvalueKind::StructField { structure, .. }
+        | RvalueKind::StructFieldI64 { structure, .. } => {
+            apply_operand_plan(structure, plan, cursor)
+        }
+        RvalueKind::StructSet {
+            structure, value, ..
+        }
+        | RvalueKind::StructSetI64 {
+            structure, value, ..
+        } => {
+            apply_operand_plan(structure, plan, cursor)?;
+            apply_operand_plan(value, plan, cursor)
+        }
+        RvalueKind::RecoverCompareNil { .. } => Ok(()),
     }
 }
 
@@ -529,10 +726,52 @@ fn collect_rvalue_reads(rvalue: &Rvalue, reads: &mut Vec<(LocalId, ReadOp)>) {
         RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => {
             collect_operand_read(operand, reads);
         }
-        RvalueKind::Binary { left, right, .. } => {
+        RvalueKind::Binary { left, right, .. }
+        | RvalueKind::AggregateEqualI64 { left, right, .. } => {
             collect_operand_read(left, reads);
             collect_operand_read(right, reads);
         }
+        RvalueKind::ArrayIndexI64 { array, index } | RvalueKind::ArrayIndex { array, index } => {
+            collect_operand_read(array, reads);
+            collect_operand_read(index, reads);
+        }
+        RvalueKind::ArraySetI64 {
+            array,
+            index,
+            value,
+        }
+        | RvalueKind::ArraySet {
+            array,
+            index,
+            value,
+        } => {
+            collect_operand_read(array, reads);
+            collect_operand_read(index, reads);
+            collect_operand_read(value, reads);
+        }
+        RvalueKind::ArrayLiteral {
+            elements: fields, ..
+        }
+        | RvalueKind::StructLiteral { fields, .. }
+        | RvalueKind::StructLiteralI64(fields) => {
+            for field in fields {
+                collect_operand_read(field, reads);
+            }
+        }
+        RvalueKind::StructField { structure, .. }
+        | RvalueKind::StructFieldI64 { structure, .. } => {
+            collect_operand_read(structure, reads);
+        }
+        RvalueKind::StructSet {
+            structure, value, ..
+        }
+        | RvalueKind::StructSetI64 {
+            structure, value, ..
+        } => {
+            collect_operand_read(structure, reads);
+            collect_operand_read(value, reads);
+        }
+        RvalueKind::RecoverCompareNil { .. } => {}
     }
 }
 
@@ -559,12 +798,22 @@ fn refresh_effects(function: &mut Function) {
         for statement in &mut block.statements {
             let effects = rvalue_effects(&statement.value.kind);
             statement.value.effects = effects;
-            statement.value.panic = panic_edge(effects);
+            statement.value.panic = refreshed_panic_edge(statement.value.panic, effects);
             statement.effects = statement_effects(&statement.value);
         }
         let effects = terminator_effects(&block.terminator.kind);
         block.terminator.effects = effects;
-        block.terminator.panic = panic_edge(effects);
+        block.terminator.panic = refreshed_panic_edge(block.terminator.panic, effects);
+    }
+}
+
+fn refreshed_panic_edge(edge: super::PanicEdge, effects: super::Effects) -> super::PanicEdge {
+    if !effects.may_panic {
+        return super::PanicEdge::None;
+    }
+    match edge {
+        super::PanicEdge::Cleanup(target) => super::PanicEdge::Cleanup(target),
+        super::PanicEdge::None | super::PanicEdge::Propagate => super::PanicEdge::Propagate,
     }
 }
 

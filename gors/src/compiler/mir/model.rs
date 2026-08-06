@@ -1,12 +1,13 @@
 //! Typed MIR data model.
 
 use crate::compiler::hir;
-use crate::compiler::ids::{BasicBlockId, DefId, LocalId};
+use crate::compiler::ids::{BasicBlockId, DefId, LocalId, PackageId};
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::types::{ConstValue, Signature, Ty};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct File {
+    pub package_id: PackageId,
     pub package: String,
     pub functions: Vec<Function>,
 }
@@ -20,7 +21,14 @@ pub struct Function {
     pub locals: Vec<LocalDecl>,
     pub blocks: Vec<BasicBlock>,
     pub entry: BasicBlockId,
+    pub panic_cleanup: Option<PanicCleanup>,
     pub source: SourceRef,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PanicCleanup {
+    pub entry: BasicBlockId,
+    pub active: LocalId,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -63,10 +71,61 @@ pub struct Rvalue {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RvalueKind {
     Use(Operand),
+    SliceLiteralI64 {
+        elements: Vec<i64>,
+        ty: Ty,
+    },
+    SliceLiteralU8(Vec<u8>),
+    SliceLiteralBool(Vec<bool>),
+    ArrayLiteralI64(Vec<i64>),
+    ArrayLiteral {
+        elements: Vec<Operand>,
+        ty: Ty,
+    },
+    ArrayIndexI64 {
+        array: Operand,
+        index: Operand,
+    },
+    ArrayIndex {
+        array: Operand,
+        index: Operand,
+    },
+    ArraySetI64 {
+        array: Operand,
+        index: Operand,
+        value: Operand,
+    },
+    ArraySet {
+        array: Operand,
+        index: Operand,
+        value: Operand,
+    },
+    StructLiteral {
+        fields: Vec<Operand>,
+        ty: Ty,
+    },
+    StructField {
+        structure: Operand,
+        field: u32,
+    },
+    StructSet {
+        structure: Operand,
+        field: u32,
+        value: Operand,
+    },
     Unary {
         op: hir::UnaryOp,
         operand: Operand,
         ty: Ty,
+    },
+    Conversion {
+        operand: Operand,
+        from: Ty,
+        ty: Ty,
+    },
+    RecoverCompareNil {
+        state: Place,
+        equal: bool,
     },
     Binary {
         op: hir::BinaryOp,
@@ -104,7 +163,11 @@ pub enum TerminatorKind {
     Call {
         callee: hir::Callee,
         args: Vec<Operand>,
-        destination: Option<Place>,
+        destinations: Vec<Place>,
+        target: BasicBlockId,
+    },
+    /// Start a proven-empty goroutine after its call operands were evaluated.
+    SpawnEmpty {
         target: BasicBlockId,
     },
     Return(Vec<Operand>),
@@ -121,6 +184,9 @@ pub enum Provenance {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SyntheticOrigin {
     NamedResultInitialization,
+    PanicCleanupInitialization,
+    ZeroValueCall,
+    PanicCleanupDispatch,
     ImplicitReturn,
 }
 
@@ -128,7 +194,6 @@ pub enum SyntheticOrigin {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PanicEdge {
     None,
-    /// Propagate the Go panic to the caller. Recover/defer landing pads will
-    /// replace this edge when that frontier is implemented.
     Propagate,
+    Cleanup(BasicBlockId),
 }

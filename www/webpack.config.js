@@ -142,6 +142,10 @@ module.exports = () => {
 					template: "index.html",
 					filename: "conformance/index.html",
 				}),
+				new HtmlWebpackPlugin({
+					template: "index.html",
+					filename: "playground/index.html",
+				}),
 				new HtmlWebpackPlugin({ template: "index.html", filename: "404.html" }),
 				new MonacoWebpackPlugin({
 					languages: ["go", "rust"],

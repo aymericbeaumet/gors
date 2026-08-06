@@ -5,6 +5,7 @@ use std::sync::Arc;
 use salsa::Setter as _;
 
 use super::queries::{PackageInput, SourceInput};
+use super::resolved_imports::{ResolvedFileImports, ResolvedImportsInput};
 use super::{CompilerDatabase, QueryError, SourceUpdate, identity_error};
 use crate::compiler::ids::{FileId, PackageId};
 use crate::compiler::input::{PackageKey, SourceContent, SourceSnapshot, WorkspaceKey};
@@ -76,7 +77,20 @@ impl CompilerDatabase {
                 .copied()
                 .map(|input| (input, input.sources(self)));
             let content = snapshot.content();
-            let input = SourceInput::new(self, package, file, Arc::from(logical_path), content);
+            let resolved_imports = ResolvedImportsInput::new(
+                self,
+                file,
+                Arc::new(ResolvedFileImports::empty(file)),
+                Arc::from([]),
+            );
+            let input = SourceInput::new(
+                self,
+                package,
+                file,
+                Arc::from(logical_path),
+                content,
+                resolved_imports,
+            );
             self.sources.insert(file, input);
             self.diagnostic_paths
                 .insert(file, snapshot.shared_diagnostic_path());
@@ -146,8 +160,8 @@ impl CompilerDatabase {
     /// Finalize source mutations after a complete manifest installation.
     ///
     /// Only removals need work at commit: their detached Salsa input is
-    /// tombstoned so the old source bytes can be released. Updates and inserts
-    /// have already published their final values.
+    /// tombstoned so the previous source bytes can be released. Updates and
+    /// inserts have already published their final values.
     pub(in crate::compiler) fn commit_source_mutations(
         &mut self,
         mutations: impl IntoIterator<Item = SourceInputMutation>,

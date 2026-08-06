@@ -29,10 +29,14 @@ pub enum QueryKind {
     TypedSignature,
     /// Type-check one stable package constant.
     TypedConstant,
+    /// Type-check one stable package variable initializer.
+    TypedVariable,
     /// Resolve one stable callee identity through the package index.
     PackageFunctionLookup,
     /// Resolve one stable package constant through the package index.
     PackageConstantLookup,
+    /// Resolve one stable package variable through the package index.
+    PackageVariableLookup,
     /// Build one function's self and direct-callee signature dependency set.
     SignatureDependencies,
     /// Classify one function's package as executable or library code.
@@ -63,8 +67,10 @@ impl QueryKind {
         Self::TypedHir,
         Self::TypedSignature,
         Self::TypedConstant,
+        Self::TypedVariable,
         Self::PackageFunctionLookup,
         Self::PackageConstantLookup,
+        Self::PackageVariableLookup,
         Self::SignatureDependencies,
         Self::ExecutableRole,
         Self::RustIrRootInputs,

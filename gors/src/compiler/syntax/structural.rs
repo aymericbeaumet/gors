@@ -10,6 +10,7 @@ pub enum SyntaxSourceRegion {
     Header,
     Body,
     Constant,
+    Variable,
 }
 
 /// Trivia-independent source identity inside one owned declaration.
@@ -45,6 +46,8 @@ pub struct IdentSyntax {
 pub struct FieldSyntax {
     pub(crate) names: Option<Arc<[IdentSyntax]>>,
     pub(crate) ty: Option<ExprSyntax>,
+    pub(crate) variadic: bool,
+    pub(crate) tag: Option<Arc<str>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -55,10 +58,117 @@ pub struct FieldListSyntax {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FunctionHeaderSyntax {
     pub(crate) name: IdentSyntax,
-    pub(crate) has_receiver: bool,
+    pub(crate) receiver: Option<FieldListSyntax>,
     pub(crate) has_type_parameters: bool,
+    pub(crate) type_parameters: Option<FieldListSyntax>,
     pub(crate) params: FieldListSyntax,
     pub(crate) results: Option<FieldListSyntax>,
+}
+
+pub fn method_receiver(header: &FunctionHeaderSyntax) -> Option<(&str, bool)> {
+    let receiver = header.receiver.as_ref()?;
+    let [field] = receiver.fields.as_ref() else {
+        return None;
+    };
+    let mut ty = field.ty.as_ref()?;
+    let pointer = if let ExprSyntaxKind::Unary {
+        token: Token::MUL,
+        expression,
+    } = &ty.kind
+    {
+        ty = expression;
+        true
+    } else {
+        false
+    };
+    let receiver = match &ty.kind {
+        ExprSyntaxKind::Ident(receiver) => receiver,
+        ExprSyntaxKind::Index { base, .. } => {
+            let ExprSyntaxKind::Ident(receiver) = &base.kind else {
+                return None;
+            };
+            receiver
+        }
+        _ => return None,
+    };
+    Some((receiver.name.as_ref(), pointer))
+}
+
+pub fn function_is_generic(header: &FunctionHeaderSyntax) -> bool {
+    if header.has_type_parameters {
+        return true;
+    }
+    let Some(receiver) = &header.receiver else {
+        return false;
+    };
+    let [field] = receiver.fields.as_ref() else {
+        return false;
+    };
+    let Some(mut ty) = field.ty.as_ref() else {
+        return false;
+    };
+    if let ExprSyntaxKind::Unary {
+        token: Token::MUL,
+        expression,
+    } = &ty.kind
+    {
+        ty = expression;
+    }
+    matches!(ty.kind, ExprSyntaxKind::Index { .. })
+}
+
+/// Whether a declaration has the Go range-over-function iterator shape.
+///
+/// These functions are consumed by semantic range lowering, which specializes
+/// the statically known iterator and yield body together. They are therefore
+/// not independent executable roots in the generated Rust package.
+pub fn function_is_range_iterator(header: &FunctionHeaderSyntax) -> bool {
+    if header.receiver.is_some()
+        || header.has_type_parameters
+        || header
+            .results
+            .as_ref()
+            .is_some_and(|results| !results.fields.is_empty())
+    {
+        return false;
+    }
+    let [parameter] = header.params.fields.as_ref() else {
+        return false;
+    };
+    if parameter.variadic || parameter.names.as_ref().map_or(1, |names| names.len()) != 1 {
+        return false;
+    }
+    let Some(ExprSyntax {
+        kind:
+            ExprSyntaxKind::FunctionType {
+                has_type_parameters: false,
+                params,
+                results: Some(results),
+            },
+        ..
+    }) = parameter.ty.as_ref()
+    else {
+        return false;
+    };
+    let yield_arity = params.fields.iter().try_fold(0_usize, |arity, field| {
+        (!field.variadic)
+            .then_some(field.names.as_ref().map_or(1, |names| names.len()))
+            .and_then(|count| arity.checked_add(count))
+    });
+    yield_arity.is_some_and(|arity| arity <= 2)
+        && matches!(
+            results.fields.as_ref(),
+            [FieldSyntax {
+                names,
+                ty: Some(ExprSyntax {
+                    kind: ExprSyntaxKind::Ident(IdentSyntax { name, .. }),
+                    ..
+                }),
+                variadic: false,
+                ..
+            }] if names.as_ref().map_or(1, |names| names.len()) == 1
+                && name.as_ref() == "bool"
+        )
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -71,12 +181,41 @@ pub struct ConstantSyntax {
     pub(crate) name: IdentSyntax,
     pub(crate) explicit_type: Option<ExprSyntax>,
     pub(crate) value: ConstantValueSyntax,
+    pub(crate) iota: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VariableSyntax {
+    pub(crate) name: IdentSyntax,
+    pub(crate) explicit_type: Option<ExprSyntax>,
+    pub(crate) value: VariableValueSyntax,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TypeAliasSyntax {
+    pub(crate) name: IdentSyntax,
+    pub(crate) type_parameters: Option<FieldListSyntax>,
+    pub(crate) target: ExprSyntax,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TypeDefinitionSyntax {
+    pub(crate) name: IdentSyntax,
+    pub(crate) type_parameters: Option<FieldListSyntax>,
+    pub(crate) underlying: ExprSyntax,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ConstantValueSyntax {
     Expression(ExprSyntax),
     ImplicitOrIota,
+    ArityMismatch,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum VariableValueSyntax {
+    Expression(ExprSyntax),
+    Zero,
     ArityMismatch,
 }
 
@@ -107,6 +246,26 @@ pub enum StmtSyntaxKind {
         expression: ExprSyntax,
         token: Token,
     },
+    Send {
+        channel: ExprSyntax,
+        value: ExprSyntax,
+    },
+    Defer {
+        has_type_parameters: bool,
+        params: FieldListSyntax,
+        results: Option<FieldListSyntax>,
+        body: BlockSyntax,
+        arguments: Arc<[ExprSyntax]>,
+        spread: bool,
+    },
+    Go {
+        has_type_parameters: bool,
+        params: FieldListSyntax,
+        results: Option<FieldListSyntax>,
+        body: BlockSyntax,
+        arguments: Arc<[ExprSyntax]>,
+        spread: bool,
+    },
     Return(Arc<[ExprSyntax]>),
     If {
         init: Option<Box<StmtSyntax>>,
@@ -115,16 +274,57 @@ pub enum StmtSyntaxKind {
         else_branch: Option<Box<StmtSyntax>>,
     },
     For {
+        label: Option<IdentSyntax>,
         init: Option<Box<StmtSyntax>>,
         condition: Option<ExprSyntax>,
         post: Option<Box<StmtSyntax>>,
         body: BlockSyntax,
     },
+    Range {
+        label: Option<IdentSyntax>,
+        key: Option<ExprSyntax>,
+        value: Option<ExprSyntax>,
+        token: Option<Token>,
+        expression: ExprSyntax,
+        body: BlockSyntax,
+    },
+    Switch {
+        init: Option<Box<StmtSyntax>>,
+        tag: Option<ExprSyntax>,
+        cases: Arc<[SwitchCaseSyntax]>,
+    },
+    TypeSwitch {
+        init: Option<Box<StmtSyntax>>,
+        binding: Option<IdentSyntax>,
+        expression: ExprSyntax,
+        cases: Arc<[SwitchCaseSyntax]>,
+    },
+    Select {
+        cases: Arc<[SelectCaseSyntax]>,
+    },
+    Labeled {
+        label: IdentSyntax,
+        statement: Box<StmtSyntax>,
+    },
     Branch {
         token: Token,
-        has_label: bool,
+        label: Option<IdentSyntax>,
     },
     Unsupported(&'static str),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SwitchCaseSyntax {
+    pub(crate) source: SyntaxSource,
+    pub(crate) expressions: Arc<[ExprSyntax]>,
+    pub(crate) body: BlockSyntax,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SelectCaseSyntax {
+    pub(crate) source: SyntaxSource,
+    pub(crate) communication: Option<Box<StmtSyntax>>,
+    pub(crate) body: BlockSyntax,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -132,7 +332,8 @@ pub struct DeclSyntax {
     pub(crate) source: SyntaxSource,
     pub(crate) token: Token,
     pub(crate) specs: Arc<[ValueSpecSyntax]>,
-    pub(crate) contains_non_value_spec: bool,
+    pub(crate) type_specs: Arc<[LocalTypeSyntax]>,
+    pub(crate) contains_import_spec: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -140,6 +341,14 @@ pub struct ValueSpecSyntax {
     pub(crate) names: Arc<[IdentSyntax]>,
     pub(crate) explicit_type: Option<ExprSyntax>,
     pub(crate) values: Option<Arc<[ExprSyntax]>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocalTypeSyntax {
+    pub(crate) name: IdentSyntax,
+    pub(crate) alias: bool,
+    pub(crate) has_type_parameters: bool,
+    pub(crate) target: ExprSyntax,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -168,10 +377,69 @@ pub enum ExprSyntaxKind {
     Call {
         callee: Box<ExprSyntax>,
         arguments: Arc<[ExprSyntax]>,
+        spread: bool,
+    },
+    FunctionLiteral {
+        has_type_parameters: bool,
+        params: FieldListSyntax,
+        results: Option<FieldListSyntax>,
+        body: BlockSyntax,
+    },
+    FunctionType {
+        has_type_parameters: bool,
+        params: FieldListSyntax,
+        results: Option<FieldListSyntax>,
     },
     Selector {
         base: Box<ExprSyntax>,
         member: IdentSyntax,
     },
+    TypeAssert {
+        value: Box<ExprSyntax>,
+        asserted: Option<Box<ExprSyntax>>,
+    },
+    ArrayType {
+        length: Option<Box<ExprSyntax>>,
+        element: Box<ExprSyntax>,
+    },
+    MapType {
+        key: Box<ExprSyntax>,
+        value: Box<ExprSyntax>,
+    },
+    ChannelType {
+        direction: ChannelDirectionSyntax,
+        element: Box<ExprSyntax>,
+    },
+    StructType {
+        fields: FieldListSyntax,
+    },
+    InterfaceType {
+        methods: FieldListSyntax,
+    },
+    KeyValue {
+        key: Box<ExprSyntax>,
+        value: Box<ExprSyntax>,
+    },
+    CompositeLiteral {
+        ty: Option<Box<ExprSyntax>>,
+        elements: Arc<[ExprSyntax]>,
+    },
+    Index {
+        base: Box<ExprSyntax>,
+        index: Box<ExprSyntax>,
+    },
+    Slice {
+        base: Box<ExprSyntax>,
+        low: Option<Box<ExprSyntax>>,
+        high: Option<Box<ExprSyntax>>,
+        max: Option<Box<ExprSyntax>>,
+    },
     Unsupported(&'static str),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChannelDirectionSyntax {
+    SendReceive,
+    SendOnly,
+    ReceiveOnly,
 }

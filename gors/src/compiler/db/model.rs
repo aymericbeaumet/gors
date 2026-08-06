@@ -1,5 +1,18 @@
 //! Compiler-owned query inputs and immutable projection products.
 
+mod descriptors;
+mod fingerprint_builder;
+mod issues;
+mod public_api;
+
+pub use descriptors::{
+    ConstantDescriptor, FunctionDescriptor, TypeAliasDescriptor, TypeDefinitionDescriptor,
+    VariableDescriptor,
+};
+pub(super) use fingerprint_builder::FingerprintBuilder;
+pub use issues::{FileIssue, PackageIssue};
+pub use public_api::PublicApi;
+
 use std::fmt;
 use std::sync::Arc;
 
@@ -8,11 +21,10 @@ use gors_runtime_abi::{ContractIdentity, RuntimeAbiManifest};
 use crate::compiler::syntax::{
     FunctionBodySyntax, FunctionHeaderSyntax, SemanticTokenStream, SyntaxAnchor,
 };
-use crate::import_path::ImportPathIssue;
 use crate::source::TextRange;
 
-use super::super::fingerprint::{Fingerprint, fingerprint_parts};
-use super::super::ids::{DefId, DefinitionKey, FileId, PackageId};
+use super::super::fingerprint::Fingerprint;
+use super::super::ids::{DefId, FileId, PackageId};
 use super::source_metadata::write_import_issue;
 
 /// Compiler identity for the exact target-neutral runtime contract.
@@ -149,90 +161,6 @@ impl ParseFailure {
     }
 }
 
-/// Non-syntax issue discovered while indexing declarations.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum FileIssue {
-    /// A Go file declares the same package-level name more than once.
-    DuplicateDefinition(Arc<str>),
-    /// Parser observations could not be projected into owned function syntax.
-    FunctionProjectionFailure { name: Arc<str>, message: Arc<str> },
-    /// A parsed constant could not be projected into owned semantic syntax.
-    ConstantProjectionFailure { name: Arc<str>, message: Arc<str> },
-}
-
-/// Stable function identity and display name in one file index.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct FunctionDescriptor {
-    id: DefId,
-    file: FileId,
-    name: Arc<str>,
-    key: DefinitionKey,
-}
-
-impl FunctionDescriptor {
-    pub(super) fn new(file: FileId, key: DefinitionKey, name: Arc<str>) -> Self {
-        Self {
-            id: key.id(),
-            file,
-            name,
-            key,
-        }
-    }
-
-    /// Stable cross-revision definition identity.
-    #[must_use]
-    pub const fn id(&self) -> DefId {
-        self.id
-    }
-
-    /// Stable logical file containing this declaration revision.
-    #[must_use]
-    pub const fn file(&self) -> FileId {
-        self.file
-    }
-
-    /// Go declaration name.
-    #[must_use]
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-}
-
-/// Stable package constant identity and display name in one file index.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct ConstantDescriptor {
-    id: DefId,
-    file: FileId,
-    name: Arc<str>,
-    key: DefinitionKey,
-}
-
-impl ConstantDescriptor {
-    pub(super) fn new(file: FileId, key: DefinitionKey, name: Arc<str>) -> Self {
-        Self {
-            id: key.id(),
-            file,
-            name,
-            key,
-        }
-    }
-
-    #[must_use]
-    pub const fn id(&self) -> DefId {
-        self.id
-    }
-
-    #[must_use]
-    pub const fn file(&self) -> FileId {
-        self.file
-    }
-
-    #[must_use]
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-}
-
 /// Deterministic, body-independent index of one parsed source file.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileAnalysis {
@@ -240,20 +168,39 @@ pub struct FileAnalysis {
     package: Arc<str>,
     functions: Arc<[FunctionDescriptor]>,
     constants: Arc<[ConstantDescriptor]>,
+    variables: Arc<[VariableDescriptor]>,
+    type_aliases: Arc<[TypeAliasDescriptor]>,
+    type_definitions: Arc<[TypeDefinitionDescriptor]>,
     failure: Option<ParseFailure>,
     issues: Arc<[FileIssue]>,
     fingerprint: Fingerprint,
 }
 
+pub(super) struct FileAnalysisData {
+    pub(super) file: FileId,
+    pub(super) package: Arc<str>,
+    pub(super) functions: Arc<[FunctionDescriptor]>,
+    pub(super) constants: Arc<[ConstantDescriptor]>,
+    pub(super) variables: Arc<[VariableDescriptor]>,
+    pub(super) type_aliases: Arc<[TypeAliasDescriptor]>,
+    pub(super) type_definitions: Arc<[TypeDefinitionDescriptor]>,
+    pub(super) failure: Option<ParseFailure>,
+    pub(super) issues: Arc<[FileIssue]>,
+}
+
 impl FileAnalysis {
-    pub(super) fn new(
-        file: FileId,
-        package: Arc<str>,
-        functions: Arc<[FunctionDescriptor]>,
-        constants: Arc<[ConstantDescriptor]>,
-        failure: Option<ParseFailure>,
-        issues: Arc<[FileIssue]>,
-    ) -> Self {
+    pub(super) fn new(data: FileAnalysisData) -> Self {
+        let FileAnalysisData {
+            file,
+            package,
+            functions,
+            constants,
+            variables,
+            type_aliases,
+            type_definitions,
+            failure,
+            issues,
+        } = data;
         let mut writer = FingerprintBuilder::new(b"file-analysis");
         writer.bytes(file.canonical_bytes());
         writer.bytes(package.as_bytes());
@@ -264,6 +211,20 @@ impl FileAnalysis {
         for constant in &*constants {
             writer.bytes(constant.id.canonical_bytes());
             writer.bytes(constant.name.as_bytes());
+        }
+        for variable in &*variables {
+            writer.bytes(variable.id.canonical_bytes());
+            writer.bytes(variable.name.as_bytes());
+        }
+        for alias in &*type_aliases {
+            writer.bytes(alias.id.canonical_bytes());
+            writer.bytes(alias.name.as_bytes());
+            writer.bytes(alias.target.as_bytes());
+        }
+        for definition in &*type_definitions {
+            writer.bytes(definition.id.canonical_bytes());
+            writer.bytes(definition.name.as_bytes());
+            writer.bytes(definition.underlying.as_bytes());
         }
         if let Some(failure) = &failure {
             writer.bytes(b"parse-failure");
@@ -285,6 +246,16 @@ impl FileAnalysis {
                     writer.bytes(name.as_bytes());
                     writer.bytes(message.as_bytes());
                 }
+                FileIssue::VariableProjectionFailure { name, message } => {
+                    writer.bytes(b"variable-projection-failure");
+                    writer.bytes(name.as_bytes());
+                    writer.bytes(message.as_bytes());
+                }
+                FileIssue::TypeProjectionFailure { name, message } => {
+                    writer.bytes(b"type-projection-failure");
+                    writer.bytes(name.as_bytes());
+                    writer.bytes(message.as_bytes());
+                }
             }
         }
         Self {
@@ -292,6 +263,9 @@ impl FileAnalysis {
             package,
             functions,
             constants,
+            variables,
+            type_aliases,
+            type_definitions,
             failure,
             issues,
             fingerprint: writer.finish(),
@@ -322,6 +296,24 @@ impl FileAnalysis {
         &self.constants
     }
 
+    /// Variables sorted by stable definition identity.
+    #[must_use]
+    pub fn variables(&self) -> &[VariableDescriptor] {
+        &self.variables
+    }
+
+    /// Type aliases sorted by stable definition identity.
+    #[must_use]
+    pub fn type_aliases(&self) -> &[TypeAliasDescriptor] {
+        &self.type_aliases
+    }
+
+    /// Defined types sorted by stable definition identity.
+    #[must_use]
+    pub fn type_definitions(&self) -> &[TypeDefinitionDescriptor] {
+        &self.type_definitions
+    }
+
     /// Parser diagnostic, if the input revision is invalid.
     #[must_use]
     pub const fn failure(&self) -> Option<&ParseFailure> {
@@ -349,11 +341,29 @@ impl FileAnalysis {
         let constants = self.constants.iter().fold(0_usize, |total, constant| {
             total.saturating_add(constant.name.len())
         });
+        let variables = self.variables.iter().fold(0_usize, |total, variable| {
+            total.saturating_add(variable.name.len())
+        });
+        let type_aliases = self.type_aliases.iter().fold(0_usize, |total, alias| {
+            total
+                .saturating_add(alias.name.len())
+                .saturating_add(alias.target.len())
+        });
+        let type_definitions = self
+            .type_definitions
+            .iter()
+            .fold(0_usize, |total, definition| {
+                total
+                    .saturating_add(definition.name.len())
+                    .saturating_add(definition.underlying.len())
+            });
         let issues = self.issues.iter().fold(0_usize, |total, issue| {
             let bytes = match issue {
                 FileIssue::DuplicateDefinition(name) => name.len(),
                 FileIssue::FunctionProjectionFailure { name, message }
-                | FileIssue::ConstantProjectionFailure { name, message } => {
+                | FileIssue::ConstantProjectionFailure { name, message }
+                | FileIssue::VariableProjectionFailure { name, message }
+                | FileIssue::TypeProjectionFailure { name, message } => {
                     name.len().saturating_add(message.len())
                 }
             };
@@ -363,6 +373,9 @@ impl FileAnalysis {
             .len()
             .saturating_add(functions)
             .saturating_add(constants)
+            .saturating_add(variables)
+            .saturating_add(type_aliases)
+            .saturating_add(type_definitions)
             .saturating_add(issues)
             .saturating_add(
                 self.failure
@@ -371,52 +384,6 @@ impl FileAnalysis {
             )
             .saturating_add(32)
     }
-}
-
-/// Deterministic package-index issue, distinct from stable-ID interning.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum PackageIssue {
-    /// One package input file currently has invalid Go syntax.
-    FileParseFailure { file: FileId, failure: ParseFailure },
-    /// One import literal cannot name a canonical Go package.
-    InvalidImportPath {
-        file: FileId,
-        literal: Arc<str>,
-        line: usize,
-        column: usize,
-        virtual_file: Option<Arc<str>>,
-        issue: ImportPathIssue,
-    },
-    /// Independently parsed files disagree on their package clause.
-    PackageClauseMismatch {
-        file: FileId,
-        expected: Arc<str>,
-        found: Arc<str>,
-    },
-    /// The same package-level name was declared by two source files.
-    DuplicateDefinition {
-        name: Arc<str>,
-        first_file: FileId,
-        second_file: FileId,
-    },
-    /// Distinct complete definition keys produced the same compact digest.
-    IdentityCollision {
-        id: DefId,
-        existing_key: Arc<str>,
-        requested_key: Arc<str>,
-    },
-    /// One parser product could not be projected into owned semantic syntax.
-    FunctionProjectionFailure {
-        file: FileId,
-        name: Arc<str>,
-        message: Arc<str>,
-    },
-    /// One parsed constant could not be projected into owned semantic syntax.
-    ConstantProjectionFailure {
-        file: FileId,
-        name: Arc<str>,
-        message: Arc<str>,
-    },
 }
 
 /// Deterministic, body-independent semantic package index.
@@ -432,6 +399,9 @@ pub struct PackageAnalysis {
     direct_imports: Arc<[Arc<str>]>,
     functions: Arc<[FunctionDescriptor]>,
     constants: Arc<[ConstantDescriptor]>,
+    variables: Arc<[VariableDescriptor]>,
+    type_aliases: Arc<[TypeAliasDescriptor]>,
+    type_definitions: Arc<[TypeDefinitionDescriptor]>,
     issues: Arc<[PackageIssue]>,
     public_api_fingerprint: Fingerprint,
     fingerprint: Fingerprint,
@@ -444,6 +414,9 @@ pub(super) struct PackageAnalysisData {
     pub(super) direct_imports: Arc<[Arc<str>]>,
     pub(super) functions: Arc<[FunctionDescriptor]>,
     pub(super) constants: Arc<[ConstantDescriptor]>,
+    pub(super) variables: Arc<[VariableDescriptor]>,
+    pub(super) type_aliases: Arc<[TypeAliasDescriptor]>,
+    pub(super) type_definitions: Arc<[TypeDefinitionDescriptor]>,
     pub(super) issues: Arc<[PackageIssue]>,
 }
 
@@ -452,6 +425,9 @@ impl PackageAnalysis {
         data: PackageAnalysisData,
         exported_signatures: &[FunctionSignature],
         exported_constants: &[(DefId, Fingerprint)],
+        exported_variables: &[(DefId, Fingerprint)],
+        exported_type_aliases: &[(DefId, Fingerprint)],
+        exported_type_definitions: &[(DefId, Fingerprint)],
     ) -> Self {
         let PackageAnalysisData {
             package,
@@ -460,6 +436,9 @@ impl PackageAnalysis {
             direct_imports,
             functions,
             constants,
+            variables,
+            type_aliases,
+            type_definitions,
             issues,
         } = data;
         let mut public_api = FingerprintBuilder::new(b"package-public-api");
@@ -470,6 +449,18 @@ impl PackageAnalysis {
             public_api.bytes(signature.fingerprint.as_bytes());
         }
         for (definition, fingerprint) in exported_constants {
+            public_api.bytes(definition.canonical_bytes());
+            public_api.bytes(fingerprint.as_bytes());
+        }
+        for (definition, fingerprint) in exported_variables {
+            public_api.bytes(definition.canonical_bytes());
+            public_api.bytes(fingerprint.as_bytes());
+        }
+        for (definition, fingerprint) in exported_type_aliases {
+            public_api.bytes(definition.canonical_bytes());
+            public_api.bytes(fingerprint.as_bytes());
+        }
+        for (definition, fingerprint) in exported_type_definitions {
             public_api.bytes(definition.canonical_bytes());
             public_api.bytes(fingerprint.as_bytes());
         }
@@ -493,6 +484,23 @@ impl PackageAnalysis {
             fingerprint.bytes(constant.id.canonical_bytes());
             fingerprint.bytes(constant.file.canonical_bytes());
             fingerprint.bytes(constant.name.as_bytes());
+        }
+        for variable in &*variables {
+            fingerprint.bytes(variable.id.canonical_bytes());
+            fingerprint.bytes(variable.file.canonical_bytes());
+            fingerprint.bytes(variable.name.as_bytes());
+        }
+        for alias in &*type_aliases {
+            fingerprint.bytes(alias.id.canonical_bytes());
+            fingerprint.bytes(alias.file.canonical_bytes());
+            fingerprint.bytes(alias.name.as_bytes());
+            fingerprint.bytes(alias.target.as_bytes());
+        }
+        for definition in &*type_definitions {
+            fingerprint.bytes(definition.id.canonical_bytes());
+            fingerprint.bytes(definition.file.canonical_bytes());
+            fingerprint.bytes(definition.name.as_bytes());
+            fingerprint.bytes(definition.underlying.as_bytes());
         }
         for issue in &*issues {
             match issue {
@@ -573,6 +581,26 @@ impl PackageAnalysis {
                     fingerprint.bytes(name.as_bytes());
                     fingerprint.bytes(message.as_bytes());
                 }
+                PackageIssue::VariableProjectionFailure {
+                    file,
+                    name,
+                    message,
+                } => {
+                    fingerprint.bytes(b"variable-projection-failure");
+                    fingerprint.bytes(file.canonical_bytes());
+                    fingerprint.bytes(name.as_bytes());
+                    fingerprint.bytes(message.as_bytes());
+                }
+                PackageIssue::TypeProjectionFailure {
+                    file,
+                    name,
+                    message,
+                } => {
+                    fingerprint.bytes(b"type-projection-failure");
+                    fingerprint.bytes(file.canonical_bytes());
+                    fingerprint.bytes(name.as_bytes());
+                    fingerprint.bytes(message.as_bytes());
+                }
             }
         }
         fingerprint.bytes(public_api_fingerprint.as_bytes());
@@ -584,6 +612,9 @@ impl PackageAnalysis {
             direct_imports,
             functions,
             constants,
+            variables,
+            type_aliases,
+            type_definitions,
             issues,
             public_api_fingerprint,
             fingerprint: fingerprint.finish(),
@@ -626,6 +657,24 @@ impl PackageAnalysis {
         &self.constants
     }
 
+    /// All indexed package variables in stable key and evidence order.
+    #[must_use]
+    pub fn variables(&self) -> &[VariableDescriptor] {
+        &self.variables
+    }
+
+    /// All indexed package type aliases in stable key and evidence order.
+    #[must_use]
+    pub fn type_aliases(&self) -> &[TypeAliasDescriptor] {
+        &self.type_aliases
+    }
+
+    /// All indexed defined types in stable key and evidence order.
+    #[must_use]
+    pub fn type_definitions(&self) -> &[TypeDefinitionDescriptor] {
+        &self.type_definitions
+    }
+
     /// Deterministically sorted package-index issues.
     #[must_use]
     pub fn issues(&self) -> &[PackageIssue] {
@@ -653,6 +702,22 @@ impl PackageAnalysis {
         let constants = self.constants.iter().fold(0_usize, |total, constant| {
             total.saturating_add(constant.name.len())
         });
+        let variables = self.variables.iter().fold(0_usize, |total, variable| {
+            total.saturating_add(variable.name.len())
+        });
+        let type_aliases = self.type_aliases.iter().fold(0_usize, |total, alias| {
+            total
+                .saturating_add(alias.name.len())
+                .saturating_add(alias.target.len())
+        });
+        let type_definitions = self
+            .type_definitions
+            .iter()
+            .fold(0_usize, |total, definition| {
+                total
+                    .saturating_add(definition.name.len())
+                    .saturating_add(definition.underlying.len())
+            });
         let issues = self.issues.iter().fold(0_usize, |total, issue| {
             let retained = match issue {
                 PackageIssue::FileParseFailure { failure, .. } => failure.retained_bytes(),
@@ -673,7 +738,9 @@ impl PackageAnalysis {
                     ..
                 } => existing_key.len().saturating_add(requested_key.len()),
                 PackageIssue::FunctionProjectionFailure { name, message, .. }
-                | PackageIssue::ConstantProjectionFailure { name, message, .. } => {
+                | PackageIssue::ConstantProjectionFailure { name, message, .. }
+                | PackageIssue::VariableProjectionFailure { name, message, .. }
+                | PackageIssue::TypeProjectionFailure { name, message, .. } => {
                     name.len().saturating_add(message.len())
                 }
             };
@@ -689,6 +756,9 @@ impl PackageAnalysis {
             )
             .saturating_add(functions)
             .saturating_add(constants)
+            .saturating_add(variables)
+            .saturating_add(type_aliases)
+            .saturating_add(type_definitions)
             .saturating_add(issues)
             .saturating_add(64)
     }
@@ -880,82 +950,5 @@ impl FunctionBody {
         self.syntax
             .as_ref()
             .map_or(32, |syntax| syntax.retained_bytes().saturating_add(32))
-    }
-}
-
-/// Public-header aggregate for one source file.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PublicApi {
-    file: FileId,
-    signatures: Arc<[FunctionSignature]>,
-    fingerprint: Fingerprint,
-}
-
-impl PublicApi {
-    pub(super) fn new(file: FileId, signatures: Arc<[FunctionSignature]>) -> Self {
-        let mut writer = FingerprintBuilder::new(b"file-public-api");
-        writer.bytes(file.canonical_bytes());
-        for signature in &*signatures {
-            writer.bytes(signature.name.as_bytes());
-            writer.bytes(signature.fingerprint.as_bytes());
-        }
-        Self {
-            file,
-            signatures,
-            fingerprint: writer.finish(),
-        }
-    }
-
-    /// Stable logical source-file identity.
-    #[must_use]
-    pub const fn file(&self) -> FileId {
-        self.file
-    }
-
-    /// Function headers sorted by stable definition identity.
-    #[must_use]
-    pub fn signatures(&self) -> &[FunctionSignature] {
-        &self.signatures
-    }
-
-    /// Domain-separated aggregate fingerprint.
-    #[must_use]
-    pub const fn fingerprint(&self) -> Fingerprint {
-        self.fingerprint
-    }
-
-    /// Approximate retained bytes for future memory-budget accounting.
-    #[must_use]
-    pub fn retained_bytes(&self) -> usize {
-        self.signatures.iter().fold(32_usize, |total, signature| {
-            total.saturating_add(signature.retained_bytes())
-        })
-    }
-}
-
-pub(super) struct FingerprintBuilder {
-    domain: Vec<u8>,
-    parts: Vec<Vec<u8>>,
-}
-
-impl FingerprintBuilder {
-    pub(super) fn new(domain: &[u8]) -> Self {
-        Self {
-            domain: domain.to_vec(),
-            parts: Vec::new(),
-        }
-    }
-
-    pub(super) fn bytes(&mut self, value: &[u8]) {
-        self.parts.push(value.to_vec());
-    }
-
-    pub(super) fn usize(&mut self, value: usize) {
-        self.bytes(&u64::try_from(value).unwrap_or(u64::MAX).to_be_bytes());
-    }
-
-    pub(super) fn finish(self) -> Fingerprint {
-        let parts = self.parts.iter().map(Vec::as_slice).collect::<Vec<_>>();
-        fingerprint_parts(&self.domain, &parts)
     }
 }

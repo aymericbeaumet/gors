@@ -25,22 +25,22 @@ checked-in oracle exactly.
 
 The driver is recorded as `gors-build-production-v1`. Raw command evidence must
 contain exactly one direct `gors build` child and one direct `go build` child
-per measured side. Result validation rejects the removed output-directory,
-`.gors-link.json`, generated-`main.rs`, `--extern`, and external-rustc paths.
+per measured side. Result validation rejects output-directory,
+`.gors-link.json`, generated-`main.rs`, `--extern`, and external-rustc drivers.
 
 ## Corpus and scenarios
 
-`corpus/v1` is content-digested and network-free. The bootstrap workload uses
-only the authoritative single-file language frontier. Every workload measures:
+`corpus/v1` is content-digested and network-free. Its initial workload stays
+compact and deterministic. Every workload measures:
 
 - cold build with isolated empty compiler and Go caches;
 - no-op build from a new process after an untimed successful build;
 - leaf implementation edit after an untimed base build, with a required changed
   output sentinel.
 
-Dependency-body and dependency-API edits are machine-readably marked unsupported
-until the authoritative compiler supports imports. They must be added rather
-than silently omitted once that frontier moves.
+Dependency-body and dependency-API edits are machine-readably marked
+unsupported in the current corpus manifest. They must be enabled as
+representative package-DAG scenarios are added rather than silently omitted.
 
 ## Commands
 
@@ -90,7 +90,7 @@ evidence, the typed runtime-contract identity reported by gors, the production
 driver, corpus, hardware class, and job budget. Internal rustc and runtime
 provider details stay owned by the timed `gors build` process instead of being
 duplicated as harness configuration. Pre-v4 evidence is unsupported; the gate
-does not reinterpret or migrate legacy evidence.
+does not reinterpret evidence from another schema.
 
 The acceptance gate succeeds without timing while no scenarios are promoted.
 After promotion it requires fresh certification evidence for the current clean

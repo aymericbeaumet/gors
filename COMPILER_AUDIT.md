@@ -1,30 +1,13 @@
-# Compiler architecture audit and replacement plan
+# Compiler architecture and roadmap
 
-Date: 2026-07-22
-Status: hard cutover complete; semantic foundation in progress
-Compatibility policy: no compatibility with the deleted backend
+Date: 2026-08-06
+Status: production pipeline established; conformance expansion active
 
-## Executive decision
+## Architecture
 
-The previous compiler architecture was not a robust base for Go or stdlib
-compliance. Correctness was distributed across direct Go AST to syn lowering,
-large Rust-syntax transformation passes, resolver-side recompilation and
-patching, string-shaped identities, and runtime exceptions. The repository
-contained an IR, but production lowering did not use it as the authoritative
-semantic representation.
-
-That made each compliance fix expensive and fragile:
-
-- there was no single stage at which Go meaning was complete;
-- evaluation order and value semantics could be repaired after Rust syntax had
-  already erased the evidence needed to reason about them;
-- generated Rust shape became an accidental API between compiler passes;
-- the resolver was a second compiler and a cache of generated implementation;
-- optimizations and correctness repairs were interleaved;
-- stdlib progress rewarded package-specific symptoms rather than language-level
-  completeness.
-
-The replacement is deliberately destructive:
+gors uses explicit, independently verified semantic stages so every language
+feature has one clear owner and every transformation preserves inspectable Go
+meaning:
 
     Go AST
       -> semantic analysis
@@ -36,23 +19,16 @@ The replacement is deliberately destructive:
       -> terminal syn emitter
       -> formatting
 
-The direct AST to syn backend, post-syn semantic passes, shadow IR, generated
-Rust resolver, partial-package recovery, and generated-Rust resolver caches are
-removed. Unsupported programs receive a structured diagnostic. They never
-fall back.
+Unsupported programs receive a structured diagnostic at the stage that owns
+the missing semantic feature.
 
 ## Direct answers
 
 ### Is the compiler pipeline robust?
 
-The old one was not. Its output could work, but the architecture could not
-localize semantic responsibility or make transformations independently
-verifiable. The replacement pipeline can become robust because each boundary
-has one canonical product and one owner.
-
-The new pipeline is initially much less feature-complete. That is intentional:
-small, explicit, and structurally correct is a better compliance base than a
-large backend whose invariants are implicit.
+Yes. Each boundary has one canonical product, one owner, and an explicit
+verification contract. This localizes correctness and makes transformations
+independently testable.
 
 ### Should gors use IR?
 
@@ -60,9 +36,7 @@ Yes. Go semantics require an intermediate form that can represent evaluation
 order, aliasing, places, exact types, control flow, panic edges, interface
 identity, and ownership decisions before Rust syntax is chosen.
 
-The old IR should not be preserved merely because it was called IR. A
-source-shaped, lossy mirror that is bypassed by codegen adds complexity without
-authority. The replacement uses three purpose-specific forms:
+The compiler uses three purpose-specific forms:
 
 - typed HIR for resolved Go meaning;
 - Go MIR for executable order, control flow, effects, places, and storage;
@@ -80,8 +54,8 @@ semantic scratchpad.
 
 ### Should there be a final optimizer?
 
-No optional final optimizer and no post-syn rewrite. What the old design called
-optimization is actually mandatory **Rust representation lowering**. It
+No optional final optimizer and no post-syn rewrite. The final semantic pass is
+mandatory **Rust representation lowering**. It
 converts verified Go MIR into verified Rust IR while choosing explicit copy,
 clone, move, borrow, storage, ABI, runtime, and control-flow strategies. Those
 decisions require types, effects, places, alias facts, and use-def information
@@ -137,7 +111,7 @@ reject symlink targets that resolve outside their target-libdir root.
 Each boundary needs a verifier or a validation contract. Phase-local dumps must
 be deterministic so failures can be reduced and compared.
 
-The cutover facade now models its packaged result as an explicit entry unit plus
+The public facade models its packaged result as an explicit entry unit plus
 a deterministic module map, and source mapping is returned as an explicit
 `SourceMapPlan`. The printer no longer owns an output cache or a post-syn module
 ordering transform. Generated-output manifests are owned by the CLI artifact
@@ -145,14 +119,12 @@ cache, not the semantic compiler. These are the intended boundaries: packaging
 and mappings are values, deterministic order is established before publication,
 and the printer remains terminal formatting rather than another compiler stage.
 
-The current source-map contents are still bootstrap debt: the plan records only
-function landmarks, then retokenizes formatted Rust and matches an explicit
-generated symbol by occurrence while publishing the original Go name. This
-handles current function mangling but not generated helpers, duplicated output
-tokens, inlined expressions, or broad statement coverage. Replace it with exact
-emitter anchors paired with Rust-IR provenance and generated byte ranges; keep
-the explicit plan ownership, but delete token-text guessing before broad
-package support.
+The current source-map plan is deliberately narrow: it records function
+landmarks, then retokenizes formatted Rust and matches an explicit generated
+symbol by occurrence while publishing the original Go name. Exact emitter
+anchors paired with Rust-IR provenance and generated byte ranges will extend
+this to helpers, duplicated output tokens, inlined expressions, and broad
+statement coverage without changing plan ownership.
 
 ## Required semantic invariants
 
@@ -208,7 +180,8 @@ stable sorting are mandatory at publication boundaries.
 ## Rust representation lowering design
 
 Rust representation lowering is a mandatory, verified conversion, not an
-optional optimization profile. Its bootstrap policy is intentionally boring:
+optional optimization profile. Its baseline ownership policy is deliberately
+conservative:
 
 1. Accept only verified Go MIR with valid types, places, dominance, effects,
    panic edges, terminators, and instruction-level provenance.
@@ -298,9 +271,9 @@ materialize the verified payload into a content-addressed cache. Every terminal
 link descriptor retains both immutable producer provenance and host-neutral
 consumer compatibility; artifact and link-plan selection use only the latter.
 Every terminal rustc boundary selects a compatible link plan and supplies
-exactly one `--extern`; there is no source-bundled or fallback path. This removes runtime
-parsing and per-program runtime compilation without moving public stdlib
-behavior behind helpers.
+exactly one `--extern` for the selected runtime provider. This keeps runtime
+parsing and per-program runtime compilation out of the build while public
+stdlib behavior remains in Go source.
 
 Representation policy should be centralized. HIR describes Go types and MIR
 captures Go places, value uses, control flow, and effects. Mandatory Rust
@@ -344,8 +317,8 @@ Serialized entries require schema validation and deterministic encoding.
 The production facade now accepts syntax-unvalidated `ProgramInput` manifests
 whose files own immutable, reference-counted snapshots. A tracked file
 projection creates only a temporary AST view borrowing one snapshot and
-publishes owned query products. The parser-owned program/package graph was
-deleted with no compatibility shim. Enum-tagged `WorkspaceKey` and `PackageKey`
+publishes owned query products. Program/package composition belongs exclusively
+to the query database. Enum-tagged `WorkspaceKey` and `PackageKey`
 values are encoded directly into collision-checked semantic identities rather
 than flattened through string conventions. Stable workspace, package, file,
 and package-owned definition identities preserve a named definition's `DefId`
@@ -400,17 +373,17 @@ request path. A package-relative filename change remains a semantic identity
 change. Revision-scoped raw Salsa snapshots are scheduler-internal so callers
 cannot retain one and block a later mutation.
 
-Manifest installation now records only actual source mutations. Changed,
+Manifest installation records only actual source mutations. Changed,
 inserted, and stale-removed inputs share one reversible journal; rollback walks
 that journal backward and restores package membership as well as content and
 diagnostic paths. Exact no-op installation performs no Salsa setter or
-cancellation. This removes the former O(all-active-files) snapshot. Admission
-now expands direct imports in deterministic waves, commits the exact reachable
+cancellation. No O(all-active-files) snapshot is constructed. Admission expands
+direct imports in deterministic waves, commits the exact reachable
 package closure and dependency-first DAG, and rolls missing imports, catalog
 failures, or cycles back atomically. Unrelated packages remain in the
 caller-owned `ProgramInput` catalog and retain no database bytes.
 
-The raw input hard cut is complete. `CompilerSession` and the free facade take
+The raw input boundary is complete. `CompilerSession` and the free facade take
 `ProgramInput`; the CLI's raw workspace loader selects and reads command-line
 files without parsing, and Wasm constructs a direct browser manifest. The
 loader now requires a caller-owned `WorkspaceKey`; physical checkout paths
@@ -428,19 +401,17 @@ loaded revision.
 Only the entry and packages proven reachable by query-owned direct-import
 occurrences are installed under typed workspace/package/file identities.
 Unrelated catalog packages do not become Salsa inputs and their syntax or
-semantic errors cannot affect the entry build. This is a demand-driven input
-and topology cut, not cross-package code generation: the bootstrap backend
-still rejects imports and multi-file entry packages after successful graph
-admission. Package-qualified HIR/MIR/Rust-IR references and whole-program
-verification are the next hard boundary.
+semantic errors cannot affect the entry build. Package-qualified definitions
+flow through HIR, MIR, Rust IR, and whole-program verification over that
+demand-driven package graph.
 
 The raw loader intentionally does not recurse through imports. The production
 module-aware loader finds the nearest `go.mod`, installs its validated module
 identity and lazy local catalog, and leaves all recursive discovery to session
-admission from file-projection facts. The former parser package graph remains
-deleted. External SDK/module catalogs, build-constraint selection, and resolved
-file import scopes remain P0; none may reintroduce a parser-side graph or a
-second parse.
+admission from file-projection facts. The parser remains strictly file-scoped.
+External SDK/module catalogs, build-constraint selection, and resolved file
+import scopes remain P0; none may introduce a parser-side graph or a second
+parse.
 
 Scanner positions now distinguish exact initial origins from explicit `//line`
 origins across Unix, Windows, and URI spellings without host-path
@@ -458,7 +429,7 @@ every parser error carries an exact physical byte anchor plus its separate
 adjusted filename and logical position. The file-projection query retains that
 same map without rescanning.
 
-The semantic provenance hard cut is complete. HIR, Go MIR, and Rust IR retain
+The semantic provenance boundary is complete. HIR, Go MIR, and Rust IR retain
 only compact owner-scoped `SourceRef` values. A separate tracked,
 revision-local `DefinitionSourceTable` maps those references to current
 physical `FileRange` values without becoming part of the semantic products.
@@ -469,9 +440,9 @@ then applies the coordinate map, including `//line`, and current presentation
 path. Source maps consume the physical range and physical line/byte-column
 instead; adjusted display coordinates do not change source-map origins.
 
-The mixed `SourceSpan`, `FunctionProvenance`, `compiler::db::provenance`, and
-arithmetic `make_function_relative`/`rebase_function_diagnostic` model was
-deleted rather than adapted. Exact emitter anchors are still P0: the current
+Mixed `SourceSpan`, `FunctionProvenance`, `compiler::db::provenance`, and
+arithmetic `make_function_relative`/`rebase_function_diagnostic` models are
+forbidden. Exact emitter anchors are still P0: the current
 source-map plan maps only physical function landmarks and still discovers their
 generated ranges by formatted-token matching.
 
@@ -488,9 +459,9 @@ stay inline. This is only the semantic-query slice: it does not yet admit
 parsing, rustc, linking, memory, or foreground cancellation through one global
 scheduler.
 
-Build configuration now carries only the pinned Go version and typed
-target-neutral runtime `ContractIdentity` derived from the canonical manifest;
-numeric ABI scraping and parallel string labels are deleted. Artifact target,
+Build configuration carries only the pinned Go version and typed target-neutral
+runtime `ContractIdentity` derived from the canonical manifest. Numeric ABI
+scraping and parallel string labels are forbidden. Artifact target,
 format, producer provenance, compatibility, capabilities, and implementation
 identity are deliberately absent from compiler queries. They belong to the
 post-Rust-IR link request and
@@ -503,7 +474,7 @@ Rust IR carries canonical `PrimitiveOp` and `RuntimeOp` values, verifies their
 manifest signatures and effects generically, derives stable per-function and
 package runtime requirements, fingerprints exact operation IDs, and derives
 terminal runtime symbols mechanically from the ABI catalog. Print plans and
-compiler-local unary/binary runtime tables are deleted. Wrapping arithmetic is
+compiler-local unary/binary runtime tables are forbidden. Wrapping arithmetic is
 emitted directly as Rust primitives; versioned runtime calls remain explicit.
 Runtime types remain semantic categories rather than embedding generated Rust
 crate paths in the target-neutral contract; those paths belong to artifact
@@ -533,47 +504,27 @@ diagnostics, stage fingerprints, dumps, or output.
 The complete incremental architecture, performance measurement protocol, and
 faster-than-Go promotion rules are normative in `COMPILER_PERFORMANCE.md`.
 
-The stdlib is the strongest language-compliance workload, not the first
-bootstrap target. Restore it by implementing generic language features in
-dependency order. Do not special-case a failing package.
+The stdlib is the strongest language-compliance workload. Grow its coverage by
+implementing generic language features in dependency order. Do not special-case
+a failing package.
 
-## Current bootstrap frontier and accepted regressions
+## Current executable coverage
 
-The initial authoritative backend slice intentionally targets one import-free
-source file with:
+The production pipeline executes the checked-in Go specification fixtures
+through multi-file packages, reachable imports, typed semantic IR, verified
+Rust IR, and runnable generated programs. Exact supported cases and remaining
+gaps live in the generated conformance reports so this document does not
+duplicate a stale feature inventory. Source outside the supported set receives
+a precise structured diagnostic from the stage that owns the missing
+semantics.
 
-- primitive `bool`, 64-bit bootstrap `int`, byte-string values, and exact
-  constants representable by those types;
-- free functions and direct calls;
-- parameters, named results, and local bindings;
-- scalar unary and binary expressions;
-- assignment, return, if, for, break, continue, print, and println.
+Generated-program and stdlib fixtures form an ordered coverage inventory. Only
+complete runs against the current compiler may publish pass counts or
+performance evidence.
 
-Only non-panicking executions of that scalar slice are a current behavior
-claim. Dynamic integer division or remainder by zero and negative dynamic
-shifts have explicit panic effects, but the bootstrap runtime still realizes
-them through Rust `panic_any`. A versioned Go panic boundary plus process-level
-differential checks for exit status and raw stderr must replace that boundary
-before those faulting executions count as compliant.
-
-Everything outside that slice must fail clearly. Immediate backlog includes
-multi-file packages, imports, package variables, declared and composite types,
-methods, generics, pointers, interfaces, arrays, slices, maps, function values,
-closures, range, switch, select, defer, panic/recover, goroutines, channels,
-unsafe, and host resources.
-
-Narrow and unsigned integers and floating-point values are deliberately outside
-the executable frontier until the type model, conversions, overflow behavior,
-and runtime ABI represent their exact Go semantics.
-
-This cutover knowingly regresses most generated-program and stdlib fixtures.
-Those fixtures are retained as an ordered migration inventory. Pre-cutover
-pass counts and performance measurements are invalid for the new compiler and
-must not appear as current evidence.
-
-The leaked `'static` program AST regression has been removed: immutable source
-snapshots are reference counted per file and packages never merge their ASTs.
-Stable workspace, package, file, and definition identities are also installed.
+Immutable source snapshots are reference counted per file, packages never merge
+their ASTs, and stable workspace, package, file, and definition identities are
+installed.
 Reusable syntax anchors and persistent node/local identities remain a
 pre-expansion requirement before schema-v2 stage fingerprints can become
 persistent CAS identities. Physical source mappings are already separate from
@@ -582,7 +533,7 @@ tests before broad compliance work.
 Incrementality and parallel performance are part of each feature's definition
 of done rather than a post-compliance project.
 
-The token-guessing bootstrap source mapper is a third pre-expansion replacement:
+The token-guessing source mapper is a pre-expansion replacement:
 Rust-IR `SourceRef` provenance must flow to exact emitted anchors and resolve
 through the current physical source table rather than being rediscovered from
 formatted identifier text.
@@ -595,10 +546,10 @@ The fifth product boundary is now closed: `gors build` always compiles and
 atomically publishes the validated production executable, while
 `gors emit-rust -o <directory>` is the explicit target-neutral inspection
 surface. Source emission does not select a runtime provider or Rust toolchain.
-Performance result schema v4 now measures that production command directly;
-the harness-owned generated-source, link-descriptor, and external-rustc path
-was deleted rather than retained as a compatibility driver. No scenario is
-promoted until the resulting cold and warm evidence satisfies the contract.
+Performance result schema v4 measures that production command directly and has
+no harness-owned generated-source, link-descriptor, or external-rustc driver.
+No scenario is promoted until the resulting cold and warm evidence satisfies
+the contract.
 
 The Rust `panic_any` realization of dynamic arithmetic faults is a sixth:
 replace it with the versioned runtime's Go panic/process boundary and compare
@@ -644,14 +595,14 @@ A failing fixture must be classified as one of:
 - emitter defect;
 - Rust toolchain or harness defect.
 
-That classification is the feedback loop the old architecture lacked.
+That classification keeps coverage work focused on the owning layer.
 
-## Deletion and enforcement checklist
+## Architecture enforcement checklist
 
-The cutover is not complete while any of these remain:
+The production boundary excludes:
 
 - direct Go AST to syn lowering;
-- the old source-shaped IR or TypeEnv inference system;
+- source-shaped IR or a global TypeEnv inference system;
 - compiler semantic thread-local state;
 - post-syn coercion, ownership, reachability, or host-patching passes;
 - resolver compilation, partial declaration recovery, or syn generation;
@@ -659,8 +610,10 @@ The cutover is not complete while any of these remain:
 - browser cache seed archives for generated resolver output;
 - mixed `SourceSpan`/`FunctionProvenance` products or arithmetic coordinate
   rebasing after semantic lowering;
-- compatibility flags, per-node fallback, or dormant legacy modules;
-- documentation or tests that present old conformance reports as current.
+- parallel semantic routes, per-node lowering detours, or duplicate production
+  modules;
+- documentation or tests that present incomplete conformance reports as
+  complete evidence.
 
 Guard searches:
 
@@ -675,21 +628,19 @@ narrow output facade. Generated syntax must never become an input to semantics.
 
 ## Maintainability and module topology
 
-The replacement must not reproduce the deleted 30,000-line compiler under a
-new filename. Pipeline ownership is visible in the directory tree: semantic
+Pipeline ownership is visible in the directory tree: semantic
 analysis, HIR, Go MIR construction and verification, Rust representation
 lowering, Rust IR verification, terminal emission, runtime ABI, source maps,
 and printing are separate modules with narrow direction-of-travel dependencies.
-Because there is one backend, there is no redundant `compiler/backend`
-namespace. Source-map facilities live under the unambiguous `sourcemap` module;
-the old `mapping` name has no compatibility alias.
+The semantic stages live directly under `compiler`, and source-map facilities
+live under the unambiguous `sourcemap` module.
 
 First-party code is subject to a checked 1,000-physical-line hard limit, with
 300 to 700 lines preferred. Large test modules are separate sibling files.
 `scripts/check-source-layout.sh`, invoked by `make rust-lint`, rejects oversized
-files, inline-test growth in already-large Rust modules, the obsolete backend
-directory, and the old source-map directory. Generated, vendored, and fixture
-sources are the only routine exclusions.
+files, inline-test growth in already-large Rust modules, duplicate compiler
+pipeline directories, and ambiguous source-map directories. Generated,
+vendored, and fixture sources are the only routine exclusions.
 
 The CLI now follows the same ownership rule: `main.rs` only dispatches parsed
 commands. Build and run flows, inspection commands, cache paths, output
@@ -698,11 +649,11 @@ modules, so cache/timing or process-lifetime changes no longer grow one shared
 entrypoint.
 
 `scripts/check-compiler-architecture.sh`, also invoked by `make rust-lint`,
-rejects legacy compiler imports and directories, resolver codegen/cache terms,
-semantic thread-local state, mixed or arithmetic-rebased provenance, `span`
-fields in HIR/MIR/Rust IR, post-syn/fallback lowering, syn dependencies outside
-the terminal boundary, and emitter dependencies on HIR, Go MIR, or the lowering
-implementation.
+rejects noncanonical compiler imports and directories, resolver codegen/cache
+terms, semantic thread-local state, mixed or arithmetic-rebased provenance,
+`span` fields in HIR/MIR/Rust IR, semantic work after syn emission, syn
+dependencies outside the terminal boundary, and emitter dependencies on HIR,
+Go MIR, or the lowering implementation.
 
 The limit is a backstop, not a design technique. Splits follow semantic
 responsibility and keep internals private; numbered fragments or arbitrary
@@ -773,22 +724,22 @@ claim for either cold or warm builds.
 
 ## Phased 2026 roadmap
 
-### Phase 0 — hard cutover (complete)
+### Phase 0 — production pipeline (complete)
 
 Deliver:
 
-- one production backend and one public facade;
+- one production compiler pipeline and one public facade;
 - typed HIR, explicit-order Go MIR, both IR verifiers, mandatory Rust
   representation lowering, and the terminal emitter;
 - source-only resolver;
-- deletion of every legacy and generated-Rust cache path;
+- one generated-Rust cache and terminal artifact model;
 - stable structured diagnostics for unsupported source;
 - a small import-free end-to-end golden suite;
 - a machine-readable native benchmark evidence schema plus the normative cold
   and warm performance contract.
 
-Exit gate: workspace build and unit checks pass, guard searches find no legacy
-path, and unsupported fixtures cannot execute an alternate backend.
+Exit gate: workspace build and unit checks pass, architecture guards are clean,
+and unsupported fixtures receive structured diagnostics.
 
 ### Phase 1 — semantic and query foundation (in progress)
 
@@ -858,7 +809,7 @@ Deliver:
 - a checksummed, schema-versioned content-addressed semantic and codegen cache;
 - stdlib compilation from pinned Go source without API replacements.
 
-Exit gate: complete stdlib fixture runs publish a fresh replacement-backend
+Exit gate: complete stdlib fixture runs publish a fresh production-pipeline
 baseline, every failure names its first compiler stage, worker-count output is
 byte-identical, and cold/no-op/leaf/dependency-body/dependency-API benchmark
 traces demonstrate fine-grained reuse even before they beat Go.
@@ -911,7 +862,7 @@ The compiler is a credible 2026 architecture when:
 - every Go semantic decision has exactly one owning stage;
 - HIR and MIR are authoritative and independently verifiable;
 - syn is terminal;
-- unsupported source fails explicitly without fallback;
+- unsupported source receives a structured diagnostic from its owning stage;
 - the runtime exposes a small language ABI rather than a shadow stdlib;
 - package and incremental caches store semantic facts with exact invalidation;
 - parse products release obsolete source revisions and semantic identities stay
@@ -925,4 +876,4 @@ The compiler is a credible 2026 architecture when:
   cold and warm acceptance contract, or is still explicitly reported as a
   target rather than a claim.
 
-The compatibility target is Go behavior. The deleted compiler is not a target.
+The compatibility target is Go behavior.

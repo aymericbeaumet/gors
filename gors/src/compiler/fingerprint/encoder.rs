@@ -4,9 +4,14 @@ use sha2::{Digest, Sha256};
 
 use super::Fingerprint;
 use crate::compiler::hir;
-use crate::compiler::ids::{BasicBlockId, DefId, LocalId, NodeId, PackageId, QualifiedDefId};
+use crate::compiler::ids::{
+    BasicBlockId, ClosureId, DefId, LocalId, LocalTypeId, NodeId, PackageId, QualifiedDefId,
+};
 use crate::compiler::provenance::{SourceRef, SourceRefKind};
-use crate::compiler::types::{ConstValue, FloatTy, IntTy, Signature, Ty, UintTy, UntypedTy};
+use crate::compiler::types::{
+    ChannelDir, ComplexTy, ConstValue, FloatTy, IntTy, InterfaceMethod, Signature, StructField, Ty,
+    UintTy, UntypedTy,
+};
 
 const FORMAT_MAGIC: &[u8] = b"gors-stage-product";
 const SCHEMA_VERSION: u32 = 2;
@@ -129,6 +134,15 @@ pub(super) fn local_id(encoder: &mut Encoder, value: LocalId) {
     encoder.u32(value.index());
 }
 
+pub(super) fn local_type_id(encoder: &mut Encoder, value: LocalTypeId) {
+    encoder.field(b"owner", |encoder| def_id(encoder, value.owner()));
+    encoder.field(b"local", |encoder| encoder.u32(value.local_index()));
+}
+
+pub(super) fn closure_id(encoder: &mut Encoder, value: ClosureId) {
+    encoder.u32(value.index());
+}
+
 pub(super) fn block_id(encoder: &mut Encoder, value: BasicBlockId) {
     encoder.u32(value.index());
 }
@@ -151,6 +165,7 @@ pub(super) fn source_ref(encoder: &mut Encoder, source: SourceRef) {
 pub(super) fn signature(encoder: &mut Encoder, value: &Signature) {
     encoder.field(b"params", |encoder| encoder.sequence(&value.params, ty));
     encoder.field(b"results", |encoder| encoder.sequence(&value.results, ty));
+    encoder.field(b"variadic", |encoder| encoder.bool(value.variadic));
 }
 
 pub(super) fn ty(encoder: &mut Encoder, value: &Ty) {
@@ -160,7 +175,46 @@ pub(super) fn ty(encoder: &mut Encoder, value: &Ty) {
         Ty::Int(value) => encoder.variant(b"int", |encoder| int_ty(encoder, *value)),
         Ty::Uint(value) => encoder.variant(b"uint", |encoder| uint_ty(encoder, *value)),
         Ty::Float(value) => encoder.variant(b"float", |encoder| float_ty(encoder, *value)),
+        Ty::Complex(value) => encoder.variant(b"complex", |encoder| complex_ty(encoder, *value)),
+        Ty::Named {
+            definition,
+            underlying,
+        } => encoder.variant(b"named", |encoder| {
+            encoder.field(b"definition", |encoder| def_id(encoder, *definition));
+            encoder.field(b"underlying", |encoder| ty(encoder, underlying));
+        }),
+        Ty::NamedRef { definition } => encoder.variant(b"named-ref", |encoder| {
+            def_id(encoder, *definition);
+        }),
+        Ty::LocalNamed {
+            identity,
+            underlying,
+        } => encoder.variant(b"local-named", |encoder| {
+            encoder.field(b"identity", |encoder| local_type_id(encoder, *identity));
+            encoder.field(b"underlying", |encoder| ty(encoder, underlying));
+        }),
+        Ty::Struct(fields) => {
+            encoder.variant(b"struct", |encoder| encoder.sequence(fields, struct_field));
+        }
+        Ty::Interface(methods) => encoder.variant(b"interface", |encoder| {
+            encoder.sequence(methods, interface_method);
+        }),
+        Ty::Function(value) => encoder.variant(b"function", |encoder| signature(encoder, value)),
         Ty::String => encoder.variant(b"string", |_| {}),
+        Ty::Pointer(element) => encoder.variant(b"pointer", |encoder| ty(encoder, element)),
+        Ty::Array(length, element) => encoder.variant(b"array", |encoder| {
+            encoder.field(b"length", |encoder| encoder.u64(*length));
+            encoder.field(b"element", |encoder| ty(encoder, element));
+        }),
+        Ty::Slice(element) => encoder.variant(b"slice", |encoder| ty(encoder, element)),
+        Ty::Map(key, value) => encoder.variant(b"map", |encoder| {
+            ty(encoder, key);
+            ty(encoder, value);
+        }),
+        Ty::Channel(direction, element) => encoder.variant(b"channel", |encoder| {
+            encoder.field(b"direction", |encoder| channel_dir(encoder, *direction));
+            encoder.field(b"element", |encoder| ty(encoder, element));
+        }),
         Ty::Tuple(values) => {
             encoder.variant(b"tuple", |encoder| encoder.sequence(values, ty));
         }
@@ -168,6 +222,31 @@ pub(super) fn ty(encoder: &mut Encoder, value: &Ty) {
             encoder.variant(b"untyped", |encoder| untyped_ty(encoder, *value));
         }
     }
+}
+
+fn struct_field(encoder: &mut Encoder, value: &StructField) {
+    encoder.field(b"name", |encoder| encoder.string(&value.name));
+    encoder.field(b"type", |encoder| ty(encoder, &value.ty));
+    encoder.field(b"embedded", |encoder| encoder.bool(value.embedded));
+    encoder.field(b"tag", |encoder| {
+        encoder.option(value.tag.as_ref(), |encoder, value| encoder.string(value));
+    });
+}
+
+fn interface_method(encoder: &mut Encoder, value: &InterfaceMethod) {
+    encoder.field(b"name", |encoder| encoder.string(&value.name));
+    encoder.field(b"signature", |encoder| signature(encoder, &value.signature));
+}
+
+fn channel_dir(encoder: &mut Encoder, direction: ChannelDir) {
+    encoder.variant(
+        match direction {
+            ChannelDir::SendReceive => b"send-receive",
+            ChannelDir::SendOnly => b"send-only",
+            ChannelDir::ReceiveOnly => b"receive-only",
+        },
+        |_| {},
+    );
 }
 
 fn int_ty(encoder: &mut Encoder, value: IntTy) {
@@ -207,12 +286,23 @@ fn float_ty(encoder: &mut Encoder, value: FloatTy) {
     );
 }
 
+fn complex_ty(encoder: &mut Encoder, value: ComplexTy) {
+    encoder.variant(
+        match value {
+            ComplexTy::Complex64 => b"complex64",
+            ComplexTy::Complex128 => b"complex128",
+        },
+        |_| {},
+    );
+}
+
 fn untyped_ty(encoder: &mut Encoder, value: UntypedTy) {
     encoder.variant(
         match value {
             UntypedTy::Bool => b"bool",
             UntypedTy::Int => b"int",
             UntypedTy::Float => b"float",
+            UntypedTy::Complex => b"complex",
             UntypedTy::String => b"string",
         },
         |_| {},
@@ -230,6 +320,10 @@ pub(super) fn const_value(encoder: &mut Encoder, value: &ConstValue) {
         ConstValue::Float(value) => {
             encoder.variant(b"exact-float", |encoder| encoder.string(value));
         }
+        ConstValue::Complex { real, imag } => encoder.variant(b"exact-complex", |encoder| {
+            encoder.field(b"real", |encoder| encoder.string(real));
+            encoder.field(b"imag", |encoder| encoder.string(imag));
+        }),
         ConstValue::String(value) => {
             encoder.variant(b"go-string-bytes", |encoder| encoder.blob(value));
         }

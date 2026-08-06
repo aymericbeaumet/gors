@@ -305,7 +305,7 @@ proptest! {
         let _ = gors::parser::parse_file("test.go", &input);
     }
 
-    /// Test that accepted generated sources never panic generic lowering
+    /// Test that accepted generated sources never panic the compiler pipeline
     #[test]
     fn compiler_no_panic(source in go_source_strategy()) {
         fuzz::exercise_compiler(source.as_bytes());

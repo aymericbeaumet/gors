@@ -60,6 +60,11 @@ assert protocol["runCommand"] == "gors-run"
 assert protocol["jobDirectory"] == "tmp"
 assert protocol["nonceHexLength"] == 32
 assert protocol["bootReadyMarker"] in warmup_script
+assert "printf '\\nGORS_BOOT_READY\\n'" in warmup_script
+assert "/usr/local/bin/gors-runtime-verify" not in warmup_script
+assert '"--smoke"' in warmup_script
+assert "rustc --crate-name gors_warmup" in warmup_script
+assert "/usr/local/bin/gors-runtime-verify" in compile_script
 assert protocol["compileDonePrefix"] in compile_script
 assert protocol["runDonePrefix"] in run_script
 assert str(protocol["nonceHexLength"]) in compile_script
@@ -111,7 +116,7 @@ post_strip = dockerfile.split(
 )[1]
 assert "/usr/local/bin/gors-runtime-publish" in post_strip
 assert "/usr/local/bin/gors-runtime-verify" in post_strip
-assert "/usr/local/bin/gors-warmup" in post_strip
+assert "/usr/local/bin/gors-warmup --smoke" in post_strip
 PY
 grep -Fq 'mktemp "${RUNTIME_DIR}/.provider.json.XXXXXX"' \
     "${SCRIPT_DIR}/rootfs/gors-runtime-publish"
@@ -184,7 +189,7 @@ assert re.fullmatch(r"[0-9a-f]{64}", provider["producer_identity"])
 assert re.fullmatch(r"[0-9a-f]{64}", provider["compatibility_identity"])
 assert re.fullmatch(r"[0-9a-f]{64}", provider["artifact_identity"])
 assert "toolchain_identity" not in provider
-assert provider["supported_operation_ids"] == [1, 2, 3, 8, 9, 10, 11, 13, 14, 15, 16, 17]
+assert provider["supported_operation_ids"] == [1, 2, 3, 8, 9, 10, 11, *range(13, 113)]
 PY
 
 PRODUCER_IDENTITY=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["producer_identity"])' \
@@ -214,7 +219,7 @@ PY
 
 CONTRACT=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["contract"])' \
     "${TEMPORARY}/provider-a.json")
-SUPPORTED=1,2,3,8,9,10,11,13,14,15,16,17
+SUPPORTED=1,2,3,8,9,10,11,13,14,15,16,17,18,19,20
 validate() {
     "${REQUEST_TOOL}" "$1" 1 "${CONTRACT}" "${SUPPORTED}"
 }

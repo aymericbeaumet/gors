@@ -9,21 +9,98 @@ use std::collections::BTreeMap;
 use proc_macro2::Span;
 
 use super::Diagnostic;
+use super::ids::{PackageId, QualifiedDefId};
 use super::rust_ir::{
-    self, CallTarget, Constant, ControlFlowPlan, DefId, LocalId, Operand, Place, PrimitiveOp,
-    ReadOp, RuntimeOp, RustLinkage, RustSymbol, RustType, Rvalue, RvalueKind, SlotInitialization,
+    self, CallTarget, Constant, ControlFlowPlan, LocalId, Operand, Place, PrimitiveOp, ReadOp,
+    RuntimeOp, RustLinkage, RustSymbol, RustType, Rvalue, RvalueKind, SlotInitialization,
     Statement, StorageClass, StoreOp, Terminator, TerminatorKind, ValueOp,
 };
 
+pub(super) fn emit_program(
+    entry: PackageId,
+    packages: &BTreeMap<PackageId, (Option<String>, rust_ir::File)>,
+) -> Result<(syn::File, BTreeMap<String, syn::File>), Diagnostic> {
+    let mut function_paths = BTreeMap::new();
+    let mut module_owners = BTreeMap::<String, PackageId>::new();
+    for (package, (module, file)) in packages {
+        if file.package_id != *package {
+            return Err(Diagnostic::backend(
+                "Rust IR package identity disagrees with program assembly",
+            ));
+        }
+        let module_ident = module
+            .as_ref()
+            .map(|module| syn::Ident::new(module, Span::mixed_site()));
+        if let Some(module) = module {
+            if let Some(previous) = module_owners.insert(module.clone(), *package)
+                && previous != *package
+            {
+                return Err(Diagnostic::backend(format!(
+                    "generated Rust module {module} names more than one package"
+                )));
+            }
+        } else if *package != entry {
+            return Err(Diagnostic::backend(
+                "a dependency Rust IR package has no generated module name",
+            ));
+        }
+        for function in &file.functions {
+            let function_ident = function_ident(&function.artifact.symbol);
+            let path = if let Some(module_ident) = &module_ident {
+                syn::parse_quote! { crate::#module_ident::#function_ident }
+            } else {
+                syn::parse_quote! { #function_ident }
+            };
+            let definition = QualifiedDefId::new(*package, function.id);
+            if function_paths.insert(definition, path).is_some() {
+                return Err(Diagnostic::backend(format!(
+                    "duplicate emitted function identity {definition}"
+                )));
+            }
+        }
+    }
+
+    let mut entry_file = None;
+    let mut modules = BTreeMap::new();
+    for (package, (module, file)) in packages {
+        let emitted = emit_file_with_paths(file, &function_paths)?;
+        if *package == entry {
+            entry_file = Some(emitted);
+        } else {
+            let module = module.clone().ok_or_else(|| {
+                Diagnostic::backend("dependency package lost its generated module name")
+            })?;
+            modules.insert(module, emitted);
+        }
+    }
+    entry_file
+        .map(|entry| (entry, modules))
+        .ok_or_else(|| Diagnostic::backend("program assembly omitted its entry package"))
+}
+
+#[cfg(test)]
 pub(super) fn emit_file(file: &rust_ir::File) -> Result<syn::File, Diagnostic> {
-    let function_names = file
+    let function_paths = file
         .functions
         .iter()
-        .map(|function| (function.id, function_ident(&function.artifact.symbol)))
+        .map(|function| {
+            let ident = function_ident(&function.artifact.symbol);
+            (
+                QualifiedDefId::new(file.package_id, function.id),
+                syn::parse_quote! { #ident },
+            )
+        })
         .collect::<BTreeMap<_, _>>();
+    emit_file_with_paths(file, &function_paths)
+}
+
+pub(super) fn emit_file_with_paths(
+    file: &rust_ir::File,
+    function_paths: &BTreeMap<QualifiedDefId, syn::Path>,
+) -> Result<syn::File, Diagnostic> {
     let mut items = Vec::new();
     for function in &file.functions {
-        items.push(syn::Item::Fn(emit_function(function, &function_names)?));
+        items.push(syn::Item::Fn(emit_function(function, function_paths)?));
     }
     Ok(syn::File {
         shebang: None,
@@ -34,11 +111,9 @@ pub(super) fn emit_file(file: &rust_ir::File) -> Result<syn::File, Diagnostic> {
 
 fn emit_function(
     function: &rust_ir::Function,
-    function_names: &BTreeMap<DefId, syn::Ident>,
+    function_paths: &BTreeMap<QualifiedDefId, syn::Path>,
 ) -> Result<syn::ItemFn, Diagnostic> {
-    let name = function_names.get(&function.id).cloned().ok_or_else(|| {
-        Diagnostic::backend(format!("missing Rust symbol for DefId {}", function.id))
-    })?;
+    let name = function_ident(&function.artifact.symbol);
     let parameter_idents = function
         .parameters
         .iter()
@@ -54,7 +129,8 @@ fn emit_function(
                 .locals
                 .get(local.0 as usize)
                 .ok_or_else(|| Diagnostic::backend(format!("invalid parameter local {}", local.0)))?
-                .ty;
+                .ty
+                .clone();
             let ty = emit_type(&ty)?;
             Ok::<syn::FnArg, Diagnostic>(syn::parse_quote! { #ident: #ty })
         })
@@ -90,42 +166,55 @@ fn emit_function(
         initializers.push(statement);
     }
 
-    if function.control_flow != ControlFlowPlan::PcDispatchU32 {
-        return Err(Diagnostic::backend(
-            "unsupported verified control-flow plan",
-        ));
-    }
-    let entry = function.entry.0;
-    let pc = syn::Ident::new("__gors_pc", Span::mixed_site());
-    let mut arms = Vec::<syn::Arm>::new();
-    for block in &function.blocks {
-        let block_id = syn::LitInt::new(&format!("{}u32", block.id.0), Span::mixed_site());
-        let statements = block
-            .statements
-            .iter()
-            .map(|statement| emit_statement(statement, function))
-            .collect::<Result<Vec<_>, _>>()?;
-        let terminator = emit_terminator(&block.terminator, function, function_names, &pc)?;
-        arms.push(syn::parse_quote! {
-            #block_id => {
-                #(#statements)*
-                #terminator
-            }
-        });
-    }
-    arms.push(syn::parse_quote! {
-        _ => ::std::unreachable!("invalid compiler Rust IR block")
-    });
-
-    let body: syn::Block = syn::parse_quote! {{
-        #(#initializers)*
-        let mut #pc: u32 = #entry;
-        loop {
-            match #pc {
-                #(#arms),*
-            }
+    let control_flow = match &function.control_flow {
+        ControlFlowPlan::StructuredLinear { order } => {
+            emit_structured_linear(function, function_paths, order)?
         }
-    }};
+        ControlFlowPlan::PcDispatchU32 => emit_pc_dispatch(function, function_paths)?,
+    };
+
+    let body: syn::Block = if let Some(cleanup) = function.panic_cleanup {
+        let cleanup_flow = emit_pc_dispatch_from(function, function_paths, cleanup.entry.0)?;
+        let active = slot_ident(cleanup.active);
+        syn::parse_quote! {{
+            #(#initializers)*
+            let __gors_execution = ::std::panic::catch_unwind(
+                ::std::panic::AssertUnwindSafe(|| {
+                    #(#control_flow)*
+                })
+            );
+            match __gors_execution {
+                ::std::result::Result::Ok(value) => value,
+                ::std::result::Result::Err(__gors_panic_payload) => {
+                    #active = ::std::option::Option::Some(true);
+                    let __gors_cleanup = ::std::panic::catch_unwind(
+                        ::std::panic::AssertUnwindSafe(|| {
+                            #(#cleanup_flow)*
+                        })
+                    );
+                    match __gors_cleanup {
+                        ::std::result::Result::Err(payload) => {
+                            ::std::panic::resume_unwind(payload)
+                        }
+                        ::std::result::Result::Ok(value) => {
+                            if *#active.as_ref().expect(
+                                "compiler read of uninitialized panic recovery state"
+                            ) {
+                                ::std::panic::resume_unwind(__gors_panic_payload)
+                            } else {
+                                value
+                            }
+                        }
+                    }
+                }
+            }
+        }}
+    } else {
+        syn::parse_quote! {{
+            #(#initializers)*
+            #(#control_flow)*
+        }}
+    };
 
     let visibility: syn::Visibility = match function.artifact.linkage {
         RustLinkage::Internal => syn::Visibility::Inherited,
@@ -151,6 +240,105 @@ fn emit_function(
     })
 }
 
+fn emit_structured_linear(
+    function: &rust_ir::Function,
+    function_names: &BTreeMap<QualifiedDefId, syn::Path>,
+    order: &[rust_ir::BasicBlockId],
+) -> Result<Vec<syn::Stmt>, Diagnostic> {
+    let mut emitted = Vec::new();
+    for block_id in order {
+        let block = function
+            .blocks
+            .get(block_id.0 as usize)
+            .ok_or_else(|| Diagnostic::backend("verified structured block is missing"))?;
+        emitted.extend(
+            block
+                .statements
+                .iter()
+                .map(|statement| emit_statement(statement, function))
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+        match &block.terminator.kind {
+            TerminatorKind::Goto(_) => {}
+            TerminatorKind::Call {
+                target,
+                args,
+                destinations,
+                ..
+            } => {
+                let args = args
+                    .iter()
+                    .map(|arg| emit_operand(arg, function))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let call = emit_call(target, args, function_names)?;
+                emitted.extend(emit_call_writes(call, destinations));
+            }
+            TerminatorKind::Return(values) => {
+                let values = values
+                    .iter()
+                    .map(|value| emit_operand(value, function))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let value: syn::Expr = match values.as_slice() {
+                    [] => syn::parse_quote! { () },
+                    [value] => value.clone(),
+                    values => syn::parse_quote! { (#(#values),*) },
+                };
+                emitted.push(syn::parse_quote! { return #value; });
+            }
+            TerminatorKind::SwitchBool { .. } | TerminatorKind::Unreachable => {
+                return Err(Diagnostic::backend(
+                    "verified structured-linear plan contains non-linear control flow",
+                ));
+            }
+        }
+    }
+    Ok(emitted)
+}
+
+fn emit_pc_dispatch(
+    function: &rust_ir::Function,
+    function_names: &BTreeMap<QualifiedDefId, syn::Path>,
+) -> Result<Vec<syn::Stmt>, Diagnostic> {
+    emit_pc_dispatch_from(function, function_names, function.entry.0)
+}
+
+fn emit_pc_dispatch_from(
+    function: &rust_ir::Function,
+    function_names: &BTreeMap<QualifiedDefId, syn::Path>,
+    entry: u32,
+) -> Result<Vec<syn::Stmt>, Diagnostic> {
+    let pc = syn::Ident::new("__gors_pc", Span::mixed_site());
+    let mut arms = Vec::<syn::Arm>::new();
+    for block in &function.blocks {
+        let block_id = syn::LitInt::new(&format!("{}u32", block.id.0), Span::mixed_site());
+        let statements = block
+            .statements
+            .iter()
+            .map(|statement| emit_statement(statement, function))
+            .collect::<Result<Vec<_>, _>>()?;
+        let terminator = emit_terminator(&block.terminator, function, function_names, &pc)?;
+        arms.push(syn::parse_quote! {
+            #block_id => {
+                #(#statements)*
+                #terminator
+            }
+        });
+    }
+    arms.push(syn::parse_quote! {
+        _ => ::std::unreachable!("invalid compiler Rust IR block")
+    });
+    Ok(vec![
+        syn::parse_quote! { let mut #pc: u32 = #entry; },
+        syn::parse_quote! {
+            loop {
+                match #pc {
+                    #(#arms),*
+                }
+            }
+        },
+    ])
+}
+
 fn emit_statement(
     statement: &Statement,
     function: &rust_ir::Function,
@@ -168,7 +356,7 @@ fn emit_statement(
 fn emit_terminator(
     terminator: &Terminator,
     function: &rust_ir::Function,
-    function_names: &BTreeMap<DefId, syn::Ident>,
+    function_names: &BTreeMap<QualifiedDefId, syn::Path>,
     pc: &syn::Ident,
 ) -> Result<syn::Expr, Diagnostic> {
     match &terminator.kind {
@@ -195,7 +383,7 @@ fn emit_terminator(
         TerminatorKind::Call {
             target: call_target,
             args,
-            destination,
+            destinations,
             next,
         } => {
             let emitted_args = args
@@ -204,20 +392,12 @@ fn emit_terminator(
                 .collect::<Result<Vec<_>, _>>()?;
             let call = emit_call(call_target, emitted_args, function_names)?;
             let target = next.0;
-            if let Some(destination) = destination {
-                let slot = slot_ident(destination.local);
-                Ok(syn::parse_quote! {{
-                    #slot = ::std::option::Option::Some(#call);
-                    #pc = #target;
-                    continue;
-                }})
-            } else {
-                Ok(syn::parse_quote! {{
-                    #call;
-                    #pc = #target;
-                    continue;
-                }})
-            }
+            let writes = emit_call_writes(call, destinations);
+            Ok(syn::parse_quote! {{
+                #(#writes)*
+                #pc = #target;
+                continue;
+            }})
         }
         TerminatorKind::Return(values) => {
             let values = values
@@ -237,10 +417,46 @@ fn emit_terminator(
     }
 }
 
+fn emit_call_writes(call: syn::Expr, destinations: &[rust_ir::Place]) -> Vec<syn::Stmt> {
+    match destinations {
+        [] => vec![syn::parse_quote! { #call; }],
+        [destination] => {
+            let slot = slot_ident(destination.local);
+            vec![syn::parse_quote! {
+                #slot = ::std::option::Option::Some(#call);
+            }]
+        }
+        destinations => {
+            let temporaries = destinations
+                .iter()
+                .enumerate()
+                .map(|(index, destination)| {
+                    syn::Ident::new(
+                        &format!("__gors_result_{index}_{}", destination.local.0),
+                        proc_macro2::Span::call_site(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let mut statements = vec![syn::parse_quote! {
+                let (#(#temporaries),*) = #call;
+            }];
+            statements.extend(destinations.iter().zip(&temporaries).map(
+                |(destination, temporary)| {
+                    let slot = slot_ident(destination.local);
+                    syn::parse_quote! {
+                        #slot = ::std::option::Option::Some(#temporary);
+                    }
+                },
+            ));
+            statements
+        }
+    }
+}
+
 fn emit_call(
     target: &CallTarget,
     args: Vec<syn::Expr>,
-    function_names: &BTreeMap<DefId, syn::Ident>,
+    function_names: &BTreeMap<QualifiedDefId, syn::Path>,
 ) -> Result<syn::Expr, Diagnostic> {
     match target {
         CallTarget::Function(id) => {
@@ -260,10 +476,206 @@ fn emit_rvalue(rvalue: &Rvalue, function: &rust_ir::Function) -> Result<syn::Exp
             let operand = emit_operand(operand, function)?;
             emit_value_op(*op, vec![operand])
         }
+        RvalueKind::RecoverCompareNil { state, equal } => {
+            let state = checked_slot(*state, function)?;
+            if *equal {
+                Ok(syn::parse_quote! {{
+                    let __gors_recover_was_active = *#state.as_ref().expect(
+                        "compiler read of uninitialized panic recovery state"
+                    );
+                    #state = ::std::option::Option::Some(false);
+                    !__gors_recover_was_active
+                }})
+            } else {
+                Ok(syn::parse_quote! {{
+                    let __gors_recover_was_active = *#state.as_ref().expect(
+                        "compiler read of uninitialized panic recovery state"
+                    );
+                    #state = ::std::option::Option::Some(false);
+                    __gors_recover_was_active
+                }})
+            }
+        }
         RvalueKind::Binary { op, left, right } => {
             let left = emit_operand(left, function)?;
             let right = emit_operand(right, function)?;
             emit_value_op(*op, vec![left, right])
+        }
+        RvalueKind::ArrayIndexI64 { array, index } => {
+            let array = emit_operand(array, function)?;
+            let index = emit_operand(index, function)?;
+            Ok(syn::parse_quote! {{
+                let __gors_array = #array;
+                let __gors_index_value = #index;
+                let ::std::result::Result::Ok(__gors_index) =
+                    ::std::primitive::usize::try_from(__gors_index_value)
+                else {
+                    ::std::panic::resume_unwind(::std::boxed::Box::new(
+                        "runtime error: index out of range"
+                    ));
+                };
+                *__gors_array.get(__gors_index).unwrap_or_else(|| {
+                    ::std::panic::resume_unwind(::std::boxed::Box::new(
+                        "runtime error: index out of range"
+                    ))
+                })
+            }})
+        }
+        RvalueKind::ArrayIndex { array, index } => {
+            let array = emit_operand(array, function)?;
+            let index = emit_operand(index, function)?;
+            Ok(syn::parse_quote! {{
+                let __gors_array = #array;
+                let __gors_index_value = #index;
+                let ::std::result::Result::Ok(__gors_index) =
+                    ::std::primitive::usize::try_from(__gors_index_value)
+                else {
+                    ::std::panic::resume_unwind(::std::boxed::Box::new(
+                        "runtime error: index out of range"
+                    ));
+                };
+                __gors_array.get(__gors_index).cloned().unwrap_or_else(|| {
+                    ::std::panic::resume_unwind(::std::boxed::Box::new(
+                        "runtime error: index out of range"
+                    ))
+                })
+            }})
+        }
+        RvalueKind::ArraySetI64 {
+            array,
+            index,
+            value,
+        } => {
+            let array = emit_operand(array, function)?;
+            let index = emit_operand(index, function)?;
+            let value = emit_operand(value, function)?;
+            Ok(syn::parse_quote! {{
+                let mut __gors_array = #array;
+                let __gors_index_value = #index;
+                let __gors_value = #value;
+                let ::std::result::Result::Ok(__gors_index) =
+                    ::std::primitive::usize::try_from(__gors_index_value)
+                else {
+                    ::std::panic::resume_unwind(::std::boxed::Box::new(
+                        "runtime error: index out of range"
+                    ));
+                };
+                let ::std::option::Option::Some(__gors_target) =
+                    __gors_array.get_mut(__gors_index)
+                else {
+                    ::std::panic::resume_unwind(::std::boxed::Box::new(
+                        "runtime error: index out of range"
+                    ));
+                };
+                *__gors_target = __gors_value;
+                __gors_array
+            }})
+        }
+        RvalueKind::ArraySet {
+            array,
+            index,
+            value,
+        } => {
+            let array = emit_operand(array, function)?;
+            let index = emit_operand(index, function)?;
+            let value = emit_operand(value, function)?;
+            Ok(syn::parse_quote! {{
+                let mut __gors_array = #array;
+                let __gors_index_value = #index;
+                let __gors_value = #value;
+                let ::std::result::Result::Ok(__gors_index) =
+                    ::std::primitive::usize::try_from(__gors_index_value)
+                else {
+                    ::std::panic::resume_unwind(::std::boxed::Box::new(
+                        "runtime error: index out of range"
+                    ));
+                };
+                let ::std::option::Option::Some(__gors_target) =
+                    __gors_array.get_mut(__gors_index)
+                else {
+                    ::std::panic::resume_unwind(::std::boxed::Box::new(
+                        "runtime error: index out of range"
+                    ));
+                };
+                *__gors_target = __gors_value;
+                __gors_array
+            }})
+        }
+        RvalueKind::ArrayLiteral { elements, .. } => {
+            let elements = elements
+                .iter()
+                .map(|element| emit_operand(element, function))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(syn::parse_quote! { [#(#elements),*] })
+        }
+        RvalueKind::StructLiteral { fields, .. } => {
+            let fields = fields
+                .iter()
+                .map(|field| emit_operand(field, function))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(syn::parse_quote! { (#(#fields,)*) })
+        }
+        RvalueKind::StructField { structure, field } => {
+            let structure = emit_operand(structure, function)?;
+            let field = syn::Index::from(usize::try_from(*field).map_err(|_| {
+                Diagnostic::backend("verified struct field index does not fit usize")
+            })?);
+            Ok(syn::parse_quote! { (#structure).#field })
+        }
+        RvalueKind::StructSet {
+            structure,
+            field,
+            value,
+        } => {
+            let structure = emit_operand(structure, function)?;
+            let field = syn::Index::from(usize::try_from(*field).map_err(|_| {
+                Diagnostic::backend("verified struct field index does not fit usize")
+            })?);
+            let value = emit_operand(value, function)?;
+            Ok(syn::parse_quote! {{
+                let mut __gors_structure = #structure;
+                __gors_structure.#field = #value;
+                __gors_structure
+            }})
+        }
+        RvalueKind::StructLiteralI64(fields) => {
+            let fields = fields
+                .iter()
+                .map(|field| emit_operand(field, function))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(syn::parse_quote! { [#(#fields),*] })
+        }
+        RvalueKind::StructFieldI64 { structure, field } => {
+            let structure = emit_operand(structure, function)?;
+            let field = syn::Index::from(usize::try_from(*field).map_err(|_| {
+                Diagnostic::backend("verified struct field index does not fit usize")
+            })?);
+            Ok(syn::parse_quote! { (#structure)[#field] })
+        }
+        RvalueKind::StructSetI64 {
+            structure,
+            field,
+            value,
+        } => {
+            let structure = emit_operand(structure, function)?;
+            let field = syn::Index::from(usize::try_from(*field).map_err(|_| {
+                Diagnostic::backend("verified struct field index does not fit usize")
+            })?);
+            let value = emit_operand(value, function)?;
+            Ok(syn::parse_quote! {{
+                let mut __gors_structure = #structure;
+                __gors_structure[#field] = #value;
+                __gors_structure
+            }})
+        }
+        RvalueKind::AggregateEqualI64 { left, right, equal } => {
+            let left = emit_operand(left, function)?;
+            let right = emit_operand(right, function)?;
+            if *equal {
+                Ok(syn::parse_quote! { (#left) == (#right) })
+            } else {
+                Ok(syn::parse_quote! { (#left) != (#right) })
+            }
         }
     }
 }
@@ -280,6 +692,10 @@ fn emit_primitive_op(operation: PrimitiveOp, args: &[syn::Expr]) -> Result<syn::
     let expression = match (operation, args) {
         (BoolNot | IntBitNot, [value]) => syn::parse_quote! { !(#value) },
         (IntWrappingNeg, [value]) => syn::parse_quote! { (#value).wrapping_neg() },
+        (FloatNeg, [value]) => syn::parse_quote! { -(#value) },
+        (ComplexNeg, [value]) => syn::parse_quote! { [-(#value)[0], -(#value)[1]] },
+        (ComplexReal, [value]) => syn::parse_quote! { (#value)[0] },
+        (ComplexImag, [value]) => syn::parse_quote! { (#value)[1] },
         (IntBitAnd, [left, right]) => syn::parse_quote! { (#left) & (#right) },
         (IntBitOr, [left, right]) => syn::parse_quote! { (#left) | (#right) },
         (IntBitXor, [left, right]) => syn::parse_quote! { (#left) ^ (#right) },
@@ -293,20 +709,86 @@ fn emit_primitive_op(operation: PrimitiveOp, args: &[syn::Expr]) -> Result<syn::
         (IntWrappingMul, [left, right]) => {
             syn::parse_quote! { (#left).wrapping_mul(#right) }
         }
-        (BoolEqual | IntEqual | StringEqual, [left, right]) => {
+        (IntMin, [left, right]) => syn::parse_quote! {
+            if (#left) < (#right) { #left } else { #right }
+        },
+        (IntMax, [left, right]) => syn::parse_quote! {
+            if (#left) > (#right) { #left } else { #right }
+        },
+        (FloatAdd, [left, right]) => syn::parse_quote! { (#left) + (#right) },
+        (FloatSub, [left, right]) => syn::parse_quote! { (#left) - (#right) },
+        (FloatMul, [left, right]) => syn::parse_quote! { (#left) * (#right) },
+        (FloatDiv, [left, right]) => syn::parse_quote! { (#left) / (#right) },
+        (FloatMin, [left, right]) => syn::parse_quote! {
+            if (#left).is_nan() {
+                #left
+            } else if (#right).is_nan() {
+                #right
+            } else if (#left) == 0.0 && (#right) == 0.0 {
+                if (#left).is_sign_negative() { #left } else { #right }
+            } else if (#left) < (#right) {
+                #left
+            } else {
+                #right
+            }
+        },
+        (FloatMax, [left, right]) => syn::parse_quote! {
+            if (#left).is_nan() {
+                #left
+            } else if (#right).is_nan() {
+                #right
+            } else if (#left) == 0.0 && (#right) == 0.0 {
+                if (#left).is_sign_positive() { #left } else { #right }
+            } else if (#left) > (#right) {
+                #left
+            } else {
+                #right
+            }
+        },
+        (ComplexFromParts, [real, imag]) => syn::parse_quote! { [#real, #imag] },
+        (ComplexAdd, [left, right]) => {
+            syn::parse_quote! { [(#left)[0] + (#right)[0], (#left)[1] + (#right)[1]] }
+        }
+        (ComplexSub, [left, right]) => {
+            syn::parse_quote! { [(#left)[0] - (#right)[0], (#left)[1] - (#right)[1]] }
+        }
+        (ComplexMul, [left, right]) => syn::parse_quote! {
+            [
+                (#left)[0] * (#right)[0] - (#left)[1] * (#right)[1],
+                (#left)[0] * (#right)[1] + (#left)[1] * (#right)[0],
+            ]
+        },
+        (ComplexDiv, [left, right]) => syn::parse_quote! {
+            {
+                let __gors_denominator = (#right)[0] * (#right)[0] + (#right)[1] * (#right)[1];
+                [
+                    ((#left)[0] * (#right)[0] + (#left)[1] * (#right)[1]) / __gors_denominator,
+                    ((#left)[1] * (#right)[0] - (#left)[0] * (#right)[1]) / __gors_denominator,
+                ]
+            }
+        },
+        (BoolEqual | IntEqual | FloatEqual | StringEqual, [left, right]) => {
             syn::parse_quote! { (#left) == (#right) }
         }
-        (BoolNotEqual | IntNotEqual | StringNotEqual, [left, right]) => {
+        (BoolNotEqual | IntNotEqual | FloatNotEqual | StringNotEqual, [left, right]) => {
             syn::parse_quote! { (#left) != (#right) }
         }
-        (IntLess | StringLess, [left, right]) => syn::parse_quote! { (#left) < (#right) },
-        (IntLessEqual | StringLessEqual, [left, right]) => {
+        (ComplexEqual, [left, right]) => syn::parse_quote! {
+            (#left)[0] == (#right)[0] && (#left)[1] == (#right)[1]
+        },
+        (ComplexNotEqual, [left, right]) => syn::parse_quote! {
+            (#left)[0] != (#right)[0] || (#left)[1] != (#right)[1]
+        },
+        (IntLess | FloatLess | StringLess, [left, right]) => {
+            syn::parse_quote! { (#left) < (#right) }
+        }
+        (IntLessEqual | FloatLessEqual | StringLessEqual, [left, right]) => {
             syn::parse_quote! { (#left) <= (#right) }
         }
-        (IntGreater | StringGreater, [left, right]) => {
+        (IntGreater | FloatGreater | StringGreater, [left, right]) => {
             syn::parse_quote! { (#left) > (#right) }
         }
-        (IntGreaterEqual | StringGreaterEqual, [left, right]) => {
+        (IntGreaterEqual | FloatGreaterEqual | StringGreaterEqual, [left, right]) => {
             syn::parse_quote! { (#left) >= (#right) }
         }
         (operation, _) => {
@@ -386,9 +868,54 @@ fn emit_constant(value: &Constant) -> Result<syn::Expr, Diagnostic> {
                 })
             }
         }
+        Constant::F64(bits) => {
+            let bits = syn::LitInt::new(&format!("{bits}u64"), Span::mixed_site());
+            Ok(syn::parse_quote! { ::std::primitive::f64::from_bits(#bits) })
+        }
+        Constant::Complex128 { real, imag } => {
+            let real = syn::LitInt::new(&format!("{real}u64"), Span::mixed_site());
+            let imag = syn::LitInt::new(&format!("{imag}u64"), Span::mixed_site());
+            Ok(syn::parse_quote! {
+                [
+                    ::std::primitive::f64::from_bits(#real),
+                    ::std::primitive::f64::from_bits(#imag),
+                ]
+            })
+        }
+        Constant::StaticI64Array(values) => {
+            let values = values
+                .iter()
+                .map(|value| emit_constant(&Constant::I64(*value)))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(syn::parse_quote! { [#(#values),*] })
+        }
         Constant::RuntimeStaticBytes { op, bytes } => {
             let bytes = syn::LitByteStr::new(bytes, Span::mixed_site());
             Ok(emit_runtime_call(*op, vec![syn::parse_quote! { #bytes }]))
+        }
+        Constant::RuntimeStaticI64s { op, values } => {
+            let values = values
+                .iter()
+                .map(|value| emit_constant(&Constant::I64(*value)))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(emit_runtime_call(
+                *op,
+                vec![syn::parse_quote! { &[#(#values),*] }],
+            ))
+        }
+        Constant::RuntimeStaticBools { op, values } => {
+            let values = values
+                .iter()
+                .map(|value| emit_constant(&Constant::Bool(*value)))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(emit_runtime_call(
+                *op,
+                vec![syn::parse_quote! { &[#(#values),*] }],
+            ))
+        }
+        Constant::RuntimeStaticU8s { op, values } => {
+            let values = syn::LitByteStr::new(values, Span::mixed_site());
+            Ok(emit_runtime_call(*op, vec![syn::parse_quote! { #values }]))
         }
     }
 }
@@ -412,6 +939,53 @@ fn emit_type(ty: &RustType) -> Result<syn::Type, Diagnostic> {
         RustType::Bool => syn::parse_quote! { bool },
         RustType::GoString => syn::parse_quote! { ::#runtime_crate::GoString },
         RustType::I64 => syn::parse_quote! { i64 },
+        RustType::F64 => syn::parse_quote! { f64 },
+        RustType::Complex128 => syn::parse_quote! { [f64; 2] },
+        RustType::GoSliceI64 => syn::parse_quote! { ::#runtime_crate::GoSliceI64 },
+        RustType::GoSliceU8 => syn::parse_quote! { ::#runtime_crate::GoSliceU8 },
+        RustType::GoSliceBool => syn::parse_quote! { ::#runtime_crate::GoSliceBool },
+        RustType::GoSliceInterface => syn::parse_quote! { ::#runtime_crate::GoSliceInterface },
+        RustType::GoMapStringI64 => syn::parse_quote! { ::#runtime_crate::GoMapStringI64 },
+        RustType::GoMapStringInterface => {
+            syn::parse_quote! { ::#runtime_crate::GoMapStringInterface }
+        }
+        RustType::GoPointerI64 => syn::parse_quote! { ::#runtime_crate::GoPointerI64 },
+        RustType::GoPointerStructI64 => {
+            syn::parse_quote! { ::#runtime_crate::GoPointerStructI64 }
+        }
+        RustType::GoInterface => syn::parse_quote! { ::#runtime_crate::GoInterface },
+        RustType::GoChannelI64 => syn::parse_quote! { ::#runtime_crate::GoChannelI64 },
+        RustType::ArrayI64(length) => {
+            let length = syn::LitInt::new(&length.to_string(), Span::mixed_site());
+            syn::parse_quote! { [i64; #length] }
+        }
+        RustType::ArrayBool(length) => {
+            let length = syn::LitInt::new(&length.to_string(), Span::mixed_site());
+            syn::parse_quote! { [bool; #length] }
+        }
+        RustType::ArrayF64(length) => {
+            let length = syn::LitInt::new(&length.to_string(), Span::mixed_site());
+            syn::parse_quote! { [f64; #length] }
+        }
+        RustType::ArrayGoString(length) => {
+            let length = syn::LitInt::new(&length.to_string(), Span::mixed_site());
+            syn::parse_quote! { [::#runtime_crate::GoString; #length] }
+        }
+        RustType::ArrayGoPointerStructI64(length) => {
+            let length = syn::LitInt::new(&length.to_string(), Span::mixed_site());
+            syn::parse_quote! { [::#runtime_crate::GoPointerStructI64; #length] }
+        }
+        RustType::Struct(fields) => {
+            let fields = fields
+                .iter()
+                .map(emit_type)
+                .collect::<Result<Vec<_>, _>>()?;
+            syn::parse_quote! { (#(#fields,)*) }
+        }
+        RustType::StructI64(length) => {
+            let length = syn::LitInt::new(&length.to_string(), Span::mixed_site());
+            syn::parse_quote! { [i64; #length] }
+        }
     })
 }
 

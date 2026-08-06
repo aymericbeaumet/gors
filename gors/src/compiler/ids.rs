@@ -117,12 +117,18 @@ impl QualifiedDefId {
     }
 }
 
+impl fmt::Display for QualifiedDefId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{:?}/{}", self.package, self.definition)
+    }
+}
+
 /// Dense identity of one HIR node within a stable definition owner.
 ///
 /// This pair is unique and deterministic for one rebuilt function, but the
 /// dense component is deliberately not a persistent/query identity. Stable
 /// node matching requires reusable incremental syntax identities, which the
-/// bootstrap parser does not yet provide. Keeping the owner explicit prevents
+/// current parser does not yet provide. Keeping the owner explicit prevents
 /// accidental file-global use and keeps unrelated declaration ordering from
 /// perturbing a function's rebuilt nodes.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -156,6 +162,50 @@ impl NodeId {
 pub struct LocalId(pub u32);
 
 impl LocalId {
+    /// Canonical owner-local index for compiler-owned encodings.
+    pub(in crate::compiler) const fn index(self) -> u32 {
+        self.0
+    }
+}
+
+/// Dense identity of a named type declared inside one function.
+///
+/// This identity is deliberately revision-local and may only travel inside
+/// its owning function's HIR and IR products. It is not a query or CAS key.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct LocalTypeId {
+    owner: DefId,
+    local: u32,
+}
+
+impl LocalTypeId {
+    pub(super) const fn owner_local(owner: DefId, local: u32) -> Self {
+        Self { owner, local }
+    }
+
+    pub(in crate::compiler) const fn owner(self) -> DefId {
+        self.owner
+    }
+
+    pub(in crate::compiler) const fn local_index(self) -> u32 {
+        self.local
+    }
+}
+
+impl fmt::Display for LocalTypeId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}:{}", self.owner, self.local)
+    }
+}
+
+/// Dense identity of one non-escaping function literal within its owner.
+///
+/// Like [`LocalId`], this is revision-local and cannot be used as a query or
+/// persistent cache key.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ClosureId(pub u32);
+
+impl ClosureId {
     /// Canonical owner-local index for compiler-owned encodings.
     pub(in crate::compiler) const fn index(self) -> u32 {
         self.0
@@ -298,6 +348,11 @@ impl DefinitionKey {
             name: name.into(),
             disambiguator: DefinitionDisambiguator::None,
         }
+    }
+
+    #[must_use]
+    pub(crate) fn is_package_level(&self) -> bool {
+        matches!(&self.namespace, DefinitionNamespace::Package)
     }
 
     pub fn disambiguated_package_definition(

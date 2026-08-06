@@ -77,7 +77,7 @@ impl FunctionLayout {
         let ranges = match source.region() {
             SyntaxSourceRegion::Header => &self.header_sources,
             SyntaxSourceRegion::Body => &self.body_sources,
-            SyntaxSourceRegion::Constant => {
+            SyntaxSourceRegion::Constant | SyntaxSourceRegion::Variable => {
                 return Err(SyntaxLayoutError::WrongRegion {
                     expected: "function header or body",
                     actual: source.region(),
@@ -101,6 +101,38 @@ pub struct ConstantLayout {
 }
 
 impl ConstantLayout {
+    pub(super) fn new(
+        declaration: TextRange,
+        source_len: TextSize,
+        sources: Arc<[TextRange]>,
+    ) -> Self {
+        Self {
+            declaration,
+            source_len,
+            sources,
+        }
+    }
+
+    #[must_use]
+    pub const fn declaration(&self) -> TextRange {
+        self.declaration
+    }
+
+    #[must_use]
+    pub const fn source_len(&self) -> TextSize {
+        self.source_len
+    }
+}
+
+/// Revision-local physical source layout for one package variable.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VariableLayout {
+    declaration: TextRange,
+    source_len: TextSize,
+    sources: Arc<[TextRange]>,
+}
+
+impl VariableLayout {
     pub(super) fn new(
         declaration: TextRange,
         source_len: TextSize,

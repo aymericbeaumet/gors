@@ -1,11 +1,14 @@
 //! Function-local bindings, scopes, and block lowering.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use super::{ConstantSymbol, FunctionSymbol};
+use super::{
+    ConstantSymbol, FunctionSymbol, GenericFunctionSymbol, GenericTypeSymbol, MethodSymbol,
+    VariableSymbol,
+};
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
-use crate::compiler::ids::{DefId, LocalId, NodeId};
+use crate::compiler::ids::{ClosureId, DefId, LocalId, LocalTypeId, NodeId};
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{BlockSyntax, FieldListSyntax, SyntaxSource};
 use crate::compiler::types::{Signature, Ty};
@@ -13,13 +16,39 @@ use crate::compiler::types::{Signature, Ty};
 pub(super) struct FunctionLowerer {
     pub(super) owner: DefId,
     pub(super) next_node: u32,
+    pub(super) next_local_type: u32,
     pub(super) functions: BTreeMap<String, FunctionSymbol>,
+    pub(super) qualified_functions: BTreeMap<(String, String), FunctionSymbol>,
+    pub(super) methods: BTreeMap<(DefId, String), MethodSymbol>,
+    pub(super) generic_functions: BTreeMap<String, GenericFunctionSymbol>,
+    pub(super) generic_methods: BTreeMap<(DefId, String), GenericFunctionSymbol>,
+    pub(super) generic_types: BTreeMap<String, GenericTypeSymbol>,
     pub(super) constants: BTreeMap<String, ConstantSymbol>,
+    pub(super) qualified_constants: BTreeMap<(String, String), ConstantSymbol>,
+    pub(super) variables: BTreeMap<String, VariableSymbol>,
+    pub(super) qualified_variables: BTreeMap<(String, String), VariableSymbol>,
+    pub(super) intrinsic_packages: BTreeSet<String>,
+    pub(super) type_aliases: BTreeMap<String, Ty>,
+    pub(super) type_scope_changes: Vec<BTreeMap<String, Option<Ty>>>,
     pub(super) signature: Signature,
     pub(super) locals: Vec<hir::Local>,
     pub(super) scopes: Vec<BTreeMap<String, LocalId>>,
+    pub(super) closures: Vec<hir::Closure>,
+    pub(super) closure_scopes: Vec<BTreeMap<String, ClosureId>>,
     pub(super) named_results: Vec<Option<LocalId>>,
-    pub(super) loop_depth: usize,
+    pub(super) loop_labels: Vec<Option<String>>,
+    /// Loop-stack depth of a specialized range-function yield body. An
+    /// unlabeled branch at exactly this depth controls the iterator callback;
+    /// deeper branches still target their ordinary nested loop.
+    pub(super) range_yield_loop_depth: Option<usize>,
+    pub(super) iteration_capture_scopes: Vec<BTreeSet<LocalId>>,
+    pub(super) declared_labels: std::collections::BTreeSet<String>,
+    pub(super) referenced_gotos: BTreeMap<String, SourceRef>,
+    pub(super) defer_registration_depth: usize,
+    pub(super) inside_deferred_closure: bool,
+    pub(super) inside_local_closure: bool,
+    pub(super) active_generic_functions: Vec<crate::compiler::ids::QualifiedDefId>,
+    pub(super) source_override: Option<SyntaxSource>,
     pub(super) source_plan: Vec<(SourceRef, SyntaxSource)>,
 }
 
@@ -36,7 +65,10 @@ impl FunctionLowerer {
             .checked_add(1)
             .ok_or_else(|| Diagnostic::backend("function exceeds the HIR node ID space"))?;
         let node = NodeId::owner_local(self.owner, local);
-        self.source_plan.push((SourceRef::node(node), source));
+        self.source_plan.push((
+            SourceRef::node(node),
+            self.source_override.unwrap_or(source),
+        ));
         Ok(node)
     }
 
@@ -52,6 +84,26 @@ impl FunctionLowerer {
         let id = LocalId(index);
         let source = SourceRef::local(self.owner, id);
         if let Some(name) = name.as_ref().filter(|name| name.as_str() != "_") {
+            if self
+                .type_scope_changes
+                .last()
+                .is_some_and(|scope| scope.contains_key(name))
+            {
+                return Err(Diagnostic::semantic(
+                    format!("{name} redeclared in this block"),
+                    source,
+                ));
+            }
+            if self
+                .closure_scopes
+                .last()
+                .is_some_and(|scope| scope.contains_key(name))
+            {
+                return Err(Diagnostic::semantic(
+                    format!("{name} redeclared in this block"),
+                    source,
+                ));
+            }
             let scope = self
                 .scopes
                 .last_mut()
@@ -70,7 +122,8 @@ impl FunctionLowerer {
             kind,
             source,
         });
-        self.source_plan.push((source, syntax_source));
+        self.source_plan
+            .push((source, self.source_override.unwrap_or(syntax_source)));
         Ok(id)
     }
 
@@ -160,12 +213,124 @@ impl FunctionLowerer {
             .and_then(|scope| scope.get(name).copied())
     }
 
+    pub(super) fn lookup_closure(&self, name: &str) -> Option<ClosureId> {
+        for (locals, closures) in self.scopes.iter().zip(&self.closure_scopes).rev() {
+            if locals.contains_key(name) {
+                return None;
+            }
+            if let Some(id) = closures.get(name) {
+                return Some(*id);
+            }
+        }
+        None
+    }
+
+    pub(super) fn bind_closure(
+        &mut self,
+        name: &str,
+        id: ClosureId,
+        source: SourceRef,
+    ) -> Result<(), Diagnostic> {
+        if self.lookup_current_local(name).is_some()
+            || self
+                .type_scope_changes
+                .last()
+                .is_some_and(|scope| scope.contains_key(name))
+        {
+            return Err(Diagnostic::semantic(
+                format!("{name} redeclared in this block"),
+                source,
+            ));
+        }
+        let scope = self
+            .closure_scopes
+            .last_mut()
+            .ok_or_else(|| Diagnostic::backend("function has no closure scope"))?;
+        if scope.insert(name.to_owned(), id).is_some() {
+            return Err(Diagnostic::semantic(
+                format!("{name} redeclared in this block"),
+                source,
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn alloc_local_type_identity(&mut self) -> Result<LocalTypeId, Diagnostic> {
+        let local = self.next_local_type;
+        self.next_local_type = self
+            .next_local_type
+            .checked_add(1)
+            .ok_or_else(|| Diagnostic::backend("function exceeds the local type ID space"))?;
+        Ok(LocalTypeId::owner_local(self.owner, local))
+    }
+
+    pub(super) fn expand_named_ref(&self, ty: &Ty) -> Result<Ty, Diagnostic> {
+        let Ty::NamedRef { definition } = ty else {
+            return Ok(ty.clone());
+        };
+        self.type_aliases
+            .values()
+            .find(|candidate| {
+                matches!(candidate, Ty::Named { definition: candidate, .. } if candidate == definition)
+            })
+            .cloned()
+            .ok_or_else(|| {
+                Diagnostic::backend(format!(
+                    "recursive named type {definition} is absent from the package type index"
+                ))
+            })
+    }
+
+    pub(super) fn bind_local_type(
+        &mut self,
+        name: String,
+        ty: Ty,
+        source: SourceRef,
+    ) -> Result<(), Diagnostic> {
+        if self.lookup_current_local(&name).is_some()
+            || self
+                .closure_scopes
+                .last()
+                .is_some_and(|scope| scope.contains_key(&name))
+        {
+            return Err(Diagnostic::semantic(
+                format!("{name} redeclared in this block"),
+                source,
+            ));
+        }
+        let scope = self
+            .type_scope_changes
+            .last_mut()
+            .ok_or_else(|| Diagnostic::backend("function has no local type scope"))?;
+        if scope.contains_key(&name) {
+            return Err(Diagnostic::semantic(
+                format!("{name} redeclared in this block"),
+                source,
+            ));
+        }
+        let previous = self.type_aliases.insert(name.clone(), ty);
+        scope.insert(name, previous);
+        Ok(())
+    }
+
     pub(super) fn push_scope(&mut self) {
         self.scopes.push(BTreeMap::new());
+        self.closure_scopes.push(BTreeMap::new());
+        self.type_scope_changes.push(BTreeMap::new());
     }
 
     pub(super) fn pop_scope(&mut self) {
         self.scopes.pop();
+        self.closure_scopes.pop();
+        if let Some(changes) = self.type_scope_changes.pop() {
+            for (name, previous) in changes {
+                if let Some(previous) = previous {
+                    self.type_aliases.insert(name, previous);
+                } else {
+                    self.type_aliases.remove(&name);
+                }
+            }
+        }
     }
 
     pub(super) fn lower_block(
@@ -175,6 +340,7 @@ impl FunctionLowerer {
     ) -> Result<hir::Block, Diagnostic> {
         if introduce_scope {
             self.push_scope();
+            self.defer_registration_depth += 1;
         }
         let mut stmts = Vec::new();
         for stmt in &*block.statements {
@@ -183,6 +349,7 @@ impl FunctionLowerer {
             }
         }
         if introduce_scope {
+            self.defer_registration_depth -= 1;
             self.pop_scope();
         }
         let node = self.alloc_node(block.source)?;

@@ -121,12 +121,12 @@ impl Function {
                 self.transfer_operand(condition, state, check_reads)?;
             }
             TerminatorKind::Call {
-                args, destination, ..
+                args, destinations, ..
             } => {
                 for argument in args {
                     self.transfer_operand(argument, state, check_reads)?;
                 }
-                if let Some(destination) = destination {
+                for destination in destinations {
                     state.insert(destination.local);
                 }
             }
@@ -135,7 +135,9 @@ impl Function {
                     self.transfer_operand(value, state, check_reads)?;
                 }
             }
-            TerminatorKind::Goto(_) | TerminatorKind::Unreachable => {}
+            TerminatorKind::Goto(_)
+            | TerminatorKind::SpawnEmpty { .. }
+            | TerminatorKind::Unreachable => {}
         }
         Ok(())
     }
@@ -147,13 +149,70 @@ impl Function {
         check_reads: bool,
     ) -> Result<(), Diagnostic> {
         match &rvalue.kind {
-            RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => {
+            RvalueKind::Use(operand)
+            | RvalueKind::Unary { operand, .. }
+            | RvalueKind::Conversion { operand, .. } => {
                 self.transfer_operand(operand, state, check_reads)
             }
             RvalueKind::Binary { left, right, .. } => {
                 self.transfer_operand(left, state, check_reads)?;
                 self.transfer_operand(right, state, check_reads)
             }
+            RvalueKind::ArrayIndexI64 { array, index } => {
+                self.transfer_operand(array, state, check_reads)?;
+                self.transfer_operand(index, state, check_reads)
+            }
+            RvalueKind::ArrayIndex { array, index } => {
+                self.transfer_operand(array, state, check_reads)?;
+                self.transfer_operand(index, state, check_reads)
+            }
+            RvalueKind::ArraySetI64 {
+                array,
+                index,
+                value,
+            } => {
+                self.transfer_operand(array, state, check_reads)?;
+                self.transfer_operand(index, state, check_reads)?;
+                self.transfer_operand(value, state, check_reads)
+            }
+            RvalueKind::ArraySet {
+                array,
+                index,
+                value,
+            } => {
+                self.transfer_operand(array, state, check_reads)?;
+                self.transfer_operand(index, state, check_reads)?;
+                self.transfer_operand(value, state, check_reads)
+            }
+            RvalueKind::ArrayLiteral { elements, .. } => {
+                for element in elements {
+                    self.transfer_operand(element, state, check_reads)?;
+                }
+                Ok(())
+            }
+            RvalueKind::StructLiteral { fields, .. } => {
+                for field in fields {
+                    self.transfer_operand(field, state, check_reads)?;
+                }
+                Ok(())
+            }
+            RvalueKind::StructField { structure, .. } => {
+                self.transfer_operand(structure, state, check_reads)
+            }
+            RvalueKind::StructSet {
+                structure, value, ..
+            } => {
+                self.transfer_operand(structure, state, check_reads)?;
+                self.transfer_operand(value, state, check_reads)
+            }
+            RvalueKind::RecoverCompareNil {
+                state: recovery_state,
+                ..
+            } => self.transfer_operand(&Operand::Read(*recovery_state), state, check_reads),
+            RvalueKind::SliceLiteralI64 { .. }
+            | RvalueKind::SliceLiteralU8(_)
+            | RvalueKind::SliceLiteralBool(_)
+            | RvalueKind::ArrayLiteralI64(_) => Ok(()),
         }
     }
 
@@ -179,7 +238,9 @@ impl Function {
 
 fn block_successors(terminator: &Terminator) -> Vec<BasicBlockId> {
     match &terminator.kind {
-        TerminatorKind::Goto(target) | TerminatorKind::Call { target, .. } => vec![*target],
+        TerminatorKind::Goto(target)
+        | TerminatorKind::Call { target, .. }
+        | TerminatorKind::SpawnEmpty { target } => vec![*target],
         TerminatorKind::SwitchBool {
             then_target,
             else_target,

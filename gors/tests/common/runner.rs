@@ -333,7 +333,7 @@ fn compile_and_run_generated_rust(
     let before = Instant::now();
     let workspace = gors::compiler::input::WorkspaceKey::ad_hoc(GENERATED_FIXTURE_WORKSPACE)
         .map_err(|error| format!("invalid fixture workspace identity: {error}"))?;
-    let program = gors::workspace::load_program(workspace, dir)
+    let program = gors::workspace::load_program_files_auto(workspace, &[dir])
         .map_err(|e| format!("source load failed: {e}"))?
         .into_input();
     RunMetrics::add_duration(&metrics.source_load, before.elapsed());
@@ -532,7 +532,10 @@ fn run_generated_program_fixture_set_impl(
     if let Err(error) = prune_integration_cache() {
         eprintln!("Warning: could not prune the generated-program cache: {error}");
     }
-    assert!(failed.is_empty(), "{} tests failed", failed.len());
+    let report_mode = crate::common::reporter::canonical_report_requested();
+    if !report_mode {
+        assert!(failed.is_empty(), "{} tests failed", failed.len());
+    }
     let complete = config.filter.is_none()
         && config.limit.is_none()
         && !config.include_unsupported

@@ -1,3 +1,4 @@
+use super::effects::panic_edge;
 use super::*;
 
 fn lower(source: &str) -> File {
@@ -517,6 +518,43 @@ fn terminal_emission_uses_the_verified_artifact_plan_not_go_name_text() {
 }
 
 #[test]
+fn idiom_pass_emits_straight_line_cfgs_without_a_pc_dispatch_loop() {
+    let file = lower(
+        "package main\nfunc identity(value int) int { return value }\nfunc main() { println(identity(3)) }\n",
+    );
+
+    assert!(file.functions.iter().all(|function| matches!(
+        function.control_flow,
+        ControlFlowPlan::StructuredLinear { .. }
+    )));
+    let syntax = crate::compiler::emit::emit_file(&file).unwrap();
+    let rust = prettyplease::unparse(&syntax);
+    assert!(!rust.contains("__gors_pc"), "{rust}");
+    assert!(!rust.contains("invalid compiler Rust IR block"), "{rust}");
+    assert!(rust.contains("return"), "{rust}");
+}
+
+#[test]
+fn verifier_rejects_a_noncanonical_structured_block_order() {
+    let mut file = lower("package main\nfunc identity(value int) int { return value }\n");
+    let function = file.functions.first_mut().unwrap();
+    let entry = function.entry;
+    assert!(matches!(
+        function.control_flow,
+        ControlFlowPlan::StructuredLinear { .. }
+    ));
+    if let ControlFlowPlan::StructuredLinear { order } = &mut function.control_flow {
+        order.push(entry);
+    }
+
+    let error = file.verify().unwrap_err();
+    assert!(
+        error.message.contains("block order is not canonical"),
+        "{error:?}"
+    );
+}
+
+#[test]
 fn lowering_selects_entrypoints_from_package_role_before_emission() {
     let executable = lower("package main\nfunc main() {}\n");
     let executable_main = &executable.functions[0];
@@ -716,9 +754,42 @@ fn rvalue_read_op_mut(rvalue: &mut Rvalue, expected: ReadOp) -> Option<&mut Read
         RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => {
             operand_read_op_mut(operand, expected)
         }
-        RvalueKind::Binary { left, right, .. } => {
+        RvalueKind::Binary { left, right, .. }
+        | RvalueKind::AggregateEqualI64 { left, right, .. } => {
             operand_read_op_mut(left, expected).or_else(|| operand_read_op_mut(right, expected))
         }
+        RvalueKind::ArrayIndexI64 { array, index } | RvalueKind::ArrayIndex { array, index } => {
+            operand_read_op_mut(array, expected).or_else(|| operand_read_op_mut(index, expected))
+        }
+        RvalueKind::ArraySetI64 {
+            array,
+            index,
+            value,
+        }
+        | RvalueKind::ArraySet {
+            array,
+            index,
+            value,
+        } => operand_read_op_mut(array, expected)
+            .or_else(|| operand_read_op_mut(index, expected))
+            .or_else(|| operand_read_op_mut(value, expected)),
+        RvalueKind::ArrayLiteral {
+            elements: fields, ..
+        }
+        | RvalueKind::StructLiteral { fields, .. }
+        | RvalueKind::StructLiteralI64(fields) => fields
+            .iter_mut()
+            .find_map(|field| operand_read_op_mut(field, expected)),
+        RvalueKind::StructField { structure, .. }
+        | RvalueKind::StructFieldI64 { structure, .. } => operand_read_op_mut(structure, expected),
+        RvalueKind::StructSet {
+            structure, value, ..
+        }
+        | RvalueKind::StructSetI64 {
+            structure, value, ..
+        } => operand_read_op_mut(structure, expected)
+            .or_else(|| operand_read_op_mut(value, expected)),
+        RvalueKind::RecoverCompareNil { .. } => None,
     }
 }
 

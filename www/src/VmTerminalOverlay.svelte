@@ -24,17 +24,16 @@ function onKeydown(event: KeyboardEvent) {
   <div class="vm-terminal-panel">
     <div class="vm-terminal-header">
       <div class="vm-terminal-left"></div>
-      <span class="vm-terminal-title">Linux VM</span>
+      <span class="vm-terminal-title">{started ? "Linux VM" : title}</span>
       <div class="vm-terminal-right">
-        <button class="vm-terminal-close" title="Close" on:click={close}>&times;</button>
+        <button
+          class="vm-terminal-close"
+          title="Close"
+          aria-label="Close"
+          on:click={close}
+        >&times;</button>
       </div>
     </div>
-    {#if !started}
-      <div class="vm-spinner-container">
-        <div class="vm-spinner"></div>
-        <span class="vm-spinner-label">{title}</span>
-      </div>
-    {/if}
-    <div class="vm-terminal-body" bind:this={terminalElement} style:display={started ? "" : "none"}></div>
+    <div class="vm-terminal-body" bind:this={terminalElement}></div>
   </div>
 </div>

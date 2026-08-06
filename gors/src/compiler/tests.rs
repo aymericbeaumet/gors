@@ -1,5 +1,17 @@
 use super::*;
 
+mod arrays;
+mod assignments;
+mod channels;
+mod control_flow;
+mod goroutines;
+mod interfaces;
+mod local_types;
+mod pointers;
+mod slices;
+mod structs;
+mod variables;
+
 struct GeneratedRun {
     rust: String,
     stderr: Vec<u8>,
@@ -186,6 +198,215 @@ fn generated_rust_executes_go_int_edge_semantics() {
 }
 
 #[test]
+fn untyped_package_constants_remain_exact_until_use() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            const (
+                highBit = 1 << 255
+                folded = ((1 << 200) + (1 << 199)) >> 190
+                lowBits = (highBit - 1) & 0xffff
+            )
+
+            func main() {
+                println(folded)
+                println(lowBits)
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"1536\n65535\n");
+}
+
+#[test]
+fn package_constants_support_iota_repetition_and_complex_components() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            const (
+                zero = iota
+                one
+                repeated = 10
+                repeatedAgain
+            )
+            const value = 1 + 2i
+
+            func main() {
+                if zero != 0 || one != 1 || repeatedAgain != 10 {
+                    panic("constant repetition changed")
+                }
+                if real(value) != 1 || imag(value) != 2 {
+                    panic("complex components changed")
+                }
+                println("constants: ok")
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"constants: ok\n");
+}
+
+#[test]
+fn numeric_builtins_lower_constants_and_dynamic_values() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            func bounded(a int, b int, c int) int {
+                return max(a, min(b, c), min(c))
+            }
+
+            func components(r float64, i float64) float64 {
+                value := complex(r, i)
+                return real(value) + imag(value)
+            }
+
+            func main() {
+                if min(9, 4, 7) != 4 || max(9, 4, 7) != 9 || min(2, 1.5) != 1.5 {
+                    panic("constant min/max changed")
+                }
+                if real(complex128(1.5)) != 1.5 || imag(complex128(1.5)) != 0.0 {
+                    panic("converted complex components changed")
+                }
+                if 1.0 / min(float64(0.0), float64(-0.0)) > 0.0 {
+                    panic("constant min lost negative zero")
+                }
+                if bounded(3, 8, 5) != 5 || components(1.5, 2.5) != 4.0 {
+                    panic("dynamic numeric built-in changed")
+                }
+                zero := 0.0
+                negativeZero := -zero
+                if 1.0 / min(zero, negativeZero) > 0.0 {
+                    panic("min lost negative zero")
+                }
+                if 1.0 / max(negativeZero, zero) < 0.0 {
+                    panic("max lost positive zero")
+                }
+                nan := zero / zero
+                minimumNaN := min(1.0, nan)
+                maximumNaN := max(nan, 1.0)
+                if minimumNaN == minimumNaN || maximumNaN == maximumNaN {
+                    panic("min/max did not propagate NaN")
+                }
+                println("numeric-builtins: ok")
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"numeric-builtins: ok\n");
+    for primitive in ["is_nan", "is_sign_negative", "is_sign_positive"] {
+        assert!(run.rust.contains(primitive), "{}", run.rust);
+    }
+}
+
+#[test]
+fn defined_numeric_types_keep_identity_through_operations_and_conversions() {
+    let source = r#"
+            package main
+
+            type Score int
+            type Ratio float64
+
+            func main() {
+                score := Score(4)
+                score += Score(3)
+                ratio := Ratio(2.5)
+                ratio += Ratio(1.5)
+                if int(score) != 7 || float64(ratio) != 4.0 {
+                    panic("defined numeric type changed")
+                }
+                println("named-types: ok")
+            }
+        "#;
+    let run = compile_and_run(source);
+
+    assert_eq!(run.stderr, b"named-types: ok\n");
+}
+
+#[test]
+fn labeled_loop_branches_target_the_named_enclosing_loop() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            func main() {
+                total := 0
+            Outer:
+                for i := 0; i < 3; i++ {
+                    for j := 0; j < 3; j++ {
+                        if j == 1 {
+                            continue Outer
+                        }
+                        total++
+                    }
+                }
+
+            Stop:
+                for i := 0; i < 3; i++ {
+                    for {
+                        total += 10
+                        break Stop
+                    }
+                }
+                println(total)
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"13\n");
+}
+
+#[test]
+fn expression_switch_evaluates_its_tag_once() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            func tag() int {
+                println("tag")
+                return 2
+            }
+
+            func main() {
+                switch value := tag(); value {
+                case 1, 2:
+                    println("matched")
+                default:
+                    panic("switch default selected")
+                }
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"tag\nmatched\n");
+}
+
+#[test]
+fn goto_uses_predeclared_forward_and_backward_targets() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            func main() {
+                total := 0
+                goto Start
+                total = 100
+            Start:
+                total++
+                if total < 3 {
+                    goto Start
+                }
+                println(total)
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"3\n");
+}
+
+#[test]
 fn generated_rust_preserves_arbitrary_string_bytes() {
     let run = compile_and_run(
         r#"
@@ -265,6 +486,368 @@ fn generated_rust_executes_verified_last_use_moves() {
 }
 
 #[test]
+fn generated_integer_slices_preserve_backing_array_aliases() {
+    let run = compile_and_run(
+        r#"
+            package main
+            func main() {
+                values := []int{1, 2, 3}
+                alias := values[1:]
+                alias[0] = 9
+                values[1] = 7
+                alias[1] += 3
+                println(values[0], values[1], values[2], alias[0], alias[1])
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"1 7 6 7 6\n");
+    assert!(
+        run.rust.contains("go_slice_i64_from_static"),
+        "{}",
+        run.rust
+    );
+    assert!(run.rust.contains("go_slice_i64_range"), "{}", run.rust);
+    assert!(run.rust.contains("go_slice_i64_set"), "{}", run.rust);
+}
+
+#[test]
+fn generated_boolean_slices_preserve_index_and_assignment_semantics() {
+    let run = compile_and_run(
+        r#"
+            package main
+            func main() {
+                flags := []bool{false, true}
+                flags[0] = true
+                println(flags[0])
+                println(flags[1])
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"true\ntrue\n");
+    assert!(
+        run.rust.contains("go_slice_bool_from_static"),
+        "{}",
+        run.rust
+    );
+    assert!(run.rust.contains("go_slice_bool_set"), "{}", run.rust);
+}
+
+#[test]
+fn generated_integer_slice_append_respects_capacity() {
+    let run = compile_and_run(
+        r#"
+            package main
+            func main() {
+                base := make([]int, 2, 4)
+                base[0] = 1
+                base[1] = 2
+                shared := append(base[:1], 9)
+                detached := append(base[:1:1], 7)
+                detached[0] = 8
+                println(len(shared), cap(shared), base[0], base[1])
+                println(len(detached), cap(detached), detached[0], detached[1])
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"2 4 1 9\n2 2 8 7\n");
+    assert!(run.rust.contains("go_slice_i64_make"), "{}", run.rust);
+    assert!(run.rust.contains("go_slice_i64_append"), "{}", run.rust);
+}
+
+#[test]
+fn generated_multiple_results_preserve_call_and_return_arity() {
+    let run = compile_and_run(
+        r#"
+            package main
+            func pair() (int, int) { return 3, 4 }
+            func forward() (int, int) { return pair() }
+            func named() (left int, right int) {
+                left = 5
+                right = 6
+                return
+            }
+            func main() {
+                first, second := forward()
+                first, second = named()
+                println(first, second)
+                first, first = pair()
+                println(first)
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"5 6\n4\n");
+    assert!(run.rust.contains("let (__gors_result_"), "{}", run.rust);
+}
+
+#[test]
+fn generated_local_functions_capture_mutable_state_and_return_directly() {
+    let run = compile_and_run(
+        r#"
+            package main
+            func main() {
+                total := 0
+                add := func(value int) (result int) {
+                    total = total + value
+                    result = total
+                    return
+                }
+                println(add(2), add(3))
+                add(4)
+                println(total)
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"2 5\n9\n");
+}
+
+#[test]
+fn generated_parallel_assignments_freeze_dynamic_targets_before_writes() {
+    let run = compile_and_run(
+        r#"
+            package main
+            func main() {
+                values := []int{0, 1}
+                values[0], values[values[0]] = 1, 2
+                println(values[0], values[1])
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"2 1\n");
+}
+
+#[test]
+fn generated_integer_slice_copy_preserves_overlap_semantics() {
+    let run = compile_and_run(
+        r#"
+            package main
+            func main() {
+                values := []int{1, 2, 3, 4}
+                clone := make([]int, len(values))
+                count := copy(clone, values)
+                copy(values[1:], values[:3])
+                println(count, clone[3], values[0], values[1], values[2], values[3])
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"4 4 1 1 2 3\n");
+}
+
+#[test]
+fn generated_slice_range_evaluates_once_and_continues_through_post() {
+    let run = compile_and_run(
+        r#"
+            package main
+            func main() {
+                calls := 0
+                values := func() []int {
+                    calls++
+                    return []int{2, 3}
+                }
+                total := 0
+                for index, value := range values() {
+                    if index == 0 {
+                        continue
+                    }
+                    total += value
+                }
+                println(calls, total)
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"1 3\n");
+}
+
+#[test]
+fn generated_expression_switch_fallthrough_skips_the_next_case_test() {
+    let run = compile_and_run(
+        r#"
+            package main
+            func main() {
+                value := 1
+                switch value {
+                case 1:
+                    value++
+                    fallthrough
+                case 99:
+                    value += 10
+                default:
+                    value = 0
+                }
+                println(value)
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"12\n");
+}
+
+#[test]
+fn generated_deferred_closures_capture_arguments_and_update_named_results() {
+    let run = compile_and_run(
+        r#"
+            package main
+            func deferred() (result int) {
+                value := 1
+                defer func(saved int) { result = result*10 + saved }(value)
+                value = 2
+                defer func(saved int) { result = result*10 + saved }(value)
+                return 3
+            }
+            func main() { println(deferred()) }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"321\n");
+}
+
+#[test]
+fn generated_deferred_recover_consumes_the_active_panic() {
+    let run = compile_and_run(
+        r#"
+            package main
+            func safe() {
+                defer func() {
+                    if recover() == nil {
+                        panic("missing panic")
+                    }
+                }()
+                panic("boom")
+                panic("continued after panic")
+            }
+            func main() {
+                safe()
+                println("recovered")
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"recovered\n");
+    assert!(run.rust.contains("catch_unwind"), "{}", run.rust);
+    assert!(run.rust.contains("resume_unwind"), "{}", run.rust);
+}
+
+#[test]
+fn generated_maps_preserve_nil_and_shared_reference_semantics() {
+    let run = compile_and_run(
+        r#"
+            package main
+            func nilWritePanics() (panicked bool) {
+                defer func() { panicked = recover() != nil }()
+                var values map[string]int
+                values["missing"] = 1
+                return false
+            }
+            func main() {
+                original := map[string]int{"value": 1, "delete": 2}
+                alias := original
+                alias["value"] = 42
+                delete(original, "delete")
+                if original["value"] != 42 || len(alias) != 1 {
+                    panic("map identity changed")
+                }
+                clear(alias)
+                var nilMap map[string]int
+                delete(nilMap, "missing")
+                clear(nilMap)
+                if nilMap != nil || nilMap["missing"] != 0 || len(nilMap) != 0 {
+                    panic("nil map behavior changed")
+                }
+                if !nilWritePanics() { panic("nil map write did not panic") }
+                println("maps: ok")
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"maps: ok\n");
+    assert!(run.rust.contains("GoMapStringI64"), "{}", run.rust);
+    assert!(run.rust.contains("go_map_string_i64_set"), "{}", run.rust);
+}
+
+#[test]
+fn generated_maps_support_comma_ok_and_key_value_ranges() {
+    let run = compile_and_run(
+        r#"
+            package main
+            func main() {
+                values := map[string]int{"zero": 0, "answer": 42}
+                zero, zeroOK := values["zero"]
+                missing, missingOK := values["missing"]
+                count, total := 0, 0
+                for key, value := range values {
+                    if key == "zero" || key == "answer" { count++ }
+                    total += value
+                }
+                if zero != 0 || !zeroOK || missing != 0 || missingOK {
+                    panic("comma-ok lookup changed")
+                }
+                if count != 2 || total != 42 { panic("map range changed") }
+                println("map-lookup-range: ok")
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"map-lookup-range: ok\n");
+    assert!(
+        run.rust.contains("go_map_string_i64_contains"),
+        "{}",
+        run.rust
+    );
+    assert!(
+        run.rust.contains("go_map_string_i64_key_at"),
+        "{}",
+        run.rust
+    );
+}
+
+#[test]
+fn generated_integer_arrays_preserve_value_semantics_and_checked_indexing() {
+    let run = compile_and_run(
+        r#"
+            package main
+            func outOfBoundsPanics() (panicked bool) {
+                defer func() { panicked = recover() != nil }()
+                values := [2]int{1, 2}
+                _ = values[2]
+                return false
+            }
+            func main() {
+                original := [3]int{1, 2: 3}
+                duplicate := original
+                duplicate[1] = 9
+                original[0] += 4
+                total := 0
+                for index, value := range original {
+                    total += index + value
+                }
+                if len(original) != 3 || original[0] != 5 || original[1] != 0 {
+                    panic("array values changed")
+                }
+                if duplicate[0] != 1 || duplicate[1] != 9 || total != 11 {
+                    panic("array copy or range changed")
+                }
+                if original == duplicate || original != [3]int{5, 0, 3} {
+                    panic("array equality changed")
+                }
+                if !outOfBoundsPanics() { panic("array bounds did not panic") }
+                println("arrays: ok")
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"arrays: ok\n");
+    assert!(run.rust.contains("[i64; 3]"), "{}", run.rust);
+    assert!(run.rust.contains(".get("), "{}", run.rust);
+}
+
+#[test]
 fn def_id_function_names_cannot_collide_with_rust_keywords() {
     let run = compile_and_run(
         r#"
@@ -304,21 +887,24 @@ fn basic_program_uses_the_hir_mir_pipeline() {
 }
 
 #[test]
-fn imports_fail_before_partial_codegen() {
+fn unresolved_package_selectors_fail_before_codegen() {
     let source = "package main\nimport \"fmt\"\nfunc main() { fmt.Println(1) }\n";
     let result = compile_file("main.go", source);
-    assert!(result.is_err(), "imports must be a semantic diagnostic");
+    assert!(
+        result.is_err(),
+        "unresolved imports must be a semantic diagnostic"
+    );
     let errors = result.err().unwrap();
     assert!(
-        errors
-            .iter()
-            .any(|error| error.message.contains("imported packages")),
+        errors.iter().any(|error| error
+            .message
+            .contains("undefined package function fmt.Println")),
         "{errors:?}"
     );
 }
 
 #[test]
-fn program_boundary_rejects_multiple_independent_files() {
+fn program_boundary_compiles_multiple_package_files() {
     let package = input::PackageKey::command_line();
     let manifest = input::PackageInputManifest::new(
         package,
@@ -344,12 +930,8 @@ fn program_boundary_rejects_multiple_independent_files() {
     )
     .unwrap();
 
-    let error = compile_program(program)
-        .err()
-        .expect("multi-file package rejected");
-
-    assert_eq!(error.diagnostics().first().unwrap().code, "GORS2001");
-    assert!(error.to_string().contains("exactly one"), "{error}");
+    let compiled = compile_program(program).expect("multi-file package compiles");
+    assert!(compiled.modules.is_empty());
 }
 
 #[test]

@@ -338,7 +338,7 @@ def _validate_command_evidence(measurement: dict[str, Any], *, compiler: str) ->
             if argv.count(required) != 1:
                 raise EvidenceError(f"gors build command must contain exactly one {required}")
     if "runtimeLink" in measurement or "runtimeLink" in command:
-        raise EvidenceError("legacy runtime-link evidence is forbidden")
+        raise EvidenceError("runtime-link evidence is not supported")
 
 
 def validate_result(result: dict[str, Any]) -> None:

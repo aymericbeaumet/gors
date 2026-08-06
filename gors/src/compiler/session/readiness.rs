@@ -37,7 +37,7 @@ pub(super) type RootInputFingerprints = BTreeMap<RustIrRoot, Fingerprint>;
 
 impl CompilerSession {
     /// Drop removed, renamed, or relocated roots before any early diagnostic
-    /// can leave obsolete readiness attached to this package.
+    /// can leave stale readiness attached to this package.
     pub(super) fn reconcile_ready_roots(&mut self, analysis: &PackageAnalysis) {
         let package = analysis.package();
         let current = analysis
@@ -65,12 +65,22 @@ impl CompilerSession {
         analysis
             .functions()
             .iter()
-            .map(|function| {
+            .filter_map(|function| {
+                match self
+                    .database
+                    .is_generic_function(function.file(), function.id())
+                {
+                    Ok(true) => return None,
+                    Ok(false) => {}
+                    Err(error) => return Some(Err(self.query_error(error))),
+                }
                 let root = RustIrRoot::new(package, function.file(), function.id());
-                self.database
-                    .rust_ir_root_inputs(function.file(), function.id())
-                    .map(|fingerprint| (root, fingerprint))
-                    .map_err(|error| self.query_error(error))
+                Some(
+                    self.database
+                        .rust_ir_root_inputs(function.file(), function.id())
+                        .map(|fingerprint| (root, fingerprint))
+                        .map_err(|error| self.query_error(error)),
+                )
             })
             .collect()
     }

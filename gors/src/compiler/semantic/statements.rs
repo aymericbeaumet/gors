@@ -5,14 +5,16 @@ use std::collections::BTreeSet;
 use crate::token::Token;
 
 use super::FunctionLowerer;
+use super::assignments::assignment_op;
 use super::expressions::*;
-use super::lower_type;
+use super::iteration::assigned_names_in_block;
+use super::{lower_type, parameter_types};
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{
-    DeclSyntax, ExprSyntax, ExprSyntaxKind, StmtSyntax, StmtSyntaxKind, SyntaxSource,
-    ValueSpecSyntax,
+    DeclSyntax, ExprSyntax, ExprSyntaxKind, LocalTypeSyntax, StmtSyntax, StmtSyntaxKind,
+    SwitchCaseSyntax, SyntaxSource, ValueSpecSyntax,
 };
 use crate::compiler::types::{ConstValue, IntTy, Ty};
 
@@ -31,7 +33,10 @@ impl FunctionLowerer {
             StmtSyntaxKind::Block(block) => hir::StmtKind::Block(self.lower_block(block, true)?),
             StmtSyntaxKind::Expr(expression) => {
                 let expression = self.lower_expr_inner(expression, None, true)?;
-                if !matches!(expression.kind, hir::ExprKind::Call { .. }) {
+                if !matches!(
+                    expression.kind,
+                    hir::ExprKind::Call { .. } | hir::ExprKind::InterfaceCall { .. }
+                ) {
                     return Err(Diagnostic::semantic(
                         "expression statement must be a call",
                         source,
@@ -46,9 +51,9 @@ impl FunctionLowerer {
             StmtSyntaxKind::IncDec { expression, token } => {
                 let destination = self.lower_place(expression, source)?;
                 let ty = self.place_ty(destination)?.clone();
-                if ty != Ty::Int(IntTy::Int) {
+                if *ty.underlying() != Ty::Int(IntTy::Int) {
                     return Err(Diagnostic::semantic(
-                        "increment and decrement require an int operand in the bootstrap backend",
+                        "increment and decrement require an int operand",
                         source,
                     ));
                 }
@@ -76,7 +81,114 @@ impl FunctionLowerer {
                     values: vec![one],
                 }
             }
+            StmtSyntaxKind::Send { channel, value } => {
+                self.lower_channel_send(channel, value, node, source)?
+            }
+            StmtSyntaxKind::Defer {
+                has_type_parameters,
+                params,
+                results,
+                body,
+                arguments,
+                spread,
+            } => {
+                if self.inside_deferred_closure || self.inside_local_closure {
+                    return Err(Diagnostic::unsupported(
+                        "defer statements in function literals are not yet implemented",
+                        source,
+                    ));
+                }
+                if self.defer_registration_depth != 0 {
+                    return Err(Diagnostic::unsupported(
+                        "defer statements in conditional, loop, or nested blocks are not yet implemented",
+                        source,
+                    ));
+                }
+                if *has_type_parameters {
+                    return Err(Diagnostic::unsupported(
+                        "generic deferred function literals are not implemented",
+                        source,
+                    ));
+                }
+                if results
+                    .as_ref()
+                    .is_some_and(|results| !results.fields.is_empty())
+                {
+                    return Err(Diagnostic::unsupported(
+                        "result-bearing deferred function literals are not yet implemented",
+                        source,
+                    ));
+                }
+                let (parameter_types, variadic) =
+                    parameter_types(params, &self.type_aliases, source)?;
+                if variadic || *spread {
+                    return Err(Diagnostic::unsupported(
+                        "variadic deferred function literals are not yet implemented",
+                        source,
+                    ));
+                }
+                if parameter_types.len() != arguments.len() {
+                    return Err(Diagnostic::semantic(
+                        format!(
+                            "deferred call has {} arguments; function requires {}",
+                            arguments.len(),
+                            parameter_types.len()
+                        ),
+                        source,
+                    ));
+                }
+                let values = arguments
+                    .iter()
+                    .zip(&parameter_types)
+                    .map(|(argument, expected)| self.lower_expr(argument, Some(expected)))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                self.push_scope();
+                let parameters = self.declare_field_bindings(
+                    params,
+                    &parameter_types,
+                    hir::LocalKind::Temporary,
+                )?;
+                let previous_inside = self.inside_deferred_closure;
+                self.inside_deferred_closure = true;
+                let body = self.lower_block(body, false);
+                self.inside_deferred_closure = previous_inside;
+                self.pop_scope();
+                hir::StmtKind::Defer {
+                    parameters,
+                    values,
+                    body: body?,
+                }
+            }
+            StmtSyntaxKind::Go {
+                has_type_parameters,
+                params,
+                results,
+                body,
+                arguments,
+                spread,
+            } => self.lower_empty_goroutine(
+                *has_type_parameters,
+                params,
+                results.as_ref(),
+                body,
+                arguments,
+                *spread,
+                source,
+            )?,
             StmtSyntaxKind::Return(results) => {
+                if self.range_yield_loop_depth.is_some() {
+                    return Err(Diagnostic::unsupported(
+                        "return from a range-over-function body is not yet represented",
+                        source,
+                    ));
+                }
+                if self.inside_deferred_closure {
+                    return Err(Diagnostic::unsupported(
+                        "return statements in deferred function literals are not yet implemented",
+                        source,
+                    ));
+                }
                 let values = if results.is_empty() && !self.named_results.is_empty() {
                     let named_results = self.named_results.clone();
                     let mut values = Vec::new();
@@ -96,6 +208,24 @@ impl FunctionLowerer {
                         values.push(self.local_expr(value_node, local, ty));
                     }
                     values
+                } else if let [result] = &**results {
+                    if let [expected] = self.signature.results.as_slice() {
+                        vec![self.lower_expr(result, Some(&expected.clone()))?]
+                    } else {
+                        let value = self.lower_expr(result, None)?;
+                        match &value.ty {
+                            Ty::Tuple(types) if types == &self.signature.results => vec![value],
+                            _ => {
+                                return Err(Diagnostic::semantic(
+                                    format!(
+                                        "return has 1 value; function requires {}",
+                                        self.signature.results.len()
+                                    ),
+                                    source,
+                                ));
+                            }
+                        }
+                    }
                 } else {
                     if results.len() != self.signature.results.len() {
                         return Err(Diagnostic::semantic(
@@ -121,82 +251,353 @@ impl FunctionLowerer {
                 condition,
                 then_block,
                 else_branch,
-            } => {
-                self.push_scope();
-                let init = init
-                    .as_deref()
-                    .map(|statement| self.lower_stmt(statement))
-                    .transpose()?
-                    .flatten()
-                    .map(Box::new);
-                let condition = self.lower_expr(condition, Some(&Ty::Bool))?;
-                let then_block = self.lower_block(then_block, true)?;
-                let else_branch = else_branch
-                    .as_deref()
-                    .map(|statement| self.lower_stmt(statement))
-                    .transpose()?
-                    .flatten()
-                    .map(Box::new);
-                self.pop_scope();
-                hir::StmtKind::If {
-                    init,
-                    condition,
-                    then_block,
-                    else_branch,
-                }
-            }
+            } => self.lower_if_statement(
+                init.as_deref(),
+                condition,
+                then_block,
+                else_branch.as_deref(),
+                source,
+            )?,
             StmtSyntaxKind::For {
+                label,
                 init,
                 condition,
                 post,
                 body,
             } => {
+                let label = label.as_ref().map(|label| label.name.to_string());
+                if self.inside_local_closure && label.is_some() {
+                    return Err(Diagnostic::unsupported(
+                        "labeled loops in local function literals are not yet implemented",
+                        source,
+                    ));
+                }
+                if let Some(label) = &label
+                    && !self.declared_labels.insert(label.clone())
+                {
+                    return Err(Diagnostic::semantic(
+                        format!("label {label} already defined"),
+                        source,
+                    ));
+                }
                 self.push_scope();
+                let iteration_local_start = self.locals.len();
                 let init = init
                     .as_deref()
                     .map(|statement| self.lower_stmt(statement))
                     .transpose()?
                     .flatten()
                     .map(Box::new);
+                let assigned_in_body = assigned_names_in_block(body);
+                let iteration_captures = self
+                    .locals
+                    .get(iteration_local_start..)
+                    .ok_or_else(|| Diagnostic::backend("iteration local boundary moved"))?
+                    .iter()
+                    .filter(|local| {
+                        local
+                            .name
+                            .as_ref()
+                            .is_some_and(|name| !assigned_in_body.contains(name))
+                    })
+                    .map(|local| local.id)
+                    .collect();
                 let condition = condition
                     .as_ref()
                     .map(|expression| self.lower_expr(expression, Some(&Ty::Bool)))
                     .transpose()?;
-                self.loop_depth += 1;
+                self.loop_labels.push(label.clone());
+                self.iteration_capture_scopes.push(iteration_captures);
                 let body = self.lower_block(body, true)?;
+                self.iteration_capture_scopes.pop();
                 let post = post
                     .as_deref()
                     .map(|statement| self.lower_stmt(statement))
                     .transpose()?
                     .flatten()
                     .map(Box::new);
-                self.loop_depth -= 1;
+                self.loop_labels.pop();
                 self.pop_scope();
                 hir::StmtKind::For {
+                    label,
                     init,
                     condition,
                     post,
                     body,
                 }
             }
-            StmtSyntaxKind::Branch { token, has_label } => match token {
-                Token::BREAK if !has_label && self.loop_depth != 0 => hir::StmtKind::Break,
-                Token::CONTINUE if !has_label && self.loop_depth != 0 => hir::StmtKind::Continue,
-                _ => {
+            StmtSyntaxKind::Range {
+                label,
+                key,
+                value,
+                token,
+                expression,
+                body,
+            } => self.lower_range(
+                label.as_ref(),
+                key.as_ref(),
+                value.as_ref(),
+                *token,
+                expression,
+                body,
+                source,
+            )?,
+            StmtSyntaxKind::Switch { init, tag, cases } => {
+                return self.lower_switch(stmt, init.as_deref(), tag.as_ref(), cases, None, source);
+            }
+            StmtSyntaxKind::TypeSwitch {
+                init,
+                binding,
+                expression,
+                cases,
+            } => {
+                return self.lower_type_switch(
+                    node,
+                    init.as_deref(),
+                    binding.as_ref(),
+                    expression,
+                    cases,
+                    stmt.source,
+                    source,
+                );
+            }
+            StmtSyntaxKind::Select { cases } => {
+                return self.lower_select(node, cases, source);
+            }
+            StmtSyntaxKind::Labeled { label, statement } => {
+                if self.inside_deferred_closure || self.inside_local_closure {
                     return Err(Diagnostic::unsupported(
-                        "only unlabeled break and continue in loops are implemented",
+                        "labels in function literals are not yet implemented",
                         source,
                     ));
                 }
-            },
+                let label = label.name.to_string();
+                if !self.declared_labels.insert(label.clone()) {
+                    return Err(Diagnostic::semantic(
+                        format!("label {label} already defined"),
+                        source,
+                    ));
+                }
+                if let StmtSyntaxKind::Switch { init, tag, cases } = &statement.kind {
+                    return self.lower_switch(
+                        statement,
+                        init.as_deref(),
+                        tag.as_ref(),
+                        cases,
+                        Some(&label),
+                        source,
+                    );
+                }
+                hir::StmtKind::Label {
+                    name: label,
+                    statement: self.lower_stmt(statement)?.map(Box::new),
+                }
+            }
+            StmtSyntaxKind::Branch { token, label } => {
+                if self.inside_deferred_closure
+                    || self.inside_local_closure && (*token == Token::GOTO || label.is_some())
+                {
+                    return Err(Diagnostic::unsupported(
+                        "labeled branches in function literals are not yet implemented",
+                        source,
+                    ));
+                }
+                if label.is_none()
+                    && self.range_yield_loop_depth == Some(self.loop_labels.len())
+                    && matches!(token, Token::BREAK | Token::CONTINUE)
+                {
+                    let value_node = self.alloc_node(stmt.source)?;
+                    let value = hir::Expr {
+                        node: value_node,
+                        kind: hir::ExprKind::Constant(ConstValue::Bool(*token == Token::CONTINUE)),
+                        ty: Ty::Bool,
+                        category: hir::ValueCategory::Constant,
+                        effects: hir::Effects::default(),
+                        source: SourceRef::node(value_node),
+                    };
+                    return Ok(Some(hir::Stmt {
+                        node,
+                        kind: hir::StmtKind::Return(vec![value]),
+                        source,
+                    }));
+                }
+                let label = label.as_ref().map(|label| label.name.to_string());
+                let target_exists = label.as_ref().map_or_else(
+                    || !self.loop_labels.is_empty(),
+                    |label| {
+                        self.loop_labels
+                            .iter()
+                            .rev()
+                            .any(|candidate| candidate.as_deref() == Some(label))
+                    },
+                );
+                match token {
+                    Token::BREAK if target_exists => hir::StmtKind::Break(label),
+                    Token::CONTINUE if target_exists => hir::StmtKind::Continue(label),
+                    Token::GOTO if label.is_some() => {
+                        let Some(label) = label else {
+                            return Err(Diagnostic::backend("goto label disappeared"));
+                        };
+                        self.referenced_gotos.entry(label.clone()).or_insert(source);
+                        hir::StmtKind::Goto(label)
+                    }
+                    _ => {
+                        return Err(Diagnostic::unsupported(
+                            "branch does not target a supported enclosing for loop",
+                            source,
+                        ));
+                    }
+                }
+            }
             StmtSyntaxKind::Unsupported(description) => {
                 return Err(Diagnostic::unsupported(
-                    format!("statement {description} is not implemented by the HIR/MIR backend"),
+                    format!("statement {description} is not yet supported"),
                     source,
                 ));
             }
         };
         Ok(Some(hir::Stmt { node, kind, source }))
+    }
+
+    fn lower_switch(
+        &mut self,
+        statement: &StmtSyntax,
+        init: Option<&StmtSyntax>,
+        tag: Option<&ExprSyntax>,
+        cases: &[SwitchCaseSyntax],
+        redundant_break_label: Option<&str>,
+        source: SourceRef,
+    ) -> Result<Option<hir::Stmt>, Diagnostic> {
+        self.push_scope();
+        let mut statements = Vec::new();
+        if let Some(init) = init
+            && let Some(init) = self.lower_stmt(init)?
+        {
+            statements.push(init);
+        }
+
+        let tag_local = if let Some(tag) = tag {
+            let tag = default_expr_type(self.lower_expr(tag, None)?, source)?;
+            ensure_bootstrap_value_type(&tag.ty, source)?;
+            let local = self.alloc_local(
+                None,
+                tag.ty.clone(),
+                hir::LocalKind::Temporary,
+                statement.source,
+            )?;
+            let node = self.alloc_node(statement.source)?;
+            statements.push(hir::Stmt {
+                node,
+                kind: hir::StmtKind::Let {
+                    destinations: vec![hir::Place::Local(local)],
+                    values: vec![tag],
+                },
+                source: SourceRef::node(node),
+            });
+            Some(local)
+        } else {
+            None
+        };
+
+        let mut default = None;
+        let mut branches = Vec::new();
+        let mut bodies = self.lower_switch_case_bodies(cases, redundant_break_label, source)?;
+        for case in cases {
+            let body = bodies.remove(0);
+            if case.expressions.is_empty() {
+                if default.replace((case.source, body)).is_some() {
+                    self.pop_scope();
+                    return Err(Diagnostic::semantic(
+                        "expression switch has multiple default cases",
+                        source,
+                    ));
+                }
+                continue;
+            }
+            let mut conditions = Vec::new();
+            for expression in &*case.expressions {
+                let condition = if let Some(tag_local) = tag_local {
+                    let tag_ty = self.place_ty(hir::Place::Local(tag_local))?.clone();
+                    let right = self.lower_expr(expression, Some(&tag_ty))?;
+                    let left_node = self.alloc_node(expression.source)?;
+                    let left = self.local_expr(left_node, tag_local, tag_ty);
+                    let node = self.alloc_node(expression.source)?;
+                    hir::Expr {
+                        node,
+                        ty: Ty::Bool,
+                        category: hir::ValueCategory::Value,
+                        effects: left.effects.union(right.effects),
+                        kind: hir::ExprKind::Binary {
+                            op: hir::BinaryOp::Equal,
+                            left: Box::new(left),
+                            right: Box::new(right),
+                        },
+                        source: SourceRef::node(node),
+                    }
+                } else {
+                    self.lower_expr(expression, Some(&Ty::Bool))?
+                };
+                conditions.push(condition);
+            }
+            let mut conditions = conditions.into_iter();
+            let mut condition = conditions
+                .next()
+                .ok_or_else(|| Diagnostic::backend("switch case lost its expressions"))?;
+            for right in conditions {
+                let node = self.alloc_node(case.source)?;
+                condition = hir::Expr {
+                    node,
+                    ty: Ty::Bool,
+                    category: hir::ValueCategory::Value,
+                    effects: condition.effects.union(right.effects),
+                    kind: hir::ExprKind::Binary {
+                        op: hir::BinaryOp::LogicalOr,
+                        left: Box::new(condition),
+                        right: Box::new(right),
+                    },
+                    source: SourceRef::node(node),
+                };
+            }
+            branches.push((case.source, condition, body));
+        }
+
+        let mut tail = if let Some((case_source, block)) = default {
+            let node = self.alloc_node(case_source)?;
+            Some(Box::new(hir::Stmt {
+                node,
+                source: SourceRef::node(node),
+                kind: hir::StmtKind::Block(block),
+            }))
+        } else {
+            None
+        };
+        for (case_source, condition, then_block) in branches.into_iter().rev() {
+            let node = self.alloc_node(case_source)?;
+            tail = Some(Box::new(hir::Stmt {
+                node,
+                kind: hir::StmtKind::If {
+                    init: None,
+                    condition,
+                    then_block,
+                    else_branch: tail,
+                },
+                source: SourceRef::node(node),
+            }));
+        }
+        if let Some(tail) = tail {
+            statements.push(*tail);
+        }
+        self.pop_scope();
+        let block_node = self.alloc_node(statement.source)?;
+        Ok(Some(hir::Stmt {
+            node: block_node,
+            kind: hir::StmtKind::Block(hir::Block {
+                node: block_node,
+                stmts: statements,
+                source: SourceRef::node(block_node),
+            }),
+            source: SourceRef::node(block_node),
+        }))
     }
 
     fn lower_local_decl(
@@ -206,17 +607,20 @@ impl FunctionLowerer {
     ) -> Result<hir::StmtKind, Diagnostic> {
         if declaration.token == Token::CONST {
             return Err(Diagnostic::unsupported(
-                "local const declarations require immutable HIR bindings and are not implemented",
+                "local const declarations are not yet supported",
                 source,
             ));
+        }
+        if declaration.token == Token::TYPE {
+            return self.lower_local_type_declaration(declaration, source);
         }
         if declaration.token != Token::VAR {
             return Err(Diagnostic::unsupported(
-                "local type and import declarations are not implemented",
+                "local import declarations are not implemented",
                 source,
             ));
         }
-        if declaration.contains_non_value_spec {
+        if declaration.contains_import_spec || !declaration.type_specs.is_empty() {
             return Err(Diagnostic::semantic(
                 "value declaration contains a non-value specification",
                 source,
@@ -235,6 +639,53 @@ impl FunctionLowerer {
         }))
     }
 
+    fn lower_local_type_declaration(
+        &mut self,
+        declaration: &DeclSyntax,
+        source: SourceRef,
+    ) -> Result<hir::StmtKind, Diagnostic> {
+        if declaration.contains_import_spec || !declaration.specs.is_empty() {
+            return Err(Diagnostic::semantic(
+                "type declaration contains a non-type specification",
+                source,
+            ));
+        }
+        for spec in &*declaration.type_specs {
+            self.lower_local_type_spec(spec, source)?;
+        }
+        let node = self.alloc_node(declaration.source)?;
+        Ok(hir::StmtKind::Block(hir::Block {
+            node,
+            stmts: Vec::new(),
+            source: SourceRef::node(node),
+        }))
+    }
+
+    fn lower_local_type_spec(
+        &mut self,
+        spec: &LocalTypeSyntax,
+        declaration_source: SourceRef,
+    ) -> Result<(), Diagnostic> {
+        if spec.has_type_parameters {
+            return Err(Diagnostic::unsupported(
+                "generic local type declarations are not yet implemented",
+                declaration_source,
+            ));
+        }
+        let target = lower_type(&spec.target, &self.type_aliases, declaration_source)?;
+        ensure_bootstrap_value_type(&target, declaration_source)?;
+        let ty = if spec.alias {
+            target
+        } else {
+            Ty::LocalNamed {
+                identity: self.alloc_local_type_identity()?,
+                underlying: Box::new(target.underlying().clone()),
+            }
+        };
+        let node = self.alloc_node(spec.name.source)?;
+        self.bind_local_type(spec.name.name.to_string(), ty, SourceRef::node(node))
+    }
+
     fn lower_value_spec(
         &mut self,
         spec: &ValueSpecSyntax,
@@ -244,7 +695,7 @@ impl FunctionLowerer {
         let explicit_ty = spec
             .explicit_type
             .as_ref()
-            .map(|ty| lower_type(ty, declaration_source))
+            .map(|ty| lower_type(ty, &self.type_aliases, declaration_source))
             .transpose()?;
         let raw_values = spec.values.as_deref().unwrap_or_default();
         if !raw_values.is_empty() && raw_values.len() != spec.names.len() {
@@ -268,20 +719,7 @@ impl FunctionLowerer {
                 .map(|name| {
                     let node = self.alloc_node(name.source)?;
                     let source = SourceRef::node(node);
-                    let value = ty.zero().ok_or_else(|| {
-                        Diagnostic::unsupported(
-                            format!("zero value for {ty:?} is not implemented"),
-                            source,
-                        )
-                    })?;
-                    Ok(hir::Expr {
-                        node,
-                        kind: hir::ExprKind::Constant(value),
-                        ty: ty.clone(),
-                        category: hir::ValueCategory::Constant,
-                        effects: hir::Effects::default(),
-                        source,
-                    })
+                    self.zero_value_expr(node, source, ty.clone())
                 })
                 .collect::<Result<Vec<_>, Diagnostic>>()?
         } else {
@@ -329,9 +767,88 @@ impl FunctionLowerer {
         right: &[ExprSyntax],
         source: SourceRef,
     ) -> Result<hir::StmtKind, Diagnostic> {
+        if let Some(binding) = self.try_lower_closure_binding(left, token, right, source) {
+            return binding;
+        }
+        if let Some(assignment) =
+            self.try_lower_parallel_dynamic_assignment(left, token, right, source)
+        {
+            return assignment;
+        }
+        if let Some(assignment) = self.try_lower_single_index_assignment(left, token, right, source)
+        {
+            return assignment;
+        }
+        if let Some(assignment) =
+            self.try_lower_single_struct_field_assignment(left, token, right, source)
+        {
+            return assignment;
+        }
+        if let Some(assignment) = self.try_lower_pointer_assignment(left, token, right, source) {
+            return assignment;
+        }
         if left.len() != right.len() {
+            if let [value] = right {
+                let value = match self.try_lower_channel_comma_ok(value) {
+                    Some(value) => value?,
+                    None => match self.try_lower_interface_comma_ok(value) {
+                        Some(value) => value?,
+                        None => match self.try_lower_map_comma_ok(value) {
+                            Some(value) => value?,
+                            None => self.lower_expr(value, None)?,
+                        },
+                    },
+                };
+                let Ty::Tuple(component_types) = &value.ty else {
+                    return Err(Diagnostic::semantic(
+                        format!(
+                            "assignment has {} destinations and {} values",
+                            left.len(),
+                            right.len()
+                        ),
+                        source,
+                    ));
+                };
+                if component_types.len() != left.len() {
+                    return Err(Diagnostic::semantic(
+                        format!(
+                            "assignment has {} destinations and {} result values",
+                            left.len(),
+                            component_types.len()
+                        ),
+                        source,
+                    ));
+                }
+                if !matches!(value.kind, hir::ExprKind::Call { .. }) {
+                    return Err(Diagnostic::backend(
+                        "tuple-valued non-call reached multi-result assignment",
+                    ));
+                }
+                if token == Token::ASSIGN
+                    && left
+                        .iter()
+                        .any(|expression| !matches!(expression.kind, ExprSyntaxKind::Ident(_)))
+                {
+                    return self.lower_parallel_tuple_assignment(left, value, source);
+                }
+                let (destinations, coercions, declares) =
+                    self.lower_multi_result_destinations(left, token, component_types, source)?;
+                return Ok(if declares {
+                    hir::StmtKind::LetTuple {
+                        destinations,
+                        value,
+                        coercions,
+                    }
+                } else {
+                    hir::StmtKind::AssignTuple {
+                        destinations,
+                        value,
+                        coercions,
+                    }
+                });
+            }
             return Err(Diagnostic::unsupported(
-                "multi-result assignment is not implemented by the HIR/MIR backend",
+                "this multi-result assignment form is not yet supported",
                 source,
             ));
         }
@@ -423,26 +940,7 @@ impl FunctionLowerer {
                 }),
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let op = match token {
-            Token::ASSIGN => hir::AssignOp::Set,
-            Token::ADD_ASSIGN => hir::AssignOp::Add,
-            Token::SUB_ASSIGN => hir::AssignOp::Sub,
-            Token::MUL_ASSIGN => hir::AssignOp::Mul,
-            Token::QUO_ASSIGN => hir::AssignOp::Div,
-            Token::REM_ASSIGN => hir::AssignOp::Rem,
-            Token::AND_ASSIGN => hir::AssignOp::BitAnd,
-            Token::OR_ASSIGN => hir::AssignOp::BitOr,
-            Token::XOR_ASSIGN => hir::AssignOp::BitXor,
-            Token::SHL_ASSIGN => hir::AssignOp::Shl,
-            Token::SHR_ASSIGN => hir::AssignOp::Shr,
-            Token::AND_NOT_ASSIGN => hir::AssignOp::AndNot,
-            _ => {
-                return Err(Diagnostic::semantic(
-                    format!("invalid assignment operator {token:?}"),
-                    source,
-                ));
-            }
-        };
+        let op = assignment_op(token, source)?;
         if op != hir::AssignOp::Set && destinations.len() != 1 {
             return Err(Diagnostic::semantic(
                 "compound assignment requires one destination and one value",
@@ -466,39 +964,5 @@ impl FunctionLowerer {
             op,
             values,
         })
-    }
-
-    fn lower_place(
-        &self,
-        expression: &ExprSyntax,
-        source: SourceRef,
-    ) -> Result<hir::Place, Diagnostic> {
-        let ExprSyntaxKind::Ident(ident) = &expression.kind else {
-            return Err(Diagnostic::unsupported(
-                "only local identifier assignment targets are implemented",
-                source,
-            ));
-        };
-        if ident.name.as_ref() == "_" {
-            return Ok(hir::Place::Discard);
-        }
-        self.lookup_local(&ident.name)
-            .map(hir::Place::Local)
-            .ok_or_else(|| {
-                Diagnostic::semantic(format!("undefined variable {}", ident.name), source)
-            })
-    }
-
-    pub(super) fn place_ty(&self, place: hir::Place) -> Result<&Ty, Diagnostic> {
-        match place {
-            hir::Place::Local(id) => self
-                .locals
-                .get(id.0 as usize)
-                .map(|local| &local.ty)
-                .ok_or_else(|| Diagnostic::backend(format!("invalid local id {}", id.0))),
-            hir::Place::Discard => Err(Diagnostic::backend(
-                "blank identifier unexpectedly required an inferred type",
-            )),
-        }
     }
 }

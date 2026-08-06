@@ -9,7 +9,9 @@ use crate::compiler::db::{
     ResolvedImportInputMutation, SourceInputMutation,
 };
 use crate::compiler::ids::{FileId, PackageId};
-use crate::compiler::input::{PackageInputManifest, PackageKey, ProgramInput, WorkspaceKey};
+use crate::compiler::input::{
+    PackageInputManifest, PackageKey, ProgramInput, SourceFileInput, WorkspaceKey,
+};
 use crate::compiler::package_dag::{
     PackageDagError, PackageDagImport, PackageDagNode, build_package_dag,
 };
@@ -149,10 +151,13 @@ impl CompilerSession {
                     .ok_or_else(|| {
                         CompilerError::backend("reachable package request has no import occurrence")
                     })?;
-                let manifest = catalog
-                    .materialize(dependency)
-                    .map_err(|error| self.catalog_error(first, &error))?
-                    .ok_or_else(|| self.unresolved_import(first))?;
+                let manifest = match intrinsic_package_manifest(dependency)? {
+                    Some(manifest) => manifest,
+                    None => catalog
+                        .materialize(dependency)
+                        .map_err(|error| self.catalog_error(first, &error))?
+                        .ok_or_else(|| self.unresolved_import(first))?,
+                };
                 if manifest.key() != dependency {
                     return Err(self.import_diagnostic(
                         first,
@@ -453,4 +458,22 @@ impl CompilerSession {
             }
         }
     }
+}
+
+fn intrinsic_package_manifest(
+    package: &PackageKey,
+) -> Result<Option<Arc<PackageInputManifest>>, CompilerError> {
+    if package.as_import_path() != Some("unsafe") {
+        return Ok(None);
+    }
+    let file = SourceFileInput::from_source(
+        "unsafe.go",
+        "gors://intrinsics/unsafe.go",
+        "package unsafe\n",
+    )
+    .map_err(|error| CompilerError::backend(format!("invalid unsafe package source: {error}")))?;
+    let manifest = PackageInputManifest::new(package.clone(), [file]).map_err(|error| {
+        CompilerError::backend(format!("invalid unsafe package manifest: {error}"))
+    })?;
+    Ok(Some(Arc::new(manifest)))
 }

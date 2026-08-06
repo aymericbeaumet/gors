@@ -56,7 +56,7 @@ test("persistent compiler worker handles cold, cached, edited, and coalesced inp
 			'import "fmt"',
 			"",
 			"func main() {",
-			'\tfmt.Println("legacy fallback forbidden")',
+			'\tfmt.Println("compiler worker ready")',
 			"}",
 		].join("\n"),
 	);

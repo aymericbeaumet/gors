@@ -10,7 +10,7 @@ use crate::compiler::hir;
 use crate::compiler::ids::{LocalId, NodeId};
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{ExprSyntax, ExprSyntaxKind};
-use crate::compiler::types::{ConstValue, IntTy, Ty, UntypedTy};
+use crate::compiler::types::{ComplexTy, ConstValue, FloatTy, IntTy, Ty, UintTy, UntypedTy};
 
 impl FunctionLowerer {
     pub(super) fn local_expr(&self, node: NodeId, local: LocalId, ty: Ty) -> hir::Expr {
@@ -32,6 +32,18 @@ impl FunctionLowerer {
         expr: &ExprSyntax,
         expected: Option<&Ty>,
     ) -> Result<hir::Expr, Diagnostic> {
+        if let Some(expected) = expected
+            && is_nil_identifier(expr)
+        {
+            let node = self.alloc_node(expr.source)?;
+            return self.zero_value_expr(node, SourceRef::node(node), expected.clone());
+        }
+        if let Some(expected) = expected
+            && matches!(expected.underlying(), Ty::Interface(_))
+        {
+            let value = self.lower_expr_inner(expr, None, false)?;
+            return self.coerce_interface_value(value, expected, expr.source);
+        }
         self.lower_expr_inner(expr, expected, false)
     }
 
@@ -44,14 +56,8 @@ impl FunctionLowerer {
         let node = self.alloc_node(expr.source)?;
         let source = SourceRef::node(node);
         let mut lowered = match &expr.kind {
-            ExprSyntaxKind::Literal { token, .. } => {
-                if *token == Token::FLOAT {
-                    return Err(Diagnostic::unsupported(
-                        "floating-point literals are outside the bootstrap bool/int/string runtime frontier",
-                        source,
-                    ));
-                }
-                let (ty, value) = eval_constant(expr, &self.constants, source)?;
+            ExprSyntaxKind::Literal { .. } => {
+                let (ty, value) = eval_constant(expr, &self.constants, source, 0)?;
                 hir::Expr {
                     node,
                     kind: hir::ExprKind::Constant(value),
@@ -63,7 +69,14 @@ impl FunctionLowerer {
             }
             ExprSyntaxKind::Ident(ident) => {
                 let name = ident.name.as_ref();
-                if let Some(local) = self.lookup_local(name) {
+                if self.lookup_closure(name).is_some() {
+                    return Err(Diagnostic::unsupported(
+                        format!(
+                            "local function {name} is non-escaping and can only be called directly"
+                        ),
+                        source,
+                    ));
+                } else if let Some(local) = self.lookup_local(name) {
                     let ty = self.place_ty(hir::Place::Local(local))?.clone();
                     self.local_expr(node, local, ty)
                 } else if let Some(constant) = self.constants.get(name).cloned() {
@@ -75,9 +88,23 @@ impl FunctionLowerer {
                         effects: hir::Effects::default(),
                         source,
                     }
-                } else if self.functions.contains_key(name) {
+                } else if let Some(variable) = self.variables.get(name).cloned() {
+                    hir::Expr {
+                        node,
+                        kind: hir::ExprKind::GlobalVariable(variable.id, variable.value),
+                        ty: variable.ty,
+                        category: hir::ValueCategory::Value,
+                        effects: hir::Effects {
+                            may_read: true,
+                            ..hir::Effects::default()
+                        },
+                        source,
+                    }
+                } else if self.functions.contains_key(name)
+                    || self.generic_functions.contains_key(name)
+                {
                     return Err(Diagnostic::unsupported(
-                        format!("function value {name} is not implemented by the HIR/MIR backend"),
+                        format!("function values for {name} are not yet supported"),
                         source,
                     ));
                 } else if matches!(name, "true" | "false") {
@@ -105,14 +132,44 @@ impl FunctionLowerer {
                 return self.lower_expr_inner(expression, expected, allow_discarded_call_result);
             }
             ExprSyntaxKind::Unary { token, expression } => {
+                if *token == Token::ARROW {
+                    return self.lower_channel_receive(expression, false, node, source, expected);
+                }
+                if *token == Token::AND {
+                    return self.lower_address_of_local(expression, node, source, expected);
+                }
+                if *token == Token::MUL {
+                    return self.lower_pointer_deref(expression, node, source, expected);
+                }
                 let mut operand = self.lower_expr(expression, expected)?;
                 let operand_ty = operand.ty.default_typed();
                 ensure_bootstrap_value_type(&operand_ty, source)?;
+                let operator_ty = operand_ty.underlying();
                 let op = match *token {
-                    Token::ADD if operand_ty == Ty::Int(IntTy::Int) => hir::UnaryOp::Positive,
-                    Token::SUB if operand_ty == Ty::Int(IntTy::Int) => hir::UnaryOp::Negative,
+                    Token::ADD if matches!(operator_ty, Ty::Int(IntTy::Int | IntTy::Int32)) => {
+                        hir::UnaryOp::Positive
+                    }
+                    Token::ADD
+                        if matches!(
+                            operator_ty,
+                            Ty::Float(FloatTy::Float64) | Ty::Complex(ComplexTy::Complex128)
+                        ) =>
+                    {
+                        hir::UnaryOp::Positive
+                    }
+                    Token::SUB if matches!(operator_ty, Ty::Int(IntTy::Int | IntTy::Int32)) => {
+                        hir::UnaryOp::Negative
+                    }
+                    Token::SUB
+                        if matches!(
+                            operator_ty,
+                            Ty::Float(FloatTy::Float64) | Ty::Complex(ComplexTy::Complex128)
+                        ) =>
+                    {
+                        hir::UnaryOp::Negative
+                    }
                     Token::NOT if is_bool(&operand_ty) => hir::UnaryOp::Not,
-                    Token::XOR if operand_ty == Ty::Int(IntTy::Int) => hir::UnaryOp::BitNot,
+                    Token::XOR if *operator_ty == Ty::Int(IntTy::Int) => hir::UnaryOp::BitNot,
                     _ => {
                         return Err(Diagnostic::semantic(
                             format!("invalid unary {token:?} operand {:?}", operand.ty),
@@ -150,8 +207,56 @@ impl FunctionLowerer {
                 }
             }
             ExprSyntaxKind::Binary { left, token, right } => {
+                if matches!(token, Token::EQL | Token::NEQ)
+                    && let Some((arguments, spread)) =
+                        super::recovery::recover_nil_comparison(left, right)
+                {
+                    if spread || !arguments.is_empty() {
+                        return Err(Diagnostic::semantic(
+                            "recover requires no arguments",
+                            source,
+                        ));
+                    }
+                    return self.lower_recover_nil_comparison(
+                        node,
+                        source,
+                        *token == Token::EQL,
+                        expected,
+                    );
+                }
+                if matches!(token, Token::EQL | Token::NEQ) {
+                    let map = if is_nil_identifier(left) {
+                        Some(right.as_ref())
+                    } else if is_nil_identifier(right) {
+                        Some(left.as_ref())
+                    } else {
+                        None
+                    };
+                    if let Some(map) = map {
+                        return self.lower_nil_comparison(
+                            map,
+                            *token == Token::EQL,
+                            node,
+                            source,
+                            expected,
+                        );
+                    }
+                }
                 let mut left = self.lower_expr(left, None)?;
                 let mut right = self.lower_expr(right, None)?;
+                if matches!(token, Token::EQL | Token::NEQ)
+                    && (left.ty.bootstrap_i64_struct_pointer_fields().is_some()
+                        || right.ty.bootstrap_i64_struct_pointer_fields().is_some())
+                {
+                    return self.lower_struct_pointer_comparison(
+                        left,
+                        right,
+                        *token == Token::EQL,
+                        node,
+                        source,
+                        expected,
+                    );
+                }
                 let op = lower_binary_op(*token).ok_or_else(|| {
                     Diagnostic::unsupported(
                         format!("binary operator {token:?} is not implemented"),
@@ -227,19 +332,135 @@ impl FunctionLowerer {
                     }
                 }
             }
-            ExprSyntaxKind::Call { callee, arguments } => {
-                let ExprSyntaxKind::Ident(callee_ident) = &callee.kind else {
-                    return Err(Diagnostic::unsupported(
-                        "only direct calls are implemented by the HIR/MIR backend",
+            ExprSyntaxKind::Call {
+                callee,
+                arguments,
+                spread,
+            } => {
+                if let ExprSyntaxKind::Index { base, index } = &callee.kind
+                    && arguments.is_empty()
+                    && !spread
+                {
+                    let slice = self.lower_expr(base, None)?;
+                    if let Some(function) = slice.ty.snapshot_function_slice_element() {
+                        let result_ty =
+                            function
+                                .snapshot_function_result()
+                                .cloned()
+                                .ok_or_else(|| {
+                                    Diagnostic::backend(
+                                        "snapshot function slice lost its result type",
+                                    )
+                                })?;
+                        let index = self.lower_expr(index, Some(&Ty::Int(IntTy::Int)))?;
+                        let effects = slice_runtime_effects(&[&slice, &index], false, false, true);
+                        let mut call = hir::Expr {
+                            node,
+                            kind: hir::ExprKind::Call {
+                                callee: hir::Callee::Builtin(
+                                    hir::Builtin::SnapshotFunctionSliceCall,
+                                ),
+                                args: vec![slice, index],
+                            },
+                            ty: result_ty,
+                            category: hir::ValueCategory::Value,
+                            effects,
+                            source,
+                        };
+                        if let Some(expected) = expected {
+                            coerce_expr(&mut call, expected, source)?;
+                        }
+                        return Ok(call);
+                    }
+                }
+                if let ExprSyntaxKind::Selector { base, member } = &callee.kind {
+                    return self.lower_selector_call(
+                        base,
+                        member,
+                        arguments,
+                        *spread,
+                        node,
                         source,
-                    ));
+                        expected,
+                        allow_discarded_call_result,
+                    );
+                }
+                let ExprSyntaxKind::Ident(callee_ident) = &callee.kind else {
+                    return self
+                        .lower_conversion_call(callee, arguments, *spread, node, source, expected);
                 };
                 let name = callee_ident.name.as_ref();
-                let (callee, params, results) = if self.lookup_local(name).is_some() {
+                if name == "make" {
+                    return self
+                        .lower_make_builtin_call(arguments, *spread, node, source, expected);
+                }
+                if name == "new" {
+                    return self.lower_new_builtin_call(arguments, *spread, node, source, expected);
+                }
+                if name == "len" {
+                    return self.lower_len_builtin_call(arguments, *spread, node, source, expected);
+                }
+                if name == "cap" {
+                    return self.lower_channel_cap_builtin_call(
+                        arguments, *spread, node, source, expected,
+                    );
+                }
+                if name == "close" {
+                    return self.lower_channel_close_builtin_call(
+                        arguments, *spread, node, source, expected,
+                    );
+                }
+                if name == "clear" {
+                    return self
+                        .lower_clear_builtin_call(arguments, *spread, node, source, expected);
+                }
+                if name == "delete" {
+                    return self
+                        .lower_delete_builtin_call(arguments, *spread, node, source, expected);
+                }
+                if matches!(name, "append" | "copy") {
+                    return self.lower_slice_builtin_call(
+                        name, arguments, *spread, node, source, expected,
+                    );
+                }
+                if matches!(name, "min" | "max" | "complex" | "real" | "imag") {
+                    return self.lower_numeric_builtin_call(
+                        name, arguments, *spread, node, source, expected,
+                    );
+                }
+                if self.type_aliases.contains_key(name)
+                    || matches!(name, "bool" | "string" | "int" | "float64" | "complex128")
+                {
+                    return self
+                        .lower_conversion_call(callee, arguments, *spread, node, source, expected);
+                }
+                if self.generic_functions.contains_key(name) {
+                    return self.lower_generic_function_call(
+                        name,
+                        arguments,
+                        *spread,
+                        node,
+                        expr.source,
+                        source,
+                        expected,
+                        allow_discarded_call_result,
+                    );
+                }
+                let (callee, params, results, variadic) = if let Some(id) =
+                    self.lookup_closure(name)
+                {
+                    let closure = self.closures.get(id.index() as usize).ok_or_else(|| {
+                        Diagnostic::backend(format!("unknown local function {name}"))
+                    })?;
+                    (
+                        hir::Callee::Closure(id),
+                        closure.signature.params.clone(),
+                        closure.signature.results.clone(),
+                        closure.signature.variadic,
+                    )
+                } else if self.lookup_local(name).is_some() {
                     return Err(Diagnostic::unsupported(
-                        format!(
-                            "calling local value {name} requires function-value HIR and is not implemented"
-                        ),
+                        format!("calling the function value {name} is not yet supported"),
                         source,
                     ));
                 } else if let Some(symbol) = self.functions.get(name).cloned() {
@@ -247,6 +468,7 @@ impl FunctionLowerer {
                         hir::Callee::Function(symbol.id),
                         symbol.signature.params,
                         symbol.signature.results,
+                        symbol.signature.variadic,
                     )
                 } else if self.constants.contains_key(name) {
                     return Err(Diagnostic::semantic(
@@ -255,8 +477,30 @@ impl FunctionLowerer {
                     ));
                 } else {
                     match name {
-                        "print" => (hir::Callee::Builtin(hir::Builtin::Print), vec![], vec![]),
-                        "println" => (hir::Callee::Builtin(hir::Builtin::Println), vec![], vec![]),
+                        "print" => (
+                            hir::Callee::Builtin(hir::Builtin::Print),
+                            vec![],
+                            vec![],
+                            false,
+                        ),
+                        "println" => (
+                            hir::Callee::Builtin(hir::Builtin::Println),
+                            vec![],
+                            vec![],
+                            false,
+                        ),
+                        "panic" => (
+                            hir::Callee::Builtin(hir::Builtin::Panic),
+                            vec![],
+                            vec![],
+                            false,
+                        ),
+                        "recover" => {
+                            return Err(Diagnostic::unsupported(
+                                "recover results are currently supported in direct nil comparisons",
+                                source,
+                            ));
+                        }
                         name => {
                             return Err(Diagnostic::semantic(
                                 format!("undefined function {name}"),
@@ -265,17 +509,35 @@ impl FunctionLowerer {
                         }
                     }
                 };
-                if !matches!(callee, hir::Callee::Builtin(_)) && arguments.len() != params.len() {
-                    return Err(Diagnostic::semantic(
-                        format!(
-                            "call has {} arguments; expected {}",
-                            arguments.len(),
-                            params.len()
-                        ),
-                        source,
-                    ));
+                match callee {
+                    hir::Callee::Builtin(hir::Builtin::Panic) if arguments.len() != 1 => {
+                        return Err(Diagnostic::semantic(
+                            format!(
+                                "call to panic has {} arguments; expected 1",
+                                arguments.len()
+                            ),
+                            source,
+                        ));
+                    }
+                    hir::Callee::Builtin(_) if *spread => {
+                        return Err(Diagnostic::semantic(
+                            "... is not valid for this built-in call",
+                            source,
+                        ));
+                    }
+                    _ => {}
                 }
-                let args = if matches!(callee, hir::Callee::Builtin(_)) {
+                let args = if matches!(callee, hir::Callee::Function(_) | hir::Callee::Closure(_)) {
+                    self.lower_call_arguments(
+                        arguments,
+                        &params,
+                        variadic,
+                        *spread,
+                        expr.source,
+                        source,
+                        "function",
+                    )?
+                } else {
                     arguments
                         .iter()
                         .map(|argument| {
@@ -285,22 +547,11 @@ impl FunctionLowerer {
                             })
                         })
                         .collect::<Result<Vec<_>, _>>()?
-                } else {
-                    arguments
-                        .iter()
-                        .zip(&params)
-                        .map(|(argument, expected)| self.lower_expr(argument, Some(expected)))
-                        .collect::<Result<Vec<_>, _>>()?
                 };
                 let ty = match results.as_slice() {
                     [] => Ty::Unit,
                     [single] => single.clone(),
-                    _ => {
-                        return Err(Diagnostic::unsupported(
-                            "multiple-result calls require explicit expression-arity HIR",
-                            source,
-                        ));
-                    }
+                    many => Ty::Tuple(many.to_vec()),
                 };
                 if ty == Ty::Unit && !allow_discarded_call_result {
                     return Err(Diagnostic::unsupported(
@@ -328,15 +579,171 @@ impl FunctionLowerer {
                     source,
                 }
             }
-            ExprSyntaxKind::Selector { .. } => {
+            ExprSyntaxKind::FunctionLiteral { .. } => {
                 return Err(Diagnostic::unsupported(
-                    "selector resolution is not implemented by the HIR/MIR backend",
+                    "function literals currently require a non-escaping short declaration",
+                    source,
+                ));
+            }
+            ExprSyntaxKind::Selector { base, member } => {
+                self.lower_selector(base, member, node, source)?
+            }
+            ExprSyntaxKind::TypeAssert { value, asserted } => self.lower_interface_type_assertion(
+                value,
+                asserted.as_deref(),
+                false,
+                node,
+                source,
+            )?,
+            ExprSyntaxKind::CompositeLiteral { ty, elements } => self.lower_composite_literal(
+                ty.as_deref(),
+                elements,
+                node,
+                expr.source,
+                source,
+                expected,
+            )?,
+            ExprSyntaxKind::Index { base, index } => {
+                let base = self.lower_expr(base, None)?;
+                if matches!(base.ty.underlying(), Ty::Map(_, _)) {
+                    return self.lower_map_index(base, index, node, source, expected);
+                }
+                if matches!(base.ty.underlying(), Ty::Array(_, _)) {
+                    return self.lower_array_index(base, index, node, source, expected);
+                }
+                let (builtin, element_ty) = match base.ty.underlying() {
+                    Ty::String => (hir::Builtin::StringIndex, Ty::Uint(UintTy::Uint8)),
+                    Ty::Slice(element)
+                        if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) =>
+                    {
+                        (hir::Builtin::SliceI64Index, element.as_ref().clone())
+                    }
+                    Ty::Slice(element) if element.underlying() == &Ty::Uint(UintTy::Uint8) => {
+                        (hir::Builtin::SliceU8Index, element.as_ref().clone())
+                    }
+                    Ty::Slice(element) if element.underlying() == &Ty::Bool => {
+                        (hir::Builtin::SliceBoolIndex, element.as_ref().clone())
+                    }
+                    Ty::Slice(element) if element.uses_interface_aggregate_representation() => {
+                        let stored_ty = element.as_ref().clone();
+                        let element_ty = self.expand_named_ref(&stored_ty)?;
+                        let type_identity = stored_ty.dynamic_type_identity().ok_or_else(|| {
+                            Diagnostic::backend(
+                                "aggregate slice element omitted its dynamic type identity",
+                            )
+                        })?;
+                        let index = self.lower_expr(index, Some(&Ty::Int(IntTy::Int)))?;
+                        let effects = slice_runtime_effects(&[&base, &index], false, false, true);
+                        return Ok(hir::Expr {
+                            node,
+                            kind: hir::ExprKind::AggregateSliceIndex {
+                                slice: Box::new(base),
+                                index: Box::new(index),
+                                type_identity,
+                            },
+                            ty: element_ty,
+                            category: hir::ValueCategory::Value,
+                            effects,
+                            source,
+                        });
+                    }
+                    ty => {
+                        return Err(Diagnostic::unsupported(
+                            format!("indexing is not yet implemented for {ty:?}"),
+                            source,
+                        ));
+                    }
+                };
+                let index = self.lower_expr(index, Some(&Ty::Int(IntTy::Int)))?;
+                let effects = slice_runtime_effects(&[&base, &index], false, false, true);
+                hir::Expr {
+                    node,
+                    kind: hir::ExprKind::Call {
+                        callee: hir::Callee::Builtin(builtin),
+                        args: vec![base, index],
+                    },
+                    ty: element_ty,
+                    category: hir::ValueCategory::Value,
+                    effects,
+                    source,
+                }
+            }
+            ExprSyntaxKind::Slice {
+                base,
+                low,
+                high,
+                max,
+            } => {
+                let base = self.lower_expr(base, None)?;
+                let low = self.lower_optional_slice_bound(low.as_deref(), expr.source)?;
+                let high = self.lower_optional_slice_bound(high.as_deref(), expr.source)?;
+                let (builtin, ty, args) = match base.ty.underlying() {
+                    Ty::String => {
+                        if max.is_some() {
+                            return Err(Diagnostic::semantic(
+                                "three-index slicing requires a slice value",
+                                source,
+                            ));
+                        }
+                        (hir::Builtin::StringRange, Ty::String, vec![base, low, high])
+                    }
+                    Ty::Slice(element)
+                        if matches!(
+                            element.underlying(),
+                            Ty::Int(IntTy::Int | IntTy::Int32) | Ty::Uint(UintTy::Uint8)
+                        ) =>
+                    {
+                        let builtin =
+                            if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) {
+                                hir::Builtin::SliceI64Range
+                            } else {
+                                hir::Builtin::SliceU8Range
+                            };
+                        let ty = Ty::Slice(element.clone());
+                        let max = self.lower_optional_slice_bound(max.as_deref(), expr.source)?;
+                        (builtin, ty, vec![base, low, high, max])
+                    }
+                    ty => {
+                        return Err(Diagnostic::unsupported(
+                            format!("slicing is not yet implemented for {ty:?}"),
+                            source,
+                        ));
+                    }
+                };
+                let effects =
+                    slice_runtime_effects(&args.iter().collect::<Vec<_>>(), false, false, true);
+                hir::Expr {
+                    node,
+                    kind: hir::ExprKind::Call {
+                        callee: hir::Callee::Builtin(builtin),
+                        args,
+                    },
+                    ty,
+                    category: hir::ValueCategory::Value,
+                    effects,
+                    source,
+                }
+            }
+            ExprSyntaxKind::ArrayType { .. }
+            | ExprSyntaxKind::MapType { .. }
+            | ExprSyntaxKind::ChannelType { .. }
+            | ExprSyntaxKind::FunctionType { .. }
+            | ExprSyntaxKind::StructType { .. }
+            | ExprSyntaxKind::InterfaceType { .. } => {
+                return Err(Diagnostic::semantic(
+                    "a type is not a value expression",
+                    source,
+                ));
+            }
+            ExprSyntaxKind::KeyValue { .. } => {
+                return Err(Diagnostic::semantic(
+                    "key: value syntax requires a composite literal",
                     source,
                 ));
             }
             ExprSyntaxKind::Unsupported(kind) => {
                 return Err(Diagnostic::unsupported(
-                    format!("expression {kind} is not implemented by the HIR/MIR backend"),
+                    format!("expression {kind} is not yet supported"),
                     source,
                 ));
             }
@@ -346,4 +753,48 @@ impl FunctionLowerer {
         }
         Ok(lowered)
     }
+
+    pub(super) fn lower_optional_slice_bound(
+        &mut self,
+        bound: Option<&ExprSyntax>,
+        syntax_source: crate::compiler::syntax::SyntaxSource,
+    ) -> Result<hir::Expr, Diagnostic> {
+        if let Some(bound) = bound {
+            return self.lower_expr(bound, Some(&Ty::Int(IntTy::Int)));
+        }
+        let node = self.alloc_node(syntax_source)?;
+        Ok(hir::Expr {
+            node,
+            kind: hir::ExprKind::Constant(ConstValue::Int("-1".into())),
+            ty: Ty::Int(IntTy::Int),
+            category: hir::ValueCategory::Constant,
+            effects: hir::Effects::default(),
+            source: SourceRef::node(node),
+        })
+    }
+}
+
+fn is_nil_identifier(expression: &ExprSyntax) -> bool {
+    matches!(
+        &expression.kind,
+        ExprSyntaxKind::Ident(identifier) if identifier.name.as_ref() == "nil"
+    )
+}
+
+pub(super) fn slice_runtime_effects(
+    arguments: &[&hir::Expr],
+    writes: bool,
+    allocates: bool,
+    panics: bool,
+) -> hir::Effects {
+    arguments.iter().fold(
+        hir::Effects {
+            may_call: true,
+            may_allocate: allocates,
+            may_panic: panics,
+            may_write: writes,
+            ..hir::Effects::default()
+        },
+        |effects, argument| effects.union(argument.effects),
+    )
 }

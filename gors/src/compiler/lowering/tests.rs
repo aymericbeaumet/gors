@@ -1,7 +1,7 @@
 use super::*;
 use crate::compiler::rust_ir::{
-    ControlFlowPlan, Operand, Provenance, ReadOp, RvalueKind, SlotInitialization, StorageClass,
-    SyntheticOrigin, TerminatorKind,
+    CallTarget, ControlFlowPlan, Operand, PanicEdge, Provenance, ReadOp, RuntimeOp, RvalueKind,
+    SlotInitialization, StorageClass, SyntheticOrigin, TerminatorKind,
 };
 
 fn lower_source(source: &str) -> rust_ir::File {
@@ -46,7 +46,12 @@ fn mandatory_lowering_selects_explicit_storage_moves_and_control_flow() {
     let rust_ir = lower_source("package main\nfunc echo(value string) string { return value }\n");
     let function = &rust_ir.functions[0];
 
-    assert_eq!(function.control_flow, ControlFlowPlan::PcDispatchU32);
+    assert_eq!(
+        function.control_flow,
+        ControlFlowPlan::StructuredLinear {
+            order: vec![function.entry]
+        }
+    );
     assert!(
         function
             .locals
@@ -61,6 +66,18 @@ fn mandatory_lowering_selects_explicit_storage_moves_and_control_flow() {
     let reads = local_reads(function, "value");
     assert!(!reads.is_empty());
     assert!(reads.iter().all(|read| *read == ReadOp::ProvenLastUseMove));
+}
+
+#[test]
+fn idiom_pass_keeps_branching_and_looping_cfgs_explicit() {
+    let file = lower_source(
+        "package main\nfunc choose(flag bool) int { if flag { return 1 }; return 2 }\n",
+    );
+
+    assert_eq!(
+        named_function(&file, "choose").control_flow,
+        ControlFlowPlan::PcDispatchU32
+    );
 }
 
 #[test]
@@ -156,10 +173,74 @@ fn mandatory_lowering_preserves_explicit_synthetic_origins() {
     )));
 }
 
+#[test]
+fn panic_builtin_selects_typed_runtime_operations() {
+    let file = lower_source(
+        r#"
+            package main
+            func panicBool() { panic(true) }
+            func panicInt() { panic(42) }
+            func panicString() { panic("boom") }
+        "#,
+    );
+
+    for (name, expected) in [
+        ("panicBool", RuntimeOp::PanicBool),
+        ("panicInt", RuntimeOp::PanicI64),
+        ("panicString", RuntimeOp::PanicGoString),
+    ] {
+        let function = named_function(&file, name);
+        let call = function
+            .blocks
+            .iter()
+            .map(|block| &block.terminator)
+            .find(|terminator| {
+                matches!(
+                    &terminator.kind,
+                    TerminatorKind::Call {
+                        target: CallTarget::Runtime(operation),
+                        ..
+                    } if *operation == expected
+                )
+            })
+            .unwrap();
+        assert!(call.effects.may_panic);
+        assert_eq!(call.panic, PanicEdge::Propagate);
+    }
+}
+
 fn rvalue_operands(kind: &RvalueKind) -> Vec<&Operand> {
     match kind {
         RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => vec![operand],
-        RvalueKind::Binary { left, right, .. } => vec![left, right],
+        RvalueKind::Binary { left, right, .. }
+        | RvalueKind::AggregateEqualI64 { left, right, .. } => vec![left, right],
+        RvalueKind::ArrayIndexI64 { array, index } | RvalueKind::ArrayIndex { array, index } => {
+            vec![array, index]
+        }
+        RvalueKind::ArraySetI64 {
+            array,
+            index,
+            value,
+        }
+        | RvalueKind::ArraySet {
+            array,
+            index,
+            value,
+        } => vec![array, index, value],
+        RvalueKind::ArrayLiteral {
+            elements: fields, ..
+        }
+        | RvalueKind::StructLiteral { fields, .. }
+        | RvalueKind::StructLiteralI64(fields) => fields.iter().collect(),
+        RvalueKind::StructField { structure, .. }
+        | RvalueKind::StructFieldI64 { structure, .. } => vec![structure],
+        RvalueKind::StructSet {
+            structure, value, ..
+        }
+        | RvalueKind::StructSetI64 {
+            structure, value, ..
+        } => vec![structure, value],
+        RvalueKind::RecoverCompareNil { .. } => Vec::new(),
     }
 }
 

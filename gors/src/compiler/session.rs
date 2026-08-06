@@ -175,28 +175,55 @@ impl CompilerSession {
         // A completed wave marks each input-equivalent root ready even when
         // canonical package assembly selects a cached stage failure below.
         self.publish_ready_roots(current_root_inputs);
-        let rust_ir = self
-            .database
-            .verified_rust_ir_package(installed.main_package)
-            .map_err(|error| self.query_error(error))?;
+        let module_names = installed
+            .package_dag
+            .nodes()
+            .iter()
+            .filter(|node| node.package() != installed.main_package)
+            .map(|node| {
+                node.import_path()
+                    .map(|path| (node.package(), crate::resolve::module_name(path.as_str())))
+                    .ok_or_else(|| {
+                        CompilerError::backend(
+                            "a reachable dependency package has no canonical import path",
+                        )
+                    })
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        let mut rust_ir_packages = BTreeMap::new();
+        let mut runtime_requirement = super::rust_ir::RuntimeRequirement::default();
+        for package in installed.package_dag.topological_order() {
+            let verified = self
+                .database
+                .verified_rust_ir_package(*package)
+                .map_err(|error| self.query_error(error))?;
+            runtime_requirement = runtime_requirement.union(verified.runtime_requirement());
+            let module = module_names.get(package).cloned();
+            rust_ir_packages.insert(*package, (module, verified.file().clone()));
+        }
         let runtime_contract = RuntimeAbiManifest::current();
         let runtime = RuntimeDependency::new(
             &runtime_contract,
-            rust_ir.runtime_requirement().clone(),
+            runtime_requirement,
         )
         .map_err(|error| {
             CompilerError::backend(format!(
                 "verified Rust IR selected an operation outside the current runtime contract: {error}"
             ))
         })?;
+        let main_rust_ir = rust_ir_packages
+            .get(&installed.main_package)
+            .map(|(_, file)| file)
+            .ok_or_else(|| CompilerError::backend("program assembly omitted package main"))?;
         let source_map = with_source_map
-            .then(|| self.source_map_plan(&installed, &main_analysis, rust_ir.file()))
+            .then(|| self.source_map_plan(&installed, &main_analysis, main_rust_ir))
             .transpose()?;
-        let entry = emit::emit_file(rust_ir.file()).map_err(CompilerError::terminal)?;
+        let (entry, modules) = emit::emit_program(installed.main_package, &rust_ir_packages)
+            .map_err(CompilerError::terminal)?;
         Ok((
             CompiledProgram {
                 entry,
-                modules: BTreeMap::new(),
+                modules,
                 runtime,
             },
             source_map,
@@ -213,18 +240,6 @@ impl CompilerSession {
             .first()
             .map(|file| file.original_path.clone())
             .unwrap_or_default();
-        if installed.main_files.len() != 1 {
-            return Err(boundary_error(
-                file,
-                "the bootstrap backend requires exactly one Go source file",
-            ));
-        }
-        if !analysis.direct_imports().is_empty() {
-            return Err(boundary_error(
-                file,
-                "imports are not implemented by the HIR/MIR backend",
-            ));
-        }
         if analysis.package_name() != "main" {
             return Err(boundary_error(
                 file,
@@ -499,6 +514,10 @@ impl CompilerSession {
                     .constants()
                     .iter()
                     .any(|constant| constant.id() == definition)
+                || analysis
+                    .variables()
+                    .iter()
+                    .any(|variable| variable.id() == definition)
             {
                 return self.database.definition_source_table(file, definition).ok();
             }
@@ -591,6 +610,32 @@ impl CompilerSession {
                     code: "GORS2003",
                     message: format!(
                         "could not project constant {name:?} into owned semantic syntax: {message}"
+                    ),
+                    file: self.source_path_or_empty(*file),
+                    line: 0,
+                    column: 0,
+                },
+                PackageIssue::VariableProjectionFailure {
+                    file,
+                    name,
+                    message,
+                } => CompilerDiagnostic {
+                    code: "GORS2003",
+                    message: format!(
+                        "could not project variable {name:?} into owned semantic syntax: {message}"
+                    ),
+                    file: self.source_path_or_empty(*file),
+                    line: 0,
+                    column: 0,
+                },
+                PackageIssue::TypeProjectionFailure {
+                    file,
+                    name,
+                    message,
+                } => CompilerDiagnostic {
+                    code: "GORS2003",
+                    message: format!(
+                        "could not project type {name:?} into owned semantic syntax: {message}"
                     ),
                     file: self.source_path_or_empty(*file),
                     line: 0,

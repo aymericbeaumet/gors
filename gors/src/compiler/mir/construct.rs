@@ -58,8 +58,33 @@ pub(super) fn make_rvalue(
     provenance: Provenance,
 ) -> Rvalue {
     let may_read = match &kind {
-        RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => operand_reads(operand),
+        RvalueKind::Use(operand)
+        | RvalueKind::Unary { operand, .. }
+        | RvalueKind::Conversion { operand, .. } => operand_reads(operand),
         RvalueKind::Binary { left, right, .. } => operand_reads(left) || operand_reads(right),
+        RvalueKind::ArrayIndexI64 { array, index } => operand_reads(array) || operand_reads(index),
+        RvalueKind::ArrayIndex { array, index } => operand_reads(array) || operand_reads(index),
+        RvalueKind::ArraySetI64 {
+            array,
+            index,
+            value,
+        } => operand_reads(array) || operand_reads(index) || operand_reads(value),
+        RvalueKind::ArraySet {
+            array,
+            index,
+            value,
+        } => operand_reads(array) || operand_reads(index) || operand_reads(value),
+        RvalueKind::ArrayLiteral { elements, .. } => elements.iter().any(operand_reads),
+        RvalueKind::StructLiteral { fields, .. } => fields.iter().any(operand_reads),
+        RvalueKind::StructField { structure, .. } => operand_reads(structure),
+        RvalueKind::StructSet {
+            structure, value, ..
+        } => operand_reads(structure) || operand_reads(value),
+        RvalueKind::RecoverCompareNil { .. } => true,
+        RvalueKind::SliceLiteralI64 { .. }
+        | RvalueKind::SliceLiteralU8(_)
+        | RvalueKind::SliceLiteralBool(_)
+        | RvalueKind::ArrayLiteralI64(_) => false,
     };
     let effects = intrinsic_effects.union(hir::Effects {
         may_read,
@@ -83,7 +108,9 @@ pub(super) fn make_terminator(
         TerminatorKind::Call { args, .. } | TerminatorKind::Return(args) => {
             args.iter().any(operand_reads)
         }
-        TerminatorKind::Goto(_) | TerminatorKind::Unreachable => false,
+        TerminatorKind::Goto(_)
+        | TerminatorKind::SpawnEmpty { .. }
+        | TerminatorKind::Unreachable => false,
     };
     let effects = intrinsic_effects.union(hir::Effects {
         may_read,
@@ -115,6 +142,14 @@ pub(super) fn call_effects() -> hir::Effects {
         may_block: true,
         may_panic: true,
         may_write: true,
+        ..hir::Effects::default()
+    }
+}
+
+pub(super) fn spawn_empty_effects() -> hir::Effects {
+    hir::Effects {
+        may_call: true,
+        may_allocate: true,
         ..hir::Effects::default()
     }
 }

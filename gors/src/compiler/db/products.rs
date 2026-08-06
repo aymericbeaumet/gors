@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::compiler::diagnostic::DiagnosticLocation;
 use crate::compiler::fingerprint::{self, Fingerprint, fingerprint_parts};
-use crate::compiler::ids::{DefId, FileId};
+use crate::compiler::ids::{DefId, FileId, QualifiedDefId};
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::SyntaxSource;
 use crate::compiler::{Diagnostic, hir, mir, rust_ir};
@@ -345,11 +345,11 @@ impl VerifiedRustIrPackage {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(super) struct MirSignatureDependencies {
-    pub(super) signatures: BTreeMap<DefId, crate::compiler::types::Signature>,
+    pub(super) signatures: BTreeMap<QualifiedDefId, crate::compiler::types::Signature>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct RustSignatureDependencies {
-    pub(super) signatures: BTreeMap<DefId, rust_ir::Signature>,
+    pub(super) signatures: BTreeMap<QualifiedDefId, rust_ir::Signature>,
     pub(super) representation_key: Fingerprint,
 }

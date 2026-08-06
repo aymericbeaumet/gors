@@ -110,7 +110,7 @@ impl RustcAction {
     /// is explicitly empty; host-native feature discovery is never part of the
     /// command or its cache identity. Construction deliberately does not inspect
     /// the recorded tools, allowing a verified warm executable to be admitted
-    /// after its historical toolchain has been removed. Execution revalidates
+    /// even when its recorded toolchain is unavailable. Execution revalidates
     /// every recorded tool input.
     pub fn for_generated_binary(
         output_directory: &Path,

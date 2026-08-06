@@ -9,12 +9,13 @@
 //!   -> verified explicit-order Go MIR
 //!   -> representation-neutral MIR normalization and reverification
 //!   -> mandatory Rust representation lowering
+//!   -> verified Rust control-flow idiom recognition
 //!   -> verified Rust IR
 //!   -> terminal syn
 //! ```
 //!
 //! `syn` is a terminal serialization target. It is never inspected to recover
-//! semantic facts and is never repaired by a post-lowering compatibility pass.
+//! semantic facts and is never used to repair semantic lowering.
 
 pub mod db;
 mod diagnostic;
@@ -144,6 +145,7 @@ pub(crate) fn lower_to_hir(filename: &str, source: &str) -> Result<hir::File, Ve
         .collect::<Result<Vec<_>, _>>()?;
     functions.sort_by_key(|function| function.id);
     Ok(hir::File {
+        package_id: database.package_for_file(file).map_err(query_diagnostics)?,
         package: analysis.package().to_string(),
         constants: Vec::new(),
         functions,
@@ -330,10 +332,6 @@ impl SourceMapPlan {
 }
 
 /// Compile raw program inputs into deterministic, self-contained Rust units.
-///
-/// The bootstrap backend deliberately accepts exactly one import-free `main`
-/// source file. Wider package manifests are rejected before lowering until
-/// cross-package semantic indexing is implemented.
 pub fn compile_program(program: input::ProgramInput) -> Result<CompiledProgram, CompilerError> {
     compile_program_impl(program, false).map(|(compiled, _)| compiled)
 }

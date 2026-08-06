@@ -1,5 +1,6 @@
 use crate::ast;
 use crate::parser::parse_file;
+use crate::token::Token;
 
 use super::{
     ExprSyntaxKind, ProjectedFunctionSyntax, StmtSyntaxKind, SyntaxAnchor, project_function,
@@ -184,4 +185,71 @@ fn selector_trivia_is_stable_but_member_edits_change_body_fingerprint() {
         compact.body.as_ref().unwrap().fingerprint(),
         edited.body.as_ref().unwrap().fingerprint()
     );
+}
+
+#[test]
+fn headers_preserve_receivers_and_aggregate_type_structure() {
+    let method = project(
+        concat!(
+            "package p\n",
+            "type Counter struct { value int }\n",
+            "func (counter *Counter) Add(delta int) int { return delta }\n",
+        ),
+        "Add",
+    );
+    assert_eq!(method.anchor, SyntaxAnchor::named_method("Counter", "Add"));
+    assert_ne!(method.anchor, SyntaxAnchor::named_function("Add"));
+    let receiver = method
+        .structural_header
+        .receiver
+        .as_ref()
+        .expect("method receiver should be projected");
+    let [receiver] = receiver.fields.as_ref() else {
+        panic!("method should have one receiver field")
+    };
+    let Some([receiver_name]) = receiver.names.as_deref() else {
+        panic!("method receiver should retain its name")
+    };
+    assert_eq!(receiver_name.name.as_ref(), "counter");
+    let ExprSyntaxKind::Unary {
+        token: Token::MUL,
+        expression,
+    } = &receiver.ty.as_ref().unwrap().kind
+    else {
+        panic!("receiver should retain its pointer type")
+    };
+    let ExprSyntaxKind::Ident(receiver_type) = &expression.kind else {
+        panic!("receiver pointer should retain its named element type")
+    };
+    assert_eq!(receiver_type.name.as_ref(), "Counter");
+
+    let function = project(
+        concat!(
+            "package p\n",
+            "func f(",
+            "value struct { Count int `json:\"count\"` }, ",
+            "callback func(int) string, ",
+            "reader interface { Read() int },",
+            ") {}\n",
+        ),
+        "f",
+    );
+    let [structure, callback, interface] = function.structural_header.params.fields.as_ref() else {
+        panic!("function should retain all three parameter fields")
+    };
+    let ExprSyntaxKind::StructType { fields } = &structure.ty.as_ref().unwrap().kind else {
+        panic!("first parameter should retain its struct type")
+    };
+    let [field] = fields.fields.as_ref() else {
+        panic!("struct type should retain its field")
+    };
+    assert_eq!(field.tag.as_deref(), Some("`json:\"count\"`"));
+    assert!(matches!(
+        callback.ty.as_ref().unwrap().kind,
+        ExprSyntaxKind::FunctionType { .. }
+    ));
+    assert!(matches!(
+        interface.ty.as_ref().unwrap().kind,
+        ExprSyntaxKind::InterfaceType { .. }
+    ));
 }

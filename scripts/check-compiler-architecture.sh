@@ -25,8 +25,7 @@ for obsolete in \
   gors/src/compiler/source \
   gors/src/mapping \
   gors/src/parser/program.rs \
-  www/wasm/pkg-threads
-do
+  www/wasm/pkg-threads; do
   if [[ -e "${obsolete}" ]]; then
     printf 'obsolete compiler path still exists: %s\n' "${obsolete}" >&2
     failed=1
@@ -42,7 +41,7 @@ fail_on_matches \
   gors/src/token
 
 fail_on_matches \
-  'legacy mixed or arithmetic-rebased compiler provenance is forbidden:' \
+  'mixed or arithmetic-rebased compiler provenance is forbidden:' \
   'SourceSpan|FunctionProvenance|make_function_relative|rebase_function_diagnostic' \
   gors/src/compiler \
   gors/tests \
@@ -59,7 +58,7 @@ fail_on_matches \
   gors/src/compiler/rust_ir
 
 fail_on_matches \
-  'legacy compiler modules or imports are forbidden:' \
+  'alternate compiler modules or imports are forbidden:' \
   'compiler::(ir|typeinfer|passes)|mod (ir|typeinfer|passes)' \
   gors/src gors-cli/src www/wasm fuzz/src
 
@@ -69,7 +68,7 @@ fail_on_matches \
   gors/src gors-cli/src www/wasm fuzz/src
 
 fail_on_matches \
-  'legacy mixed generated-Rust/terminal cache identities are forbidden:' \
+  'mixed generated-Rust/terminal cache identities are forbidden:' \
   'GORS_(CLI_ABI|COMPILER)_FINGERPRINT|(^|[^[:alnum:]_])(COMPILER_FINGERPRINT|CacheRequest|RustcArgs)([^[:alnum:]_]|$)' \
   gors/src \
   gors/build.rs \
@@ -115,7 +114,7 @@ while IFS= read -r source; do
       failed=1
       ;;
   esac
-done <<< "${rayon_files}"
+done <<<"${rayon_files}"
 
 fail_on_matches \
   'tracked compiler queries must not create or submit nested worker jobs:' \
@@ -164,7 +163,7 @@ while IFS= read -r source; do
       failed=1
       ;;
   esac
-done <<< "${snapshot_callers}"
+done <<<"${snapshot_callers}"
 
 fail_on_matches \
   'high-level parser products must not leak source or publish static ASTs:' \
@@ -193,13 +192,13 @@ syn_files="$(rg -l 'syn::|quote!|parse_quote!' gors/src/compiler --glob '*.rs' |
 while IFS= read -r source; do
   [[ -z "${source}" ]] && continue
   case "${source}" in
-    gors/src/compiler/emit.rs|gors/src/compiler/mod.rs) ;;
+    gors/src/compiler/emit.rs | gors/src/compiler/mod.rs) ;;
     *)
       printf 'semantic compiler module depends on terminal Rust syntax: %s\n' "${source}" >&2
       failed=1
       ;;
   esac
-done <<< "${syn_files}"
+done <<<"${syn_files}"
 
 if [[ -f gors/src/compiler/emit.rs ]]; then
   if matches="$(rg -n '(^|[^[:alnum:]_])(hir|mir|lowering)::|super::(hir|mir|lowering)|crate::compiler::(hir|mir|lowering)' \
@@ -231,7 +230,7 @@ if [[ -f gors/src/compiler/mod.rs ]]; then
     sed -n '/^fn compile_program_impl(/,/^}/p' gors/src/compiler/mod.rs
   } || true)"
   if matches="$(rg -n 'semantic::|mir::|lowering::|lower_to_(hir|mir|rust_ir)|compile_file' \
-    <<< "${production_facade}")"; then
+    <<<"${production_facade}")"; then
     printf '%s\n%s\n' \
       'production compile_program_impl must delegate only through CompilerSession:' \
       "${matches}" >&2
@@ -254,16 +253,16 @@ if [[ -f gors-cli/src/program.rs ]]; then
       inside { print }
     ' gors-cli/src/program.rs
   )"
-  if [[ -z "${warm_executable_prefix}" ]] || \
-    ! rg -q 'admit_executable' <<< "${warm_executable_prefix}" || \
-    ! rg -q 'return Ok\(executable\)' <<< "${warm_executable_prefix}"; then
+  if [[ -z "${warm_executable_prefix}" ]] ||
+    ! rg -q 'admit_executable' <<<"${warm_executable_prefix}" ||
+    ! rg -q 'return Ok\(executable\)' <<<"${warm_executable_prefix}"; then
     printf '%s\n' \
       'program cache must expose an explicit warm executable admission branch' >&2
     failed=1
   fi
   if matches="$(rg -n \
     'resolve_runtime\(|generated_files_are_current|embedded_runtime_artifact|\.materialize\(|NATIVE_RUNTIME_RUST_TOOLCHAIN|rustup[[:space:]]+(run|which)' \
-    <<< "${warm_executable_prefix}" || true)" && \
+    <<<"${warm_executable_prefix}" || true)" &&
     [[ -n "${matches}" ]]; then
     printf '%s\n%s\n' \
       'warm executable admission must precede generated-file, runtime, and toolchain resolution:' \
@@ -285,7 +284,7 @@ fail_on_matches \
   gors-runtime/src
 
 fail_on_matches \
-  'legacy Rust-IR operation shadows and bundled print plans are forbidden:' \
+  'Rust-IR operation shadows and bundled print plans are forbidden:' \
   'RuntimePrint|PrintStep|print_plan|enum[[:space:]]+(BinaryOp|UnaryOp)' \
   gors/src/compiler/rust_ir \
   gors/src/compiler/emit.rs \
@@ -324,8 +323,7 @@ fail_on_matches \
 
 for native_runtime_toolchain_owner in \
   gors/build/runtime_artifact.rs \
-  gors-cli/src/runtime_link.rs
-do
+  gors-cli/src/runtime_link.rs; do
   if ! rg -q 'NATIVE_RUNTIME_RUST_TOOLCHAIN' "${native_runtime_toolchain_owner}"; then
     printf 'native runtime boundary does not use the ABI-owned rustup toolchain: %s\n' \
       "${native_runtime_toolchain_owner}" >&2
@@ -346,14 +344,24 @@ for terminal_linker in \
   gors/src/compiler/tests.rs \
   gors/src/printer/mod.rs \
   gors/tests/common/runner.rs \
-  www/v86/rootfs/gors-compile
-do
+  www/v86/rootfs/gors-compile; do
   if [[ ! -f "${terminal_linker}" ]] || ! rg -q -- '--extern' "${terminal_linker}"; then
     printf 'terminal Rust linker does not require the external runtime: %s\n' \
       "${terminal_linker}" >&2
     failed=1
   fi
 done
+
+fail_on_matches \
+  'production code must not reference the differential fixture corpus (no input special-casing):' \
+  'tests/fixtures|go_spec/|go_stdlib/|go_programs/|go_repositories/' \
+  gors/src \
+  gors-cli/src \
+  gors-runtime/src \
+  gors-runtime-abi/src \
+  www/wasm \
+  www/src \
+  --glob '!tests.rs'
 
 fail_on_matches \
   'runtime ABI identity must come from the typed contract, never source scraping or build-script environment strings:' \

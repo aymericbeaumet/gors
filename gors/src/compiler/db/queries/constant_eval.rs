@@ -4,7 +4,10 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use super::support::{check_semantic_barrier, semantic_build_dependency, semantic_failure};
-use super::{ConstantProjection, Db, PackageInput, package_constant_named_product};
+use super::{
+    ConstantProjection, Db, PackageInput, package_constant_named_product,
+    package_type_aliases_product,
+};
 use crate::compiler::Diagnostic;
 use crate::compiler::db::products::{CompilerStage, StageFailure, StageResult};
 use crate::compiler::ids::DefId;
@@ -66,7 +69,7 @@ fn evaluate(
         constants.insert(
             typed.name.clone(),
             ConstantSymbol {
-                id: typed.id,
+                id: crate::compiler::ids::QualifiedDefId::new(input.package(db), typed.id),
                 ty: typed.ty.clone(),
                 value: typed.value.clone(),
             },
@@ -74,10 +77,15 @@ fn evaluate(
     }
     stack.pop();
 
-    let typed =
-        super::super::super::semantic::lower_constant(definition, &constant.syntax(db), &constants)
-            .map(Arc::new)
-            .map_err(|diagnostic| semantic_failure(definition, diagnostic))?;
+    let type_aliases = package_type_aliases_product(db, input)?;
+    let typed = super::super::super::semantic::lower_constant(
+        definition,
+        &constant.syntax(db),
+        &constants,
+        &type_aliases,
+    )
+    .map(Arc::new)
+    .map_err(|diagnostic| semantic_failure(definition, diagnostic))?;
     cache.insert(definition, Arc::clone(&typed));
     Ok(typed)
 }

@@ -4,7 +4,7 @@
 //! contract. Every [`PrimitiveOp`] and [`RuntimeOp`] carries an exact typed
 //! signature. Runtime operations additionally carry target capability
 //! requirements and [`RuntimeEffects`] describing allocation, owned-argument
-//! mutation, host I/O, and Go language panic conditions. A canonical
+//! mutation, blocking, host I/O, and Go language panic conditions. A canonical
 //! [`RuntimeRequirement`] records the exact runtime operations selected by a
 //! compiled unit. A [`RuntimeArtifactManifest`] separately identifies one
 //! compiled implementation for a concrete target. [`RuntimeDependency`] makes
@@ -33,7 +33,8 @@ pub use contract::{
     ManifestSchemaVersion, RuntimeAbiManifest,
 };
 pub use effects::{
-    AllocationEffect, ArgumentMutationEffect, GoPanicCondition, HostIoEffect, RuntimeEffects,
+    AllocationEffect, ArgumentMutationEffect, BlockingEffect, GoPanicCondition, HostIoEffect,
+    RuntimeEffects,
 };
 pub use identity::{
     ArtifactIdentity, CompatibilityIdentity, ContractIdentity, ImplementationHash,

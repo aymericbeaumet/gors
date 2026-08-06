@@ -2,7 +2,8 @@
 
 use super::Fingerprint;
 use super::encoder::{
-    Encoder, const_value, def_id, hir_effects, local_id, node_id, signature, source_ref, ty,
+    Encoder, closure_id, const_value, def_id, hir_effects, local_id, node_id, package_id,
+    qualified_def_id, signature, source_ref, ty,
 };
 use crate::compiler::hir;
 
@@ -30,7 +31,18 @@ pub fn hir_constant(constant: &hir::Constant) -> Fingerprint {
     encoder.finish()
 }
 
+/// Fingerprint one typed immutable package variable independently of siblings.
+#[must_use]
+pub fn hir_variable(variable: &hir::Variable) -> Fingerprint {
+    let mut encoder = Encoder::root(b"hir-variable");
+    encode_variable(&mut encoder, variable);
+    encoder.finish()
+}
+
 fn encode_file(encoder: &mut Encoder, file: &hir::File) {
+    encoder.field(b"package-id", |encoder| {
+        package_id(encoder, file.package_id)
+    });
     encoder.field(b"package", |encoder| encoder.string(&file.package));
     encoder.field(b"constants", |encoder| {
         encoder.sequence(&file.constants, encode_constant);
@@ -46,6 +58,16 @@ fn encode_constant(encoder: &mut Encoder, constant: &hir::Constant) {
     encoder.field(b"type", |encoder| ty(encoder, &constant.ty));
     encoder.field(b"value", |encoder| const_value(encoder, &constant.value));
     encoder.field(b"source", |encoder| source_ref(encoder, constant.source));
+}
+
+fn encode_variable(encoder: &mut Encoder, variable: &hir::Variable) {
+    encoder.field(b"id", |encoder| def_id(encoder, variable.id));
+    encoder.field(b"name", |encoder| encoder.string(&variable.name));
+    encoder.field(b"type", |encoder| ty(encoder, &variable.ty));
+    encoder.field(b"value", |encoder| {
+        encode_static_value(encoder, &variable.value);
+    });
+    encoder.field(b"source", |encoder| source_ref(encoder, variable.source));
 }
 
 fn encode_function(encoder: &mut Encoder, function: &hir::Function) {
@@ -66,10 +88,30 @@ fn encode_function(encoder: &mut Encoder, function: &hir::Function) {
     encoder.field(b"locals", |encoder| {
         encoder.sequence(&function.locals, encode_local);
     });
+    encoder.field(b"closures", |encoder| {
+        encoder.sequence(&function.closures, encode_closure);
+    });
     encoder.field(b"body", |encoder| {
         encode_block(encoder, &function.body);
     });
     encoder.field(b"source", |encoder| source_ref(encoder, function.source));
+}
+
+fn encode_closure(encoder: &mut Encoder, closure: &hir::Closure) {
+    encoder.field(b"id", |encoder| closure_id(encoder, closure.id));
+    encoder.field(b"signature", |encoder| {
+        signature(encoder, &closure.signature);
+    });
+    encoder.field(b"parameters", |encoder| {
+        encoder.sequence(&closure.params, |encoder, id| local_id(encoder, *id));
+    });
+    encoder.field(b"named-results", |encoder| {
+        encoder.sequence(&closure.named_results, |encoder, result| {
+            encoder.option(result.as_ref(), |encoder, id| local_id(encoder, *id));
+        });
+    });
+    encoder.field(b"body", |encoder| encode_block(encoder, &closure.body));
+    encoder.field(b"source", |encoder| source_ref(encoder, closure.source));
 }
 
 fn encode_local(encoder: &mut Encoder, local: &hir::Local) {
@@ -118,6 +160,19 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
         } => encoder.variant(b"let", |encoder| {
             encode_places_and_values(encoder, destinations, values);
         }),
+        hir::StmtKind::LetTuple {
+            destinations,
+            value,
+            coercions,
+        } => encoder.variant(b"let-tuple", |encoder| {
+            encoder.field(b"destinations", |encoder| {
+                encoder.sequence(destinations, |encoder, place| encode_place(encoder, *place));
+            });
+            encoder.field(b"value", |encoder| encode_expression(encoder, value));
+            encoder.field(b"coercions", |encoder| {
+                encoder.sequence(coercions, encode_value_coercion);
+            });
+        }),
         hir::StmtKind::Assign {
             destinations,
             op,
@@ -133,11 +188,85 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
                 });
             });
         }),
+        hir::StmtKind::AssignTuple {
+            destinations,
+            value,
+            coercions,
+        } => encoder.variant(b"assign-tuple", |encoder| {
+            encoder.field(b"destinations", |encoder| {
+                encoder.sequence(destinations, |encoder, place| encode_place(encoder, *place));
+            });
+            encoder.field(b"value", |encoder| encode_expression(encoder, value));
+            encoder.field(b"coercions", |encoder| {
+                encoder.sequence(coercions, encode_value_coercion);
+            });
+        }),
+        hir::StmtKind::ParallelAssignTuple {
+            destinations,
+            value,
+            coercions,
+        } => encoder.variant(b"parallel-assign-tuple", |encoder| {
+            encoder.field(b"destinations", |encoder| {
+                encoder.sequence(destinations, encode_assignment_target);
+            });
+            encoder.field(b"value", |encoder| encode_expression(encoder, value));
+            encoder.field(b"coercions", |encoder| {
+                encoder.sequence(coercions, encode_value_coercion);
+            });
+        }),
+        hir::StmtKind::ParallelAssign {
+            destinations,
+            values,
+        } => encoder.variant(b"parallel-assign", |encoder| {
+            encoder.field(b"destinations", |encoder| {
+                encoder.sequence(destinations, encode_assignment_target);
+            });
+            encoder.field(b"values", |encoder| {
+                encoder.sequence(values, encode_expression);
+            });
+        }),
         hir::StmtKind::Expr(expression) => {
             encoder.variant(b"expression", |encoder| {
                 encode_expression(encoder, expression)
             });
         }
+        hir::StmtKind::ClosureBinding(id) => {
+            encoder.variant(b"closure-binding", |encoder| closure_id(encoder, *id));
+        }
+        hir::StmtKind::Defer {
+            parameters,
+            values,
+            body,
+        } => encoder.variant(b"defer", |encoder| {
+            encoder.field(b"parameters", |encoder| {
+                encoder.sequence(parameters, |encoder, parameter| {
+                    local_id(encoder, *parameter);
+                });
+            });
+            encoder.field(b"values", |encoder| {
+                encoder.sequence(values, |encoder, expression| {
+                    encode_expression(encoder, expression);
+                });
+            });
+            encoder.field(b"body", |encoder| encode_block(encoder, body));
+        }),
+        hir::StmtKind::Go {
+            parameters,
+            values,
+            body,
+        } => encoder.variant(b"go", |encoder| {
+            encoder.field(b"parameters", |encoder| {
+                encoder.sequence(parameters, |encoder, parameter| {
+                    local_id(encoder, *parameter);
+                });
+            });
+            encoder.field(b"values", |encoder| {
+                encoder.sequence(values, |encoder, expression| {
+                    encode_expression(encoder, expression);
+                });
+            });
+            encoder.field(b"body", |encoder| encode_block(encoder, body));
+        }),
         hir::StmtKind::Return(values) => encoder.variant(b"return", |encoder| {
             encoder.sequence(values, |encoder, expression| {
                 encode_expression(encoder, expression);
@@ -167,11 +296,15 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
             });
         }),
         hir::StmtKind::For {
+            label,
             init,
             condition,
             post,
             body,
         } => encoder.variant(b"for", |encoder| {
+            encoder.field(b"label", |encoder| {
+                encoder.option(label.as_ref(), |encoder, label| encoder.string(label));
+            });
             encoder.field(b"init", |encoder| {
                 encoder.option(init.as_deref(), |encoder, statement| {
                     encode_statement(encoder, statement);
@@ -191,13 +324,150 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
                 encode_block(encoder, body);
             });
         }),
+        hir::StmtKind::Range {
+            label,
+            key,
+            value,
+            expression,
+            body,
+        } => encoder.variant(b"range", |encoder| {
+            encoder.field(b"label", |encoder| {
+                encoder.option(label.as_ref(), |encoder, label| encoder.string(label));
+            });
+            encoder.field(b"key", |encoder| {
+                encoder.option(key.as_ref(), |encoder, place| encode_place(encoder, *place));
+            });
+            encoder.field(b"value", |encoder| {
+                encoder.option(value.as_ref(), |encoder, place| {
+                    encode_place(encoder, *place)
+                });
+            });
+            encoder.field(b"expression", |encoder| {
+                encode_expression(encoder, expression);
+            });
+            encoder.field(b"body", |encoder| encode_block(encoder, body));
+        }),
         hir::StmtKind::Block(block) => {
             encoder.variant(b"block", |encoder| {
                 encode_block(encoder, block);
             });
         }
-        hir::StmtKind::Break => encoder.variant(b"break", |_| {}),
-        hir::StmtKind::Continue => encoder.variant(b"continue", |_| {}),
+        hir::StmtKind::Label { name, statement } => encoder.variant(b"label", |encoder| {
+            encoder.field(b"name", |encoder| encoder.string(name));
+            encoder.field(b"statement", |encoder| {
+                encoder.option(statement.as_deref(), |encoder, statement| {
+                    encode_statement(encoder, statement);
+                });
+            });
+        }),
+        hir::StmtKind::Goto(label) => encoder.variant(b"goto", |encoder| encoder.string(label)),
+        hir::StmtKind::Break(label) => encoder.variant(b"break", |encoder| {
+            encoder.option(label.as_ref(), |encoder, label| encoder.string(label));
+        }),
+        hir::StmtKind::Continue(label) => encoder.variant(b"continue", |encoder| {
+            encoder.option(label.as_ref(), |encoder, label| encoder.string(label));
+        }),
+        hir::StmtKind::SliceAssign {
+            slice,
+            index,
+            set,
+            op,
+            value,
+        } => encoder.variant(b"slice-assign", |encoder| {
+            encoder.field(b"slice", |encoder| encode_expression(encoder, slice));
+            encoder.field(b"index", |encoder| encode_expression(encoder, index));
+            encoder.field(b"set", |encoder| encode_builtin(encoder, *set));
+            encoder.field(b"operation", |encoder| encode_assign_op(encoder, *op));
+            encoder.field(b"value", |encoder| encode_expression(encoder, value));
+        }),
+        hir::StmtKind::ArrayAssign {
+            array,
+            index,
+            op,
+            value,
+        } => encoder.variant(b"array-assign", |encoder| {
+            encoder.field(b"array", |encoder| local_id(encoder, *array));
+            encoder.field(b"index", |encoder| encode_expression(encoder, index));
+            encoder.field(b"operation", |encoder| encode_assign_op(encoder, *op));
+            encoder.field(b"value", |encoder| encode_expression(encoder, value));
+        }),
+        hir::StmtKind::StructFieldAssign {
+            structure,
+            field,
+            op,
+            value,
+        } => encoder.variant(b"struct-field-assign", |encoder| {
+            encoder.field(b"structure", |encoder| local_id(encoder, *structure));
+            encoder.field(b"field", |encoder| encoder.u32(*field));
+            encoder.field(b"operation", |encoder| encode_assign_op(encoder, *op));
+            encoder.field(b"value", |encoder| encode_expression(encoder, value));
+        }),
+        hir::StmtKind::MapAssign { map, key, value } => {
+            encoder.variant(b"map-assign", |encoder| {
+                encoder.field(b"map", |encoder| encode_expression(encoder, map));
+                encoder.field(b"key", |encoder| encode_expression(encoder, key));
+                encoder.field(b"value", |encoder| encode_expression(encoder, value));
+            });
+        }
+    }
+}
+
+fn encode_value_coercion(encoder: &mut Encoder, coercion: &hir::ValueCoercion) {
+    match coercion {
+        hir::ValueCoercion::Identity => encoder.variant(b"identity", |_| {}),
+        hir::ValueCoercion::Representation { target } => {
+            encoder.variant(b"representation", |encoder| ty(encoder, target));
+        }
+        hir::ValueCoercion::Interface {
+            target,
+            type_identity,
+        } => encoder.variant(b"interface", |encoder| {
+            encoder.field(b"target", |encoder| ty(encoder, target));
+            encoder.field(b"type-identity", |encoder| encoder.blob(type_identity));
+        }),
+    }
+}
+
+fn encode_assignment_target(encoder: &mut Encoder, target: &hir::AssignTarget) {
+    match target {
+        hir::AssignTarget::Local(id) => {
+            encoder.variant(b"local", |encoder| local_id(encoder, *id));
+        }
+        hir::AssignTarget::Discard => encoder.variant(b"discard", |_| {}),
+        hir::AssignTarget::SliceIndex { slice, index, set } => {
+            encoder.variant(b"slice-index", |encoder| {
+                encoder.field(b"slice", |encoder| encode_expression(encoder, slice));
+                encoder.field(b"index", |encoder| encode_expression(encoder, index));
+                encoder.field(b"set", |encoder| encode_builtin(encoder, *set));
+            });
+        }
+        hir::AssignTarget::MapIndex { map, key } => {
+            encoder.variant(b"map-index", |encoder| {
+                encoder.field(b"map", |encoder| encode_expression(encoder, map));
+                encoder.field(b"key", |encoder| encode_expression(encoder, key));
+            });
+        }
+        hir::AssignTarget::Pointer { pointer, set } => {
+            encoder.variant(b"pointer", |encoder| {
+                encoder.field(b"pointer", |encoder| encode_expression(encoder, pointer));
+                encoder.field(b"set", |encoder| encode_builtin(encoder, *set));
+            });
+        }
+        hir::AssignTarget::StructField { structure, field } => {
+            encoder.variant(b"struct-field", |encoder| {
+                encoder.field(b"structure", |encoder| local_id(encoder, *structure));
+                encoder.field(b"field", |encoder| encoder.u32(*field));
+            });
+        }
+        hir::AssignTarget::PointerStructField {
+            pointer,
+            field,
+            set,
+        } => encoder.variant(b"pointer-struct-field", |encoder| {
+            encoder.field(b"pointer", |encoder| encode_expression(encoder, pointer));
+            encoder.field(b"field", |encoder| encoder.u32(*field));
+            encoder.field(b"set", |encoder| encode_builtin(encoder, *set));
+        }),
     }
 }
 
@@ -268,10 +538,64 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
         hir::ExprKind::Local(id) => {
             encoder.variant(b"local", |encoder| local_id(encoder, *id));
         }
+        hir::ExprKind::AddressOfLocal(id) => {
+            encoder.variant(b"address-of-local", |encoder| local_id(encoder, *id));
+        }
+        hir::ExprKind::AddressOfValue(value) => {
+            encoder.variant(b"address-of-value", |encoder| {
+                encode_expression(encoder, value);
+            });
+        }
+        hir::ExprKind::PointerStructValue(pointer) => {
+            encoder.variant(b"pointer-struct-value", |encoder| {
+                encode_expression(encoder, pointer);
+            });
+        }
+        hir::ExprKind::InterfaceValue {
+            value,
+            type_identity,
+        } => encoder.variant(b"interface-value", |encoder| {
+            encoder.field(b"value", |encoder| encode_expression(encoder, value));
+            encoder.field(b"type-identity", |encoder| encoder.blob(type_identity));
+        }),
+        hir::ExprKind::InterfaceCall {
+            receiver,
+            args,
+            candidates,
+        } => encoder.variant(b"interface-call", |encoder| {
+            encoder.field(b"receiver", |encoder| {
+                encode_expression(encoder, receiver);
+            });
+            encoder.field(b"arguments", |encoder| {
+                encoder.sequence(args, encode_expression);
+            });
+            encoder.field(b"candidates", |encoder| {
+                encoder.sequence(candidates, |encoder, candidate| {
+                    encoder.field(b"type-identity", |encoder| {
+                        encoder.blob(&candidate.type_identity);
+                    });
+                    encoder.field(b"dynamic-type", |encoder| {
+                        ty(encoder, &candidate.dynamic_ty);
+                    });
+                    encoder.field(b"receiver-type", |encoder| {
+                        ty(encoder, &candidate.receiver_ty);
+                    });
+                    encoder.field(b"function", |encoder| {
+                        qualified_def_id(encoder, candidate.function);
+                    });
+                });
+            });
+        }),
         hir::ExprKind::GlobalConstant(id, value) => {
             encoder.variant(b"global-constant", |encoder| {
-                encoder.field(b"id", |encoder| def_id(encoder, *id));
+                encoder.field(b"id", |encoder| qualified_def_id(encoder, *id));
                 encoder.field(b"value", |encoder| const_value(encoder, value));
+            });
+        }
+        hir::ExprKind::GlobalVariable(id, value) => {
+            encoder.variant(b"global-variable", |encoder| {
+                encoder.field(b"id", |encoder| qualified_def_id(encoder, *id));
+                encoder.field(b"value", |encoder| encode_static_value(encoder, value));
             });
         }
         hir::ExprKind::Binary { op, left, right } => {
@@ -291,6 +615,123 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
                 encode_expression(encoder, operand);
             });
         }),
+        hir::ExprKind::Conversion { value } => encoder.variant(b"conversion", |encoder| {
+            encode_expression(encoder, value);
+        }),
+        hir::ExprKind::RecoverCompareNil { equal } => {
+            encoder.variant(b"recover-compare-nil", |encoder| {
+                encoder.field(b"equal", |encoder| encoder.bool(*equal));
+            });
+        }
+        hir::ExprKind::SliceLiteralI64(elements) => {
+            encoder.variant(b"slice-literal-i64", |encoder| {
+                encoder.sequence(elements, |encoder, element| encoder.i64(*element));
+            });
+        }
+        hir::ExprKind::DynamicSliceLiteralI64(elements) => {
+            encoder.variant(b"dynamic-slice-literal-i64", |encoder| {
+                encoder.sequence(elements, encode_expression);
+            });
+        }
+        hir::ExprKind::AggregateSliceLiteral {
+            elements,
+            type_identity,
+        } => encoder.variant(b"aggregate-slice-literal", |encoder| {
+            encoder.field(b"elements", |encoder| {
+                encoder.sequence(elements, encode_expression);
+            });
+            encoder.field(b"type-identity", |encoder| encoder.blob(type_identity));
+        }),
+        hir::ExprKind::AggregateSliceIndex {
+            slice,
+            index,
+            type_identity,
+        } => encoder.variant(b"aggregate-slice-index", |encoder| {
+            encoder.field(b"slice", |encoder| encode_expression(encoder, slice));
+            encoder.field(b"index", |encoder| encode_expression(encoder, index));
+            encoder.field(b"type-identity", |encoder| encoder.blob(type_identity));
+        }),
+        hir::ExprKind::SliceLiteralU8(elements) => {
+            encoder.variant(b"slice-literal-u8", |encoder| encoder.blob(elements));
+        }
+        hir::ExprKind::SliceLiteralBool(elements) => {
+            encoder.variant(b"slice-literal-bool", |encoder| {
+                encoder.sequence(elements, |encoder, element| encoder.bool(*element));
+            });
+        }
+        hir::ExprKind::ArrayLiteralI64(elements) => {
+            encoder.variant(b"array-literal-i64", |encoder| {
+                encoder.sequence(elements, |encoder, element| encoder.i64(*element));
+            });
+        }
+        hir::ExprKind::ArrayLiteral(elements) => {
+            encoder.variant(b"array-literal", |encoder| {
+                encoder.sequence(elements, |encoder, (index, element)| {
+                    encoder.field(b"index", |encoder| encoder.u64(*index));
+                    encoder.field(b"value", |encoder| encode_expression(encoder, element));
+                });
+            });
+        }
+        hir::ExprKind::ArrayIndexI64 { array, index } => {
+            encoder.variant(b"array-index-i64", |encoder| {
+                encoder.field(b"array", |encoder| encode_expression(encoder, array));
+                encoder.field(b"index", |encoder| encode_expression(encoder, index));
+            });
+        }
+        hir::ExprKind::ArrayIndex { array, index } => {
+            encoder.variant(b"array-index", |encoder| {
+                encoder.field(b"array", |encoder| encode_expression(encoder, array));
+                encoder.field(b"index", |encoder| encode_expression(encoder, index));
+            });
+        }
+        hir::ExprKind::ArrayLen { array, length } => {
+            encoder.variant(b"array-len", |encoder| {
+                encoder.field(b"array", |encoder| encode_expression(encoder, array));
+                encoder.field(b"length", |encoder| encoder.u64(*length));
+            });
+        }
+        hir::ExprKind::StructLiteral(fields) => {
+            encoder.variant(b"struct-literal", |encoder| {
+                encoder.sequence(fields, encode_expression);
+            });
+        }
+        hir::ExprKind::StructField { structure, field } => {
+            encoder.variant(b"struct-field", |encoder| {
+                encoder.field(b"structure", |encoder| {
+                    encode_expression(encoder, structure);
+                });
+                encoder.field(b"field", |encoder| encoder.u32(*field));
+            });
+        }
+        hir::ExprKind::MapLiteralStringI64(entries) => {
+            encoder.variant(b"map-literal-string-i64", |encoder| {
+                encoder.sequence(entries, |encoder, (key, value)| {
+                    encoder.field(b"key", |encoder| encode_expression(encoder, key));
+                    encoder.field(b"value", |encoder| encode_expression(encoder, value));
+                });
+            });
+        }
+        hir::ExprKind::AggregateMapLiteral {
+            entries,
+            type_identity,
+        } => encoder.variant(b"aggregate-map-literal", |encoder| {
+            encoder.field(b"entries", |encoder| {
+                encoder.sequence(entries, |encoder, (key, value)| {
+                    encoder.field(b"key", |encoder| encode_expression(encoder, key));
+                    encoder.field(b"value", |encoder| encode_expression(encoder, value));
+                });
+            });
+            encoder.field(b"type-identity", |encoder| encoder.blob(type_identity));
+        }),
+        hir::ExprKind::AggregateMapIndex {
+            map,
+            key,
+            type_identity,
+        } => encoder.variant(b"aggregate-map-index", |encoder| {
+            encoder.field(b"map", |encoder| encode_expression(encoder, map));
+            encoder.field(b"key", |encoder| encode_expression(encoder, key));
+            encoder.field(b"type-identity", |encoder| encoder.blob(type_identity));
+        }),
         hir::ExprKind::Call { callee, args } => encoder.variant(b"call", |encoder| {
             encoder.field(b"callee", |encoder| encode_callee(encoder, *callee));
             encoder.field(b"arguments", |encoder| {
@@ -302,10 +743,31 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
     }
 }
 
+fn encode_static_value(encoder: &mut Encoder, value: &crate::compiler::types::StaticValue) {
+    match value {
+        crate::compiler::types::StaticValue::Constant(value) => {
+            encoder.variant(b"constant", |encoder| const_value(encoder, value));
+        }
+        crate::compiler::types::StaticValue::Struct(fields) => {
+            encoder.variant(b"struct", |encoder| {
+                encoder.sequence(fields, encode_static_value);
+            });
+        }
+        crate::compiler::types::StaticValue::Slice(elements) => {
+            encoder.variant(b"slice", |encoder| {
+                encoder.sequence(elements, encode_static_value);
+            });
+        }
+    }
+}
+
 fn encode_callee(encoder: &mut Encoder, callee: hir::Callee) {
     match callee {
         hir::Callee::Function(id) => {
-            encoder.variant(b"function", |encoder| def_id(encoder, id));
+            encoder.variant(b"function", |encoder| qualified_def_id(encoder, id));
+        }
+        hir::Callee::Closure(id) => {
+            encoder.variant(b"closure", |encoder| closure_id(encoder, id));
         }
         hir::Callee::Builtin(builtin) => {
             encoder.variant(b"builtin", |encoder| encode_builtin(encoder, builtin));
@@ -318,6 +780,108 @@ fn encode_builtin(encoder: &mut Encoder, builtin: hir::Builtin) {
         match builtin {
             hir::Builtin::Print => b"print",
             hir::Builtin::Println => b"println",
+            hir::Builtin::Panic => b"panic",
+            hir::Builtin::SliceI64Index => b"slice-i64-index",
+            hir::Builtin::SliceI64Range => b"slice-i64-range",
+            hir::Builtin::SliceI64Set => b"slice-i64-set",
+            hir::Builtin::SliceI64Make => b"slice-i64-make",
+            hir::Builtin::SliceI64Len => b"slice-i64-len",
+            hir::Builtin::SliceI64Cap => b"slice-i64-cap",
+            hir::Builtin::SliceI64Append => b"slice-i64-append",
+            hir::Builtin::SliceI64Nil => b"slice-i64-nil",
+            hir::Builtin::SliceI64IsNil => b"slice-i64-is-nil",
+            hir::Builtin::SliceU8AppendSlice => b"slice-u8-append-slice",
+            hir::Builtin::SliceU8AppendString => b"slice-u8-append-string",
+            hir::Builtin::SliceU8CopyString => b"slice-u8-copy-string",
+            hir::Builtin::SliceU8Len => b"slice-u8-len",
+            hir::Builtin::SliceU8Index => b"slice-u8-index",
+            hir::Builtin::SliceU8Range => b"slice-u8-range",
+            hir::Builtin::SliceU8Nil => b"slice-u8-nil",
+            hir::Builtin::SliceU8IsNil => b"slice-u8-is-nil",
+            hir::Builtin::SliceI64Copy => b"slice-i64-copy",
+            hir::Builtin::SliceI64Clear => b"slice-i64-clear",
+            hir::Builtin::SliceBoolIndex => b"slice-bool-index",
+            hir::Builtin::SliceBoolSet => b"slice-bool-set",
+            hir::Builtin::SliceBoolNil => b"slice-bool-nil",
+            hir::Builtin::SliceBoolIsNil => b"slice-bool-is-nil",
+            hir::Builtin::AggregateSliceMake => b"aggregate-slice-make",
+            hir::Builtin::AggregateSliceNil => b"aggregate-slice-nil",
+            hir::Builtin::AggregateSliceIsNil => b"aggregate-slice-is-nil",
+            hir::Builtin::AggregateSliceLen => b"aggregate-slice-len",
+            hir::Builtin::AggregateSliceIndexTagged => b"aggregate-slice-index-tagged",
+            hir::Builtin::AggregateSliceSetTagged => b"aggregate-slice-set-tagged",
+            hir::Builtin::SnapshotFunctionSliceAppend => b"snapshot-function-slice-append",
+            hir::Builtin::SnapshotFunctionSliceCall => b"snapshot-function-slice-call",
+            hir::Builtin::StringFromSliceU8 => b"string-from-slice-u8",
+            hir::Builtin::StringFromSliceRunes => b"string-from-slice-runes",
+            hir::Builtin::StringLen => b"string-len",
+            hir::Builtin::StringIndex => b"string-index",
+            hir::Builtin::StringRange => b"string-range",
+            hir::Builtin::StringRangeCount => b"string-range-count",
+            hir::Builtin::StringRangeIndexAt => b"string-range-index-at",
+            hir::Builtin::StringRangeRuneAt => b"string-range-rune-at",
+            hir::Builtin::MapStringI64Nil => b"map-string-i64-nil",
+            hir::Builtin::MapStringI64Make => b"map-string-i64-make",
+            hir::Builtin::MapStringI64Len => b"map-string-i64-len",
+            hir::Builtin::MapStringI64Get => b"map-string-i64-get",
+            hir::Builtin::MapStringI64Lookup => b"map-string-i64-lookup",
+            hir::Builtin::MapStringI64Contains => b"map-string-i64-contains",
+            hir::Builtin::MapStringI64Set => b"map-string-i64-set",
+            hir::Builtin::MapStringI64Delete => b"map-string-i64-delete",
+            hir::Builtin::MapStringI64Clear => b"map-string-i64-clear",
+            hir::Builtin::MapStringI64IsNil => b"map-string-i64-is-nil",
+            hir::Builtin::MapStringI64KeyAt => b"map-string-i64-key-at",
+            hir::Builtin::AggregateMapMake => b"aggregate-map-make",
+            hir::Builtin::AggregateMapLen => b"aggregate-map-len",
+            hir::Builtin::AggregateMapGetTagged => b"aggregate-map-get-tagged",
+            hir::Builtin::AggregateMapContains => b"aggregate-map-contains",
+            hir::Builtin::AggregateMapSetTagged => b"aggregate-map-set-tagged",
+            hir::Builtin::PointerI64Nil => b"pointer-i64-nil",
+            hir::Builtin::PointerI64New => b"pointer-i64-new",
+            hir::Builtin::PointerI64Get => b"pointer-i64-get",
+            hir::Builtin::PointerI64Set => b"pointer-i64-set",
+            hir::Builtin::PointerI64IsNil => b"pointer-i64-is-nil",
+            hir::Builtin::PointerStructI64Nil => b"pointer-struct-i64-nil",
+            hir::Builtin::PointerStructI64New => b"pointer-struct-i64-new",
+            hir::Builtin::PointerStructI64Get => b"pointer-struct-i64-get",
+            hir::Builtin::PointerStructI64Set => b"pointer-struct-i64-set",
+            hir::Builtin::PointerStructI64IsNil => b"pointer-struct-i64-is-nil",
+            hir::Builtin::PointerStructI64Equal => b"pointer-struct-i64-equal",
+            hir::Builtin::AggregatePointerNil => b"aggregate-pointer-nil",
+            hir::Builtin::AggregatePointerNew => b"aggregate-pointer-new",
+            hir::Builtin::AggregatePointerSnapshot => b"aggregate-pointer-snapshot",
+            hir::Builtin::AggregatePointerIsNil => b"aggregate-pointer-is-nil",
+            hir::Builtin::InterfaceNil => b"interface-nil",
+            hir::Builtin::InterfaceBoxBool => b"interface-box-bool",
+            hir::Builtin::InterfaceBoxI64 => b"interface-box-i64",
+            hir::Builtin::InterfaceBoxGoString => b"interface-box-go-string",
+            hir::Builtin::InterfaceBoxStructI64 => b"interface-box-struct-i64",
+            hir::Builtin::InterfaceBoxPointerStructI64 => b"interface-box-pointer-struct-i64",
+            hir::Builtin::InterfaceBoxAggregate => b"interface-box-aggregate",
+            hir::Builtin::InterfaceIsNil => b"interface-is-nil",
+            hir::Builtin::InterfaceIsType => b"interface-is-type",
+            hir::Builtin::InterfaceAssert => b"interface-assert",
+            hir::Builtin::InterfaceSatisfies => b"interface-satisfies",
+            hir::Builtin::InterfaceSatisfiesNonNil => b"interface-satisfies-non-nil",
+            hir::Builtin::InterfaceUnboxBool => b"interface-unbox-bool",
+            hir::Builtin::InterfaceUnboxI64 => b"interface-unbox-i64",
+            hir::Builtin::InterfaceUnboxGoString => b"interface-unbox-go-string",
+            hir::Builtin::InterfaceStructI64Get => b"interface-struct-i64-get",
+            hir::Builtin::InterfaceUnboxPointerStructI64 => b"interface-unbox-pointer-struct-i64",
+            hir::Builtin::InterfaceUnboxAggregate => b"interface-unbox-aggregate",
+            hir::Builtin::FunctionNil => b"function-nil",
+            hir::Builtin::FunctionIsNil => b"function-is-nil",
+            hir::Builtin::ChannelI64Nil => b"channel-i64-nil",
+            hir::Builtin::ChannelI64Make => b"channel-i64-make",
+            hir::Builtin::ChannelI64Len => b"channel-i64-len",
+            hir::Builtin::ChannelI64Cap => b"channel-i64-cap",
+            hir::Builtin::ChannelI64Send => b"channel-i64-send",
+            hir::Builtin::ChannelI64ReceiveValue => b"channel-i64-receive-value",
+            hir::Builtin::ChannelI64Receive => b"channel-i64-receive",
+            hir::Builtin::ChannelI64Close => b"channel-i64-close",
+            hir::Builtin::ChannelI64IsNil => b"channel-i64-is-nil",
+            hir::Builtin::ChannelI64TrySend => b"channel-i64-try-send",
+            hir::Builtin::ChannelI64TryReceive => b"channel-i64-try-receive",
         },
         |_| {},
     );
@@ -345,6 +909,9 @@ fn encode_binary_op(encoder: &mut Encoder, op: hir::BinaryOp) {
             hir::BinaryOp::GreaterEqual => b"greater-equal",
             hir::BinaryOp::LogicalAnd => b"logical-and",
             hir::BinaryOp::LogicalOr => b"logical-or",
+            hir::BinaryOp::Min => b"minimum",
+            hir::BinaryOp::Max => b"maximum",
+            hir::BinaryOp::Complex => b"complex",
         },
         |_| {},
     );
@@ -357,6 +924,8 @@ fn encode_unary_op(encoder: &mut Encoder, op: hir::UnaryOp) {
             hir::UnaryOp::Negative => b"negative",
             hir::UnaryOp::Not => b"not",
             hir::UnaryOp::BitNot => b"bit-not",
+            hir::UnaryOp::Real => b"real",
+            hir::UnaryOp::Imag => b"imaginary",
         },
         |_| {},
     );

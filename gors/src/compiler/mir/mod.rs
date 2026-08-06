@@ -2,14 +2,15 @@
 
 mod construct;
 mod dataflow;
+mod labels;
 mod lower;
 mod model;
 mod normalize;
 mod verify;
 
 pub use model::{
-    BasicBlock, File, Function, LocalDecl, Operand, PanicEdge, Place, Provenance, Rvalue,
-    RvalueKind, Statement, SyntheticOrigin, Terminator, TerminatorKind,
+    BasicBlock, File, Function, LocalDecl, Operand, PanicCleanup, PanicEdge, Place, Provenance,
+    Rvalue, RvalueKind, Statement, SyntheticOrigin, Terminator, TerminatorKind,
 };
 
 use std::collections::BTreeMap;
@@ -34,13 +35,14 @@ pub(super) fn verify(file: &File) -> Result<(), Diagnostic> {
 }
 
 pub(super) type SignatureIndex =
-    BTreeMap<crate::compiler::ids::DefId, crate::compiler::types::Signature>;
+    BTreeMap<crate::compiler::ids::QualifiedDefId, crate::compiler::types::Signature>;
 
 pub(super) fn verify_function(
     function: &Function,
+    owner: crate::compiler::ids::QualifiedDefId,
     signatures: &SignatureIndex,
 ) -> Result<(), Diagnostic> {
-    function.verify_with_signatures(signatures)
+    function.verify_with_signatures(owner, signatures)
 }
 
 #[cfg(test)]
@@ -50,9 +52,10 @@ pub(super) fn normalize(input: VerifiedMir) -> Result<VerifiedMir, Vec<Diagnosti
 
 pub(super) fn normalize_function(
     function: Function,
+    package: crate::compiler::ids::PackageId,
     signatures: &SignatureIndex,
 ) -> Result<Function, Vec<Diagnostic>> {
-    normalize::normalize_function(function, signatures)
+    normalize::normalize_function(function, package, signatures)
 }
 
 #[cfg(test)]

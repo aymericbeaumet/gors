@@ -2,7 +2,8 @@
 
 use super::Fingerprint;
 use super::encoder::{
-    Encoder, block_id, const_value, def_id, hir_effects, local_id, signature, source_ref, ty,
+    Encoder, block_id, closure_id, const_value, def_id, hir_effects, local_id, package_id,
+    qualified_def_id, signature, source_ref, ty,
 };
 use crate::compiler::{hir, mir};
 
@@ -23,6 +24,9 @@ pub fn mir_function(function: &mir::Function) -> Fingerprint {
 }
 
 fn encode_file(encoder: &mut Encoder, file: &mir::File) {
+    encoder.field(b"package-id", |encoder| {
+        package_id(encoder, file.package_id)
+    });
     encoder.field(b"package", |encoder| encoder.string(&file.package));
     encoder.field(b"functions", |encoder| {
         encoder.sequence(&file.functions, encode_function);
@@ -45,6 +49,12 @@ fn encode_function(encoder: &mut Encoder, function: &mir::Function) {
         encoder.sequence(&function.blocks, encode_block);
     });
     encoder.field(b"entry", |encoder| block_id(encoder, function.entry));
+    encoder.field(b"panic-cleanup", |encoder| {
+        encoder.option(function.panic_cleanup.as_ref(), |encoder, cleanup| {
+            encoder.field(b"entry", |encoder| block_id(encoder, cleanup.entry));
+            encoder.field(b"active", |encoder| local_id(encoder, cleanup.active));
+        });
+    });
     encoder.field(b"source", |encoder| source_ref(encoder, function.source));
 }
 
@@ -113,6 +123,93 @@ fn encode_rvalue_kind(encoder: &mut Encoder, kind: &mir::RvalueKind) {
         mir::RvalueKind::Use(operand) => {
             encoder.variant(b"use", |encoder| encode_operand(encoder, operand));
         }
+        mir::RvalueKind::SliceLiteralI64 {
+            elements,
+            ty: slice_ty,
+        } => {
+            encoder.variant(b"slice-literal-i64", |encoder| {
+                encoder.sequence(elements, |encoder, element| encoder.i64(*element));
+                ty(encoder, slice_ty);
+            });
+        }
+        mir::RvalueKind::SliceLiteralU8(elements) => {
+            encoder.variant(b"slice-literal-u8", |encoder| encoder.blob(elements));
+        }
+        mir::RvalueKind::SliceLiteralBool(elements) => {
+            encoder.variant(b"slice-literal-bool", |encoder| {
+                encoder.sequence(elements, |encoder, element| encoder.bool(*element));
+            });
+        }
+        mir::RvalueKind::ArrayLiteralI64(elements) => {
+            encoder.variant(b"array-literal-i64", |encoder| {
+                encoder.sequence(elements, |encoder, element| encoder.i64(*element));
+            });
+        }
+        mir::RvalueKind::ArrayLiteral {
+            elements,
+            ty: literal_ty,
+        } => encoder.variant(b"array-literal", |encoder| {
+            encoder.field(b"elements", |encoder| {
+                encoder.sequence(elements, encode_operand);
+            });
+            encoder.field(b"type", |encoder| ty(encoder, literal_ty));
+        }),
+        mir::RvalueKind::ArrayIndexI64 { array, index } => {
+            encoder.variant(b"array-index-i64", |encoder| {
+                encoder.field(b"array", |encoder| encode_operand(encoder, array));
+                encoder.field(b"index", |encoder| encode_operand(encoder, index));
+            });
+        }
+        mir::RvalueKind::ArrayIndex { array, index } => {
+            encoder.variant(b"array-index", |encoder| {
+                encoder.field(b"array", |encoder| encode_operand(encoder, array));
+                encoder.field(b"index", |encoder| encode_operand(encoder, index));
+            });
+        }
+        mir::RvalueKind::ArraySetI64 {
+            array,
+            index,
+            value,
+        } => encoder.variant(b"array-set-i64", |encoder| {
+            encoder.field(b"array", |encoder| encode_operand(encoder, array));
+            encoder.field(b"index", |encoder| encode_operand(encoder, index));
+            encoder.field(b"value", |encoder| encode_operand(encoder, value));
+        }),
+        mir::RvalueKind::ArraySet {
+            array,
+            index,
+            value,
+        } => encoder.variant(b"array-set", |encoder| {
+            encoder.field(b"array", |encoder| encode_operand(encoder, array));
+            encoder.field(b"index", |encoder| encode_operand(encoder, index));
+            encoder.field(b"value", |encoder| encode_operand(encoder, value));
+        }),
+        mir::RvalueKind::StructLiteral {
+            fields,
+            ty: literal_ty,
+        } => {
+            encoder.variant(b"struct-literal", |encoder| {
+                encoder.field(b"fields", |encoder| {
+                    encoder.sequence(fields, encode_operand);
+                });
+                encoder.field(b"type", |encoder| ty(encoder, literal_ty));
+            });
+        }
+        mir::RvalueKind::StructField { structure, field } => {
+            encoder.variant(b"struct-field", |encoder| {
+                encoder.field(b"structure", |encoder| encode_operand(encoder, structure));
+                encoder.field(b"field", |encoder| encoder.u32(*field));
+            });
+        }
+        mir::RvalueKind::StructSet {
+            structure,
+            field,
+            value,
+        } => encoder.variant(b"struct-set", |encoder| {
+            encoder.field(b"structure", |encoder| encode_operand(encoder, structure));
+            encoder.field(b"field", |encoder| encoder.u32(*field));
+            encoder.field(b"value", |encoder| encode_operand(encoder, value));
+        }),
         mir::RvalueKind::Unary {
             op,
             operand,
@@ -122,6 +219,23 @@ fn encode_rvalue_kind(encoder: &mut Encoder, kind: &mir::RvalueKind) {
                 encoder.field(b"operation", |encoder| encode_unary_op(encoder, *op));
                 encoder.field(b"operand", |encoder| encode_operand(encoder, operand));
                 encoder.field(b"type", |encoder| ty(encoder, value_ty));
+            });
+        }
+        mir::RvalueKind::Conversion {
+            operand,
+            from,
+            ty: to,
+        } => {
+            encoder.variant(b"conversion", |encoder| {
+                encoder.field(b"operand", |encoder| encode_operand(encoder, operand));
+                encoder.field(b"from", |encoder| ty(encoder, from));
+                encoder.field(b"to", |encoder| ty(encoder, to));
+            });
+        }
+        mir::RvalueKind::RecoverCompareNil { state, equal } => {
+            encoder.variant(b"recover-compare-nil", |encoder| {
+                encoder.field(b"state", |encoder| encode_place(encoder, *state));
+                encoder.field(b"equal", |encoder| encoder.bool(*equal));
             });
         }
         mir::RvalueKind::Binary {
@@ -185,20 +299,21 @@ fn encode_terminator_kind(encoder: &mut Encoder, kind: &mir::TerminatorKind) {
         mir::TerminatorKind::Call {
             callee,
             args,
-            destination,
+            destinations,
             target,
         } => encoder.variant(b"call", |encoder| {
             encoder.field(b"callee", |encoder| encode_callee(encoder, *callee));
             encoder.field(b"arguments", |encoder| {
                 encoder.sequence(args, encode_operand);
             });
-            encoder.field(b"destination", |encoder| {
-                encoder.option(destination.as_ref(), |encoder, place| {
-                    encode_place(encoder, *place);
-                });
+            encoder.field(b"destinations", |encoder| {
+                encoder.sequence(destinations, |encoder, place| encode_place(encoder, *place));
             });
             encoder.field(b"target", |encoder| block_id(encoder, *target));
         }),
+        mir::TerminatorKind::SpawnEmpty { target } => {
+            encoder.variant(b"spawn-empty", |encoder| block_id(encoder, *target));
+        }
         mir::TerminatorKind::Return(values) => encoder.variant(b"return", |encoder| {
             encoder.sequence(values, encode_operand);
         }),
@@ -209,13 +324,122 @@ fn encode_terminator_kind(encoder: &mut Encoder, kind: &mir::TerminatorKind) {
 fn encode_callee(encoder: &mut Encoder, callee: hir::Callee) {
     match callee {
         hir::Callee::Function(id) => {
-            encoder.variant(b"function", |encoder| def_id(encoder, id));
+            encoder.variant(b"function", |encoder| qualified_def_id(encoder, id));
+        }
+        hir::Callee::Closure(id) => {
+            encoder.variant(b"closure", |encoder| closure_id(encoder, id));
         }
         hir::Callee::Builtin(builtin) => encoder.variant(b"builtin", |encoder| {
             encoder.variant(
                 match builtin {
                     hir::Builtin::Print => b"print",
                     hir::Builtin::Println => b"println",
+                    hir::Builtin::Panic => b"panic",
+                    hir::Builtin::SliceI64Index => b"slice-i64-index",
+                    hir::Builtin::SliceI64Range => b"slice-i64-range",
+                    hir::Builtin::SliceI64Set => b"slice-i64-set",
+                    hir::Builtin::SliceI64Make => b"slice-i64-make",
+                    hir::Builtin::SliceI64Len => b"slice-i64-len",
+                    hir::Builtin::SliceI64Cap => b"slice-i64-cap",
+                    hir::Builtin::SliceI64Append => b"slice-i64-append",
+                    hir::Builtin::SliceI64Nil => b"slice-i64-nil",
+                    hir::Builtin::SliceI64IsNil => b"slice-i64-is-nil",
+                    hir::Builtin::SliceU8AppendSlice => b"slice-u8-append-slice",
+                    hir::Builtin::SliceU8AppendString => b"slice-u8-append-string",
+                    hir::Builtin::SliceU8CopyString => b"slice-u8-copy-string",
+                    hir::Builtin::SliceU8Len => b"slice-u8-len",
+                    hir::Builtin::SliceU8Index => b"slice-u8-index",
+                    hir::Builtin::SliceU8Range => b"slice-u8-range",
+                    hir::Builtin::SliceU8Nil => b"slice-u8-nil",
+                    hir::Builtin::SliceU8IsNil => b"slice-u8-is-nil",
+                    hir::Builtin::SliceI64Copy => b"slice-i64-copy",
+                    hir::Builtin::SliceI64Clear => b"slice-i64-clear",
+                    hir::Builtin::SliceBoolIndex => b"slice-bool-index",
+                    hir::Builtin::SliceBoolSet => b"slice-bool-set",
+                    hir::Builtin::SliceBoolNil => b"slice-bool-nil",
+                    hir::Builtin::SliceBoolIsNil => b"slice-bool-is-nil",
+                    hir::Builtin::AggregateSliceMake => b"aggregate-slice-make",
+                    hir::Builtin::AggregateSliceNil => b"aggregate-slice-nil",
+                    hir::Builtin::AggregateSliceIsNil => b"aggregate-slice-is-nil",
+                    hir::Builtin::AggregateSliceLen => b"aggregate-slice-len",
+                    hir::Builtin::AggregateSliceIndexTagged => b"aggregate-slice-index-tagged",
+                    hir::Builtin::AggregateSliceSetTagged => b"aggregate-slice-set-tagged",
+                    hir::Builtin::SnapshotFunctionSliceAppend => b"snapshot-function-slice-append",
+                    hir::Builtin::SnapshotFunctionSliceCall => b"snapshot-function-slice-call",
+                    hir::Builtin::StringFromSliceU8 => b"string-from-slice-u8",
+                    hir::Builtin::StringFromSliceRunes => b"string-from-slice-runes",
+                    hir::Builtin::StringLen => b"string-len",
+                    hir::Builtin::StringIndex => b"string-index",
+                    hir::Builtin::StringRange => b"string-range",
+                    hir::Builtin::StringRangeCount => b"string-range-count",
+                    hir::Builtin::StringRangeIndexAt => b"string-range-index-at",
+                    hir::Builtin::StringRangeRuneAt => b"string-range-rune-at",
+                    hir::Builtin::MapStringI64Nil => b"map-string-i64-nil",
+                    hir::Builtin::MapStringI64Make => b"map-string-i64-make",
+                    hir::Builtin::MapStringI64Len => b"map-string-i64-len",
+                    hir::Builtin::MapStringI64Get => b"map-string-i64-get",
+                    hir::Builtin::MapStringI64Lookup => b"map-string-i64-lookup",
+                    hir::Builtin::MapStringI64Contains => b"map-string-i64-contains",
+                    hir::Builtin::MapStringI64Set => b"map-string-i64-set",
+                    hir::Builtin::MapStringI64Delete => b"map-string-i64-delete",
+                    hir::Builtin::MapStringI64Clear => b"map-string-i64-clear",
+                    hir::Builtin::MapStringI64IsNil => b"map-string-i64-is-nil",
+                    hir::Builtin::MapStringI64KeyAt => b"map-string-i64-key-at",
+                    hir::Builtin::AggregateMapMake => b"aggregate-map-make",
+                    hir::Builtin::AggregateMapLen => b"aggregate-map-len",
+                    hir::Builtin::AggregateMapGetTagged => b"aggregate-map-get-tagged",
+                    hir::Builtin::AggregateMapContains => b"aggregate-map-contains",
+                    hir::Builtin::AggregateMapSetTagged => b"aggregate-map-set-tagged",
+                    hir::Builtin::PointerI64Nil => b"pointer-i64-nil",
+                    hir::Builtin::PointerI64New => b"pointer-i64-new",
+                    hir::Builtin::PointerI64Get => b"pointer-i64-get",
+                    hir::Builtin::PointerI64Set => b"pointer-i64-set",
+                    hir::Builtin::PointerI64IsNil => b"pointer-i64-is-nil",
+                    hir::Builtin::PointerStructI64Nil => b"pointer-struct-i64-nil",
+                    hir::Builtin::PointerStructI64New => b"pointer-struct-i64-new",
+                    hir::Builtin::PointerStructI64Get => b"pointer-struct-i64-get",
+                    hir::Builtin::PointerStructI64Set => b"pointer-struct-i64-set",
+                    hir::Builtin::PointerStructI64IsNil => b"pointer-struct-i64-is-nil",
+                    hir::Builtin::PointerStructI64Equal => b"pointer-struct-i64-equal",
+                    hir::Builtin::AggregatePointerNil => b"aggregate-pointer-nil",
+                    hir::Builtin::AggregatePointerNew => b"aggregate-pointer-new",
+                    hir::Builtin::AggregatePointerSnapshot => b"aggregate-pointer-snapshot",
+                    hir::Builtin::AggregatePointerIsNil => b"aggregate-pointer-is-nil",
+                    hir::Builtin::InterfaceNil => b"interface-nil",
+                    hir::Builtin::InterfaceBoxBool => b"interface-box-bool",
+                    hir::Builtin::InterfaceBoxI64 => b"interface-box-i64",
+                    hir::Builtin::InterfaceBoxGoString => b"interface-box-go-string",
+                    hir::Builtin::InterfaceBoxStructI64 => b"interface-box-struct-i64",
+                    hir::Builtin::InterfaceBoxPointerStructI64 => {
+                        b"interface-box-pointer-struct-i64"
+                    }
+                    hir::Builtin::InterfaceBoxAggregate => b"interface-box-aggregate",
+                    hir::Builtin::InterfaceIsNil => b"interface-is-nil",
+                    hir::Builtin::InterfaceIsType => b"interface-is-type",
+                    hir::Builtin::InterfaceAssert => b"interface-assert",
+                    hir::Builtin::InterfaceSatisfies => b"interface-satisfies",
+                    hir::Builtin::InterfaceSatisfiesNonNil => b"interface-satisfies-non-nil",
+                    hir::Builtin::InterfaceUnboxBool => b"interface-unbox-bool",
+                    hir::Builtin::InterfaceUnboxI64 => b"interface-unbox-i64",
+                    hir::Builtin::InterfaceUnboxGoString => b"interface-unbox-go-string",
+                    hir::Builtin::InterfaceStructI64Get => b"interface-struct-i64-get",
+                    hir::Builtin::InterfaceUnboxPointerStructI64 => {
+                        b"interface-unbox-pointer-struct-i64"
+                    }
+                    hir::Builtin::InterfaceUnboxAggregate => b"interface-unbox-aggregate",
+                    hir::Builtin::FunctionNil => b"function-nil",
+                    hir::Builtin::FunctionIsNil => b"function-is-nil",
+                    hir::Builtin::ChannelI64Nil => b"channel-i64-nil",
+                    hir::Builtin::ChannelI64Make => b"channel-i64-make",
+                    hir::Builtin::ChannelI64Len => b"channel-i64-len",
+                    hir::Builtin::ChannelI64Cap => b"channel-i64-cap",
+                    hir::Builtin::ChannelI64Send => b"channel-i64-send",
+                    hir::Builtin::ChannelI64ReceiveValue => b"channel-i64-receive-value",
+                    hir::Builtin::ChannelI64Receive => b"channel-i64-receive",
+                    hir::Builtin::ChannelI64Close => b"channel-i64-close",
+                    hir::Builtin::ChannelI64IsNil => b"channel-i64-is-nil",
+                    hir::Builtin::ChannelI64TrySend => b"channel-i64-try-send",
+                    hir::Builtin::ChannelI64TryReceive => b"channel-i64-try-receive",
                 },
                 |_| {},
             );
@@ -230,6 +454,8 @@ fn encode_unary_op(encoder: &mut Encoder, op: hir::UnaryOp) {
             hir::UnaryOp::Negative => b"negative",
             hir::UnaryOp::Not => b"not",
             hir::UnaryOp::BitNot => b"bit-not",
+            hir::UnaryOp::Real => b"real",
+            hir::UnaryOp::Imag => b"imaginary",
         },
         |_| {},
     );
@@ -257,19 +483,22 @@ fn encode_binary_op(encoder: &mut Encoder, op: hir::BinaryOp) {
             hir::BinaryOp::GreaterEqual => b"greater-equal",
             hir::BinaryOp::LogicalAnd => b"logical-and",
             hir::BinaryOp::LogicalOr => b"logical-or",
+            hir::BinaryOp::Min => b"minimum",
+            hir::BinaryOp::Max => b"maximum",
+            hir::BinaryOp::Complex => b"complex",
         },
         |_| {},
     );
 }
 
 fn encode_panic(encoder: &mut Encoder, panic: mir::PanicEdge) {
-    encoder.variant(
-        match panic {
-            mir::PanicEdge::None => b"none",
-            mir::PanicEdge::Propagate => b"propagate",
-        },
-        |_| {},
-    );
+    match panic {
+        mir::PanicEdge::None => encoder.variant(b"none", |_| {}),
+        mir::PanicEdge::Propagate => encoder.variant(b"propagate", |_| {}),
+        mir::PanicEdge::Cleanup(target) => {
+            encoder.variant(b"cleanup", |encoder| block_id(encoder, target));
+        }
+    }
 }
 
 fn encode_provenance(encoder: &mut Encoder, provenance: &mir::Provenance) {
@@ -284,6 +513,11 @@ fn encode_provenance(encoder: &mut Encoder, provenance: &mir::Provenance) {
                         mir::SyntheticOrigin::NamedResultInitialization => {
                             b"named-result-initialization"
                         }
+                        mir::SyntheticOrigin::PanicCleanupInitialization => {
+                            b"panic-cleanup-initialization"
+                        }
+                        mir::SyntheticOrigin::ZeroValueCall => b"zero-value-call",
+                        mir::SyntheticOrigin::PanicCleanupDispatch => b"panic-cleanup-dispatch",
                         mir::SyntheticOrigin::ImplicitReturn => b"implicit-return",
                     },
                     |_| {},

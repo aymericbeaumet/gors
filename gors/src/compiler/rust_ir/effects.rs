@@ -1,10 +1,12 @@
 //! Canonical effect derivation for the selected Rust representation.
 
 use super::{
-    CallTarget, Constant, Effects, Operand, PanicEdge, PrimitiveOp, ReadOp, RuntimeOp, Rvalue,
-    RvalueKind, TerminatorKind, ValueOp,
+    CallTarget, Constant, Effects, Operand, PrimitiveOp, ReadOp, RuntimeOp, Rvalue, RvalueKind,
+    TerminatorKind, ValueOp,
 };
-use gors_runtime_abi::{AllocationEffect, ArgumentMutationEffect, HostIoEffect, RuntimeType};
+use gors_runtime_abi::{
+    AllocationEffect, ArgumentMutationEffect, BlockingEffect, HostIoEffect, RuntimeType,
+};
 
 pub(in crate::compiler) fn statement_effects(value: &Rvalue) -> Effects {
     let mut effects = value.effects;
@@ -14,14 +16,78 @@ pub(in crate::compiler) fn statement_effects(value: &Rvalue) -> Effects {
 
 pub(in crate::compiler) fn rvalue_effects(kind: &RvalueKind) -> Effects {
     let intrinsic = match kind {
-        RvalueKind::Use(_) => Effects::default(),
+        RvalueKind::Use(_)
+        | RvalueKind::ArrayLiteral { .. }
+        | RvalueKind::StructLiteral { .. }
+        | RvalueKind::StructField { .. }
+        | RvalueKind::StructLiteralI64(_)
+        | RvalueKind::StructFieldI64 { .. }
+        | RvalueKind::AggregateEqualI64 { .. } => Effects::default(),
+        RvalueKind::StructSet { .. } | RvalueKind::StructSetI64 { .. } => Effects {
+            may_write: true,
+            ..Effects::default()
+        },
         RvalueKind::Unary { op, .. } | RvalueKind::Binary { op, .. } => value_op_effects(*op),
+        RvalueKind::RecoverCompareNil { .. } => Effects {
+            may_read: true,
+            may_write: true,
+            ..Effects::default()
+        },
+        RvalueKind::ArrayIndexI64 { .. } | RvalueKind::ArrayIndex { .. } => Effects {
+            may_call: true,
+            may_panic: true,
+            ..Effects::default()
+        },
+        RvalueKind::ArraySetI64 { .. } | RvalueKind::ArraySet { .. } => Effects {
+            may_write: true,
+            may_call: true,
+            may_panic: true,
+            ..Effects::default()
+        },
     };
     let operands = match kind {
         RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => operand_effects(operand),
         RvalueKind::Binary { left, right, .. } => {
             union(operand_effects(left), operand_effects(right))
         }
+        RvalueKind::ArrayIndexI64 { array, index } | RvalueKind::ArrayIndex { array, index } => {
+            union(operand_effects(array), operand_effects(index))
+        }
+        RvalueKind::ArraySetI64 {
+            array,
+            index,
+            value,
+        }
+        | RvalueKind::ArraySet {
+            array,
+            index,
+            value,
+        } => union(
+            union(operand_effects(array), operand_effects(index)),
+            operand_effects(value),
+        ),
+        RvalueKind::ArrayLiteral { elements, .. } => elements
+            .iter()
+            .fold(Effects::default(), |effects, element| {
+                union(effects, operand_effects(element))
+            }),
+        RvalueKind::StructLiteral { fields, .. } | RvalueKind::StructLiteralI64(fields) => {
+            fields.iter().fold(Effects::default(), |effects, field| {
+                union(effects, operand_effects(field))
+            })
+        }
+        RvalueKind::StructField { structure, .. }
+        | RvalueKind::StructFieldI64 { structure, .. } => operand_effects(structure),
+        RvalueKind::StructSet {
+            structure, value, ..
+        }
+        | RvalueKind::StructSetI64 {
+            structure, value, ..
+        } => union(operand_effects(structure), operand_effects(value)),
+        RvalueKind::AggregateEqualI64 { left, right, .. } => {
+            union(operand_effects(left), operand_effects(right))
+        }
+        RvalueKind::RecoverCompareNil { .. } => Effects::default(),
     };
     union(intrinsic, operands)
 }
@@ -47,23 +113,18 @@ pub(in crate::compiler) fn terminator_effects(kind: &TerminatorKind) -> Effects 
         TerminatorKind::Goto(_) | TerminatorKind::Unreachable => Effects::default(),
     };
     let mut effects = union(intrinsic, operands);
-    if matches!(
-        kind,
-        TerminatorKind::Call {
-            destination: Some(_),
-            ..
-        }
-    ) {
+    if matches!(kind, TerminatorKind::Call { destinations, .. } if !destinations.is_empty()) {
         effects.may_write = true;
     }
     effects
 }
 
-pub(in crate::compiler) fn panic_edge(effects: Effects) -> PanicEdge {
+#[cfg(test)]
+pub(super) fn panic_edge(effects: Effects) -> super::PanicEdge {
     if effects.may_panic {
-        PanicEdge::Propagate
+        super::PanicEdge::Propagate
     } else {
-        PanicEdge::None
+        super::PanicEdge::None
     }
 }
 
@@ -96,7 +157,7 @@ fn runtime_effects(operation: RuntimeOp) -> Effects {
         may_allocate: effects.allocation() == AllocationEffect::MayAllocate,
         may_write: effects.argument_mutation() == ArgumentMutationEffect::MayMutateOwnedArgument
             || host_io,
-        may_block: host_io,
+        may_block: effects.blocking() == BlockingEffect::MayBlock,
         may_panic: !effects.go_panics().is_empty(),
         ..Effects::default()
     }
@@ -127,10 +188,20 @@ fn operand_effects(operand: &Operand) -> Effects {
             may_write: true,
             ..Effects::default()
         },
-        Operand::Constant(Constant::RuntimeStaticBytes { op, .. }) => runtime_effects(*op),
-        Operand::Constant(Constant::Bool(_) | Constant::I64(_)) | Operand::Unit => {
-            Effects::default()
-        }
+        Operand::Constant(
+            Constant::RuntimeStaticBytes { op, .. }
+            | Constant::RuntimeStaticI64s { op, .. }
+            | Constant::RuntimeStaticBools { op, .. }
+            | Constant::RuntimeStaticU8s { op, .. },
+        ) => runtime_effects(*op),
+        Operand::Constant(
+            Constant::Bool(_)
+            | Constant::I64(_)
+            | Constant::F64(_)
+            | Constant::Complex128 { .. }
+            | Constant::StaticI64Array(_),
+        )
+        | Operand::Unit => Effects::default(),
     }
 }
 
