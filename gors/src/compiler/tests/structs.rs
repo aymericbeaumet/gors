@@ -67,3 +67,30 @@ fn generated_integer_structs_support_value_methods_and_go_namespaces() {
 
     assert_eq!(run.stderr, b"methods: ok\n");
 }
+
+#[test]
+fn generated_value_method_values_capture_the_receiver_copy() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            type Counter struct { Value int }
+
+            func (counter Counter) Add(delta int) int {
+                return counter.Value + delta
+            }
+
+            func main() {
+                counter := Counter{Value: 3}
+                saved := counter.Add
+                counter = Counter{Value: 10}
+                if saved(4) != 7 || counter.Add(4) != 14 {
+                    panic("method value receiver capture changed")
+                }
+                println("method-values: ok")
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"method-values: ok\n");
+}

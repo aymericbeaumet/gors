@@ -1,7 +1,7 @@
 //! Exact struct literal and direct-field expression lowering.
 
-use super::FunctionLowerer;
 use super::expressions::{coerce_expr, ensure_bootstrap_value_type};
+use super::{FunctionLowerer, MethodSymbol};
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::NodeId;
@@ -37,22 +37,7 @@ impl FunctionLowerer {
             );
         }
         let mut receiver = self.lower_expr(base, None)?;
-        let definition = named_receiver_definition(&receiver.ty).ok_or_else(|| {
-            Diagnostic::semantic(
-                format!("type {:?} has no method {}", receiver.ty, member.name),
-                source,
-            )
-        })?;
-        let symbol = self
-            .methods
-            .get(&(definition, member.name.to_string()))
-            .cloned()
-            .ok_or_else(|| {
-                Diagnostic::semantic(
-                    format!("type {:?} has no method {}", receiver.ty, member.name),
-                    source,
-                )
-            })?;
+        let symbol = self.resolve_method_symbol(&receiver.ty, &member.name, source)?;
         if symbol.pointer_receiver {
             return Err(Diagnostic::unsupported(
                 "pointer-receiver method calls are not yet represented",
@@ -131,6 +116,23 @@ impl FunctionLowerer {
             coerce_expr(&mut lowered, expected, source)?;
         }
         Ok(lowered)
+    }
+
+    pub(super) fn resolve_method_symbol(
+        &self,
+        receiver: &Ty,
+        name: &str,
+        source: SourceRef,
+    ) -> Result<MethodSymbol, Diagnostic> {
+        let definition = named_receiver_definition(receiver).ok_or_else(|| {
+            Diagnostic::semantic(format!("type {receiver:?} has no method {name}"), source)
+        })?;
+        self.methods
+            .get(&(definition, name.to_owned()))
+            .cloned()
+            .ok_or_else(|| {
+                Diagnostic::semantic(format!("type {receiver:?} has no method {name}"), source)
+            })
     }
 
     pub(super) fn lower_selector(
