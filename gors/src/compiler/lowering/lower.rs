@@ -530,6 +530,7 @@ fn lower_panic_call(
         | out::RustType::GoMapStringI64
         | out::RustType::GoPointerI64
         | out::RustType::GoPointerStructI64
+        | out::RustType::GoInterface
         | out::RustType::GoChannelI64 => {
             return Err(Diagnostic::backend(
                 "unsupported numeric panic payload reached Rust lowering",
@@ -599,6 +600,7 @@ fn lower_print_call(
             | out::RustType::GoMapStringI64
             | out::RustType::GoPointerI64
             | out::RustType::GoPointerStructI64
+            | out::RustType::GoInterface
             | out::RustType::GoChannelI64 => {
                 return Err(Diagnostic::backend(
                     "numeric print operation reached lowering without a runtime ABI operation",

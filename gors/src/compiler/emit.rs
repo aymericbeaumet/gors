@@ -907,6 +907,7 @@ fn emit_type(ty: &RustType) -> Result<syn::Type, Diagnostic> {
         RustType::GoPointerStructI64 => {
             syn::parse_quote! { ::#runtime_crate::GoPointerStructI64 }
         }
+        RustType::GoInterface => syn::parse_quote! { ::#runtime_crate::GoInterface },
         RustType::GoChannelI64 => syn::parse_quote! { ::#runtime_crate::GoChannelI64 },
         RustType::ArrayI64(length) => {
             let length = syn::LitInt::new(&length.to_string(), Span::mixed_site());

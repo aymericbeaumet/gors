@@ -11,12 +11,19 @@
 #![allow(dead_code)]
 
 mod channels;
+mod interfaces;
 
 pub use channels::{
     GoChannelI64, go_channel_i64_cap, go_channel_i64_close, go_channel_i64_is_nil,
     go_channel_i64_len, go_channel_i64_make, go_channel_i64_nil, go_channel_i64_receive,
     go_channel_i64_receive_value, go_channel_i64_send, go_channel_i64_try_receive,
     go_channel_i64_try_send,
+};
+pub use interfaces::{
+    GoInterface, go_interface_box_bool, go_interface_box_go_string, go_interface_box_i64,
+    go_interface_box_pointer_struct_i64, go_interface_box_struct_i64, go_interface_is_nil,
+    go_interface_is_type, go_interface_nil, go_interface_struct_i64_get, go_interface_unbox_bool,
+    go_interface_unbox_go_string, go_interface_unbox_i64, go_interface_unbox_pointer_struct_i64,
 };
 
 use std::cmp::Ordering;

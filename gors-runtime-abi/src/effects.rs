@@ -91,6 +91,7 @@ pub enum GoPanicCondition {
     SendOnClosedChannel,
     CloseOfNilChannel,
     CloseOfClosedChannel,
+    TypeAssertionFailure,
 }
 
 impl GoPanicCondition {
@@ -107,6 +108,7 @@ impl GoPanicCondition {
             Self::SendOnClosedChannel => 9,
             Self::CloseOfNilChannel => 10,
             Self::CloseOfClosedChannel => 11,
+            Self::TypeAssertionFailure => 12,
         }
     }
 }

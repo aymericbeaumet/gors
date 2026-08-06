@@ -5,6 +5,7 @@ use super::{
     NEGATIVE_CHANNEL_CAPACITY, NEGATIVE_SHIFT_AMOUNT, NIL_MAP_ASSIGNMENT, NIL_POINTER_DEREFERENCE,
     NIL_POINTER_OR_INDEX_OUT_OF_RANGE, NO_CAPABILITIES, NO_GO_PANICS, RuntimeOp,
     SEND_ON_CLOSED_CHANNEL, SLICE_BOUNDS_OUT_OF_RANGE, STANDARD_IO_CAPABILITY,
+    TYPE_ASSERTION_FAILURE, TYPE_ASSERTION_OR_INDEX_OUT_OF_RANGE,
 };
 use crate::effects::{
     AllocationEffect, ArgumentMutationEffect, BlockingEffect, HostIoEffect, RuntimeEffects,
@@ -67,6 +68,19 @@ impl RuntimeOp {
             | Self::GoPointerStructI64Set
             | Self::GoPointerStructI64IsNil
             | Self::GoPointerStructI64Equal
+            | Self::GoInterfaceNil
+            | Self::GoInterfaceBoxBool
+            | Self::GoInterfaceBoxI64
+            | Self::GoInterfaceBoxGoString
+            | Self::GoInterfaceBoxStructI64
+            | Self::GoInterfaceBoxPointerStructI64
+            | Self::GoInterfaceIsNil
+            | Self::GoInterfaceIsType
+            | Self::GoInterfaceUnboxBool
+            | Self::GoInterfaceUnboxI64
+            | Self::GoInterfaceUnboxGoString
+            | Self::GoInterfaceStructI64Get
+            | Self::GoInterfaceUnboxPointerStructI64
             | Self::GoChannelI64Nil
             | Self::GoChannelI64Make
             | Self::GoChannelI64Len
@@ -263,6 +277,44 @@ impl RuntimeOp {
                 ArgumentMutationEffect::MayMutateOwnedArgument,
                 HostIoEffect::None,
                 NIL_POINTER_OR_INDEX_OUT_OF_RANGE,
+            ),
+            Self::GoInterfaceNil | Self::GoInterfaceIsNil | Self::GoInterfaceIsType => {
+                RuntimeEffects::new(
+                    AllocationEffect::None,
+                    ArgumentMutationEffect::None,
+                    HostIoEffect::None,
+                    NO_GO_PANICS,
+                )
+            }
+            Self::GoInterfaceBoxBool
+            | Self::GoInterfaceBoxI64
+            | Self::GoInterfaceBoxGoString
+            | Self::GoInterfaceBoxPointerStructI64 => RuntimeEffects::new(
+                AllocationEffect::None,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                NO_GO_PANICS,
+            ),
+            Self::GoInterfaceBoxStructI64 => RuntimeEffects::new(
+                AllocationEffect::MayAllocate,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                NO_GO_PANICS,
+            ),
+            Self::GoInterfaceUnboxBool
+            | Self::GoInterfaceUnboxI64
+            | Self::GoInterfaceUnboxGoString
+            | Self::GoInterfaceUnboxPointerStructI64 => RuntimeEffects::new(
+                AllocationEffect::None,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                TYPE_ASSERTION_FAILURE,
+            ),
+            Self::GoInterfaceStructI64Get => RuntimeEffects::new(
+                AllocationEffect::None,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                TYPE_ASSERTION_OR_INDEX_OUT_OF_RANGE,
             ),
             Self::GoChannelI64Nil
             | Self::GoChannelI64Len

@@ -93,11 +93,11 @@ fn current_contract_identity_is_sha256_of_canonical_bytes() {
 
     assert_eq!(manifest.schema().get(), 2);
     assert_eq!(manifest.contract(), CURRENT_CONTRACT_VERSION);
-    assert_eq!(manifest.contract(), ContractVersion::new(2, 7, 0));
+    assert_eq!(manifest.contract(), ContractVersion::new(2, 8, 0));
     assert_eq!(manifest.identity().as_bytes(), &expected);
     assert_eq!(
         manifest.identity().to_string(),
-        "56b2c2c13dcc4a48a0c895bd2a5fdc531482f1db733813149e664926019b5d56",
+        "a63915688a101a3dc4f44360da4293c80803167421a73809ad3bb9dc8ba4d902",
         "the canonical runtime contract changed; review the ABI diff and bump its semantic version before accepting a new identity",
     );
 }
@@ -163,6 +163,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoMapStringI64Set
             | RuntimeOp::GoPointerI64New
             | RuntimeOp::GoPointerStructI64New
+            | RuntimeOp::GoInterfaceBoxStructI64
             | RuntimeOp::GoChannelI64Make => AllocationEffect::MayAllocate,
             RuntimeOp::GoStringFromStatic
             | RuntimeOp::IntDiv
@@ -202,6 +203,18 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoPointerStructI64Set
             | RuntimeOp::GoPointerStructI64IsNil
             | RuntimeOp::GoPointerStructI64Equal
+            | RuntimeOp::GoInterfaceNil
+            | RuntimeOp::GoInterfaceBoxBool
+            | RuntimeOp::GoInterfaceBoxI64
+            | RuntimeOp::GoInterfaceBoxGoString
+            | RuntimeOp::GoInterfaceBoxPointerStructI64
+            | RuntimeOp::GoInterfaceIsNil
+            | RuntimeOp::GoInterfaceIsType
+            | RuntimeOp::GoInterfaceUnboxBool
+            | RuntimeOp::GoInterfaceUnboxI64
+            | RuntimeOp::GoInterfaceUnboxGoString
+            | RuntimeOp::GoInterfaceStructI64Get
+            | RuntimeOp::GoInterfaceUnboxPointerStructI64
             | RuntimeOp::GoChannelI64Nil
             | RuntimeOp::GoChannelI64Len
             | RuntimeOp::GoChannelI64Cap
@@ -272,6 +285,19 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoPointerStructI64Get
             | RuntimeOp::GoPointerStructI64IsNil
             | RuntimeOp::GoPointerStructI64Equal
+            | RuntimeOp::GoInterfaceNil
+            | RuntimeOp::GoInterfaceBoxBool
+            | RuntimeOp::GoInterfaceBoxI64
+            | RuntimeOp::GoInterfaceBoxGoString
+            | RuntimeOp::GoInterfaceBoxStructI64
+            | RuntimeOp::GoInterfaceBoxPointerStructI64
+            | RuntimeOp::GoInterfaceIsNil
+            | RuntimeOp::GoInterfaceIsType
+            | RuntimeOp::GoInterfaceUnboxBool
+            | RuntimeOp::GoInterfaceUnboxI64
+            | RuntimeOp::GoInterfaceUnboxGoString
+            | RuntimeOp::GoInterfaceStructI64Get
+            | RuntimeOp::GoInterfaceUnboxPointerStructI64
             | RuntimeOp::GoChannelI64Nil
             | RuntimeOp::GoChannelI64Make
             | RuntimeOp::GoChannelI64Len
@@ -342,6 +368,19 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoPointerStructI64Set
             | RuntimeOp::GoPointerStructI64IsNil
             | RuntimeOp::GoPointerStructI64Equal
+            | RuntimeOp::GoInterfaceNil
+            | RuntimeOp::GoInterfaceBoxBool
+            | RuntimeOp::GoInterfaceBoxI64
+            | RuntimeOp::GoInterfaceBoxGoString
+            | RuntimeOp::GoInterfaceBoxStructI64
+            | RuntimeOp::GoInterfaceBoxPointerStructI64
+            | RuntimeOp::GoInterfaceIsNil
+            | RuntimeOp::GoInterfaceIsType
+            | RuntimeOp::GoInterfaceUnboxBool
+            | RuntimeOp::GoInterfaceUnboxI64
+            | RuntimeOp::GoInterfaceUnboxGoString
+            | RuntimeOp::GoInterfaceStructI64Get
+            | RuntimeOp::GoInterfaceUnboxPointerStructI64
             | RuntimeOp::GoChannelI64Nil
             | RuntimeOp::GoChannelI64Make
             | RuntimeOp::GoChannelI64Len
@@ -375,6 +414,16 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             RuntimeOp::GoPointerStructI64Get | RuntimeOp::GoPointerStructI64Set => &[
                 GoPanicCondition::NilPointerDereference,
                 GoPanicCondition::IndexOutOfRange,
+            ],
+            RuntimeOp::GoInterfaceUnboxBool
+            | RuntimeOp::GoInterfaceUnboxI64
+            | RuntimeOp::GoInterfaceUnboxGoString
+            | RuntimeOp::GoInterfaceUnboxPointerStructI64 => {
+                &[GoPanicCondition::TypeAssertionFailure]
+            }
+            RuntimeOp::GoInterfaceStructI64Get => &[
+                GoPanicCondition::IndexOutOfRange,
+                GoPanicCondition::TypeAssertionFailure,
             ],
             RuntimeOp::GoChannelI64Make => &[GoPanicCondition::NegativeChannelCapacity],
             RuntimeOp::GoChannelI64Send | RuntimeOp::GoChannelI64TrySend => {
@@ -417,6 +466,14 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoPointerStructI64Nil
             | RuntimeOp::GoPointerStructI64IsNil
             | RuntimeOp::GoPointerStructI64Equal
+            | RuntimeOp::GoInterfaceNil
+            | RuntimeOp::GoInterfaceBoxBool
+            | RuntimeOp::GoInterfaceBoxI64
+            | RuntimeOp::GoInterfaceBoxGoString
+            | RuntimeOp::GoInterfaceBoxStructI64
+            | RuntimeOp::GoInterfaceBoxPointerStructI64
+            | RuntimeOp::GoInterfaceIsNil
+            | RuntimeOp::GoInterfaceIsType
             | RuntimeOp::GoChannelI64Nil
             | RuntimeOp::GoChannelI64Len
             | RuntimeOp::GoChannelI64Cap

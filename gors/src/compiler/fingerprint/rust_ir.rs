@@ -460,6 +460,7 @@ fn encode_type(encoder: &mut Encoder, ty: rust_ir::RustType) {
         rust_ir::RustType::GoPointerStructI64 => {
             encoder.variant(b"go-pointer-struct-i64", |_| {});
         }
+        rust_ir::RustType::GoInterface => encoder.variant(b"go-interface", |_| {}),
         rust_ir::RustType::GoChannelI64 => encoder.variant(b"go-channel-i64", |_| {}),
         rust_ir::RustType::ArrayI64(length) => {
             encoder.variant(b"array-i64", |encoder| encoder.u64(length));

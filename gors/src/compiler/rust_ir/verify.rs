@@ -656,6 +656,7 @@ fn rust_type_from_runtime(ty: RuntimeType, context: &str) -> Result<RustType, Di
         RuntimeType::GoMapStringI64 => Ok(RustType::GoMapStringI64),
         RuntimeType::GoPointerI64 => Ok(RustType::GoPointerI64),
         RuntimeType::GoPointerStructI64 => Ok(RustType::GoPointerStructI64),
+        RuntimeType::GoInterface => Ok(RustType::GoInterface),
         RuntimeType::GoChannelI64 => Ok(RustType::GoChannelI64),
         RuntimeType::ByteSlice
         | RuntimeType::StaticByteSlice

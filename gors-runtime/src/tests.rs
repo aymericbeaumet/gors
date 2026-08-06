@@ -147,6 +147,74 @@ fn pointers_are_send_and_sync() {
 }
 
 #[test]
+fn interfaces_preserve_dynamic_types_and_value_copying() {
+    let int_type = go_string_from_static(b"builtin:int");
+    let string_type = go_string_from_static(b"builtin:string");
+    let boxed_int = go_interface_box_i64(int_type.clone(), 42);
+    assert!(!go_interface_is_nil(boxed_int.clone()));
+    assert!(go_interface_is_type(boxed_int.clone(), int_type.clone()));
+    assert!(!go_interface_is_type(
+        boxed_int.clone(),
+        string_type.clone()
+    ));
+    assert_eq!(go_interface_unbox_i64(boxed_int, int_type), 42);
+
+    let boxed_string =
+        go_interface_box_go_string(string_type.clone(), go_string_from_static(b"interface"));
+    assert_eq!(
+        go_interface_unbox_go_string(boxed_string, string_type).as_bytes(),
+        b"interface"
+    );
+
+    let nil = go_interface_nil();
+    assert!(go_interface_is_nil(nil.clone()));
+    assert!(!go_interface_is_type(
+        nil,
+        go_string_from_static(b"builtin:int")
+    ));
+}
+
+#[test]
+fn interfaces_snapshot_structs_and_preserve_pointer_identity() {
+    let struct_type = go_string_from_static(b"named:counter");
+    let fields = go_slice_i64_from_static(&[1, 2]);
+    let boxed_struct = go_interface_box_struct_i64(struct_type.clone(), fields.clone());
+    go_slice_i64_set(fields, 1, 99);
+    assert_eq!(
+        go_interface_struct_i64_get(boxed_struct, struct_type.clone(), 1),
+        2
+    );
+
+    let pointer = go_pointer_struct_i64_new(1);
+    let boxed_pointer = go_interface_box_pointer_struct_i64(struct_type.clone(), pointer.clone());
+    let unboxed = go_interface_unbox_pointer_struct_i64(boxed_pointer, struct_type);
+    go_pointer_struct_i64_set(unboxed, 0, 7);
+    assert_eq!(go_pointer_struct_i64_get(pointer, 0), 7);
+}
+
+#[test]
+fn interface_unboxing_checks_the_exact_dynamic_type() {
+    let value = go_interface_box_bool(go_string_from_static(b"builtin:bool"), true);
+    assert!(go_interface_unbox_bool(
+        value.clone(),
+        go_string_from_static(b"builtin:bool")
+    ));
+    assert!(
+        std::panic::catch_unwind(|| {
+            let _ = go_interface_unbox_bool(value, go_string_from_static(b"named:bool"));
+        })
+        .is_err()
+    );
+}
+
+#[test]
+fn interfaces_are_send_and_sync() {
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    assert_send_sync::<GoInterface>();
+}
+
+#[test]
 fn channels_preserve_buffer_close_and_comma_ok_semantics() {
     let nil = go_channel_i64_nil();
     assert!(go_channel_i64_is_nil(nil.clone()));

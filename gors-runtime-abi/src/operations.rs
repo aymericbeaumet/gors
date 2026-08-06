@@ -2,11 +2,11 @@
 
 mod decode;
 mod metadata;
+mod value_types;
 
 use crate::effects::GoPanicCondition;
 use crate::encoding::CanonicalEncoder;
 use crate::target::{TargetCapability, TargetCapability::StandardIo};
-use std::fmt::{Display, Formatter};
 
 /// Go operations emitted directly without a runtime ABI symbol.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -337,34 +337,7 @@ pub enum RuntimeType {
     /// ABI-only aggregate returned by nonblocking integer channel receive.
     I64I64Tuple,
     GoPointerStructI64,
-}
-
-impl RuntimeType {
-    const fn canonical_tag(self) -> u8 {
-        match self {
-            Self::Unit => 1,
-            Self::Bool => 2,
-            Self::I64 => 3,
-            Self::GoString => 4,
-            Self::ByteSlice => 5,
-            Self::StaticByteSlice => 6,
-            Self::F64 => 7,
-            Self::Complex128 => 8,
-            Self::GoSliceI64 => 9,
-            Self::StaticI64Slice => 10,
-            Self::GoSliceU8 => 11,
-            Self::GoMapStringI64 => 12,
-            Self::GoPointerI64 => 13,
-            Self::GoChannelI64 => 14,
-            Self::I64BoolTuple => 15,
-            Self::I64I64Tuple => 16,
-            Self::GoPointerStructI64 => 17,
-        }
-    }
-
-    fn encode(self, encoder: &mut CanonicalEncoder) {
-        encoder.u8(self.canonical_tag());
-    }
+    GoInterface,
 }
 
 /// Complete function signature for one runtime operation.
@@ -372,30 +345,6 @@ impl RuntimeType {
 pub struct RuntimeSignature {
     parameters: &'static [RuntimeType],
     result: RuntimeType,
-}
-
-impl RuntimeSignature {
-    const fn new(parameters: &'static [RuntimeType], result: RuntimeType) -> Self {
-        Self { parameters, result }
-    }
-
-    #[must_use]
-    pub const fn parameters(self) -> &'static [RuntimeType] {
-        self.parameters
-    }
-
-    #[must_use]
-    pub const fn result(self) -> RuntimeType {
-        self.result
-    }
-
-    fn encode(self, encoder: &mut CanonicalEncoder) {
-        encoder.count(self.parameters.len());
-        for parameter in self.parameters {
-            parameter.encode(encoder);
-        }
-        self.result.encode(encoder);
-    }
 }
 
 const NO_PARAMETERS: &[RuntimeType] = &[];
@@ -453,6 +402,20 @@ const GO_POINTER_STRUCT_I64_SET: &[RuntimeType] = &[
     RuntimeType::I64,
     RuntimeType::I64,
 ];
+const GO_INTERFACE_PARAMETER: &[RuntimeType] = &[RuntimeType::GoInterface];
+const GO_INTERFACE_AND_TYPE: &[RuntimeType] = &[RuntimeType::GoInterface, RuntimeType::GoString];
+const GO_INTERFACE_AND_TYPE_AND_INDEX: &[RuntimeType] = &[
+    RuntimeType::GoInterface,
+    RuntimeType::GoString,
+    RuntimeType::I64,
+];
+const GO_INTERFACE_BOX_BOOL: &[RuntimeType] = &[RuntimeType::GoString, RuntimeType::Bool];
+const GO_INTERFACE_BOX_I64: &[RuntimeType] = &[RuntimeType::GoString, RuntimeType::I64];
+const GO_INTERFACE_BOX_STRING: &[RuntimeType] = &[RuntimeType::GoString, RuntimeType::GoString];
+const GO_INTERFACE_BOX_STRUCT_I64: &[RuntimeType] =
+    &[RuntimeType::GoString, RuntimeType::GoSliceI64];
+const GO_INTERFACE_BOX_POINTER_STRUCT_I64: &[RuntimeType] =
+    &[RuntimeType::GoString, RuntimeType::GoPointerStructI64];
 const GO_CHANNEL_I64_PARAMETER: &[RuntimeType] = &[RuntimeType::GoChannelI64];
 const GO_CHANNEL_I64_SEND: &[RuntimeType] = &[RuntimeType::GoChannelI64, RuntimeType::I64];
 const NO_CAPABILITIES: &[TargetCapability] = &[];
@@ -474,6 +437,11 @@ const SEND_ON_CLOSED_CHANNEL: &[GoPanicCondition] = &[GoPanicCondition::SendOnCl
 const CLOSE_CHANNEL_PANICS: &[GoPanicCondition] = &[
     GoPanicCondition::CloseOfNilChannel,
     GoPanicCondition::CloseOfClosedChannel,
+];
+const TYPE_ASSERTION_FAILURE: &[GoPanicCondition] = &[GoPanicCondition::TypeAssertionFailure];
+const TYPE_ASSERTION_OR_INDEX_OUT_OF_RANGE: &[GoPanicCondition] = &[
+    GoPanicCondition::IndexOutOfRange,
+    GoPanicCondition::TypeAssertionFailure,
 ];
 
 /// Operations that require an exact symbol from the versioned runtime ABI.
@@ -542,38 +510,28 @@ pub enum RuntimeOp {
     GoPointerStructI64Set,
     GoPointerStructI64IsNil,
     GoPointerStructI64Equal,
+    GoInterfaceNil,
+    GoInterfaceBoxBool,
+    GoInterfaceBoxI64,
+    GoInterfaceBoxGoString,
+    GoInterfaceBoxStructI64,
+    GoInterfaceBoxPointerStructI64,
+    GoInterfaceIsNil,
+    GoInterfaceIsType,
+    GoInterfaceUnboxBool,
+    GoInterfaceUnboxI64,
+    GoInterfaceUnboxGoString,
+    GoInterfaceStructI64Get,
+    GoInterfaceUnboxPointerStructI64,
 }
 
 /// Stable compact identity of one runtime ABI operation.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct RuntimeOpId(u16);
 
-impl RuntimeOpId {
-    /// Canonical numeric value used by fingerprints and manifest encodings.
-    #[must_use]
-    pub const fn get(self) -> u16 {
-        self.0
-    }
-}
-
 /// Stable operation ID that is not defined by this ABI crate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct UnknownRuntimeOpId(u16);
-
-impl UnknownRuntimeOpId {
-    #[must_use]
-    pub const fn get(self) -> u16 {
-        self.0
-    }
-}
-
-impl Display for UnknownRuntimeOpId {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "unknown runtime operation ID {}", self.0)
-    }
-}
-
-impl std::error::Error for UnknownRuntimeOpId {}
 
 impl RuntimeOp {
     /// Complete helper catalog for the current contract.
@@ -641,6 +599,19 @@ impl RuntimeOp {
         Self::GoPointerStructI64Set,
         Self::GoPointerStructI64IsNil,
         Self::GoPointerStructI64Equal,
+        Self::GoInterfaceNil,
+        Self::GoInterfaceBoxBool,
+        Self::GoInterfaceBoxI64,
+        Self::GoInterfaceBoxGoString,
+        Self::GoInterfaceBoxStructI64,
+        Self::GoInterfaceBoxPointerStructI64,
+        Self::GoInterfaceIsNil,
+        Self::GoInterfaceIsType,
+        Self::GoInterfaceUnboxBool,
+        Self::GoInterfaceUnboxI64,
+        Self::GoInterfaceUnboxGoString,
+        Self::GoInterfaceStructI64Get,
+        Self::GoInterfaceUnboxPointerStructI64,
     ];
 
     /// Stable exported Rust symbol assigned to this ABI operation.
@@ -710,6 +681,19 @@ impl RuntimeOp {
             Self::GoPointerStructI64Set => "go_pointer_struct_i64_set",
             Self::GoPointerStructI64IsNil => "go_pointer_struct_i64_is_nil",
             Self::GoPointerStructI64Equal => "go_pointer_struct_i64_equal",
+            Self::GoInterfaceNil => "go_interface_nil",
+            Self::GoInterfaceBoxBool => "go_interface_box_bool",
+            Self::GoInterfaceBoxI64 => "go_interface_box_i64",
+            Self::GoInterfaceBoxGoString => "go_interface_box_go_string",
+            Self::GoInterfaceBoxStructI64 => "go_interface_box_struct_i64",
+            Self::GoInterfaceBoxPointerStructI64 => "go_interface_box_pointer_struct_i64",
+            Self::GoInterfaceIsNil => "go_interface_is_nil",
+            Self::GoInterfaceIsType => "go_interface_is_type",
+            Self::GoInterfaceUnboxBool => "go_interface_unbox_bool",
+            Self::GoInterfaceUnboxI64 => "go_interface_unbox_i64",
+            Self::GoInterfaceUnboxGoString => "go_interface_unbox_go_string",
+            Self::GoInterfaceStructI64Get => "go_interface_struct_i64_get",
+            Self::GoInterfaceUnboxPointerStructI64 => "go_interface_unbox_pointer_struct_i64",
         }
     }
 
@@ -862,6 +846,44 @@ impl RuntimeOp {
             Self::GoPointerStructI64Equal => {
                 RuntimeSignature::new(TWO_GO_POINTER_STRUCT_I64_PARAMETERS, RuntimeType::Bool)
             }
+            Self::GoInterfaceNil => RuntimeSignature::new(NO_PARAMETERS, RuntimeType::GoInterface),
+            Self::GoInterfaceBoxBool => {
+                RuntimeSignature::new(GO_INTERFACE_BOX_BOOL, RuntimeType::GoInterface)
+            }
+            Self::GoInterfaceBoxI64 => {
+                RuntimeSignature::new(GO_INTERFACE_BOX_I64, RuntimeType::GoInterface)
+            }
+            Self::GoInterfaceBoxGoString => {
+                RuntimeSignature::new(GO_INTERFACE_BOX_STRING, RuntimeType::GoInterface)
+            }
+            Self::GoInterfaceBoxStructI64 => {
+                RuntimeSignature::new(GO_INTERFACE_BOX_STRUCT_I64, RuntimeType::GoInterface)
+            }
+            Self::GoInterfaceBoxPointerStructI64 => RuntimeSignature::new(
+                GO_INTERFACE_BOX_POINTER_STRUCT_I64,
+                RuntimeType::GoInterface,
+            ),
+            Self::GoInterfaceIsNil => {
+                RuntimeSignature::new(GO_INTERFACE_PARAMETER, RuntimeType::Bool)
+            }
+            Self::GoInterfaceIsType => {
+                RuntimeSignature::new(GO_INTERFACE_AND_TYPE, RuntimeType::Bool)
+            }
+            Self::GoInterfaceUnboxBool => {
+                RuntimeSignature::new(GO_INTERFACE_AND_TYPE, RuntimeType::Bool)
+            }
+            Self::GoInterfaceUnboxI64 => {
+                RuntimeSignature::new(GO_INTERFACE_AND_TYPE, RuntimeType::I64)
+            }
+            Self::GoInterfaceUnboxGoString => {
+                RuntimeSignature::new(GO_INTERFACE_AND_TYPE, RuntimeType::GoString)
+            }
+            Self::GoInterfaceStructI64Get => {
+                RuntimeSignature::new(GO_INTERFACE_AND_TYPE_AND_INDEX, RuntimeType::I64)
+            }
+            Self::GoInterfaceUnboxPointerStructI64 => {
+                RuntimeSignature::new(GO_INTERFACE_AND_TYPE, RuntimeType::GoPointerStructI64)
+            }
         }
     }
 
@@ -932,6 +954,19 @@ impl RuntimeOp {
             Self::GoPointerStructI64Set => 66,
             Self::GoPointerStructI64IsNil => 67,
             Self::GoPointerStructI64Equal => 68,
+            Self::GoInterfaceNil => 69,
+            Self::GoInterfaceBoxBool => 70,
+            Self::GoInterfaceBoxI64 => 71,
+            Self::GoInterfaceBoxGoString => 72,
+            Self::GoInterfaceBoxStructI64 => 73,
+            Self::GoInterfaceBoxPointerStructI64 => 74,
+            Self::GoInterfaceIsNil => 75,
+            Self::GoInterfaceIsType => 76,
+            Self::GoInterfaceUnboxBool => 77,
+            Self::GoInterfaceUnboxI64 => 78,
+            Self::GoInterfaceUnboxGoString => 79,
+            Self::GoInterfaceStructI64Get => 80,
+            Self::GoInterfaceUnboxPointerStructI64 => 81,
         })
     }
 

@@ -1,21 +1,26 @@
 use gors_runtime::{
-    GoChannelI64, GoInt, GoMapStringI64, GoPointerI64, GoPointerStructI64, GoSliceI64, GoSliceU8,
-    GoString, concat_go_strings, go_channel_i64_cap, go_channel_i64_close, go_channel_i64_is_nil,
-    go_channel_i64_len, go_channel_i64_make, go_channel_i64_nil, go_channel_i64_receive,
-    go_channel_i64_receive_value, go_channel_i64_send, go_channel_i64_try_receive,
-    go_channel_i64_try_send, go_map_string_i64_clear, go_map_string_i64_contains,
-    go_map_string_i64_delete, go_map_string_i64_get, go_map_string_i64_is_nil,
-    go_map_string_i64_key_at, go_map_string_i64_len, go_map_string_i64_make, go_map_string_i64_nil,
-    go_map_string_i64_set, go_pointer_i64_get, go_pointer_i64_is_nil, go_pointer_i64_new,
-    go_pointer_i64_nil, go_pointer_i64_set, go_pointer_struct_i64_equal, go_pointer_struct_i64_get,
-    go_pointer_struct_i64_is_nil, go_pointer_struct_i64_new, go_pointer_struct_i64_nil,
-    go_pointer_struct_i64_set, go_slice_i64_append, go_slice_i64_cap, go_slice_i64_clear,
-    go_slice_i64_copy, go_slice_i64_from_static, go_slice_i64_index, go_slice_i64_len,
-    go_slice_i64_make, go_slice_i64_range, go_slice_i64_set, go_slice_u8_append_slice,
-    go_slice_u8_append_string, go_slice_u8_copy_string, go_slice_u8_from_static,
-    go_string_from_bytes, go_string_from_slice_u8, go_string_from_static, go_string_len, int_div,
-    int_rem, int_shl, int_shr, panic_bool, panic_go_string, panic_i64, print_bool, print_go_string,
-    print_i64, print_newline, print_space,
+    GoChannelI64, GoInt, GoInterface, GoMapStringI64, GoPointerI64, GoPointerStructI64, GoSliceI64,
+    GoSliceU8, GoString, concat_go_strings, go_channel_i64_cap, go_channel_i64_close,
+    go_channel_i64_is_nil, go_channel_i64_len, go_channel_i64_make, go_channel_i64_nil,
+    go_channel_i64_receive, go_channel_i64_receive_value, go_channel_i64_send,
+    go_channel_i64_try_receive, go_channel_i64_try_send, go_interface_box_bool,
+    go_interface_box_go_string, go_interface_box_i64, go_interface_box_pointer_struct_i64,
+    go_interface_box_struct_i64, go_interface_is_nil, go_interface_is_type, go_interface_nil,
+    go_interface_struct_i64_get, go_interface_unbox_bool, go_interface_unbox_go_string,
+    go_interface_unbox_i64, go_interface_unbox_pointer_struct_i64, go_map_string_i64_clear,
+    go_map_string_i64_contains, go_map_string_i64_delete, go_map_string_i64_get,
+    go_map_string_i64_is_nil, go_map_string_i64_key_at, go_map_string_i64_len,
+    go_map_string_i64_make, go_map_string_i64_nil, go_map_string_i64_set, go_pointer_i64_get,
+    go_pointer_i64_is_nil, go_pointer_i64_new, go_pointer_i64_nil, go_pointer_i64_set,
+    go_pointer_struct_i64_equal, go_pointer_struct_i64_get, go_pointer_struct_i64_is_nil,
+    go_pointer_struct_i64_new, go_pointer_struct_i64_nil, go_pointer_struct_i64_set,
+    go_slice_i64_append, go_slice_i64_cap, go_slice_i64_clear, go_slice_i64_copy,
+    go_slice_i64_from_static, go_slice_i64_index, go_slice_i64_len, go_slice_i64_make,
+    go_slice_i64_range, go_slice_i64_set, go_slice_u8_append_slice, go_slice_u8_append_string,
+    go_slice_u8_copy_string, go_slice_u8_from_static, go_string_from_bytes,
+    go_string_from_slice_u8, go_string_from_static, go_string_len, int_div, int_rem, int_shl,
+    int_shr, panic_bool, panic_go_string, panic_i64, print_bool, print_go_string, print_i64,
+    print_newline, print_space,
 };
 use gors_runtime_abi::{RuntimeOp, RuntimeType};
 
@@ -293,6 +298,71 @@ fn implementation_surface(operation: RuntimeOp) -> RuntimeSurface {
             go_pointer_struct_i64_equal,
             fn(GoPointerStructI64, GoPointerStructI64) -> bool,
             [RuntimeType::GoPointerStructI64, RuntimeType::GoPointerStructI64] -> RuntimeType::Bool
+        ),
+        RuntimeOp::GoInterfaceNil => runtime_surface!(
+            go_interface_nil,
+            fn() -> GoInterface,
+            [] -> RuntimeType::GoInterface
+        ),
+        RuntimeOp::GoInterfaceBoxBool => runtime_surface!(
+            go_interface_box_bool,
+            fn(GoString, bool) -> GoInterface,
+            [RuntimeType::GoString, RuntimeType::Bool] -> RuntimeType::GoInterface
+        ),
+        RuntimeOp::GoInterfaceBoxI64 => runtime_surface!(
+            go_interface_box_i64,
+            fn(GoString, GoInt) -> GoInterface,
+            [RuntimeType::GoString, RuntimeType::I64] -> RuntimeType::GoInterface
+        ),
+        RuntimeOp::GoInterfaceBoxGoString => runtime_surface!(
+            go_interface_box_go_string,
+            fn(GoString, GoString) -> GoInterface,
+            [RuntimeType::GoString, RuntimeType::GoString] -> RuntimeType::GoInterface
+        ),
+        RuntimeOp::GoInterfaceBoxStructI64 => runtime_surface!(
+            go_interface_box_struct_i64,
+            fn(GoString, GoSliceI64) -> GoInterface,
+            [RuntimeType::GoString, RuntimeType::GoSliceI64] -> RuntimeType::GoInterface
+        ),
+        RuntimeOp::GoInterfaceBoxPointerStructI64 => runtime_surface!(
+            go_interface_box_pointer_struct_i64,
+            fn(GoString, GoPointerStructI64) -> GoInterface,
+            [RuntimeType::GoString, RuntimeType::GoPointerStructI64] -> RuntimeType::GoInterface
+        ),
+        RuntimeOp::GoInterfaceIsNil => runtime_surface!(
+            go_interface_is_nil,
+            fn(GoInterface) -> bool,
+            [RuntimeType::GoInterface] -> RuntimeType::Bool
+        ),
+        RuntimeOp::GoInterfaceIsType => runtime_surface!(
+            go_interface_is_type,
+            fn(GoInterface, GoString) -> bool,
+            [RuntimeType::GoInterface, RuntimeType::GoString] -> RuntimeType::Bool
+        ),
+        RuntimeOp::GoInterfaceUnboxBool => runtime_surface!(
+            go_interface_unbox_bool,
+            fn(GoInterface, GoString) -> bool,
+            [RuntimeType::GoInterface, RuntimeType::GoString] -> RuntimeType::Bool
+        ),
+        RuntimeOp::GoInterfaceUnboxI64 => runtime_surface!(
+            go_interface_unbox_i64,
+            fn(GoInterface, GoString) -> GoInt,
+            [RuntimeType::GoInterface, RuntimeType::GoString] -> RuntimeType::I64
+        ),
+        RuntimeOp::GoInterfaceUnboxGoString => runtime_surface!(
+            go_interface_unbox_go_string,
+            fn(GoInterface, GoString) -> GoString,
+            [RuntimeType::GoInterface, RuntimeType::GoString] -> RuntimeType::GoString
+        ),
+        RuntimeOp::GoInterfaceStructI64Get => runtime_surface!(
+            go_interface_struct_i64_get,
+            fn(GoInterface, GoString, GoInt) -> GoInt,
+            [RuntimeType::GoInterface, RuntimeType::GoString, RuntimeType::I64] -> RuntimeType::I64
+        ),
+        RuntimeOp::GoInterfaceUnboxPointerStructI64 => runtime_surface!(
+            go_interface_unbox_pointer_struct_i64,
+            fn(GoInterface, GoString) -> GoPointerStructI64,
+            [RuntimeType::GoInterface, RuntimeType::GoString] -> RuntimeType::GoPointerStructI64
         ),
         RuntimeOp::GoChannelI64Nil => runtime_surface!(
             go_channel_i64_nil,
