@@ -320,6 +320,12 @@ pub(in crate::compiler) fn lower_type_with_constant_lookup(
             source,
         ));
     };
+    // Declared type names in package and local blocks shadow names from the
+    // universe block. Resolve that type index first so declarations such as
+    // `type rune = string` retain their declared meaning.
+    if let Some(ty) = type_aliases.get(ident.name.as_ref()) {
+        return Ok(ty.clone());
+    }
     if let Some(ty) = predeclared_constant_type(ident.name.as_ref()) {
         return Ok(ty);
     }
@@ -335,9 +341,10 @@ pub(in crate::compiler) fn lower_type_with_constant_lookup(
                 source,
             ))
         }
-        other => type_aliases.get(other).cloned().ok_or_else(|| {
-            Diagnostic::unsupported(format!("type {other} is not yet supported"), source)
-        }),
+        other => Err(Diagnostic::unsupported(
+            format!("type {other} is not yet supported"),
+            source,
+        )),
     }
 }
 

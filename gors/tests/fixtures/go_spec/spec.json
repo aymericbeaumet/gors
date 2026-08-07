@@ -1318,6 +1318,15 @@
           ]
         },
         {
+          "id": "spec-declarations-and-scope-predeclared-shadowing",
+          "section": "Predeclared identifiers",
+          "title": "Package and local declarations shadow predeclared identifiers only after their declaration scope begins",
+          "status": "passing",
+          "fixtures": [
+            "declarations_and_scope_predeclared_shadowing"
+          ]
+        },
+        {
           "id": "decl-exported-identifiers",
           "section": "Exported identifiers",
           "title": "Identifiers starting with a capital letter are exported",
@@ -2046,6 +2055,15 @@
           "status": "passing",
           "fixtures": [
             "statements"
+          ]
+        },
+        {
+          "id": "spec-switch-fallthrough-placement",
+          "section": "Fallthrough statements",
+          "title": "Fallthrough follows source-order clauses and may be the final non-empty statement beneath a label",
+          "status": "passing",
+          "fixtures": [
+            "switch_fallthrough_placement"
           ]
         },
         {

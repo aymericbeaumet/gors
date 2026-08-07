@@ -102,3 +102,81 @@ fn goto_may_not_skip_a_variable_declaration_in_its_block() {
     assert_eq!(diagnostic.file, "/checkout/goto.go");
     assert!(diagnostic.line > 0);
 }
+
+#[test]
+fn labeled_fallthrough_preserves_labels_and_source_order() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            func main() {
+                trace := ""
+                switch 5 {
+                case 1:
+                    trace += "one,"
+                default:
+                    trace += "default,"
+                    goto Next
+                Next:
+                    fallthrough
+                case 2:
+                    trace += "two,"
+                }
+                println(trace)
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"default,two,\n");
+}
+
+#[test]
+fn labeled_fallthrough_must_be_final_and_have_a_following_clause() {
+    let non_final = compile_program(raw_program(
+        "fallthrough.go",
+        "/checkout/fallthrough.go",
+        r#"
+            package main
+            func main() {
+                switch 1 {
+                case 1:
+                Label:
+                    fallthrough
+                    println("not final")
+                case 2:
+                }
+            }
+        "#,
+    ))
+    .err()
+    .expect("a non-final labeled fallthrough must be rejected");
+    assert!(
+        non_final
+            .to_string()
+            .contains("fallthrough must be the final non-empty statement"),
+        "{non_final}"
+    );
+
+    let final_case = compile_program(raw_program(
+        "fallthrough.go",
+        "/checkout/fallthrough.go",
+        r#"
+            package main
+            func main() {
+                switch 1 {
+                case 1:
+                Label:
+                    fallthrough
+                }
+            }
+        "#,
+    ))
+    .err()
+    .expect("a final-case labeled fallthrough must be rejected");
+    assert!(
+        final_case
+            .to_string()
+            .contains("the final switch case cannot fall through"),
+        "{final_case}"
+    );
+}

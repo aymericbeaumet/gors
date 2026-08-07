@@ -6,7 +6,7 @@ use super::FunctionLowerer;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::provenance::SourceRef;
-use crate::compiler::syntax::{BlockSyntax, StmtSyntaxKind, SwitchCaseSyntax};
+use crate::compiler::syntax::{BlockSyntax, StmtSyntax, StmtSyntaxKind, SwitchCaseSyntax};
 use crate::token::Token;
 
 impl FunctionLowerer {
@@ -29,25 +29,19 @@ impl FunctionLowerer {
                 .statements
                 .iter()
                 .enumerate()
-                .filter_map(|(index, statement)| match &statement.kind {
-                    StmtSyntaxKind::Branch {
-                        token: Token::FALLTHROUGH,
-                        label,
-                    } => Some((index, label)),
-                    _ => None,
-                })
+                .filter_map(|(index, statement)| switch_fallthrough(statement).then_some(index))
                 .collect::<Vec<_>>();
             if fallthrough.len() > 1
                 || fallthrough
                     .first()
-                    .is_some_and(|(index, label)| Some(*index) != last_statement || label.is_some())
+                    .is_some_and(|index| Some(*index) != last_statement)
             {
                 return Err(Diagnostic::semantic(
                     "fallthrough must be the final non-empty statement of a switch case",
                     source,
                 ));
             }
-            let fallthrough = fallthrough.first().map(|(index, _)| *index);
+            let fallthrough = fallthrough.first().copied();
             let redundant_break = last_statement.filter(|index| {
                 case.body.statements.get(*index).is_some_and(|statement| {
                     matches!(
@@ -59,7 +53,17 @@ impl FunctionLowerer {
                     )
                 })
             });
-            let block = if let Some(removed) = fallthrough.or(redundant_break) {
+            let block = if let Some(removed) = fallthrough {
+                let mut statements = case.body.statements.to_vec();
+                let statement = statements.remove(removed);
+                if let Some(labels) = strip_switch_fallthrough(statement) {
+                    statements.insert(removed, labels);
+                }
+                BlockSyntax {
+                    source: case.body.source,
+                    statements: Arc::from(statements),
+                }
+            } else if let Some(removed) = redundant_break {
                 let mut statements = case.body.statements.to_vec();
                 statements.remove(removed);
                 BlockSyntax {
@@ -98,5 +102,45 @@ impl FunctionLowerer {
             });
         }
         Ok(bodies)
+    }
+}
+
+fn switch_fallthrough(statement: &StmtSyntax) -> bool {
+    match &statement.kind {
+        StmtSyntaxKind::Branch {
+            token: Token::FALLTHROUGH,
+            label: None,
+        } => true,
+        StmtSyntaxKind::Labeled { statement, .. } => switch_fallthrough(statement),
+        _ => false,
+    }
+}
+
+/// Remove the fallthrough leaf while preserving every label that targeted it.
+/// The empty leaf lowers to `hir::StmtKind::Label { statement: None }`, so a
+/// preceding goto still reaches the exact source position before control
+/// continues into the next switch clause.
+fn strip_switch_fallthrough(statement: StmtSyntax) -> Option<StmtSyntax> {
+    let StmtSyntax { source, kind } = statement;
+    match kind {
+        StmtSyntaxKind::Branch {
+            token: Token::FALLTHROUGH,
+            label: None,
+        } => None,
+        StmtSyntaxKind::Labeled { label, statement } => {
+            let nested_source = statement.source;
+            let statement = strip_switch_fallthrough(*statement).unwrap_or(StmtSyntax {
+                source: nested_source,
+                kind: StmtSyntaxKind::Empty,
+            });
+            Some(StmtSyntax {
+                source,
+                kind: StmtSyntaxKind::Labeled {
+                    label,
+                    statement: Box::new(statement),
+                },
+            })
+        }
+        kind => Some(StmtSyntax { source, kind }),
     }
 }
