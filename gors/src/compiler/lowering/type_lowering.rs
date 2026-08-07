@@ -57,6 +57,11 @@ pub(super) fn lower_type(ty: &Ty) -> Result<RustType, Diagnostic> {
             Ok(RustType::GoMapStringI64)
         }
         Ty::Map(key, value)
+            if key.underlying() == &Ty::Int(IntTy::Int) && value.underlying() == &Ty::String =>
+        {
+            Ok(RustType::GoMapI64GoString)
+        }
+        Ty::Map(key, value)
             if key.underlying() == &Ty::String && value.bootstrap_i64_struct_fields().is_some() =>
         {
             Ok(RustType::GoMapStringInterface)

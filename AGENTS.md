@@ -754,8 +754,8 @@ The production pipeline currently executes this focused, fully verified subset:
 - `bool`, every scalar signed and unsigned integer type in the 64-bit Go data
   model, `float64`, `complex128`, byte-string values, named numeric types,
   aliases, `[]int`, `[]byte`, `[]string` and named slices whose element's
-  underlying type is `string`, `map[string]int`, `*int`, `chan int`, scalar
-  fixed arrays, and integer-field structs;
+  underlying type is `string`, `map[string]int`, `map[int]string`, `*int`,
+  `chan int`, scalar fixed arrays, and integer-field structs;
 - exact typed and untyped constants, including `iota` and complex constants;
 - free functions, value methods and method values, direct non-escaping
   closures, parameters, multiple and named results, locals, immutable package
@@ -771,6 +771,14 @@ runtime ABI operations; the MIR verifier preserves the source slice and element
 types even when distinct named slice types share an identical named string
 element type. Runtime copying is overlap-safe and allocation-free so its
 representation-effect summary remains exact.
+
+Concrete map range lowering snapshots the initial candidate keys exactly once,
+then checks live membership immediately before each body entry and reads the
+live value only after that check. Deleting an unreached candidate suppresses
+its iteration, updating an unreached value is observable when reached, and new
+keys are not added to the active range. Both `map[string]int` and
+`map[int]string` use typed ABI operations; the legacy indexed-key operation
+remains only for compatibility with older generated artifacts.
 
 Supported control flow and typed panic/recover behavior are executable today.
 Every deferred action is an explicit ordered Go-MIR and Rust-IR region. It

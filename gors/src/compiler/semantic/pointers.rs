@@ -3,7 +3,7 @@
 use super::FunctionLowerer;
 use super::channels::channel_parts;
 use super::expressions::coerce_expr;
-use super::maps::string_i64_map_ty;
+use super::maps::{i64_go_string_map_ty, string_i64_map_ty};
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::NodeId;
@@ -378,6 +378,8 @@ impl FunctionLowerer {
             }
         } else if value.ty.underlying() == string_i64_map_ty().underlying() {
             hir::Builtin::MapStringI64IsNil
+        } else if value.ty.underlying() == i64_go_string_map_ty().underlying() {
+            hir::Builtin::MapI64GoStringIsNil
         } else if matches!(value.ty.underlying(), Ty::Interface(_)) {
             hir::Builtin::InterfaceIsNil
         } else if matches!(value.ty.underlying(), Ty::Function(_)) {

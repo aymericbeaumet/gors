@@ -15,6 +15,7 @@ mod byte_slices;
 mod channels;
 mod interface_containers;
 mod interfaces;
+mod maps;
 mod printing;
 mod slice_identity;
 mod slice_values;
@@ -57,6 +58,16 @@ pub use interfaces::{
     go_interface_unbox_i64, go_interface_unbox_pointer_struct_i64, go_panic_payload_to_interface,
     panic_go_interface,
 };
+pub use maps::{
+    GoMapI64GoString, GoMapStringI64, go_map_i64_go_string_clear, go_map_i64_go_string_contains,
+    go_map_i64_go_string_delete, go_map_i64_go_string_get, go_map_i64_go_string_is_nil,
+    go_map_i64_go_string_len, go_map_i64_go_string_make, go_map_i64_go_string_nil,
+    go_map_i64_go_string_range_keys, go_map_i64_go_string_set, go_map_string_i64_clear,
+    go_map_string_i64_contains, go_map_string_i64_delete, go_map_string_i64_get,
+    go_map_string_i64_is_nil, go_map_string_i64_key_at, go_map_string_i64_len,
+    go_map_string_i64_make, go_map_string_i64_nil, go_map_string_i64_range_keys,
+    go_map_string_i64_set,
+};
 pub use printing::{
     print_bool, print_f64, print_go_string, print_i64, print_newline, print_space, print_u64,
 };
@@ -75,7 +86,6 @@ pub use string_slices::{
 };
 
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 use std::io::Write as _;
 use std::sync::{Arc, RwLock};
@@ -457,139 +467,11 @@ impl Hash for GoString {
     }
 }
 
-/// A nullable Go `map[string]int` header with shared mutable identity.
-///
-/// Cloning the header preserves the identity of a non-nil map. The absent
-/// storage variant is the Go nil-map value: reads are zero-valued, deletes and
-/// clears are no-ops, and writes panic.
-#[derive(Clone, Debug, Default)]
-pub struct GoMapStringI64 {
-    storage: Option<Arc<RwLock<BTreeMap<GoString, GoInt>>>>,
-}
-
-/// Construct the nil `map[string]int` value.
-#[must_use]
-pub fn go_map_string_i64_nil() -> GoMapStringI64 {
-    GoMapStringI64::default()
-}
-
-/// Allocate an empty non-nil `map[string]int` value.
-#[must_use]
-pub fn go_map_string_i64_make() -> GoMapStringI64 {
-    GoMapStringI64 {
-        storage: Some(Arc::new(RwLock::new(BTreeMap::new()))),
-    }
-}
-
-/// Return the number of entries in a map. A nil map has length zero.
-#[must_use]
-pub fn go_map_string_i64_len(map: GoMapStringI64) -> GoInt {
-    let Some(storage) = map.storage else {
-        return 0;
-    };
-    let entries = storage
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    GoInt::try_from(entries.len()).unwrap_or_else(|_| map_index_out_of_range())
-}
-
-/// Read a map entry, returning the element zero value when the key is absent.
-#[must_use]
-pub fn go_map_string_i64_get(map: GoMapStringI64, key: GoString) -> GoInt {
-    let Some(storage) = map.storage else {
-        return 0;
-    };
-    let entries = storage
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    entries.get(&key).copied().unwrap_or_default()
-}
-
-/// Report whether a map contains a key. Nil maps contain no keys.
-#[must_use]
-pub fn go_map_string_i64_contains(map: GoMapStringI64, key: GoString) -> bool {
-    let Some(storage) = map.storage else {
-        return false;
-    };
-    let entries = storage
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    entries.contains_key(&key)
-}
-
-/// Assign a map entry while preserving shared map identity.
-pub fn go_map_string_i64_set(map: GoMapStringI64, key: GoString, value: GoInt) {
-    let Some(storage) = map.storage else {
-        nil_map_assignment();
-    };
-    let mut entries = storage
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    entries.insert(key, value);
-}
-
-/// Delete a map entry. Deleting from a nil map is a no-op.
-pub fn go_map_string_i64_delete(map: GoMapStringI64, key: GoString) {
-    let Some(storage) = map.storage else {
-        return;
-    };
-    let mut entries = storage
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    entries.remove(&key);
-}
-
-/// Delete every map entry. Clearing a nil map is a no-op.
-pub fn go_map_string_i64_clear(map: GoMapStringI64) {
-    let Some(storage) = map.storage else {
-        return;
-    };
-    let mut entries = storage
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    entries.clear();
-}
-
-/// Report whether a map header is nil.
-#[must_use]
-pub fn go_map_string_i64_is_nil(map: GoMapStringI64) -> bool {
-    map.storage.is_none()
-}
-
-/// Return the key at one deterministic iteration index.
-///
-/// Map iteration order is intentionally unspecified by Go. The runtime uses
-/// byte ordering to keep compiler tests and generated artifacts deterministic.
-#[must_use]
-pub fn go_map_string_i64_key_at(map: GoMapStringI64, index: GoInt) -> GoString {
-    let Some(storage) = map.storage else {
-        map_index_out_of_range();
-    };
-    let Ok(index) = usize::try_from(index) else {
-        map_index_out_of_range();
-    };
-    let entries = storage
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    entries
-        .keys()
-        .nth(index)
-        .cloned()
-        .unwrap_or_else(|| map_index_out_of_range())
-}
-
 #[cold]
 #[inline(never)]
 #[allow(clippy::panic)] // This is the Go language panic boundary, not an invariant failure.
 fn nil_map_assignment() -> ! {
     std::panic::resume_unwind(Box::new("assignment to entry in nil map"))
-}
-
-#[cold]
-#[inline(never)]
-#[allow(clippy::panic)] // This is a checked runtime iteration boundary.
-fn map_index_out_of_range() -> ! {
-    std::panic::resume_unwind(Box::new("runtime error: map iteration index out of range"))
 }
 
 /// A nullable Go `*int` value with shared mutable pointee identity.

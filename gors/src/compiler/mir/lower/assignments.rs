@@ -21,6 +21,7 @@ enum PreparedTarget {
     MapIndex {
         map: Operand,
         key: Operand,
+        set: hir::Builtin,
     },
     Pointer {
         pointer: Operand,
@@ -132,6 +133,9 @@ impl FunctionLowerer {
                     }
                 }
                 hir::AssignTarget::MapIndex { map, key } => {
+                    let set = super::maps::map_set_builtin(&map.ty).ok_or_else(|| {
+                        Diagnostic::backend("parallel map assignment has no concrete set operation")
+                    })?;
                     let map_operand = self.lower_expr(map)?;
                     let map_operand = self.materialize(
                         map_operand,
@@ -147,6 +151,7 @@ impl FunctionLowerer {
                     PreparedTarget::MapIndex {
                         map: map_operand,
                         key: key_operand,
+                        set,
                     }
                 }
                 hir::AssignTarget::Pointer { pointer, set } => {
@@ -224,13 +229,8 @@ impl FunctionLowerer {
                     ))?;
                     self.current = target;
                 }
-                PreparedTarget::MapIndex { map, key } => {
-                    self.emit_map_call(
-                        hir::Builtin::MapStringI64Set,
-                        vec![map, key, operand],
-                        Vec::new(),
-                        source,
-                    )?;
+                PreparedTarget::MapIndex { map, key, set } => {
+                    self.emit_map_call(set, vec![map, key, operand], Vec::new(), source)?;
                 }
                 PreparedTarget::Pointer { pointer, set } => {
                     self.emit_pointer_call(

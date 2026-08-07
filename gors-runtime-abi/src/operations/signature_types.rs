@@ -60,6 +60,14 @@ pub(super) const GO_MAP_STRING_I64_SET: &[RuntimeType] = &[
     RuntimeType::GoString,
     RuntimeType::I64,
 ];
+pub(super) const GO_MAP_I64_GO_STRING_PARAMETER: &[RuntimeType] = &[RuntimeType::GoMapI64GoString];
+pub(super) const GO_MAP_I64_GO_STRING_AND_KEY: &[RuntimeType] =
+    &[RuntimeType::GoMapI64GoString, RuntimeType::I64];
+pub(super) const GO_MAP_I64_GO_STRING_SET: &[RuntimeType] = &[
+    RuntimeType::GoMapI64GoString,
+    RuntimeType::I64,
+    RuntimeType::GoString,
+];
 pub(super) const GO_POINTER_I64_PARAMETER: &[RuntimeType] = &[RuntimeType::GoPointerI64];
 pub(super) const GO_POINTER_I64_SET: &[RuntimeType] =
     &[RuntimeType::GoPointerI64, RuntimeType::I64];

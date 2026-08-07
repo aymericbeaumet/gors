@@ -24,7 +24,12 @@ impl FunctionLowerer {
         if let hir::Callee::Closure(id) = callee {
             return self.lower_closure_call(*id, args, destinations, expression.source);
         }
-        if *callee == hir::Callee::Builtin(hir::Builtin::MapStringI64Lookup) {
+        if matches!(
+            callee,
+            hir::Callee::Builtin(
+                hir::Builtin::MapStringI64Lookup | hir::Builtin::MapI64GoStringLookup
+            )
+        ) {
             return self.lower_map_lookup_into(args, destinations, expression.source);
         }
         if *callee == hir::Callee::Builtin(hir::Builtin::InterfaceAssert) {

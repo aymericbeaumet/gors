@@ -83,5 +83,6 @@ fn runtime_result_components(result: RuntimeType) -> &'static [RuntimeType] {
         GoChannelGoString => &[GoChannelGoString],
         GoChannelGoChannelI64 => &[GoChannelGoChannelI64],
         GoSliceGoString => &[GoSliceGoString],
+        GoMapI64GoString => &[GoMapI64GoString],
     }
 }

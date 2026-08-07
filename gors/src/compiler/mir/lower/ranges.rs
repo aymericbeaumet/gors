@@ -1,4 +1,4 @@
-//! Explicit-order MIR construction for slice and map range loops.
+//! Explicit-order MIR construction for range loops.
 
 use super::super::construct::{
     binary_effects, call_effects, make_rvalue, make_statement, make_terminator,
@@ -18,7 +18,7 @@ enum RangeKind {
         index: hir::Builtin,
     },
     String,
-    Map,
+    Map(MapRangeKind),
     Channel,
     Integer(IntegerRangeKind),
 }
@@ -28,6 +28,56 @@ enum IntegerRangeKind {
     Int,
     Int32,
     Uint8,
+}
+
+#[derive(Clone, Copy)]
+enum MapRangeKind {
+    StringI64,
+    I64GoString,
+}
+
+impl MapRangeKind {
+    fn key_ty(self) -> Ty {
+        match self {
+            Self::StringI64 => Ty::String,
+            Self::I64GoString => Ty::Int(IntTy::Int),
+        }
+    }
+
+    fn snapshot(self) -> hir::Builtin {
+        match self {
+            Self::StringI64 => hir::Builtin::MapStringI64RangeKeys,
+            Self::I64GoString => hir::Builtin::MapI64GoStringRangeKeys,
+        }
+    }
+
+    fn snapshot_len(self) -> hir::Builtin {
+        match self {
+            Self::StringI64 => hir::Builtin::SliceGoStringLen,
+            Self::I64GoString => hir::Builtin::SliceI64Len,
+        }
+    }
+
+    fn snapshot_index(self) -> hir::Builtin {
+        match self {
+            Self::StringI64 => hir::Builtin::SliceGoStringIndex,
+            Self::I64GoString => hir::Builtin::SliceI64Index,
+        }
+    }
+
+    fn contains(self) -> hir::Builtin {
+        match self {
+            Self::StringI64 => hir::Builtin::MapStringI64Contains,
+            Self::I64GoString => hir::Builtin::MapI64GoStringContains,
+        }
+    }
+
+    fn get(self) -> hir::Builtin {
+        match self {
+            Self::StringI64 => hir::Builtin::MapStringI64Get,
+            Self::I64GoString => hir::Builtin::MapI64GoStringGet,
+        }
+    }
 }
 
 impl IntegerRangeKind {
@@ -76,7 +126,13 @@ impl FunctionLowerer {
                 if key.underlying() == &Ty::String
                     && value.underlying() == &Ty::Int(IntTy::Int) =>
             {
-                RangeKind::Map
+                RangeKind::Map(MapRangeKind::StringI64)
+            }
+            Ty::Map(key, value)
+                if key.underlying() == &Ty::Int(IntTy::Int)
+                    && value.underlying() == &Ty::String =>
+            {
+                RangeKind::Map(MapRangeKind::I64GoString)
             }
             Ty::Channel(direction, element)
                 if direction.can_receive() && element.underlying() == &Ty::Int(IntTy::Int) =>
@@ -100,6 +156,27 @@ impl FunctionLowerer {
             expression.ty.clone(),
             Provenance::Source(expression.source),
         )?;
+
+        let iteration_container = if let RangeKind::Map(map_kind) = range_kind {
+            let snapshot = Place {
+                local: self.new_temp(Ty::Slice(Box::new(map_kind.key_ty()))),
+            };
+            let after_snapshot = self.new_block(provenance.clone());
+            self.terminate(make_terminator(
+                TerminatorKind::Call {
+                    callee: hir::Callee::Builtin(map_kind.snapshot()),
+                    args: vec![container.clone()],
+                    destinations: vec![snapshot],
+                    target: after_snapshot,
+                },
+                call_effects(),
+                provenance.clone(),
+            ))?;
+            self.current = after_snapshot;
+            Operand::Read(snapshot)
+        } else {
+            container.clone()
+        };
 
         if matches!(range_kind, RangeKind::Channel) {
             return self.lower_channel_range(label, key, expression, container, body, source);
@@ -136,12 +213,12 @@ impl FunctionLowerer {
                 );
                 self.push_statement(make_statement(length, value, provenance.clone()))?;
             }
-            RangeKind::Slice { .. } | RangeKind::String | RangeKind::Map => {
+            RangeKind::Slice { .. } | RangeKind::String | RangeKind::Map(_) => {
                 let after_length = self.new_block(provenance.clone());
                 let builtin = match range_kind {
                     RangeKind::Slice { len, .. } => len,
                     RangeKind::String => hir::Builtin::StringRangeCount,
-                    RangeKind::Map => hir::Builtin::MapStringI64Len,
+                    RangeKind::Map(map_kind) => map_kind.snapshot_len(),
                     _ => {
                         return Err(Diagnostic::backend(
                             "non-container range reached runtime length lowering",
@@ -151,7 +228,7 @@ impl FunctionLowerer {
                 self.terminate(make_terminator(
                     TerminatorKind::Call {
                         callee: hir::Callee::Builtin(builtin),
-                        args: vec![container.clone()],
+                        args: vec![iteration_container.clone()],
                         destinations: vec![length],
                         target: after_length,
                     },
@@ -299,42 +376,65 @@ impl FunctionLowerer {
                     self.current = after_value;
                 }
             }
-            RangeKind::Map => {
-                let needs_key = matches!(key, Some(hir::Place::Local(_)))
-                    || matches!(value, Some(hir::Place::Local(_)));
-                if needs_key {
-                    let map_key = Place {
-                        local: self.new_temp(Ty::String),
-                    };
-                    let after_key = self.new_block(provenance.clone());
+            RangeKind::Map(map_kind) => {
+                let map_key = Place {
+                    local: self.new_temp(map_kind.key_ty()),
+                };
+                let after_key = self.new_block(provenance.clone());
+                self.terminate(make_terminator(
+                    TerminatorKind::Call {
+                        callee: hir::Callee::Builtin(map_kind.snapshot_index()),
+                        args: vec![iteration_container, Operand::Read(index)],
+                        destinations: vec![map_key],
+                        target: after_key,
+                    },
+                    call_effects(),
+                    provenance.clone(),
+                ))?;
+                self.current = after_key;
+
+                let present = Place {
+                    local: self.new_temp(Ty::Bool),
+                };
+                let after_contains = self.new_block(provenance.clone());
+                self.terminate(make_terminator(
+                    TerminatorKind::Call {
+                        callee: hir::Callee::Builtin(map_kind.contains()),
+                        args: vec![container.clone(), Operand::Read(map_key)],
+                        destinations: vec![present],
+                        target: after_contains,
+                    },
+                    call_effects(),
+                    provenance.clone(),
+                ))?;
+                self.current = after_contains;
+                let present_target = self.new_block(provenance.clone());
+                self.terminate(make_terminator(
+                    TerminatorKind::SwitchBool {
+                        condition: Operand::Read(present),
+                        then_target: present_target,
+                        else_target: post_target,
+                    },
+                    hir::Effects::default(),
+                    provenance.clone(),
+                ))?;
+                self.current = present_target;
+                if let Some(hir::Place::Local(local)) = key {
+                    self.assign_range_local(Place { local }, Operand::Read(map_key), source)?;
+                }
+                if let Some(hir::Place::Local(local)) = value {
+                    let after_value = self.new_block(provenance.clone());
                     self.terminate(make_terminator(
                         TerminatorKind::Call {
-                            callee: hir::Callee::Builtin(hir::Builtin::MapStringI64KeyAt),
-                            args: vec![container.clone(), Operand::Read(index)],
-                            destinations: vec![map_key],
-                            target: after_key,
+                            callee: hir::Callee::Builtin(map_kind.get()),
+                            args: vec![container, Operand::Read(map_key)],
+                            destinations: vec![Place { local }],
+                            target: after_value,
                         },
                         call_effects(),
                         provenance.clone(),
                     ))?;
-                    self.current = after_key;
-                    if let Some(hir::Place::Local(local)) = key {
-                        self.assign_range_local(Place { local }, Operand::Read(map_key), source)?;
-                    }
-                    if let Some(hir::Place::Local(local)) = value {
-                        let after_value = self.new_block(provenance.clone());
-                        self.terminate(make_terminator(
-                            TerminatorKind::Call {
-                                callee: hir::Callee::Builtin(hir::Builtin::MapStringI64Get),
-                                args: vec![container, Operand::Read(map_key)],
-                                destinations: vec![Place { local }],
-                                target: after_value,
-                            },
-                            call_effects(),
-                            provenance.clone(),
-                        ))?;
-                        self.current = after_value;
-                    }
+                    self.current = after_value;
                 }
             }
             RangeKind::Integer(_) => {

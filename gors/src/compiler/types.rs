@@ -377,9 +377,11 @@ impl Ty {
             ) || element.bootstrap_i64_struct_pointer_fields().is_some();
         }
         if let Self::Map(key, value) = self {
-            return key.underlying() == &Self::String
+            return (key.underlying() == &Self::String
                 && (value.underlying() == &Self::Int(IntTy::Int)
-                    || value.bootstrap_i64_struct_fields().is_some());
+                    || value.bootstrap_i64_struct_fields().is_some()))
+                || (key.underlying() == &Self::Int(IntTy::Int)
+                    && value.underlying() == &Self::String);
         }
         if let Self::Channel(_, element) = self {
             return matches!(element.underlying(), Self::Int(IntTy::Int) | Self::String)

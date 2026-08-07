@@ -275,6 +275,59 @@ fn verifier_rejects_invalid_float_interface_runtime_calls() {
 }
 
 #[test]
+fn map_verifier_accepts_named_maps_and_rejects_wrong_key_and_value_types() {
+    let source = r#"
+        package main
+        type Words map[int]string
+        type Counts map[string]int
+        func main() {
+            words := Words{1: "one"}
+            counts := Counts{"one": 1}
+            _ = words[1]
+            counts["two"] = 2
+        }
+    "#;
+    let file = lower(source);
+    file.verify().expect("named concrete maps must verify");
+
+    let mut wrong_key = file.clone();
+    let arguments = wrong_key
+        .functions
+        .iter_mut()
+        .flat_map(|function| &mut function.blocks)
+        .find_map(|block| match &mut block.terminator.kind {
+            TerminatorKind::Call {
+                callee: hir::Callee::Builtin(hir::Builtin::MapI64GoStringGet),
+                args,
+                ..
+            } => Some(args),
+            _ => None,
+        })
+        .expect("expected named map lookup");
+    arguments[1] = Operand::Constant(ConstValue::String(b"bad".to_vec()), Ty::String);
+    let error = wrong_key.verify().unwrap_err();
+    assert!(error.message.contains("invalid MIR map call"), "{error:?}");
+
+    let mut wrong_value = file;
+    let arguments = wrong_value
+        .functions
+        .iter_mut()
+        .flat_map(|function| &mut function.blocks)
+        .find_map(|block| match &mut block.terminator.kind {
+            TerminatorKind::Call {
+                callee: hir::Callee::Builtin(hir::Builtin::MapStringI64Set),
+                args,
+                ..
+            } => Some(args),
+            _ => None,
+        })
+        .expect("expected named map assignment");
+    arguments[2] = Operand::Constant(ConstValue::String(b"bad".to_vec()), Ty::String);
+    let error = wrong_value.verify().unwrap_err();
+    assert!(error.message.contains("invalid MIR map call"), "{error:?}");
+}
+
+#[test]
 fn verifier_rejects_a_mutated_return_type() {
     let mut file = lower("package main\nfunc answer() int { return 42 }\n");
     let function = &mut file.functions[0];

@@ -12,10 +12,10 @@
   "summary": {
     "groupCount": 15,
     "passingGroupCount": 15,
-    "caseCount": 322,
-    "passingCaseCount": 322,
+    "caseCount": 323,
+    "passingCaseCount": 323,
     "unsupportedCaseCount": 0,
-    "fixtureCount": 168
+    "fixtureCount": 169
   },
   "groups": [
     {
@@ -3160,6 +3160,7 @@
         "goto_backward_redeclare",
         "if_init_scope_and_else",
         "labeled_empty_statements",
+        "map_delete_during_range",
         "op_assign_evaluate_once",
         "range_statements",
         "return_statements",
@@ -3174,10 +3175,10 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 54,
-        "passingCaseCount": 54,
+        "caseCount": 55,
+        "passingCaseCount": 55,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 22
+        "fixtureCount": 23
       },
       "cases": [
         {
@@ -3689,6 +3690,20 @@
           ],
           "freshFixtures": [
             "control_flow_evaluation"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-map-delete-during-range",
+          "title": "Deleting reached map entries preserves remaining candidates while deleting unreached entries suppresses them",
+          "subtitle": "For statements with range clause",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "map_delete_during_range"
+          ],
+          "freshFixtures": [
+            "map_delete_during_range"
           ],
           "reason": ""
         },

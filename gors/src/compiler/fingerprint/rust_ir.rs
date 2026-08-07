@@ -583,6 +583,9 @@ fn encode_type(encoder: &mut Encoder, ty: &rust_ir::RustType) {
         rust_ir::RustType::GoSliceInterface => encoder.variant(b"go-slice-interface", |_| {}),
         rust_ir::RustType::GoSliceGoString => encoder.variant(b"go-slice-go-string", |_| {}),
         rust_ir::RustType::GoMapStringI64 => encoder.variant(b"go-map-string-i64", |_| {}),
+        rust_ir::RustType::GoMapI64GoString => {
+            encoder.variant(b"go-map-i64-go-string", |_| {});
+        }
         rust_ir::RustType::GoMapStringInterface => {
             encoder.variant(b"go-map-string-interface", |_| {});
         }

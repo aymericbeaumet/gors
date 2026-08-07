@@ -486,6 +486,17 @@ pub enum RuntimeOp {
     GoSliceGoStringIsNil,
     GoInterfaceBoxGoSliceGoString,
     GoInterfaceUnboxGoSliceGoString,
+    GoMapStringI64RangeKeys,
+    GoMapI64GoStringNil,
+    GoMapI64GoStringMake,
+    GoMapI64GoStringLen,
+    GoMapI64GoStringGet,
+    GoMapI64GoStringContains,
+    GoMapI64GoStringSet,
+    GoMapI64GoStringDelete,
+    GoMapI64GoStringClear,
+    GoMapI64GoStringIsNil,
+    GoMapI64GoStringRangeKeys,
 }
 
 impl RuntimeOp {
@@ -628,6 +639,36 @@ impl RuntimeOp {
             }
             Self::GoMapStringI64KeyAt => {
                 RuntimeSignature::new(GO_MAP_STRING_I64_AND_INDEX, RuntimeType::GoString)
+            }
+            Self::GoMapStringI64RangeKeys => {
+                RuntimeSignature::new(GO_MAP_STRING_I64_PARAMETER, RuntimeType::GoSliceGoString)
+            }
+            Self::GoMapI64GoStringNil | Self::GoMapI64GoStringMake => {
+                RuntimeSignature::new(NO_PARAMETERS, RuntimeType::GoMapI64GoString)
+            }
+            Self::GoMapI64GoStringLen => {
+                RuntimeSignature::new(GO_MAP_I64_GO_STRING_PARAMETER, RuntimeType::I64)
+            }
+            Self::GoMapI64GoStringGet => {
+                RuntimeSignature::new(GO_MAP_I64_GO_STRING_AND_KEY, RuntimeType::GoString)
+            }
+            Self::GoMapI64GoStringContains => {
+                RuntimeSignature::new(GO_MAP_I64_GO_STRING_AND_KEY, RuntimeType::Bool)
+            }
+            Self::GoMapI64GoStringSet => {
+                RuntimeSignature::new(GO_MAP_I64_GO_STRING_SET, RuntimeType::Unit)
+            }
+            Self::GoMapI64GoStringDelete => {
+                RuntimeSignature::new(GO_MAP_I64_GO_STRING_AND_KEY, RuntimeType::Unit)
+            }
+            Self::GoMapI64GoStringClear => {
+                RuntimeSignature::new(GO_MAP_I64_GO_STRING_PARAMETER, RuntimeType::Unit)
+            }
+            Self::GoMapI64GoStringIsNil => {
+                RuntimeSignature::new(GO_MAP_I64_GO_STRING_PARAMETER, RuntimeType::Bool)
+            }
+            Self::GoMapI64GoStringRangeKeys => {
+                RuntimeSignature::new(GO_MAP_I64_GO_STRING_PARAMETER, RuntimeType::GoSliceI64)
             }
             Self::GoPointerI64Nil | Self::GoPointerI64New => {
                 RuntimeSignature::new(NO_PARAMETERS, RuntimeType::GoPointerI64)

@@ -881,6 +881,7 @@ fn collect_expr_addresses(expression: &hir::Expr, addressed: &mut BTreeSet<Local
             collect_expr_addresses(structure, addressed);
         }
         hir::ExprKind::MapLiteralStringI64(entries)
+        | hir::ExprKind::MapLiteralI64GoString(entries)
         | hir::ExprKind::AggregateMapLiteral { entries, .. } => {
             for (key, value) in entries {
                 collect_expr_addresses(key, addressed);

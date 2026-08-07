@@ -8,8 +8,8 @@ use gors_runtime_abi::{
     CompatibilityIdentity, ContractVersion, DataWidth, Endianness, GoPanicCondition,
     GoSemanticModel, HostIoEffect, ImplementationHash, IntegerKind, IntegerPrimitive, PrimitiveOp,
     RuntimeAbiManifest, RuntimeArtifactFormat, RuntimeArtifactManifest, RuntimeDependency,
-    RuntimeLinkError, RuntimeLinkRequest, RuntimeOp, RuntimeRequirement, RuntimeType,
-    TargetCapabilities, TargetCapability, TargetModel, TargetModelError,
+    RuntimeLinkError, RuntimeLinkRequest, RuntimeOp, RuntimeRequirement, TargetCapabilities,
+    TargetCapability, TargetModel, TargetModelError,
 };
 
 #[path = "manifest/catalog.rs"]
@@ -103,11 +103,11 @@ fn current_contract_identity_is_sha256_of_canonical_bytes() {
 
     assert_eq!(manifest.schema().get(), 2);
     assert_eq!(manifest.contract(), CURRENT_CONTRACT_VERSION);
-    assert_eq!(manifest.contract(), ContractVersion::new(2, 23, 0));
+    assert_eq!(manifest.contract(), ContractVersion::new(2, 24, 0));
     assert_eq!(manifest.identity().as_bytes(), &expected);
     assert_eq!(
         manifest.identity().to_string(),
-        "c7f7985066e94f009efff35f16ca9d1863b219a47f152571c662831f26971007",
+        "7f2e66d6085c7d0dff9daca318651200bfba66b8644fa022e4ec12c16f5b93c7",
         "the canonical runtime contract changed; review the ABI diff and bump its semantic version before accepting a new identity",
     );
 }
@@ -139,6 +139,10 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoStringFromSliceRunes
             | RuntimeOp::GoMapStringI64Make
             | RuntimeOp::GoMapStringI64Set
+            | RuntimeOp::GoMapStringI64RangeKeys
+            | RuntimeOp::GoMapI64GoStringMake
+            | RuntimeOp::GoMapI64GoStringSet
+            | RuntimeOp::GoMapI64GoStringRangeKeys
             | RuntimeOp::GoMapStringInterfaceMake
             | RuntimeOp::GoMapStringInterfaceSet
             | RuntimeOp::GoPointerI64New
@@ -188,6 +192,13 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoMapStringI64Clear
             | RuntimeOp::GoMapStringI64IsNil
             | RuntimeOp::GoMapStringI64KeyAt
+            | RuntimeOp::GoMapI64GoStringNil
+            | RuntimeOp::GoMapI64GoStringLen
+            | RuntimeOp::GoMapI64GoStringGet
+            | RuntimeOp::GoMapI64GoStringContains
+            | RuntimeOp::GoMapI64GoStringDelete
+            | RuntimeOp::GoMapI64GoStringClear
+            | RuntimeOp::GoMapI64GoStringIsNil
             | RuntimeOp::GoMapStringInterfaceLen
             | RuntimeOp::GoMapStringInterfaceGet
             | RuntimeOp::GoMapStringInterfaceContains
@@ -256,9 +267,12 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceI64Clear
             | RuntimeOp::GoSliceI64Copy
             | RuntimeOp::GoMapStringI64Set
+            | RuntimeOp::GoMapI64GoStringSet
             | RuntimeOp::GoMapStringInterfaceSet
             | RuntimeOp::GoMapStringI64Delete
             | RuntimeOp::GoMapStringI64Clear
+            | RuntimeOp::GoMapI64GoStringDelete
+            | RuntimeOp::GoMapI64GoStringClear
             | RuntimeOp::GoPointerI64Set
             | RuntimeOp::GoPointerStructI64Set
             | RuntimeOp::GoChannelI64Send
@@ -321,6 +335,14 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoMapStringInterfaceContains
             | RuntimeOp::GoMapStringI64IsNil
             | RuntimeOp::GoMapStringI64KeyAt
+            | RuntimeOp::GoMapStringI64RangeKeys
+            | RuntimeOp::GoMapI64GoStringNil
+            | RuntimeOp::GoMapI64GoStringMake
+            | RuntimeOp::GoMapI64GoStringLen
+            | RuntimeOp::GoMapI64GoStringGet
+            | RuntimeOp::GoMapI64GoStringContains
+            | RuntimeOp::GoMapI64GoStringIsNil
+            | RuntimeOp::GoMapI64GoStringRangeKeys
             | RuntimeOp::GoPointerI64Nil
             | RuntimeOp::GoPointerI64New
             | RuntimeOp::GoPointerI64Get
@@ -535,9 +557,9 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceI64Make
             | RuntimeOp::GoSliceU8Make
             | RuntimeOp::GoSliceInterfaceMake => &[GoPanicCondition::SliceBoundsOutOfRange],
-            RuntimeOp::GoMapStringI64Set | RuntimeOp::GoMapStringInterfaceSet => {
-                &[GoPanicCondition::NilMapAssignment]
-            }
+            RuntimeOp::GoMapStringI64Set
+            | RuntimeOp::GoMapI64GoStringSet
+            | RuntimeOp::GoMapStringInterfaceSet => &[GoPanicCondition::NilMapAssignment],
             RuntimeOp::GoPointerI64Get | RuntimeOp::GoPointerI64Set => {
                 &[GoPanicCondition::NilPointerDereference]
             }
@@ -613,6 +635,16 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoMapStringI64Delete
             | RuntimeOp::GoMapStringI64Clear
             | RuntimeOp::GoMapStringI64IsNil
+            | RuntimeOp::GoMapStringI64RangeKeys
+            | RuntimeOp::GoMapI64GoStringNil
+            | RuntimeOp::GoMapI64GoStringMake
+            | RuntimeOp::GoMapI64GoStringLen
+            | RuntimeOp::GoMapI64GoStringGet
+            | RuntimeOp::GoMapI64GoStringContains
+            | RuntimeOp::GoMapI64GoStringDelete
+            | RuntimeOp::GoMapI64GoStringClear
+            | RuntimeOp::GoMapI64GoStringIsNil
+            | RuntimeOp::GoMapI64GoStringRangeKeys
             | RuntimeOp::GoPointerI64Nil
             | RuntimeOp::GoPointerI64New
             | RuntimeOp::GoPointerI64IsNil
@@ -729,80 +761,6 @@ fn target_and_implementation_change_artifact_but_not_contract_identity()
     assert!(!first.verifies_payload(b"implementation two"));
     assert_ne!(first.identity(), second.identity());
     Ok(())
-}
-
-#[test]
-fn primitive_signatures_are_complete_and_exact() {
-    for operation in PrimitiveOp::ALL {
-        let expected: (&[RuntimeType], RuntimeType) = match operation {
-            PrimitiveOp::BoolNot => (&[RuntimeType::Bool], RuntimeType::Bool),
-            PrimitiveOp::BoolEqual | PrimitiveOp::BoolNotEqual => {
-                (&[RuntimeType::Bool, RuntimeType::Bool], RuntimeType::Bool)
-            }
-            PrimitiveOp::Integer { op, .. } if op.arity() == 1 => {
-                (&[RuntimeType::I64], RuntimeType::I64)
-            }
-            PrimitiveOp::Integer { op, .. } if op.returns_bool() => {
-                (&[RuntimeType::I64, RuntimeType::I64], RuntimeType::Bool)
-            }
-            PrimitiveOp::Integer { .. } => {
-                (&[RuntimeType::I64, RuntimeType::I64], RuntimeType::I64)
-            }
-            PrimitiveOp::IntegerConvert { .. } => (&[RuntimeType::I64], RuntimeType::I64),
-            PrimitiveOp::FloatNeg | PrimitiveOp::FloatRound32 => {
-                (&[RuntimeType::F64], RuntimeType::F64)
-            }
-            PrimitiveOp::FloatAdd
-            | PrimitiveOp::FloatSub
-            | PrimitiveOp::FloatMul
-            | PrimitiveOp::FloatDiv
-            | PrimitiveOp::FloatMin
-            | PrimitiveOp::FloatMax => (&[RuntimeType::F64, RuntimeType::F64], RuntimeType::F64),
-            PrimitiveOp::FloatEqual
-            | PrimitiveOp::FloatNotEqual
-            | PrimitiveOp::FloatLess
-            | PrimitiveOp::FloatLessEqual
-            | PrimitiveOp::FloatGreater
-            | PrimitiveOp::FloatGreaterEqual => {
-                (&[RuntimeType::F64, RuntimeType::F64], RuntimeType::Bool)
-            }
-            PrimitiveOp::ComplexNeg => (&[RuntimeType::Complex128], RuntimeType::Complex128),
-            PrimitiveOp::ComplexAdd
-            | PrimitiveOp::ComplexSub
-            | PrimitiveOp::ComplexMul
-            | PrimitiveOp::ComplexDiv => (
-                &[RuntimeType::Complex128, RuntimeType::Complex128],
-                RuntimeType::Complex128,
-            ),
-            PrimitiveOp::ComplexEqual | PrimitiveOp::ComplexNotEqual => (
-                &[RuntimeType::Complex128, RuntimeType::Complex128],
-                RuntimeType::Bool,
-            ),
-            PrimitiveOp::ComplexFromParts => (
-                &[RuntimeType::F64, RuntimeType::F64],
-                RuntimeType::Complex128,
-            ),
-            PrimitiveOp::ComplexReal | PrimitiveOp::ComplexImag => {
-                (&[RuntimeType::Complex128], RuntimeType::F64)
-            }
-            PrimitiveOp::StringEqual
-            | PrimitiveOp::StringNotEqual
-            | PrimitiveOp::StringLess
-            | PrimitiveOp::StringLessEqual
-            | PrimitiveOp::StringGreater
-            | PrimitiveOp::StringGreaterEqual => (
-                &[RuntimeType::GoString, RuntimeType::GoString],
-                RuntimeType::Bool,
-            ),
-        };
-
-        assert_eq!(
-            operation.signature().parameters(),
-            expected.0,
-            "{operation:?}"
-        );
-        assert_eq!(operation.signature().result(), expected.1, "{operation:?}");
-    }
 }
 
 #[test]

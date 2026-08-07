@@ -162,6 +162,17 @@ impl TryFrom<u16> for RuntimeOp {
             158 => Ok(Self::GoInterfaceBoxGoSliceGoString),
             159 => Ok(Self::GoInterfaceUnboxGoSliceGoString),
             160 => Ok(Self::PrintU64),
+            161 => Ok(Self::GoMapStringI64RangeKeys),
+            162 => Ok(Self::GoMapI64GoStringNil),
+            163 => Ok(Self::GoMapI64GoStringMake),
+            164 => Ok(Self::GoMapI64GoStringLen),
+            165 => Ok(Self::GoMapI64GoStringGet),
+            166 => Ok(Self::GoMapI64GoStringContains),
+            167 => Ok(Self::GoMapI64GoStringSet),
+            168 => Ok(Self::GoMapI64GoStringDelete),
+            169 => Ok(Self::GoMapI64GoStringClear),
+            170 => Ok(Self::GoMapI64GoStringIsNil),
+            171 => Ok(Self::GoMapI64GoStringRangeKeys),
             unknown => Err(UnknownRuntimeOpId(unknown)),
         }
     }

@@ -170,6 +170,17 @@ impl RuntimeOp {
             Self::GoInterfaceBoxGoSliceGoString => 158,
             Self::GoInterfaceUnboxGoSliceGoString => 159,
             Self::PrintU64 => 160,
+            Self::GoMapStringI64RangeKeys => 161,
+            Self::GoMapI64GoStringNil => 162,
+            Self::GoMapI64GoStringMake => 163,
+            Self::GoMapI64GoStringLen => 164,
+            Self::GoMapI64GoStringGet => 165,
+            Self::GoMapI64GoStringContains => 166,
+            Self::GoMapI64GoStringSet => 167,
+            Self::GoMapI64GoStringDelete => 168,
+            Self::GoMapI64GoStringClear => 169,
+            Self::GoMapI64GoStringIsNil => 170,
+            Self::GoMapI64GoStringRangeKeys => 171,
         })
     }
 }

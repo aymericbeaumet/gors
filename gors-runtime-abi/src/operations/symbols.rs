@@ -162,6 +162,17 @@ impl RuntimeOp {
             Self::GoSliceGoStringIsNil => "go_slice_go_string_is_nil",
             Self::GoInterfaceBoxGoSliceGoString => "go_interface_box_go_slice_go_string",
             Self::GoInterfaceUnboxGoSliceGoString => "go_interface_unbox_go_slice_go_string",
+            Self::GoMapStringI64RangeKeys => "go_map_string_i64_range_keys",
+            Self::GoMapI64GoStringNil => "go_map_i64_go_string_nil",
+            Self::GoMapI64GoStringMake => "go_map_i64_go_string_make",
+            Self::GoMapI64GoStringLen => "go_map_i64_go_string_len",
+            Self::GoMapI64GoStringGet => "go_map_i64_go_string_get",
+            Self::GoMapI64GoStringContains => "go_map_i64_go_string_contains",
+            Self::GoMapI64GoStringSet => "go_map_i64_go_string_set",
+            Self::GoMapI64GoStringDelete => "go_map_i64_go_string_delete",
+            Self::GoMapI64GoStringClear => "go_map_i64_go_string_clear",
+            Self::GoMapI64GoStringIsNil => "go_map_i64_go_string_is_nil",
+            Self::GoMapI64GoStringRangeKeys => "go_map_i64_go_string_range_keys",
         }
     }
 }

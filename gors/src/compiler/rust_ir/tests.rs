@@ -2,6 +2,7 @@ use super::effects::panic_edge;
 use super::*;
 
 mod integer;
+mod maps;
 mod recovery;
 mod string_slices;
 

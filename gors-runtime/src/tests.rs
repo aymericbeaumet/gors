@@ -1,5 +1,7 @@
 use super::*;
 
+mod maps;
+
 #[test]
 fn strings_preserve_arbitrary_bytes() {
     let bytes = [b'a', 0, 0xff, 0x80, b'z'];

@@ -7,7 +7,7 @@ use super::expressions::{
     assignment_binary_op, coerce_expr, default_expr_type, ensure_bootstrap_value_type,
     is_assignable, validate_binary_operator,
 };
-use super::maps::string_i64_map_ty;
+use super::maps::{i64_go_string_map_ty, string_i64_map_ty};
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::provenance::SourceRef;
@@ -536,8 +536,29 @@ impl FunctionLowerer {
                     value,
                 })
             }
+            Ty::Map(key, element)
+                if key.underlying() == &Ty::Int(IntTy::Int)
+                    && element.underlying() == &Ty::String =>
+            {
+                let op = assignment_op(token, source)?;
+                if op != hir::AssignOp::Set {
+                    super::expressions::validate_binary_operator(
+                        super::expressions::assignment_binary_op(op),
+                        &Ty::String,
+                        source,
+                    )?;
+                }
+                let key = self.lower_expr(index, Some(&Ty::Int(IntTy::Int)))?;
+                let value = self.lower_expr(value, Some(&Ty::String))?;
+                Ok(hir::StmtKind::MapAssign {
+                    map: container,
+                    key,
+                    op,
+                    value,
+                })
+            }
             _ => Err(Diagnostic::semantic(
-                "indexed assignment requires []bool, []byte, []int, a string-element slice, or map[string]int",
+                "indexed assignment requires an executable slice or map representation",
                 source,
             )),
         }
@@ -704,9 +725,19 @@ impl FunctionLowerer {
                             });
                             destination_types.push(Some(Ty::Int(IntTy::Int)));
                         }
+                        Ty::Map(_, _)
+                            if container.ty.underlying() == i64_go_string_map_ty().underlying() =>
+                        {
+                            let key = self.lower_expr(index, Some(&Ty::Int(IntTy::Int)))?;
+                            destinations.push(hir::AssignTarget::MapIndex {
+                                map: container,
+                                key,
+                            });
+                            destination_types.push(Some(Ty::String));
+                        }
                         _ => {
                             return Err(Diagnostic::semantic(
-                                "indexed assignment requires []bool, []byte, []int, a string-element slice, or map[string]int",
+                                "indexed assignment requires an executable slice or map representation",
                                 source,
                             ));
                         }

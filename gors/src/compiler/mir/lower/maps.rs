@@ -1,4 +1,4 @@
-//! Explicit-order lowering for `map[string]int` operations.
+//! Explicit-order lowering for concrete map operations.
 
 use super::super::construct::{
     assignment_binary_op, binary_effects, call_effects, make_rvalue, make_statement,
@@ -28,6 +28,9 @@ impl FunctionLowerer {
                 "map comma-ok lookup result arity changed before MIR lowering",
             ));
         };
+        let (get, contains) = map_get_contains_builtins(&map.ty).ok_or_else(|| {
+            Diagnostic::backend("map comma-ok lookup has no concrete runtime representation")
+        })?;
         let map_operand = self.lower_expr(map)?;
         let map_operand =
             self.materialize(map_operand, map.ty.clone(), Provenance::Source(map.source))?;
@@ -35,13 +38,13 @@ impl FunctionLowerer {
         let key_operand =
             self.materialize(key_operand, key.ty.clone(), Provenance::Source(key.source))?;
         self.emit_map_call(
-            hir::Builtin::MapStringI64Get,
+            get,
             vec![map_operand.clone(), key_operand.clone()],
             vec![*value_destination],
             source,
         )?;
         self.emit_map_call(
-            hir::Builtin::MapStringI64Contains,
+            contains,
             vec![map_operand, key_operand],
             vec![*present_destination],
             source,
@@ -98,6 +101,8 @@ impl FunctionLowerer {
         }
         let zero_builtin = if is_string_i64_map(&ty) {
             Some(hir::Builtin::MapStringI64Nil)
+        } else if is_i64_go_string_map(&ty) {
+            Some(hir::Builtin::MapI64GoStringNil)
         } else if let Ty::Slice(element) = ty.underlying() {
             if matches!(
                 element.underlying(),
@@ -161,12 +166,10 @@ impl FunctionLowerer {
         let result = Place {
             local: self.new_temp(ty.clone()),
         };
-        self.emit_map_call(
-            hir::Builtin::MapStringI64Make,
-            Vec::new(),
-            vec![result],
-            source,
-        )?;
+        let (make, set) = map_make_set_builtins(ty).ok_or_else(|| {
+            Diagnostic::backend("map literal has no concrete runtime representation")
+        })?;
+        self.emit_map_call(make, Vec::new(), vec![result], source)?;
         for (key, value) in entries {
             let key_operand = self.lower_expr(key)?;
             let key_operand =
@@ -178,7 +181,7 @@ impl FunctionLowerer {
                 Provenance::Source(value.source),
             )?;
             self.emit_map_call(
-                hir::Builtin::MapStringI64Set,
+                set,
                 vec![Operand::Read(result), key_operand, value_operand],
                 Vec::new(),
                 source,
@@ -326,6 +329,11 @@ impl FunctionLowerer {
         value: &hir::Expr,
         source: SourceRef,
     ) -> Result<(), Diagnostic> {
+        let (get, _) = map_get_contains_builtins(&map.ty).ok_or_else(|| {
+            Diagnostic::backend("map assignment has no concrete runtime representation")
+        })?;
+        let set = map_set_builtin(&map.ty)
+            .ok_or_else(|| Diagnostic::backend("map assignment has no concrete set operation"))?;
         let map_operand = self.lower_expr(map)?;
         let map_operand =
             self.materialize(map_operand, map.ty.clone(), Provenance::Source(map.source))?;
@@ -345,7 +353,7 @@ impl FunctionLowerer {
                 local: self.new_temp(value.ty.clone()),
             };
             self.emit_map_call(
-                hir::Builtin::MapStringI64Get,
+                get,
                 vec![map_operand.clone(), key_operand.clone()],
                 vec![old],
                 source,
@@ -374,7 +382,7 @@ impl FunctionLowerer {
             Operand::Read(result)
         };
         self.emit_map_call(
-            hir::Builtin::MapStringI64Set,
+            set,
             vec![map_operand, key_operand, assigned],
             Vec::new(),
             source,
@@ -423,6 +431,7 @@ pub(super) fn has_mir_zero_representation(ty: &Ty) -> bool {
                     == &Ty::Int(crate::compiler::types::IntTy::Int)
         )
         || is_string_i64_map(ty)
+        || is_i64_go_string_map(ty)
         || matches!(ty.underlying(), Ty::Interface(_))
         || is_int_pointer(ty)
         || ty.bootstrap_i64_struct_pointer_fields().is_some()
@@ -448,6 +457,51 @@ fn is_string_i64_map(ty: &Ty) -> bool {
             if key.underlying() == &Ty::String
                 && value.underlying() == &Ty::Int(crate::compiler::types::IntTy::Int)
     )
+}
+
+fn is_i64_go_string_map(ty: &Ty) -> bool {
+    matches!(
+        ty.underlying(),
+        Ty::Map(key, value)
+            if key.underlying() == &Ty::Int(crate::compiler::types::IntTy::Int)
+                && value.underlying() == &Ty::String
+    )
+}
+
+fn map_get_contains_builtins(ty: &Ty) -> Option<(hir::Builtin, hir::Builtin)> {
+    if is_string_i64_map(ty) {
+        Some((
+            hir::Builtin::MapStringI64Get,
+            hir::Builtin::MapStringI64Contains,
+        ))
+    } else if is_i64_go_string_map(ty) {
+        Some((
+            hir::Builtin::MapI64GoStringGet,
+            hir::Builtin::MapI64GoStringContains,
+        ))
+    } else {
+        None
+    }
+}
+
+fn map_make_set_builtins(ty: &Ty) -> Option<(hir::Builtin, hir::Builtin)> {
+    if is_string_i64_map(ty) {
+        Some((
+            hir::Builtin::MapStringI64Make,
+            hir::Builtin::MapStringI64Set,
+        ))
+    } else if is_i64_go_string_map(ty) {
+        Some((
+            hir::Builtin::MapI64GoStringMake,
+            hir::Builtin::MapI64GoStringSet,
+        ))
+    } else {
+        None
+    }
+}
+
+pub(super) fn map_set_builtin(ty: &Ty) -> Option<hir::Builtin> {
+    map_make_set_builtins(ty).map(|(_, set)| set)
 }
 
 fn channel_nil_builtin(ty: &Ty) -> Option<hir::Builtin> {

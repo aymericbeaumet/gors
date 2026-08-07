@@ -59,6 +59,7 @@ pub(super) fn lower_print_call(
             | out::RustType::GoSliceInterface
             | out::RustType::GoSliceGoString
             | out::RustType::GoMapStringI64
+            | out::RustType::GoMapI64GoString
             | out::RustType::GoMapStringInterface
             | out::RustType::GoPointerI64
             | out::RustType::GoPointerStructI64

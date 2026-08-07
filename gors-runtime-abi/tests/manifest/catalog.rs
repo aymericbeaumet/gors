@@ -60,6 +60,8 @@ fn current_operation_catalogs_are_complete_and_collision_free() {
     assert_eq!(RuntimeOp::GoChannelGoChannelI64Nil.id().get(), 136);
     assert_eq!(RuntimeOp::GoChannelGoChannelI64TryReceive.id().get(), 146);
     assert_eq!(RuntimeOp::PrintU64.id().get(), 160);
+    assert_eq!(RuntimeOp::GoMapStringI64RangeKeys.id().get(), 161);
+    assert_eq!(RuntimeOp::GoMapI64GoStringRangeKeys.id().get(), 171);
 
     let primitive_identities = PrimitiveOp::ALL
         .iter()
@@ -182,10 +184,84 @@ fn integer_kind_constraints_accept_only_their_declared_semantic_sets() {
     }
 }
 
+#[test]
+fn primitive_signatures_are_complete_and_exact() {
+    for operation in PrimitiveOp::ALL {
+        let expected: (&[RuntimeType], RuntimeType) = match operation {
+            PrimitiveOp::BoolNot => (&[RuntimeType::Bool], RuntimeType::Bool),
+            PrimitiveOp::BoolEqual | PrimitiveOp::BoolNotEqual => {
+                (&[RuntimeType::Bool, RuntimeType::Bool], RuntimeType::Bool)
+            }
+            PrimitiveOp::Integer { op, .. } if op.arity() == 1 => {
+                (&[RuntimeType::I64], RuntimeType::I64)
+            }
+            PrimitiveOp::Integer { op, .. } if op.returns_bool() => {
+                (&[RuntimeType::I64, RuntimeType::I64], RuntimeType::Bool)
+            }
+            PrimitiveOp::Integer { .. } => {
+                (&[RuntimeType::I64, RuntimeType::I64], RuntimeType::I64)
+            }
+            PrimitiveOp::IntegerConvert { .. } => (&[RuntimeType::I64], RuntimeType::I64),
+            PrimitiveOp::FloatNeg | PrimitiveOp::FloatRound32 => {
+                (&[RuntimeType::F64], RuntimeType::F64)
+            }
+            PrimitiveOp::FloatAdd
+            | PrimitiveOp::FloatSub
+            | PrimitiveOp::FloatMul
+            | PrimitiveOp::FloatDiv
+            | PrimitiveOp::FloatMin
+            | PrimitiveOp::FloatMax => (&[RuntimeType::F64, RuntimeType::F64], RuntimeType::F64),
+            PrimitiveOp::FloatEqual
+            | PrimitiveOp::FloatNotEqual
+            | PrimitiveOp::FloatLess
+            | PrimitiveOp::FloatLessEqual
+            | PrimitiveOp::FloatGreater
+            | PrimitiveOp::FloatGreaterEqual => {
+                (&[RuntimeType::F64, RuntimeType::F64], RuntimeType::Bool)
+            }
+            PrimitiveOp::ComplexNeg => (&[RuntimeType::Complex128], RuntimeType::Complex128),
+            PrimitiveOp::ComplexAdd
+            | PrimitiveOp::ComplexSub
+            | PrimitiveOp::ComplexMul
+            | PrimitiveOp::ComplexDiv => (
+                &[RuntimeType::Complex128, RuntimeType::Complex128],
+                RuntimeType::Complex128,
+            ),
+            PrimitiveOp::ComplexEqual | PrimitiveOp::ComplexNotEqual => (
+                &[RuntimeType::Complex128, RuntimeType::Complex128],
+                RuntimeType::Bool,
+            ),
+            PrimitiveOp::ComplexFromParts => (
+                &[RuntimeType::F64, RuntimeType::F64],
+                RuntimeType::Complex128,
+            ),
+            PrimitiveOp::ComplexReal | PrimitiveOp::ComplexImag => {
+                (&[RuntimeType::Complex128], RuntimeType::F64)
+            }
+            PrimitiveOp::StringEqual
+            | PrimitiveOp::StringNotEqual
+            | PrimitiveOp::StringLess
+            | PrimitiveOp::StringLessEqual
+            | PrimitiveOp::StringGreater
+            | PrimitiveOp::StringGreaterEqual => (
+                &[RuntimeType::GoString, RuntimeType::GoString],
+                RuntimeType::Bool,
+            ),
+        };
+
+        assert_eq!(
+            operation.signature().parameters(),
+            expected.0,
+            "{operation:?}"
+        );
+        assert_eq!(operation.signature().result(), expected.1, "{operation:?}");
+    }
+}
+
 fn runtime_result_components(result: RuntimeType) -> Vec<RuntimeType> {
     use RuntimeType::{
         Bool, ByteSlice, Complex128, F64, GoChannelGoChannelI64, GoChannelGoString, GoChannelI64,
-        GoChannelI64BoolTuple, GoChannelI64I64Tuple, GoInterface, GoMapStringI64,
+        GoChannelI64BoolTuple, GoChannelI64I64Tuple, GoInterface, GoMapI64GoString, GoMapStringI64,
         GoMapStringInterface, GoPanicPayload, GoPointerI64, GoPointerStructI64, GoSliceBool,
         GoSliceGoString, GoSliceI64, GoSliceInterface, GoSliceU8, GoString, GoStringBoolTuple,
         GoStringI64Tuple, I64, I64BoolTuple, I64I64Tuple, StaticBoolSlice, StaticByteSlice,
@@ -210,6 +286,7 @@ fn runtime_result_components(result: RuntimeType) -> Vec<RuntimeType> {
         | StaticI64Slice
         | GoSliceU8
         | GoMapStringI64
+        | GoMapI64GoString
         | GoPointerI64
         | GoChannelI64
         | GoPointerStructI64

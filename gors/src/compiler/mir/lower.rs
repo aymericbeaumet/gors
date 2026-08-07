@@ -787,7 +787,8 @@ impl FunctionLowerer {
             hir::ExprKind::StructField { structure, field } => {
                 self.lower_struct_field_expr(structure, *field, &expr.ty, expr.source)
             }
-            hir::ExprKind::MapLiteralStringI64(entries) => {
+            hir::ExprKind::MapLiteralStringI64(entries)
+            | hir::ExprKind::MapLiteralI64GoString(entries) => {
                 self.lower_map_literal(entries, &expr.ty, expr.source)
             }
             hir::ExprKind::AggregateMapLiteral {

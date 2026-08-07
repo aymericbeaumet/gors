@@ -175,6 +175,7 @@ fn collect_expression_callees(expression: &hir::Expr, callees: &mut BTreeSet<Qua
             }
         }
         hir::ExprKind::MapLiteralStringI64(entries)
+        | hir::ExprKind::MapLiteralI64GoString(entries)
         | hir::ExprKind::AggregateMapLiteral { entries, .. } => {
             for (key, value) in entries {
                 collect_expression_callees(key, callees);

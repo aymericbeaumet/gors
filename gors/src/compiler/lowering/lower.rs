@@ -430,6 +430,18 @@ fn lower_terminator(
                 | hir::Builtin::MapStringI64Clear
                 | hir::Builtin::MapStringI64IsNil
                 | hir::Builtin::MapStringI64KeyAt
+                | hir::Builtin::MapStringI64RangeKeys
+                | hir::Builtin::MapI64GoStringNil
+                | hir::Builtin::MapI64GoStringMake
+                | hir::Builtin::MapI64GoStringLen
+                | hir::Builtin::MapI64GoStringGet
+                | hir::Builtin::MapI64GoStringLookup
+                | hir::Builtin::MapI64GoStringContains
+                | hir::Builtin::MapI64GoStringSet
+                | hir::Builtin::MapI64GoStringDelete
+                | hir::Builtin::MapI64GoStringClear
+                | hir::Builtin::MapI64GoStringIsNil
+                | hir::Builtin::MapI64GoStringRangeKeys
                 | hir::Builtin::AggregateMapMake
                 | hir::Builtin::AggregateMapLen
                 | hir::Builtin::AggregateMapGetTagged
@@ -577,6 +589,17 @@ fn lower_terminator(
                     hir::Builtin::MapStringI64Clear => RuntimeOp::GoMapStringI64Clear,
                     hir::Builtin::MapStringI64IsNil => RuntimeOp::GoMapStringI64IsNil,
                     hir::Builtin::MapStringI64KeyAt => RuntimeOp::GoMapStringI64KeyAt,
+                    hir::Builtin::MapStringI64RangeKeys => RuntimeOp::GoMapStringI64RangeKeys,
+                    hir::Builtin::MapI64GoStringNil => RuntimeOp::GoMapI64GoStringNil,
+                    hir::Builtin::MapI64GoStringMake => RuntimeOp::GoMapI64GoStringMake,
+                    hir::Builtin::MapI64GoStringLen => RuntimeOp::GoMapI64GoStringLen,
+                    hir::Builtin::MapI64GoStringGet => RuntimeOp::GoMapI64GoStringGet,
+                    hir::Builtin::MapI64GoStringContains => RuntimeOp::GoMapI64GoStringContains,
+                    hir::Builtin::MapI64GoStringSet => RuntimeOp::GoMapI64GoStringSet,
+                    hir::Builtin::MapI64GoStringDelete => RuntimeOp::GoMapI64GoStringDelete,
+                    hir::Builtin::MapI64GoStringClear => RuntimeOp::GoMapI64GoStringClear,
+                    hir::Builtin::MapI64GoStringIsNil => RuntimeOp::GoMapI64GoStringIsNil,
+                    hir::Builtin::MapI64GoStringRangeKeys => RuntimeOp::GoMapI64GoStringRangeKeys,
                     hir::Builtin::AggregateMapMake => RuntimeOp::GoMapStringInterfaceMake,
                     hir::Builtin::AggregateMapLen => RuntimeOp::GoMapStringInterfaceLen,
                     hir::Builtin::AggregateMapGetTagged => RuntimeOp::GoMapStringInterfaceGet,
@@ -676,7 +699,7 @@ fn lower_terminator(
                     hir::Builtin::ChannelGoChannelI64TryReceive => {
                         RuntimeOp::GoChannelGoChannelI64TryReceive
                     }
-                    hir::Builtin::MapStringI64Lookup => {
+                    hir::Builtin::MapStringI64Lookup | hir::Builtin::MapI64GoStringLookup => {
                         return Err(Diagnostic::backend(
                             "map comma-ok lookup survived MIR expansion",
                         ));

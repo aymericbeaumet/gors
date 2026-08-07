@@ -28,10 +28,10 @@ use arrays::{
 };
 use channels::{is_channel_builtin, verify_channel_call};
 use containers::{
-    is_aggregate_container_builtin, is_go_string_slice_builtin, is_representation_slice_builtin,
-    map_string_i64_ty, verify_aggregate_container_call, verify_bool_slice_call,
+    is_aggregate_container_builtin, is_go_string_slice_builtin, is_map_builtin,
+    is_representation_slice_builtin, verify_aggregate_container_call, verify_bool_slice_call,
     verify_byte_slice_call_arguments, verify_byte_slice_integer_arguments,
-    verify_go_string_slice_call, verify_map_call_arguments, verify_representation_slice_call,
+    verify_go_string_slice_call, verify_map_call, verify_representation_slice_call,
     verify_slice_call_arguments, verify_slice_value_arguments,
 };
 use effects::{
@@ -454,6 +454,12 @@ impl Function {
                                 &argument_types,
                                 &destination_types,
                             )?
+                        } else if is_map_builtin(*builtin) {
+                            let destination_types = destinations
+                                .iter()
+                                .map(|destination| self.place_ty(*destination).cloned())
+                                .collect::<Result<Vec<_>, _>>()?;
+                            verify_map_call(*builtin, &argument_types, &destination_types)?
                         } else if is_go_string_slice_builtin(*builtin) {
                             let destination_types = destinations
                                 .iter()
@@ -664,82 +670,32 @@ impl Function {
                                     }
                                     Vec::new()
                                 }
-                                hir::Builtin::MapStringI64Nil | hir::Builtin::MapStringI64Make => {
-                                    verify_map_call_arguments(
-                                        &argument_types,
-                                        &[],
-                                        "map creation",
-                                    )?;
-                                    vec![map_string_i64_ty()]
-                                }
-                                hir::Builtin::MapStringI64Len => {
-                                    verify_map_call_arguments(
-                                        &argument_types,
-                                        &[map_string_i64_ty()],
-                                        "map len",
-                                    )?;
-                                    vec![Ty::Int(IntTy::Int)]
-                                }
-                                hir::Builtin::MapStringI64Get => {
-                                    verify_map_call_arguments(
-                                        &argument_types,
-                                        &[map_string_i64_ty(), Ty::String],
-                                        "map lookup",
-                                    )?;
-                                    vec![Ty::Int(IntTy::Int)]
-                                }
-                                hir::Builtin::MapStringI64Lookup => {
+                                hir::Builtin::MapStringI64Nil
+                                | hir::Builtin::MapStringI64Make
+                                | hir::Builtin::MapStringI64Len
+                                | hir::Builtin::MapStringI64Get
+                                | hir::Builtin::MapStringI64Lookup
+                                | hir::Builtin::MapStringI64Contains
+                                | hir::Builtin::MapStringI64Set
+                                | hir::Builtin::MapStringI64Delete
+                                | hir::Builtin::MapStringI64Clear
+                                | hir::Builtin::MapStringI64IsNil
+                                | hir::Builtin::MapStringI64KeyAt
+                                | hir::Builtin::MapStringI64RangeKeys
+                                | hir::Builtin::MapI64GoStringNil
+                                | hir::Builtin::MapI64GoStringMake
+                                | hir::Builtin::MapI64GoStringLen
+                                | hir::Builtin::MapI64GoStringGet
+                                | hir::Builtin::MapI64GoStringLookup
+                                | hir::Builtin::MapI64GoStringContains
+                                | hir::Builtin::MapI64GoStringSet
+                                | hir::Builtin::MapI64GoStringDelete
+                                | hir::Builtin::MapI64GoStringClear
+                                | hir::Builtin::MapI64GoStringIsNil
+                                | hir::Builtin::MapI64GoStringRangeKeys => {
                                     return Err(Diagnostic::backend(
-                                        "map comma-ok lookup survived MIR construction",
+                                        "map builtin bypassed MIR verifier dispatch",
                                     ));
-                                }
-                                hir::Builtin::MapStringI64Contains => {
-                                    verify_map_call_arguments(
-                                        &argument_types,
-                                        &[map_string_i64_ty(), Ty::String],
-                                        "map membership test",
-                                    )?;
-                                    vec![Ty::Bool]
-                                }
-                                hir::Builtin::MapStringI64Set => {
-                                    verify_map_call_arguments(
-                                        &argument_types,
-                                        &[map_string_i64_ty(), Ty::String, Ty::Int(IntTy::Int)],
-                                        "map assignment",
-                                    )?;
-                                    Vec::new()
-                                }
-                                hir::Builtin::MapStringI64Delete => {
-                                    verify_map_call_arguments(
-                                        &argument_types,
-                                        &[map_string_i64_ty(), Ty::String],
-                                        "map delete",
-                                    )?;
-                                    Vec::new()
-                                }
-                                hir::Builtin::MapStringI64Clear => {
-                                    verify_map_call_arguments(
-                                        &argument_types,
-                                        &[map_string_i64_ty()],
-                                        "map clear",
-                                    )?;
-                                    Vec::new()
-                                }
-                                hir::Builtin::MapStringI64IsNil => {
-                                    verify_map_call_arguments(
-                                        &argument_types,
-                                        &[map_string_i64_ty()],
-                                        "map nil comparison",
-                                    )?;
-                                    vec![Ty::Bool]
-                                }
-                                hir::Builtin::MapStringI64KeyAt => {
-                                    verify_map_call_arguments(
-                                        &argument_types,
-                                        &[map_string_i64_ty(), Ty::Int(IntTy::Int)],
-                                        "map range key",
-                                    )?;
-                                    vec![Ty::String]
                                 }
                                 hir::Builtin::ChannelI64Nil
                                 | hir::Builtin::ChannelI64Make

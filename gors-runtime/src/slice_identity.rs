@@ -5,6 +5,17 @@ use std::sync::{Arc, RwLock};
 use crate::{GoSlice, GoSliceBool, GoSliceGoString, GoSliceI64, GoSliceU8};
 
 impl<T> GoSlice<T> {
+    pub(crate) fn from_values(values: Vec<T>) -> Self {
+        let len = values.len();
+        Self {
+            storage: Arc::new(RwLock::new(values)),
+            start: 0,
+            len,
+            capacity: len,
+            nil: false,
+        }
+    }
+
     pub(crate) fn nil() -> Self {
         Self {
             storage: Arc::new(RwLock::new(Vec::new())),

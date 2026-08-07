@@ -38,6 +38,7 @@ impl RuntimeType {
             Self::GoChannelI64BoolTuple => 28,
             Self::GoChannelI64I64Tuple => 29,
             Self::GoSliceGoString => 30,
+            Self::GoMapI64GoString => 31,
         }
     }
 

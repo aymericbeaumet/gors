@@ -10,6 +10,7 @@ mod goroutines;
 mod imports;
 mod interfaces;
 mod local_types;
+mod maps;
 mod pipeline;
 mod pointers;
 mod recovery;
@@ -937,7 +938,7 @@ fn generated_maps_support_comma_ok_and_key_value_ranges() {
         run.rust
     );
     assert!(
-        run.rust.contains("go_map_string_i64_key_at"),
+        run.rust.contains("go_map_string_i64_range_keys"),
         "{}",
         run.rust
     );

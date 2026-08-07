@@ -455,19 +455,128 @@ fn is_aggregate_map(ty: &Ty) -> bool {
     )
 }
 
-pub(super) fn map_string_i64_ty() -> Ty {
-    Ty::Map(Box::new(Ty::String), Box::new(Ty::Int(IntTy::Int)))
+fn is_exact_map_shape(ty: &Ty, expected_key: &Ty, expected_value: &Ty) -> bool {
+    matches!(
+        ty.underlying(),
+        Ty::Map(key, value)
+            if key.as_ref() == expected_key && value.as_ref() == expected_value
+    )
 }
 
-pub(super) fn verify_map_call_arguments(
+pub(super) fn is_map_builtin(builtin: hir::Builtin) -> bool {
+    matches!(
+        builtin,
+        hir::Builtin::MapStringI64Nil
+            | hir::Builtin::MapStringI64Make
+            | hir::Builtin::MapStringI64Len
+            | hir::Builtin::MapStringI64Get
+            | hir::Builtin::MapStringI64Lookup
+            | hir::Builtin::MapStringI64Contains
+            | hir::Builtin::MapStringI64Set
+            | hir::Builtin::MapStringI64Delete
+            | hir::Builtin::MapStringI64Clear
+            | hir::Builtin::MapStringI64IsNil
+            | hir::Builtin::MapStringI64KeyAt
+            | hir::Builtin::MapStringI64RangeKeys
+            | hir::Builtin::MapI64GoStringNil
+            | hir::Builtin::MapI64GoStringMake
+            | hir::Builtin::MapI64GoStringLen
+            | hir::Builtin::MapI64GoStringGet
+            | hir::Builtin::MapI64GoStringLookup
+            | hir::Builtin::MapI64GoStringContains
+            | hir::Builtin::MapI64GoStringSet
+            | hir::Builtin::MapI64GoStringDelete
+            | hir::Builtin::MapI64GoStringClear
+            | hir::Builtin::MapI64GoStringIsNil
+            | hir::Builtin::MapI64GoStringRangeKeys
+    )
+}
+
+pub(super) fn verify_map_call(
+    builtin: hir::Builtin,
     arguments: &[Ty],
-    expected: &[Ty],
-    context: &str,
-) -> Result<(), Diagnostic> {
-    if arguments != expected {
-        return Err(Diagnostic::backend(format!(
-            "invalid MIR {context} argument types: {arguments:?}"
-        )));
-    }
-    Ok(())
+    destinations: &[Ty],
+) -> Result<Vec<Ty>, Diagnostic> {
+    let int = Ty::Int(IntTy::Int);
+    let string_i64 = |ty: &Ty| is_exact_map_shape(ty, &Ty::String, &int);
+    let i64_string = |ty: &Ty| is_exact_map_shape(ty, &int, &Ty::String);
+    let valid = match builtin {
+        hir::Builtin::MapStringI64Nil | hir::Builtin::MapStringI64Make => {
+            arguments.is_empty() && matches!(destinations, [map] if string_i64(map))
+        }
+        hir::Builtin::MapStringI64Len => {
+            matches!(arguments, [map] if string_i64(map)) && destinations == [Ty::Int(IntTy::Int)]
+        }
+        hir::Builtin::MapStringI64Get => {
+            matches!(arguments, [map, Ty::String] if string_i64(map))
+                && destinations == [Ty::Int(IntTy::Int)]
+        }
+        hir::Builtin::MapStringI64Contains => {
+            matches!(arguments, [map, Ty::String] if string_i64(map)) && destinations == [Ty::Bool]
+        }
+        hir::Builtin::MapStringI64Set => {
+            matches!(arguments, [map, Ty::String, Ty::Int(IntTy::Int)] if string_i64(map))
+                && destinations.is_empty()
+        }
+        hir::Builtin::MapStringI64Delete => {
+            matches!(arguments, [map, Ty::String] if string_i64(map)) && destinations.is_empty()
+        }
+        hir::Builtin::MapStringI64Clear => {
+            matches!(arguments, [map] if string_i64(map)) && destinations.is_empty()
+        }
+        hir::Builtin::MapStringI64IsNil => {
+            matches!(arguments, [map] if string_i64(map)) && destinations == [Ty::Bool]
+        }
+        hir::Builtin::MapStringI64KeyAt => {
+            matches!(arguments, [map, Ty::Int(IntTy::Int)] if string_i64(map))
+                && destinations == [Ty::String]
+        }
+        hir::Builtin::MapStringI64RangeKeys => {
+            matches!(arguments, [map] if string_i64(map))
+                && destinations == [Ty::Slice(Box::new(Ty::String))]
+        }
+        hir::Builtin::MapI64GoStringNil | hir::Builtin::MapI64GoStringMake => {
+            arguments.is_empty() && matches!(destinations, [map] if i64_string(map))
+        }
+        hir::Builtin::MapI64GoStringLen => {
+            matches!(arguments, [map] if i64_string(map)) && destinations == [Ty::Int(IntTy::Int)]
+        }
+        hir::Builtin::MapI64GoStringGet => {
+            matches!(arguments, [map, Ty::Int(IntTy::Int)] if i64_string(map))
+                && destinations == [Ty::String]
+        }
+        hir::Builtin::MapI64GoStringContains => {
+            matches!(arguments, [map, Ty::Int(IntTy::Int)] if i64_string(map))
+                && destinations == [Ty::Bool]
+        }
+        hir::Builtin::MapI64GoStringSet => {
+            matches!(arguments, [map, Ty::Int(IntTy::Int), Ty::String] if i64_string(map))
+                && destinations.is_empty()
+        }
+        hir::Builtin::MapI64GoStringDelete => {
+            matches!(arguments, [map, Ty::Int(IntTy::Int)] if i64_string(map))
+                && destinations.is_empty()
+        }
+        hir::Builtin::MapI64GoStringClear => {
+            matches!(arguments, [map] if i64_string(map)) && destinations.is_empty()
+        }
+        hir::Builtin::MapI64GoStringIsNil => {
+            matches!(arguments, [map] if i64_string(map)) && destinations == [Ty::Bool]
+        }
+        hir::Builtin::MapI64GoStringRangeKeys => {
+            matches!(arguments, [map] if i64_string(map))
+                && destinations == [Ty::Slice(Box::new(Ty::Int(IntTy::Int)))]
+        }
+        hir::Builtin::MapStringI64Lookup | hir::Builtin::MapI64GoStringLookup => {
+            return Err(Diagnostic::backend(
+                "map comma-ok lookup survived MIR construction",
+            ));
+        }
+        _ => false,
+    };
+    valid.then(|| destinations.to_vec()).ok_or_else(|| {
+        Diagnostic::backend(format!(
+            "invalid MIR map call {builtin:?}: {arguments:?} -> {destinations:?}"
+        ))
+    })
 }

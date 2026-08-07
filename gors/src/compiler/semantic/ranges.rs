@@ -66,8 +66,10 @@ impl FunctionLowerer {
             }
             Ty::String => (Ty::Int(IntTy::Int), Ty::Int(IntTy::Int32), 2),
             Ty::Map(key, value)
-                if key.underlying() == &Ty::String
-                    && value.underlying() == &Ty::Int(IntTy::Int) =>
+                if (key.underlying() == &Ty::String
+                    && value.underlying() == &Ty::Int(IntTy::Int))
+                    || (key.underlying() == &Ty::Int(IntTy::Int)
+                        && value.underlying() == &Ty::String) =>
             {
                 (key.as_ref().clone(), value.as_ref().clone(), 2)
             }

@@ -64,6 +64,17 @@ impl RuntimeOp {
             | Self::GoMapStringI64Clear
             | Self::GoMapStringI64IsNil
             | Self::GoMapStringI64KeyAt
+            | Self::GoMapStringI64RangeKeys
+            | Self::GoMapI64GoStringNil
+            | Self::GoMapI64GoStringMake
+            | Self::GoMapI64GoStringLen
+            | Self::GoMapI64GoStringGet
+            | Self::GoMapI64GoStringContains
+            | Self::GoMapI64GoStringSet
+            | Self::GoMapI64GoStringDelete
+            | Self::GoMapI64GoStringClear
+            | Self::GoMapI64GoStringIsNil
+            | Self::GoMapI64GoStringRangeKeys
             | Self::GoPointerI64Nil
             | Self::GoPointerI64New
             | Self::GoPointerI64Get
@@ -362,6 +373,11 @@ impl RuntimeOp {
             | Self::GoMapStringI64Get
             | Self::GoMapStringI64Contains
             | Self::GoMapStringI64IsNil
+            | Self::GoMapI64GoStringNil
+            | Self::GoMapI64GoStringLen
+            | Self::GoMapI64GoStringGet
+            | Self::GoMapI64GoStringContains
+            | Self::GoMapI64GoStringIsNil
             | Self::GoMapStringInterfaceLen
             | Self::GoMapStringInterfaceGet
             | Self::GoMapStringInterfaceContains
@@ -375,21 +391,27 @@ impl RuntimeOp {
                 HostIoEffect::None,
                 NO_GO_PANICS,
             ),
-            Self::GoMapStringI64Make | Self::GoMapStringInterfaceMake | Self::GoPointerI64New => {
+            Self::GoMapStringI64Make
+            | Self::GoMapI64GoStringMake
+            | Self::GoMapStringInterfaceMake
+            | Self::GoPointerI64New => RuntimeEffects::new(
+                AllocationEffect::MayAllocate,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                NO_GO_PANICS,
+            ),
+            Self::GoMapStringI64Set | Self::GoMapI64GoStringSet | Self::GoMapStringInterfaceSet => {
                 RuntimeEffects::new(
                     AllocationEffect::MayAllocate,
-                    ArgumentMutationEffect::None,
+                    ArgumentMutationEffect::MayMutateOwnedArgument,
                     HostIoEffect::None,
-                    NO_GO_PANICS,
+                    NIL_MAP_ASSIGNMENT,
                 )
             }
-            Self::GoMapStringI64Set | Self::GoMapStringInterfaceSet => RuntimeEffects::new(
-                AllocationEffect::MayAllocate,
-                ArgumentMutationEffect::MayMutateOwnedArgument,
-                HostIoEffect::None,
-                NIL_MAP_ASSIGNMENT,
-            ),
-            Self::GoMapStringI64Delete | Self::GoMapStringI64Clear => RuntimeEffects::new(
+            Self::GoMapStringI64Delete
+            | Self::GoMapStringI64Clear
+            | Self::GoMapI64GoStringDelete
+            | Self::GoMapI64GoStringClear => RuntimeEffects::new(
                 AllocationEffect::None,
                 ArgumentMutationEffect::MayMutateOwnedArgument,
                 HostIoEffect::None,
@@ -400,6 +422,12 @@ impl RuntimeOp {
                 ArgumentMutationEffect::None,
                 HostIoEffect::None,
                 INDEX_OUT_OF_RANGE,
+            ),
+            Self::GoMapStringI64RangeKeys | Self::GoMapI64GoStringRangeKeys => RuntimeEffects::new(
+                AllocationEffect::MayAllocate,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                NO_GO_PANICS,
             ),
             Self::GoStringRangeIndexAt | Self::GoStringRangeRuneAt => RuntimeEffects::new(
                 AllocationEffect::None,

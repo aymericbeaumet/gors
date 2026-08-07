@@ -2256,6 +2256,15 @@
           ]
         },
         {
+          "id": "spec-map-delete-during-range",
+          "section": "For statements with range clause",
+          "title": "Deleting reached map entries preserves remaining candidates while deleting unreached entries suppresses them",
+          "status": "passing",
+          "fixtures": [
+            "map_delete_during_range"
+          ]
+        },
+        {
           "id": "stmt-range-invalid-utf8-string",
           "section": "For statements with range clause",
           "title": "Ranging over invalid UTF-8 bytes yields replacement runes and advances one byte",
