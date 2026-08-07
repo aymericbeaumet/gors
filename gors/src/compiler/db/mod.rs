@@ -67,6 +67,8 @@ pub enum QueryError {
     IdentityCollision(Arc<str>),
     /// The database was observed before its required config input was installed.
     MissingBuildConfig,
+    /// The explicit compiler Go version is not a valid language version.
+    InvalidBuildConfig(Arc<str>),
     /// A tracked compiler stage rejected its immutable input.
     StageFailure(Arc<StageFailure>),
     /// Package indexing found deterministic cross-file or syntax issues.
@@ -97,6 +99,7 @@ impl fmt::Display for QueryError {
             }
             Self::IdentityCollision(message) => formatter.write_str(message),
             Self::MissingBuildConfig => formatter.write_str("compiler build config is missing"),
+            Self::InvalidBuildConfig(message) => formatter.write_str(message),
             Self::StageFailure(failure) => {
                 write!(formatter, "{:?} query failed", failure.stage())
             }
@@ -129,7 +132,7 @@ impl SourceUpdate {
         self.file
     }
 
-    /// Whether source bytes or logical membership changed.
+    /// Whether source bytes, language metadata, or logical membership changed.
     #[must_use]
     pub const fn semantic_changed(self) -> bool {
         self.semantic_changed
@@ -187,6 +190,7 @@ impl CompilerDatabase {
                 event_telemetry.record_event(&event.kind);
             }))
             .ingredient::<queries::file_projection>()
+            .ingredient::<queries::language_version_issues>()
             .ingredient::<queries::file_analysis_product>()
             .ingredient::<queries::signature_product>()
             .ingredient::<queries::body_product>()
@@ -257,8 +261,20 @@ impl CompilerDatabase {
         logical_path: &str,
         snapshot: Arc<SourceSnapshot>,
     ) -> Result<SourceUpdate, QueryError> {
-        let (update, mutation) =
-            self.set_source_transactional(workspace, package, logical_path, snapshot)?;
+        let build_config = self.build_config()?;
+        let language_version = super::input::GoLanguageVersion::parse(build_config.go_version())
+            .map_err(|error| {
+                QueryError::InvalidBuildConfig(Arc::from(format!(
+                    "compiler has an invalid configured Go version: {error}"
+                )))
+            })?;
+        let (update, mutation) = self.set_source_transactional(
+            workspace,
+            package,
+            logical_path,
+            language_version,
+            snapshot,
+        )?;
         self.commit_source_mutations(mutation);
         Ok(update)
     }

@@ -17,8 +17,9 @@ pub enum SyntaxAnchorKind {
 ///
 /// Package functions are anchored by name. Methods are anchored by their named
 /// receiver and method name. Neither form contains a byte offset, token
-/// ordinal, or AST traversal index. Repeated `init` declarations remain
-/// rejected until a reusable structural disambiguator exists.
+/// ordinal, or AST traversal index. Repeated package initializers share the
+/// package-owned `init` identity and are composed as ordered fragments rather
+/// than pretending each unnameable declaration is an independent definition.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SyntaxAnchor {
     kind: SyntaxAnchorKind,

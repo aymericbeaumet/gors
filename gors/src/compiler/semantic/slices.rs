@@ -30,18 +30,22 @@ impl FunctionLowerer {
                     [declared, len, cap] => (declared, len, Some(cap)),
                     _ => {
                         return Err(Diagnostic::semantic(
-                            "make([]int, len[, cap]) requires two or three arguments",
+                            "make(slice, len[, cap]) requires two or three arguments",
                             source,
                         ));
                     }
                 };
                 let declared = lower_type(declared_syntax, &self.type_aliases, source)?;
-                if declared != slice_ty {
+                let builtin = if declared == slice_ty {
+                    hir::Builtin::SliceI64Make
+                } else if declared == byte_slice_ty {
+                    hir::Builtin::SliceU8Make
+                } else {
                     return Err(Diagnostic::unsupported(
-                        "make currently supports []int values",
+                        "make currently supports []int and []byte values",
                         source,
                     ));
-                }
+                };
                 let len = self.lower_expr(len_syntax, Some(&Ty::Int(IntTy::Int)))?;
                 let len_constant = constant_index_value(&len);
                 if let Some(len_value) = len_constant
@@ -76,14 +80,7 @@ impl FunctionLowerer {
                 } else {
                     self.lower_optional_slice_bound(None, declared_syntax.source)?
                 };
-                (
-                    hir::Builtin::SliceI64Make,
-                    vec![len, cap],
-                    slice_ty,
-                    true,
-                    false,
-                    true,
-                )
+                (builtin, vec![len, cap], declared, true, false, true)
             }
             "cap" => {
                 let [value] = arguments else {
@@ -180,7 +177,7 @@ impl FunctionLowerer {
             "copy" => {
                 let [destination, source_value] = arguments else {
                     return Err(Diagnostic::semantic(
-                        "copy currently requires a []byte destination and string source",
+                        "copy requires a destination and source",
                         source,
                     ));
                 };
@@ -194,13 +191,24 @@ impl FunctionLowerer {
                         self.lower_expr(source_value, Some(&slice_ty))?,
                     )
                 } else if destination.ty == byte_slice_ty {
-                    (
-                        hir::Builtin::SliceU8CopyString,
-                        self.lower_expr(source_value, Some(&Ty::String))?,
-                    )
+                    let mut source_value = self.lower_expr(source_value, None)?;
+                    if source_value.ty == Ty::Untyped(UntypedTy::String) {
+                        coerce_expr(&mut source_value, &Ty::String, source)?;
+                    }
+                    let builtin = if source_value.ty == byte_slice_ty {
+                        hir::Builtin::SliceU8Copy
+                    } else if source_value.ty == Ty::String {
+                        hir::Builtin::SliceU8CopyString
+                    } else {
+                        return Err(Diagnostic::semantic(
+                            "copy with a []byte destination requires a []byte or string source",
+                            source,
+                        ));
+                    };
+                    (builtin, source_value)
                 } else {
                     return Err(Diagnostic::semantic(
-                        "copy currently supports []int slices or a []byte destination and string source",
+                        "copy currently supports []int pairs, []byte pairs, or a []byte destination and string source",
                         source,
                     ));
                 };

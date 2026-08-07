@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::compiler::input::{PackageKey, WorkspaceKey};
+use crate::compiler::input::{GoLanguageVersion, PackageKey, WorkspaceKey};
 
 use super::{
     LoadError, PathExpectation, load_program, load_program_files, load_program_files_auto,
@@ -75,6 +75,10 @@ fn module_directory_uses_canonical_entry_and_lazy_dependency_catalog() {
         &WorkspaceKey::module("example.com/project").unwrap()
     );
     assert_eq!(
+        loaded.input().entry_package().language_version(),
+        GoLanguageVersion::DEFAULT_MODULE
+    );
+    assert_eq!(
         loaded.input().entry_package().key().as_import_path(),
         Some("example.com/project")
     );
@@ -87,6 +91,109 @@ fn module_directory_uses_canonical_entry_and_lazy_dependency_catalog() {
         .unwrap();
     assert_eq!(manifest.key(), &dependency);
     assert_eq!(manifest.files().len(), 1);
+
+    let standard_library = PackageKey::import_path("fmt").unwrap();
+    let manifest = loaded
+        .input()
+        .package_catalog()
+        .materialize(&standard_library)
+        .unwrap()
+        .unwrap();
+    assert_eq!(manifest.key(), &standard_library);
+    assert!(!manifest.files().is_empty());
+    assert!(
+        manifest
+            .files()
+            .first()
+            .unwrap()
+            .snapshot()
+            .diagnostic_path()
+            .starts_with("gors://go-sdk/fmt/")
+    );
+}
+
+#[test]
+fn module_go_directive_gates_binary_literals_at_the_literal_span() {
+    let temporary = tempfile::tempdir().unwrap();
+    write(
+        &temporary.path().join("go.mod"),
+        "module example.com/language\n\ngo 1.12\n",
+    );
+    write(
+        &temporary.path().join("main.go"),
+        "package main\n\nfunc main() {\n\tx := 0b1011\n\tprintln(x)\n}\n",
+    );
+
+    let loaded =
+        load_program_files_auto(test_workspace(), &[temporary.path().to_path_buf()]).unwrap();
+    assert_eq!(
+        loaded.input().entry_package().language_version(),
+        GoLanguageVersion::new(1, 12)
+    );
+    let error = crate::compiler::compile_program(loaded.into_input())
+        .err()
+        .expect("Go 1.12 must reject binary literals");
+    let diagnostic = error.diagnostics().first().unwrap();
+    assert_eq!(diagnostic.code, "GORS2002");
+    assert_eq!((diagnostic.line, diagnostic.column), (4, 7));
+    assert_eq!(
+        diagnostic.message,
+        "binary literal requires go1.13 or later (-lang was set to go1.12; check go.mod)"
+    );
+
+    write(
+        &temporary.path().join("go.mod"),
+        "module example.com/language\n\ngo 1.13\n",
+    );
+    let loaded =
+        load_program_files_auto(test_workspace(), &[temporary.path().to_path_buf()]).unwrap();
+    crate::compiler::compile_program(loaded.into_input())
+        .expect("the same binary literal is valid under Go 1.13");
+}
+
+#[test]
+fn ad_hoc_auto_load_keeps_its_workspace_and_resolves_the_embedded_sdk() {
+    let temporary = tempfile::tempdir().unwrap();
+    let main = temporary.path().join("main.go");
+    write(&main, "package main\nimport \"fmt\"\n");
+    let workspace = test_workspace();
+
+    let loaded = load_program_files_auto(workspace.clone(), &[main]).unwrap();
+
+    assert_eq!(loaded.input().workspace(), &workspace);
+    assert!(loaded.input().entry_package().key().is_command_line());
+    let standard_library = PackageKey::import_path("fmt").unwrap();
+    assert!(
+        loaded
+            .input()
+            .package_catalog()
+            .materialize(&standard_library)
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
+fn ad_hoc_auto_load_compiles_a_reachable_embedded_sdk_package() {
+    let temporary = tempfile::tempdir().unwrap();
+    let main = temporary.path().join("main.go");
+    write(
+        &main,
+        "package main\nimport _ \"structs\"\nfunc main() { println(1) }\n",
+    );
+
+    let loaded = load_program_files_auto(test_workspace(), &[main]).unwrap();
+    let compiled = crate::compiler::compile_program(loaded.into_input()).unwrap();
+
+    assert!(!compiled.entry.items.is_empty());
+    assert_eq!(
+        compiled
+            .modules
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["structs"]
+    );
 }
 
 #[test]

@@ -15,6 +15,8 @@ use gors_runtime_abi::{
 
 #[path = "manifest/link_identity.rs"]
 mod link_identity;
+#[path = "manifest/link_validation.rs"]
+mod link_validation;
 
 fn target_model(triple: &str) -> Result<TargetModel, TargetModelError> {
     TargetModel::new(triple, DataWidth::Bits32, Endianness::Little)
@@ -96,11 +98,11 @@ fn current_contract_identity_is_sha256_of_canonical_bytes() {
 
     assert_eq!(manifest.schema().get(), 2);
     assert_eq!(manifest.contract(), CURRENT_CONTRACT_VERSION);
-    assert_eq!(manifest.contract(), ContractVersion::new(2, 14, 0));
+    assert_eq!(manifest.contract(), ContractVersion::new(2, 16, 0));
     assert_eq!(manifest.identity().as_bytes(), &expected);
     assert_eq!(
         manifest.identity().to_string(),
-        "54fba61d5a89d2d4aac86ac1c5ff94646ef04c883b3c20c94e58f3e72156d961",
+        "a2de8d7d19727d36710f363bbb9023e17be6e3943d28229ef6faf230dbde86ad",
         "the canonical runtime contract changed; review the ABI diff and bump its semantic version before accepting a new identity",
     );
 }
@@ -155,9 +157,11 @@ fn runtime_effect_metadata_is_complete_and_exact() {
         let expected_allocation = match operation {
             RuntimeOp::GoStringFromBytes
             | RuntimeOp::ConcatGoStrings
+            | RuntimeOp::PrintF64
             | RuntimeOp::GoSliceI64FromStatic
             | RuntimeOp::GoSliceBoolFromStatic
             | RuntimeOp::GoSliceI64Make
+            | RuntimeOp::GoSliceU8Make
             | RuntimeOp::GoSliceInterfaceMake
             | RuntimeOp::GoSliceI64Nil
             | RuntimeOp::GoSliceU8Nil
@@ -205,6 +209,8 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceI64Len
             | RuntimeOp::GoSliceI64Cap
             | RuntimeOp::GoSliceU8CopyString
+            | RuntimeOp::GoSliceU8Set
+            | RuntimeOp::GoSliceU8Copy
             | RuntimeOp::GoSliceI64Clear
             | RuntimeOp::GoSliceI64Copy
             | RuntimeOp::GoMapStringI64Nil
@@ -230,17 +236,21 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoInterfaceNil
             | RuntimeOp::GoInterfaceBoxBool
             | RuntimeOp::GoInterfaceBoxI64
+            | RuntimeOp::GoInterfaceBoxF64
             | RuntimeOp::GoInterfaceBoxGoString
             | RuntimeOp::GoInterfaceBoxPointerStructI64
             | RuntimeOp::GoInterfaceBoxAggregate
+            | RuntimeOp::GoInterfaceBoxComparableAggregate
             | RuntimeOp::GoInterfaceIsNil
             | RuntimeOp::GoInterfaceIsType
             | RuntimeOp::GoInterfaceUnboxBool
             | RuntimeOp::GoInterfaceUnboxI64
+            | RuntimeOp::GoInterfaceUnboxF64
             | RuntimeOp::GoInterfaceUnboxGoString
             | RuntimeOp::GoInterfaceStructI64Get
             | RuntimeOp::GoInterfaceUnboxPointerStructI64
             | RuntimeOp::GoInterfaceUnboxAggregate
+            | RuntimeOp::GoInterfaceEqual
             | RuntimeOp::GoChannelI64Nil
             | RuntimeOp::GoChannelI64Len
             | RuntimeOp::GoChannelI64Cap
@@ -270,6 +280,8 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceU8AppendSlice
             | RuntimeOp::GoSliceU8AppendString
             | RuntimeOp::GoSliceU8CopyString
+            | RuntimeOp::GoSliceU8Set
+            | RuntimeOp::GoSliceU8Copy
             | RuntimeOp::GoSliceI64Clear
             | RuntimeOp::GoSliceI64Copy
             | RuntimeOp::GoMapStringI64Set
@@ -292,6 +304,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::IntShr
             | RuntimeOp::PrintBool
             | RuntimeOp::PrintI64
+            | RuntimeOp::PrintF64
             | RuntimeOp::PrintSpace
             | RuntimeOp::PrintNewline
             | RuntimeOp::PrintGoString
@@ -312,6 +325,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceBoolIndex
             | RuntimeOp::GoSliceI64Range
             | RuntimeOp::GoSliceI64Make
+            | RuntimeOp::GoSliceU8Make
             | RuntimeOp::GoSliceInterfaceMake
             | RuntimeOp::GoSliceInterfaceLen
             | RuntimeOp::GoSliceInterfaceIndex
@@ -343,18 +357,22 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoInterfaceNil
             | RuntimeOp::GoInterfaceBoxBool
             | RuntimeOp::GoInterfaceBoxI64
+            | RuntimeOp::GoInterfaceBoxF64
             | RuntimeOp::GoInterfaceBoxGoString
             | RuntimeOp::GoInterfaceBoxStructI64
             | RuntimeOp::GoInterfaceBoxPointerStructI64
             | RuntimeOp::GoInterfaceBoxAggregate
+            | RuntimeOp::GoInterfaceBoxComparableAggregate
             | RuntimeOp::GoInterfaceIsNil
             | RuntimeOp::GoInterfaceIsType
             | RuntimeOp::GoInterfaceUnboxBool
             | RuntimeOp::GoInterfaceUnboxI64
+            | RuntimeOp::GoInterfaceUnboxF64
             | RuntimeOp::GoInterfaceUnboxGoString
             | RuntimeOp::GoInterfaceStructI64Get
             | RuntimeOp::GoInterfaceUnboxPointerStructI64
             | RuntimeOp::GoInterfaceUnboxAggregate
+            | RuntimeOp::GoInterfaceEqual
             | RuntimeOp::GoChannelI64Nil
             | RuntimeOp::GoChannelI64Make
             | RuntimeOp::GoChannelI64Len
@@ -373,6 +391,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
         let expected_blocking = match operation {
             RuntimeOp::PrintBool
             | RuntimeOp::PrintI64
+            | RuntimeOp::PrintF64
             | RuntimeOp::PrintSpace
             | RuntimeOp::PrintNewline
             | RuntimeOp::PrintGoString
@@ -384,6 +403,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
         let expected_host_io = match operation {
             RuntimeOp::PrintBool
             | RuntimeOp::PrintI64
+            | RuntimeOp::PrintF64
             | RuntimeOp::PrintSpace
             | RuntimeOp::PrintNewline
             | RuntimeOp::PrintGoString => HostIoEffect::StandardError,
@@ -417,6 +437,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceInterfaceIndex
             | RuntimeOp::GoSliceInterfaceSet
             | RuntimeOp::GoSliceI64Make
+            | RuntimeOp::GoSliceU8Make
             | RuntimeOp::GoSliceI64Len
             | RuntimeOp::GoSliceI64Cap
             | RuntimeOp::GoSliceI64Append
@@ -424,6 +445,8 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceU8AppendSlice
             | RuntimeOp::GoSliceU8AppendString
             | RuntimeOp::GoSliceU8CopyString
+            | RuntimeOp::GoSliceU8Set
+            | RuntimeOp::GoSliceU8Copy
             | RuntimeOp::GoSliceI64Clear
             | RuntimeOp::GoStringFromSliceU8
             | RuntimeOp::GoStringFromSliceRunes
@@ -457,18 +480,22 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoInterfaceNil
             | RuntimeOp::GoInterfaceBoxBool
             | RuntimeOp::GoInterfaceBoxI64
+            | RuntimeOp::GoInterfaceBoxF64
             | RuntimeOp::GoInterfaceBoxGoString
             | RuntimeOp::GoInterfaceBoxStructI64
             | RuntimeOp::GoInterfaceBoxPointerStructI64
             | RuntimeOp::GoInterfaceBoxAggregate
+            | RuntimeOp::GoInterfaceBoxComparableAggregate
             | RuntimeOp::GoInterfaceIsNil
             | RuntimeOp::GoInterfaceIsType
             | RuntimeOp::GoInterfaceUnboxBool
             | RuntimeOp::GoInterfaceUnboxI64
+            | RuntimeOp::GoInterfaceUnboxF64
             | RuntimeOp::GoInterfaceUnboxGoString
             | RuntimeOp::GoInterfaceStructI64Get
             | RuntimeOp::GoInterfaceUnboxPointerStructI64
             | RuntimeOp::GoInterfaceUnboxAggregate
+            | RuntimeOp::GoInterfaceEqual
             | RuntimeOp::GoChannelI64Nil
             | RuntimeOp::GoChannelI64Make
             | RuntimeOp::GoChannelI64Len
@@ -500,6 +527,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceU8Index
             | RuntimeOp::GoStringIndex
             | RuntimeOp::GoSliceI64Set
+            | RuntimeOp::GoSliceU8Set
             | RuntimeOp::GoSliceBoolIndex
             | RuntimeOp::GoSliceBoolSet
             | RuntimeOp::GoSliceInterfaceIndex
@@ -511,6 +539,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceU8Range
             | RuntimeOp::GoStringRange
             | RuntimeOp::GoSliceI64Make
+            | RuntimeOp::GoSliceU8Make
             | RuntimeOp::GoSliceInterfaceMake => &[GoPanicCondition::SliceBoundsOutOfRange],
             RuntimeOp::GoMapStringI64Set | RuntimeOp::GoMapStringInterfaceSet => {
                 &[GoPanicCondition::NilMapAssignment]
@@ -525,9 +554,11 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             ],
             RuntimeOp::GoInterfaceUnboxBool
             | RuntimeOp::GoInterfaceUnboxI64
+            | RuntimeOp::GoInterfaceUnboxF64
             | RuntimeOp::GoInterfaceUnboxGoString
             | RuntimeOp::GoInterfaceUnboxPointerStructI64
             | RuntimeOp::GoInterfaceUnboxAggregate => &[GoPanicCondition::TypeAssertionFailure],
+            RuntimeOp::GoInterfaceEqual => &[GoPanicCondition::UncomparableInterfaceComparison],
             RuntimeOp::GoInterfaceStructI64Get => &[
                 GoPanicCondition::IndexOutOfRange,
                 GoPanicCondition::TypeAssertionFailure,
@@ -545,6 +576,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::ConcatGoStrings
             | RuntimeOp::PrintBool
             | RuntimeOp::PrintI64
+            | RuntimeOp::PrintF64
             | RuntimeOp::PrintSpace
             | RuntimeOp::PrintNewline
             | RuntimeOp::PrintGoString
@@ -566,6 +598,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceU8AppendSlice
             | RuntimeOp::GoSliceU8AppendString
             | RuntimeOp::GoSliceU8CopyString
+            | RuntimeOp::GoSliceU8Copy
             | RuntimeOp::GoSliceI64Clear
             | RuntimeOp::GoStringFromSliceU8
             | RuntimeOp::GoStringFromSliceRunes
@@ -591,10 +624,12 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoInterfaceNil
             | RuntimeOp::GoInterfaceBoxBool
             | RuntimeOp::GoInterfaceBoxI64
+            | RuntimeOp::GoInterfaceBoxF64
             | RuntimeOp::GoInterfaceBoxGoString
             | RuntimeOp::GoInterfaceBoxStructI64
             | RuntimeOp::GoInterfaceBoxPointerStructI64
             | RuntimeOp::GoInterfaceBoxAggregate
+            | RuntimeOp::GoInterfaceBoxComparableAggregate
             | RuntimeOp::GoInterfaceIsNil
             | RuntimeOp::GoInterfaceIsType
             | RuntimeOp::GoChannelI64Nil
@@ -939,61 +974,5 @@ fn dependency_rejects_an_operation_outside_its_contract() -> Result<(), Box<dyn 
         return Err("a consumer selected an operation absent from its contract".into());
     };
     assert_eq!(error.operation(), RuntimeOp::PrintI64);
-    Ok(())
-}
-
-#[test]
-fn link_validation_order_is_schema_contract_target_then_toolchain() -> Result<(), Box<dyn Error>> {
-    let contract = manifest([], [RuntimeOp::PrintI64]);
-    let other_contract = manifest([], [RuntimeOp::IntDiv]);
-    let target = target_model("x86_64-unknown-linux-gnu")?;
-    let other_target = target_model("wasm32-unknown-unknown")?;
-    let expected_toolchain = compatibility_identity(b"expected rustc");
-    let other_toolchain = compatibility_identity(b"other rustc");
-    let dependency = RuntimeDependency::new(&contract, RuntimeRequirement::default())?;
-    let request = RuntimeLinkRequest::new(
-        dependency,
-        target.clone(),
-        RuntimeArtifactFormat::RustRlibV1,
-        expected_toolchain,
-    );
-
-    let stale = RuntimeArtifactManifest::from_parts(
-        ArtifactSchemaVersion::new(1),
-        other_contract.identity(),
-        other_target.clone(),
-        TargetCapabilities::default(),
-        RuntimeArtifactFormat::RustRlibV1,
-        other_toolchain,
-        ImplementationHash::sha256(b"runtime"),
-    );
-    assert!(matches!(
-        stale.select(request.clone()),
-        Err(RuntimeLinkError::UnsupportedSchema { .. })
-    ));
-
-    let wrong_contract = artifact(
-        &other_contract,
-        other_target.clone(),
-        [],
-        other_toolchain,
-        b"runtime",
-    );
-    assert!(matches!(
-        wrong_contract.select(request.clone()),
-        Err(RuntimeLinkError::ContractMismatch { .. })
-    ));
-
-    let wrong_target = artifact(&contract, other_target, [], other_toolchain, b"runtime");
-    assert!(matches!(
-        wrong_target.select(request.clone()),
-        Err(RuntimeLinkError::TargetMismatch { .. })
-    ));
-
-    let wrong_toolchain = artifact(&contract, target, [], other_toolchain, b"runtime");
-    assert!(matches!(
-        wrong_toolchain.select(request),
-        Err(RuntimeLinkError::CompatibilityMismatch { .. })
-    ));
     Ok(())
 }

@@ -50,7 +50,7 @@ pub(in crate::compiler::db) fn rust_ir_package_product(
             db.unwind_if_revision_cancelled();
             let name = function.name(db);
             if function.receiver_type(db).is_none()
-                && (name.as_ref() == "init"
+                && (matches!(name.as_ref(), "init" | "_")
                     || specialized_range_iterators.contains(&function.id(db)))
             {
                 continue;

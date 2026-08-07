@@ -209,6 +209,43 @@ fn panic_builtin_selects_typed_runtime_operations() {
     }
 }
 
+#[test]
+fn byte_slice_builtins_select_exact_typed_runtime_operations() {
+    let file = lower_source(
+        r#"
+            package main
+            func main() {
+                destination := make([]byte, 2)
+                source := make([]byte, 2)
+                destination[0] = 'x'
+                _ = copy(destination, source)
+                _ = copy(destination, "go")
+            }
+        "#,
+    );
+    let function = named_function(&file, "main");
+    let operations = function
+        .blocks
+        .iter()
+        .filter_map(|block| match &block.terminator.kind {
+            TerminatorKind::Call {
+                target: CallTarget::Runtime(operation),
+                ..
+            } => Some(*operation),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    for expected in [
+        RuntimeOp::GoSliceU8Make,
+        RuntimeOp::GoSliceU8Set,
+        RuntimeOp::GoSliceU8Copy,
+        RuntimeOp::GoSliceU8CopyString,
+    ] {
+        assert!(operations.contains(&expected), "{operations:?}");
+    }
+}
+
 fn rvalue_operands(kind: &RvalueKind) -> Vec<&Operand> {
     match kind {
         RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => vec![operand],

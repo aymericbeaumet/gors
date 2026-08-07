@@ -3,8 +3,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::compiler::input::{
-    PackageCatalogError, PackageInputManifest, PackageKey, PackageManifestCatalog, SourceSnapshot,
-    WorkspaceKey,
+    GoLanguageVersion, PackageCatalogError, PackageInputManifest, PackageKey,
+    PackageManifestCatalog, SourceSnapshot, WorkspaceKey,
 };
 use crate::compiler::provenance::SourceRef;
 
@@ -72,6 +72,21 @@ fn raw_program(logical_path: &str, diagnostic_path: &str, source: &str) -> Progr
         super::super::input::SourceFileInput::from_source(logical_path, diagnostic_path, source)
             .unwrap();
     let manifest = PackageInputManifest::new(package, [file]).unwrap();
+    ProgramInput::standalone(test_workspace(), manifest).unwrap()
+}
+
+fn raw_program_at_version(
+    logical_path: &str,
+    diagnostic_path: &str,
+    source: &str,
+    language_version: GoLanguageVersion,
+) -> ProgramInput {
+    let package = super::super::input::PackageKey::command_line();
+    let file =
+        super::super::input::SourceFileInput::from_source(logical_path, diagnostic_path, source)
+            .unwrap();
+    let manifest =
+        PackageInputManifest::new_with_language_version(package, language_version, [file]).unwrap();
     ProgramInput::standalone(test_workspace(), manifest).unwrap()
 }
 
@@ -382,6 +397,164 @@ fn syntax_invalid_input_is_query_owned_and_repeated_revision_is_green() {
         .compile_program(program)
         .err()
         .expect("the unchanged invalid revision must remain invalid");
+    assert_eq!(second, first);
+    assert_eq!(session.database().telemetry().total_executions(), 0);
+}
+
+#[test]
+fn binary_literals_obey_package_and_file_language_versions() {
+    let source = "package main\n\nfunc main() {\n\tx := 0b1011\n\tprintln(x)\n}\n";
+    let old = raw_program_at_version(
+        "main.go",
+        "/checkout/project/main.go",
+        source,
+        GoLanguageVersion::new(1, 12),
+    );
+    let mut session = CompilerSession::default();
+    let error = session
+        .compile_program(old)
+        .err()
+        .expect("a binary literal must be rejected under Go 1.12");
+    let diagnostic = error.diagnostics().first().unwrap();
+    assert_eq!(diagnostic.code, "GORS2002");
+    assert_eq!(diagnostic.file, "/checkout/project/main.go");
+    assert_eq!((diagnostic.line, diagnostic.column), (4, 7));
+    assert_eq!(
+        diagnostic.message,
+        "binary literal requires go1.13 or later (-lang was set to go1.12; check go.mod)"
+    );
+
+    session
+        .compile_program(raw_program_at_version(
+            "main.go",
+            "/checkout/project/main.go",
+            source,
+            GoLanguageVersion::new(1, 13),
+        ))
+        .expect("Go 1.13 accepts binary literals");
+
+    let file_override = "//go:build go1.13\n\npackage main\n\nfunc main() { println(0b1011) }\n";
+    session
+        .compile_program(raw_program_at_version(
+            "main.go",
+            "/checkout/project/main.go",
+            file_override,
+            GoLanguageVersion::new(1, 12),
+        ))
+        .expect("a Go version build constraint selects the file language version");
+}
+
+#[test]
+fn language_version_only_updates_reuse_projection_and_semantic_products() {
+    let source = "package main\nfunc main() { println(0b1011) }\n";
+    let mut session = CompilerSession::default();
+    session
+        .compile_program(raw_program_at_version(
+            "main.go",
+            "/checkout/project/main.go",
+            source,
+            GoLanguageVersion::new(1, 13),
+        ))
+        .unwrap();
+    session.database().reset_telemetry();
+
+    session
+        .compile_program(raw_program_at_version(
+            "main.go",
+            "/checkout/project/main.go",
+            source,
+            GoLanguageVersion::new(1, 14),
+        ))
+        .unwrap();
+
+    let telemetry = session.database().telemetry();
+    assert_eq!(
+        telemetry.executions(crate::compiler::db::QueryKind::FileProjection),
+        0
+    );
+    assert_eq!(
+        telemetry.executions(crate::compiler::db::QueryKind::LanguageVersionCheck),
+        1
+    );
+    assert_eq!(
+        telemetry.executions(crate::compiler::db::QueryKind::TypedHir),
+        0
+    );
+    assert_eq!(
+        telemetry.executions(crate::compiler::db::QueryKind::VerifiedGoMir),
+        0
+    );
+    assert_eq!(
+        telemetry.executions(crate::compiler::db::QueryKind::VerifiedRustIr),
+        0
+    );
+
+    session.database().reset_telemetry();
+    session
+        .compile_program(raw_program_at_version(
+            "main.go",
+            "/checkout/project/main.go",
+            source,
+            GoLanguageVersion::new(1, 14),
+        ))
+        .unwrap();
+    assert_eq!(session.database().telemetry().total_executions(), 0);
+}
+
+#[test]
+fn runtime_int32_negation_diagnostic_is_incrementally_reused() {
+    let program = raw_program(
+        "main.go",
+        "/checkout/main.go",
+        "package main\nfunc negate(value int32) int32 { return -value }\nfunc main() {}\n",
+    );
+    let mut session = CompilerSession::default();
+
+    let first = session
+        .compile_program(program.clone())
+        .err()
+        .expect("runtime int32 negation must be rejected before representation lowering");
+    let diagnostic = first.diagnostics().first().unwrap();
+    assert_eq!(diagnostic.code, "GORS2001");
+    assert!(
+        diagnostic
+            .message
+            .contains("runtime unary negation of int32/rune requires 32-bit wrapping semantics")
+    );
+
+    session.database().reset_telemetry();
+    let second = session
+        .compile_program(program)
+        .err()
+        .expect("the unchanged unsupported revision must remain invalid");
+
+    assert_eq!(second, first);
+    assert_eq!(session.database().telemetry().total_executions(), 0);
+}
+
+#[test]
+fn goto_scope_diagnostic_is_incrementally_reused() {
+    let program = raw_program(
+        "main.go",
+        "/checkout/main.go",
+        "package main\nfunc main() {\n\tgoto Nested\n\t{\n\tNested:\n\t}\n}\n",
+    );
+    let mut session = CompilerSession::default();
+
+    let first = session
+        .compile_program(program.clone())
+        .err()
+        .expect("goto into a nested block must fail semantic analysis");
+    let diagnostic = first.diagnostics().first().unwrap();
+    assert_eq!(diagnostic.code, "GORS2002");
+    assert_eq!(diagnostic.message, "goto Nested jumps into block");
+
+    session.database().reset_telemetry();
+    let second = session
+        .compile_program(program)
+        .err()
+        .expect("the unchanged invalid goto must remain invalid");
+
     assert_eq!(second, first);
     assert_eq!(session.database().telemetry().total_executions(), 0);
 }

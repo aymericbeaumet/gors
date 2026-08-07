@@ -114,6 +114,14 @@ impl RuntimeOp {
             Self::GoSliceInterfaceIsNil => 110,
             Self::GoInterfaceBoxAggregate => 111,
             Self::GoInterfaceUnboxAggregate => 112,
+            Self::GoSliceU8Make => 113,
+            Self::GoSliceU8Set => 114,
+            Self::GoSliceU8Copy => 115,
+            Self::PrintF64 => 116,
+            Self::GoInterfaceBoxF64 => 117,
+            Self::GoInterfaceUnboxF64 => 118,
+            Self::GoInterfaceEqual => 119,
+            Self::GoInterfaceBoxComparableAggregate => 120,
         })
     }
 }

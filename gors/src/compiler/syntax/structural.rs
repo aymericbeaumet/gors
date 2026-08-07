@@ -83,7 +83,7 @@ pub fn method_receiver(header: &FunctionHeaderSyntax) -> Option<(&str, bool)> {
     };
     let receiver = match &ty.kind {
         ExprSyntaxKind::Ident(receiver) => receiver,
-        ExprSyntaxKind::Index { base, .. } => {
+        ExprSyntaxKind::Index { base, .. } | ExprSyntaxKind::IndexList { base, .. } => {
             let ExprSyntaxKind::Ident(receiver) = &base.kind else {
                 return None;
             };
@@ -114,7 +114,10 @@ pub fn function_is_generic(header: &FunctionHeaderSyntax) -> bool {
     {
         ty = expression;
     }
-    matches!(ty.kind, ExprSyntaxKind::Index { .. })
+    matches!(
+        ty.kind,
+        ExprSyntaxKind::Index { .. } | ExprSyntaxKind::IndexList { .. }
+    )
 }
 
 /// Whether a declaration has the Go range-over-function iterator shape.
@@ -341,6 +344,9 @@ pub struct ValueSpecSyntax {
     pub(crate) names: Arc<[IdentSyntax]>,
     pub(crate) explicit_type: Option<ExprSyntax>,
     pub(crate) values: Option<Arc<[ExprSyntax]>>,
+    /// Zero-based ConstSpec index inside its declaration. Var declarations
+    /// retain zero because `iota` is defined only for constant declarations.
+    pub(crate) iota: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -427,6 +433,10 @@ pub enum ExprSyntaxKind {
     Index {
         base: Box<ExprSyntax>,
         index: Box<ExprSyntax>,
+    },
+    IndexList {
+        base: Box<ExprSyntax>,
+        indices: Arc<[ExprSyntax]>,
     },
     Slice {
         base: Box<ExprSyntax>,

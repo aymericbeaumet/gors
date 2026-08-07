@@ -1,0 +1,3 @@
+module go_spec_negative_language_version_binary_literal
+
+go 1.12

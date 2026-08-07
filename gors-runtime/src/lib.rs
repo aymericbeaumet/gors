@@ -11,15 +11,18 @@
 #![allow(dead_code)]
 
 mod byte_ranges;
+mod byte_slices;
 mod channels;
 mod interface_containers;
 mod interfaces;
+mod printing;
 mod slice_identity;
 mod string_runes;
 
 pub use byte_ranges::{
     go_slice_u8_index, go_slice_u8_len, go_slice_u8_range, go_string_index, go_string_range,
 };
+pub use byte_slices::{go_slice_u8_copy, go_slice_u8_make, go_slice_u8_set};
 pub use channels::{
     GoChannelI64, go_channel_i64_cap, go_channel_i64_close, go_channel_i64_is_nil,
     go_channel_i64_len, go_channel_i64_make, go_channel_i64_nil, go_channel_i64_receive,
@@ -34,12 +37,15 @@ pub use interface_containers::{
     go_slice_interface_set,
 };
 pub use interfaces::{
-    GoInterface, go_interface_box_aggregate, go_interface_box_bool, go_interface_box_go_string,
+    GoInterface, go_interface_box_aggregate, go_interface_box_bool,
+    go_interface_box_comparable_aggregate, go_interface_box_f64, go_interface_box_go_string,
     go_interface_box_i64, go_interface_box_pointer_struct_i64, go_interface_box_struct_i64,
-    go_interface_is_nil, go_interface_is_type, go_interface_nil, go_interface_struct_i64_get,
-    go_interface_unbox_aggregate, go_interface_unbox_bool, go_interface_unbox_go_string,
-    go_interface_unbox_i64, go_interface_unbox_pointer_struct_i64,
+    go_interface_equal, go_interface_is_nil, go_interface_is_type, go_interface_nil,
+    go_interface_struct_i64_get, go_interface_unbox_aggregate, go_interface_unbox_bool,
+    go_interface_unbox_f64, go_interface_unbox_go_string, go_interface_unbox_i64,
+    go_interface_unbox_pointer_struct_i64,
 };
+pub use printing::{print_bool, print_f64, print_go_string, print_i64, print_newline, print_space};
 pub use slice_identity::{
     go_slice_bool_is_nil, go_slice_bool_nil, go_slice_i64_is_nil, go_slice_i64_nil,
     go_slice_u8_is_nil, go_slice_u8_nil,
@@ -933,35 +939,6 @@ fn integer_divide_by_zero() -> ! {
 #[allow(clippy::panic)] // This is the Go language panic boundary, not an invariant failure.
 fn negative_shift_amount() -> ! {
     std::panic::resume_unwind(Box::new("runtime error: negative shift amount"))
-}
-
-/// Print an exact Go boolean representation.
-pub fn print_bool(value: bool) {
-    write_stderr_bytes(if value { b"true" } else { b"false" });
-}
-
-/// Print an exact 64-bit Go `int` representation.
-pub fn print_i64(value: GoInt) {
-    let stderr = std::io::stderr();
-    let mut output = stderr.lock();
-    drop(write!(output, "{value}"));
-}
-
-/// Emit the separator used between arguments to Go `println`.
-pub fn print_space() {
-    write_stderr_bytes(b" ");
-}
-
-/// Emit the line terminator used by Go `println`.
-pub fn print_newline() {
-    write_stderr_bytes(b"\n");
-}
-
-/// Print the exact bytes of a Go string.
-pub fn print_go_string(value: GoString) {
-    let stderr = std::io::stderr();
-    let mut output = stderr.lock();
-    drop(write_go_string_to(&mut output, &value));
 }
 
 /// Raise an explicit Go panic carrying a boolean value.

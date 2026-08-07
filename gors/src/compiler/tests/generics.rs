@@ -57,3 +57,27 @@ fn generic_inference_rejects_non_representable_untyped_constants() {
     .expect("an unassignable constant argument must be rejected");
     assert!(error.to_string().contains("cannot use"), "{error}");
 }
+
+#[test]
+fn generic_types_accept_multiple_explicit_type_arguments() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            type Pair[A, B any] struct {
+                First A
+                Second B
+            }
+
+            func main() {
+                pair := Pair[int, string]{First: 42, Second: "answer"}
+                if pair.First != 42 || pair.Second != "answer" {
+                    panic("multiple generic type arguments changed")
+                }
+                println(pair.First, pair.Second)
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"42 answer\n");
+}

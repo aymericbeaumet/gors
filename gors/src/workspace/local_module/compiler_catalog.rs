@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::compiler::input::{
-    PackageCatalogError, PackageInputManifest, PackageKey, PackageManifestCatalog, SourceFileInput,
+    GoLanguageVersion, PackageCatalogError, PackageInputManifest, PackageKey,
+    PackageManifestCatalog, SourceFileInput,
 };
 use crate::import_path::CanonicalImportPath;
 
@@ -80,7 +81,11 @@ impl PackageManifestCatalog for LocalModuleManifestCatalog {
                 return Err(PackageCatalogError::new(package.clone(), error));
             }
         };
-        let manifest = Arc::new(convert_manifest(package, &source_package)?);
+        let manifest = Arc::new(convert_manifest(
+            package,
+            &source_package,
+            self.source_catalog.language_version(),
+        )?);
         Ok(Some(self.publish(import_path.clone(), manifest)))
     }
 }
@@ -88,6 +93,7 @@ impl PackageManifestCatalog for LocalModuleManifestCatalog {
 fn convert_manifest(
     requested: &PackageKey,
     package: &MaterializedPackage,
+    language_version: GoLanguageVersion,
 ) -> Result<PackageInputManifest, PackageCatalogError> {
     let mut files = Vec::with_capacity(package.files().len());
     for file in package.files() {
@@ -102,8 +108,12 @@ fn convert_manifest(
                 .map_err(|error| PackageCatalogError::new(requested.clone(), error))?,
         );
     }
-    PackageInputManifest::new(PackageKey::ImportPath(package.import_path().clone()), files)
-        .map_err(|error| PackageCatalogError::new(requested.clone(), error))
+    PackageInputManifest::new_with_language_version(
+        PackageKey::ImportPath(package.import_path().clone()),
+        language_version,
+        files,
+    )
+    .map_err(|error| PackageCatalogError::new(requested.clone(), error))
 }
 
 fn lock_manifests(

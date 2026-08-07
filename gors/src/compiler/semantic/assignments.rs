@@ -9,7 +9,7 @@ use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{ExprSyntax, ExprSyntaxKind};
-use crate::compiler::types::{IntTy, Ty};
+use crate::compiler::types::{IntTy, Ty, UintTy};
 use crate::token::Token;
 
 impl FunctionLowerer {
@@ -255,18 +255,26 @@ impl FunctionLowerer {
             Ty::Slice(element)
                 if matches!(
                     element.underlying(),
-                    Ty::Int(IntTy::Int | IntTy::Int32) | Ty::Bool
+                    Ty::Int(IntTy::Int | IntTy::Int32) | Ty::Uint(UintTy::Uint8) | Ty::Bool
                 ) =>
             {
                 let element_ty = element.as_ref().clone();
                 let set = if element.underlying() == &Ty::Bool {
                     hir::Builtin::SliceBoolSet
+                } else if element.underlying() == &Ty::Uint(UintTy::Uint8) {
+                    hir::Builtin::SliceU8Set
                 } else {
                     hir::Builtin::SliceI64Set
                 };
                 let index = self.lower_expr(index, Some(&Ty::Int(IntTy::Int)))?;
                 let value = self.lower_expr(value, Some(&element_ty))?;
                 let op = assignment_op(token, source)?;
+                if element.underlying() == &Ty::Uint(UintTy::Uint8) && op != hir::AssignOp::Set {
+                    return Err(Diagnostic::unsupported(
+                        "compound []byte assignment requires uint8 wrapping semantics",
+                        source,
+                    ));
+                }
                 if op != hir::AssignOp::Set {
                     super::expressions::validate_binary_operator(
                         super::expressions::assignment_binary_op(op),
@@ -304,7 +312,7 @@ impl FunctionLowerer {
                 })
             }
             _ => Err(Diagnostic::semantic(
-                "indexed assignment requires []bool, []int, or map[string]int",
+                "indexed assignment requires []bool, []byte, []int, or map[string]int",
                 source,
             )),
         }
@@ -437,12 +445,16 @@ impl FunctionLowerer {
                         Ty::Slice(element)
                             if matches!(
                                 element.underlying(),
-                                Ty::Int(IntTy::Int | IntTy::Int32) | Ty::Bool
+                                Ty::Int(IntTy::Int | IntTy::Int32)
+                                    | Ty::Uint(UintTy::Uint8)
+                                    | Ty::Bool
                             ) =>
                         {
                             let element_ty = element.as_ref().clone();
                             let set = if element.underlying() == &Ty::Bool {
                                 hir::Builtin::SliceBoolSet
+                            } else if element.underlying() == &Ty::Uint(UintTy::Uint8) {
+                                hir::Builtin::SliceU8Set
                             } else {
                                 hir::Builtin::SliceI64Set
                             };
@@ -466,7 +478,7 @@ impl FunctionLowerer {
                         }
                         _ => {
                             return Err(Diagnostic::semantic(
-                                "indexed assignment requires []bool, []int, or map[string]int",
+                                "indexed assignment requires []bool, []byte, []int, or map[string]int",
                                 source,
                             ));
                         }
@@ -581,6 +593,14 @@ impl FunctionLowerer {
         if self.variables.contains_key(ident.name.as_ref()) {
             return Err(Diagnostic::unsupported(
                 "package variable mutation requires global storage lowering",
+                source,
+            ));
+        }
+        if self.lookup_local_constant(&ident.name).is_some()
+            || self.constants.contains_key(ident.name.as_ref())
+        {
+            return Err(Diagnostic::semantic(
+                format!("cannot assign to constant {}", ident.name),
                 source,
             ));
         }

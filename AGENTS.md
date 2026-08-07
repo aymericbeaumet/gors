@@ -470,8 +470,14 @@ Revision-local physical ranges live only in `FunctionLayout` and
 plan which the presentation query joins to the current layout. Package-function
 `SyntaxAnchor`s use the package-level name, while method anchors use the named
 receiver and method name. Neither form contains an offset, traversal ordinal,
-or token index, and repeated `init` remains rejected until a structural
-disambiguator exists. Demand queries independently type function headers,
+or token index. Repeated `init` declarations are not independently nameable Go
+definitions: file projection retains each body as an ordered fragment under
+one stable package-owned `init` identity, and package-variable initialization
+composes those fragments in package filename and source declaration order.
+Identical initializer bodies therefore require no unstable declaration
+ordinal. Generic receiver and type syntax retains every explicit type argument
+rather than collapsing multi-argument instantiations back into parser-only
+syntax. Demand queries independently type function headers,
 package constants, package variables, and function bodies before reaching
 function-relative typed HIR, per-definition
 verified MIR, mandatory normalized/reverified MIR, configured verified Rust IR,
@@ -488,6 +494,10 @@ reads materialize exact constant or zero initial values, while mutation and
 address-taking remain rejected until global storage lowering exists. Exported
 constant and variable type/value semantics participate in the package
 public-API fingerprint.
+Function-local constant declarations are scoped semantic bindings. Their exact
+values, explicit types, repeated specification expressions, and `iota` values
+are resolved before HIR expression lowering; they never become storage places
+or MIR locals, and assignment to one is a source diagnostic.
 Address-taking of a non-nested integer local is explicit HIR intent. MIR plans
 one shared pointer-backed storage cell for each such local, initializes
 parameters and declarations at their Go sequence points, and routes subsequent
@@ -656,6 +666,14 @@ fallback ad-hoc key only with the validated module identity read from the
 nearest containing `go.mod`. Directory entry packages receive their canonical
 module import path; explicit file lists remain `PackageKey::CommandLine` while
 sharing the local-module dependency catalog.
+Every `PackageInputManifest` also owns its canonical Go language version.
+Local-module manifests use the `go` directive, or Go's fixed `go1.16` default
+when it is absent; synthetic and embedded-SDK manifests default to the pinned
+compiler version. File projection records exact language-gated token evidence
+and any `//go:build go1.N` file version during its one parser pass. A separate
+tracked compatibility query combines those facts with manifest metadata, so a
+go.mod-only version change cannot reparse source or invalidate unchanged HIR,
+MIR, or Rust IR.
 
 The raw workspace loader deliberately performs no recursive module or import
 discovery. Module resolution is query-owned manifest expansion from decoded
@@ -667,17 +685,24 @@ Canonical decoded package identities live in the frontend-neutral
 consume that type's shared decoded-path validator instead of maintaining a
 parser-local validator. `workspace::local_module::LocalModuleCatalog` is the
 filesystem-only first boundary for local module discovery. Opening it
-canonicalizes one explicit module root and reads only its strict `module`
-directive. It materializes and memoizes one explicitly requested local package
-at a time, verifies lexical and canonical containment, reads only immediate
-eligible non-test Go files in canonical order, and never parses source or
-follows imports. `LocalModuleManifestCatalog` is its compiler adapter: it lazily
+canonicalizes one explicit module root and reads only its strict `module` and
+optional `go` directives. It materializes and memoizes one explicitly requested
+local package at a time, verifies lexical and canonical containment, reads only
+immediate eligible non-test Go files in canonical order, and never parses
+source or follows imports. `LocalModuleManifestCatalog` is its compiler adapter: it lazily
 converts and memoizes immutable `PackageInputManifest` values, reports external
 imports as unowned, and preserves concrete local loading failures through the
 catalog error chain. `ProgramInput` owns that adapter and the session admits its
 reachable closure from query-owned direct-import occurrences without another
-parse. Module discovery is `go.mod` based; GORSPATH is unsupported. Until the
-compiler publishes a closed reachable-input snapshot for the CLI manifest,
+parse. The production auto-loader composes the embedded Go SDK source catalog
+ahead of the local-module catalog, so standard-library identity wins while
+unknown canonical paths fall through to local module ownership; ad-hoc
+filesystem workspaces still own an embedded-SDK catalog when no local module
+exists. Each SDK request materializes and memoizes only that immutable
+package's raw build-selected Go files and never parses or follows imports.
+Module discovery is `go.mod` based; GORSPATH is unsupported.
+Until the compiler publishes a closed reachable-input snapshot for the CLI
+manifest,
 module-catalog builds must conservatively bypass cross-invocation
 generated-artifact cache admission;
 an entry-only snapshot is not sufficient evidence for a cache hit.

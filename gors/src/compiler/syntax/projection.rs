@@ -758,9 +758,18 @@ impl StructuralProjector {
         let mut contains_import_spec = false;
         let mut specs = Vec::new();
         let mut type_specs = Vec::new();
-        for spec in &declaration.specs {
+        for (index, spec) in declaration.specs.iter().enumerate() {
             match spec {
-                ast::Spec::ValueSpec(spec) => specs.push(self.value_spec(spec)?),
+                ast::Spec::ValueSpec(spec) => {
+                    let iota = if declaration.tok == crate::token::Token::CONST {
+                        u64::try_from(index).map_err(|_| {
+                            ProjectionError::OffsetOutsideTextDomain { offset: index }
+                        })?
+                    } else {
+                        0
+                    };
+                    specs.push(self.value_spec(spec, iota)?);
+                }
                 ast::Spec::TypeSpec(spec) => type_specs.push(self.local_type_spec(spec)?),
                 ast::Spec::ImportSpec(_) => contains_import_spec = true,
             }
@@ -777,6 +786,7 @@ impl StructuralProjector {
     fn value_spec(
         &mut self,
         spec: &ast::ValueSpec<'_>,
+        iota: u64,
     ) -> Result<ValueSpecSyntax, ProjectionError> {
         Ok(ValueSpecSyntax {
             names: spec
@@ -801,6 +811,7 @@ impl StructuralProjector {
                         .map(Arc::from)
                 })
                 .transpose()?,
+            iota,
         })
     }
 
@@ -908,7 +919,15 @@ impl StructuralProjector {
                 base: Box::new(self.expression(&expression.x)?),
                 index: Box::new(self.expression(&expression.index)?),
             },
-            ast::Expr::IndexListExpr(_) => ExprSyntaxKind::Unsupported("generic index expression"),
+            ast::Expr::IndexListExpr(expression) => ExprSyntaxKind::IndexList {
+                base: Box::new(self.expression(&expression.x)?),
+                indices: expression
+                    .indices
+                    .iter()
+                    .map(|index| self.expression(index))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into(),
+            },
             ast::Expr::InterfaceType(interface) => ExprSyntaxKind::InterfaceType {
                 methods: interface
                     .methods

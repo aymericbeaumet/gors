@@ -426,6 +426,7 @@ impl FunctionLowerer {
                 } else {
                     let get = match set {
                         hir::Builtin::SliceI64Set => hir::Builtin::SliceI64Index,
+                        hir::Builtin::SliceU8Set => hir::Builtin::SliceU8Index,
                         hir::Builtin::SliceBoolSet => hir::Builtin::SliceBoolIndex,
                         _ => {
                             return Err(Diagnostic::backend(

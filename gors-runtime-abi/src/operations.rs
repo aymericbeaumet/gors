@@ -3,8 +3,12 @@
 mod decode;
 mod identity;
 mod metadata;
+mod runtime_encoding;
+mod signature_types;
 mod symbols;
 mod value_types;
+
+use signature_types::*;
 
 use crate::effects::GoPanicCondition;
 use crate::encoding::CanonicalEncoder;
@@ -353,113 +357,6 @@ pub struct RuntimeSignature {
     result: RuntimeType,
 }
 
-const NO_PARAMETERS: &[RuntimeType] = &[];
-const BYTES_PARAMETER: &[RuntimeType] = &[RuntimeType::ByteSlice];
-const STATIC_BYTES_PARAMETER: &[RuntimeType] = &[RuntimeType::StaticByteSlice];
-const BOOL_PARAMETER: &[RuntimeType] = &[RuntimeType::Bool];
-const TWO_BOOL_PARAMETERS: &[RuntimeType] = &[RuntimeType::Bool, RuntimeType::Bool];
-const I64_PARAMETER: &[RuntimeType] = &[RuntimeType::I64];
-const TWO_I64_PARAMETERS: &[RuntimeType] = &[RuntimeType::I64, RuntimeType::I64];
-const F64_PARAMETER: &[RuntimeType] = &[RuntimeType::F64];
-const TWO_F64_PARAMETERS: &[RuntimeType] = &[RuntimeType::F64, RuntimeType::F64];
-const COMPLEX128_PARAMETER: &[RuntimeType] = &[RuntimeType::Complex128];
-const TWO_COMPLEX128_PARAMETERS: &[RuntimeType] =
-    &[RuntimeType::Complex128, RuntimeType::Complex128];
-const GO_STRING_PARAMETER: &[RuntimeType] = &[RuntimeType::GoString];
-const TWO_GO_STRING_PARAMETERS: &[RuntimeType] = &[RuntimeType::GoString, RuntimeType::GoString];
-const STATIC_I64_SLICE_PARAMETER: &[RuntimeType] = &[RuntimeType::StaticI64Slice];
-const GO_SLICE_I64_AND_INDEX: &[RuntimeType] = &[RuntimeType::GoSliceI64, RuntimeType::I64];
-const GO_SLICE_I64_RANGE: &[RuntimeType] = &[
-    RuntimeType::GoSliceI64,
-    RuntimeType::I64,
-    RuntimeType::I64,
-    RuntimeType::I64,
-];
-const GO_SLICE_I64_SET: &[RuntimeType] =
-    &[RuntimeType::GoSliceI64, RuntimeType::I64, RuntimeType::I64];
-const GO_SLICE_I64_PARAMETER: &[RuntimeType] = &[RuntimeType::GoSliceI64];
-const TWO_GO_SLICE_I64_PARAMETERS: &[RuntimeType] =
-    &[RuntimeType::GoSliceI64, RuntimeType::GoSliceI64];
-const GO_SLICE_U8_PARAMETER: &[RuntimeType] = &[RuntimeType::GoSliceU8];
-const GO_SLICE_BOOL_PARAMETER: &[RuntimeType] = &[RuntimeType::GoSliceBool];
-const GO_SLICE_U8_AND_INDEX: &[RuntimeType] = &[RuntimeType::GoSliceU8, RuntimeType::I64];
-const GO_SLICE_U8_RANGE: &[RuntimeType] = &[
-    RuntimeType::GoSliceU8,
-    RuntimeType::I64,
-    RuntimeType::I64,
-    RuntimeType::I64,
-];
-const TWO_GO_SLICE_U8_PARAMETERS: &[RuntimeType] =
-    &[RuntimeType::GoSliceU8, RuntimeType::GoSliceU8];
-const GO_SLICE_U8_AND_STRING: &[RuntimeType] = &[RuntimeType::GoSliceU8, RuntimeType::GoString];
-const GO_STRING_AND_INDEX: &[RuntimeType] = &[RuntimeType::GoString, RuntimeType::I64];
-const GO_STRING_RANGE: &[RuntimeType] =
-    &[RuntimeType::GoString, RuntimeType::I64, RuntimeType::I64];
-const GO_MAP_STRING_I64_PARAMETER: &[RuntimeType] = &[RuntimeType::GoMapStringI64];
-const GO_MAP_STRING_I64_AND_KEY: &[RuntimeType] =
-    &[RuntimeType::GoMapStringI64, RuntimeType::GoString];
-const GO_MAP_STRING_I64_AND_INDEX: &[RuntimeType] =
-    &[RuntimeType::GoMapStringI64, RuntimeType::I64];
-const GO_MAP_STRING_I64_SET: &[RuntimeType] = &[
-    RuntimeType::GoMapStringI64,
-    RuntimeType::GoString,
-    RuntimeType::I64,
-];
-const GO_POINTER_I64_PARAMETER: &[RuntimeType] = &[RuntimeType::GoPointerI64];
-const GO_POINTER_I64_SET: &[RuntimeType] = &[RuntimeType::GoPointerI64, RuntimeType::I64];
-const GO_POINTER_STRUCT_I64_PARAMETER: &[RuntimeType] = &[RuntimeType::GoPointerStructI64];
-const TWO_GO_POINTER_STRUCT_I64_PARAMETERS: &[RuntimeType] = &[
-    RuntimeType::GoPointerStructI64,
-    RuntimeType::GoPointerStructI64,
-];
-const GO_POINTER_STRUCT_I64_AND_INDEX: &[RuntimeType] =
-    &[RuntimeType::GoPointerStructI64, RuntimeType::I64];
-const GO_POINTER_STRUCT_I64_SET: &[RuntimeType] = &[
-    RuntimeType::GoPointerStructI64,
-    RuntimeType::I64,
-    RuntimeType::I64,
-];
-const GO_INTERFACE_PARAMETER: &[RuntimeType] = &[RuntimeType::GoInterface];
-const GO_INTERFACE_AND_TYPE: &[RuntimeType] = &[RuntimeType::GoInterface, RuntimeType::GoString];
-const GO_INTERFACE_AND_TYPE_AND_INDEX: &[RuntimeType] = &[
-    RuntimeType::GoInterface,
-    RuntimeType::GoString,
-    RuntimeType::I64,
-];
-const GO_INTERFACE_BOX_BOOL: &[RuntimeType] = &[RuntimeType::GoString, RuntimeType::Bool];
-const GO_INTERFACE_BOX_I64: &[RuntimeType] = &[RuntimeType::GoString, RuntimeType::I64];
-const GO_INTERFACE_BOX_STRING: &[RuntimeType] = &[RuntimeType::GoString, RuntimeType::GoString];
-const GO_INTERFACE_BOX_STRUCT_I64: &[RuntimeType] =
-    &[RuntimeType::GoString, RuntimeType::GoSliceI64];
-const GO_INTERFACE_BOX_POINTER_STRUCT_I64: &[RuntimeType] =
-    &[RuntimeType::GoString, RuntimeType::GoPointerStructI64];
-const GO_INTERFACE_BOX_AGGREGATE: &[RuntimeType] =
-    &[RuntimeType::GoString, RuntimeType::GoSliceInterface];
-const STATIC_BOOL_SLICE_PARAMETER: &[RuntimeType] = &[RuntimeType::StaticBoolSlice];
-const GO_SLICE_BOOL_AND_INDEX: &[RuntimeType] = &[RuntimeType::GoSliceBool, RuntimeType::I64];
-const GO_SLICE_BOOL_SET: &[RuntimeType] = &[
-    RuntimeType::GoSliceBool,
-    RuntimeType::I64,
-    RuntimeType::Bool,
-];
-const GO_SLICE_INTERFACE_PARAMETER: &[RuntimeType] = &[RuntimeType::GoSliceInterface];
-const GO_SLICE_INTERFACE_AND_INDEX: &[RuntimeType] =
-    &[RuntimeType::GoSliceInterface, RuntimeType::I64];
-const GO_SLICE_INTERFACE_SET: &[RuntimeType] = &[
-    RuntimeType::GoSliceInterface,
-    RuntimeType::I64,
-    RuntimeType::GoInterface,
-];
-const GO_MAP_STRING_INTERFACE_PARAMETER: &[RuntimeType] = &[RuntimeType::GoMapStringInterface];
-const GO_MAP_STRING_INTERFACE_AND_KEY: &[RuntimeType] =
-    &[RuntimeType::GoMapStringInterface, RuntimeType::GoString];
-const GO_MAP_STRING_INTERFACE_SET: &[RuntimeType] = &[
-    RuntimeType::GoMapStringInterface,
-    RuntimeType::GoString,
-    RuntimeType::GoInterface,
-];
-const GO_CHANNEL_I64_PARAMETER: &[RuntimeType] = &[RuntimeType::GoChannelI64];
-const GO_CHANNEL_I64_SEND: &[RuntimeType] = &[RuntimeType::GoChannelI64, RuntimeType::I64];
 const NO_CAPABILITIES: &[TargetCapability] = &[];
 const STANDARD_IO_CAPABILITY: &[TargetCapability] = &[StandardIo];
 const NO_GO_PANICS: &[GoPanicCondition] = &[];
@@ -485,6 +382,8 @@ const TYPE_ASSERTION_OR_INDEX_OUT_OF_RANGE: &[GoPanicCondition] = &[
     GoPanicCondition::IndexOutOfRange,
     GoPanicCondition::TypeAssertionFailure,
 ];
+const UNCOMPARABLE_INTERFACE_COMPARISON: &[GoPanicCondition] =
+    &[GoPanicCondition::UncomparableInterfaceComparison];
 
 /// Operations that require an exact symbol from the versioned runtime ABI.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -596,6 +495,14 @@ pub enum RuntimeOp {
     GoSliceInterfaceIsNil,
     GoInterfaceBoxAggregate,
     GoInterfaceUnboxAggregate,
+    GoSliceU8Make,
+    GoSliceU8Set,
+    GoSliceU8Copy,
+    PrintF64,
+    GoInterfaceBoxF64,
+    GoInterfaceUnboxF64,
+    GoInterfaceEqual,
+    GoInterfaceBoxComparableAggregate,
 }
 
 /// Stable compact identity of one runtime ABI operation.
@@ -716,6 +623,14 @@ impl RuntimeOp {
         Self::GoSliceInterfaceIsNil,
         Self::GoInterfaceBoxAggregate,
         Self::GoInterfaceUnboxAggregate,
+        Self::GoSliceU8Make,
+        Self::GoSliceU8Set,
+        Self::GoSliceU8Copy,
+        Self::PrintF64,
+        Self::GoInterfaceBoxF64,
+        Self::GoInterfaceUnboxF64,
+        Self::GoInterfaceEqual,
+        Self::GoInterfaceBoxComparableAggregate,
     ];
 
     /// Exact typed call signature at the Rust runtime boundary.
@@ -739,6 +654,7 @@ impl RuntimeOp {
             }
             Self::PrintBool => RuntimeSignature::new(BOOL_PARAMETER, RuntimeType::Unit),
             Self::PrintI64 => RuntimeSignature::new(I64_PARAMETER, RuntimeType::Unit),
+            Self::PrintF64 => RuntimeSignature::new(F64_PARAMETER, RuntimeType::Unit),
             Self::PrintGoString => RuntimeSignature::new(GO_STRING_PARAMETER, RuntimeType::Unit),
             Self::PanicBool => RuntimeSignature::new(BOOL_PARAMETER, RuntimeType::Unit),
             Self::PanicI64 => RuntimeSignature::new(I64_PARAMETER, RuntimeType::Unit),
@@ -874,6 +790,9 @@ impl RuntimeOp {
             Self::GoInterfaceBoxI64 => {
                 RuntimeSignature::new(GO_INTERFACE_BOX_I64, RuntimeType::GoInterface)
             }
+            Self::GoInterfaceBoxF64 => {
+                RuntimeSignature::new(GO_INTERFACE_BOX_F64, RuntimeType::GoInterface)
+            }
             Self::GoInterfaceBoxGoString => {
                 RuntimeSignature::new(GO_INTERFACE_BOX_STRING, RuntimeType::GoInterface)
             }
@@ -895,6 +814,12 @@ impl RuntimeOp {
             }
             Self::GoInterfaceUnboxI64 => {
                 RuntimeSignature::new(GO_INTERFACE_AND_TYPE, RuntimeType::I64)
+            }
+            Self::GoInterfaceUnboxF64 => {
+                RuntimeSignature::new(GO_INTERFACE_AND_TYPE, RuntimeType::F64)
+            }
+            Self::GoInterfaceEqual => {
+                RuntimeSignature::new(TWO_GO_INTERFACE_PARAMETERS, RuntimeType::Bool)
             }
             Self::GoInterfaceUnboxGoString => {
                 RuntimeSignature::new(GO_INTERFACE_AND_TYPE, RuntimeType::GoString)
@@ -971,24 +896,19 @@ impl RuntimeOp {
             Self::GoSliceInterfaceIsNil => {
                 RuntimeSignature::new(GO_SLICE_INTERFACE_PARAMETER, RuntimeType::Bool)
             }
-            Self::GoInterfaceBoxAggregate => {
+            Self::GoInterfaceBoxAggregate | Self::GoInterfaceBoxComparableAggregate => {
                 RuntimeSignature::new(GO_INTERFACE_BOX_AGGREGATE, RuntimeType::GoInterface)
             }
             Self::GoInterfaceUnboxAggregate => {
                 RuntimeSignature::new(GO_INTERFACE_AND_TYPE, RuntimeType::GoSliceInterface)
             }
-        }
-    }
-
-    pub(crate) fn encode(self, encoder: &mut CanonicalEncoder) {
-        encoder.u16(self.id().get());
-        encoder.text(self.symbol());
-        self.signature().encode(encoder);
-        self.effects().encode(encoder);
-        let requirements = self.required_capabilities();
-        encoder.count(requirements.len());
-        for requirement in requirements {
-            encoder.u16(requirement.canonical_tag());
+            Self::GoSliceU8Make => {
+                RuntimeSignature::new(TWO_I64_PARAMETERS, RuntimeType::GoSliceU8)
+            }
+            Self::GoSliceU8Set => RuntimeSignature::new(GO_SLICE_U8_SET, RuntimeType::Unit),
+            Self::GoSliceU8Copy => {
+                RuntimeSignature::new(TWO_GO_SLICE_U8_PARAMETERS, RuntimeType::I64)
+            }
         }
     }
 }

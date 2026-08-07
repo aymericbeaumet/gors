@@ -2,6 +2,7 @@ use std::fmt;
 use std::io;
 use std::path::PathBuf;
 
+use crate::compiler::input::GoLanguageVersionParseError;
 use crate::import_path::{CanonicalImportPath, ImportPathIssue};
 
 /// Structural failure in a local module's `go.mod` file.
@@ -15,6 +16,18 @@ pub enum ModuleFileIssue {
     },
     MalformedModuleDirective {
         line: usize,
+    },
+    DuplicateGoDirective {
+        first_line: usize,
+        duplicate_line: usize,
+    },
+    MalformedGoDirective {
+        line: usize,
+    },
+    InvalidGoVersion {
+        line: usize,
+        version: std::sync::Arc<str>,
+        issue: GoLanguageVersionParseError,
     },
     InvalidModulePath {
         line: usize,
@@ -38,6 +51,25 @@ impl fmt::Display for ModuleFileIssue {
             Self::MalformedModuleDirective { line } => {
                 write!(formatter, "malformed module directive on line {line}")
             }
+            Self::DuplicateGoDirective {
+                first_line,
+                duplicate_line,
+            } => write!(
+                formatter,
+                "go.mod repeats its go directive on line {duplicate_line} \
+                 (first declared on line {first_line})"
+            ),
+            Self::MalformedGoDirective { line } => {
+                write!(formatter, "malformed go directive on line {line}")
+            }
+            Self::InvalidGoVersion {
+                line,
+                version,
+                issue,
+            } => write!(
+                formatter,
+                "invalid Go language version {version:?} on line {line}: {issue}"
+            ),
             Self::InvalidModulePath { line, issue } => {
                 write!(formatter, "invalid module path on line {line}: {issue}")
             }
@@ -49,6 +81,7 @@ impl std::error::Error for ModuleFileIssue {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::InvalidModulePath { issue, .. } => Some(issue),
+            Self::InvalidGoVersion { issue, .. } => Some(issue),
             _ => None,
         }
     }

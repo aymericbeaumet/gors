@@ -9,7 +9,6 @@ mod pointers;
 mod provenance;
 mod structs;
 mod type_rules;
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::construct::spawn_empty_effects;
@@ -554,6 +553,15 @@ impl Function {
                                     }
                                     vec![Ty::Slice(Box::new(Ty::Int(IntTy::Int)))]
                                 }
+                                hir::Builtin::SliceU8Make => {
+                                    if argument_types != [Ty::Int(IntTy::Int), Ty::Int(IntTy::Int)]
+                                    {
+                                        return Err(Diagnostic::backend(format!(
+                                            "invalid MIR byte slice make argument types: {argument_types:?}"
+                                        )));
+                                    }
+                                    vec![Ty::Slice(Box::new(Ty::Uint(UintTy::Uint8)))]
+                                }
                                 hir::Builtin::SliceI64Len | hir::Builtin::SliceI64Cap => {
                                     let valid = matches!(
                                         argument_types.as_slice(),
@@ -605,6 +613,28 @@ impl Function {
                                             crate::compiler::types::UintTy::Uint8,
                                         )))]
                                     }
+                                }
+                                hir::Builtin::SliceU8Set => {
+                                    let expected = [
+                                        Ty::Slice(Box::new(Ty::Uint(UintTy::Uint8))),
+                                        Ty::Int(IntTy::Int),
+                                        Ty::Uint(UintTy::Uint8),
+                                    ];
+                                    if argument_types != expected {
+                                        return Err(Diagnostic::backend(format!(
+                                            "invalid MIR byte slice set argument types: {argument_types:?}"
+                                        )));
+                                    }
+                                    Vec::new()
+                                }
+                                hir::Builtin::SliceU8Copy => {
+                                    let byte_slice = Ty::Slice(Box::new(Ty::Uint(UintTy::Uint8)));
+                                    if argument_types != [byte_slice.clone(), byte_slice] {
+                                        return Err(Diagnostic::backend(format!(
+                                            "invalid MIR byte slice copy arguments: {argument_types:?}"
+                                        )));
+                                    }
+                                    vec![Ty::Int(IntTy::Int)]
                                 }
                                 hir::Builtin::SliceU8Len => {
                                     verify_byte_slice_integer_arguments(

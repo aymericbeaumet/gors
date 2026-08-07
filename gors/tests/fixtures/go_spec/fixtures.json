@@ -1,5 +1,5 @@
 {
-  "expectedProgramCount": 111,
+  "expectedProgramCount": 114,
   "fixtures": {
     "_negative/composite_literal_duplicate_index": {
       "status": "compile_error",
@@ -18,6 +18,10 @@
       "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
     },
     "_negative/generics_constraints": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/goto_jump_into_block": {
       "status": "compile_error",
       "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
     },
@@ -42,6 +46,10 @@
       "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
     },
     "_negative/map_element_not_addressable": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/negative_language_version_binary_literal": {
       "status": "compile_error",
       "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
     },

@@ -4,11 +4,12 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 
+use crate::compiler::input::GoLanguageVersion;
 use crate::import_path::CanonicalImportPath;
 
 use super::{
     LocalModuleError, MaterializedPackage, MaterializedSourceFile, ModuleFileIssue,
-    parse_module_directive,
+    go_mod::parse_module_metadata,
 };
 
 type PackageCell = Arc<PackageSingleFlight>;
@@ -22,6 +23,7 @@ type PackageCell = Arc<PackageSingleFlight>;
 pub struct LocalModuleCatalog {
     canonical_root: PathBuf,
     module_path: CanonicalImportPath,
+    language_version: GoLanguageVersion,
     packages: Mutex<BTreeMap<CanonicalImportPath, PackageCell>>,
 }
 
@@ -53,15 +55,16 @@ impl LocalModuleCatalog {
                 path: canonical_go_mod.clone(),
                 issue: ModuleFileIssue::NonUtf8,
             })?;
-        let module_path =
-            parse_module_directive(source).map_err(|issue| LocalModuleError::MalformedModule {
+        let metadata =
+            parse_module_metadata(source).map_err(|issue| LocalModuleError::MalformedModule {
                 path: canonical_go_mod,
                 issue,
             })?;
 
         Ok(Self {
             canonical_root,
-            module_path,
+            module_path: metadata.module_path,
+            language_version: metadata.language_version,
             packages: Mutex::new(BTreeMap::new()),
         })
     }
@@ -76,6 +79,13 @@ impl LocalModuleCatalog {
     #[must_use]
     pub const fn module_path(&self) -> &CanonicalImportPath {
         &self.module_path
+    }
+
+    /// Go language version declared by this module, or Go's fixed `go1.16`
+    /// compatibility default when the directive is absent.
+    #[must_use]
+    pub const fn language_version(&self) -> GoLanguageVersion {
+        self.language_version
     }
 
     /// Number of successfully materialized package snapshots.

@@ -4,6 +4,7 @@ mod analysis;
 mod constant_eval;
 mod hir_dependencies;
 mod imports;
+mod language_versions;
 mod lookups;
 mod rust_ir_package;
 mod support;
@@ -16,6 +17,7 @@ pub(super) use analysis::{
     signature_product,
 };
 use hir_dependencies::direct_callees;
+pub(super) use language_versions::language_version_issues;
 pub(super) use lookups::{
     package_constant_named_product, package_function_named_product, package_function_product,
     package_method_named_product, package_variable_named_product,
@@ -48,6 +50,7 @@ use crate::compiler::{Diagnostic, lowering, mir, rust_ir};
 use crate::source::SourceCoordinateMap;
 
 use super::super::ids::{DefId, DefinitionKey, DefinitionKind, FileId, PackageId, QualifiedDefId};
+use super::model::LanguageFeatureUse;
 use super::model::{FileIssue, FunctionBody, FunctionSignature, ParseFailure, RuntimeAbiId};
 use super::products::{
     CompilerStage, MirSignatureDependencies, NormalizedMirFunction, RustSignatureDependencies,
@@ -73,6 +76,8 @@ pub(super) struct SourceInput {
     pub(super) file: FileId,
     #[returns(clone)]
     pub(super) logical_path: Arc<str>,
+    #[returns(copy)]
+    pub(super) language_version: crate::compiler::input::GoLanguageVersion,
     #[returns(clone)]
     pub(super) content: Arc<SourceContent>,
     #[returns(copy)]
@@ -187,6 +192,12 @@ pub(super) struct FileFacts<'db> {
     #[returns(clone)]
     pub(super) logical_path: Arc<str>,
     #[tracked]
+    #[returns(copy)]
+    pub(super) file_language_version: Option<crate::compiler::input::GoLanguageVersion>,
+    #[tracked]
+    #[returns(clone)]
+    pub(super) language_features: Arc<[LanguageFeatureUse]>,
+    #[tracked]
     #[returns(clone)]
     pub(super) coordinate_map: Arc<SourceCoordinateMap>,
     #[tracked]
@@ -237,6 +248,8 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
                 file,
                 package_id,
                 logical_path,
+                None,
+                Arc::from([]),
                 coordinate_map,
                 Arc::from(""),
                 Arc::new(FileImports::new(file, Arc::from([]), Arc::from([]))),
@@ -253,6 +266,11 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
     };
     let (parsed, coordinate_map, token_observations) = parsed.into_parts();
     let coordinate_map = Arc::new(coordinate_map);
+    let (file_language_version, language_features) = language_versions::project_language_facts(
+        parsed.go_version,
+        &token_observations,
+        content.text_len(),
+    );
     db.unwind_if_revision_cancelled();
     let declared_package: Arc<str> = Arc::from(parsed.name.name);
     let imports = Arc::new(project_imports(file, &content, &parsed));
@@ -296,10 +314,13 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
                 };
                 let (key, receiver_type, pointer_receiver) =
                     function_definition_key(package_id, &structural_header);
-                let duplicate = receiver_type.as_ref().map_or_else(
-                    || !seen.insert(Arc::clone(&name)),
-                    |_| !seen_methods.insert(key.clone()),
-                );
+                let duplicate = if receiver_type.is_some() {
+                    !seen_methods.insert(key.clone())
+                } else if matches!(name.as_ref(), "init" | "_") {
+                    false
+                } else {
+                    !seen.insert(Arc::clone(&name))
+                };
                 if duplicate {
                     issues.push(FileIssue::DuplicateDefinition(name));
                     continue;
@@ -349,7 +370,7 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
                     let arity_mismatch = !values.is_empty() && values.len() != spec.names.len();
                     for (index, name) in spec.names.iter().enumerate() {
                         let owned_name: Arc<str> = Arc::from(name.name);
-                        if !seen.insert(Arc::clone(&owned_name)) {
+                        if owned_name.as_ref() != "_" && !seen.insert(Arc::clone(&owned_name)) {
                             issues.push(FileIssue::DuplicateDefinition(owned_name));
                             continue;
                         }
@@ -403,7 +424,7 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
                     let arity_mismatch = !values.is_empty() && values.len() != spec.names.len();
                     for (index, name) in spec.names.iter().enumerate() {
                         let owned_name: Arc<str> = Arc::from(name.name);
-                        if !seen.insert(Arc::clone(&owned_name)) {
+                        if owned_name.as_ref() != "_" && !seen.insert(Arc::clone(&owned_name)) {
                             issues.push(FileIssue::DuplicateDefinition(owned_name));
                             continue;
                         }
@@ -456,7 +477,7 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
                         continue;
                     };
                     let owned_name: Arc<str> = Arc::from(name.name);
-                    if !seen.insert(Arc::clone(&owned_name)) {
+                    if owned_name.as_ref() != "_" && !seen.insert(Arc::clone(&owned_name)) {
                         issues.push(FileIssue::DuplicateDefinition(owned_name));
                         continue;
                     }
@@ -564,6 +585,8 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
         file,
         package_id,
         logical_path,
+        file_language_version,
+        language_features,
         coordinate_map,
         declared_package,
         imports,

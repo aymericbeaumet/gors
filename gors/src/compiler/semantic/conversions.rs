@@ -8,7 +8,7 @@ use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::NodeId;
 use crate::compiler::provenance::SourceRef;
-use crate::compiler::syntax::ExprSyntax;
+use crate::compiler::syntax::{ExprSyntax, ExprSyntaxKind};
 use crate::compiler::types::{IntTy, Ty, UintTy};
 
 impl FunctionLowerer {
@@ -35,6 +35,19 @@ impl FunctionLowerer {
             ));
         };
         let target = lower_type(callee, &self.type_aliases, source)?;
+        if is_nil_identifier(argument) {
+            if !is_nilable_type(&target) {
+                return Err(Diagnostic::semantic(
+                    format!("cannot convert nil to {target:?}"),
+                    source,
+                ));
+            }
+            let mut result = self.zero_value_expr(node, source, target)?;
+            if let Some(expected) = expected {
+                coerce_expr(&mut result, expected, source)?;
+            }
+            return Ok(result);
+        }
         if matches!(target.underlying(), Ty::Interface(_)) {
             // A conversion to an interface type, including the predeclared
             // `any` alias, boxes the operand exactly like interface
@@ -136,6 +149,25 @@ impl FunctionLowerer {
         }
         Ok(result)
     }
+}
+
+fn is_nil_identifier(expression: &ExprSyntax) -> bool {
+    matches!(
+        &expression.kind,
+        ExprSyntaxKind::Ident(identifier) if identifier.name.as_ref() == "nil"
+    )
+}
+
+fn is_nilable_type(ty: &Ty) -> bool {
+    matches!(
+        ty.underlying(),
+        Ty::Interface(_)
+            | Ty::Function(_)
+            | Ty::Pointer(_)
+            | Ty::Slice(_)
+            | Ty::Map(_, _)
+            | Ty::Channel(_, _)
+    )
 }
 
 fn is_lossless_integer_conversion(from: &Ty, to: &Ty) -> bool {

@@ -8,7 +8,7 @@ use crate::operations::{PrimitiveOp, RuntimeOp};
 pub const CURRENT_MANIFEST_SCHEMA: ManifestSchemaVersion = ManifestSchemaVersion::new(2);
 
 /// Current semantic compiler/runtime operation contract.
-pub const CURRENT_CONTRACT_VERSION: ContractVersion = ContractVersion::new(2, 14, 0);
+pub const CURRENT_CONTRACT_VERSION: ContractVersion = ContractVersion::new(2, 16, 0);
 
 /// Version of the canonical manifest encoding itself.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

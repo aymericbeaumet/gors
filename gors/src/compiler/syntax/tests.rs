@@ -35,6 +35,32 @@ fn function_anchor_is_independent_of_layout_and_declaration_order() {
 }
 
 #[test]
+fn repeated_package_initializers_share_one_stable_package_anchor() {
+    let parsed = parse_file(
+        "syntax_projection.go",
+        "package p\nfunc init() {}\nfunc init() {}\n",
+    )
+    .expect("source should parse");
+    let initializers = parsed
+        .ast()
+        .decls
+        .iter()
+        .filter_map(|declaration| match declaration {
+            ast::Decl::FuncDecl(function) if function.name.name == "init" => Some(
+                project_function(function, parsed.token_observations())
+                    .expect("initializer projection should succeed"),
+            ),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(initializers.len(), 2);
+    assert_eq!(initializers[0].anchor, SyntaxAnchor::named_function("init"));
+    assert_eq!(initializers[0].anchor, initializers[1].anchor);
+    assert_ne!(initializers[0].layout, initializers[1].layout);
+}
+
+#[test]
 fn trivia_and_semicolon_spelling_do_not_change_owned_function_syntax() {
     let inserted = project(
         concat!(
@@ -252,4 +278,32 @@ fn headers_preserve_receivers_and_aggregate_type_structure() {
         interface.ty.as_ref().unwrap().kind,
         ExprSyntaxKind::InterfaceType { .. }
     ));
+}
+
+#[test]
+fn generic_method_anchors_use_the_named_receiver_with_multiple_type_arguments() {
+    let method = project(
+        concat!(
+            "package p\n",
+            "type Pair[A, B any] struct { first A; second B }\n",
+            "func (pair Pair[A, B]) First() A { return pair.first }\n",
+        ),
+        "First",
+    );
+
+    assert_eq!(method.anchor, SyntaxAnchor::named_method("Pair", "First"));
+    assert!(super::function_is_generic(&method.structural_header));
+    let receiver = method
+        .structural_header
+        .receiver
+        .as_ref()
+        .expect("generic method should retain its receiver");
+    let [receiver] = receiver.fields.as_ref() else {
+        panic!("generic method should have one receiver field")
+    };
+    let ExprSyntaxKind::IndexList { base, indices } = &receiver.ty.as_ref().unwrap().kind else {
+        panic!("generic receiver should retain every type argument")
+    };
+    assert_eq!(indices.len(), 2);
+    assert!(matches!(&base.kind, ExprSyntaxKind::Ident(_)));
 }

@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use crate::{
-    GoInt, GoPointerStructI64, GoSliceI64, GoSliceInterface, GoString, go_slice_i64_index,
-    go_slice_i64_len,
+    GoInt, GoPointerStructI64, GoSliceI64, GoSliceInterface, GoString, go_pointer_struct_i64_equal,
+    go_slice_i64_index, go_slice_i64_len, go_slice_interface_index, go_slice_interface_len,
 };
 
 /// A Go interface pairs one concrete dynamic type with a copied dynamic value.
@@ -24,10 +24,12 @@ struct DynamicValue {
 enum InterfacePayload {
     Bool(bool),
     I64(GoInt),
+    F64(f64),
     GoString(GoString),
     StructI64(Arc<[GoInt]>),
     PointerStructI64(GoPointerStructI64),
     Aggregate(GoSliceInterface),
+    ComparableAggregate(GoSliceInterface),
 }
 
 /// Construct the nil interface value, which has no dynamic type.
@@ -46,6 +48,12 @@ pub fn go_interface_box_bool(type_identity: GoString, value: bool) -> GoInterfac
 #[must_use]
 pub fn go_interface_box_i64(type_identity: GoString, value: GoInt) -> GoInterface {
     boxed(type_identity, InterfacePayload::I64(value))
+}
+
+/// Copy a floating-point value into an interface with its exact dynamic type.
+#[must_use]
+pub fn go_interface_box_f64(type_identity: GoString, value: f64) -> GoInterface {
+    boxed(type_identity, InterfacePayload::F64(value))
 }
 
 /// Copy a string header into an interface with its exact dynamic type.
@@ -90,6 +98,15 @@ pub fn go_interface_box_aggregate(type_identity: GoString, value: GoSliceInterfa
     boxed(type_identity, InterfacePayload::Aggregate(value))
 }
 
+/// Copy a comparable aggregate snapshot into an interface.
+#[must_use]
+pub fn go_interface_box_comparable_aggregate(
+    type_identity: GoString,
+    value: GoSliceInterface,
+) -> GoInterface {
+    boxed(type_identity, InterfacePayload::ComparableAggregate(value))
+}
+
 /// Report whether an interface has no dynamic type.
 #[must_use]
 pub fn go_interface_is_nil(value: GoInterface) -> bool {
@@ -102,6 +119,35 @@ pub fn go_interface_is_type(value: GoInterface, type_identity: GoString) -> bool
     value
         .0
         .is_some_and(|dynamic| dynamic.type_identity == type_identity)
+}
+
+/// Compare two interface values with Go's dynamic-type and comparability rules.
+#[must_use]
+pub fn go_interface_equal(left: GoInterface, right: GoInterface) -> bool {
+    let (Some(left), Some(right)) = (&left.0, &right.0) else {
+        return left.0.is_none() && right.0.is_none();
+    };
+    if left.type_identity != right.type_identity {
+        return false;
+    }
+    match (&left.payload, &right.payload) {
+        (InterfacePayload::Bool(left), InterfacePayload::Bool(right)) => left == right,
+        (InterfacePayload::I64(left), InterfacePayload::I64(right)) => left == right,
+        (InterfacePayload::F64(left), InterfacePayload::F64(right)) => left == right,
+        (InterfacePayload::GoString(left), InterfacePayload::GoString(right)) => left == right,
+        (InterfacePayload::StructI64(left), InterfacePayload::StructI64(right)) => left == right,
+        (InterfacePayload::PointerStructI64(left), InterfacePayload::PointerStructI64(right)) => {
+            go_pointer_struct_i64_equal(left.clone(), right.clone())
+        }
+        (
+            InterfacePayload::ComparableAggregate(left),
+            InterfacePayload::ComparableAggregate(right),
+        ) => comparable_aggregate_equal(left, right),
+        (InterfacePayload::Aggregate(_), InterfacePayload::Aggregate(_)) => {
+            uncomparable_interface_comparison()
+        }
+        _ => false,
+    }
 }
 
 /// Extract a boolean after checking the exact dynamic type.
@@ -118,6 +164,15 @@ pub fn go_interface_unbox_bool(value: GoInterface, type_identity: GoString) -> b
 pub fn go_interface_unbox_i64(value: GoInterface, type_identity: GoString) -> GoInt {
     match checked_payload(value, type_identity) {
         InterfacePayload::I64(value) => value,
+        _ => type_assertion_failure(),
+    }
+}
+
+/// Extract a floating-point value after checking the exact dynamic type.
+#[must_use]
+pub fn go_interface_unbox_f64(value: GoInterface, type_identity: GoString) -> f64 {
+    match checked_payload(value, type_identity) {
+        InterfacePayload::F64(value) => value,
         _ => type_assertion_failure(),
     }
 }
@@ -166,9 +221,22 @@ pub fn go_interface_unbox_aggregate(
     type_identity: GoString,
 ) -> GoSliceInterface {
     match checked_payload(value, type_identity) {
-        InterfacePayload::Aggregate(value) => value,
+        InterfacePayload::Aggregate(value) | InterfacePayload::ComparableAggregate(value) => value,
         _ => type_assertion_failure(),
     }
+}
+
+fn comparable_aggregate_equal(left: &GoSliceInterface, right: &GoSliceInterface) -> bool {
+    let length = go_slice_interface_len(left.clone());
+    if length != go_slice_interface_len(right.clone()) {
+        return false;
+    }
+    (0..length).all(|index| {
+        go_interface_equal(
+            go_slice_interface_index(left.clone(), index),
+            go_slice_interface_index(right.clone(), index),
+        )
+    })
 }
 
 fn boxed(type_identity: GoString, payload: InterfacePayload) -> GoInterface {
@@ -193,6 +261,15 @@ fn checked_payload(value: GoInterface, type_identity: GoString) -> InterfacePayl
 #[allow(clippy::panic)] // This is the Go language panic boundary for a failed assertion.
 fn type_assertion_failure() -> ! {
     std::panic::resume_unwind(Box::new("runtime error: interface conversion failed"))
+}
+
+#[cold]
+#[inline(never)]
+#[allow(clippy::panic)] // This is Go's interface comparison panic boundary.
+fn uncomparable_interface_comparison() -> ! {
+    std::panic::resume_unwind(Box::new(
+        "runtime error: comparing uncomparable interface dynamic type",
+    ))
 }
 
 #[cold]

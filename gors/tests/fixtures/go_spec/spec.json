@@ -69,6 +69,16 @@
           "expect": "source_bytes"
         },
         {
+          "id": "spec-negative-language-version-binary-literal",
+          "section": "Language versions",
+          "title": "A module targeting Go 1.12 rejects the Go 1.13 binary integer literal syntax",
+          "status": "passing",
+          "fixtures": [
+            "_negative/negative_language_version_binary_literal"
+          ],
+          "expect": "compile_error"
+        },
+        {
           "id": "spec-lexical-unicode-identifier-categories",
           "section": "Letters and digits",
           "title": "Identifiers exercising every letter category the corpus lacks: Lm (U+02B0) and Lt (U+01C5) letters STARTING identifiers, an Nd...",
@@ -2121,6 +2131,16 @@
           "expect": "compile_error"
         },
         {
+          "id": "spec-goto-jump-into-block",
+          "section": "Goto statements",
+          "title": "A goto outside a block cannot jump to a label inside that block",
+          "status": "passing",
+          "fixtures": [
+            "_negative/goto_jump_into_block"
+          ],
+          "expect": "compile_error"
+        },
+        {
           "id": "spec-op-assign-evaluate-once",
           "section": "Assignment statements",
           "title": "No fixture verifies that x op= y evaluates x only once (side-effecting index/key expressions must run exactly once, including o...",
@@ -2159,6 +2179,15 @@
           "status": "passing",
           "fixtures": [
             "append_copy_clear_builtins"
+          ]
+        },
+        {
+          "id": "spec-copy-overlapping-and-counts",
+          "section": "Appending to and copying slices",
+          "title": "Overlapping copy is uncovered in both directions",
+          "status": "passing",
+          "fixtures": [
+            "copy_overlapping_and_counts"
           ]
         },
         {

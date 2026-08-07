@@ -559,6 +559,12 @@ impl PackageReferenceCollector {
                 self.expression(base);
                 self.expression(index);
             }
+            ExprSyntaxKind::IndexList { base, indices } => {
+                self.expression(base);
+                for index in &**indices {
+                    self.expression(index);
+                }
+            }
             ExprSyntaxKind::Slice {
                 base,
                 low,
@@ -649,6 +655,12 @@ fn collect_all_expression_names(expression: &ExprSyntax, names: &mut BTreeSet<St
         ExprSyntaxKind::Index { base, index } => {
             collect_all_expression_names(base, names);
             collect_all_expression_names(index, names);
+        }
+        ExprSyntaxKind::IndexList { base, indices } => {
+            collect_all_expression_names(base, names);
+            for index in &**indices {
+                collect_all_expression_names(index, names);
+            }
         }
         ExprSyntaxKind::Slice {
             base,

@@ -7,6 +7,7 @@ use crate::token::Token;
 use super::FunctionLowerer;
 use super::assignments::assignment_op;
 use super::expressions::*;
+use super::function::LocalConstantSymbol;
 use super::iteration::assigned_names_in_block;
 use super::{lower_type, parameter_types};
 use crate::compiler::Diagnostic;
@@ -626,10 +627,7 @@ impl FunctionLowerer {
         source: SourceRef,
     ) -> Result<hir::StmtKind, Diagnostic> {
         if declaration.token == Token::CONST {
-            return Err(Diagnostic::unsupported(
-                "local const declarations are not yet supported",
-                source,
-            ));
+            return self.lower_local_const_declaration(declaration, source);
         }
         if declaration.token == Token::TYPE {
             return self.lower_local_type_declaration(declaration, source);
@@ -655,6 +653,84 @@ impl FunctionLowerer {
         Ok(hir::StmtKind::Block(hir::Block {
             node,
             stmts: statements,
+            source: SourceRef::node(node),
+        }))
+    }
+
+    fn lower_local_const_declaration(
+        &mut self,
+        declaration: &DeclSyntax,
+        source: SourceRef,
+    ) -> Result<hir::StmtKind, Diagnostic> {
+        if declaration.contains_import_spec || !declaration.type_specs.is_empty() {
+            return Err(Diagnostic::semantic(
+                "constant declaration contains a non-value specification",
+                source,
+            ));
+        }
+        let mut previous_explicit_type: Option<ExprSyntax> = None;
+        let mut previous_values: Option<std::sync::Arc<[ExprSyntax]>> = None;
+        for spec in &*declaration.specs {
+            let (explicit_type, values) = if let Some(values) = &spec.values {
+                previous_explicit_type = spec.explicit_type.clone();
+                previous_values = Some(values.clone());
+                (spec.explicit_type.as_ref(), values.as_ref())
+            } else {
+                let values = previous_values.as_deref().ok_or_else(|| {
+                    Diagnostic::semantic(
+                        "first local constant specification requires an expression",
+                        source,
+                    )
+                })?;
+                (previous_explicit_type.as_ref(), values)
+            };
+            if spec.names.len() != values.len() {
+                return Err(Diagnostic::semantic(
+                    format!(
+                        "constant declaration has {} names and {} values",
+                        spec.names.len(),
+                        values.len()
+                    ),
+                    source,
+                ));
+            }
+            let declared_type = explicit_type
+                .map(|ty| lower_type(ty, &self.type_aliases, source))
+                .transpose()?;
+            let evaluated = values
+                .iter()
+                .map(|value| self.eval_constant_expression(value, source, spec.iota))
+                .collect::<Result<Vec<_>, _>>()?;
+            for (name, (raw_ty, mut value)) in spec.names.iter().zip(evaluated) {
+                let ty = declared_type.clone().unwrap_or_else(|| raw_ty.clone());
+                ensure_bootstrap_value_type(&ty.default_typed(), source)?;
+                if !is_assignable(&raw_ty, &ty) {
+                    return Err(Diagnostic::semantic(
+                        format!("constant {} is not assignable to {ty:?}", name.name),
+                        source,
+                    ));
+                }
+                if !value.is_representable_as(&ty) {
+                    return Err(Diagnostic::semantic(
+                        format!("constant {} is not representable as {ty:?}", name.name),
+                        source,
+                    ));
+                }
+                value = value.normalized_for(&ty);
+                let node = self.alloc_node(name.source)?;
+                if name.name.as_ref() != "_" {
+                    self.bind_local_constant(
+                        name.name.to_string(),
+                        LocalConstantSymbol { ty, value },
+                        SourceRef::node(node),
+                    )?;
+                }
+            }
+        }
+        let node = self.alloc_node(declaration.source)?;
+        Ok(hir::StmtKind::Block(hir::Block {
+            node,
+            stmts: Vec::new(),
             source: SourceRef::node(node),
         }))
     }

@@ -344,8 +344,11 @@ fn lower_terminator(
                 | hir::Builtin::SliceI64Len
                 | hir::Builtin::SliceI64Cap
                 | hir::Builtin::SliceI64Append
+                | hir::Builtin::SliceU8Make
+                | hir::Builtin::SliceU8Set
                 | hir::Builtin::SliceU8AppendSlice
                 | hir::Builtin::SliceU8AppendString
+                | hir::Builtin::SliceU8Copy
                 | hir::Builtin::SliceU8CopyString
                 | hir::Builtin::SliceU8Len
                 | hir::Builtin::SliceU8Index
@@ -447,8 +450,11 @@ fn lower_terminator(
                     hir::Builtin::SliceI64Len => RuntimeOp::GoSliceI64Len,
                     hir::Builtin::SliceI64Cap => RuntimeOp::GoSliceI64Cap,
                     hir::Builtin::SliceI64Append => RuntimeOp::GoSliceI64Append,
+                    hir::Builtin::SliceU8Make => RuntimeOp::GoSliceU8Make,
+                    hir::Builtin::SliceU8Set => RuntimeOp::GoSliceU8Set,
                     hir::Builtin::SliceU8AppendSlice => RuntimeOp::GoSliceU8AppendSlice,
                     hir::Builtin::SliceU8AppendString => RuntimeOp::GoSliceU8AppendString,
+                    hir::Builtin::SliceU8Copy => RuntimeOp::GoSliceU8Copy,
                     hir::Builtin::SliceU8CopyString => RuntimeOp::GoSliceU8CopyString,
                     hir::Builtin::SliceU8Len => RuntimeOp::GoSliceU8Len,
                     hir::Builtin::SliceU8Index => RuntimeOp::GoSliceU8Index,

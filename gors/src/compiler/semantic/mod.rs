@@ -12,6 +12,7 @@ mod expressions;
 mod function;
 mod generics;
 mod goroutines;
+mod goto_scopes;
 mod imports;
 mod interfaces;
 mod iteration;
@@ -332,7 +333,7 @@ pub(super) fn lower_function(
     type_aliases: BTreeMap<String, Ty>,
 ) -> Result<LoweredFunction, FunctionLoweringFailure> {
     let node = NodeId::owner_local(definition, 0);
-    let initial_source_plan = vec![
+    let mut initial_source_plan = vec![
         (SourceRef::definition(definition), header.name.source),
         (SourceRef::node(node), header.name.source),
     ];
@@ -345,6 +346,14 @@ pub(super) fn lower_function(
             source_plan: initial_source_plan,
         });
     };
+    if let Err(error) = goto_scopes::validate(body) {
+        let source = SourceRef::node(NodeId::owner_local(definition, 1));
+        initial_source_plan.push((source, error.source));
+        return Err(FunctionLoweringFailure {
+            diagnostic: Diagnostic::semantic(error.message, source),
+            source_plan: initial_source_plan,
+        });
+    }
     let mut lowerer = FunctionLowerer {
         owner: definition,
         next_node: 1,
@@ -357,6 +366,7 @@ pub(super) fn lower_function(
         generic_types: symbols.generic_types,
         constants: symbols.constants,
         qualified_constants: symbols.qualified_constants,
+        local_constant_scopes: vec![BTreeMap::new()],
         variables: symbols.variables,
         qualified_variables: symbols.qualified_variables,
         intrinsic_packages: symbols.intrinsic_packages,
@@ -693,6 +703,24 @@ pub(super) fn eval_constant(
     source: SourceRef,
     iota: u64,
 ) -> Result<(Ty, ConstValue), Diagnostic> {
+    eval_constant_with_lookup(
+        expression,
+        &|name| {
+            constants
+                .get(name)
+                .map(|constant| (constant.ty.clone(), constant.value.clone()))
+        },
+        source,
+        iota,
+    )
+}
+
+pub(super) fn eval_constant_with_lookup(
+    expression: &ExprSyntax,
+    lookup: &impl Fn(&str) -> Option<(Ty, ConstValue)>,
+    source: SourceRef,
+    iota: u64,
+) -> Result<(Ty, ConstValue), Diagnostic> {
     match &expression.kind {
         ExprSyntaxKind::Literal { token, spelling } => match *token {
             crate::token::Token::INT => parse_go_integer(spelling)
@@ -735,8 +763,8 @@ pub(super) fn eval_constant(
             )),
         },
         ExprSyntaxKind::Ident(ident) => {
-            if let Some(constant) = constants.get(ident.name.as_ref()) {
-                Ok((constant.ty.clone(), constant.value.clone()))
+            if let Some(constant) = lookup(ident.name.as_ref()) {
+                Ok(constant)
             } else if matches!(ident.name.as_ref(), "true" | "false") {
                 Ok((
                     Ty::Untyped(UntypedTy::Bool),
@@ -755,8 +783,8 @@ pub(super) fn eval_constant(
             }
         }
         ExprSyntaxKind::Binary { left, token, right } => {
-            let (left_ty, left) = eval_constant(left, constants, source, iota)?;
-            let (right_ty, right) = eval_constant(right, constants, source, iota)?;
+            let (left_ty, left) = eval_constant_with_lookup(left, lookup, source, iota)?;
+            let (right_ty, right) = eval_constant_with_lookup(right, lookup, source, iota)?;
             let op = lower_binary_op(*token).ok_or_else(|| {
                 Diagnostic::unsupported(
                     format!("constant operator {token:?} is not implemented"),
@@ -803,9 +831,11 @@ pub(super) fn eval_constant(
             };
             Ok((result_ty, value))
         }
-        ExprSyntaxKind::Paren(expression) => eval_constant(expression, constants, source, iota),
+        ExprSyntaxKind::Paren(expression) => {
+            eval_constant_with_lookup(expression, lookup, source, iota)
+        }
         ExprSyntaxKind::Unary { token, expression } => {
-            let (ty, value) = eval_constant(expression, constants, source, iota)?;
+            let (ty, value) = eval_constant_with_lookup(expression, lookup, source, iota)?;
             match (*token, value) {
                 (crate::token::Token::ADD, value) => Ok((ty, value)),
                 (crate::token::Token::SUB, ConstValue::Int(value)) => {
@@ -849,6 +879,7 @@ pub(super) fn eval_constant(
         | ExprSyntaxKind::KeyValue { .. }
         | ExprSyntaxKind::CompositeLiteral { .. }
         | ExprSyntaxKind::Index { .. }
+        | ExprSyntaxKind::IndexList { .. }
         | ExprSyntaxKind::Slice { .. }
         | ExprSyntaxKind::Unsupported(_) => Err(Diagnostic::unsupported(
             "this constant expression is not yet supported",

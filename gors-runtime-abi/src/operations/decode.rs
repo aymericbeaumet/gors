@@ -114,6 +114,14 @@ impl TryFrom<u16> for RuntimeOp {
             110 => Ok(Self::GoSliceInterfaceIsNil),
             111 => Ok(Self::GoInterfaceBoxAggregate),
             112 => Ok(Self::GoInterfaceUnboxAggregate),
+            113 => Ok(Self::GoSliceU8Make),
+            114 => Ok(Self::GoSliceU8Set),
+            115 => Ok(Self::GoSliceU8Copy),
+            116 => Ok(Self::PrintF64),
+            117 => Ok(Self::GoInterfaceBoxF64),
+            118 => Ok(Self::GoInterfaceUnboxF64),
+            119 => Ok(Self::GoInterfaceEqual),
+            120 => Ok(Self::GoInterfaceBoxComparableAggregate),
             unknown => Err(UnknownRuntimeOpId(unknown)),
         }
     }

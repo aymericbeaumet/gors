@@ -135,6 +135,36 @@ fn constraint_allows(
             nested.insert(name.clone(), argument);
             constraint_allows(&generic.underlying, actual, &nested, generic_types, source)
         }
+        ExprSyntaxKind::IndexList { base, indices } => {
+            let ExprSyntaxKind::Ident(base) = &base.kind else {
+                return Ok(false);
+            };
+            let Some(generic) = generic_types.get(base.name.as_ref()) else {
+                return Ok(false);
+            };
+            let names = type_parameter_names(&generic.type_parameters, source)?
+                .into_iter()
+                .collect::<Vec<_>>();
+            if names.len() != indices.len() {
+                return Err(Diagnostic::semantic(
+                    format!(
+                        "constraint {} requires {} type arguments; got {}",
+                        base.name,
+                        names.len(),
+                        indices.len()
+                    ),
+                    source,
+                ));
+            }
+            let mut nested = environment.clone();
+            for (name, argument) in names.into_iter().zip(&**indices) {
+                nested.insert(
+                    name,
+                    lower_type_with_generics(argument, environment, generic_types, source)?,
+                );
+            }
+            constraint_allows(&generic.underlying, actual, &nested, generic_types, source)
+        }
         ExprSyntaxKind::InterfaceType { methods } => {
             for field in &*methods.fields {
                 if field.names.is_some() {

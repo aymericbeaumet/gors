@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub enum QueryKind {
     /// Parse one immutable source snapshot and project its declarations.
     FileProjection,
+    /// Check projected syntax against its effective package/file Go version.
+    LanguageVersionCheck,
     /// Materialize the body-independent file index.
     FileAnalysis,
     /// Merge sorted file projections into a body-independent package index.
@@ -57,6 +59,7 @@ impl QueryKind {
     const COUNT: usize = Self::RustIrPackage as usize + 1;
     const ALL: [Self; Self::COUNT] = [
         Self::FileProjection,
+        Self::LanguageVersionCheck,
         Self::FileAnalysis,
         Self::PackageAnalysis,
         Self::PublicApi,

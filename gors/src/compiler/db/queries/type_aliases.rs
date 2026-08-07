@@ -250,6 +250,7 @@ fn collect_type_dependencies(
         | ExprSyntaxKind::KeyValue { .. }
         | ExprSyntaxKind::CompositeLiteral { .. }
         | ExprSyntaxKind::Index { .. }
+        | ExprSyntaxKind::IndexList { .. }
         | ExprSyntaxKind::Slice { .. }
         | ExprSyntaxKind::Unsupported(_) => {}
     }

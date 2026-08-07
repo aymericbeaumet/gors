@@ -118,6 +118,53 @@ fn verifier_rejects_uninitialized_reads() {
 }
 
 #[test]
+fn verifier_rejects_invalid_byte_slice_runtime_calls() {
+    let source = r#"
+        package main
+        func main() {
+            destination := make([]byte, 2)
+            source := make([]byte, 2)
+            destination[0] = 'x'
+            _ = copy(destination, source)
+        }
+    "#;
+
+    for (builtin, expected) in [
+        (
+            hir::Builtin::SliceU8Make,
+            "invalid MIR byte slice make argument types",
+        ),
+        (
+            hir::Builtin::SliceU8Set,
+            "invalid MIR byte slice set argument types",
+        ),
+        (
+            hir::Builtin::SliceU8Copy,
+            "invalid MIR byte slice copy arguments",
+        ),
+    ] {
+        let mut file = lower(source);
+        let arguments = file
+            .functions
+            .iter_mut()
+            .flat_map(|function| &mut function.blocks)
+            .find_map(|block| match &mut block.terminator.kind {
+                TerminatorKind::Call {
+                    callee: hir::Callee::Builtin(actual),
+                    args,
+                    ..
+                } if *actual == builtin => Some(args),
+                _ => None,
+            })
+            .expect("expected byte-slice runtime call");
+        arguments.clear();
+
+        let error = file.verify().unwrap_err();
+        assert!(error.message.contains(expected), "{error:?}");
+    }
+}
+
+#[test]
 fn verifier_rejects_a_mutated_return_type() {
     let mut file = lower("package main\nfunc answer() int { return 42 }\n");
     let function = &mut file.functions[0];

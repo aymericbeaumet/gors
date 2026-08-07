@@ -11,7 +11,13 @@ use crate::compiler::hir;
 use crate::compiler::ids::{ClosureId, DefId, LocalId, LocalTypeId, NodeId};
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{BlockSyntax, FieldListSyntax, SyntaxSource};
-use crate::compiler::types::{Signature, Ty};
+use crate::compiler::types::{ConstValue, Signature, Ty};
+
+#[derive(Clone)]
+pub(super) struct LocalConstantSymbol {
+    pub(super) ty: Ty,
+    pub(super) value: ConstValue,
+}
 
 pub(super) struct FunctionLowerer {
     pub(super) owner: DefId,
@@ -25,6 +31,7 @@ pub(super) struct FunctionLowerer {
     pub(super) generic_types: BTreeMap<String, GenericTypeSymbol>,
     pub(super) constants: BTreeMap<String, ConstantSymbol>,
     pub(super) qualified_constants: BTreeMap<(String, String), ConstantSymbol>,
+    pub(super) local_constant_scopes: Vec<BTreeMap<String, LocalConstantSymbol>>,
     pub(super) variables: BTreeMap<String, VariableSymbol>,
     pub(super) qualified_variables: BTreeMap<(String, String), VariableSymbol>,
     pub(super) intrinsic_packages: BTreeSet<String>,
@@ -88,6 +95,10 @@ impl FunctionLowerer {
                 .type_scope_changes
                 .last()
                 .is_some_and(|scope| scope.contains_key(name))
+                || self
+                    .local_constant_scopes
+                    .last()
+                    .is_some_and(|scope| scope.contains_key(name))
             {
                 return Err(Diagnostic::semantic(
                     format!("{name} redeclared in this block"),
@@ -201,10 +212,83 @@ impl FunctionLowerer {
     }
 
     pub(super) fn lookup_local(&self, name: &str) -> Option<LocalId> {
-        self.scopes
-            .iter()
-            .rev()
-            .find_map(|scope| scope.get(name).copied())
+        for (locals, constants) in self.scopes.iter().zip(&self.local_constant_scopes).rev() {
+            if let Some(local) = locals.get(name) {
+                return Some(*local);
+            }
+            if constants.contains_key(name) {
+                return None;
+            }
+        }
+        None
+    }
+
+    pub(super) fn lookup_local_constant(&self, name: &str) -> Option<&LocalConstantSymbol> {
+        for (locals, constants) in self.scopes.iter().zip(&self.local_constant_scopes).rev() {
+            if let Some(constant) = constants.get(name) {
+                return Some(constant);
+            }
+            if locals.contains_key(name) {
+                return None;
+            }
+        }
+        None
+    }
+
+    pub(super) fn eval_constant_expression(
+        &self,
+        expression: &crate::compiler::syntax::ExprSyntax,
+        source: SourceRef,
+        iota: u64,
+    ) -> Result<(Ty, ConstValue), Diagnostic> {
+        super::eval_constant_with_lookup(
+            expression,
+            &|name| {
+                self.lookup_local_constant(name)
+                    .map(|constant| (constant.ty.clone(), constant.value.clone()))
+                    .or_else(|| {
+                        self.constants
+                            .get(name)
+                            .map(|constant| (constant.ty.clone(), constant.value.clone()))
+                    })
+            },
+            source,
+            iota,
+        )
+    }
+
+    pub(super) fn bind_local_constant(
+        &mut self,
+        name: String,
+        constant: LocalConstantSymbol,
+        source: SourceRef,
+    ) -> Result<(), Diagnostic> {
+        if self.lookup_current_local(&name).is_some()
+            || self
+                .closure_scopes
+                .last()
+                .is_some_and(|scope| scope.contains_key(&name))
+            || self
+                .type_scope_changes
+                .last()
+                .is_some_and(|scope| scope.contains_key(&name))
+        {
+            return Err(Diagnostic::semantic(
+                format!("{name} redeclared in this block"),
+                source,
+            ));
+        }
+        let scope = self
+            .local_constant_scopes
+            .last_mut()
+            .ok_or_else(|| Diagnostic::backend("function has no local constant scope"))?;
+        if scope.insert(name.clone(), constant).is_some() {
+            return Err(Diagnostic::semantic(
+                format!("{name} redeclared in this block"),
+                source,
+            ));
+        }
+        Ok(())
     }
 
     pub(super) fn lookup_current_local(&self, name: &str) -> Option<LocalId> {
@@ -214,8 +298,14 @@ impl FunctionLowerer {
     }
 
     pub(super) fn lookup_closure(&self, name: &str) -> Option<ClosureId> {
-        for (locals, closures) in self.scopes.iter().zip(&self.closure_scopes).rev() {
-            if locals.contains_key(name) {
+        for ((locals, constants), closures) in self
+            .scopes
+            .iter()
+            .zip(&self.local_constant_scopes)
+            .zip(&self.closure_scopes)
+            .rev()
+        {
+            if locals.contains_key(name) || constants.contains_key(name) {
                 return None;
             }
             if let Some(id) = closures.get(name) {
@@ -234,6 +324,10 @@ impl FunctionLowerer {
         if self.lookup_current_local(name).is_some()
             || self
                 .type_scope_changes
+                .last()
+                .is_some_and(|scope| scope.contains_key(name))
+            || self
+                .local_constant_scopes
                 .last()
                 .is_some_and(|scope| scope.contains_key(name))
         {
@@ -292,6 +386,10 @@ impl FunctionLowerer {
                 .closure_scopes
                 .last()
                 .is_some_and(|scope| scope.contains_key(&name))
+            || self
+                .local_constant_scopes
+                .last()
+                .is_some_and(|scope| scope.contains_key(&name))
         {
             return Err(Diagnostic::semantic(
                 format!("{name} redeclared in this block"),
@@ -317,11 +415,13 @@ impl FunctionLowerer {
         self.scopes.push(BTreeMap::new());
         self.closure_scopes.push(BTreeMap::new());
         self.type_scope_changes.push(BTreeMap::new());
+        self.local_constant_scopes.push(BTreeMap::new());
     }
 
     pub(super) fn pop_scope(&mut self) {
         self.scopes.pop();
         self.closure_scopes.pop();
+        self.local_constant_scopes.pop();
         if let Some(changes) = self.type_scope_changes.pop() {
             for (name, previous) in changes {
                 if let Some(previous) = previous {

@@ -377,8 +377,12 @@ pub(super) fn lower_type_with_generics(
     generic_types: &BTreeMap<String, GenericTypeSymbol>,
     source: SourceRef,
 ) -> Result<Ty, Diagnostic> {
-    let ExprSyntaxKind::Index { base, index } = &expression.kind else {
-        return lower_type(expression, aliases, source);
+    let (base, arguments) = match &expression.kind {
+        ExprSyntaxKind::Index { base, index } => {
+            (base.as_ref(), std::slice::from_ref(index.as_ref()))
+        }
+        ExprSyntaxKind::IndexList { base, indices } => (base.as_ref(), indices.as_ref()),
+        _ => return lower_type(expression, aliases, source),
     };
     let ExprSyntaxKind::Ident(base) = &base.kind else {
         return Err(Diagnostic::unsupported(
@@ -391,14 +395,25 @@ pub(super) fn lower_type_with_generics(
     })?;
     let parameters = type_parameter_names(&generic.type_parameters, source)?;
     let parameters = parameters.into_iter().collect::<Vec<_>>();
-    let [parameter] = parameters.as_slice() else {
-        return Err(Diagnostic::unsupported(
-            "this generic type requires multiple type arguments",
+    if parameters.len() != arguments.len() {
+        return Err(Diagnostic::semantic(
+            format!(
+                "generic type {} requires {} type arguments; got {}",
+                base.name,
+                parameters.len(),
+                arguments.len()
+            ),
             source,
         ));
-    };
-    let argument = lower_type_with_generics(index, aliases, generic_types, source)?;
-    let substitutions = BTreeMap::from([(parameter.clone(), argument)]);
+    }
+    let substitutions = parameters
+        .into_iter()
+        .zip(arguments)
+        .map(|(parameter, argument)| {
+            lower_type_with_generics(argument, aliases, generic_types, source)
+                .map(|argument| (parameter, argument))
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
     validate_constraints(
         &generic.type_parameters,
         &substitutions,
@@ -644,7 +659,7 @@ fn infer_type_expression(
                 source,
             )
         }
-        ExprSyntaxKind::Index { base, .. } => {
+        ExprSyntaxKind::Index { base, .. } | ExprSyntaxKind::IndexList { base, .. } => {
             let ExprSyntaxKind::Ident(base) = &base.kind else {
                 return Err(type_inference_mismatch(formal, actual, source));
             };

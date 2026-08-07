@@ -114,6 +114,14 @@ impl RuntimeOp {
             Self::GoSliceInterfaceIsNil => "go_slice_interface_is_nil",
             Self::GoInterfaceBoxAggregate => "go_interface_box_aggregate",
             Self::GoInterfaceUnboxAggregate => "go_interface_unbox_aggregate",
+            Self::GoSliceU8Make => "go_slice_u8_make",
+            Self::GoSliceU8Set => "go_slice_u8_set",
+            Self::GoSliceU8Copy => "go_slice_u8_copy",
+            Self::PrintF64 => "print_f64",
+            Self::GoInterfaceBoxF64 => "go_interface_box_f64",
+            Self::GoInterfaceUnboxF64 => "go_interface_unbox_f64",
+            Self::GoInterfaceEqual => "go_interface_equal",
+            Self::GoInterfaceBoxComparableAggregate => "go_interface_box_comparable_aggregate",
         }
     }
 }

@@ -147,6 +147,39 @@ fn verifier_checks_runtime_calls_against_the_typed_abi() {
 }
 
 #[test]
+fn verifier_rejects_malformed_byte_slice_runtime_calls() {
+    let source = r#"
+        package main
+        func main() {
+            destination := make([]byte, 2)
+            source := make([]byte, 2)
+            destination[0] = 'x'
+            _ = copy(destination, source)
+        }
+    "#;
+
+    for operation in [
+        RuntimeOp::GoSliceU8Make,
+        RuntimeOp::GoSliceU8Set,
+        RuntimeOp::GoSliceU8Copy,
+    ] {
+        let mut file = lower(source);
+        let TerminatorKind::Call { args, .. } =
+            &mut runtime_call_terminator_mut(&mut file, operation).kind
+        else {
+            unreachable!();
+        };
+        args.clear();
+
+        let error = file.verify().unwrap_err();
+        assert!(
+            error.message.contains("ABI signature requires"),
+            "{operation:?}: {error:?}"
+        );
+    }
+}
+
+#[test]
 fn runtime_call_destination_writes_are_explicit_and_verified() {
     let mut file = lower(
         r#"

@@ -21,9 +21,15 @@ struct GeneratedRun {
 }
 
 fn raw_program(logical_path: &str, diagnostic_path: &str, source: &str) -> input::ProgramInput {
+    raw_program_files([(logical_path, diagnostic_path, source)])
+}
+
+fn raw_program_files<const N: usize>(files: [(&str, &str, &str); N]) -> input::ProgramInput {
     let package = input::PackageKey::command_line();
-    let file = input::SourceFileInput::from_source(logical_path, diagnostic_path, source).unwrap();
-    let manifest = input::PackageInputManifest::new(package, [file]).unwrap();
+    let files = files.map(|(logical_path, diagnostic_path, source)| {
+        input::SourceFileInput::from_source(logical_path, diagnostic_path, source).unwrap()
+    });
+    let manifest = input::PackageInputManifest::new(package, files).unwrap();
     input::ProgramInput::standalone(
         input::WorkspaceKey::ad_hoc("compiler-tests").unwrap(),
         manifest,
@@ -32,8 +38,11 @@ fn raw_program(logical_path: &str, diagnostic_path: &str, source: &str) -> input
 }
 
 fn compile_and_run(source: &str) -> GeneratedRun {
-    let compiled = compile_program(raw_program("generated.go", "generated.go", source))
-        .expect("compile Go through verified MIR");
+    compile_program_and_run(raw_program("generated.go", "generated.go", source))
+}
+
+fn compile_program_and_run(program: input::ProgramInput) -> GeneratedRun {
+    let compiled = compile_program(program).expect("compile Go through verified MIR");
     let generated = crate::printer::generate_single(compiled)
         .expect("package generated Rust with an external runtime dependency");
     let rust = generated
@@ -79,6 +88,28 @@ fn compile_and_run(source: &str) -> GeneratedRun {
         rust,
         stderr: output.stderr,
     }
+}
+
+#[test]
+fn repeated_blank_package_declarations_do_not_create_bindings_or_roots() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            const _ = 1
+            const _ = 2
+            var _ int
+            var _ = 3
+            type _ int
+            type _ = string
+            func _() { panic("blank function ran") }
+            func _() { panic("second blank function ran") }
+
+            func main() { println("blank declarations: ok") }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"blank declarations: ok\n");
 }
 
 #[test]
@@ -198,6 +229,58 @@ fn generated_rust_executes_go_int_edge_semantics() {
             "obsolete runtime helper survived: {removed}"
         );
     }
+}
+
+#[test]
+fn runtime_int32_negation_is_rejected_before_i64_representation_can_miscompile_it() {
+    let error = compile_program(raw_program(
+        "int32-negation.go",
+        "/checkout/int32-negation.go",
+        r#"
+            package main
+
+            func negate(value int32) int32 { return -value }
+
+            func main() {}
+        "#,
+    ))
+    .err()
+    .expect("int32 negation must not silently use 64-bit wrapping semantics");
+
+    let diagnostic = error
+        .diagnostics()
+        .iter()
+        .find(|diagnostic| {
+            diagnostic
+                .message
+                .contains("runtime unary negation of int32/rune requires 32-bit wrapping semantics")
+        })
+        .expect("int32 negation must produce an honest unsupported diagnostic");
+    assert_eq!(diagnostic.code, "GORS2001");
+    assert_eq!(diagnostic.file, "/checkout/int32-negation.go");
+    assert!(
+        diagnostic.line > 0,
+        "diagnostic must retain a source line: {diagnostic:?}"
+    );
+}
+
+#[test]
+fn runtime_int_negation_retains_i64_wrapping_semantics() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            func negate(value int) int { return -value }
+
+            func main() {
+                minimum := -9223372036854775807 - 1
+                println(negate(minimum))
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"-9223372036854775808\n");
+    assert!(run.rust.contains(".wrapping_neg()"), "{}", run.rust);
 }
 
 #[test]

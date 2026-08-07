@@ -330,6 +330,12 @@ impl FileReferences {
                 self.expression(base);
                 self.expression(index);
             }
+            ExprSyntaxKind::IndexList { base, indices } => {
+                self.expression(base);
+                for index in &**indices {
+                    self.expression(index);
+                }
+            }
             ExprSyntaxKind::Slice {
                 base,
                 low,

@@ -10,7 +10,8 @@ pub use descriptors::{
     VariableDescriptor,
 };
 pub(super) use fingerprint_builder::FingerprintBuilder;
-pub use issues::{FileIssue, PackageIssue};
+pub(in crate::compiler) use issues::LanguageFeatureUse;
+pub use issues::{FileIssue, LanguageFeature, PackageIssue};
 pub use public_api::PublicApi;
 
 use std::fmt;
@@ -509,6 +510,26 @@ impl PackageAnalysis {
                     fingerprint.bytes(file.canonical_bytes());
                     failure.write_fingerprint(&mut fingerprint);
                 }
+                PackageIssue::LanguageVersion {
+                    file,
+                    feature,
+                    selected,
+                    range,
+                } => {
+                    fingerprint.bytes(b"language-version");
+                    fingerprint.bytes(file.canonical_bytes());
+                    fingerprint.bytes(feature.description().as_bytes());
+                    fingerprint.usize(
+                        usize::try_from(feature.required_version().major()).unwrap_or(usize::MAX),
+                    );
+                    fingerprint.usize(
+                        usize::try_from(feature.required_version().minor()).unwrap_or(usize::MAX),
+                    );
+                    fingerprint.usize(usize::try_from(selected.major()).unwrap_or(usize::MAX));
+                    fingerprint.usize(usize::try_from(selected.minor()).unwrap_or(usize::MAX));
+                    fingerprint.usize(range.start().to_usize());
+                    fingerprint.usize(range.end().to_usize());
+                }
                 PackageIssue::UnusedImport {
                     file,
                     local_name,
@@ -745,6 +766,7 @@ impl PackageAnalysis {
         let issues = self.issues.iter().fold(0_usize, |total, issue| {
             let retained = match issue {
                 PackageIssue::FileParseFailure { failure, .. } => failure.retained_bytes(),
+                PackageIssue::LanguageVersion { .. } => 0,
                 PackageIssue::UnusedImport {
                     local_name,
                     path,

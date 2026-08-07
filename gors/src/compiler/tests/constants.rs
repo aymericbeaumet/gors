@@ -1,5 +1,95 @@
-use super::compile_and_run;
-use crate::compiler::compile_file;
+use super::{compile_and_run, raw_program};
+use crate::compiler::db::QueryKind;
+use crate::compiler::{CompilerSession, compile_file};
+
+#[test]
+fn local_constants_are_exact_scoped_and_support_repeated_specs_and_iota() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            const packageValue = 90
+
+            func value() int {
+                const (
+                    first = iota + 1
+                    second
+                    typed int32 = 1<<31 - 1
+                )
+                const packageValue = second + 5
+                {
+                    const packageValue = 7
+                    if packageValue != 7 {
+                        panic("nested constant scope changed")
+                    }
+                }
+                if first != 1 || second != 2 || typed != 2147483647 {
+                    panic("local constant evaluation changed")
+                }
+                return packageValue
+            }
+
+            func main() {
+                println(packageValue, value())
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"90 7\n");
+}
+
+#[test]
+fn local_constants_are_not_assignment_places() {
+    let errors = compile_file(
+        "main.go",
+        "package main\nfunc main() { const answer = 42; answer = 0 }\n",
+    )
+    .err()
+    .expect("assignment to a local constant must be rejected");
+
+    assert!(
+        errors.iter().any(|error| {
+            error.code == "GORS2002" && error.message.contains("cannot assign to constant answer")
+        }),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn local_constant_comment_edits_do_not_reexecute_semantic_stages() {
+    let before = r#"
+        package main
+        func answer() int {
+            const value = 40 + 2
+            return value
+        }
+        func main() { println(answer()) }
+    "#;
+    let after = r#"
+        package main
+        func answer() int {
+            // The physical layout changed; the local constant did not.
+            const value = 40 + 2
+            return value
+        }
+        func main() { println(answer()) }
+    "#;
+    let mut session = CompilerSession::default();
+    session
+        .compile_program(raw_program("main.go", "main.go", before))
+        .unwrap();
+    session.database().reset_telemetry();
+
+    session
+        .compile_program(raw_program("main.go", "main.go", after))
+        .unwrap();
+
+    let telemetry = session.database().telemetry();
+    assert_eq!(telemetry.executions(QueryKind::TypedHir), 0);
+    assert_eq!(telemetry.executions(QueryKind::VerifiedGoMir), 0);
+    assert_eq!(telemetry.executions(QueryKind::NormalizedGoMir), 0);
+    assert_eq!(telemetry.executions(QueryKind::VerifiedRustIr), 0);
+}
 
 #[test]
 fn exact_float_constant_arithmetic_folds_at_integer_sites() {

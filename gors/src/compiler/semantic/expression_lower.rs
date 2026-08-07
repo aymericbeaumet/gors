@@ -3,7 +3,6 @@
 use crate::token::Token;
 
 use super::FunctionLowerer;
-use super::eval_constant;
 use super::expressions::*;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
@@ -57,7 +56,7 @@ impl FunctionLowerer {
         let source = SourceRef::node(node);
         let mut lowered = match &expr.kind {
             ExprSyntaxKind::Literal { .. } => {
-                let (ty, value) = eval_constant(expr, &self.constants, source, 0)?;
+                let (ty, value) = self.eval_constant_expression(expr, source, 0)?;
                 hir::Expr {
                     node,
                     kind: hir::ExprKind::Constant(value),
@@ -79,6 +78,15 @@ impl FunctionLowerer {
                 } else if let Some(local) = self.lookup_local(name) {
                     let ty = self.place_ty(hir::Place::Local(local))?.clone();
                     self.local_expr(node, local, ty)
+                } else if let Some(constant) = self.lookup_local_constant(name).cloned() {
+                    hir::Expr {
+                        node,
+                        kind: hir::ExprKind::Constant(constant.value),
+                        ty: constant.ty,
+                        category: hir::ValueCategory::Constant,
+                        effects: hir::Effects::default(),
+                        source,
+                    }
                 } else if let Some(constant) = self.constants.get(name).cloned() {
                     hir::Expr {
                         node,
@@ -157,8 +165,12 @@ impl FunctionLowerer {
                     {
                         hir::UnaryOp::Positive
                     }
-                    Token::SUB if matches!(operator_ty, Ty::Int(IntTy::Int | IntTy::Int32)) => {
-                        hir::UnaryOp::Negative
+                    Token::SUB if *operator_ty == Ty::Int(IntTy::Int) => hir::UnaryOp::Negative,
+                    Token::SUB if *operator_ty == Ty::Int(IntTy::Int32) => {
+                        return Err(Diagnostic::unsupported(
+                            "runtime unary negation of int32/rune requires 32-bit wrapping semantics",
+                            source,
+                        ));
                     }
                     Token::SUB
                         if matches!(
@@ -503,7 +515,9 @@ impl FunctionLowerer {
                         symbol.signature.results,
                         symbol.signature.variadic,
                     )
-                } else if self.constants.contains_key(name) {
+                } else if self.lookup_local_constant(name).is_some()
+                    || self.constants.contains_key(name)
+                {
                     return Err(Diagnostic::semantic(
                         format!("constant {name} is not callable"),
                         source,
@@ -707,6 +721,12 @@ impl FunctionLowerer {
                     effects,
                     source,
                 }
+            }
+            ExprSyntaxKind::IndexList { .. } => {
+                return Err(Diagnostic::unsupported(
+                    "generic instantiation expressions with multiple type arguments are not yet executable",
+                    source,
+                ));
             }
             ExprSyntaxKind::Slice {
                 base,

@@ -6,6 +6,7 @@ use super::{
     NIL_POINTER_OR_INDEX_OUT_OF_RANGE, NO_CAPABILITIES, NO_GO_PANICS, RuntimeOp,
     SEND_ON_CLOSED_CHANNEL, SLICE_BOUNDS_OUT_OF_RANGE, STANDARD_IO_CAPABILITY,
     TYPE_ASSERTION_FAILURE, TYPE_ASSERTION_OR_INDEX_OUT_OF_RANGE,
+    UNCOMPARABLE_INTERFACE_COMPARISON,
 };
 use crate::effects::{
     AllocationEffect, ArgumentMutationEffect, BlockingEffect, HostIoEffect, RuntimeEffects,
@@ -19,6 +20,7 @@ impl RuntimeOp {
         match self {
             Self::PrintBool
             | Self::PrintI64
+            | Self::PrintF64
             | Self::PrintSpace
             | Self::PrintNewline
             | Self::PrintGoString => STANDARD_IO_CAPABILITY,
@@ -71,6 +73,7 @@ impl RuntimeOp {
             | Self::GoInterfaceNil
             | Self::GoInterfaceBoxBool
             | Self::GoInterfaceBoxI64
+            | Self::GoInterfaceBoxF64
             | Self::GoInterfaceBoxGoString
             | Self::GoInterfaceBoxStructI64
             | Self::GoInterfaceBoxPointerStructI64
@@ -78,6 +81,7 @@ impl RuntimeOp {
             | Self::GoInterfaceIsType
             | Self::GoInterfaceUnboxBool
             | Self::GoInterfaceUnboxI64
+            | Self::GoInterfaceUnboxF64
             | Self::GoInterfaceUnboxGoString
             | Self::GoInterfaceStructI64Get
             | Self::GoInterfaceUnboxPointerStructI64
@@ -111,7 +115,12 @@ impl RuntimeOp {
             | Self::GoSliceInterfaceNil
             | Self::GoSliceInterfaceIsNil
             | Self::GoInterfaceBoxAggregate
+            | Self::GoInterfaceBoxComparableAggregate
             | Self::GoInterfaceUnboxAggregate
+            | Self::GoInterfaceEqual
+            | Self::GoSliceU8Make
+            | Self::GoSliceU8Set
+            | Self::GoSliceU8Copy
             | Self::GoChannelI64Nil
             | Self::GoChannelI64Make
             | Self::GoChannelI64Len
@@ -161,6 +170,13 @@ impl RuntimeOp {
             | Self::PrintNewline
             | Self::PrintGoString => RuntimeEffects::new(
                 AllocationEffect::None,
+                ArgumentMutationEffect::None,
+                HostIoEffect::StandardError,
+                NO_GO_PANICS,
+            )
+            .with_blocking(BlockingEffect::MayBlock),
+            Self::PrintF64 => RuntimeEffects::new(
+                AllocationEffect::MayAllocate,
                 ArgumentMutationEffect::None,
                 HostIoEffect::StandardError,
                 NO_GO_PANICS,
@@ -226,20 +242,23 @@ impl RuntimeOp {
                     SLICE_BOUNDS_OUT_OF_RANGE,
                 )
             }
-            Self::GoSliceI64Set | Self::GoSliceBoolSet | Self::GoSliceInterfaceSet => {
+            Self::GoSliceI64Set
+            | Self::GoSliceU8Set
+            | Self::GoSliceBoolSet
+            | Self::GoSliceInterfaceSet => RuntimeEffects::new(
+                AllocationEffect::None,
+                ArgumentMutationEffect::MayMutateOwnedArgument,
+                HostIoEffect::None,
+                INDEX_OUT_OF_RANGE,
+            ),
+            Self::GoSliceI64Make | Self::GoSliceU8Make | Self::GoSliceInterfaceMake => {
                 RuntimeEffects::new(
-                    AllocationEffect::None,
-                    ArgumentMutationEffect::MayMutateOwnedArgument,
+                    AllocationEffect::MayAllocate,
+                    ArgumentMutationEffect::None,
                     HostIoEffect::None,
-                    INDEX_OUT_OF_RANGE,
+                    SLICE_BOUNDS_OUT_OF_RANGE,
                 )
             }
-            Self::GoSliceI64Make | Self::GoSliceInterfaceMake => RuntimeEffects::new(
-                AllocationEffect::MayAllocate,
-                ArgumentMutationEffect::None,
-                HostIoEffect::None,
-                SLICE_BOUNDS_OUT_OF_RANGE,
-            ),
             Self::GoSliceI64Len
             | Self::GoSliceI64Cap
             | Self::GoSliceU8Len
@@ -268,14 +287,15 @@ impl RuntimeOp {
                 HostIoEffect::None,
                 NO_GO_PANICS,
             ),
-            Self::GoSliceU8CopyString | Self::GoSliceI64Clear | Self::GoSliceI64Copy => {
-                RuntimeEffects::new(
-                    AllocationEffect::None,
-                    ArgumentMutationEffect::MayMutateOwnedArgument,
-                    HostIoEffect::None,
-                    NO_GO_PANICS,
-                )
-            }
+            Self::GoSliceU8CopyString
+            | Self::GoSliceU8Copy
+            | Self::GoSliceI64Clear
+            | Self::GoSliceI64Copy => RuntimeEffects::new(
+                AllocationEffect::None,
+                ArgumentMutationEffect::MayMutateOwnedArgument,
+                HostIoEffect::None,
+                NO_GO_PANICS,
+            ),
             Self::GoMapStringI64Nil
             | Self::GoMapStringI64Len
             | Self::GoMapStringI64Get
@@ -366,9 +386,11 @@ impl RuntimeOp {
             }
             Self::GoInterfaceBoxBool
             | Self::GoInterfaceBoxI64
+            | Self::GoInterfaceBoxF64
             | Self::GoInterfaceBoxGoString
             | Self::GoInterfaceBoxPointerStructI64
-            | Self::GoInterfaceBoxAggregate => RuntimeEffects::new(
+            | Self::GoInterfaceBoxAggregate
+            | Self::GoInterfaceBoxComparableAggregate => RuntimeEffects::new(
                 AllocationEffect::None,
                 ArgumentMutationEffect::None,
                 HostIoEffect::None,
@@ -382,6 +404,7 @@ impl RuntimeOp {
             ),
             Self::GoInterfaceUnboxBool
             | Self::GoInterfaceUnboxI64
+            | Self::GoInterfaceUnboxF64
             | Self::GoInterfaceUnboxGoString
             | Self::GoInterfaceUnboxPointerStructI64
             | Self::GoInterfaceUnboxAggregate => RuntimeEffects::new(
@@ -389,6 +412,12 @@ impl RuntimeOp {
                 ArgumentMutationEffect::None,
                 HostIoEffect::None,
                 TYPE_ASSERTION_FAILURE,
+            ),
+            Self::GoInterfaceEqual => RuntimeEffects::new(
+                AllocationEffect::None,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                UNCOMPARABLE_INTERFACE_COMPARISON,
             ),
             Self::GoInterfaceStructI64Get => RuntimeEffects::new(
                 AllocationEffect::None,

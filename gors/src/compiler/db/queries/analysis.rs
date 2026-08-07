@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use super::support::specialized_range_iterator_ids;
 use super::{
-    Db, FileFacts, FunctionProjection, PackageInput, file_projection, package_type_aliases_product,
-    typed_constant_product, typed_variable_product,
+    Db, FileFacts, FunctionProjection, PackageInput, file_projection, language_version_issues,
+    package_type_aliases_product, typed_constant_product, typed_variable_product,
 };
 use crate::compiler::db::model::{
     ConstantDescriptor, FileAnalysis, FileIssue, FunctionBody, FunctionDescriptor,
@@ -129,6 +129,7 @@ pub(in crate::compiler::db) fn package_analysis_product(
             issues.push(PackageIssue::FileParseFailure { file, failure });
             continue;
         }
+        issues.extend(language_version_issues(db, source, facts).iter().cloned());
 
         let imports = facts.imports(db);
         direct_imports.extend(
@@ -211,11 +212,14 @@ pub(in crate::compiler::db) fn package_analysis_product(
             let key = function.key(db);
             let name = function.name(db);
 
-            let first_file = if key.is_package_level() {
-                declarations_by_name.insert(Arc::clone(&name), file)
-            } else {
-                method_declarations.insert(key.clone(), file)
-            };
+            let first_file =
+                if function.receiver_type(db).is_none() && matches!(name.as_ref(), "init" | "_") {
+                    None
+                } else if key.is_package_level() {
+                    declarations_by_name.insert(Arc::clone(&name), file)
+                } else {
+                    method_declarations.insert(key.clone(), file)
+                };
             if let Some(first_file) = first_file {
                 issues.push(PackageIssue::DuplicateDefinition {
                     name: Arc::clone(&name),
@@ -237,7 +241,8 @@ pub(in crate::compiler::db) fn package_analysis_product(
             }
 
             if function.receiver_type(db).is_none()
-                && (name.as_ref() == "init" || specialized_range_iterators.contains(&id))
+                && (matches!(name.as_ref(), "init" | "_")
+                    || specialized_range_iterators.contains(&id))
             {
                 continue;
             }
@@ -252,7 +257,9 @@ pub(in crate::compiler::db) fn package_analysis_product(
             let id = constant.id(db);
             let key = constant.key(db);
             let name = constant.name(db);
-            if let Some(first_file) = declarations_by_name.insert(Arc::clone(&name), file) {
+            if name.as_ref() != "_"
+                && let Some(first_file) = declarations_by_name.insert(Arc::clone(&name), file)
+            {
                 issues.push(PackageIssue::DuplicateDefinition {
                     name: Arc::clone(&name),
                     first_file,
@@ -269,6 +276,9 @@ pub(in crate::compiler::db) fn package_analysis_product(
                 }
             } else {
                 definitions_by_digest.insert(id, (key.clone(), file));
+            }
+            if name.as_ref() == "_" {
+                continue;
             }
             if is_exported(&name)
                 && let Ok(typed) = typed_constant_product(db, input, constant)
@@ -292,7 +302,9 @@ pub(in crate::compiler::db) fn package_analysis_product(
             let id = variable.id(db);
             let key = variable.key(db);
             let name = variable.name(db);
-            if let Some(first_file) = declarations_by_name.insert(Arc::clone(&name), file) {
+            if name.as_ref() != "_"
+                && let Some(first_file) = declarations_by_name.insert(Arc::clone(&name), file)
+            {
                 issues.push(PackageIssue::DuplicateDefinition {
                     name: Arc::clone(&name),
                     first_file,
@@ -309,6 +321,9 @@ pub(in crate::compiler::db) fn package_analysis_product(
                 }
             } else {
                 definitions_by_digest.insert(id, (key.clone(), file));
+            }
+            if name.as_ref() == "_" {
+                continue;
             }
             if is_exported(&name)
                 && let Ok(typed) = typed_variable_product(db, input, variable)
@@ -332,7 +347,9 @@ pub(in crate::compiler::db) fn package_analysis_product(
             let id = alias.id(db);
             let key = alias.key(db);
             let name = alias.name(db);
-            if let Some(first_file) = declarations_by_name.insert(Arc::clone(&name), file) {
+            if name.as_ref() != "_"
+                && let Some(first_file) = declarations_by_name.insert(Arc::clone(&name), file)
+            {
                 issues.push(PackageIssue::DuplicateDefinition {
                     name: Arc::clone(&name),
                     first_file,
@@ -349,6 +366,9 @@ pub(in crate::compiler::db) fn package_analysis_product(
                 }
             } else {
                 definitions_by_digest.insert(id, (key, file));
+            }
+            if name.as_ref() == "_" {
+                continue;
             }
             let syntax = alias.syntax(db);
             let target = match &syntax.target.kind {
@@ -362,7 +382,9 @@ pub(in crate::compiler::db) fn package_analysis_product(
             let id = definition.id(db);
             let key = definition.key(db);
             let name = definition.name(db);
-            if let Some(first_file) = declarations_by_name.insert(Arc::clone(&name), file) {
+            if name.as_ref() != "_"
+                && let Some(first_file) = declarations_by_name.insert(Arc::clone(&name), file)
+            {
                 issues.push(PackageIssue::DuplicateDefinition {
                     name: Arc::clone(&name),
                     first_file,
@@ -379,6 +401,9 @@ pub(in crate::compiler::db) fn package_analysis_product(
                 }
             } else {
                 definitions_by_digest.insert(id, (key, file));
+            }
+            if name.as_ref() == "_" {
+                continue;
             }
             let syntax = definition.syntax(db);
             let underlying = match &syntax.underlying.kind {

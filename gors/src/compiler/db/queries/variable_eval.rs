@@ -56,11 +56,9 @@ pub(in crate::compiler::db) fn typed_variable_product(
     let mut static_functions = BTreeMap::new();
     let mut package_initializers = Vec::new();
     let mut sources = input.sources(db).iter().copied().collect::<Vec<_>>();
-    sources.sort_by_key(|source| source.file(db));
+    sources.sort_by_key(|source| source.logical_path(db));
     for source in sources {
-        let mut functions = file_projection(db, source).functions(db);
-        functions.sort_by_key(|function| function.id(db));
-        for function in functions {
+        for function in file_projection(db, source).functions(db) {
             if function.receiver_type(db).is_some() {
                 continue;
             }

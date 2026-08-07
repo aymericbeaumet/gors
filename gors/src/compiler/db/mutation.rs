@@ -8,7 +8,9 @@ use super::queries::{PackageInput, SourceInput};
 use super::resolved_imports::{ResolvedFileImports, ResolvedImportsInput};
 use super::{CompilerDatabase, QueryError, SourceUpdate, identity_error};
 use crate::compiler::ids::{FileId, PackageId};
-use crate::compiler::input::{PackageKey, SourceContent, SourceSnapshot, WorkspaceKey};
+use crate::compiler::input::{
+    GoLanguageVersion, PackageKey, SourceContent, SourceSnapshot, WorkspaceKey,
+};
 
 /// Opaque reversible record for one source-facade mutation.
 ///
@@ -24,6 +26,7 @@ enum SourceInputMutationKind {
     Updated {
         source: SourceInput,
         previous_content: Option<Arc<SourceContent>>,
+        previous_language_version: Option<GoLanguageVersion>,
         previous_diagnostic_path: Option<Arc<str>>,
     },
     Inserted {
@@ -53,6 +56,7 @@ impl CompilerDatabase {
         workspace: &WorkspaceKey,
         package: &PackageKey,
         logical_path: &str,
+        language_version: GoLanguageVersion,
         snapshot: Arc<SourceSnapshot>,
     ) -> Result<(SourceUpdate, Option<SourceInputMutation>), QueryError> {
         let workspace = self
@@ -69,7 +73,7 @@ impl CompilerDatabase {
             .map_err(identity_error)?;
 
         if self.sources.contains_key(&file) {
-            self.replace_source_revision(file, snapshot)
+            self.replace_source_revision(file, language_version, snapshot)
         } else {
             let previous_package = self
                 .packages
@@ -88,6 +92,7 @@ impl CompilerDatabase {
                 package,
                 file,
                 Arc::from(logical_path),
+                language_version,
                 content,
                 resolved_imports,
             );
@@ -188,10 +193,14 @@ impl CompilerDatabase {
                 SourceInputMutationKind::Updated {
                     source,
                     previous_content,
+                    previous_language_version,
                     previous_diagnostic_path,
                 } => {
                     if let Some(content) = previous_content {
                         source.set_content(self).to(content);
+                    }
+                    if let Some(language_version) = previous_language_version {
+                        source.set_language_version(self).to(language_version);
                     }
                     if let Some(path) = previous_diagnostic_path {
                         self.diagnostic_paths.insert(source.file(self), path);
@@ -232,6 +241,7 @@ impl CompilerDatabase {
     fn replace_source_revision(
         &mut self,
         file: FileId,
+        language_version: GoLanguageVersion,
         snapshot: Arc<SourceSnapshot>,
     ) -> Result<(SourceUpdate, Option<SourceInputMutation>), QueryError> {
         let input = self
@@ -245,6 +255,11 @@ impl CompilerDatabase {
         if semantic_changed {
             input.set_content(self).to(content);
         }
+        let previous_language_version = input.language_version(self);
+        let language_version_changed = previous_language_version != language_version;
+        if language_version_changed {
+            input.set_language_version(self).to(language_version);
+        }
         let diagnostic_path = snapshot.shared_diagnostic_path();
         let previous_diagnostic_path = self
             .diagnostic_paths
@@ -255,18 +270,21 @@ impl CompilerDatabase {
         if diagnostic_path_changed {
             self.diagnostic_paths.insert(file, diagnostic_path);
         }
-        let mutation = (semantic_changed || diagnostic_path_changed).then(|| SourceInputMutation {
-            kind: SourceInputMutationKind::Updated {
-                source: input,
-                previous_content: semantic_changed.then_some(previous_content),
-                previous_diagnostic_path: diagnostic_path_changed
-                    .then_some(previous_diagnostic_path),
-            },
-        });
+        let mutation = (semantic_changed || language_version_changed || diagnostic_path_changed)
+            .then(|| SourceInputMutation {
+                kind: SourceInputMutationKind::Updated {
+                    source: input,
+                    previous_content: semantic_changed.then_some(previous_content),
+                    previous_language_version: language_version_changed
+                        .then_some(previous_language_version),
+                    previous_diagnostic_path: diagnostic_path_changed
+                        .then_some(previous_diagnostic_path),
+                },
+            });
         Ok((
             SourceUpdate {
                 file,
-                semantic_changed,
+                semantic_changed: semantic_changed || language_version_changed,
                 diagnostic_path_changed,
                 inserted: false,
             },

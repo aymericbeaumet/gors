@@ -232,6 +232,36 @@ fn interfaces_preserve_dynamic_types_and_value_copying() {
 }
 
 #[test]
+fn float_interfaces_preserve_ieee_equality_and_checked_extraction() {
+    let float_type = go_string_from_static(b"builtin:float64");
+    let nan = go_interface_box_f64(float_type.clone(), f64::NAN);
+    assert!(!go_interface_equal(nan.clone(), nan));
+
+    let positive_zero = go_interface_box_f64(float_type.clone(), 0.0);
+    let negative_zero = go_interface_box_f64(float_type.clone(), -0.0);
+    assert!(go_interface_equal(
+        positive_zero.clone(),
+        negative_zero.clone()
+    ));
+    assert_eq!(
+        go_interface_unbox_f64(negative_zero, float_type.clone()).to_bits(),
+        (-0.0_f64).to_bits()
+    );
+
+    let integer = go_interface_box_i64(go_string_from_static(b"builtin:int"), 0);
+    assert!(!go_interface_equal(positive_zero, integer));
+    assert!(
+        std::panic::catch_unwind(|| {
+            let _ = go_interface_unbox_f64(
+                go_interface_box_i64(go_string_from_static(b"builtin:int"), 1),
+                float_type,
+            );
+        })
+        .is_err()
+    );
+}
+
+#[test]
 fn interfaces_snapshot_structs_and_preserve_pointer_identity() {
     let struct_type = go_string_from_static(b"named:counter");
     let fields = go_slice_i64_from_static(&[1, 2]);
@@ -486,6 +516,25 @@ fn byte_slice_copy_uses_the_shorter_visible_length() {
         5
     );
     assert_eq!(go_string_from_slice_u8(destination).as_bytes(), b"hello");
+}
+
+#[test]
+fn byte_slice_make_set_and_copy_preserve_capacity_aliasing_and_overlap() {
+    let values = go_slice_u8_make(4, 6);
+    assert_eq!(go_slice_u8_len(values.clone()), 4);
+    go_slice_u8_set(values.clone(), 0, GoInt::from(b'a'));
+    go_slice_u8_set(values.clone(), 1, GoInt::from(b'b'));
+    go_slice_u8_set(values.clone(), 2, GoInt::from(b'c'));
+    go_slice_u8_set(values.clone(), 3, GoInt::from(b'd'));
+
+    let destination = go_slice_u8_range(values.clone(), 1, 4, -1);
+    let source = go_slice_u8_range(values.clone(), 0, 3, -1);
+    assert_eq!(go_slice_u8_copy(destination, source), 3);
+    assert_eq!(go_string_from_slice_u8(values.clone()).as_bytes(), b"aabc");
+
+    assert_eq!(go_slice_u8_copy(go_slice_u8_nil(), values.clone()), 0);
+    assert_eq!(go_slice_u8_copy(values, go_slice_u8_nil()), 0);
+    assert!(!go_slice_u8_is_nil(go_slice_u8_make(0, 0)));
 }
 
 #[test]
