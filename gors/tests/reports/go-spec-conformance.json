@@ -12,10 +12,10 @@
   "summary": {
     "groupCount": 15,
     "passingGroupCount": 15,
-    "caseCount": 325,
-    "passingCaseCount": 325,
+    "caseCount": 326,
+    "passingCaseCount": 326,
     "unsupportedCaseCount": 0,
-    "fixtureCount": 171
+    "fixtureCount": 172
   },
   "groups": [
     {
@@ -575,6 +575,7 @@
         "_negative/constants_division_by_zero",
         "_negative/constants_representability",
         "_negative/constants_typed_shift_overflow",
+        "constant_builtins",
         "constant_division_kinds",
         "constant_exact_evaluation",
         "constants",
@@ -586,10 +587,10 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 17,
-        "passingCaseCount": 17,
+        "caseCount": 18,
+        "passingCaseCount": 18,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 10
+        "fixtureCount": 11
       },
       "cases": [
         {
@@ -603,6 +604,20 @@
           ],
           "freshFixtures": [
             "constants"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "constant-builtins-kinds-and-constness",
+          "title": "Built-in functions min, max, len, real, imag, and complex applied to constants yield constants with spec-defined kinds and default types",
+          "subtitle": "Constants",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "constant_builtins"
+          ],
+          "freshFixtures": [
+            "constant_builtins"
           ],
           "reason": ""
         },

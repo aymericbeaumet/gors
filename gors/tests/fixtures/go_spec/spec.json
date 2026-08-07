@@ -353,6 +353,15 @@
           ]
         },
         {
+          "id": "constant-builtins-kinds-and-constness",
+          "section": "Constants",
+          "title": "Built-in functions min, max, len, real, imag, and complex applied to constants yield constants with spec-defined kinds and default types",
+          "status": "passing",
+          "fixtures": [
+            "constant_builtins"
+          ]
+        },
+        {
           "id": "constants-iota",
           "section": "Iota",
           "title": "iota increments across const specifications",

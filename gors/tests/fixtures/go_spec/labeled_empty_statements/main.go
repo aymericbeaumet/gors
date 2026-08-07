@@ -16,14 +16,15 @@ func bump(n *int) {
 	if *n > 10 {
 		goto Done
 	}
+	// `+=` through a pointer is unrelated to labeled/empty statements.
 	*n = *n + 5
 Done:
 }
 
 func main() {
-
+	;
 	a := double(3)
-
+	;;
 	b := double(0)
 	n := 4
 	bump(&n)
@@ -31,10 +32,10 @@ func main() {
 	bump(&n)
 	switch a {
 	case 6:
-
+		;
 	}
 	for i := 0; i < 1; i++ {
-
+		;
 	}
 	println(a, b, n)
 }
