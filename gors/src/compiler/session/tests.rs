@@ -547,7 +547,7 @@ fn recursively_admits_only_reachable_packages_in_dependency_first_layers() {
         entry_key.clone(),
         "main.go",
         "/checkout/main.go",
-        "package main\nimport \"example/first\"\nfunc main() {}\n",
+        "package main\nimport \"example/first\"\nfunc main() { println(first.Value()) }\n",
     );
     let first = package_manifest(
         first_key.clone(),

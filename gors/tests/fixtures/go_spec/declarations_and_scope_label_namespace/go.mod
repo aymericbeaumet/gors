@@ -1,0 +1,3 @@
+module go_spec_declarations_and_scope_label_namespace
+
+go 1.26

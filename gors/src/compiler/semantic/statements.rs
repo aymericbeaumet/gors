@@ -49,36 +49,56 @@ impl FunctionLowerer {
                 self.lower_assignment(left, *token, right, source)?
             }
             StmtSyntaxKind::IncDec { expression, token } => {
-                let destination = self.lower_place(expression, source)?;
-                let ty = self.place_ty(destination)?.clone();
-                if *ty.underlying() != Ty::Int(IntTy::Int) {
-                    return Err(Diagnostic::semantic(
-                        "increment and decrement require an int operand",
-                        source,
-                    ));
-                }
-                let one_node = self.alloc_node(expression.source)?;
-                let one = hir::Expr {
-                    node: one_node,
-                    kind: hir::ExprKind::Constant(ConstValue::Int("1".into())),
-                    ty,
-                    category: hir::ValueCategory::Constant,
-                    effects: hir::Effects::default(),
-                    source: SourceRef::node(one_node),
+                let op = match token {
+                    Token::INC => hir::AssignOp::Add,
+                    Token::DEC => hir::AssignOp::Sub,
+                    _ => {
+                        return Err(Diagnostic::semantic(
+                            "invalid increment/decrement token",
+                            source,
+                        ));
+                    }
                 };
-                hir::StmtKind::Assign {
-                    destinations: vec![destination],
-                    op: match token {
-                        Token::INC => hir::AssignOp::Add,
-                        Token::DEC => hir::AssignOp::Sub,
-                        _ => {
-                            return Err(Diagnostic::semantic(
-                                "invalid increment/decrement token",
-                                source,
-                            ));
-                        }
-                    },
-                    values: vec![one],
+                if let ExprSyntaxKind::Index { base, index } = &expression.kind {
+                    // The specification defines `x++` as the assignment
+                    // `x += 1`, so an indexed operand reuses the compound
+                    // element-assignment lowering with a constant `1` operand.
+                    let one = ExprSyntax {
+                        source: expression.source,
+                        kind: ExprSyntaxKind::Literal {
+                            token: Token::INT,
+                            spelling: "1".into(),
+                        },
+                    };
+                    let assign_token = if op == hir::AssignOp::Add {
+                        Token::ADD_ASSIGN
+                    } else {
+                        Token::SUB_ASSIGN
+                    };
+                    self.lower_single_index_assignment(base, index, assign_token, &one, source)?
+                } else {
+                    let destination = self.lower_place(expression, source)?;
+                    let ty = self.place_ty(destination)?.clone();
+                    if *ty.underlying() != Ty::Int(IntTy::Int) {
+                        return Err(Diagnostic::semantic(
+                            "increment and decrement require an int operand",
+                            source,
+                        ));
+                    }
+                    let one_node = self.alloc_node(expression.source)?;
+                    let one = hir::Expr {
+                        node: one_node,
+                        kind: hir::ExprKind::Constant(ConstValue::Int("1".into())),
+                        ty,
+                        category: hir::ValueCategory::Constant,
+                        effects: hir::Effects::default(),
+                        source: SourceRef::node(one_node),
+                    };
+                    hir::StmtKind::Assign {
+                        destinations: vec![destination],
+                        op,
+                        values: vec![one],
+                    }
                 }
             }
             StmtSyntaxKind::Send { channel, value } => {

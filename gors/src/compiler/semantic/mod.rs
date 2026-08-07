@@ -232,6 +232,7 @@ pub(super) fn lower_constant(
             source,
         ));
     }
+    let value = value.normalized_for(&ty);
     Ok(TypedConstant {
         id: definition,
         name: syntax.name.name.to_string(),
@@ -762,6 +763,13 @@ pub(super) fn eval_constant(
                     source,
                 )
             })?;
+            if matches!(op, hir::BinaryOp::Shl | hir::BinaryOp::Shr)
+                && matches!(left_ty, Ty::Untyped(_))
+                && (right_ty.is_integer() || matches!(right_ty, Ty::Untyped(_)))
+            {
+                let value = fold_untyped_constant_shift(op, &left, &right, source)?;
+                return Ok((Ty::Untyped(UntypedTy::Int), value));
+            }
             let operand_ty = exact_common_operand_type(&left_ty, &right_ty).ok_or_else(|| {
                 Diagnostic::semantic(
                     format!("incompatible constant operands {left_ty:?} and {right_ty:?}"),
@@ -770,6 +778,11 @@ pub(super) fn eval_constant(
             })?;
             ensure_bootstrap_value_type(&operand_ty.default_typed(), source)?;
             validate_binary_operator(op, &operand_ty.default_typed(), source)?;
+            // An untyped constant operand first converts to the common
+            // operand type, so an integral float spelling participates in
+            // integer arithmetic at integer operand types.
+            let left = left.normalized_for(&operand_ty);
+            let right = right.normalized_for(&operand_ty);
             let value = fold_constant_binary(op, &left, &right, source)?.ok_or_else(|| {
                 Diagnostic::unsupported("this constant operation is not yet supported", source)
             })?;

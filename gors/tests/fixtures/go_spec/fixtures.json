@@ -1,7 +1,19 @@
 {
-  "expectedProgramCount": 54,
+  "expectedProgramCount": 111,
   "fixtures": {
+    "_negative/composite_literal_duplicate_index": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/constants_division_by_zero": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
     "_negative/constants_representability": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/constants_typed_shift_overflow": {
       "status": "compile_error",
       "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
     },
@@ -9,11 +21,163 @@
       "status": "compile_error",
       "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
     },
+    "_negative/goto_jump_over_declaration": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/import_unused": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/init_not_referable": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/initialization_cycle": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/make_constant_len_exceeds_cap": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/map_element_not_addressable": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/negative_close_receive_only": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/negative_composite_literal_duplicate_index": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/negative_exported_identifiers_unexported_access": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/negative_map_element_not_addressable": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/negative_operand_blank_identifier": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/negative_properties_assignability_both_named": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/negative_properties_non_comparable_map_key": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/negative_short_decl_no_new_vars": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/negative_short_decl_repeated_name": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/negative_short_redeclare_type_mismatch": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/negative_types_array_length_mismatch": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/negative_types_channel_direction_reverse": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/negative_types_non_basic_interface_value": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/negative_types_promoted_composite_literal": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/negative_types_string_immutable": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/negative_types_struct_tag_identity": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/negative_unsafe_sizeof_type_param": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/negative_var_untyped_nil": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/operand_blank_identifier": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/package_clause_blank_name": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/properties_assignability": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/properties_assignability_both_named": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
     "_negative/properties_non_comparable": {
       "status": "compile_error",
       "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
     },
+    "_negative/properties_non_comparable_map_key": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/short_decl_no_new_vars": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/short_decl_repeated_name": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/short_redeclare_type_mismatch": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/slice_constant_bounds_swapped": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/types_channel_direction_reverse": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
     "_negative/types_interface_method_sets": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/types_non_basic_interface_value": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/types_promoted_composite_literal": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/types_struct_tag_identity": {
+      "status": "compile_error",
+      "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
+    },
+    "_negative/var_untyped_nil": {
       "status": "compile_error",
       "reason": "Negative Go-spec fixture; executed by the compile-error oracle instead of the generated-program runner."
     }

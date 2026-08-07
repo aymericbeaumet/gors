@@ -424,6 +424,20 @@ impl Ty {
 }
 
 impl ConstValue {
+    /// Exact value rewritten to the representation kind of `ty`. An exactly
+    /// integral float-kind constant becomes an integer constant at integer
+    /// sites; every other combination is returned unchanged.
+    #[must_use]
+    pub fn normalized_for(&self, ty: &Ty) -> Self {
+        if let (Self::Float(spelling), Ty::Int(_) | Ty::Uint(_) | Ty::Untyped(UntypedTy::Int)) =
+            (self, ty.underlying())
+            && let Some(integer) = exact_integer_from_number_spelling(spelling)
+        {
+            return integer;
+        }
+        self.clone()
+    }
+
     /// Whether this exact Go constant can be materialized as `ty` by the
     /// current target representation.
     pub fn is_representable_as(&self, ty: &Ty) -> bool {
@@ -470,6 +484,10 @@ impl ConstValue {
             }
             (Self::Float(value), Ty::Untyped(UntypedTy::Float | UntypedTy::Complex)) => {
                 parse_go_float(value).is_some()
+            }
+            (Self::Float(value), Ty::Int(_) | Ty::Uint(_)) => {
+                exact_integer_from_number_spelling(value)
+                    .is_some_and(|integer| integer.is_representable_as(ty))
             }
             (Self::Float(value), Ty::Float(FloatTy::Float64)) => parse_go_float(value).is_some(),
             (Self::Float(value), Ty::Complex(ComplexTy::Complex128)) => {
@@ -519,6 +537,186 @@ impl StaticValue {
     }
 }
 
+/// Exact rational value of a Go numeric constant spelling.
+///
+/// The exact constant algebra keeps big-number precision through folding; the
+/// denominator is always positive and the fraction is kept reduced.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ExactNumber {
+    numerator: BigInt,
+    denominator: BigInt,
+}
+
+impl ExactNumber {
+    /// Bounded exact decoding of a Go integer or floating-point constant
+    /// spelling. `None` when the spelling is not an exact bounded number.
+    pub(crate) fn from_spelling(spelling: &str) -> Option<Self> {
+        const EXACT_CONSTANT_SCALE_LIMIT: i64 = 16 * 1024;
+        let cleaned = spelling.replace('_', "");
+        let (negative, unsigned) = match cleaned.strip_prefix('-') {
+            Some(rest) => (true, rest),
+            None => (false, cleaned.strip_prefix('+').unwrap_or(cleaned.as_str())),
+        };
+        let (value, power, base) = if let Some(hexadecimal) = unsigned
+            .strip_prefix("0x")
+            .or_else(|| unsigned.strip_prefix("0X"))
+        {
+            let (significand, exponent) = hexadecimal.split_once(['p', 'P'])?;
+            let exponent = exponent.parse::<i64>().ok()?;
+            let (integer, fraction) = significand.split_once('.').unwrap_or((significand, ""));
+            if integer.is_empty() && fraction.is_empty() {
+                return None;
+            }
+            let digits = format!("{integer}{fraction}");
+            let value = BigInt::parse_bytes(digits.as_bytes(), 16)?;
+            let power = exponent.checked_sub(4 * i64::try_from(fraction.len()).ok()?)?;
+            (value, power, 2_u8)
+        } else {
+            let (significand, exponent) = match unsigned.split_once(['e', 'E']) {
+                Some((significand, exponent)) => (significand, exponent.parse::<i64>().ok()?),
+                None => (unsigned, 0),
+            };
+            let (integer, fraction) = significand.split_once('.').unwrap_or((significand, ""));
+            if integer.is_empty() && fraction.is_empty() {
+                return None;
+            }
+            let digits = format!("{integer}{fraction}");
+            let value = BigInt::parse_bytes(digits.as_bytes(), 10)?;
+            let power = exponent.checked_sub(i64::try_from(fraction.len()).ok()?)?;
+            (value, power, 10)
+        };
+        if power.abs() > EXACT_CONSTANT_SCALE_LIMIT {
+            return None;
+        }
+        let factor = BigInt::from(base).pow(u32::try_from(power.unsigned_abs()).ok()?);
+        let (numerator, denominator) = if power >= 0 {
+            (value * factor, BigInt::from(1_u8))
+        } else {
+            (value, factor)
+        };
+        let numerator = if negative { -numerator } else { numerator };
+        Some(Self::reduced(numerator, denominator))
+    }
+
+    pub(crate) fn is_zero(&self) -> bool {
+        use num_traits::Zero;
+        self.numerator.is_zero()
+    }
+
+    pub(crate) fn add(&self, other: &Self) -> Self {
+        Self::reduced(
+            &self.numerator * &other.denominator + &other.numerator * &self.denominator,
+            &self.denominator * &other.denominator,
+        )
+    }
+
+    pub(crate) fn sub(&self, other: &Self) -> Self {
+        Self::reduced(
+            &self.numerator * &other.denominator - &other.numerator * &self.denominator,
+            &self.denominator * &other.denominator,
+        )
+    }
+
+    pub(crate) fn mul(&self, other: &Self) -> Self {
+        Self::reduced(
+            &self.numerator * &other.numerator,
+            &self.denominator * &other.denominator,
+        )
+    }
+
+    /// Exact division. `None` when `other` is zero.
+    pub(crate) fn div(&self, other: &Self) -> Option<Self> {
+        use num_traits::Signed;
+        if other.is_zero() {
+            return None;
+        }
+        let mut numerator = &self.numerator * &other.denominator;
+        let mut denominator = &self.denominator * &other.numerator;
+        if denominator.is_negative() {
+            numerator = -numerator;
+            denominator = -denominator;
+        }
+        Some(Self::reduced(numerator, denominator))
+    }
+
+    /// The exact constant value: an integer constant when the value is
+    /// integral, otherwise the exact finite decimal spelling. `None` when the
+    /// value has no bounded finite decimal representation.
+    pub(crate) fn to_const_value(&self) -> Option<ConstValue> {
+        use num_traits::{Signed, Zero};
+        const EXACT_DECIMAL_DIGIT_LIMIT: u32 = 64 * 1024;
+        let one = BigInt::from(1_u8);
+        if self.denominator == one {
+            return Some(ConstValue::Int(self.numerator.to_string()));
+        }
+        let two = BigInt::from(2_u8);
+        let five = BigInt::from(5_u8);
+        let mut remaining = self.denominator.clone();
+        let mut twos = 0_u32;
+        let mut fives = 0_u32;
+        while (&remaining % &two).is_zero() && twos < EXACT_DECIMAL_DIGIT_LIMIT {
+            remaining /= &two;
+            twos += 1;
+        }
+        while (&remaining % &five).is_zero() && fives < EXACT_DECIMAL_DIGIT_LIMIT {
+            remaining /= &five;
+            fives += 1;
+        }
+        if remaining != one {
+            return None;
+        }
+        let fraction_digits = twos.max(fives);
+        let scaled = &self.numerator * BigInt::from(10_u8).pow(fraction_digits) / &self.denominator;
+        let sign = if scaled.is_negative() { "-" } else { "" };
+        let magnitude = scaled.abs().to_string();
+        let fraction_digits = fraction_digits as usize;
+        let padded = format!("{magnitude:0>width$}", width = fraction_digits + 1);
+        let split = padded.len() - fraction_digits;
+        Some(ConstValue::Float(format!(
+            "{sign}{}.{}",
+            &padded[..split],
+            &padded[split..]
+        )))
+    }
+
+    fn reduced(numerator: BigInt, denominator: BigInt) -> Self {
+        use num_traits::Zero;
+        debug_assert!(!denominator.is_zero());
+        let divisor = big_gcd(&numerator, &denominator);
+        if divisor > BigInt::from(1_u8) {
+            Self {
+                numerator: numerator / &divisor,
+                denominator: denominator / &divisor,
+            }
+        } else {
+            Self {
+                numerator,
+                denominator,
+            }
+        }
+    }
+}
+
+fn big_gcd(left: &BigInt, right: &BigInt) -> BigInt {
+    use num_traits::{Signed, Zero};
+    let mut a = left.abs();
+    let mut b = right.abs();
+    while !b.is_zero() {
+        let remainder = &a % &b;
+        a = b;
+        b = remainder;
+    }
+    a
+}
+
+/// Exact integer value of a Go numeric constant spelling, or `None` when the
+/// spelling does not represent an integer.
+pub(crate) fn exact_integer_from_number_spelling(spelling: &str) -> Option<ConstValue> {
+    let number = ExactNumber::from_spelling(spelling)?;
+    (number.denominator == BigInt::from(1_u8))
+        .then(|| ConstValue::Int(number.numerator.to_string()))
+}
+
 pub(crate) fn parse_go_float(spelling: &str) -> Option<f64> {
     let spelling = spelling.replace('_', "");
     let unsigned = spelling
@@ -554,20 +752,4 @@ pub(crate) fn parse_go_float(spelling: &str) -> Option<f64> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::parse_go_float;
-
-    #[test]
-    fn parses_decimal_and_hexadecimal_go_float_literals() {
-        for (spelling, expected) in [
-            ("1.25", 1.25),
-            ("1.5e1", 15.0),
-            ("0x1p-2", 0.25),
-            ("0x1.Fp+0", 1.9375),
-            ("0X.8P+0", 0.5),
-            ("-0x1p+2", -4.0),
-        ] {
-            assert_eq!(parse_go_float(spelling), Some(expected), "{spelling}");
-        }
-    }
-}
+mod tests;

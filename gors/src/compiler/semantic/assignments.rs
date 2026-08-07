@@ -233,7 +233,7 @@ impl FunctionLowerer {
         Some(self.lower_single_index_assignment(base, index, token, value, source))
     }
 
-    fn lower_single_index_assignment(
+    pub(super) fn lower_single_index_assignment(
         &mut self,
         base: &ExprSyntax,
         index: &ExprSyntax,
@@ -286,17 +286,20 @@ impl FunctionLowerer {
                 if key.underlying() == &Ty::String
                     && element.underlying() == &Ty::Int(IntTy::Int) =>
             {
-                if assignment_op(token, source)? != hir::AssignOp::Set {
-                    return Err(Diagnostic::unsupported(
-                        "compound map assignment is not yet implemented",
+                let op = assignment_op(token, source)?;
+                if op != hir::AssignOp::Set {
+                    super::expressions::validate_binary_operator(
+                        super::expressions::assignment_binary_op(op),
+                        &Ty::Int(IntTy::Int),
                         source,
-                    ));
+                    )?;
                 }
                 let key = self.lower_expr(index, Some(&Ty::String))?;
                 let value = self.lower_expr(value, Some(&Ty::Int(IntTy::Int)))?;
                 Ok(hir::StmtKind::MapAssign {
                     map: container,
                     key,
+                    op,
                     value,
                 })
             }

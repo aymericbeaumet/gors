@@ -1,4 +1,63 @@
-use super::compile_and_run;
+use super::{compile_and_run, compile_file};
+
+#[test]
+fn map_element_compound_assignment_and_incdec_evaluate_operands_once() {
+    let run = compile_and_run(
+        r#"
+            package main
+            func nilCompoundWritePanics() (panicked bool) {
+                defer func() { panicked = recover() != nil }()
+                var missing map[string]int
+                missing["value"] += 1
+                return false
+            }
+            func main() {
+                counts := map[string]int{"a": 1}
+                calls := 0
+                key := func() string {
+                    calls++
+                    return "a"
+                }
+                counts[key()] += 2
+                counts["a"]++
+                counts["missing"]++
+                counts["negative"] -= 3
+                if calls != 1 { panic("key evaluated more than once") }
+                if counts["a"] != 4 || counts["missing"] != 1 || counts["negative"] != -3 {
+                    panic("compound map assignment changed")
+                }
+                if !nilCompoundWritePanics() { panic("nil map compound write did not panic") }
+                println("map-compound: ok")
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"map-compound: ok\n");
+    assert!(run.rust.contains("go_map_string_i64_get"), "{}", run.rust);
+    assert!(run.rust.contains("go_map_string_i64_set"), "{}", run.rust);
+}
+
+#[test]
+fn map_element_compound_assignment_rejects_mismatched_values() {
+    let errors = compile_file(
+        "main.go",
+        r#"package main
+func main() {
+    counts := map[string]int{"a": 1}
+    counts["a"] += "text"
+    println(counts["a"])
+}
+"#,
+    )
+    .err()
+    .expect("a non-integer compound map operand must be rejected");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("cannot use")),
+        "{errors:?}"
+    );
+}
 
 #[test]
 fn tuple_assignment_prepares_dynamic_targets_before_the_call() {

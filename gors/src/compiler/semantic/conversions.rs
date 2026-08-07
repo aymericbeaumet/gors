@@ -35,6 +35,17 @@ impl FunctionLowerer {
             ));
         };
         let target = lower_type(callee, &self.type_aliases, source)?;
+        if matches!(target.underlying(), Ty::Interface(_)) {
+            // A conversion to an interface type, including the predeclared
+            // `any` alias, boxes the operand exactly like interface
+            // assignment.
+            let value = self.lower_expr(argument, None)?;
+            let mut result = self.coerce_interface_value(value, &target, argument.source)?;
+            if let Some(expected) = expected {
+                coerce_expr(&mut result, expected, source)?;
+            }
+            return Ok(result);
+        }
         let mut argument = self.lower_expr(argument, None)?;
         let byte_slice = Ty::Slice(Box::new(Ty::Uint(UintTy::Uint8)));
         let rune_slice = Ty::Slice(Box::new(Ty::Int(IntTy::Int32)));

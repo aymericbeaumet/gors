@@ -57,7 +57,7 @@ struct FixtureExecutionDirective {
     status: String,
 }
 
-const EXPECTED_SPEC_CASE_COUNT: usize = 211;
+const EXPECTED_SPEC_CASE_COUNT: usize = 270;
 
 const GO_1_26_SPEC_SECTIONS: &[&str] = &[
     "Source code representation",

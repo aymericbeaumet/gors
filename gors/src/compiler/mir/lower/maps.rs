@@ -1,6 +1,9 @@
 //! Explicit-order lowering for `map[string]int` operations.
 
-use super::super::construct::{call_effects, make_rvalue, make_statement, make_terminator};
+use super::super::construct::{
+    assignment_binary_op, binary_effects, call_effects, make_rvalue, make_statement,
+    make_terminator,
+};
 use super::super::{Operand, Place, Provenance, RvalueKind, TerminatorKind};
 use super::FunctionLowerer;
 use crate::compiler::Diagnostic;
@@ -309,10 +312,17 @@ impl FunctionLowerer {
         Ok(Operand::Read(result))
     }
 
+    /// Write a map element, evaluating the map and key operands exactly once.
+    ///
+    /// A compound operation first reads the current element through the same
+    /// operand temporaries (a missing key reads the zero value), applies the
+    /// binary operation, and then performs the single write; writing through a
+    /// nil map keeps the runtime's Go assignment panic.
     pub(super) fn lower_map_assignment(
         &mut self,
         map: &hir::Expr,
         key: &hir::Expr,
+        op: hir::AssignOp,
         value: &hir::Expr,
         source: SourceRef,
     ) -> Result<(), Diagnostic> {
@@ -322,15 +332,50 @@ impl FunctionLowerer {
         let key_operand = self.lower_expr(key)?;
         let key_operand =
             self.materialize(key_operand, key.ty.clone(), Provenance::Source(key.source))?;
-        let value_operand = self.lower_expr(value)?;
-        let value_operand = self.materialize(
-            value_operand,
-            value.ty.clone(),
-            Provenance::Source(value.source),
-        )?;
+        let assigned = if op == hir::AssignOp::Set {
+            let value_operand = self.lower_expr(value)?;
+            self.materialize(
+                value_operand,
+                value.ty.clone(),
+                Provenance::Source(value.source),
+            )?
+        } else {
+            let provenance = Provenance::Source(source);
+            let old = Place {
+                local: self.new_temp(value.ty.clone()),
+            };
+            self.emit_map_call(
+                hir::Builtin::MapStringI64Get,
+                vec![map_operand.clone(), key_operand.clone()],
+                vec![old],
+                source,
+            )?;
+            let value_operand = self.lower_expr(value)?;
+            let value_operand = self.materialize(
+                value_operand,
+                value.ty.clone(),
+                Provenance::Source(value.source),
+            )?;
+            let result = Place {
+                local: self.new_temp(value.ty.clone()),
+            };
+            let binary_op = assignment_binary_op(op);
+            let binary = make_rvalue(
+                RvalueKind::Binary {
+                    op: binary_op,
+                    left: Operand::Read(old),
+                    right: value_operand,
+                    ty: value.ty.clone(),
+                },
+                binary_effects(binary_op, &value.ty),
+                provenance.clone(),
+            );
+            self.push_statement(make_statement(result, binary, provenance))?;
+            Operand::Read(result)
+        };
         self.emit_map_call(
             hir::Builtin::MapStringI64Set,
-            vec![map_operand, key_operand, value_operand],
+            vec![map_operand, key_operand, assigned],
             Vec::new(),
             source,
         )

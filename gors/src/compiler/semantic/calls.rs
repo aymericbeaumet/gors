@@ -59,29 +59,31 @@ impl FunctionLowerer {
             ));
         }
         let (fixed_arguments, variadic_arguments) = arguments.split_at(fixed_parameters.len());
-        if variadic_arguments.is_empty() {
-            return Err(Diagnostic::unsupported(
-                "a variadic call with no final arguments requires nil-slice lowering",
-                source,
-            ));
-        }
         let Ty::Slice(element) = variadic_parameter.underlying() else {
             return Err(Diagnostic::backend(
                 "variadic signature final parameter is not a slice",
             ));
         };
+        let mut lowered = fixed_arguments
+            .iter()
+            .zip(fixed_parameters)
+            .map(|(argument, expected)| self.lower_expr(argument, Some(expected)))
+            .collect::<Result<Vec<_>, _>>()?;
+        if variadic_arguments.is_empty() {
+            // A variadic call without final arguments passes the parameter's
+            // nil slice, not an allocated empty slice.
+            let node = self.alloc_node(pack_source)?;
+            let nil =
+                self.zero_value_expr(node, SourceRef::node(node), variadic_parameter.clone())?;
+            lowered.push(nil);
+            return Ok(lowered);
+        }
         if element.underlying() != &Ty::Int(IntTy::Int) {
             return Err(Diagnostic::unsupported(
                 "variadic slice packing currently supports int elements",
                 source,
             ));
         }
-
-        let mut lowered = fixed_arguments
-            .iter()
-            .zip(fixed_parameters)
-            .map(|(argument, expected)| self.lower_expr(argument, Some(expected)))
-            .collect::<Result<Vec<_>, _>>()?;
         let values = variadic_arguments
             .iter()
             .map(|argument| self.lower_expr(argument, Some(element)))

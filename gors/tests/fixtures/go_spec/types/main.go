@@ -101,10 +101,14 @@ func main() {
 	slice := []int{1, 2, 3}
 	slice = append(slice, 4)
 	structValue := Counter{Embedded: Embedded{Name: "score"}, Value: array[1]}
+	array[0] = 5
 	var pointer *Counter = &structValue
 	mapping := map[string]int{"answer": 42}
 	channel := make(chan int, 1)
 	channel <- mapping["answer"]
+	mapping["question"] = 6
+	mapping["answer"]++
+	missingElement, missingElementOK := mapping["missing"]
 	sendDirectional := make(chan int, 1)
 	SendOnly(sendDirectional, 7)
 	receiveDirectional := make(chan int, 1)
@@ -115,6 +119,15 @@ func main() {
 	accumulator := Accumulator{Total: 4}
 	var dynamicAdder any = &accumulator
 	assertedAdder, assertedAdderOK := dynamicAdder.(Adder)
+	var dynamicValueAdder any = accumulator
+	failedAdder, failedAdderOK := dynamicValueAdder.(Adder)
+	valueTypeSwitchResult := 0
+	switch dynamicValueAdder.(type) {
+	case Adder:
+		valueTypeSwitchResult = 1
+	default:
+		valueTypeSwitchResult = -1
+	}
 	var scalar any = 1
 	convertedScalar, convertedScalarOK := scalar.(interface{})
 	scalarTypeSwitch := false
@@ -147,6 +160,9 @@ func main() {
 	if len(slice) != 4 || structValue.Name != "score" {
 		panic("slice or embedded field changed")
 	}
+	if len(array) != 2 || array[0] != 5 || array[1] != 2 {
+		panic("array length or indexed mutation changed")
+	}
 	if Name(structValue) != "counter" {
 		panic("interface value method changed")
 	}
@@ -155,6 +171,19 @@ func main() {
 	}
 	if <-channel != 42 || ReceiveOnly(receiveDirectional) != 8 {
 		panic("channel type changed")
+	}
+	channel <- 1
+	close(channel)
+	first, firstOK := <-channel
+	zero, zeroOK := <-channel
+	if !(first == 1 && firstOK && zero == 0 && !zeroOK) {
+		panic("channel close or comma-ok changed")
+	}
+	if len(mapping) != 2 || mapping["question"] != 6 || mapping["answer"] != 43 {
+		panic("map mutation changed")
+	}
+	if missingElement != 0 || missingElementOK {
+		panic("map comma-ok changed")
 	}
 	if node.Children[0].Value != 2 {
 		panic("recursive type changed")
@@ -167,6 +196,9 @@ func main() {
 	}
 	if !assertedAdderOK || assertedAdder.Sum() != 9 || typeSwitchTotal != 9 {
 		panic("interface assertion changed")
+	}
+	if failedAdderOK || failedAdder != nil || valueTypeSwitchResult != -1 {
+		panic("value method set assertion changed")
 	}
 	if !convertedScalarOK || convertedScalar == nil || !scalarTypeSwitch {
 		panic("implied interface assertion changed")

@@ -402,10 +402,16 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
             encoder.field(b"operation", |encoder| encode_assign_op(encoder, *op));
             encoder.field(b"value", |encoder| encode_expression(encoder, value));
         }),
-        hir::StmtKind::MapAssign { map, key, value } => {
+        hir::StmtKind::MapAssign {
+            map,
+            key,
+            op,
+            value,
+        } => {
             encoder.variant(b"map-assign", |encoder| {
                 encoder.field(b"map", |encoder| encode_expression(encoder, map));
                 encoder.field(b"key", |encoder| encode_expression(encoder, key));
+                encoder.field(b"operation", |encoder| encode_assign_op(encoder, *op));
                 encoder.field(b"value", |encoder| encode_expression(encoder, value));
             });
         }

@@ -73,7 +73,9 @@ fn collect_statement_callees(statement: &hir::Stmt, callees: &mut BTreeSet<Quali
         hir::StmtKind::StructFieldAssign { value, .. } => {
             collect_expression_callees(value, callees);
         }
-        hir::StmtKind::MapAssign { map, key, value } => {
+        hir::StmtKind::MapAssign {
+            map, key, value, ..
+        } => {
             collect_expression_callees(map, callees);
             collect_expression_callees(key, callees);
             collect_expression_callees(value, callees);

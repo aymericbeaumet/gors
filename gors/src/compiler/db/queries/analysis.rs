@@ -150,6 +150,9 @@ pub(in crate::compiler::db) fn package_analysis_product(
                     issue: import.issue().clone(),
                 }),
         );
+        issues.extend(super::unused_imports::file_unused_import_issues(
+            db, source, facts,
+        ));
         let declared_package = facts.package(db);
         if let Some(expected) = &package_name {
             if expected != &declared_package {

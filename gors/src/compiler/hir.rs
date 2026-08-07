@@ -180,9 +180,13 @@ pub enum StmtKind {
         op: AssignOp,
         value: Expr,
     },
+    /// The map and key operands are evaluated exactly once; a compound
+    /// operation reads the current element (a missing key yields the zero
+    /// value) before the single write.
     MapAssign {
         map: Expr,
         key: Expr,
+        op: AssignOp,
         value: Expr,
     },
 }

@@ -67,6 +67,24 @@
             "_source_bytes/bom_middle"
           ],
           "expect": "source_bytes"
+        },
+        {
+          "id": "spec-lexical-unicode-identifier-categories",
+          "section": "Letters and digits",
+          "title": "Identifiers exercising every letter category the corpus lacks: Lm (U+02B0) and Lt (U+01C5) letters STARTING identifiers, an Nd...",
+          "status": "passing",
+          "fixtures": [
+            "lexical_unicode_identifier_categories"
+          ]
+        },
+        {
+          "id": "spec-source-non-canonicalized-text",
+          "section": "Source code representation",
+          "title": "Locks in non-canonicalization: precomposed U+00E9 (2 UTF-8 bytes) vs 'e'+combining U+0301 (3 bytes) written literally in source...",
+          "status": "passing",
+          "fixtures": [
+            "source_non_canonicalized_text"
+          ]
         }
       ]
     },
@@ -235,6 +253,53 @@
           "fixtures": [
             "string_bytes_and_invalid_utf8"
           ]
+        },
+        {
+          "id": "spec-int-separator-misplaced",
+          "section": "Integer literals",
+          "title": "Negative parity case: '_' before the base prefix (0_xBadFace) is illegal; an implementation that strips underscores before lexi...",
+          "status": "passing",
+          "fixtures": [
+            "_source_bytes/int_separator_misplaced"
+          ],
+          "expect": "source_bytes"
+        },
+        {
+          "id": "spec-lexical-raw-string-carriage-returns",
+          "section": "String literals",
+          "title": "Carriage returns inside raw string literals must be discarded from the value; no fixture in the corpus contains a CR byte, so t...",
+          "status": "passing",
+          "fixtures": [
+            "lexical_raw_string_carriage_returns"
+          ]
+        },
+        {
+          "id": "spec-lexical-semicolon-insertion-forms",
+          "section": "Semicolons",
+          "title": "Discriminates rule 1's token list from a newline-means-semicolon lexer: lines ending in '+', '&&', '||', and '.' must continue...",
+          "status": "passing",
+          "fixtures": [
+            "lexical_semicolon_insertion_forms"
+          ]
+        },
+        {
+          "id": "spec-lexical-string-escape-bytes",
+          "section": "String literals",
+          "title": "Octal \\nnn escapes as single BYTES are untested, as is the byte-vs-character distinction: \\377 == \\xFF is one byte 0xFF while t...",
+          "status": "passing",
+          "fixtures": [
+            "lexical_string_escape_bytes"
+          ]
+        },
+        {
+          "id": "spec-semicolon-if-brace-newline",
+          "section": "Semicolons",
+          "title": "Negative parity case for rule 1: 'if true' followed by '{' on the next line is a syntax error because a semicolon is inserted a...",
+          "status": "passing",
+          "fixtures": [
+            "_source_bytes/semicolon_if_brace_newline"
+          ],
+          "expect": "source_bytes"
         }
       ]
     },
@@ -331,6 +396,26 @@
           "fixtures": [
             "constants"
           ]
+        },
+        {
+          "id": "spec-constants-division-by-zero",
+          "section": "Constant expressions",
+          "title": "Constant division by zero is rejected at compile time",
+          "status": "passing",
+          "fixtures": [
+            "_negative/constants_division_by_zero"
+          ],
+          "expect": "compile_error"
+        },
+        {
+          "id": "spec-constants-typed-shift-overflow",
+          "section": "Constant expressions",
+          "title": "No negative fixture checks that a typed constant expression whose value overflows its type is rejected: `int32(1) << 33` must e...",
+          "status": "passing",
+          "fixtures": [
+            "_negative/constants_typed_shift_overflow"
+          ],
+          "expect": "compile_error"
         }
       ]
     },
@@ -409,6 +494,104 @@
           "fixtures": [
             "variables_and_zero_values"
           ]
+        },
+        {
+          "id": "spec-short-decl-block-shadowing",
+          "section": "Short variable declarations",
+          "title": "Short variable declarations in inner blocks shadow rather than redeclare outer variables",
+          "status": "passing",
+          "fixtures": [
+            "short_decl_block_shadowing"
+          ]
+        },
+        {
+          "id": "spec-short-decl-no-new-vars",
+          "section": "Short variable declarations",
+          "title": "Short variable declaration with no new non-blank variables is rejected",
+          "status": "passing",
+          "fixtures": [
+            "_negative/short_decl_no_new_vars"
+          ],
+          "expect": "compile_error"
+        },
+        {
+          "id": "spec-short-decl-repeated-name",
+          "section": "Short variable declarations",
+          "title": "Repeated non-blank name on left side of := is illegal",
+          "status": "passing",
+          "fixtures": [
+            "_negative/short_decl_repeated_name"
+          ],
+          "expect": "compile_error"
+        },
+        {
+          "id": "spec-short-redeclare-same-storage",
+          "section": "Short variable declarations",
+          "title": "Short variable redeclaration assigns to the original variable's storage",
+          "status": "passing",
+          "fixtures": [
+            "short_redeclare_same_storage"
+          ]
+        },
+        {
+          "id": "spec-short-redeclare-type-mismatch",
+          "section": "Short variable declarations",
+          "title": "Short variable redeclaration with a value of a different type is rejected",
+          "status": "passing",
+          "fixtures": [
+            "_negative/short_redeclare_type_mismatch"
+          ],
+          "expect": "compile_error"
+        },
+        {
+          "id": "spec-var-untyped-nil",
+          "section": "Variable declarations",
+          "title": "The predeclared identifier nil cannot initialize a variable declared without an explicit type",
+          "status": "passing",
+          "fixtures": [
+            "_negative/var_untyped_nil"
+          ],
+          "expect": "compile_error"
+        },
+        {
+          "id": "spec-negative-short-decl-no-new-vars",
+          "section": "Short variable declarations",
+          "title": "No negative fixture rejects a := with no new NON-BLANK variables: after `a := 1`, the declaration `a, _ := 2, 3` must fail to c...",
+          "status": "passing",
+          "fixtures": [
+            "_negative/negative_short_decl_no_new_vars"
+          ],
+          "expect": "compile_error"
+        },
+        {
+          "id": "spec-negative-short-decl-repeated-name",
+          "section": "Short variable declarations",
+          "title": "No negative fixture rejects a repeated non-blank name on the left side of :=, the spec's explicit illegal example `x, y, x := 1...",
+          "status": "passing",
+          "fixtures": [
+            "_negative/negative_short_decl_repeated_name"
+          ],
+          "expect": "compile_error"
+        },
+        {
+          "id": "spec-negative-short-redeclare-type-mismatch",
+          "section": "Short variable declarations",
+          "title": "No negative fixture rejects redeclaration with a different type: after `a := 1`, `a, b := \"text\", 2` must fail because redeclar...",
+          "status": "passing",
+          "fixtures": [
+            "_negative/negative_short_redeclare_type_mismatch"
+          ],
+          "expect": "compile_error"
+        },
+        {
+          "id": "spec-negative-var-untyped-nil",
+          "section": "Variable declarations",
+          "title": "No negative fixture rejects `var n = nil` \u2014 initializing a variable with no explicit type from the predeclared identifier nil,...",
+          "status": "passing",
+          "fixtures": [
+            "_negative/negative_var_untyped_nil"
+          ],
+          "expect": "compile_error"
         }
       ]
     },
@@ -493,7 +676,9 @@
           "title": "Slices support len, cap, append, copy, and full-slice expressions",
           "status": "passing",
           "fixtures": [
-            "types"
+            "types",
+            "slice_capacity_and_append",
+            "append_copy_clear_builtins"
           ]
         },
         {
@@ -685,6 +870,125 @@
           "fixtures": [
             "types"
           ]
+        },
+        {
+          "id": "spec-types-channel-direction-reverse",
+          "section": "Channel types",
+          "title": "Converting a receive-only channel back to a bidirectional channel is rejected",
+          "status": "passing",
+          "fixtures": [
+            "_negative/types_channel_direction_reverse"
+          ],
+          "expect": "compile_error"
+        },
+        {
+          "id": "spec-types-non-basic-interface-value",
+          "section": "Interface types",
+          "title": "Non-basic interface cannot be used as the type of a variable",
+          "status": "passing",
+          "fixtures": [
+            "_negative/types_non_basic_interface_value"
+          ],
+          "expect": "compile_error"
+        },
+        {
+          "id": "spec-types-promoted-composite-literal",
+          "section": "Struct types",
+          "title": "Promoted field names are rejected as keys in composite literals of the outer struct",
+          "status": "passing",
+          "fixtures": [
+            "_negative/types_promoted_composite_literal"
+          ],
+          "expect": "compile_error"
+        },
+        {
+          "id": "spec-types-struct-tag-identity",
+          "section": "Struct types",
+          "title": "Struct tags take part in type identity: assignment between unnamed struct types differing only in tags is rejected",
+          "status": "passing",
+          "fixtures": [
+            "_negative/types_struct_tag_identity"
+          ],
+          "expect": "compile_error"
+        },
+        {
+          "id": "spec-negative-types-array-length-mismatch",
+          "section": "Array types",
+          "title": "No negative fixture verifies that array length is part of the array type: assigning a [2]int to a [3]int variable must be rejected",
+          "status": "passing",
+          "fixtures": [
+            "_negative/negative_types_array_length_mismatch"
+          ],
+          "expect": "compile_error"
+        },
+        {
+          "id": "spec-negative-types-channel-direction-reverse",
+          "section": "Channel types",
+          "title": "No negative test that channel direction constraints are one-way: converting a receive-only channel back to a bidirectional chan...",
+          "status": "passing",
+          "fixtures": [
+            "_negative/negative_types_channel_direction_reverse"
+          ],
+          "expect": "compile_error"
+        },
+        {
+          "id": "spec-negative-types-non-basic-interface-value",
+          "section": "Interface types",
+          "title": "No negative test that a non-basic (general) interface cannot be used as the type of a variable \u2014 the suite exercises type-set i...",
+          "status": "passing",
+          "fixtures": [
+            "_negative/negative_types_non_basic_interface_value"
+          ],
+          "expect": "compile_error"
+        },
+        {
+          "id": "spec-negative-types-promoted-composite-literal",
+          "section": "Struct types",
+          "title": "No negative test that promoted fields cannot be used as field names in composite literals of the outer struct",
+          "status": "passing",
+          "fixtures": [
+            "_negative/negative_types_promoted_composite_literal"
+          ],
+          "expect": "compile_error"
+        },
+        {
+          "id": "spec-negative-types-string-immutable",
+          "section": "String types",
+          "title": "No negative fixture rejects assignment to a string element (s[0] = 'x'); a compiler lowering strings to mutable byte buffers co...",
+          "status": "passing",
+          "fixtures": [
+            "_negative/negative_types_string_immutable"
+          ],
+          "expect": "compile_error"
+        },
+        {
+          "id": "spec-negative-types-struct-tag-identity",
+          "section": "Struct types",
+          "title": "No negative test that struct tags take part in type identity: assignment between unnamed struct types identical except for thei...",
+          "status": "passing",
+          "fixtures": [
+            "_negative/negative_types_struct_tag_identity"
+          ],
+          "expect": "compile_error"
+        },
+        {
+          "id": "spec-nil-slice-semantics",
+          "section": "Slice types",
+          "title": "Nil-slice semantics are only tested as `nilSlice != nil`: nothing checks len/cap of nil == 0, range over nil iterating zero tim...",
+          "status": "passing",
+          "fixtures": [
+            "nil_slice_semantics"
+          ]
+        },
+        {
+          "id": "spec-properties-non-comparable-map-key",
+          "section": "Map types",
+          "title": "Map key types must be comparable",
+          "status": "passing",
+          "fixtures": [
+            "_negative/properties_non_comparable_map_key"
+          ],
+          "expect": "compile_error"
         }
       ]
     },
@@ -764,8 +1068,50 @@
           "title": "Method expressions and method values preserve receiver semantics",
           "status": "passing",
           "fixtures": [
-            "properties_of_types_and_values"
+            "properties_of_types_and_values",
+            "method_expressions",
+            "method_value_receiver_capture"
           ]
+        },
+        {
+          "id": "spec-properties-assignability-both-named",
+          "section": "Assignability",
+          "title": "Two distinct named types with identical underlying types are not assignable",
+          "status": "passing",
+          "fixtures": [
+            "_negative/properties_assignability_both_named"
+          ],
+          "expect": "compile_error"
+        },
+        {
+          "id": "spec-negative-properties-assignability-both-named",
+          "section": "Assignability",
+          "title": "No negative coverage of the rule that two DIFFERENT named types with identical underlying types are not assignable (the 'at lea...",
+          "status": "passing",
+          "fixtures": [
+            "_negative/negative_properties_assignability_both_named"
+          ],
+          "expect": "compile_error"
+        },
+        {
+          "id": "spec-negative-properties-non-comparable-map-key",
+          "section": "Comparison operators",
+          "title": "The map-key half of the properties-non-comparable case title is untested: using a non-comparable type as a map key type must be...",
+          "status": "passing",
+          "fixtures": [
+            "_negative/negative_properties_non_comparable_map_key"
+          ],
+          "expect": "compile_error"
+        },
+        {
+          "id": "spec-properties-assignability",
+          "section": "Assignability",
+          "title": "Non-assignable named type pairs are rejected",
+          "status": "passing",
+          "fixtures": [
+            "_negative/properties_assignability"
+          ],
+          "expect": "compile_error"
         }
       ]
     },
@@ -908,6 +1254,54 @@
           "fixtures": [
             "declarations_and_scope"
           ]
+        },
+        {
+          "id": "spec-declarations-and-scope-implicit-blocks",
+          "section": "Blocks",
+          "title": "No fixture exercises implicit blocks: if/for/switch statements are their own implicit blocks (header declarations scoped to the...",
+          "status": "passing",
+          "fixtures": [
+            "declarations_and_scope_implicit_blocks"
+          ]
+        },
+        {
+          "id": "spec-declarations-and-scope-label-namespace",
+          "section": "Label scopes",
+          "title": "No fixture declares a label and a variable with the same name in one function (labels live in a separate namespace), gotos to a...",
+          "status": "passing",
+          "fixtures": [
+            "declarations_and_scope_label_namespace"
+          ]
+        },
+        {
+          "id": "spec-import-unused",
+          "section": "Import declarations",
+          "title": "Negative: an imported package whose identifiers are never referenced must be rejected ('imported and not used')",
+          "status": "passing",
+          "fixtures": [
+            "_negative/import_unused"
+          ],
+          "expect": "compile_error"
+        },
+        {
+          "id": "spec-negative-exported-identifiers-unexported-access",
+          "section": "Exported identifiers",
+          "title": "No compile_error fixture verifies that an unexported package-level identifier cannot be referenced from another package; gors t...",
+          "status": "passing",
+          "fixtures": [
+            "_negative/negative_exported_identifiers_unexported_access"
+          ],
+          "expect": "compile_error"
+        },
+        {
+          "id": "spec-package-clause-blank-name",
+          "section": "Package clause",
+          "title": "Negative: a source file whose package clause names the blank identifier (package _) must be rejected",
+          "status": "passing",
+          "fixtures": [
+            "_negative/package_clause_blank_name"
+          ],
+          "expect": "compile_error"
         }
       ]
     },
@@ -920,7 +1314,6 @@
           "title": "Expressions combine operands, operators, calls, conversions, and selectors into values",
           "status": "passing",
           "fixtures": [
-            "expressions",
             "spec_section_edgecases"
           ]
         },
@@ -930,7 +1323,6 @@
           "title": "Operands include literals, identifiers, and parenthesized expressions",
           "status": "passing",
           "fixtures": [
-            "expressions",
             "spec_section_edgecases"
           ]
         },
@@ -971,21 +1363,12 @@
           ]
         },
         {
-          "id": "expr-primary",
-          "section": "Primary expressions",
-          "title": "Operands, selectors, indexes, slices, calls, and assertions compile",
-          "status": "passing",
-          "fixtures": [
-            "expressions"
-          ]
-        },
-        {
           "id": "expr-selectors",
           "section": "Selectors",
-          "title": "Selector expressions resolve package names, fields, and methods",
+          "title": "Selector expressions resolve fields and methods, including promoted fields through embedded pointer fields",
           "status": "passing",
           "fixtures": [
-            "expressions"
+            "types"
           ]
         },
         {
@@ -995,15 +1378,6 @@
           "status": "passing",
           "fixtures": [
             "method_expressions"
-          ]
-        },
-        {
-          "id": "expr-index",
-          "section": "Index expressions",
-          "title": "Index expressions read and write arrays, slices, strings, and maps",
-          "status": "passing",
-          "fixtures": [
-            "expressions"
           ]
         },
         {
@@ -1021,16 +1395,8 @@
           "title": "Slice expressions support two-index and full-slice forms",
           "status": "passing",
           "fixtures": [
-            "expressions"
-          ]
-        },
-        {
-          "id": "expr-composite-literals",
-          "section": "Composite literals",
-          "title": "Composite literals construct structs, slices, arrays, and maps",
-          "status": "passing",
-          "fixtures": [
-            "expressions"
+            "slice_capacity_and_append",
+            "spec_section_edgecases"
           ]
         },
         {
@@ -1058,6 +1424,177 @@
           "status": "passing",
           "fixtures": [
             "composite_literals"
+          ]
+        },
+        {
+          "id": "expr-arithmetic-operators",
+          "section": "Arithmetic operators",
+          "title": "Arithmetic operators preserve numeric, shift, and bit-clear semantics",
+          "status": "passing",
+          "fixtures": [
+            "spec_section_edgecases"
+          ]
+        },
+        {
+          "id": "expr-string-concat-interface-methods",
+          "section": "Operators",
+          "title": "String concatenation accepts method-call operands",
+          "status": "passing",
+          "fixtures": [
+            "types"
+          ]
+        },
+        {
+          "id": "expr-logical-operators",
+          "section": "Logical operators",
+          "title": "Logical operators preserve boolean precedence and short-circuit grouping",
+          "status": "passing",
+          "fixtures": [
+            "spec_section_edgecases"
+          ]
+        },
+        {
+          "id": "expr-receive-operator",
+          "section": "Receive operator",
+          "title": "Receive expressions read channel values in expression contexts",
+          "status": "passing",
+          "fixtures": [
+            "built_in_functions",
+            "spec_section_edgecases"
+          ]
+        },
+        {
+          "id": "expr-type-inference",
+          "section": "Type inference",
+          "title": "Generic function calls infer omitted type arguments from ordinary arguments",
+          "status": "passing",
+          "fixtures": [
+            "generics",
+            "spec_section_edgecases"
+          ]
+        },
+        {
+          "id": "spec-composite-literal-duplicate-index",
+          "section": "Composite literals",
+          "title": "Duplicate constant index keys in an array or slice literal are rejected",
+          "status": "passing",
+          "fixtures": [
+            "_negative/composite_literal_duplicate_index"
+          ],
+          "expect": "compile_error"
+        },
+        {
+          "id": "spec-map-element-not-addressable",
+          "section": "Index expressions",
+          "title": "Taking the address of a map index expression is a compile-time error",
+          "status": "passing",
+          "fixtures": [
+            "_negative/map_element_not_addressable"
+          ],
+          "expect": "compile_error"
+        },
+        {
+          "id": "spec-operand-blank-identifier",
+          "section": "Operands",
+          "title": "Blank identifier is rejected as an operand outside the left-hand side of an assignment",
+          "status": "passing",
+          "fixtures": [
+            "_negative/operand_blank_identifier"
+          ],
+          "expect": "compile_error"
+        },
+        {
+          "id": "spec-slice-constant-bounds-swapped",
+          "section": "Slice expressions",
+          "title": "Constant slice indices with low > high are rejected even on slice operands",
+          "status": "passing",
+          "fixtures": [
+            "_negative/slice_constant_bounds_swapped"
+          ],
+          "expect": "compile_error"
+        },
+        {
+          "id": "spec-slice-nil-operand",
+          "section": "Slice expressions",
+          "title": "Slicing a nil slice yields a nil slice (simple and full forms); boundary slices at len are valid",
+          "status": "passing",
+          "fixtures": [
+            "slice_nil_operand"
+          ]
+        },
+        {
+          "id": "spec-variadic-passing-semantics",
+          "section": "Passing arguments to ... parameters",
+          "title": "Variadic passing: no args passes nil; nil-slice spread stays nil; direct calls allocate a new array with len==cap==arg count; s...",
+          "status": "passing",
+          "fixtures": [
+            "variadic_passing_semantics"
+          ]
+        },
+        {
+          "id": "spec-negative-composite-literal-duplicate-index",
+          "section": "Composite literals",
+          "title": "No negative fixture verifies that duplicate constant keys in an array/slice literal are rejected at compile time",
+          "status": "passing",
+          "fixtures": [
+            "_negative/negative_composite_literal_duplicate_index"
+          ],
+          "expect": "compile_error"
+        },
+        {
+          "id": "spec-negative-map-element-not-addressable",
+          "section": "Index expressions",
+          "title": "No negative fixture checks that a map index expression is not addressable: &m[k] must be rejected at compile time (map elements...",
+          "status": "passing",
+          "fixtures": [
+            "_negative/negative_map_element_not_addressable"
+          ],
+          "expect": "compile_error"
+        },
+        {
+          "id": "spec-negative-operand-blank-identifier",
+          "section": "Operands",
+          "title": "No negative fixture verifies that the blank identifier is rejected as an operand outside the left-hand side of an assignment",
+          "status": "passing",
+          "fixtures": [
+            "_negative/negative_operand_blank_identifier"
+          ],
+          "expect": "compile_error"
+        },
+        {
+          "id": "spec-operator-precedence-vs-c",
+          "section": "Operators",
+          "title": "No fixture evaluates a runtime expression whose result depends on Go's operator precedence table where it differs from C/Rust:...",
+          "status": "passing",
+          "fixtures": [
+            "operator_precedence_vs_c"
+          ]
+        },
+        {
+          "id": "expr-primary",
+          "section": "Primary expressions",
+          "title": "Operands, selectors, indexes, slices, calls, and assertions compile",
+          "status": "passing",
+          "fixtures": [
+            "expressions"
+          ]
+        },
+        {
+          "id": "expr-index",
+          "section": "Index expressions",
+          "title": "Index expressions read and write arrays, slices, strings, and maps",
+          "status": "passing",
+          "fixtures": [
+            "expressions"
+          ]
+        },
+        {
+          "id": "expr-composite-literals",
+          "section": "Composite literals",
+          "title": "Composite literals construct structs, slices, arrays, and maps",
+          "status": "passing",
+          "fixtures": [
+            "expressions"
           ]
         },
         {
@@ -1106,61 +1643,12 @@
           ]
         },
         {
-          "id": "expr-arithmetic-operators",
-          "section": "Arithmetic operators",
-          "title": "Arithmetic operators preserve numeric, shift, and bit-clear semantics",
-          "status": "passing",
-          "fixtures": [
-            "expressions",
-            "spec_section_edgecases"
-          ]
-        },
-        {
           "id": "expr-bit-clear-and-shifts",
           "section": "Operators",
           "title": "Shift and bit clear operators execute with Go precedence",
           "status": "passing",
           "fixtures": [
             "expressions"
-          ]
-        },
-        {
-          "id": "expr-string-concat-interface-methods",
-          "section": "Operators",
-          "title": "String concatenation accepts method-call operands",
-          "status": "passing",
-          "fixtures": [
-            "types"
-          ]
-        },
-        {
-          "id": "expr-logical-operators",
-          "section": "Logical operators",
-          "title": "Logical operators preserve boolean precedence and short-circuit grouping",
-          "status": "passing",
-          "fixtures": [
-            "expressions",
-            "spec_section_edgecases"
-          ]
-        },
-        {
-          "id": "expr-receive-operator",
-          "section": "Receive operator",
-          "title": "Receive expressions read channel values in expression contexts",
-          "status": "passing",
-          "fixtures": [
-            "built_in_functions",
-            "spec_section_edgecases"
-          ]
-        },
-        {
-          "id": "expr-type-inference",
-          "section": "Type inference",
-          "title": "Generic function calls infer omitted type arguments from ordinary arguments",
-          "status": "passing",
-          "fixtures": [
-            "generics",
-            "spec_section_edgecases"
           ]
         },
         {
@@ -1603,6 +2091,43 @@
           "fixtures": [
             "statements_forward_goto"
           ]
+        },
+        {
+          "id": "spec-fallthrough-nonmatching",
+          "section": "Fallthrough statements",
+          "title": "Fallthrough through a NON-matching case clause and into a default clause is untested, including that the fallen-into clause's c...",
+          "status": "passing",
+          "fixtures": [
+            "fallthrough_nonmatching"
+          ]
+        },
+        {
+          "id": "spec-goto-backward-redeclare",
+          "section": "Goto statements",
+          "title": "Backward goto across a short variable declaration is legal (the variable is already in scope at the goto) and re-executes the d...",
+          "status": "passing",
+          "fixtures": [
+            "goto_backward_redeclare"
+          ]
+        },
+        {
+          "id": "spec-goto-jump-over-declaration",
+          "section": "Goto statements",
+          "title": "There is no _negative fixture for either goto restriction: jumping forward over a variable declaration, and jumping from outsid...",
+          "status": "passing",
+          "fixtures": [
+            "_negative/goto_jump_over_declaration"
+          ],
+          "expect": "compile_error"
+        },
+        {
+          "id": "spec-op-assign-evaluate-once",
+          "section": "Assignment statements",
+          "title": "No fixture verifies that x op= y evaluates x only once (side-effecting index/key expressions must run exactly once, including o...",
+          "status": "passing",
+          "fixtures": [
+            "op_assign_evaluate_once"
+          ]
         }
       ]
     },
@@ -1763,6 +2288,26 @@
           "fixtures": [
             "built_in_functions"
           ]
+        },
+        {
+          "id": "spec-make-constant-len-exceeds-cap",
+          "section": "Making slices, maps and channels",
+          "title": "No negative fixture checks that make with CONSTANT sizes where n > m is rejected at compile time (the spec's own 'illegal' exam...",
+          "status": "passing",
+          "fixtures": [
+            "_negative/make_constant_len_exceeds_cap"
+          ],
+          "expect": "compile_error"
+        },
+        {
+          "id": "spec-negative-close-receive-only",
+          "section": "Close",
+          "title": "The _negative corpus has zero channel fixtures: no compile-time channel-direction violation is tested anywhere",
+          "status": "passing",
+          "fixtures": [
+            "_negative/negative_close_receive_only"
+          ],
+          "expect": "compile_error"
         }
       ]
     },
@@ -1863,6 +2408,26 @@
           "fixtures": [
             "packages_and_program_initialization"
           ]
+        },
+        {
+          "id": "spec-init-not-referable",
+          "section": "Package initialization",
+          "title": "Negative: the init identifier is not declared by func init() and cannot be referenced \u2014 calling init() from main must be reject...",
+          "status": "passing",
+          "fixtures": [
+            "_negative/init_not_referable"
+          ],
+          "expect": "compile_error"
+        },
+        {
+          "id": "spec-initialization-cycle",
+          "section": "Package initialization",
+          "title": "Negative: initialization cycle through a function body (var x = f(); f returns x) must be rejected; no _negative fixture covers...",
+          "status": "passing",
+          "fixtures": [
+            "_negative/initialization_cycle"
+          ],
+          "expect": "compile_error"
         }
       ]
     },
@@ -1957,9 +2522,7 @@
           "title": "Type inference unifies generic arguments with type parameter constraints",
           "status": "passing",
           "fixtures": [
-            "generics",
-            "generics_type_sets",
-            "spec_section_edgecases"
+            "generics_type_sets"
           ]
         }
       ]
@@ -2013,6 +2576,16 @@
             "system_considerations",
             "spec_section_edgecases"
           ]
+        },
+        {
+          "id": "spec-negative-unsafe-sizeof-type-param",
+          "section": "Package unsafe",
+          "title": "No negative test verifies that unsafe.Sizeof applied to a variable of type-parameter type (variable size) is NOT a constant: `c...",
+          "status": "passing",
+          "fixtures": [
+            "_negative/negative_unsafe_sizeof_type_param"
+          ],
+          "expect": "compile_error"
         }
       ]
     }

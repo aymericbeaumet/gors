@@ -507,8 +507,13 @@ impl FunctionLowerer {
                     statement.source,
                 )?;
             }
-            hir::StmtKind::MapAssign { map, key, value } => {
-                self.lower_map_assignment(map, key, value, statement.source)?;
+            hir::StmtKind::MapAssign {
+                map,
+                key,
+                op,
+                value,
+            } => {
+                self.lower_map_assignment(map, key, *op, value, statement.source)?;
             }
             hir::StmtKind::Expr(expr) => {
                 let _ = self.lower_expr(expr)?;

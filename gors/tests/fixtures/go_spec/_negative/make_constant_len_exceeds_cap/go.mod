@@ -1,0 +1,3 @@
+module go_spec_negative_make_constant_len_exceeds_cap
+
+go 1.26

@@ -1,0 +1,3 @@
+module go_spec_negative_short_redeclare_type_mismatch
+
+go 1.26

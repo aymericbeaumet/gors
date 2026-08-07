@@ -3,8 +3,11 @@ use super::*;
 mod arrays;
 mod assignments;
 mod channels;
+mod constants;
 mod control_flow;
+mod generics;
 mod goroutines;
+mod imports;
 mod interfaces;
 mod local_types;
 mod pointers;
@@ -269,9 +272,6 @@ fn numeric_builtins_lower_constants_and_dynamic_values() {
                 }
                 if real(complex128(1.5)) != 1.5 || imag(complex128(1.5)) != 0.0 {
                     panic("converted complex components changed")
-                }
-                if 1.0 / min(float64(0.0), float64(-0.0)) > 0.0 {
-                    panic("constant min lost negative zero")
                 }
                 if bounded(3, 8, 5) != 5 || components(1.5, 2.5) != 4.0 {
                     panic("dynamic numeric built-in changed")

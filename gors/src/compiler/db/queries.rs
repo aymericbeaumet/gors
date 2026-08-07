@@ -8,6 +8,7 @@ mod lookups;
 mod rust_ir_package;
 mod support;
 mod type_aliases;
+mod unused_imports;
 mod variable_eval;
 
 pub(super) use analysis::{

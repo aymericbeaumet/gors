@@ -1,0 +1,3 @@
+module go_spec_negative_package_clause_blank_name
+
+go 1.26
