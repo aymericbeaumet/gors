@@ -462,6 +462,15 @@
           ]
         },
         {
+          "id": "spec-constant-negative-zero-simplified",
+          "section": "Representability",
+          "title": "Constant -1e-1000 and -0.0 simplify to unsigned zero; run-time negation of +0.0 yields IEEE -0.0",
+          "status": "passing",
+          "fixtures": [
+            "constant_negative_zero_simplified"
+          ]
+        },
+        {
           "id": "constants-complex",
           "section": "Constants",
           "title": "Complex constants preserve real and imaginary components",
@@ -1500,6 +1509,15 @@
           ]
         },
         {
+          "id": "spec-method-declarations-receiver-forms",
+          "section": "Method declarations",
+          "title": "Methods support omitted and blank receiver names, non-struct defined receiver types, pointer receivers, and renamed or blank generic receiver parameters",
+          "status": "passing",
+          "fixtures": [
+            "method_declarations_receiver_forms"
+          ]
+        },
+        {
           "id": "decl-scope-shadowing",
           "section": "Declarations and scope",
           "title": "Nested scopes and shadowing follow Go name resolution",
@@ -2193,6 +2211,15 @@
           ]
         },
         {
+          "id": "spec-switch-interface-case-conversion",
+          "section": "Switch statements",
+          "title": "Untyped switch case constants convert to the switch expression type, preserving interface dynamic types and nil distinctions",
+          "status": "passing",
+          "fixtures": [
+            "switch_interface_case_conversion"
+          ]
+        },
+        {
           "id": "stmt-fallthrough",
           "section": "Fallthrough statements",
           "title": "fallthrough transfers control to the next expression switch case",
@@ -2235,6 +2262,15 @@
           "status": "passing",
           "fixtures": [
             "statements"
+          ]
+        },
+        {
+          "id": "spec-type-switch-clause-typing",
+          "section": "Type switch statements",
+          "title": "Type-switch clause variables use the single case type only in one-type clauses and retain the guard interface type otherwise",
+          "status": "passing",
+          "fixtures": [
+            "type_switch_clause_typing"
           ]
         },
         {

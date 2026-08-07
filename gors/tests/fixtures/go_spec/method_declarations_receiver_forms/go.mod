@@ -1,0 +1,3 @@
+module go_spec_method_declarations_receiver_forms
+
+go 1.26

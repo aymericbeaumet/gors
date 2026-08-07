@@ -12,10 +12,10 @@
   "summary": {
     "groupCount": 15,
     "passingGroupCount": 15,
-    "caseCount": 339,
-    "passingCaseCount": 339,
+    "caseCount": 343,
+    "passingCaseCount": 343,
     "unsupportedCaseCount": 0,
-    "fixtureCount": 185
+    "fixtureCount": 189
   },
   "groups": [
     {
@@ -578,6 +578,7 @@
         "constant_builtins",
         "constant_division_kinds",
         "constant_exact_evaluation",
+        "constant_negative_zero_simplified",
         "constants",
         "iota_parallel_and_skipped",
         "large_constant_precision",
@@ -588,10 +589,10 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 19,
-        "passingCaseCount": 19,
+        "caseCount": 20,
+        "passingCaseCount": 20,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 12
+        "fixtureCount": 13
       },
       "cases": [
         {
@@ -773,6 +774,20 @@
           ],
           "freshFixtures": [
             "representability_rounding"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-constant-negative-zero-simplified",
+          "title": "Constant -1e-1000 and -0.0 simplify to unsigned zero; run-time negation of +0.0 yields IEEE -0.0",
+          "subtitle": "Representability",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "constant_negative_zero_simplified"
+          ],
+          "freshFixtures": [
+            "constant_negative_zero_simplified"
           ],
           "reason": ""
         },
@@ -2240,16 +2255,17 @@
         "declarations_and_scope_uniqueness",
         "generics",
         "generics_type_sets",
+        "method_declarations_receiver_forms",
         "spec_section_edgecases",
         "type_declarations_alias_vs_defined"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 22,
-        "passingCaseCount": 22,
+        "caseCount": 23,
+        "passingCaseCount": 23,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 16
+        "fixtureCount": 17
       },
       "cases": [
         {
@@ -2463,6 +2479,20 @@
           ],
           "freshFixtures": [
             "declarations_and_scope"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-method-declarations-receiver-forms",
+          "title": "Methods support omitted and blank receiver names, non-struct defined receiver types, pointer receivers, and renamed or blank generic receiver parameters",
+          "subtitle": "Method declarations",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "method_declarations_receiver_forms"
+          ],
+          "freshFixtures": [
+            "method_declarations_receiver_forms"
           ],
           "reason": ""
         },
@@ -3309,16 +3339,18 @@
         "statements_forward_goto",
         "string_bytes_and_invalid_utf8",
         "switch_fallthrough_placement",
+        "switch_interface_case_conversion",
         "switch_statements",
-        "terminating_statement_forms"
+        "terminating_statement_forms",
+        "type_switch_clause_typing"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 60,
-        "passingCaseCount": 60,
+        "caseCount": 62,
+        "passingCaseCount": 62,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 28
+        "fixtureCount": 30
       },
       "cases": [
         {
@@ -3610,6 +3642,20 @@
           "reason": ""
         },
         {
+          "id": "spec-switch-interface-case-conversion",
+          "title": "Untyped switch case constants convert to the switch expression type, preserving interface dynamic types and nil distinctions",
+          "subtitle": "Switch statements",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "switch_interface_case_conversion"
+          ],
+          "freshFixtures": [
+            "switch_interface_case_conversion"
+          ],
+          "reason": ""
+        },
+        {
           "id": "stmt-fallthrough",
           "title": "fallthrough transfers control to the next expression switch case",
           "subtitle": "Fallthrough statements",
@@ -3676,6 +3722,20 @@
           ],
           "freshFixtures": [
             "statements"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-type-switch-clause-typing",
+          "title": "Type-switch clause variables use the single case type only in one-type clauses and retain the guard interface type otherwise",
+          "subtitle": "Type switch statements",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "type_switch_clause_typing"
+          ],
+          "freshFixtures": [
+            "type_switch_clause_typing"
           ],
           "reason": ""
         },
