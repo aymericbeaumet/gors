@@ -178,6 +178,7 @@ impl RuntimeOp {
             Self::GoMapI64GoStringClear => 169,
             Self::GoMapI64GoStringIsNil => 170,
             Self::GoMapI64GoStringRangeKeys => 171,
+            Self::GoStringToSliceRunes => 216,
         })
     }
 }

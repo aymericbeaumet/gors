@@ -411,6 +411,7 @@ pub enum Builtin {
     StringFromRune,
     StringFromSliceU8,
     StringFromSliceRunes,
+    StringToSliceRunes,
     StringLen,
     StringIndex,
     StringRange,

@@ -158,6 +158,10 @@ dynamic byte buffer, when capacity permits, only after representation lowering
 proves a last-use move. Remaining allocation or growth must stay explicit. The
 verifier derives or checks effects from explicit operations; lowering must not
 blindly copy the Go-MIR summary.
+String conversions to byte or rune slices always allocate fresh, non-nil slice
+backing. String-to-rune decoding emits U+FFFD and advances one byte for invalid
+UTF-8, and named string/rune-slice types retain their exact semantic type while
+using the canonical runtime representation.
 
 ### Terminal syn emitter
 

@@ -120,11 +120,11 @@ fn current_contract_identity_is_sha256_of_canonical_bytes() {
 
     assert_eq!(manifest.schema().get(), 2);
     assert_eq!(manifest.contract(), CURRENT_CONTRACT_VERSION);
-    assert_eq!(manifest.contract(), ContractVersion::new(2, 25, 0));
+    assert_eq!(manifest.contract(), ContractVersion::new(2, 26, 0));
     assert_eq!(manifest.identity().as_bytes(), &expected);
     assert_eq!(
         manifest.identity().to_string(),
-        "1a352537501b9e54bf8512ce0826dcc7043ff059096f73d961f92255418e4755",
+        "6d589747d0fe3db13b3cecb86ae9875270caaaf87fc5e496253cf32a572192c6",
         "the canonical runtime contract changed; review the ABI diff and bump its semantic version before accepting a new identity",
     );
 }
@@ -154,6 +154,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceU8AppendString
             | RuntimeOp::GoStringFromSliceU8
             | RuntimeOp::GoStringFromSliceRunes
+            | RuntimeOp::GoStringToSliceRunes
             | RuntimeOp::GoMapStringI64Make
             | RuntimeOp::GoMapStringI64Set
             | RuntimeOp::GoMapStringI64RangeKeys
@@ -335,6 +336,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceU8FromStatic
             | RuntimeOp::GoStringFromSliceU8
             | RuntimeOp::GoStringFromSliceRunes
+            | RuntimeOp::GoStringToSliceRunes
             | RuntimeOp::GoMapStringI64Nil
             | RuntimeOp::GoMapStringI64Make
             | RuntimeOp::GoMapStringInterfaceMake
@@ -469,6 +471,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceI64Clear
             | RuntimeOp::GoStringFromSliceU8
             | RuntimeOp::GoStringFromSliceRunes
+            | RuntimeOp::GoStringToSliceRunes
             | RuntimeOp::GoSliceI64Copy
             | RuntimeOp::GoMapStringI64Nil
             | RuntimeOp::GoMapStringI64Make
@@ -640,6 +643,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoSliceI64Clear
             | RuntimeOp::GoStringFromSliceU8
             | RuntimeOp::GoStringFromSliceRunes
+            | RuntimeOp::GoStringToSliceRunes
             | RuntimeOp::GoSliceI64Copy
             | RuntimeOp::GoMapStringI64Nil
             | RuntimeOp::GoMapStringI64Make

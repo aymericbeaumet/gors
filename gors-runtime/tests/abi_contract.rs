@@ -47,9 +47,9 @@ use gors_runtime::{
     go_slice_u8_make, go_slice_u8_nil, go_slice_u8_range, go_slice_u8_set, go_string_from_bytes,
     go_string_from_rune, go_string_from_slice_runes, go_string_from_slice_u8,
     go_string_from_static, go_string_index, go_string_len, go_string_range, go_string_range_count,
-    go_string_range_index_at, go_string_range_rune_at, panic_bool, panic_go_interface,
-    panic_go_string, panic_i64, print_bool, print_f64, print_go_string, print_i64, print_newline,
-    print_space, print_u64,
+    go_string_range_index_at, go_string_range_rune_at, go_string_to_slice_runes, panic_bool,
+    panic_go_interface, panic_go_string, panic_i64, print_bool, print_f64, print_go_string,
+    print_i64, print_newline, print_space, print_u64,
 };
 use gors_runtime_abi::{RuntimeOp, RuntimeType};
 
@@ -701,6 +701,11 @@ fn implementation_surface(operation: RuntimeOp) -> RuntimeSurface {
             go_string_from_slice_runes,
             fn(GoSliceI64) -> GoString,
             [RuntimeType::GoSliceI64] -> RuntimeType::GoString
+        ),
+        RuntimeOp::GoStringToSliceRunes => runtime_surface!(
+            go_string_to_slice_runes,
+            fn(GoString) -> GoSliceI64,
+            [RuntimeType::GoString] -> RuntimeType::GoSliceI64
         ),
         RuntimeOp::GoStringRangeCount => runtime_surface!(
             go_string_range_count,

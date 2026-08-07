@@ -10,6 +10,7 @@ pub(super) fn is_string_builtin(builtin: hir::Builtin) -> bool {
         hir::Builtin::StringFromRune
             | hir::Builtin::StringFromSliceU8
             | hir::Builtin::StringFromSliceRunes
+            | hir::Builtin::StringToSliceRunes
             | hir::Builtin::StringLen
             | hir::Builtin::StringIndex
             | hir::Builtin::StringRange
@@ -22,6 +23,7 @@ pub(super) fn is_string_builtin(builtin: hir::Builtin) -> bool {
 pub(super) fn verify_string_call(
     builtin: hir::Builtin,
     arguments: &[Ty],
+    destinations: &[Ty],
 ) -> Result<Vec<Ty>, Diagnostic> {
     match builtin {
         hir::Builtin::StringFromRune => {
@@ -35,23 +37,35 @@ pub(super) fn verify_string_call(
                     "invalid MIR rune conversion argument: {argument:?}"
                 )));
             }
-            Ok(vec![Ty::String])
+            verify_single_destination(destinations, is_string, "rune conversion")
         }
         hir::Builtin::StringFromSliceU8 => {
-            if arguments != [Ty::Slice(Box::new(Ty::Uint(UintTy::Uint8)))] {
+            if !matches!(arguments, [argument] if is_byte_slice(argument)) {
                 return Err(Diagnostic::backend(format!(
                     "invalid MIR byte slice conversion arguments: {arguments:?}"
                 )));
             }
-            Ok(vec![Ty::String])
+            verify_single_destination(destinations, is_string, "byte slice conversion")
         }
         hir::Builtin::StringFromSliceRunes => {
-            if arguments != [Ty::Slice(Box::new(Ty::Int(IntTy::Int32)))] {
+            if !matches!(arguments, [argument] if is_rune_slice(argument)) {
                 return Err(Diagnostic::backend(format!(
                     "invalid MIR rune slice conversion arguments: {arguments:?}"
                 )));
             }
-            Ok(vec![Ty::String])
+            verify_single_destination(destinations, is_string, "rune slice conversion")
+        }
+        hir::Builtin::StringToSliceRunes => {
+            if !matches!(arguments, [argument] if is_string(argument)) {
+                return Err(Diagnostic::backend(format!(
+                    "invalid MIR string to rune slice conversion arguments: {arguments:?}"
+                )));
+            }
+            verify_single_destination(
+                destinations,
+                is_rune_slice,
+                "string to rune slice conversion",
+            )
         }
         hir::Builtin::StringLen | hir::Builtin::StringRangeCount => {
             if !matches!(arguments, [value] if is_string(value)) {
@@ -103,4 +117,36 @@ fn verify_string_and_index(arguments: &[Ty], context: &str) -> Result<(), Diagno
 
 fn is_string(ty: &Ty) -> bool {
     ty.underlying() == &Ty::String
+}
+
+fn is_byte_slice(ty: &Ty) -> bool {
+    matches!(
+        ty.underlying(),
+        Ty::Slice(element) if element.underlying() == &Ty::Uint(UintTy::Uint8)
+    )
+}
+
+fn is_rune_slice(ty: &Ty) -> bool {
+    matches!(
+        ty.underlying(),
+        Ty::Slice(element) if element.underlying() == &Ty::Int(IntTy::Int32)
+    )
+}
+
+fn verify_single_destination(
+    destinations: &[Ty],
+    predicate: fn(&Ty) -> bool,
+    context: &str,
+) -> Result<Vec<Ty>, Diagnostic> {
+    let [destination] = destinations else {
+        return Err(Diagnostic::backend(format!(
+            "invalid MIR {context} destinations: {destinations:?}"
+        )));
+    };
+    if !predicate(destination) {
+        return Err(Diagnostic::backend(format!(
+            "invalid MIR {context} destination: {destination:?}"
+        )));
+    }
+    Ok(vec![destination.clone()])
 }

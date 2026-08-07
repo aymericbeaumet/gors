@@ -119,6 +119,7 @@ impl RuntimeOp {
             | Self::GoStringRangeCount
             | Self::GoStringRangeIndexAt
             | Self::GoStringRangeRuneAt
+            | Self::GoStringToSliceRunes
             | Self::GoSliceI64Nil
             | Self::GoSliceI64IsNil
             | Self::GoSliceU8Nil
@@ -294,7 +295,7 @@ impl RuntimeOp {
                 HostIoEffect::None,
                 NO_GO_PANICS,
             ),
-            Self::GoStringFromSliceRunes => RuntimeEffects::new(
+            Self::GoStringFromSliceRunes | Self::GoStringToSliceRunes => RuntimeEffects::new(
                 AllocationEffect::MayAllocate,
                 ArgumentMutationEffect::None,
                 HostIoEffect::None,

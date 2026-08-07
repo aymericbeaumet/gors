@@ -12,10 +12,10 @@
   "summary": {
     "groupCount": 15,
     "passingGroupCount": 15,
-    "caseCount": 326,
-    "passingCaseCount": 326,
+    "caseCount": 328,
+    "passingCaseCount": 328,
     "unsupportedCaseCount": 0,
-    "fixtureCount": 172
+    "fixtureCount": 174
   },
   "groups": [
     {
@@ -1205,6 +1205,7 @@
         "numeric_wraparound",
         "slice_capacity_and_append",
         "string_bytes_and_invalid_utf8",
+        "string_conversion_copies",
         "types",
         "types_aliases",
         "types_slice_alias_mutation"
@@ -1212,10 +1213,10 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 49,
-        "passingCaseCount": 49,
+        "caseCount": 50,
+        "passingCaseCount": 50,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 28
+        "fixtureCount": 29
       },
       "cases": [
         {
@@ -1327,6 +1328,20 @@
           ],
           "freshFixtures": [
             "string_bytes_and_invalid_utf8"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-string-conversion-copies",
+          "title": "String conversions to byte and rune slices allocate fresh backing, while string slicing shares immutable bytes",
+          "subtitle": "String types",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "string_conversion_copies"
+          ],
+          "freshFixtures": [
+            "string_conversion_copies"
           ],
           "reason": ""
         },
@@ -2538,16 +2553,17 @@
         "slice_capacity_and_append",
         "slice_nil_operand",
         "spec_section_edgecases",
+        "string_rune_conversions",
         "types",
         "variadic_passing_semantics"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 45,
-        "passingCaseCount": 45,
+        "caseCount": 46,
+        "passingCaseCount": 46,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 29
+        "fixtureCount": 30
       },
       "cases": [
         {
@@ -3113,6 +3129,20 @@
           ],
           "freshFixtures": [
             "expressions"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-string-rune-conversions",
+          "title": "Integer-to-string and string-to-rune-slice conversions preserve replacement, UTF-8, and named-type semantics",
+          "subtitle": "Conversions",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "string_rune_conversions"
+          ],
+          "freshFixtures": [
+            "string_rune_conversions"
           ],
           "reason": ""
         },
@@ -4926,7 +4956,7 @@
         "run_time_panics",
         "run_time_panics_channels",
         "run_time_panics_make_and_full_slice",
-        "run_time_panics_negative_shift_int",
+        "run_time_panics_negative_shift",
         "run_time_panics_nil_struct_interface",
         "run_time_panics_type_assertion_concrete"
       ],
@@ -4982,16 +5012,16 @@
           "reason": ""
         },
         {
-          "id": "spec-run-time-panics-negative-shift-int",
-          "title": "Negative dynamic `int` shift counts panic; large `int` counts do not panic and yield zero",
+          "id": "spec-run-time-panics-negative-shift",
+          "title": "Negative dynamic `int` and `int64` shift counts panic; large counts remain valid and yield zero",
           "subtitle": "Run-time panics",
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
-            "run_time_panics_negative_shift_int"
+            "run_time_panics_negative_shift"
           ],
           "freshFixtures": [
-            "run_time_panics_negative_shift_int"
+            "run_time_panics_negative_shift"
           ],
           "reason": ""
         },

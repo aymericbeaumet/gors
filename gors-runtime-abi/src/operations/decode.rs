@@ -191,6 +191,7 @@ impl TryFrom<u16> for RuntimeOp {
                 };
                 Ok(Self::Integer { op, kind })
             }
+            216 => Ok(Self::GoStringToSliceRunes),
             unknown => Err(UnknownRuntimeOpId(unknown)),
         }
     }

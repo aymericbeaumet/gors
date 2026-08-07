@@ -1,3 +1,0 @@
-module go_spec_run_time_panics_negative_shift_int
-
-go 1.26

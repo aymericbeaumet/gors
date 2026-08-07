@@ -39,6 +39,20 @@ pub fn go_string_from_slice_runes(runes: GoSliceI64) -> GoString {
     go_string_from_bytes(&bytes)
 }
 
+/// Decode a Go string into a fresh, non-nil rune slice.
+#[must_use]
+pub fn go_string_to_slice_runes(value: GoString) -> GoSliceI64 {
+    let bytes = value.as_bytes();
+    let mut runes = Vec::with_capacity(bytes.len());
+    let mut byte_index = 0;
+    while byte_index < bytes.len() {
+        let (rune, width) = decode_rune(bytes, byte_index);
+        runes.push(rune);
+        byte_index = byte_index.saturating_add(width);
+    }
+    GoSliceI64::from_values(runes)
+}
+
 /// Count the UTF-8 decoding steps performed by a Go string range loop.
 #[must_use]
 pub fn go_string_range_count(value: GoString) -> GoInt {

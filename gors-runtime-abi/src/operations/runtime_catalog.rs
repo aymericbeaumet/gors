@@ -357,4 +357,5 @@ pub(super) const ALL: &[RuntimeOp] = &[
         op: IntegerRuntimeOp::ShrUnsigned,
         kind: IntegerKind::U64,
     },
+    RuntimeOp::GoStringToSliceRunes,
 ];

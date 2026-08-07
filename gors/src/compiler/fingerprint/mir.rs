@@ -418,6 +418,7 @@ fn encode_callee(encoder: &mut Encoder, callee: hir::Callee) {
                     hir::Builtin::StringFromRune => b"string-from-rune",
                     hir::Builtin::StringFromSliceU8 => b"string-from-slice-u8",
                     hir::Builtin::StringFromSliceRunes => b"string-from-slice-runes",
+                    hir::Builtin::StringToSliceRunes => b"string-to-slice-runes",
                     hir::Builtin::StringLen => b"string-len",
                     hir::Builtin::StringIndex => b"string-index",
                     hir::Builtin::StringRange => b"string-range",

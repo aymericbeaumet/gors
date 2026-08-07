@@ -413,6 +413,7 @@ fn lower_terminator(
                 | hir::Builtin::StringFromRune
                 | hir::Builtin::StringFromSliceU8
                 | hir::Builtin::StringFromSliceRunes
+                | hir::Builtin::StringToSliceRunes
                 | hir::Builtin::StringLen
                 | hir::Builtin::StringIndex
                 | hir::Builtin::StringRange
@@ -573,6 +574,7 @@ fn lower_terminator(
                     hir::Builtin::StringFromRune => RuntimeOp::GoStringFromRune,
                     hir::Builtin::StringFromSliceU8 => RuntimeOp::GoStringFromSliceU8,
                     hir::Builtin::StringFromSliceRunes => RuntimeOp::GoStringFromSliceRunes,
+                    hir::Builtin::StringToSliceRunes => RuntimeOp::GoStringToSliceRunes,
                     hir::Builtin::StringLen => RuntimeOp::GoStringLen,
                     hir::Builtin::StringIndex => RuntimeOp::GoStringIndex,
                     hir::Builtin::StringRange => RuntimeOp::GoStringRange,

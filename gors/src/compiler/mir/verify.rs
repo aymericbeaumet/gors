@@ -471,7 +471,11 @@ impl Function {
                                 &destination_types,
                             )?
                         } else if is_string_builtin(*builtin) {
-                            verify_string_call(*builtin, &argument_types)?
+                            let destination_types = destinations
+                                .iter()
+                                .map(|destination| self.place_ty(*destination).cloned())
+                                .collect::<Result<Vec<_>, _>>()?;
+                            verify_string_call(*builtin, &argument_types, &destination_types)?
                         } else if matches!(
                             builtin,
                             hir::Builtin::SliceBoolIndex | hir::Builtin::SliceBoolSet
@@ -788,6 +792,7 @@ impl Function {
                                 hir::Builtin::StringFromRune
                                 | hir::Builtin::StringFromSliceU8
                                 | hir::Builtin::StringFromSliceRunes
+                                | hir::Builtin::StringToSliceRunes
                                 | hir::Builtin::StringLen
                                 | hir::Builtin::StringIndex
                                 | hir::Builtin::StringRange

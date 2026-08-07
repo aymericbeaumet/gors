@@ -789,6 +789,15 @@
           ]
         },
         {
+          "id": "spec-string-conversion-copies",
+          "section": "String types",
+          "title": "String conversions to byte and rune slices allocate fresh backing, while string slicing shares immutable bytes",
+          "status": "passing",
+          "fixtures": [
+            "string_conversion_copies"
+          ]
+        },
+        {
           "id": "spec-const-string-len-array",
           "section": "String types",
           "title": "len of a constant string is a byte-count constant usable in array types and arithmetic",
@@ -1902,6 +1911,15 @@
           "status": "passing",
           "fixtures": [
             "expressions"
+          ]
+        },
+        {
+          "id": "spec-string-rune-conversions",
+          "section": "Conversions",
+          "title": "Integer-to-string and string-to-rune-slice conversions preserve replacement, UTF-8, and named-type semantics",
+          "status": "passing",
+          "fixtures": [
+            "string_rune_conversions"
           ]
         },
         {
@@ -3033,12 +3051,12 @@
           ]
         },
         {
-          "id": "spec-run-time-panics-negative-shift-int",
+          "id": "spec-run-time-panics-negative-shift",
           "section": "Run-time panics",
-          "title": "Negative dynamic `int` shift counts panic; large `int` counts do not panic and yield zero",
+          "title": "Negative dynamic `int` and `int64` shift counts panic; large counts remain valid and yield zero",
           "status": "passing",
           "fixtures": [
-            "run_time_panics_negative_shift_int"
+            "run_time_panics_negative_shift"
           ]
         },
         {

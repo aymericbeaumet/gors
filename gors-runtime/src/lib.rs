@@ -90,7 +90,7 @@ pub use slice_identity::{
 };
 pub use string_runes::{
     go_string_from_rune, go_string_from_slice_runes, go_string_range_count,
-    go_string_range_index_at, go_string_range_rune_at,
+    go_string_range_index_at, go_string_range_rune_at, go_string_to_slice_runes,
 };
 pub use string_slices::{
     GoSliceGoString, go_slice_go_string_append, go_slice_go_string_cap, go_slice_go_string_clear,

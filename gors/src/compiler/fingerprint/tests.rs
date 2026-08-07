@@ -271,7 +271,7 @@ func narrowNeg(value rune) rune { return -value }
 #[test]
 fn rust_ir_fingerprints_encode_hidden_and_terminal_runtime_operations() {
     let (_, _, original) = lower_stages(
-        "package main\nfunc literal() string { return \"value\" }\nfunc main() { println(1) }\n",
+        "package main\nfunc literal() string { return \"value\" }\nfunc runes(value string) []rune { return []rune(value) }\nfunc main() { println(1) }\n",
     );
 
     let mut changed_constant = original.clone();
@@ -294,6 +294,14 @@ fn rust_ir_fingerprints_encode_hidden_and_terminal_runtime_operations() {
         rust_ir_function(rust_ir_named(&changed_call, "main"))
     );
     assert_ne!(rust_ir_file(&original), rust_ir_file(&changed_call));
+
+    let mut changed_runes = original.clone();
+    *runtime_call_op_mut(&mut changed_runes, "runes", RuntimeOp::GoStringToSliceRunes) =
+        RuntimeOp::GoStringFromSliceRunes;
+    assert_ne!(
+        rust_ir_function(rust_ir_named(&original, "runes")),
+        rust_ir_function(rust_ir_named(&changed_runes, "runes"))
+    );
 }
 
 #[test]

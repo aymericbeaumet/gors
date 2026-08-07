@@ -64,6 +64,30 @@ fn rune_slices_encode_and_string_ranges_decode_go_utf8() {
 }
 
 #[test]
+fn strings_decode_to_fresh_non_nil_rune_slices() {
+    let source = go_string_from_static(&[b'h', 0xff, 0xc3, 0xa9]);
+    let first = go_string_to_slice_runes(source.clone());
+    let second = go_string_to_slice_runes(source.clone());
+
+    assert_eq!(go_slice_i64_len(first.clone()), 3);
+    assert_eq!(go_slice_i64_index(first.clone(), 0), GoInt::from(b'h'));
+    assert_eq!(go_slice_i64_index(first.clone(), 1), 0xfffd);
+    assert_eq!(go_slice_i64_index(first.clone(), 2), 0xe9);
+    assert_eq!(
+        go_string_from_slice_runes(first.clone()).as_bytes(),
+        "h�é".as_bytes()
+    );
+
+    go_slice_i64_set(first, 0, GoInt::from(b'X'));
+    assert_eq!(source.as_bytes(), &[b'h', 0xff, 0xc3, 0xa9]);
+    assert_eq!(go_slice_i64_index(second, 0), GoInt::from(b'h'));
+
+    let empty = go_string_to_slice_runes(go_string_from_static(b""));
+    assert_eq!(go_slice_i64_len(empty.clone()), 0);
+    assert!(!go_slice_i64_is_nil(empty));
+}
+
+#[test]
 fn individual_runes_encode_as_go_strings() {
     assert_eq!(go_string_from_rune(255).as_bytes(), "ÿ".as_bytes());
     assert_eq!(go_string_from_rune(-1).as_bytes(), "�".as_bytes());

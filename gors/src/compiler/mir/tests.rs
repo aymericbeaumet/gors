@@ -165,6 +165,97 @@ fn verifier_rejects_invalid_byte_slice_runtime_calls() {
 }
 
 #[test]
+fn string_conversion_verifier_preserves_named_destinations_and_rejects_corruption() {
+    let source = r#"
+        package main
+        type Text string
+        type Rune rune
+        type Runes []Rune
+        func main() {
+            dynamic := rune(65)
+            _ = Text(dynamic)
+            bytes := []byte{'x'}
+            _ = Text(bytes)
+            runes := Runes{'x'}
+            text := Text(runes)
+            _ = Runes(text)
+        }
+    "#;
+
+    let file = lower(source);
+    file.verify()
+        .expect("named string and rune-slice conversions must verify");
+
+    for builtin in [
+        hir::Builtin::StringFromRune,
+        hir::Builtin::StringFromSliceU8,
+        hir::Builtin::StringFromSliceRunes,
+        hir::Builtin::StringToSliceRunes,
+    ] {
+        let mut corrupt = file.clone();
+        let arguments = corrupt
+            .functions
+            .iter_mut()
+            .flat_map(|function| &mut function.blocks)
+            .find_map(|block| match &mut block.terminator.kind {
+                TerminatorKind::Call {
+                    callee: hir::Callee::Builtin(actual),
+                    args,
+                    ..
+                } if *actual == builtin => Some(args),
+                _ => None,
+            })
+            .expect("expected string conversion runtime call");
+        arguments.clear();
+
+        let error = corrupt.verify().unwrap_err();
+        assert!(error.message.contains("conversion arguments"), "{error:?}");
+    }
+
+    let mut corrupt_destination = file;
+    let function = corrupt_destination
+        .functions
+        .iter_mut()
+        .find(|function| {
+            function.blocks.iter().any(|block| {
+                matches!(
+                    block.terminator.kind,
+                    TerminatorKind::Call {
+                        callee: hir::Callee::Builtin(hir::Builtin::StringToSliceRunes),
+                        ..
+                    }
+                )
+            })
+        })
+        .expect("expected string-to-rune conversion owner");
+    let destination = function
+        .blocks
+        .iter()
+        .find_map(|block| match &block.terminator.kind {
+            TerminatorKind::Call {
+                callee: hir::Callee::Builtin(hir::Builtin::StringToSliceRunes),
+                destinations,
+                ..
+            } => destinations.first().copied(),
+            _ => None,
+        })
+        .expect("expected string-to-rune conversion destination");
+    function
+        .locals
+        .get_mut(destination.local.0 as usize)
+        .expect("string conversion destination local")
+        .ty = Ty::String;
+
+    let error = corrupt_destination.verify().unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("string to rune slice conversion destination"),
+        "{error:?}"
+    );
+}
+
+#[test]
 fn verifier_rejects_every_malformed_string_slice_runtime_call() {
     let source = r#"
         package main
