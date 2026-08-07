@@ -3,7 +3,7 @@
 use super::FunctionLowerer;
 use super::channels::{channel_effects, channel_parts};
 use super::expressions::{coerce_expr, expr_constant};
-use super::pointers::{int_pointer_ty, pointer_effects};
+use super::pointers::pointer_effects;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::NodeId;
@@ -196,7 +196,10 @@ impl FunctionLowerer {
                 source,
             });
         }
-        if ty.underlying() == int_pointer_ty().underlying() {
+        if matches!(
+            ty.underlying(),
+            Ty::Pointer(element) if element.underlying() == &Ty::Int(IntTy::Int)
+        ) {
             return Ok(hir::Expr {
                 node,
                 kind: hir::ExprKind::Call {

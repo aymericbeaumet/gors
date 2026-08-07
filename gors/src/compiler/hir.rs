@@ -454,6 +454,7 @@ pub enum Builtin {
     PointerI64Get,
     PointerI64Set,
     PointerI64IsNil,
+    PointerI64Equal,
     PointerStructI64Nil,
     PointerStructI64New,
     PointerStructI64Get,

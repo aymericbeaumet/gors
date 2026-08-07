@@ -12,6 +12,7 @@ pub(super) fn is_pointer_builtin(builtin: hir::Builtin) -> bool {
             | hir::Builtin::PointerI64Get
             | hir::Builtin::PointerI64Set
             | hir::Builtin::PointerI64IsNil
+            | hir::Builtin::PointerI64Equal
             | hir::Builtin::PointerStructI64Nil
             | hir::Builtin::PointerStructI64New
             | hir::Builtin::PointerStructI64Get
@@ -63,6 +64,19 @@ pub(super) fn verify_pointer_call(
                 ));
             };
             verify_int_pointer_type(pointer, "pointer nil comparison")?;
+            Ok(vec![Ty::Bool])
+        }
+        hir::Builtin::PointerI64Equal => {
+            let [left, right] = arguments else {
+                return Err(shape_error(
+                    "integer pointer equality",
+                    arguments,
+                    destinations,
+                ));
+            };
+            verify_int_pointer_type(left, "integer pointer equality")?;
+            verify_int_pointer_type(right, "integer pointer equality")?;
+            super::verify_same_type(left, right, "integer pointer equality")?;
             Ok(vec![Ty::Bool])
         }
         hir::Builtin::PointerStructI64Nil => {

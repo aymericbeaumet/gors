@@ -131,6 +131,48 @@ fn labeled_fallthrough_preserves_labels_and_source_order() {
 }
 
 #[test]
+fn expression_switches_apply_general_comparison_typing_to_typed_cases() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            type Named [1]int
+
+            func namedTag(tag Named, candidate [1]int) bool {
+                switch tag {
+                case candidate:
+                    return true
+                }
+                return false
+            }
+
+            func unnamedTag(tag [1]int, candidate Named) bool {
+                switch tag {
+                case candidate:
+                    return true
+                }
+                return false
+            }
+
+            func main() {
+                named := Named{7}
+                same := [1]int{7}
+                different := [1]int{8}
+                if !namedTag(named, same) || !unnamedTag(same, named) {
+                    panic("named and unnamed arrays did not compare")
+                }
+                if namedTag(named, different) || unnamedTag(different, named) {
+                    panic("different arrays compared equal")
+                }
+                println("typed-switch-cases: ok")
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"typed-switch-cases: ok\n");
+}
+
+#[test]
 fn labeled_fallthrough_must_be_final_and_have_a_following_clause() {
     let non_final = compile_program(raw_program(
         "fallthrough.go",

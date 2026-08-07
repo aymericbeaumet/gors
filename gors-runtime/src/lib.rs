@@ -540,7 +540,7 @@ pub fn go_pointer_i64_is_nil(pointer: GoPointerI64) -> bool {
 
 /// Compare two Go `*int` values by pointee identity.
 #[must_use]
-pub(crate) fn go_pointer_i64_equal(left: GoPointerI64, right: GoPointerI64) -> bool {
+pub fn go_pointer_i64_equal(left: GoPointerI64, right: GoPointerI64) -> bool {
     match (left.storage, right.storage) {
         (None, None) => true,
         (Some(left), Some(right)) => Arc::ptr_eq(&left, &right),

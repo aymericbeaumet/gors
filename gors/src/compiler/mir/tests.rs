@@ -2,6 +2,8 @@ use super::*;
 use crate::compiler::ids::LocalId;
 use crate::compiler::types::{ConstValue, ExactNumber, FloatTy, IntTy, Ty, UintTy};
 
+mod pointers;
+
 fn lower(source: &str) -> File {
     let hir = crate::compiler::lower_to_hir("verify.go", source).unwrap();
     lower_file(&hir).unwrap()
@@ -532,49 +534,6 @@ fn verifier_rejects_invalid_float_interface_runtime_calls() {
 
         let error = file.verify().unwrap_err();
         assert!(error.message.contains(expected), "{error:?}");
-    }
-}
-
-#[test]
-fn verifier_rejects_invalid_integer_pointer_interface_calls() {
-    let source = r#"
-        package main
-        type Counter int
-        func main() {
-            value := 1
-            var boxed any = &value
-            _, _ = boxed.(*int)
-            named := Counter(2)
-            var namedBox any = &named
-            _, _ = namedBox.(*Counter)
-        }
-    "#;
-
-    for (builtin, expected) in [
-        (hir::Builtin::InterfaceBoxPointerI64, "interface boxing"),
-        (
-            hir::Builtin::InterfaceUnboxPointerI64,
-            "interface integer pointer extraction",
-        ),
-    ] {
-        let mut file = lower(source);
-        let arguments = file
-            .functions
-            .iter_mut()
-            .flat_map(|function| &mut function.blocks)
-            .find_map(|block| match &mut block.terminator.kind {
-                TerminatorKind::Call {
-                    callee: hir::Callee::Builtin(actual),
-                    args,
-                    ..
-                } if *actual == builtin => Some(args),
-                _ => None,
-            })
-            .expect("expected integer-pointer interface call");
-        arguments.clear();
-
-        let error = file.verify().unwrap_err();
-        assert!(error.message.contains(expected), "{builtin:?}: {error:?}");
     }
 }
 

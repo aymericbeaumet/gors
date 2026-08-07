@@ -443,6 +443,7 @@ impl FunctionLowerer {
         }
 
         let tag_local = if let Some(tag) = tag {
+            let tag_source = tag.source;
             let tag = default_expr_type(self.lower_expr(tag, None)?, source)?;
             ensure_bootstrap_value_type(&tag.ty, source)?;
             let local = self.alloc_local(
@@ -460,7 +461,7 @@ impl FunctionLowerer {
                 },
                 source: SourceRef::node(node),
             });
-            Some(local)
+            Some((local, tag_source))
         } else {
             None
         };
@@ -482,23 +483,58 @@ impl FunctionLowerer {
             }
             let mut conditions = Vec::new();
             for expression in &*case.expressions {
-                let condition = if let Some(tag_local) = tag_local {
+                let condition = if let Some((tag_local, tag_source)) = tag_local {
                     let tag_ty = self.place_ty(hir::Place::Local(tag_local))?.clone();
-                    let right = self.lower_expr(expression, Some(&tag_ty))?;
+                    let mut right = if super::expression_lower::is_nil_identifier(expression) {
+                        self.lower_expr(expression, Some(&tag_ty))?
+                    } else {
+                        self.lower_expr(expression, None)?
+                    };
+                    if matches!(right.ty, Ty::Untyped(_)) {
+                        if matches!(tag_ty.underlying(), Ty::Interface(_)) {
+                            right =
+                                self.coerce_interface_value(right, &tag_ty, expression.source)?;
+                        } else {
+                            let right_source = right.source;
+                            coerce_expr(&mut right, &tag_ty, right_source)?;
+                        }
+                    }
                     let left_node = self.alloc_node(expression.source)?;
                     let left = self.local_expr(left_node, tag_local, tag_ty);
                     let node = self.alloc_node(expression.source)?;
-                    hir::Expr {
-                        node,
-                        ty: Ty::Bool,
-                        category: hir::ValueCategory::Value,
-                        effects: left.effects.union(right.effects),
-                        kind: hir::ExprKind::Binary {
-                            op: hir::BinaryOp::Equal,
-                            left: Box::new(left),
-                            right: Box::new(right),
-                        },
-                        source: SourceRef::node(node),
+                    let comparison_source = SourceRef::node(node);
+                    if matches!(left.ty.underlying(), Ty::Interface(_))
+                        || matches!(right.ty.underlying(), Ty::Interface(_))
+                    {
+                        self.lower_interface_comparison(
+                            left,
+                            tag_source,
+                            right,
+                            expression.source,
+                            true,
+                            node,
+                            comparison_source,
+                            None,
+                        )?
+                    } else if super::pointers::pointer_comparison_builtin(&left.ty).is_some()
+                        || super::pointers::pointer_comparison_builtin(&right.ty).is_some()
+                    {
+                        self.lower_pointer_comparison(
+                            left,
+                            right,
+                            true,
+                            node,
+                            comparison_source,
+                            None,
+                        )?
+                    } else {
+                        super::expression_lower::lower_regular_binary_expression(
+                            hir::BinaryOp::Equal,
+                            left,
+                            right,
+                            node,
+                            comparison_source,
+                        )?
                     }
                 } else {
                     self.lower_expr(expression, Some(&Ty::Bool))?

@@ -12,10 +12,10 @@
   "summary": {
     "groupCount": 15,
     "passingGroupCount": 15,
-    "caseCount": 334,
-    "passingCaseCount": 334,
+    "caseCount": 335,
+    "passingCaseCount": 335,
     "unsupportedCaseCount": 0,
-    "fixtureCount": 180
+    "fixtureCount": 181
   },
   "groups": [
     {
@@ -1219,6 +1219,7 @@
         "named_numeric_types",
         "nil_slice_semantics",
         "numeric_wraparound",
+        "pointer_equality",
         "slice_capacity_and_append",
         "string_bytes_and_invalid_utf8",
         "string_conversion_copies",
@@ -1229,10 +1230,10 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 51,
-        "passingCaseCount": 51,
+        "caseCount": 52,
+        "passingCaseCount": 52,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 30
+        "fixtureCount": 31
       },
       "cases": [
         {
@@ -1516,6 +1517,20 @@
           ],
           "freshFixtures": [
             "types"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-pointer-equality",
+          "title": "Pointer equality uses pointee identity for aliases, distinct variables, nil values, and fresh allocations",
+          "subtitle": "Pointer types",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "pointer_equality"
+          ],
+          "freshFixtures": [
+            "pointer_equality"
           ],
           "reason": ""
         },

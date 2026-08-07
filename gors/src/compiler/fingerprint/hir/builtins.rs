@@ -97,6 +97,7 @@ pub(super) fn encode_builtin(encoder: &mut Encoder, builtin: hir::Builtin) {
             hir::Builtin::PointerI64Get => b"pointer-i64-get",
             hir::Builtin::PointerI64Set => b"pointer-i64-set",
             hir::Builtin::PointerI64IsNil => b"pointer-i64-is-nil",
+            hir::Builtin::PointerI64Equal => b"pointer-i64-equal",
             hir::Builtin::PointerStructI64Nil => b"pointer-struct-i64-nil",
             hir::Builtin::PointerStructI64New => b"pointer-struct-i64-new",
             hir::Builtin::PointerStructI64Get => b"pointer-struct-i64-get",

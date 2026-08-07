@@ -518,6 +518,9 @@ impl RuntimeOp {
             Self::GoPointerI64IsNil => {
                 RuntimeSignature::new(GO_POINTER_I64_PARAMETER, RuntimeType::Bool)
             }
+            Self::GoPointerI64Equal => {
+                RuntimeSignature::new(TWO_GO_POINTER_I64_PARAMETERS, RuntimeType::Bool)
+            }
             Self::GoChannelI64Nil => {
                 RuntimeSignature::new(NO_PARAMETERS, RuntimeType::GoChannelI64)
             }

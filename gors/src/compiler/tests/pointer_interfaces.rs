@@ -25,6 +25,9 @@ fn integer_pointer_interfaces_preserve_nil_identity_aliasing_and_assertions() {
                 if boxedNil == nil {
                     panic("typed nil pointer became a nil interface")
                 }
+                if nilPointer != boxedNil || boxedNil != nilPointer {
+                    panic("direct typed nil pointer/interface comparison changed")
+                }
                 nilAlias, ok := boxedNil.(*int)
                 if !ok || nilAlias != nil {
                     panic("typed nil pointer assertion changed the value")
@@ -42,7 +45,9 @@ fn integer_pointer_interfaces_preserve_nil_identity_aliasing_and_assertions() {
                 var same any = pointer
                 otherValue := 7
                 var different any = &otherValue
-                if first != same || first == different {
+                if first != same || first == different ||
+                    pointer != first || first != pointer ||
+                    pointer == different || different == pointer {
                     panic("interface pointer equality lost pointee identity")
                 }
                 extracted := first.(*int)
@@ -77,4 +82,55 @@ fn integer_pointer_interfaces_preserve_nil_identity_aliasing_and_assertions() {
         "{}",
         run.rust
     );
+}
+
+#[test]
+fn pointer_interface_expression_switches_compare_after_typed_case_lowering() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            func pointerTag(tag *int, boxed any) bool {
+                switch tag {
+                case boxed:
+                    return true
+                }
+                return false
+            }
+
+            func interfaceTag(tag any, candidate *int) bool {
+                switch tag {
+                case candidate:
+                    return true
+                }
+                return false
+            }
+
+            func main() {
+                value := 7
+                pointer := &value
+                var boxed any = pointer
+                if !pointerTag(pointer, boxed) || !interfaceTag(boxed, pointer) {
+                    panic("boxed pointer switch did not match")
+                }
+
+                otherValue := 7
+                other := &otherValue
+                boxed = other
+                if pointerTag(pointer, boxed) || interfaceTag(boxed, pointer) {
+                    panic("distinct boxed pointer switch matched")
+                }
+
+                var nilPointer *int
+                boxed = nilPointer
+                if !pointerTag(nilPointer, boxed) || !interfaceTag(boxed, nilPointer) {
+                    panic("boxed nil pointer switch did not match")
+                }
+                println("pointer-interface-switch: ok")
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"pointer-interface-switch: ok\n");
+    assert!(run.rust.contains("go_interface_equal"), "{}", run.rust);
 }

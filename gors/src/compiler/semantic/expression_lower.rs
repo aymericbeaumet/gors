@@ -243,21 +243,8 @@ impl FunctionLowerer {
                 }
                 let left_syntax_source = left.source;
                 let right_syntax_source = right.source;
-                let mut left = self.lower_expr(left, None)?;
-                let mut right = self.lower_expr(right, None)?;
-                if matches!(token, Token::EQL | Token::NEQ)
-                    && (left.ty.bootstrap_i64_struct_pointer_fields().is_some()
-                        || right.ty.bootstrap_i64_struct_pointer_fields().is_some())
-                {
-                    return self.lower_struct_pointer_comparison(
-                        left,
-                        right,
-                        *token == Token::EQL,
-                        node,
-                        source,
-                        expected,
-                    );
-                }
+                let left = self.lower_expr(left, None)?;
+                let right = self.lower_expr(right, None)?;
                 if matches!(token, Token::EQL | Token::NEQ)
                     && (matches!(left.ty.underlying(), Ty::Interface(_))
                         || matches!(right.ty.underlying(), Ty::Interface(_)))
@@ -273,6 +260,19 @@ impl FunctionLowerer {
                         expected,
                     );
                 }
+                if matches!(token, Token::EQL | Token::NEQ)
+                    && (super::pointers::pointer_comparison_builtin(&left.ty).is_some()
+                        || super::pointers::pointer_comparison_builtin(&right.ty).is_some())
+                {
+                    return self.lower_pointer_comparison(
+                        left,
+                        right,
+                        *token == Token::EQL,
+                        node,
+                        source,
+                        expected,
+                    );
+                }
                 let op = lower_binary_op(*token).ok_or_else(|| {
                     Diagnostic::unsupported(
                         format!("binary operator {token:?} is not implemented"),
@@ -282,105 +282,7 @@ impl FunctionLowerer {
                 if matches!(op, hir::BinaryOp::Shl | hir::BinaryOp::Shr) {
                     return lower_shift_expression(op, left, right, node, source, expected);
                 }
-                let comparison = matches!(
-                    op,
-                    hir::BinaryOp::Equal
-                        | hir::BinaryOp::NotEqual
-                        | hir::BinaryOp::Less
-                        | hir::BinaryOp::LessEqual
-                        | hir::BinaryOp::Greater
-                        | hir::BinaryOp::GreaterEqual
-                );
-                let logical = matches!(op, hir::BinaryOp::LogicalAnd | hir::BinaryOp::LogicalOr);
-                let operand_ty = common_operand_type(&left.ty, &right.ty).ok_or_else(|| {
-                    Diagnostic::semantic(
-                        format!(
-                            "incompatible binary operands {:?} and {:?}",
-                            left.ty, right.ty
-                        ),
-                        source,
-                    )
-                })?;
-                // A folded operation on two untyped operands stays an untyped
-                // constant of the merged kind, so a later conversion site can
-                // still adapt the exact value. Fold before default-type
-                // materialization: an intermediate Go constant need not fit
-                // float64 when the final exact result does.
-                let untyped_operand_ty = exact_common_operand_type(&left.ty, &right.ty)
-                    .filter(|ty| matches!(ty, Ty::Untyped(_)));
-                if expr_constant(&left).is_some() && expr_constant(&right).is_some() {
-                    super::validate_constant_binary_operator(op, &operand_ty, source)?;
-                } else {
-                    validate_binary_operator(op, &operand_ty, source)?;
-                }
-                let folded_untyped = if untyped_operand_ty.is_some() {
-                    expr_constant(&left)
-                        .zip(expr_constant(&right))
-                        .map(|(left, right)| fold_constant_binary(op, left, right, source))
-                        .transpose()?
-                        .flatten()
-                } else {
-                    None
-                };
-                if folded_untyped.is_none() {
-                    coerce_expr(&mut left, &operand_ty, source)?;
-                    coerce_expr(&mut right, &operand_ty, source)?;
-                }
-                let mut effects = left.effects.union(right.effects);
-                if matches!(
-                    op,
-                    hir::BinaryOp::Div
-                        | hir::BinaryOp::Rem
-                        | hir::BinaryOp::Shl
-                        | hir::BinaryOp::Shr
-                ) {
-                    effects.may_panic = true;
-                }
-                if op == hir::BinaryOp::Add && operand_ty == Ty::String {
-                    effects.may_allocate = true;
-                }
-                let result_ty = if comparison || logical {
-                    Ty::Bool
-                } else {
-                    operand_ty
-                };
-                let folded = match folded_untyped {
-                    Some(value) => Some(value),
-                    None => expr_constant(&left)
-                        .zip(expr_constant(&right))
-                        .map(|(left, right)| fold_constant_binary(op, left, right, source))
-                        .transpose()?
-                        .flatten(),
-                };
-                if let Some(value) = folded {
-                    let ty = if comparison || logical {
-                        result_ty
-                    } else {
-                        untyped_operand_ty.unwrap_or(result_ty)
-                    };
-                    let value = normalize_constant_for_type(value, &ty, source)?;
-                    hir::Expr {
-                        node,
-                        kind: hir::ExprKind::Constant(value),
-                        ty,
-                        category: hir::ValueCategory::Constant,
-                        effects: hir::Effects::default(),
-                        source,
-                    }
-                } else {
-                    hir::Expr {
-                        node,
-                        kind: hir::ExprKind::Binary {
-                            op,
-                            left: Box::new(left),
-                            right: Box::new(right),
-                        },
-                        ty: result_ty,
-                        category: hir::ValueCategory::Value,
-                        effects,
-                        source,
-                    }
-                }
+                lower_regular_binary_expression(op, left, right, node, source)?
             }
             ExprSyntaxKind::Call {
                 callee,
@@ -755,6 +657,111 @@ impl FunctionLowerer {
     }
 }
 
+pub(super) fn lower_regular_binary_expression(
+    op: hir::BinaryOp,
+    mut left: hir::Expr,
+    mut right: hir::Expr,
+    node: NodeId,
+    source: SourceRef,
+) -> Result<hir::Expr, Diagnostic> {
+    let comparison = matches!(
+        op,
+        hir::BinaryOp::Equal
+            | hir::BinaryOp::NotEqual
+            | hir::BinaryOp::Less
+            | hir::BinaryOp::LessEqual
+            | hir::BinaryOp::Greater
+            | hir::BinaryOp::GreaterEqual
+    );
+    let logical = matches!(op, hir::BinaryOp::LogicalAnd | hir::BinaryOp::LogicalOr);
+    let operand_ty = common_operand_type(&left.ty, &right.ty).ok_or_else(|| {
+        Diagnostic::semantic(
+            format!(
+                "incompatible binary operands {:?} and {:?}",
+                left.ty, right.ty
+            ),
+            source,
+        )
+    })?;
+    // A folded operation on two untyped operands stays an untyped
+    // constant of the merged kind, so a later conversion site can
+    // still adapt the exact value. Fold before default-type
+    // materialization: an intermediate Go constant need not fit
+    // float64 when the final exact result does.
+    let untyped_operand_ty =
+        exact_common_operand_type(&left.ty, &right.ty).filter(|ty| matches!(ty, Ty::Untyped(_)));
+    if expr_constant(&left).is_some() && expr_constant(&right).is_some() {
+        super::validate_constant_binary_operator(op, &operand_ty, source)?;
+    } else {
+        validate_binary_operator(op, &operand_ty, source)?;
+    }
+    let folded_untyped = if untyped_operand_ty.is_some() {
+        expr_constant(&left)
+            .zip(expr_constant(&right))
+            .map(|(left, right)| fold_constant_binary(op, left, right, source))
+            .transpose()?
+            .flatten()
+    } else {
+        None
+    };
+    if folded_untyped.is_none() {
+        coerce_expr(&mut left, &operand_ty, source)?;
+        coerce_expr(&mut right, &operand_ty, source)?;
+    }
+    let mut effects = left.effects.union(right.effects);
+    if matches!(
+        op,
+        hir::BinaryOp::Div | hir::BinaryOp::Rem | hir::BinaryOp::Shl | hir::BinaryOp::Shr
+    ) {
+        effects.may_panic = true;
+    }
+    if op == hir::BinaryOp::Add && operand_ty == Ty::String {
+        effects.may_allocate = true;
+    }
+    let result_ty = if comparison || logical {
+        Ty::Bool
+    } else {
+        operand_ty
+    };
+    let folded = match folded_untyped {
+        Some(value) => Some(value),
+        None => expr_constant(&left)
+            .zip(expr_constant(&right))
+            .map(|(left, right)| fold_constant_binary(op, left, right, source))
+            .transpose()?
+            .flatten(),
+    };
+    if let Some(value) = folded {
+        let ty = if comparison || logical {
+            result_ty
+        } else {
+            untyped_operand_ty.unwrap_or(result_ty)
+        };
+        let value = normalize_constant_for_type(value, &ty, source)?;
+        Ok(hir::Expr {
+            node,
+            kind: hir::ExprKind::Constant(value),
+            ty,
+            category: hir::ValueCategory::Constant,
+            effects: hir::Effects::default(),
+            source,
+        })
+    } else {
+        Ok(hir::Expr {
+            node,
+            kind: hir::ExprKind::Binary {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            ty: result_ty,
+            category: hir::ValueCategory::Value,
+            effects,
+            source,
+        })
+    }
+}
+
 /// Exact integer value of an already-lowered constant expression.
 ///
 /// Returns `None` for runtime values, so callers only reject when the Go spec
@@ -771,7 +778,7 @@ pub(super) fn constant_index_value(expression: &hir::Expr) -> Option<i64> {
     text.parse::<i64>().ok()
 }
 
-fn is_nil_identifier(expression: &ExprSyntax) -> bool {
+pub(super) fn is_nil_identifier(expression: &ExprSyntax) -> bool {
     matches!(
         &expression.kind,
         ExprSyntaxKind::Ident(identifier) if identifier.name.as_ref() == "nil"

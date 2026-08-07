@@ -743,6 +743,7 @@ impl Function {
                                 | hir::Builtin::PointerI64Get
                                 | hir::Builtin::PointerI64Set
                                 | hir::Builtin::PointerI64IsNil
+                                | hir::Builtin::PointerI64Equal
                                 | hir::Builtin::PointerStructI64Nil
                                 | hir::Builtin::PointerStructI64New
                                 | hir::Builtin::PointerStructI64Get

@@ -908,6 +908,15 @@
           ]
         },
         {
+          "id": "spec-pointer-equality",
+          "section": "Pointer types",
+          "title": "Pointer equality uses pointee identity for aliases, distinct variables, nil values, and fresh allocations",
+          "status": "passing",
+          "fixtures": [
+            "pointer_equality"
+          ]
+        },
+        {
           "id": "types-nil-composite-values",
           "section": "Pointer, slice, map, channel, function, and interface types",
           "title": "nil is assignable to pointer, slice, map, channel, function, and interface values",

@@ -816,7 +816,15 @@ unboxing are explicit versioned ABI operations: typed nil pointers remain
 non-nil interfaces, extraction clones the pointer header and preserves pointee
 alias identity, interface equality compares pointee identity, and exact dynamic
 type identities keep defined pointer types distinct while aliases retain their
-target identity.
+target identity. Direct equality between executable integer pointers resolves
+Go comparison compatibility while their exact semantic types are still
+present, then selects the ABI-owned identity operation; representation lowering
+must never compare pointee values or erase distinct defined pointer types before
+that check. When either operand is an interface, interface coercion and equality
+take precedence over direct pointer comparison. Expression-switch case equality
+uses this same interface-first, exact-pointer path and the ordinary typed
+comparison path for all other values; only untyped and `nil` case expressions
+are implicitly converted to the switch tag type.
 
 The remaining frontier receives precise source diagnostics until its semantics
 are represented in HIR and MIR:

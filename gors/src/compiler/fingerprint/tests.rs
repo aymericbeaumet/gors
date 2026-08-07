@@ -18,6 +18,8 @@ const INT_REM: RuntimeOp = RuntimeOp::Integer {
     kind: IntegerKind::I64,
 };
 
+mod pointers;
+
 fn lower_stages(source: &str) -> (hir::File, mir::File, rust_ir::File) {
     lower_stages_at("fingerprint.go", source)
 }
@@ -441,47 +443,6 @@ fn rust_ir_fingerprints_encode_hidden_and_terminal_runtime_operations() {
         rust_ir_function(rust_ir_named(&original, "runes")),
         rust_ir_function(rust_ir_named(&changed_runes, "runes"))
     );
-}
-
-#[test]
-fn pointer_interface_fingerprints_encode_dynamic_type_and_runtime_operations() {
-    let (builtin_hir, builtin_mir, builtin_rust_ir) = lower_stages(
-        "package main\nfunc roundtrip(value *int) *int { var boxed any = value; return boxed.(*int) }\nfunc main() {}\n",
-    );
-    let (named_hir, named_mir, named_rust_ir) = lower_stages(
-        "package main\ntype Counter int\nfunc roundtrip(value *Counter) *Counter { var boxed any = value; return boxed.(*Counter) }\nfunc main() {}\n",
-    );
-
-    assert_ne!(
-        hir_function(hir_named(&builtin_hir, "roundtrip")),
-        hir_function(hir_named(&named_hir, "roundtrip"))
-    );
-    assert_ne!(
-        mir_function(mir_named(&builtin_mir, "roundtrip")),
-        mir_function(mir_named(&named_mir, "roundtrip"))
-    );
-    assert_ne!(
-        rust_ir_function(rust_ir_named(&builtin_rust_ir, "roundtrip")),
-        rust_ir_function(rust_ir_named(&named_rust_ir, "roundtrip"))
-    );
-
-    for (expected, replacement) in [
-        (
-            RuntimeOp::GoInterfaceBoxPointerI64,
-            RuntimeOp::GoInterfaceBoxPointerStructI64,
-        ),
-        (
-            RuntimeOp::GoInterfaceUnboxPointerI64,
-            RuntimeOp::GoInterfaceUnboxPointerStructI64,
-        ),
-    ] {
-        let mut changed = builtin_rust_ir.clone();
-        *runtime_call_op_mut(&mut changed, "roundtrip", expected) = replacement;
-        assert_ne!(
-            rust_ir_function(rust_ir_named(&builtin_rust_ir, "roundtrip")),
-            rust_ir_function(rust_ir_named(&changed, "roundtrip"))
-        );
-    }
 }
 
 #[test]

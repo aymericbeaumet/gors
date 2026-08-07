@@ -51,6 +51,7 @@ pub enum RuntimeOp {
     GoPointerI64Get,
     GoPointerI64Set,
     GoPointerI64IsNil,
+    GoPointerI64Equal,
     GoChannelI64Nil,
     GoChannelI64Make,
     GoChannelI64Len,

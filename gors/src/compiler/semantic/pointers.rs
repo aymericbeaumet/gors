@@ -2,7 +2,7 @@
 
 use super::FunctionLowerer;
 use super::channels::channel_parts;
-use super::expressions::coerce_expr;
+use super::expressions::{coerce_expr, common_operand_type};
 use super::maps::{i64_go_string_map_ty, string_i64_map_ty};
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
@@ -11,12 +11,8 @@ use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{ExprSyntax, ExprSyntaxKind};
 use crate::compiler::types::{IntTy, Ty};
 
-pub(super) fn int_pointer_ty() -> Ty {
-    Ty::Pointer(Box::new(Ty::Int(IntTy::Int)))
-}
-
 impl FunctionLowerer {
-    pub(super) fn lower_struct_pointer_comparison(
+    pub(super) fn lower_pointer_comparison(
         &mut self,
         mut left: hir::Expr,
         mut right: hir::Expr,
@@ -25,10 +21,7 @@ impl FunctionLowerer {
         source: SourceRef,
         expected: Option<&Ty>,
     ) -> Result<hir::Expr, Diagnostic> {
-        if left.ty.bootstrap_i64_struct_pointer_fields().is_none()
-            || right.ty.bootstrap_i64_struct_pointer_fields().is_none()
-            || left.ty != right.ty
-        {
+        let Some(pointer_ty) = common_operand_type(&left.ty, &right.ty) else {
             return Err(Diagnostic::semantic(
                 format!(
                     "incompatible pointer comparison operands {:?} and {:?}",
@@ -36,15 +29,23 @@ impl FunctionLowerer {
                 ),
                 source,
             ));
-        }
-        let pointer_ty = left.ty.clone();
+        };
+        let Some(builtin) = pointer_comparison_builtin(&pointer_ty) else {
+            return Err(Diagnostic::semantic(
+                format!(
+                    "incompatible pointer comparison operands {:?} and {:?}",
+                    left.ty, right.ty
+                ),
+                source,
+            ));
+        };
         coerce_expr(&mut left, &pointer_ty, source)?;
         coerce_expr(&mut right, &pointer_ty, source)?;
         let effects = pointer_effects(&[&left, &right], false, false, false);
         let call = hir::Expr {
             node,
             kind: hir::ExprKind::Call {
-                callee: hir::Callee::Builtin(hir::Builtin::PointerStructI64Equal),
+                callee: hir::Callee::Builtin(builtin),
                 args: vec![left, right],
             },
             ty: Ty::Bool,
@@ -324,7 +325,10 @@ impl FunctionLowerer {
             hir::Builtin::InterfaceIsNil
         } else if matches!(value.ty.underlying(), Ty::Function(_)) {
             hir::Builtin::FunctionIsNil
-        } else if value.ty.underlying() == int_pointer_ty().underlying() {
+        } else if matches!(
+            value.ty.underlying(),
+            Ty::Pointer(element) if element.underlying() == &Ty::Int(IntTy::Int)
+        ) {
             hir::Builtin::PointerI64IsNil
         } else if value.ty.bootstrap_i64_struct_pointer_fields().is_some() {
             hir::Builtin::PointerStructI64IsNil
@@ -372,6 +376,18 @@ impl FunctionLowerer {
             coerce_expr(&mut result, expected, source)?;
         }
         Ok(result)
+    }
+}
+
+pub(super) fn pointer_comparison_builtin(ty: &Ty) -> Option<hir::Builtin> {
+    match ty.underlying() {
+        Ty::Pointer(element) if element.underlying() == &Ty::Int(IntTy::Int) => {
+            Some(hir::Builtin::PointerI64Equal)
+        }
+        _ if ty.bootstrap_i64_struct_pointer_fields().is_some() => {
+            Some(hir::Builtin::PointerStructI64Equal)
+        }
+        _ => None,
     }
 }
 

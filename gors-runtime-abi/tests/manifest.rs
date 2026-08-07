@@ -120,11 +120,11 @@ fn current_contract_identity_is_sha256_of_canonical_bytes() {
 
     assert_eq!(manifest.schema().get(), 2);
     assert_eq!(manifest.contract(), CURRENT_CONTRACT_VERSION);
-    assert_eq!(manifest.contract(), ContractVersion::new(2, 27, 0));
+    assert_eq!(manifest.contract(), ContractVersion::new(2, 28, 0));
     assert_eq!(manifest.identity().as_bytes(), &expected);
     assert_eq!(
         manifest.identity().to_string(),
-        "d4ebc27454bd1867920c59fc95c1e42d8d33eec22defeb5ea95a6eba19f8a146",
+        "d2c73bd226b817900465b02e404a6f8b84786032dda50311e61e2f29316a80a9",
         "the canonical runtime contract changed; review the ABI diff and bump its semantic version before accepting a new identity",
     );
 }
@@ -221,6 +221,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoPointerI64Get
             | RuntimeOp::GoPointerI64Set
             | RuntimeOp::GoPointerI64IsNil
+            | RuntimeOp::GoPointerI64Equal
             | RuntimeOp::GoPointerStructI64Nil
             | RuntimeOp::GoPointerStructI64Get
             | RuntimeOp::GoPointerStructI64Set
@@ -362,6 +363,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoPointerI64New
             | RuntimeOp::GoPointerI64Get
             | RuntimeOp::GoPointerI64IsNil
+            | RuntimeOp::GoPointerI64Equal
             | RuntimeOp::GoPointerStructI64Nil
             | RuntimeOp::GoPointerStructI64New
             | RuntimeOp::GoPointerStructI64Get
@@ -497,6 +499,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoPointerI64Get
             | RuntimeOp::GoPointerI64Set
             | RuntimeOp::GoPointerI64IsNil
+            | RuntimeOp::GoPointerI64Equal
             | RuntimeOp::GoPointerStructI64Nil
             | RuntimeOp::GoPointerStructI64New
             | RuntimeOp::GoPointerStructI64Get
@@ -677,6 +680,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoPointerI64Nil
             | RuntimeOp::GoPointerI64New
             | RuntimeOp::GoPointerI64IsNil
+            | RuntimeOp::GoPointerI64Equal
             | RuntimeOp::GoPointerStructI64Nil
             | RuntimeOp::GoPointerStructI64IsNil
             | RuntimeOp::GoPointerStructI64Equal

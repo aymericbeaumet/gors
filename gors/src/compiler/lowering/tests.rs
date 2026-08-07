@@ -292,6 +292,32 @@ fn float_interface_and_print_builtins_select_exact_runtime_operations() {
     }
 }
 
+#[test]
+fn integer_pointer_equality_selects_the_canonical_identity_operation() {
+    let file = lower_source(
+        r#"
+            package main
+            func same(left, right *int) bool { return left == right }
+            func different(left, right *int) bool { return left != right }
+        "#,
+    );
+
+    for name in ["same", "different"] {
+        let operations = named_function(&file, name)
+            .blocks
+            .iter()
+            .filter_map(|block| match &block.terminator.kind {
+                TerminatorKind::Call {
+                    target: CallTarget::Runtime(operation),
+                    ..
+                } => Some(*operation),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(operations, [RuntimeOp::GoPointerI64Equal]);
+    }
+}
+
 fn rvalue_operands(kind: &RvalueKind) -> Vec<&Operand> {
     match kind {
         RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => vec![operand],

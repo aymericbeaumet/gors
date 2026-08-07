@@ -275,14 +275,21 @@ fn maps_are_send_and_sync() {
 #[test]
 fn pointers_preserve_nil_and_shared_pointee_semantics() {
     let nil_pointer = go_pointer_i64_nil();
+    let other_nil = go_pointer_i64_nil();
     assert!(go_pointer_i64_is_nil(nil_pointer.clone()));
+    assert!(go_pointer_i64_equal(nil_pointer.clone(), other_nil));
     assert!(std::panic::catch_unwind(|| go_pointer_i64_get(nil_pointer.clone())).is_err());
-    assert!(std::panic::catch_unwind(|| go_pointer_i64_set(nil_pointer, 1)).is_err());
+    assert!(std::panic::catch_unwind(|| go_pointer_i64_set(nil_pointer.clone(), 1)).is_err());
 
     let pointer = go_pointer_i64_new();
     let alias = pointer.clone();
+    let distinct = go_pointer_i64_new();
     assert!(!go_pointer_i64_is_nil(pointer.clone()));
+    assert!(!go_pointer_i64_equal(nil_pointer, pointer.clone()));
+    assert!(go_pointer_i64_equal(pointer.clone(), alias.clone()));
+    assert!(!go_pointer_i64_equal(pointer.clone(), distinct.clone()));
     assert_eq!(go_pointer_i64_get(pointer.clone()), 0);
+    go_pointer_i64_set(distinct, 42);
     go_pointer_i64_set(alias, 42);
     assert_eq!(go_pointer_i64_get(pointer), 42);
 }

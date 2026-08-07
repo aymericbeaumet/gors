@@ -453,6 +453,7 @@ fn lower_terminator(
                 | hir::Builtin::PointerI64Get
                 | hir::Builtin::PointerI64Set
                 | hir::Builtin::PointerI64IsNil
+                | hir::Builtin::PointerI64Equal
                 | hir::Builtin::PointerStructI64Nil
                 | hir::Builtin::PointerStructI64New
                 | hir::Builtin::PointerStructI64Get
@@ -614,6 +615,7 @@ fn lower_terminator(
                     hir::Builtin::PointerI64Get => RuntimeOp::GoPointerI64Get,
                     hir::Builtin::PointerI64Set => RuntimeOp::GoPointerI64Set,
                     hir::Builtin::PointerI64IsNil => RuntimeOp::GoPointerI64IsNil,
+                    hir::Builtin::PointerI64Equal => RuntimeOp::GoPointerI64Equal,
                     hir::Builtin::PointerStructI64Nil => RuntimeOp::GoPointerStructI64Nil,
                     hir::Builtin::PointerStructI64New => RuntimeOp::GoPointerStructI64New,
                     hir::Builtin::PointerStructI64Get => RuntimeOp::GoPointerStructI64Get,

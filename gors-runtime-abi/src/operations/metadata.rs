@@ -77,6 +77,7 @@ impl RuntimeOp {
             | Self::GoPointerI64Get
             | Self::GoPointerI64Set
             | Self::GoPointerI64IsNil
+            | Self::GoPointerI64Equal
             | Self::GoPointerStructI64Nil
             | Self::GoPointerStructI64New
             | Self::GoPointerStructI64Get
@@ -398,6 +399,7 @@ impl RuntimeOp {
             | Self::GoMapStringInterfaceContains
             | Self::GoPointerI64Nil
             | Self::GoPointerI64IsNil
+            | Self::GoPointerI64Equal
             | Self::GoPointerStructI64Nil
             | Self::GoPointerStructI64IsNil
             | Self::GoPointerStructI64Equal => RuntimeEffects::new(

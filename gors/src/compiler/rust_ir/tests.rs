@@ -3,6 +3,7 @@ use super::*;
 
 mod integer;
 mod maps;
+mod pointers;
 mod recovery;
 mod representation_effects;
 mod runes;
@@ -159,47 +160,6 @@ fn verifier_checks_float_interface_and_print_runtime_signatures() {
         refresh_test_effects(&mut file);
 
         let error = file.verify().unwrap_err();
-        assert!(
-            error.message.contains("runtime call")
-                || error.message.contains("call destination type mismatch"),
-            "{expected:?} mutation produced {error:?}"
-        );
-    }
-}
-
-#[test]
-fn verifier_checks_integer_pointer_interface_runtime_signatures() {
-    let source = r#"
-        package main
-        func main() {
-            value := 1
-            var boxed any = &value
-            _, _ = boxed.(*int)
-        }
-    "#;
-    let file = lower(source);
-    let requirement = file.verify().expect("pointer interface calls must verify");
-    for operation in [
-        RuntimeOp::GoInterfaceBoxPointerI64,
-        RuntimeOp::GoInterfaceUnboxPointerI64,
-    ] {
-        assert!(requirement.contains(operation), "missing {operation:?}");
-    }
-
-    for (expected, replacement) in [
-        (
-            RuntimeOp::GoInterfaceBoxPointerI64,
-            RuntimeOp::GoInterfaceBoxPointerStructI64,
-        ),
-        (
-            RuntimeOp::GoInterfaceUnboxPointerI64,
-            RuntimeOp::GoInterfaceUnboxPointerStructI64,
-        ),
-    ] {
-        let mut corrupt = file.clone();
-        *runtime_call_target_mut(&mut corrupt, expected) = replacement;
-        refresh_test_effects(&mut corrupt);
-        let error = corrupt.verify().unwrap_err();
         assert!(
             error.message.contains("runtime call")
                 || error.message.contains("call destination type mismatch"),

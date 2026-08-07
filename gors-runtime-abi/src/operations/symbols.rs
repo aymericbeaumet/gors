@@ -50,6 +50,7 @@ impl RuntimeOp {
             Self::GoPointerI64Get => "go_pointer_i64_get",
             Self::GoPointerI64Set => "go_pointer_i64_set",
             Self::GoPointerI64IsNil => "go_pointer_i64_is_nil",
+            Self::GoPointerI64Equal => "go_pointer_i64_equal",
             Self::GoChannelI64Nil => "go_channel_i64_nil",
             Self::GoChannelI64Make => "go_channel_i64_make",
             Self::GoChannelI64Len => "go_channel_i64_len",
