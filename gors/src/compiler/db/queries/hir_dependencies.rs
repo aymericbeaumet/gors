@@ -174,6 +174,20 @@ fn collect_expression_callees(expression: &hir::Expr, callees: &mut BTreeSet<Qua
                 collect_expression_callees(argument, callees);
             }
         }
+        hir::ExprKind::ForwardedCall {
+            callee,
+            prefix,
+            source_call,
+            ..
+        } => {
+            if let hir::Callee::Function(definition) = callee {
+                callees.insert(*definition);
+            }
+            for argument in prefix {
+                collect_expression_callees(argument, callees);
+            }
+            collect_expression_callees(source_call, callees);
+        }
         hir::ExprKind::MapLiteralStringI64(entries)
         | hir::ExprKind::MapLiteralI64GoString(entries)
         | hir::ExprKind::AggregateMapLiteral { entries, .. } => {
@@ -245,5 +259,35 @@ fn collect_expression_callees(expression: &hir::Expr, callees: &mut BTreeSet<Qua
         | hir::ExprKind::SliceLiteralU8(_)
         | hir::ExprKind::SliceLiteralBool(_)
         | hir::ExprKind::ArrayLiteralI64(_) => {}
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn forwarded_calls_retain_outer_and_source_dependencies() {
+        let file = crate::compiler::lower_to_hir(
+            "dependencies.go",
+            "package main\nfunc pair() (int, int) { return 1, 2 }\nfunc add(left, right int) int { return left + right }\nfunc value() int { return add(pair()) }\n",
+        )
+        .unwrap();
+        let value = file
+            .functions
+            .iter()
+            .find(|function| function.name == "value")
+            .unwrap();
+        let expected = file
+            .functions
+            .iter()
+            .filter(|function| matches!(function.name.as_str(), "pair" | "add"))
+            .map(|function| QualifiedDefId::new(file.package_id, function.id))
+            .collect::<BTreeSet<_>>();
+        let mut actual = BTreeSet::new();
+        collect_block_callees(&value.body, &mut actual);
+
+        assert_eq!(actual, expected);
     }
 }

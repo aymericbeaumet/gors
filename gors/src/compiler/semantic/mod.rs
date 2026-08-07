@@ -2,6 +2,7 @@
 
 mod arrays;
 mod assignments;
+mod call_expressions;
 mod calls;
 mod channels;
 mod closures;

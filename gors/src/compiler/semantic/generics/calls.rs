@@ -1,6 +1,19 @@
 //! Generic function and method call instantiation.
 
 use super::*;
+use crate::compiler::semantic::calls::{LoweredCallArguments, forwarded_call_result_types};
+
+fn flattened_call_argument_types(arguments: &[hir::Expr]) -> Vec<Ty> {
+    if let [argument] = arguments
+        && let Some(results) = forwarded_call_result_types(argument)
+    {
+        return results.to_vec();
+    }
+    arguments
+        .iter()
+        .map(|argument| argument.ty.clone())
+        .collect()
+}
 
 impl FunctionLowerer {
     pub(in crate::compiler::semantic) fn lower_semantic_type(
@@ -58,10 +71,11 @@ impl FunctionLowerer {
             .iter()
             .map(|argument| self.lower_expr(argument, None))
             .collect::<Result<Vec<_>, _>>()?;
+        let inference_types = flattened_call_argument_types(&inference_args);
         let substitutions = infer_function_arguments(
             &symbol.header,
             type_arguments,
-            &inference_args,
+            &inference_types,
             spread,
             &self.type_aliases,
             &self.generic_types,
@@ -102,6 +116,7 @@ impl FunctionLowerer {
         self.finish_generic_call(
             closure,
             args,
+            Vec::new(),
             signature.results,
             node,
             source,
@@ -121,7 +136,7 @@ impl FunctionLowerer {
         pack_source: SyntaxSource,
         source: SourceRef,
         callable: &str,
-    ) -> Result<Vec<hir::Expr>, Diagnostic> {
+    ) -> Result<LoweredCallArguments, Diagnostic> {
         if arguments.len() != syntax.len() {
             return Err(Diagnostic::backend(
                 "generic argument syntax and lowered values have different lengths",
@@ -132,6 +147,24 @@ impl FunctionLowerer {
                 format!("... is only valid when calling a variadic {callable}"),
                 source,
             ));
+        }
+        if let [argument] = arguments.as_slice()
+            && let Some(results) = forwarded_call_result_types(argument)
+        {
+            if spread {
+                return Err(Diagnostic::semantic(
+                    format!("cannot use ... with {}-valued function call", results.len()),
+                    source,
+                ));
+            }
+            return self.plan_forwarded_call_arguments(
+                argument.clone(),
+                results.to_vec(),
+                parameters,
+                variadic,
+                source,
+                callable,
+            );
         }
         if !variadic || spread {
             if arguments.len() != parameters.len() {
@@ -148,7 +181,7 @@ impl FunctionLowerer {
             {
                 self.coerce_lowered_generic_argument(argument, parameter, syntax.source)?;
             }
-            return Ok(arguments);
+            return Ok(LoweredCallArguments::Explicit(arguments));
         }
 
         let Some((variadic_parameter, fixed_parameters)) = parameters.split_last() else {
@@ -191,7 +224,7 @@ impl FunctionLowerer {
                 SourceRef::node(node),
                 variadic_parameter.clone(),
             )?);
-            return Ok(arguments);
+            return Ok(LoweredCallArguments::Explicit(arguments));
         }
         if element.underlying() != &Ty::Int(crate::compiler::types::IntTy::Int) {
             return Err(Diagnostic::unsupported(
@@ -223,7 +256,7 @@ impl FunctionLowerer {
             effects,
             source: SourceRef::node(node),
         });
-        Ok(arguments)
+        Ok(LoweredCallArguments::Explicit(arguments))
     }
 
     fn coerce_lowered_generic_argument(
@@ -351,12 +384,6 @@ impl FunctionLowerer {
         else {
             return Ok(None);
         };
-        if spread {
-            return Err(Diagnostic::unsupported(
-                "generic variadic method calls are not yet implemented",
-                source,
-            ));
-        }
         let receiver_syntax = single_receiver_type(&symbol.header, source)?;
         let generic_type = self
             .generic_types
@@ -384,14 +411,15 @@ impl FunctionLowerer {
         let mut body_substitutions = substitutions.clone();
         body_substitutions.extend(receiver_aliases);
         let method_parameter_names = body_substitutions.keys().cloned().collect::<BTreeSet<_>>();
-        let mut ordinary_args = arguments
+        let ordinary_args = arguments
             .iter()
             .map(|argument| self.lower_expr(argument, None))
             .collect::<Result<Vec<_>, _>>()?;
+        let inference_types = flattened_call_argument_types(&ordinary_args);
         infer_parameter_list(
             &symbol.header.params,
-            &ordinary_args,
-            false,
+            &inference_types,
+            spread,
             &method_parameter_names,
             &mut body_substitutions,
             &self.type_aliases,
@@ -433,10 +461,16 @@ impl FunctionLowerer {
             syntax_source,
             source,
         )?;
-        coerce_arguments(&mut ordinary_args, parameters, source, "generic method")?;
-        let mut args = Vec::with_capacity(ordinary_args.len().saturating_add(1));
-        args.push(receiver);
-        args.extend(ordinary_args);
+        let args = self.coerce_lowered_generic_arguments(
+            ordinary_args,
+            arguments,
+            parameters,
+            signature.variadic,
+            spread,
+            syntax_source,
+            source,
+            "generic method",
+        )?;
         let closure = self.lower_instantiated_generic_closure(
             &symbol,
             signature.clone(),
@@ -447,6 +481,7 @@ impl FunctionLowerer {
         self.finish_generic_call(
             closure,
             args,
+            vec![receiver],
             signature.results,
             node,
             source,
@@ -460,7 +495,8 @@ impl FunctionLowerer {
     fn finish_generic_call(
         &mut self,
         closure: ClosureId,
-        args: Vec<hir::Expr>,
+        args: LoweredCallArguments,
+        prefix: Vec<hir::Expr>,
         results: Vec<Ty>,
         node: NodeId,
         source: SourceRef,
@@ -478,23 +514,23 @@ impl FunctionLowerer {
                 source,
             ));
         }
-        let effects = args.iter().fold(
-            hir::Effects {
-                may_call: true,
-                may_allocate: true,
-                may_block: true,
-                may_panic: true,
-                may_write: true,
-                may_read: false,
-            },
-            |effects, argument| effects.union(argument.effects),
-        );
+        let effects = prefix
+            .iter()
+            .fold(
+                hir::Effects {
+                    may_call: true,
+                    may_allocate: true,
+                    may_block: true,
+                    may_panic: true,
+                    may_write: true,
+                    may_read: false,
+                },
+                |effects, argument| effects.union(argument.effects),
+            )
+            .union(args.effects());
         let mut result = hir::Expr {
             node,
-            kind: hir::ExprKind::Call {
-                callee: hir::Callee::Closure(closure),
-                args,
-            },
+            kind: args.into_call_kind(hir::Callee::Closure(closure), prefix),
             ty,
             category: hir::ValueCategory::Value,
             effects,

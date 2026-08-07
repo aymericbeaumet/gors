@@ -3,7 +3,6 @@
 use crate::token::Token;
 
 use super::FunctionLowerer;
-use super::conversions::is_predeclared_conversion_name;
 use super::expressions::*;
 use super::shifts::lower_shift_expression;
 use crate::compiler::Diagnostic;
@@ -482,197 +481,17 @@ impl FunctionLowerer {
                         .lower_conversion_call(callee, arguments, *spread, node, source, expected);
                 };
                 let name = callee_ident.name.as_ref();
-                if name == "make" {
-                    return self
-                        .lower_make_builtin_call(arguments, *spread, node, source, expected);
-                }
-                if name == "new" {
-                    return self.lower_new_builtin_call(arguments, *spread, node, source, expected);
-                }
-                if name == "recover" {
-                    return self
-                        .lower_recover_builtin_call(arguments, *spread, node, source, expected);
-                }
-                if name == "len" {
-                    return self.lower_len_builtin_call(arguments, *spread, node, source, expected);
-                }
-                if name == "cap" {
-                    return self.lower_channel_cap_builtin_call(
-                        arguments, *spread, node, source, expected,
-                    );
-                }
-                if name == "close" {
-                    return self.lower_channel_close_builtin_call(
-                        arguments, *spread, node, source, expected,
-                    );
-                }
-                if name == "clear" {
-                    return self
-                        .lower_clear_builtin_call(arguments, *spread, node, source, expected);
-                }
-                if name == "delete" {
-                    return self
-                        .lower_delete_builtin_call(arguments, *spread, node, source, expected);
-                }
-                if matches!(name, "append" | "copy") {
-                    return self.lower_slice_builtin_call(
-                        name, arguments, *spread, node, source, expected,
-                    );
-                }
-                if matches!(name, "min" | "max" | "complex" | "real" | "imag") {
-                    return self.lower_numeric_builtin_call(
-                        name, arguments, *spread, node, source, expected,
-                    );
-                }
-                if self.type_aliases.contains_key(name) || is_predeclared_conversion_name(name) {
-                    return self
-                        .lower_conversion_call(callee, arguments, *spread, node, source, expected);
-                }
-                if self.generic_functions.contains_key(name) {
-                    return self.lower_generic_function_call(
-                        name,
-                        arguments,
-                        *spread,
-                        node,
-                        expr.source,
-                        source,
-                        expected,
-                        allow_discarded_call_result,
-                    );
-                }
-                let (callee, params, results, variadic) =
-                    if let Some(id) = self.lookup_closure(name) {
-                        let closure = self.closures.get(id.index() as usize).ok_or_else(|| {
-                            Diagnostic::backend(format!("unknown local function {name}"))
-                        })?;
-                        (
-                            hir::Callee::Closure(id),
-                            closure.signature.params.clone(),
-                            closure.signature.results.clone(),
-                            closure.signature.variadic,
-                        )
-                    } else if self.lookup_local(name).is_some() {
-                        return Err(Diagnostic::unsupported(
-                            format!("calling the function value {name} is not yet supported"),
-                            source,
-                        ));
-                    } else if let Some(symbol) = self.functions.get(name).cloned() {
-                        (
-                            hir::Callee::Function(symbol.id),
-                            symbol.signature.params,
-                            symbol.signature.results,
-                            symbol.signature.variadic,
-                        )
-                    } else if self.lookup_local_constant(name).is_some()
-                        || self.constants.contains_key(name)
-                    {
-                        return Err(Diagnostic::semantic(
-                            format!("constant {name} is not callable"),
-                            source,
-                        ));
-                    } else {
-                        match name {
-                            "print" => (
-                                hir::Callee::Builtin(hir::Builtin::Print),
-                                vec![],
-                                vec![],
-                                false,
-                            ),
-                            "println" => (
-                                hir::Callee::Builtin(hir::Builtin::Println),
-                                vec![],
-                                vec![],
-                                false,
-                            ),
-                            "panic" => (
-                                hir::Callee::Builtin(hir::Builtin::Panic),
-                                vec![],
-                                vec![],
-                                false,
-                            ),
-                            name => {
-                                return Err(Diagnostic::semantic(
-                                    format!("undefined function {name}"),
-                                    source,
-                                ));
-                            }
-                        }
-                    };
-                match callee {
-                    hir::Callee::Builtin(hir::Builtin::Panic) if arguments.len() != 1 => {
-                        return Err(Diagnostic::semantic(
-                            format!(
-                                "call to panic has {} arguments; expected 1",
-                                arguments.len()
-                            ),
-                            source,
-                        ));
-                    }
-                    hir::Callee::Builtin(_) if *spread => {
-                        return Err(Diagnostic::semantic(
-                            "... is not valid for this built-in call",
-                            source,
-                        ));
-                    }
-                    _ => {}
-                }
-                let args = if callee == hir::Callee::Builtin(hir::Builtin::Panic) {
-                    let any = Ty::Interface(Vec::new());
-                    arguments
-                        .iter()
-                        .map(|argument| self.lower_expr(argument, Some(&any)))
-                        .collect::<Result<Vec<_>, _>>()?
-                } else if matches!(callee, hir::Callee::Function(_) | hir::Callee::Closure(_)) {
-                    self.lower_call_arguments(
-                        arguments,
-                        &params,
-                        variadic,
-                        *spread,
-                        expr.source,
-                        source,
-                        "function",
-                    )?
-                } else {
-                    arguments
-                        .iter()
-                        .map(|argument| {
-                            self.lower_expr(argument, None).and_then(|expression| {
-                                let expression_source = expression.source;
-                                default_expr_type(expression, expression_source)
-                            })
-                        })
-                        .collect::<Result<Vec<_>, _>>()?
-                };
-                let ty = match results.as_slice() {
-                    [] => Ty::Unit,
-                    [single] => single.clone(),
-                    many => Ty::Tuple(many.to_vec()),
-                };
-                if ty == Ty::Unit && !allow_discarded_call_result {
-                    return Err(Diagnostic::unsupported(
-                        "a no-result call cannot be used as a value",
-                        source,
-                    ));
-                }
-                let effects = args.iter().fold(
-                    hir::Effects {
-                        may_read: false,
-                        may_call: true,
-                        may_allocate: true,
-                        may_block: true,
-                        may_panic: true,
-                        may_write: true,
-                    },
-                    |effects, argument| effects.union(argument.effects),
-                );
-                hir::Expr {
+                return self.lower_named_call_expression(
+                    name,
+                    callee,
+                    arguments,
+                    *spread,
                     node,
-                    kind: hir::ExprKind::Call { callee, args },
-                    ty,
-                    category: hir::ValueCategory::Value,
-                    effects,
+                    expr.source,
                     source,
-                }
+                    expected,
+                    allow_discarded_call_result,
+                );
             }
             ExprSyntaxKind::FunctionLiteral { .. } => {
                 return Err(Diagnostic::unsupported(

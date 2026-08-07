@@ -338,6 +338,19 @@ pub enum ExprKind {
         callee: Callee,
         args: Vec<Expr>,
     },
+    /// Bind every result of one sole function call to the outer call's
+    /// parameters. `prefix` contains only implicit operands such as a method
+    /// receiver; the source call remains one tuple-valued expression so MIR
+    /// can evaluate it exactly once before applying the recorded assignment
+    /// coercions.
+    ForwardedCall {
+        callee: Callee,
+        prefix: Vec<Expr>,
+        source_call: Box<Expr>,
+        coercions: Vec<ValueCoercion>,
+        fixed_results: u32,
+        variadic_slice: Option<Ty>,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

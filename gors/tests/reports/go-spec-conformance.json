@@ -12,10 +12,10 @@
   "summary": {
     "groupCount": 15,
     "passingGroupCount": 15,
-    "caseCount": 328,
-    "passingCaseCount": 328,
+    "caseCount": 329,
+    "passingCaseCount": 329,
     "unsupportedCaseCount": 0,
-    "fixtureCount": 174
+    "fixtureCount": 175
   },
   "groups": [
     {
@@ -2535,6 +2535,7 @@
         "_negative/slice_constant_bounds_swapped",
         "arithmetic_overflow_and_division",
         "built_in_functions",
+        "calls_multi_value_forwarding",
         "composite_literal_if_ambiguity",
         "composite_literal_sparse_indices",
         "composite_literals",
@@ -2560,10 +2561,10 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 46,
-        "passingCaseCount": 46,
+        "caseCount": 47,
+        "passingCaseCount": 47,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 30
+        "fixtureCount": 31
       },
       "cases": [
         {
@@ -3115,6 +3116,20 @@
           ],
           "freshFixtures": [
             "expressions"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-calls-multi-value-forwarding",
+          "title": "f(g()) forwards g's multiple return values to f's parameters, including a variadic tail with len and cap equal to the bound values",
+          "subtitle": "Calls",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "calls_multi_value_forwarding"
+          ],
+          "freshFixtures": [
+            "calls_multi_value_forwarding"
           ],
           "reason": ""
         },

@@ -119,6 +119,65 @@ fn semantic_field_mutations_change_each_stage_fingerprint() {
 }
 
 #[test]
+fn forwarded_call_binding_fields_participate_in_hir_fingerprints() {
+    let (original, _, _) = lower_stages(
+        "package main\nfunc pair() (int, int) { return 1, 2 }\nfunc add(left, right int) int { return left + right }\nfunc value() int { return add(pair()) }\n",
+    );
+    let original_fingerprint = hir_function(hir_named(&original, "value"));
+
+    let mutate = |mut file: hir::File, mutation: fn(&mut hir::ExprKind)| {
+        let function = file
+            .functions
+            .iter_mut()
+            .find(|function| function.name == "value")
+            .expect("value HIR function");
+        let hir::StmtKind::Return(values) = &mut function
+            .body
+            .stmts
+            .first_mut()
+            .expect("value return statement")
+            .kind
+        else {
+            panic!("expected value return");
+        };
+        mutation(&mut values.first_mut().expect("value return expression").kind);
+        hir_function(
+            file.functions
+                .iter()
+                .find(|function| function.name == "value")
+                .expect("mutated value HIR function"),
+        )
+    };
+
+    let changed_fixed = mutate(original.clone(), |kind| {
+        let hir::ExprKind::ForwardedCall { fixed_results, .. } = kind else {
+            panic!("expected forwarded call");
+        };
+        *fixed_results = 1;
+    });
+    assert_ne!(original_fingerprint, changed_fixed);
+
+    let changed_coercion = mutate(original.clone(), |kind| {
+        let hir::ExprKind::ForwardedCall { coercions, .. } = kind else {
+            panic!("expected forwarded call");
+        };
+        *coercions.first_mut().expect("forwarded coercion") =
+            hir::ValueCoercion::Representation { target: Ty::Bool };
+    });
+    assert_ne!(original_fingerprint, changed_coercion);
+
+    let changed_variadic = mutate(original, |kind| {
+        let hir::ExprKind::ForwardedCall { variadic_slice, .. } = kind else {
+            panic!("expected forwarded call");
+        };
+        *variadic_slice = Some(Ty::Slice(Box::new(Ty::Int(
+            crate::compiler::types::IntTy::Int,
+        ))));
+    });
+    assert_ne!(original_fingerprint, changed_variadic);
+}
+
+#[test]
 fn rust_ir_fingerprints_distinguish_clone_and_move_read_plans() {
     let (_, _, rust_ir) =
         lower_stages("package main\nfunc twice(value string) { print(value); print(value) }\n");

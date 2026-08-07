@@ -754,6 +754,32 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
                 });
             });
         }),
+        hir::ExprKind::ForwardedCall {
+            callee,
+            prefix,
+            source_call,
+            coercions,
+            fixed_results,
+            variadic_slice,
+        } => encoder.variant(b"forwarded-call", |encoder| {
+            encoder.field(b"callee", |encoder| encode_callee(encoder, *callee));
+            encoder.field(b"prefix", |encoder| {
+                encoder.sequence(prefix, encode_expression);
+            });
+            encoder.field(b"source-call", |encoder| {
+                encode_expression(encoder, source_call);
+            });
+            encoder.field(b"coercions", |encoder| {
+                encoder.sequence(coercions, encode_value_coercion);
+            });
+            encoder.field(b"fixed-results", |encoder| encoder.u32(*fixed_results));
+            encoder.field(b"variadic-slice", |encoder| match variadic_slice {
+                Some(variadic_slice) => {
+                    encoder.variant(b"some", |encoder| ty(encoder, variadic_slice));
+                }
+                None => encoder.variant(b"none", |_| {}),
+            });
+        }),
     }
 }
 

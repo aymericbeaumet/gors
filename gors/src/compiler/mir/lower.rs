@@ -2,6 +2,7 @@
 
 mod arrays;
 mod assignments;
+mod calls;
 mod closures;
 mod expressions;
 mod flow;
@@ -838,6 +839,23 @@ impl FunctionLowerer {
             hir::ExprKind::Call { callee, args } => {
                 self.lower_call_expr(*callee, args, &expr.ty, expr.source)
             }
+            hir::ExprKind::ForwardedCall {
+                callee,
+                prefix,
+                source_call,
+                coercions,
+                fixed_results,
+                variadic_slice,
+            } => self.lower_forwarded_call_expr(
+                *callee,
+                prefix,
+                source_call,
+                coercions,
+                *fixed_results,
+                variadic_slice.as_ref(),
+                &expr.ty,
+                expr.source,
+            ),
         }
     }
 }

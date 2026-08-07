@@ -2,6 +2,7 @@ use super::*;
 
 mod arrays;
 mod assignments;
+mod calls;
 mod channels;
 mod constants;
 mod control_flow;

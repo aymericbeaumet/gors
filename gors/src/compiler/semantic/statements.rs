@@ -33,7 +33,9 @@ impl FunctionLowerer {
                 let expression = self.lower_expr_inner(expression, None, true)?;
                 if !matches!(
                     expression.kind,
-                    hir::ExprKind::Call { .. } | hir::ExprKind::InterfaceCall { .. }
+                    hir::ExprKind::Call { .. }
+                        | hir::ExprKind::ForwardedCall { .. }
+                        | hir::ExprKind::InterfaceCall { .. }
                 ) {
                     return Err(Diagnostic::semantic(
                         "expression statement must be a call",
@@ -898,7 +900,10 @@ impl FunctionLowerer {
                 declaration_source,
             ));
         }
-        if !matches!(value.kind, hir::ExprKind::Call { .. }) {
+        if !matches!(
+            value.kind,
+            hir::ExprKind::Call { .. } | hir::ExprKind::ForwardedCall { .. }
+        ) {
             return Err(Diagnostic::backend(
                 "tuple-valued non-call reached multi-valued variable declaration",
             ));

@@ -86,6 +86,52 @@ fn verifier_rejects_mutated_ids_types_and_call_abis() {
 }
 
 #[test]
+fn verifier_rejects_a_corrupt_forwarded_variadic_argument() {
+    let source = r#"
+        package main
+        func pair() (int, int) { return 1, 2 }
+        func consume(head int, rest ...int) int { return head + len(rest) }
+        func main() { println(consume(pair())) }
+    "#;
+    let mut file = lower(source);
+    file.verify().expect("forwarded variadic call must verify");
+
+    let consume = file
+        .functions
+        .iter()
+        .find(|function| function.name == "consume")
+        .expect("consume function")
+        .id;
+    let consume = crate::compiler::ids::QualifiedDefId::new(file.package_id, consume);
+    let arguments = file
+        .functions
+        .iter_mut()
+        .find(|function| function.name == "main")
+        .into_iter()
+        .flat_map(|function| &mut function.blocks)
+        .find_map(|block| match &mut block.terminator.kind {
+            TerminatorKind::Call {
+                callee: hir::Callee::Function(actual),
+                args,
+                ..
+            } if *actual == consume => Some(args),
+            _ => None,
+        })
+        .expect("forwarded consume call");
+    assert_eq!(arguments.len(), 2);
+    *arguments
+        .get_mut(1)
+        .expect("forwarded variadic slice argument") =
+        Operand::Constant(ConstValue::Int("0".into()), Ty::Int(IntTy::Int));
+
+    let error = file.verify().unwrap_err();
+    assert!(
+        error.message.contains("call argument type mismatch"),
+        "{error:?}"
+    );
+}
+
+#[test]
 fn verifier_rejects_uninitialized_reads() {
     let source = r#"
         package main

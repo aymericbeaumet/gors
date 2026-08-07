@@ -98,7 +98,7 @@ pub(super) fn lower_type_with_generics(
 fn infer_function_arguments(
     header: &FunctionHeaderSyntax,
     type_arguments: &[ExprSyntax],
-    arguments: &[hir::Expr],
+    arguments: &[Ty],
     spread: bool,
     aliases: &BTreeMap<String, Ty>,
     generic_types: &BTreeMap<String, GenericTypeSymbol>,
@@ -163,7 +163,7 @@ fn infer_function_arguments(
 #[allow(clippy::too_many_arguments)]
 fn infer_parameter_list(
     fields: &FieldListSyntax,
-    arguments: &[hir::Expr],
+    arguments: &[Ty],
     spread: bool,
     parameter_names: &BTreeSet<String>,
     substitutions: &mut BTreeMap<String, Ty>,
@@ -188,12 +188,12 @@ fn infer_parameter_list(
     // argument determined receive the merged default type of their untyped
     // constant arguments.
     for (formal, actual) in formal.iter().zip(arguments) {
-        if matches!(actual.ty, Ty::Untyped(_)) {
+        if matches!(actual, Ty::Untyped(_)) {
             continue;
         }
         infer_type_expression(
             formal,
-            &actual.ty.default_typed(),
+            &actual.default_typed(),
             parameter_names,
             substitutions,
             aliases,
@@ -203,13 +203,13 @@ fn infer_parameter_list(
     }
     let mut constant_defaults = BTreeMap::<String, UntypedTy>::new();
     for (formal, actual) in formal.iter().zip(arguments) {
-        let Ty::Untyped(kind) = actual.ty else {
+        let Ty::Untyped(kind) = actual else {
             continue;
         };
         let Some(parameter) = bare_type_parameter(formal, parameter_names) else {
             infer_type_expression(
                 formal,
-                &actual.ty.default_typed(),
+                &actual.default_typed(),
                 parameter_names,
                 substitutions,
                 aliases,
@@ -222,13 +222,13 @@ fn infer_parameter_list(
             continue;
         }
         let merged = match constant_defaults.get(parameter) {
-            None => kind,
-            Some(previous) => merge_untyped_constant_kinds(*previous, kind).ok_or_else(|| {
+            None => *kind,
+            Some(previous) => merge_untyped_constant_kinds(*previous, *kind).ok_or_else(|| {
                 Diagnostic::semantic(
                     format!(
                         "mismatched default types {:?} and {:?} for {parameter}",
                         Ty::Untyped(*previous).default_typed(),
-                        Ty::Untyped(kind).default_typed()
+                        Ty::Untyped(*kind).default_typed()
                     ),
                     source,
                 )
@@ -926,28 +926,6 @@ fn parameter_patterns_for_call(
         ));
     }
     Ok(result)
-}
-
-fn coerce_arguments(
-    arguments: &mut [hir::Expr],
-    parameters: &[Ty],
-    source: SourceRef,
-    callable: &str,
-) -> Result<(), Diagnostic> {
-    if arguments.len() != parameters.len() {
-        return Err(Diagnostic::semantic(
-            format!(
-                "{callable} call has {} arguments; expected {}",
-                arguments.len(),
-                parameters.len()
-            ),
-            source,
-        ));
-    }
-    for (argument, parameter) in arguments.iter_mut().zip(parameters) {
-        coerce_expr(argument, parameter, source)?;
-    }
-    Ok(())
 }
 
 fn single_receiver_type(

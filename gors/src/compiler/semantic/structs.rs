@@ -87,9 +87,6 @@ impl FunctionLowerer {
             source,
             "method",
         )?;
-        let mut args = Vec::with_capacity(lowered_arguments.len().saturating_add(1));
-        args.push(receiver);
-        args.extend(lowered_arguments);
         let ty = match symbol.signature.results.as_slice() {
             [] => Ty::Unit,
             [single] => single.clone(),
@@ -101,23 +98,20 @@ impl FunctionLowerer {
                 source,
             ));
         }
-        let effects = args.iter().fold(
-            hir::Effects {
-                may_call: true,
-                may_allocate: true,
-                may_block: true,
-                may_panic: true,
-                may_write: true,
-                ..hir::Effects::default()
-            },
-            |effects, argument| effects.union(argument.effects),
-        );
+        let effects = hir::Effects {
+            may_call: true,
+            may_allocate: true,
+            may_block: true,
+            may_panic: true,
+            may_write: true,
+            ..hir::Effects::default()
+        }
+        .union(receiver.effects)
+        .union(lowered_arguments.effects());
         let mut lowered = hir::Expr {
             node,
-            kind: hir::ExprKind::Call {
-                callee: hir::Callee::Function(symbol.id),
-                args,
-            },
+            kind: lowered_arguments
+                .into_call_kind(hir::Callee::Function(symbol.id), vec![receiver]),
             ty,
             category: hir::ValueCategory::Value,
             effects,

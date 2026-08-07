@@ -1905,6 +1905,15 @@
           ]
         },
         {
+          "id": "spec-calls-multi-value-forwarding",
+          "section": "Calls",
+          "title": "f(g()) forwards g's multiple return values to f's parameters, including a variadic tail with len and cap equal to the bound values",
+          "status": "passing",
+          "fixtures": [
+            "calls_multi_value_forwarding"
+          ]
+        },
+        {
           "id": "expr-conversions",
           "section": "Conversions",
           "title": "Conversions handle numeric, string, byte-slice, and rune-slice cases",

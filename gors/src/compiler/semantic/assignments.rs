@@ -67,7 +67,10 @@ impl FunctionLowerer {
                         source,
                     ));
                 }
-                if !matches!(value.kind, hir::ExprKind::Call { .. }) {
+                if !matches!(
+                    value.kind,
+                    hir::ExprKind::Call { .. } | hir::ExprKind::ForwardedCall { .. }
+                ) {
                     return Err(Diagnostic::backend(
                         "tuple-valued non-call reached multi-result assignment",
                     ));

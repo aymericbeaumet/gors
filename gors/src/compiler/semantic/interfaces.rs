@@ -354,15 +354,17 @@ impl FunctionLowerer {
         allow_discarded_call_result: bool,
     ) -> Result<hir::Expr, Diagnostic> {
         let signature = interface_method_signature(&receiver.ty, member, source)?;
-        let args = self.lower_call_arguments(
-            arguments,
-            &signature.params,
-            signature.variadic,
-            spread,
-            member_source,
-            source,
-            "method",
-        )?;
+        let args = self
+            .lower_call_arguments(
+                arguments,
+                &signature.params,
+                signature.variadic,
+                spread,
+                member_source,
+                source,
+                "method",
+            )?
+            .into_explicit(source)?;
         self.build_interface_call(
             receiver,
             member,

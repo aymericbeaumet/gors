@@ -16,10 +16,32 @@ impl FunctionLowerer {
         expression: &hir::Expr,
         destinations: Vec<Place>,
     ) -> Result<(), Diagnostic> {
-        let hir::ExprKind::Call { callee, args } = &expression.kind else {
-            return Err(Diagnostic::backend(
-                "tuple-valued non-call reached MIR call lowering",
-            ));
+        let (callee, args) = match &expression.kind {
+            hir::ExprKind::Call { callee, args } => (callee, args),
+            hir::ExprKind::ForwardedCall {
+                callee,
+                prefix,
+                source_call,
+                coercions,
+                fixed_results,
+                variadic_slice,
+            } => {
+                return self.lower_forwarded_call_into(
+                    *callee,
+                    prefix,
+                    source_call,
+                    coercions,
+                    *fixed_results,
+                    variadic_slice.as_ref(),
+                    destinations,
+                    expression.source,
+                );
+            }
+            _ => {
+                return Err(Diagnostic::backend(
+                    "tuple-valued non-call reached MIR call lowering",
+                ));
+            }
         };
         if let hir::Callee::Closure(id) = callee {
             return self.lower_closure_call(*id, args, destinations, expression.source);
@@ -83,6 +105,25 @@ impl FunctionLowerer {
         destinations: Vec<Place>,
         source: SourceRef,
     ) -> Result<(), Diagnostic> {
+        let mut operands = Vec::with_capacity(arguments.len());
+        for argument in arguments {
+            let operand = self.lower_expr(argument)?;
+            operands.push(self.materialize(
+                operand,
+                argument.ty.clone(),
+                Provenance::Source(argument.source),
+            )?);
+        }
+        self.lower_closure_call_operands(id, operands, destinations, source)
+    }
+
+    pub(super) fn lower_closure_call_operands(
+        &mut self,
+        id: ClosureId,
+        operands: Vec<Operand>,
+        destinations: Vec<Place>,
+        source: SourceRef,
+    ) -> Result<(), Diagnostic> {
         let closure = self
             .closures
             .get(id.index() as usize)
@@ -95,7 +136,7 @@ impl FunctionLowerer {
                 source,
             ));
         }
-        if arguments.len() != closure.params.len() {
+        if operands.len() != closure.params.len() {
             return Err(Diagnostic::backend(
                 "local function argument arity changed before MIR lowering",
             ));
@@ -104,16 +145,6 @@ impl FunctionLowerer {
             return Err(Diagnostic::backend(
                 "local function result arity changed before MIR lowering",
             ));
-        }
-
-        let mut operands = Vec::with_capacity(arguments.len());
-        for argument in arguments {
-            let operand = self.lower_expr(argument)?;
-            operands.push(self.materialize(
-                operand,
-                argument.ty.clone(),
-                Provenance::Source(argument.source),
-            )?);
         }
         for (parameter, operand) in closure.params.iter().zip(operands) {
             let parameter_ty = self.local_ty(*parameter)?.clone();

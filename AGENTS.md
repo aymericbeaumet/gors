@@ -510,6 +510,12 @@ Function-local variable declarations may consume one multi-valued call,
 comma-ok map lookup, comma-ok interface assertion, or comma-ok channel receive.
 The RHS is lowered once before any name in that `ValueSpec` enters scope, and
 typed component coercions remain explicit in HIR `LetTuple` lowering.
+One sole multi-valued function call used as another call's argument remains an
+explicit HIR binding. MIR evaluates and freezes any method receiver first,
+executes the source call exactly once, applies each recorded assignment
+coercion in result order, and packs only the variadic remainder. A nonempty
+`...int` remainder receives a fresh slice whose length and capacity equal its
+bound result count; an empty remainder is nil.
 Multi-valued package-variable initialization remains rejected until the
 package initializer model represents tuple-producing execution.
 Address-taking of a non-nested integer local is explicit HIR intent. MIR plans

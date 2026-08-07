@@ -889,6 +889,14 @@ fn collect_expr_addresses(expression: &hir::Expr, addressed: &mut BTreeSet<Local
             }
         }
         hir::ExprKind::Call { args, .. } => collect_expression_addresses(args, addressed),
+        hir::ExprKind::ForwardedCall {
+            prefix,
+            source_call,
+            ..
+        } => {
+            collect_expression_addresses(prefix, addressed);
+            collect_expr_addresses(source_call, addressed);
+        }
         hir::ExprKind::Constant(_)
         | hir::ExprKind::Local(_)
         | hir::ExprKind::GlobalConstant(..)

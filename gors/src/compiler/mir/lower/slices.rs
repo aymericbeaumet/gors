@@ -17,6 +17,49 @@ pub(super) fn element_type(ty: &Ty) -> Result<Ty, Diagnostic> {
 }
 
 impl FunctionLowerer {
+    pub(super) fn lower_i64_variadic_operands(
+        &mut self,
+        values: Vec<Operand>,
+        ty: &Ty,
+        source: SourceRef,
+    ) -> Result<Operand, Diagnostic> {
+        let Ty::Slice(element) = ty.underlying() else {
+            return Err(Diagnostic::backend(
+                "forwarded variadic arguments have a non-slice parameter",
+            ));
+        };
+        if element.underlying() != &Ty::Int(crate::compiler::types::IntTy::Int) {
+            return Err(Diagnostic::backend(
+                "unsupported forwarded variadic element type reached MIR",
+            ));
+        }
+
+        let slice = Place {
+            local: self.new_temp(ty.clone()),
+        };
+        if values.is_empty() {
+            self.lower_zero_value(slice, ty.clone(), Provenance::Source(source))?;
+            return Ok(Operand::Read(slice));
+        }
+
+        let length = int_constant_operand(values.len());
+        self.emit_map_call(
+            hir::Builtin::SliceI64Make,
+            vec![length.clone(), length],
+            vec![slice],
+            source,
+        )?;
+        for (index, value) in values.into_iter().enumerate() {
+            self.emit_map_call(
+                hir::Builtin::SliceI64Set,
+                vec![Operand::Read(slice), int_constant_operand(index), value],
+                Vec::new(),
+                source,
+            )?;
+        }
+        Ok(Operand::Read(slice))
+    }
+
     pub(super) fn lower_dynamic_i64_slice_literal(
         &mut self,
         elements: &[hir::Expr],
