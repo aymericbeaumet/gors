@@ -51,13 +51,14 @@ use gors_runtime::{
     go_string_from_slice_runes, go_string_from_slice_u8, go_string_from_static, go_string_index,
     go_string_len, go_string_range, go_string_range_count, go_string_range_index_at,
     go_string_range_rune_at, go_string_to_slice_runes, panic_bool, panic_go_interface,
-    panic_go_string, panic_i64, print_bool, print_f64, print_go_string, print_i64, print_newline,
-    print_space, print_u64,
+    panic_go_string, panic_i64,
 };
 use gors_runtime_abi::{RuntimeOp, RuntimeType};
 
 #[path = "abi_contract/integer.rs"]
 mod integer;
+#[path = "abi_contract/printing.rs"]
+mod printing;
 
 struct RuntimeSurface {
     symbol: &'static str,
@@ -100,36 +101,18 @@ fn implementation_surface(operation: RuntimeOp) -> RuntimeSurface {
             [RuntimeType::GoString, RuntimeType::GoString] -> RuntimeType::GoString
         ),
         RuntimeOp::Integer { op, kind } => integer::implementation_surface(op, kind),
-        RuntimeOp::PrintBool => runtime_surface!(
-            print_bool,
-            fn(bool),
-            [RuntimeType::Bool] -> RuntimeType::Unit
-        ),
-        RuntimeOp::PrintI64 => runtime_surface!(
-            print_i64,
-            fn(GoInt),
-            [RuntimeType::I64] -> RuntimeType::Unit
-        ),
-        RuntimeOp::PrintU64 => runtime_surface!(
-            print_u64,
-            fn(GoInt),
-            [RuntimeType::I64] -> RuntimeType::Unit
-        ),
-        RuntimeOp::PrintSpace => runtime_surface!(
-            print_space,
-            fn(),
-            [] -> RuntimeType::Unit
-        ),
-        RuntimeOp::PrintNewline => runtime_surface!(
-            print_newline,
-            fn(),
-            [] -> RuntimeType::Unit
-        ),
-        RuntimeOp::PrintGoString => runtime_surface!(
-            print_go_string,
-            fn(GoString),
-            [RuntimeType::GoString] -> RuntimeType::Unit
-        ),
+        RuntimeOp::PrintBool => printing::implementation_surface(printing::PrintOperation::Bool),
+        RuntimeOp::PrintI64 => printing::implementation_surface(printing::PrintOperation::I64),
+        RuntimeOp::PrintU64 => printing::implementation_surface(printing::PrintOperation::U64),
+        RuntimeOp::PrintF32 => printing::implementation_surface(printing::PrintOperation::F32),
+        RuntimeOp::PrintF64 => printing::implementation_surface(printing::PrintOperation::F64),
+        RuntimeOp::PrintSpace => printing::implementation_surface(printing::PrintOperation::Space),
+        RuntimeOp::PrintNewline => {
+            printing::implementation_surface(printing::PrintOperation::Newline)
+        }
+        RuntimeOp::PrintGoString => {
+            printing::implementation_surface(printing::PrintOperation::GoString)
+        }
         RuntimeOp::PanicBool => runtime_surface!(
             panic_bool,
             fn(bool),
@@ -814,11 +797,6 @@ fn implementation_surface(operation: RuntimeOp) -> RuntimeSurface {
             go_slice_u8_copy,
             fn(GoSliceU8, GoSliceU8) -> GoInt,
             [RuntimeType::GoSliceU8, RuntimeType::GoSliceU8] -> RuntimeType::I64
-        ),
-        RuntimeOp::PrintF64 => runtime_surface!(
-            print_f64,
-            fn(f64),
-            [RuntimeType::F64] -> RuntimeType::Unit
         ),
         RuntimeOp::GoInterfaceBoxF64 => runtime_surface!(
             go_interface_box_f64,

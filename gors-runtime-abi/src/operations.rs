@@ -1,9 +1,11 @@
 //! Stable native and runtime operation catalogs.
 
 mod decode;
+mod float;
 mod identity;
 mod integer;
 mod metadata;
+mod primitive;
 mod runtime_catalog;
 mod runtime_encoding;
 mod runtime_op;
@@ -21,314 +23,12 @@ use value_model::{
     TYPE_ASSERTION_OR_INDEX_OUT_OF_RANGE, UNCOMPARABLE_INTERFACE_COMPARISON,
 };
 
+pub use float::{FloatKind, FloatPrimitive};
 pub use identity::{RuntimeOpId, UnknownRuntimeOpId};
 pub use integer::{IntegerKind, IntegerKindConstraint, IntegerPrimitive, IntegerRuntimeOp};
+pub use primitive::{PrimitiveOp, PrimitiveOpId};
 pub use runtime_op::RuntimeOp;
 pub use value_model::{RuntimeSignature, RuntimeType};
-
-use crate::encoding::CanonicalEncoder;
-
-/// Go operations emitted directly without a runtime ABI symbol.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum PrimitiveOp {
-    BoolNot,
-    BoolEqual,
-    BoolNotEqual,
-    StringEqual,
-    StringNotEqual,
-    StringLess,
-    StringLessEqual,
-    StringGreater,
-    StringGreaterEqual,
-    FloatAdd,
-    FloatSub,
-    FloatMul,
-    FloatDiv,
-    FloatNeg,
-    FloatEqual,
-    FloatNotEqual,
-    FloatLess,
-    FloatLessEqual,
-    FloatGreater,
-    FloatGreaterEqual,
-    ComplexAdd,
-    ComplexSub,
-    ComplexMul,
-    ComplexDiv,
-    ComplexNeg,
-    ComplexEqual,
-    ComplexNotEqual,
-    FloatMin,
-    FloatMax,
-    ComplexFromParts,
-    ComplexReal,
-    ComplexImag,
-    FloatRound32,
-    Integer {
-        op: IntegerPrimitive,
-        kind: IntegerKind,
-    },
-    IntegerConvert {
-        from: IntegerKind,
-        to: IntegerKind,
-    },
-}
-
-/// Stable compact identity of one directly emitted operation.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct PrimitiveOpId(u16);
-
-impl PrimitiveOpId {
-    /// Canonical numeric value used by fingerprints and manifest encodings.
-    #[must_use]
-    pub const fn get(self) -> u16 {
-        self.0
-    }
-}
-
-impl PrimitiveOp {
-    /// Complete native-operation catalog for the current contract.
-    pub const ALL: &'static [Self] = &Self::CATALOG;
-
-    const NON_INTEGER: &'static [Self] = &[
-        Self::BoolNot,
-        Self::BoolEqual,
-        Self::BoolNotEqual,
-        Self::StringEqual,
-        Self::StringNotEqual,
-        Self::StringLess,
-        Self::StringLessEqual,
-        Self::StringGreater,
-        Self::StringGreaterEqual,
-        Self::FloatAdd,
-        Self::FloatSub,
-        Self::FloatMul,
-        Self::FloatDiv,
-        Self::FloatNeg,
-        Self::FloatEqual,
-        Self::FloatNotEqual,
-        Self::FloatLess,
-        Self::FloatLessEqual,
-        Self::FloatGreater,
-        Self::FloatGreaterEqual,
-        Self::ComplexAdd,
-        Self::ComplexSub,
-        Self::ComplexMul,
-        Self::ComplexDiv,
-        Self::ComplexNeg,
-        Self::ComplexEqual,
-        Self::ComplexNotEqual,
-        Self::FloatMin,
-        Self::FloatMax,
-        Self::ComplexFromParts,
-        Self::ComplexReal,
-        Self::ComplexImag,
-        Self::FloatRound32,
-    ];
-
-    const CATALOG: [Self; 233] = primitive_catalog();
-
-    /// Exact typed signature for this directly emitted operation.
-    #[must_use]
-    pub const fn signature(self) -> RuntimeSignature {
-        match self {
-            Self::BoolNot => RuntimeSignature::new(BOOL_PARAMETER, RuntimeType::Bool),
-            Self::BoolEqual | Self::BoolNotEqual => {
-                RuntimeSignature::new(TWO_BOOL_PARAMETERS, RuntimeType::Bool)
-            }
-            Self::Integer { op, .. } if op.arity() == 1 => {
-                RuntimeSignature::new(I64_PARAMETER, RuntimeType::I64)
-            }
-            Self::Integer { op, .. } if op.returns_bool() => {
-                RuntimeSignature::new(TWO_I64_PARAMETERS, RuntimeType::Bool)
-            }
-            Self::Integer { .. } => RuntimeSignature::new(TWO_I64_PARAMETERS, RuntimeType::I64),
-            Self::IntegerConvert { .. } => RuntimeSignature::new(I64_PARAMETER, RuntimeType::I64),
-            Self::FloatAdd | Self::FloatSub | Self::FloatMul | Self::FloatDiv => {
-                RuntimeSignature::new(TWO_F64_PARAMETERS, RuntimeType::F64)
-            }
-            Self::FloatNeg | Self::FloatRound32 => {
-                RuntimeSignature::new(F64_PARAMETER, RuntimeType::F64)
-            }
-            Self::FloatEqual
-            | Self::FloatNotEqual
-            | Self::FloatLess
-            | Self::FloatLessEqual
-            | Self::FloatGreater
-            | Self::FloatGreaterEqual => {
-                RuntimeSignature::new(TWO_F64_PARAMETERS, RuntimeType::Bool)
-            }
-            Self::ComplexAdd | Self::ComplexSub | Self::ComplexMul | Self::ComplexDiv => {
-                RuntimeSignature::new(TWO_COMPLEX128_PARAMETERS, RuntimeType::Complex128)
-            }
-            Self::ComplexNeg => {
-                RuntimeSignature::new(COMPLEX128_PARAMETER, RuntimeType::Complex128)
-            }
-            Self::ComplexEqual | Self::ComplexNotEqual => {
-                RuntimeSignature::new(TWO_COMPLEX128_PARAMETERS, RuntimeType::Bool)
-            }
-            Self::FloatMin | Self::FloatMax => {
-                RuntimeSignature::new(TWO_F64_PARAMETERS, RuntimeType::F64)
-            }
-            Self::ComplexFromParts => {
-                RuntimeSignature::new(TWO_F64_PARAMETERS, RuntimeType::Complex128)
-            }
-            Self::ComplexReal | Self::ComplexImag => {
-                RuntimeSignature::new(COMPLEX128_PARAMETER, RuntimeType::F64)
-            }
-            Self::StringEqual
-            | Self::StringNotEqual
-            | Self::StringLess
-            | Self::StringLessEqual
-            | Self::StringGreater
-            | Self::StringGreaterEqual => {
-                RuntimeSignature::new(TWO_GO_STRING_PARAMETERS, RuntimeType::Bool)
-            }
-        }
-    }
-
-    /// Stable semantic name protected by the canonical contract identity.
-    ///
-    /// This is not a runtime symbol: primitive operations are emitted directly.
-    #[must_use]
-    pub fn name(self) -> String {
-        match self {
-            Self::Integer { op, kind } => format!("{}-{}", kind.name(), op.name()),
-            Self::IntegerConvert { from, to } => {
-                format!("{}-to-{}", from.name(), to.name())
-            }
-            other => other.non_integer_name().to_owned(),
-        }
-    }
-
-    const fn non_integer_name(self) -> &'static str {
-        match self {
-            Self::BoolNot => "bool-not",
-            Self::BoolEqual => "bool-equal",
-            Self::BoolNotEqual => "bool-not-equal",
-            Self::StringEqual => "string-equal",
-            Self::StringNotEqual => "string-not-equal",
-            Self::StringLess => "string-less",
-            Self::StringLessEqual => "string-less-equal",
-            Self::StringGreater => "string-greater",
-            Self::StringGreaterEqual => "string-greater-equal",
-            Self::FloatAdd => "float-add",
-            Self::FloatSub => "float-sub",
-            Self::FloatMul => "float-mul",
-            Self::FloatDiv => "float-div",
-            Self::FloatNeg => "float-neg",
-            Self::FloatEqual => "float-equal",
-            Self::FloatNotEqual => "float-not-equal",
-            Self::FloatLess => "float-less",
-            Self::FloatLessEqual => "float-less-equal",
-            Self::FloatGreater => "float-greater",
-            Self::FloatGreaterEqual => "float-greater-equal",
-            Self::ComplexAdd => "complex-add",
-            Self::ComplexSub => "complex-sub",
-            Self::ComplexMul => "complex-mul",
-            Self::ComplexDiv => "complex-div",
-            Self::ComplexNeg => "complex-neg",
-            Self::ComplexEqual => "complex-equal",
-            Self::ComplexNotEqual => "complex-not-equal",
-            Self::FloatMin => "float-min",
-            Self::FloatMax => "float-max",
-            Self::ComplexFromParts => "complex-from-parts",
-            Self::ComplexReal => "complex-real",
-            Self::ComplexImag => "complex-imag",
-            Self::FloatRound32 => "float-round-32",
-            Self::Integer { .. } | Self::IntegerConvert { .. } => "integer-operation",
-        }
-    }
-
-    /// Stable compact identity for canonical encodings and fingerprints.
-    #[must_use]
-    pub const fn id(self) -> PrimitiveOpId {
-        PrimitiveOpId(match self {
-            Self::BoolNot => 1,
-            Self::BoolEqual => 2,
-            Self::BoolNotEqual => 3,
-            Self::FloatAdd => 25,
-            Self::FloatSub => 26,
-            Self::FloatMul => 27,
-            Self::FloatDiv => 28,
-            Self::FloatNeg => 29,
-            Self::FloatEqual => 30,
-            Self::FloatNotEqual => 31,
-            Self::FloatLess => 32,
-            Self::FloatLessEqual => 33,
-            Self::FloatGreater => 34,
-            Self::FloatGreaterEqual => 35,
-            Self::ComplexAdd => 36,
-            Self::ComplexSub => 37,
-            Self::ComplexMul => 38,
-            Self::ComplexDiv => 39,
-            Self::ComplexNeg => 40,
-            Self::ComplexEqual => 41,
-            Self::ComplexNotEqual => 42,
-            Self::FloatMin => 45,
-            Self::FloatMax => 46,
-            Self::ComplexFromParts => 47,
-            Self::ComplexReal => 48,
-            Self::ComplexImag => 49,
-            Self::FloatRound32 => 50,
-            Self::Integer { op, kind } => 53 + op.ordinal() * 8 + kind.ordinal(),
-            Self::IntegerConvert { from, to } => 189 + from.ordinal() * 8 + to.ordinal(),
-            Self::StringEqual => 15,
-            Self::StringNotEqual => 16,
-            Self::StringLess => 17,
-            Self::StringLessEqual => 18,
-            Self::StringGreater => 19,
-            Self::StringGreaterEqual => 20,
-        })
-    }
-
-    pub(crate) fn encode(self, encoder: &mut CanonicalEncoder) {
-        encoder.u16(self.id().get());
-        encoder.text(&self.name());
-        self.signature().encode(encoder);
-    }
-}
-
-// Every index is bounded by the lengths which define the exact catalog size.
-// Const slice access cannot yet use the checked APIs on the supported compiler.
-#[allow(clippy::indexing_slicing)]
-const fn primitive_catalog() -> [PrimitiveOp; 233] {
-    let mut result = [PrimitiveOp::BoolNot; 233];
-    let mut output = 0;
-    let mut index = 0;
-    while index < PrimitiveOp::NON_INTEGER.len() {
-        result[output] = PrimitiveOp::NON_INTEGER[index];
-        output += 1;
-        index += 1;
-    }
-    let mut primitive = 0;
-    while primitive < IntegerPrimitive::ALL.len() {
-        let mut kind = 0;
-        while kind < IntegerKind::ALL.len() {
-            result[output] = PrimitiveOp::Integer {
-                op: IntegerPrimitive::ALL[primitive],
-                kind: IntegerKind::ALL[kind],
-            };
-            output += 1;
-            kind += 1;
-        }
-        primitive += 1;
-    }
-    let mut from = 0;
-    while from < IntegerKind::ALL.len() {
-        let mut to = 0;
-        while to < IntegerKind::ALL.len() {
-            result[output] = PrimitiveOp::IntegerConvert {
-                from: IntegerKind::ALL[from],
-                to: IntegerKind::ALL[to],
-            };
-            output += 1;
-            to += 1;
-        }
-        from += 1;
-    }
-    result
-}
 
 impl RuntimeOp {
     /// Complete helper catalog for the current contract.
@@ -397,7 +97,9 @@ impl RuntimeOp {
             Self::PrintI64 | Self::PrintU64 => {
                 RuntimeSignature::new(I64_PARAMETER, RuntimeType::Unit)
             }
-            Self::PrintF64 => RuntimeSignature::new(F64_PARAMETER, RuntimeType::Unit),
+            Self::PrintF64 | Self::PrintF32 => {
+                RuntimeSignature::new(F64_PARAMETER, RuntimeType::Unit)
+            }
             Self::PrintGoString => RuntimeSignature::new(GO_STRING_PARAMETER, RuntimeType::Unit),
             Self::PanicBool => RuntimeSignature::new(BOOL_PARAMETER, RuntimeType::Unit),
             Self::PanicI64 => RuntimeSignature::new(I64_PARAMETER, RuntimeType::Unit),

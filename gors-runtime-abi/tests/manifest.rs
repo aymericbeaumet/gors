@@ -37,6 +37,8 @@ mod catalog;
 mod channel_effects;
 #[path = "manifest/contract_and_artifact.rs"]
 mod contract_and_artifact;
+#[path = "manifest/float_catalog.rs"]
+mod float_catalog;
 #[path = "manifest/link_identity.rs"]
 mod link_identity;
 #[path = "manifest/link_validation.rs"]
@@ -124,11 +126,11 @@ fn current_contract_identity_is_sha256_of_canonical_bytes() {
 
     assert_eq!(manifest.schema().get(), 2);
     assert_eq!(manifest.contract(), CURRENT_CONTRACT_VERSION);
-    assert_eq!(manifest.contract(), ContractVersion::new(2, 29, 0));
+    assert_eq!(manifest.contract(), ContractVersion::new(2, 30, 0));
     assert_eq!(manifest.identity().as_bytes(), &expected);
     assert_eq!(
         manifest.identity().to_string(),
-        "6080a9961357934d54f96347bbaf7e631c7d53ab7f09f98ea3a3b9b96f1db4c7",
+        "85424e7ac8e35369577757236ae84a43453773209ab51a076c1ff94122cddb2d",
         "the canonical runtime contract changed; review the ABI diff and bump its semantic version before accepting a new identity",
     );
 }
@@ -143,6 +145,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoPanicPayloadToInterface
             | RuntimeOp::ConcatGoStrings
             | RuntimeOp::PrintF64
+            | RuntimeOp::PrintF32
             | RuntimeOp::GoSliceI64FromStatic
             | RuntimeOp::GoSliceBoolFromStatic
             | RuntimeOp::GoSliceI64Make
@@ -315,6 +318,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::PrintI64
             | RuntimeOp::PrintU64
             | RuntimeOp::PrintF64
+            | RuntimeOp::PrintF32
             | RuntimeOp::PrintSpace
             | RuntimeOp::PrintNewline
             | RuntimeOp::PrintGoString
@@ -422,6 +426,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::PrintI64
             | RuntimeOp::PrintU64
             | RuntimeOp::PrintF64
+            | RuntimeOp::PrintF32
             | RuntimeOp::PrintSpace
             | RuntimeOp::PrintNewline
             | RuntimeOp::PrintGoString
@@ -438,6 +443,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::PrintI64
             | RuntimeOp::PrintU64
             | RuntimeOp::PrintF64
+            | RuntimeOp::PrintF32
             | RuntimeOp::PrintSpace
             | RuntimeOp::PrintNewline
             | RuntimeOp::PrintGoString => HostIoEffect::StandardError,
@@ -636,6 +642,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::PrintI64
             | RuntimeOp::PrintU64
             | RuntimeOp::PrintF64
+            | RuntimeOp::PrintF32
             | RuntimeOp::PrintSpace
             | RuntimeOp::PrintNewline
             | RuntimeOp::PrintGoString

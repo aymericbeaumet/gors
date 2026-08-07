@@ -177,4 +177,6 @@ pub enum RuntimeOp {
     GoStringToSliceRunes,
     GoInterfaceBoxPointerI64,
     GoInterfaceUnboxPointerI64,
+    /// Print a canonical float32 carried physically as `f64`.
+    PrintF32,
 }

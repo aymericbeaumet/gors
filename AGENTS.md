@@ -202,6 +202,17 @@ runtime-call blocks during representation lowering. Wrapping integer arithmetic
 is a typed primitive emitted directly as Rust wrapping operations, while only
 operations that need a versioned runtime symbol remain `RuntimeOp` values.
 
+`gors-runtime-abi` owns `FloatKind` and every width-specific numeric operation.
+The Rust boundary uses `f64` as the physical carrier for both Go `float32` and
+`float64`, but every `F32` primitive must narrow its operands before evaluation
+and widen only the already rounded `f32` result; comparisons observe those
+narrowed operands. Complex64 similarly uses the physical `Complex128` carrier
+with canonical `f32` components. Legacy float64 primitive IDs, names,
+signatures, and encodings are immutable, and new width-specific members are
+append-only. `PrintF32` accepts the physical `f64` carrier, narrows it, and then
+uses Go's float32 shortest-round-trip formatting; it must never reuse float64
+formatting directly.
+
 Verification derives each function's canonical `RuntimeRequirement` from its
 explicit operations and constants. Verified function products retain that set,
 and package products union the cached function sets in stable operation-ID

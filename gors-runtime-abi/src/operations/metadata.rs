@@ -22,6 +22,7 @@ impl RuntimeOp {
             | Self::PrintI64
             | Self::PrintU64
             | Self::PrintF64
+            | Self::PrintF32
             | Self::PrintSpace
             | Self::PrintNewline
             | Self::PrintGoString => STANDARD_IO_CAPABILITY,
@@ -247,7 +248,7 @@ impl RuntimeOp {
                 NO_GO_PANICS,
             )
             .with_blocking(BlockingEffect::MayBlock),
-            Self::PrintF64 => RuntimeEffects::new(
+            Self::PrintF64 | Self::PrintF32 => RuntimeEffects::new(
                 AllocationEffect::MayAllocate,
                 ArgumentMutationEffect::None,
                 HostIoEffect::StandardError,

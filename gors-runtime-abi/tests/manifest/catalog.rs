@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use gors_runtime_abi::{
-    IntegerKind, IntegerKindConstraint, IntegerPrimitive, IntegerRuntimeOp, PrimitiveOp,
-    RuntimeAbiManifest, RuntimeOp, RuntimeType,
+    FloatPrimitive, IntegerKind, IntegerKindConstraint, IntegerPrimitive, IntegerRuntimeOp,
+    PrimitiveOp, RuntimeAbiManifest, RuntimeOp, RuntimeType,
 };
 
 use super::{INT_DIV, INT_REM, INT_SHL, INT_SHR, manifest};
@@ -42,7 +42,7 @@ fn current_operation_catalogs_are_complete_and_collision_free() {
         .get(),
         167
     );
-    assert_eq!(PrimitiveOp::ALL.len(), 233);
+    assert_eq!(PrimitiveOp::ALL.len(), 283);
 
     let primitive_names = PrimitiveOp::ALL
         .iter()
@@ -68,7 +68,10 @@ fn current_operation_catalogs_are_complete_and_collision_free() {
     assert_eq!(RuntimeOp::GoPointerI64Equal.id().get(), 219);
     assert_eq!(RuntimeOp::GoSliceI64AppendSlice.id().get(), 220);
     assert_eq!(RuntimeOp::GoSliceInterfaceAppend.id().get(), 221);
-    assert_eq!(RuntimeOp::ALL.len(), 216);
+    assert_eq!(RuntimeOp::PrintF32.id().get(), 222);
+    assert_eq!(RuntimeOp::try_from(222), Ok(RuntimeOp::PrintF32));
+    assert_eq!(RuntimeOp::PrintF32.symbol(), "print_f32");
+    assert_eq!(RuntimeOp::ALL.len(), 217);
 
     let integer_ids = [
         [172, 173, 174, 8, 175, 176, 177, 178],
@@ -240,9 +243,32 @@ fn primitive_signatures_are_complete_and_exact() {
                 (&[RuntimeType::I64, RuntimeType::I64], RuntimeType::I64)
             }
             PrimitiveOp::IntegerConvert { .. } => (&[RuntimeType::I64], RuntimeType::I64),
-            PrimitiveOp::FloatNeg | PrimitiveOp::FloatRound32 => {
+            PrimitiveOp::IntegerToFloat { .. } => (&[RuntimeType::I64], RuntimeType::F64),
+            PrimitiveOp::FloatToInteger { .. } => (&[RuntimeType::F64], RuntimeType::I64),
+            PrimitiveOp::FloatNeg | PrimitiveOp::FloatRound32 | PrimitiveOp::FloatWiden64 => {
                 (&[RuntimeType::F64], RuntimeType::F64)
             }
+            PrimitiveOp::Float32 {
+                op: FloatPrimitive::Neg,
+            } => (&[RuntimeType::F64], RuntimeType::F64),
+            PrimitiveOp::Float32 {
+                op:
+                    FloatPrimitive::Equal
+                    | FloatPrimitive::NotEqual
+                    | FloatPrimitive::Less
+                    | FloatPrimitive::LessEqual
+                    | FloatPrimitive::Greater
+                    | FloatPrimitive::GreaterEqual,
+            } => (&[RuntimeType::F64, RuntimeType::F64], RuntimeType::Bool),
+            PrimitiveOp::Float32 {
+                op:
+                    FloatPrimitive::Add
+                    | FloatPrimitive::Sub
+                    | FloatPrimitive::Mul
+                    | FloatPrimitive::Div
+                    | FloatPrimitive::Min
+                    | FloatPrimitive::Max,
+            } => (&[RuntimeType::F64, RuntimeType::F64], RuntimeType::F64),
             PrimitiveOp::FloatAdd
             | PrimitiveOp::FloatSub
             | PrimitiveOp::FloatMul
@@ -273,8 +299,12 @@ fn primitive_signatures_are_complete_and_exact() {
                 &[RuntimeType::F64, RuntimeType::F64],
                 RuntimeType::Complex128,
             ),
-            PrimitiveOp::ComplexReal | PrimitiveOp::ComplexImag => {
-                (&[RuntimeType::Complex128], RuntimeType::F64)
+            PrimitiveOp::ComplexReal
+            | PrimitiveOp::ComplexImag
+            | PrimitiveOp::Complex64Real
+            | PrimitiveOp::Complex64Imag => (&[RuntimeType::Complex128], RuntimeType::F64),
+            PrimitiveOp::Complex128ToComplex64 | PrimitiveOp::Complex64ToComplex128 => {
+                (&[RuntimeType::Complex128], RuntimeType::Complex128)
             }
             PrimitiveOp::StringEqual
             | PrimitiveOp::StringNotEqual

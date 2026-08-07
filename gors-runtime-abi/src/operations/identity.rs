@@ -184,6 +184,7 @@ impl RuntimeOp {
             Self::GoPointerI64Equal => 219,
             Self::GoSliceI64AppendSlice => 220,
             Self::GoSliceInterfaceAppend => 221,
+            Self::PrintF32 => 222,
         })
     }
 }

@@ -176,6 +176,7 @@ impl RuntimeOp {
             Self::GoStringToSliceRunes => "go_string_to_slice_runes",
             Self::GoInterfaceBoxPointerI64 => "go_interface_box_pointer_i64",
             Self::GoInterfaceUnboxPointerI64 => "go_interface_unbox_pointer_i64",
+            Self::PrintF32 => "print_f32",
         }
     }
 }
