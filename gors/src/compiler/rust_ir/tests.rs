@@ -6,6 +6,11 @@ mod maps;
 mod recovery;
 mod string_slices;
 
+const INT_DIV: RuntimeOp = RuntimeOp::Integer {
+    op: IntegerRuntimeOp::Div,
+    kind: IntegerKind::I64,
+};
+
 fn lower(source: &str) -> File {
     lower_at("rust-ir.go", source)
 }
@@ -317,18 +322,18 @@ fn runtime_call_destination_writes_are_explicit_and_verified() {
     );
     let terminator = first_function_call_terminator_mut(&mut file);
     if let TerminatorKind::Call { target, .. } = &mut terminator.kind {
-        *target = CallTarget::Runtime(RuntimeOp::IntDiv);
+        *target = CallTarget::Runtime(INT_DIV);
     }
     refresh_test_effects(&mut file);
 
     assert!(
-        runtime_call_terminator_mut(&mut file, RuntimeOp::IntDiv)
+        runtime_call_terminator_mut(&mut file, INT_DIV)
             .effects
             .may_write
     );
     file.verify().unwrap();
 
-    runtime_call_terminator_mut(&mut file, RuntimeOp::IntDiv)
+    runtime_call_terminator_mut(&mut file, INT_DIV)
         .effects
         .may_write = false;
     let error = file.verify().unwrap_err();
@@ -364,7 +369,7 @@ fn verifier_checks_value_operations_against_the_typed_abi() {
 #[test]
 fn verifier_rejects_static_bytes_with_an_incompatible_runtime_constructor() {
     let mut file = lower("package main\nfunc main() { print(\"value\") }\n");
-    *static_bytes_runtime_op_mut(&mut file) = RuntimeOp::IntDiv;
+    *static_bytes_runtime_op_mut(&mut file) = INT_DIV;
 
     let error = file.verify().unwrap_err();
     assert!(
@@ -536,8 +541,7 @@ fn verifier_rejects_mutated_representation_effects_and_panic_edges() {
     );
 
     let mut bad_panic_edge = file.clone();
-    binary_rvalue_mut(&mut bad_panic_edge, ValueOp::Runtime(RuntimeOp::IntDiv)).panic =
-        PanicEdge::None;
+    binary_rvalue_mut(&mut bad_panic_edge, ValueOp::Runtime(INT_DIV)).panic = PanicEdge::None;
     assert!(
         bad_panic_edge
             .verify()
@@ -553,7 +557,7 @@ fn verifier_rejects_mutated_representation_effects_and_panic_edges() {
         .unwrap()
         .source;
     let mut bad_provenance = file.clone();
-    binary_rvalue_mut(&mut bad_provenance, ValueOp::Runtime(RuntimeOp::IntDiv)).provenance =
+    binary_rvalue_mut(&mut bad_provenance, ValueOp::Runtime(INT_DIV)).provenance =
         Provenance::Source(unrelated_source);
     assert!(
         bad_provenance

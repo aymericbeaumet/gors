@@ -9,7 +9,7 @@ use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::types::{
-    ComplexTy, ConstValue, ExactNumber, FloatTy, IntTy, Ty, UintTy, UntypedTy,
+    ComplexTy, ConstValue, ExactNumber, FloatTy, Ty, UintTy, UntypedTy,
     exact_integer_from_number_spelling,
 };
 
@@ -236,7 +236,7 @@ pub(super) fn fold_untyped_constant_shift(
         .ok_or_else(|| Diagnostic::backend("integer constant shift did not fold"))
 }
 
-fn constant_shift_integer_operand(
+pub(super) fn constant_shift_integer_operand(
     value: &ConstValue,
     role: &str,
     source: SourceRef,
@@ -397,6 +397,16 @@ pub(super) fn coerce_expr(
     if let hir::ExprKind::Constant(value) | hir::ExprKind::GlobalConstant(_, value) = &mut expr.kind
     {
         *value = normalize_constant_for_type(value.clone(), expected, source)?;
+    }
+    if matches!(expr.ty, Ty::Untyped(_))
+        && expected.is_integer()
+        && let hir::ExprKind::Binary {
+            op: hir::BinaryOp::Shl | hir::BinaryOp::Shr,
+            left,
+            ..
+        } = &mut expr.kind
+    {
+        coerce_expr(left, expected, source)?;
     }
     let representation_preserving_conversion = expr.ty != *expected
         && (expr.ty.underlying() == expected.underlying()
@@ -594,7 +604,10 @@ pub(super) fn validate_binary_operator(
         ),
         hir::BinaryOp::Div => matches!(
             ty,
-            Ty::Int(IntTy::Int) | Ty::Float(FloatTy::Float64) | Ty::Complex(ComplexTy::Complex128)
+            Ty::Int(_)
+                | Ty::Uint(_)
+                | Ty::Float(FloatTy::Float64)
+                | Ty::Complex(ComplexTy::Complex128)
         ),
         hir::BinaryOp::Min | hir::BinaryOp::Max => {
             matches!(ty, Ty::Int(_) | Ty::Uint(_) | Ty::Float(_))
@@ -604,7 +617,9 @@ pub(super) fn validate_binary_operator(
         | hir::BinaryOp::BitOr
         | hir::BinaryOp::BitXor
         | hir::BinaryOp::AndNot => matches!(ty, Ty::Int(_) | Ty::Uint(_)),
-        hir::BinaryOp::Rem | hir::BinaryOp::Shl | hir::BinaryOp::Shr => *ty == Ty::Int(IntTy::Int),
+        hir::BinaryOp::Rem | hir::BinaryOp::Shl | hir::BinaryOp::Shr => {
+            matches!(ty, Ty::Int(_) | Ty::Uint(_))
+        }
     };
     if valid {
         Ok(())

@@ -2,9 +2,9 @@
 
 use super::{
     CLOSE_CHANNEL_PANICS, EXPLICIT_PANIC, INDEX_OUT_OF_RANGE, INTEGER_DIVIDE_BY_ZERO,
-    NEGATIVE_CHANNEL_CAPACITY, NEGATIVE_SHIFT_AMOUNT, NIL_MAP_ASSIGNMENT, NIL_POINTER_DEREFERENCE,
-    NIL_POINTER_OR_INDEX_OUT_OF_RANGE, NO_CAPABILITIES, NO_GO_PANICS, RuntimeOp,
-    SEND_ON_CLOSED_CHANNEL, SLICE_BOUNDS_OUT_OF_RANGE, STANDARD_IO_CAPABILITY,
+    IntegerRuntimeOp, NEGATIVE_CHANNEL_CAPACITY, NEGATIVE_SHIFT_AMOUNT, NIL_MAP_ASSIGNMENT,
+    NIL_POINTER_DEREFERENCE, NIL_POINTER_OR_INDEX_OUT_OF_RANGE, NO_CAPABILITIES, NO_GO_PANICS,
+    RuntimeOp, SEND_ON_CLOSED_CHANNEL, SLICE_BOUNDS_OUT_OF_RANGE, STANDARD_IO_CAPABILITY,
     TYPE_ASSERTION_FAILURE, TYPE_ASSERTION_OR_INDEX_OUT_OF_RANGE,
     UNCOMPARABLE_INTERFACE_COMPARISON,
 };
@@ -29,10 +29,7 @@ impl RuntimeOp {
             | Self::GoStringFromRune
             | Self::GoStringFromStatic
             | Self::ConcatGoStrings
-            | Self::IntDiv
-            | Self::IntRem
-            | Self::IntShl
-            | Self::IntShr
+            | Self::Integer { .. }
             | Self::PanicBool
             | Self::PanicI64
             | Self::PanicGoString
@@ -205,17 +202,32 @@ impl RuntimeOp {
                 HostIoEffect::None,
                 NO_GO_PANICS,
             ),
-            Self::IntDiv | Self::IntRem => RuntimeEffects::new(
+            Self::Integer {
+                op: IntegerRuntimeOp::Div | IntegerRuntimeOp::Rem,
+                ..
+            } => RuntimeEffects::new(
                 AllocationEffect::None,
                 ArgumentMutationEffect::None,
                 HostIoEffect::None,
                 INTEGER_DIVIDE_BY_ZERO,
             ),
-            Self::IntShl | Self::IntShr => RuntimeEffects::new(
+            Self::Integer {
+                op: IntegerRuntimeOp::ShlSigned | IntegerRuntimeOp::ShrSigned,
+                ..
+            } => RuntimeEffects::new(
                 AllocationEffect::None,
                 ArgumentMutationEffect::None,
                 HostIoEffect::None,
                 NEGATIVE_SHIFT_AMOUNT,
+            ),
+            Self::Integer {
+                op: IntegerRuntimeOp::ShlUnsigned | IntegerRuntimeOp::ShrUnsigned,
+                ..
+            } => RuntimeEffects::new(
+                AllocationEffect::None,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                NO_GO_PANICS,
             ),
             Self::PrintBool
             | Self::PrintI64

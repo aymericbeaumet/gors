@@ -86,7 +86,18 @@ impl FunctionLowerer {
             return self
                 .lower_pointer_struct_field_assignment_stmt(structure, field, op, value, source);
         }
-        let field_ty = value.ty.clone();
+        let Ty::Struct(fields) = structure_ty.underlying() else {
+            return Err(Diagnostic::backend(
+                "struct field assignment reached MIR with a non-struct receiver",
+            ));
+        };
+        let field_ty = fields
+            .get(
+                usize::try_from(field)
+                    .map_err(|_| Diagnostic::backend("struct field index does not fit usize"))?,
+            )
+            .map(|definition| definition.ty.clone())
+            .ok_or_else(|| Diagnostic::backend("struct field update is out of bounds"))?;
         let provenance = Provenance::Source(source);
         let structure_operand = self.read_semantic_local(structure, source)?;
         let structure_operand =
@@ -112,7 +123,7 @@ impl FunctionLowerer {
             );
             self.push_statement(make_statement(old, read, provenance.clone()))?;
             let rhs = self.lower_expr(value)?;
-            let rhs = self.materialize(rhs, field_ty.clone(), Provenance::Source(value.source))?;
+            let rhs = self.materialize(rhs, value.ty.clone(), Provenance::Source(value.source))?;
             let result = Place {
                 local: self.new_temp(field_ty.clone()),
             };
@@ -124,7 +135,7 @@ impl FunctionLowerer {
                     right: rhs,
                     ty: field_ty.clone(),
                 },
-                binary_effects(binary_op, &field_ty),
+                binary_effects(binary_op, &field_ty, &value.ty),
                 provenance.clone(),
             );
             self.push_statement(make_statement(result, binary, provenance.clone()))?;
@@ -165,7 +176,7 @@ impl FunctionLowerer {
             )
             .map(|definition| definition.ty.clone())
             .ok_or_else(|| Diagnostic::backend("pointer struct field update is out of bounds"))?;
-        if value.ty != field_ty {
+        if op == hir::AssignOp::Set && value.ty != field_ty {
             return Err(Diagnostic::backend(
                 "pointer struct field update changed its field type",
             ));
@@ -191,7 +202,7 @@ impl FunctionLowerer {
                 provenance.clone(),
             )?;
             let rhs = self.lower_expr(value)?;
-            let rhs = self.materialize(rhs, field_ty.clone(), Provenance::Source(value.source))?;
+            let rhs = self.materialize(rhs, value.ty.clone(), Provenance::Source(value.source))?;
             let result = Place {
                 local: self.new_temp(field_ty.clone()),
             };
@@ -203,7 +214,7 @@ impl FunctionLowerer {
                     right: rhs,
                     ty: field_ty.clone(),
                 },
-                binary_effects(binary_op, &field_ty),
+                binary_effects(binary_op, &field_ty, &value.ty),
                 provenance.clone(),
             );
             self.push_statement(make_statement(result, binary, provenance.clone()))?;

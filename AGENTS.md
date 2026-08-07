@@ -785,10 +785,10 @@ Every deferred action is an explicit ordered Go-MIR and Rust-IR region. It
 clears its registration flag before invocation, owns an independent unwind
 boundary and newest-panic replacement transition, and continues at the next
 earlier action; terminal emission mechanically renders that verified plan.
-Dynamic division or remainder by zero and negative dynamic shifts still reach
-Rust `panic_any`; give those faults versioned Go panic/process semantics and
-process-level differential tests before counting their failure presentation as
-compliant.
+Dynamic division or remainder by zero and negative dynamic signed shift counts
+reach the versioned integer runtime boundary and preserve Go's ordered
+evaluation and panic semantics. Unsigned shift counts are statically
+nonnegative and therefore carry no negative-shift panic effect.
 
 The remaining frontier receives precise source diagnostics until its semantics
 are represented in HIR and MIR:
@@ -807,9 +807,12 @@ representation lowering selects width-specific wrapping arithmetic, negation,
 bit operations, comparisons, min/max, and conversions; the verifier rejects
 noncanonical carriers and mismatched kinds before emission. Signed and unsigned
 printing select distinct runtime operations, so high-bit `uint64` values retain
-their Go rendering. Dynamic division, remainder, and shifts remain executable
-only for Go `int`; broader integer slice, map, pointer, and channel families
-remain outside this scalar checkpoint.
+their Go rendering. Dynamic division and remainder select exact-width signed or
+unsigned runtime members for all eight scalar integer kinds, including Go's
+`MIN / -1` and `MIN % -1` rules. Shifts preserve the exact left-hand kind while
+retaining an independently typed integer count; signed and unsigned count
+members keep their distinct panic contracts. Broader integer slice, map,
+pointer, and channel families remain outside this scalar checkpoint.
 
 Typed floating-point and complex constants are quantized from the exact
 rational constant algebra at every declaration, conversion, and typed

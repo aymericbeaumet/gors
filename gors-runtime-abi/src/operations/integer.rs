@@ -24,6 +24,178 @@ pub enum IntegerKindConstraint {
     Unsigned,
 }
 
+/// Integer operations implemented by the versioned runtime ABI.
+///
+/// Division and remainder carry their exact operand kind. Shift operations
+/// additionally encode the signedness of the independently typed shift count;
+/// the left operand kind remains the operation's concrete [`IntegerKind`].
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum IntegerRuntimeOp {
+    Div,
+    Rem,
+    ShlSigned,
+    ShrSigned,
+    ShlUnsigned,
+    ShrUnsigned,
+}
+
+impl IntegerRuntimeOp {
+    pub const ALL: &'static [Self] = &[
+        Self::Div,
+        Self::Rem,
+        Self::ShlSigned,
+        Self::ShrSigned,
+        Self::ShlUnsigned,
+        Self::ShrUnsigned,
+    ];
+
+    #[must_use]
+    pub const fn is_shift(self) -> bool {
+        matches!(
+            self,
+            Self::ShlSigned | Self::ShrSigned | Self::ShlUnsigned | Self::ShrUnsigned
+        )
+    }
+
+    #[must_use]
+    pub const fn count_constraint(self) -> IntegerKindConstraint {
+        match self {
+            Self::ShlSigned | Self::ShrSigned => IntegerKindConstraint::Signed,
+            Self::ShlUnsigned | Self::ShrUnsigned => IntegerKindConstraint::Unsigned,
+            Self::Div | Self::Rem => IntegerKindConstraint::Any,
+        }
+    }
+
+    pub(super) const fn runtime_id(self, kind: IntegerKind) -> u16 {
+        match (self, kind) {
+            (Self::Div, IntegerKind::I64) => 8,
+            (Self::Rem, IntegerKind::I64) => 9,
+            (Self::ShlSigned, IntegerKind::I64) => 10,
+            (Self::ShrSigned, IntegerKind::I64) => 11,
+            (Self::Div, IntegerKind::I8) => 172,
+            (Self::Div, IntegerKind::I16) => 173,
+            (Self::Div, IntegerKind::I32) => 174,
+            (Self::Div, IntegerKind::U8) => 175,
+            (Self::Div, IntegerKind::U16) => 176,
+            (Self::Div, IntegerKind::U32) => 177,
+            (Self::Div, IntegerKind::U64) => 178,
+            (Self::Rem, IntegerKind::I8) => 179,
+            (Self::Rem, IntegerKind::I16) => 180,
+            (Self::Rem, IntegerKind::I32) => 181,
+            (Self::Rem, IntegerKind::U8) => 182,
+            (Self::Rem, IntegerKind::U16) => 183,
+            (Self::Rem, IntegerKind::U32) => 184,
+            (Self::Rem, IntegerKind::U64) => 185,
+            (Self::ShlSigned, IntegerKind::I8) => 186,
+            (Self::ShlSigned, IntegerKind::I16) => 187,
+            (Self::ShlSigned, IntegerKind::I32) => 188,
+            (Self::ShlSigned, IntegerKind::U8) => 189,
+            (Self::ShlSigned, IntegerKind::U16) => 190,
+            (Self::ShlSigned, IntegerKind::U32) => 191,
+            (Self::ShlSigned, IntegerKind::U64) => 192,
+            (Self::ShrSigned, IntegerKind::I8) => 193,
+            (Self::ShrSigned, IntegerKind::I16) => 194,
+            (Self::ShrSigned, IntegerKind::I32) => 195,
+            (Self::ShrSigned, IntegerKind::U8) => 196,
+            (Self::ShrSigned, IntegerKind::U16) => 197,
+            (Self::ShrSigned, IntegerKind::U32) => 198,
+            (Self::ShrSigned, IntegerKind::U64) => 199,
+            (Self::ShlUnsigned, kind) => 200 + kind.ordinal(),
+            (Self::ShrUnsigned, kind) => 208 + kind.ordinal(),
+        }
+    }
+
+    pub(super) fn from_appended_id(id: u16) -> Option<(Self, IntegerKind)> {
+        let (op, ordinal, omits_i64) = match id {
+            172..=178 => (Self::Div, id - 172, true),
+            179..=185 => (Self::Rem, id - 179, true),
+            186..=192 => (Self::ShlSigned, id - 186, true),
+            193..=199 => (Self::ShrSigned, id - 193, true),
+            200..=207 => (Self::ShlUnsigned, id - 200, false),
+            208..=215 => (Self::ShrUnsigned, id - 208, false),
+            _ => return None,
+        };
+        let kind = if omits_i64 {
+            match ordinal {
+                0 => IntegerKind::I8,
+                1 => IntegerKind::I16,
+                2 => IntegerKind::I32,
+                3 => IntegerKind::U8,
+                4 => IntegerKind::U16,
+                5 => IntegerKind::U32,
+                6 => IntegerKind::U64,
+                _ => return None,
+            }
+        } else {
+            match ordinal {
+                0 => IntegerKind::I8,
+                1 => IntegerKind::I16,
+                2 => IntegerKind::I32,
+                3 => IntegerKind::I64,
+                4 => IntegerKind::U8,
+                5 => IntegerKind::U16,
+                6 => IntegerKind::U32,
+                7 => IntegerKind::U64,
+                _ => return None,
+            }
+        };
+        Some((op, kind))
+    }
+
+    pub(super) const fn symbol(self, kind: IntegerKind) -> &'static str {
+        match (self, kind) {
+            (Self::Div, IntegerKind::I8) => "int_div_i8",
+            (Self::Div, IntegerKind::I16) => "int_div_i16",
+            (Self::Div, IntegerKind::I32) => "int_div_i32",
+            (Self::Div, IntegerKind::I64) => "int_div",
+            (Self::Div, IntegerKind::U8) => "int_div_u8",
+            (Self::Div, IntegerKind::U16) => "int_div_u16",
+            (Self::Div, IntegerKind::U32) => "int_div_u32",
+            (Self::Div, IntegerKind::U64) => "int_div_u64",
+            (Self::Rem, IntegerKind::I8) => "int_rem_i8",
+            (Self::Rem, IntegerKind::I16) => "int_rem_i16",
+            (Self::Rem, IntegerKind::I32) => "int_rem_i32",
+            (Self::Rem, IntegerKind::I64) => "int_rem",
+            (Self::Rem, IntegerKind::U8) => "int_rem_u8",
+            (Self::Rem, IntegerKind::U16) => "int_rem_u16",
+            (Self::Rem, IntegerKind::U32) => "int_rem_u32",
+            (Self::Rem, IntegerKind::U64) => "int_rem_u64",
+            (Self::ShlSigned, IntegerKind::I8) => "int_shl_signed_i8",
+            (Self::ShlSigned, IntegerKind::I16) => "int_shl_signed_i16",
+            (Self::ShlSigned, IntegerKind::I32) => "int_shl_signed_i32",
+            (Self::ShlSigned, IntegerKind::I64) => "int_shl",
+            (Self::ShlSigned, IntegerKind::U8) => "int_shl_signed_u8",
+            (Self::ShlSigned, IntegerKind::U16) => "int_shl_signed_u16",
+            (Self::ShlSigned, IntegerKind::U32) => "int_shl_signed_u32",
+            (Self::ShlSigned, IntegerKind::U64) => "int_shl_signed_u64",
+            (Self::ShrSigned, IntegerKind::I8) => "int_shr_signed_i8",
+            (Self::ShrSigned, IntegerKind::I16) => "int_shr_signed_i16",
+            (Self::ShrSigned, IntegerKind::I32) => "int_shr_signed_i32",
+            (Self::ShrSigned, IntegerKind::I64) => "int_shr",
+            (Self::ShrSigned, IntegerKind::U8) => "int_shr_signed_u8",
+            (Self::ShrSigned, IntegerKind::U16) => "int_shr_signed_u16",
+            (Self::ShrSigned, IntegerKind::U32) => "int_shr_signed_u32",
+            (Self::ShrSigned, IntegerKind::U64) => "int_shr_signed_u64",
+            (Self::ShlUnsigned, IntegerKind::I8) => "int_shl_unsigned_i8",
+            (Self::ShlUnsigned, IntegerKind::I16) => "int_shl_unsigned_i16",
+            (Self::ShlUnsigned, IntegerKind::I32) => "int_shl_unsigned_i32",
+            (Self::ShlUnsigned, IntegerKind::I64) => "int_shl_unsigned_i64",
+            (Self::ShlUnsigned, IntegerKind::U8) => "int_shl_unsigned_u8",
+            (Self::ShlUnsigned, IntegerKind::U16) => "int_shl_unsigned_u16",
+            (Self::ShlUnsigned, IntegerKind::U32) => "int_shl_unsigned_u32",
+            (Self::ShlUnsigned, IntegerKind::U64) => "int_shl_unsigned_u64",
+            (Self::ShrUnsigned, IntegerKind::I8) => "int_shr_unsigned_i8",
+            (Self::ShrUnsigned, IntegerKind::I16) => "int_shr_unsigned_i16",
+            (Self::ShrUnsigned, IntegerKind::I32) => "int_shr_unsigned_i32",
+            (Self::ShrUnsigned, IntegerKind::I64) => "int_shr_unsigned_i64",
+            (Self::ShrUnsigned, IntegerKind::U8) => "int_shr_unsigned_u8",
+            (Self::ShrUnsigned, IntegerKind::U16) => "int_shr_unsigned_u16",
+            (Self::ShrUnsigned, IntegerKind::U32) => "int_shr_unsigned_u32",
+            (Self::ShrUnsigned, IntegerKind::U64) => "int_shr_unsigned_u64",
+        }
+    }
+}
+
 impl IntegerKindConstraint {
     #[must_use]
     pub const fn accepts(self, kind: IntegerKind) -> bool {

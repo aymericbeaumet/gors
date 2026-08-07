@@ -278,7 +278,7 @@ impl FunctionLowerer {
                 right: Operand::Read(length),
                 ty: Ty::Bool,
             },
-            binary_effects(hir::BinaryOp::Less, &Ty::Bool),
+            binary_effects(hir::BinaryOp::Less, &Ty::Bool, &counter_ty),
             provenance.clone(),
         );
         self.push_statement(make_statement(condition, comparison, provenance.clone()))?;
@@ -465,7 +465,7 @@ impl FunctionLowerer {
                 right: Operand::Constant(ConstValue::Int("1".into()), counter_ty.clone()),
                 ty: counter_ty.clone(),
             },
-            binary_effects(hir::BinaryOp::Add, &counter_ty),
+            binary_effects(hir::BinaryOp::Add, &counter_ty, &counter_ty),
             provenance.clone(),
         );
         self.push_statement(make_statement(index, increment, provenance.clone()))?;

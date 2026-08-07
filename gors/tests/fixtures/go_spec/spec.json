@@ -1662,6 +1662,24 @@
           ]
         },
         {
+          "id": "spec-arithmetic-overflow-and-division",
+          "section": "Arithmetic operators",
+          "title": "Exact-width integer arithmetic wraps, signed division truncates toward zero, and MIN / -1 preserves the dividend",
+          "status": "passing",
+          "fixtures": [
+            "arithmetic_overflow_and_division"
+          ]
+        },
+        {
+          "id": "spec-shift-count-and-width-semantics",
+          "section": "Arithmetic operators",
+          "title": "Shift counts retain their independent integer type, wide shifts use the left width, and negative dynamic signed counts panic (non-IIFE recover rewrite)",
+          "status": "passing",
+          "fixtures": [
+            "shift_count_and_width_semantics"
+          ]
+        },
+        {
           "id": "expr-string-concat-interface-methods",
           "section": "Operators",
           "title": "String concatenation accepts method-call operands",

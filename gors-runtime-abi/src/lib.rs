@@ -45,8 +45,8 @@ pub use link::{
     RuntimeDependency, RuntimeLinkError, RuntimeLinkPlan, RuntimeLinkRequest,
 };
 pub use operations::{
-    IntegerKind, IntegerKindConstraint, IntegerPrimitive, PrimitiveOp, PrimitiveOpId, RuntimeOp,
-    RuntimeOpId, RuntimeSignature, RuntimeType, UnknownRuntimeOpId,
+    IntegerKind, IntegerKindConstraint, IntegerPrimitive, IntegerRuntimeOp, PrimitiveOp,
+    PrimitiveOpId, RuntimeOp, RuntimeOpId, RuntimeSignature, RuntimeType, UnknownRuntimeOpId,
 };
 pub use requirement::RuntimeRequirement;
 pub use target::{Endianness, TargetCapabilities, TargetCapability, TargetModel, TargetModelError};

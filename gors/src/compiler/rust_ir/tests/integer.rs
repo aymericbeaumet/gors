@@ -78,7 +78,7 @@ fn verifier_rejects_noncanonical_integer_constants_and_static_arrays() {
 }
 
 #[test]
-fn verifier_enforces_signed_unsigned_print_and_int_only_runtime_operations() {
+fn verifier_enforces_signed_unsigned_print_and_exact_integer_runtime_operations() {
     for (source, expected, replacement) in [
         (
             "package main\nfunc main() { print(int8(-1)) }\n",
@@ -109,10 +109,39 @@ fn verifier_enforces_signed_unsigned_print_and_int_only_runtime_operations() {
             op: IntegerPrimitive::WrappingAdd,
             kind: IntegerKind::U64,
         }),
-    ) = ValueOp::Runtime(RuntimeOp::IntDiv);
+    ) = ValueOp::Runtime(INT_DIV);
     refresh_test_effects(&mut division);
     let error = division.verify().unwrap_err();
     assert!(error.message.contains("requires Exact(I64)"), "{error:?}");
+}
+
+#[test]
+fn shift_runtime_effects_follow_the_independent_count_kind() {
+    let signed_operation = RuntimeOp::Integer {
+        op: IntegerRuntimeOp::ShlSigned,
+        kind: IntegerKind::U8,
+    };
+    let signed = lower(
+        "package main\nfunc shift(value uint8, count int8) uint8 { return value << count }\n",
+    );
+    let signed_shift = binary_rvalue(&signed, ValueOp::Runtime(signed_operation));
+    assert!(signed_shift.effects.may_panic);
+    assert_ne!(signed_shift.panic, PanicEdge::None);
+
+    let unsigned_operation = RuntimeOp::Integer {
+        op: IntegerRuntimeOp::ShlUnsigned,
+        kind: IntegerKind::U8,
+    };
+    let mut unsigned = lower(
+        "package main\nfunc shift(value uint8, count uint64) uint8 { return value << count }\n",
+    );
+    let unsigned_shift = binary_rvalue_mut(&mut unsigned, ValueOp::Runtime(unsigned_operation));
+    assert!(!unsigned_shift.effects.may_panic);
+    assert_eq!(unsigned_shift.panic, PanicEdge::None);
+    unsigned_shift.effects.may_panic = true;
+
+    let error = unsigned.verify().unwrap_err();
+    assert!(error.message.contains("effect mismatch"), "{error:?}");
 }
 
 #[test]

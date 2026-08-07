@@ -8,6 +8,7 @@ mod control_flow;
 mod generics;
 mod goroutines;
 mod imports;
+mod integer_runtime;
 mod interfaces;
 mod local_types;
 mod maps;

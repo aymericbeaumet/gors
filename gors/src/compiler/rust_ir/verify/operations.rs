@@ -2,7 +2,7 @@ use super::verify_same;
 use crate::compiler::Diagnostic;
 use crate::compiler::rust_ir::{RustType, ValueOp};
 use gors_runtime_abi::{
-    IntegerKind, IntegerKindConstraint, PrimitiveOp, RuntimeOp, RuntimeSignature, RuntimeType,
+    IntegerKindConstraint, PrimitiveOp, RuntimeOp, RuntimeSignature, RuntimeType,
 };
 
 pub(super) fn verify_value_operation(
@@ -41,9 +41,7 @@ pub(super) fn verify_value_operation(
         ValueOp::Runtime(operation) => {
             verify_runtime_arguments(operation, arguments, context)?;
             match operation {
-                RuntimeOp::IntDiv | RuntimeOp::IntRem | RuntimeOp::IntShl | RuntimeOp::IntShr => {
-                    Ok(RustType::Integer(IntegerKind::I64))
-                }
+                RuntimeOp::Integer { kind, .. } => Ok(RustType::Integer(kind)),
                 _ => rust_type_from_runtime(operation.signature().result(), context),
             }
         }
@@ -195,5 +193,68 @@ fn rust_type_from_runtime(ty: RuntimeType, context: &str) -> Result<RustType, Di
         | RuntimeType::GoPanicPayload => Err(Diagnostic::backend(format!(
             "Rust IR {context} requires ABI-only operand type {ty:?}"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod integer_runtime_tests {
+    use super::*;
+    use gors_runtime_abi::{IntegerKind, IntegerRuntimeOp};
+
+    #[test]
+    fn verifier_accepts_every_exact_integer_division_and_remainder_member() {
+        for kind in IntegerKind::ALL {
+            let arguments = [RustType::Integer(*kind), RustType::Integer(*kind)];
+            for op in [IntegerRuntimeOp::Div, IntegerRuntimeOp::Rem] {
+                let operation = RuntimeOp::Integer { op, kind: *kind };
+                let expected = RustType::Integer(*kind);
+                let actual =
+                    verify_value_operation(ValueOp::Runtime(operation), &arguments, "test");
+                assert!(
+                    matches!(&actual, Ok(value) if value == &expected),
+                    "{actual:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn verifier_accepts_every_independent_integer_shift_count_and_rejects_corruption() {
+        for lhs in IntegerKind::ALL {
+            for count in IntegerKind::ALL {
+                let op = if count.is_signed() {
+                    IntegerRuntimeOp::ShlSigned
+                } else {
+                    IntegerRuntimeOp::ShlUnsigned
+                };
+                let operation = RuntimeOp::Integer { op, kind: *lhs };
+                let arguments = [RustType::Integer(*lhs), RustType::Integer(*count)];
+                let expected = RustType::Integer(*lhs);
+                let actual =
+                    verify_value_operation(ValueOp::Runtime(operation), &arguments, "test");
+                assert!(
+                    matches!(&actual, Ok(value) if value == &expected),
+                    "{actual:?}"
+                );
+
+                let wrong_op = if count.is_signed() {
+                    IntegerRuntimeOp::ShlUnsigned
+                } else {
+                    IntegerRuntimeOp::ShlSigned
+                };
+                let corrupted = verify_value_operation(
+                    ValueOp::Runtime(RuntimeOp::Integer {
+                        op: wrong_op,
+                        kind: *lhs,
+                    }),
+                    &arguments,
+                    "corrupt shift",
+                );
+                assert!(
+                    matches!(&corrupted, Err(error) if error.message.contains("requires")),
+                    "{corrupted:?}"
+                );
+            }
+        }
     }
 }

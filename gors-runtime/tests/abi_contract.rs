@@ -47,11 +47,14 @@ use gors_runtime::{
     go_slice_u8_make, go_slice_u8_nil, go_slice_u8_range, go_slice_u8_set, go_string_from_bytes,
     go_string_from_rune, go_string_from_slice_runes, go_string_from_slice_u8,
     go_string_from_static, go_string_index, go_string_len, go_string_range, go_string_range_count,
-    go_string_range_index_at, go_string_range_rune_at, int_div, int_rem, int_shl, int_shr,
-    panic_bool, panic_go_interface, panic_go_string, panic_i64, print_bool, print_f64,
-    print_go_string, print_i64, print_newline, print_space, print_u64,
+    go_string_range_index_at, go_string_range_rune_at, panic_bool, panic_go_interface,
+    panic_go_string, panic_i64, print_bool, print_f64, print_go_string, print_i64, print_newline,
+    print_space, print_u64,
 };
 use gors_runtime_abi::{RuntimeOp, RuntimeType};
+
+#[path = "abi_contract/integer.rs"]
+mod integer;
 
 struct RuntimeSurface {
     symbol: &'static str,
@@ -93,26 +96,7 @@ fn implementation_surface(operation: RuntimeOp) -> RuntimeSurface {
             fn(GoString, GoString) -> GoString,
             [RuntimeType::GoString, RuntimeType::GoString] -> RuntimeType::GoString
         ),
-        RuntimeOp::IntDiv => runtime_surface!(
-            int_div,
-            fn(GoInt, GoInt) -> GoInt,
-            [RuntimeType::I64, RuntimeType::I64] -> RuntimeType::I64
-        ),
-        RuntimeOp::IntRem => runtime_surface!(
-            int_rem,
-            fn(GoInt, GoInt) -> GoInt,
-            [RuntimeType::I64, RuntimeType::I64] -> RuntimeType::I64
-        ),
-        RuntimeOp::IntShl => runtime_surface!(
-            int_shl,
-            fn(GoInt, GoInt) -> GoInt,
-            [RuntimeType::I64, RuntimeType::I64] -> RuntimeType::I64
-        ),
-        RuntimeOp::IntShr => runtime_surface!(
-            int_shr,
-            fn(GoInt, GoInt) -> GoInt,
-            [RuntimeType::I64, RuntimeType::I64] -> RuntimeType::I64
-        ),
+        RuntimeOp::Integer { op, kind } => integer::implementation_surface(op, kind),
         RuntimeOp::PrintBool => runtime_surface!(
             print_bool,
             fn(bool),

@@ -22,6 +22,7 @@ mod pointers;
 mod ranges;
 mod recovery;
 mod selects;
+mod shifts;
 mod slices;
 mod statements;
 mod static_values;

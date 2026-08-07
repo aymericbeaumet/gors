@@ -360,7 +360,7 @@ impl Function {
                 let left_ty = self.operand_ty(left)?;
                 let right_ty = self.operand_ty(right)?;
                 verify_binary_types(*op, &left_ty, &right_ty, ty)?;
-                (ty.clone(), binary_effects(*op, ty))
+                (ty.clone(), binary_effects(*op, ty, &right_ty))
             }
         };
         let expected = intrinsic.union(read_effects(rvalue_operands(&rvalue.kind)));

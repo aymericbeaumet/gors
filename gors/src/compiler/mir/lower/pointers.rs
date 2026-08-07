@@ -648,7 +648,7 @@ impl FunctionLowerer {
                 right: rhs,
                 ty: ty.clone(),
             },
-            binary_effects(op, &ty),
+            binary_effects(op, &ty, &value.ty),
             provenance.clone(),
         );
         self.push_statement(make_statement(result, value, provenance.clone()))?;

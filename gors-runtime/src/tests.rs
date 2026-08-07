@@ -1,5 +1,6 @@
 use super::*;
 
+mod integer;
 mod maps;
 
 #[test]
@@ -745,30 +746,6 @@ fn raw_output_does_not_require_utf8() {
     assert!(write_go_string_to(&mut output, &value).is_ok());
 
     assert_eq!(output, [b'x', 0xff]);
-}
-
-#[test]
-fn runtime_integer_operations_match_go_edge_rules() {
-    assert_eq!(int_div(GoInt::MIN, -1), GoInt::MIN);
-    assert_eq!(int_rem(GoInt::MIN, -1), 0);
-}
-
-#[test]
-fn int_shifts_do_not_use_rusts_masked_shift_count() {
-    assert_eq!(int_shl(1, 63), GoInt::MIN);
-    assert_eq!(int_shl(1, 64), 0);
-    assert_eq!(int_shl(1, 10_000), 0);
-    assert_eq!(int_shr(-2, 1), -1);
-    assert_eq!(int_shr(-2, 64), -1);
-    assert_eq!(int_shr(2, 64), 0);
-}
-
-#[test]
-fn invalid_integer_operations_panic() {
-    assert!(std::panic::catch_unwind(|| int_div(1, 0)).is_err());
-    assert!(std::panic::catch_unwind(|| int_rem(1, 0)).is_err());
-    assert!(std::panic::catch_unwind(|| int_shl(1, -1)).is_err());
-    assert!(std::panic::catch_unwind(|| int_shr(1, -1)).is_err());
 }
 
 #[test]

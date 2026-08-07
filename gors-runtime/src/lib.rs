@@ -13,6 +13,7 @@
 mod byte_ranges;
 mod byte_slices;
 mod channels;
+mod integer;
 mod interface_containers;
 mod interfaces;
 mod maps;
@@ -39,6 +40,18 @@ pub use channels::{
     go_channel_i64_cap, go_channel_i64_close, go_channel_i64_is_nil, go_channel_i64_len,
     go_channel_i64_make, go_channel_i64_nil, go_channel_i64_receive, go_channel_i64_receive_value,
     go_channel_i64_send, go_channel_i64_try_receive, go_channel_i64_try_send,
+};
+pub use integer::{
+    int_div, int_div_i8, int_div_i16, int_div_i32, int_div_u8, int_div_u16, int_div_u32,
+    int_div_u64, int_rem, int_rem_i8, int_rem_i16, int_rem_i32, int_rem_u8, int_rem_u16,
+    int_rem_u32, int_rem_u64, int_shl, int_shl_signed_i8, int_shl_signed_i16, int_shl_signed_i32,
+    int_shl_signed_u8, int_shl_signed_u16, int_shl_signed_u32, int_shl_signed_u64,
+    int_shl_unsigned_i8, int_shl_unsigned_i16, int_shl_unsigned_i32, int_shl_unsigned_i64,
+    int_shl_unsigned_u8, int_shl_unsigned_u16, int_shl_unsigned_u32, int_shl_unsigned_u64, int_shr,
+    int_shr_signed_i8, int_shr_signed_i16, int_shr_signed_i32, int_shr_signed_u8,
+    int_shr_signed_u16, int_shr_signed_u32, int_shr_signed_u64, int_shr_unsigned_i8,
+    int_shr_unsigned_i16, int_shr_unsigned_i32, int_shr_unsigned_i64, int_shr_unsigned_u8,
+    int_shr_unsigned_u16, int_shr_unsigned_u32, int_shr_unsigned_u64,
 };
 pub use interface_containers::{
     GoMapStringInterface, GoSliceInterface, go_map_string_interface_contains,
@@ -668,86 +681,6 @@ fn concat_growth_capacity(required: usize) -> usize {
     required
         .saturating_add(required / 2)
         .saturating_add(usize::from(required != 0))
-}
-
-/// Go signed division, including the specified `MIN / -1 == MIN` case.
-///
-/// Division by zero is a language-level runtime panic.
-#[must_use]
-pub fn int_div(left: GoInt, right: GoInt) -> GoInt {
-    if right == 0 {
-        integer_divide_by_zero();
-    }
-    if left == GoInt::MIN && right == -1 {
-        GoInt::MIN
-    } else {
-        left / right
-    }
-}
-
-/// Go signed remainder, including the specified `MIN % -1 == 0` case.
-///
-/// Division by zero is a language-level runtime panic.
-#[must_use]
-pub fn int_rem(left: GoInt, right: GoInt) -> GoInt {
-    if right == 0 {
-        integer_divide_by_zero();
-    }
-    if left == GoInt::MIN && right == -1 {
-        0
-    } else {
-        left % right
-    }
-}
-
-/// Go left shift for a signed 64-bit `int` value.
-///
-/// Shift counts are not masked. Counts of 64 or more discard every bit and a
-/// negative dynamic count panics.
-#[must_use]
-pub fn int_shl(value: GoInt, shift: GoInt) -> GoInt {
-    if shift < 0 {
-        negative_shift_amount();
-    }
-    if shift >= GoInt::from(GoInt::BITS) {
-        return 0;
-    }
-    let Ok(shift) = u32::try_from(shift) else {
-        return 0;
-    };
-    value.wrapping_shl(shift)
-}
-
-/// Go arithmetic right shift for a signed 64-bit `int` value.
-///
-/// Counts of 64 or more retain only the sign extension and a negative dynamic
-/// count panics.
-#[must_use]
-pub fn int_shr(value: GoInt, shift: GoInt) -> GoInt {
-    if shift < 0 {
-        negative_shift_amount();
-    }
-    if shift >= GoInt::from(GoInt::BITS) {
-        return if value < 0 { -1 } else { 0 };
-    }
-    let Ok(shift) = u32::try_from(shift) else {
-        return if value < 0 { -1 } else { 0 };
-    };
-    value >> shift
-}
-
-#[cold]
-#[inline(never)]
-#[allow(clippy::panic)] // This is the Go language panic boundary, not an invariant failure.
-fn integer_divide_by_zero() -> ! {
-    std::panic::resume_unwind(Box::new("runtime error: integer divide by zero"))
-}
-
-#[cold]
-#[inline(never)]
-#[allow(clippy::panic)] // This is the Go language panic boundary, not an invariant failure.
-fn negative_shift_amount() -> ! {
-    std::panic::resume_unwind(Box::new("runtime error: negative shift amount"))
 }
 
 /// Raise an explicit Go panic carrying a boolean value.

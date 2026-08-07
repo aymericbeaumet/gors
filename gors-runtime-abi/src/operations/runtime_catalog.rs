@@ -1,15 +1,27 @@
 //! Canonically ordered runtime-operation catalog.
 
-use super::RuntimeOp;
+use super::{IntegerKind, IntegerRuntimeOp, RuntimeOp};
 
 pub(super) const ALL: &[RuntimeOp] = &[
     RuntimeOp::GoStringFromBytes,
     RuntimeOp::GoStringFromStatic,
     RuntimeOp::ConcatGoStrings,
-    RuntimeOp::IntDiv,
-    RuntimeOp::IntRem,
-    RuntimeOp::IntShl,
-    RuntimeOp::IntShr,
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::Div,
+        kind: IntegerKind::I64,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::Rem,
+        kind: IntegerKind::I64,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::ShlSigned,
+        kind: IntegerKind::I64,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::ShrSigned,
+        kind: IntegerKind::I64,
+    },
     RuntimeOp::PrintBool,
     RuntimeOp::PrintI64,
     RuntimeOp::PrintSpace,
@@ -169,4 +181,180 @@ pub(super) const ALL: &[RuntimeOp] = &[
     RuntimeOp::GoMapI64GoStringClear,
     RuntimeOp::GoMapI64GoStringIsNil,
     RuntimeOp::GoMapI64GoStringRangeKeys,
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::Div,
+        kind: IntegerKind::I8,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::Div,
+        kind: IntegerKind::I16,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::Div,
+        kind: IntegerKind::I32,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::Div,
+        kind: IntegerKind::U8,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::Div,
+        kind: IntegerKind::U16,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::Div,
+        kind: IntegerKind::U32,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::Div,
+        kind: IntegerKind::U64,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::Rem,
+        kind: IntegerKind::I8,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::Rem,
+        kind: IntegerKind::I16,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::Rem,
+        kind: IntegerKind::I32,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::Rem,
+        kind: IntegerKind::U8,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::Rem,
+        kind: IntegerKind::U16,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::Rem,
+        kind: IntegerKind::U32,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::Rem,
+        kind: IntegerKind::U64,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::ShlSigned,
+        kind: IntegerKind::I8,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::ShlSigned,
+        kind: IntegerKind::I16,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::ShlSigned,
+        kind: IntegerKind::I32,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::ShlSigned,
+        kind: IntegerKind::U8,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::ShlSigned,
+        kind: IntegerKind::U16,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::ShlSigned,
+        kind: IntegerKind::U32,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::ShlSigned,
+        kind: IntegerKind::U64,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::ShrSigned,
+        kind: IntegerKind::I8,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::ShrSigned,
+        kind: IntegerKind::I16,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::ShrSigned,
+        kind: IntegerKind::I32,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::ShrSigned,
+        kind: IntegerKind::U8,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::ShrSigned,
+        kind: IntegerKind::U16,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::ShrSigned,
+        kind: IntegerKind::U32,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::ShrSigned,
+        kind: IntegerKind::U64,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::ShlUnsigned,
+        kind: IntegerKind::I8,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::ShlUnsigned,
+        kind: IntegerKind::I16,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::ShlUnsigned,
+        kind: IntegerKind::I32,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::ShlUnsigned,
+        kind: IntegerKind::I64,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::ShlUnsigned,
+        kind: IntegerKind::U8,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::ShlUnsigned,
+        kind: IntegerKind::U16,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::ShlUnsigned,
+        kind: IntegerKind::U32,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::ShlUnsigned,
+        kind: IntegerKind::U64,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::ShrUnsigned,
+        kind: IntegerKind::I8,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::ShrUnsigned,
+        kind: IntegerKind::I16,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::ShrUnsigned,
+        kind: IntegerKind::I32,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::ShrUnsigned,
+        kind: IntegerKind::I64,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::ShrUnsigned,
+        kind: IntegerKind::U8,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::ShrUnsigned,
+        kind: IntegerKind::U16,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::ShrUnsigned,
+        kind: IntegerKind::U32,
+    },
+    RuntimeOp::Integer {
+        op: IntegerRuntimeOp::ShrUnsigned,
+        kind: IntegerKind::U64,
+    },
 ];

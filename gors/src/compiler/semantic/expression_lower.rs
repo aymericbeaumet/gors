@@ -5,6 +5,7 @@ use crate::token::Token;
 use super::FunctionLowerer;
 use super::conversions::is_predeclared_conversion_name;
 use super::expressions::*;
+use super::shifts::lower_shift_expression;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::{LocalId, NodeId};
@@ -150,7 +151,11 @@ impl FunctionLowerer {
                 if *token == Token::MUL {
                     return self.lower_pointer_deref(expression, node, source, expected);
                 }
-                let mut operand = self.lower_expr(expression, expected)?;
+                // Unary operators apply to the exact operand before the
+                // surrounding context is considered. In particular, -128 is
+                // representable as int8 even though the intermediate literal
+                // 128 is not.
+                let mut operand = self.lower_expr(expression, None)?;
                 let operand_ty = operand.ty.default_typed();
                 ensure_bootstrap_value_type(&operand_ty, source)?;
                 let operator_ty = operand_ty.underlying();
@@ -275,25 +280,8 @@ impl FunctionLowerer {
                         source,
                     )
                 })?;
-                if matches!(op, hir::BinaryOp::Shl | hir::BinaryOp::Shr)
-                    && matches!(left.ty, Ty::Untyped(_))
-                    && (right.ty.is_integer() || matches!(right.ty, Ty::Untyped(_)))
-                    && let (Some(left_value), Some(right_value)) =
-                        (expr_constant(&left), expr_constant(&right))
-                {
-                    let value = fold_untyped_constant_shift(op, left_value, right_value, source)?;
-                    let mut lowered = hir::Expr {
-                        node,
-                        kind: hir::ExprKind::Constant(value),
-                        ty: Ty::Untyped(UntypedTy::Int),
-                        category: hir::ValueCategory::Constant,
-                        effects: hir::Effects::default(),
-                        source,
-                    };
-                    if let Some(expected) = expected {
-                        coerce_expr(&mut lowered, expected, source)?;
-                    }
-                    return Ok(lowered);
+                if matches!(op, hir::BinaryOp::Shl | hir::BinaryOp::Shr) {
+                    return lower_shift_expression(op, left, right, node, source, expected);
                 }
                 let comparison = matches!(
                     op,

@@ -5,7 +5,18 @@ use crate::compiler::input::{PackageKey, WorkspaceKey};
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::types::{ConstValue, FloatTy, Ty};
 use crate::compiler::{self, hir, mir, rust_ir};
-use gors_runtime_abi::{IntegerKind, IntegerPrimitive, PrimitiveOp, RuntimeOp, RuntimeRequirement};
+use gors_runtime_abi::{
+    IntegerKind, IntegerPrimitive, IntegerRuntimeOp, PrimitiveOp, RuntimeOp, RuntimeRequirement,
+};
+
+const INT_DIV: RuntimeOp = RuntimeOp::Integer {
+    op: IntegerRuntimeOp::Div,
+    kind: IntegerKind::I64,
+};
+const INT_REM: RuntimeOp = RuntimeOp::Integer {
+    op: IntegerRuntimeOp::Rem,
+    kind: IntegerKind::I64,
+};
 
 fn lower_stages(source: &str) -> (hir::File, mir::File, rust_ir::File) {
     lower_stages_at("fingerprint.go", source)
@@ -216,8 +227,8 @@ func narrowNeg(value rune) rune { return -value }
     *value_op_mut(
         &mut changed_runtime,
         "runtime",
-        rust_ir::ValueOp::Runtime(RuntimeOp::IntDiv),
-    ) = rust_ir::ValueOp::Runtime(RuntimeOp::IntRem);
+        rust_ir::ValueOp::Runtime(INT_DIV),
+    ) = rust_ir::ValueOp::Runtime(INT_REM);
     assert_ne!(
         rust_ir_function(rust_ir_named(&original, "runtime")),
         rust_ir_function(rust_ir_named(&changed_runtime, "runtime"))
@@ -287,11 +298,10 @@ fn rust_ir_fingerprints_encode_hidden_and_terminal_runtime_operations() {
 
 #[test]
 fn runtime_requirement_fingerprints_are_canonical_and_exact() {
-    let left =
-        RuntimeRequirement::new([RuntimeOp::PrintI64, RuntimeOp::IntDiv, RuntimeOp::PrintI64]);
-    let reordered = RuntimeRequirement::new([RuntimeOp::IntDiv, RuntimeOp::PrintI64]);
-    let changed = RuntimeRequirement::new([RuntimeOp::IntRem, RuntimeOp::PrintI64]);
-    let missing = RuntimeRequirement::new([RuntimeOp::IntDiv]);
+    let left = RuntimeRequirement::new([RuntimeOp::PrintI64, INT_DIV, RuntimeOp::PrintI64]);
+    let reordered = RuntimeRequirement::new([INT_DIV, RuntimeOp::PrintI64]);
+    let changed = RuntimeRequirement::new([INT_REM, RuntimeOp::PrintI64]);
+    let missing = RuntimeRequirement::new([INT_DIV]);
 
     assert_eq!(left, reordered);
     assert_eq!(

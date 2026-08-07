@@ -334,6 +334,12 @@ impl FunctionLowerer {
         })?;
         let set = map_set_builtin(&map.ty)
             .ok_or_else(|| Diagnostic::backend("map assignment has no concrete set operation"))?;
+        let Ty::Map(_, element_ty) = map.ty.underlying() else {
+            return Err(Diagnostic::backend(
+                "map assignment reached MIR with a non-map receiver",
+            ));
+        };
+        let element_ty = element_ty.as_ref().clone();
         let map_operand = self.lower_expr(map)?;
         let map_operand =
             self.materialize(map_operand, map.ty.clone(), Provenance::Source(map.source))?;
@@ -350,7 +356,7 @@ impl FunctionLowerer {
         } else {
             let provenance = Provenance::Source(source);
             let old = Place {
-                local: self.new_temp(value.ty.clone()),
+                local: self.new_temp(element_ty.clone()),
             };
             self.emit_map_call(
                 get,
@@ -365,7 +371,7 @@ impl FunctionLowerer {
                 Provenance::Source(value.source),
             )?;
             let result = Place {
-                local: self.new_temp(value.ty.clone()),
+                local: self.new_temp(element_ty.clone()),
             };
             let binary_op = assignment_binary_op(op);
             let binary = make_rvalue(
@@ -373,9 +379,9 @@ impl FunctionLowerer {
                     op: binary_op,
                     left: Operand::Read(old),
                     right: value_operand,
-                    ty: value.ty.clone(),
+                    ty: element_ty.clone(),
                 },
-                binary_effects(binary_op, &value.ty),
+                binary_effects(binary_op, &element_ty, &value.ty),
                 provenance.clone(),
             );
             self.push_statement(make_statement(result, binary, provenance))?;

@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn link_validation_order_is_schema_contract_target_then_toolchain() -> Result<(), Box<dyn Error>> {
     let contract = manifest([], [RuntimeOp::PrintI64]);
-    let other_contract = manifest([], [RuntimeOp::IntDiv]);
+    let other_contract = manifest([], [INT_DIV]);
     let target = target_model("x86_64-unknown-linux-gnu")?;
     let other_target = target_model("wasm32-unknown-unknown")?;
     let expected_toolchain = compatibility_identity(b"expected rustc");

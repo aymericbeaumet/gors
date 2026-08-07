@@ -3,7 +3,7 @@ use crate::compiler::hir;
 use crate::compiler::lowering::type_lowering::integer_kind;
 use crate::compiler::rust_ir as out;
 use crate::compiler::types::{ConstValue, FloatTy, Ty};
-use gors_runtime_abi::{IntegerKind, IntegerPrimitive, PrimitiveOp, RuntimeOp};
+use gors_runtime_abi::{IntegerPrimitive, IntegerRuntimeOp, PrimitiveOp, RuntimeOp};
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 
@@ -163,18 +163,22 @@ pub(super) fn lower_binary_op(
         {
             integer_op(IntegerPrimitive::WrappingMul, result)
         }
-        (
-            Go::Div,
-            Integer(IntegerKind::I64),
-            Integer(IntegerKind::I64),
-            Integer(IntegerKind::I64),
-        ) => Runtime(RuntimeOp::IntDiv),
-        (
-            Go::Rem,
-            Integer(IntegerKind::I64),
-            Integer(IntegerKind::I64),
-            Integer(IntegerKind::I64),
-        ) => Runtime(RuntimeOp::IntRem),
+        (Go::Div, Integer(left), Integer(right), Integer(result))
+            if left == right && left == result =>
+        {
+            Runtime(RuntimeOp::Integer {
+                op: IntegerRuntimeOp::Div,
+                kind: result,
+            })
+        }
+        (Go::Rem, Integer(left), Integer(right), Integer(result))
+            if left == right && left == result =>
+        {
+            Runtime(RuntimeOp::Integer {
+                op: IntegerRuntimeOp::Rem,
+                kind: result,
+            })
+        }
         (Go::BitAnd, Integer(left), Integer(right), Integer(result))
             if left == right && left == result =>
         {
@@ -190,18 +194,26 @@ pub(super) fn lower_binary_op(
         {
             integer_op(IntegerPrimitive::BitXor, result)
         }
-        (
-            Go::Shl,
-            Integer(IntegerKind::I64),
-            Integer(IntegerKind::I64),
-            Integer(IntegerKind::I64),
-        ) => Runtime(RuntimeOp::IntShl),
-        (
-            Go::Shr,
-            Integer(IntegerKind::I64),
-            Integer(IntegerKind::I64),
-            Integer(IntegerKind::I64),
-        ) => Runtime(RuntimeOp::IntShr),
+        (Go::Shl, Integer(left), Integer(right), Integer(result)) if left == result => {
+            Runtime(RuntimeOp::Integer {
+                op: if right.is_signed() {
+                    IntegerRuntimeOp::ShlSigned
+                } else {
+                    IntegerRuntimeOp::ShlUnsigned
+                },
+                kind: result,
+            })
+        }
+        (Go::Shr, Integer(left), Integer(right), Integer(result)) if left == result => {
+            Runtime(RuntimeOp::Integer {
+                op: if right.is_signed() {
+                    IntegerRuntimeOp::ShrSigned
+                } else {
+                    IntegerRuntimeOp::ShrUnsigned
+                },
+                kind: result,
+            })
+        }
         (Go::AndNot, Integer(left), Integer(right), Integer(result))
             if left == right && left == result =>
         {
@@ -270,4 +282,75 @@ pub(super) fn lower_binary_op(
         }
     };
     Ok(lowered)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gors_runtime_abi::IntegerKind;
+
+    #[test]
+    fn every_integer_kind_selects_the_parameterized_division_and_remainder_runtime_ops() {
+        for kind in IntegerKind::ALL {
+            let ty = out::RustType::Integer(*kind);
+            for (go, runtime) in [
+                (hir::BinaryOp::Div, IntegerRuntimeOp::Div),
+                (hir::BinaryOp::Rem, IntegerRuntimeOp::Rem),
+            ] {
+                let expected = out::ValueOp::Runtime(RuntimeOp::Integer {
+                    op: runtime,
+                    kind: *kind,
+                });
+                let actual = lower_binary_op(
+                    go,
+                    &Ty::Int(crate::compiler::types::IntTy::Int),
+                    ty.clone(),
+                    ty.clone(),
+                    ty.clone(),
+                );
+                assert!(
+                    matches!(&actual, Ok(value) if value == &expected),
+                    "{actual:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_lhs_and_count_kind_selects_the_exact_shift_runtime_member() {
+        for lhs in IntegerKind::ALL {
+            for count in IntegerKind::ALL {
+                let lhs_ty = out::RustType::Integer(*lhs);
+                let count_ty = out::RustType::Integer(*count);
+                for (go, signed, unsigned) in [
+                    (
+                        hir::BinaryOp::Shl,
+                        IntegerRuntimeOp::ShlSigned,
+                        IntegerRuntimeOp::ShlUnsigned,
+                    ),
+                    (
+                        hir::BinaryOp::Shr,
+                        IntegerRuntimeOp::ShrSigned,
+                        IntegerRuntimeOp::ShrUnsigned,
+                    ),
+                ] {
+                    let expected = out::ValueOp::Runtime(RuntimeOp::Integer {
+                        op: if count.is_signed() { signed } else { unsigned },
+                        kind: *lhs,
+                    });
+                    let actual = lower_binary_op(
+                        go,
+                        &Ty::Int(crate::compiler::types::IntTy::Int),
+                        lhs_ty.clone(),
+                        count_ty.clone(),
+                        lhs_ty.clone(),
+                    );
+                    assert!(
+                        matches!(&actual, Ok(value) if value == &expected),
+                        "{actual:?}"
+                    );
+                }
+            }
+        }
+    }
 }

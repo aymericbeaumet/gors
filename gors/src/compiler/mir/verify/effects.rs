@@ -19,13 +19,13 @@ pub(super) fn call_effects() -> hir::Effects {
 pub(super) fn binary_effects(
     op: hir::BinaryOp,
     result: &crate::compiler::types::Ty,
+    right: &crate::compiler::types::Ty,
 ) -> hir::Effects {
     hir::Effects {
         may_allocate: op == hir::BinaryOp::Add && result == &crate::compiler::types::Ty::String,
-        may_panic: matches!(
-            op,
-            hir::BinaryOp::Div | hir::BinaryOp::Rem | hir::BinaryOp::Shl | hir::BinaryOp::Shr
-        ),
+        may_panic: matches!(op, hir::BinaryOp::Div | hir::BinaryOp::Rem)
+            || (matches!(op, hir::BinaryOp::Shl | hir::BinaryOp::Shr)
+                && matches!(right.underlying(), crate::compiler::types::Ty::Int(_))),
         ..hir::Effects::default()
     }
 }

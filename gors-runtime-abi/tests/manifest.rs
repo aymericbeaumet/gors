@@ -6,10 +6,27 @@ use gors_runtime_abi::{
     AllocationEffect, ArgumentMutationEffect, ArtifactSchemaVersion, BlockingEffect,
     CURRENT_ARTIFACT_SCHEMA, CURRENT_CONTRACT_VERSION, CURRENT_MANIFEST_SCHEMA,
     CompatibilityIdentity, ContractVersion, DataWidth, Endianness, GoPanicCondition,
-    GoSemanticModel, HostIoEffect, ImplementationHash, IntegerKind, IntegerPrimitive, PrimitiveOp,
-    RuntimeAbiManifest, RuntimeArtifactFormat, RuntimeArtifactManifest, RuntimeDependency,
-    RuntimeLinkError, RuntimeLinkRequest, RuntimeOp, RuntimeRequirement, TargetCapabilities,
-    TargetCapability, TargetModel, TargetModelError,
+    GoSemanticModel, HostIoEffect, ImplementationHash, IntegerKind, IntegerPrimitive,
+    IntegerRuntimeOp, PrimitiveOp, RuntimeAbiManifest, RuntimeArtifactFormat,
+    RuntimeArtifactManifest, RuntimeDependency, RuntimeLinkError, RuntimeLinkRequest, RuntimeOp,
+    RuntimeRequirement, TargetCapabilities, TargetCapability, TargetModel, TargetModelError,
+};
+
+const INT_DIV: RuntimeOp = RuntimeOp::Integer {
+    op: IntegerRuntimeOp::Div,
+    kind: IntegerKind::I64,
+};
+const INT_REM: RuntimeOp = RuntimeOp::Integer {
+    op: IntegerRuntimeOp::Rem,
+    kind: IntegerKind::I64,
+};
+const INT_SHL: RuntimeOp = RuntimeOp::Integer {
+    op: IntegerRuntimeOp::ShlSigned,
+    kind: IntegerKind::I64,
+};
+const INT_SHR: RuntimeOp = RuntimeOp::Integer {
+    op: IntegerRuntimeOp::ShrSigned,
+    kind: IntegerKind::I64,
 };
 
 #[path = "manifest/catalog.rs"]
@@ -84,11 +101,11 @@ fn contract_canonicalization_removes_input_order_and_duplicates() {
     };
     let left = manifest(
         [integer_equal, PrimitiveOp::BoolNot, integer_equal],
-        [RuntimeOp::PrintI64, RuntimeOp::IntDiv, RuntimeOp::PrintI64],
+        [RuntimeOp::PrintI64, INT_DIV, RuntimeOp::PrintI64],
     );
     let right = manifest(
         [PrimitiveOp::BoolNot, integer_equal],
-        [RuntimeOp::IntDiv, RuntimeOp::PrintI64],
+        [INT_DIV, RuntimeOp::PrintI64],
     );
 
     assert_eq!(left, right);
@@ -103,11 +120,11 @@ fn current_contract_identity_is_sha256_of_canonical_bytes() {
 
     assert_eq!(manifest.schema().get(), 2);
     assert_eq!(manifest.contract(), CURRENT_CONTRACT_VERSION);
-    assert_eq!(manifest.contract(), ContractVersion::new(2, 24, 0));
+    assert_eq!(manifest.contract(), ContractVersion::new(2, 25, 0));
     assert_eq!(manifest.identity().as_bytes(), &expected);
     assert_eq!(
         manifest.identity().to_string(),
-        "7f2e66d6085c7d0dff9daca318651200bfba66b8644fa022e4ec12c16f5b93c7",
+        "1a352537501b9e54bf8512ce0826dcc7043ff059096f73d961f92255418e4755",
         "the canonical runtime contract changed; review the ABI diff and bump its semantic version before accepting a new identity",
     );
 }
@@ -150,10 +167,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoInterfaceBoxStructI64
             | RuntimeOp::GoChannelI64Make => AllocationEffect::MayAllocate,
             RuntimeOp::GoStringFromStatic
-            | RuntimeOp::IntDiv
-            | RuntimeOp::IntRem
-            | RuntimeOp::IntShl
-            | RuntimeOp::IntShr
+            | RuntimeOp::Integer { .. }
             | RuntimeOp::PrintBool
             | RuntimeOp::PrintI64
             | RuntimeOp::PrintU64
@@ -284,10 +298,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             RuntimeOp::GoStringFromBytes
             | RuntimeOp::GoStringFromRune
             | RuntimeOp::GoStringFromStatic
-            | RuntimeOp::IntDiv
-            | RuntimeOp::IntRem
-            | RuntimeOp::IntShl
-            | RuntimeOp::IntShr
+            | RuntimeOp::Integer { .. }
             | RuntimeOp::PrintBool
             | RuntimeOp::PrintI64
             | RuntimeOp::PrintU64
@@ -418,10 +429,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoStringFromRune
             | RuntimeOp::GoStringFromStatic
             | RuntimeOp::ConcatGoStrings
-            | RuntimeOp::IntDiv
-            | RuntimeOp::IntRem
-            | RuntimeOp::IntShl
-            | RuntimeOp::IntShr
+            | RuntimeOp::Integer { .. }
             | RuntimeOp::PanicBool
             | RuntimeOp::PanicI64
             | RuntimeOp::PanicGoString
@@ -533,8 +541,14 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             _ => HostIoEffect::None,
         };
         let expected_panics: &[GoPanicCondition] = match operation {
-            RuntimeOp::IntDiv | RuntimeOp::IntRem => &[GoPanicCondition::IntegerDivideByZero],
-            RuntimeOp::IntShl | RuntimeOp::IntShr => &[GoPanicCondition::NegativeShiftAmount],
+            RuntimeOp::Integer {
+                op: IntegerRuntimeOp::Div | IntegerRuntimeOp::Rem,
+                ..
+            } => &[GoPanicCondition::IntegerDivideByZero],
+            RuntimeOp::Integer {
+                op: IntegerRuntimeOp::ShlSigned | IntegerRuntimeOp::ShrSigned,
+                ..
+            } => &[GoPanicCondition::NegativeShiftAmount],
             RuntimeOp::PanicBool
             | RuntimeOp::PanicI64
             | RuntimeOp::PanicGoString
@@ -587,6 +601,10 @@ fn runtime_effect_metadata_is_complete_and_exact() {
                 GoPanicCondition::CloseOfNilChannel,
                 GoPanicCondition::CloseOfClosedChannel,
             ],
+            RuntimeOp::Integer {
+                op: IntegerRuntimeOp::ShlUnsigned | IntegerRuntimeOp::ShrUnsigned,
+                ..
+            } => &[],
             RuntimeOp::GoStringFromBytes
             | RuntimeOp::GoStringFromRune
             | RuntimeOp::GoStringFromStatic
@@ -692,7 +710,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
 
 #[test]
 fn semantic_contract_dimensions_change_only_the_contract_hash() {
-    let baseline = manifest([PrimitiveOp::BoolNot], [RuntimeOp::IntDiv]);
+    let baseline = manifest([PrimitiveOp::BoolNot], [INT_DIV]);
     let schema = RuntimeAbiManifest::new(
         gors_runtime_abi::ManifestSchemaVersion::new(3),
         baseline.contract(),
@@ -726,7 +744,7 @@ fn semantic_contract_dimensions_change_only_the_contract_hash() {
         baseline.contract(),
         baseline.semantics(),
         baseline.primitive_ops().iter().copied(),
-        [RuntimeOp::IntDiv, RuntimeOp::IntRem],
+        [INT_DIV, INT_REM],
     );
 
     for changed in [schema, version, semantics, primitive, runtime] {
@@ -737,7 +755,7 @@ fn semantic_contract_dimensions_change_only_the_contract_hash() {
 #[test]
 fn target_and_implementation_change_artifact_but_not_contract_identity()
 -> Result<(), Box<dyn Error>> {
-    let contract = manifest([], [RuntimeOp::IntDiv]);
+    let contract = manifest([], [INT_DIV]);
     let first = artifact(
         &contract,
         target_model("wasm32-unknown-unknown")?,
@@ -768,40 +786,30 @@ fn runtime_requirements_are_canonical_and_composable() {
     let left = RuntimeRequirement::new([
         RuntimeOp::PrintI64,
         RuntimeOp::ConcatGoStrings,
-        RuntimeOp::IntDiv,
+        INT_DIV,
         RuntimeOp::PrintI64,
     ]);
-    let reordered = RuntimeRequirement::new([
-        RuntimeOp::IntDiv,
-        RuntimeOp::PrintI64,
-        RuntimeOp::ConcatGoStrings,
-    ]);
+    let reordered =
+        RuntimeRequirement::new([INT_DIV, RuntimeOp::PrintI64, RuntimeOp::ConcatGoStrings]);
 
     assert_eq!(left, reordered);
     assert_eq!(
         left.as_slice(),
-        [
-            RuntimeOp::ConcatGoStrings,
-            RuntimeOp::IntDiv,
-            RuntimeOp::PrintI64
-        ]
+        [RuntimeOp::ConcatGoStrings, INT_DIV, RuntimeOp::PrintI64]
     );
     assert_eq!(left.iter().collect::<Vec<_>>(), left.as_slice());
     assert_eq!((&left).into_iter().collect::<Vec<_>>(), left.as_slice());
-    assert!(left.contains(RuntimeOp::IntDiv));
-    assert!(!left.contains(RuntimeOp::IntRem));
+    assert!(left.contains(INT_DIV));
+    assert!(!left.contains(INT_REM));
     assert_eq!(left.len(), 3);
     assert!(!left.is_empty());
 
-    let union = left.union(&RuntimeRequirement::new([
-        RuntimeOp::IntDiv,
-        RuntimeOp::PrintNewline,
-    ]));
+    let union = left.union(&RuntimeRequirement::new([INT_DIV, RuntimeOp::PrintNewline]));
     assert_eq!(
         union.as_slice(),
         [
             RuntimeOp::ConcatGoStrings,
-            RuntimeOp::IntDiv,
+            INT_DIV,
             RuntimeOp::PrintI64,
             RuntimeOp::PrintNewline
         ]
@@ -820,11 +828,8 @@ fn runtime_requirements_are_canonical_and_composable() {
 #[test]
 fn runtime_requirement_wire_ids_round_trip_and_reject_unknown_values() -> Result<(), Box<dyn Error>>
 {
-    let requirement = RuntimeRequirement::new([
-        RuntimeOp::PrintNewline,
-        RuntimeOp::IntDiv,
-        RuntimeOp::PrintNewline,
-    ]);
+    let requirement =
+        RuntimeRequirement::new([RuntimeOp::PrintNewline, INT_DIV, RuntimeOp::PrintNewline]);
     let ids = requirement.operation_ids().collect::<Vec<_>>();
 
     assert_eq!(ids, [8, 16]);
@@ -840,17 +845,12 @@ fn runtime_requirement_wire_ids_round_trip_and_reject_unknown_values() -> Result
 
 #[test]
 fn artifact_selection_enforces_runtime_capability_requirements() -> Result<(), Box<dyn Error>> {
-    let contract = manifest([], [RuntimeOp::IntDiv, RuntimeOp::PrintI64]);
+    let contract = manifest([], [INT_DIV, RuntimeOp::PrintI64]);
     let target = target_model("wasm32-unknown-unknown")?;
     let toolchain = compatibility_identity(b"rustc");
     let provider = artifact(&contract, target.clone(), [], toolchain, b"runtime");
 
-    let pure = provider.select(request(
-        &contract,
-        [RuntimeOp::IntDiv],
-        target.clone(),
-        toolchain,
-    )?)?;
+    let pure = provider.select(request(&contract, [INT_DIV], target.clone(), toolchain)?)?;
     assert_eq!(pure.request().dependency().requirement().len(), 1);
 
     let Err(error) = provider.select(request(
@@ -919,7 +919,7 @@ fn empty_operation_requirement_still_selects_a_runtime() -> Result<(), Box<dyn E
 
 #[test]
 fn dependency_rejects_an_operation_outside_its_contract() -> Result<(), Box<dyn Error>> {
-    let contract = manifest([], [RuntimeOp::IntDiv]);
+    let contract = manifest([], [INT_DIV]);
     let Err(error) =
         RuntimeDependency::new(&contract, RuntimeRequirement::new([RuntimeOp::PrintI64]))
     else {

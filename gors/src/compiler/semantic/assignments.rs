@@ -8,6 +8,7 @@ use super::expressions::{
     is_assignable, validate_binary_operator,
 };
 use super::maps::{i64_go_string_map_ty, string_i64_map_ty};
+use super::shifts::prepare_shift_count;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::provenance::SourceRef;
@@ -176,18 +177,18 @@ impl FunctionLowerer {
                 hir::Place::Discard => Ok(None),
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let op = assignment_op(token, source)?;
         let values = right
             .iter()
             .zip(&destination_types)
             .map(|(expression, expected)| match expected {
-                Some(expected) => self.lower_expr(expression, Some(expected)),
+                Some(expected) => self.lower_assignment_operand(expression, expected, op, source),
                 None => self.lower_expr(expression, None).and_then(|expression| {
                     let source = expression.source;
                     default_expr_type(expression, source)
                 }),
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let op = assignment_op(token, source)?;
         if op != hir::AssignOp::Set && destinations.len() != 1 {
             return Err(Diagnostic::semantic(
                 "compound assignment requires one destination and one value",
@@ -413,8 +414,8 @@ impl FunctionLowerer {
                     source,
                 ));
             };
-            let value = self.lower_expr(value, Some(&target.ty))?;
             let op = assignment_op(token, source)?;
+            let value = self.lower_assignment_operand(value, &target.ty, op, source)?;
             if op != hir::AssignOp::Set {
                 super::expressions::validate_binary_operator(
                     super::expressions::assignment_binary_op(op),
@@ -492,8 +493,8 @@ impl FunctionLowerer {
                     hir::Builtin::SliceI64Set
                 };
                 let index = self.lower_expr(index, Some(&Ty::Int(IntTy::Int)))?;
-                let value = self.lower_expr(value, Some(&element_ty))?;
                 let op = assignment_op(token, source)?;
+                let value = self.lower_assignment_operand(value, &element_ty, op, source)?;
                 if element.underlying() == &Ty::Uint(UintTy::Uint8) && op != hir::AssignOp::Set {
                     return Err(Diagnostic::unsupported(
                         "compound []byte assignment requires uint8 wrapping semantics",
@@ -528,7 +529,8 @@ impl FunctionLowerer {
                     )?;
                 }
                 let key = self.lower_expr(index, Some(&Ty::String))?;
-                let value = self.lower_expr(value, Some(&Ty::Int(IntTy::Int)))?;
+                let value =
+                    self.lower_assignment_operand(value, &Ty::Int(IntTy::Int), op, source)?;
                 Ok(hir::StmtKind::MapAssign {
                     map: container,
                     key,
@@ -549,7 +551,7 @@ impl FunctionLowerer {
                     )?;
                 }
                 let key = self.lower_expr(index, Some(&Ty::Int(IntTy::Int)))?;
-                let value = self.lower_expr(value, Some(&Ty::String))?;
+                let value = self.lower_assignment_operand(value, &Ty::String, op, source)?;
                 Ok(hir::StmtKind::MapAssign {
                     map: container,
                     key,
@@ -880,6 +882,22 @@ impl FunctionLowerer {
             hir::Place::Discard => Err(Diagnostic::backend(
                 "blank identifier unexpectedly required an inferred type",
             )),
+        }
+    }
+
+    pub(super) fn lower_assignment_operand(
+        &mut self,
+        expression: &ExprSyntax,
+        expected: &Ty,
+        op: hir::AssignOp,
+        source: SourceRef,
+    ) -> Result<hir::Expr, Diagnostic> {
+        if matches!(op, hir::AssignOp::Shl | hir::AssignOp::Shr) {
+            let mut value = self.lower_expr(expression, None)?;
+            prepare_shift_count(&mut value, source)?;
+            Ok(value)
+        } else {
+            self.lower_expr(expression, Some(expected))
         }
     }
 }

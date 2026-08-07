@@ -1,11 +1,11 @@
 use std::collections::BTreeSet;
 
 use gors_runtime_abi::{
-    IntegerKind, IntegerKindConstraint, IntegerPrimitive, PrimitiveOp, RuntimeAbiManifest,
-    RuntimeOp, RuntimeType,
+    IntegerKind, IntegerKindConstraint, IntegerPrimitive, IntegerRuntimeOp, PrimitiveOp,
+    RuntimeAbiManifest, RuntimeOp, RuntimeType,
 };
 
-use super::manifest;
+use super::{INT_DIV, INT_REM, INT_SHL, INT_SHR, manifest};
 
 #[test]
 fn current_operation_catalogs_are_complete_and_collision_free() {
@@ -62,6 +62,34 @@ fn current_operation_catalogs_are_complete_and_collision_free() {
     assert_eq!(RuntimeOp::PrintU64.id().get(), 160);
     assert_eq!(RuntimeOp::GoMapStringI64RangeKeys.id().get(), 161);
     assert_eq!(RuntimeOp::GoMapI64GoStringRangeKeys.id().get(), 171);
+    assert_eq!(RuntimeOp::ALL.len(), 210);
+
+    let integer_ids = [
+        [172, 173, 174, 8, 175, 176, 177, 178],
+        [179, 180, 181, 9, 182, 183, 184, 185],
+        [186, 187, 188, 10, 189, 190, 191, 192],
+        [193, 194, 195, 11, 196, 197, 198, 199],
+        [200, 201, 202, 203, 204, 205, 206, 207],
+        [208, 209, 210, 211, 212, 213, 214, 215],
+    ];
+    for (operation, expected_ids) in IntegerRuntimeOp::ALL.iter().zip(integer_ids) {
+        for (kind, expected_id) in IntegerKind::ALL.iter().zip(expected_ids) {
+            let runtime_operation = RuntimeOp::Integer {
+                op: *operation,
+                kind: *kind,
+            };
+            assert_eq!(runtime_operation.id().get(), expected_id);
+            assert_eq!(
+                RuntimeOp::try_from(runtime_operation.id().get()),
+                Ok(runtime_operation)
+            );
+            assert!(RuntimeOp::ALL.contains(&runtime_operation));
+        }
+    }
+    assert_eq!(INT_DIV.symbol(), "int_div");
+    assert_eq!(INT_REM.symbol(), "int_rem");
+    assert_eq!(INT_SHL.symbol(), "int_shl");
+    assert_eq!(INT_SHR.symbol(), "int_shr");
 
     let primitive_identities = PrimitiveOp::ALL
         .iter()
@@ -88,6 +116,9 @@ fn every_runtime_i64_slot_has_the_exact_semantic_integer_constraint() {
             }
             parameter_slots += 1;
             let expected = match (*operation, position) {
+                (RuntimeOp::Integer { kind, .. }, 0) => IntegerKindConstraint::Exact(kind),
+                (RuntimeOp::Integer { op, .. }, 1) if op.is_shift() => op.count_constraint(),
+                (RuntimeOp::Integer { kind, .. }, 1) => IntegerKindConstraint::Exact(kind),
                 (RuntimeOp::PrintI64, 0) => IntegerKindConstraint::Signed,
                 (RuntimeOp::PrintU64, 0) => IntegerKindConstraint::Unsigned,
                 (RuntimeOp::GoInterfaceBoxI64, 1) | (RuntimeOp::GoStringFromRune, 0) => {
@@ -115,6 +146,7 @@ fn every_runtime_i64_slot_has_the_exact_semantic_integer_constraint() {
             }
             result_slots += 1;
             let expected = match (*operation, position) {
+                (RuntimeOp::Integer { kind, .. }, 0) => IntegerKindConstraint::Exact(kind),
                 (RuntimeOp::GoInterfaceUnboxI64, 0) => IntegerKindConstraint::Any,
                 (RuntimeOp::GoSliceI64Index, 0) => IntegerKindConstraint::I64OrI32,
                 (RuntimeOp::GoSliceU8Index | RuntimeOp::GoStringIndex, 0) => {

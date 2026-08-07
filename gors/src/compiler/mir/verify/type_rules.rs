@@ -2,7 +2,7 @@
 
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
-use crate::compiler::types::{ComplexTy, ConstValue, FloatTy, IntTy, Ty};
+use crate::compiler::types::{ComplexTy, ConstValue, FloatTy, Ty};
 
 pub(super) fn verify_bootstrap_type(ty: &Ty, context: &str) -> Result<(), Diagnostic> {
     if *ty == Ty::Unit || ty.is_bootstrap_value() {
@@ -111,7 +111,8 @@ pub(super) fn verify_binary_types(
                 && same_result
                 && matches!(
                     underlying,
-                    Ty::Int(IntTy::Int)
+                    Ty::Int(_)
+                        | Ty::Uint(_)
                         | Ty::Float(FloatTy::Float64)
                         | Ty::Complex(ComplexTy::Complex128)
                 )
@@ -132,8 +133,13 @@ pub(super) fn verify_binary_types(
         | hir::BinaryOp::AndNot => {
             same_operands && same_result && matches!(underlying, Ty::Int(_) | Ty::Uint(_))
         }
-        hir::BinaryOp::Rem | hir::BinaryOp::Shl | hir::BinaryOp::Shr => {
-            same_operands && same_result && *underlying == Ty::Int(IntTy::Int)
+        hir::BinaryOp::Rem => {
+            same_operands && same_result && matches!(underlying, Ty::Int(_) | Ty::Uint(_))
+        }
+        hir::BinaryOp::Shl | hir::BinaryOp::Shr => {
+            same_result
+                && matches!(underlying, Ty::Int(_) | Ty::Uint(_))
+                && matches!(right.underlying(), Ty::Int(_) | Ty::Uint(_))
         }
         hir::BinaryOp::Equal | hir::BinaryOp::NotEqual => {
             same_operands

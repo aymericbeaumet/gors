@@ -19,7 +19,7 @@ mod test_file;
 
 use super::construct::{
     assignment_binary_op, binary_effects, call_effects, make_rvalue, make_statement,
-    make_terminator, operand_ty,
+    make_terminator,
 };
 use super::labels::{collect_labels, statement_declares_label};
 use super::{
@@ -404,6 +404,7 @@ impl FunctionLowerer {
                 value,
             } => {
                 let provenance = Provenance::Source(statement.source);
+                let element_ty = slices::element_type(&slice.ty)?;
                 let slice_operand = self.lower_expr(slice)?;
                 let slice_operand = self.materialize(
                     slice_operand,
@@ -437,7 +438,7 @@ impl FunctionLowerer {
                         }
                     };
                     let old = Place {
-                        local: self.new_temp(value.ty.clone()),
+                        local: self.new_temp(element_ty.clone()),
                     };
                     let after_index = self.new_block(provenance.clone());
                     self.terminate(make_terminator(
@@ -458,7 +459,7 @@ impl FunctionLowerer {
                         Provenance::Source(value.source),
                     )?;
                     let result = Place {
-                        local: self.new_temp(value.ty.clone()),
+                        local: self.new_temp(element_ty.clone()),
                     };
                     let binary_op = assignment_binary_op(*op);
                     let binary = make_rvalue(
@@ -466,9 +467,9 @@ impl FunctionLowerer {
                             op: binary_op,
                             left: Operand::Read(old),
                             right: value_operand,
-                            ty: value.ty.clone(),
+                            ty: element_ty.clone(),
                         },
-                        binary_effects(binary_op, &value.ty),
+                        binary_effects(binary_op, &element_ty, &value.ty),
                         provenance.clone(),
                     );
                     self.push_statement(make_statement(result, binary, provenance.clone()))?;
@@ -819,66 +820,12 @@ impl FunctionLowerer {
                 args,
                 candidates,
             } => self.lower_interface_call_expr(receiver, args, candidates, &expr.ty, expr.source),
-            hir::ExprKind::Recover => {
-                let state = self.recover_active.ok_or_else(|| {
-                    Diagnostic::backend("recover reached a function without cleanup state")
-                })?;
-                let recovered = self.recover_value.ok_or_else(|| {
-                    Diagnostic::backend("recover reached a function without a captured value")
-                })?;
-                let result = Place {
-                    local: self.new_temp(expr.ty.clone()),
-                };
-                let provenance = Provenance::Source(expr.source);
-                let value = make_rvalue(
-                    RvalueKind::Recover {
-                        state: Place { local: state },
-                        value: Operand::Read(Place { local: recovered }),
-                    },
-                    expr.effects,
-                    provenance.clone(),
-                );
-                self.push_statement(make_statement(result, value, provenance))?;
-                Ok(Operand::Read(result))
-            }
+            hir::ExprKind::Recover => self.lower_recover_expr(&expr.ty, expr.effects, expr.source),
             hir::ExprKind::Unary { op, operand } => {
-                let operand_provenance = Provenance::Source(operand.source);
-                let operand = self.lower_expr(operand)?;
-                let ty = operand_ty(&operand, &self.locals)?;
-                let operand = self.materialize(operand, ty, operand_provenance)?;
-                let result = self.new_temp(expr.ty.clone());
-                let place = Place { local: result };
-                let provenance = Provenance::Source(expr.source);
-                let value = make_rvalue(
-                    RvalueKind::Unary {
-                        op: *op,
-                        operand,
-                        ty: expr.ty.clone(),
-                    },
-                    hir::Effects::default(),
-                    provenance.clone(),
-                );
-                self.push_statement(make_statement(place, value, provenance))?;
-                Ok(Operand::Read(place))
+                self.lower_unary_expr(*op, operand, &expr.ty, expr.source)
             }
             hir::ExprKind::Conversion { value } => {
-                let operand = self.lower_expr(value)?;
-                let operand =
-                    self.materialize(operand, value.ty.clone(), Provenance::Source(value.source))?;
-                let result = self.new_temp(expr.ty.clone());
-                let place = Place { local: result };
-                let provenance = Provenance::Source(expr.source);
-                let converted = make_rvalue(
-                    RvalueKind::Conversion {
-                        operand,
-                        from: value.ty.clone(),
-                        ty: expr.ty.clone(),
-                    },
-                    hir::Effects::default(),
-                    provenance.clone(),
-                );
-                self.push_statement(make_statement(place, converted, provenance))?;
-                Ok(Operand::Read(place))
+                self.lower_conversion_expr(value, &expr.ty, expr.source)
             }
             hir::ExprKind::Binary { op, left, right }
                 if matches!(op, hir::BinaryOp::LogicalAnd | hir::BinaryOp::LogicalOr) =>
@@ -886,113 +833,10 @@ impl FunctionLowerer {
                 self.lower_short_circuit(*op, left, right, expr.source)
             }
             hir::ExprKind::Binary { op, left, right } => {
-                // Each operand is frozen immediately after its evaluation;
-                // evaluation of the right operand cannot observe a delayed
-                // read of the left operand.
-                let left_operand = self.lower_expr(left)?;
-                let left_operand = self.materialize(
-                    left_operand,
-                    left.ty.clone(),
-                    Provenance::Source(left.source),
-                )?;
-                let right_operand = self.lower_expr(right)?;
-                let right_operand = self.materialize(
-                    right_operand,
-                    right.ty.clone(),
-                    Provenance::Source(right.source),
-                )?;
-                let result = self.new_temp(expr.ty.clone());
-                let place = Place { local: result };
-                let provenance = Provenance::Source(expr.source);
-                let value = make_rvalue(
-                    RvalueKind::Binary {
-                        op: *op,
-                        left: left_operand,
-                        right: right_operand,
-                        ty: expr.ty.clone(),
-                    },
-                    binary_effects(*op, &expr.ty),
-                    provenance.clone(),
-                );
-                self.push_statement(make_statement(place, value, provenance))?;
-                Ok(Operand::Read(place))
+                self.lower_binary_expr(*op, left, right, &expr.ty, expr.source)
             }
             hir::ExprKind::Call { callee, args } => {
-                if *callee == hir::Callee::Builtin(hir::Builtin::InterfaceAssert) {
-                    return self.lower_interface_assertion_expr(args, &expr.ty, expr.source);
-                }
-                if matches!(
-                    callee,
-                    hir::Callee::Builtin(
-                        hir::Builtin::InterfaceSatisfies
-                            | hir::Builtin::InterfaceSatisfiesRuntimeError
-                            | hir::Builtin::InterfaceSatisfiesNonNil
-                    )
-                ) {
-                    if expr.ty != Ty::Bool {
-                        return Err(Diagnostic::backend(
-                            "interface satisfaction value bypassed tuple lowering",
-                        ));
-                    }
-                    return self.lower_interface_satisfaction_test(
-                        args,
-                        *callee == hir::Callee::Builtin(hir::Builtin::InterfaceSatisfiesNonNil),
-                        *callee
-                            == hir::Callee::Builtin(hir::Builtin::InterfaceSatisfiesRuntimeError),
-                        expr.source,
-                    );
-                }
-                if let hir::Callee::Closure(id) = callee {
-                    if matches!(expr.ty, Ty::Tuple(_)) {
-                        return Err(Diagnostic::backend(
-                            "tuple-valued local function call bypassed tuple lowering",
-                        ));
-                    }
-                    let destination = (expr.ty != Ty::Unit).then(|| Place {
-                        local: self.new_temp(expr.ty.clone()),
-                    });
-                    self.lower_closure_call(
-                        *id,
-                        args,
-                        destination.into_iter().collect(),
-                        expr.source,
-                    )?;
-                    return Ok(destination.map_or(Operand::Unit, Operand::Read));
-                }
-                let mut operands = Vec::new();
-                for arg in args {
-                    let operand = self.lower_expr(arg)?;
-                    operands.push(self.materialize(
-                        operand,
-                        arg.ty.clone(),
-                        Provenance::Source(arg.source),
-                    )?);
-                }
-                let provenance = Provenance::Source(expr.source);
-                let target = self.new_block(provenance.clone());
-                let diverges = *callee == hir::Callee::Builtin(hir::Builtin::Panic);
-                let destination = (expr.ty != Ty::Unit).then(|| Place {
-                    local: self.new_temp(expr.ty.clone()),
-                });
-                self.terminate(make_terminator(
-                    TerminatorKind::Call {
-                        callee: *callee,
-                        args: operands,
-                        destinations: destination.into_iter().collect(),
-                        target,
-                    },
-                    call_effects(),
-                    provenance,
-                ))?;
-                self.current = target;
-                if diverges {
-                    self.terminate(make_terminator(
-                        TerminatorKind::Unreachable,
-                        hir::Effects::default(),
-                        Provenance::Source(expr.source),
-                    ))?;
-                }
-                Ok(destination.map_or(Operand::Unit, Operand::Read))
+                self.lower_call_expr(*callee, args, &expr.ty, expr.source)
             }
         }
     }

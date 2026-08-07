@@ -404,8 +404,8 @@ impl FunctionLowerer {
         }
         let element_ty = element.as_ref().clone();
         let index = self.lower_expr(index, Some(&Ty::Int(IntTy::Int)))?;
-        let value = self.lower_expr(value, Some(&element_ty))?;
         let op = super::assignments::assignment_op(token, source)?;
+        let value = self.lower_assignment_operand(value, &element_ty, op, source)?;
         if op != hir::AssignOp::Set {
             validate_binary_operator(
                 super::expressions::assignment_binary_op(op),

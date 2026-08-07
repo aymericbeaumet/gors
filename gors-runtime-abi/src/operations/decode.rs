@@ -1,6 +1,6 @@
 //! Stable decoding for persisted runtime operation identifiers.
 
-use super::{RuntimeOp, UnknownRuntimeOpId};
+use super::{IntegerKind, IntegerRuntimeOp, RuntimeOp, UnknownRuntimeOpId};
 
 impl TryFrom<u16> for RuntimeOp {
     type Error = UnknownRuntimeOpId;
@@ -10,10 +10,22 @@ impl TryFrom<u16> for RuntimeOp {
             1 => Ok(Self::GoStringFromBytes),
             2 => Ok(Self::GoStringFromStatic),
             3 => Ok(Self::ConcatGoStrings),
-            8 => Ok(Self::IntDiv),
-            9 => Ok(Self::IntRem),
-            10 => Ok(Self::IntShl),
-            11 => Ok(Self::IntShr),
+            8 => Ok(Self::Integer {
+                op: IntegerRuntimeOp::Div,
+                kind: IntegerKind::I64,
+            }),
+            9 => Ok(Self::Integer {
+                op: IntegerRuntimeOp::Rem,
+                kind: IntegerKind::I64,
+            }),
+            10 => Ok(Self::Integer {
+                op: IntegerRuntimeOp::ShlSigned,
+                kind: IntegerKind::I64,
+            }),
+            11 => Ok(Self::Integer {
+                op: IntegerRuntimeOp::ShrSigned,
+                kind: IntegerKind::I64,
+            }),
             13 => Ok(Self::PrintBool),
             14 => Ok(Self::PrintI64),
             15 => Ok(Self::PrintSpace),
@@ -173,6 +185,12 @@ impl TryFrom<u16> for RuntimeOp {
             169 => Ok(Self::GoMapI64GoStringClear),
             170 => Ok(Self::GoMapI64GoStringIsNil),
             171 => Ok(Self::GoMapI64GoStringRangeKeys),
+            integer @ 172..=215 => {
+                let Some((op, kind)) = IntegerRuntimeOp::from_appended_id(integer) else {
+                    return Err(UnknownRuntimeOpId(integer));
+                };
+                Ok(Self::Integer { op, kind })
+            }
             unknown => Err(UnknownRuntimeOpId(unknown)),
         }
     }

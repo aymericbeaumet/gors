@@ -1,6 +1,6 @@
 use super::*;
 use crate::compiler::ids::LocalId;
-use crate::compiler::types::{ConstValue, IntTy, Ty};
+use crate::compiler::types::{ConstValue, FloatTy, IntTy, Ty, UintTy};
 
 fn lower(source: &str) -> File {
     let hir = crate::compiler::lower_to_hir("verify.go", source).unwrap();
@@ -453,6 +453,68 @@ fn verifier_rejects_mutated_effects_panic_edges_and_provenance() {
             .unwrap_err()
             .message
             .contains("function source reference is owned by")
+    );
+}
+
+#[test]
+fn verifier_enforces_exact_width_division_and_independently_typed_shift_counts() {
+    let source = r#"
+        package main
+        func signed(value int8, count int16) int8 { return value << count }
+        func unsigned(value uint8, count uint64) uint8 { return value >> count }
+        func divide(value uint32, divisor uint32) uint32 { return value / divisor }
+    "#;
+    let file = lower(source);
+
+    let signed = binary_rvalue(&file, hir::BinaryOp::Shl);
+    assert!(signed.effects.may_panic);
+    assert_eq!(signed.panic, PanicEdge::Propagate);
+    let unsigned = binary_rvalue(&file, hir::BinaryOp::Shr);
+    assert!(!unsigned.effects.may_panic);
+    assert_eq!(unsigned.panic, PanicEdge::None);
+    let division = binary_rvalue(&file, hir::BinaryOp::Div);
+    assert!(division.effects.may_panic);
+
+    let mut bad_count = file.clone();
+    let RvalueKind::Binary { right, .. } =
+        &mut binary_rvalue_mut(&mut bad_count, hir::BinaryOp::Shr).kind
+    else {
+        panic!("expected shift")
+    };
+    *right = Operand::Constant(ConstValue::Int("1".into()), Ty::Float(FloatTy::Float64));
+    assert!(
+        bad_count
+            .verify()
+            .unwrap_err()
+            .message
+            .contains("invalid MIR binary operation")
+    );
+
+    let mut bad_unsigned_effect = file.clone();
+    binary_rvalue_mut(&mut bad_unsigned_effect, hir::BinaryOp::Shr)
+        .effects
+        .may_panic = true;
+    assert!(
+        bad_unsigned_effect
+            .verify()
+            .unwrap_err()
+            .message
+            .contains("effect mismatch")
+    );
+
+    let mut bad_divisor = file;
+    let RvalueKind::Binary { right, .. } =
+        &mut binary_rvalue_mut(&mut bad_divisor, hir::BinaryOp::Div).kind
+    else {
+        panic!("expected division")
+    };
+    *right = Operand::Constant(ConstValue::Int("1".into()), Ty::Uint(UintTy::Uint64));
+    assert!(
+        bad_divisor
+            .verify()
+            .unwrap_err()
+            .message
+            .contains("invalid MIR binary operation")
     );
 }
 

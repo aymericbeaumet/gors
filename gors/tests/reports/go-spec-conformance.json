@@ -12,10 +12,10 @@
   "summary": {
     "groupCount": 15,
     "passingGroupCount": 15,
-    "caseCount": 323,
-    "passingCaseCount": 323,
+    "caseCount": 325,
+    "passingCaseCount": 325,
     "unsupportedCaseCount": 0,
-    "fixtureCount": 169
+    "fixtureCount": 171
   },
   "groups": [
     {
@@ -2503,6 +2503,7 @@
         "_negative/negative_operand_blank_identifier",
         "_negative/operand_blank_identifier",
         "_negative/slice_constant_bounds_swapped",
+        "arithmetic_overflow_and_division",
         "built_in_functions",
         "composite_literal_if_ambiguity",
         "composite_literal_sparse_indices",
@@ -2518,6 +2519,7 @@
         "method_value_receiver_capture",
         "operator_precedence_vs_c",
         "receive_expression_contexts",
+        "shift_count_and_width_semantics",
         "slice_capacity_and_append",
         "slice_nil_operand",
         "spec_section_edgecases",
@@ -2527,10 +2529,10 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 43,
-        "passingCaseCount": 43,
+        "caseCount": 45,
+        "passingCaseCount": 45,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 27
+        "fixtureCount": 29
       },
       "cases": [
         {
@@ -2742,6 +2744,34 @@
           ],
           "freshFixtures": [
             "spec_section_edgecases"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-arithmetic-overflow-and-division",
+          "title": "Exact-width integer arithmetic wraps, signed division truncates toward zero, and MIN / -1 preserves the dividend",
+          "subtitle": "Arithmetic operators",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "arithmetic_overflow_and_division"
+          ],
+          "freshFixtures": [
+            "arithmetic_overflow_and_division"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-shift-count-and-width-semantics",
+          "title": "Shift counts retain their independent integer type, wide shifts use the left width, and negative dynamic signed counts panic (non-IIFE recover rewrite)",
+          "subtitle": "Arithmetic operators",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "shift_count_and_width_semantics"
+          ],
+          "freshFixtures": [
+            "shift_count_and_width_semantics"
           ],
           "reason": ""
         },

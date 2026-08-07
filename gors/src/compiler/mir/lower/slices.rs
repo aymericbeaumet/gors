@@ -7,6 +7,15 @@ use crate::compiler::hir;
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::types::Ty;
 
+pub(super) fn element_type(ty: &Ty) -> Result<Ty, Diagnostic> {
+    let Ty::Slice(element) = ty.underlying() else {
+        return Err(Diagnostic::backend(
+            "slice assignment reached MIR with a non-slice receiver",
+        ));
+    };
+    Ok(element.as_ref().clone())
+}
+
 impl FunctionLowerer {
     pub(super) fn lower_dynamic_i64_slice_literal(
         &mut self,

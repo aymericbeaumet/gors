@@ -21,7 +21,7 @@ use value_model::{
 };
 
 pub use identity::{RuntimeOpId, UnknownRuntimeOpId};
-pub use integer::{IntegerKind, IntegerKindConstraint, IntegerPrimitive};
+pub use integer::{IntegerKind, IntegerKindConstraint, IntegerPrimitive, IntegerRuntimeOp};
 pub use value_model::{RuntimeSignature, RuntimeType};
 
 use crate::encoding::CanonicalEncoder;
@@ -334,10 +334,10 @@ pub enum RuntimeOp {
     GoStringFromBytes,
     GoStringFromStatic,
     ConcatGoStrings,
-    IntDiv,
-    IntRem,
-    IntShl,
-    IntShr,
+    Integer {
+        op: IntegerRuntimeOp,
+        kind: IntegerKind,
+    },
     PrintBool,
     PrintI64,
     PrintU64,
@@ -508,6 +508,14 @@ impl RuntimeOp {
     #[must_use]
     pub const fn integer_parameter_constraint(self, position: usize) -> IntegerKindConstraint {
         match (self, position) {
+            (Self::Integer { kind, .. }, 0) => IntegerKindConstraint::Exact(kind),
+            (Self::Integer { op, kind }, 1) => {
+                if op.is_shift() {
+                    op.count_constraint()
+                } else {
+                    IntegerKindConstraint::Exact(kind)
+                }
+            }
             (Self::PrintI64, 0) => IntegerKindConstraint::Signed,
             (Self::PrintU64, 0) => IntegerKindConstraint::Unsigned,
             (Self::GoInterfaceBoxI64, 1) => IntegerKindConstraint::Any,
@@ -526,6 +534,7 @@ impl RuntimeOp {
     #[must_use]
     pub const fn integer_result_constraint(self, position: usize) -> IntegerKindConstraint {
         match (self, position) {
+            (Self::Integer { kind, .. }, 0) => IntegerKindConstraint::Exact(kind),
             (Self::GoInterfaceUnboxI64, 0) => IntegerKindConstraint::Any,
             (Self::GoSliceI64Index, 0) => IntegerKindConstraint::I64OrI32,
             (Self::GoSliceU8Index | Self::GoStringIndex, 0) => {
@@ -549,9 +558,7 @@ impl RuntimeOp {
             Self::ConcatGoStrings => {
                 RuntimeSignature::new(TWO_GO_STRING_PARAMETERS, RuntimeType::GoString)
             }
-            Self::IntDiv | Self::IntRem | Self::IntShl | Self::IntShr => {
-                RuntimeSignature::new(TWO_I64_PARAMETERS, RuntimeType::I64)
-            }
+            Self::Integer { .. } => RuntimeSignature::new(TWO_I64_PARAMETERS, RuntimeType::I64),
             Self::PrintSpace | Self::PrintNewline => {
                 RuntimeSignature::new(NO_PARAMETERS, RuntimeType::Unit)
             }
