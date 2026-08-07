@@ -2470,6 +2470,15 @@
           ]
         },
         {
+          "id": "spec-make-runtime-size-panics",
+          "section": "Making slices, maps and channels",
+          "title": "Dynamic make sizes are checked at run time for slices and channels",
+          "status": "passing",
+          "fixtures": [
+            "make_runtime_size_panics"
+          ]
+        },
+        {
           "id": "builtin-allocation",
           "section": "Allocation",
           "title": "new allocates zeroed storage and returns an addressable pointer value",
@@ -2558,6 +2567,15 @@
           "status": "passing",
           "fixtures": [
             "built_in_panic_nil_value"
+          ]
+        },
+        {
+          "id": "spec-panic-nil-runtime-panic",
+          "section": "Handling panics",
+          "title": "panic(nil) produces a non-nil runtime error while a typed nil pointer remains its typed nil value",
+          "status": "passing",
+          "fixtures": [
+            "panic_nil_runtime_panic"
           ]
         },
         {
@@ -2958,6 +2976,33 @@
           "status": "passing",
           "fixtures": [
             "run_time_panics_make_and_full_slice"
+          ]
+        },
+        {
+          "id": "spec-run-time-panics-negative-shift-int",
+          "section": "Run-time panics",
+          "title": "Negative dynamic `int` shift counts panic; large `int` counts do not panic and yield zero",
+          "status": "passing",
+          "fixtures": [
+            "run_time_panics_negative_shift_int"
+          ]
+        },
+        {
+          "id": "spec-run-time-panics-nil-struct-interface",
+          "section": "Run-time panics",
+          "title": "Nil struct-pointer field reads/writes and nil-interface method calls panic",
+          "status": "passing",
+          "fixtures": [
+            "run_time_panics_nil_struct_interface"
+          ]
+        },
+        {
+          "id": "spec-run-time-panics-type-assertion-concrete",
+          "section": "Run-time panics",
+          "title": "A failed concrete single-result assertion panics, while comma-ok returns zero,false",
+          "status": "passing",
+          "fixtures": [
+            "run_time_panics_type_assertion_concrete"
           ]
         }
       ]

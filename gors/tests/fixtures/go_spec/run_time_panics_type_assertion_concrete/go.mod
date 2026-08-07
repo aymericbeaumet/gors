@@ -1,0 +1,3 @@
+module go_spec_run_time_panics_type_assertion_concrete
+
+go 1.26
