@@ -10,7 +10,7 @@ use crate::compiler::hir;
 use crate::compiler::ids::NodeId;
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::ExprSyntax;
-use crate::compiler::types::{ComplexTy, ConstValue, FloatTy, IntTy, Ty, UntypedTy};
+use crate::compiler::types::{ComplexTy, ConstValue, FloatTy, Ty, UntypedTy};
 
 impl FunctionLowerer {
     pub(super) fn lower_numeric_builtin_call(
@@ -76,7 +76,7 @@ impl FunctionLowerer {
         ensure_bootstrap_value_type(&executable_ty, source)?;
         if !matches!(
             executable_ty.underlying(),
-            Ty::Int(IntTy::Int) | Ty::Float(_) | Ty::String
+            Ty::Int(_) | Ty::Uint(_) | Ty::Float(_) | Ty::String
         ) {
             return Err(Diagnostic::semantic(
                 format!("{name} requires ordered numeric arguments"),

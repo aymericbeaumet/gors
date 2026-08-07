@@ -2,7 +2,7 @@
 
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
-use crate::compiler::types::{ComplexTy, ConstValue, FloatTy, IntTy, Ty, UintTy};
+use crate::compiler::types::{ComplexTy, ConstValue, FloatTy, IntTy, Ty};
 
 pub(super) fn verify_bootstrap_type(ty: &Ty, context: &str) -> Result<(), Diagnostic> {
     if *ty == Ty::Unit || ty.is_bootstrap_value() {
@@ -19,12 +19,8 @@ pub(super) fn verify_constant_type(value: &ConstValue, ty: &Ty) -> Result<(), Di
     let shape_matches = matches!(
         (value, underlying),
         (ConstValue::Bool(_), Ty::Bool)
-            | (ConstValue::Int(_), Ty::Int(IntTy::Int))
-            | (ConstValue::Int(_), Ty::Int(IntTy::Int8))
-            | (ConstValue::Int(_), Ty::Int(IntTy::Int32))
-            | (ConstValue::Int(_), Ty::Uint(UintTy::Uint))
-            | (ConstValue::Int(_), Ty::Uint(UintTy::Uint8))
-            | (ConstValue::Int(_), Ty::Uint(UintTy::Uintptr))
+            | (ConstValue::Int(_), Ty::Int(_))
+            | (ConstValue::Int(_), Ty::Uint(_))
             | (ConstValue::Float(_), Ty::Float(_))
             | (ConstValue::Int(_), Ty::Float(_))
             | (
@@ -65,10 +61,7 @@ pub(super) fn same_mir_representation(left: &Ty, right: &Ty) -> bool {
         )
         || matches!(
             (left.underlying(), right.underlying()),
-            (
-                Ty::Int(IntTy::Int32) | Ty::Uint(UintTy::Uint8),
-                Ty::Int(IntTy::Int)
-            )
+            (Ty::Int(_) | Ty::Uint(_), Ty::Int(_) | Ty::Uint(_))
         )
         || matches!(
             (left.underlying(), right.underlying()),
@@ -95,15 +88,25 @@ pub(super) fn verify_binary_types(
                 && same_result
                 && matches!(
                     underlying,
-                    Ty::Int(IntTy::Int)
-                        | Ty::Int(IntTy::Int32)
-                        | Ty::Uint(UintTy::Uint8)
+                    Ty::Int(_)
+                        | Ty::Uint(_)
                         | Ty::Float(FloatTy::Float64)
                         | Ty::Complex(ComplexTy::Complex128)
                         | Ty::String
                 )
         }
-        hir::BinaryOp::Sub | hir::BinaryOp::Mul | hir::BinaryOp::Div => {
+        hir::BinaryOp::Sub | hir::BinaryOp::Mul => {
+            same_operands
+                && same_result
+                && matches!(
+                    underlying,
+                    Ty::Int(_)
+                        | Ty::Uint(_)
+                        | Ty::Float(FloatTy::Float64)
+                        | Ty::Complex(ComplexTy::Complex128)
+                )
+        }
+        hir::BinaryOp::Div => {
             same_operands
                 && same_result
                 && matches!(
@@ -114,20 +117,22 @@ pub(super) fn verify_binary_types(
                 )
         }
         hir::BinaryOp::Min | hir::BinaryOp::Max => {
-            same_operands && same_result && matches!(underlying, Ty::Int(IntTy::Int) | Ty::Float(_))
+            same_operands
+                && same_result
+                && matches!(underlying, Ty::Int(_) | Ty::Uint(_) | Ty::Float(_))
         }
         hir::BinaryOp::Complex => {
             same_operands
                 && *underlying == Ty::Float(FloatTy::Float64)
                 && result == &Ty::Complex(ComplexTy::Complex128)
         }
-        hir::BinaryOp::Rem
-        | hir::BinaryOp::BitAnd
+        hir::BinaryOp::BitAnd
         | hir::BinaryOp::BitOr
         | hir::BinaryOp::BitXor
-        | hir::BinaryOp::Shl
-        | hir::BinaryOp::Shr
         | hir::BinaryOp::AndNot => {
+            same_operands && same_result && matches!(underlying, Ty::Int(_) | Ty::Uint(_))
+        }
+        hir::BinaryOp::Rem | hir::BinaryOp::Shl | hir::BinaryOp::Shr => {
             same_operands && same_result && *underlying == Ty::Int(IntTy::Int)
         }
         hir::BinaryOp::Equal | hir::BinaryOp::NotEqual => {
@@ -135,8 +140,8 @@ pub(super) fn verify_binary_types(
                 && (matches!(
                     underlying,
                     Ty::Bool
-                        | Ty::Int(IntTy::Int | IntTy::Int8 | IntTy::Int32)
-                        | Ty::Uint(UintTy::Uint | UintTy::Uint8 | UintTy::Uintptr)
+                        | Ty::Int(_)
+                        | Ty::Uint(_)
                         | Ty::Float(_)
                         | Ty::Complex(ComplexTy::Complex128)
                         | Ty::String
@@ -150,10 +155,7 @@ pub(super) fn verify_binary_types(
             same_operands
                 && matches!(
                     underlying,
-                    Ty::Int(IntTy::Int | IntTy::Int8 | IntTy::Int32)
-                        | Ty::Uint(UintTy::Uint | UintTy::Uint8 | UintTy::Uintptr)
-                        | Ty::Float(_)
-                        | Ty::String
+                    Ty::Int(_) | Ty::Uint(_) | Ty::Float(_) | Ty::String
                 )
                 && result == &Ty::Bool
         }
@@ -190,8 +192,15 @@ mod tests {
         );
         assert!(
             verify_constant_type(
-                &ConstValue::Int("9223372036854775808".into()),
+                &ConstValue::Int(u64::MAX.to_string()),
                 &Ty::Uint(UintTy::Uint),
+            )
+            .is_ok()
+        );
+        assert!(
+            verify_constant_type(
+                &ConstValue::Int("18446744073709551616".into()),
+                &Ty::Uint(UintTy::Uint64),
             )
             .is_err()
         );

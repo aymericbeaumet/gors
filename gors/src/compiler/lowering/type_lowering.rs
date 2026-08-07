@@ -3,14 +3,30 @@
 use crate::compiler::Diagnostic;
 use crate::compiler::rust_ir::RustType;
 use crate::compiler::types::{ComplexTy, FloatTy, IntTy, Ty, UintTy};
+use gors_runtime_abi::IntegerKind;
+
+pub(super) fn integer_kind(ty: &Ty) -> Option<IntegerKind> {
+    Some(match ty.underlying() {
+        Ty::Int(IntTy::Int | IntTy::Int64) => IntegerKind::I64,
+        Ty::Int(IntTy::Int8) => IntegerKind::I8,
+        Ty::Int(IntTy::Int16) => IntegerKind::I16,
+        Ty::Int(IntTy::Int32) => IntegerKind::I32,
+        Ty::Uint(UintTy::Uint | UintTy::Uint64 | UintTy::Uintptr) => IntegerKind::U64,
+        Ty::Uint(UintTy::Uint8) => IntegerKind::U8,
+        Ty::Uint(UintTy::Uint16) => IntegerKind::U16,
+        Ty::Uint(UintTy::Uint32) => IntegerKind::U32,
+        _ => return None,
+    })
+}
 
 pub(super) fn lower_type(ty: &Ty) -> Result<RustType, Diagnostic> {
     let ty = ty.default_typed();
     match ty.underlying() {
         Ty::Unit => Ok(RustType::Unit),
         Ty::Bool => Ok(RustType::Bool),
-        Ty::Int(IntTy::Int | IntTy::Int8 | IntTy::Int32)
-        | Ty::Uint(UintTy::Uint | UintTy::Uint8 | UintTy::Uintptr) => Ok(RustType::I64),
+        Ty::Int(_) | Ty::Uint(_) => integer_kind(&ty)
+            .map(RustType::Integer)
+            .ok_or_else(|| Diagnostic::backend(format!("unsupported Go integer type: {ty:?}"))),
         Ty::Float(FloatTy::Float32 | FloatTy::Float64) => Ok(RustType::F64),
         Ty::Complex(ComplexTy::Complex128) => Ok(RustType::Complex128),
         Ty::String => Ok(RustType::GoString),
@@ -68,12 +84,13 @@ pub(super) fn lower_type(ty: &Ty) -> Result<RustType, Diagnostic> {
         {
             Ok(RustType::GoChannelGoChannelI64)
         }
-        Ty::Array(0, _) => Ok(RustType::ArrayI64(0)),
-        Ty::Array(length, element) if element.underlying() == &Ty::Int(IntTy::Int) => {
-            Ok(RustType::ArrayI64(*length))
-        }
-        Ty::Array(length, element) if element.underlying() == &Ty::Uint(UintTy::Uint8) => {
-            Ok(RustType::ArrayI64(*length))
+        Ty::Array(length, element) if integer_kind(element).is_some() => {
+            Ok(RustType::ArrayInteger {
+                length: *length,
+                element: integer_kind(element).ok_or_else(|| {
+                    Diagnostic::backend("missing integral array element representation")
+                })?,
+            })
         }
         Ty::Array(length, element) if element.underlying() == &Ty::Bool => {
             Ok(RustType::ArrayBool(*length))
@@ -87,6 +104,7 @@ pub(super) fn lower_type(ty: &Ty) -> Result<RustType, Diagnostic> {
         Ty::Array(length, element) if element.bootstrap_i64_struct_pointer_fields().is_some() => {
             Ok(RustType::ArrayGoPointerStructI64(*length))
         }
+        Ty::Array(0, _) => Ok(RustType::ZeroArray),
         Ty::Struct(fields)
             if fields
                 .iter()

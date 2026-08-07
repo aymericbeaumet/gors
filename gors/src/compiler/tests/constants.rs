@@ -216,43 +216,44 @@ fn non_integral_float_constants_are_rejected_at_integer_sites() {
 }
 
 #[test]
-fn narrow_and_unsigned_values_reject_unrepresented_domains() {
-    for (source, expected) in [
-        (
-            "package main\nfunc main() { _ = int8(128) }\n",
-            "not representable as Int(Int8)",
-        ),
-        (
-            "package main\nfunc main() { var value int = 127; _ = int8(value) }\n",
-            "requires a representation change",
-        ),
-        (
-            "package main\nfunc main() { var value int8 = 127; _ = value + 1 }\n",
-            "operator Add is invalid for Int(Int8)",
-        ),
-        (
-            "package main\nfunc main() { var value int8 = 127; value++ }\n",
-            "increment and decrement require an int operand",
-        ),
-        (
-            "package main\nfunc main() { _ = uint(-1) }\n",
-            "not representable as Uint(Uint)",
-        ),
-        (
-            "package main\nfunc main() { var value uint = 9223372036854775808; _ = value }\n",
-            "not representable as Uint(Uint)",
-        ),
-        (
-            "package main\nfunc main() { var value uint = 1; _ = value + 1 }\n",
-            "operator Add is invalid for Uint(Uint)",
-        ),
+fn integral_widths_wrap_convert_compare_and_preserve_constant_bounds() {
+    let run = compile_and_run(
+        r#"
+            package main
+            func main() {
+                i8 := int8(127); i8++
+                u8 := uint8(0); u8--
+                i16 := int16(-32768); i16--
+                u16 := uint16(65535); u16++
+                i32 := int32(2147483647); i32++
+                u32 := uint32(4294967295); u32++
+                i64 := int64(-9223372036854775808); i64--
+                u64 := uint64(18446744073709551615); u64++
+                raw := uint8(255)
+                converted := uint16(int8(raw))
+                println(i8, u8, i16, u16, i32, u32, i64, u64, converted)
+                println(^uint8(0), uint64(18446744073709551615), ^uint64(0), uint64(18446744073709551615) > uint64(1), min(uint64(9), uint64(3)))
+            }
+        "#,
+    );
+    assert_eq!(
+        run.stderr,
+        b"-128 255 32767 0 -2147483648 0 9223372036854775807 0 65535\n255 18446744073709551615 18446744073709551615 true 3\n"
+    );
+
+    for source in [
+        "package main\nfunc main() { _ = int8(128) }\n",
+        "package main\nfunc main() { _ = uint64(18446744073709551616) }\n",
+        "package main\nfunc main() { _ = uint(-1) }\n",
     ] {
         let errors = compile_file("main.go", source)
             .err()
-            .expect("unsupported narrow or unsigned execution must be rejected");
+            .expect("out-of-range integral constant must be rejected");
         assert!(
-            errors.iter().any(|error| error.message.contains(expected)),
-            "expected {expected:?} for {source:?}, found {errors:?}"
+            errors
+                .iter()
+                .any(|error| error.message.contains("not representable")),
+            "expected representability diagnostic for {source:?}, found {errors:?}"
         );
     }
 }

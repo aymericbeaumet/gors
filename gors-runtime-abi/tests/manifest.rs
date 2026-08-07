@@ -6,10 +6,10 @@ use gors_runtime_abi::{
     AllocationEffect, ArgumentMutationEffect, ArtifactSchemaVersion, BlockingEffect,
     CURRENT_ARTIFACT_SCHEMA, CURRENT_CONTRACT_VERSION, CURRENT_MANIFEST_SCHEMA,
     CompatibilityIdentity, ContractVersion, DataWidth, Endianness, GoPanicCondition,
-    GoSemanticModel, HostIoEffect, ImplementationHash, PrimitiveOp, RuntimeAbiManifest,
-    RuntimeArtifactFormat, RuntimeArtifactManifest, RuntimeDependency, RuntimeLinkError,
-    RuntimeLinkRequest, RuntimeOp, RuntimeRequirement, RuntimeType, TargetCapabilities,
-    TargetCapability, TargetModel, TargetModelError,
+    GoSemanticModel, HostIoEffect, ImplementationHash, IntegerKind, IntegerPrimitive, PrimitiveOp,
+    RuntimeAbiManifest, RuntimeArtifactFormat, RuntimeArtifactManifest, RuntimeDependency,
+    RuntimeLinkError, RuntimeLinkRequest, RuntimeOp, RuntimeRequirement, RuntimeType,
+    TargetCapabilities, TargetCapability, TargetModel, TargetModelError,
 };
 
 #[path = "manifest/catalog.rs"]
@@ -78,16 +78,16 @@ fn manifest(
 
 #[test]
 fn contract_canonicalization_removes_input_order_and_duplicates() {
+    let integer_equal = PrimitiveOp::Integer {
+        op: IntegerPrimitive::Equal,
+        kind: IntegerKind::I64,
+    };
     let left = manifest(
-        [
-            PrimitiveOp::IntEqual,
-            PrimitiveOp::BoolNot,
-            PrimitiveOp::IntEqual,
-        ],
+        [integer_equal, PrimitiveOp::BoolNot, integer_equal],
         [RuntimeOp::PrintI64, RuntimeOp::IntDiv, RuntimeOp::PrintI64],
     );
     let right = manifest(
-        [PrimitiveOp::BoolNot, PrimitiveOp::IntEqual],
+        [PrimitiveOp::BoolNot, integer_equal],
         [RuntimeOp::IntDiv, RuntimeOp::PrintI64],
     );
 
@@ -103,11 +103,11 @@ fn current_contract_identity_is_sha256_of_canonical_bytes() {
 
     assert_eq!(manifest.schema().get(), 2);
     assert_eq!(manifest.contract(), CURRENT_CONTRACT_VERSION);
-    assert_eq!(manifest.contract(), ContractVersion::new(2, 22, 0));
+    assert_eq!(manifest.contract(), ContractVersion::new(2, 23, 0));
     assert_eq!(manifest.identity().as_bytes(), &expected);
     assert_eq!(
         manifest.identity().to_string(),
-        "6adf10b9b14adcb6fcd38db5998e774a16dfbb9a8bc3fa0ea8a5ae6856a34f5b",
+        "c7f7985066e94f009efff35f16ca9d1863b219a47f152571c662831f26971007",
         "the canonical runtime contract changed; review the ABI diff and bump its semantic version before accepting a new identity",
     );
 }
@@ -152,6 +152,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::IntShr
             | RuntimeOp::PrintBool
             | RuntimeOp::PrintI64
+            | RuntimeOp::PrintU64
             | RuntimeOp::PrintSpace
             | RuntimeOp::PrintNewline
             | RuntimeOp::PrintGoString
@@ -275,6 +276,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::IntShr
             | RuntimeOp::PrintBool
             | RuntimeOp::PrintI64
+            | RuntimeOp::PrintU64
             | RuntimeOp::PrintF64
             | RuntimeOp::PrintSpace
             | RuntimeOp::PrintNewline
@@ -369,6 +371,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
         let expected_blocking = match operation {
             RuntimeOp::PrintBool
             | RuntimeOp::PrintI64
+            | RuntimeOp::PrintU64
             | RuntimeOp::PrintF64
             | RuntimeOp::PrintSpace
             | RuntimeOp::PrintNewline
@@ -384,6 +387,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
         let expected_host_io = match operation {
             RuntimeOp::PrintBool
             | RuntimeOp::PrintI64
+            | RuntimeOp::PrintU64
             | RuntimeOp::PrintF64
             | RuntimeOp::PrintSpace
             | RuntimeOp::PrintNewline
@@ -567,6 +571,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::ConcatGoStrings
             | RuntimeOp::PrintBool
             | RuntimeOp::PrintI64
+            | RuntimeOp::PrintU64
             | RuntimeOp::PrintF64
             | RuntimeOp::PrintSpace
             | RuntimeOp::PrintNewline
@@ -734,27 +739,16 @@ fn primitive_signatures_are_complete_and_exact() {
             PrimitiveOp::BoolEqual | PrimitiveOp::BoolNotEqual => {
                 (&[RuntimeType::Bool, RuntimeType::Bool], RuntimeType::Bool)
             }
-            PrimitiveOp::IntBitNot
-            | PrimitiveOp::IntWrappingNeg
-            | PrimitiveOp::Int32WrappingNeg => (&[RuntimeType::I64], RuntimeType::I64),
-            PrimitiveOp::IntBitAnd
-            | PrimitiveOp::IntBitOr
-            | PrimitiveOp::IntBitXor
-            | PrimitiveOp::IntAndNot
-            | PrimitiveOp::IntWrappingAdd
-            | PrimitiveOp::IntWrappingSub
-            | PrimitiveOp::IntWrappingMul
-            | PrimitiveOp::Int32WrappingAdd
-            | PrimitiveOp::IntMin
-            | PrimitiveOp::IntMax => (&[RuntimeType::I64, RuntimeType::I64], RuntimeType::I64),
-            PrimitiveOp::IntEqual
-            | PrimitiveOp::IntNotEqual
-            | PrimitiveOp::IntLess
-            | PrimitiveOp::IntLessEqual
-            | PrimitiveOp::IntGreater
-            | PrimitiveOp::IntGreaterEqual => {
+            PrimitiveOp::Integer { op, .. } if op.arity() == 1 => {
+                (&[RuntimeType::I64], RuntimeType::I64)
+            }
+            PrimitiveOp::Integer { op, .. } if op.returns_bool() => {
                 (&[RuntimeType::I64, RuntimeType::I64], RuntimeType::Bool)
             }
+            PrimitiveOp::Integer { .. } => {
+                (&[RuntimeType::I64, RuntimeType::I64], RuntimeType::I64)
+            }
+            PrimitiveOp::IntegerConvert { .. } => (&[RuntimeType::I64], RuntimeType::I64),
             PrimitiveOp::FloatNeg | PrimitiveOp::FloatRound32 => {
                 (&[RuntimeType::F64], RuntimeType::F64)
             }

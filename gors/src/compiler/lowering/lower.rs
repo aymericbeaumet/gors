@@ -2,19 +2,21 @@
 
 mod aggregates;
 mod control;
+mod numeric;
 mod printing;
 mod provenance;
 mod recovery;
 
-use super::type_lowering::lower_type;
+use super::type_lowering::{integer_kind, lower_type};
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::mir;
 use crate::compiler::rust_ir as out;
-use crate::compiler::types::{ConstValue, FloatTy, IntTy, Signature as GoSignature, Ty, UintTy};
-use gors_runtime_abi::{PrimitiveOp, RuntimeOp};
+use crate::compiler::types::{FloatTy, Signature as GoSignature, Ty};
+use gors_runtime_abi::{IntegerKind, PrimitiveOp, RuntimeOp};
 
 use control::{finish_terminator, lower_panic_edge};
+use numeric::{lower_binary_op, lower_constant, lower_unary_op};
 use printing::lower_print_call;
 use provenance::lower_provenance;
 
@@ -160,12 +162,17 @@ fn lower_rvalue(rvalue: mir::Rvalue, locals: &[out::LocalDecl]) -> Result<out::R
                 values: elements,
             }))
         }
-        mir::RvalueKind::ArrayLiteralI64(elements) => out::RvalueKind::Use(out::Operand::Constant(
-            out::Constant::StaticI64Array(elements),
-        )),
+        mir::RvalueKind::ArrayLiteralI64(elements) => {
+            out::RvalueKind::Use(out::Operand::Constant(out::Constant::StaticIntegerArray {
+                kind: IntegerKind::I64,
+                values: elements,
+            }))
+        }
         mir::RvalueKind::ArrayLiteral { elements, ty } => {
             let ty = lower_type(&ty)?;
-            if ty.scalar_array_parts().is_none() {
+            if ty.scalar_array_parts().is_none()
+                && !(ty == out::RustType::ZeroArray && elements.is_empty())
+            {
                 return Err(Diagnostic::backend(
                     "non-scalar array reached scalar array representation lowering",
                 ));
@@ -225,6 +232,16 @@ fn lower_rvalue(rvalue: mir::Rvalue, locals: &[out::LocalDecl]) -> Result<out::R
         }
         mir::RvalueKind::Conversion { operand, from, ty } => {
             let operation = match (from.underlying(), ty.underlying()) {
+                (Ty::Int(_) | Ty::Uint(_), Ty::Int(_) | Ty::Uint(_)) => {
+                    Some(out::ValueOp::Primitive(PrimitiveOp::IntegerConvert {
+                        from: integer_kind(&from).ok_or_else(|| {
+                            Diagnostic::backend("missing source integer representation")
+                        })?,
+                        to: integer_kind(&ty).ok_or_else(|| {
+                            Diagnostic::backend("missing destination integer representation")
+                        })?,
+                    }))
+                }
                 (Ty::Float(_), Ty::Float(FloatTy::Float32)) => {
                     Some(out::ValueOp::Primitive(PrimitiveOp::FloatRound32))
                 }
@@ -232,7 +249,7 @@ fn lower_rvalue(rvalue: mir::Rvalue, locals: &[out::LocalDecl]) -> Result<out::R
             };
             let from_representation = lower_type(&from)?;
             let to_representation = lower_type(&ty)?;
-            if from_representation != to_representation {
+            if from_representation != to_representation && operation.is_none() {
                 return Err(Diagnostic::backend(format!(
                     "representation-preserving conversion changed Rust type from {from_representation:?} to {to_representation:?}"
                 )));
@@ -262,11 +279,13 @@ fn lower_rvalue(rvalue: mir::Rvalue, locals: &[out::LocalDecl]) -> Result<out::R
                 && left_ty == right_ty
                 && matches!(
                     left_ty,
-                    out::RustType::ArrayI64(_) | out::RustType::StructI64(_)
+                    out::RustType::ArrayInteger { .. }
+                        | out::RustType::ZeroArray
+                        | out::RustType::StructI64(_)
                 )
                 && result_ty == out::RustType::Bool
             {
-                out::RvalueKind::AggregateEqualI64 {
+                out::RvalueKind::AggregateEqualInteger {
                     left: lower_operand(left, locals)?,
                     right: lower_operand(right, locals)?,
                     equal: op == hir::BinaryOp::Equal,
@@ -727,45 +746,15 @@ fn lower_panic_call(
             args.len()
         ))
     })?;
-    let operation = match mir_operand_type(&argument, locals)? {
-        out::RustType::Bool => RuntimeOp::PanicBool,
-        out::RustType::I64 => RuntimeOp::PanicI64,
-        out::RustType::GoString => RuntimeOp::PanicGoString,
-        out::RustType::GoInterface => RuntimeOp::PanicGoInterface,
-        out::RustType::F64
-        | out::RustType::Complex128
-        | out::RustType::ArrayI64(_)
-        | out::RustType::ArrayBool(_)
-        | out::RustType::ArrayF64(_)
-        | out::RustType::ArrayGoString(_)
-        | out::RustType::ArrayGoPointerStructI64(_)
-        | out::RustType::Struct(_)
-        | out::RustType::StructI64(_)
-        | out::RustType::GoSliceI64
-        | out::RustType::GoSliceU8
-        | out::RustType::GoSliceBool
-        | out::RustType::GoSliceInterface
-        | out::RustType::GoSliceGoString
-        | out::RustType::GoMapStringI64
-        | out::RustType::GoMapStringInterface
-        | out::RustType::GoPointerI64
-        | out::RustType::GoPointerStructI64
-        | out::RustType::GoChannelI64
-        | out::RustType::GoChannelGoString
-        | out::RustType::GoChannelGoChannelI64 => {
-            return Err(Diagnostic::backend(
-                "unsupported numeric panic payload reached Rust lowering",
-            ));
-        }
-        out::RustType::Unit => {
-            return Err(Diagnostic::backend(
-                "unit value reached Rust panic representation lowering",
-            ));
-        }
-    };
+    let argument_ty = mir_operand_type(&argument, locals)?;
+    if argument_ty != out::RustType::GoInterface {
+        return Err(Diagnostic::backend(format!(
+            "verified Go panic payload is not an empty interface: {argument_ty:?}"
+        )));
+    }
     Ok(finish_terminator(
         out::TerminatorKind::Call {
-            target: out::CallTarget::Runtime(operation),
+            target: out::CallTarget::Runtime(RuntimeOp::PanicGoInterface),
             args: vec![lower_operand(argument, locals)?],
             destinations: Vec::new(),
             next,
@@ -796,181 +785,6 @@ pub(super) fn lower_operand(
         }
         mir::Operand::Unit => Ok(out::Operand::Unit),
     }
-}
-
-fn lower_constant(value: ConstValue, ty: &Ty) -> Result<out::Constant, Diagnostic> {
-    match (value, ty.underlying()) {
-        (ConstValue::Bool(value), Ty::Bool) => Ok(out::Constant::Bool(value)),
-        (
-            ConstValue::Int(value),
-            Ty::Int(IntTy::Int | IntTy::Int8 | IntTy::Int32)
-            | Ty::Uint(UintTy::Uint | UintTy::Uint8 | UintTy::Uintptr),
-        ) => value
-            .parse::<i64>()
-            .map(out::Constant::I64)
-            .map_err(|_| Diagnostic::backend(format!("Go int is outside Rust IR i64: {value}"))),
-        (ConstValue::String(bytes), Ty::String) => Ok(out::Constant::RuntimeStaticBytes {
-            op: RuntimeOp::GoStringFromStatic,
-            bytes,
-        }),
-        (value @ (ConstValue::Float(_) | ConstValue::Int(_)), Ty::Float(float_ty)) => value
-            .ieee_bits_for(*float_ty)
-            .and_then(|bits| lower_float_bits(bits, *float_ty))
-            .map(out::Constant::F64)
-            .ok_or_else(|| {
-                Diagnostic::backend(format!("invalid canonical Go float constant: {value:?}"))
-            }),
-        (value @ (ConstValue::Int(_) | ConstValue::Float(_)), Ty::Complex(complex_ty)) => value
-            .ieee_bits_for(complex_ty.component_type())
-            .and_then(|bits| lower_float_bits(bits, complex_ty.component_type()))
-            .map(|real| out::Constant::Complex128 {
-                real,
-                imag: 0.0_f64.to_bits(),
-            })
-            .ok_or_else(|| {
-                Diagnostic::backend(format!("invalid canonical Go complex constant: {value:?}"))
-            }),
-        (ConstValue::Complex { real, imag }, Ty::Complex(complex_ty)) => {
-            let component_ty = complex_ty.component_type();
-            let real = ConstValue::Float(real)
-                .ieee_bits_for(component_ty)
-                .and_then(|bits| lower_float_bits(bits, component_ty))
-                .ok_or_else(|| Diagnostic::backend("invalid real complex128 component"))?;
-            let imag = ConstValue::Float(imag)
-                .ieee_bits_for(component_ty)
-                .and_then(|bits| lower_float_bits(bits, component_ty))
-                .ok_or_else(|| Diagnostic::backend("invalid imaginary complex128 component"))?;
-            Ok(out::Constant::Complex128 { real, imag })
-        }
-        (value, ty) => Err(Diagnostic::backend(format!(
-            "invalid constant reached Rust lowering: {value:?} as {ty:?}"
-        ))),
-    }
-}
-
-fn lower_float_bits(bits: u64, ty: FloatTy) -> Option<u64> {
-    match ty {
-        FloatTy::Float32 => u32::try_from(bits)
-            .ok()
-            .map(f32::from_bits)
-            .map(f64::from)
-            .map(f64::to_bits),
-        FloatTy::Float64 => Some(bits),
-    }
-}
-
-fn lower_unary_op(
-    op: hir::UnaryOp,
-    go_result: &Ty,
-    operand: out::RustType,
-    result: out::RustType,
-) -> Result<Option<out::ValueOp>, Diagnostic> {
-    let is_int32 = matches!(go_result.underlying(), Ty::Int(IntTy::Int32));
-    let lowered = match (op, operand, result) {
-        (hir::UnaryOp::Positive, out::RustType::I64, out::RustType::I64) => None,
-        (hir::UnaryOp::Positive, out::RustType::F64, out::RustType::F64)
-        | (hir::UnaryOp::Positive, out::RustType::Complex128, out::RustType::Complex128) => None,
-        (hir::UnaryOp::Negative, out::RustType::I64, out::RustType::I64) => {
-            Some(out::ValueOp::Primitive(if is_int32 {
-                PrimitiveOp::Int32WrappingNeg
-            } else {
-                PrimitiveOp::IntWrappingNeg
-            }))
-        }
-        (hir::UnaryOp::Negative, out::RustType::F64, out::RustType::F64) => {
-            Some(out::ValueOp::Primitive(PrimitiveOp::FloatNeg))
-        }
-        (hir::UnaryOp::Negative, out::RustType::Complex128, out::RustType::Complex128) => {
-            Some(out::ValueOp::Primitive(PrimitiveOp::ComplexNeg))
-        }
-        (hir::UnaryOp::Not, out::RustType::Bool, out::RustType::Bool) => {
-            Some(out::ValueOp::Primitive(PrimitiveOp::BoolNot))
-        }
-        (hir::UnaryOp::BitNot, out::RustType::I64, out::RustType::I64) => {
-            Some(out::ValueOp::Primitive(PrimitiveOp::IntBitNot))
-        }
-        (hir::UnaryOp::Real, out::RustType::Complex128, out::RustType::F64) => {
-            Some(out::ValueOp::Primitive(PrimitiveOp::ComplexReal))
-        }
-        (hir::UnaryOp::Imag, out::RustType::Complex128, out::RustType::F64) => {
-            Some(out::ValueOp::Primitive(PrimitiveOp::ComplexImag))
-        }
-        invalid => {
-            return Err(Diagnostic::backend(format!(
-                "invalid unary representation lowering: {invalid:?}"
-            )));
-        }
-    };
-    Ok(lowered)
-}
-
-fn lower_binary_op(
-    op: hir::BinaryOp,
-    go_result: &Ty,
-    left: out::RustType,
-    right: out::RustType,
-    result: out::RustType,
-) -> Result<out::ValueOp, Diagnostic> {
-    use hir::BinaryOp as Go;
-    use out::RustType::{Bool, Complex128, F64, GoString, I64};
-    use out::ValueOp::{Primitive, Runtime};
-    let is_int32 = matches!(go_result.underlying(), Ty::Int(IntTy::Int32));
-    let lowered = match (op, left, right, result) {
-        (Go::Add, I64, I64, I64) if is_int32 => Primitive(PrimitiveOp::Int32WrappingAdd),
-        (Go::Add, I64, I64, I64) => Primitive(PrimitiveOp::IntWrappingAdd),
-        (Go::Sub, I64, I64, I64) => Primitive(PrimitiveOp::IntWrappingSub),
-        (Go::Mul, I64, I64, I64) => Primitive(PrimitiveOp::IntWrappingMul),
-        (Go::Div, I64, I64, I64) => Runtime(RuntimeOp::IntDiv),
-        (Go::Rem, I64, I64, I64) => Runtime(RuntimeOp::IntRem),
-        (Go::BitAnd, I64, I64, I64) => Primitive(PrimitiveOp::IntBitAnd),
-        (Go::BitOr, I64, I64, I64) => Primitive(PrimitiveOp::IntBitOr),
-        (Go::BitXor, I64, I64, I64) => Primitive(PrimitiveOp::IntBitXor),
-        (Go::Shl, I64, I64, I64) => Runtime(RuntimeOp::IntShl),
-        (Go::Shr, I64, I64, I64) => Runtime(RuntimeOp::IntShr),
-        (Go::AndNot, I64, I64, I64) => Primitive(PrimitiveOp::IntAndNot),
-        (Go::Equal, Bool, Bool, Bool) => Primitive(PrimitiveOp::BoolEqual),
-        (Go::NotEqual, Bool, Bool, Bool) => Primitive(PrimitiveOp::BoolNotEqual),
-        (Go::Equal, I64, I64, Bool) => Primitive(PrimitiveOp::IntEqual),
-        (Go::NotEqual, I64, I64, Bool) => Primitive(PrimitiveOp::IntNotEqual),
-        (Go::Less, I64, I64, Bool) => Primitive(PrimitiveOp::IntLess),
-        (Go::LessEqual, I64, I64, Bool) => Primitive(PrimitiveOp::IntLessEqual),
-        (Go::Greater, I64, I64, Bool) => Primitive(PrimitiveOp::IntGreater),
-        (Go::GreaterEqual, I64, I64, Bool) => Primitive(PrimitiveOp::IntGreaterEqual),
-        (Go::Min, I64, I64, I64) => Primitive(PrimitiveOp::IntMin),
-        (Go::Max, I64, I64, I64) => Primitive(PrimitiveOp::IntMax),
-        (Go::Add, F64, F64, F64) => Primitive(PrimitiveOp::FloatAdd),
-        (Go::Sub, F64, F64, F64) => Primitive(PrimitiveOp::FloatSub),
-        (Go::Mul, F64, F64, F64) => Primitive(PrimitiveOp::FloatMul),
-        (Go::Div, F64, F64, F64) => Primitive(PrimitiveOp::FloatDiv),
-        (Go::Equal, F64, F64, Bool) => Primitive(PrimitiveOp::FloatEqual),
-        (Go::NotEqual, F64, F64, Bool) => Primitive(PrimitiveOp::FloatNotEqual),
-        (Go::Less, F64, F64, Bool) => Primitive(PrimitiveOp::FloatLess),
-        (Go::LessEqual, F64, F64, Bool) => Primitive(PrimitiveOp::FloatLessEqual),
-        (Go::Greater, F64, F64, Bool) => Primitive(PrimitiveOp::FloatGreater),
-        (Go::GreaterEqual, F64, F64, Bool) => Primitive(PrimitiveOp::FloatGreaterEqual),
-        (Go::Min, F64, F64, F64) => Primitive(PrimitiveOp::FloatMin),
-        (Go::Max, F64, F64, F64) => Primitive(PrimitiveOp::FloatMax),
-        (Go::Complex, F64, F64, Complex128) => Primitive(PrimitiveOp::ComplexFromParts),
-        (Go::Add, Complex128, Complex128, Complex128) => Primitive(PrimitiveOp::ComplexAdd),
-        (Go::Sub, Complex128, Complex128, Complex128) => Primitive(PrimitiveOp::ComplexSub),
-        (Go::Mul, Complex128, Complex128, Complex128) => Primitive(PrimitiveOp::ComplexMul),
-        (Go::Div, Complex128, Complex128, Complex128) => Primitive(PrimitiveOp::ComplexDiv),
-        (Go::Equal, Complex128, Complex128, Bool) => Primitive(PrimitiveOp::ComplexEqual),
-        (Go::NotEqual, Complex128, Complex128, Bool) => Primitive(PrimitiveOp::ComplexNotEqual),
-        (Go::Add, GoString, GoString, GoString) => Runtime(RuntimeOp::ConcatGoStrings),
-        (Go::Equal, GoString, GoString, Bool) => Primitive(PrimitiveOp::StringEqual),
-        (Go::NotEqual, GoString, GoString, Bool) => Primitive(PrimitiveOp::StringNotEqual),
-        (Go::Less, GoString, GoString, Bool) => Primitive(PrimitiveOp::StringLess),
-        (Go::LessEqual, GoString, GoString, Bool) => Primitive(PrimitiveOp::StringLessEqual),
-        (Go::Greater, GoString, GoString, Bool) => Primitive(PrimitiveOp::StringGreater),
-        (Go::GreaterEqual, GoString, GoString, Bool) => Primitive(PrimitiveOp::StringGreaterEqual),
-        invalid => {
-            return Err(Diagnostic::backend(format!(
-                "invalid binary representation lowering: {invalid:?}"
-            )));
-        }
-    };
-    Ok(lowered)
 }
 
 pub(super) fn mir_operand_type(

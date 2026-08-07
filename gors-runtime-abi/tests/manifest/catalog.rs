@@ -1,6 +1,9 @@
 use std::collections::BTreeSet;
 
-use gors_runtime_abi::{PrimitiveOp, RuntimeAbiManifest, RuntimeOp};
+use gors_runtime_abi::{
+    IntegerKind, IntegerKindConstraint, IntegerPrimitive, PrimitiveOp, RuntimeAbiManifest,
+    RuntimeOp, RuntimeType,
+};
 
 use super::manifest;
 
@@ -21,8 +24,25 @@ fn current_operation_catalogs_are_complete_and_collision_free() {
         .map(|operation| operation.id())
         .collect::<BTreeSet<_>>();
     assert_eq!(primitive_ids.len(), PrimitiveOp::ALL.len());
-    assert_eq!(PrimitiveOp::Int32WrappingAdd.id().get(), 51);
-    assert_eq!(PrimitiveOp::Int32WrappingNeg.id().get(), 52);
+    assert_eq!(
+        PrimitiveOp::Integer {
+            op: IntegerPrimitive::WrappingAdd,
+            kind: IntegerKind::I32,
+        }
+        .id()
+        .get(),
+        143
+    );
+    assert_eq!(
+        PrimitiveOp::Integer {
+            op: IntegerPrimitive::WrappingNeg,
+            kind: IntegerKind::I32,
+        }
+        .id()
+        .get(),
+        167
+    );
+    assert_eq!(PrimitiveOp::ALL.len(), 233);
 
     let primitive_names = PrimitiveOp::ALL
         .iter()
@@ -39,6 +59,7 @@ fn current_operation_catalogs_are_complete_and_collision_free() {
     assert_eq!(RuntimeOp::GoChannelGoStringTryReceive.id().get(), 135);
     assert_eq!(RuntimeOp::GoChannelGoChannelI64Nil.id().get(), 136);
     assert_eq!(RuntimeOp::GoChannelGoChannelI64TryReceive.id().get(), 146);
+    assert_eq!(RuntimeOp::PrintU64.id().get(), 160);
 
     let primitive_identities = PrimitiveOp::ALL
         .iter()
@@ -51,4 +72,155 @@ fn current_operation_catalogs_are_complete_and_collision_free() {
         .map(|operation| manifest([], [*operation]).identity())
         .collect::<BTreeSet<_>>();
     assert_eq!(operation_identities.len(), RuntimeOp::ALL.len());
+}
+
+#[test]
+fn every_runtime_i64_slot_has_the_exact_semantic_integer_constraint() {
+    let mut parameter_slots = 0usize;
+    let mut result_slots = 0usize;
+
+    for operation in RuntimeOp::ALL {
+        for (position, parameter) in operation.signature().parameters().iter().enumerate() {
+            if *parameter != RuntimeType::I64 {
+                continue;
+            }
+            parameter_slots += 1;
+            let expected = match (*operation, position) {
+                (RuntimeOp::PrintI64, 0) => IntegerKindConstraint::Signed,
+                (RuntimeOp::PrintU64, 0) => IntegerKindConstraint::Unsigned,
+                (RuntimeOp::GoInterfaceBoxI64, 1) | (RuntimeOp::GoStringFromRune, 0) => {
+                    IntegerKindConstraint::Any
+                }
+                (RuntimeOp::GoSliceI64Set, 2) | (RuntimeOp::GoSliceI64Append, 1) => {
+                    IntegerKindConstraint::I64OrI32
+                }
+                (RuntimeOp::GoSliceU8Set, 2) => IntegerKindConstraint::Exact(IntegerKind::U8),
+                _ => IntegerKindConstraint::Exact(IntegerKind::I64),
+            };
+            assert_eq!(
+                operation.integer_parameter_constraint(position),
+                expected,
+                "parameter {position} of {operation:?}"
+            );
+        }
+
+        for (position, result) in runtime_result_components(operation.signature().result())
+            .into_iter()
+            .enumerate()
+        {
+            if result != RuntimeType::I64 {
+                continue;
+            }
+            result_slots += 1;
+            let expected = match (*operation, position) {
+                (RuntimeOp::GoInterfaceUnboxI64, 0) => IntegerKindConstraint::Any,
+                (RuntimeOp::GoSliceI64Index, 0) => IntegerKindConstraint::I64OrI32,
+                (RuntimeOp::GoSliceU8Index | RuntimeOp::GoStringIndex, 0) => {
+                    IntegerKindConstraint::Exact(IntegerKind::U8)
+                }
+                (RuntimeOp::GoStringRangeRuneAt, 0) => {
+                    IntegerKindConstraint::Exact(IntegerKind::I32)
+                }
+                _ => IntegerKindConstraint::Exact(IntegerKind::I64),
+            };
+            assert_eq!(
+                operation.integer_result_constraint(position),
+                expected,
+                "result {position} of {operation:?}"
+            );
+        }
+    }
+
+    assert!(
+        parameter_slots > 50,
+        "the runtime catalog unexpectedly lost I64 parameters"
+    );
+    assert!(
+        result_slots > 20,
+        "the runtime catalog unexpectedly lost I64 results"
+    );
+}
+
+#[test]
+fn integer_kind_constraints_accept_only_their_declared_semantic_sets() {
+    for (constraint, accepted) in [
+        (
+            IntegerKindConstraint::Exact(IntegerKind::I64),
+            &[IntegerKind::I64][..],
+        ),
+        (
+            IntegerKindConstraint::I64OrI32,
+            &[IntegerKind::I32, IntegerKind::I64][..],
+        ),
+        (IntegerKindConstraint::Any, IntegerKind::ALL),
+        (
+            IntegerKindConstraint::Signed,
+            &[
+                IntegerKind::I8,
+                IntegerKind::I16,
+                IntegerKind::I32,
+                IntegerKind::I64,
+            ][..],
+        ),
+        (
+            IntegerKindConstraint::Unsigned,
+            &[
+                IntegerKind::U8,
+                IntegerKind::U16,
+                IntegerKind::U32,
+                IntegerKind::U64,
+            ][..],
+        ),
+    ] {
+        for kind in IntegerKind::ALL {
+            assert_eq!(
+                constraint.accepts(*kind),
+                accepted.contains(kind),
+                "{constraint:?} acceptance for {kind:?}"
+            );
+        }
+    }
+}
+
+fn runtime_result_components(result: RuntimeType) -> Vec<RuntimeType> {
+    use RuntimeType::{
+        Bool, ByteSlice, Complex128, F64, GoChannelGoChannelI64, GoChannelGoString, GoChannelI64,
+        GoChannelI64BoolTuple, GoChannelI64I64Tuple, GoInterface, GoMapStringI64,
+        GoMapStringInterface, GoPanicPayload, GoPointerI64, GoPointerStructI64, GoSliceBool,
+        GoSliceGoString, GoSliceI64, GoSliceInterface, GoSliceU8, GoString, GoStringBoolTuple,
+        GoStringI64Tuple, I64, I64BoolTuple, I64I64Tuple, StaticBoolSlice, StaticByteSlice,
+        StaticI64Slice, Unit,
+    };
+    match result {
+        Unit => Vec::new(),
+        I64BoolTuple => vec![I64, Bool],
+        I64I64Tuple => vec![I64, I64],
+        GoStringBoolTuple => vec![GoString, Bool],
+        GoStringI64Tuple => vec![GoString, I64],
+        GoChannelI64BoolTuple => vec![GoChannelI64, Bool],
+        GoChannelI64I64Tuple => vec![GoChannelI64, I64],
+        Bool
+        | I64
+        | GoString
+        | ByteSlice
+        | StaticByteSlice
+        | F64
+        | Complex128
+        | GoSliceI64
+        | StaticI64Slice
+        | GoSliceU8
+        | GoMapStringI64
+        | GoPointerI64
+        | GoChannelI64
+        | GoPointerStructI64
+        | GoInterface
+        | StaticBoolSlice
+        | GoSliceBool
+        | GoSliceInterface
+        | GoMapStringInterface
+        | GoPanicPayload
+        | GoChannelGoString
+        | GoChannelGoChannelI64
+        | GoSliceGoString => vec![result],
+    }
 }

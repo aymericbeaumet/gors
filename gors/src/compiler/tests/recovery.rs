@@ -82,6 +82,39 @@ fn recover_is_an_ordinary_interface_value_and_consumes_the_active_panic() {
 }
 
 #[test]
+fn panic_and_recover_preserve_exact_narrow_and_high_bit_integer_types() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            func recoveredUint64() (result bool) {
+                defer func() {
+                    recovered := recover()
+                    value, ok := recovered.(uint64)
+                    result = ok && value == uint64(18446744073709551615)
+                }()
+                panic(uint64(18446744073709551615))
+            }
+
+            func recoveredInt8() (result bool) {
+                defer func() {
+                    recovered := recover()
+                    value, ok := recovered.(int8)
+                    result = ok && value == int8(-128)
+                }()
+                panic(int8(-128))
+            }
+
+            func main() { println(recoveredUint64(), recoveredInt8()) }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"true true\n");
+    assert!(run.rust.contains("panic_go_interface"), "{}", run.rust);
+    assert!(!run.rust.contains("panic_i64"), "{}", run.rust);
+}
+
+#[test]
 fn recover_rejects_arguments_at_the_builtin_boundary() {
     let errors = compile_file(
         "recover.go",

@@ -20,6 +20,7 @@ impl RuntimeOp {
         match self {
             Self::PrintBool
             | Self::PrintI64
+            | Self::PrintU64
             | Self::PrintF64
             | Self::PrintSpace
             | Self::PrintNewline
@@ -207,6 +208,7 @@ impl RuntimeOp {
             ),
             Self::PrintBool
             | Self::PrintI64
+            | Self::PrintU64
             | Self::PrintSpace
             | Self::PrintNewline
             | Self::PrintGoString => RuntimeEffects::new(

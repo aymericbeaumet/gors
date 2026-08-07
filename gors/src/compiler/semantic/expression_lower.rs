@@ -3,6 +3,7 @@
 use crate::token::Token;
 
 use super::FunctionLowerer;
+use super::conversions::is_predeclared_conversion_name;
 use super::expressions::*;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
@@ -154,7 +155,7 @@ impl FunctionLowerer {
                 ensure_bootstrap_value_type(&operand_ty, source)?;
                 let operator_ty = operand_ty.underlying();
                 let op = match *token {
-                    Token::ADD if matches!(operator_ty, Ty::Int(IntTy::Int | IntTy::Int32)) => {
+                    Token::ADD if matches!(operator_ty, Ty::Int(_) | Ty::Uint(_)) => {
                         hir::UnaryOp::Positive
                     }
                     Token::ADD
@@ -165,7 +166,7 @@ impl FunctionLowerer {
                     {
                         hir::UnaryOp::Positive
                     }
-                    Token::SUB if matches!(operator_ty, Ty::Int(IntTy::Int | IntTy::Int32)) => {
+                    Token::SUB if matches!(operator_ty, Ty::Int(_) | Ty::Uint(_)) => {
                         hir::UnaryOp::Negative
                     }
                     Token::SUB
@@ -177,7 +178,9 @@ impl FunctionLowerer {
                         hir::UnaryOp::Negative
                     }
                     Token::NOT if is_bool(&operand_ty) => hir::UnaryOp::Not,
-                    Token::XOR if *operator_ty == Ty::Int(IntTy::Int) => hir::UnaryOp::BitNot,
+                    Token::XOR if matches!(operator_ty, Ty::Int(_) | Ty::Uint(_)) => {
+                        hir::UnaryOp::BitNot
+                    }
                     _ => {
                         return Err(Diagnostic::semantic(
                             format!("invalid unary {token:?} operand {:?}", operand.ty),
@@ -186,7 +189,7 @@ impl FunctionLowerer {
                     }
                 };
                 if let Some(value) = expr_constant(&operand)
-                    .map(|value| fold_constant_unary(op, value, source))
+                    .map(|value| fold_constant_unary(op, value, &operand.ty, source))
                     .transpose()?
                     .flatten()
                 {
@@ -533,20 +536,7 @@ impl FunctionLowerer {
                         name, arguments, *spread, node, source, expected,
                     );
                 }
-                if self.type_aliases.contains_key(name)
-                    || matches!(
-                        name,
-                        "bool"
-                            | "string"
-                            | "int"
-                            | "int8"
-                            | "uint"
-                            | "float32"
-                            | "float64"
-                            | "complex128"
-                            | "any"
-                    )
-                {
+                if self.type_aliases.contains_key(name) || is_predeclared_conversion_name(name) {
                     return self
                         .lower_conversion_call(callee, arguments, *spread, node, source, expected);
                 }

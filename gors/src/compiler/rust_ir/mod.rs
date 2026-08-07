@@ -7,7 +7,9 @@ mod model;
 mod verify;
 
 pub use crate::compiler::ids::{BasicBlockId, DefId, LocalId};
-pub use gors_runtime_abi::{PrimitiveOp, RuntimeOp, RuntimeRequirement};
+pub use gors_runtime_abi::{
+    IntegerKind, IntegerPrimitive, PrimitiveOp, RuntimeOp, RuntimeRequirement,
+};
 pub use model::{
     BasicBlock, CallTarget, Constant, ControlFlowPlan, DeferredAction, Effects, EntrypointPlan,
     File, Function, FunctionArtifactPlan, LocalDecl, Operand, PanicCleanup, PanicEdge,

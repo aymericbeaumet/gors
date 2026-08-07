@@ -57,7 +57,9 @@ pub use interfaces::{
     go_interface_unbox_i64, go_interface_unbox_pointer_struct_i64, go_panic_payload_to_interface,
     panic_go_interface,
 };
-pub use printing::{print_bool, print_f64, print_go_string, print_i64, print_newline, print_space};
+pub use printing::{
+    print_bool, print_f64, print_go_string, print_i64, print_newline, print_space, print_u64,
+};
 pub use slice_identity::{
     go_slice_bool_is_nil, go_slice_bool_nil, go_slice_go_string_is_nil, go_slice_go_string_nil,
     go_slice_i64_is_nil, go_slice_i64_nil, go_slice_u8_is_nil, go_slice_u8_nil,

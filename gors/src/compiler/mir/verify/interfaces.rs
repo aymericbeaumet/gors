@@ -2,7 +2,7 @@
 
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
-use crate::compiler::types::{IntTy, Ty, UintTy};
+use crate::compiler::types::{IntTy, Ty};
 
 pub(super) fn is_interface_builtin(builtin: hir::Builtin) -> bool {
     matches!(
@@ -182,11 +182,7 @@ pub(super) fn verify_interface_call(
 }
 
 fn is_i64_interface_scalar(ty: &Ty) -> bool {
-    matches!(
-        ty.underlying(),
-        Ty::Int(IntTy::Int | IntTy::Int8 | IntTy::Int32)
-            | Ty::Uint(UintTy::Uint | UintTy::Uint8 | UintTy::Uintptr)
-    )
+    matches!(ty.underlying(), Ty::Int(_) | Ty::Uint(_))
 }
 
 fn verify_box(

@@ -1,6 +1,7 @@
 use super::effects::panic_edge;
 use super::*;
 
+mod integer;
 mod recovery;
 mod string_slices;
 
@@ -64,7 +65,13 @@ fn representation_effects_cover_runtime_calls_clones_and_string_allocation() {
     assert!(!concat.effects.may_panic);
     assert_eq!(concat.panic, PanicEdge::None);
 
-    let add = binary_rvalue(&file, ValueOp::Primitive(PrimitiveOp::IntWrappingAdd));
+    let add = binary_rvalue(
+        &file,
+        ValueOp::Primitive(PrimitiveOp::Integer {
+            op: IntegerPrimitive::WrappingAdd,
+            kind: IntegerKind::I64,
+        }),
+    );
     assert!(add.effects.may_read);
     assert!(!add.effects.may_call);
     assert!(!add.effects.may_allocate);
@@ -147,19 +154,31 @@ fn verified_int32_primitives_preserve_go_width_before_i64_storage() {
         .collect::<Vec<_>>();
 
     assert!(
-        operations.contains(&ValueOp::Primitive(PrimitiveOp::Int32WrappingAdd)),
+        operations.contains(&ValueOp::Primitive(PrimitiveOp::Integer {
+            op: IntegerPrimitive::WrappingAdd,
+            kind: IntegerKind::I32,
+        })),
         "{operations:?}"
     );
     assert!(
-        operations.contains(&ValueOp::Primitive(PrimitiveOp::Int32WrappingNeg)),
+        operations.contains(&ValueOp::Primitive(PrimitiveOp::Integer {
+            op: IntegerPrimitive::WrappingNeg,
+            kind: IntegerKind::I32,
+        })),
         "{operations:?}"
     );
     assert!(
-        !operations.contains(&ValueOp::Primitive(PrimitiveOp::IntWrappingAdd)),
+        !operations.contains(&ValueOp::Primitive(PrimitiveOp::Integer {
+            op: IntegerPrimitive::WrappingAdd,
+            kind: IntegerKind::I64,
+        })),
         "int32 addition must not use 64-bit wrapping: {operations:?}"
     );
     assert!(
-        !operations.contains(&ValueOp::Primitive(PrimitiveOp::IntWrappingNeg)),
+        !operations.contains(&ValueOp::Primitive(PrimitiveOp::Integer {
+            op: IntegerPrimitive::WrappingNeg,
+            kind: IntegerKind::I64,
+        })),
         "rune negation must not use 64-bit wrapping: {operations:?}"
     );
     assert!(file.verify().is_ok(), "int32 primitives must verify");
@@ -323,8 +342,13 @@ fn verifier_checks_value_operations_against_the_typed_abi() {
     let mut file = lower(
         "package main\nfunc add(left int, right int) int { return left + right }\nfunc main() {}\n",
     );
-    *binary_value_op_mut(&mut file, ValueOp::Primitive(PrimitiveOp::IntWrappingAdd)) =
-        ValueOp::Primitive(PrimitiveOp::BoolEqual);
+    *binary_value_op_mut(
+        &mut file,
+        ValueOp::Primitive(PrimitiveOp::Integer {
+            op: IntegerPrimitive::WrappingAdd,
+            kind: IntegerKind::I64,
+        }),
+    ) = ValueOp::Primitive(PrimitiveOp::BoolEqual);
     refresh_test_effects(&mut file);
 
     let error = file.verify().unwrap_err();
@@ -606,7 +630,7 @@ fn verifier_rejects_mutated_function_artifact_plans() {
     entrypoint_with_parameters.functions[main_index]
         .signature
         .params
-        .push(RustType::I64);
+        .push(RustType::Integer(IntegerKind::I64));
     assert!(
         entrypoint_with_parameters
             .verify()
@@ -895,7 +919,7 @@ fn rvalue_read_op_mut(rvalue: &mut Rvalue, expected: ReadOp) -> Option<&mut Read
             operand_read_op_mut(operand, expected)
         }
         RvalueKind::Binary { left, right, .. }
-        | RvalueKind::AggregateEqualI64 { left, right, .. } => {
+        | RvalueKind::AggregateEqualInteger { left, right, .. } => {
             operand_read_op_mut(left, expected).or_else(|| operand_read_op_mut(right, expected))
         }
         RvalueKind::ArrayIndexI64 { array, index } | RvalueKind::ArrayIndex { array, index } => {

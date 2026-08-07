@@ -5,7 +5,7 @@ use crate::compiler::input::{PackageKey, WorkspaceKey};
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::types::{ConstValue, FloatTy, Ty};
 use crate::compiler::{self, hir, mir, rust_ir};
-use gors_runtime_abi::{PrimitiveOp, RuntimeOp, RuntimeRequirement};
+use gors_runtime_abi::{IntegerKind, IntegerPrimitive, PrimitiveOp, RuntimeOp, RuntimeRequirement};
 
 fn lower_stages(source: &str) -> (hir::File, mir::File, rust_ir::File) {
     lower_stages_at("fingerprint.go", source)
@@ -152,8 +152,14 @@ func narrowNeg(value rune) rune { return -value }
     *value_op_mut(
         &mut changed_primitive,
         "primitive",
-        rust_ir::ValueOp::Primitive(PrimitiveOp::IntWrappingAdd),
-    ) = rust_ir::ValueOp::Primitive(PrimitiveOp::IntWrappingSub);
+        rust_ir::ValueOp::Primitive(PrimitiveOp::Integer {
+            op: IntegerPrimitive::WrappingAdd,
+            kind: IntegerKind::I64,
+        }),
+    ) = rust_ir::ValueOp::Primitive(PrimitiveOp::Integer {
+        op: IntegerPrimitive::WrappingSub,
+        kind: IntegerKind::I64,
+    });
     assert_ne!(
         rust_ir_function(rust_ir_named(&original, "primitive")),
         rust_ir_function(rust_ir_named(&changed_primitive, "primitive"))
@@ -168,8 +174,14 @@ func narrowNeg(value rune) rune { return -value }
     *value_op_mut(
         &mut changed_int32_add,
         "narrowAdd",
-        rust_ir::ValueOp::Primitive(PrimitiveOp::Int32WrappingAdd),
-    ) = rust_ir::ValueOp::Primitive(PrimitiveOp::IntWrappingAdd);
+        rust_ir::ValueOp::Primitive(PrimitiveOp::Integer {
+            op: IntegerPrimitive::WrappingAdd,
+            kind: IntegerKind::I32,
+        }),
+    ) = rust_ir::ValueOp::Primitive(PrimitiveOp::Integer {
+        op: IntegerPrimitive::WrappingAdd,
+        kind: IntegerKind::I64,
+    });
     assert_ne!(
         rust_ir_function(rust_ir_named(&original, "narrowAdd")),
         rust_ir_function(rust_ir_named(&changed_int32_add, "narrowAdd"))
@@ -183,8 +195,14 @@ func narrowNeg(value rune) rune { return -value }
     *value_op_mut(
         &mut changed_int32_neg,
         "narrowNeg",
-        rust_ir::ValueOp::Primitive(PrimitiveOp::Int32WrappingNeg),
-    ) = rust_ir::ValueOp::Primitive(PrimitiveOp::IntWrappingNeg);
+        rust_ir::ValueOp::Primitive(PrimitiveOp::Integer {
+            op: IntegerPrimitive::WrappingNeg,
+            kind: IntegerKind::I32,
+        }),
+    ) = rust_ir::ValueOp::Primitive(PrimitiveOp::Integer {
+        op: IntegerPrimitive::WrappingNeg,
+        kind: IntegerKind::I64,
+    });
     assert_ne!(
         rust_ir_function(rust_ir_named(&original, "narrowNeg")),
         rust_ir_function(rust_ir_named(&changed_int32_neg, "narrowNeg"))
@@ -211,16 +229,24 @@ func narrowNeg(value rune) rune { return -value }
     );
 
     assert_eq!(
-        PrimitiveOp::IntAndNot.id().get(),
-        RuntimeOp::IntDiv.id().get(),
+        PrimitiveOp::Integer {
+            op: IntegerPrimitive::AndNot,
+            kind: IntegerKind::I64,
+        }
+        .id()
+        .get(),
+        RuntimeOp::GoSliceInterfaceSet.id().get(),
         "the adversarial pair must collide numerically across operation domains"
     );
     let mut changed_domain = original.clone();
     *value_op_mut(
         &mut changed_domain,
         "collision",
-        rust_ir::ValueOp::Primitive(PrimitiveOp::IntAndNot),
-    ) = rust_ir::ValueOp::Runtime(RuntimeOp::IntDiv);
+        rust_ir::ValueOp::Primitive(PrimitiveOp::Integer {
+            op: IntegerPrimitive::AndNot,
+            kind: IntegerKind::I64,
+        }),
+    ) = rust_ir::ValueOp::Runtime(RuntimeOp::GoSliceInterfaceSet);
     assert_ne!(
         rust_ir_function(rust_ir_named(&original, "collision")),
         rust_ir_function(rust_ir_named(&changed_domain, "collision"))
@@ -480,7 +506,7 @@ fn value_op_mut<'a>(
                 | rust_ir::RvalueKind::StructLiteralI64(_)
                 | rust_ir::RvalueKind::StructFieldI64 { .. }
                 | rust_ir::RvalueKind::StructSetI64 { .. }
-                | rust_ir::RvalueKind::AggregateEqualI64 { .. }
+                | rust_ir::RvalueKind::AggregateEqualInteger { .. }
                 | rust_ir::RvalueKind::Binary { .. } => {}
             }
         }
@@ -520,7 +546,7 @@ fn rvalue_runtime_static_op_mut(
             operand_runtime_static_op_mut(operand, expected)
         }
         rust_ir::RvalueKind::Binary { left, right, .. }
-        | rust_ir::RvalueKind::AggregateEqualI64 { left, right, .. } => {
+        | rust_ir::RvalueKind::AggregateEqualInteger { left, right, .. } => {
             if let Some(operation) = operand_runtime_static_op_mut(left, expected) {
                 Some(operation)
             } else {

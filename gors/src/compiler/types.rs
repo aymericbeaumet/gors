@@ -198,9 +198,14 @@ impl Ty {
             Self::Bool => "builtin:bool".to_owned(),
             Self::Int(IntTy::Int) => "builtin:int".to_owned(),
             Self::Int(IntTy::Int8) => "builtin:int8".to_owned(),
+            Self::Int(IntTy::Int16) => "builtin:int16".to_owned(),
             Self::Int(IntTy::Int32) => "builtin:int32".to_owned(),
+            Self::Int(IntTy::Int64) => "builtin:int64".to_owned(),
             Self::Uint(UintTy::Uint) => "builtin:uint".to_owned(),
             Self::Uint(UintTy::Uint8) => "builtin:uint8".to_owned(),
+            Self::Uint(UintTy::Uint16) => "builtin:uint16".to_owned(),
+            Self::Uint(UintTy::Uint32) => "builtin:uint32".to_owned(),
+            Self::Uint(UintTy::Uint64) => "builtin:uint64".to_owned(),
             Self::Uint(UintTy::Uintptr) => "builtin:uintptr".to_owned(),
             Self::Float(FloatTy::Float32) => "builtin:float32".to_owned(),
             Self::Float(FloatTy::Float64) => "builtin:float64".to_owned(),
@@ -315,11 +320,7 @@ impl Ty {
     #[must_use]
     pub fn supports_interface_payload(&self) -> bool {
         match self.underlying() {
-            Self::Bool
-            | Self::Int(IntTy::Int | IntTy::Int8 | IntTy::Int32)
-            | Self::Uint(UintTy::Uint | UintTy::Uint8 | UintTy::Uintptr)
-            | Self::Float(_)
-            | Self::String => true,
+            Self::Bool | Self::Int(_) | Self::Uint(_) | Self::Float(_) | Self::String => true,
             Self::Struct(_) => self.interface_aggregate_struct_fields().is_some(),
             Self::Slice(element) => {
                 element.underlying() == &Self::String
@@ -405,8 +406,8 @@ impl Ty {
         matches!(
             self,
             Self::Bool
-                | Self::Int(IntTy::Int | IntTy::Int8 | IntTy::Int32)
-                | Self::Uint(UintTy::Uint | UintTy::Uint8 | UintTy::Uintptr)
+                | Self::Int(_)
+                | Self::Uint(_)
                 | Self::Float(_)
                 | Self::Complex(ComplexTy::Complex128)
                 | Self::String
@@ -541,32 +542,27 @@ impl ConstValue {
                     UntypedTy::Int | UntypedTy::Rune | UntypedTy::Float | UntypedTy::Complex,
                 ),
             ) => BigInt::parse_bytes(value.as_bytes(), 10).is_some(),
-            (Self::Int(value), Ty::Int(IntTy::Int)) => {
+            (Self::Int(value), Ty::Int(kind)) => {
                 let Some(value) = BigInt::parse_bytes(value.as_bytes(), 10) else {
                     return false;
                 };
-                value >= BigInt::from(i64::MIN) && value <= BigInt::from(i64::MAX)
+                let (minimum, maximum) = match kind {
+                    IntTy::Int | IntTy::Int64 => (BigInt::from(i64::MIN), BigInt::from(i64::MAX)),
+                    IntTy::Int8 => (BigInt::from(i8::MIN), BigInt::from(i8::MAX)),
+                    IntTy::Int16 => (BigInt::from(i16::MIN), BigInt::from(i16::MAX)),
+                    IntTy::Int32 => (BigInt::from(i32::MIN), BigInt::from(i32::MAX)),
+                };
+                value >= minimum && value <= maximum
             }
-            (Self::Int(value), Ty::Int(IntTy::Int8)) => {
+            (Self::Int(value), Ty::Uint(kind)) => {
                 let Some(value) = BigInt::parse_bytes(value.as_bytes(), 10) else {
                     return false;
                 };
-                value >= BigInt::from(i8::MIN) && value <= BigInt::from(i8::MAX)
-            }
-            (Self::Int(value), Ty::Int(IntTy::Int32)) => {
-                let Some(value) = BigInt::parse_bytes(value.as_bytes(), 10) else {
-                    return false;
-                };
-                value >= BigInt::from(i32::MIN) && value <= BigInt::from(i32::MAX)
-            }
-            (Self::Int(value), Ty::Uint(UintTy::Uint | UintTy::Uint8 | UintTy::Uintptr)) => {
-                let Some(value) = BigInt::parse_bytes(value.as_bytes(), 10) else {
-                    return false;
-                };
-                let maximum = if ty == &Ty::Uint(UintTy::Uint8) {
-                    BigInt::from(u8::MAX)
-                } else {
-                    BigInt::from(i64::MAX)
+                let maximum = match kind {
+                    UintTy::Uint | UintTy::Uint64 | UintTy::Uintptr => BigInt::from(u64::MAX),
+                    UintTy::Uint8 => BigInt::from(u8::MAX),
+                    UintTy::Uint16 => BigInt::from(u16::MAX),
+                    UintTy::Uint32 => BigInt::from(u32::MAX),
                 };
                 value >= BigInt::from(0_u8) && value <= maximum
             }
@@ -598,8 +594,7 @@ impl ConstValue {
                         .ieee_bits_for(component_ty)
                         .is_some()
             }
-            // Other narrow and unsigned widths stay in the semantic algebra
-            // for the next frontier but are not executable yet.
+            // Remaining source/target combinations are not representable.
             _ => false,
         }
     }

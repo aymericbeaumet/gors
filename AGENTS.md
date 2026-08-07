@@ -751,10 +751,11 @@ The production pipeline currently executes this focused, fully verified subset:
 
 - source packages and resolved Go-source imports within the executable type
   subset;
-- `bool`, 64-bit `int`, `float64`, `complex128`, byte-string values, named
-  numeric types, aliases, `[]int`, `[]byte`, `[]string` and named slices whose
-  element's underlying type is `string`, `map[string]int`, `*int`, `chan int`,
-  scalar fixed arrays, and integer-field structs;
+- `bool`, every scalar signed and unsigned integer type in the 64-bit Go data
+  model, `float64`, `complex128`, byte-string values, named numeric types,
+  aliases, `[]int`, `[]byte`, `[]string` and named slices whose element's
+  underlying type is `string`, `map[string]int`, `*int`, `chan int`, scalar
+  fixed arrays, and integer-field structs;
 - exact typed and untyped constants, including `iota` and complex constants;
 - free functions, value methods and method values, direct non-escaping
   closures, parameters, multiple and named results, locals, immutable package
@@ -792,13 +793,15 @@ are represented in HIR and MIR:
   and channels;
 - unsafe and host-resource integration.
 
-The executable scalar frontier admits `int8` and `uint` only where the shared
-`i64` representation is exact: zero values, representable constants (`int8`
-from -128 through 127 and `uint` from zero through `i64::MAX`), typed value
-transport, equality/order, generic identity calls, and interface boxing with
-the exact Go dynamic type identity. Dynamic narrowing, narrow or unsigned
-arithmetic, shifts, increment/decrement, and `uint` values above `i64::MAX`
-remain diagnosed until width-specific lowering represents their Go semantics.
+Every predeclared signed and unsigned scalar integer type has an exact
+ABI-owned `IntegerKind` over one canonical `i64` carrier. Mandatory Rust
+representation lowering selects width-specific wrapping arithmetic, negation,
+bit operations, comparisons, min/max, and conversions; the verifier rejects
+noncanonical carriers and mismatched kinds before emission. Signed and unsigned
+printing select distinct runtime operations, so high-bit `uint64` values retain
+their Go rendering. Dynamic division, remainder, and shifts remain executable
+only for Go `int`; broader integer slice, map, pointer, and channel families
+remain outside this scalar checkpoint.
 
 Typed floating-point and complex constants are quantized from the exact
 rational constant algebra at every declaration, conversion, and typed

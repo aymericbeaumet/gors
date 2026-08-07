@@ -16,6 +16,7 @@ impl RuntimeOp {
             Self::IntShr => "int_shr",
             Self::PrintBool => "print_bool",
             Self::PrintI64 => "print_i64",
+            Self::PrintU64 => "print_u64",
             Self::PrintSpace => "print_space",
             Self::PrintNewline => "print_newline",
             Self::PrintGoString => "print_go_string",

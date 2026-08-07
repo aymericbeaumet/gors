@@ -18,8 +18,14 @@ pub(super) fn predeclared_constant_type(name: &str) -> Option<Ty> {
         "string" => Ty::String,
         "int" => Ty::Int(IntTy::Int),
         "int8" => Ty::Int(IntTy::Int8),
+        "int16" => Ty::Int(IntTy::Int16),
         "int32" | "rune" => Ty::Int(IntTy::Int32),
+        "int64" => Ty::Int(IntTy::Int64),
         "uint" => Ty::Uint(UintTy::Uint),
+        "uint16" => Ty::Uint(UintTy::Uint16),
+        "uint32" => Ty::Uint(UintTy::Uint32),
+        "uint64" => Ty::Uint(UintTy::Uint64),
+        "uintptr" => Ty::Uint(UintTy::Uintptr),
         "float32" => Ty::Float(FloatTy::Float32),
         "float64" => Ty::Float(FloatTy::Float64),
         "complex128" => Ty::Complex(crate::compiler::types::ComplexTy::Complex128),
@@ -332,15 +338,13 @@ pub(in crate::compiler) fn lower_type_with_constant_lookup(
     match ident.name.as_ref() {
         "any" => Ok(Ty::Interface(Vec::new())),
         "error" => Ok(interfaces::error_interface_ty()),
-        "int16" | "int64" | "uint16" | "uint32" | "uint64" | "uintptr" | "complex64" => {
-            Err(Diagnostic::unsupported(
-                format!(
-                    "executable support for type {} is not yet available",
-                    ident.name
-                ),
-                source,
-            ))
-        }
+        "complex64" => Err(Diagnostic::unsupported(
+            format!(
+                "executable support for type {} is not yet available",
+                ident.name
+            ),
+            source,
+        )),
         other => Err(Diagnostic::unsupported(
             format!("type {other} is not yet supported"),
             source,

@@ -157,4 +157,5 @@ pub(super) const ALL: &[RuntimeOp] = &[
     RuntimeOp::GoSliceGoStringIsNil,
     RuntimeOp::GoInterfaceBoxGoSliceGoString,
     RuntimeOp::GoInterfaceUnboxGoSliceGoString,
+    RuntimeOp::PrintU64,
 ];

@@ -296,7 +296,7 @@ fn rvalue_operands(kind: &RvalueKind) -> Vec<&Operand> {
     match kind {
         RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => vec![operand],
         RvalueKind::Binary { left, right, .. }
-        | RvalueKind::AggregateEqualI64 { left, right, .. } => vec![left, right],
+        | RvalueKind::AggregateEqualInteger { left, right, .. } => vec![left, right],
         RvalueKind::ArrayIndexI64 { array, index } | RvalueKind::ArrayIndex { array, index } => {
             vec![array, index]
         }

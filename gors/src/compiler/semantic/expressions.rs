@@ -47,6 +47,7 @@ pub(super) fn normalize_constant_for_type(
 pub(super) fn fold_constant_unary(
     op: hir::UnaryOp,
     value: &ConstValue,
+    ty: &Ty,
     source: SourceRef,
 ) -> Result<Option<ConstValue>, Diagnostic> {
     let folded = match (op, value) {
@@ -70,7 +71,18 @@ pub(super) fn fold_constant_unary(
         (hir::UnaryOp::BitNot, ConstValue::Int(value)) => {
             let value = BigInt::parse_bytes(value.as_bytes(), 10)
                 .ok_or_else(|| Diagnostic::semantic("invalid exact integer constant", source))?;
-            ConstValue::Int((!value).to_string())
+            let value = if let Ty::Uint(kind) = ty.underlying() {
+                let width = match kind {
+                    UintTy::Uint | UintTy::Uint64 | UintTy::Uintptr => 64,
+                    UintTy::Uint8 => 8,
+                    UintTy::Uint16 => 16,
+                    UintTy::Uint32 => 32,
+                };
+                ((BigInt::from(1_u8) << width) - BigInt::from(1_u8)) ^ value
+            } else {
+                !value
+            };
+            ConstValue::Int(value.to_string())
         }
         _ => return Ok(None),
     };
@@ -552,8 +564,8 @@ pub(super) fn validate_binary_operator(
             matches!(
                 ty,
                 Ty::Bool
-                    | Ty::Int(IntTy::Int | IntTy::Int8 | IntTy::Int32)
-                    | Ty::Uint(UintTy::Uint | UintTy::Uint8 | UintTy::Uintptr)
+                    | Ty::Int(_)
+                    | Ty::Uint(_)
                     | Ty::Float(_)
                     | Ty::Complex(ComplexTy::Complex128)
                     | Ty::String
@@ -562,35 +574,37 @@ pub(super) fn validate_binary_operator(
         hir::BinaryOp::Less
         | hir::BinaryOp::LessEqual
         | hir::BinaryOp::Greater
-        | hir::BinaryOp::GreaterEqual => matches!(
-            ty,
-            Ty::Int(IntTy::Int | IntTy::Int8 | IntTy::Int32)
-                | Ty::Uint(UintTy::Uint | UintTy::Uint8 | UintTy::Uintptr)
-                | Ty::Float(_)
-                | Ty::String
-        ),
+        | hir::BinaryOp::GreaterEqual => {
+            matches!(ty, Ty::Int(_) | Ty::Uint(_) | Ty::Float(_) | Ty::String)
+        }
         hir::BinaryOp::Add => matches!(
             ty,
-            Ty::Int(IntTy::Int | IntTy::Int32)
+            Ty::Int(_)
+                | Ty::Uint(_)
                 | Ty::Float(FloatTy::Float64)
                 | Ty::Complex(ComplexTy::Complex128)
                 | Ty::String
         ),
-        hir::BinaryOp::Sub | hir::BinaryOp::Mul | hir::BinaryOp::Div => matches!(
+        hir::BinaryOp::Sub | hir::BinaryOp::Mul => matches!(
+            ty,
+            Ty::Int(_)
+                | Ty::Uint(_)
+                | Ty::Float(FloatTy::Float64)
+                | Ty::Complex(ComplexTy::Complex128)
+        ),
+        hir::BinaryOp::Div => matches!(
             ty,
             Ty::Int(IntTy::Int) | Ty::Float(FloatTy::Float64) | Ty::Complex(ComplexTy::Complex128)
         ),
         hir::BinaryOp::Min | hir::BinaryOp::Max => {
-            matches!(ty, Ty::Int(IntTy::Int) | Ty::Float(_))
+            matches!(ty, Ty::Int(_) | Ty::Uint(_) | Ty::Float(_))
         }
         hir::BinaryOp::Complex => *ty == Ty::Float(FloatTy::Float64),
-        hir::BinaryOp::Rem
-        | hir::BinaryOp::BitAnd
+        hir::BinaryOp::BitAnd
         | hir::BinaryOp::BitOr
         | hir::BinaryOp::BitXor
-        | hir::BinaryOp::Shl
-        | hir::BinaryOp::Shr
-        | hir::BinaryOp::AndNot => *ty == Ty::Int(IntTy::Int),
+        | hir::BinaryOp::AndNot => matches!(ty, Ty::Int(_) | Ty::Uint(_)),
+        hir::BinaryOp::Rem | hir::BinaryOp::Shl | hir::BinaryOp::Shr => *ty == Ty::Int(IntTy::Int),
     };
     if valid {
         Ok(())

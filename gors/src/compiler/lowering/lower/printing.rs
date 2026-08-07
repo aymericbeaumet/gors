@@ -41,14 +41,16 @@ pub(super) fn lower_print_call(
         let operation = match ty {
             out::RustType::Bool => RuntimeOp::PrintBool,
             out::RustType::F64 => RuntimeOp::PrintF64,
-            out::RustType::I64 => RuntimeOp::PrintI64,
+            out::RustType::Integer(kind) if kind.is_signed() => RuntimeOp::PrintI64,
+            out::RustType::Integer(_) => RuntimeOp::PrintU64,
             out::RustType::GoString => RuntimeOp::PrintGoString,
             out::RustType::Complex128
-            | out::RustType::ArrayI64(_)
+            | out::RustType::ArrayInteger { .. }
             | out::RustType::ArrayBool(_)
             | out::RustType::ArrayF64(_)
             | out::RustType::ArrayGoString(_)
             | out::RustType::ArrayGoPointerStructI64(_)
+            | out::RustType::ZeroArray
             | out::RustType::Struct(_)
             | out::RustType::StructI64(_)
             | out::RustType::GoSliceI64

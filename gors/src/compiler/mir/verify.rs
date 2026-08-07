@@ -301,14 +301,16 @@ impl Function {
                         operand_ty == *ty
                             && matches!(
                                 operand_ty.underlying(),
-                                Ty::Int(IntTy::Int | IntTy::Int32)
+                                Ty::Int(_)
+                                    | Ty::Uint(_)
                                     | Ty::Float(_)
                                     | Ty::Complex(ComplexTy::Complex128)
                             )
                     }
                     hir::UnaryOp::Not => operand_ty == Ty::Bool && *ty == Ty::Bool,
                     hir::UnaryOp::BitNot => {
-                        operand_ty.underlying() == &Ty::Int(IntTy::Int) && operand_ty == *ty
+                        matches!(operand_ty.underlying(), Ty::Int(_) | Ty::Uint(_))
+                            && operand_ty == *ty
                     }
                     hir::UnaryOp::Real | hir::UnaryOp::Imag => {
                         operand_ty.underlying() == &Ty::Complex(ComplexTy::Complex128)

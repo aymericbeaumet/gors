@@ -435,6 +435,15 @@
           "expect": "compile_error"
         },
         {
+          "id": "spec-representability-rounding",
+          "section": "Representability",
+          "title": "Representable float constants round to target precision using IEEE 754 round-to-even, and integral float constants convert to integer types",
+          "status": "passing",
+          "fixtures": [
+            "representability_rounding"
+          ]
+        },
+        {
           "id": "constants-complex",
           "section": "Constants",
           "title": "Complex constants preserve real and imaginary components",
@@ -714,6 +723,15 @@
           "status": "passing",
           "fixtures": [
             "types"
+          ]
+        },
+        {
+          "id": "spec-numeric-wraparound",
+          "section": "Numeric types",
+          "title": "Fixed-width signed and unsigned integers preserve two's-complement wraparound and conversion semantics",
+          "status": "passing",
+          "fixtures": [
+            "numeric_wraparound"
           ]
         },
         {

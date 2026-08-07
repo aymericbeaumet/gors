@@ -10,6 +10,31 @@ use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{ExprSyntax, ExprSyntaxKind};
 use crate::compiler::types::{FloatTy, IntTy, Ty, UintTy};
 
+pub(super) fn is_predeclared_conversion_name(name: &str) -> bool {
+    matches!(
+        name,
+        "bool"
+            | "string"
+            | "int"
+            | "int8"
+            | "int16"
+            | "int32"
+            | "int64"
+            | "uint"
+            | "uint8"
+            | "uint16"
+            | "uint32"
+            | "uint64"
+            | "uintptr"
+            | "byte"
+            | "rune"
+            | "float32"
+            | "float64"
+            | "complex128"
+            | "any"
+    )
+}
+
 impl FunctionLowerer {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn lower_conversion_call(
@@ -139,7 +164,7 @@ impl FunctionLowerer {
             coerce_expr(&mut argument, &target, source)?;
             argument
         } else if argument.ty.underlying() == target.underlying()
-            || is_lossless_integer_conversion(&argument.ty, &target)
+            || is_integer_conversion(&argument.ty, &target)
             || is_float_conversion(&argument.ty, &target)
         {
             let effects = argument.effects;
@@ -188,13 +213,10 @@ fn is_nilable_type(ty: &Ty) -> bool {
     )
 }
 
-fn is_lossless_integer_conversion(from: &Ty, to: &Ty) -> bool {
+fn is_integer_conversion(from: &Ty, to: &Ty) -> bool {
     matches!(
         (from.underlying(), to.underlying()),
-        (
-            Ty::Int(IntTy::Int32) | Ty::Uint(UintTy::Uint8),
-            Ty::Int(IntTy::Int)
-        )
+        (Ty::Int(_) | Ty::Uint(_), Ty::Int(_) | Ty::Uint(_))
     )
 }
 

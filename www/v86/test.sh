@@ -189,7 +189,7 @@ assert re.fullmatch(r"[0-9a-f]{64}", provider["producer_identity"])
 assert re.fullmatch(r"[0-9a-f]{64}", provider["compatibility_identity"])
 assert re.fullmatch(r"[0-9a-f]{64}", provider["artifact_identity"])
 assert "toolchain_identity" not in provider
-assert provider["supported_operation_ids"] == [1, 2, 3, 8, 9, 10, 11, *range(13, 160)]
+assert provider["supported_operation_ids"] == [1, 2, 3, 8, 9, 10, 11, *range(13, 161)]
 PY
 
 PRODUCER_IDENTITY=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["producer_identity"])' \

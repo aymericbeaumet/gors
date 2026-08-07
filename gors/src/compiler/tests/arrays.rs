@@ -49,6 +49,24 @@ fn generated_scalar_arrays_preserve_literals_updates_and_evaluation_order() {
 }
 
 #[test]
+fn integer_array_equality_preserves_the_exact_element_kind() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            func main() {
+                bytes := [2]byte{1, 255}
+                sameBytes := [2]uint8{1, 255}
+                otherBytes := [2]byte{1, 0}
+                println(bytes == sameBytes, bytes != otherBytes)
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"true true\n");
+}
+
+#[test]
 fn constant_array_lengths_work_in_package_function_and_local_type_positions() {
     let run = compile_and_run(
         r#"
@@ -82,21 +100,25 @@ fn zero_length_arrays_and_named_array_capacity_need_no_element_representation() 
             package main
 
             type Empty [len("")]struct{}
+            type Unsupported [0]map[int]int
             type Values [3]int
 
             var packageEmpty Empty
+            var packageUnsupported Unsupported
 
             func main() {
                 var localEmpty [0]struct{}
+                var localUnsupported [0]map[int]int
                 var values Values
                 println(len(packageEmpty), cap(packageEmpty), len(localEmpty), cap(localEmpty))
+                println(len(packageUnsupported), cap(packageUnsupported), len(localUnsupported), cap(localUnsupported))
                 println(len(values), cap(values))
             }
         "#,
     );
 
-    assert_eq!(run.stderr, b"0 0 0 0\n3 3\n");
-    assert!(run.rust.contains("[i64; 0]"), "{}", run.rust);
+    assert_eq!(run.stderr, b"0 0 0 0\n0 0 0 0\n3 3\n");
+    assert!(run.rust.contains("[(); 0]"), "{}", run.rust);
 }
 
 #[test]

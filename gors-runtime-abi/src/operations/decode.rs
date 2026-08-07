@@ -161,6 +161,7 @@ impl TryFrom<u16> for RuntimeOp {
             157 => Ok(Self::GoSliceGoStringIsNil),
             158 => Ok(Self::GoInterfaceBoxGoSliceGoString),
             159 => Ok(Self::GoInterfaceUnboxGoSliceGoString),
+            160 => Ok(Self::PrintU64),
             unknown => Err(UnknownRuntimeOpId(unknown)),
         }
     }

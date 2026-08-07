@@ -2,7 +2,7 @@
 
 use crate::compiler::ids::{BasicBlockId, DefId, LocalId, PackageId, QualifiedDefId};
 use crate::compiler::provenance::SourceRef;
-use gors_runtime_abi::{PrimitiveOp, RuntimeOp};
+use gors_runtime_abi::{IntegerKind, PrimitiveOp, RuntimeOp};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct File {
@@ -253,7 +253,7 @@ pub enum RvalueKind {
         field: u32,
         value: Operand,
     },
-    AggregateEqualI64 {
+    AggregateEqualInteger {
         left: Operand,
         right: Operand,
         equal: bool,
@@ -291,10 +291,10 @@ pub enum ReadOp {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Constant {
     Bool(bool),
-    I64(i64),
+    Integer { kind: IntegerKind, bits: i64 },
     F64(u64),
     Complex128 { real: u64, imag: u64 },
-    StaticI64Array(Vec<i64>),
+    StaticIntegerArray { kind: IntegerKind, values: Vec<i64> },
     RuntimeStaticBytes { op: RuntimeOp, bytes: Vec<u8> },
     RuntimeStaticI64s { op: RuntimeOp, values: Vec<i64> },
     RuntimeStaticBools { op: RuntimeOp, values: Vec<bool> },
@@ -337,7 +337,9 @@ pub enum CallTarget {
 pub enum RustType {
     Unit,
     Bool,
-    I64,
+    /// One `i64` Rust carrier with an explicit canonical Go integer
+    /// interpretation selected during mandatory representation lowering.
+    Integer(IntegerKind),
     F64,
     Complex128,
     GoString,
@@ -354,11 +356,17 @@ pub enum RustType {
     GoChannelI64,
     GoChannelGoString,
     GoChannelGoChannelI64,
-    ArrayI64(u64),
+    ArrayInteger {
+        length: u64,
+        element: IntegerKind,
+    },
     ArrayBool(u64),
     ArrayF64(u64),
     ArrayGoString(u64),
     ArrayGoPointerStructI64(u64),
+    /// A zero-length Go array whose element needs no executable Rust
+    /// representation because no element operation can occur.
+    ZeroArray,
     Struct(Vec<RustType>),
     StructI64(u64),
 }
@@ -368,7 +376,7 @@ impl RustType {
     pub(in crate::compiler) fn scalar_array_parts(&self) -> Option<(u64, Self)> {
         match self {
             Self::ArrayBool(length) => Some((*length, Self::Bool)),
-            Self::ArrayI64(length) => Some((*length, Self::I64)),
+            Self::ArrayInteger { length, element } => Some((*length, Self::Integer(*element))),
             Self::ArrayF64(length) => Some((*length, Self::F64)),
             Self::ArrayGoString(length) => Some((*length, Self::GoString)),
             Self::ArrayGoPointerStructI64(length) => Some((*length, Self::GoPointerStructI64)),
@@ -384,12 +392,13 @@ impl RustType {
             }
             Self::Struct(_) => Some(ReadOp::ProvenInitializedClone),
             Self::Bool
-            | Self::I64
+            | Self::Integer(_)
             | Self::F64
             | Self::Complex128
             | Self::ArrayBool(_)
             | Self::ArrayF64(_)
-            | Self::ArrayI64(_)
+            | Self::ArrayInteger { .. }
+            | Self::ZeroArray
             | Self::StructI64(_) => Some(ReadOp::ProvenInitializedCopy),
             Self::GoString
             | Self::GoSliceI64
@@ -419,12 +428,13 @@ impl RustType {
             Self::Struct(_) if live_after => Some(ReadOp::ProvenInitializedClone),
             Self::Struct(_) => Some(ReadOp::ProvenLastUseMove),
             Self::Bool
-            | Self::I64
+            | Self::Integer(_)
             | Self::F64
             | Self::Complex128
             | Self::ArrayBool(_)
             | Self::ArrayF64(_)
-            | Self::ArrayI64(_)
+            | Self::ArrayInteger { .. }
+            | Self::ZeroArray
             | Self::StructI64(_) => Some(ReadOp::ProvenInitializedCopy),
             Self::GoString
             | Self::GoSliceI64
@@ -476,12 +486,13 @@ impl RustType {
                 ReadOp::ProvenInitializedClone | ReadOp::ProvenLastUseMove
             ),
             Self::Bool
-            | Self::I64
+            | Self::Integer(_)
             | Self::F64
             | Self::Complex128
             | Self::ArrayBool(_)
             | Self::ArrayF64(_)
-            | Self::ArrayI64(_)
+            | Self::ArrayInteger { .. }
+            | Self::ZeroArray
             | Self::StructI64(_) => op == ReadOp::ProvenInitializedCopy,
             Self::GoString
             | Self::GoSliceI64
@@ -513,12 +524,13 @@ impl RustType {
         matches!(
             self,
             Self::Bool
-                | Self::I64
+                | Self::Integer(_)
                 | Self::F64
                 | Self::Complex128
                 | Self::ArrayBool(_)
                 | Self::ArrayF64(_)
-                | Self::ArrayI64(_)
+                | Self::ArrayInteger { .. }
+                | Self::ZeroArray
                 | Self::StructI64(_)
         ) || matches!(self, Self::Struct(fields) if fields.iter().all(Self::is_copy))
     }

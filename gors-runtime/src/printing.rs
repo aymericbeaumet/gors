@@ -16,6 +16,13 @@ pub fn print_i64(value: GoInt) {
     drop(write!(output, "{value}"));
 }
 
+/// Print the unsigned interpretation of an exact 64-bit Go integer carrier.
+pub fn print_u64(value: GoInt) {
+    let stderr = std::io::stderr();
+    let mut output = stderr.lock();
+    drop(write!(output, "{}", value as u64));
+}
+
 /// Print Go 1.26's shortest-round-trip floating-point representation.
 pub fn print_f64(value: f64) {
     let rendered = format_f64(value);

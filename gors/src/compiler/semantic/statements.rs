@@ -14,7 +14,7 @@ use crate::compiler::syntax::{
     DeclSyntax, ExprSyntax, ExprSyntaxKind, LocalTypeSyntax, StmtSyntax, StmtSyntaxKind,
     SwitchCaseSyntax, SyntaxSource, ValueSpecSyntax,
 };
-use crate::compiler::types::{ConstValue, IntTy, Ty};
+use crate::compiler::types::{ConstValue, Ty};
 
 impl FunctionLowerer {
     pub(super) fn lower_stmt(
@@ -77,9 +77,9 @@ impl FunctionLowerer {
                 } else {
                     let destination = self.lower_place(expression, source)?;
                     let ty = self.place_ty(destination)?.clone();
-                    if *ty.underlying() != Ty::Int(IntTy::Int) {
+                    if !matches!(ty.underlying(), Ty::Int(_) | Ty::Uint(_)) {
                         return Err(Diagnostic::semantic(
-                            "increment and decrement require an int operand",
+                            "increment and decrement require an integer operand",
                             source,
                         ));
                     }

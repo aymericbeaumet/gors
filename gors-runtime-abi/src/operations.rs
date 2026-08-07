@@ -2,6 +2,7 @@
 
 mod decode;
 mod identity;
+mod integer;
 mod metadata;
 mod runtime_catalog;
 mod runtime_encoding;
@@ -20,6 +21,7 @@ use value_model::{
 };
 
 pub use identity::{RuntimeOpId, UnknownRuntimeOpId};
+pub use integer::{IntegerKind, IntegerKindConstraint, IntegerPrimitive};
 pub use value_model::{RuntimeSignature, RuntimeType};
 
 use crate::encoding::CanonicalEncoder;
@@ -30,27 +32,12 @@ pub enum PrimitiveOp {
     BoolNot,
     BoolEqual,
     BoolNotEqual,
-    IntBitNot,
-    IntBitAnd,
-    IntBitOr,
-    IntBitXor,
-    IntAndNot,
-    IntEqual,
-    IntNotEqual,
-    IntLess,
-    IntLessEqual,
-    IntGreater,
-    IntGreaterEqual,
     StringEqual,
     StringNotEqual,
     StringLess,
     StringLessEqual,
     StringGreater,
     StringGreaterEqual,
-    IntWrappingAdd,
-    IntWrappingSub,
-    IntWrappingMul,
-    IntWrappingNeg,
     FloatAdd,
     FloatSub,
     FloatMul,
@@ -69,16 +56,20 @@ pub enum PrimitiveOp {
     ComplexNeg,
     ComplexEqual,
     ComplexNotEqual,
-    IntMin,
-    IntMax,
     FloatMin,
     FloatMax,
     ComplexFromParts,
     ComplexReal,
     ComplexImag,
     FloatRound32,
-    Int32WrappingAdd,
-    Int32WrappingNeg,
+    Integer {
+        op: IntegerPrimitive,
+        kind: IntegerKind,
+    },
+    IntegerConvert {
+        from: IntegerKind,
+        to: IntegerKind,
+    },
 }
 
 /// Stable compact identity of one directly emitted operation.
@@ -95,31 +86,18 @@ impl PrimitiveOpId {
 
 impl PrimitiveOp {
     /// Complete native-operation catalog for the current contract.
-    pub const ALL: &'static [Self] = &[
+    pub const ALL: &'static [Self] = &Self::CATALOG;
+
+    const NON_INTEGER: &'static [Self] = &[
         Self::BoolNot,
         Self::BoolEqual,
         Self::BoolNotEqual,
-        Self::IntBitNot,
-        Self::IntBitAnd,
-        Self::IntBitOr,
-        Self::IntBitXor,
-        Self::IntAndNot,
-        Self::IntEqual,
-        Self::IntNotEqual,
-        Self::IntLess,
-        Self::IntLessEqual,
-        Self::IntGreater,
-        Self::IntGreaterEqual,
         Self::StringEqual,
         Self::StringNotEqual,
         Self::StringLess,
         Self::StringLessEqual,
         Self::StringGreater,
         Self::StringGreaterEqual,
-        Self::IntWrappingAdd,
-        Self::IntWrappingSub,
-        Self::IntWrappingMul,
-        Self::IntWrappingNeg,
         Self::FloatAdd,
         Self::FloatSub,
         Self::FloatMul,
@@ -138,17 +116,15 @@ impl PrimitiveOp {
         Self::ComplexNeg,
         Self::ComplexEqual,
         Self::ComplexNotEqual,
-        Self::IntMin,
-        Self::IntMax,
         Self::FloatMin,
         Self::FloatMax,
         Self::ComplexFromParts,
         Self::ComplexReal,
         Self::ComplexImag,
         Self::FloatRound32,
-        Self::Int32WrappingAdd,
-        Self::Int32WrappingNeg,
     ];
+
+    const CATALOG: [Self; 233] = primitive_catalog();
 
     /// Exact typed signature for this directly emitted operation.
     #[must_use]
@@ -158,16 +134,14 @@ impl PrimitiveOp {
             Self::BoolEqual | Self::BoolNotEqual => {
                 RuntimeSignature::new(TWO_BOOL_PARAMETERS, RuntimeType::Bool)
             }
-            Self::IntBitNot => RuntimeSignature::new(I64_PARAMETER, RuntimeType::I64),
-            Self::IntBitAnd | Self::IntBitOr | Self::IntBitXor | Self::IntAndNot => {
-                RuntimeSignature::new(TWO_I64_PARAMETERS, RuntimeType::I64)
+            Self::Integer { op, .. } if op.arity() == 1 => {
+                RuntimeSignature::new(I64_PARAMETER, RuntimeType::I64)
             }
-            Self::IntWrappingAdd | Self::IntWrappingSub | Self::IntWrappingMul => {
-                RuntimeSignature::new(TWO_I64_PARAMETERS, RuntimeType::I64)
+            Self::Integer { op, .. } if op.returns_bool() => {
+                RuntimeSignature::new(TWO_I64_PARAMETERS, RuntimeType::Bool)
             }
-            Self::IntWrappingNeg => RuntimeSignature::new(I64_PARAMETER, RuntimeType::I64),
-            Self::Int32WrappingAdd => RuntimeSignature::new(TWO_I64_PARAMETERS, RuntimeType::I64),
-            Self::Int32WrappingNeg => RuntimeSignature::new(I64_PARAMETER, RuntimeType::I64),
+            Self::Integer { .. } => RuntimeSignature::new(TWO_I64_PARAMETERS, RuntimeType::I64),
+            Self::IntegerConvert { .. } => RuntimeSignature::new(I64_PARAMETER, RuntimeType::I64),
             Self::FloatAdd | Self::FloatSub | Self::FloatMul | Self::FloatDiv => {
                 RuntimeSignature::new(TWO_F64_PARAMETERS, RuntimeType::F64)
             }
@@ -191,9 +165,6 @@ impl PrimitiveOp {
             Self::ComplexEqual | Self::ComplexNotEqual => {
                 RuntimeSignature::new(TWO_COMPLEX128_PARAMETERS, RuntimeType::Bool)
             }
-            Self::IntMin | Self::IntMax => {
-                RuntimeSignature::new(TWO_I64_PARAMETERS, RuntimeType::I64)
-            }
             Self::FloatMin | Self::FloatMax => {
                 RuntimeSignature::new(TWO_F64_PARAMETERS, RuntimeType::F64)
             }
@@ -203,12 +174,6 @@ impl PrimitiveOp {
             Self::ComplexReal | Self::ComplexImag => {
                 RuntimeSignature::new(COMPLEX128_PARAMETER, RuntimeType::F64)
             }
-            Self::IntEqual
-            | Self::IntNotEqual
-            | Self::IntLess
-            | Self::IntLessEqual
-            | Self::IntGreater
-            | Self::IntGreaterEqual => RuntimeSignature::new(TWO_I64_PARAMETERS, RuntimeType::Bool),
             Self::StringEqual
             | Self::StringNotEqual
             | Self::StringLess
@@ -224,32 +189,27 @@ impl PrimitiveOp {
     ///
     /// This is not a runtime symbol: primitive operations are emitted directly.
     #[must_use]
-    pub const fn name(self) -> &'static str {
+    pub fn name(self) -> String {
+        match self {
+            Self::Integer { op, kind } => format!("{}-{}", kind.name(), op.name()),
+            Self::IntegerConvert { from, to } => {
+                format!("{}-to-{}", from.name(), to.name())
+            }
+            other => other.non_integer_name().to_owned(),
+        }
+    }
+
+    const fn non_integer_name(self) -> &'static str {
         match self {
             Self::BoolNot => "bool-not",
             Self::BoolEqual => "bool-equal",
             Self::BoolNotEqual => "bool-not-equal",
-            Self::IntBitNot => "int-bit-not",
-            Self::IntBitAnd => "int-bit-and",
-            Self::IntBitOr => "int-bit-or",
-            Self::IntBitXor => "int-bit-xor",
-            Self::IntAndNot => "int-and-not",
-            Self::IntEqual => "int-equal",
-            Self::IntNotEqual => "int-not-equal",
-            Self::IntLess => "int-less",
-            Self::IntLessEqual => "int-less-equal",
-            Self::IntGreater => "int-greater",
-            Self::IntGreaterEqual => "int-greater-equal",
             Self::StringEqual => "string-equal",
             Self::StringNotEqual => "string-not-equal",
             Self::StringLess => "string-less",
             Self::StringLessEqual => "string-less-equal",
             Self::StringGreater => "string-greater",
             Self::StringGreaterEqual => "string-greater-equal",
-            Self::IntWrappingAdd => "int-wrapping-add",
-            Self::IntWrappingSub => "int-wrapping-sub",
-            Self::IntWrappingMul => "int-wrapping-mul",
-            Self::IntWrappingNeg => "int-wrapping-neg",
             Self::FloatAdd => "float-add",
             Self::FloatSub => "float-sub",
             Self::FloatMul => "float-mul",
@@ -268,16 +228,13 @@ impl PrimitiveOp {
             Self::ComplexNeg => "complex-neg",
             Self::ComplexEqual => "complex-equal",
             Self::ComplexNotEqual => "complex-not-equal",
-            Self::IntMin => "int-min",
-            Self::IntMax => "int-max",
             Self::FloatMin => "float-min",
             Self::FloatMax => "float-max",
             Self::ComplexFromParts => "complex-from-parts",
             Self::ComplexReal => "complex-real",
             Self::ComplexImag => "complex-imag",
             Self::FloatRound32 => "float-round-32",
-            Self::Int32WrappingAdd => "int32-wrapping-add",
-            Self::Int32WrappingNeg => "int32-wrapping-neg",
+            Self::Integer { .. } | Self::IntegerConvert { .. } => "integer-operation",
         }
     }
 
@@ -288,15 +245,6 @@ impl PrimitiveOp {
             Self::BoolNot => 1,
             Self::BoolEqual => 2,
             Self::BoolNotEqual => 3,
-            Self::IntBitNot => 4,
-            Self::IntBitAnd => 5,
-            Self::IntBitOr => 6,
-            Self::IntBitXor => 7,
-            Self::IntAndNot => 8,
-            Self::IntWrappingAdd => 21,
-            Self::IntWrappingSub => 22,
-            Self::IntWrappingMul => 23,
-            Self::IntWrappingNeg => 24,
             Self::FloatAdd => 25,
             Self::FloatSub => 26,
             Self::FloatMul => 27,
@@ -315,22 +263,14 @@ impl PrimitiveOp {
             Self::ComplexNeg => 40,
             Self::ComplexEqual => 41,
             Self::ComplexNotEqual => 42,
-            Self::IntMin => 43,
-            Self::IntMax => 44,
             Self::FloatMin => 45,
             Self::FloatMax => 46,
             Self::ComplexFromParts => 47,
             Self::ComplexReal => 48,
             Self::ComplexImag => 49,
             Self::FloatRound32 => 50,
-            Self::Int32WrappingAdd => 51,
-            Self::Int32WrappingNeg => 52,
-            Self::IntEqual => 9,
-            Self::IntNotEqual => 10,
-            Self::IntLess => 11,
-            Self::IntLessEqual => 12,
-            Self::IntGreater => 13,
-            Self::IntGreaterEqual => 14,
+            Self::Integer { op, kind } => 53 + op.ordinal() * 8 + kind.ordinal(),
+            Self::IntegerConvert { from, to } => 189 + from.ordinal() * 8 + to.ordinal(),
             Self::StringEqual => 15,
             Self::StringNotEqual => 16,
             Self::StringLess => 17,
@@ -342,9 +282,50 @@ impl PrimitiveOp {
 
     pub(crate) fn encode(self, encoder: &mut CanonicalEncoder) {
         encoder.u16(self.id().get());
-        encoder.text(self.name());
+        encoder.text(&self.name());
         self.signature().encode(encoder);
     }
+}
+
+// Every index is bounded by the lengths which define the exact catalog size.
+// Const slice access cannot yet use the checked APIs on the supported compiler.
+#[allow(clippy::indexing_slicing)]
+const fn primitive_catalog() -> [PrimitiveOp; 233] {
+    let mut result = [PrimitiveOp::BoolNot; 233];
+    let mut output = 0;
+    let mut index = 0;
+    while index < PrimitiveOp::NON_INTEGER.len() {
+        result[output] = PrimitiveOp::NON_INTEGER[index];
+        output += 1;
+        index += 1;
+    }
+    let mut primitive = 0;
+    while primitive < IntegerPrimitive::ALL.len() {
+        let mut kind = 0;
+        while kind < IntegerKind::ALL.len() {
+            result[output] = PrimitiveOp::Integer {
+                op: IntegerPrimitive::ALL[primitive],
+                kind: IntegerKind::ALL[kind],
+            };
+            output += 1;
+            kind += 1;
+        }
+        primitive += 1;
+    }
+    let mut from = 0;
+    while from < IntegerKind::ALL.len() {
+        let mut to = 0;
+        while to < IntegerKind::ALL.len() {
+            result[output] = PrimitiveOp::IntegerConvert {
+                from: IntegerKind::ALL[from],
+                to: IntegerKind::ALL[to],
+            };
+            output += 1;
+            to += 1;
+        }
+        from += 1;
+    }
+    result
 }
 
 /// Operations that require an exact symbol from the versioned runtime ABI.
@@ -359,6 +340,7 @@ pub enum RuntimeOp {
     IntShr,
     PrintBool,
     PrintI64,
+    PrintU64,
     PrintSpace,
     PrintNewline,
     PrintGoString,
@@ -510,6 +492,39 @@ impl RuntimeOp {
     /// Complete helper catalog for the current contract.
     pub const ALL: &'static [Self] = runtime_catalog::ALL;
 
+    /// Semantic Go integer constraint for one physical `I64` parameter slot.
+    /// Callers must only query positions whose ABI type is [`RuntimeType::I64`].
+    #[must_use]
+    pub const fn integer_parameter_constraint(self, position: usize) -> IntegerKindConstraint {
+        match (self, position) {
+            (Self::PrintI64, 0) => IntegerKindConstraint::Signed,
+            (Self::PrintU64, 0) => IntegerKindConstraint::Unsigned,
+            (Self::GoInterfaceBoxI64, 1) => IntegerKindConstraint::Any,
+            (Self::GoSliceI64Set, 2) | (Self::GoSliceI64Append, 1) => {
+                IntegerKindConstraint::I64OrI32
+            }
+            (Self::GoSliceU8Set, 2) => IntegerKindConstraint::Exact(IntegerKind::U8),
+            (Self::GoStringFromRune, 0) => IntegerKindConstraint::Any,
+            _ => IntegerKindConstraint::Exact(IntegerKind::I64),
+        }
+    }
+
+    /// Semantic Go integer constraint for one flattened physical `I64` result
+    /// slot. Callers must only query result positions whose ABI component is
+    /// [`RuntimeType::I64`].
+    #[must_use]
+    pub const fn integer_result_constraint(self, position: usize) -> IntegerKindConstraint {
+        match (self, position) {
+            (Self::GoInterfaceUnboxI64, 0) => IntegerKindConstraint::Any,
+            (Self::GoSliceI64Index, 0) => IntegerKindConstraint::I64OrI32,
+            (Self::GoSliceU8Index | Self::GoStringIndex, 0) => {
+                IntegerKindConstraint::Exact(IntegerKind::U8)
+            }
+            (Self::GoStringRangeRuneAt, 0) => IntegerKindConstraint::Exact(IntegerKind::I32),
+            _ => IntegerKindConstraint::Exact(IntegerKind::I64),
+        }
+    }
+
     /// Exact typed call signature at the Rust runtime boundary.
     #[must_use]
     pub const fn signature(self) -> RuntimeSignature {
@@ -530,7 +545,9 @@ impl RuntimeOp {
                 RuntimeSignature::new(NO_PARAMETERS, RuntimeType::Unit)
             }
             Self::PrintBool => RuntimeSignature::new(BOOL_PARAMETER, RuntimeType::Unit),
-            Self::PrintI64 => RuntimeSignature::new(I64_PARAMETER, RuntimeType::Unit),
+            Self::PrintI64 | Self::PrintU64 => {
+                RuntimeSignature::new(I64_PARAMETER, RuntimeType::Unit)
+            }
             Self::PrintF64 => RuntimeSignature::new(F64_PARAMETER, RuntimeType::Unit),
             Self::PrintGoString => RuntimeSignature::new(GO_STRING_PARAMETER, RuntimeType::Unit),
             Self::PanicBool => RuntimeSignature::new(BOOL_PARAMETER, RuntimeType::Unit),

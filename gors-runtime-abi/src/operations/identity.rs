@@ -169,6 +169,7 @@ impl RuntimeOp {
             Self::GoSliceGoStringIsNil => 157,
             Self::GoInterfaceBoxGoSliceGoString => 158,
             Self::GoInterfaceUnboxGoSliceGoString => 159,
+            Self::PrintU64 => 160,
         })
     }
 }

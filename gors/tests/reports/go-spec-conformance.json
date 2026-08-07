@@ -12,10 +12,10 @@
   "summary": {
     "groupCount": 15,
     "passingGroupCount": 15,
-    "caseCount": 270,
-    "passingCaseCount": 270,
+    "caseCount": 322,
+    "passingCaseCount": 322,
     "unsupportedCaseCount": 0,
-    "fixtureCount": 116
+    "fixtureCount": 168
   },
   "groups": [
     {
@@ -23,6 +23,7 @@
       "title": "Source code representation",
       "subtitle": "",
       "fixtures": [
+        "_negative/negative_language_version_binary_literal",
         "_source_bytes/bom_leading",
         "_source_bytes/bom_middle",
         "_source_bytes/source_nul",
@@ -34,10 +35,10 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 8,
-        "passingCaseCount": 8,
+        "caseCount": 9,
+        "passingCaseCount": 9,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 7
+        "fixtureCount": 8
       },
       "cases": [
         {
@@ -129,6 +130,20 @@
           "reason": ""
         },
         {
+          "id": "spec-negative-language-version-binary-literal",
+          "title": "A module targeting Go 1.12 rejects the Go 1.13 binary integer literal syntax",
+          "subtitle": "Language versions",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "_negative/negative_language_version_binary_literal"
+          ],
+          "freshFixtures": [
+            "_negative/negative_language_version_binary_literal"
+          ],
+          "reason": ""
+        },
+        {
           "id": "spec-lexical-unicode-identifier-categories",
           "title": "Identifiers exercising every letter category the corpus lacks: Lm (U+02B0) and Lt (U+01C5) letters STARTING identifiers, an Nd...",
           "subtitle": "Letters and digits",
@@ -166,7 +181,10 @@
         "_source_bytes/int_separator_misplaced",
         "_source_bytes/semicolon_if_brace_newline",
         "lexical_elements",
+        "lexical_imaginary_literal_bases",
+        "lexical_numeric_literal_edge_forms",
         "lexical_raw_string_carriage_returns",
+        "lexical_rune_escape_values",
         "lexical_semicolon_insertion_forms",
         "lexical_string_escape_bytes",
         "spec_section_edgecases",
@@ -175,10 +193,10 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 23,
-        "passingCaseCount": 23,
+        "caseCount": 26,
+        "passingCaseCount": 26,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 8
+        "fixtureCount": 11
       },
       "cases": [
         {
@@ -352,6 +370,20 @@
           "reason": ""
         },
         {
+          "id": "spec-lexical-numeric-literal-edge-forms",
+          "title": "Numeric literal edge forms preserve longest-match, separators, base prefixes, and elided parts",
+          "subtitle": "Floating-point literals",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "lexical_numeric_literal_edge_forms"
+          ],
+          "freshFixtures": [
+            "lexical_numeric_literal_edge_forms"
+          ],
+          "reason": ""
+        },
+        {
           "id": "lexical-imaginary-literals",
           "title": "Imaginary literals lower to complex values",
           "subtitle": "Imaginary literals",
@@ -362,6 +394,20 @@
           ],
           "freshFixtures": [
             "lexical_elements"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-lexical-imaginary-literal-bases",
+          "title": "Imaginary literals preserve decimal leading-zero compatibility and base-prefixed or elided forms",
+          "subtitle": "Imaginary literals",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "lexical_imaginary_literal_bases"
+          ],
+          "freshFixtures": [
+            "lexical_imaginary_literal_bases"
           ],
           "reason": ""
         },
@@ -390,6 +436,20 @@
           ],
           "freshFixtures": [
             "lexical_elements"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-lexical-rune-escape-values",
+          "title": "The full escaped_char set (\\a \\b \\f \\n \\r \\t \\v \\\\ \\'), octal rune escapes (\\000 \\007 \\377), and multi-byte source characters a...",
+          "subtitle": "Rune literals",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "lexical_rune_escape_values"
+          ],
+          "freshFixtures": [
+            "lexical_rune_escape_values"
           ],
           "reason": ""
         },
@@ -515,16 +575,21 @@
         "_negative/constants_division_by_zero",
         "_negative/constants_representability",
         "_negative/constants_typed_shift_overflow",
+        "constant_division_kinds",
+        "constant_exact_evaluation",
         "constants",
-        "large_constant_precision"
+        "iota_parallel_and_skipped",
+        "large_constant_precision",
+        "representability_rounding",
+        "untyped_constant_default_types"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 12,
-        "passingCaseCount": 12,
+        "caseCount": 17,
+        "passingCaseCount": 17,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 5
+        "fixtureCount": 10
       },
       "cases": [
         {
@@ -552,6 +617,20 @@
           ],
           "freshFixtures": [
             "constants"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "iota-parallel-and-skipped",
+          "title": "Parallel and skipped const specifications share, advance, and reset iota with exact typed-constant behavior",
+          "subtitle": "Iota",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "iota_parallel_and_skipped"
+          ],
+          "freshFixtures": [
+            "iota_parallel_and_skipped"
           ],
           "reason": ""
         },
@@ -598,6 +677,20 @@
           "reason": ""
         },
         {
+          "id": "spec-constant-division-kinds",
+          "title": "Constant division operand kinds determine integer or floating-point evaluation before target coercion",
+          "subtitle": "Constant expressions",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "constant_division_kinds"
+          ],
+          "freshFixtures": [
+            "constant_division_kinds"
+          ],
+          "reason": ""
+        },
+        {
           "id": "constants-shift-expressions",
           "title": "Shift expressions produce integer constants",
           "subtitle": "Constant expressions",
@@ -636,6 +729,20 @@
           ],
           "freshFixtures": [
             "_negative/constants_representability"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-representability-rounding",
+          "title": "Representable float constants round to target precision using IEEE 754 round-to-even, and integral float constants convert to integer types",
+          "subtitle": "Representability",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "representability_rounding"
+          ],
+          "freshFixtures": [
+            "representability_rounding"
           ],
           "reason": ""
         },
@@ -694,6 +801,34 @@
             "_negative/constants_typed_shift_overflow"
           ],
           "reason": ""
+        },
+        {
+          "id": "constants-exact-evaluation",
+          "title": "Constant expressions evaluate exactly with arbitrary-precision intermediates",
+          "subtitle": "Constant expressions",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "constant_exact_evaluation"
+          ],
+          "freshFixtures": [
+            "constant_exact_evaluation"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "constants-untyped-default-types",
+          "title": "Untyped constant expressions retain their kinds and acquire the required default types",
+          "subtitle": "Constants",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "untyped_constant_default_types"
+          ],
+          "freshFixtures": [
+            "untyped_constant_default_types"
+          ],
+          "reason": ""
         }
       ]
     },
@@ -713,15 +848,18 @@
         "short_decl_block_shadowing",
         "short_redeclare_same_storage",
         "spec_section_edgecases",
-        "variables_and_zero_values"
+        "var_decl_default_types",
+        "var_decl_multi_value_init",
+        "variables_and_zero_values",
+        "variables_dynamic_type_nil_pointer"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 18,
-        "passingCaseCount": 18,
+        "caseCount": 21,
+        "passingCaseCount": 21,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 12
+        "fixtureCount": 15
       },
       "cases": [
         {
@@ -737,6 +875,20 @@
           "freshFixtures": [
             "variables_and_zero_values",
             "spec_section_edgecases"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "vars-dynamic-type-nil-pointer",
+          "title": "An interface holding a nil pointer retains its dynamic pointer type and is not a nil interface",
+          "subtitle": "Variables",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "variables_dynamic_type_nil_pointer"
+          ],
+          "freshFixtures": [
+            "variables_dynamic_type_nil_pointer"
           ],
           "reason": ""
         },
@@ -977,6 +1129,34 @@
             "_negative/negative_var_untyped_nil"
           ],
           "reason": ""
+        },
+        {
+          "id": "vars-default-types",
+          "title": "Untyped constant initializers in var and short declarations acquire their default types",
+          "subtitle": "Variable declarations",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "var_decl_default_types"
+          ],
+          "freshFixtures": [
+            "var_decl_default_types"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-var-decl-multi-value-init",
+          "title": "Local var declarations initialize from one multi-valued expression using assignment rules",
+          "subtitle": "Variable declarations",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "var_decl_multi_value_init"
+          ],
+          "freshFixtures": [
+            "var_decl_multi_value_init"
+          ],
+          "reason": ""
         }
       ]
     },
@@ -998,9 +1178,16 @@
         "_negative/types_promoted_composite_literal",
         "_negative/types_struct_tag_identity",
         "append_copy_clear_builtins",
+        "array_value_semantics",
+        "buffered_capacity_fifo_close",
+        "byte_rune_alias_identity",
+        "channel_direction_conversions",
+        "channel_type_associativity",
+        "const_string_len_array",
         "map_lookup_and_nil",
         "named_numeric_types",
         "nil_slice_semantics",
+        "numeric_wraparound",
         "slice_capacity_and_append",
         "string_bytes_and_invalid_utf8",
         "types",
@@ -1010,10 +1197,10 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 42,
-        "passingCaseCount": 42,
+        "caseCount": 49,
+        "passingCaseCount": 49,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 21
+        "fixtureCount": 28
       },
       "cases": [
         {
@@ -1041,6 +1228,20 @@
           ],
           "freshFixtures": [
             "types"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-numeric-wraparound",
+          "title": "Fixed-width signed and unsigned integers preserve two's-complement wraparound and conversion semantics",
+          "subtitle": "Numeric types",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "numeric_wraparound"
+          ],
+          "freshFixtures": [
+            "numeric_wraparound"
           ],
           "reason": ""
         },
@@ -1111,6 +1312,20 @@
           ],
           "freshFixtures": [
             "string_bytes_and_invalid_utf8"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-const-string-len-array",
+          "title": "len of a constant string is a byte-count constant usable in array types and arithmetic",
+          "subtitle": "String types",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "const_string_len_array"
+          ],
+          "freshFixtures": [
+            "const_string_len_array"
           ],
           "reason": ""
         },
@@ -1413,6 +1628,48 @@
           "reason": ""
         },
         {
+          "id": "types-channel-direction-conversions",
+          "title": "Explicit and assignment conversions constrain channel direction while preserving shared storage",
+          "subtitle": "Channel types",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "channel_direction_conversions"
+          ],
+          "freshFixtures": [
+            "channel_direction_conversions"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-channel-type-associativity",
+          "title": "Channel direction syntax associates with the leftmost chan and make accepts directional types",
+          "subtitle": "Channel types",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "channel_type_associativity"
+          ],
+          "freshFixtures": [
+            "channel_type_associativity"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-buffered-capacity-fifo-close",
+          "title": "Buffered string channels preserve capacity, FIFO drain order, close, and repeated zero receives",
+          "subtitle": "Channel types",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "buffered_capacity_fifo_close"
+          ],
+          "freshFixtures": [
+            "buffered_capacity_fifo_close"
+          ],
+          "reason": ""
+        },
+        {
           "id": "types-aliases",
           "title": "Alias declarations preserve identity with the aliased type",
           "subtitle": "Alias declarations",
@@ -1607,6 +1864,34 @@
             "_negative/properties_non_comparable_map_key"
           ],
           "reason": ""
+        },
+        {
+          "id": "spec-array-value-semantics",
+          "title": "One-dimensional array values copy on assignment and parameter passing and compare element-wise",
+          "subtitle": "Array types",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "array_value_semantics"
+          ],
+          "freshFixtures": [
+            "array_value_semantics"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-byte-rune-alias-identity",
+          "title": "byte/uint8 and rune/int32 aliases share assignment, slice, and interface dynamic identity",
+          "subtitle": "Numeric types",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "byte_rune_alias_identity"
+          ],
+          "freshFixtures": [
+            "byte_rune_alias_identity"
+          ],
+          "reason": ""
         }
       ]
     },
@@ -1620,20 +1905,23 @@
         "_negative/properties_assignability",
         "_negative/properties_assignability_both_named",
         "_negative/properties_non_comparable",
+        "float_nan_negzero_comparisons",
         "map_reference_and_nil_write",
         "method_expressions",
         "method_value_receiver_capture",
         "named_numeric_types",
+        "properties_assignability_channels",
         "properties_of_types_and_values",
+        "properties_underlying_type_chains",
         "spec_section_edgecases"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 12,
-        "passingCaseCount": 12,
+        "caseCount": 15,
+        "passingCaseCount": 15,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 11
+        "fixtureCount": 14
       },
       "cases": [
         {
@@ -1683,6 +1971,20 @@
           "reason": ""
         },
         {
+          "id": "spec-properties-underlying-type-chains",
+          "title": "Transitive underlying-type chains through defined types and aliases drive conversion and assignability",
+          "subtitle": "Underlying types",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "properties_underlying_type_chains"
+          ],
+          "freshFixtures": [
+            "properties_underlying_type_chains"
+          ],
+          "reason": ""
+        },
+        {
           "id": "properties-type-identity",
           "title": "Distinct defined types preserve identity while allowing explicit conversions",
           "subtitle": "Type identity",
@@ -1713,6 +2015,20 @@
           "reason": ""
         },
         {
+          "id": "properties-assignability-channels",
+          "title": "Named bidirectional channels assign to unnamed directional channels and accept the same function arguments",
+          "subtitle": "Assignability",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "properties_assignability_channels"
+          ],
+          "freshFixtures": [
+            "properties_assignability_channels"
+          ],
+          "reason": ""
+        },
+        {
           "id": "properties-comparability",
           "title": "Comparable values participate in equality and ordering",
           "subtitle": "Comparison operators",
@@ -1723,6 +2039,20 @@
           ],
           "freshFixtures": [
             "properties_of_types_and_values"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-float-nan-negzero-comparisons",
+          "title": "IEEE 754 comparisons preserve NaN, signed zero, infinity, float32 conversion, and interface equality semantics",
+          "subtitle": "Comparison operators",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "float_nan_negzero_comparisons"
+          ],
+          "freshFixtures": [
+            "float_nan_negzero_comparisons"
           ],
           "reason": ""
         },
@@ -1831,18 +2161,20 @@
         "declarations_and_scope_label_namespace",
         "declarations_and_scope_labels",
         "declarations_and_scope_predeclared",
+        "declarations_and_scope_predeclared_shadowing",
         "declarations_and_scope_uniqueness",
         "generics",
         "generics_type_sets",
-        "spec_section_edgecases"
+        "spec_section_edgecases",
+        "type_declarations_alias_vs_defined"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 20,
-        "passingCaseCount": 20,
+        "caseCount": 22,
+        "passingCaseCount": 22,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 14
+        "fixtureCount": 16
       },
       "cases": [
         {
@@ -1884,6 +2216,20 @@
           ],
           "freshFixtures": [
             "declarations_and_scope_predeclared"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-declarations-and-scope-predeclared-shadowing",
+          "title": "Package and local declarations shadow predeclared identifiers only after their declaration scope begins",
+          "subtitle": "Predeclared identifiers",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "declarations_and_scope_predeclared_shadowing"
+          ],
+          "freshFixtures": [
+            "declarations_and_scope_predeclared_shadowing"
           ],
           "reason": ""
         },
@@ -1968,6 +2314,20 @@
           ],
           "freshFixtures": [
             "declarations_and_scope"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-type-declarations-alias-vs-defined",
+          "title": "Aliases preserve type identity and method sets while type definitions create distinct types",
+          "subtitle": "Type declarations",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "type_declarations_alias_vs_defined"
+          ],
+          "freshFixtures": [
+            "type_declarations_alias_vs_defined"
           ],
           "reason": ""
         },
@@ -2144,16 +2504,20 @@
         "_negative/operand_blank_identifier",
         "_negative/slice_constant_bounds_swapped",
         "built_in_functions",
+        "composite_literal_if_ambiguity",
+        "composite_literal_sparse_indices",
         "composite_literals",
         "expressions",
         "expressions_method_values",
         "expressions_qualified_identifiers",
         "expressions_variadic_spread",
         "generics",
+        "logical_short_circuit",
         "map_reference_and_nil_write",
         "method_expressions",
         "method_value_receiver_capture",
         "operator_precedence_vs_c",
+        "receive_expression_contexts",
         "slice_capacity_and_append",
         "slice_nil_operand",
         "spec_section_edgecases",
@@ -2163,10 +2527,10 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 39,
-        "passingCaseCount": 39,
+        "caseCount": 43,
+        "passingCaseCount": 43,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 23
+        "fixtureCount": 27
       },
       "cases": [
         {
@@ -2326,6 +2690,20 @@
           "reason": ""
         },
         {
+          "id": "expr-composite-literal-sparse-indices",
+          "title": "Array and slice literal lengths derive from the largest keyed element index",
+          "subtitle": "Composite literals",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "composite_literal_sparse_indices"
+          ],
+          "freshFixtures": [
+            "composite_literal_sparse_indices"
+          ],
+          "reason": ""
+        },
+        {
           "id": "expr-composite-literal-elision",
           "title": "Nested composite literals elide repeated element and pointer types",
           "subtitle": "Composite literals",
@@ -2396,6 +2774,20 @@
           "reason": ""
         },
         {
+          "id": "spec-logical-short-circuit",
+          "title": "Logical operators short-circuit side effects in lexical left-to-right order",
+          "subtitle": "Logical operators",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "logical_short_circuit"
+          ],
+          "freshFixtures": [
+            "logical_short_circuit"
+          ],
+          "reason": ""
+        },
+        {
           "id": "expr-receive-operator",
           "title": "Receive expressions read channel values in expression contexts",
           "subtitle": "Receive operator",
@@ -2408,6 +2800,20 @@
           "freshFixtures": [
             "built_in_functions",
             "spec_section_edgecases"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-receive-expression-contexts",
+          "title": "Receive expressions preserve left-to-right evaluation in calls, operators, statements, and comma-ok assignment",
+          "subtitle": "Receive operator",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "receive_expression_contexts"
+          ],
+          "freshFixtures": [
+            "receive_expression_contexts"
           ],
           "reason": ""
         },
@@ -2720,6 +3126,20 @@
             "expressions"
           ],
           "reason": ""
+        },
+        {
+          "id": "spec-composite-literal-if-ambiguity",
+          "title": "Parentheses and index brackets disambiguate composite literals in if, for, and switch headers",
+          "subtitle": "Composite literals",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "composite_literal_if_ambiguity"
+          ],
+          "freshFixtures": [
+            "composite_literal_if_ambiguity"
+          ],
+          "reason": ""
         }
       ]
     },
@@ -2728,6 +3148,7 @@
       "title": "Statements",
       "subtitle": "",
       "fixtures": [
+        "_negative/goto_jump_into_block",
         "_negative/goto_jump_over_declaration",
         "assignment_evaluation_order",
         "assignment_two_phase",
@@ -2737,6 +3158,8 @@
         "fallthrough_nonmatching",
         "for_iteration_variables",
         "goto_backward_redeclare",
+        "if_init_scope_and_else",
+        "labeled_empty_statements",
         "op_assign_evaluate_once",
         "range_statements",
         "return_statements",
@@ -2745,15 +3168,16 @@
         "statements",
         "statements_forward_goto",
         "string_bytes_and_invalid_utf8",
+        "switch_fallthrough_placement",
         "switch_statements"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 50,
-        "passingCaseCount": 50,
+        "caseCount": 54,
+        "passingCaseCount": 54,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 18
+        "fixtureCount": 22
       },
       "cases": [
         {
@@ -2919,6 +3343,20 @@
           "reason": ""
         },
         {
+          "id": "spec-if-init-scope-and-else",
+          "title": "If initializers have implicit scope and else-if branches execute only when reached",
+          "subtitle": "If statements",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "if_init_scope_and_else"
+          ],
+          "freshFixtures": [
+            "if_init_scope_and_else"
+          ],
+          "reason": ""
+        },
+        {
           "id": "stmt-switch",
           "title": "Expression switches support breaks, defaults, and fallthrough",
           "subtitle": "Switch statements",
@@ -2985,6 +3423,20 @@
           ],
           "freshFixtures": [
             "statements"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-switch-fallthrough-placement",
+          "title": "Fallthrough follows source-order clauses and may be the final non-empty statement beneath a label",
+          "subtitle": "Fallthrough statements",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "switch_fallthrough_placement"
+          ],
+          "freshFixtures": [
+            "switch_fallthrough_placement"
           ],
           "reason": ""
         },
@@ -3451,6 +3903,20 @@
           "reason": ""
         },
         {
+          "id": "spec-goto-jump-into-block",
+          "title": "A goto outside a block cannot jump to a label inside that block",
+          "subtitle": "Goto statements",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "_negative/goto_jump_into_block"
+          ],
+          "freshFixtures": [
+            "_negative/goto_jump_into_block"
+          ],
+          "reason": ""
+        },
+        {
           "id": "spec-op-assign-evaluate-once",
           "title": "No fixture verifies that x op= y evaluates x only once (side-effecting index/key expressions must run exactly once, including o...",
           "subtitle": "Assignment statements",
@@ -3461,6 +3927,20 @@
           ],
           "freshFixtures": [
             "op_assign_evaluate_once"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-labeled-empty-statements",
+          "title": "Labels may target implicit empty statements before closing braces, and explicit empty statements preserve control flow",
+          "subtitle": "Labeled statements",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "labeled_empty_statements"
+          ],
+          "freshFixtures": [
+            "labeled_empty_statements"
           ],
           "reason": ""
         }
@@ -3475,17 +3955,25 @@
         "_negative/negative_close_receive_only",
         "append_copy_clear_builtins",
         "built_in_functions",
+        "built_in_panic_nil_value",
         "built_in_panic_recover",
+        "built_in_panic_recover_sequence",
+        "built_in_recover_placement",
+        "copy_overlapping_and_counts",
+        "make_runtime_size_panics",
         "map_lookup_and_nil",
+        "min_max_float_string",
+        "nested_panic_during_defer",
+        "panic_nil_runtime_panic",
         "spec_section_edgecases"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 19,
-        "passingCaseCount": 19,
+        "caseCount": 27,
+        "passingCaseCount": 27,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 7
+        "fixtureCount": 15
       },
       "cases": [
         {
@@ -3531,6 +4019,20 @@
           "reason": ""
         },
         {
+          "id": "spec-copy-overlapping-and-counts",
+          "title": "Overlapping copy is uncovered in both directions",
+          "subtitle": "Appending to and copying slices",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "copy_overlapping_and_counts"
+          ],
+          "freshFixtures": [
+            "copy_overlapping_and_counts"
+          ],
+          "reason": ""
+        },
+        {
           "id": "builtin-len-cap",
           "title": "len and cap report values for strings, arrays, slices, maps, and channels",
           "subtitle": "Length and capacity",
@@ -3569,6 +4071,20 @@
           ],
           "freshFixtures": [
             "built_in_functions"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-make-runtime-size-panics",
+          "title": "Dynamic make sizes are checked at run time for slices and channels",
+          "subtitle": "Making slices, maps and channels",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "make_runtime_size_panics"
+          ],
+          "freshFixtures": [
+            "make_runtime_size_panics"
           ],
           "reason": ""
         },
@@ -3673,6 +4189,20 @@
           "reason": ""
         },
         {
+          "id": "spec-min-max-float-string",
+          "title": "min and max preserve floating-point special values, lexical string order, mixed constants, and float32 result typing",
+          "subtitle": "Min and max",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "min_max_float_string"
+          ],
+          "freshFixtures": [
+            "min_max_float_string"
+          ],
+          "reason": ""
+        },
+        {
           "id": "builtin-panic-recover",
           "title": "panic and recover follow deferred recovery semantics",
           "subtitle": "Handling panics",
@@ -3683,6 +4213,76 @@
           ],
           "freshFixtures": [
             "built_in_panic_recover"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-built-in-panic-nil-value",
+          "title": "panic of nil and nil interface values produces a non-nil recoverable run-time error",
+          "subtitle": "Handling panics",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "built_in_panic_nil_value"
+          ],
+          "freshFixtures": [
+            "built_in_panic_nil_value"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-panic-nil-runtime-panic",
+          "title": "panic(nil) produces a non-nil runtime error while a typed nil pointer remains its typed nil value",
+          "subtitle": "Handling panics",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "panic_nil_runtime_panic"
+          ],
+          "freshFixtures": [
+            "panic_nil_runtime_panic"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-built-in-recover-placement",
+          "title": "recover returns nil outside a directly deferred panicking call and only direct deferred recover stops the panic",
+          "subtitle": "Handling panics",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "built_in_recover_placement"
+          ],
+          "freshFixtures": [
+            "built_in_recover_placement"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-built-in-panic-recover-sequence",
+          "title": "panic unwinding runs nested defers in order and a recovering defer resumes the caller with its named result",
+          "subtitle": "Handling panics",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "built_in_panic_recover_sequence"
+          ],
+          "freshFixtures": [
+            "built_in_panic_recover_sequence"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-nested-panic-during-defer",
+          "title": "a panic in a deferred function replaces the active panic while earlier defers continue",
+          "subtitle": "Handling panics",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "nested_panic_during_defer"
+          ],
+          "freshFixtures": [
+            "nested_panic_during_defer"
           ],
           "reason": ""
         },
@@ -3968,15 +4568,21 @@
       "fixtures": [
         "_negative/generics_constraints",
         "generics",
+        "generics_channel_constraint_unification",
+        "generics_generic_alias",
+        "generics_inference_constant_kinds",
+        "generics_inference_defined_types",
+        "generics_inference_from_constraint_term",
+        "generics_type_param_declarations",
         "generics_type_sets"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 10,
-        "passingCaseCount": 10,
+        "caseCount": 16,
+        "passingCaseCount": 16,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 3
+        "fixtureCount": 9
       },
       "cases": [
         {
@@ -4018,6 +4624,20 @@
           ],
           "freshFixtures": [
             "generics"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "generics-type-param-parsing-ambiguity",
+          "title": "Trailing commas and embedded constraints disambiguate type parameter lists from array declarations",
+          "subtitle": "Type parameter declarations",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "generics_type_param_declarations"
+          ],
+          "freshFixtures": [
+            "generics_type_param_declarations"
           ],
           "reason": ""
         },
@@ -4118,6 +4738,76 @@
             "generics_type_sets"
           ],
           "reason": ""
+        },
+        {
+          "id": "generics-inference-from-constraint-term",
+          "title": "A single non-tilde constraint term supplies an otherwise unknown type argument",
+          "subtitle": "Type unification rules",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "generics_inference_from_constraint_term"
+          ],
+          "freshFixtures": [
+            "generics_inference_from_constraint_term"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "generics-inference-constant-kinds",
+          "title": "Untyped constant-kind merging chooses the merged default type while typed operands take precedence",
+          "subtitle": "Type inference",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "generics_inference_constant_kinds"
+          ],
+          "freshFixtures": [
+            "generics_inference_constant_kinds"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-generics-generic-alias",
+          "title": "Generic alias instantiation preserves the substituted target type and mutual assignability",
+          "subtitle": "Instantiations",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "generics_generic_alias"
+          ],
+          "freshFixtures": [
+            "generics_generic_alias"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "generics-channel-constraint-unification",
+          "title": "Channel constraint unification infers element types across compatible directions",
+          "subtitle": "Type unification rules",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "generics_channel_constraint_unification"
+          ],
+          "freshFixtures": [
+            "generics_channel_constraint_unification"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "generics-inference-defined-types",
+          "title": "Inference preserves defined types while unifying their underlying structure",
+          "subtitle": "Type inference",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "generics_inference_defined_types"
+          ],
+          "freshFixtures": [
+            "generics_inference_defined_types"
+          ],
+          "reason": ""
         }
       ]
     },
@@ -4126,15 +4816,16 @@
       "title": "Errors",
       "subtitle": "",
       "fixtures": [
-        "errors"
+        "errors",
+        "errors_typed_nil"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 1,
-        "passingCaseCount": 1,
+        "caseCount": 2,
+        "passingCaseCount": 2,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 1
+        "fixtureCount": 2
       },
       "cases": [
         {
@@ -4150,6 +4841,20 @@
             "errors"
           ],
           "reason": ""
+        },
+        {
+          "id": "spec-errors-typed-nil",
+          "title": "An error interface holding a typed nil pointer is non-nil while the zero error interface is nil",
+          "subtitle": "Errors",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "errors_typed_nil"
+          ],
+          "freshFixtures": [
+            "errors_typed_nil"
+          ],
+          "reason": ""
         }
       ]
     },
@@ -4158,15 +4863,20 @@
       "title": "Run-time panics",
       "subtitle": "",
       "fixtures": [
-        "run_time_panics"
+        "run_time_panics",
+        "run_time_panics_channels",
+        "run_time_panics_make_and_full_slice",
+        "run_time_panics_negative_shift_int",
+        "run_time_panics_nil_struct_interface",
+        "run_time_panics_type_assertion_concrete"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 1,
-        "passingCaseCount": 1,
+        "caseCount": 6,
+        "passingCaseCount": 6,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 1
+        "fixtureCount": 6
       },
       "cases": [
         {
@@ -4180,6 +4890,76 @@
           ],
           "freshFixtures": [
             "run_time_panics"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-run-time-panics-channels",
+          "title": "Invalid sends and closes on closed or nil channels cause recoverable run-time panics",
+          "subtitle": "Run-time panics",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "run_time_panics_channels"
+          ],
+          "freshFixtures": [
+            "run_time_panics_channels"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-run-time-panics-make-and-full-slice",
+          "title": "Invalid dynamic make sizes and full-slice bounds cause recoverable run-time panics",
+          "subtitle": "Run-time panics",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "run_time_panics_make_and_full_slice"
+          ],
+          "freshFixtures": [
+            "run_time_panics_make_and_full_slice"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-run-time-panics-negative-shift-int",
+          "title": "Negative dynamic `int` shift counts panic; large `int` counts do not panic and yield zero",
+          "subtitle": "Run-time panics",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "run_time_panics_negative_shift_int"
+          ],
+          "freshFixtures": [
+            "run_time_panics_negative_shift_int"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-run-time-panics-nil-struct-interface",
+          "title": "Nil struct-pointer field reads/writes and nil-interface method calls panic",
+          "subtitle": "Run-time panics",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "run_time_panics_nil_struct_interface"
+          ],
+          "freshFixtures": [
+            "run_time_panics_nil_struct_interface"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-run-time-panics-type-assertion-concrete",
+          "title": "A failed concrete single-result assertion panics, while comma-ok returns zero,false",
+          "subtitle": "Run-time panics",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "run_time_panics_type_assertion_concrete"
+          ],
+          "freshFixtures": [
+            "run_time_panics_type_assertion_concrete"
           ],
           "reason": ""
         }

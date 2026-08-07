@@ -8,7 +8,7 @@ use crate::operations::{PrimitiveOp, RuntimeOp};
 pub const CURRENT_MANIFEST_SCHEMA: ManifestSchemaVersion = ManifestSchemaVersion::new(2);
 
 /// Current semantic compiler/runtime operation contract.
-pub const CURRENT_CONTRACT_VERSION: ContractVersion = ContractVersion::new(2, 22, 0);
+pub const CURRENT_CONTRACT_VERSION: ContractVersion = ContractVersion::new(2, 23, 0);
 
 /// Version of the canonical manifest encoding itself.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -209,4 +209,57 @@ where
     values.sort_unstable_by_key(&mut key);
     values.dedup_by(|left, right| key(left) == key(right));
     values.into_boxed_slice()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::operations::{IntegerKind, IntegerKindConstraint};
+
+    #[test]
+    fn integer_kind_constraints_participate_in_contract_identity() {
+        let manifest = RuntimeAbiManifest::current();
+        let signed =
+            canonical_bytes_with_print_constraint(&manifest, IntegerKindConstraint::Signed);
+        assert_eq!(signed, manifest.canonical_bytes());
+
+        let exact_i64 = canonical_bytes_with_print_constraint(
+            &manifest,
+            IntegerKindConstraint::Exact(IntegerKind::I64),
+        );
+        assert_ne!(
+            ContractIdentity::sha256(&signed),
+            ContractIdentity::sha256(&exact_i64),
+            "changing only an ABI integer-kind constraint must change the contract identity"
+        );
+    }
+
+    fn canonical_bytes_with_print_constraint(
+        manifest: &RuntimeAbiManifest,
+        print_constraint: IntegerKindConstraint,
+    ) -> Vec<u8> {
+        let mut encoder = CanonicalEncoder::contract();
+        encoder.u32(manifest.schema.get());
+        encoder.u16(manifest.contract.major());
+        encoder.u16(manifest.contract.minor());
+        encoder.u16(manifest.contract.patch());
+        manifest.semantics.encode(&mut encoder);
+        encoder.count(manifest.primitive_ops.len());
+        for operation in &manifest.primitive_ops {
+            operation.encode(&mut encoder);
+        }
+        encoder.count(manifest.runtime_ops.len());
+        for operation in &manifest.runtime_ops {
+            if *operation == RuntimeOp::PrintI64 {
+                operation.encode_with_integer_constraints(
+                    &mut encoder,
+                    |_| print_constraint,
+                    |position| operation.integer_result_constraint(position),
+                );
+            } else {
+                operation.encode(&mut encoder);
+            }
+        }
+        encoder.finish()
+    }
 }
