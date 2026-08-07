@@ -10,9 +10,7 @@ use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::mir;
 use crate::compiler::rust_ir as out;
-use crate::compiler::types::{
-    ComplexTy, ConstValue, FloatTy, IntTy, Signature as GoSignature, Ty, UintTy, parse_go_float,
-};
+use crate::compiler::types::{ConstValue, FloatTy, IntTy, Signature as GoSignature, Ty, UintTy};
 use gors_runtime_abi::{PrimitiveOp, RuntimeOp};
 
 use control::{finish_terminator, lower_panic_edge};
@@ -796,50 +794,34 @@ fn lower_constant(value: ConstValue, ty: &Ty) -> Result<out::Constant, Diagnosti
             op: RuntimeOp::GoStringFromStatic,
             bytes,
         }),
-        (ConstValue::Float(value), Ty::Float(float_ty)) => parse_go_float(&value)
-            .map(|value| lower_float_constant(value, *float_ty))
-            .map(f64::to_bits)
-            .map(out::Constant::F64)
-            .ok_or_else(|| Diagnostic::backend(format!("invalid Go float constant: {value}"))),
-        (ConstValue::Int(value), Ty::Float(float_ty)) => value
-            .parse::<f64>()
-            .ok()
-            .filter(|value| value.is_finite())
-            .map(|value| lower_float_constant(value, *float_ty))
-            .map(f64::to_bits)
+        (value @ (ConstValue::Float(_) | ConstValue::Int(_)), Ty::Float(float_ty)) => value
+            .ieee_bits_for(*float_ty)
+            .and_then(|bits| lower_float_bits(bits, *float_ty))
             .map(out::Constant::F64)
             .ok_or_else(|| {
-                Diagnostic::backend(format!("invalid Go integer-to-float constant: {value}"))
+                Diagnostic::backend(format!("invalid canonical Go float constant: {value:?}"))
             }),
-        (ConstValue::Int(value), Ty::Complex(ComplexTy::Complex128)) => value
-            .parse::<f64>()
-            .ok()
-            .filter(|value| value.is_finite())
+        (value @ (ConstValue::Int(_) | ConstValue::Float(_)), Ty::Complex(complex_ty)) => value
+            .ieee_bits_for(complex_ty.component_type())
+            .and_then(|bits| lower_float_bits(bits, complex_ty.component_type()))
             .map(|real| out::Constant::Complex128 {
-                real: real.to_bits(),
+                real,
                 imag: 0.0_f64.to_bits(),
             })
             .ok_or_else(|| {
-                Diagnostic::backend(format!("invalid Go integer-to-complex constant: {value}"))
+                Diagnostic::backend(format!("invalid canonical Go complex constant: {value:?}"))
             }),
-        (ConstValue::Float(value), Ty::Complex(ComplexTy::Complex128)) => parse_go_float(&value)
-            .filter(|value| value.is_finite())
-            .map(|real| out::Constant::Complex128 {
-                real: real.to_bits(),
-                imag: 0.0_f64.to_bits(),
-            })
-            .ok_or_else(|| {
-                Diagnostic::backend(format!("invalid Go float-to-complex constant: {value}"))
-            }),
-        (ConstValue::Complex { real, imag }, Ty::Complex(ComplexTy::Complex128)) => {
-            let real = parse_go_float(&real)
+        (ConstValue::Complex { real, imag }, Ty::Complex(complex_ty)) => {
+            let component_ty = complex_ty.component_type();
+            let real = ConstValue::Float(real)
+                .ieee_bits_for(component_ty)
+                .and_then(|bits| lower_float_bits(bits, component_ty))
                 .ok_or_else(|| Diagnostic::backend("invalid real complex128 component"))?;
-            let imag = parse_go_float(&imag)
+            let imag = ConstValue::Float(imag)
+                .ieee_bits_for(component_ty)
+                .and_then(|bits| lower_float_bits(bits, component_ty))
                 .ok_or_else(|| Diagnostic::backend("invalid imaginary complex128 component"))?;
-            Ok(out::Constant::Complex128 {
-                real: real.to_bits(),
-                imag: imag.to_bits(),
-            })
+            Ok(out::Constant::Complex128 { real, imag })
         }
         (value, ty) => Err(Diagnostic::backend(format!(
             "invalid constant reached Rust lowering: {value:?} as {ty:?}"
@@ -847,10 +829,14 @@ fn lower_constant(value: ConstValue, ty: &Ty) -> Result<out::Constant, Diagnosti
     }
 }
 
-fn lower_float_constant(value: f64, ty: FloatTy) -> f64 {
+fn lower_float_bits(bits: u64, ty: FloatTy) -> Option<u64> {
     match ty {
-        FloatTy::Float32 => f64::from(value as f32),
-        FloatTy::Float64 => value,
+        FloatTy::Float32 => u32::try_from(bits)
+            .ok()
+            .map(f32::from_bits)
+            .map(f64::from)
+            .map(f64::to_bits),
+        FloatTy::Float64 => Some(bits),
     }
 }
 

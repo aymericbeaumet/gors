@@ -190,6 +190,7 @@ impl FunctionLowerer {
                     .transpose()?
                     .flatten()
                 {
+                    let value = normalize_constant_for_type(value, &operand.ty, source)?;
                     hir::Expr {
                         node,
                         kind: hir::ExprKind::Constant(value),
@@ -317,7 +318,11 @@ impl FunctionLowerer {
                 // float64 when the final exact result does.
                 let untyped_operand_ty = exact_common_operand_type(&left.ty, &right.ty)
                     .filter(|ty| matches!(ty, Ty::Untyped(_)));
-                validate_binary_operator(op, &operand_ty, source)?;
+                if expr_constant(&left).is_some() && expr_constant(&right).is_some() {
+                    super::validate_constant_binary_operator(op, &operand_ty, source)?;
+                } else {
+                    validate_binary_operator(op, &operand_ty, source)?;
+                }
                 let folded_untyped = if untyped_operand_ty.is_some() {
                     expr_constant(&left)
                         .zip(expr_constant(&right))
@@ -363,6 +368,7 @@ impl FunctionLowerer {
                     } else {
                         untyped_operand_ty.unwrap_or(result_ty)
                     };
+                    let value = normalize_constant_for_type(value, &ty, source)?;
                     hir::Expr {
                         node,
                         kind: hir::ExprKind::Constant(value),

@@ -35,7 +35,8 @@ pub(super) fn verify_constant_type(value: &ConstValue, ty: &Ty) -> Result<(), Di
             | (ConstValue::Float(_), Ty::Complex(ComplexTy::Complex128))
             | (ConstValue::String(_), Ty::String)
     );
-    (shape_matches && value.is_representable_as(ty))
+    let canonical = value.normalized_for(ty) == *value;
+    (shape_matches && value.is_representable_as(ty) && canonical)
         .then_some(())
         .ok_or_else(|| {
             Diagnostic::backend(format!(
@@ -170,7 +171,7 @@ pub(super) fn verify_binary_types(
 #[cfg(test)]
 mod tests {
     use super::verify_constant_type;
-    use crate::compiler::types::{ConstValue, IntTy, Ty, UintTy};
+    use crate::compiler::types::{ConstValue, FloatTy, IntTy, Ty, UintTy};
 
     #[test]
     fn constant_verification_enforces_exact_integer_representation_bounds() {
@@ -191,6 +192,31 @@ mod tests {
             verify_constant_type(
                 &ConstValue::Int("9223372036854775808".into()),
                 &Ty::Uint(UintTy::Uint),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn constant_verification_rejects_unquantized_typed_floats() {
+        assert!(
+            verify_constant_type(
+                &ConstValue::Int("16777217".into()),
+                &Ty::Float(FloatTy::Float32),
+            )
+            .is_err()
+        );
+        assert!(
+            verify_constant_type(
+                &ConstValue::Int("16777216".into()),
+                &Ty::Float(FloatTy::Float32),
+            )
+            .is_ok()
+        );
+        assert!(
+            verify_constant_type(
+                &ConstValue::Int("9007199254740993".into()),
+                &Ty::Float(FloatTy::Float64),
             )
             .is_err()
         );

@@ -30,6 +30,20 @@ pub(super) fn expr_constant(expr: &hir::Expr) -> Option<&ConstValue> {
     }
 }
 
+pub(super) fn normalize_constant_for_type(
+    value: ConstValue,
+    ty: &Ty,
+    source: SourceRef,
+) -> Result<ConstValue, Diagnostic> {
+    if !value.is_representable_as(ty) {
+        return Err(Diagnostic::semantic(
+            format!("constant result is not representable as {ty:?}"),
+            source,
+        ));
+    }
+    Ok(value.normalized_for(ty))
+}
+
 pub(super) fn fold_constant_unary(
     op: hir::UnaryOp,
     value: &ConstValue,
@@ -370,13 +384,7 @@ pub(super) fn coerce_expr(
     }
     if let hir::ExprKind::Constant(value) | hir::ExprKind::GlobalConstant(_, value) = &mut expr.kind
     {
-        if !value.is_representable_as(expected) {
-            return Err(Diagnostic::semantic(
-                format!("constant is not representable as {expected:?}"),
-                source,
-            ));
-        }
-        *value = value.normalized_for(expected);
+        *value = normalize_constant_for_type(value.clone(), expected, source)?;
     }
     let representation_preserving_conversion = expr.ty != *expected
         && (expr.ty.underlying() == expected.underlying()

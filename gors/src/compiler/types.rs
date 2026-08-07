@@ -3,6 +3,8 @@
 //! Adding a supported Go construct extends this type algebra directly; it must
 //! never be represented by an unknown sentinel plus a compensating side table.
 
+mod exact_float;
+
 use num_bigint::BigInt;
 
 use super::ids::{DefId, LocalTypeId};
@@ -457,10 +459,10 @@ impl Ty {
         match self.default_typed() {
             Self::Bool => Some(ConstValue::Bool(false)),
             Self::Int(_) | Self::Uint(_) => Some(ConstValue::Int("0".into())),
-            Self::Float(_) => Some(ConstValue::Float("0.0".into())),
+            Self::Float(_) => Some(ConstValue::Int("0".into())),
             Self::Complex(_) => Some(ConstValue::Complex {
-                real: "0.0".into(),
-                imag: "0.0".into(),
+                real: "0".into(),
+                imag: "0".into(),
             }),
             Self::String => Some(ConstValue::String(Vec::new())),
             Self::Struct(_) | Self::Interface(_) | Self::Function(_) => None,
@@ -481,20 +483,43 @@ impl Ty {
 }
 
 impl ConstValue {
-    /// Exact value rewritten to the representation kind of `ty`. An exactly
-    /// integral float-kind constant becomes an integer constant at integer
-    /// sites; every other combination is returned unchanged.
+    /// Exact value converted to the canonical constant representation of `ty`.
+    /// Typed floating-point and complex constants are rounded exactly once at
+    /// every typing boundary, as required by Go's constant rules.
     #[must_use]
     pub fn normalized_for(&self, ty: &Ty) -> Self {
-        if let (
-            Self::Float(spelling),
-            Ty::Int(_) | Ty::Uint(_) | Ty::Untyped(UntypedTy::Int | UntypedTy::Rune),
-        ) = (self, ty.underlying())
-            && let Some(integer) = exact_integer_from_number_spelling(spelling)
-        {
-            return integer;
+        match (self, ty.underlying()) {
+            (
+                Self::Float(spelling),
+                Ty::Int(_) | Ty::Uint(_) | Ty::Untyped(UntypedTy::Int | UntypedTy::Rune),
+            ) => exact_integer_from_number_spelling(spelling).unwrap_or_else(|| self.clone()),
+            (Self::Int(_) | Self::Float(_), Ty::Float(float_ty)) => self
+                .quantized_for_float(*float_ty)
+                .unwrap_or_else(|| self.clone()),
+            (Self::Int(_) | Self::Float(_), Ty::Complex(complex_ty)) => self
+                .quantized_for_float(complex_ty.component_type())
+                .unwrap_or_else(|| self.clone()),
+            (Self::Complex { real, imag }, Ty::Complex(complex_ty)) => {
+                let component_ty = complex_ty.component_type();
+                let quantize = |spelling: &str| {
+                    Self::Float(spelling.to_owned())
+                        .quantized_for_float(component_ty)
+                        .and_then(Self::into_number_spelling)
+                };
+                match (quantize(real), quantize(imag)) {
+                    (Some(real), Some(imag)) => Self::Complex { real, imag },
+                    _ => self.clone(),
+                }
+            }
+            _ => self.clone(),
         }
-        self.clone()
+    }
+
+    fn into_number_spelling(self) -> Option<String> {
+        match self {
+            Self::Int(spelling) | Self::Float(spelling) => Some(spelling),
+            Self::Bool(_) | Self::Complex { .. } | Self::String(_) => None,
+        }
     }
 
     /// Whether this exact Go constant can be materialized as `ty` by the
@@ -541,35 +566,34 @@ impl ConstValue {
                 };
                 value >= BigInt::from(0_u8) && value <= maximum
             }
-            (Self::Int(value), Ty::Float(float_ty)) => BigInt::parse_bytes(value.as_bytes(), 10)
-                .and_then(|value| value.to_string().parse::<f64>().ok())
-                .is_some_and(|value| match float_ty {
-                    FloatTy::Float32 => (value as f32).is_finite(),
-                    FloatTy::Float64 => value.is_finite(),
-                }),
-            (Self::Int(value), Ty::Complex(ComplexTy::Complex128)) => {
-                BigInt::parse_bytes(value.as_bytes(), 10).is_some()
+            (Self::Int(_), Ty::Float(float_ty)) => self.ieee_bits_for(*float_ty).is_some(),
+            (Self::Int(_), Ty::Complex(complex_ty)) => {
+                self.ieee_bits_for(complex_ty.component_type()).is_some()
             }
             (Self::Float(value), Ty::Untyped(UntypedTy::Float | UntypedTy::Complex)) => {
-                parse_go_float(value).is_some()
+                ExactNumber::from_spelling(value).is_some()
             }
             (Self::Float(value), Ty::Int(_) | Ty::Uint(_)) => {
                 exact_integer_from_number_spelling(value)
                     .is_some_and(|integer| integer.is_representable_as(ty))
             }
-            (Self::Float(value), Ty::Float(float_ty)) => {
-                parse_go_float(value).is_some_and(|value| match float_ty {
-                    FloatTy::Float32 => (value as f32).is_finite(),
-                    FloatTy::Float64 => value.is_finite(),
-                })
+            (Self::Float(_), Ty::Float(float_ty)) => self.ieee_bits_for(*float_ty).is_some(),
+            (Self::Float(_), Ty::Complex(complex_ty)) => {
+                self.ieee_bits_for(complex_ty.component_type()).is_some()
             }
-            (Self::Float(value), Ty::Complex(ComplexTy::Complex128)) => {
-                parse_go_float(value).is_some()
+            (Self::Complex { real, imag }, Ty::Untyped(UntypedTy::Complex)) => {
+                ExactNumber::from_spelling(real).is_some()
+                    && ExactNumber::from_spelling(imag).is_some()
             }
-            (
-                Self::Complex { real, imag },
-                Ty::Untyped(UntypedTy::Complex) | Ty::Complex(ComplexTy::Complex128),
-            ) => parse_go_float(real).is_some() && parse_go_float(imag).is_some(),
+            (Self::Complex { real, imag }, Ty::Complex(complex_ty)) => {
+                let component_ty = complex_ty.component_type();
+                Self::Float(real.clone())
+                    .ieee_bits_for(component_ty)
+                    .is_some()
+                    && Self::Float(imag.clone())
+                        .ieee_bits_for(component_ty)
+                        .is_some()
+            }
             // Other narrow and unsigned widths stay in the semantic algebra
             // for the next frontier but are not executable yet.
             _ => false,

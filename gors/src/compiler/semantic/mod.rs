@@ -591,8 +591,8 @@ pub(super) fn eval_constant_with_lookups(
             // An untyped constant operand first converts to the common
             // operand type, so an integral float spelling participates in
             // integer arithmetic at integer operand types.
-            let left = left.normalized_for(&operand_ty);
-            let right = right.normalized_for(&operand_ty);
+            let left = normalize_constant_for_type(left, &operand_ty, source)?;
+            let right = normalize_constant_for_type(right, &operand_ty, source)?;
             let value = fold_constant_binary(op, &left, &right, source)?.ok_or_else(|| {
                 Diagnostic::unsupported("this constant operation is not yet supported", source)
             })?;
@@ -611,6 +611,7 @@ pub(super) fn eval_constant_with_lookups(
             } else {
                 operand_ty
             };
+            let value = normalize_constant_for_type(value, &result_ty, source)?;
             Ok((result_ty, value))
         }
         ExprSyntaxKind::Paren(expression) => {
@@ -619,35 +620,36 @@ pub(super) fn eval_constant_with_lookups(
         ExprSyntaxKind::Unary { token, expression } => {
             let (ty, value) =
                 eval_constant_with_lookups(expression, constant_lookup, type_lookup, source, iota)?;
-            match (*token, value) {
-                (crate::token::Token::ADD, value) => Ok((ty, value)),
+            let value = match (*token, value) {
+                (crate::token::Token::ADD, value) => value,
                 (crate::token::Token::SUB, ConstValue::Int(value)) => {
                     let value = BigInt::parse_bytes(value.as_bytes(), 10)
                         .map(|value| (-value).to_string())
                         .ok_or_else(|| Diagnostic::semantic("invalid exact integer", source))?;
-                    Ok((ty, ConstValue::Int(value)))
+                    ConstValue::Int(value)
                 }
                 (crate::token::Token::SUB, ConstValue::Float(value)) => {
                     let value = value
                         .strip_prefix('-')
                         .map_or_else(|| format!("-{value}"), str::to_string);
-                    Ok((ty, ConstValue::Float(value)))
+                    ConstValue::Float(value)
                 }
-                (crate::token::Token::SUB, ConstValue::Complex { real, imag }) => Ok((
-                    ty,
+                (crate::token::Token::SUB, ConstValue::Complex { real, imag }) => {
                     ConstValue::Complex {
                         real: negate_number_spelling(&real),
                         imag: negate_number_spelling(&imag),
-                    },
-                )),
-                (crate::token::Token::NOT, ConstValue::Bool(value)) => {
-                    Ok((ty, ConstValue::Bool(!value)))
+                    }
                 }
-                _ => Err(Diagnostic::unsupported(
-                    "constant unary operation is not implemented",
-                    source,
-                )),
-            }
+                (crate::token::Token::NOT, ConstValue::Bool(value)) => ConstValue::Bool(!value),
+                _ => {
+                    return Err(Diagnostic::unsupported(
+                        "constant unary operation is not implemented",
+                        source,
+                    ));
+                }
+            };
+            let value = normalize_constant_for_type(value, &ty, source)?;
+            Ok((ty, value))
         }
         ExprSyntaxKind::Call {
             callee,
@@ -746,7 +748,9 @@ fn eval_constant_call(
         ));
     }
     let name = callee.name.as_ref();
-    if let Some(target) = type_lookup(name) {
+    if let Some(target) =
+        type_lookup(name).or_else(|| type_lowering::predeclared_constant_type(name))
+    {
         let [argument] = arguments else {
             return Err(Diagnostic::semantic(
                 format!("conversion to {name} requires exactly one argument"),
@@ -847,13 +851,11 @@ fn eval_constant_min_max(
                 source,
             ));
         }
-        value = fold_constant_binary(
-            op,
-            &value.normalized_for(&common),
-            &right.normalized_for(&common),
-            source,
-        )?
-        .ok_or_else(|| Diagnostic::semantic(format!("invalid constant {name}"), source))?;
+        let left = normalize_constant_for_type(value, &common, source)?;
+        let right = normalize_constant_for_type(right, &common, source)?;
+        value = fold_constant_binary(op, &left, &right, source)?
+            .ok_or_else(|| Diagnostic::semantic(format!("invalid constant {name}"), source))?;
+        value = normalize_constant_for_type(value, &common, source)?;
         ty = common;
     }
     Ok((ty, value))

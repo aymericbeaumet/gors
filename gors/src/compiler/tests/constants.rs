@@ -132,6 +132,50 @@ fn exact_float_constant_intermediates_need_not_fit_float64() {
 }
 
 #[test]
+fn typed_float_constants_quantize_at_declarations_conversions_and_operations() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            const lowerTie float32 = 16777217
+            const upperTie float32 = 16777219
+            const wideTie float64 = 1<<53 + 1
+            const converted = float32(16777217)
+            const base float32 = 16777216
+            const roundedOperation = base + 1
+            const doubleRound float32 = 1.0000000596046447753906250000000000000001
+            const underflowTie float32 = 0x1p-150
+            const underflowAbove float32 = 0x1.000002p-150
+            const negativeUnderflow float32 = -0x1p-150
+
+            func keep32(value float32) float32 { return value }
+            func keep64(value float64) float64 { return value }
+
+            func main() {
+                if keep32(lowerTie) != 16777216 ||
+                    keep32(upperTie) != 16777220 ||
+                    keep64(wideTie) != 9007199254740992 ||
+                    keep32(converted) != 16777216 ||
+                    keep32(roundedOperation) != 16777216 ||
+                    keep32(doubleRound) <= 1 ||
+                    keep32(underflowTie) != 0 ||
+                    keep32(underflowAbove) == 0 {
+                    panic("typed floating-point constant quantization changed")
+                }
+                zero := keep64(float64(negativeUnderflow))
+                one := 1.0
+                if one/zero < 0 {
+                    panic("constant underflow produced negative zero")
+                }
+                println("typed float constants: ok")
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"typed float constants: ok\n");
+}
+
+#[test]
 fn decimal_only_imaginary_literals_do_not_use_legacy_octal_values() {
     let run = compile_and_run(
         r#"

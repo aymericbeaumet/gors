@@ -781,6 +781,14 @@ the exact Go dynamic type identity. Dynamic narrowing, narrow or unsigned
 arithmetic, shifts, increment/decrement, and `uint` values above `i64::MAX`
 remain diagnosed until width-specific lowering represents their Go semantics.
 
+Typed floating-point and complex constants are quantized from the exact
+rational constant algebra at every declaration, conversion, and typed
+operation using the destination IEEE format's round-to-nearest, ties-to-even
+rule. HIR and MIR retain that canonical rounded value, the MIR verifier rejects
+unquantized typed constants, and representation lowering consumes the exact
+verified bits rather than making the first rounding decision or routing a
+`float32` constant through host `float64`.
+
 Executable channels use one direction-neutral shared handle representation per
 element representation while retaining exact send/receive direction in HIR and
 Go MIR. The canonical runtime ABI currently provides complete operation

@@ -12,6 +12,22 @@ use crate::compiler::types::{
     ChannelDir, ConstValue, FloatTy, IntTy, InterfaceMethod, Signature, StructField, Ty, UintTy,
 };
 
+pub(super) fn predeclared_constant_type(name: &str) -> Option<Ty> {
+    Some(match name {
+        "bool" => Ty::Bool,
+        "string" => Ty::String,
+        "int" => Ty::Int(IntTy::Int),
+        "int8" => Ty::Int(IntTy::Int8),
+        "int32" | "rune" => Ty::Int(IntTy::Int32),
+        "uint" => Ty::Uint(UintTy::Uint),
+        "float32" => Ty::Float(FloatTy::Float32),
+        "float64" => Ty::Float(FloatTy::Float64),
+        "complex128" => Ty::Complex(crate::compiler::types::ComplexTy::Complex128),
+        "uint8" | "byte" => Ty::Uint(UintTy::Uint8),
+        _ => return None,
+    })
+}
+
 pub(super) fn field_types(
     fields: &FieldListSyntax,
     type_aliases: &BTreeMap<String, Ty>,
@@ -304,17 +320,10 @@ pub(in crate::compiler) fn lower_type_with_constant_lookup(
             source,
         ));
     };
+    if let Some(ty) = predeclared_constant_type(ident.name.as_ref()) {
+        return Ok(ty);
+    }
     match ident.name.as_ref() {
-        "bool" => Ok(Ty::Bool),
-        "string" => Ok(Ty::String),
-        "int" => Ok(Ty::Int(IntTy::Int)),
-        "int8" => Ok(Ty::Int(IntTy::Int8)),
-        "int32" | "rune" => Ok(Ty::Int(IntTy::Int32)),
-        "uint" => Ok(Ty::Uint(UintTy::Uint)),
-        "float32" => Ok(Ty::Float(FloatTy::Float32)),
-        "float64" => Ok(Ty::Float(FloatTy::Float64)),
-        "complex128" => Ok(Ty::Complex(crate::compiler::types::ComplexTy::Complex128)),
-        "uint8" | "byte" => Ok(Ty::Uint(UintTy::Uint8)),
         "any" => Ok(Ty::Interface(Vec::new())),
         "error" => Ok(interfaces::error_interface_ty()),
         "int16" | "int64" | "uint16" | "uint32" | "uint64" | "uintptr" | "complex64" => {

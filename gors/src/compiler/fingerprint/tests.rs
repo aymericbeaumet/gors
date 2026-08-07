@@ -2,6 +2,8 @@ use super::rust_ir::runtime_requirement as runtime_requirement_fingerprint;
 use super::*;
 use crate::compiler::ids::{DefinitionKey, DefinitionKind, IdentityInterner, QualifiedDefId};
 use crate::compiler::input::{PackageKey, WorkspaceKey};
+use crate::compiler::provenance::SourceRef;
+use crate::compiler::types::{ConstValue, FloatTy, Ty};
 use crate::compiler::{self, hir, mir, rust_ir};
 use gors_runtime_abi::{PrimitiveOp, RuntimeOp, RuntimeRequirement};
 
@@ -322,6 +324,27 @@ fn exact_integer_interface_types_change_every_stage_fingerprint() {
         rust_ir_function(rust_ir_named(&narrow.2, "box")),
         rust_ir_function(rust_ir_named(&unsigned.2, "box"))
     );
+}
+
+#[test]
+fn typed_float_constant_fingerprints_encode_the_quantized_value() {
+    let hir = lower_stages("package main\nfunc main() {}\n").0;
+    let id = DefinitionKey::package_named(hir.package_id, DefinitionKind::Constant, "Rounded").id();
+    let ty = Ty::Float(FloatTy::Float32);
+    let constant = |spelling: &str| hir::Constant {
+        id,
+        name: "Rounded".to_owned(),
+        ty: ty.clone(),
+        value: ConstValue::Int(spelling.to_owned()).normalized_for(&ty),
+        source: SourceRef::definition(id),
+    };
+    let rounded_down = constant("16777217");
+    let exact = constant("16777216");
+    let rounded_up = constant("16777219");
+
+    assert_eq!(rounded_down.value, exact.value);
+    assert_eq!(hir_constant(&rounded_down), hir_constant(&exact));
+    assert_ne!(hir_constant(&rounded_down), hir_constant(&rounded_up));
 }
 
 #[test]

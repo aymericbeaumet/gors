@@ -129,9 +129,10 @@ impl FunctionLowerer {
                 effects,
                 source,
             }
-        } else if let hir::ExprKind::Constant(value) = &argument.kind
+        } else if let hir::ExprKind::Constant(value) = &mut argument.kind
             && value.is_representable_as(&target)
         {
+            *value = value.normalized_for(&target);
             argument.ty = target;
             argument
         } else if is_assignable(&argument.ty, &target) {
