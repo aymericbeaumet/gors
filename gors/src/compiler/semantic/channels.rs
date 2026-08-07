@@ -354,6 +354,11 @@ impl FunctionLowerer {
             Ty::Slice(element) if element.underlying() == &Ty::Int(IntTy::Int)
         ) {
             hir::Builtin::SliceI64Cap
+        } else if matches!(
+            value.ty.underlying(),
+            Ty::Slice(element) if element.underlying() == &Ty::String
+        ) {
+            hir::Builtin::SliceGoStringCap
         } else {
             return Err(Diagnostic::unsupported(
                 format!("cap is not yet implemented for {:?}", value.ty),

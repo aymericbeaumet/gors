@@ -54,7 +54,7 @@ pub(super) fn verify_string_call(
             Ok(vec![Ty::String])
         }
         hir::Builtin::StringLen | hir::Builtin::StringRangeCount => {
-            if arguments != [Ty::String] {
+            if !matches!(arguments, [value] if is_string(value)) {
                 return Err(Diagnostic::backend(format!(
                     "invalid MIR string length arguments: {arguments:?}"
                 )));
@@ -66,12 +66,17 @@ pub(super) fn verify_string_call(
             Ok(vec![Ty::Uint(UintTy::Uint8)])
         }
         hir::Builtin::StringRange => {
-            if arguments != [Ty::String, Ty::Int(IntTy::Int), Ty::Int(IntTy::Int)] {
+            let [value, Ty::Int(IntTy::Int), Ty::Int(IntTy::Int)] = arguments else {
+                return Err(Diagnostic::backend(format!(
+                    "invalid MIR string slice arguments: {arguments:?}"
+                )));
+            };
+            if !is_string(value) {
                 return Err(Diagnostic::backend(format!(
                     "invalid MIR string slice arguments: {arguments:?}"
                 )));
             }
-            Ok(vec![Ty::String])
+            Ok(vec![value.clone()])
         }
         hir::Builtin::StringRangeIndexAt => {
             verify_string_and_index(arguments, "range index")?;
@@ -88,10 +93,14 @@ pub(super) fn verify_string_call(
 }
 
 fn verify_string_and_index(arguments: &[Ty], context: &str) -> Result<(), Diagnostic> {
-    if arguments != [Ty::String, Ty::Int(IntTy::Int)] {
+    if !matches!(arguments, [value, Ty::Int(IntTy::Int)] if is_string(value)) {
         return Err(Diagnostic::backend(format!(
             "invalid MIR string {context} arguments: {arguments:?}"
         )));
     }
     Ok(())
+}
+
+fn is_string(ty: &Ty) -> bool {
+    ty.underlying() == &Ty::String
 }

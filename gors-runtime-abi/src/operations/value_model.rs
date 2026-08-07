@@ -42,6 +42,7 @@ pub enum RuntimeType {
     GoChannelI64BoolTuple,
     /// ABI-only aggregate returned by nonblocking nested channel receive.
     GoChannelI64I64Tuple,
+    GoSliceGoString,
 }
 
 /// Complete function signature for one runtime operation.

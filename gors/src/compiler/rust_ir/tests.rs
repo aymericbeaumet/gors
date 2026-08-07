@@ -2,6 +2,7 @@ use super::effects::panic_edge;
 use super::*;
 
 mod recovery;
+mod string_slices;
 
 fn lower(source: &str) -> File {
     lower_at("rust-ir.go", source)

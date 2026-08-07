@@ -748,6 +748,9 @@ impl FunctionLowerer {
                     Ty::Slice(element) if element.underlying() == &Ty::Bool => {
                         (hir::Builtin::SliceBoolIndex, element.as_ref().clone())
                     }
+                    Ty::Slice(element) if element.underlying() == &Ty::String => {
+                        (hir::Builtin::SliceGoStringIndex, element.as_ref().clone())
+                    }
                     Ty::Slice(element) if element.uses_interface_aggregate_representation() => {
                         let stored_ty = element.as_ref().clone();
                         let element_ty = self.expand_named_ref(&stored_ty)?;
@@ -805,6 +808,7 @@ impl FunctionLowerer {
                 max,
             } => {
                 let base = self.lower_expr(base, None)?;
+                let base_ty = base.ty.clone();
                 let low_bound = self.lower_optional_slice_bound(low.as_deref(), expr.source)?;
                 let high_bound = self.lower_optional_slice_bound(high.as_deref(), expr.source)?;
                 // A missing low bound is the constant zero. Missing high and
@@ -841,16 +845,19 @@ impl FunctionLowerer {
                     Ty::Slice(element)
                         if matches!(
                             element.underlying(),
-                            Ty::Int(IntTy::Int | IntTy::Int32) | Ty::Uint(UintTy::Uint8)
+                            Ty::Int(IntTy::Int | IntTy::Int32)
+                                | Ty::Uint(UintTy::Uint8)
+                                | Ty::String
                         ) =>
                     {
                         let builtin =
                             if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) {
                                 hir::Builtin::SliceI64Range
-                            } else {
+                            } else if element.underlying() == &Ty::Uint(UintTy::Uint8) {
                                 hir::Builtin::SliceU8Range
+                            } else {
+                                hir::Builtin::SliceGoStringRange
                             };
-                        let ty = Ty::Slice(element.clone());
                         let max_bound =
                             self.lower_optional_slice_bound(max.as_deref(), expr.source)?;
                         if let Some(max_value) = max
@@ -874,7 +881,11 @@ impl FunctionLowerer {
                                 ));
                             }
                         }
-                        (builtin, ty, vec![base, low_bound, high_bound, max_bound])
+                        (
+                            builtin,
+                            base_ty,
+                            vec![base, low_bound, high_bound, max_bound],
+                        )
                     }
                     ty => {
                         return Err(Diagnostic::unsupported(

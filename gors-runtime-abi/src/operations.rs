@@ -3,6 +3,7 @@
 mod decode;
 mod identity;
 mod metadata;
+mod runtime_catalog;
 mod runtime_encoding;
 mod signature_types;
 mod symbols;
@@ -490,153 +491,24 @@ pub enum RuntimeOp {
     GoChannelGoChannelI64IsNil,
     GoChannelGoChannelI64TrySend,
     GoChannelGoChannelI64TryReceive,
+    GoSliceGoStringNil,
+    GoSliceGoStringMake,
+    GoSliceGoStringLen,
+    GoSliceGoStringCap,
+    GoSliceGoStringIndex,
+    GoSliceGoStringRange,
+    GoSliceGoStringSet,
+    GoSliceGoStringAppend,
+    GoSliceGoStringCopy,
+    GoSliceGoStringClear,
+    GoSliceGoStringIsNil,
+    GoInterfaceBoxGoSliceGoString,
+    GoInterfaceUnboxGoSliceGoString,
 }
 
 impl RuntimeOp {
     /// Complete helper catalog for the current contract.
-    pub const ALL: &'static [Self] = &[
-        Self::GoStringFromBytes,
-        Self::GoStringFromStatic,
-        Self::ConcatGoStrings,
-        Self::IntDiv,
-        Self::IntRem,
-        Self::IntShl,
-        Self::IntShr,
-        Self::PrintBool,
-        Self::PrintI64,
-        Self::PrintSpace,
-        Self::PrintNewline,
-        Self::PrintGoString,
-        Self::PanicBool,
-        Self::PanicI64,
-        Self::PanicGoString,
-        Self::GoSliceI64FromStatic,
-        Self::GoSliceI64Index,
-        Self::GoSliceI64Range,
-        Self::GoSliceI64Set,
-        Self::GoSliceI64Make,
-        Self::GoSliceI64Len,
-        Self::GoSliceI64Cap,
-        Self::GoSliceI64Append,
-        Self::GoSliceU8FromStatic,
-        Self::GoSliceU8AppendSlice,
-        Self::GoSliceU8AppendString,
-        Self::GoSliceU8CopyString,
-        Self::GoSliceI64Clear,
-        Self::GoStringFromSliceU8,
-        Self::GoSliceI64Copy,
-        Self::GoMapStringI64Nil,
-        Self::GoMapStringI64Make,
-        Self::GoMapStringI64Len,
-        Self::GoMapStringI64Get,
-        Self::GoMapStringI64Contains,
-        Self::GoMapStringI64Set,
-        Self::GoMapStringI64Delete,
-        Self::GoMapStringI64Clear,
-        Self::GoMapStringI64IsNil,
-        Self::GoMapStringI64KeyAt,
-        Self::GoPointerI64Nil,
-        Self::GoPointerI64New,
-        Self::GoPointerI64Get,
-        Self::GoPointerI64Set,
-        Self::GoPointerI64IsNil,
-        Self::GoChannelI64Nil,
-        Self::GoChannelI64Make,
-        Self::GoChannelI64Len,
-        Self::GoChannelI64Cap,
-        Self::GoChannelI64Send,
-        Self::GoChannelI64ReceiveValue,
-        Self::GoChannelI64Receive,
-        Self::GoChannelI64Close,
-        Self::GoChannelI64IsNil,
-        Self::GoStringLen,
-        Self::GoChannelI64TrySend,
-        Self::GoChannelI64TryReceive,
-        Self::GoPointerStructI64Nil,
-        Self::GoPointerStructI64New,
-        Self::GoPointerStructI64Get,
-        Self::GoPointerStructI64Set,
-        Self::GoPointerStructI64IsNil,
-        Self::GoPointerStructI64Equal,
-        Self::GoInterfaceNil,
-        Self::GoInterfaceBoxBool,
-        Self::GoInterfaceBoxI64,
-        Self::GoInterfaceBoxGoString,
-        Self::GoInterfaceBoxStructI64,
-        Self::GoInterfaceBoxPointerStructI64,
-        Self::GoInterfaceIsNil,
-        Self::GoInterfaceIsType,
-        Self::GoInterfaceUnboxBool,
-        Self::GoInterfaceUnboxI64,
-        Self::GoInterfaceUnboxGoString,
-        Self::GoInterfaceStructI64Get,
-        Self::GoInterfaceUnboxPointerStructI64,
-        Self::GoSliceBoolFromStatic,
-        Self::GoSliceBoolIndex,
-        Self::GoSliceBoolSet,
-        Self::GoSliceInterfaceMake,
-        Self::GoSliceInterfaceLen,
-        Self::GoSliceInterfaceIndex,
-        Self::GoSliceInterfaceSet,
-        Self::GoMapStringInterfaceMake,
-        Self::GoMapStringInterfaceLen,
-        Self::GoMapStringInterfaceGet,
-        Self::GoMapStringInterfaceContains,
-        Self::GoMapStringInterfaceSet,
-        Self::GoSliceU8Len,
-        Self::GoSliceU8Index,
-        Self::GoSliceU8Range,
-        Self::GoStringIndex,
-        Self::GoStringRange,
-        Self::GoStringFromSliceRunes,
-        Self::GoStringRangeCount,
-        Self::GoStringRangeIndexAt,
-        Self::GoStringRangeRuneAt,
-        Self::GoSliceI64Nil,
-        Self::GoSliceI64IsNil,
-        Self::GoSliceU8Nil,
-        Self::GoSliceU8IsNil,
-        Self::GoSliceBoolNil,
-        Self::GoSliceBoolIsNil,
-        Self::GoSliceInterfaceNil,
-        Self::GoSliceInterfaceIsNil,
-        Self::GoInterfaceBoxAggregate,
-        Self::GoInterfaceUnboxAggregate,
-        Self::GoSliceU8Make,
-        Self::GoSliceU8Set,
-        Self::GoSliceU8Copy,
-        Self::PrintF64,
-        Self::GoInterfaceBoxF64,
-        Self::GoInterfaceUnboxF64,
-        Self::GoInterfaceEqual,
-        Self::GoInterfaceBoxComparableAggregate,
-        Self::GoStringFromRune,
-        Self::PanicGoInterface,
-        Self::GoPanicPayloadToInterface,
-        Self::GoInterfaceIsRuntimeError,
-        Self::GoChannelGoStringNil,
-        Self::GoChannelGoStringMake,
-        Self::GoChannelGoStringLen,
-        Self::GoChannelGoStringCap,
-        Self::GoChannelGoStringSend,
-        Self::GoChannelGoStringReceiveValue,
-        Self::GoChannelGoStringReceive,
-        Self::GoChannelGoStringClose,
-        Self::GoChannelGoStringIsNil,
-        Self::GoChannelGoStringTrySend,
-        Self::GoChannelGoStringTryReceive,
-        Self::GoChannelGoChannelI64Nil,
-        Self::GoChannelGoChannelI64Make,
-        Self::GoChannelGoChannelI64Len,
-        Self::GoChannelGoChannelI64Cap,
-        Self::GoChannelGoChannelI64Send,
-        Self::GoChannelGoChannelI64ReceiveValue,
-        Self::GoChannelGoChannelI64Receive,
-        Self::GoChannelGoChannelI64Close,
-        Self::GoChannelGoChannelI64IsNil,
-        Self::GoChannelGoChannelI64TrySend,
-        Self::GoChannelGoChannelI64TryReceive,
-    ];
+    pub const ALL: &'static [Self] = runtime_catalog::ALL;
 
     /// Exact typed call signature at the Rust runtime boundary.
     #[must_use]
@@ -844,6 +716,43 @@ impl RuntimeOp {
                 GO_CHANNEL_GO_CHANNEL_I64_PARAMETER,
                 RuntimeType::GoChannelI64I64Tuple,
             ),
+            Self::GoSliceGoStringNil => {
+                RuntimeSignature::new(NO_PARAMETERS, RuntimeType::GoSliceGoString)
+            }
+            Self::GoSliceGoStringMake => {
+                RuntimeSignature::new(TWO_I64_PARAMETERS, RuntimeType::GoSliceGoString)
+            }
+            Self::GoSliceGoStringLen | Self::GoSliceGoStringCap => {
+                RuntimeSignature::new(GO_SLICE_GO_STRING_PARAMETER, RuntimeType::I64)
+            }
+            Self::GoSliceGoStringIndex => {
+                RuntimeSignature::new(GO_SLICE_GO_STRING_AND_INDEX, RuntimeType::GoString)
+            }
+            Self::GoSliceGoStringRange => {
+                RuntimeSignature::new(GO_SLICE_GO_STRING_RANGE, RuntimeType::GoSliceGoString)
+            }
+            Self::GoSliceGoStringSet => {
+                RuntimeSignature::new(GO_SLICE_GO_STRING_SET, RuntimeType::Unit)
+            }
+            Self::GoSliceGoStringAppend => {
+                RuntimeSignature::new(GO_SLICE_GO_STRING_AND_VALUE, RuntimeType::GoSliceGoString)
+            }
+            Self::GoSliceGoStringCopy => {
+                RuntimeSignature::new(TWO_GO_SLICE_GO_STRING_PARAMETERS, RuntimeType::I64)
+            }
+            Self::GoSliceGoStringClear => {
+                RuntimeSignature::new(GO_SLICE_GO_STRING_PARAMETER, RuntimeType::Unit)
+            }
+            Self::GoSliceGoStringIsNil => {
+                RuntimeSignature::new(GO_SLICE_GO_STRING_PARAMETER, RuntimeType::Bool)
+            }
+            Self::GoInterfaceBoxGoSliceGoString => RuntimeSignature::new(
+                GO_INTERFACE_BOX_GO_SLICE_GO_STRING,
+                RuntimeType::GoInterface,
+            ),
+            Self::GoInterfaceUnboxGoSliceGoString => {
+                RuntimeSignature::new(GO_INTERFACE_AND_TYPE, RuntimeType::GoSliceGoString)
+            }
             Self::GoPointerStructI64Nil => {
                 RuntimeSignature::new(NO_PARAMETERS, RuntimeType::GoPointerStructI64)
             }

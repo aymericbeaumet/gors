@@ -97,7 +97,6 @@ fn unsupported_aggregate_payloads_fail_at_their_source_boundary() {
     for source in [
         "package main\nfunc main() { value := \"x\"; _ = &value }\n",
         "package main\ntype Value struct { Items []int }\nfunc main() { value := Value{}; _ = &value }\n",
-        "package main\ntype Value struct { Items []string }\nfunc main() { value := Value{}; _ = &value }\n",
         "package main\ntype Node struct { Next *Node }\nfunc main() { value := Node{}; _ = &value }\n",
         "package main\ntype Node struct { Next *Node }\nfunc use(value *Node) {}\nfunc main() {}\n",
         "package main\nfunc main() { value := &struct { Name string }{}; _ = value }\n",
@@ -107,7 +106,7 @@ fn unsupported_aggregate_payloads_fail_at_their_source_boundary() {
         let error = CompilerSession::default()
             .compile_program(raw_program("main.go", "/checkout/project/main.go", source))
             .err()
-            .expect("an unsupported pointer payload must be rejected before MIR");
+            .expect("an unsupported aggregate payload must be rejected before MIR");
         let diagnostic = error.diagnostics().first().unwrap();
         assert_eq!(diagnostic.code, "GORS2001");
         assert_eq!(diagnostic.file, "/checkout/project/main.go");

@@ -148,6 +148,19 @@ impl RuntimeOp {
             Self::GoChannelGoChannelI64IsNil => "go_channel_go_channel_i64_is_nil",
             Self::GoChannelGoChannelI64TrySend => "go_channel_go_channel_i64_try_send",
             Self::GoChannelGoChannelI64TryReceive => "go_channel_go_channel_i64_try_receive",
+            Self::GoSliceGoStringNil => "go_slice_go_string_nil",
+            Self::GoSliceGoStringMake => "go_slice_go_string_make",
+            Self::GoSliceGoStringLen => "go_slice_go_string_len",
+            Self::GoSliceGoStringCap => "go_slice_go_string_cap",
+            Self::GoSliceGoStringIndex => "go_slice_go_string_index",
+            Self::GoSliceGoStringRange => "go_slice_go_string_range",
+            Self::GoSliceGoStringSet => "go_slice_go_string_set",
+            Self::GoSliceGoStringAppend => "go_slice_go_string_append",
+            Self::GoSliceGoStringCopy => "go_slice_go_string_copy",
+            Self::GoSliceGoStringClear => "go_slice_go_string_clear",
+            Self::GoSliceGoStringIsNil => "go_slice_go_string_is_nil",
+            Self::GoInterfaceBoxGoSliceGoString => "go_interface_box_go_slice_go_string",
+            Self::GoInterfaceUnboxGoSliceGoString => "go_interface_unbox_go_slice_go_string",
         }
     }
 }

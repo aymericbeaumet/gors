@@ -199,6 +199,7 @@ fn collect_expression_callees(expression: &hir::Expr, callees: &mut BTreeSet<Qua
         }
         hir::ExprKind::ArrayLen { array, .. } => collect_expression_callees(array, callees),
         hir::ExprKind::DynamicSliceLiteralI64(elements)
+        | hir::ExprKind::SliceLiteralGoString(elements)
         | hir::ExprKind::AggregateSliceLiteral { elements, .. } => {
             for element in elements {
                 collect_expression_callees(element, callees);

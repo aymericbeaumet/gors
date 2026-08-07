@@ -746,8 +746,9 @@ The production pipeline currently executes this focused, fully verified subset:
 - source packages and resolved Go-source imports within the executable type
   subset;
 - `bool`, 64-bit `int`, `float64`, `complex128`, byte-string values, named
-  numeric types, aliases, `[]int`, `[]byte`, `map[string]int`, `*int`,
-  `chan int`, scalar fixed arrays, and integer-field structs;
+  numeric types, aliases, `[]int`, `[]byte`, `[]string` and named slices whose
+  element's underlying type is `string`, `map[string]int`, `*int`, `chan int`,
+  scalar fixed arrays, and integer-field structs;
 - exact typed and untyped constants, including `iota` and complex constants;
 - free functions, value methods and method values, direct non-escaping
   closures, parameters, multiple and named results, locals, immutable package
@@ -755,6 +756,14 @@ The production pipeline currently executes this focused, fully verified subset:
 - explicit-order assignments, calls, slice and map built-ins, expression
   switches, labels, goto, range over slices and maps, and structured loops;
 - print and println intrinsics through the versioned runtime ABI.
+
+String-element slices use one typed `GoSlice<GoString>` runtime
+representation. Nil, make, len, cap, index, range, set, append, copy, clear,
+nil testing, and interface box/unbox are explicit HIR/MIR operations and stable
+runtime ABI operations; the MIR verifier preserves the source slice and element
+types even when distinct named slice types share an identical named string
+element type. Runtime copying is overlap-safe and allocation-free so its
+representation-effect summary remains exact.
 
 Supported control flow and typed panic/recover behavior are executable today.
 Every deferred action is an explicit ordered Go-MIR and Rust-IR region. It

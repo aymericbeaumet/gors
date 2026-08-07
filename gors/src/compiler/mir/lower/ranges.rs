@@ -13,7 +13,10 @@ use crate::compiler::types::{ConstValue, IntTy, Ty};
 #[derive(Clone, Copy)]
 enum RangeKind {
     Array(u64),
-    Slice,
+    Slice {
+        len: hir::Builtin,
+        index: hir::Builtin,
+    },
     String,
     Map,
     Channel,
@@ -59,8 +62,15 @@ impl FunctionLowerer {
             Ty::Slice(element)
                 if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) =>
             {
-                RangeKind::Slice
+                RangeKind::Slice {
+                    len: hir::Builtin::SliceI64Len,
+                    index: hir::Builtin::SliceI64Index,
+                }
             }
+            Ty::Slice(element) if element.underlying() == &Ty::String => RangeKind::Slice {
+                len: hir::Builtin::SliceGoStringLen,
+                index: hir::Builtin::SliceGoStringIndex,
+            },
             Ty::String => RangeKind::String,
             Ty::Map(key, value)
                 if key.underlying() == &Ty::String
@@ -126,10 +136,10 @@ impl FunctionLowerer {
                 );
                 self.push_statement(make_statement(length, value, provenance.clone()))?;
             }
-            RangeKind::Slice | RangeKind::String | RangeKind::Map => {
+            RangeKind::Slice { .. } | RangeKind::String | RangeKind::Map => {
                 let after_length = self.new_block(provenance.clone());
                 let builtin = match range_kind {
-                    RangeKind::Slice => hir::Builtin::SliceI64Len,
+                    RangeKind::Slice { len, .. } => len,
                     RangeKind::String => hir::Builtin::StringRangeCount,
                     RangeKind::Map => hir::Builtin::MapStringI64Len,
                     _ => {
@@ -236,7 +246,7 @@ impl FunctionLowerer {
                     ))?;
                 }
             }
-            RangeKind::Slice => {
+            RangeKind::Slice { index: builtin, .. } => {
                 if let Some(hir::Place::Local(local)) = key {
                     self.assign_range_local(Place { local }, Operand::Read(index), source)?;
                 }
@@ -244,7 +254,7 @@ impl FunctionLowerer {
                     let after_value = self.new_block(provenance.clone());
                     self.terminate(make_terminator(
                         TerminatorKind::Call {
-                            callee: hir::Callee::Builtin(hir::Builtin::SliceI64Index),
+                            callee: hir::Callee::Builtin(builtin),
                             args: vec![container, Operand::Read(index)],
                             destinations: vec![Place { local }],
                             target: after_value,

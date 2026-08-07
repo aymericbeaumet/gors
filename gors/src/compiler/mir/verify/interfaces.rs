@@ -12,6 +12,7 @@ pub(super) fn is_interface_builtin(builtin: hir::Builtin) -> bool {
             | hir::Builtin::InterfaceBoxF64
             | hir::Builtin::InterfaceBoxI64
             | hir::Builtin::InterfaceBoxGoString
+            | hir::Builtin::InterfaceBoxGoSliceGoString
             | hir::Builtin::InterfaceBoxStructI64
             | hir::Builtin::InterfaceBoxPointerStructI64
             | hir::Builtin::InterfaceBoxAggregate
@@ -24,6 +25,7 @@ pub(super) fn is_interface_builtin(builtin: hir::Builtin) -> bool {
             | hir::Builtin::InterfaceUnboxF64
             | hir::Builtin::InterfaceUnboxI64
             | hir::Builtin::InterfaceUnboxGoString
+            | hir::Builtin::InterfaceUnboxGoSliceGoString
             | hir::Builtin::InterfaceStructI64Get
             | hir::Builtin::InterfaceUnboxPointerStructI64
             | hir::Builtin::InterfaceUnboxAggregate
@@ -56,6 +58,9 @@ pub(super) fn verify_interface_call(
         }
         hir::Builtin::InterfaceBoxGoString => {
             verify_box(arguments, destinations, |ty| ty.underlying() == &Ty::String)
+        }
+        hir::Builtin::InterfaceBoxGoSliceGoString => {
+            verify_box(arguments, destinations, is_go_string_slice)
         }
         hir::Builtin::InterfaceBoxStructI64 => verify_box(arguments, destinations, |ty| {
             ty.underlying() == &Ty::Slice(Box::new(Ty::Int(IntTy::Int)))
@@ -112,6 +117,12 @@ pub(super) fn verify_interface_call(
             destinations,
             |ty| ty.underlying() == &Ty::String,
             "interface string extraction",
+        ),
+        hir::Builtin::InterfaceUnboxGoSliceGoString => verify_unbox(
+            arguments,
+            destinations,
+            is_go_string_slice,
+            "interface string slice extraction",
         ),
         hir::Builtin::InterfaceStructI64Get => {
             let ([interface, identity, field], [result]) = (arguments, destinations) else {
@@ -259,9 +270,15 @@ fn is_aggregate_payload(ty: &Ty) -> bool {
     matches!(
         ty.underlying(),
         Ty::Slice(element)
-            if matches!(element.underlying(), Ty::Interface(_))
+            if element.underlying() != &Ty::String
+                && (matches!(element.underlying(), Ty::Interface(_))
                 || element.uses_interface_aggregate_representation()
+                )
     )
+}
+
+fn is_go_string_slice(ty: &Ty) -> bool {
+    matches!(ty.underlying(), Ty::Slice(element) if element.underlying() == &Ty::String)
 }
 
 fn verify_string(ty: &Ty, context: &str) -> Result<(), Diagnostic> {

@@ -372,6 +372,17 @@ fn lower_terminator(
                 | hir::Builtin::SliceBoolSet
                 | hir::Builtin::SliceBoolNil
                 | hir::Builtin::SliceBoolIsNil
+                | hir::Builtin::SliceGoStringIndex
+                | hir::Builtin::SliceGoStringRange
+                | hir::Builtin::SliceGoStringSet
+                | hir::Builtin::SliceGoStringMake
+                | hir::Builtin::SliceGoStringNil
+                | hir::Builtin::SliceGoStringIsNil
+                | hir::Builtin::SliceGoStringLen
+                | hir::Builtin::SliceGoStringCap
+                | hir::Builtin::SliceGoStringAppend
+                | hir::Builtin::SliceGoStringCopy
+                | hir::Builtin::SliceGoStringClear
                 | hir::Builtin::AggregateSliceMake
                 | hir::Builtin::AggregateSliceNil
                 | hir::Builtin::AggregateSliceIsNil
@@ -425,6 +436,7 @@ fn lower_terminator(
                 | hir::Builtin::InterfaceBoxF64
                 | hir::Builtin::InterfaceBoxI64
                 | hir::Builtin::InterfaceBoxGoString
+                | hir::Builtin::InterfaceBoxGoSliceGoString
                 | hir::Builtin::InterfaceBoxStructI64
                 | hir::Builtin::InterfaceBoxPointerStructI64
                 | hir::Builtin::InterfaceBoxAggregate
@@ -441,6 +453,7 @@ fn lower_terminator(
                 | hir::Builtin::InterfaceUnboxF64
                 | hir::Builtin::InterfaceUnboxI64
                 | hir::Builtin::InterfaceUnboxGoString
+                | hir::Builtin::InterfaceUnboxGoSliceGoString
                 | hir::Builtin::InterfaceStructI64Get
                 | hir::Builtin::InterfaceUnboxPointerStructI64
                 | hir::Builtin::InterfaceUnboxAggregate
@@ -507,6 +520,17 @@ fn lower_terminator(
                     hir::Builtin::SliceBoolSet => RuntimeOp::GoSliceBoolSet,
                     hir::Builtin::SliceBoolNil => RuntimeOp::GoSliceBoolNil,
                     hir::Builtin::SliceBoolIsNil => RuntimeOp::GoSliceBoolIsNil,
+                    hir::Builtin::SliceGoStringIndex => RuntimeOp::GoSliceGoStringIndex,
+                    hir::Builtin::SliceGoStringRange => RuntimeOp::GoSliceGoStringRange,
+                    hir::Builtin::SliceGoStringSet => RuntimeOp::GoSliceGoStringSet,
+                    hir::Builtin::SliceGoStringMake => RuntimeOp::GoSliceGoStringMake,
+                    hir::Builtin::SliceGoStringNil => RuntimeOp::GoSliceGoStringNil,
+                    hir::Builtin::SliceGoStringIsNil => RuntimeOp::GoSliceGoStringIsNil,
+                    hir::Builtin::SliceGoStringLen => RuntimeOp::GoSliceGoStringLen,
+                    hir::Builtin::SliceGoStringCap => RuntimeOp::GoSliceGoStringCap,
+                    hir::Builtin::SliceGoStringAppend => RuntimeOp::GoSliceGoStringAppend,
+                    hir::Builtin::SliceGoStringCopy => RuntimeOp::GoSliceGoStringCopy,
+                    hir::Builtin::SliceGoStringClear => RuntimeOp::GoSliceGoStringClear,
                     hir::Builtin::AggregateSliceMake => RuntimeOp::GoSliceInterfaceMake,
                     hir::Builtin::AggregateSliceNil => RuntimeOp::GoSliceInterfaceNil,
                     hir::Builtin::AggregateSliceIsNil => RuntimeOp::GoSliceInterfaceIsNil,
@@ -559,6 +583,9 @@ fn lower_terminator(
                     hir::Builtin::InterfaceBoxF64 => RuntimeOp::GoInterfaceBoxF64,
                     hir::Builtin::InterfaceBoxI64 => RuntimeOp::GoInterfaceBoxI64,
                     hir::Builtin::InterfaceBoxGoString => RuntimeOp::GoInterfaceBoxGoString,
+                    hir::Builtin::InterfaceBoxGoSliceGoString => {
+                        RuntimeOp::GoInterfaceBoxGoSliceGoString
+                    }
                     hir::Builtin::InterfaceBoxStructI64 => RuntimeOp::GoInterfaceBoxStructI64,
                     hir::Builtin::InterfaceBoxPointerStructI64 => {
                         RuntimeOp::GoInterfaceBoxPointerStructI64
@@ -575,6 +602,9 @@ fn lower_terminator(
                     hir::Builtin::InterfaceUnboxF64 => RuntimeOp::GoInterfaceUnboxF64,
                     hir::Builtin::InterfaceUnboxI64 => RuntimeOp::GoInterfaceUnboxI64,
                     hir::Builtin::InterfaceUnboxGoString => RuntimeOp::GoInterfaceUnboxGoString,
+                    hir::Builtin::InterfaceUnboxGoSliceGoString => {
+                        RuntimeOp::GoInterfaceUnboxGoSliceGoString
+                    }
                     hir::Builtin::InterfaceStructI64Get => RuntimeOp::GoInterfaceStructI64Get,
                     hir::Builtin::InterfaceUnboxPointerStructI64 => {
                         RuntimeOp::GoInterfaceUnboxPointerStructI64
@@ -715,6 +745,7 @@ fn lower_panic_call(
         | out::RustType::GoSliceU8
         | out::RustType::GoSliceBool
         | out::RustType::GoSliceInterface
+        | out::RustType::GoSliceGoString
         | out::RustType::GoMapStringI64
         | out::RustType::GoMapStringInterface
         | out::RustType::GoPointerI64

@@ -3,9 +3,9 @@
 use std::sync::Arc;
 
 use crate::{
-    GoInt, GoPointerStructI64, GoSliceI64, GoSliceInterface, GoString, go_pointer_struct_i64_equal,
-    go_slice_i64_index, go_slice_i64_len, go_slice_interface_index, go_slice_interface_len,
-    go_string_from_bytes, go_string_from_static,
+    GoInt, GoPointerStructI64, GoSliceGoString, GoSliceI64, GoSliceInterface, GoString,
+    go_pointer_struct_i64_equal, go_slice_i64_index, go_slice_i64_len, go_slice_interface_index,
+    go_slice_interface_len, go_string_from_bytes, go_string_from_static,
 };
 
 const RUNTIME_ERROR_TYPE_IDENTITY: &[u8] = b"runtime:gors-error";
@@ -34,6 +34,7 @@ enum InterfacePayload {
     GoString(GoString),
     StructI64(Arc<[GoInt]>),
     PointerStructI64(GoPointerStructI64),
+    SliceGoString(GoSliceGoString),
     Aggregate(GoSliceInterface),
     ComparableAggregate(GoSliceInterface),
 }
@@ -66,6 +67,15 @@ pub fn go_interface_box_f64(type_identity: GoString, value: f64) -> GoInterface 
 #[must_use]
 pub fn go_interface_box_go_string(type_identity: GoString, value: GoString) -> GoInterface {
     boxed(type_identity, InterfacePayload::GoString(value))
+}
+
+/// Copy a string-slice header into an interface while preserving its backing array.
+#[must_use]
+pub fn go_interface_box_go_slice_go_string(
+    type_identity: GoString,
+    value: GoSliceGoString,
+) -> GoInterface {
+    boxed(type_identity, InterfacePayload::SliceGoString(value))
 }
 
 /// Snapshot an integer-field struct into an interface.
@@ -201,6 +211,9 @@ pub fn go_interface_equal(left: GoInterface, right: GoInterface) -> bool {
         (InterfacePayload::PointerStructI64(left), InterfacePayload::PointerStructI64(right)) => {
             go_pointer_struct_i64_equal(left.clone(), right.clone())
         }
+        (InterfacePayload::SliceGoString(_), InterfacePayload::SliceGoString(_)) => {
+            uncomparable_interface_comparison()
+        }
         (
             InterfacePayload::ComparableAggregate(left),
             InterfacePayload::ComparableAggregate(right),
@@ -244,6 +257,18 @@ pub fn go_interface_unbox_f64(value: GoInterface, type_identity: GoString) -> f6
 pub fn go_interface_unbox_go_string(value: GoInterface, type_identity: GoString) -> GoString {
     match checked_payload(value, type_identity) {
         InterfacePayload::GoString(value) => value,
+        _ => type_assertion_failure(),
+    }
+}
+
+/// Extract a string-slice header after checking its exact dynamic type.
+#[must_use]
+pub fn go_interface_unbox_go_slice_go_string(
+    value: GoInterface,
+    type_identity: GoString,
+) -> GoSliceGoString {
+    match checked_payload(value, type_identity) {
+        InterfacePayload::SliceGoString(value) => value,
         _ => type_assertion_failure(),
     }
 }

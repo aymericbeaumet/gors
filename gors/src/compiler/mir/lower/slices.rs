@@ -14,6 +14,38 @@ impl FunctionLowerer {
         ty: &Ty,
         source: SourceRef,
     ) -> Result<Operand, Diagnostic> {
+        self.lower_dynamic_value_slice_literal(
+            elements,
+            ty,
+            hir::Builtin::SliceI64Make,
+            hir::Builtin::SliceI64Set,
+            source,
+        )
+    }
+
+    pub(super) fn lower_dynamic_go_string_slice_literal(
+        &mut self,
+        elements: &[hir::Expr],
+        ty: &Ty,
+        source: SourceRef,
+    ) -> Result<Operand, Diagnostic> {
+        self.lower_dynamic_value_slice_literal(
+            elements,
+            ty,
+            hir::Builtin::SliceGoStringMake,
+            hir::Builtin::SliceGoStringSet,
+            source,
+        )
+    }
+
+    fn lower_dynamic_value_slice_literal(
+        &mut self,
+        elements: &[hir::Expr],
+        ty: &Ty,
+        make: hir::Builtin,
+        set: hir::Builtin,
+        source: SourceRef,
+    ) -> Result<Operand, Diagnostic> {
         let mut values = Vec::with_capacity(elements.len());
         for element in elements {
             let value = self.lower_expr(element)?;
@@ -28,16 +60,11 @@ impl FunctionLowerer {
             local: self.new_temp(ty.clone()),
         };
         let length = int_constant_operand(elements.len());
-        self.emit_map_call(
-            hir::Builtin::SliceI64Make,
-            vec![length.clone(), length],
-            vec![slice],
-            source,
-        )?;
+        self.emit_map_call(make, vec![length.clone(), length], vec![slice], source)?;
 
         for (index, value) in values.into_iter().enumerate() {
             self.emit_map_call(
-                hir::Builtin::SliceI64Set,
+                set,
                 vec![Operand::Read(slice), int_constant_operand(index), value],
                 Vec::new(),
                 source,

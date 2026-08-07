@@ -39,9 +39,12 @@ impl FunctionLowerer {
                     hir::Builtin::SliceI64Make
                 } else if declared == byte_slice_ty {
                     hir::Builtin::SliceU8Make
+                } else if matches!(declared.underlying(), Ty::Slice(element) if element.underlying() == &Ty::String)
+                {
+                    hir::Builtin::SliceGoStringMake
                 } else {
                     return Err(Diagnostic::unsupported(
-                        "make currently supports []int and []byte values",
+                        "make currently supports []int, []byte, and string-element slice values",
                         source,
                     ));
                 };
@@ -88,9 +91,25 @@ impl FunctionLowerer {
                         source,
                     ));
                 };
-                let value = self.lower_expr(value, Some(&slice_ty))?;
+                let value = self.lower_expr(value, None)?;
+                let builtin = match value.ty.underlying() {
+                    Ty::Slice(element)
+                        if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) =>
+                    {
+                        hir::Builtin::SliceI64Cap
+                    }
+                    Ty::Slice(element) if element.underlying() == &Ty::String => {
+                        hir::Builtin::SliceGoStringCap
+                    }
+                    ty => {
+                        return Err(Diagnostic::unsupported(
+                            format!("cap is not yet implemented for {ty:?}"),
+                            source,
+                        ));
+                    }
+                };
                 (
-                    hir::Builtin::SliceI64Cap,
+                    builtin,
                     vec![value],
                     Ty::Int(IntTy::Int),
                     false,
@@ -154,23 +173,24 @@ impl FunctionLowerer {
                             expected,
                         );
                     }
-                    if !matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) {
+                    if !matches!(
+                        element.underlying(),
+                        Ty::Int(IntTy::Int | IntTy::Int32) | Ty::String
+                    ) {
                         return Err(Diagnostic::unsupported(
-                            "non-spread append currently supports int, rune, and proven function slices",
+                            "non-spread append currently supports int, rune, string, and proven function slices",
                             source,
                         ));
                     }
                     let element_ty = element.as_ref().clone();
                     let result_ty = slice.ty.clone();
                     let value = self.lower_expr(value, Some(&element_ty))?;
-                    (
-                        hir::Builtin::SliceI64Append,
-                        vec![slice, value],
-                        result_ty,
-                        true,
-                        true,
-                        false,
-                    )
+                    let builtin = if element.underlying() == &Ty::String {
+                        hir::Builtin::SliceGoStringAppend
+                    } else {
+                        hir::Builtin::SliceI64Append
+                    };
+                    (builtin, vec![slice, value], result_ty, true, true, false)
                 }
             }
             "copy" => {
@@ -205,9 +225,27 @@ impl FunctionLowerer {
                         ));
                     };
                     (builtin, source_value)
+                } else if matches!(destination.ty.underlying(), Ty::Slice(element) if element.underlying() == &Ty::String)
+                {
+                    let source_value = self.lower_expr(source_value, None)?;
+                    let (Ty::Slice(destination_element), Ty::Slice(source_element)) =
+                        (destination.ty.underlying(), source_value.ty.underlying())
+                    else {
+                        return Err(Diagnostic::semantic(
+                            "copy with a string-element slice destination requires a slice source",
+                            source,
+                        ));
+                    };
+                    if destination_element != source_element {
+                        return Err(Diagnostic::semantic(
+                            "copy requires source and destination slices with identical element types",
+                            source,
+                        ));
+                    }
+                    (hir::Builtin::SliceGoStringCopy, source_value)
                 } else {
                     return Err(Diagnostic::semantic(
-                        "copy currently supports []int pairs, []byte pairs, or a []byte destination and string source",
+                        "copy currently supports []int, []byte, or identical string-element slice pairs, plus a []byte destination and string source",
                         source,
                     ));
                 };

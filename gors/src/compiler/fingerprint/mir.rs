@@ -396,6 +396,17 @@ fn encode_callee(encoder: &mut Encoder, callee: hir::Callee) {
                     hir::Builtin::SliceBoolSet => b"slice-bool-set",
                     hir::Builtin::SliceBoolNil => b"slice-bool-nil",
                     hir::Builtin::SliceBoolIsNil => b"slice-bool-is-nil",
+                    hir::Builtin::SliceGoStringIndex => b"slice-go-string-index",
+                    hir::Builtin::SliceGoStringRange => b"slice-go-string-range",
+                    hir::Builtin::SliceGoStringSet => b"slice-go-string-set",
+                    hir::Builtin::SliceGoStringMake => b"slice-go-string-make",
+                    hir::Builtin::SliceGoStringNil => b"slice-go-string-nil",
+                    hir::Builtin::SliceGoStringIsNil => b"slice-go-string-is-nil",
+                    hir::Builtin::SliceGoStringLen => b"slice-go-string-len",
+                    hir::Builtin::SliceGoStringCap => b"slice-go-string-cap",
+                    hir::Builtin::SliceGoStringAppend => b"slice-go-string-append",
+                    hir::Builtin::SliceGoStringCopy => b"slice-go-string-copy",
+                    hir::Builtin::SliceGoStringClear => b"slice-go-string-clear",
                     hir::Builtin::AggregateSliceMake => b"aggregate-slice-make",
                     hir::Builtin::AggregateSliceNil => b"aggregate-slice-nil",
                     hir::Builtin::AggregateSliceIsNil => b"aggregate-slice-is-nil",
@@ -449,6 +460,9 @@ fn encode_callee(encoder: &mut Encoder, callee: hir::Callee) {
                     hir::Builtin::InterfaceBoxI64 => b"interface-box-i64",
                     hir::Builtin::InterfaceBoxF64 => b"interface-box-f64",
                     hir::Builtin::InterfaceBoxGoString => b"interface-box-go-string",
+                    hir::Builtin::InterfaceBoxGoSliceGoString => {
+                        b"interface-box-go-slice-go-string"
+                    }
                     hir::Builtin::InterfaceBoxStructI64 => b"interface-box-struct-i64",
                     hir::Builtin::InterfaceBoxPointerStructI64 => {
                         b"interface-box-pointer-struct-i64"
@@ -471,6 +485,9 @@ fn encode_callee(encoder: &mut Encoder, callee: hir::Callee) {
                     hir::Builtin::InterfaceUnboxI64 => b"interface-unbox-i64",
                     hir::Builtin::InterfaceUnboxF64 => b"interface-unbox-f64",
                     hir::Builtin::InterfaceUnboxGoString => b"interface-unbox-go-string",
+                    hir::Builtin::InterfaceUnboxGoSliceGoString => {
+                        b"interface-unbox-go-slice-go-string"
+                    }
                     hir::Builtin::InterfaceStructI64Get => b"interface-struct-i64-get",
                     hir::Builtin::InterfaceUnboxPointerStructI64 => {
                         b"interface-unbox-pointer-struct-i64"

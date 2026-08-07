@@ -118,6 +118,75 @@ fn strings_are_send_and_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
 
     assert_send_sync::<GoString>();
+    assert_send_sync::<GoSliceGoString>();
+}
+
+#[test]
+fn string_slices_preserve_zero_values_aliasing_ranges_and_overlap() {
+    let slice = go_slice_go_string_make(2, 4);
+    assert_eq!(go_slice_go_string_len(slice.clone()), 2);
+    assert_eq!(go_slice_go_string_cap(slice.clone()), 4);
+    assert_eq!(go_slice_go_string_index(slice.clone(), 0).as_bytes(), b"");
+
+    let alias = slice.clone();
+    go_slice_go_string_set(slice.clone(), 0, go_string_from_static(b"a"));
+    assert_eq!(go_slice_go_string_index(alias, 0).as_bytes(), b"a");
+
+    let appended = go_slice_go_string_append(slice.clone(), go_string_from_static(b"b"));
+    assert_eq!(go_slice_go_string_len(appended.clone()), 3);
+    assert_eq!(
+        go_slice_go_string_index(appended.clone(), 2).as_bytes(),
+        b"b"
+    );
+
+    let tail = go_slice_go_string_range(appended.clone(), 1, 3, -1);
+    go_slice_go_string_set(tail, 0, go_string_from_static(b"c"));
+    assert_eq!(
+        go_slice_go_string_index(appended.clone(), 1).as_bytes(),
+        b"c"
+    );
+
+    assert_eq!(
+        go_slice_go_string_copy(appended.clone(), appended.clone()),
+        3
+    );
+    let shifted = go_slice_go_string_range(appended.clone(), 1, 3, -1);
+    assert_eq!(go_slice_go_string_copy(shifted, appended.clone()), 2);
+    assert_eq!(
+        go_slice_go_string_index(appended.clone(), 1).as_bytes(),
+        b"a"
+    );
+    assert_eq!(
+        go_slice_go_string_index(appended.clone(), 2).as_bytes(),
+        b"c"
+    );
+
+    go_slice_go_string_clear(appended.clone());
+    for index in 0..go_slice_go_string_len(appended.clone()) {
+        assert_eq!(
+            go_slice_go_string_index(appended.clone(), index).as_bytes(),
+            b""
+        );
+    }
+    assert!(go_slice_go_string_is_nil(go_slice_go_string_nil()));
+    assert!(!go_slice_go_string_is_nil(slice));
+}
+
+#[test]
+fn string_slice_interfaces_preserve_headers_and_reject_comparison() {
+    let identity = go_string_from_static(b"slice:builtin:string");
+    let slice = go_slice_go_string_make(1, 1);
+    go_slice_go_string_set(slice.clone(), 0, go_string_from_static(b"value"));
+    let boxed = go_interface_box_go_slice_go_string(identity.clone(), slice.clone());
+    let unboxed = go_interface_unbox_go_slice_go_string(boxed.clone(), identity);
+    go_slice_go_string_set(unboxed, 0, go_string_from_static(b"updated"));
+    assert_eq!(go_slice_go_string_index(slice, 0).as_bytes(), b"updated");
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = go_interface_equal(boxed.clone(), boxed);
+        }))
+        .is_err()
+    );
 }
 
 #[test]

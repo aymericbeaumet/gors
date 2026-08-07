@@ -429,6 +429,7 @@ impl FunctionLowerer {
                         hir::Builtin::SliceI64Set => hir::Builtin::SliceI64Index,
                         hir::Builtin::SliceU8Set => hir::Builtin::SliceU8Index,
                         hir::Builtin::SliceBoolSet => hir::Builtin::SliceBoolIndex,
+                        hir::Builtin::SliceGoStringSet => hir::Builtin::SliceGoStringIndex,
                         _ => {
                             return Err(Diagnostic::backend(
                                 "slice assignment selected a non-slice runtime operation",
@@ -763,7 +764,8 @@ impl FunctionLowerer {
             | hir::ExprKind::AggregateSliceLiteral { .. }
             | hir::ExprKind::AggregateSliceIndex { .. }
             | hir::ExprKind::SliceLiteralU8(_)
-            | hir::ExprKind::SliceLiteralBool(_) => self.lower_slice_expr(expr),
+            | hir::ExprKind::SliceLiteralBool(_)
+            | hir::ExprKind::SliceLiteralGoString(_) => self.lower_slice_expr(expr),
             hir::ExprKind::ArrayLiteralI64(elements) => {
                 self.lower_array_literal_expr(elements, &expr.ty, expr.source)
             }

@@ -265,24 +265,94 @@ fn explicit_nil_conversion_rejects_non_nilable_types() {
 }
 
 #[test]
-fn byte_slice_make_rejects_unsupported_elements_and_unimplemented_compound_writes() {
-    for (source, expected) in [
-        (
-            "package main\nfunc main() { _ = make([]string, 1) }\n",
-            "make currently supports []int and []byte values",
-        ),
-        (
-            "package main\nfunc main() { b := make([]byte, 1); b[0] += 1 }\n",
-            "compound []byte assignment requires uint8 wrapping semantics",
-        ),
+fn byte_slice_compound_writes_remain_rejected_until_uint8_wrapping_is_explicit() {
+    let errors = compile_file(
+        "main.go",
+        "package main\nfunc main() { b := make([]byte, 1); b[0] += 1 }\n",
+    )
+    .err()
+    .expect("compound byte-slice writes must be rejected");
+    assert!(
+        errors.iter().any(|error| error
+            .message
+            .contains("compound []byte assignment requires uint8 wrapping semantics")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn string_slices_use_one_typed_runtime_family_across_named_types() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            type Word string
+            type A []Word
+            type B []Word
+            type Holder struct { Items []string }
+
+            func main() {
+                var empty []string
+                if empty != nil || len(empty) != 0 || cap(empty) != 0 {
+                    panic("nil string slice changed")
+                }
+
+                values := make([]string, 2, 4)
+                values[0] = "a"
+                values[1] = "b"
+                window := values[:1:2]
+                window = append(window, "c")
+                if len(window) != 2 || cap(window) != 2 || values[1] != "c" {
+                    panic("string append or aliasing changed")
+                }
+
+                source := []string{"x", "y", "z"}
+                if copy(values, source) != 2 || values[0] != "x" || values[1] != "y" {
+                    panic("string copy changed")
+                }
+                clear(source[1:])
+                if source[0] != "x" || source[1] != "" || source[2] != "" {
+                    panic("string clear changed")
+                }
+
+                var boxed any = values
+                restored := boxed.([]string)
+                restored[0] = "boxed"
+                if values[0] != "boxed" {
+                    panic("string slice interface header changed")
+                }
+                holder := &Holder{Items: values}
+                if holder.Items[0] != "boxed" {
+                    panic("string slice aggregate field changed")
+                }
+
+                left := A{"left", "tail"}
+                right := B{"right", "end"}
+                if copy(left, right) != 2 || left[0] != "right" || left[1] != "end" {
+                    panic("copy between named string slices changed")
+                }
+                println("string-slices: ok")
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"string-slices: ok\n");
+    for symbol in [
+        "go_slice_go_string_nil",
+        "go_slice_go_string_make",
+        "go_slice_go_string_len",
+        "go_slice_go_string_cap",
+        "go_slice_go_string_index",
+        "go_slice_go_string_range",
+        "go_slice_go_string_set",
+        "go_slice_go_string_append",
+        "go_slice_go_string_copy",
+        "go_slice_go_string_clear",
+        "go_slice_go_string_is_nil",
+        "go_interface_box_go_slice_go_string",
+        "go_interface_unbox_go_slice_go_string",
     ] {
-        let errors = compile_file("main.go", source)
-            .err()
-            .expect("unsupported byte-slice forms must be rejected");
-        assert!(
-            errors.iter().any(|error| error.message.contains(expected)),
-            "{errors:?}"
-        );
+        assert!(run.rust.contains(symbol), "missing {symbol}: {}", run.rust);
     }
 }
 
@@ -302,6 +372,44 @@ fn byte_slice_comment_edits_do_not_reexecute_semantic_stages() {
             // Byte make and copy are unchanged semantic inputs.
             bytes := make([]byte, 2)
             return copy(bytes, "go")
+        }
+        func main() { println(copied()) }
+    "#;
+    let mut session = CompilerSession::default();
+    session
+        .compile_program(raw_program("main.go", "main.go", before))
+        .unwrap();
+    session.database().reset_telemetry();
+
+    session
+        .compile_program(raw_program("main.go", "main.go", after))
+        .unwrap();
+
+    let telemetry = session.database().telemetry();
+    assert_eq!(telemetry.executions(QueryKind::TypedHir), 0);
+    assert_eq!(telemetry.executions(QueryKind::VerifiedGoMir), 0);
+    assert_eq!(telemetry.executions(QueryKind::NormalizedGoMir), 0);
+    assert_eq!(telemetry.executions(QueryKind::VerifiedRustIr), 0);
+}
+
+#[test]
+fn string_slice_comment_edits_do_not_reexecute_semantic_stages() {
+    let before = r#"
+        package main
+        func copied() int {
+            destination := make([]string, 2)
+            destination[0] = "left"
+            return copy(destination, []string{"right"})
+        }
+        func main() { println(copied()) }
+    "#;
+    let after = r#"
+        package main
+        func copied() int {
+            // The complete string-slice pipeline has unchanged semantic input.
+            destination := make([]string, 2)
+            destination[0] = "left"
+            return copy(destination, []string{"right"})
         }
         func main() { println(copied()) }
     "#;

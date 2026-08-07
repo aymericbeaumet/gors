@@ -28,10 +28,11 @@ use arrays::{
 };
 use channels::{is_channel_builtin, verify_channel_call};
 use containers::{
-    is_aggregate_container_builtin, is_representation_slice_builtin, map_string_i64_ty,
-    verify_aggregate_container_call, verify_bool_slice_call, verify_byte_slice_call_arguments,
-    verify_byte_slice_integer_arguments, verify_map_call_arguments,
-    verify_representation_slice_call, verify_slice_call_arguments, verify_slice_value_arguments,
+    is_aggregate_container_builtin, is_go_string_slice_builtin, is_representation_slice_builtin,
+    map_string_i64_ty, verify_aggregate_container_call, verify_bool_slice_call,
+    verify_byte_slice_call_arguments, verify_byte_slice_integer_arguments,
+    verify_go_string_slice_call, verify_map_call_arguments, verify_representation_slice_call,
+    verify_slice_call_arguments, verify_slice_value_arguments,
 };
 use effects::{
     binary_effects, call_effects, read_effects, rvalue_operands, terminator_operands,
@@ -451,6 +452,16 @@ impl Function {
                                 &argument_types,
                                 &destination_types,
                             )?
+                        } else if is_go_string_slice_builtin(*builtin) {
+                            let destination_types = destinations
+                                .iter()
+                                .map(|destination| self.place_ty(*destination).cloned())
+                                .collect::<Result<Vec<_>, _>>()?;
+                            verify_go_string_slice_call(
+                                *builtin,
+                                &argument_types,
+                                &destination_types,
+                            )?
                         } else if is_string_builtin(*builtin) {
                             verify_string_call(*builtin, &argument_types)?
                         } else if matches!(
@@ -805,6 +816,8 @@ impl Function {
                                 | hir::Builtin::InterfaceUnboxF64
                                 | hir::Builtin::InterfaceUnboxI64
                                 | hir::Builtin::InterfaceUnboxGoString
+                                | hir::Builtin::InterfaceBoxGoSliceGoString
+                                | hir::Builtin::InterfaceUnboxGoSliceGoString
                                 | hir::Builtin::InterfaceStructI64Get
                                 | hir::Builtin::InterfaceUnboxPointerStructI64
                                 | hir::Builtin::InterfaceUnboxAggregate
@@ -830,6 +843,21 @@ impl Function {
                                 hir::Builtin::SliceBoolIndex | hir::Builtin::SliceBoolSet => {
                                     return Err(Diagnostic::backend(
                                         "bool slice builtin bypassed dedicated MIR verification",
+                                    ));
+                                }
+                                hir::Builtin::SliceGoStringIndex
+                                | hir::Builtin::SliceGoStringRange
+                                | hir::Builtin::SliceGoStringSet
+                                | hir::Builtin::SliceGoStringMake
+                                | hir::Builtin::SliceGoStringNil
+                                | hir::Builtin::SliceGoStringIsNil
+                                | hir::Builtin::SliceGoStringLen
+                                | hir::Builtin::SliceGoStringCap
+                                | hir::Builtin::SliceGoStringAppend
+                                | hir::Builtin::SliceGoStringCopy
+                                | hir::Builtin::SliceGoStringClear => {
+                                    return Err(Diagnostic::backend(
+                                        "string slice builtin bypassed dedicated MIR verification",
                                     ));
                                 }
                                 hir::Builtin::SliceI64Nil

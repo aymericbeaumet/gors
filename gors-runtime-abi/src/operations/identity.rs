@@ -156,6 +156,19 @@ impl RuntimeOp {
             Self::GoChannelGoChannelI64IsNil => 144,
             Self::GoChannelGoChannelI64TrySend => 145,
             Self::GoChannelGoChannelI64TryReceive => 146,
+            Self::GoSliceGoStringNil => 147,
+            Self::GoSliceGoStringMake => 148,
+            Self::GoSliceGoStringLen => 149,
+            Self::GoSliceGoStringCap => 150,
+            Self::GoSliceGoStringIndex => 151,
+            Self::GoSliceGoStringRange => 152,
+            Self::GoSliceGoStringSet => 153,
+            Self::GoSliceGoStringAppend => 154,
+            Self::GoSliceGoStringCopy => 155,
+            Self::GoSliceGoStringClear => 156,
+            Self::GoSliceGoStringIsNil => 157,
+            Self::GoInterfaceBoxGoSliceGoString => 158,
+            Self::GoInterfaceUnboxGoSliceGoString => 159,
         })
     }
 }

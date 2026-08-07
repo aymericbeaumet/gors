@@ -366,6 +366,8 @@ impl FunctionLowerer {
                 hir::Builtin::SliceU8IsNil
             } else if element.underlying() == &Ty::Bool {
                 hir::Builtin::SliceBoolIsNil
+            } else if element.underlying() == &Ty::String {
+                hir::Builtin::SliceGoStringIsNil
             } else if element.uses_interface_aggregate_representation() {
                 hir::Builtin::AggregateSliceIsNil
             } else {

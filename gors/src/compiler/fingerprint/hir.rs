@@ -631,9 +631,7 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
             });
         }
         hir::ExprKind::DynamicSliceLiteralI64(elements) => {
-            encoder.variant(b"dynamic-slice-literal-i64", |encoder| {
-                encoder.sequence(elements, encode_expression);
-            });
+            encode_expression_list(encoder, b"dynamic-slice-literal-i64", elements);
         }
         hir::ExprKind::AggregateSliceLiteral {
             elements,
@@ -660,6 +658,9 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
             encoder.variant(b"slice-literal-bool", |encoder| {
                 encoder.sequence(elements, |encoder, element| encoder.bool(*element));
             });
+        }
+        hir::ExprKind::SliceLiteralGoString(elements) => {
+            encode_expression_list(encoder, b"slice-literal-go-string", elements);
         }
         hir::ExprKind::ArrayLiteralI64(elements) => {
             encoder.variant(b"array-literal-i64", |encoder| {
@@ -693,9 +694,7 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
             });
         }
         hir::ExprKind::StructLiteral(fields) => {
-            encoder.variant(b"struct-literal", |encoder| {
-                encoder.sequence(fields, encode_expression);
-            });
+            encode_expression_list(encoder, b"struct-literal", fields);
         }
         hir::ExprKind::StructField { structure, field } => {
             encoder.variant(b"struct-field", |encoder| {
@@ -743,6 +742,10 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
             });
         }),
     }
+}
+
+fn encode_expression_list(encoder: &mut Encoder, label: &'static [u8], values: &[hir::Expr]) {
+    encoder.variant(label, |encoder| encoder.sequence(values, encode_expression));
 }
 
 fn encode_static_value(encoder: &mut Encoder, value: &crate::compiler::types::StaticValue) {
@@ -814,6 +817,17 @@ fn encode_builtin(encoder: &mut Encoder, builtin: hir::Builtin) {
             hir::Builtin::SliceBoolSet => b"slice-bool-set",
             hir::Builtin::SliceBoolNil => b"slice-bool-nil",
             hir::Builtin::SliceBoolIsNil => b"slice-bool-is-nil",
+            hir::Builtin::SliceGoStringIndex => b"slice-go-string-index",
+            hir::Builtin::SliceGoStringRange => b"slice-go-string-range",
+            hir::Builtin::SliceGoStringSet => b"slice-go-string-set",
+            hir::Builtin::SliceGoStringMake => b"slice-go-string-make",
+            hir::Builtin::SliceGoStringNil => b"slice-go-string-nil",
+            hir::Builtin::SliceGoStringIsNil => b"slice-go-string-is-nil",
+            hir::Builtin::SliceGoStringLen => b"slice-go-string-len",
+            hir::Builtin::SliceGoStringCap => b"slice-go-string-cap",
+            hir::Builtin::SliceGoStringAppend => b"slice-go-string-append",
+            hir::Builtin::SliceGoStringCopy => b"slice-go-string-copy",
+            hir::Builtin::SliceGoStringClear => b"slice-go-string-clear",
             hir::Builtin::AggregateSliceMake => b"aggregate-slice-make",
             hir::Builtin::AggregateSliceNil => b"aggregate-slice-nil",
             hir::Builtin::AggregateSliceIsNil => b"aggregate-slice-is-nil",
@@ -867,6 +881,7 @@ fn encode_builtin(encoder: &mut Encoder, builtin: hir::Builtin) {
             hir::Builtin::InterfaceBoxI64 => b"interface-box-i64",
             hir::Builtin::InterfaceBoxF64 => b"interface-box-f64",
             hir::Builtin::InterfaceBoxGoString => b"interface-box-go-string",
+            hir::Builtin::InterfaceBoxGoSliceGoString => b"interface-box-go-slice-go-string",
             hir::Builtin::InterfaceBoxStructI64 => b"interface-box-struct-i64",
             hir::Builtin::InterfaceBoxPointerStructI64 => b"interface-box-pointer-struct-i64",
             hir::Builtin::InterfaceBoxAggregate => b"interface-box-aggregate",
@@ -883,6 +898,7 @@ fn encode_builtin(encoder: &mut Encoder, builtin: hir::Builtin) {
             hir::Builtin::InterfaceUnboxI64 => b"interface-unbox-i64",
             hir::Builtin::InterfaceUnboxF64 => b"interface-unbox-f64",
             hir::Builtin::InterfaceUnboxGoString => b"interface-unbox-go-string",
+            hir::Builtin::InterfaceUnboxGoSliceGoString => b"interface-unbox-go-slice-go-string",
             hir::Builtin::InterfaceStructI64Get => b"interface-struct-i64-get",
             hir::Builtin::InterfaceUnboxPointerStructI64 => b"interface-unbox-pointer-struct-i64",
             hir::Builtin::InterfaceUnboxAggregate => b"interface-unbox-aggregate",

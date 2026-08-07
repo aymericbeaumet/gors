@@ -115,6 +115,26 @@ pub(super) const GO_SLICE_INTERFACE_SET: &[RuntimeType] = &[
     RuntimeType::I64,
     RuntimeType::GoInterface,
 ];
+pub(super) const GO_SLICE_GO_STRING_PARAMETER: &[RuntimeType] = &[RuntimeType::GoSliceGoString];
+pub(super) const TWO_GO_SLICE_GO_STRING_PARAMETERS: &[RuntimeType] =
+    &[RuntimeType::GoSliceGoString, RuntimeType::GoSliceGoString];
+pub(super) const GO_SLICE_GO_STRING_AND_INDEX: &[RuntimeType] =
+    &[RuntimeType::GoSliceGoString, RuntimeType::I64];
+pub(super) const GO_SLICE_GO_STRING_RANGE: &[RuntimeType] = &[
+    RuntimeType::GoSliceGoString,
+    RuntimeType::I64,
+    RuntimeType::I64,
+    RuntimeType::I64,
+];
+pub(super) const GO_SLICE_GO_STRING_SET: &[RuntimeType] = &[
+    RuntimeType::GoSliceGoString,
+    RuntimeType::I64,
+    RuntimeType::GoString,
+];
+pub(super) const GO_SLICE_GO_STRING_AND_VALUE: &[RuntimeType] =
+    &[RuntimeType::GoSliceGoString, RuntimeType::GoString];
+pub(super) const GO_INTERFACE_BOX_GO_SLICE_GO_STRING: &[RuntimeType] =
+    &[RuntimeType::GoString, RuntimeType::GoSliceGoString];
 pub(super) const GO_MAP_STRING_INTERFACE_PARAMETER: &[RuntimeType] =
     &[RuntimeType::GoMapStringInterface];
 pub(super) const GO_MAP_STRING_INTERFACE_AND_KEY: &[RuntimeType] =

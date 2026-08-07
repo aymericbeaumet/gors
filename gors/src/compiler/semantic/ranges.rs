@@ -57,7 +57,10 @@ impl FunctionLowerer {
                 (Ty::Int(IntTy::Int), element.as_ref().clone(), 2)
             }
             Ty::Slice(element)
-                if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) =>
+                if matches!(
+                    element.underlying(),
+                    Ty::Int(IntTy::Int | IntTy::Int32) | Ty::String
+                ) =>
             {
                 (Ty::Int(IntTy::Int), element.as_ref().clone(), 2)
             }

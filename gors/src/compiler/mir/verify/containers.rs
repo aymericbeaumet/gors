@@ -20,6 +20,92 @@ pub(super) fn is_representation_slice_builtin(builtin: hir::Builtin) -> bool {
     )
 }
 
+pub(super) fn is_go_string_slice_builtin(builtin: hir::Builtin) -> bool {
+    matches!(
+        builtin,
+        hir::Builtin::SliceGoStringIndex
+            | hir::Builtin::SliceGoStringRange
+            | hir::Builtin::SliceGoStringSet
+            | hir::Builtin::SliceGoStringMake
+            | hir::Builtin::SliceGoStringNil
+            | hir::Builtin::SliceGoStringIsNil
+            | hir::Builtin::SliceGoStringLen
+            | hir::Builtin::SliceGoStringCap
+            | hir::Builtin::SliceGoStringAppend
+            | hir::Builtin::SliceGoStringCopy
+            | hir::Builtin::SliceGoStringClear
+    )
+}
+
+pub(super) fn verify_go_string_slice_call(
+    builtin: hir::Builtin,
+    arguments: &[Ty],
+    destinations: &[Ty],
+) -> Result<Vec<Ty>, Diagnostic> {
+    let string_slice = |ty: &Ty| matches!(ty.underlying(), Ty::Slice(element) if element.underlying() == &Ty::String);
+    let element = |ty: &Ty| match ty.underlying() {
+        Ty::Slice(element) if element.underlying() == &Ty::String => Some(element.as_ref().clone()),
+        _ => None,
+    };
+    let valid = match builtin {
+        hir::Builtin::SliceGoStringNil => {
+            arguments.is_empty() && matches!(destinations, [slice] if string_slice(slice))
+        }
+        hir::Builtin::SliceGoStringMake => {
+            arguments == [Ty::Int(IntTy::Int), Ty::Int(IntTy::Int)]
+                && matches!(destinations, [slice] if string_slice(slice))
+        }
+        hir::Builtin::SliceGoStringLen | hir::Builtin::SliceGoStringCap => {
+            matches!(arguments, [slice] if string_slice(slice))
+                && destinations == [Ty::Int(IntTy::Int)]
+        }
+        hir::Builtin::SliceGoStringIndex => {
+            matches!((arguments, destinations), ([slice, Ty::Int(IntTy::Int)], [value])
+                if element(slice).as_ref() == Some(value))
+        }
+        hir::Builtin::SliceGoStringRange => {
+            matches!(
+                (arguments, destinations),
+                (
+                    [slice, Ty::Int(IntTy::Int), Ty::Int(IntTy::Int), Ty::Int(IntTy::Int)],
+                    [result]
+                ) if string_slice(slice) && result == slice
+            )
+        }
+        hir::Builtin::SliceGoStringSet => {
+            matches!(arguments, [slice, Ty::Int(IntTy::Int), value]
+                if element(slice).as_ref() == Some(value))
+                && destinations.is_empty()
+        }
+        hir::Builtin::SliceGoStringAppend => {
+            matches!(
+                (arguments, destinations),
+                ([slice, value], [result])
+                    if element(slice).as_ref() == Some(value) && result == slice
+            )
+        }
+        hir::Builtin::SliceGoStringCopy => {
+            matches!(arguments, [destination, source]
+                if string_slice(destination)
+                    && string_slice(source)
+                    && element(destination) == element(source))
+                && destinations == [Ty::Int(IntTy::Int)]
+        }
+        hir::Builtin::SliceGoStringClear => {
+            matches!(arguments, [slice] if string_slice(slice)) && destinations.is_empty()
+        }
+        hir::Builtin::SliceGoStringIsNil => {
+            matches!(arguments, [slice] if string_slice(slice)) && destinations == [Ty::Bool]
+        }
+        _ => false,
+    };
+    valid.then(|| destinations.to_vec()).ok_or_else(|| {
+        Diagnostic::backend(format!(
+            "invalid MIR string slice call {builtin:?}: {arguments:?} -> {destinations:?}"
+        ))
+    })
+}
+
 pub(super) fn verify_representation_slice_call(
     builtin: hir::Builtin,
     arguments: &[Ty],
@@ -353,8 +439,10 @@ fn is_aggregate_slice(ty: &Ty) -> bool {
     matches!(
         ty.underlying(),
         Ty::Slice(element)
-            if matches!(element.underlying(), Ty::Interface(_))
+            if element.underlying() != &Ty::String
+                && (matches!(element.underlying(), Ty::Interface(_))
                 || element.uses_interface_aggregate_representation()
+                )
     )
 }
 

@@ -464,7 +464,10 @@ impl FunctionLowerer {
             Ty::Slice(element)
                 if matches!(
                     element.underlying(),
-                    Ty::Int(IntTy::Int | IntTy::Int32) | Ty::Uint(UintTy::Uint8) | Ty::Bool
+                    Ty::Int(IntTy::Int | IntTy::Int32)
+                        | Ty::Uint(UintTy::Uint8)
+                        | Ty::Bool
+                        | Ty::String
                 ) =>
             {
                 let element_ty = element.as_ref().clone();
@@ -472,6 +475,8 @@ impl FunctionLowerer {
                     hir::Builtin::SliceBoolSet
                 } else if element.underlying() == &Ty::Uint(UintTy::Uint8) {
                     hir::Builtin::SliceU8Set
+                } else if element.underlying() == &Ty::String {
+                    hir::Builtin::SliceGoStringSet
                 } else {
                     hir::Builtin::SliceI64Set
                 };
@@ -521,7 +526,7 @@ impl FunctionLowerer {
                 })
             }
             _ => Err(Diagnostic::semantic(
-                "indexed assignment requires []bool, []byte, []int, or map[string]int",
+                "indexed assignment requires []bool, []byte, []int, a string-element slice, or map[string]int",
                 source,
             )),
         }
@@ -657,6 +662,7 @@ impl FunctionLowerer {
                                 Ty::Int(IntTy::Int | IntTy::Int32)
                                     | Ty::Uint(UintTy::Uint8)
                                     | Ty::Bool
+                                    | Ty::String
                             ) =>
                         {
                             let element_ty = element.as_ref().clone();
@@ -664,6 +670,8 @@ impl FunctionLowerer {
                                 hir::Builtin::SliceBoolSet
                             } else if element.underlying() == &Ty::Uint(UintTy::Uint8) {
                                 hir::Builtin::SliceU8Set
+                            } else if element.underlying() == &Ty::String {
+                                hir::Builtin::SliceGoStringSet
                             } else {
                                 hir::Builtin::SliceI64Set
                             };
@@ -687,7 +695,7 @@ impl FunctionLowerer {
                         }
                         _ => {
                             return Err(Diagnostic::semantic(
-                                "indexed assignment requires []bool, []byte, []int, or map[string]int",
+                                "indexed assignment requires []bool, []byte, []int, a string-element slice, or map[string]int",
                                 source,
                             ));
                         }

@@ -345,6 +345,7 @@ pub enum RustType {
     GoSliceU8,
     GoSliceBool,
     GoSliceInterface,
+    GoSliceGoString,
     GoMapStringI64,
     GoMapStringInterface,
     GoPointerI64,
@@ -395,6 +396,7 @@ impl RustType {
             | Self::GoSliceU8
             | Self::GoSliceBool
             | Self::GoSliceInterface
+            | Self::GoSliceGoString
             | Self::GoMapStringI64
             | Self::GoMapStringInterface
             | Self::GoPointerI64
@@ -429,6 +431,7 @@ impl RustType {
             | Self::GoSliceU8
             | Self::GoSliceBool
             | Self::GoSliceInterface
+            | Self::GoSliceGoString
             | Self::GoMapStringI64
             | Self::GoMapStringInterface
             | Self::GoPointerI64
@@ -448,6 +451,7 @@ impl RustType {
             | Self::GoSliceU8
             | Self::GoSliceBool
             | Self::GoSliceInterface
+            | Self::GoSliceGoString
             | Self::GoMapStringI64
             | Self::GoMapStringInterface
             | Self::GoPointerI64
@@ -484,6 +488,7 @@ impl RustType {
             | Self::GoSliceU8
             | Self::GoSliceBool
             | Self::GoSliceInterface
+            | Self::GoSliceGoString
             | Self::GoMapStringI64
             | Self::GoMapStringInterface
             | Self::GoPointerI64

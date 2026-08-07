@@ -28,6 +28,7 @@ pub(super) fn lower_type(ty: &Ty) -> Result<RustType, Diagnostic> {
             Ok(RustType::GoSliceU8)
         }
         Ty::Slice(element) if element.underlying() == &Ty::Bool => Ok(RustType::GoSliceBool),
+        Ty::Slice(element) if element.underlying() == &Ty::String => Ok(RustType::GoSliceGoString),
         Ty::Slice(element) if matches!(element.underlying(), Ty::Interface(_)) => {
             Ok(RustType::GoSliceInterface)
         }

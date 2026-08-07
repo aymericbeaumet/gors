@@ -67,6 +67,9 @@ impl FunctionLowerer {
                 self.push_statement(make_statement(result, value, provenance))?;
                 Ok(Operand::Read(result))
             }
+            hir::ExprKind::SliceLiteralGoString(elements) => {
+                self.lower_dynamic_go_string_slice_literal(elements, &expr.ty, expr.source)
+            }
             _ => Err(Diagnostic::backend(
                 "non-slice HIR expression reached slice MIR lowering",
             )),

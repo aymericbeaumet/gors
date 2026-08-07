@@ -867,6 +867,7 @@ fn collect_expr_addresses(expression: &hir::Expr, addressed: &mut BTreeSet<Local
         }
         hir::ExprKind::ArrayLen { array, .. } => collect_expr_addresses(array, addressed),
         hir::ExprKind::DynamicSliceLiteralI64(elements)
+        | hir::ExprKind::SliceLiteralGoString(elements)
         | hir::ExprKind::AggregateSliceLiteral { elements, .. } => {
             collect_expression_addresses(elements, addressed);
         }

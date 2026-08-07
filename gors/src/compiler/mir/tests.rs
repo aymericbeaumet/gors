@@ -165,6 +165,75 @@ fn verifier_rejects_invalid_byte_slice_runtime_calls() {
 }
 
 #[test]
+fn verifier_rejects_every_malformed_string_slice_runtime_call() {
+    let source = r#"
+        package main
+        type Word string
+        type Words []Word
+        func main() {
+            var values Words
+            _ = values == nil
+            values = make(Words, 1, 2)
+            values[0] = "a"
+            _ = len(values)
+            _ = cap(values)
+            _ = values[0]
+            _ = values[:]
+            values = append(values, "b")
+            _ = copy(values, Words{"c"})
+            clear(values)
+            var boxed any = values
+            _, _ = boxed.(Words)
+        }
+    "#;
+
+    for builtin in [
+        hir::Builtin::SliceGoStringNil,
+        hir::Builtin::SliceGoStringIsNil,
+        hir::Builtin::SliceGoStringMake,
+        hir::Builtin::SliceGoStringSet,
+        hir::Builtin::SliceGoStringLen,
+        hir::Builtin::SliceGoStringCap,
+        hir::Builtin::SliceGoStringIndex,
+        hir::Builtin::SliceGoStringRange,
+        hir::Builtin::SliceGoStringAppend,
+        hir::Builtin::SliceGoStringCopy,
+        hir::Builtin::SliceGoStringClear,
+        hir::Builtin::InterfaceBoxGoSliceGoString,
+        hir::Builtin::InterfaceUnboxGoSliceGoString,
+    ] {
+        let mut file = lower(source);
+        let (arguments, destinations) = file
+            .functions
+            .iter_mut()
+            .flat_map(|function| &mut function.blocks)
+            .find_map(|block| match &mut block.terminator.kind {
+                TerminatorKind::Call {
+                    callee: hir::Callee::Builtin(actual),
+                    args,
+                    destinations,
+                    ..
+                } if *actual == builtin => Some((args, destinations)),
+                _ => None,
+            })
+            .expect("expected string-slice runtime call");
+        if arguments.is_empty() {
+            destinations.clear();
+        } else {
+            arguments.clear();
+        }
+
+        let error = file.verify().unwrap_err();
+        assert!(
+            error.message.contains("string slice")
+                || error.message.contains("interface boxing")
+                || error.message.contains("interface extraction"),
+            "{builtin:?}: {error:?}"
+        );
+    }
+}
+
+#[test]
 fn verifier_rejects_invalid_float_interface_runtime_calls() {
     let source = r#"
         package main

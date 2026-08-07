@@ -912,6 +912,7 @@ fn emit_type(ty: &RustType) -> Result<syn::Type, Diagnostic> {
         RustType::GoSliceU8 => syn::parse_quote! { ::#runtime_crate::GoSliceU8 },
         RustType::GoSliceBool => syn::parse_quote! { ::#runtime_crate::GoSliceBool },
         RustType::GoSliceInterface => syn::parse_quote! { ::#runtime_crate::GoSliceInterface },
+        RustType::GoSliceGoString => syn::parse_quote! { ::#runtime_crate::GoSliceGoString },
         RustType::GoMapStringI64 => syn::parse_quote! { ::#runtime_crate::GoMapStringI64 },
         RustType::GoMapStringInterface => {
             syn::parse_quote! { ::#runtime_crate::GoMapStringInterface }

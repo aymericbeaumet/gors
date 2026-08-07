@@ -95,8 +95,15 @@ impl FunctionLowerer {
             matches!(element_ty.underlying(), Ty::Int(IntTy::Int | IntTy::Int32));
         let byte_elements = element_ty.underlying() == &Ty::Uint(UintTy::Uint8);
         let boolean_elements = element_ty.underlying() == &Ty::Bool;
-        let aggregate_elements = element_ty.uses_interface_aggregate_representation();
-        if !integer_elements && !byte_elements && !boolean_elements && !aggregate_elements {
+        let string_elements = element_ty.underlying() == &Ty::String;
+        let aggregate_elements =
+            !string_elements && element_ty.uses_interface_aggregate_representation();
+        if !integer_elements
+            && !byte_elements
+            && !boolean_elements
+            && !string_elements
+            && !aggregate_elements
+        {
             return Err(Diagnostic::unsupported(
                 "slice literal element type has no executable representation",
                 source,
@@ -184,6 +191,28 @@ impl FunctionLowerer {
                     may_allocate: true,
                     ..hir::Effects::default()
                 },
+                source,
+            });
+        }
+        if string_elements {
+            let effects = lowered_elements
+                .iter()
+                .fold(hir::Effects::default(), |effects, element| {
+                    effects.union(element.effects)
+                })
+                .union(hir::Effects {
+                    may_call: true,
+                    may_allocate: true,
+                    may_write: true,
+                    may_panic: true,
+                    ..hir::Effects::default()
+                });
+            return Ok(hir::Expr {
+                node,
+                kind: hir::ExprKind::SliceLiteralGoString(lowered_elements),
+                ty: literal_ty,
+                category: hir::ValueCategory::Value,
+                effects,
                 source,
             });
         }

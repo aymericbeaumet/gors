@@ -78,6 +78,9 @@ impl FunctionLowerer {
             Ty::Slice(element) if element.underlying() == &Ty::Bool => {
                 Some(hir::Builtin::SliceBoolNil)
             }
+            Ty::Slice(element) if element.underlying() == &Ty::String => {
+                Some(hir::Builtin::SliceGoStringNil)
+            }
             Ty::Slice(element) if element.uses_interface_aggregate_representation() => {
                 Some(hir::Builtin::AggregateSliceNil)
             }
@@ -468,11 +471,11 @@ impl FunctionLowerer {
             Ty::Slice(element) if element.underlying() == &Ty::Uint(UintTy::Uint8) => {
                 hir::Builtin::SliceU8Len
             }
-            Ty::Slice(element)
-                if matches!(element.underlying(), Ty::String)
-                    || element.bootstrap_i64_struct_fields().is_some() =>
-            {
+            Ty::Slice(element) if element.bootstrap_i64_struct_fields().is_some() => {
                 hir::Builtin::AggregateSliceLen
+            }
+            Ty::Slice(element) if element.underlying() == &Ty::String => {
+                hir::Builtin::SliceGoStringLen
             }
             Ty::String => hir::Builtin::StringLen,
             ty => {
@@ -527,6 +530,9 @@ impl FunctionLowerer {
             }
             Ty::Slice(element) if element.underlying() == &Ty::Int(IntTy::Int) => {
                 hir::Builtin::SliceI64Clear
+            }
+            Ty::Slice(element) if element.underlying() == &Ty::String => {
+                hir::Builtin::SliceGoStringClear
             }
             ty => {
                 return Err(Diagnostic::unsupported(

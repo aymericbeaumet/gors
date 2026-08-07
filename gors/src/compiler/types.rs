@@ -215,6 +215,7 @@ impl Ty {
                 _ => return None,
             },
             Self::Slice(element) => match element.as_ref() {
+                Self::String => "slice:builtin:string".to_owned(),
                 Self::Named { definition, .. } | Self::NamedRef { definition } => {
                     format!("slice:named:{definition}")
                 }
@@ -320,7 +321,10 @@ impl Ty {
             | Self::Float(_)
             | Self::String => true,
             Self::Struct(_) => self.interface_aggregate_struct_fields().is_some(),
-            Self::Slice(element) => element.uses_interface_aggregate_representation(),
+            Self::Slice(element) => {
+                element.underlying() == &Self::String
+                    || element.uses_interface_aggregate_representation()
+            }
             Self::Pointer(_) => self.bootstrap_i64_struct_pointer_fields().is_some(),
             _ => false,
         }

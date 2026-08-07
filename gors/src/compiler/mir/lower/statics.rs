@@ -83,13 +83,31 @@ impl FunctionLowerer {
                         "static slice value has a non-slice Go type",
                     ));
                 };
-                let type_identity = element.dynamic_type_identity().ok_or_else(|| {
-                    Diagnostic::backend("static slice element has no dynamic type identity")
-                })?;
                 let slice = Place {
                     local: self.new_temp(ty.clone()),
                 };
                 let length = int_constant_operand(values.len());
+                if element.underlying() == &Ty::String {
+                    self.emit_map_call(
+                        crate::compiler::hir::Builtin::SliceGoStringMake,
+                        vec![length.clone(), length],
+                        vec![slice],
+                        source,
+                    )?;
+                    for (index, value) in values.iter().enumerate() {
+                        let value = self.lower_static_value(value, element, source)?;
+                        self.emit_map_call(
+                            crate::compiler::hir::Builtin::SliceGoStringSet,
+                            vec![Operand::Read(slice), int_constant_operand(index), value],
+                            Vec::new(),
+                            source,
+                        )?;
+                    }
+                    return Ok(Operand::Read(slice));
+                }
+                let type_identity = element.dynamic_type_identity().ok_or_else(|| {
+                    Diagnostic::backend("static slice element has no dynamic type identity")
+                })?;
                 self.emit_map_call(
                     crate::compiler::hir::Builtin::AggregateSliceMake,
                     vec![length.clone(), length],

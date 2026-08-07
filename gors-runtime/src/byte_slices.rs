@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, RwLock};
 
-use super::{GoInt, GoSliceU8, slice_bounds_out_of_range, slice_index};
+use super::{GoInt, GoSliceU8, slice_bounds_out_of_range, slice_index, slice_values};
 
 /// Allocate a zero-initialized `[]byte` with an explicit Go length and capacity.
 /// A capacity of `-1` selects the requested length for two-argument `make`.
@@ -45,27 +45,5 @@ pub fn go_slice_u8_set(slice: GoSliceU8, index: GoInt, value: GoInt) {
 
 /// Copy bytes between slices with Go's overlap-safe semantics.
 pub fn go_slice_u8_copy(destination: GoSliceU8, source: GoSliceU8) -> GoInt {
-    let count = destination.len.min(source.len);
-    let source_values = {
-        let storage = source
-            .storage
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let end = source.start.saturating_add(count);
-        storage
-            .get(source.start..end)
-            .unwrap_or_else(|| slice_bounds_out_of_range())
-            .to_vec()
-    };
-    let mut storage = destination
-        .storage
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let end = destination.start.saturating_add(count);
-    let target = storage
-        .get_mut(destination.start..end)
-        .unwrap_or_else(|| slice_bounds_out_of_range());
-    target.copy_from_slice(&source_values);
-    drop(storage);
-    GoInt::try_from(count).unwrap_or_else(|_| slice_bounds_out_of_range())
+    slice_values::copy(&destination, &source)
 }

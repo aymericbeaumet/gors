@@ -159,6 +159,19 @@ impl RuntimeOp {
             | Self::GoChannelGoChannelI64IsNil
             | Self::GoChannelGoChannelI64TrySend
             | Self::GoChannelGoChannelI64TryReceive => NO_CAPABILITIES,
+            Self::GoSliceGoStringNil
+            | Self::GoSliceGoStringMake
+            | Self::GoSliceGoStringLen
+            | Self::GoSliceGoStringCap
+            | Self::GoSliceGoStringIndex
+            | Self::GoSliceGoStringRange
+            | Self::GoSliceGoStringSet
+            | Self::GoSliceGoStringAppend
+            | Self::GoSliceGoStringCopy
+            | Self::GoSliceGoStringClear
+            | Self::GoSliceGoStringIsNil
+            | Self::GoInterfaceBoxGoSliceGoString
+            | Self::GoInterfaceUnboxGoSliceGoString => NO_CAPABILITIES,
         }
     }
 
@@ -239,7 +252,8 @@ impl RuntimeOp {
             Self::GoSliceI64Nil
             | Self::GoSliceU8Nil
             | Self::GoSliceBoolNil
-            | Self::GoSliceInterfaceNil => RuntimeEffects::new(
+            | Self::GoSliceInterfaceNil
+            | Self::GoSliceGoStringNil => RuntimeEffects::new(
                 AllocationEffect::MayAllocate,
                 ArgumentMutationEffect::None,
                 HostIoEffect::None,
@@ -248,7 +262,8 @@ impl RuntimeOp {
             Self::GoSliceI64IsNil
             | Self::GoSliceU8IsNil
             | Self::GoSliceBoolIsNil
-            | Self::GoSliceInterfaceIsNil => RuntimeEffects::new(
+            | Self::GoSliceInterfaceIsNil
+            | Self::GoSliceGoStringIsNil => RuntimeEffects::new(
                 AllocationEffect::None,
                 ArgumentMutationEffect::None,
                 HostIoEffect::None,
@@ -264,48 +279,54 @@ impl RuntimeOp {
             | Self::GoSliceU8Index
             | Self::GoSliceBoolIndex
             | Self::GoSliceInterfaceIndex
+            | Self::GoSliceGoStringIndex
             | Self::GoStringIndex => RuntimeEffects::new(
                 AllocationEffect::None,
                 ArgumentMutationEffect::None,
                 HostIoEffect::None,
                 INDEX_OUT_OF_RANGE,
             ),
-            Self::GoSliceI64Range | Self::GoSliceU8Range | Self::GoStringRange => {
-                RuntimeEffects::new(
-                    AllocationEffect::None,
-                    ArgumentMutationEffect::None,
-                    HostIoEffect::None,
-                    SLICE_BOUNDS_OUT_OF_RANGE,
-                )
-            }
+            Self::GoSliceI64Range
+            | Self::GoSliceU8Range
+            | Self::GoSliceGoStringRange
+            | Self::GoStringRange => RuntimeEffects::new(
+                AllocationEffect::None,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                SLICE_BOUNDS_OUT_OF_RANGE,
+            ),
             Self::GoSliceI64Set
             | Self::GoSliceU8Set
             | Self::GoSliceBoolSet
-            | Self::GoSliceInterfaceSet => RuntimeEffects::new(
+            | Self::GoSliceInterfaceSet
+            | Self::GoSliceGoStringSet => RuntimeEffects::new(
                 AllocationEffect::None,
                 ArgumentMutationEffect::MayMutateOwnedArgument,
                 HostIoEffect::None,
                 INDEX_OUT_OF_RANGE,
             ),
-            Self::GoSliceI64Make | Self::GoSliceU8Make | Self::GoSliceInterfaceMake => {
-                RuntimeEffects::new(
-                    AllocationEffect::MayAllocate,
-                    ArgumentMutationEffect::None,
-                    HostIoEffect::None,
-                    SLICE_BOUNDS_OUT_OF_RANGE,
-                )
-            }
+            Self::GoSliceI64Make
+            | Self::GoSliceU8Make
+            | Self::GoSliceInterfaceMake
+            | Self::GoSliceGoStringMake => RuntimeEffects::new(
+                AllocationEffect::MayAllocate,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                SLICE_BOUNDS_OUT_OF_RANGE,
+            ),
             Self::GoSliceI64Len
             | Self::GoSliceI64Cap
             | Self::GoSliceU8Len
             | Self::GoSliceInterfaceLen
+            | Self::GoSliceGoStringLen
+            | Self::GoSliceGoStringCap
             | Self::GoStringRangeCount => RuntimeEffects::new(
                 AllocationEffect::None,
                 ArgumentMutationEffect::None,
                 HostIoEffect::None,
                 NO_GO_PANICS,
             ),
-            Self::GoSliceI64Append => RuntimeEffects::new(
+            Self::GoSliceI64Append | Self::GoSliceGoStringAppend => RuntimeEffects::new(
                 AllocationEffect::MayAllocate,
                 ArgumentMutationEffect::MayMutateOwnedArgument,
                 HostIoEffect::None,
@@ -326,7 +347,9 @@ impl RuntimeOp {
             Self::GoSliceU8CopyString
             | Self::GoSliceU8Copy
             | Self::GoSliceI64Clear
-            | Self::GoSliceI64Copy => RuntimeEffects::new(
+            | Self::GoSliceI64Copy
+            | Self::GoSliceGoStringCopy
+            | Self::GoSliceGoStringClear => RuntimeEffects::new(
                 AllocationEffect::None,
                 ArgumentMutationEffect::MayMutateOwnedArgument,
                 HostIoEffect::None,
@@ -432,6 +455,12 @@ impl RuntimeOp {
                 HostIoEffect::None,
                 NO_GO_PANICS,
             ),
+            Self::GoInterfaceBoxGoSliceGoString => RuntimeEffects::new(
+                AllocationEffect::None,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                NO_GO_PANICS,
+            ),
             Self::GoInterfaceBoxStructI64 => RuntimeEffects::new(
                 AllocationEffect::MayAllocate,
                 ArgumentMutationEffect::None,
@@ -444,6 +473,12 @@ impl RuntimeOp {
             | Self::GoInterfaceUnboxGoString
             | Self::GoInterfaceUnboxPointerStructI64
             | Self::GoInterfaceUnboxAggregate => RuntimeEffects::new(
+                AllocationEffect::None,
+                ArgumentMutationEffect::None,
+                HostIoEffect::None,
+                TYPE_ASSERTION_FAILURE,
+            ),
+            Self::GoInterfaceUnboxGoSliceGoString => RuntimeEffects::new(
                 AllocationEffect::None,
                 ArgumentMutationEffect::None,
                 HostIoEffect::None,

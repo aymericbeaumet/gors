@@ -1152,6 +1152,15 @@
           ]
         },
         {
+          "id": "spec-properties-underlying-type-chains",
+          "section": "Underlying types",
+          "title": "Transitive underlying-type chains through defined types and aliases drive conversion and assignability",
+          "status": "passing",
+          "fixtures": [
+            "properties_underlying_type_chains"
+          ]
+        },
+        {
           "id": "properties-type-identity",
           "section": "Type identity",
           "title": "Distinct defined types preserve identity while allowing explicit conversions",
@@ -1617,6 +1626,15 @@
           ]
         },
         {
+          "id": "spec-logical-short-circuit",
+          "section": "Logical operators",
+          "title": "Logical operators short-circuit side effects in lexical left-to-right order",
+          "status": "passing",
+          "fixtures": [
+            "logical_short_circuit"
+          ]
+        },
+        {
           "id": "expr-receive-operator",
           "section": "Receive operator",
           "title": "Receive expressions read channel values in expression contexts",
@@ -1947,6 +1965,15 @@
           "status": "passing",
           "fixtures": [
             "statements"
+          ]
+        },
+        {
+          "id": "spec-if-init-scope-and-else",
+          "section": "If statements",
+          "title": "If initializers have implicit scope and else-if branches execute only when reached",
+          "status": "passing",
+          "fixtures": [
+            "if_init_scope_and_else"
           ]
         },
         {

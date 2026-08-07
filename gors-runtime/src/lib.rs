@@ -17,7 +17,9 @@ mod interface_containers;
 mod interfaces;
 mod printing;
 mod slice_identity;
+mod slice_values;
 mod string_runes;
+mod string_slices;
 
 pub use byte_ranges::{
     go_slice_u8_index, go_slice_u8_len, go_slice_u8_range, go_string_index, go_string_range,
@@ -46,22 +48,28 @@ pub use interface_containers::{
 };
 pub use interfaces::{
     GoInterface, GoPanicPayload, go_interface_box_aggregate, go_interface_box_bool,
-    go_interface_box_comparable_aggregate, go_interface_box_f64, go_interface_box_go_string,
-    go_interface_box_i64, go_interface_box_pointer_struct_i64, go_interface_box_struct_i64,
-    go_interface_equal, go_interface_is_nil, go_interface_is_runtime_error, go_interface_is_type,
-    go_interface_nil, go_interface_struct_i64_get, go_interface_unbox_aggregate,
-    go_interface_unbox_bool, go_interface_unbox_f64, go_interface_unbox_go_string,
+    go_interface_box_comparable_aggregate, go_interface_box_f64,
+    go_interface_box_go_slice_go_string, go_interface_box_go_string, go_interface_box_i64,
+    go_interface_box_pointer_struct_i64, go_interface_box_struct_i64, go_interface_equal,
+    go_interface_is_nil, go_interface_is_runtime_error, go_interface_is_type, go_interface_nil,
+    go_interface_struct_i64_get, go_interface_unbox_aggregate, go_interface_unbox_bool,
+    go_interface_unbox_f64, go_interface_unbox_go_slice_go_string, go_interface_unbox_go_string,
     go_interface_unbox_i64, go_interface_unbox_pointer_struct_i64, go_panic_payload_to_interface,
     panic_go_interface,
 };
 pub use printing::{print_bool, print_f64, print_go_string, print_i64, print_newline, print_space};
 pub use slice_identity::{
-    go_slice_bool_is_nil, go_slice_bool_nil, go_slice_i64_is_nil, go_slice_i64_nil,
-    go_slice_u8_is_nil, go_slice_u8_nil,
+    go_slice_bool_is_nil, go_slice_bool_nil, go_slice_go_string_is_nil, go_slice_go_string_nil,
+    go_slice_i64_is_nil, go_slice_i64_nil, go_slice_u8_is_nil, go_slice_u8_nil,
 };
 pub use string_runes::{
     go_string_from_rune, go_string_from_slice_runes, go_string_range_count,
     go_string_range_index_at, go_string_range_rune_at,
+};
+pub use string_slices::{
+    GoSliceGoString, go_slice_go_string_append, go_slice_go_string_cap, go_slice_go_string_clear,
+    go_slice_go_string_copy, go_slice_go_string_index, go_slice_go_string_len,
+    go_slice_go_string_make, go_slice_go_string_range, go_slice_go_string_set,
 };
 
 use std::cmp::Ordering;
@@ -122,74 +130,25 @@ pub fn go_slice_i64_from_static(values: &'static [GoInt]) -> GoSliceI64 {
 /// `make([]int, len)`.
 #[must_use]
 pub fn go_slice_i64_make(len: GoInt, capacity: GoInt) -> GoSliceI64 {
-    let Ok(len) = usize::try_from(len) else {
-        slice_bounds_out_of_range();
-    };
-    let capacity = if capacity == -1 {
-        len
-    } else {
-        usize::try_from(capacity).unwrap_or_else(|_| slice_bounds_out_of_range())
-    };
-    if len > capacity {
-        slice_bounds_out_of_range();
-    }
-    GoSliceI64 {
-        storage: Arc::new(RwLock::new(vec![0; capacity])),
-        start: 0,
-        len,
-        capacity,
-        nil: false,
-    }
+    slice_values::make(len, capacity)
 }
 
 /// Return a `[]int` length as the compiler's fixed-width Go `int`.
 #[must_use]
 pub fn go_slice_i64_len(slice: GoSliceI64) -> GoInt {
-    GoInt::try_from(slice.len).unwrap_or_else(|_| slice_bounds_out_of_range())
+    slice_values::len(&slice)
 }
 
 /// Return a `[]int` capacity as the compiler's fixed-width Go `int`.
 #[must_use]
 pub fn go_slice_i64_cap(slice: GoSliceI64) -> GoInt {
-    GoInt::try_from(slice.capacity).unwrap_or_else(|_| slice_bounds_out_of_range())
+    slice_values::cap(&slice)
 }
 
 /// Append one element, reusing the backing array exactly when capacity permits.
 #[must_use]
-#[allow(clippy::indexing_slicing)] // The slice header invariants validate the write position.
-pub fn go_slice_i64_append(mut slice: GoSliceI64, value: GoInt) -> GoSliceI64 {
-    if slice.len < slice.capacity {
-        let absolute = slice.start.saturating_add(slice.len);
-        let mut storage = slice
-            .storage
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        storage[absolute] = value;
-        drop(storage);
-        slice.len = slice.len.saturating_add(1);
-        return slice;
-    }
-
-    let required = slice.len.saturating_add(1);
-    let capacity = slice.capacity.saturating_mul(2).max(required).max(1);
-    let mut values = Vec::with_capacity(capacity);
-    {
-        let storage = slice
-            .storage
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let end = slice.start.saturating_add(slice.len);
-        values.extend_from_slice(&storage[slice.start..end]);
-    }
-    values.push(value);
-    values.resize(capacity, 0);
-    GoSliceI64 {
-        storage: Arc::new(RwLock::new(values)),
-        start: 0,
-        len: required,
-        capacity,
-        nil: false,
-    }
+pub fn go_slice_i64_append(slice: GoSliceI64, value: GoInt) -> GoSliceI64 {
+    slice_values::append(slice, value)
 }
 
 /// Construct a `[]byte` value from compiler-emitted literal bytes.
@@ -250,43 +209,12 @@ pub fn go_slice_u8_copy_string(destination: GoSliceU8, source: GoString) -> GoIn
 
 /// Copy integer elements between slices with Go's overlap-safe semantics.
 pub fn go_slice_i64_copy(destination: GoSliceI64, source: GoSliceI64) -> GoInt {
-    let count = destination.len.min(source.len);
-    let source_values = {
-        let storage = source
-            .storage
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let end = source.start.saturating_add(count);
-        storage
-            .get(source.start..end)
-            .unwrap_or_else(|| slice_bounds_out_of_range())
-            .to_vec()
-    };
-    let mut storage = destination
-        .storage
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let end = destination.start.saturating_add(count);
-    let target = storage
-        .get_mut(destination.start..end)
-        .unwrap_or_else(|| slice_bounds_out_of_range());
-    target.copy_from_slice(&source_values);
-    drop(storage);
-    GoInt::try_from(count).unwrap_or_else(|_| slice_bounds_out_of_range())
+    slice_values::copy(&destination, &source)
 }
 
 /// Assign the element zero value throughout an integer slice.
 pub fn go_slice_i64_clear(slice: GoSliceI64) {
-    let mut storage = slice
-        .storage
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let end = slice.start.saturating_add(slice.len);
-    let Some(values) = storage.get_mut(slice.start..end) else {
-        slice_bounds_out_of_range();
-    };
-    values.fill(0);
-    drop(storage);
+    slice_values::clear(&slice);
 }
 
 /// Convert the visible bytes of a byte slice into an immutable Go string.
@@ -351,13 +279,7 @@ fn append_u8_values(mut slice: GoSliceU8, values: &[u8]) -> GoSliceU8 {
 #[must_use]
 #[allow(clippy::indexing_slicing)] // The explicit Go bounds check validates this index.
 pub fn go_slice_i64_index(slice: GoSliceI64, index: GoInt) -> GoInt {
-    let index = slice_index(index, slice.len);
-    let absolute = slice.start.saturating_add(index);
-    let storage = slice
-        .storage
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    storage[absolute]
+    slice_values::index(&slice, index)
 }
 
 /// Produce a two- or three-index subslice while retaining the backing array.
@@ -388,13 +310,7 @@ fn go_slice_range<T>(slice: GoSlice<T>, low: GoInt, high: GoInt, max: GoInt) -> 
 /// Assign one `[]int` element through its shared backing array.
 #[allow(clippy::indexing_slicing)] // The explicit Go bounds check validates this index.
 pub fn go_slice_i64_set(slice: GoSliceI64, index: GoInt, value: GoInt) {
-    let index = slice_index(index, slice.len);
-    let absolute = slice.start.saturating_add(index);
-    let mut storage = slice
-        .storage
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    storage[absolute] = value;
+    slice_values::set(&slice, index, value);
 }
 
 /// Read one `[]bool` element with Go bounds checking.
