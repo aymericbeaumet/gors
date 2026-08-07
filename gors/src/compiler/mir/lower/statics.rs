@@ -47,6 +47,36 @@ impl FunctionLowerer {
                 self.push_statement(make_statement(result, value, provenance))?;
                 Ok(Operand::Read(result))
             }
+            StaticValue::Array(values) => {
+                let Ty::Array(length, element) = ty.underlying() else {
+                    return Err(Diagnostic::backend(
+                        "static array value has a non-array Go type",
+                    ));
+                };
+                if u64::try_from(values.len()).ok() != Some(*length) {
+                    return Err(Diagnostic::backend(
+                        "static array value length changed before MIR lowering",
+                    ));
+                }
+                let mut operands = Vec::with_capacity(values.len());
+                for value in values {
+                    operands.push(self.lower_static_value(value, element, source)?);
+                }
+                let result = Place {
+                    local: self.new_temp(ty.clone()),
+                };
+                let provenance = Provenance::Source(source);
+                let value = make_rvalue(
+                    RvalueKind::ArrayLiteral {
+                        elements: operands,
+                        ty: ty.clone(),
+                    },
+                    crate::compiler::hir::Effects::default(),
+                    provenance.clone(),
+                );
+                self.push_statement(make_statement(result, value, provenance))?;
+                Ok(Operand::Read(result))
+            }
             StaticValue::Slice(values) => {
                 let Ty::Slice(element) = ty.underlying() else {
                     return Err(Diagnostic::backend(

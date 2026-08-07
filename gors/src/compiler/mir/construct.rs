@@ -80,7 +80,7 @@ pub(super) fn make_rvalue(
         RvalueKind::StructSet {
             structure, value, ..
         } => operand_reads(structure) || operand_reads(value),
-        RvalueKind::RecoverCompareNil { .. } => true,
+        RvalueKind::Recover { .. } => true,
         RvalueKind::SliceLiteralI64 { .. }
         | RvalueKind::SliceLiteralU8(_)
         | RvalueKind::SliceLiteralBool(_)

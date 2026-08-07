@@ -2,6 +2,7 @@
 
 mod aggregates;
 mod control;
+mod printing;
 mod provenance;
 
 use super::type_lowering::lower_type;
@@ -15,6 +16,7 @@ use crate::compiler::types::{
 use gors_runtime_abi::{PrimitiveOp, RuntimeOp};
 
 use control::{finish_terminator, lower_panic_edge};
+use printing::lower_print_call;
 use provenance::lower_provenance;
 
 #[cfg(test)]
@@ -44,6 +46,17 @@ pub(super) fn lower_function(
     let panic_cleanup = function.panic_cleanup.map(|cleanup| out::PanicCleanup {
         entry: cleanup.entry,
         active: cleanup.active,
+        recovered: cleanup.recovered,
+        capture: out::PanicPayloadCapture {
+            operation: RuntimeOp::GoPanicPayloadToInterface,
+            effects: out::runtime_effects(RuntimeOp::GoPanicPayloadToInterface),
+            provenance: out::Provenance::Synthetic(out::SyntheticOrigin::PanicCleanupDispatch),
+        },
+        rethrow: out::PanicPayloadRethrow {
+            operation: RuntimeOp::PanicGoInterface,
+            effects: out::runtime_effects(RuntimeOp::PanicGoInterface),
+            provenance: out::Provenance::Synthetic(out::SyntheticOrigin::PanicCleanupDispatch),
+        },
     });
     let locals = function
         .locals
@@ -219,24 +232,36 @@ fn lower_rvalue(rvalue: mir::Rvalue, locals: &[out::LocalDecl]) -> Result<out::R
         mir::RvalueKind::Unary { op, operand, ty } => {
             let operand_ty = mir_operand_type(&operand, locals)?;
             let operand = lower_operand(operand, locals)?;
-            match lower_unary_op(op, operand_ty, lower_type(&ty)?)? {
+            match lower_unary_op(op, &ty, operand_ty, lower_type(&ty)?)? {
                 Some(op) => out::RvalueKind::Unary { op, operand },
                 None => out::RvalueKind::Use(operand),
             }
         }
         mir::RvalueKind::Conversion { operand, from, ty } => {
-            let from = lower_type(&from)?;
-            let to = lower_type(&ty)?;
-            if from != to {
+            let operation = match (from.underlying(), ty.underlying()) {
+                (Ty::Float(_), Ty::Float(FloatTy::Float32)) => {
+                    Some(out::ValueOp::Primitive(PrimitiveOp::FloatRound32))
+                }
+                _ => None,
+            };
+            let from_representation = lower_type(&from)?;
+            let to_representation = lower_type(&ty)?;
+            if from_representation != to_representation {
                 return Err(Diagnostic::backend(format!(
-                    "representation-preserving conversion changed Rust type from {from:?} to {to:?}"
+                    "representation-preserving conversion changed Rust type from {from_representation:?} to {to_representation:?}"
                 )));
             }
-            out::RvalueKind::Use(lower_operand(operand, locals)?)
+            let operand = lower_operand(operand, locals)?;
+            if let Some(op) = operation {
+                out::RvalueKind::Unary { op, operand }
+            } else {
+                out::RvalueKind::Use(operand)
+            }
         }
-        mir::RvalueKind::RecoverCompareNil { state, equal } => out::RvalueKind::RecoverCompareNil {
+        mir::RvalueKind::Recover { state, value } => out::RvalueKind::Recover {
             state: lower_place(state),
-            equal,
+            value: lower_operand(value, locals)?,
+            nil: RuntimeOp::GoInterfaceNil,
         },
         mir::RvalueKind::Binary {
             op,
@@ -262,7 +287,7 @@ fn lower_rvalue(rvalue: mir::Rvalue, locals: &[out::LocalDecl]) -> Result<out::R
                 }
             } else {
                 out::RvalueKind::Binary {
-                    op: lower_binary_op(op, left_ty, right_ty, result_ty)?,
+                    op: lower_binary_op(op, &ty, left_ty, right_ty, result_ty)?,
                     left: lower_operand(left, locals)?,
                     right: lower_operand(right, locals)?,
                 }
@@ -369,6 +394,7 @@ fn lower_terminator(
                 | hir::Builtin::AggregateSliceSetTagged
                 | hir::Builtin::SnapshotFunctionSliceAppend
                 | hir::Builtin::SnapshotFunctionSliceCall
+                | hir::Builtin::StringFromRune
                 | hir::Builtin::StringFromSliceU8
                 | hir::Builtin::StringFromSliceRunes
                 | hir::Builtin::StringLen
@@ -410,17 +436,23 @@ fn lower_terminator(
                 | hir::Builtin::AggregatePointerIsNil
                 | hir::Builtin::InterfaceNil
                 | hir::Builtin::InterfaceBoxBool
+                | hir::Builtin::InterfaceBoxF64
                 | hir::Builtin::InterfaceBoxI64
                 | hir::Builtin::InterfaceBoxGoString
                 | hir::Builtin::InterfaceBoxStructI64
                 | hir::Builtin::InterfaceBoxPointerStructI64
                 | hir::Builtin::InterfaceBoxAggregate
+                | hir::Builtin::InterfaceBoxComparableAggregate
+                | hir::Builtin::InterfaceEqual
                 | hir::Builtin::InterfaceIsNil
                 | hir::Builtin::InterfaceIsType
+                | hir::Builtin::InterfaceIsRuntimeError
                 | hir::Builtin::InterfaceAssert
                 | hir::Builtin::InterfaceSatisfies
+                | hir::Builtin::InterfaceSatisfiesRuntimeError
                 | hir::Builtin::InterfaceSatisfiesNonNil
                 | hir::Builtin::InterfaceUnboxBool
+                | hir::Builtin::InterfaceUnboxF64
                 | hir::Builtin::InterfaceUnboxI64
                 | hir::Builtin::InterfaceUnboxGoString
                 | hir::Builtin::InterfaceStructI64Get
@@ -475,6 +507,7 @@ fn lower_terminator(
                     hir::Builtin::AggregateSliceSetTagged => RuntimeOp::GoSliceInterfaceSet,
                     hir::Builtin::SnapshotFunctionSliceAppend => RuntimeOp::GoSliceI64Append,
                     hir::Builtin::SnapshotFunctionSliceCall => RuntimeOp::GoSliceI64Index,
+                    hir::Builtin::StringFromRune => RuntimeOp::GoStringFromRune,
                     hir::Builtin::StringFromSliceU8 => RuntimeOp::GoStringFromSliceU8,
                     hir::Builtin::StringFromSliceRunes => RuntimeOp::GoStringFromSliceRunes,
                     hir::Builtin::StringLen => RuntimeOp::GoStringLen,
@@ -515,6 +548,7 @@ fn lower_terminator(
                     hir::Builtin::AggregatePointerIsNil => RuntimeOp::GoInterfaceIsNil,
                     hir::Builtin::InterfaceNil => RuntimeOp::GoInterfaceNil,
                     hir::Builtin::InterfaceBoxBool => RuntimeOp::GoInterfaceBoxBool,
+                    hir::Builtin::InterfaceBoxF64 => RuntimeOp::GoInterfaceBoxF64,
                     hir::Builtin::InterfaceBoxI64 => RuntimeOp::GoInterfaceBoxI64,
                     hir::Builtin::InterfaceBoxGoString => RuntimeOp::GoInterfaceBoxGoString,
                     hir::Builtin::InterfaceBoxStructI64 => RuntimeOp::GoInterfaceBoxStructI64,
@@ -522,9 +556,15 @@ fn lower_terminator(
                         RuntimeOp::GoInterfaceBoxPointerStructI64
                     }
                     hir::Builtin::InterfaceBoxAggregate => RuntimeOp::GoInterfaceBoxAggregate,
+                    hir::Builtin::InterfaceBoxComparableAggregate => {
+                        RuntimeOp::GoInterfaceBoxComparableAggregate
+                    }
+                    hir::Builtin::InterfaceEqual => RuntimeOp::GoInterfaceEqual,
                     hir::Builtin::InterfaceIsNil => RuntimeOp::GoInterfaceIsNil,
                     hir::Builtin::InterfaceIsType => RuntimeOp::GoInterfaceIsType,
+                    hir::Builtin::InterfaceIsRuntimeError => RuntimeOp::GoInterfaceIsRuntimeError,
                     hir::Builtin::InterfaceUnboxBool => RuntimeOp::GoInterfaceUnboxBool,
+                    hir::Builtin::InterfaceUnboxF64 => RuntimeOp::GoInterfaceUnboxF64,
                     hir::Builtin::InterfaceUnboxI64 => RuntimeOp::GoInterfaceUnboxI64,
                     hir::Builtin::InterfaceUnboxGoString => RuntimeOp::GoInterfaceUnboxGoString,
                     hir::Builtin::InterfaceStructI64Get => RuntimeOp::GoInterfaceStructI64Get,
@@ -558,6 +598,11 @@ fn lower_terminator(
                     hir::Builtin::InterfaceSatisfies => {
                         return Err(Diagnostic::backend(
                             "interface satisfaction assertion survived MIR expansion",
+                        ));
+                    }
+                    hir::Builtin::InterfaceSatisfiesRuntimeError => {
+                        return Err(Diagnostic::backend(
+                            "runtime-error interface satisfaction survived MIR expansion",
                         ));
                     }
                     hir::Builtin::InterfaceSatisfiesNonNil => {
@@ -614,6 +659,7 @@ fn lower_panic_call(
         out::RustType::Bool => RuntimeOp::PanicBool,
         out::RustType::I64 => RuntimeOp::PanicI64,
         out::RustType::GoString => RuntimeOp::PanicGoString,
+        out::RustType::GoInterface => RuntimeOp::PanicGoInterface,
         out::RustType::F64
         | out::RustType::Complex128
         | out::RustType::ArrayI64(_)
@@ -631,7 +677,6 @@ fn lower_panic_call(
         | out::RustType::GoMapStringInterface
         | out::RustType::GoPointerI64
         | out::RustType::GoPointerStructI64
-        | out::RustType::GoInterface
         | out::RustType::GoChannelI64 => {
             return Err(Diagnostic::backend(
                 "unsupported numeric panic payload reached Rust lowering",
@@ -649,136 +694,6 @@ fn lower_panic_call(
             args: vec![lower_operand(argument, locals)?],
             destinations: Vec::new(),
             next,
-        },
-        provenance,
-        panic,
-    ))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn lower_print_call(
-    builtin: hir::Builtin,
-    args: Vec<mir::Operand>,
-    destinations: Vec<mir::Place>,
-    next: out::BasicBlockId,
-    provenance: out::Provenance,
-    locals: &[out::LocalDecl],
-    original_block_count: usize,
-    extra_blocks: &mut Vec<out::BasicBlock>,
-    panic: mir::PanicEdge,
-) -> Result<out::Terminator, Diagnostic> {
-    if !destinations.is_empty() {
-        return Err(Diagnostic::backend(
-            "Go print builtin unexpectedly has a result destination",
-        ));
-    }
-
-    let argument_types = args
-        .iter()
-        .map(|argument| mir_operand_type(argument, locals))
-        .collect::<Result<Vec<_>, _>>()?;
-    let newline = builtin == hir::Builtin::Println;
-    let mut calls = Vec::with_capacity(
-        args.len()
-            .saturating_mul(usize::from(newline).saturating_add(1))
-            .saturating_add(usize::from(newline)),
-    );
-    let mut arguments = args.into_iter().zip(argument_types).peekable();
-    while let Some((argument, ty)) = arguments.next() {
-        let operation = match ty {
-            out::RustType::Bool => RuntimeOp::PrintBool,
-            out::RustType::I64 => RuntimeOp::PrintI64,
-            out::RustType::GoString => RuntimeOp::PrintGoString,
-            out::RustType::F64
-            | out::RustType::Complex128
-            | out::RustType::ArrayI64(_)
-            | out::RustType::ArrayBool(_)
-            | out::RustType::ArrayF64(_)
-            | out::RustType::ArrayGoString(_)
-            | out::RustType::ArrayGoPointerStructI64(_)
-            | out::RustType::Struct(_)
-            | out::RustType::StructI64(_)
-            | out::RustType::GoSliceI64
-            | out::RustType::GoSliceU8
-            | out::RustType::GoSliceBool
-            | out::RustType::GoSliceInterface
-            | out::RustType::GoMapStringI64
-            | out::RustType::GoMapStringInterface
-            | out::RustType::GoPointerI64
-            | out::RustType::GoPointerStructI64
-            | out::RustType::GoInterface
-            | out::RustType::GoChannelI64 => {
-                return Err(Diagnostic::backend(
-                    "numeric print operation reached lowering without a runtime ABI operation",
-                ));
-            }
-            out::RustType::Unit => {
-                return Err(Diagnostic::backend(
-                    "unit value reached Rust print representation lowering",
-                ));
-            }
-        };
-        calls.push((operation, vec![lower_operand(argument, locals)?]));
-        if newline && arguments.peek().is_some() {
-            calls.push((RuntimeOp::PrintSpace, Vec::new()));
-        }
-    }
-    if newline {
-        calls.push((RuntimeOp::PrintNewline, Vec::new()));
-    }
-    if calls.is_empty() {
-        return Ok(finish_terminator(
-            out::TerminatorKind::Goto(next),
-            provenance,
-            panic,
-        ));
-    }
-
-    let tail_count = calls.len().saturating_sub(1);
-    let mut tail_ids = Vec::with_capacity(tail_count);
-    for offset in 0..tail_count {
-        let index = original_block_count
-            .checked_add(extra_blocks.len())
-            .and_then(|index| index.checked_add(offset))
-            .ok_or_else(|| Diagnostic::backend("Rust IR block count overflow"))?;
-        let index = u32::try_from(index)
-            .map_err(|_| Diagnostic::backend("Rust IR block count exceeds u32"))?;
-        tail_ids.push(out::BasicBlockId(index));
-    }
-
-    let mut calls = calls.into_iter();
-    let (first_operation, first_args) = calls
-        .next()
-        .ok_or_else(|| Diagnostic::backend("missing lowered Rust runtime call"))?;
-    let first_next = tail_ids.first().copied().unwrap_or(next);
-    for (index, ((operation, args), id)) in calls.zip(tail_ids.iter().copied()).enumerate() {
-        let call_next = tail_ids
-            .get(index.saturating_add(1))
-            .copied()
-            .unwrap_or(next);
-        extra_blocks.push(out::BasicBlock {
-            id,
-            provenance: provenance.clone(),
-            statements: Vec::new(),
-            terminator: finish_terminator(
-                out::TerminatorKind::Call {
-                    target: out::CallTarget::Runtime(operation),
-                    args,
-                    destinations: Vec::new(),
-                    next: call_next,
-                },
-                provenance.clone(),
-                panic,
-            ),
-        });
-    }
-
-    Ok(finish_terminator(
-        out::TerminatorKind::Call {
-            target: out::CallTarget::Runtime(first_operation),
-            args: first_args,
-            destinations: Vec::new(),
-            next: first_next,
         },
         provenance,
         panic,
@@ -822,14 +737,16 @@ fn lower_constant(value: ConstValue, ty: &Ty) -> Result<out::Constant, Diagnosti
             op: RuntimeOp::GoStringFromStatic,
             bytes,
         }),
-        (ConstValue::Float(value), Ty::Float(FloatTy::Float64)) => parse_go_float(&value)
+        (ConstValue::Float(value), Ty::Float(float_ty)) => parse_go_float(&value)
+            .map(|value| lower_float_constant(value, *float_ty))
             .map(f64::to_bits)
             .map(out::Constant::F64)
-            .ok_or_else(|| Diagnostic::backend(format!("invalid Go float64 constant: {value}"))),
-        (ConstValue::Int(value), Ty::Float(FloatTy::Float64)) => value
+            .ok_or_else(|| Diagnostic::backend(format!("invalid Go float constant: {value}"))),
+        (ConstValue::Int(value), Ty::Float(float_ty)) => value
             .parse::<f64>()
             .ok()
             .filter(|value| value.is_finite())
+            .map(|value| lower_float_constant(value, *float_ty))
             .map(f64::to_bits)
             .map(out::Constant::F64)
             .ok_or_else(|| {
@@ -871,17 +788,30 @@ fn lower_constant(value: ConstValue, ty: &Ty) -> Result<out::Constant, Diagnosti
     }
 }
 
+fn lower_float_constant(value: f64, ty: FloatTy) -> f64 {
+    match ty {
+        FloatTy::Float32 => f64::from(value as f32),
+        FloatTy::Float64 => value,
+    }
+}
+
 fn lower_unary_op(
     op: hir::UnaryOp,
+    go_result: &Ty,
     operand: out::RustType,
     result: out::RustType,
 ) -> Result<Option<out::ValueOp>, Diagnostic> {
+    let is_int32 = matches!(go_result.underlying(), Ty::Int(IntTy::Int32));
     let lowered = match (op, operand, result) {
         (hir::UnaryOp::Positive, out::RustType::I64, out::RustType::I64) => None,
         (hir::UnaryOp::Positive, out::RustType::F64, out::RustType::F64)
         | (hir::UnaryOp::Positive, out::RustType::Complex128, out::RustType::Complex128) => None,
         (hir::UnaryOp::Negative, out::RustType::I64, out::RustType::I64) => {
-            Some(out::ValueOp::Primitive(PrimitiveOp::IntWrappingNeg))
+            Some(out::ValueOp::Primitive(if is_int32 {
+                PrimitiveOp::Int32WrappingNeg
+            } else {
+                PrimitiveOp::IntWrappingNeg
+            }))
         }
         (hir::UnaryOp::Negative, out::RustType::F64, out::RustType::F64) => {
             Some(out::ValueOp::Primitive(PrimitiveOp::FloatNeg))
@@ -912,6 +842,7 @@ fn lower_unary_op(
 
 fn lower_binary_op(
     op: hir::BinaryOp,
+    go_result: &Ty,
     left: out::RustType,
     right: out::RustType,
     result: out::RustType,
@@ -919,7 +850,9 @@ fn lower_binary_op(
     use hir::BinaryOp as Go;
     use out::RustType::{Bool, Complex128, F64, GoString, I64};
     use out::ValueOp::{Primitive, Runtime};
+    let is_int32 = matches!(go_result.underlying(), Ty::Int(IntTy::Int32));
     let lowered = match (op, left, right, result) {
+        (Go::Add, I64, I64, I64) if is_int32 => Primitive(PrimitiveOp::Int32WrappingAdd),
         (Go::Add, I64, I64, I64) => Primitive(PrimitiveOp::IntWrappingAdd),
         (Go::Sub, I64, I64, I64) => Primitive(PrimitiveOp::IntWrappingSub),
         (Go::Mul, I64, I64, I64) => Primitive(PrimitiveOp::IntWrappingMul),

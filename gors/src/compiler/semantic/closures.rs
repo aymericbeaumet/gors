@@ -110,6 +110,52 @@ impl FunctionLowerer {
         if let (
             [
                 ExprSyntax {
+                    kind: ExprSyntaxKind::Ident(binding),
+                    ..
+                },
+            ],
+            [instantiation],
+        ) = (left, right)
+        {
+            let explicit = match &instantiation.kind {
+                ExprSyntaxKind::Index { base, index } => {
+                    let ExprSyntaxKind::Ident(name) = &base.kind else {
+                        return None;
+                    };
+                    self.generic_functions
+                        .contains_key(name.name.as_ref())
+                        .then_some((name.name.as_ref(), std::slice::from_ref(index.as_ref())))
+                }
+                ExprSyntaxKind::IndexList { base, indices } => {
+                    let ExprSyntaxKind::Ident(name) = &base.kind else {
+                        return None;
+                    };
+                    self.generic_functions
+                        .contains_key(name.name.as_ref())
+                        .then_some((name.name.as_ref(), indices.as_ref()))
+                }
+                _ => None,
+            };
+            if let Some((name, type_arguments)) = explicit {
+                return Some(if token == Token::DEFINE {
+                    self.lower_generic_function_binding(
+                        binding,
+                        name,
+                        type_arguments,
+                        instantiation.source,
+                        source,
+                    )
+                } else {
+                    Err(Diagnostic::unsupported(
+                        "generic function values currently require a non-escaping short declaration",
+                        source,
+                    ))
+                });
+            }
+        }
+        if let (
+            [
+                ExprSyntax {
                     kind: ExprSyntaxKind::Ident(name),
                     ..
                 },

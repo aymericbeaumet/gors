@@ -3,13 +3,12 @@
 use super::FunctionLowerer;
 use super::expression_lower::slice_runtime_effects;
 use super::expressions::{coerce_expr, is_assignable};
-use super::lower_type;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::NodeId;
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{ExprSyntax, ExprSyntaxKind};
-use crate::compiler::types::{IntTy, Ty, UintTy};
+use crate::compiler::types::{FloatTy, IntTy, Ty, UintTy};
 
 impl FunctionLowerer {
     #[allow(clippy::too_many_arguments)]
@@ -34,7 +33,7 @@ impl FunctionLowerer {
                 source,
             ));
         };
-        let target = lower_type(callee, &self.type_aliases, source)?;
+        let target = self.lower_scoped_type(callee, source)?;
         if is_nil_identifier(argument) {
             if !is_nilable_type(&target) {
                 return Err(Diagnostic::semantic(
@@ -62,7 +61,24 @@ impl FunctionLowerer {
         let mut argument = self.lower_expr(argument, None)?;
         let byte_slice = Ty::Slice(Box::new(Ty::Uint(UintTy::Uint8)));
         let rune_slice = Ty::Slice(Box::new(Ty::Int(IntTy::Int32)));
-        let mut result = if target == Ty::String && argument.ty == byte_slice {
+        let mut result = if target == Ty::String && argument.ty.is_integer() {
+            let default_ty = argument.ty.default_typed();
+            if argument.ty != default_ty {
+                coerce_expr(&mut argument, &default_ty, source)?;
+            }
+            let effects = slice_runtime_effects(&[&argument], false, true, false);
+            hir::Expr {
+                node,
+                kind: hir::ExprKind::Call {
+                    callee: hir::Callee::Builtin(hir::Builtin::StringFromRune),
+                    args: vec![argument],
+                },
+                ty: Ty::String,
+                category: hir::ValueCategory::Value,
+                effects,
+                source,
+            }
+        } else if target == Ty::String && argument.ty == byte_slice {
             let effects = slice_runtime_effects(&[&argument], false, true, false);
             hir::Expr {
                 node,
@@ -123,6 +139,7 @@ impl FunctionLowerer {
             argument
         } else if argument.ty.underlying() == target.underlying()
             || is_lossless_integer_conversion(&argument.ty, &target)
+            || is_float_conversion(&argument.ty, &target)
         {
             let effects = argument.effects;
             hir::Expr {
@@ -176,6 +193,16 @@ fn is_lossless_integer_conversion(from: &Ty, to: &Ty) -> bool {
         (
             Ty::Int(IntTy::Int32) | Ty::Uint(UintTy::Uint8),
             Ty::Int(IntTy::Int)
+        )
+    )
+}
+
+fn is_float_conversion(from: &Ty, to: &Ty) -> bool {
+    matches!(
+        (from.underlying(), to.underlying()),
+        (
+            Ty::Float(FloatTy::Float32 | FloatTy::Float64),
+            Ty::Float(FloatTy::Float32 | FloatTy::Float64)
         )
     )
 }

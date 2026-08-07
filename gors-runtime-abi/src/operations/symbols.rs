@@ -122,6 +122,10 @@ impl RuntimeOp {
             Self::GoInterfaceUnboxF64 => "go_interface_unbox_f64",
             Self::GoInterfaceEqual => "go_interface_equal",
             Self::GoInterfaceBoxComparableAggregate => "go_interface_box_comparable_aggregate",
+            Self::GoStringFromRune => "go_string_from_rune",
+            Self::PanicGoInterface => "panic_go_interface",
+            Self::GoPanicPayloadToInterface => "go_panic_payload_to_interface",
+            Self::GoInterfaceIsRuntimeError => "go_interface_is_runtime_error",
         }
     }
 }

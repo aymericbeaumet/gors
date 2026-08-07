@@ -7,7 +7,7 @@ use super::pointers::int_constant_operand;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::provenance::SourceRef;
-use crate::compiler::types::{ConstValue, IntTy, Ty};
+use crate::compiler::types::{ConstValue, FloatTy, IntTy, Ty};
 
 impl FunctionLowerer {
     pub(super) fn lower_interface_call_expr(
@@ -209,6 +209,7 @@ impl FunctionLowerer {
         arguments: &[hir::Expr],
         destinations: Vec<Place>,
         implied: bool,
+        runtime_error: bool,
         source: SourceRef,
     ) -> Result<(), Diagnostic> {
         let [value_destination, ok_destination] = destinations.as_slice() else {
@@ -230,6 +231,7 @@ impl FunctionLowerer {
             interface.clone(),
             &identities,
             implied,
+            runtime_error,
             source,
         )?;
 
@@ -293,10 +295,17 @@ impl FunctionLowerer {
         &mut self,
         arguments: &[hir::Expr],
         implied: bool,
+        runtime_error: bool,
         source: SourceRef,
     ) -> Result<Operand, Diagnostic> {
         let (interface, _, identities) = self.lower_interface_satisfaction_input(arguments)?;
-        self.lower_interface_satisfaction_condition(interface, &identities, implied, source)
+        self.lower_interface_satisfaction_condition(
+            interface,
+            &identities,
+            implied,
+            runtime_error,
+            source,
+        )
     }
 
     fn lower_interface_satisfaction_input(
@@ -339,12 +348,13 @@ impl FunctionLowerer {
         interface: Operand,
         identities: &[Vec<u8>],
         implied: bool,
+        runtime_error: bool,
         source: SourceRef,
     ) -> Result<Operand, Diagnostic> {
         if implied {
-            if !identities.is_empty() {
+            if runtime_error || !identities.is_empty() {
                 return Err(Diagnostic::backend(
-                    "statically implied interface satisfaction retained dynamic identities",
+                    "statically implied interface satisfaction retained dynamic cases",
                 ));
             }
             let is_nil = Place {
@@ -372,7 +382,20 @@ impl FunctionLowerer {
             self.push_statement(make_statement(result, value, provenance))?;
             return Ok(Operand::Read(result));
         }
-        let mut condition = None;
+        let mut condition = if runtime_error {
+            let matched = Place {
+                local: self.new_temp(Ty::Bool),
+            };
+            self.emit_map_call(
+                hir::Builtin::InterfaceIsRuntimeError,
+                vec![interface.clone()],
+                vec![matched],
+                source,
+            )?;
+            Some(Operand::Read(matched))
+        } else {
+            None
+        };
         for identity in identities {
             let matched = Place {
                 local: self.new_temp(Ty::Bool),
@@ -466,6 +489,13 @@ impl FunctionLowerer {
                 ty.clone(),
                 source,
             ),
+            Ty::Float(FloatTy::Float32 | FloatTy::Float64) => self.unbox_interface_scalar(
+                hir::Builtin::InterfaceUnboxF64,
+                interface,
+                identity,
+                ty.clone(),
+                source,
+            ),
             Ty::Int(IntTy::Int) => self.unbox_interface_scalar(
                 hir::Builtin::InterfaceUnboxI64,
                 interface,
@@ -524,6 +554,9 @@ impl FunctionLowerer {
         let identity = Operand::Constant(ConstValue::String(type_identity.to_vec()), Ty::String);
         let (builtin, payload) = match value_ty.underlying() {
             Ty::Bool => (hir::Builtin::InterfaceBoxBool, value_operand),
+            Ty::Float(FloatTy::Float32 | FloatTy::Float64) => {
+                (hir::Builtin::InterfaceBoxF64, value_operand)
+            }
             Ty::Int(IntTy::Int) => (hir::Builtin::InterfaceBoxI64, value_operand),
             Ty::String => (hir::Builtin::InterfaceBoxGoString, value_operand),
             Ty::Struct(_) if value_ty.bootstrap_i64_struct_fields().is_some() => (
@@ -533,10 +566,17 @@ impl FunctionLowerer {
             Ty::Slice(element) if element.uses_interface_aggregate_representation() => {
                 (hir::Builtin::InterfaceBoxAggregate, value_operand)
             }
-            Ty::Struct(_) if value_ty.interface_aggregate_struct_fields().is_some() => (
-                hir::Builtin::InterfaceBoxAggregate,
-                self.snapshot_interface_aggregate_struct(value_operand, value_ty, source)?,
-            ),
+            Ty::Struct(_) if value_ty.interface_aggregate_struct_fields().is_some() => {
+                let builtin = if value_ty.is_go_comparable() {
+                    hir::Builtin::InterfaceBoxComparableAggregate
+                } else {
+                    hir::Builtin::InterfaceBoxAggregate
+                };
+                (
+                    builtin,
+                    self.snapshot_interface_aggregate_struct(value_operand, value_ty, source)?,
+                )
+            }
             Ty::Pointer(_) if value_ty.bootstrap_i64_struct_pointer_fields().is_some() => {
                 (hir::Builtin::InterfaceBoxPointerStructI64, value_operand)
             }

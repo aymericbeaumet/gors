@@ -166,6 +166,8 @@ pub(super) fn fold_constant_binary(
             hir::BinaryOp::LessEqual => ConstValue::Bool(left <= right),
             hir::BinaryOp::Greater => ConstValue::Bool(left > right),
             hir::BinaryOp::GreaterEqual => ConstValue::Bool(left >= right),
+            hir::BinaryOp::Min => ConstValue::String(left.min(right).clone()),
+            hir::BinaryOp::Max => ConstValue::String(left.max(right).clone()),
             _ => return Ok(None),
         },
         (ConstValue::Int(left), ConstValue::Complex { real, imag }) => {
@@ -376,10 +378,16 @@ pub(super) fn coerce_expr(
         }
         *value = value.normalized_for(expected);
     }
-    if expr.ty != *expected
-        && matches!(
-            (expr.ty.underlying(), expected.underlying()),
-            (Ty::Channel(_, actual), Ty::Channel(_, expected)) if actual == expected
+    let representation_preserving_conversion = expr.ty != *expected
+        && (expr.ty.underlying() == expected.underlying()
+            || matches!(
+                (expr.ty.underlying(), expected.underlying()),
+                (Ty::Channel(_, actual), Ty::Channel(_, expected)) if actual == expected
+            ));
+    if representation_preserving_conversion
+        && !matches!(
+            expr.kind,
+            hir::ExprKind::Constant(_) | hir::ExprKind::GlobalConstant(_, _)
         )
     {
         let value = expr.clone();
@@ -393,6 +401,11 @@ pub(super) fn coerce_expr(
 
 pub(super) fn is_assignable(actual: &Ty, expected: &Ty) -> bool {
     if same_semantic_type(actual, expected) {
+        return true;
+    }
+    if actual.underlying() == expected.underlying()
+        && (!is_defined_type(actual) || !is_defined_type(expected))
+    {
         return true;
     }
     if let Ty::Named { underlying, .. } | Ty::LocalNamed { underlying, .. } = expected
@@ -414,8 +427,17 @@ pub(super) fn is_assignable(actual: &Ty, expected: &Ty) -> bool {
         (Ty::Untyped(UntypedTy::Bool), Ty::Bool)
             | (
                 Ty::Untyped(UntypedTy::Int),
-                Ty::Untyped(UntypedTy::Float)
+                Ty::Untyped(UntypedTy::Rune)
+                    | Ty::Untyped(UntypedTy::Float)
                     | Ty::Untyped(UntypedTy::Complex)
+                    | Ty::Int(_)
+                    | Ty::Uint(_)
+                    | Ty::Float(_)
+                    | Ty::Complex(_)
+            )
+            | (
+                Ty::Untyped(UntypedTy::Rune),
+                Ty::Untyped(UntypedTy::Float | UntypedTy::Complex)
                     | Ty::Int(_)
                     | Ty::Uint(_)
                     | Ty::Float(_)
@@ -432,6 +454,10 @@ pub(super) fn is_assignable(actual: &Ty, expected: &Ty) -> bool {
             | (Ty::Untyped(UntypedTy::Complex), Ty::Complex(_))
             | (Ty::Untyped(UntypedTy::String), Ty::String)
     )
+}
+
+fn is_defined_type(ty: &Ty) -> bool {
+    matches!(ty, Ty::Named { .. } | Ty::LocalNamed { .. })
 }
 
 fn same_semantic_type(left: &Ty, right: &Ty) -> bool {
@@ -524,7 +550,7 @@ pub(super) fn validate_binary_operator(
                         crate::compiler::types::UintTy::Uint8
                             | crate::compiler::types::UintTy::Uintptr
                     )
-                    | Ty::Float(FloatTy::Float64)
+                    | Ty::Float(_)
                     | Ty::Complex(ComplexTy::Complex128)
                     | Ty::String
             ) || ty.is_bootstrap_comparable_aggregate()
@@ -539,12 +565,12 @@ pub(super) fn validate_binary_operator(
                 | Ty::Uint(
                     crate::compiler::types::UintTy::Uint8 | crate::compiler::types::UintTy::Uintptr
                 )
-                | Ty::Float(FloatTy::Float64)
+                | Ty::Float(_)
                 | Ty::String
         ),
         hir::BinaryOp::Add => matches!(
             ty,
-            Ty::Int(IntTy::Int)
+            Ty::Int(IntTy::Int | IntTy::Int32)
                 | Ty::Float(FloatTy::Float64)
                 | Ty::Complex(ComplexTy::Complex128)
                 | Ty::String
@@ -554,7 +580,7 @@ pub(super) fn validate_binary_operator(
             Ty::Int(IntTy::Int) | Ty::Float(FloatTy::Float64) | Ty::Complex(ComplexTy::Complex128)
         ),
         hir::BinaryOp::Min | hir::BinaryOp::Max => {
-            matches!(ty, Ty::Int(IntTy::Int) | Ty::Float(FloatTy::Float64))
+            matches!(ty, Ty::Int(IntTy::Int) | Ty::Float(_))
         }
         hir::BinaryOp::Complex => *ty == Ty::Float(FloatTy::Float64),
         hir::BinaryOp::Rem
@@ -676,11 +702,42 @@ pub(super) fn parse_go_rune(value: &str) -> Option<u32> {
     if value.len() < 2 || !value.starts_with('\'') || !value.ends_with('\'') {
         return None;
     }
-    let bytes = parse_interpreted_bytes(&value[1..value.len() - 1])?;
-    let text = std::str::from_utf8(&bytes).ok()?;
-    let mut chars = text.chars();
+    let inner = &value[1..value.len() - 1];
+    if let Some(escaped) = inner.strip_prefix('\\') {
+        return match escaped {
+            "a" => Some(0x07),
+            "b" => Some(0x08),
+            "f" => Some(0x0c),
+            "n" => Some(u32::from(b'\n')),
+            "r" => Some(u32::from(b'\r')),
+            "t" => Some(u32::from(b'\t')),
+            "v" => Some(0x0b),
+            "\\" => Some(u32::from(b'\\')),
+            "'" => Some(u32::from(b'\'')),
+            "\"" => Some(u32::from(b'"')),
+            _ if escaped.len() == 3 && escaped.starts_with('x') => {
+                u32::from_str_radix(&escaped[1..], 16).ok()
+            }
+            _ if escaped.len() == 5 && escaped.starts_with('u') => {
+                parse_unicode_rune_escape(&escaped[1..])
+            }
+            _ if escaped.len() == 9 && escaped.starts_with('U') => {
+                parse_unicode_rune_escape(&escaped[1..])
+            }
+            _ if escaped.len() == 3 && escaped.bytes().all(|byte| matches!(byte, b'0'..=b'7')) => {
+                u32::from_str_radix(escaped, 8).ok()
+            }
+            _ => None,
+        };
+    }
+    let mut chars = inner.chars();
     let value = chars.next()? as u32;
     chars.next().is_none().then_some(value)
+}
+
+fn parse_unicode_rune_escape(digits: &str) -> Option<u32> {
+    let value = u32::from_str_radix(digits, 16).ok()?;
+    char::from_u32(value).map(u32::from)
 }
 
 fn parse_interpreted_bytes(value: &str) -> Option<Vec<u8>> {
@@ -736,4 +793,28 @@ fn push_rune_bytes(result: &mut Vec<u8>, value: u32) -> Option<()> {
     let mut bytes = [0; 4];
     result.extend_from_slice(value.encode_utf8(&mut bytes).as_bytes());
     Some(())
+}
+
+#[cfg(test)]
+mod rune_literal_tests {
+    use super::parse_go_rune;
+
+    #[test]
+    fn rune_escapes_decode_to_code_points_instead_of_utf8_bytes() {
+        assert_eq!(parse_go_rune(r"'\a'"), Some(7));
+        assert_eq!(parse_go_rune(r"'\377'"), Some(255));
+        assert_eq!(parse_go_rune(r"'\xff'"), Some(255));
+        assert_eq!(parse_go_rune(r#"'\"'"#), Some(u32::from(b'"')));
+        assert_eq!(parse_go_rune(r"'\u12e4'"), Some(0x12e4));
+        assert_eq!(parse_go_rune(r"'\U00101234'"), Some(0x10_1234));
+        assert_eq!(parse_go_rune("'ä'"), Some(0xe4));
+        assert_eq!(parse_go_rune("'本'"), Some(0x672c));
+    }
+
+    #[test]
+    fn rune_decoder_rejects_multiple_values_and_invalid_unicode() {
+        assert_eq!(parse_go_rune("'ab'"), None);
+        assert_eq!(parse_go_rune(r"'\uD800'"), None);
+        assert_eq!(parse_go_rune(r"'\U00110000'"), None);
+    }
 }

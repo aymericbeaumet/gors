@@ -113,14 +113,33 @@ pub(super) fn function_source(
 }
 
 pub(super) fn collect_constant_references(syntax: &ConstantSyntax, names: &mut BTreeSet<String>) {
+    if let Some(explicit_type) = &syntax.explicit_type {
+        collect_all_expression_names(explicit_type, names);
+    }
     if let ConstantValueSyntax::Expression(expression) = &syntax.value {
         collect_all_expression_names(expression, names);
     }
 }
 
 pub(super) fn collect_variable_references(syntax: &VariableSyntax, names: &mut BTreeSet<String>) {
+    if let Some(explicit_type) = &syntax.explicit_type {
+        collect_all_expression_names(explicit_type, names);
+    }
     if let VariableValueSyntax::Expression(expression) = &syntax.value {
         collect_all_expression_names(expression, names);
+    }
+}
+
+pub(super) fn collect_signature_type_references(
+    header: &FunctionHeaderSyntax,
+    names: &mut BTreeSet<String>,
+) {
+    if let Some(receiver) = &header.receiver {
+        collect_field_type_names(receiver, names);
+    }
+    collect_field_type_names(&header.params, names);
+    if let Some(results) = &header.results {
+        collect_field_type_names(results, names);
     }
 }
 
@@ -146,10 +165,13 @@ pub(super) fn package_references_in_body(
         range_functions: BTreeSet::new(),
     };
     if let Some(receiver) = &header.receiver {
+        collector.field_type_expressions(receiver);
         collector.bind_fields(receiver);
     }
+    collector.field_type_expressions(&header.params);
     collector.bind_fields(&header.params);
     if let Some(results) = &header.results {
+        collector.field_type_expressions(results);
         collector.bind_fields(results);
     }
     if let Some(body) = &body.block {
@@ -447,6 +469,9 @@ impl PackageReferenceCollector {
         }
         for spec in &*declaration.specs {
             // Go evaluates a ValueSpec's RHS before introducing its names.
+            if let Some(explicit_type) = &spec.explicit_type {
+                self.expression(explicit_type);
+            }
             if let Some(values) = &spec.values {
                 for value in &**values {
                     self.expression(value);
@@ -589,7 +614,7 @@ impl PackageReferenceCollector {
     }
 }
 
-fn collect_all_expression_names(expression: &ExprSyntax, names: &mut BTreeSet<String>) {
+pub(super) fn collect_all_expression_names(expression: &ExprSyntax, names: &mut BTreeSet<String>) {
     match &expression.kind {
         ExprSyntaxKind::Ident(ident) => {
             names.insert(ident.name.to_string());

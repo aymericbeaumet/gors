@@ -122,6 +122,10 @@ impl TryFrom<u16> for RuntimeOp {
             118 => Ok(Self::GoInterfaceUnboxF64),
             119 => Ok(Self::GoInterfaceEqual),
             120 => Ok(Self::GoInterfaceBoxComparableAggregate),
+            121 => Ok(Self::GoStringFromRune),
+            122 => Ok(Self::PanicGoInterface),
+            123 => Ok(Self::GoPanicPayloadToInterface),
+            124 => Ok(Self::GoInterfaceIsRuntimeError),
             unknown => Err(UnknownRuntimeOpId(unknown)),
         }
     }

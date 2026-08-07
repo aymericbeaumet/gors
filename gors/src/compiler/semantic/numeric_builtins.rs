@@ -76,7 +76,7 @@ impl FunctionLowerer {
         ensure_bootstrap_value_type(&executable_ty, source)?;
         if !matches!(
             executable_ty.underlying(),
-            Ty::Int(IntTy::Int) | Ty::Float(FloatTy::Float64)
+            Ty::Int(IntTy::Int) | Ty::Float(_) | Ty::String
         ) {
             return Err(Diagnostic::semantic(
                 format!("{name} requires ordered numeric arguments"),
@@ -116,6 +116,12 @@ impl FunctionLowerer {
                 coerce_expr(&mut result, expected, source)?;
             }
             return Ok(result);
+        }
+        if executable_ty == Ty::String {
+            return Err(Diagnostic::unsupported(
+                "runtime string min/max is not yet supported",
+                source,
+            ));
         }
         for value in &mut values {
             coerce_expr(value, &executable_ty, source)?;
@@ -185,7 +191,8 @@ impl FunctionLowerer {
         })?;
         let valid_component = matches!(
             component_ty.underlying(),
-            Ty::Float(FloatTy::Float64) | Ty::Untyped(UntypedTy::Int | UntypedTy::Float)
+            Ty::Float(FloatTy::Float64)
+                | Ty::Untyped(UntypedTy::Int | UntypedTy::Rune | UntypedTy::Float)
         );
         if !valid_component {
             return Err(Diagnostic::semantic(

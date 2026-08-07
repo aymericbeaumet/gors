@@ -165,6 +165,9 @@ blindly copy the Go-MIR summary.
 - The emitter renders verified Rust IR as Rust syntax. It must not discover Go
   types, repair evaluation order, perform reachability, infer ownership or
   representation, or recognize stdlib functions by generated Rust shape.
+- Terminal emission may be split between `compiler/emit.rs` and focused modules
+  under `compiler/emit/`; every such module remains Rust-IR-only and is covered
+  by the same architecture checks.
 - Do not add semantic post-syn passes. Formatting is the only normal operation
   after emission.
 - Keep syn and quote usage confined to the emitter and the narrow public output
@@ -465,9 +468,10 @@ source, package, and build inputs. Its tracked path parses each file projection
 once and projects that temporary AST exactly once into owned, trivia-insensitive
 structural function and constant syntax plus canonical header/body token
 streams. Semantic queries never retain or revisit the AST or raw source.
-Revision-local physical ranges live only in `FunctionLayout` and
-`ConstantLayout`; successful semantic lowering publishes a physical-free source
-plan which the presentation query joins to the current layout. Package-function
+Revision-local physical ranges live only in `FunctionLayout`, `ConstantLayout`,
+`VariableLayout`, and `TypeDeclarationLayout`; successful semantic lowering
+publishes a physical-free source plan which the presentation query joins to the
+current layout. Package-function
 `SyntaxAnchor`s use the package-level name, while method anchors use the named
 receiver and method name. Neither form contains an offset, traversal ordinal,
 or token index. Repeated `init` declarations are not independently nameable Go

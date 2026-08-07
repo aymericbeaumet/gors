@@ -29,6 +29,7 @@ pub struct Function {
 pub struct PanicCleanup {
     pub entry: BasicBlockId,
     pub active: LocalId,
+    pub recovered: LocalId,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -123,9 +124,9 @@ pub enum RvalueKind {
         from: Ty,
         ty: Ty,
     },
-    RecoverCompareNil {
+    Recover {
         state: Place,
-        equal: bool,
+        value: Operand,
     },
     Binary {
         op: hir::BinaryOp,

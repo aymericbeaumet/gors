@@ -77,6 +77,7 @@ pub(super) const GO_POINTER_STRUCT_I64_SET: &[RuntimeType] = &[
     RuntimeType::I64,
 ];
 pub(super) const GO_INTERFACE_PARAMETER: &[RuntimeType] = &[RuntimeType::GoInterface];
+pub(super) const GO_PANIC_PAYLOAD_PARAMETER: &[RuntimeType] = &[RuntimeType::GoPanicPayload];
 pub(super) const TWO_GO_INTERFACE_PARAMETERS: &[RuntimeType] =
     &[RuntimeType::GoInterface, RuntimeType::GoInterface];
 pub(super) const GO_INTERFACE_AND_TYPE: &[RuntimeType] =

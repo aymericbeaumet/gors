@@ -165,6 +165,47 @@ fn verifier_rejects_invalid_byte_slice_runtime_calls() {
 }
 
 #[test]
+fn verifier_rejects_invalid_float_interface_runtime_calls() {
+    let source = r#"
+        package main
+        func main() {
+            var left any = 1.5
+            var right any = 2.5
+            _ = left == right
+            _, _ = left.(float64)
+        }
+    "#;
+
+    for (builtin, expected) in [
+        (hir::Builtin::InterfaceBoxF64, "interface boxing"),
+        (hir::Builtin::InterfaceEqual, "interface equality"),
+        (
+            hir::Builtin::InterfaceUnboxF64,
+            "interface float extraction",
+        ),
+    ] {
+        let mut file = lower(source);
+        let arguments = file
+            .functions
+            .iter_mut()
+            .flat_map(|function| &mut function.blocks)
+            .find_map(|block| match &mut block.terminator.kind {
+                TerminatorKind::Call {
+                    callee: hir::Callee::Builtin(actual),
+                    args,
+                    ..
+                } if *actual == builtin => Some(args),
+                _ => None,
+            })
+            .expect("expected float-interface runtime call");
+        arguments.clear();
+
+        let error = file.verify().unwrap_err();
+        assert!(error.message.contains(expected), "{error:?}");
+    }
+}
+
+#[test]
 fn verifier_rejects_a_mutated_return_type() {
     let mut file = lower("package main\nfunc answer() int { return 42 }\n");
     let function = &mut file.functions[0];

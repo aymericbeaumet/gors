@@ -301,6 +301,7 @@ fn untyped_ty(encoder: &mut Encoder, value: UntypedTy) {
         match value {
             UntypedTy::Bool => b"bool",
             UntypedTy::Int => b"int",
+            UntypedTy::Rune => b"rune",
             UntypedTy::Float => b"float",
             UntypedTy::Complex => b"complex",
             UntypedTy::String => b"string",

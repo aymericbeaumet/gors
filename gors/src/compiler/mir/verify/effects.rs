@@ -93,8 +93,8 @@ pub(super) fn rvalue_operands(kind: &RvalueKind) -> Vec<&Operand> {
         RvalueKind::StructSet {
             structure, value, ..
         } => vec![structure, value],
-        RvalueKind::RecoverCompareNil { .. }
-        | RvalueKind::SliceLiteralI64 { .. }
+        RvalueKind::Recover { value, .. } => vec![value],
+        RvalueKind::SliceLiteralI64 { .. }
         | RvalueKind::SliceLiteralU8(_)
         | RvalueKind::SliceLiteralBool(_)
         | RvalueKind::ArrayLiteralI64(_) => Vec::new(),

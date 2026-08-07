@@ -25,6 +25,7 @@ impl RuntimeOp {
             | Self::PrintNewline
             | Self::PrintGoString => STANDARD_IO_CAPABILITY,
             Self::GoStringFromBytes
+            | Self::GoStringFromRune
             | Self::GoStringFromStatic
             | Self::ConcatGoStrings
             | Self::IntDiv
@@ -34,6 +35,9 @@ impl RuntimeOp {
             | Self::PanicBool
             | Self::PanicI64
             | Self::PanicGoString
+            | Self::PanicGoInterface
+            | Self::GoPanicPayloadToInterface
+            | Self::GoInterfaceIsRuntimeError
             | Self::GoSliceI64FromStatic
             | Self::GoSliceI64Index
             | Self::GoSliceI64Range
@@ -140,12 +144,14 @@ impl RuntimeOp {
     #[must_use]
     pub const fn effects(self) -> RuntimeEffects {
         match self {
-            Self::GoStringFromBytes => RuntimeEffects::new(
-                AllocationEffect::MayAllocate,
-                ArgumentMutationEffect::None,
-                HostIoEffect::None,
-                NO_GO_PANICS,
-            ),
+            Self::GoStringFromBytes | Self::GoStringFromRune | Self::GoPanicPayloadToInterface => {
+                RuntimeEffects::new(
+                    AllocationEffect::MayAllocate,
+                    ArgumentMutationEffect::None,
+                    HostIoEffect::None,
+                    NO_GO_PANICS,
+                )
+            }
             Self::ConcatGoStrings => RuntimeEffects::new(
                 AllocationEffect::MayAllocate,
                 ArgumentMutationEffect::MayMutateOwnedArgument,
@@ -188,11 +194,19 @@ impl RuntimeOp {
                 HostIoEffect::None,
                 NO_GO_PANICS,
             ),
-            Self::PanicBool | Self::PanicI64 | Self::PanicGoString => RuntimeEffects::new(
+            Self::PanicBool | Self::PanicI64 | Self::PanicGoString | Self::PanicGoInterface => {
+                RuntimeEffects::new(
+                    AllocationEffect::None,
+                    ArgumentMutationEffect::None,
+                    HostIoEffect::None,
+                    EXPLICIT_PANIC,
+                )
+            }
+            Self::GoInterfaceIsRuntimeError => RuntimeEffects::new(
                 AllocationEffect::None,
                 ArgumentMutationEffect::None,
                 HostIoEffect::None,
-                EXPLICIT_PANIC,
+                NO_GO_PANICS,
             ),
             Self::GoSliceI64FromStatic | Self::GoSliceBoolFromStatic => RuntimeEffects::new(
                 AllocationEffect::MayAllocate,

@@ -30,6 +30,7 @@ impl RuntimeType {
             Self::GoSliceBool => 20,
             Self::GoSliceInterface => 21,
             Self::GoMapStringInterface => 22,
+            Self::GoPanicPayload => 23,
         }
     }
 

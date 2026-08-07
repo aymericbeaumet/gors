@@ -140,6 +140,8 @@ func primitive(left int, right int) int { return left + right }
 func runtime(left int, right int) int { return left / right }
 func collision(left int, right int) int { return left &^ right }
 func stable(left int, right int) int { return left | right }
+func narrowAdd(left int32, right int32) int32 { return left + right }
+func narrowNeg(value rune) rune { return -value }
 "#,
     );
     let stable = rust_ir_function(rust_ir_named(&original, "stable"));
@@ -158,6 +160,36 @@ func stable(left int, right int) int { return left | right }
     assert_eq!(
         stable,
         rust_ir_function(rust_ir_named(&changed_primitive, "stable"))
+    );
+
+    let mut changed_int32_add = original.clone();
+    *value_op_mut(
+        &mut changed_int32_add,
+        "narrowAdd",
+        rust_ir::ValueOp::Primitive(PrimitiveOp::Int32WrappingAdd),
+    ) = rust_ir::ValueOp::Primitive(PrimitiveOp::IntWrappingAdd);
+    assert_ne!(
+        rust_ir_function(rust_ir_named(&original, "narrowAdd")),
+        rust_ir_function(rust_ir_named(&changed_int32_add, "narrowAdd"))
+    );
+    assert_eq!(
+        stable,
+        rust_ir_function(rust_ir_named(&changed_int32_add, "stable"))
+    );
+
+    let mut changed_int32_neg = original.clone();
+    *value_op_mut(
+        &mut changed_int32_neg,
+        "narrowNeg",
+        rust_ir::ValueOp::Primitive(PrimitiveOp::Int32WrappingNeg),
+    ) = rust_ir::ValueOp::Primitive(PrimitiveOp::IntWrappingNeg);
+    assert_ne!(
+        rust_ir_function(rust_ir_named(&original, "narrowNeg")),
+        rust_ir_function(rust_ir_named(&changed_int32_neg, "narrowNeg"))
+    );
+    assert_eq!(
+        stable,
+        rust_ir_function(rust_ir_named(&changed_int32_neg, "stable"))
     );
 
     let mut changed_runtime = original.clone();
@@ -392,7 +424,7 @@ fn value_op_mut<'a>(
                 }
                 rust_ir::RvalueKind::Use(_)
                 | rust_ir::RvalueKind::Unary { .. }
-                | rust_ir::RvalueKind::RecoverCompareNil { .. }
+                | rust_ir::RvalueKind::Recover { .. }
                 | rust_ir::RvalueKind::ArrayIndexI64 { .. }
                 | rust_ir::RvalueKind::ArrayIndex { .. }
                 | rust_ir::RvalueKind::ArraySetI64 { .. }
@@ -486,7 +518,7 @@ fn rvalue_runtime_static_op_mut(
             structure, value, ..
         } => operand_runtime_static_op_mut(structure, expected)
             .or_else(|| operand_runtime_static_op_mut(value, expected)),
-        rust_ir::RvalueKind::RecoverCompareNil { .. } => None,
+        rust_ir::RvalueKind::Recover { .. } => None,
     }
 }
 

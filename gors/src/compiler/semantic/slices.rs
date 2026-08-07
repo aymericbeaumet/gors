@@ -3,7 +3,6 @@
 use super::FunctionLowerer;
 use super::expression_lower::{constant_index_value, slice_runtime_effects};
 use super::expressions::coerce_expr;
-use super::lower_type;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::NodeId;
@@ -35,7 +34,7 @@ impl FunctionLowerer {
                         ));
                     }
                 };
-                let declared = lower_type(declared_syntax, &self.type_aliases, source)?;
+                let declared = self.lower_scoped_type(declared_syntax, source)?;
                 let builtin = if declared == slice_ty {
                     hir::Builtin::SliceI64Make
                 } else if declared == byte_slice_ty {

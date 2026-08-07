@@ -183,6 +183,21 @@ fn collect_generic_type_symbols(
     let mut sources = input.sources(db).iter().copied().collect::<Vec<_>>();
     sources.sort_by_key(|source| source.file(db));
     for source in sources {
+        for alias in file_projection(db, source).type_aliases(db) {
+            let syntax = alias.syntax(db);
+            let Some(type_parameters) = &syntax.type_parameters else {
+                continue;
+            };
+            result.insert(
+                alias.name(db).to_string(),
+                GenericTypeSymbol {
+                    id: alias.id(db),
+                    type_parameters: Arc::new(type_parameters.clone()),
+                    underlying: syntax.target.clone(),
+                    alias: true,
+                },
+            );
+        }
         for definition in file_projection(db, source).type_definitions(db) {
             let syntax = definition.syntax(db);
             result.insert(
@@ -195,6 +210,7 @@ fn collect_generic_type_symbols(
                         },
                     )),
                     underlying: syntax.underlying.clone(),
+                    alias: false,
                 },
             );
         }
@@ -297,6 +313,17 @@ fn add_method_symbols(
                                 ),
                             )
                         })?;
+                if generic_type.alias {
+                    return Err(semantic_failure(
+                        caller,
+                        Diagnostic::semantic(
+                            format!(
+                                "method receiver base {receiver} must be a defined type, not an alias"
+                            ),
+                            SourceRef::definition(caller),
+                        ),
+                    ));
+                }
                 symbols.generic_methods.insert(
                     (generic_type.id, name.to_string()),
                     GenericFunctionSymbol {

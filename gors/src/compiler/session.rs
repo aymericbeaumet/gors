@@ -518,6 +518,14 @@ impl CompilerSession {
                     .variables()
                     .iter()
                     .any(|variable| variable.id() == definition)
+                || analysis
+                    .type_aliases()
+                    .iter()
+                    .any(|alias| alias.id() == definition)
+                || analysis
+                    .type_definitions()
+                    .iter()
+                    .any(|declared| declared.id() == definition)
             {
                 return self.database.definition_source_table(file, definition).ok();
             }

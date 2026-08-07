@@ -624,11 +624,7 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
         hir::ExprKind::Conversion { value } => encoder.variant(b"conversion", |encoder| {
             encode_expression(encoder, value);
         }),
-        hir::ExprKind::RecoverCompareNil { equal } => {
-            encoder.variant(b"recover-compare-nil", |encoder| {
-                encoder.field(b"equal", |encoder| encoder.bool(*equal));
-            });
-        }
+        hir::ExprKind::Recover => encoder.variant(b"recover", |_| {}),
         hir::ExprKind::SliceLiteralI64(elements) => {
             encoder.variant(b"slice-literal-i64", |encoder| {
                 encoder.sequence(elements, |encoder, element| encoder.i64(*element));
@@ -759,6 +755,11 @@ fn encode_static_value(encoder: &mut Encoder, value: &crate::compiler::types::St
                 encoder.sequence(fields, encode_static_value);
             });
         }
+        crate::compiler::types::StaticValue::Array(elements) => {
+            encoder.variant(b"array", |encoder| {
+                encoder.sequence(elements, encode_static_value);
+            });
+        }
         crate::compiler::types::StaticValue::Slice(elements) => {
             encoder.variant(b"slice", |encoder| {
                 encoder.sequence(elements, encode_static_value);
@@ -821,6 +822,7 @@ fn encode_builtin(encoder: &mut Encoder, builtin: hir::Builtin) {
             hir::Builtin::AggregateSliceSetTagged => b"aggregate-slice-set-tagged",
             hir::Builtin::SnapshotFunctionSliceAppend => b"snapshot-function-slice-append",
             hir::Builtin::SnapshotFunctionSliceCall => b"snapshot-function-slice-call",
+            hir::Builtin::StringFromRune => b"string-from-rune",
             hir::Builtin::StringFromSliceU8 => b"string-from-slice-u8",
             hir::Builtin::StringFromSliceRunes => b"string-from-slice-runes",
             hir::Builtin::StringLen => b"string-len",
@@ -863,17 +865,23 @@ fn encode_builtin(encoder: &mut Encoder, builtin: hir::Builtin) {
             hir::Builtin::InterfaceNil => b"interface-nil",
             hir::Builtin::InterfaceBoxBool => b"interface-box-bool",
             hir::Builtin::InterfaceBoxI64 => b"interface-box-i64",
+            hir::Builtin::InterfaceBoxF64 => b"interface-box-f64",
             hir::Builtin::InterfaceBoxGoString => b"interface-box-go-string",
             hir::Builtin::InterfaceBoxStructI64 => b"interface-box-struct-i64",
             hir::Builtin::InterfaceBoxPointerStructI64 => b"interface-box-pointer-struct-i64",
             hir::Builtin::InterfaceBoxAggregate => b"interface-box-aggregate",
+            hir::Builtin::InterfaceBoxComparableAggregate => b"interface-box-comparable-aggregate",
             hir::Builtin::InterfaceIsNil => b"interface-is-nil",
             hir::Builtin::InterfaceIsType => b"interface-is-type",
+            hir::Builtin::InterfaceIsRuntimeError => b"interface-is-runtime-error",
+            hir::Builtin::InterfaceEqual => b"interface-equal",
             hir::Builtin::InterfaceAssert => b"interface-assert",
             hir::Builtin::InterfaceSatisfies => b"interface-satisfies",
+            hir::Builtin::InterfaceSatisfiesRuntimeError => b"interface-satisfies-runtime-error",
             hir::Builtin::InterfaceSatisfiesNonNil => b"interface-satisfies-non-nil",
             hir::Builtin::InterfaceUnboxBool => b"interface-unbox-bool",
             hir::Builtin::InterfaceUnboxI64 => b"interface-unbox-i64",
+            hir::Builtin::InterfaceUnboxF64 => b"interface-unbox-f64",
             hir::Builtin::InterfaceUnboxGoString => b"interface-unbox-go-string",
             hir::Builtin::InterfaceStructI64Get => b"interface-struct-i64-get",
             hir::Builtin::InterfaceUnboxPointerStructI64 => b"interface-unbox-pointer-struct-i64",

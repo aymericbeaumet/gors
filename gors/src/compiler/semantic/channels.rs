@@ -261,6 +261,12 @@ impl FunctionLowerer {
             return Err(Diagnostic::semantic("cap does not accept ...", source));
         }
         let value = self.lower_expr(value, None)?;
+        if let Ty::Array(length, element) = value.ty.underlying()
+            && super::arrays::is_executable_array(*length, element)
+        {
+            let length = *length;
+            return self.lower_array_len(value, length, node, source, expected);
+        }
         let builtin = if int_channel_parts(&value.ty).is_some() {
             hir::Builtin::ChannelI64Cap
         } else if matches!(

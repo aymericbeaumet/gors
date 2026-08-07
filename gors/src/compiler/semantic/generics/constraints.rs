@@ -2,7 +2,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::lower_type_with_generics;
+use super::{
+    infer_from_constraint_pattern, infer_type_expression, lower_type_with_generics,
+    type_inference_mismatch,
+};
 use crate::compiler::Diagnostic;
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::semantic::GenericTypeSymbol;
@@ -14,21 +17,95 @@ pub(super) fn type_parameter_names(
     fields: &FieldListSyntax,
     source: SourceRef,
 ) -> Result<BTreeSet<String>, Diagnostic> {
+    Ok(type_parameter_names_in_order(fields, source)?
+        .into_iter()
+        .collect())
+}
+
+pub(super) fn type_parameter_names_in_order(
+    fields: &FieldListSyntax,
+    source: SourceRef,
+) -> Result<Vec<String>, Diagnostic> {
     let mut result = BTreeSet::new();
+    let mut ordered = Vec::new();
     for field in &*fields.fields {
         let names = field.names.as_ref().ok_or_else(|| {
             Diagnostic::semantic("type parameter declaration requires a name", source)
         })?;
         for name in &**names {
-            if !result.insert(name.name.to_string()) {
+            if name.name.as_ref() != "_" && !result.insert(name.name.to_string()) {
                 return Err(Diagnostic::semantic(
                     format!("duplicate type parameter {}", name.name),
                     source,
                 ));
             }
+            ordered.push(name.name.to_string());
         }
     }
-    Ok(result)
+    Ok(ordered)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn infer_from_instantiated_constraint(
+    base: &ExprSyntax,
+    arguments: &[ExprSyntax],
+    actual: &Ty,
+    parameter_names: &BTreeSet<String>,
+    substitutions: &mut BTreeMap<String, Ty>,
+    aliases: &BTreeMap<String, Ty>,
+    generic_types: &BTreeMap<String, GenericTypeSymbol>,
+    source: SourceRef,
+) -> Result<(), Diagnostic> {
+    let ExprSyntaxKind::Ident(base) = &base.kind else {
+        return Err(type_inference_mismatch(base, actual, source));
+    };
+    let generic = generic_types.get(base.name.as_ref()).ok_or_else(|| {
+        Diagnostic::semantic(format!("{} is not a generic type", base.name), source)
+    })?;
+    let inner_names = type_parameter_names_in_order(&generic.type_parameters, source)?;
+    if inner_names.len() != arguments.len() {
+        return Err(Diagnostic::semantic(
+            format!(
+                "constraint {} requires {} type arguments; got {}",
+                base.name,
+                inner_names.len(),
+                arguments.len()
+            ),
+            source,
+        ));
+    }
+
+    // First match the concrete argument against the named constraint's own
+    // type parameters. Then project those inferred types through the
+    // instantiation arguments into the caller's parameter environment. This
+    // keeps the two parameter namespaces distinct, including when the named
+    // constraint deliberately renames its element parameter.
+    let inner_parameter_names = inner_names.iter().cloned().collect::<BTreeSet<_>>();
+    let mut inner_substitutions = BTreeMap::new();
+    infer_from_constraint_pattern(
+        &generic.underlying,
+        actual,
+        &inner_parameter_names,
+        &mut inner_substitutions,
+        aliases,
+        generic_types,
+        source,
+    )?;
+    for (inner_name, argument) in inner_names.iter().zip(arguments) {
+        let Some(inferred) = inner_substitutions.get(inner_name) else {
+            continue;
+        };
+        infer_type_expression(
+            argument,
+            inferred,
+            parameter_names,
+            substitutions,
+            aliases,
+            generic_types,
+            source,
+        )?;
+    }
+    Ok(())
 }
 
 pub(super) fn validate_declared_constraints(
@@ -121,9 +198,7 @@ fn constraint_allows(
             let Some(generic) = generic_types.get(base.name.as_ref()) else {
                 return Ok(false);
             };
-            let names = type_parameter_names(&generic.type_parameters, source)?
-                .into_iter()
-                .collect::<Vec<_>>();
+            let names = type_parameter_names_in_order(&generic.type_parameters, source)?;
             let [name] = names.as_slice() else {
                 return Err(Diagnostic::unsupported(
                     "constraint instantiation with multiple arguments is not yet implemented",
@@ -142,9 +217,7 @@ fn constraint_allows(
             let Some(generic) = generic_types.get(base.name.as_ref()) else {
                 return Ok(false);
             };
-            let names = type_parameter_names(&generic.type_parameters, source)?
-                .into_iter()
-                .collect::<Vec<_>>();
+            let names = type_parameter_names_in_order(&generic.type_parameters, source)?;
             if names.len() != indices.len() {
                 return Err(Diagnostic::semantic(
                     format!(

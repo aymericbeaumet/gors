@@ -7,6 +7,7 @@ mod imports;
 mod language_versions;
 mod lookups;
 mod rust_ir_package;
+mod source_tables;
 mod support;
 mod type_aliases;
 mod unused_imports;
@@ -23,13 +24,17 @@ pub(super) use lookups::{
     package_method_named_product, package_variable_named_product,
 };
 pub(super) use rust_ir_package::rust_ir_package_product;
+pub(super) use source_tables::{
+    constant_source_table_product, definition_source_table_product, function_layout_product,
+};
 use support::{
-    check_semantic_barrier, collect_constant_references, collect_variable_references,
-    function_definition_key, function_file, package_references_in_body, semantic_build_dependency,
-    semantic_failure,
+    check_semantic_barrier, collect_constant_references, collect_signature_type_references,
+    collect_variable_references, function_definition_key, package_references_in_body,
+    semantic_build_dependency, semantic_failure,
 };
 pub(super) use type_aliases::{
     TypeAliasProjection, TypeDefinitionProjection, package_type_aliases_product,
+    type_alias_source_table_product, type_definition_source_table_product,
 };
 pub(super) use variable_eval::{typed_variable_product, variable_source_table_product};
 
@@ -39,12 +44,12 @@ use std::sync::Arc;
 use crate::ast;
 use crate::compiler::fingerprint::rust_ir_root_inputs;
 use crate::compiler::input::SourceContent;
-use crate::compiler::provenance::{DefinitionSourceTable, FileRange, SourceRef};
+use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{
     ConstantLayout, ConstantSyntax, FunctionLayout, ProjectedConstantSyntax,
-    ProjectedFunctionSyntax, ProjectedVariableSyntax, VariableLayout, VariableSyntax,
-    project_constant, project_function, project_type_alias, project_type_definition,
-    project_variable,
+    ProjectedFunctionSyntax, ProjectedTypeAliasSyntax, ProjectedTypeDefinitionSyntax,
+    ProjectedVariableSyntax, VariableLayout, VariableSyntax, project_constant, project_function,
+    project_type_alias, project_type_definition, project_variable,
 };
 use crate::compiler::{Diagnostic, lowering, mir, rust_ir};
 use crate::source::SourceCoordinateMap;
@@ -485,21 +490,25 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
                         DefinitionKey::package_named(package_id, DefinitionKind::Type, name.name);
                     let id = key.id();
                     let projected = if spec.assign.is_some() {
-                        project_type_alias(spec).map(|syntax| {
+                        project_type_alias(spec, content.text_len()).map(|projected| {
+                            let ProjectedTypeAliasSyntax { syntax, layout } = projected;
                             projected_type_aliases.push((
                                 id,
                                 key.clone(),
                                 Arc::clone(&owned_name),
                                 Arc::new(syntax),
+                                Arc::new(layout),
                             ));
                         })
                     } else {
-                        project_type_definition(spec).map(|syntax| {
+                        project_type_definition(spec, content.text_len()).map(|projected| {
+                            let ProjectedTypeDefinitionSyntax { syntax, layout } = projected;
                             projected_type_definitions.push((
                                 id,
                                 key.clone(),
                                 Arc::clone(&owned_name),
                                 Arc::new(syntax),
+                                Arc::new(layout),
                             ));
                         })
                     };
@@ -518,8 +527,8 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
     projected_functions.sort_by_key(|(id, _, _, _, _, _, _, _)| *id);
     projected_constants.sort_by_key(|(id, _, _, _, _, _)| *id);
     projected_variables.sort_by_key(|(id, _, _, _, _, _)| *id);
-    projected_type_aliases.sort_by_key(|(id, _, _, _)| *id);
-    projected_type_definitions.sort_by_key(|(id, _, _, _)| *id);
+    projected_type_aliases.sort_by_key(|(id, _, _, _, _)| *id);
+    projected_type_definitions.sort_by_key(|(id, _, _, _, _)| *id);
     issues.sort();
 
     let functions = projected_functions
@@ -574,11 +583,15 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
         .collect();
     let type_aliases = projected_type_aliases
         .into_iter()
-        .map(|(id, key, name, syntax)| TypeAliasProjection::new(db, id, key, name, syntax))
+        .map(|(id, key, name, syntax, layout)| {
+            TypeAliasProjection::new(db, id, key, name, syntax, layout)
+        })
         .collect();
     let type_definitions = projected_type_definitions
         .into_iter()
-        .map(|(id, key, name, syntax)| TypeDefinitionProjection::new(db, id, key, name, syntax))
+        .map(|(id, key, name, syntax, layout)| {
+            TypeDefinitionProjection::new(db, id, key, name, syntax, layout)
+        })
         .collect();
     FileFacts::new(
         db,
@@ -599,90 +612,6 @@ pub(super) fn file_projection<'db>(db: &'db dyn Db, source: SourceInput) -> File
         None,
         issues,
     )
-}
-
-#[salsa::tracked(returns(clone))]
-pub(super) fn definition_source_table_product(
-    db: &dyn Db,
-    input: PackageInput,
-    function: FunctionProjection<'_>,
-) -> StageResult<DefinitionSourceTable> {
-    db.query_telemetry()
-        .record_query(QueryKind::DefinitionSourceTable);
-    let definition = function.id(db);
-    let layout = function.layout(db);
-    let file = function_file(db, input, function)?;
-    let semantic = semantic_function_product(db, input, function);
-    let source_plan = semantic.source_plan();
-    let mappings = source_plan
-        .iter()
-        .copied()
-        .map(|(source, syntax_source)| {
-            layout
-                .resolve(syntax_source)
-                .map(|range| (source, FileRange::new(file, range)))
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| {
-            Arc::new(StageFailure::one_for_definition(
-                CompilerStage::Semantic,
-                definition,
-                Diagnostic::backend(format!(
-                    "owned syntax source plan does not match its physical layout: {error}"
-                )),
-            ))
-        })?;
-    DefinitionSourceTable::try_new(definition, file, layout.source_len(), mappings)
-        .map(Arc::new)
-        .map_err(|error| {
-            Arc::new(StageFailure::one_for_definition(
-                CompilerStage::Semantic,
-                definition,
-                Diagnostic::backend(format!(
-                    "failed to construct definition source table: {error}"
-                )),
-            ))
-        })
-}
-
-#[salsa::tracked(returns(clone))]
-pub(super) fn constant_source_table_product(
-    db: &dyn Db,
-    file: FileId,
-    constant: ConstantProjection<'_>,
-) -> StageResult<DefinitionSourceTable> {
-    db.query_telemetry()
-        .record_query(QueryKind::DefinitionSourceTable);
-    let definition = constant.id(db);
-    let layout = constant.layout(db);
-    DefinitionSourceTable::try_new(
-        definition,
-        file,
-        layout.source_len(),
-        [(
-            SourceRef::definition(definition),
-            FileRange::new(file, layout.declaration()),
-        )],
-    )
-    .map(Arc::new)
-    .map_err(|error| {
-        Arc::new(StageFailure::one_for_definition(
-            CompilerStage::Semantic,
-            definition,
-            Diagnostic::backend(format!(
-                "failed to construct constant source table: {error}"
-            )),
-        ))
-    })
-}
-
-#[salsa::tracked(returns(clone))]
-pub(super) fn function_layout_product(
-    db: &dyn Db,
-    function: FunctionProjection<'_>,
-) -> Arc<FunctionLayout> {
-    db.query_telemetry().record_query(QueryKind::FunctionLayout);
-    function.layout(db)
 }
 
 #[salsa::tracked(returns(clone))]
@@ -775,10 +704,29 @@ pub(super) fn typed_signature_product(
     check_semantic_barrier(db, definition, function.semantic_barrier(db))?;
     semantic_build_dependency(db, definition)?;
     let type_aliases = package_type_aliases_product(db, input)?;
+    let mut referenced = BTreeSet::new();
+    collect_signature_type_references(function.signature(db).structure(), &mut referenced);
+    let mut constants = BTreeMap::new();
+    for name in referenced {
+        let name: Arc<str> = Arc::from(name);
+        let Some(constant) = package_constant_named_product(db, input, name) else {
+            continue;
+        };
+        let typed = typed_constant_product(db, input, constant)?;
+        constants.insert(
+            typed.name.clone(),
+            super::super::semantic::ConstantSymbol {
+                id: QualifiedDefId::new(input.package(db), typed.id),
+                ty: typed.ty.clone(),
+                value: typed.value.clone(),
+            },
+        );
+    }
     super::super::semantic::lower_signature(
         definition,
         function.signature(db).structure(),
         &type_aliases,
+        &constants,
     )
     .map(|signature| Arc::new(TypedFunctionSignature::new(definition, signature)))
     .map_err(|diagnostic| semantic_failure(definition, diagnostic))

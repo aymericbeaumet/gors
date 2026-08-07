@@ -211,6 +211,8 @@ impl CompilerDatabase {
             .ingredient::<queries::package_constant_named_product>()
             .ingredient::<queries::package_variable_named_product>()
             .ingredient::<queries::variable_source_table_product>()
+            .ingredient::<queries::type_alias_source_table_product>()
+            .ingredient::<queries::type_definition_source_table_product>()
             .ingredient::<queries::mir_signature_dependencies_product>()
             .ingredient::<queries::verified_mir_product>()
             .ingredient::<queries::normalized_mir_product>()
@@ -450,8 +452,16 @@ impl CompilerDatabase {
             return queries::constant_source_table_product(self, file, constant)
                 .map_err(QueryError::StageFailure);
         }
-        let variable = self.variable_projection(file, function)?;
-        queries::variable_source_table_product(self, file, variable)
+        if let Ok(variable) = self.variable_projection(file, function) {
+            return queries::variable_source_table_product(self, file, variable)
+                .map_err(QueryError::StageFailure);
+        }
+        if let Ok(alias) = self.type_alias_projection(file, function) {
+            return queries::type_alias_source_table_product(self, file, alias)
+                .map_err(QueryError::StageFailure);
+        }
+        let definition = self.type_definition_projection(file, function)?;
+        queries::type_definition_source_table_product(self, file, definition)
             .map_err(QueryError::StageFailure)
     }
 
@@ -633,6 +643,38 @@ impl CompilerDatabase {
         let facts = self.file_facts(file)?;
         facts
             .variables(self)
+            .into_iter()
+            .find(|candidate| candidate.id(self) == definition)
+            .ok_or(QueryError::UnknownFunction {
+                file,
+                function: definition,
+            })
+    }
+
+    fn type_alias_projection(
+        &self,
+        file: FileId,
+        definition: DefId,
+    ) -> Result<TypeAliasProjection<'_>, QueryError> {
+        let facts = self.file_facts(file)?;
+        facts
+            .type_aliases(self)
+            .into_iter()
+            .find(|candidate| candidate.id(self) == definition)
+            .ok_or(QueryError::UnknownFunction {
+                file,
+                function: definition,
+            })
+    }
+
+    fn type_definition_projection(
+        &self,
+        file: FileId,
+        definition: DefId,
+    ) -> Result<TypeDefinitionProjection<'_>, QueryError> {
+        let facts = self.file_facts(file)?;
+        facts
+            .type_definitions(self)
             .into_iter()
             .find(|candidate| candidate.id(self) == definition)
             .ok_or(QueryError::UnknownFunction {

@@ -53,6 +53,7 @@ fn encode_function(encoder: &mut Encoder, function: &mir::Function) {
         encoder.option(function.panic_cleanup.as_ref(), |encoder, cleanup| {
             encoder.field(b"entry", |encoder| block_id(encoder, cleanup.entry));
             encoder.field(b"active", |encoder| local_id(encoder, cleanup.active));
+            encoder.field(b"recovered", |encoder| local_id(encoder, cleanup.recovered));
         });
     });
     encoder.field(b"source", |encoder| source_ref(encoder, function.source));
@@ -232,10 +233,10 @@ fn encode_rvalue_kind(encoder: &mut Encoder, kind: &mir::RvalueKind) {
                 encoder.field(b"to", |encoder| ty(encoder, to));
             });
         }
-        mir::RvalueKind::RecoverCompareNil { state, equal } => {
-            encoder.variant(b"recover-compare-nil", |encoder| {
+        mir::RvalueKind::Recover { state, value } => {
+            encoder.variant(b"recover", |encoder| {
                 encoder.field(b"state", |encoder| encode_place(encoder, *state));
-                encoder.field(b"equal", |encoder| encoder.bool(*equal));
+                encoder.field(b"value", |encoder| encode_operand(encoder, value));
             });
         }
         mir::RvalueKind::Binary {
@@ -369,6 +370,7 @@ fn encode_callee(encoder: &mut Encoder, callee: hir::Callee) {
                     hir::Builtin::AggregateSliceSetTagged => b"aggregate-slice-set-tagged",
                     hir::Builtin::SnapshotFunctionSliceAppend => b"snapshot-function-slice-append",
                     hir::Builtin::SnapshotFunctionSliceCall => b"snapshot-function-slice-call",
+                    hir::Builtin::StringFromRune => b"string-from-rune",
                     hir::Builtin::StringFromSliceU8 => b"string-from-slice-u8",
                     hir::Builtin::StringFromSliceRunes => b"string-from-slice-runes",
                     hir::Builtin::StringLen => b"string-len",
@@ -411,19 +413,29 @@ fn encode_callee(encoder: &mut Encoder, callee: hir::Callee) {
                     hir::Builtin::InterfaceNil => b"interface-nil",
                     hir::Builtin::InterfaceBoxBool => b"interface-box-bool",
                     hir::Builtin::InterfaceBoxI64 => b"interface-box-i64",
+                    hir::Builtin::InterfaceBoxF64 => b"interface-box-f64",
                     hir::Builtin::InterfaceBoxGoString => b"interface-box-go-string",
                     hir::Builtin::InterfaceBoxStructI64 => b"interface-box-struct-i64",
                     hir::Builtin::InterfaceBoxPointerStructI64 => {
                         b"interface-box-pointer-struct-i64"
                     }
                     hir::Builtin::InterfaceBoxAggregate => b"interface-box-aggregate",
+                    hir::Builtin::InterfaceBoxComparableAggregate => {
+                        b"interface-box-comparable-aggregate"
+                    }
                     hir::Builtin::InterfaceIsNil => b"interface-is-nil",
                     hir::Builtin::InterfaceIsType => b"interface-is-type",
+                    hir::Builtin::InterfaceIsRuntimeError => b"interface-is-runtime-error",
+                    hir::Builtin::InterfaceEqual => b"interface-equal",
                     hir::Builtin::InterfaceAssert => b"interface-assert",
                     hir::Builtin::InterfaceSatisfies => b"interface-satisfies",
+                    hir::Builtin::InterfaceSatisfiesRuntimeError => {
+                        b"interface-satisfies-runtime-error"
+                    }
                     hir::Builtin::InterfaceSatisfiesNonNil => b"interface-satisfies-non-nil",
                     hir::Builtin::InterfaceUnboxBool => b"interface-unbox-bool",
                     hir::Builtin::InterfaceUnboxI64 => b"interface-unbox-i64",
+                    hir::Builtin::InterfaceUnboxF64 => b"interface-unbox-f64",
                     hir::Builtin::InterfaceUnboxGoString => b"interface-unbox-go-string",
                     hir::Builtin::InterfaceStructI64Get => b"interface-struct-i64-get",
                     hir::Builtin::InterfaceUnboxPointerStructI64 => {

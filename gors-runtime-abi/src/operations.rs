@@ -66,6 +66,9 @@ pub enum PrimitiveOp {
     ComplexFromParts,
     ComplexReal,
     ComplexImag,
+    FloatRound32,
+    Int32WrappingAdd,
+    Int32WrappingNeg,
 }
 
 /// Stable compact identity of one directly emitted operation.
@@ -132,6 +135,9 @@ impl PrimitiveOp {
         Self::ComplexFromParts,
         Self::ComplexReal,
         Self::ComplexImag,
+        Self::FloatRound32,
+        Self::Int32WrappingAdd,
+        Self::Int32WrappingNeg,
     ];
 
     /// Exact typed signature for this directly emitted operation.
@@ -150,10 +156,14 @@ impl PrimitiveOp {
                 RuntimeSignature::new(TWO_I64_PARAMETERS, RuntimeType::I64)
             }
             Self::IntWrappingNeg => RuntimeSignature::new(I64_PARAMETER, RuntimeType::I64),
+            Self::Int32WrappingAdd => RuntimeSignature::new(TWO_I64_PARAMETERS, RuntimeType::I64),
+            Self::Int32WrappingNeg => RuntimeSignature::new(I64_PARAMETER, RuntimeType::I64),
             Self::FloatAdd | Self::FloatSub | Self::FloatMul | Self::FloatDiv => {
                 RuntimeSignature::new(TWO_F64_PARAMETERS, RuntimeType::F64)
             }
-            Self::FloatNeg => RuntimeSignature::new(F64_PARAMETER, RuntimeType::F64),
+            Self::FloatNeg | Self::FloatRound32 => {
+                RuntimeSignature::new(F64_PARAMETER, RuntimeType::F64)
+            }
             Self::FloatEqual
             | Self::FloatNotEqual
             | Self::FloatLess
@@ -255,6 +265,9 @@ impl PrimitiveOp {
             Self::ComplexFromParts => "complex-from-parts",
             Self::ComplexReal => "complex-real",
             Self::ComplexImag => "complex-imag",
+            Self::FloatRound32 => "float-round-32",
+            Self::Int32WrappingAdd => "int32-wrapping-add",
+            Self::Int32WrappingNeg => "int32-wrapping-neg",
         }
     }
 
@@ -299,6 +312,9 @@ impl PrimitiveOp {
             Self::ComplexFromParts => 47,
             Self::ComplexReal => 48,
             Self::ComplexImag => 49,
+            Self::FloatRound32 => 50,
+            Self::Int32WrappingAdd => 51,
+            Self::Int32WrappingNeg => 52,
             Self::IntEqual => 9,
             Self::IntNotEqual => 10,
             Self::IntLess => 11,
@@ -348,6 +364,8 @@ pub enum RuntimeType {
     GoSliceBool,
     GoSliceInterface,
     GoMapStringInterface,
+    /// ABI-only opaque payload produced by Rust's unwind boundary.
+    GoPanicPayload,
 }
 
 /// Complete function signature for one runtime operation.
@@ -503,6 +521,10 @@ pub enum RuntimeOp {
     GoInterfaceUnboxF64,
     GoInterfaceEqual,
     GoInterfaceBoxComparableAggregate,
+    GoStringFromRune,
+    PanicGoInterface,
+    GoPanicPayloadToInterface,
+    GoInterfaceIsRuntimeError,
 }
 
 /// Stable compact identity of one runtime ABI operation.
@@ -631,6 +653,10 @@ impl RuntimeOp {
         Self::GoInterfaceUnboxF64,
         Self::GoInterfaceEqual,
         Self::GoInterfaceBoxComparableAggregate,
+        Self::GoStringFromRune,
+        Self::PanicGoInterface,
+        Self::GoPanicPayloadToInterface,
+        Self::GoInterfaceIsRuntimeError,
     ];
 
     /// Exact typed call signature at the Rust runtime boundary.
@@ -659,6 +685,15 @@ impl RuntimeOp {
             Self::PanicBool => RuntimeSignature::new(BOOL_PARAMETER, RuntimeType::Unit),
             Self::PanicI64 => RuntimeSignature::new(I64_PARAMETER, RuntimeType::Unit),
             Self::PanicGoString => RuntimeSignature::new(GO_STRING_PARAMETER, RuntimeType::Unit),
+            Self::PanicGoInterface => {
+                RuntimeSignature::new(GO_INTERFACE_PARAMETER, RuntimeType::Unit)
+            }
+            Self::GoPanicPayloadToInterface => {
+                RuntimeSignature::new(GO_PANIC_PAYLOAD_PARAMETER, RuntimeType::GoInterface)
+            }
+            Self::GoInterfaceIsRuntimeError => {
+                RuntimeSignature::new(GO_INTERFACE_PARAMETER, RuntimeType::Bool)
+            }
             Self::GoSliceI64FromStatic => {
                 RuntimeSignature::new(STATIC_I64_SLICE_PARAMETER, RuntimeType::GoSliceI64)
             }
@@ -874,6 +909,7 @@ impl RuntimeOp {
             Self::GoStringFromSliceRunes => {
                 RuntimeSignature::new(GO_SLICE_I64_PARAMETER, RuntimeType::GoString)
             }
+            Self::GoStringFromRune => RuntimeSignature::new(I64_PARAMETER, RuntimeType::GoString),
             Self::GoStringRangeCount => {
                 RuntimeSignature::new(GO_STRING_PARAMETER, RuntimeType::I64)
             }

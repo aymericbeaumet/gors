@@ -192,7 +192,7 @@ syn_files="$(rg -l 'syn::|quote!|parse_quote!' gors/src/compiler --glob '*.rs' |
 while IFS= read -r source; do
   [[ -z "${source}" ]] && continue
   case "${source}" in
-    gors/src/compiler/emit.rs | gors/src/compiler/mod.rs) ;;
+    gors/src/compiler/emit.rs | gors/src/compiler/emit/*.rs | gors/src/compiler/mod.rs) ;;
     *)
       printf 'semantic compiler module depends on terminal Rust syntax: %s\n' "${source}" >&2
       failed=1
@@ -202,14 +202,14 @@ done <<<"${syn_files}"
 
 if [[ -f gors/src/compiler/emit.rs ]]; then
   if matches="$(rg -n '(^|[^[:alnum:]_])(hir|mir|lowering)::|super::(hir|mir|lowering)|crate::compiler::(hir|mir|lowering)' \
-    gors/src/compiler/emit.rs)"; then
+    gors/src/compiler/emit.rs gors/src/compiler/emit)"; then
     printf '%s\n%s\n' \
       'terminal emission must consume Rust IR only:' \
       "${matches}" >&2
     failed=1
   fi
   if matches="$(rg -n 'function\.name|__gors_fn_|[=!]=[[:space:]]*"main"' \
-    gors/src/compiler/emit.rs)"; then
+    gors/src/compiler/emit.rs gors/src/compiler/emit)"; then
     printf '%s\n%s\n' \
       'terminal emission must render verified symbols and linkage without Go-name inference:' \
       "${matches}" >&2
@@ -223,7 +223,8 @@ fail_on_matches \
   gors/src/compiler/mir \
   gors/src/compiler/lowering \
   gors/src/compiler/rust_ir \
-  gors/src/compiler/emit.rs
+  gors/src/compiler/emit.rs \
+  gors/src/compiler/emit
 
 if [[ -f gors/src/compiler/mod.rs ]]; then
   production_facade="$({
@@ -288,12 +289,14 @@ fail_on_matches \
   'RuntimePrint|PrintStep|print_plan|enum[[:space:]]+(BinaryOp|UnaryOp)' \
   gors/src/compiler/rust_ir \
   gors/src/compiler/emit.rs \
+  gors/src/compiler/emit \
   gors/src/compiler/lowering
 
 fail_on_matches \
   'runtime symbols outside the ABI catalog are forbidden in Rust-IR consumers:' \
   'go_string_from_(bytes|static)|concat_go_strings|int_(div|rem|shl|shr)|print_(bool|i64|space|newline|go_string)' \
   gors/src/compiler/emit.rs \
+  gors/src/compiler/emit \
   gors/src/compiler/rust_ir/effects.rs \
   gors/src/compiler/fingerprint/rust_ir.rs
 
@@ -301,7 +304,8 @@ fail_on_matches \
   'obsolete runtime arithmetic and empty-print helpers are forbidden:' \
   'fn[[:space:]]+(int_add|int_sub|int_mul|int_neg|print_empty)' \
   gors-runtime/src \
-  gors/src/compiler/emit.rs
+  gors/src/compiler/emit.rs \
+  gors/src/compiler/emit
 
 fail_on_matches \
   'runtime source bundling and relative runtime modules are forbidden:' \

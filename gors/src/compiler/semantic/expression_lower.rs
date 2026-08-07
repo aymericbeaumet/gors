@@ -9,7 +9,7 @@ use crate::compiler::hir;
 use crate::compiler::ids::{LocalId, NodeId};
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{ExprSyntax, ExprSyntaxKind};
-use crate::compiler::types::{ComplexTy, ConstValue, FloatTy, IntTy, Ty, UintTy, UntypedTy};
+use crate::compiler::types::{ComplexTy, ConstValue, IntTy, Ty, UintTy, UntypedTy};
 
 impl FunctionLowerer {
     pub(super) fn local_expr(&self, node: NodeId, local: LocalId, ty: Ty) -> hir::Expr {
@@ -160,22 +160,18 @@ impl FunctionLowerer {
                     Token::ADD
                         if matches!(
                             operator_ty,
-                            Ty::Float(FloatTy::Float64) | Ty::Complex(ComplexTy::Complex128)
+                            Ty::Float(_) | Ty::Complex(ComplexTy::Complex128)
                         ) =>
                     {
                         hir::UnaryOp::Positive
                     }
-                    Token::SUB if *operator_ty == Ty::Int(IntTy::Int) => hir::UnaryOp::Negative,
-                    Token::SUB if *operator_ty == Ty::Int(IntTy::Int32) => {
-                        return Err(Diagnostic::unsupported(
-                            "runtime unary negation of int32/rune requires 32-bit wrapping semantics",
-                            source,
-                        ));
+                    Token::SUB if matches!(operator_ty, Ty::Int(IntTy::Int | IntTy::Int32)) => {
+                        hir::UnaryOp::Negative
                     }
                     Token::SUB
                         if matches!(
                             operator_ty,
-                            Ty::Float(FloatTy::Float64) | Ty::Complex(ComplexTy::Complex128)
+                            Ty::Float(_) | Ty::Complex(ComplexTy::Complex128)
                         ) =>
                     {
                         hir::UnaryOp::Negative
@@ -219,23 +215,6 @@ impl FunctionLowerer {
                 }
             }
             ExprSyntaxKind::Binary { left, token, right } => {
-                if matches!(token, Token::EQL | Token::NEQ)
-                    && let Some((arguments, spread)) =
-                        super::recovery::recover_nil_comparison(left, right)
-                {
-                    if spread || !arguments.is_empty() {
-                        return Err(Diagnostic::semantic(
-                            "recover requires no arguments",
-                            source,
-                        ));
-                    }
-                    return self.lower_recover_nil_comparison(
-                        node,
-                        source,
-                        *token == Token::EQL,
-                        expected,
-                    );
-                }
                 if matches!(token, Token::EQL | Token::NEQ) {
                     let map = if is_nil_identifier(left) {
                         Some(right.as_ref())
@@ -254,6 +233,8 @@ impl FunctionLowerer {
                         );
                     }
                 }
+                let left_syntax_source = left.source;
+                let right_syntax_source = right.source;
                 let mut left = self.lower_expr(left, None)?;
                 let mut right = self.lower_expr(right, None)?;
                 if matches!(token, Token::EQL | Token::NEQ)
@@ -263,6 +244,21 @@ impl FunctionLowerer {
                     return self.lower_struct_pointer_comparison(
                         left,
                         right,
+                        *token == Token::EQL,
+                        node,
+                        source,
+                        expected,
+                    );
+                }
+                if matches!(token, Token::EQL | Token::NEQ)
+                    && (matches!(left.ty.underlying(), Ty::Interface(_))
+                        || matches!(right.ty.underlying(), Ty::Interface(_)))
+                {
+                    return self.lower_interface_comparison(
+                        left,
+                        left_syntax_source,
+                        right,
+                        right_syntax_source,
                         *token == Token::EQL,
                         node,
                         source,
@@ -382,6 +378,11 @@ impl FunctionLowerer {
                 if let ExprSyntaxKind::Index { base, index } = &callee.kind
                     && arguments.is_empty()
                     && !spread
+                    && !matches!(
+                        &base.kind,
+                        ExprSyntaxKind::Ident(name)
+                            if self.generic_functions.contains_key(name.name.as_ref())
+                    )
                 {
                     let slice = self.lower_expr(base, None)?;
                     if let Some(function) = slice.ty.snapshot_function_slice_element() {
@@ -415,6 +416,42 @@ impl FunctionLowerer {
                         return Ok(call);
                     }
                 }
+                let explicit_generic = match &callee.kind {
+                    ExprSyntaxKind::Index { base, index } => {
+                        let ExprSyntaxKind::Ident(name) = &base.kind else {
+                            return self.lower_conversion_call(
+                                callee, arguments, *spread, node, source, expected,
+                            );
+                        };
+                        self.generic_functions
+                            .contains_key(name.name.as_ref())
+                            .then_some((name.name.as_ref(), std::slice::from_ref(index.as_ref())))
+                    }
+                    ExprSyntaxKind::IndexList { base, indices } => {
+                        let ExprSyntaxKind::Ident(name) = &base.kind else {
+                            return self.lower_conversion_call(
+                                callee, arguments, *spread, node, source, expected,
+                            );
+                        };
+                        self.generic_functions
+                            .contains_key(name.name.as_ref())
+                            .then_some((name.name.as_ref(), indices.as_ref()))
+                    }
+                    _ => None,
+                };
+                if let Some((name, type_arguments)) = explicit_generic {
+                    return self.lower_explicit_generic_function_call(
+                        name,
+                        type_arguments,
+                        arguments,
+                        *spread,
+                        node,
+                        expr.source,
+                        source,
+                        expected,
+                        allow_discarded_call_result,
+                    );
+                }
                 if let ExprSyntaxKind::Selector { base, member } = &callee.kind {
                     return self.lower_selector_call(
                         base,
@@ -438,6 +475,10 @@ impl FunctionLowerer {
                 }
                 if name == "new" {
                     return self.lower_new_builtin_call(arguments, *spread, node, source, expected);
+                }
+                if name == "recover" {
+                    return self
+                        .lower_recover_builtin_call(arguments, *spread, node, source, expected);
                 }
                 if name == "len" {
                     return self.lower_len_builtin_call(arguments, *spread, node, source, expected);
@@ -473,7 +514,7 @@ impl FunctionLowerer {
                 if self.type_aliases.contains_key(name)
                     || matches!(
                         name,
-                        "bool" | "string" | "int" | "float64" | "complex128" | "any"
+                        "bool" | "string" | "int" | "float32" | "float64" | "complex128" | "any"
                     )
                 {
                     return self
@@ -491,71 +532,64 @@ impl FunctionLowerer {
                         allow_discarded_call_result,
                     );
                 }
-                let (callee, params, results, variadic) = if let Some(id) =
-                    self.lookup_closure(name)
-                {
-                    let closure = self.closures.get(id.index() as usize).ok_or_else(|| {
-                        Diagnostic::backend(format!("unknown local function {name}"))
-                    })?;
-                    (
-                        hir::Callee::Closure(id),
-                        closure.signature.params.clone(),
-                        closure.signature.results.clone(),
-                        closure.signature.variadic,
-                    )
-                } else if self.lookup_local(name).is_some() {
-                    return Err(Diagnostic::unsupported(
-                        format!("calling the function value {name} is not yet supported"),
-                        source,
-                    ));
-                } else if let Some(symbol) = self.functions.get(name).cloned() {
-                    (
-                        hir::Callee::Function(symbol.id),
-                        symbol.signature.params,
-                        symbol.signature.results,
-                        symbol.signature.variadic,
-                    )
-                } else if self.lookup_local_constant(name).is_some()
-                    || self.constants.contains_key(name)
-                {
-                    return Err(Diagnostic::semantic(
-                        format!("constant {name} is not callable"),
-                        source,
-                    ));
-                } else {
-                    match name {
-                        "print" => (
-                            hir::Callee::Builtin(hir::Builtin::Print),
-                            vec![],
-                            vec![],
-                            false,
-                        ),
-                        "println" => (
-                            hir::Callee::Builtin(hir::Builtin::Println),
-                            vec![],
-                            vec![],
-                            false,
-                        ),
-                        "panic" => (
-                            hir::Callee::Builtin(hir::Builtin::Panic),
-                            vec![],
-                            vec![],
-                            false,
-                        ),
-                        "recover" => {
-                            return Err(Diagnostic::unsupported(
-                                "recover results are currently supported in direct nil comparisons",
-                                source,
-                            ));
+                let (callee, params, results, variadic) =
+                    if let Some(id) = self.lookup_closure(name) {
+                        let closure = self.closures.get(id.index() as usize).ok_or_else(|| {
+                            Diagnostic::backend(format!("unknown local function {name}"))
+                        })?;
+                        (
+                            hir::Callee::Closure(id),
+                            closure.signature.params.clone(),
+                            closure.signature.results.clone(),
+                            closure.signature.variadic,
+                        )
+                    } else if self.lookup_local(name).is_some() {
+                        return Err(Diagnostic::unsupported(
+                            format!("calling the function value {name} is not yet supported"),
+                            source,
+                        ));
+                    } else if let Some(symbol) = self.functions.get(name).cloned() {
+                        (
+                            hir::Callee::Function(symbol.id),
+                            symbol.signature.params,
+                            symbol.signature.results,
+                            symbol.signature.variadic,
+                        )
+                    } else if self.lookup_local_constant(name).is_some()
+                        || self.constants.contains_key(name)
+                    {
+                        return Err(Diagnostic::semantic(
+                            format!("constant {name} is not callable"),
+                            source,
+                        ));
+                    } else {
+                        match name {
+                            "print" => (
+                                hir::Callee::Builtin(hir::Builtin::Print),
+                                vec![],
+                                vec![],
+                                false,
+                            ),
+                            "println" => (
+                                hir::Callee::Builtin(hir::Builtin::Println),
+                                vec![],
+                                vec![],
+                                false,
+                            ),
+                            "panic" => (
+                                hir::Callee::Builtin(hir::Builtin::Panic),
+                                vec![],
+                                vec![],
+                                false,
+                            ),
+                            name => {
+                                return Err(Diagnostic::semantic(
+                                    format!("undefined function {name}"),
+                                    source,
+                                ));
+                            }
                         }
-                        name => {
-                            return Err(Diagnostic::semantic(
-                                format!("undefined function {name}"),
-                                source,
-                            ));
-                        }
-                    }
-                };
+                    };
                 match callee {
                     hir::Callee::Builtin(hir::Builtin::Panic) if arguments.len() != 1 => {
                         return Err(Diagnostic::semantic(
@@ -574,7 +608,13 @@ impl FunctionLowerer {
                     }
                     _ => {}
                 }
-                let args = if matches!(callee, hir::Callee::Function(_) | hir::Callee::Closure(_)) {
+                let args = if callee == hir::Callee::Builtin(hir::Builtin::Panic) {
+                    let any = Ty::Interface(Vec::new());
+                    arguments
+                        .iter()
+                        .map(|argument| self.lower_expr(argument, Some(&any)))
+                        .collect::<Result<Vec<_>, _>>()?
+                } else if matches!(callee, hir::Callee::Function(_) | hir::Callee::Closure(_)) {
                     self.lower_call_arguments(
                         arguments,
                         &params,

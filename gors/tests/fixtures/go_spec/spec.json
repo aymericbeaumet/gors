@@ -238,6 +238,15 @@
           ]
         },
         {
+          "id": "spec-lexical-rune-escape-values",
+          "section": "Rune literals",
+          "title": "The full escaped_char set (\\a \\b \\f \\n \\r \\t \\v \\\\ \\'), octal rune escapes (\\000 \\007 \\377), and multi-byte source characters a...",
+          "status": "passing",
+          "fixtures": [
+            "lexical_rune_escape_values"
+          ]
+        },
+        {
           "id": "lexical-string-literals",
           "section": "String literals",
           "title": "Interpreted string literals and escapes preserve Go values",
@@ -672,6 +681,15 @@
           ]
         },
         {
+          "id": "spec-const-string-len-array",
+          "section": "String types",
+          "title": "len of a constant string is a byte-count constant usable in array types and arithmetic",
+          "status": "passing",
+          "fixtures": [
+            "const_string_len_array"
+          ]
+        },
+        {
           "id": "types-arrays",
           "section": "Array types",
           "title": "Arrays have fixed length and support indexed mutation",
@@ -1063,6 +1081,15 @@
           ]
         },
         {
+          "id": "spec-float-nan-negzero-comparisons",
+          "section": "Comparison operators",
+          "title": "IEEE 754 comparisons preserve NaN, signed zero, infinity, float32 conversion, and interface equality semantics",
+          "status": "passing",
+          "fixtures": [
+            "float_nan_negzero_comparisons"
+          ]
+        },
+        {
           "id": "properties-non-comparable",
           "section": "Comparison operators",
           "title": "Non-comparable values are rejected by comparison and map-key contexts",
@@ -1416,6 +1443,15 @@
           "status": "passing",
           "fixtures": [
             "composite_literals"
+          ]
+        },
+        {
+          "id": "expr-composite-literal-sparse-indices",
+          "section": "Composite literals",
+          "title": "Array and slice literal lengths derive from the largest keyed element index",
+          "status": "passing",
+          "fixtures": [
+            "composite_literal_sparse_indices"
           ]
         },
         {
@@ -2282,12 +2318,30 @@
           ]
         },
         {
+          "id": "spec-min-max-float-string",
+          "section": "Min and max",
+          "title": "min and max preserve floating-point special values, lexical string order, mixed constants, and float32 result typing",
+          "status": "passing",
+          "fixtures": [
+            "min_max_float_string"
+          ]
+        },
+        {
           "id": "builtin-panic-recover",
           "section": "Handling panics",
           "title": "panic and recover follow deferred recovery semantics",
           "status": "passing",
           "fixtures": [
             "built_in_panic_recover"
+          ]
+        },
+        {
+          "id": "spec-built-in-panic-nil-value",
+          "section": "Handling panics",
+          "title": "panic of nil and nil interface values produces a non-nil recoverable run-time error",
+          "status": "passing",
+          "fixtures": [
+            "built_in_panic_nil_value"
           ]
         },
         {
@@ -2491,6 +2545,15 @@
           ]
         },
         {
+          "id": "generics-type-param-parsing-ambiguity",
+          "section": "Type parameter declarations",
+          "title": "Trailing commas and embedded constraints disambiguate type parameter lists from array declarations",
+          "status": "passing",
+          "fixtures": [
+            "generics_type_param_declarations"
+          ]
+        },
+        {
           "id": "generics-receiver-methods",
           "section": "Method declarations",
           "title": "Generic receiver methods keep receiver type parameters",
@@ -2553,6 +2616,15 @@
           "fixtures": [
             "generics_type_sets"
           ]
+        },
+        {
+          "id": "generics-inference-from-constraint-term",
+          "section": "Type unification rules",
+          "title": "A single non-tilde constraint term supplies an otherwise unknown type argument",
+          "status": "passing",
+          "fixtures": [
+            "generics_inference_from_constraint_term"
+          ]
         }
       ]
     },
@@ -2580,6 +2652,24 @@
           "status": "passing",
           "fixtures": [
             "run_time_panics"
+          ]
+        },
+        {
+          "id": "spec-run-time-panics-channels",
+          "section": "Run-time panics",
+          "title": "Invalid sends and closes on closed or nil channels cause recoverable run-time panics",
+          "status": "passing",
+          "fixtures": [
+            "run_time_panics_channels"
+          ]
+        },
+        {
+          "id": "spec-run-time-panics-make-and-full-slice",
+          "section": "Run-time panics",
+          "title": "Invalid dynamic make sizes and full-slice bounds cause recoverable run-time panics",
+          "status": "passing",
+          "fixtures": [
+            "run_time_panics_make_and_full_slice"
           ]
         }
       ]

@@ -891,7 +891,7 @@ fn collect_expr_addresses(expression: &hir::Expr, addressed: &mut BTreeSet<Local
         | hir::ExprKind::Local(_)
         | hir::ExprKind::GlobalConstant(..)
         | hir::ExprKind::GlobalVariable(..)
-        | hir::ExprKind::RecoverCompareNil { .. }
+        | hir::ExprKind::Recover
         | hir::ExprKind::SliceLiteralI64(_)
         | hir::ExprKind::SliceLiteralU8(_)
         | hir::ExprKind::SliceLiteralBool(_)

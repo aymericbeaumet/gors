@@ -1,15 +1,12 @@
 //! Statement, declaration, assignment, and place lowering.
 
-use std::collections::BTreeSet;
-
 use crate::token::Token;
 
 use super::FunctionLowerer;
-use super::assignments::assignment_op;
 use super::expressions::*;
 use super::function::LocalConstantSymbol;
 use super::iteration::assigned_names_in_block;
-use super::{lower_type, parameter_types};
+use super::parameter_types;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::provenance::SourceRef;
@@ -695,7 +692,7 @@ impl FunctionLowerer {
                 ));
             }
             let declared_type = explicit_type
-                .map(|ty| lower_type(ty, &self.type_aliases, source))
+                .map(|ty| self.lower_scoped_type(ty, source))
                 .transpose()?;
             let evaluated = values
                 .iter()
@@ -768,7 +765,7 @@ impl FunctionLowerer {
                 declaration_source,
             ));
         }
-        let target = lower_type(&spec.target, &self.type_aliases, declaration_source)?;
+        let target = self.lower_scoped_type(&spec.target, declaration_source)?;
         ensure_bootstrap_value_type(&target, declaration_source)?;
         let ty = if spec.alias {
             target
@@ -791,7 +788,7 @@ impl FunctionLowerer {
         let explicit_ty = spec
             .explicit_type
             .as_ref()
-            .map(|ty| lower_type(ty, &self.type_aliases, declaration_source))
+            .map(|ty| self.lower_scoped_type(ty, declaration_source))
             .transpose()?;
         let raw_values = spec.values.as_deref().unwrap_or_default();
         if !raw_values.is_empty() && raw_values.len() != spec.names.len() {
@@ -853,212 +850,6 @@ impl FunctionLowerer {
                 values,
             },
             source: SourceRef::node(node),
-        })
-    }
-
-    fn lower_assignment(
-        &mut self,
-        left: &[ExprSyntax],
-        token: Token,
-        right: &[ExprSyntax],
-        source: SourceRef,
-    ) -> Result<hir::StmtKind, Diagnostic> {
-        if let Some(binding) = self.try_lower_closure_binding(left, token, right, source) {
-            return binding;
-        }
-        if let Some(assignment) =
-            self.try_lower_parallel_dynamic_assignment(left, token, right, source)
-        {
-            return assignment;
-        }
-        if let Some(assignment) = self.try_lower_single_index_assignment(left, token, right, source)
-        {
-            return assignment;
-        }
-        if let Some(assignment) =
-            self.try_lower_single_struct_field_assignment(left, token, right, source)
-        {
-            return assignment;
-        }
-        if let Some(assignment) = self.try_lower_pointer_assignment(left, token, right, source) {
-            return assignment;
-        }
-        if left.len() != right.len() {
-            if let [value] = right {
-                let value = match self.try_lower_channel_comma_ok(value) {
-                    Some(value) => value?,
-                    None => match self.try_lower_interface_comma_ok(value) {
-                        Some(value) => value?,
-                        None => match self.try_lower_map_comma_ok(value) {
-                            Some(value) => value?,
-                            None => self.lower_expr(value, None)?,
-                        },
-                    },
-                };
-                let Ty::Tuple(component_types) = &value.ty else {
-                    return Err(Diagnostic::semantic(
-                        format!(
-                            "assignment has {} destinations and {} values",
-                            left.len(),
-                            right.len()
-                        ),
-                        source,
-                    ));
-                };
-                if component_types.len() != left.len() {
-                    return Err(Diagnostic::semantic(
-                        format!(
-                            "assignment has {} destinations and {} result values",
-                            left.len(),
-                            component_types.len()
-                        ),
-                        source,
-                    ));
-                }
-                if !matches!(value.kind, hir::ExprKind::Call { .. }) {
-                    return Err(Diagnostic::backend(
-                        "tuple-valued non-call reached multi-result assignment",
-                    ));
-                }
-                if token == Token::ASSIGN
-                    && left
-                        .iter()
-                        .any(|expression| !matches!(expression.kind, ExprSyntaxKind::Ident(_)))
-                {
-                    return self.lower_parallel_tuple_assignment(left, value, source);
-                }
-                let (destinations, coercions, declares) =
-                    self.lower_multi_result_destinations(left, token, component_types, source)?;
-                return Ok(if declares {
-                    hir::StmtKind::LetTuple {
-                        destinations,
-                        value,
-                        coercions,
-                    }
-                } else {
-                    hir::StmtKind::AssignTuple {
-                        destinations,
-                        value,
-                        coercions,
-                    }
-                });
-            }
-            return Err(Diagnostic::unsupported(
-                "this multi-result assignment form is not yet supported",
-                source,
-            ));
-        }
-        if token == Token::DEFINE {
-            let mut names = BTreeSet::new();
-            for expression in left {
-                let ExprSyntaxKind::Ident(name) = &expression.kind else {
-                    return Err(Diagnostic::semantic(
-                        "short declaration target must be an identifier",
-                        source,
-                    ));
-                };
-                if name.name.as_ref() != "_" && !names.insert(name.name.as_ref()) {
-                    return Err(Diagnostic::semantic(
-                        format!("{} appears more than once on the left of :=", name.name),
-                        source,
-                    ));
-                }
-            }
-            // Go resolves all RHS expressions before adding the new bindings.
-            let mut values = right
-                .iter()
-                .map(|expression| self.lower_expr(expression, None))
-                .collect::<Result<Vec<_>, _>>()?;
-            let mut destinations = Vec::new();
-            let mut introduced = false;
-            for (expression, value) in left.iter().zip(&mut values) {
-                let ExprSyntaxKind::Ident(name) = &expression.kind else {
-                    return Err(Diagnostic::semantic(
-                        "short declaration target must be an identifier",
-                        source,
-                    ));
-                };
-                if name.name.as_ref() == "_" {
-                    destinations.push(hir::Place::Discard);
-                    continue;
-                }
-                if let Some(local) = self.lookup_current_local(&name.name) {
-                    let ty = self.place_ty(hir::Place::Local(local))?.clone();
-                    let value_source = value.source;
-                    coerce_expr(value, &ty, value_source)?;
-                    destinations.push(hir::Place::Local(local));
-                } else {
-                    introduced = true;
-                    let ty = value.ty.default_typed();
-                    let value_source = value.source;
-                    ensure_bootstrap_value_type(&ty, value_source)?;
-                    coerce_expr(value, &ty, value_source)?;
-                    let local = self.alloc_local(
-                        Some(name.name.to_string()),
-                        ty,
-                        hir::LocalKind::Variable,
-                        name.source,
-                    )?;
-                    destinations.push(hir::Place::Local(local));
-                }
-            }
-            if !introduced {
-                return Err(Diagnostic::semantic(
-                    "short declaration introduces no new variables",
-                    source,
-                ));
-            }
-            return Ok(hir::StmtKind::Let {
-                destinations,
-                values,
-            });
-        }
-
-        let destinations = left
-            .iter()
-            .map(|expression| self.lower_place(expression, source))
-            .collect::<Result<Vec<_>, _>>()?;
-        let destination_types = destinations
-            .iter()
-            .map(|destination| match destination {
-                hir::Place::Local(_) => self.place_ty(*destination).cloned().map(Some),
-                hir::Place::Discard => Ok(None),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let values = right
-            .iter()
-            .zip(&destination_types)
-            .map(|(expression, expected)| match expected {
-                Some(expected) => self.lower_expr(expression, Some(expected)),
-                None => self.lower_expr(expression, None).and_then(|expression| {
-                    let source = expression.source;
-                    default_expr_type(expression, source)
-                }),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let op = assignment_op(token, source)?;
-        if op != hir::AssignOp::Set && destinations.len() != 1 {
-            return Err(Diagnostic::semantic(
-                "compound assignment requires one destination and one value",
-                source,
-            ));
-        }
-        if op != hir::AssignOp::Set {
-            let ty = destination_types
-                .first()
-                .and_then(Option::as_ref)
-                .ok_or_else(|| {
-                    Diagnostic::semantic(
-                        "compound assignment requires a non-blank destination",
-                        source,
-                    )
-                })?;
-            validate_binary_operator(assignment_binary_op(op), ty, source)?;
-        }
-        Ok(hir::StmtKind::Assign {
-            destinations,
-            op,
-            values,
         })
     }
 }

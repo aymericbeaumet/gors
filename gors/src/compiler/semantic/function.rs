@@ -60,6 +60,43 @@ pub(super) struct FunctionLowerer {
 }
 
 impl FunctionLowerer {
+    pub(super) fn lower_scoped_type(
+        &self,
+        expression: &crate::compiler::syntax::ExprSyntax,
+        source: SourceRef,
+    ) -> Result<Ty, Diagnostic> {
+        let generic_base = match &expression.kind {
+            crate::compiler::syntax::ExprSyntaxKind::Index { base, .. }
+            | crate::compiler::syntax::ExprSyntaxKind::IndexList { base, .. } => match &base.kind {
+                crate::compiler::syntax::ExprSyntaxKind::Ident(base) => Some(base.name.as_ref()),
+                _ => None,
+            },
+            _ => None,
+        };
+        if generic_base.is_some_and(|base| self.generic_types.contains_key(base)) {
+            return super::generics::lower_type_with_generics(
+                expression,
+                &self.type_aliases,
+                &self.generic_types,
+                source,
+            );
+        }
+        super::lower_type_with_constant_lookup(
+            expression,
+            &self.type_aliases,
+            &|name| {
+                self.lookup_local_constant(name)
+                    .map(|constant| (constant.ty.clone(), constant.value.clone()))
+                    .or_else(|| {
+                        self.constants
+                            .get(name)
+                            .map(|constant| (constant.ty.clone(), constant.value.clone()))
+                    })
+            },
+            source,
+        )
+    }
+
     /// Allocate a revision-local HIR node index inside this stable owner.
     ///
     /// Unlike `DefId`, this is not a query key. Allocation restarts for every
@@ -241,7 +278,7 @@ impl FunctionLowerer {
         source: SourceRef,
         iota: u64,
     ) -> Result<(Ty, ConstValue), Diagnostic> {
-        super::eval_constant_with_lookup(
+        super::eval_constant_with_lookups(
             expression,
             &|name| {
                 self.lookup_local_constant(name)
@@ -252,6 +289,7 @@ impl FunctionLowerer {
                             .map(|constant| (constant.ty.clone(), constant.value.clone()))
                     })
             },
+            &|name| self.type_aliases.get(name).cloned(),
             source,
             iota,
         )

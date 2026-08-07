@@ -238,7 +238,7 @@ fn collect_expression_callees(expression: &hir::Expr, callees: &mut BTreeSet<Qua
         | hir::ExprKind::AddressOfLocal(_)
         | hir::ExprKind::GlobalConstant(..)
         | hir::ExprKind::GlobalVariable(..)
-        | hir::ExprKind::RecoverCompareNil { .. }
+        | hir::ExprKind::Recover
         | hir::ExprKind::SliceLiteralI64(_)
         | hir::ExprKind::SliceLiteralU8(_)
         | hir::ExprKind::SliceLiteralBool(_)

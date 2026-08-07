@@ -37,13 +37,14 @@ pub use interface_containers::{
     go_slice_interface_set,
 };
 pub use interfaces::{
-    GoInterface, go_interface_box_aggregate, go_interface_box_bool,
+    GoInterface, GoPanicPayload, go_interface_box_aggregate, go_interface_box_bool,
     go_interface_box_comparable_aggregate, go_interface_box_f64, go_interface_box_go_string,
     go_interface_box_i64, go_interface_box_pointer_struct_i64, go_interface_box_struct_i64,
-    go_interface_equal, go_interface_is_nil, go_interface_is_type, go_interface_nil,
-    go_interface_struct_i64_get, go_interface_unbox_aggregate, go_interface_unbox_bool,
-    go_interface_unbox_f64, go_interface_unbox_go_string, go_interface_unbox_i64,
-    go_interface_unbox_pointer_struct_i64,
+    go_interface_equal, go_interface_is_nil, go_interface_is_runtime_error, go_interface_is_type,
+    go_interface_nil, go_interface_struct_i64_get, go_interface_unbox_aggregate,
+    go_interface_unbox_bool, go_interface_unbox_f64, go_interface_unbox_go_string,
+    go_interface_unbox_i64, go_interface_unbox_pointer_struct_i64, go_panic_payload_to_interface,
+    panic_go_interface,
 };
 pub use printing::{print_bool, print_f64, print_go_string, print_i64, print_newline, print_space};
 pub use slice_identity::{
@@ -51,8 +52,8 @@ pub use slice_identity::{
     go_slice_u8_is_nil, go_slice_u8_nil,
 };
 pub use string_runes::{
-    go_string_from_slice_runes, go_string_range_count, go_string_range_index_at,
-    go_string_range_rune_at,
+    go_string_from_rune, go_string_from_slice_runes, go_string_range_count,
+    go_string_range_index_at, go_string_range_rune_at,
 };
 
 use std::cmp::Ordering;

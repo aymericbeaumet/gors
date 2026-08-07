@@ -77,10 +77,15 @@ fn evaluate(
     }
     stack.pop();
 
-    let type_aliases = package_type_aliases_product(db, input)?;
+    let syntax = constant.syntax(db);
+    let type_aliases = if syntax.explicit_type.is_some() {
+        package_type_aliases_product(db, input)?
+    } else {
+        Arc::new(BTreeMap::new())
+    };
     let typed = super::super::super::semantic::lower_constant(
         definition,
-        &constant.syntax(db),
+        &syntax,
         &constants,
         &type_aliases,
     )

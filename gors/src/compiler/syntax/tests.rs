@@ -55,9 +55,15 @@ fn repeated_package_initializers_share_one_stable_package_anchor() {
         .collect::<Vec<_>>();
 
     assert_eq!(initializers.len(), 2);
-    assert_eq!(initializers[0].anchor, SyntaxAnchor::named_function("init"));
-    assert_eq!(initializers[0].anchor, initializers[1].anchor);
-    assert_ne!(initializers[0].layout, initializers[1].layout);
+    let first = initializers
+        .first()
+        .expect("first initializer should exist");
+    let second = initializers
+        .last()
+        .expect("second initializer should exist");
+    assert_eq!(first.anchor, SyntaxAnchor::named_function("init"));
+    assert_eq!(first.anchor, second.anchor);
+    assert_ne!(first.layout, second.layout);
 }
 
 #[test]

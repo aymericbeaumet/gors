@@ -9,14 +9,19 @@ pub(super) fn is_interface_builtin(builtin: hir::Builtin) -> bool {
         builtin,
         hir::Builtin::InterfaceNil
             | hir::Builtin::InterfaceBoxBool
+            | hir::Builtin::InterfaceBoxF64
             | hir::Builtin::InterfaceBoxI64
             | hir::Builtin::InterfaceBoxGoString
             | hir::Builtin::InterfaceBoxStructI64
             | hir::Builtin::InterfaceBoxPointerStructI64
             | hir::Builtin::InterfaceBoxAggregate
+            | hir::Builtin::InterfaceBoxComparableAggregate
+            | hir::Builtin::InterfaceEqual
             | hir::Builtin::InterfaceIsNil
             | hir::Builtin::InterfaceIsType
+            | hir::Builtin::InterfaceIsRuntimeError
             | hir::Builtin::InterfaceUnboxBool
+            | hir::Builtin::InterfaceUnboxF64
             | hir::Builtin::InterfaceUnboxI64
             | hir::Builtin::InterfaceUnboxGoString
             | hir::Builtin::InterfaceStructI64Get
@@ -43,6 +48,9 @@ pub(super) fn verify_interface_call(
         hir::Builtin::InterfaceBoxBool => {
             verify_box(arguments, destinations, |ty| ty.underlying() == &Ty::Bool)
         }
+        hir::Builtin::InterfaceBoxF64 => verify_box(arguments, destinations, |ty| {
+            matches!(ty.underlying(), Ty::Float(_))
+        }),
         hir::Builtin::InterfaceBoxI64 => verify_box(arguments, destinations, |ty| {
             ty.underlying() == &Ty::Int(IntTy::Int)
         }),
@@ -55,8 +63,19 @@ pub(super) fn verify_interface_call(
         hir::Builtin::InterfaceBoxPointerStructI64 => verify_box(arguments, destinations, |ty| {
             ty.bootstrap_i64_struct_pointer_fields().is_some()
         }),
-        hir::Builtin::InterfaceBoxAggregate => {
+        hir::Builtin::InterfaceBoxAggregate | hir::Builtin::InterfaceBoxComparableAggregate => {
             verify_box(arguments, destinations, is_aggregate_payload)
+        }
+        hir::Builtin::InterfaceEqual => {
+            let ([left, right], [result]) = (arguments, destinations) else {
+                return Err(shape_error("interface equality", arguments, destinations));
+            };
+            verify_interface(left, "interface equality left operand")?;
+            verify_interface(right, "interface equality right operand")?;
+            if result != &Ty::Bool {
+                return Err(shape_error("interface equality", arguments, destinations));
+            }
+            Ok(vec![Ty::Bool])
         }
         hir::Builtin::InterfaceIsNil => {
             verify_test(arguments, destinations, false, "interface nil test")
@@ -64,11 +83,23 @@ pub(super) fn verify_interface_call(
         hir::Builtin::InterfaceIsType => {
             verify_test(arguments, destinations, true, "interface dynamic type test")
         }
+        hir::Builtin::InterfaceIsRuntimeError => verify_test(
+            arguments,
+            destinations,
+            false,
+            "runtime error interface test",
+        ),
         hir::Builtin::InterfaceUnboxBool => verify_unbox(
             arguments,
             destinations,
             |ty| ty.underlying() == &Ty::Bool,
             "interface bool extraction",
+        ),
+        hir::Builtin::InterfaceUnboxF64 => verify_unbox(
+            arguments,
+            destinations,
+            |ty| matches!(ty.underlying(), Ty::Float(_)),
+            "interface float extraction",
         ),
         hir::Builtin::InterfaceUnboxI64 => verify_unbox(
             arguments,

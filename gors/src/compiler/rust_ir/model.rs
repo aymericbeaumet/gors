@@ -30,6 +30,23 @@ pub struct Function {
 pub struct PanicCleanup {
     pub entry: BasicBlockId,
     pub active: LocalId,
+    pub recovered: LocalId,
+    pub capture: PanicPayloadCapture,
+    pub rethrow: PanicPayloadRethrow,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PanicPayloadCapture {
+    pub operation: RuntimeOp,
+    pub effects: Effects,
+    pub provenance: Provenance,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PanicPayloadRethrow {
+    pub operation: RuntimeOp,
+    pub effects: Effects,
+    pub provenance: Provenance,
 }
 
 /// Final Rust artifact decisions selected before terminal syntax emission.
@@ -162,9 +179,10 @@ pub enum RvalueKind {
         op: ValueOp,
         operand: Operand,
     },
-    RecoverCompareNil {
+    Recover {
         state: Place,
-        equal: bool,
+        value: Operand,
+        nil: RuntimeOp,
     },
     ArrayIndexI64 {
         array: Operand,
@@ -484,7 +502,7 @@ pub enum PanicEdge {
     Cleanup(BasicBlockId),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Provenance {
     Source(SourceRef),
     Synthetic(SyntheticOrigin),

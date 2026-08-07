@@ -27,6 +27,7 @@ mod statements;
 mod static_values;
 mod structs;
 mod switches;
+mod type_lowering;
 mod type_switches;
 mod unsafe_intrinsics;
 
@@ -37,20 +38,23 @@ use num_bigint::BigInt;
 
 use expressions::*;
 use function::FunctionLowerer;
+use type_lowering::{
+    field_types, field_types_with_constant_lookup, parameter_types,
+    parameter_types_with_constant_lookup,
+};
+pub(super) use type_lowering::{
+    lower_type, lower_type_with_constant_lookup, lower_type_with_constants,
+};
 
 use super::Diagnostic;
 use super::hir;
 use super::ids::{DefId, NodeId, QualifiedDefId};
 use super::provenance::SourceRef;
 use super::syntax::{
-    ChannelDirectionSyntax, ConstantSyntax, ConstantValueSyntax, ExprSyntax, ExprSyntaxKind,
-    FieldListSyntax, FunctionBodySyntax, FunctionHeaderSyntax, SyntaxSource, VariableSyntax,
-    VariableValueSyntax,
+    ConstantSyntax, ConstantValueSyntax, ExprSyntax, ExprSyntaxKind, FieldListSyntax,
+    FunctionBodySyntax, FunctionHeaderSyntax, SyntaxSource, VariableSyntax, VariableValueSyntax,
 };
-use super::types::{
-    ChannelDir, ConstValue, IntTy, InterfaceMethod, Signature, StaticValue, StructField, Ty,
-    UntypedTy,
-};
+use super::types::{ComplexTy, ConstValue, FloatTy, Signature, StaticValue, Ty, UntypedTy};
 
 #[derive(Clone)]
 pub(super) struct FunctionSymbol {
@@ -80,6 +84,7 @@ pub(super) struct GenericTypeSymbol {
     pub(super) id: DefId,
     pub(super) type_parameters: Arc<FieldListSyntax>,
     pub(super) underlying: ExprSyntax,
+    pub(super) alias: bool,
 }
 
 #[derive(Clone)]
@@ -142,8 +147,14 @@ pub(super) fn lower_signature(
     definition: DefId,
     header: &FunctionHeaderSyntax,
     type_aliases: &BTreeMap<String, Ty>,
+    constants: &BTreeMap<String, ConstantSymbol>,
 ) -> Result<Signature, Diagnostic> {
     let source = SourceRef::definition(definition);
+    let constant_lookup = |name: &str| {
+        constants
+            .get(name)
+            .map(|constant| (constant.ty.clone(), constant.value.clone()))
+    };
     if header.has_type_parameters {
         return Err(Diagnostic::unsupported(
             "generic functions with this declaration form are not yet supported",
@@ -152,7 +163,8 @@ pub(super) fn lower_signature(
     }
     let mut params = Vec::new();
     if let Some(receiver) = &header.receiver {
-        let (receiver, receiver_variadic) = parameter_types(receiver, type_aliases, source)?;
+        let (receiver, receiver_variadic) =
+            parameter_types_with_constant_lookup(receiver, type_aliases, &constant_lookup, source)?;
         if receiver_variadic || receiver.len() != 1 {
             return Err(Diagnostic::semantic(
                 "a method must declare exactly one non-variadic receiver",
@@ -161,12 +173,19 @@ pub(super) fn lower_signature(
         }
         params.extend(receiver);
     }
-    let (ordinary_params, variadic) = parameter_types(&header.params, type_aliases, source)?;
+    let (ordinary_params, variadic) = parameter_types_with_constant_lookup(
+        &header.params,
+        type_aliases,
+        &constant_lookup,
+        source,
+    )?;
     params.extend(ordinary_params);
     let results = header
         .results
         .as_ref()
-        .map(|fields| field_types(fields, type_aliases, source))
+        .map(|fields| {
+            field_types_with_constant_lookup(fields, type_aliases, &constant_lookup, source)
+        })
         .transpose()?
         .unwrap_or_default();
     for ty in params.iter().chain(&results) {
@@ -210,7 +229,7 @@ pub(super) fn lower_constant(
             ));
         }
     };
-    let (raw_ty, value) = eval_constant(expression, constants, source, syntax.iota)?;
+    let (raw_ty, value) = eval_constant(expression, constants, type_aliases, source, syntax.iota)?;
     let ty = syntax
         .explicit_type
         .as_ref()
@@ -254,7 +273,7 @@ pub(super) fn lower_variable(
     let explicit_ty = syntax
         .explicit_type
         .as_ref()
-        .map(|ty| lower_type(ty, type_aliases, source))
+        .map(|ty| lower_type_with_constants(ty, type_aliases, constants, source))
         .transpose()?;
     let (raw_ty, mut value) = match &syntax.value {
         VariableValueSyntax::Expression(expression) => static_values::evaluate_initializer(
@@ -450,266 +469,21 @@ pub(super) fn lower_function(
     }
 }
 
-fn field_types(
-    fields: &FieldListSyntax,
-    type_aliases: &BTreeMap<String, Ty>,
-    source: SourceRef,
-) -> Result<Vec<Ty>, Diagnostic> {
-    let mut result = Vec::new();
-    for field in &*fields.fields {
-        if field.variadic {
-            return Err(Diagnostic::semantic(
-                "result parameters cannot be variadic",
-                source,
-            ));
-        }
-        let type_expression = field
-            .ty
-            .as_ref()
-            .ok_or_else(|| Diagnostic::backend("signature field has no type"))?;
-        let ty = lower_type(type_expression, type_aliases, source)?;
-        let count = field.names.as_ref().map_or(1, |names| names.len());
-        result.extend(std::iter::repeat_n(ty, count));
-    }
-    Ok(result)
-}
-
-fn parameter_types(
-    fields: &FieldListSyntax,
-    type_aliases: &BTreeMap<String, Ty>,
-    source: SourceRef,
-) -> Result<(Vec<Ty>, bool), Diagnostic> {
-    let mut result = Vec::new();
-    let mut variadic = false;
-    for (index, field) in fields.fields.iter().enumerate() {
-        let type_expression = field
-            .ty
-            .as_ref()
-            .ok_or_else(|| Diagnostic::backend("signature field has no type"))?;
-        let mut ty = lower_type(type_expression, type_aliases, source)?;
-        let count = field.names.as_ref().map_or(1, |names| names.len());
-        if field.variadic {
-            if variadic || index + 1 != fields.fields.len() || count != 1 {
-                return Err(Diagnostic::semantic(
-                    "a variadic parameter must be the final single parameter",
-                    source,
-                ));
-            }
-            variadic = true;
-            ty = Ty::Slice(Box::new(ty));
-        }
-        result.extend(std::iter::repeat_n(ty, count));
-    }
-    Ok((result, variadic))
-}
-
-pub(super) fn lower_type(
-    expression: &ExprSyntax,
-    type_aliases: &BTreeMap<String, Ty>,
-    source: SourceRef,
-) -> Result<Ty, Diagnostic> {
-    if let ExprSyntaxKind::Paren(expression) = &expression.kind {
-        return lower_type(expression, type_aliases, source);
-    }
-    if let ExprSyntaxKind::ArrayType { length, element } = &expression.kind {
-        return match length {
-            None => Ok(Ty::Slice(Box::new(lower_type(
-                element,
-                type_aliases,
-                source,
-            )?))),
-            Some(length) => arrays::lower_array_type(length, element, type_aliases, source),
-        };
-    }
-    if let ExprSyntaxKind::MapType { key, value } = &expression.kind {
-        return Ok(Ty::Map(
-            Box::new(lower_type(key, type_aliases, source)?),
-            Box::new(lower_type(value, type_aliases, source)?),
-        ));
-    }
-    if let ExprSyntaxKind::ChannelType { direction, element } = &expression.kind {
-        let direction = match direction {
-            ChannelDirectionSyntax::SendReceive => ChannelDir::SendReceive,
-            ChannelDirectionSyntax::SendOnly => ChannelDir::SendOnly,
-            ChannelDirectionSyntax::ReceiveOnly => ChannelDir::ReceiveOnly,
-        };
-        return Ok(Ty::Channel(
-            direction,
-            Box::new(lower_type(element, type_aliases, source)?),
-        ));
-    }
-    if let ExprSyntaxKind::Unary {
-        token: crate::token::Token::MUL,
-        expression,
-    } = &expression.kind
-    {
-        return Ok(Ty::Pointer(Box::new(lower_type(
-            expression,
-            type_aliases,
-            source,
-        )?)));
-    }
-    if let ExprSyntaxKind::FunctionType {
-        has_type_parameters,
-        params,
-        results,
-    } = &expression.kind
-    {
-        if *has_type_parameters {
-            return Err(Diagnostic::unsupported(
-                "generic function types are not yet implemented",
-                source,
-            ));
-        }
-        let (params, variadic) = parameter_types(params, type_aliases, source)?;
-        let results = results
-            .as_ref()
-            .map(|results| field_types(results, type_aliases, source))
-            .transpose()?
-            .unwrap_or_default();
-        return Ok(Ty::Function(Signature {
-            params,
-            results,
-            variadic,
-        }));
-    }
-    if let ExprSyntaxKind::StructType { fields } = &expression.kind {
-        let mut lowered = Vec::new();
-        for field in &*fields.fields {
-            if field.variadic {
-                return Err(Diagnostic::semantic(
-                    "struct fields cannot be variadic",
-                    source,
-                ));
-            }
-            let syntax = field
-                .ty
-                .as_ref()
-                .ok_or_else(|| Diagnostic::backend("struct field has no type"))?;
-            let ty = lower_type(syntax, type_aliases, source)?;
-            let tag = field.tag.as_ref().map(ToString::to_string);
-            if let Some(names) = &field.names {
-                lowered.extend(names.iter().map(|name| StructField {
-                    name: name.name.to_string(),
-                    ty: ty.clone(),
-                    embedded: false,
-                    tag: tag.clone(),
-                }));
-            } else {
-                lowered.push(StructField {
-                    name: embedded_field_name(syntax).ok_or_else(|| {
-                        Diagnostic::semantic("invalid embedded struct field type", source)
-                    })?,
-                    ty,
-                    embedded: true,
-                    tag,
-                });
-            }
-        }
-        return Ok(Ty::Struct(lowered));
-    }
-    if let ExprSyntaxKind::InterfaceType { methods } = &expression.kind {
-        let mut lowered = BTreeMap::<String, Signature>::new();
-        for field in &*methods.fields {
-            let syntax = field
-                .ty
-                .as_ref()
-                .ok_or_else(|| Diagnostic::backend("interface element has no type"))?;
-            if let Some(names) = &field.names {
-                let Ty::Function(signature) = lower_type(syntax, type_aliases, source)? else {
-                    return Err(Diagnostic::semantic(
-                        "interface methods require function signatures",
-                        source,
-                    ));
-                };
-                for name in &**names {
-                    if lowered
-                        .insert(name.name.to_string(), signature.clone())
-                        .is_some()
-                    {
-                        return Err(Diagnostic::semantic(
-                            format!("duplicate interface method {}", name.name),
-                            source,
-                        ));
-                    }
-                }
-            } else {
-                let embedded = lower_type(syntax, type_aliases, source)?;
-                let Ty::Interface(methods) = embedded.underlying() else {
-                    return Err(Diagnostic::unsupported(
-                        "interface type-set elements are not yet implemented",
-                        source,
-                    ));
-                };
-                for method in methods {
-                    lowered
-                        .entry(method.name.clone())
-                        .or_insert_with(|| method.signature.clone());
-                }
-            }
-        }
-        return Ok(Ty::Interface(
-            lowered
-                .into_iter()
-                .map(|(name, signature)| InterfaceMethod { name, signature })
-                .collect(),
-        ));
-    }
-    let ExprSyntaxKind::Ident(ident) = &expression.kind else {
-        return Err(Diagnostic::unsupported(
-            "this Go type is not yet supported",
-            source,
-        ));
-    };
-    match ident.name.as_ref() {
-        "bool" => Ok(Ty::Bool),
-        "string" => Ok(Ty::String),
-        "int" => Ok(Ty::Int(IntTy::Int)),
-        "int32" | "rune" => Ok(Ty::Int(IntTy::Int32)),
-        "float64" => Ok(Ty::Float(super::types::FloatTy::Float64)),
-        "complex128" => Ok(Ty::Complex(super::types::ComplexTy::Complex128)),
-        "uint8" | "byte" => Ok(Ty::Uint(super::types::UintTy::Uint8)),
-        "any" => Ok(Ty::Interface(Vec::new())),
-        "error" => Ok(interfaces::error_interface_ty()),
-        "int8" | "int16" | "int64" | "uint" | "uint16" | "uint32" | "uint64" | "uintptr"
-        | "float32" | "complex64" => Err(Diagnostic::unsupported(
-            format!(
-                "executable support for type {} is not yet available",
-                ident.name
-            ),
-            source,
-        )),
-        other => type_aliases.get(other).cloned().ok_or_else(|| {
-            Diagnostic::unsupported(format!("type {other} is not yet supported"), source)
-        }),
-    }
-}
-
-fn embedded_field_name(expression: &ExprSyntax) -> Option<String> {
-    match &expression.kind {
-        ExprSyntaxKind::Ident(ident) => Some(ident.name.to_string()),
-        ExprSyntaxKind::Unary {
-            token: crate::token::Token::MUL,
-            expression,
-        } => embedded_field_name(expression),
-        ExprSyntaxKind::Selector { member, .. } => Some(member.name.to_string()),
-        _ => None,
-    }
-}
-
 pub(super) fn eval_constant(
     expression: &ExprSyntax,
     constants: &BTreeMap<String, ConstantSymbol>,
+    type_aliases: &BTreeMap<String, Ty>,
     source: SourceRef,
     iota: u64,
 ) -> Result<(Ty, ConstValue), Diagnostic> {
-    eval_constant_with_lookup(
+    eval_constant_with_lookups(
         expression,
         &|name| {
             constants
                 .get(name)
                 .map(|constant| (constant.ty.clone(), constant.value.clone()))
         },
+        &|name| type_aliases.get(name).cloned(),
         source,
         iota,
     )
@@ -718,6 +492,16 @@ pub(super) fn eval_constant(
 pub(super) fn eval_constant_with_lookup(
     expression: &ExprSyntax,
     lookup: &impl Fn(&str) -> Option<(Ty, ConstValue)>,
+    source: SourceRef,
+    iota: u64,
+) -> Result<(Ty, ConstValue), Diagnostic> {
+    eval_constant_with_lookups(expression, lookup, &|_| None, source, iota)
+}
+
+pub(super) fn eval_constant_with_lookups(
+    expression: &ExprSyntax,
+    constant_lookup: &impl Fn(&str) -> Option<(Ty, ConstValue)>,
+    type_lookup: &impl Fn(&str) -> Option<Ty>,
     source: SourceRef,
     iota: u64,
 ) -> Result<(Ty, ConstValue), Diagnostic> {
@@ -752,7 +536,7 @@ pub(super) fn eval_constant_with_lookup(
             crate::token::Token::CHAR => parse_go_rune(spelling)
                 .map(|value| {
                     (
-                        Ty::Untyped(UntypedTy::Int),
+                        Ty::Untyped(UntypedTy::Rune),
                         ConstValue::Int(value.to_string()),
                     )
                 })
@@ -763,7 +547,7 @@ pub(super) fn eval_constant_with_lookup(
             )),
         },
         ExprSyntaxKind::Ident(ident) => {
-            if let Some(constant) = lookup(ident.name.as_ref()) {
+            if let Some(constant) = constant_lookup(ident.name.as_ref()) {
                 Ok(constant)
             } else if matches!(ident.name.as_ref(), "true" | "false") {
                 Ok((
@@ -783,8 +567,10 @@ pub(super) fn eval_constant_with_lookup(
             }
         }
         ExprSyntaxKind::Binary { left, token, right } => {
-            let (left_ty, left) = eval_constant_with_lookup(left, lookup, source, iota)?;
-            let (right_ty, right) = eval_constant_with_lookup(right, lookup, source, iota)?;
+            let (left_ty, left) =
+                eval_constant_with_lookups(left, constant_lookup, type_lookup, source, iota)?;
+            let (right_ty, right) =
+                eval_constant_with_lookups(right, constant_lookup, type_lookup, source, iota)?;
             let op = lower_binary_op(*token).ok_or_else(|| {
                 Diagnostic::unsupported(
                     format!("constant operator {token:?} is not implemented"),
@@ -804,8 +590,7 @@ pub(super) fn eval_constant_with_lookup(
                     source,
                 )
             })?;
-            ensure_bootstrap_value_type(&operand_ty.default_typed(), source)?;
-            validate_binary_operator(op, &operand_ty.default_typed(), source)?;
+            validate_constant_binary_operator(op, &operand_ty, source)?;
             // An untyped constant operand first converts to the common
             // operand type, so an integral float spelling participates in
             // integer arithmetic at integer operand types.
@@ -832,10 +617,11 @@ pub(super) fn eval_constant_with_lookup(
             Ok((result_ty, value))
         }
         ExprSyntaxKind::Paren(expression) => {
-            eval_constant_with_lookup(expression, lookup, source, iota)
+            eval_constant_with_lookups(expression, constant_lookup, type_lookup, source, iota)
         }
         ExprSyntaxKind::Unary { token, expression } => {
-            let (ty, value) = eval_constant_with_lookup(expression, lookup, source, iota)?;
+            let (ty, value) =
+                eval_constant_with_lookups(expression, constant_lookup, type_lookup, source, iota)?;
             match (*token, value) {
                 (crate::token::Token::ADD, value) => Ok((ty, value)),
                 (crate::token::Token::SUB, ConstValue::Int(value)) => {
@@ -866,8 +652,20 @@ pub(super) fn eval_constant_with_lookup(
                 )),
             }
         }
-        ExprSyntaxKind::Call { .. }
-        | ExprSyntaxKind::FunctionLiteral { .. }
+        ExprSyntaxKind::Call {
+            callee,
+            arguments,
+            spread,
+        } => eval_constant_call(
+            callee,
+            arguments,
+            *spread,
+            constant_lookup,
+            type_lookup,
+            source,
+            iota,
+        ),
+        ExprSyntaxKind::FunctionLiteral { .. }
         | ExprSyntaxKind::FunctionType { .. }
         | ExprSyntaxKind::Selector { .. }
         | ExprSyntaxKind::TypeAssert { .. }
@@ -886,6 +684,277 @@ pub(super) fn eval_constant_with_lookup(
             source,
         )),
     }
+}
+
+fn validate_constant_binary_operator(
+    op: hir::BinaryOp,
+    ty: &Ty,
+    source: SourceRef,
+) -> Result<(), Diagnostic> {
+    let ty = ty.default_typed();
+    let ty = ty.underlying();
+    let ordered = ty.is_integer() || matches!(ty, Ty::Float(_) | Ty::String);
+    let valid = match op {
+        hir::BinaryOp::LogicalAnd | hir::BinaryOp::LogicalOr => *ty == Ty::Bool,
+        hir::BinaryOp::Equal | hir::BinaryOp::NotEqual => {
+            *ty == Ty::Bool || ty.is_numeric() || *ty == Ty::String
+        }
+        hir::BinaryOp::Less
+        | hir::BinaryOp::LessEqual
+        | hir::BinaryOp::Greater
+        | hir::BinaryOp::GreaterEqual
+        | hir::BinaryOp::Min
+        | hir::BinaryOp::Max => ordered,
+        hir::BinaryOp::Add => ty.is_numeric() || *ty == Ty::String,
+        hir::BinaryOp::Sub | hir::BinaryOp::Mul | hir::BinaryOp::Div => ty.is_numeric(),
+        hir::BinaryOp::Rem
+        | hir::BinaryOp::BitAnd
+        | hir::BinaryOp::BitOr
+        | hir::BinaryOp::BitXor
+        | hir::BinaryOp::Shl
+        | hir::BinaryOp::Shr
+        | hir::BinaryOp::AndNot => ty.is_integer(),
+        hir::BinaryOp::Complex => matches!(ty, Ty::Int(_) | Ty::Uint(_) | Ty::Float(_)),
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(Diagnostic::semantic(
+            format!("operator {op:?} is invalid for constant type {ty:?}"),
+            source,
+        ))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_constant_call(
+    callee: &ExprSyntax,
+    arguments: &[ExprSyntax],
+    spread: bool,
+    constant_lookup: &impl Fn(&str) -> Option<(Ty, ConstValue)>,
+    type_lookup: &impl Fn(&str) -> Option<Ty>,
+    source: SourceRef,
+    iota: u64,
+) -> Result<(Ty, ConstValue), Diagnostic> {
+    let ExprSyntaxKind::Ident(callee) = &callee.kind else {
+        return Err(Diagnostic::semantic(
+            "constant call target must be a predeclared function or type",
+            source,
+        ));
+    };
+    if spread {
+        return Err(Diagnostic::semantic(
+            "... is not permitted in a constant expression",
+            source,
+        ));
+    }
+    let name = callee.name.as_ref();
+    if let Some(target) = type_lookup(name) {
+        let [argument] = arguments else {
+            return Err(Diagnostic::semantic(
+                format!("conversion to {name} requires exactly one argument"),
+                source,
+            ));
+        };
+        let (actual, mut value) =
+            eval_constant_with_lookups(argument, constant_lookup, type_lookup, source, iota)?;
+        if !is_assignable(&actual, &target) || !value.is_representable_as(&target) {
+            return Err(Diagnostic::semantic(
+                format!("constant is not representable as {target:?}"),
+                source,
+            ));
+        }
+        value = value.normalized_for(&target);
+        return Ok((target, value));
+    }
+    match name {
+        "len" => {
+            let [argument] = arguments else {
+                return Err(Diagnostic::semantic(
+                    "constant len requires exactly one argument",
+                    source,
+                ));
+            };
+            let (_, value) =
+                eval_constant_with_lookups(argument, constant_lookup, type_lookup, source, iota)?;
+            let ConstValue::String(value) = value else {
+                return Err(Diagnostic::semantic(
+                    "constant len currently requires a constant string",
+                    source,
+                ));
+            };
+            Ok((
+                Ty::Untyped(UntypedTy::Int),
+                ConstValue::Int(value.len().to_string()),
+            ))
+        }
+        "min" | "max" => {
+            eval_constant_min_max(name, arguments, constant_lookup, type_lookup, source, iota)
+        }
+        "complex" => eval_constant_complex(arguments, constant_lookup, type_lookup, source, iota),
+        "real" | "imag" => eval_constant_complex_component(
+            name,
+            arguments,
+            constant_lookup,
+            type_lookup,
+            source,
+            iota,
+        ),
+        _ => Err(Diagnostic::semantic(
+            format!("{name} is not a constant function or type"),
+            source,
+        )),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_constant_min_max(
+    name: &str,
+    arguments: &[ExprSyntax],
+    constant_lookup: &impl Fn(&str) -> Option<(Ty, ConstValue)>,
+    type_lookup: &impl Fn(&str) -> Option<Ty>,
+    source: SourceRef,
+    iota: u64,
+) -> Result<(Ty, ConstValue), Diagnostic> {
+    let mut arguments = arguments.iter();
+    let first = arguments.next().ok_or_else(|| {
+        Diagnostic::semantic(
+            format!("call to {name} requires at least one argument"),
+            source,
+        )
+    })?;
+    let (mut ty, mut value) =
+        eval_constant_with_lookups(first, constant_lookup, type_lookup, source, iota)?;
+    let op = if name == "min" {
+        hir::BinaryOp::Min
+    } else {
+        hir::BinaryOp::Max
+    };
+    for argument in arguments {
+        let (right_ty, right) =
+            eval_constant_with_lookups(argument, constant_lookup, type_lookup, source, iota)?;
+        let common = exact_common_operand_type(&ty, &right_ty).ok_or_else(|| {
+            Diagnostic::semantic(
+                format!("incompatible {name} operands {ty:?} and {right_ty:?}"),
+                source,
+            )
+        })?;
+        if !(common.is_numeric() || common.default_typed().underlying() == &Ty::String)
+            || matches!(
+                common.default_typed().underlying(),
+                Ty::Complex(ComplexTy::Complex64 | ComplexTy::Complex128)
+            )
+        {
+            return Err(Diagnostic::semantic(
+                format!("{name} requires ordered arguments"),
+                source,
+            ));
+        }
+        value = fold_constant_binary(
+            op,
+            &value.normalized_for(&common),
+            &right.normalized_for(&common),
+            source,
+        )?
+        .ok_or_else(|| Diagnostic::semantic(format!("invalid constant {name}"), source))?;
+        ty = common;
+    }
+    Ok((ty, value))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_constant_complex(
+    arguments: &[ExprSyntax],
+    constant_lookup: &impl Fn(&str) -> Option<(Ty, ConstValue)>,
+    type_lookup: &impl Fn(&str) -> Option<Ty>,
+    source: SourceRef,
+    iota: u64,
+) -> Result<(Ty, ConstValue), Diagnostic> {
+    let [real, imag] = arguments else {
+        return Err(Diagnostic::semantic(
+            "call to complex requires exactly two arguments",
+            source,
+        ));
+    };
+    let (real_ty, real) =
+        eval_constant_with_lookups(real, constant_lookup, type_lookup, source, iota)?;
+    let (imag_ty, imag) =
+        eval_constant_with_lookups(imag, constant_lookup, type_lookup, source, iota)?;
+    let component_ty = exact_common_operand_type(&real_ty, &imag_ty).ok_or_else(|| {
+        Diagnostic::semantic(
+            format!("incompatible complex components {real_ty:?} and {imag_ty:?}"),
+            source,
+        )
+    })?;
+    let component = |value: ConstValue| match value {
+        ConstValue::Int(value) | ConstValue::Float(value) => Ok(value),
+        _ => Err(Diagnostic::semantic(
+            "complex requires real numeric constant arguments",
+            source,
+        )),
+    };
+    let ty = match component_ty.default_typed().underlying() {
+        Ty::Float(FloatTy::Float32) => Ty::Complex(ComplexTy::Complex64),
+        Ty::Int(_) | Ty::Uint(_) | Ty::Float(FloatTy::Float64)
+            if matches!(component_ty, Ty::Untyped(_)) =>
+        {
+            Ty::Untyped(UntypedTy::Complex)
+        }
+        Ty::Float(FloatTy::Float64) => Ty::Complex(ComplexTy::Complex128),
+        _ => {
+            return Err(Diagnostic::semantic(
+                "complex requires floating-point arguments or numeric constants",
+                source,
+            ));
+        }
+    };
+    Ok((
+        ty,
+        ConstValue::Complex {
+            real: component(real)?,
+            imag: component(imag)?,
+        },
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_constant_complex_component(
+    name: &str,
+    arguments: &[ExprSyntax],
+    constant_lookup: &impl Fn(&str) -> Option<(Ty, ConstValue)>,
+    type_lookup: &impl Fn(&str) -> Option<Ty>,
+    source: SourceRef,
+    iota: u64,
+) -> Result<(Ty, ConstValue), Diagnostic> {
+    let [argument] = arguments else {
+        return Err(Diagnostic::semantic(
+            format!("call to {name} requires exactly one argument"),
+            source,
+        ));
+    };
+    let (argument_ty, argument) =
+        eval_constant_with_lookups(argument, constant_lookup, type_lookup, source, iota)?;
+    let ConstValue::Complex { real, imag } = argument else {
+        return Err(Diagnostic::semantic(
+            format!("{name} requires a complex argument"),
+            source,
+        ));
+    };
+    let ty = match argument_ty {
+        Ty::Untyped(_) => Ty::Untyped(UntypedTy::Float),
+        Ty::Complex(ComplexTy::Complex64) => Ty::Float(FloatTy::Float32),
+        Ty::Complex(ComplexTy::Complex128) => Ty::Float(FloatTy::Float64),
+        _ => {
+            return Err(Diagnostic::semantic(
+                format!("{name} requires a complex argument"),
+                source,
+            ));
+        }
+    };
+    Ok((
+        ty,
+        ConstValue::Float(if name == "real" { real } else { imag }),
+    ))
 }
 
 fn negate_number_spelling(value: &str) -> String {

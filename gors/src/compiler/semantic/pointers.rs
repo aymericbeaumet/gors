@@ -3,7 +3,6 @@
 use super::FunctionLowerer;
 use super::channels::int_channel_parts;
 use super::expressions::coerce_expr;
-use super::lower_type;
 use super::maps::string_i64_map_ty;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
@@ -187,7 +186,7 @@ impl FunctionLowerer {
             ));
         };
         let element_source = element.source;
-        let element = lower_type(element, &self.type_aliases, source)?;
+        let element = self.lower_scoped_type(element, source)?;
         let (builtin, args) = if element.underlying() == &Ty::Int(IntTy::Int) {
             (hir::Builtin::PointerI64New, Vec::new())
         } else if let Some(fields) = element.bootstrap_i64_struct_fields() {

@@ -33,13 +33,16 @@ impl FunctionLowerer {
         if matches!(
             callee,
             hir::Callee::Builtin(
-                hir::Builtin::InterfaceSatisfies | hir::Builtin::InterfaceSatisfiesNonNil
+                hir::Builtin::InterfaceSatisfies
+                    | hir::Builtin::InterfaceSatisfiesRuntimeError
+                    | hir::Builtin::InterfaceSatisfiesNonNil
             )
         ) {
             return self.lower_interface_satisfaction_into(
                 args,
                 destinations,
                 *callee == hir::Callee::Builtin(hir::Builtin::InterfaceSatisfiesNonNil),
+                *callee == hir::Callee::Builtin(hir::Builtin::InterfaceSatisfiesRuntimeError),
                 expression.source,
             );
         }

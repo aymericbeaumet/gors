@@ -35,7 +35,7 @@ impl FunctionLowerer {
         else {
             return Ok(None);
         };
-        let target = super::lower_type(callee, &self.type_aliases, source)?;
+        let target = self.lower_scoped_type(callee, source)?;
         let Ty::Pointer(element) = target.underlying() else {
             return Err(Diagnostic::semantic(
                 "unsafe.Pointer round trip requires conversion to a pointer type",

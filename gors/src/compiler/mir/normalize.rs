@@ -222,7 +222,7 @@ fn rewrite_rvalue_boolean_reads(rvalue: &mut Rvalue, constants: &BTreeMap<LocalI
             rewrite_boolean_read(structure, constants);
             rewrite_boolean_read(value, constants);
         }
-        RvalueKind::RecoverCompareNil { .. } => {}
+        RvalueKind::Recover { value, .. } => rewrite_boolean_read(value, constants),
         RvalueKind::SliceLiteralI64 { .. }
         | RvalueKind::SliceLiteralU8(_)
         | RvalueKind::SliceLiteralBool(_)
@@ -305,7 +305,7 @@ fn refresh_rvalue_effects(rvalue: &mut Rvalue) {
         RvalueKind::StructSet {
             structure, value, ..
         } => operand_reads(structure) || operand_reads(value),
-        RvalueKind::RecoverCompareNil { .. } => true,
+        RvalueKind::Recover { value, .. } => operand_reads(value),
         RvalueKind::SliceLiteralI64 { .. }
         | RvalueKind::SliceLiteralU8(_)
         | RvalueKind::SliceLiteralBool(_)
@@ -331,7 +331,7 @@ fn refresh_rvalue_effects(rvalue: &mut Rvalue) {
             | RvalueKind::SliceLiteralU8(_)
             | RvalueKind::SliceLiteralBool(_)
     );
-    let recover = matches!(rvalue.kind, RvalueKind::RecoverCompareNil { .. });
+    let recover = matches!(rvalue.kind, RvalueKind::Recover { .. });
     rvalue.effects = hir::Effects {
         may_read,
         may_write: recover,

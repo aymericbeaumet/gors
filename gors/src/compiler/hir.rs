@@ -288,11 +288,8 @@ pub enum ExprKind {
     Conversion {
         value: Box<Expr>,
     },
-    /// Compare the result of a direct `recover()` call with `nil` while
-    /// consuming the active panic when one exists.
-    RecoverCompareNil {
-        equal: bool,
-    },
+    /// Return and consume the active panic value for a directly deferred call.
+    Recover,
     SliceLiteralI64(Vec<i64>),
     DynamicSliceLiteralI64(Vec<Expr>),
     AggregateSliceLiteral {
@@ -398,6 +395,7 @@ pub enum Builtin {
     SnapshotFunctionSliceAppend,
     /// Invoke one proven capture-only function directly from its slice.
     SnapshotFunctionSliceCall,
+    StringFromRune,
     StringFromSliceU8,
     StringFromSliceRunes,
     StringLen,
@@ -442,24 +440,32 @@ pub enum Builtin {
     InterfaceNil,
     InterfaceBoxBool,
     InterfaceBoxI64,
+    InterfaceBoxF64,
     InterfaceBoxGoString,
     InterfaceBoxStructI64,
     InterfaceBoxPointerStructI64,
     InterfaceBoxAggregate,
+    InterfaceBoxComparableAggregate,
     InterfaceIsNil,
     InterfaceIsType,
+    InterfaceIsRuntimeError,
+    InterfaceEqual,
     /// HIR-only type assertion expanded into explicit interface tests and
     /// extraction calls during MIR construction.
     InterfaceAssert,
     /// HIR-only interface-satisfaction assertion expanded against the
     /// package's executable dynamic-type set during MIR construction.
     InterfaceSatisfies,
+    /// HIR-only interface-satisfaction assertion that also admits the
+    /// implementation-provided dynamic type used for runtime panics.
+    InterfaceSatisfiesRuntimeError,
     /// HIR-only interface conversion whose source method set statically
     /// implies the target method set. It succeeds for every non-nil dynamic
     /// value and is expanded into an explicit nil test during MIR construction.
     InterfaceSatisfiesNonNil,
     InterfaceUnboxBool,
     InterfaceUnboxI64,
+    InterfaceUnboxF64,
     InterfaceUnboxGoString,
     InterfaceStructI64Get,
     InterfaceUnboxPointerStructI64,

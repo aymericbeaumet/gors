@@ -11,6 +11,7 @@ pub enum SyntaxSourceRegion {
     Body,
     Constant,
     Variable,
+    TypeDeclaration,
 }
 
 /// Trivia-independent source identity inside one owned declaration.

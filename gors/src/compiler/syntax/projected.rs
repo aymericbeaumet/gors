@@ -2,7 +2,8 @@
 
 use super::{
     ConstantLayout, ConstantSyntax, FunctionBodySyntax, FunctionHeaderSyntax, FunctionLayout,
-    SemanticTokenStream, SyntaxAnchor, VariableLayout, VariableSyntax,
+    SemanticTokenStream, SyntaxAnchor, TypeAliasSyntax, TypeDeclarationLayout,
+    TypeDefinitionSyntax, VariableLayout, VariableSyntax,
 };
 
 pub struct ProjectedFunctionSyntax {
@@ -22,4 +23,14 @@ pub struct ProjectedConstantSyntax {
 pub struct ProjectedVariableSyntax {
     pub(crate) syntax: VariableSyntax,
     pub(crate) layout: VariableLayout,
+}
+
+pub struct ProjectedTypeAliasSyntax {
+    pub(crate) syntax: TypeAliasSyntax,
+    pub(crate) layout: TypeDeclarationLayout,
+}
+
+pub struct ProjectedTypeDefinitionSyntax {
+    pub(crate) syntax: TypeDefinitionSyntax,
+    pub(crate) layout: TypeDeclarationLayout,
 }

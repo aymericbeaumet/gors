@@ -1,0 +1,3 @@
+module go_spec_run_time_panics_make_and_full_slice
+
+go 1.26

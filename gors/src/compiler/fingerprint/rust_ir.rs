@@ -68,6 +68,29 @@ fn encode_function(encoder: &mut Encoder, function: &rust_ir::Function) {
         encoder.option(function.panic_cleanup.as_ref(), |encoder, cleanup| {
             encoder.field(b"entry", |encoder| block_id(encoder, cleanup.entry));
             encoder.field(b"active", |encoder| local_id(encoder, cleanup.active));
+            encoder.field(b"recovered", |encoder| local_id(encoder, cleanup.recovered));
+            encoder.field(b"capture", |encoder| {
+                encoder.field(b"operation", |encoder| {
+                    encode_runtime_op(encoder, cleanup.capture.operation);
+                });
+                encoder.field(b"effects", |encoder| {
+                    encode_effects(encoder, cleanup.capture.effects);
+                });
+                encoder.field(b"provenance", |encoder| {
+                    encode_provenance(encoder, &cleanup.capture.provenance);
+                });
+            });
+            encoder.field(b"rethrow", |encoder| {
+                encoder.field(b"operation", |encoder| {
+                    encode_runtime_op(encoder, cleanup.rethrow.operation);
+                });
+                encoder.field(b"effects", |encoder| {
+                    encode_effects(encoder, cleanup.rethrow.effects);
+                });
+                encoder.field(b"provenance", |encoder| {
+                    encode_provenance(encoder, &cleanup.rethrow.provenance);
+                });
+            });
         });
     });
     encoder.field(b"control-flow", |encoder| {
@@ -212,10 +235,11 @@ fn encode_rvalue_kind(encoder: &mut Encoder, kind: &rust_ir::RvalueKind) {
                 encoder.field(b"operand", |encoder| encode_operand(encoder, operand));
             });
         }
-        rust_ir::RvalueKind::RecoverCompareNil { state, equal } => {
-            encoder.variant(b"recover-compare-nil", |encoder| {
+        rust_ir::RvalueKind::Recover { state, value, nil } => {
+            encoder.variant(b"recover", |encoder| {
                 encoder.field(b"state", |encoder| encode_place(encoder, *state));
-                encoder.field(b"equal", |encoder| encoder.bool(*equal));
+                encoder.field(b"value", |encoder| encode_operand(encoder, value));
+                encoder.field(b"nil", |encoder| encode_runtime_op(encoder, *nil));
             });
         }
         rust_ir::RvalueKind::Binary { op, left, right } => {

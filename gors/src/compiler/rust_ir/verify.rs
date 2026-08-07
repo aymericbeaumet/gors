@@ -1,5 +1,6 @@
 //! Verification for explicit Rust representation, ABI, storage, and control plans.
 
+mod recovery;
 mod structs;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -186,40 +187,10 @@ impl Function {
             }
             self.verify_terminator(&block.terminator, signatures)?;
         }
-        self.verify_panic_cleanup()?;
+        recovery::verify_panic_cleanup(self)?;
         self.verify_control_flow_plan()?;
         self.verify_storage_dataflow()?;
         Ok(runtime_requirement(self))
-    }
-
-    fn verify_panic_cleanup(&self) -> Result<(), Diagnostic> {
-        if let Some(cleanup) = self.panic_cleanup {
-            self.verify_target(cleanup.entry)?;
-            verify_same(
-                self.place_ty(Place {
-                    local: cleanup.active,
-                })?,
-                RustType::Bool,
-                "panic cleanup state",
-            )?;
-        }
-        for block in &self.blocks {
-            for edge in block
-                .statements
-                .iter()
-                .map(|statement| statement.value.panic)
-                .chain(std::iter::once(block.terminator.panic))
-            {
-                if let PanicEdge::Cleanup(target) = edge
-                    && self.panic_cleanup.map(|cleanup| cleanup.entry) != Some(target)
-                {
-                    return Err(Diagnostic::backend(
-                        "Rust IR panic edge does not target the function cleanup entry",
-                    ));
-                }
-            }
-        }
-        Ok(())
     }
 
     fn verify_control_flow_plan(&self) -> Result<(), Diagnostic> {
@@ -303,13 +274,8 @@ impl Function {
                 let operand = self.operand_ty(operand)?;
                 verify_value_operation(*op, &[operand], "unary operation")?
             }
-            RvalueKind::RecoverCompareNil { state, .. } => {
-                verify_same(
-                    self.place_ty(*state)?,
-                    RustType::Bool,
-                    "panic recovery state",
-                )?;
-                RustType::Bool
+            RvalueKind::Recover { state, value, nil } => {
+                recovery::verify_recover(self, *state, value, *nil)?
             }
             RvalueKind::Binary { op, left, right } => {
                 let left = self.operand_ty(left)?;
@@ -686,7 +652,8 @@ fn rust_type_from_runtime(ty: RuntimeType, context: &str) -> Result<RustType, Di
         | RuntimeType::StaticI64Slice
         | RuntimeType::StaticBoolSlice
         | RuntimeType::I64BoolTuple
-        | RuntimeType::I64I64Tuple => Err(Diagnostic::backend(format!(
+        | RuntimeType::I64I64Tuple
+        | RuntimeType::GoPanicPayload => Err(Diagnostic::backend(format!(
             "Rust IR {context} requires ABI-only operand type {ty:?}"
         ))),
     }
@@ -757,6 +724,10 @@ fn constant_type(constant: &Constant) -> Result<RustType, Diagnostic> {
 
 fn runtime_requirement(function: &Function) -> RuntimeRequirement {
     let mut operations = Vec::new();
+    if let Some(cleanup) = function.panic_cleanup {
+        operations.push(cleanup.capture.operation);
+        operations.push(cleanup.rethrow.operation);
+    }
     for block in &function.blocks {
         for statement in &block.statements {
             collect_rvalue_runtime_operations(&statement.value, &mut operations);
@@ -826,7 +797,10 @@ fn collect_rvalue_runtime_operations(rvalue: &Rvalue, operations: &mut Vec<Runti
             collect_operand_runtime_operations(left, operations);
             collect_operand_runtime_operations(right, operations);
         }
-        RvalueKind::RecoverCompareNil { .. } => {}
+        RvalueKind::Recover { value, nil, .. } => {
+            operations.push(*nil);
+            collect_operand_runtime_operations(value, operations);
+        }
     }
 }
 

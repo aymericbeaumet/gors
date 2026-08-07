@@ -5,7 +5,13 @@ use std::sync::Arc;
 use crate::{
     GoInt, GoPointerStructI64, GoSliceI64, GoSliceInterface, GoString, go_pointer_struct_i64_equal,
     go_slice_i64_index, go_slice_i64_len, go_slice_interface_index, go_slice_interface_len,
+    go_string_from_bytes, go_string_from_static,
 };
+
+const RUNTIME_ERROR_TYPE_IDENTITY: &[u8] = b"runtime:gors-error";
+
+/// Opaque payload crossing the Rust unwind boundary into Go recovery semantics.
+pub type GoPanicPayload = Box<dyn std::any::Any + Send + 'static>;
 
 /// A Go interface pairs one concrete dynamic type with a copied dynamic value.
 ///
@@ -119,6 +125,62 @@ pub fn go_interface_is_type(value: GoInterface, type_identity: GoString) -> bool
     value
         .0
         .is_some_and(|dynamic| dynamic.type_identity == type_identity)
+}
+
+/// Report whether an interface holds an implementation-provided runtime error.
+#[must_use]
+pub fn go_interface_is_runtime_error(value: GoInterface) -> bool {
+    value.0.is_some_and(|dynamic| {
+        dynamic.type_identity == go_string_from_static(RUNTIME_ERROR_TYPE_IDENTITY)
+    })
+}
+
+/// Convert one opaque Rust unwind payload into its exact recoverable Go value.
+#[must_use]
+pub fn go_panic_payload_to_interface(payload: GoPanicPayload) -> GoInterface {
+    let payload = match payload.downcast::<GoInterface>() {
+        Ok(value) => return *value,
+        Err(payload) => payload,
+    };
+    let payload = match payload.downcast::<bool>() {
+        Ok(value) => {
+            return go_interface_box_bool(go_string_from_static(b"builtin:bool"), *value);
+        }
+        Err(payload) => payload,
+    };
+    let payload = match payload.downcast::<GoInt>() {
+        Ok(value) => {
+            return go_interface_box_i64(go_string_from_static(b"builtin:int"), *value);
+        }
+        Err(payload) => payload,
+    };
+    let payload = match payload.downcast::<GoString>() {
+        Ok(value) => {
+            return go_interface_box_go_string(go_string_from_static(b"builtin:string"), *value);
+        }
+        Err(payload) => payload,
+    };
+    let payload = match payload.downcast::<&'static str>() {
+        Ok(message) => return runtime_error(go_string_from_static(message.as_bytes())),
+        Err(payload) => payload,
+    };
+    if let Ok(message) = payload.downcast::<String>() {
+        return runtime_error(go_string_from_bytes(message.as_bytes()));
+    }
+    runtime_error(go_string_from_static(
+        b"runtime error: unknown panic payload",
+    ))
+}
+
+/// Raise an explicit Go panic carrying an already boxed interface value.
+#[allow(clippy::panic)] // This is the Go language panic boundary, not an invariant failure.
+pub fn panic_go_interface(value: GoInterface) {
+    let value = if value.0.is_none() {
+        runtime_error(go_string_from_static(b"panic called with nil argument"))
+    } else {
+        value
+    };
+    std::panic::resume_unwind(Box::new(value))
 }
 
 /// Compare two interface values with Go's dynamic-type and comparability rules.
@@ -244,6 +306,13 @@ fn boxed(type_identity: GoString, payload: InterfacePayload) -> GoInterface {
         type_identity,
         payload,
     }))
+}
+
+fn runtime_error(message: GoString) -> GoInterface {
+    boxed(
+        go_string_from_static(RUNTIME_ERROR_TYPE_IDENTITY),
+        InterfacePayload::GoString(message),
+    )
 }
 
 fn checked_payload(value: GoInterface, type_identity: GoString) -> InterfacePayload {

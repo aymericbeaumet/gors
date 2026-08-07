@@ -12,7 +12,7 @@ pub(super) fn lower_type(ty: &Ty) -> Result<RustType, Diagnostic> {
         Ty::Int(IntTy::Int | IntTy::Int32) | Ty::Uint(UintTy::Uint8 | UintTy::Uintptr) => {
             Ok(RustType::I64)
         }
-        Ty::Float(FloatTy::Float64) => Ok(RustType::F64),
+        Ty::Float(FloatTy::Float32 | FloatTy::Float64) => Ok(RustType::F64),
         Ty::Complex(ComplexTy::Complex128) => Ok(RustType::Complex128),
         Ty::String => Ok(RustType::GoString),
         Ty::Interface(_) => Ok(RustType::GoInterface),
@@ -57,7 +57,11 @@ pub(super) fn lower_type(ty: &Ty) -> Result<RustType, Diagnostic> {
         Ty::Channel(_, element) if element.underlying() == &Ty::Int(IntTy::Int) => {
             Ok(RustType::GoChannelI64)
         }
+        Ty::Array(0, _) => Ok(RustType::ArrayI64(0)),
         Ty::Array(length, element) if element.underlying() == &Ty::Int(IntTy::Int) => {
+            Ok(RustType::ArrayI64(*length))
+        }
+        Ty::Array(length, element) if element.underlying() == &Ty::Uint(UintTy::Uint8) => {
             Ok(RustType::ArrayI64(*length))
         }
         Ty::Array(length, element) if element.underlying() == &Ty::Bool => {

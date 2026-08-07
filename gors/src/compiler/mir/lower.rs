@@ -55,6 +55,7 @@ struct FunctionLowerer {
     defer_flags: Vec<LocalId>,
     next_defer: usize,
     recover_active: Option<LocalId>,
+    recover_value: Option<LocalId>,
     addressed_locals: BTreeMap<LocalId, LocalId>,
     initialized_addressed_locals: BTreeSet<LocalId>,
 }
@@ -121,6 +122,7 @@ impl FunctionLowerer {
             defer_flags: Vec::new(),
             next_defer: 0,
             recover_active: None,
+            recover_value: None,
             addressed_locals,
             initialized_addressed_locals: BTreeSet::new(),
         };
@@ -146,7 +148,9 @@ impl FunctionLowerer {
                     .push(DeferredAction { registered, body });
             }
             let active = lowerer.new_temp(Ty::Bool);
+            let recovered = lowerer.new_temp(Ty::Interface(Vec::new()));
             lowerer.recover_active = Some(active);
+            lowerer.recover_value = Some(recovered);
             lowerer.initialize_panic_cleanup_locals(hir)?;
             panic_dispatch = Some(lowerer.current);
             let body_entry = lowerer.new_block(Provenance::Source(hir.body.source));
@@ -199,10 +203,10 @@ impl FunctionLowerer {
             }
         }
 
-        let panic_cleanup = if let (Some(body_entry), Some(active)) =
-            (body_entry, lowerer.recover_active)
+        let panic_cleanup = if let (Some(body_entry), Some(active), Some(recovered)) =
+            (body_entry, lowerer.recover_active, lowerer.recover_value)
         {
-            let cleanup = lowerer.build_panic_cleanup(hir, active)?;
+            let cleanup = lowerer.build_panic_cleanup(hir, active, recovered)?;
             lowerer.retarget_body_panics(cleanup.entry);
             lowerer.current = panic_dispatch
                 .ok_or_else(|| Diagnostic::backend("defer cleanup has no entry dispatch block"))?;
@@ -815,18 +819,21 @@ impl FunctionLowerer {
                 args,
                 candidates,
             } => self.lower_interface_call_expr(receiver, args, candidates, &expr.ty, expr.source),
-            hir::ExprKind::RecoverCompareNil { equal } => {
+            hir::ExprKind::Recover => {
                 let state = self.recover_active.ok_or_else(|| {
-                    Diagnostic::backend("recover comparison reached a function without cleanup")
+                    Diagnostic::backend("recover reached a function without cleanup state")
+                })?;
+                let recovered = self.recover_value.ok_or_else(|| {
+                    Diagnostic::backend("recover reached a function without a captured value")
                 })?;
                 let result = Place {
-                    local: self.new_temp(Ty::Bool),
+                    local: self.new_temp(expr.ty.clone()),
                 };
                 let provenance = Provenance::Source(expr.source);
                 let value = make_rvalue(
-                    RvalueKind::RecoverCompareNil {
+                    RvalueKind::Recover {
                         state: Place { local: state },
-                        equal: *equal,
+                        value: Operand::Read(Place { local: recovered }),
                     },
                     expr.effects,
                     provenance.clone(),
@@ -867,7 +874,7 @@ impl FunctionLowerer {
                         from: value.ty.clone(),
                         ty: expr.ty.clone(),
                     },
-                    value.effects,
+                    hir::Effects::default(),
                     provenance.clone(),
                 );
                 self.push_statement(make_statement(place, converted, provenance))?;
@@ -917,7 +924,9 @@ impl FunctionLowerer {
                 if matches!(
                     callee,
                     hir::Callee::Builtin(
-                        hir::Builtin::InterfaceSatisfies | hir::Builtin::InterfaceSatisfiesNonNil
+                        hir::Builtin::InterfaceSatisfies
+                            | hir::Builtin::InterfaceSatisfiesRuntimeError
+                            | hir::Builtin::InterfaceSatisfiesNonNil
                     )
                 ) {
                     if expr.ty != Ty::Bool {
@@ -928,6 +937,8 @@ impl FunctionLowerer {
                     return self.lower_interface_satisfaction_test(
                         args,
                         *callee == hir::Callee::Builtin(hir::Builtin::InterfaceSatisfiesNonNil),
+                        *callee
+                            == hir::Callee::Builtin(hir::Builtin::InterfaceSatisfiesRuntimeError),
                         expr.source,
                     );
                 }
@@ -959,6 +970,7 @@ impl FunctionLowerer {
                 }
                 let provenance = Provenance::Source(expr.source);
                 let target = self.new_block(provenance.clone());
+                let diverges = *callee == hir::Callee::Builtin(hir::Builtin::Panic);
                 let destination = (expr.ty != Ty::Unit).then(|| Place {
                     local: self.new_temp(expr.ty.clone()),
                 });
@@ -973,6 +985,13 @@ impl FunctionLowerer {
                     provenance,
                 ))?;
                 self.current = target;
+                if diverges {
+                    self.terminate(make_terminator(
+                        TerminatorKind::Unreachable,
+                        hir::Effects::default(),
+                        Provenance::Source(expr.source),
+                    ))?;
+                }
                 Ok(destination.map_or(Operand::Unit, Operand::Read))
             }
         }

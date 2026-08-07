@@ -368,8 +368,9 @@ impl Function {
                 self.transfer_operand(structure, state, check_reads)?;
                 self.transfer_operand(value, state, check_reads)
             }
-            RvalueKind::RecoverCompareNil {
+            RvalueKind::Recover {
                 state: recovery_state,
+                value,
                 ..
             } => {
                 if check_reads && !state.contains(&recovery_state.local) {
@@ -378,7 +379,7 @@ impl Function {
                         recovery_state.local.0
                     )));
                 }
-                Ok(())
+                self.transfer_operand(value, state, check_reads)
             }
         }
     }
@@ -492,7 +493,8 @@ fn add_rvalue_uses_backwards(rvalue: &Rvalue, live: &mut BTreeSet<LocalId>) {
             add_operand_use(value, live);
             add_operand_use(structure, live);
         }
-        RvalueKind::RecoverCompareNil { state, .. } => {
+        RvalueKind::Recover { state, value, .. } => {
+            add_operand_use(value, live);
             live.insert(state.local);
         }
     }
@@ -591,7 +593,8 @@ fn plan_rvalue_backwards(
             plan_operand_backwards(value, live, local_types, reverse_plan)?;
             plan_operand_backwards(structure, live, local_types, reverse_plan)
         }
-        RvalueKind::RecoverCompareNil { state, .. } => {
+        RvalueKind::Recover { state, value, .. } => {
+            plan_operand_backwards(value, live, local_types, reverse_plan)?;
             live.insert(state.local);
             Ok(())
         }
@@ -676,7 +679,7 @@ fn apply_rvalue_plan(
             apply_operand_plan(structure, plan, cursor)?;
             apply_operand_plan(value, plan, cursor)
         }
-        RvalueKind::RecoverCompareNil { .. } => Ok(()),
+        RvalueKind::Recover { value, .. } => apply_operand_plan(value, plan, cursor),
     }
 }
 
@@ -771,7 +774,7 @@ fn collect_rvalue_reads(rvalue: &Rvalue, reads: &mut Vec<(LocalId, ReadOp)>) {
             collect_operand_read(structure, reads);
             collect_operand_read(value, reads);
         }
-        RvalueKind::RecoverCompareNil { .. } => {}
+        RvalueKind::Recover { value, .. } => collect_operand_read(value, reads),
     }
 }
 

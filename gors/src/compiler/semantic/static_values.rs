@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use super::expressions::is_assignable;
-use super::{ConstantSymbol, eval_constant, lower_type};
+use super::{ConstantSymbol, eval_constant, lower_type_with_constants};
 use crate::compiler::Diagnostic;
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{
@@ -42,7 +42,7 @@ fn evaluate_expression(
         elements,
     } = &expression.kind
     {
-        let ty = lower_type(literal_type, types, source)?;
+        let ty = lower_type_with_constants(literal_type, types, constants, source)?;
         let value = match ty.underlying() {
             Ty::Struct(_) => {
                 evaluate_struct(&ty, elements, constants, types, functions, source, depth)?
@@ -83,7 +83,7 @@ fn evaluate_expression(
     {
         return evaluate_static_function(body, constants, types, functions, source, depth + 1);
     }
-    let (ty, value) = eval_constant(expression, constants, source, 0)?;
+    let (ty, value) = eval_constant(expression, constants, types, source, 0)?;
     Ok((ty, StaticValue::Constant(value)))
 }
 
@@ -245,7 +245,7 @@ fn evaluate_typed_value(
     {
         let ty = literal_type
             .as_deref()
-            .map(|ty| lower_type(ty, types, source))
+            .map(|ty| lower_type_with_constants(ty, types, constants, source))
             .transpose()?
             .unwrap_or_else(|| expected.clone());
         if !is_assignable(&ty, expected) {

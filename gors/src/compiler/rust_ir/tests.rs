@@ -1,6 +1,8 @@
 use super::effects::panic_edge;
 use super::*;
 
+mod recovery;
+
 fn lower(source: &str) -> File {
     lower_at("rust-ir.go", source)
 }
@@ -132,6 +134,37 @@ fn representation_effects_cover_runtime_calls_clones_and_string_allocation() {
 }
 
 #[test]
+fn verified_int32_primitives_preserve_go_width_before_i64_storage() {
+    let file = lower(
+        "package main\nfunc next(value int32) int32 { return value + 1 }\nfunc negate(value rune) rune { return -value }\nfunc main() {}\n",
+    );
+    let operations = all_rvalues(&file)
+        .filter_map(|rvalue| match &rvalue.kind {
+            RvalueKind::Unary { op, .. } | RvalueKind::Binary { op, .. } => Some(*op),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        operations.contains(&ValueOp::Primitive(PrimitiveOp::Int32WrappingAdd)),
+        "{operations:?}"
+    );
+    assert!(
+        operations.contains(&ValueOp::Primitive(PrimitiveOp::Int32WrappingNeg)),
+        "{operations:?}"
+    );
+    assert!(
+        !operations.contains(&ValueOp::Primitive(PrimitiveOp::IntWrappingAdd)),
+        "int32 addition must not use 64-bit wrapping: {operations:?}"
+    );
+    assert!(
+        !operations.contains(&ValueOp::Primitive(PrimitiveOp::IntWrappingNeg)),
+        "rune negation must not use 64-bit wrapping: {operations:?}"
+    );
+    assert!(file.verify().is_ok(), "int32 primitives must verify");
+}
+
+#[test]
 fn verifier_checks_runtime_calls_against_the_typed_abi() {
     let mut file = lower("package main\nfunc main() { print(1) }\n");
     *runtime_call_target_mut(&mut file, RuntimeOp::PrintI64) = RuntimeOp::PrintBool;
@@ -144,6 +177,41 @@ fn verifier_checks_runtime_calls_against_the_typed_abi() {
             .contains("runtime call argument 0 type mismatch"),
         "{error:?}"
     );
+}
+
+#[test]
+fn verifier_checks_float_interface_and_print_runtime_signatures() {
+    let source = r#"
+        package main
+        func main() {
+            var left any = 1.5
+            var right any = 2.5
+            _ = left == right
+            value, _ := left.(float64)
+            print(value)
+        }
+    "#;
+
+    for (expected, replacement) in [
+        (RuntimeOp::GoInterfaceBoxF64, RuntimeOp::GoInterfaceBoxBool),
+        (RuntimeOp::GoInterfaceEqual, RuntimeOp::GoInterfaceIsNil),
+        (
+            RuntimeOp::GoInterfaceUnboxF64,
+            RuntimeOp::GoInterfaceUnboxI64,
+        ),
+        (RuntimeOp::PrintF64, RuntimeOp::PrintI64),
+    ] {
+        let mut file = lower(source);
+        *runtime_call_target_mut(&mut file, expected) = replacement;
+        refresh_test_effects(&mut file);
+
+        let error = file.verify().unwrap_err();
+        assert!(
+            error.message.contains("runtime call")
+                || error.message.contains("call destination type mismatch"),
+            "{expected:?} mutation produced {error:?}"
+        );
+    }
 }
 
 #[test]
@@ -164,10 +232,16 @@ fn verifier_rejects_malformed_byte_slice_runtime_calls() {
         RuntimeOp::GoSliceU8Copy,
     ] {
         let mut file = lower(source);
-        let TerminatorKind::Call { args, .. } =
-            &mut runtime_call_terminator_mut(&mut file, operation).kind
-        else {
-            unreachable!();
+        let args = match &mut runtime_call_terminator_mut(&mut file, operation).kind {
+            TerminatorKind::Call { args, .. } => Some(args),
+            _ => None,
+        };
+        assert!(
+            args.is_some(),
+            "runtime call lookup must return a call terminator"
+        );
+        let Some(args) = args else {
+            return;
         };
         args.clear();
 
@@ -822,7 +896,7 @@ fn rvalue_read_op_mut(rvalue: &mut Rvalue, expected: ReadOp) -> Option<&mut Read
             structure, value, ..
         } => operand_read_op_mut(structure, expected)
             .or_else(|| operand_read_op_mut(value, expected)),
-        RvalueKind::RecoverCompareNil { .. } => None,
+        RvalueKind::Recover { .. } => None,
     }
 }
 

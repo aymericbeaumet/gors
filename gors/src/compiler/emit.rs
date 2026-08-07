@@ -4,6 +4,8 @@
 //! it does not run corrective `syn` passes. Rust representations and local-use
 //! modes have already been selected and verified before this point.
 
+mod recovery;
+
 use std::collections::BTreeMap;
 
 use proc_macro2::Span;
@@ -173,42 +175,8 @@ fn emit_function(
         ControlFlowPlan::PcDispatchU32 => emit_pc_dispatch(function, function_paths)?,
     };
 
-    let body: syn::Block = if let Some(cleanup) = function.panic_cleanup {
-        let cleanup_flow = emit_pc_dispatch_from(function, function_paths, cleanup.entry.0)?;
-        let active = slot_ident(cleanup.active);
-        syn::parse_quote! {{
-            #(#initializers)*
-            let __gors_execution = ::std::panic::catch_unwind(
-                ::std::panic::AssertUnwindSafe(|| {
-                    #(#control_flow)*
-                })
-            );
-            match __gors_execution {
-                ::std::result::Result::Ok(value) => value,
-                ::std::result::Result::Err(__gors_panic_payload) => {
-                    #active = ::std::option::Option::Some(true);
-                    let __gors_cleanup = ::std::panic::catch_unwind(
-                        ::std::panic::AssertUnwindSafe(|| {
-                            #(#cleanup_flow)*
-                        })
-                    );
-                    match __gors_cleanup {
-                        ::std::result::Result::Err(payload) => {
-                            ::std::panic::resume_unwind(payload)
-                        }
-                        ::std::result::Result::Ok(value) => {
-                            if *#active.as_ref().expect(
-                                "compiler read of uninitialized panic recovery state"
-                            ) {
-                                ::std::panic::resume_unwind(__gors_panic_payload)
-                            } else {
-                                value
-                            }
-                        }
-                    }
-                }
-            }
-        }}
+    let body: syn::Block = if function.panic_cleanup.is_some() {
+        recovery::emit_body(function, function_paths, &initializers, &control_flow)?
     } else {
         syn::parse_quote! {{
             #(#initializers)*
@@ -476,25 +444,17 @@ fn emit_rvalue(rvalue: &Rvalue, function: &rust_ir::Function) -> Result<syn::Exp
             let operand = emit_operand(operand, function)?;
             emit_value_op(*op, vec![operand])
         }
-        RvalueKind::RecoverCompareNil { state, equal } => {
+        RvalueKind::Recover { state, value, nil } => {
             let state = checked_slot(*state, function)?;
-            if *equal {
-                Ok(syn::parse_quote! {{
-                    let __gors_recover_was_active = *#state.as_ref().expect(
-                        "compiler read of uninitialized panic recovery state"
-                    );
-                    #state = ::std::option::Option::Some(false);
-                    !__gors_recover_was_active
-                }})
-            } else {
-                Ok(syn::parse_quote! {{
-                    let __gors_recover_was_active = *#state.as_ref().expect(
-                        "compiler read of uninitialized panic recovery state"
-                    );
-                    #state = ::std::option::Option::Some(false);
-                    __gors_recover_was_active
-                }})
-            }
+            let value = emit_operand(value, function)?;
+            let nil = emit_runtime_call(*nil, Vec::new());
+            Ok(syn::parse_quote! {{
+                let __gors_recover_was_active = *#state.as_ref().expect(
+                    "compiler read of uninitialized panic recovery state"
+                );
+                #state = ::std::option::Option::Some(false);
+                if __gors_recover_was_active { #value } else { #nil }
+            }})
         }
         RvalueKind::Binary { op, left, right } => {
             let left = emit_operand(left, function)?;
@@ -692,7 +652,11 @@ fn emit_primitive_op(operation: PrimitiveOp, args: &[syn::Expr]) -> Result<syn::
     let expression = match (operation, args) {
         (BoolNot | IntBitNot, [value]) => syn::parse_quote! { !(#value) },
         (IntWrappingNeg, [value]) => syn::parse_quote! { (#value).wrapping_neg() },
+        (Int32WrappingNeg, [value]) => {
+            syn::parse_quote! { ::std::primitive::i64::from(((#value) as i32).wrapping_neg()) }
+        }
         (FloatNeg, [value]) => syn::parse_quote! { -(#value) },
+        (FloatRound32, [value]) => syn::parse_quote! { ((#value) as f32) as f64 },
         (ComplexNeg, [value]) => syn::parse_quote! { [-(#value)[0], -(#value)[1]] },
         (ComplexReal, [value]) => syn::parse_quote! { (#value)[0] },
         (ComplexImag, [value]) => syn::parse_quote! { (#value)[1] },
@@ -703,6 +667,9 @@ fn emit_primitive_op(operation: PrimitiveOp, args: &[syn::Expr]) -> Result<syn::
         (IntWrappingAdd, [left, right]) => {
             syn::parse_quote! { (#left).wrapping_add(#right) }
         }
+        (Int32WrappingAdd, [left, right]) => syn::parse_quote! {
+            ::std::primitive::i64::from(((#left) as i32).wrapping_add((#right) as i32))
+        },
         (IntWrappingSub, [left, right]) => {
             syn::parse_quote! { (#left).wrapping_sub(#right) }
         }

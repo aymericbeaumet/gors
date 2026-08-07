@@ -11,12 +11,12 @@ use super::FunctionLowerer;
 use super::expressions::{
     coerce_expr, default_expr_type, ensure_bootstrap_value_type, is_assignable,
 };
-use super::lower_type;
 
 struct InterfaceCase {
     ty: Ty,
     identities: Vec<Vec<u8>>,
     satisfaction: bool,
+    runtime_error: bool,
     implied: bool,
 }
 
@@ -32,6 +32,84 @@ pub(super) fn error_interface_ty() -> Ty {
 }
 
 impl FunctionLowerer {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn lower_interface_comparison(
+        &mut self,
+        left: hir::Expr,
+        left_source: SyntaxSource,
+        right: hir::Expr,
+        right_source: SyntaxSource,
+        equal: bool,
+        node: NodeId,
+        source: SourceRef,
+        expected: Option<&Ty>,
+    ) -> Result<hir::Expr, Diagnostic> {
+        let target = match (left.ty.underlying(), right.ty.underlying()) {
+            (Ty::Interface(left_methods), Ty::Interface(right_methods))
+                if interface_contains(left_methods, right_methods) =>
+            {
+                right.ty.clone()
+            }
+            (Ty::Interface(left_methods), Ty::Interface(right_methods))
+                if interface_contains(right_methods, left_methods) =>
+            {
+                left.ty.clone()
+            }
+            (Ty::Interface(methods), _) if self.concrete_implements(&right.ty, methods) => {
+                left.ty.clone()
+            }
+            (_, Ty::Interface(methods)) if self.concrete_implements(&left.ty, methods) => {
+                right.ty.clone()
+            }
+            _ => {
+                return Err(Diagnostic::semantic(
+                    format!(
+                        "incompatible interface comparison operands {:?} and {:?}",
+                        left.ty, right.ty
+                    ),
+                    source,
+                ));
+            }
+        };
+        let left = self.coerce_interface_value(left, &target, left_source)?;
+        let right = self.coerce_interface_value(right, &target, right_source)?;
+        let effects = left.effects.union(right.effects).union(hir::Effects {
+            may_call: true,
+            may_panic: true,
+            ..hir::Effects::default()
+        });
+        let call = hir::Expr {
+            node,
+            kind: hir::ExprKind::Call {
+                callee: hir::Callee::Builtin(hir::Builtin::InterfaceEqual),
+                args: vec![left, right],
+            },
+            ty: Ty::Bool,
+            category: hir::ValueCategory::Value,
+            effects,
+            source,
+        };
+        let mut result = if equal {
+            call
+        } else {
+            hir::Expr {
+                node,
+                kind: hir::ExprKind::Unary {
+                    op: hir::UnaryOp::Not,
+                    operand: Box::new(call),
+                },
+                ty: Ty::Bool,
+                category: hir::ValueCategory::Value,
+                effects,
+                source,
+            }
+        };
+        if let Some(expected) = expected {
+            coerce_expr(&mut result, expected, source)?;
+        }
+        Ok(result)
+    }
+
     pub(super) fn try_lower_interface_comma_ok(
         &mut self,
         expression: &ExprSyntax,
@@ -73,6 +151,7 @@ impl FunctionLowerer {
             ty: asserted_ty,
             identities: type_identities,
             satisfaction,
+            runtime_error,
             implied,
         } = self.interface_case_identities(&interface.ty, asserted, source)?;
         if satisfaction && !comma_ok {
@@ -102,6 +181,8 @@ impl FunctionLowerer {
                 callee: hir::Callee::Builtin(if satisfaction {
                     if implied {
                         hir::Builtin::InterfaceSatisfiesNonNil
+                    } else if runtime_error {
+                        hir::Builtin::InterfaceSatisfiesRuntimeError
                     } else {
                         hir::Builtin::InterfaceSatisfies
                     }
@@ -128,6 +209,7 @@ impl FunctionLowerer {
             ty: asserted_ty,
             identities: type_identities,
             satisfaction,
+            runtime_error,
             implied,
         } = self.interface_case_identities(&interface.ty, asserted, source)?;
         let effects = interface.effects.union(hir::Effects {
@@ -145,6 +227,8 @@ impl FunctionLowerer {
                 callee: hir::Callee::Builtin(if satisfaction {
                     if implied {
                         hir::Builtin::InterfaceSatisfiesNonNil
+                    } else if runtime_error {
+                        hir::Builtin::InterfaceSatisfiesRuntimeError
                     } else {
                         hir::Builtin::InterfaceSatisfies
                     }
@@ -173,16 +257,19 @@ impl FunctionLowerer {
                 source,
             ));
         };
-        let asserted_ty = lower_type(asserted, &self.type_aliases, source)?;
+        let asserted_ty = self.lower_scoped_type(asserted, source)?;
         if let Ty::Interface(asserted_methods) = asserted_ty.underlying() {
             if interface_method_set_contains(required_methods, asserted_methods) {
                 return Ok(InterfaceCase {
                     ty: asserted_ty,
                     identities: Vec::new(),
                     satisfaction: true,
+                    runtime_error: false,
                     implied: true,
                 });
             }
+            let runtime_error =
+                is_error_interface(asserted_methods) && runtime_error_implements(required_methods);
             let mut identities = std::collections::BTreeSet::new();
             for ty in self.type_aliases.values() {
                 let Ty::Named { .. } = ty else {
@@ -202,6 +289,7 @@ impl FunctionLowerer {
                 ty: asserted_ty,
                 identities: identities.into_iter().collect(),
                 satisfaction: true,
+                runtime_error,
                 implied: false,
             });
         }
@@ -231,6 +319,7 @@ impl FunctionLowerer {
             ty: asserted_ty,
             identities: vec![type_identity],
             satisfaction: false,
+            runtime_error: false,
             implied: false,
         })
     }
@@ -375,6 +464,12 @@ impl FunctionLowerer {
                     format!("cannot use {:?} as {expected:?}", value.ty),
                     source,
                 ));
+            }
+            if value.ty != *expected {
+                let converted = value.clone();
+                value.kind = hir::ExprKind::Conversion {
+                    value: Box::new(converted),
+                };
             }
             value.ty = expected.clone();
             return Ok(value);
@@ -557,6 +652,17 @@ impl FunctionLowerer {
             ));
         }
         Ok(candidates.into_values().collect())
+    }
+}
+
+fn is_error_interface(methods: &[InterfaceMethod]) -> bool {
+    error_interface_ty() == Ty::Interface(methods.to_vec())
+}
+
+fn runtime_error_implements(methods: &[InterfaceMethod]) -> bool {
+    match error_interface_ty() {
+        Ty::Interface(error_methods) => interface_method_set_contains(&error_methods, methods),
+        _ => false,
     }
 }
 

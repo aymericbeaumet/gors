@@ -61,6 +61,18 @@ fn rune_slices_encode_and_string_ranges_decode_go_utf8() {
 }
 
 #[test]
+fn individual_runes_encode_as_go_strings() {
+    assert_eq!(go_string_from_rune(255).as_bytes(), "ÿ".as_bytes());
+    assert_eq!(go_string_from_rune(-1).as_bytes(), "�".as_bytes());
+    assert_eq!(go_string_from_rune(0xd800).as_bytes(), "�".as_bytes());
+    assert_eq!(
+        go_string_from_rune(0x10_ffff).as_bytes(),
+        "\u{10ffff}".as_bytes()
+    );
+    assert_eq!(go_string_from_rune(0x11_0000).as_bytes(), "�".as_bytes());
+}
+
+#[test]
 fn string_range_access_rejects_invalid_ordinals() {
     let value = go_string_from_static(b"x");
     assert!(std::panic::catch_unwind(|| go_string_range_index_at(value.clone(), -1)).is_err());
@@ -676,4 +688,82 @@ fn explicit_panics_preserve_supported_payload_types() {
         payload.as_deref().map(GoString::as_bytes),
         Some(b"boom".as_slice())
     );
+}
+
+#[test]
+fn interface_panics_round_trip_through_the_recovery_payload_boundary() {
+    let identity = go_string_from_static(b"builtin:int");
+    let value = go_interface_box_i64(identity.clone(), 42);
+    let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        panic_go_interface(value);
+    }))
+    .err();
+    assert!(payload.is_some(), "an explicit interface panic must unwind");
+    let Some(payload) = payload else {
+        return;
+    };
+    let recovered = go_panic_payload_to_interface(payload);
+
+    assert!(!go_interface_is_nil(recovered.clone()));
+    assert_eq!(go_interface_unbox_i64(recovered, identity), 42);
+}
+
+#[test]
+fn scalar_panics_become_exact_recoverable_interface_values() {
+    let boolean = std::panic::catch_unwind(|| panic_bool(true)).err();
+    assert!(boolean.is_some(), "an explicit bool panic must unwind");
+    if let Some(boolean) = boolean {
+        assert!(go_interface_unbox_bool(
+            go_panic_payload_to_interface(boolean),
+            go_string_from_static(b"builtin:bool"),
+        ));
+    }
+
+    let integer = std::panic::catch_unwind(|| panic_i64(42)).err();
+    assert!(integer.is_some(), "an explicit int panic must unwind");
+    if let Some(integer) = integer {
+        assert_eq!(
+            go_interface_unbox_i64(
+                go_panic_payload_to_interface(integer),
+                go_string_from_static(b"builtin:int"),
+            ),
+            42,
+        );
+    }
+
+    let string = std::panic::catch_unwind(|| panic_go_string(go_string_from_static(b"boom"))).err();
+    assert!(string.is_some(), "an explicit string panic must unwind");
+    if let Some(string) = string {
+        assert_eq!(
+            go_interface_unbox_go_string(
+                go_panic_payload_to_interface(string),
+                go_string_from_static(b"builtin:string"),
+            )
+            .as_bytes(),
+            b"boom",
+        );
+    }
+}
+
+#[test]
+fn nil_and_implicit_panics_become_non_nil_runtime_errors() {
+    let nil_payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        panic_go_interface(go_interface_nil());
+    }))
+    .err();
+    assert!(
+        nil_payload.is_some(),
+        "panic(nil) must unwind with a replacement value"
+    );
+    let Some(nil_payload) = nil_payload else {
+        return;
+    };
+    let recovered_nil = go_panic_payload_to_interface(nil_payload);
+    assert!(!go_interface_is_nil(recovered_nil.clone()));
+    assert!(go_interface_is_runtime_error(recovered_nil));
+
+    let implicit =
+        go_panic_payload_to_interface(Box::new("implicit runtime panic") as GoPanicPayload);
+    assert!(!go_interface_is_nil(implicit.clone()));
+    assert!(go_interface_is_runtime_error(implicit));
 }

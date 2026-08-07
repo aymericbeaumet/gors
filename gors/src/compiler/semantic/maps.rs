@@ -3,7 +3,6 @@
 use super::FunctionLowerer;
 use super::channels::{channel_effects, int_channel_parts};
 use super::expressions::{coerce_expr, expr_constant};
-use super::lower_type;
 use super::pointers::{int_pointer_ty, pointer_effects};
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
@@ -191,6 +190,40 @@ impl FunctionLowerer {
                 source,
             });
         }
+        if let Ty::Array(length, element) = ty.underlying()
+            && super::arrays::is_executable_array(*length, element)
+        {
+            let length = usize::try_from(*length).map_err(|_| {
+                Diagnostic::unsupported("array length does not fit this host", source)
+            })?;
+            if matches!(ty, Ty::Array(_, _)) && element.underlying() == &Ty::Int(IntTy::Int) {
+                return Ok(hir::Expr {
+                    node,
+                    kind: hir::ExprKind::ArrayLiteralI64(vec![0; length]),
+                    ty,
+                    category: hir::ValueCategory::Value,
+                    effects: hir::Effects::default(),
+                    source,
+                });
+            }
+            let mut values = Vec::with_capacity(length);
+            for index in 0..length {
+                let value = self.zero_value_expr(node, source, element.as_ref().clone())?;
+                values.push((
+                    u64::try_from(index)
+                        .map_err(|_| Diagnostic::backend("array index does not fit u64"))?,
+                    value,
+                ));
+            }
+            return Ok(hir::Expr {
+                node,
+                kind: hir::ExprKind::ArrayLiteral(values),
+                ty,
+                category: hir::ValueCategory::Value,
+                effects: hir::Effects::default(),
+                source,
+            });
+        }
         if let Ty::Struct(fields) = ty.underlying() {
             let values = fields
                 .iter()
@@ -337,7 +370,7 @@ impl FunctionLowerer {
                 source,
             ));
         };
-        let declared = lower_type(declared_syntax, &self.type_aliases, source)?;
+        let declared = self.lower_scoped_type(declared_syntax, source)?;
         if int_channel_parts(&declared).is_some() {
             return self.lower_channel_make(declared, arguments, spread, node, source, expected);
         }
@@ -409,7 +442,7 @@ impl FunctionLowerer {
             return self.lower_channel_len(value, node, source, expected);
         }
         if let Ty::Array(length, element) = value.ty.underlying()
-            && super::arrays::is_executable_array_element(element)
+            && super::arrays::is_executable_array(*length, element)
         {
             let length = *length;
             return self.lower_array_len(value, length, node, source, expected);

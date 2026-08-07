@@ -174,7 +174,7 @@ fn mandatory_lowering_preserves_explicit_synthetic_origins() {
 }
 
 #[test]
-fn panic_builtin_selects_typed_runtime_operations() {
+fn panic_builtin_boxes_the_exact_dynamic_type_before_the_interface_panic() {
     let file = lower_source(
         r#"
             package main
@@ -184,28 +184,38 @@ fn panic_builtin_selects_typed_runtime_operations() {
         "#,
     );
 
-    for (name, expected) in [
-        ("panicBool", RuntimeOp::PanicBool),
-        ("panicInt", RuntimeOp::PanicI64),
-        ("panicString", RuntimeOp::PanicGoString),
+    for (name, boxing) in [
+        ("panicBool", RuntimeOp::GoInterfaceBoxBool),
+        ("panicInt", RuntimeOp::GoInterfaceBoxI64),
+        ("panicString", RuntimeOp::GoInterfaceBoxGoString),
     ] {
         let function = named_function(&file, name);
-        let call = function
+        let operations = function
             .blocks
             .iter()
-            .map(|block| &block.terminator)
-            .find(|terminator| {
-                matches!(
-                    &terminator.kind,
-                    TerminatorKind::Call {
-                        target: CallTarget::Runtime(operation),
-                        ..
-                    } if *operation == expected
-                )
+            .filter_map(|block| match &block.terminator.kind {
+                TerminatorKind::Call {
+                    target: CallTarget::Runtime(operation),
+                    ..
+                } => Some((*operation, &block.terminator)),
+                _ => None,
             })
+            .collect::<Vec<_>>();
+        assert!(operations.iter().any(|(operation, _)| *operation == boxing));
+        let (_, panic_call) = operations
+            .iter()
+            .find(|(operation, _)| *operation == RuntimeOp::PanicGoInterface)
             .unwrap();
-        assert!(call.effects.may_panic);
-        assert_eq!(call.panic, PanicEdge::Propagate);
+        assert!(panic_call.effects.may_panic);
+        assert_eq!(panic_call.panic, PanicEdge::Propagate);
+        let panic_target = match &panic_call.kind {
+            TerminatorKind::Call { next, .. } => function.blocks.get(next.0 as usize),
+            _ => None,
+        };
+        assert!(
+            panic_target
+                .is_some_and(|block| matches!(block.terminator.kind, TerminatorKind::Unreachable))
+        );
     }
 }
 
@@ -246,6 +256,42 @@ fn byte_slice_builtins_select_exact_typed_runtime_operations() {
     }
 }
 
+#[test]
+fn float_interface_and_print_builtins_select_exact_runtime_operations() {
+    let file = lower_source(
+        r#"
+            package main
+            func main() {
+                var left any = 1.5
+                var right any = 2.5
+                _ = left == right
+                value, _ := left.(float64)
+                println(value)
+            }
+        "#,
+    );
+    let operations = named_function(&file, "main")
+        .blocks
+        .iter()
+        .filter_map(|block| match &block.terminator.kind {
+            TerminatorKind::Call {
+                target: CallTarget::Runtime(operation),
+                ..
+            } => Some(*operation),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    for expected in [
+        RuntimeOp::GoInterfaceBoxF64,
+        RuntimeOp::GoInterfaceEqual,
+        RuntimeOp::GoInterfaceUnboxF64,
+        RuntimeOp::PrintF64,
+    ] {
+        assert!(operations.contains(&expected), "{operations:?}");
+    }
+}
+
 fn rvalue_operands(kind: &RvalueKind) -> Vec<&Operand> {
     match kind {
         RvalueKind::Use(operand) | RvalueKind::Unary { operand, .. } => vec![operand],
@@ -277,7 +323,7 @@ fn rvalue_operands(kind: &RvalueKind) -> Vec<&Operand> {
         | RvalueKind::StructSetI64 {
             structure, value, ..
         } => vec![structure, value],
-        RvalueKind::RecoverCompareNil { .. } => Vec::new(),
+        RvalueKind::Recover { .. } => Vec::new(),
     }
 }
 

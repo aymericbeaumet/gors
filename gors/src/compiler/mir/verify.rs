@@ -6,7 +6,9 @@ mod containers;
 mod effects;
 mod interfaces;
 mod pointers;
+mod printing;
 mod provenance;
+mod strings;
 mod structs;
 mod type_rules;
 use std::collections::{BTreeMap, BTreeSet};
@@ -36,10 +38,12 @@ use effects::{
 };
 use interfaces::{is_interface_builtin, verify_interface_call};
 use pointers::{is_pointer_builtin, verify_pointer_call};
+use printing::verify_print_arguments;
 use provenance::{
     verify_rvalue_provenance, verify_source_provenance, verify_source_ref,
     verify_statement_provenance, verify_terminator_provenance,
 };
+use strings::{is_string_builtin, verify_string_call};
 use structs::{verify_struct_field, verify_struct_literal, verify_struct_set};
 use type_rules::{
     same_mir_representation, verify_binary_types, verify_bootstrap_type, verify_constant_type,
@@ -206,6 +210,13 @@ impl Function {
                 &Ty::Bool,
                 "panic cleanup state",
             )?;
+            verify_same_type(
+                self.place_ty(Place {
+                    local: cleanup.recovered,
+                })?,
+                &Ty::Interface(Vec::new()),
+                "panic cleanup recovered value",
+            )?;
         }
         for block in &self.blocks {
             for edge in block
@@ -330,7 +341,7 @@ impl Function {
                             && matches!(
                                 operand_ty.underlying(),
                                 Ty::Int(IntTy::Int | IntTy::Int32)
-                                    | Ty::Float(FloatTy::Float64)
+                                    | Ty::Float(_)
                                     | Ty::Complex(ComplexTy::Complex128)
                             )
                     }
@@ -360,10 +371,16 @@ impl Function {
                 }
                 (ty.clone(), hir::Effects::default())
             }
-            RvalueKind::RecoverCompareNil { state, .. } => {
+            RvalueKind::Recover { state, value } => {
                 verify_same_type(self.place_ty(*state)?, &Ty::Bool, "panic recovery state")?;
+                let recovered_ty = Ty::Interface(Vec::new());
+                verify_same_type(
+                    &self.operand_ty(value)?,
+                    &recovered_ty,
+                    "panic recovery value",
+                )?;
                 (
-                    Ty::Bool,
+                    recovered_ty,
                     hir::Effects {
                         may_read: true,
                         may_write: true,
@@ -474,6 +491,8 @@ impl Function {
                                 &argument_types,
                                 &destination_types,
                             )?
+                        } else if is_string_builtin(*builtin) {
+                            verify_string_call(*builtin, &argument_types)?
                         } else if matches!(
                             builtin,
                             hir::Builtin::SliceBoolIndex | hir::Builtin::SliceBoolSet
@@ -492,17 +511,7 @@ impl Function {
                         } else {
                             match builtin {
                                 hir::Builtin::Print | hir::Builtin::Println => {
-                                    for ty in &argument_types {
-                                        if !matches!(
-                                            ty.underlying(),
-                                            Ty::Bool | Ty::Int(IntTy::Int) | Ty::String
-                                        ) {
-                                            return Err(Diagnostic::backend(format!(
-                                                "print builtin cannot consume MIR operand type {ty:?}"
-                                            )));
-                                        }
-                                    }
-                                    Vec::new()
+                                    verify_print_arguments(&argument_types)?
                                 }
                                 hir::Builtin::Panic => {
                                     if argument_types.len() != 1 {
@@ -513,7 +522,7 @@ impl Function {
                                     }
                                     if !matches!(
                                         argument_types.as_slice(),
-                                        [Ty::Bool | Ty::Int(IntTy::Int) | Ty::String]
+                                        [Ty::Interface(methods)] if methods.is_empty()
                                     ) {
                                         return Err(Diagnostic::backend(
                                             "panic builtin received an unsupported MIR operand type",
@@ -682,78 +691,6 @@ impl Function {
                                     }
                                     Vec::new()
                                 }
-                                hir::Builtin::StringFromSliceU8 => {
-                                    if argument_types
-                                        != [Ty::Slice(Box::new(Ty::Uint(
-                                            crate::compiler::types::UintTy::Uint8,
-                                        )))]
-                                    {
-                                        return Err(Diagnostic::backend(format!(
-                                            "invalid MIR byte slice conversion arguments: {argument_types:?}"
-                                        )));
-                                    }
-                                    vec![Ty::String]
-                                }
-                                hir::Builtin::StringFromSliceRunes => {
-                                    if argument_types
-                                        != [Ty::Slice(Box::new(Ty::Int(IntTy::Int32)))]
-                                    {
-                                        return Err(Diagnostic::backend(format!(
-                                            "invalid MIR rune slice conversion arguments: {argument_types:?}"
-                                        )));
-                                    }
-                                    vec![Ty::String]
-                                }
-                                hir::Builtin::StringLen => {
-                                    if argument_types != [Ty::String] {
-                                        return Err(Diagnostic::backend(format!(
-                                            "invalid MIR string len arguments: {argument_types:?}"
-                                        )));
-                                    }
-                                    vec![Ty::Int(IntTy::Int)]
-                                }
-                                hir::Builtin::StringIndex => {
-                                    if argument_types != [Ty::String, Ty::Int(IntTy::Int)] {
-                                        return Err(Diagnostic::backend(format!(
-                                            "invalid MIR string index arguments: {argument_types:?}"
-                                        )));
-                                    }
-                                    vec![Ty::Uint(UintTy::Uint8)]
-                                }
-                                hir::Builtin::StringRange => {
-                                    if argument_types
-                                        != [Ty::String, Ty::Int(IntTy::Int), Ty::Int(IntTy::Int)]
-                                    {
-                                        return Err(Diagnostic::backend(format!(
-                                            "invalid MIR string slice arguments: {argument_types:?}"
-                                        )));
-                                    }
-                                    vec![Ty::String]
-                                }
-                                hir::Builtin::StringRangeCount => {
-                                    if argument_types != [Ty::String] {
-                                        return Err(Diagnostic::backend(format!(
-                                            "invalid MIR string range count arguments: {argument_types:?}"
-                                        )));
-                                    }
-                                    vec![Ty::Int(IntTy::Int)]
-                                }
-                                hir::Builtin::StringRangeIndexAt => {
-                                    if argument_types != [Ty::String, Ty::Int(IntTy::Int)] {
-                                        return Err(Diagnostic::backend(format!(
-                                            "invalid MIR string range index arguments: {argument_types:?}"
-                                        )));
-                                    }
-                                    vec![Ty::Int(IntTy::Int)]
-                                }
-                                hir::Builtin::StringRangeRuneAt => {
-                                    if argument_types != [Ty::String, Ty::Int(IntTy::Int)] {
-                                        return Err(Diagnostic::backend(format!(
-                                            "invalid MIR string range rune arguments: {argument_types:?}"
-                                        )));
-                                    }
-                                    vec![Ty::Int(IntTy::Int32)]
-                                }
                                 hir::Builtin::MapStringI64Nil | hir::Builtin::MapStringI64Make => {
                                     verify_map_call_arguments(
                                         &argument_types,
@@ -867,17 +804,23 @@ impl Function {
                                 }
                                 hir::Builtin::InterfaceNil
                                 | hir::Builtin::InterfaceBoxBool
+                                | hir::Builtin::InterfaceBoxF64
                                 | hir::Builtin::InterfaceBoxI64
                                 | hir::Builtin::InterfaceBoxGoString
                                 | hir::Builtin::InterfaceBoxStructI64
                                 | hir::Builtin::InterfaceBoxPointerStructI64
                                 | hir::Builtin::InterfaceBoxAggregate
+                                | hir::Builtin::InterfaceBoxComparableAggregate
+                                | hir::Builtin::InterfaceEqual
                                 | hir::Builtin::InterfaceIsNil
                                 | hir::Builtin::InterfaceIsType
+                                | hir::Builtin::InterfaceIsRuntimeError
                                 | hir::Builtin::InterfaceAssert
                                 | hir::Builtin::InterfaceSatisfies
+                                | hir::Builtin::InterfaceSatisfiesRuntimeError
                                 | hir::Builtin::InterfaceSatisfiesNonNil
                                 | hir::Builtin::InterfaceUnboxBool
+                                | hir::Builtin::InterfaceUnboxF64
                                 | hir::Builtin::InterfaceUnboxI64
                                 | hir::Builtin::InterfaceUnboxGoString
                                 | hir::Builtin::InterfaceStructI64Get
@@ -887,6 +830,19 @@ impl Function {
                                 | hir::Builtin::FunctionIsNil => {
                                     return Err(Diagnostic::backend(
                                         "interface builtin bypassed dedicated MIR verification",
+                                    ));
+                                }
+                                hir::Builtin::StringFromRune
+                                | hir::Builtin::StringFromSliceU8
+                                | hir::Builtin::StringFromSliceRunes
+                                | hir::Builtin::StringLen
+                                | hir::Builtin::StringIndex
+                                | hir::Builtin::StringRange
+                                | hir::Builtin::StringRangeCount
+                                | hir::Builtin::StringRangeIndexAt
+                                | hir::Builtin::StringRangeRuneAt => {
+                                    return Err(Diagnostic::backend(
+                                        "string builtin bypassed dedicated MIR verification",
                                     ));
                                 }
                                 hir::Builtin::SliceBoolIndex | hir::Builtin::SliceBoolSet => {

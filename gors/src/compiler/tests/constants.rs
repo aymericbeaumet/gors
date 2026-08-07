@@ -231,3 +231,59 @@ fn indexing_a_non_string_untyped_constant_is_rejected() {
         "{errors:?}"
     );
 }
+
+#[test]
+fn predeclared_constant_functions_preserve_exact_values_and_kinds() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            const textLength = len("héllo")
+            const minimum = min(3, 2.0)
+            const maximum = max('a', 100)
+            const lexicalMinimum = min("go", "Go")
+            const lexicalMaximum = max("bar", "foo")
+            const pair = complex(1, 2)
+            const realPart = real(pair)
+            const imaginaryPart = imag(pair)
+
+            func main() {
+                var sized [textLength]int
+                if len(sized) != 6 || minimum != 2 || maximum != 100 || lexicalMinimum != "Go" || lexicalMaximum != "foo" || realPart != 1 || imaginaryPart != 2 {
+                    panic("constant built-in evaluation changed")
+                }
+                println(textLength, int(minimum), int(maximum), lexicalMinimum, lexicalMaximum, int(realPart), int(imaginaryPart))
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"6 2 100 Go foo 1 2\n");
+}
+
+#[test]
+fn invalid_constant_function_calls_are_rejected() {
+    for (source, expected) in [
+        (
+            "package main\nconst bad = len(123)\nfunc main() { println(bad) }\n",
+            "constant len currently requires a constant string",
+        ),
+        (
+            "package main\nconst bad = min()\nfunc main() { println(bad) }\n",
+            "call to min requires at least one argument",
+        ),
+        (
+            "package main\nconst bad = complex(1)\nfunc main() { println(bad) }\n",
+            "call to complex requires exactly two arguments",
+        ),
+    ] {
+        let errors = compile_file("main.go", source)
+            .err()
+            .expect("invalid constant function call must be rejected");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.code == "GORS2002" && error.message.contains(expected)),
+            "expected {expected:?}, got {errors:?}"
+        );
+    }
+}

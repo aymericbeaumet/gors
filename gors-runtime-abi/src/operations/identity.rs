@@ -122,6 +122,10 @@ impl RuntimeOp {
             Self::GoInterfaceUnboxF64 => 118,
             Self::GoInterfaceEqual => 119,
             Self::GoInterfaceBoxComparableAggregate => 120,
+            Self::GoStringFromRune => 121,
+            Self::PanicGoInterface => 122,
+            Self::GoPanicPayloadToInterface => 123,
+            Self::GoInterfaceIsRuntimeError => 124,
         })
     }
 }

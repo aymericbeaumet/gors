@@ -29,8 +29,8 @@ pub(super) fn verify_constant_type(value: &ConstValue, ty: &Ty) -> Result<(), Di
                 ConstValue::Int(_),
                 Ty::Uint(crate::compiler::types::UintTy::Uintptr)
             )
-            | (ConstValue::Float(_), Ty::Float(FloatTy::Float64))
-            | (ConstValue::Int(_), Ty::Float(FloatTy::Float64))
+            | (ConstValue::Float(_), Ty::Float(_))
+            | (ConstValue::Int(_), Ty::Float(_))
             | (
                 ConstValue::Complex { .. },
                 Ty::Complex(ComplexTy::Complex128)
@@ -76,6 +76,10 @@ pub(super) fn same_mir_representation(left: &Ty, right: &Ty) -> bool {
             (left.underlying(), right.underlying()),
             (Ty::Interface(_), Ty::Interface(_))
         )
+        || matches!(
+            (left.underlying(), right.underlying()),
+            (Ty::Float(_), Ty::Float(_))
+        )
 }
 
 pub(super) fn verify_binary_types(
@@ -112,12 +116,7 @@ pub(super) fn verify_binary_types(
                 )
         }
         hir::BinaryOp::Min | hir::BinaryOp::Max => {
-            same_operands
-                && same_result
-                && matches!(
-                    underlying,
-                    Ty::Int(IntTy::Int) | Ty::Float(FloatTy::Float64)
-                )
+            same_operands && same_result && matches!(underlying, Ty::Int(IntTy::Int) | Ty::Float(_))
         }
         hir::BinaryOp::Complex => {
             same_operands
@@ -142,7 +141,7 @@ pub(super) fn verify_binary_types(
                         | Ty::Int(IntTy::Int32)
                         | Ty::Uint(crate::compiler::types::UintTy::Uint8)
                         | Ty::Uint(crate::compiler::types::UintTy::Uintptr)
-                        | Ty::Float(FloatTy::Float64)
+                        | Ty::Float(_)
                         | Ty::Complex(ComplexTy::Complex128)
                         | Ty::String
                 ) || underlying.is_bootstrap_comparable_aggregate())
@@ -159,7 +158,7 @@ pub(super) fn verify_binary_types(
                         | Ty::Int(IntTy::Int32)
                         | Ty::Uint(crate::compiler::types::UintTy::Uint8)
                         | Ty::Uint(crate::compiler::types::UintTy::Uintptr)
-                        | Ty::Float(FloatTy::Float64)
+                        | Ty::Float(_)
                         | Ty::String
                 )
                 && result == &Ty::Bool

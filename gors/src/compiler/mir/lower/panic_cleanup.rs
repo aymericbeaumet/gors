@@ -112,6 +112,7 @@ impl FunctionLowerer {
         &mut self,
         function: &hir::Function,
         active: LocalId,
+        recovered: LocalId,
     ) -> Result<PanicCleanup, Diagnostic> {
         let provenance = Provenance::Synthetic(SyntheticOrigin::PanicCleanupDispatch);
         let entry = self.new_block(provenance.clone());
@@ -160,7 +161,11 @@ impl FunctionLowerer {
             hir::Effects::default(),
             provenance,
         ))?;
-        Ok(PanicCleanup { entry, active })
+        Ok(PanicCleanup {
+            entry,
+            active,
+            recovered,
+        })
     }
 
     pub(super) fn retarget_body_panics(&mut self, cleanup: BasicBlockId) {

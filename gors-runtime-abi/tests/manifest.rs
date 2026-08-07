@@ -98,11 +98,11 @@ fn current_contract_identity_is_sha256_of_canonical_bytes() {
 
     assert_eq!(manifest.schema().get(), 2);
     assert_eq!(manifest.contract(), CURRENT_CONTRACT_VERSION);
-    assert_eq!(manifest.contract(), ContractVersion::new(2, 16, 0));
+    assert_eq!(manifest.contract(), ContractVersion::new(2, 20, 0));
     assert_eq!(manifest.identity().as_bytes(), &expected);
     assert_eq!(
         manifest.identity().to_string(),
-        "a2de8d7d19727d36710f363bbb9023e17be6e3943d28229ef6faf230dbde86ad",
+        "79c8edd1ec15e7da105b544b262f3d1825022737c255c5274713998cad4f2aca",
         "the canonical runtime contract changed; review the ABI diff and bump its semantic version before accepting a new identity",
     );
 }
@@ -124,6 +124,8 @@ fn current_operation_catalogs_are_complete_and_collision_free() {
         .map(|operation| operation.id())
         .collect::<BTreeSet<_>>();
     assert_eq!(primitive_ids.len(), PrimitiveOp::ALL.len());
+    assert_eq!(PrimitiveOp::Int32WrappingAdd.id().get(), 51);
+    assert_eq!(PrimitiveOp::Int32WrappingNeg.id().get(), 52);
 
     let primitive_names = PrimitiveOp::ALL
         .iter()
@@ -156,6 +158,8 @@ fn runtime_effect_metadata_is_complete_and_exact() {
         let effects = operation.effects();
         let expected_allocation = match operation {
             RuntimeOp::GoStringFromBytes
+            | RuntimeOp::GoStringFromRune
+            | RuntimeOp::GoPanicPayloadToInterface
             | RuntimeOp::ConcatGoStrings
             | RuntimeOp::PrintF64
             | RuntimeOp::GoSliceI64FromStatic
@@ -194,6 +198,8 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::PanicBool
             | RuntimeOp::PanicI64
             | RuntimeOp::PanicGoString
+            | RuntimeOp::PanicGoInterface
+            | RuntimeOp::GoInterfaceIsRuntimeError
             | RuntimeOp::GoSliceI64Index
             | RuntimeOp::GoSliceI64IsNil
             | RuntimeOp::GoSliceU8IsNil
@@ -297,6 +303,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoChannelI64TrySend
             | RuntimeOp::GoChannelI64TryReceive => ArgumentMutationEffect::MayMutateOwnedArgument,
             RuntimeOp::GoStringFromBytes
+            | RuntimeOp::GoStringFromRune
             | RuntimeOp::GoStringFromStatic
             | RuntimeOp::IntDiv
             | RuntimeOp::IntRem
@@ -311,6 +318,9 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::PanicBool
             | RuntimeOp::PanicI64
             | RuntimeOp::PanicGoString
+            | RuntimeOp::PanicGoInterface
+            | RuntimeOp::GoPanicPayloadToInterface
+            | RuntimeOp::GoInterfaceIsRuntimeError
             | RuntimeOp::GoSliceI64FromStatic
             | RuntimeOp::GoSliceI64Nil
             | RuntimeOp::GoSliceI64IsNil
@@ -408,6 +418,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::PrintNewline
             | RuntimeOp::PrintGoString => HostIoEffect::StandardError,
             RuntimeOp::GoStringFromBytes
+            | RuntimeOp::GoStringFromRune
             | RuntimeOp::GoStringFromStatic
             | RuntimeOp::ConcatGoStrings
             | RuntimeOp::IntDiv
@@ -417,6 +428,9 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::PanicBool
             | RuntimeOp::PanicI64
             | RuntimeOp::PanicGoString
+            | RuntimeOp::PanicGoInterface
+            | RuntimeOp::GoPanicPayloadToInterface
+            | RuntimeOp::GoInterfaceIsRuntimeError
             | RuntimeOp::GoSliceI64FromStatic
             | RuntimeOp::GoSliceI64Nil
             | RuntimeOp::GoSliceI64IsNil
@@ -520,9 +534,10 @@ fn runtime_effect_metadata_is_complete_and_exact() {
         let expected_panics: &[GoPanicCondition] = match operation {
             RuntimeOp::IntDiv | RuntimeOp::IntRem => &[GoPanicCondition::IntegerDivideByZero],
             RuntimeOp::IntShl | RuntimeOp::IntShr => &[GoPanicCondition::NegativeShiftAmount],
-            RuntimeOp::PanicBool | RuntimeOp::PanicI64 | RuntimeOp::PanicGoString => {
-                &[GoPanicCondition::ExplicitPanic]
-            }
+            RuntimeOp::PanicBool
+            | RuntimeOp::PanicI64
+            | RuntimeOp::PanicGoString
+            | RuntimeOp::PanicGoInterface => &[GoPanicCondition::ExplicitPanic],
             RuntimeOp::GoSliceI64Index
             | RuntimeOp::GoSliceU8Index
             | RuntimeOp::GoStringIndex
@@ -572,6 +587,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
                 GoPanicCondition::CloseOfClosedChannel,
             ],
             RuntimeOp::GoStringFromBytes
+            | RuntimeOp::GoStringFromRune
             | RuntimeOp::GoStringFromStatic
             | RuntimeOp::ConcatGoStrings
             | RuntimeOp::PrintBool
@@ -580,6 +596,8 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::PrintSpace
             | RuntimeOp::PrintNewline
             | RuntimeOp::PrintGoString
+            | RuntimeOp::GoPanicPayloadToInterface
+            | RuntimeOp::GoInterfaceIsRuntimeError
             | RuntimeOp::GoSliceI64FromStatic
             | RuntimeOp::GoSliceI64Nil
             | RuntimeOp::GoSliceI64IsNil
@@ -737,9 +755,9 @@ fn primitive_signatures_are_complete_and_exact() {
             PrimitiveOp::BoolEqual | PrimitiveOp::BoolNotEqual => {
                 (&[RuntimeType::Bool, RuntimeType::Bool], RuntimeType::Bool)
             }
-            PrimitiveOp::IntBitNot | PrimitiveOp::IntWrappingNeg => {
-                (&[RuntimeType::I64], RuntimeType::I64)
-            }
+            PrimitiveOp::IntBitNot
+            | PrimitiveOp::IntWrappingNeg
+            | PrimitiveOp::Int32WrappingNeg => (&[RuntimeType::I64], RuntimeType::I64),
             PrimitiveOp::IntBitAnd
             | PrimitiveOp::IntBitOr
             | PrimitiveOp::IntBitXor
@@ -747,6 +765,7 @@ fn primitive_signatures_are_complete_and_exact() {
             | PrimitiveOp::IntWrappingAdd
             | PrimitiveOp::IntWrappingSub
             | PrimitiveOp::IntWrappingMul
+            | PrimitiveOp::Int32WrappingAdd
             | PrimitiveOp::IntMin
             | PrimitiveOp::IntMax => (&[RuntimeType::I64, RuntimeType::I64], RuntimeType::I64),
             PrimitiveOp::IntEqual
@@ -757,7 +776,9 @@ fn primitive_signatures_are_complete_and_exact() {
             | PrimitiveOp::IntGreaterEqual => {
                 (&[RuntimeType::I64, RuntimeType::I64], RuntimeType::Bool)
             }
-            PrimitiveOp::FloatNeg => (&[RuntimeType::F64], RuntimeType::F64),
+            PrimitiveOp::FloatNeg | PrimitiveOp::FloatRound32 => {
+                (&[RuntimeType::F64], RuntimeType::F64)
+            }
             PrimitiveOp::FloatAdd
             | PrimitiveOp::FloatSub
             | PrimitiveOp::FloatMul
