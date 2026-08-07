@@ -195,6 +195,11 @@ impl Ty {
         let identity = match self {
             Self::Bool => "builtin:bool".to_owned(),
             Self::Int(IntTy::Int) => "builtin:int".to_owned(),
+            Self::Int(IntTy::Int8) => "builtin:int8".to_owned(),
+            Self::Int(IntTy::Int32) => "builtin:int32".to_owned(),
+            Self::Uint(UintTy::Uint) => "builtin:uint".to_owned(),
+            Self::Uint(UintTy::Uint8) => "builtin:uint8".to_owned(),
+            Self::Uint(UintTy::Uintptr) => "builtin:uintptr".to_owned(),
             Self::Float(FloatTy::Float32) => "builtin:float32".to_owned(),
             Self::Float(FloatTy::Float64) => "builtin:float64".to_owned(),
             Self::String => "builtin:string".to_owned(),
@@ -307,7 +312,11 @@ impl Ty {
     #[must_use]
     pub fn supports_interface_payload(&self) -> bool {
         match self.underlying() {
-            Self::Bool | Self::Int(IntTy::Int) | Self::Float(_) | Self::String => true,
+            Self::Bool
+            | Self::Int(IntTy::Int | IntTy::Int8 | IntTy::Int32)
+            | Self::Uint(UintTy::Uint | UintTy::Uint8 | UintTy::Uintptr)
+            | Self::Float(_)
+            | Self::String => true,
             Self::Struct(_) => self.interface_aggregate_struct_fields().is_some(),
             Self::Slice(element) => element.uses_interface_aggregate_representation(),
             Self::Pointer(_) => self.bootstrap_i64_struct_pointer_fields().is_some(),
@@ -366,7 +375,11 @@ impl Ty {
                     || value.bootstrap_i64_struct_fields().is_some());
         }
         if let Self::Channel(_, element) = self {
-            return element.underlying() == &Self::Int(IntTy::Int);
+            return matches!(element.underlying(), Self::Int(IntTy::Int) | Self::String)
+                || matches!(
+                    element.underlying(),
+                    Self::Channel(_, nested) if nested.underlying() == &Self::Int(IntTy::Int)
+                );
         }
         if let Self::Tuple(elements) = self {
             return elements.iter().all(Self::is_bootstrap_value);
@@ -386,9 +399,8 @@ impl Ty {
         matches!(
             self,
             Self::Bool
-                | Self::Int(IntTy::Int)
-                | Self::Int(IntTy::Int32)
-                | Self::Uint(UintTy::Uint8 | UintTy::Uintptr)
+                | Self::Int(IntTy::Int | IntTy::Int8 | IntTy::Int32)
+                | Self::Uint(UintTy::Uint | UintTy::Uint8 | UintTy::Uintptr)
                 | Self::Float(_)
                 | Self::Complex(ComplexTy::Complex128)
                 | Self::String
@@ -506,13 +518,19 @@ impl ConstValue {
                 };
                 value >= BigInt::from(i64::MIN) && value <= BigInt::from(i64::MAX)
             }
+            (Self::Int(value), Ty::Int(IntTy::Int8)) => {
+                let Some(value) = BigInt::parse_bytes(value.as_bytes(), 10) else {
+                    return false;
+                };
+                value >= BigInt::from(i8::MIN) && value <= BigInt::from(i8::MAX)
+            }
             (Self::Int(value), Ty::Int(IntTy::Int32)) => {
                 let Some(value) = BigInt::parse_bytes(value.as_bytes(), 10) else {
                     return false;
                 };
                 value >= BigInt::from(i32::MIN) && value <= BigInt::from(i32::MAX)
             }
-            (Self::Int(value), Ty::Uint(UintTy::Uint8 | UintTy::Uintptr)) => {
+            (Self::Int(value), Ty::Uint(UintTy::Uint | UintTy::Uint8 | UintTy::Uintptr)) => {
                 let Some(value) = BigInt::parse_bytes(value.as_bytes(), 10) else {
                     return false;
                 };
@@ -552,8 +570,8 @@ impl ConstValue {
                 Self::Complex { real, imag },
                 Ty::Untyped(UntypedTy::Complex) | Ty::Complex(ComplexTy::Complex128),
             ) => parse_go_float(real).is_some() && parse_go_float(imag).is_some(),
-            // Remaining narrow and unsigned integers stay in the semantic
-            // algebra for the next frontier but are not executable yet.
+            // Other narrow and unsigned widths stay in the semantic algebra
+            // for the next frontier but are not executable yet.
             _ => false,
         }
     }

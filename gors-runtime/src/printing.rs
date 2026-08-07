@@ -16,7 +16,7 @@ pub fn print_i64(value: GoInt) {
     drop(write!(output, "{value}"));
 }
 
-/// Print Go's floating-point debug representation.
+/// Print Go 1.26's shortest-round-trip floating-point representation.
 pub fn print_f64(value: f64) {
     let rendered = format_f64(value);
     write_stderr_bytes(rendered.as_bytes());
@@ -30,14 +30,19 @@ fn format_f64(value: f64) -> String {
     } else if value == f64::NEG_INFINITY {
         "-Inf".to_owned()
     } else {
-        let raw = format!("{value:+.6e}");
-        let Some((mantissa, exponent)) = raw.rsplit_once('e') else {
-            return raw;
+        let scientific = format!("{value:e}");
+        let Some((mantissa, exponent)) = scientific.rsplit_once('e') else {
+            return scientific;
         };
-        let (sign, digits) = exponent
-            .strip_prefix('-')
-            .map_or(("+", exponent), |digits| ("-", digits));
-        format!("{mantissa}e{sign}{digits:0>3}")
+        let Ok(exponent) = exponent.parse::<i16>() else {
+            return scientific;
+        };
+        if (-4..6).contains(&exponent) {
+            return value.to_string();
+        }
+        let sign = if exponent.is_negative() { '-' } else { '+' };
+        let magnitude = exponent.unsigned_abs();
+        format!("{mantissa}e{sign}{magnitude:02}")
     }
 }
 
@@ -63,12 +68,25 @@ mod tests {
     use super::format_f64;
 
     #[test]
-    fn float_format_matches_the_go_builtin_debug_surface() {
-        assert_eq!(format_f64(1.0), "+1.000000e+000");
-        assert_eq!(format_f64(-0.0), "-0.000000e+000");
-        assert_eq!(format_f64(1e100), "+1.000000e+100");
-        assert_eq!(format_f64(f64::INFINITY), "+Inf");
-        assert_eq!(format_f64(f64::NEG_INFINITY), "-Inf");
+    fn float_format_matches_go_1_26_shortest_round_trip_output() {
+        for (value, expected) in [
+            (1.0, "1"),
+            (-0.0, "-0"),
+            (3.5, "3.5"),
+            (3.75, "3.75"),
+            (0.0001, "0.0001"),
+            (0.00001, "1e-05"),
+            (999_999.0, "999999"),
+            (1_000_000.0, "1e+06"),
+            (16_777_216.0, "1.6777216e+07"),
+            (1e100, "1e+100"),
+            (f64::from_bits(1), "5e-324"),
+            (f64::MAX, "1.7976931348623157e+308"),
+            (f64::INFINITY, "+Inf"),
+            (f64::NEG_INFINITY, "-Inf"),
+        ] {
+            assert_eq!(format_f64(value), expected, "{value:?}");
+        }
         assert_eq!(format_f64(f64::NAN), "NaN");
     }
 }

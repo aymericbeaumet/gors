@@ -1,7 +1,7 @@
 //! Typed lowering for the `map[string]int` runtime representation.
 
 use super::FunctionLowerer;
-use super::channels::{channel_effects, int_channel_parts};
+use super::channels::{channel_effects, channel_parts};
 use super::expressions::{coerce_expr, expr_constant};
 use super::pointers::{int_pointer_ty, pointer_effects};
 use crate::compiler::Diagnostic;
@@ -177,11 +177,11 @@ impl FunctionLowerer {
                 source,
             });
         }
-        if int_channel_parts(&ty).is_some() {
+        if let Some((_, _, representation)) = channel_parts(&ty) {
             return Ok(hir::Expr {
                 node,
                 kind: hir::ExprKind::Call {
-                    callee: hir::Callee::Builtin(hir::Builtin::ChannelI64Nil),
+                    callee: hir::Callee::Builtin(representation.builtins().nil),
                     args: Vec::new(),
                 },
                 ty,
@@ -371,7 +371,7 @@ impl FunctionLowerer {
             ));
         };
         let declared = self.lower_scoped_type(declared_syntax, source)?;
-        if int_channel_parts(&declared).is_some() {
+        if channel_parts(&declared).is_some() {
             return self.lower_channel_make(declared, arguments, spread, node, source, expected);
         }
         let aggregate_map = string_aggregate_map_value_ty(&declared).is_some();
@@ -438,7 +438,7 @@ impl FunctionLowerer {
             }
             return Ok(result);
         }
-        if int_channel_parts(&value.ty).is_some() {
+        if channel_parts(&value.ty).is_some() {
             return self.lower_channel_len(value, node, source, expected);
         }
         if let Ty::Array(length, element) = value.ty.underlying()

@@ -2,7 +2,7 @@
 
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
-use crate::compiler::types::{ComplexTy, ConstValue, FloatTy, IntTy, Ty};
+use crate::compiler::types::{ComplexTy, ConstValue, FloatTy, IntTy, Ty, UintTy};
 
 pub(super) fn verify_bootstrap_type(ty: &Ty, context: &str) -> Result<(), Diagnostic> {
     if *ty == Ty::Unit || ty.is_bootstrap_value() {
@@ -16,19 +16,15 @@ pub(super) fn verify_bootstrap_type(ty: &Ty, context: &str) -> Result<(), Diagno
 
 pub(super) fn verify_constant_type(value: &ConstValue, ty: &Ty) -> Result<(), Diagnostic> {
     let underlying = ty.underlying();
-    matches!(
+    let shape_matches = matches!(
         (value, underlying),
         (ConstValue::Bool(_), Ty::Bool)
             | (ConstValue::Int(_), Ty::Int(IntTy::Int))
+            | (ConstValue::Int(_), Ty::Int(IntTy::Int8))
             | (ConstValue::Int(_), Ty::Int(IntTy::Int32))
-            | (
-                ConstValue::Int(_),
-                Ty::Uint(crate::compiler::types::UintTy::Uint8)
-            )
-            | (
-                ConstValue::Int(_),
-                Ty::Uint(crate::compiler::types::UintTy::Uintptr)
-            )
+            | (ConstValue::Int(_), Ty::Uint(UintTy::Uint))
+            | (ConstValue::Int(_), Ty::Uint(UintTy::Uint8))
+            | (ConstValue::Int(_), Ty::Uint(UintTy::Uintptr))
             | (ConstValue::Float(_), Ty::Float(_))
             | (ConstValue::Int(_), Ty::Float(_))
             | (
@@ -38,13 +34,14 @@ pub(super) fn verify_constant_type(value: &ConstValue, ty: &Ty) -> Result<(), Di
             | (ConstValue::Int(_), Ty::Complex(ComplexTy::Complex128))
             | (ConstValue::Float(_), Ty::Complex(ComplexTy::Complex128))
             | (ConstValue::String(_), Ty::String)
-    )
-    .then_some(())
-    .ok_or_else(|| {
-        Diagnostic::backend(format!(
-            "MIR constant {value:?} does not have declared type {ty:?}"
-        ))
-    })
+    );
+    (shape_matches && value.is_representable_as(ty))
+        .then_some(())
+        .ok_or_else(|| {
+            Diagnostic::backend(format!(
+                "MIR constant {value:?} is not representable as declared type {ty:?}"
+            ))
+        })
 }
 
 pub(super) fn verify_same_type(
@@ -68,7 +65,7 @@ pub(super) fn same_mir_representation(left: &Ty, right: &Ty) -> bool {
         || matches!(
             (left.underlying(), right.underlying()),
             (
-                Ty::Int(IntTy::Int32) | Ty::Uint(crate::compiler::types::UintTy::Uint8),
+                Ty::Int(IntTy::Int32) | Ty::Uint(UintTy::Uint8),
                 Ty::Int(IntTy::Int)
             )
         )
@@ -99,7 +96,7 @@ pub(super) fn verify_binary_types(
                     underlying,
                     Ty::Int(IntTy::Int)
                         | Ty::Int(IntTy::Int32)
-                        | Ty::Uint(crate::compiler::types::UintTy::Uint8)
+                        | Ty::Uint(UintTy::Uint8)
                         | Ty::Float(FloatTy::Float64)
                         | Ty::Complex(ComplexTy::Complex128)
                         | Ty::String
@@ -137,10 +134,8 @@ pub(super) fn verify_binary_types(
                 && (matches!(
                     underlying,
                     Ty::Bool
-                        | Ty::Int(IntTy::Int)
-                        | Ty::Int(IntTy::Int32)
-                        | Ty::Uint(crate::compiler::types::UintTy::Uint8)
-                        | Ty::Uint(crate::compiler::types::UintTy::Uintptr)
+                        | Ty::Int(IntTy::Int | IntTy::Int8 | IntTy::Int32)
+                        | Ty::Uint(UintTy::Uint | UintTy::Uint8 | UintTy::Uintptr)
                         | Ty::Float(_)
                         | Ty::Complex(ComplexTy::Complex128)
                         | Ty::String
@@ -154,10 +149,8 @@ pub(super) fn verify_binary_types(
             same_operands
                 && matches!(
                     underlying,
-                    Ty::Int(IntTy::Int)
-                        | Ty::Int(IntTy::Int32)
-                        | Ty::Uint(crate::compiler::types::UintTy::Uint8)
-                        | Ty::Uint(crate::compiler::types::UintTy::Uintptr)
+                    Ty::Int(IntTy::Int | IntTy::Int8 | IntTy::Int32)
+                        | Ty::Uint(UintTy::Uint | UintTy::Uint8 | UintTy::Uintptr)
                         | Ty::Float(_)
                         | Ty::String
                 )
@@ -172,4 +165,34 @@ pub(super) fn verify_binary_types(
             "invalid MIR binary operation {op:?}: {left:?}, {right:?} -> {result:?}"
         ))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::verify_constant_type;
+    use crate::compiler::types::{ConstValue, IntTy, Ty, UintTy};
+
+    #[test]
+    fn constant_verification_enforces_exact_integer_representation_bounds() {
+        assert!(
+            verify_constant_type(&ConstValue::Int("127".into()), &Ty::Int(IntTy::Int8)).is_ok()
+        );
+        assert!(
+            verify_constant_type(&ConstValue::Int("128".into()), &Ty::Int(IntTy::Int8)).is_err()
+        );
+        assert!(
+            verify_constant_type(
+                &ConstValue::Int(i64::MAX.to_string()),
+                &Ty::Uint(UintTy::Uint),
+            )
+            .is_ok()
+        );
+        assert!(
+            verify_constant_type(
+                &ConstValue::Int("9223372036854775808".into()),
+                &Ty::Uint(UintTy::Uint),
+            )
+            .is_err()
+        );
+    }
 }

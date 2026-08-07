@@ -516,20 +516,17 @@ pub(super) fn eval_constant_with_lookups(
                 Ty::Untyped(UntypedTy::Float),
                 ConstValue::Float(spelling.replace('_', "")),
             )),
-            crate::token::Token::IMAG => {
-                let component = spelling
-                    .strip_suffix('i')
-                    .ok_or_else(|| Diagnostic::semantic("invalid imaginary literal", source))?;
-                let imag =
-                    parse_go_integer(component).unwrap_or_else(|| component.replace('_', ""));
-                Ok((
-                    Ty::Untyped(UntypedTy::Complex),
-                    ConstValue::Complex {
-                        real: "0".into(),
-                        imag,
-                    },
-                ))
-            }
+            crate::token::Token::IMAG => parse_go_imaginary(spelling)
+                .map(|imag| {
+                    (
+                        Ty::Untyped(UntypedTy::Complex),
+                        ConstValue::Complex {
+                            real: "0".into(),
+                            imag,
+                        },
+                    )
+                })
+                .ok_or_else(|| Diagnostic::semantic("invalid imaginary literal", source)),
             crate::token::Token::STRING => parse_go_string(spelling)
                 .map(|value| (Ty::Untyped(UntypedTy::String), ConstValue::String(value)))
                 .ok_or_else(|| Diagnostic::semantic("invalid string literal", source)),

@@ -2,7 +2,7 @@
 
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
-use crate::compiler::types::{IntTy, Ty};
+use crate::compiler::types::{IntTy, Ty, UintTy};
 
 pub(super) fn is_interface_builtin(builtin: hir::Builtin) -> bool {
     matches!(
@@ -51,9 +51,9 @@ pub(super) fn verify_interface_call(
         hir::Builtin::InterfaceBoxF64 => verify_box(arguments, destinations, |ty| {
             matches!(ty.underlying(), Ty::Float(_))
         }),
-        hir::Builtin::InterfaceBoxI64 => verify_box(arguments, destinations, |ty| {
-            ty.underlying() == &Ty::Int(IntTy::Int)
-        }),
+        hir::Builtin::InterfaceBoxI64 => {
+            verify_box(arguments, destinations, is_i64_interface_scalar)
+        }
         hir::Builtin::InterfaceBoxGoString => {
             verify_box(arguments, destinations, |ty| ty.underlying() == &Ty::String)
         }
@@ -104,7 +104,7 @@ pub(super) fn verify_interface_call(
         hir::Builtin::InterfaceUnboxI64 => verify_unbox(
             arguments,
             destinations,
-            |ty| ty.underlying() == &Ty::Int(IntTy::Int),
+            is_i64_interface_scalar,
             "interface integer extraction",
         ),
         hir::Builtin::InterfaceUnboxGoString => verify_unbox(
@@ -168,6 +168,14 @@ pub(super) fn verify_interface_call(
             "non-interface builtin reached interface MIR verification",
         )),
     }
+}
+
+fn is_i64_interface_scalar(ty: &Ty) -> bool {
+    matches!(
+        ty.underlying(),
+        Ty::Int(IntTy::Int | IntTy::Int8 | IntTy::Int32)
+            | Ty::Uint(UintTy::Uint | UintTy::Uint8 | UintTy::Uintptr)
+    )
 }
 
 fn verify_box(

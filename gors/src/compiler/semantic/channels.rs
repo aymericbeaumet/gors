@@ -1,4 +1,4 @@
-//! Typed lowering for Go channels carrying integer values.
+//! Typed lowering for executable Go channel element representations.
 
 use super::FunctionLowerer;
 use super::expressions::coerce_expr;
@@ -10,11 +10,91 @@ use crate::compiler::syntax::{ExprSyntax, ExprSyntaxKind};
 use crate::compiler::types::{ChannelDir, ConstValue, IntTy, Ty};
 use crate::token::Token;
 
-pub(super) fn int_channel_parts(ty: &Ty) -> Option<(ChannelDir, &Ty)> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ChannelRepresentation {
+    I64,
+    GoString,
+    GoChannelI64,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct ChannelBuiltins {
+    pub(super) nil: hir::Builtin,
+    pub(super) make: hir::Builtin,
+    pub(super) len: hir::Builtin,
+    pub(super) cap: hir::Builtin,
+    pub(super) send: hir::Builtin,
+    pub(super) receive_value: hir::Builtin,
+    pub(super) receive: hir::Builtin,
+    pub(super) close: hir::Builtin,
+    pub(super) is_nil: hir::Builtin,
+    pub(super) try_send: hir::Builtin,
+    pub(super) try_receive: hir::Builtin,
+}
+
+impl ChannelRepresentation {
+    pub(super) const fn builtins(self) -> ChannelBuiltins {
+        match self {
+            Self::I64 => ChannelBuiltins {
+                nil: hir::Builtin::ChannelI64Nil,
+                make: hir::Builtin::ChannelI64Make,
+                len: hir::Builtin::ChannelI64Len,
+                cap: hir::Builtin::ChannelI64Cap,
+                send: hir::Builtin::ChannelI64Send,
+                receive_value: hir::Builtin::ChannelI64ReceiveValue,
+                receive: hir::Builtin::ChannelI64Receive,
+                close: hir::Builtin::ChannelI64Close,
+                is_nil: hir::Builtin::ChannelI64IsNil,
+                try_send: hir::Builtin::ChannelI64TrySend,
+                try_receive: hir::Builtin::ChannelI64TryReceive,
+            },
+            Self::GoString => ChannelBuiltins {
+                nil: hir::Builtin::ChannelGoStringNil,
+                make: hir::Builtin::ChannelGoStringMake,
+                len: hir::Builtin::ChannelGoStringLen,
+                cap: hir::Builtin::ChannelGoStringCap,
+                send: hir::Builtin::ChannelGoStringSend,
+                receive_value: hir::Builtin::ChannelGoStringReceiveValue,
+                receive: hir::Builtin::ChannelGoStringReceive,
+                close: hir::Builtin::ChannelGoStringClose,
+                is_nil: hir::Builtin::ChannelGoStringIsNil,
+                try_send: hir::Builtin::ChannelGoStringTrySend,
+                try_receive: hir::Builtin::ChannelGoStringTryReceive,
+            },
+            Self::GoChannelI64 => ChannelBuiltins {
+                nil: hir::Builtin::ChannelGoChannelI64Nil,
+                make: hir::Builtin::ChannelGoChannelI64Make,
+                len: hir::Builtin::ChannelGoChannelI64Len,
+                cap: hir::Builtin::ChannelGoChannelI64Cap,
+                send: hir::Builtin::ChannelGoChannelI64Send,
+                receive_value: hir::Builtin::ChannelGoChannelI64ReceiveValue,
+                receive: hir::Builtin::ChannelGoChannelI64Receive,
+                close: hir::Builtin::ChannelGoChannelI64Close,
+                is_nil: hir::Builtin::ChannelGoChannelI64IsNil,
+                try_send: hir::Builtin::ChannelGoChannelI64TrySend,
+                try_receive: hir::Builtin::ChannelGoChannelI64TryReceive,
+            },
+        }
+    }
+}
+
+fn channel_representation(element: &Ty) -> Option<ChannelRepresentation> {
+    match element.underlying() {
+        Ty::Int(IntTy::Int) => Some(ChannelRepresentation::I64),
+        Ty::String => Some(ChannelRepresentation::GoString),
+        Ty::Channel(_, nested) if nested.underlying() == &Ty::Int(IntTy::Int) => {
+            Some(ChannelRepresentation::GoChannelI64)
+        }
+        _ => None,
+    }
+}
+
+pub(super) fn channel_parts(ty: &Ty) -> Option<(ChannelDir, &Ty, ChannelRepresentation)> {
     let Ty::Channel(direction, element) = ty.underlying() else {
         return None;
     };
-    (element.underlying() == &Ty::Int(IntTy::Int)).then_some((*direction, element.as_ref()))
+    let representation = channel_representation(element)?;
+    Some((*direction, element.as_ref(), representation))
 }
 
 impl FunctionLowerer {
@@ -30,9 +110,9 @@ impl FunctionLowerer {
         if spread {
             return Err(Diagnostic::semantic("make does not accept ...", source));
         }
-        let Some(_) = int_channel_parts(&declared) else {
+        let Some((_, _, representation)) = channel_parts(&declared) else {
             return Err(Diagnostic::unsupported(
-                "make currently supports channels carrying int values",
+                "make does not yet support this channel element representation",
                 source,
             ));
         };
@@ -48,7 +128,7 @@ impl FunctionLowerer {
             [_, capacity] => self.lower_expr(capacity, Some(&Ty::Int(IntTy::Int)))?,
             _ => {
                 return Err(Diagnostic::semantic(
-                    "make(chan int[, capacity]) requires one or two arguments",
+                    "make(channel[, capacity]) requires one or two arguments",
                     source,
                 ));
             }
@@ -57,7 +137,7 @@ impl FunctionLowerer {
         let mut result = hir::Expr {
             node,
             kind: hir::ExprKind::Call {
-                callee: hir::Callee::Builtin(hir::Builtin::ChannelI64Make),
+                callee: hir::Callee::Builtin(representation.builtins().make),
                 args: vec![capacity],
             },
             ty: declared,
@@ -80,9 +160,9 @@ impl FunctionLowerer {
         expected: Option<&Ty>,
     ) -> Result<hir::Expr, Diagnostic> {
         let channel = self.lower_expr(expression, None)?;
-        let Some((direction, element)) = int_channel_parts(&channel.ty) else {
+        let Some((direction, element, representation)) = channel_parts(&channel.ty) else {
             return Err(Diagnostic::semantic(
-                "receive requires a channel carrying int values",
+                "receive requires an executable channel element representation",
                 source,
             ));
         };
@@ -103,9 +183,9 @@ impl FunctionLowerer {
             node,
             kind: hir::ExprKind::Call {
                 callee: hir::Callee::Builtin(if comma_ok {
-                    hir::Builtin::ChannelI64Receive
+                    representation.builtins().receive
                 } else {
-                    hir::Builtin::ChannelI64ReceiveValue
+                    representation.builtins().receive_value
                 }),
                 args: vec![channel],
             },
@@ -146,9 +226,9 @@ impl FunctionLowerer {
         source: SourceRef,
     ) -> Result<hir::StmtKind, Diagnostic> {
         let channel = self.lower_expr(channel, None)?;
-        let Some((direction, element)) = int_channel_parts(&channel.ty) else {
+        let Some((direction, element, representation)) = channel_parts(&channel.ty) else {
             return Err(Diagnostic::semantic(
-                "send requires a channel carrying int values",
+                "send requires an executable channel element representation",
                 source,
             ));
         };
@@ -164,7 +244,7 @@ impl FunctionLowerer {
         Ok(hir::StmtKind::Expr(hir::Expr {
             node,
             kind: hir::ExprKind::Call {
-                callee: hir::Callee::Builtin(hir::Builtin::ChannelI64Send),
+                callee: hir::Callee::Builtin(representation.builtins().send),
                 args: vec![channel, value],
             },
             ty: Ty::Unit,
@@ -182,9 +262,9 @@ impl FunctionLowerer {
         source: SourceRef,
     ) -> Result<hir::Expr, Diagnostic> {
         let channel = self.lower_expr(channel, None)?;
-        let Some((direction, element)) = int_channel_parts(&channel.ty) else {
+        let Some((direction, element, representation)) = channel_parts(&channel.ty) else {
             return Err(Diagnostic::semantic(
-                "select send requires a channel carrying int values",
+                "select send requires an executable channel element representation",
                 source,
             ));
         };
@@ -199,7 +279,7 @@ impl FunctionLowerer {
         Ok(hir::Expr {
             node,
             kind: hir::ExprKind::Call {
-                callee: hir::Callee::Builtin(hir::Builtin::ChannelI64TrySend),
+                callee: hir::Callee::Builtin(representation.builtins().try_send),
                 args: vec![channel, value],
             },
             ty: Ty::Bool,
@@ -216,9 +296,9 @@ impl FunctionLowerer {
         source: SourceRef,
     ) -> Result<hir::Expr, Diagnostic> {
         let channel = self.lower_expr(expression, None)?;
-        let Some((direction, element)) = int_channel_parts(&channel.ty) else {
+        let Some((direction, element, representation)) = channel_parts(&channel.ty) else {
             return Err(Diagnostic::semantic(
-                "select receive requires a channel carrying int values",
+                "select receive requires an executable channel element representation",
                 source,
             ));
         };
@@ -233,7 +313,7 @@ impl FunctionLowerer {
         Ok(hir::Expr {
             node,
             kind: hir::ExprKind::Call {
-                callee: hir::Callee::Builtin(hir::Builtin::ChannelI64TryReceive),
+                callee: hir::Callee::Builtin(representation.builtins().try_receive),
                 args: vec![channel],
             },
             ty,
@@ -267,8 +347,8 @@ impl FunctionLowerer {
             let length = *length;
             return self.lower_array_len(value, length, node, source, expected);
         }
-        let builtin = if int_channel_parts(&value.ty).is_some() {
-            hir::Builtin::ChannelI64Cap
+        let builtin = if let Some((_, _, representation)) = channel_parts(&value.ty) {
+            representation.builtins().cap
         } else if matches!(
             value.ty.underlying(),
             Ty::Slice(element) if element.underlying() == &Ty::Int(IntTy::Int)
@@ -290,7 +370,19 @@ impl FunctionLowerer {
         source: SourceRef,
         expected: Option<&Ty>,
     ) -> Result<hir::Expr, Diagnostic> {
-        self.lower_channel_size(channel, hir::Builtin::ChannelI64Len, node, source, expected)
+        let Some((_, _, representation)) = channel_parts(&channel.ty) else {
+            return Err(Diagnostic::semantic(
+                "len requires an executable channel element representation",
+                source,
+            ));
+        };
+        self.lower_channel_size(
+            channel,
+            representation.builtins().len,
+            node,
+            source,
+            expected,
+        )
     }
 
     fn lower_channel_size(
@@ -337,9 +429,9 @@ impl FunctionLowerer {
             return Err(Diagnostic::semantic("close does not accept ...", source));
         }
         let channel = self.lower_expr(channel, None)?;
-        let Some((direction, _)) = int_channel_parts(&channel.ty) else {
+        let Some((direction, _, representation)) = channel_parts(&channel.ty) else {
             return Err(Diagnostic::semantic(
-                "close requires a channel carrying int values",
+                "close requires an executable channel element representation",
                 source,
             ));
         };
@@ -353,7 +445,7 @@ impl FunctionLowerer {
         let mut result = hir::Expr {
             node,
             kind: hir::ExprKind::Call {
-                callee: hir::Callee::Builtin(hir::Builtin::ChannelI64Close),
+                callee: hir::Callee::Builtin(representation.builtins().close),
                 args: vec![channel],
             },
             ty: Ty::Unit,

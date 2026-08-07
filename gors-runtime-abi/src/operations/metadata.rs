@@ -136,7 +136,29 @@ impl RuntimeOp {
             | Self::GoChannelI64IsNil
             | Self::GoStringLen
             | Self::GoChannelI64TrySend
-            | Self::GoChannelI64TryReceive => NO_CAPABILITIES,
+            | Self::GoChannelI64TryReceive
+            | Self::GoChannelGoStringNil
+            | Self::GoChannelGoStringMake
+            | Self::GoChannelGoStringLen
+            | Self::GoChannelGoStringCap
+            | Self::GoChannelGoStringSend
+            | Self::GoChannelGoStringReceiveValue
+            | Self::GoChannelGoStringReceive
+            | Self::GoChannelGoStringClose
+            | Self::GoChannelGoStringIsNil
+            | Self::GoChannelGoStringTrySend
+            | Self::GoChannelGoStringTryReceive
+            | Self::GoChannelGoChannelI64Nil
+            | Self::GoChannelGoChannelI64Make
+            | Self::GoChannelGoChannelI64Len
+            | Self::GoChannelGoChannelI64Cap
+            | Self::GoChannelGoChannelI64Send
+            | Self::GoChannelGoChannelI64ReceiveValue
+            | Self::GoChannelGoChannelI64Receive
+            | Self::GoChannelGoChannelI64Close
+            | Self::GoChannelGoChannelI64IsNil
+            | Self::GoChannelGoChannelI64TrySend
+            | Self::GoChannelGoChannelI64TryReceive => NO_CAPABILITIES,
         }
     }
 
@@ -443,45 +465,68 @@ impl RuntimeOp {
             | Self::GoChannelI64Len
             | Self::GoChannelI64Cap
             | Self::GoChannelI64IsNil
+            | Self::GoChannelGoStringNil
+            | Self::GoChannelGoStringLen
+            | Self::GoChannelGoStringCap
+            | Self::GoChannelGoStringIsNil
+            | Self::GoChannelGoChannelI64Nil
+            | Self::GoChannelGoChannelI64Len
+            | Self::GoChannelGoChannelI64Cap
+            | Self::GoChannelGoChannelI64IsNil
             | Self::GoStringLen => RuntimeEffects::new(
                 AllocationEffect::None,
                 ArgumentMutationEffect::None,
                 HostIoEffect::None,
                 NO_GO_PANICS,
             ),
-            Self::GoChannelI64Make => RuntimeEffects::new(
+            Self::GoChannelI64Make
+            | Self::GoChannelGoStringMake
+            | Self::GoChannelGoChannelI64Make => RuntimeEffects::new(
                 AllocationEffect::MayAllocate,
                 ArgumentMutationEffect::None,
                 HostIoEffect::None,
                 NEGATIVE_CHANNEL_CAPACITY,
             ),
-            Self::GoChannelI64Send => RuntimeEffects::new(
+            Self::GoChannelI64Send
+            | Self::GoChannelGoStringSend
+            | Self::GoChannelGoChannelI64Send => RuntimeEffects::new(
                 AllocationEffect::None,
                 ArgumentMutationEffect::MayMutateOwnedArgument,
                 HostIoEffect::None,
                 SEND_ON_CLOSED_CHANNEL,
             )
             .with_blocking(BlockingEffect::MayBlock),
-            Self::GoChannelI64ReceiveValue | Self::GoChannelI64Receive => RuntimeEffects::new(
+            Self::GoChannelI64ReceiveValue
+            | Self::GoChannelI64Receive
+            | Self::GoChannelGoStringReceiveValue
+            | Self::GoChannelGoStringReceive
+            | Self::GoChannelGoChannelI64ReceiveValue
+            | Self::GoChannelGoChannelI64Receive => RuntimeEffects::new(
                 AllocationEffect::None,
                 ArgumentMutationEffect::MayMutateOwnedArgument,
                 HostIoEffect::None,
                 NO_GO_PANICS,
             )
             .with_blocking(BlockingEffect::MayBlock),
-            Self::GoChannelI64Close => RuntimeEffects::new(
+            Self::GoChannelI64Close
+            | Self::GoChannelGoStringClose
+            | Self::GoChannelGoChannelI64Close => RuntimeEffects::new(
                 AllocationEffect::None,
                 ArgumentMutationEffect::MayMutateOwnedArgument,
                 HostIoEffect::None,
                 CLOSE_CHANNEL_PANICS,
             ),
-            Self::GoChannelI64TrySend => RuntimeEffects::new(
+            Self::GoChannelI64TrySend
+            | Self::GoChannelGoStringTrySend
+            | Self::GoChannelGoChannelI64TrySend => RuntimeEffects::new(
                 AllocationEffect::None,
                 ArgumentMutationEffect::MayMutateOwnedArgument,
                 HostIoEffect::None,
                 SEND_ON_CLOSED_CHANNEL,
             ),
-            Self::GoChannelI64TryReceive => RuntimeEffects::new(
+            Self::GoChannelI64TryReceive
+            | Self::GoChannelGoStringTryReceive
+            | Self::GoChannelGoChannelI64TryReceive => RuntimeEffects::new(
                 AllocationEffect::None,
                 ArgumentMutationEffect::MayMutateOwnedArgument,
                 HostIoEffect::None,

@@ -470,7 +470,29 @@ fn lower_terminator(
                 | hir::Builtin::ChannelI64Close
                 | hir::Builtin::ChannelI64IsNil
                 | hir::Builtin::ChannelI64TrySend
-                | hir::Builtin::ChannelI64TryReceive),
+                | hir::Builtin::ChannelI64TryReceive
+                | hir::Builtin::ChannelGoStringNil
+                | hir::Builtin::ChannelGoStringMake
+                | hir::Builtin::ChannelGoStringLen
+                | hir::Builtin::ChannelGoStringCap
+                | hir::Builtin::ChannelGoStringSend
+                | hir::Builtin::ChannelGoStringReceiveValue
+                | hir::Builtin::ChannelGoStringReceive
+                | hir::Builtin::ChannelGoStringClose
+                | hir::Builtin::ChannelGoStringIsNil
+                | hir::Builtin::ChannelGoStringTrySend
+                | hir::Builtin::ChannelGoStringTryReceive
+                | hir::Builtin::ChannelGoChannelI64Nil
+                | hir::Builtin::ChannelGoChannelI64Make
+                | hir::Builtin::ChannelGoChannelI64Len
+                | hir::Builtin::ChannelGoChannelI64Cap
+                | hir::Builtin::ChannelGoChannelI64Send
+                | hir::Builtin::ChannelGoChannelI64ReceiveValue
+                | hir::Builtin::ChannelGoChannelI64Receive
+                | hir::Builtin::ChannelGoChannelI64Close
+                | hir::Builtin::ChannelGoChannelI64IsNil
+                | hir::Builtin::ChannelGoChannelI64TrySend
+                | hir::Builtin::ChannelGoChannelI64TryReceive),
             ) => out::TerminatorKind::Call {
                 target: out::CallTarget::Runtime(match builtin {
                     hir::Builtin::SliceI64Index => RuntimeOp::GoSliceI64Index,
@@ -585,6 +607,40 @@ fn lower_terminator(
                     hir::Builtin::ChannelI64IsNil => RuntimeOp::GoChannelI64IsNil,
                     hir::Builtin::ChannelI64TrySend => RuntimeOp::GoChannelI64TrySend,
                     hir::Builtin::ChannelI64TryReceive => RuntimeOp::GoChannelI64TryReceive,
+                    hir::Builtin::ChannelGoStringNil => RuntimeOp::GoChannelGoStringNil,
+                    hir::Builtin::ChannelGoStringMake => RuntimeOp::GoChannelGoStringMake,
+                    hir::Builtin::ChannelGoStringLen => RuntimeOp::GoChannelGoStringLen,
+                    hir::Builtin::ChannelGoStringCap => RuntimeOp::GoChannelGoStringCap,
+                    hir::Builtin::ChannelGoStringSend => RuntimeOp::GoChannelGoStringSend,
+                    hir::Builtin::ChannelGoStringReceiveValue => {
+                        RuntimeOp::GoChannelGoStringReceiveValue
+                    }
+                    hir::Builtin::ChannelGoStringReceive => RuntimeOp::GoChannelGoStringReceive,
+                    hir::Builtin::ChannelGoStringClose => RuntimeOp::GoChannelGoStringClose,
+                    hir::Builtin::ChannelGoStringIsNil => RuntimeOp::GoChannelGoStringIsNil,
+                    hir::Builtin::ChannelGoStringTrySend => RuntimeOp::GoChannelGoStringTrySend,
+                    hir::Builtin::ChannelGoStringTryReceive => {
+                        RuntimeOp::GoChannelGoStringTryReceive
+                    }
+                    hir::Builtin::ChannelGoChannelI64Nil => RuntimeOp::GoChannelGoChannelI64Nil,
+                    hir::Builtin::ChannelGoChannelI64Make => RuntimeOp::GoChannelGoChannelI64Make,
+                    hir::Builtin::ChannelGoChannelI64Len => RuntimeOp::GoChannelGoChannelI64Len,
+                    hir::Builtin::ChannelGoChannelI64Cap => RuntimeOp::GoChannelGoChannelI64Cap,
+                    hir::Builtin::ChannelGoChannelI64Send => RuntimeOp::GoChannelGoChannelI64Send,
+                    hir::Builtin::ChannelGoChannelI64ReceiveValue => {
+                        RuntimeOp::GoChannelGoChannelI64ReceiveValue
+                    }
+                    hir::Builtin::ChannelGoChannelI64Receive => {
+                        RuntimeOp::GoChannelGoChannelI64Receive
+                    }
+                    hir::Builtin::ChannelGoChannelI64Close => RuntimeOp::GoChannelGoChannelI64Close,
+                    hir::Builtin::ChannelGoChannelI64IsNil => RuntimeOp::GoChannelGoChannelI64IsNil,
+                    hir::Builtin::ChannelGoChannelI64TrySend => {
+                        RuntimeOp::GoChannelGoChannelI64TrySend
+                    }
+                    hir::Builtin::ChannelGoChannelI64TryReceive => {
+                        RuntimeOp::GoChannelGoChannelI64TryReceive
+                    }
                     hir::Builtin::MapStringI64Lookup => {
                         return Err(Diagnostic::backend(
                             "map comma-ok lookup survived MIR expansion",
@@ -677,7 +733,9 @@ fn lower_panic_call(
         | out::RustType::GoMapStringInterface
         | out::RustType::GoPointerI64
         | out::RustType::GoPointerStructI64
-        | out::RustType::GoChannelI64 => {
+        | out::RustType::GoChannelI64
+        | out::RustType::GoChannelGoString
+        | out::RustType::GoChannelGoChannelI64 => {
             return Err(Diagnostic::backend(
                 "unsupported numeric panic payload reached Rust lowering",
             ));
@@ -728,7 +786,8 @@ fn lower_constant(value: ConstValue, ty: &Ty) -> Result<out::Constant, Diagnosti
         (ConstValue::Bool(value), Ty::Bool) => Ok(out::Constant::Bool(value)),
         (
             ConstValue::Int(value),
-            Ty::Int(IntTy::Int | IntTy::Int32) | Ty::Uint(UintTy::Uint8 | UintTy::Uintptr),
+            Ty::Int(IntTy::Int | IntTy::Int8 | IntTy::Int32)
+            | Ty::Uint(UintTy::Uint | UintTy::Uint8 | UintTy::Uintptr),
         ) => value
             .parse::<i64>()
             .map(out::Constant::I64)

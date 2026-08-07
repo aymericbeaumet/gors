@@ -1,6 +1,14 @@
 //! Stable identities for runtime operations.
 
-use super::{RuntimeOp, RuntimeOpId};
+use super::RuntimeOp;
+
+/// Stable compact identity of one runtime ABI operation.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct RuntimeOpId(pub(super) u16);
+
+/// Stable operation ID that is not defined by this ABI crate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UnknownRuntimeOpId(pub(super) u16);
 
 impl RuntimeOp {
     /// Stable compact identity for canonical encodings and fingerprints.
@@ -126,6 +134,28 @@ impl RuntimeOp {
             Self::PanicGoInterface => 122,
             Self::GoPanicPayloadToInterface => 123,
             Self::GoInterfaceIsRuntimeError => 124,
+            Self::GoChannelGoStringNil => 125,
+            Self::GoChannelGoStringMake => 126,
+            Self::GoChannelGoStringLen => 127,
+            Self::GoChannelGoStringCap => 128,
+            Self::GoChannelGoStringSend => 129,
+            Self::GoChannelGoStringReceiveValue => 130,
+            Self::GoChannelGoStringReceive => 131,
+            Self::GoChannelGoStringClose => 132,
+            Self::GoChannelGoStringIsNil => 133,
+            Self::GoChannelGoStringTrySend => 134,
+            Self::GoChannelGoStringTryReceive => 135,
+            Self::GoChannelGoChannelI64Nil => 136,
+            Self::GoChannelGoChannelI64Make => 137,
+            Self::GoChannelGoChannelI64Len => 138,
+            Self::GoChannelGoChannelI64Cap => 139,
+            Self::GoChannelGoChannelI64Send => 140,
+            Self::GoChannelGoChannelI64ReceiveValue => 141,
+            Self::GoChannelGoChannelI64Receive => 142,
+            Self::GoChannelGoChannelI64Close => 143,
+            Self::GoChannelGoChannelI64IsNil => 144,
+            Self::GoChannelGoChannelI64TrySend => 145,
+            Self::GoChannelGoChannelI64TryReceive => 146,
         })
     }
 }

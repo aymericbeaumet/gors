@@ -522,6 +522,12 @@ fn encode_type(encoder: &mut Encoder, ty: &rust_ir::RustType) {
         }
         rust_ir::RustType::GoInterface => encoder.variant(b"go-interface", |_| {}),
         rust_ir::RustType::GoChannelI64 => encoder.variant(b"go-channel-i64", |_| {}),
+        rust_ir::RustType::GoChannelGoString => {
+            encoder.variant(b"go-channel-go-string", |_| {});
+        }
+        rust_ir::RustType::GoChannelGoChannelI64 => {
+            encoder.variant(b"go-channel-go-channel-i64", |_| {});
+        }
         rust_ir::RustType::ArrayI64(length) => {
             encoder.variant(b"array-i64", |encoder| encoder.u64(*length));
         }

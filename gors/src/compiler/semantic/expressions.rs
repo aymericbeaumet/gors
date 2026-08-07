@@ -9,7 +9,7 @@ use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::types::{
-    ComplexTy, ConstValue, ExactNumber, FloatTy, IntTy, Ty, UntypedTy,
+    ComplexTy, ConstValue, ExactNumber, FloatTy, IntTy, Ty, UintTy, UntypedTy,
     exact_integer_from_number_spelling,
 };
 
@@ -544,12 +544,8 @@ pub(super) fn validate_binary_operator(
             matches!(
                 ty,
                 Ty::Bool
-                    | Ty::Int(IntTy::Int)
-                    | Ty::Int(IntTy::Int32)
-                    | Ty::Uint(
-                        crate::compiler::types::UintTy::Uint8
-                            | crate::compiler::types::UintTy::Uintptr
-                    )
+                    | Ty::Int(IntTy::Int | IntTy::Int8 | IntTy::Int32)
+                    | Ty::Uint(UintTy::Uint | UintTy::Uint8 | UintTy::Uintptr)
                     | Ty::Float(_)
                     | Ty::Complex(ComplexTy::Complex128)
                     | Ty::String
@@ -560,11 +556,8 @@ pub(super) fn validate_binary_operator(
         | hir::BinaryOp::Greater
         | hir::BinaryOp::GreaterEqual => matches!(
             ty,
-            Ty::Int(IntTy::Int)
-                | Ty::Int(IntTy::Int32)
-                | Ty::Uint(
-                    crate::compiler::types::UintTy::Uint8 | crate::compiler::types::UintTy::Uintptr
-                )
+            Ty::Int(IntTy::Int | IntTy::Int8 | IntTy::Int32)
+                | Ty::Uint(UintTy::Uint | UintTy::Uint8 | UintTy::Uintptr)
                 | Ty::Float(_)
                 | Ty::String
         ),
@@ -679,6 +672,19 @@ pub(super) fn parse_go_integer(value: &str) -> Option<String> {
         radix,
     )
     .map(|value| value.to_string())
+}
+
+/// Exact imaginary component spelling under Go's leading-zero compatibility rule.
+pub(super) fn parse_go_imaginary(value: &str) -> Option<String> {
+    let component = value.strip_suffix('i')?;
+    let cleaned = component.replace('_', "");
+    if component
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || byte == b'_')
+    {
+        return BigInt::parse_bytes(cleaned.as_bytes(), 10).map(|value| value.to_string());
+    }
+    Some(parse_go_integer(component).unwrap_or(cleaned))
 }
 
 pub(super) fn parse_go_string(value: &str) -> Option<Vec<u8>> {
@@ -816,5 +822,19 @@ mod rune_literal_tests {
         assert_eq!(parse_go_rune("'ab'"), None);
         assert_eq!(parse_go_rune(r"'\uD800'"), None);
         assert_eq!(parse_go_rune(r"'\U00110000'"), None);
+    }
+}
+
+#[cfg(test)]
+mod imaginary_literal_tests {
+    use super::parse_go_imaginary;
+
+    #[test]
+    fn decimal_only_imaginary_components_ignore_legacy_octal_rules() {
+        assert_eq!(parse_go_imaginary("0123i").as_deref(), Some("123"));
+        assert_eq!(parse_go_imaginary("0_123i").as_deref(), Some("123"));
+        assert_eq!(parse_go_imaginary("0o123i").as_deref(), Some("83"));
+        assert_eq!(parse_go_imaginary("0xabci").as_deref(), Some("2748"));
+        assert_eq!(parse_go_imaginary("0x1p-2i").as_deref(), Some("0x1p-2"));
     }
 }

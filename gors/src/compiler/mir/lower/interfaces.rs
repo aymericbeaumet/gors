@@ -7,7 +7,7 @@ use super::pointers::int_constant_operand;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::provenance::SourceRef;
-use crate::compiler::types::{ConstValue, FloatTy, IntTy, Ty};
+use crate::compiler::types::{ConstValue, FloatTy, IntTy, Ty, UintTy};
 
 impl FunctionLowerer {
     pub(super) fn lower_interface_call_expr(
@@ -496,13 +496,15 @@ impl FunctionLowerer {
                 ty.clone(),
                 source,
             ),
-            Ty::Int(IntTy::Int) => self.unbox_interface_scalar(
-                hir::Builtin::InterfaceUnboxI64,
-                interface,
-                identity,
-                ty.clone(),
-                source,
-            ),
+            Ty::Int(IntTy::Int | IntTy::Int8 | IntTy::Int32)
+            | Ty::Uint(UintTy::Uint | UintTy::Uint8 | UintTy::Uintptr) => self
+                .unbox_interface_scalar(
+                    hir::Builtin::InterfaceUnboxI64,
+                    interface,
+                    identity,
+                    ty.clone(),
+                    source,
+                ),
             Ty::String => self.unbox_interface_scalar(
                 hir::Builtin::InterfaceUnboxGoString,
                 interface,
@@ -557,7 +559,10 @@ impl FunctionLowerer {
             Ty::Float(FloatTy::Float32 | FloatTy::Float64) => {
                 (hir::Builtin::InterfaceBoxF64, value_operand)
             }
-            Ty::Int(IntTy::Int) => (hir::Builtin::InterfaceBoxI64, value_operand),
+            Ty::Int(IntTy::Int | IntTy::Int8 | IntTy::Int32)
+            | Ty::Uint(UintTy::Uint | UintTy::Uint8 | UintTy::Uintptr) => {
+                (hir::Builtin::InterfaceBoxI64, value_operand)
+            }
             Ty::String => (hir::Builtin::InterfaceBoxGoString, value_operand),
             Ty::Struct(_) if value_ty.bootstrap_i64_struct_fields().is_some() => (
                 hir::Builtin::InterfaceBoxStructI64,

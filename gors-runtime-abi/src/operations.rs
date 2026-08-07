@@ -6,13 +6,22 @@ mod metadata;
 mod runtime_encoding;
 mod signature_types;
 mod symbols;
+mod value_model;
 mod value_types;
 
 use signature_types::*;
+use value_model::{
+    CLOSE_CHANNEL_PANICS, EXPLICIT_PANIC, INDEX_OUT_OF_RANGE, INTEGER_DIVIDE_BY_ZERO,
+    NEGATIVE_CHANNEL_CAPACITY, NEGATIVE_SHIFT_AMOUNT, NIL_MAP_ASSIGNMENT, NIL_POINTER_DEREFERENCE,
+    NIL_POINTER_OR_INDEX_OUT_OF_RANGE, NO_CAPABILITIES, NO_GO_PANICS, SEND_ON_CLOSED_CHANNEL,
+    SLICE_BOUNDS_OUT_OF_RANGE, STANDARD_IO_CAPABILITY, TYPE_ASSERTION_FAILURE,
+    TYPE_ASSERTION_OR_INDEX_OUT_OF_RANGE, UNCOMPARABLE_INTERFACE_COMPARISON,
+};
 
-use crate::effects::GoPanicCondition;
+pub use identity::{RuntimeOpId, UnknownRuntimeOpId};
+pub use value_model::{RuntimeSignature, RuntimeType};
+
 use crate::encoding::CanonicalEncoder;
-use crate::target::{TargetCapability, TargetCapability::StandardIo};
 
 /// Go operations emitted directly without a runtime ABI symbol.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -337,72 +346,6 @@ impl PrimitiveOp {
     }
 }
 
-/// Value categories supported at the typed runtime call boundary.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum RuntimeType {
-    Unit,
-    Bool,
-    I64,
-    GoString,
-    ByteSlice,
-    StaticByteSlice,
-    F64,
-    Complex128,
-    GoSliceI64,
-    StaticI64Slice,
-    GoSliceU8,
-    GoMapStringI64,
-    GoPointerI64,
-    GoChannelI64,
-    /// ABI-only aggregate returned by comma-ok integer channel receive.
-    I64BoolTuple,
-    /// ABI-only aggregate returned by nonblocking integer channel receive.
-    I64I64Tuple,
-    GoPointerStructI64,
-    GoInterface,
-    StaticBoolSlice,
-    GoSliceBool,
-    GoSliceInterface,
-    GoMapStringInterface,
-    /// ABI-only opaque payload produced by Rust's unwind boundary.
-    GoPanicPayload,
-}
-
-/// Complete function signature for one runtime operation.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct RuntimeSignature {
-    parameters: &'static [RuntimeType],
-    result: RuntimeType,
-}
-
-const NO_CAPABILITIES: &[TargetCapability] = &[];
-const STANDARD_IO_CAPABILITY: &[TargetCapability] = &[StandardIo];
-const NO_GO_PANICS: &[GoPanicCondition] = &[];
-const INTEGER_DIVIDE_BY_ZERO: &[GoPanicCondition] = &[GoPanicCondition::IntegerDivideByZero];
-const NEGATIVE_SHIFT_AMOUNT: &[GoPanicCondition] = &[GoPanicCondition::NegativeShiftAmount];
-const EXPLICIT_PANIC: &[GoPanicCondition] = &[GoPanicCondition::ExplicitPanic];
-const INDEX_OUT_OF_RANGE: &[GoPanicCondition] = &[GoPanicCondition::IndexOutOfRange];
-const SLICE_BOUNDS_OUT_OF_RANGE: &[GoPanicCondition] = &[GoPanicCondition::SliceBoundsOutOfRange];
-const NIL_MAP_ASSIGNMENT: &[GoPanicCondition] = &[GoPanicCondition::NilMapAssignment];
-const NIL_POINTER_DEREFERENCE: &[GoPanicCondition] = &[GoPanicCondition::NilPointerDereference];
-const NIL_POINTER_OR_INDEX_OUT_OF_RANGE: &[GoPanicCondition] = &[
-    GoPanicCondition::NilPointerDereference,
-    GoPanicCondition::IndexOutOfRange,
-];
-const NEGATIVE_CHANNEL_CAPACITY: &[GoPanicCondition] = &[GoPanicCondition::NegativeChannelCapacity];
-const SEND_ON_CLOSED_CHANNEL: &[GoPanicCondition] = &[GoPanicCondition::SendOnClosedChannel];
-const CLOSE_CHANNEL_PANICS: &[GoPanicCondition] = &[
-    GoPanicCondition::CloseOfNilChannel,
-    GoPanicCondition::CloseOfClosedChannel,
-];
-const TYPE_ASSERTION_FAILURE: &[GoPanicCondition] = &[GoPanicCondition::TypeAssertionFailure];
-const TYPE_ASSERTION_OR_INDEX_OUT_OF_RANGE: &[GoPanicCondition] = &[
-    GoPanicCondition::IndexOutOfRange,
-    GoPanicCondition::TypeAssertionFailure,
-];
-const UNCOMPARABLE_INTERFACE_COMPARISON: &[GoPanicCondition] =
-    &[GoPanicCondition::UncomparableInterfaceComparison];
-
 /// Operations that require an exact symbol from the versioned runtime ABI.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum RuntimeOp {
@@ -525,15 +468,29 @@ pub enum RuntimeOp {
     PanicGoInterface,
     GoPanicPayloadToInterface,
     GoInterfaceIsRuntimeError,
+    GoChannelGoStringNil,
+    GoChannelGoStringMake,
+    GoChannelGoStringLen,
+    GoChannelGoStringCap,
+    GoChannelGoStringSend,
+    GoChannelGoStringReceiveValue,
+    GoChannelGoStringReceive,
+    GoChannelGoStringClose,
+    GoChannelGoStringIsNil,
+    GoChannelGoStringTrySend,
+    GoChannelGoStringTryReceive,
+    GoChannelGoChannelI64Nil,
+    GoChannelGoChannelI64Make,
+    GoChannelGoChannelI64Len,
+    GoChannelGoChannelI64Cap,
+    GoChannelGoChannelI64Send,
+    GoChannelGoChannelI64ReceiveValue,
+    GoChannelGoChannelI64Receive,
+    GoChannelGoChannelI64Close,
+    GoChannelGoChannelI64IsNil,
+    GoChannelGoChannelI64TrySend,
+    GoChannelGoChannelI64TryReceive,
 }
-
-/// Stable compact identity of one runtime ABI operation.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct RuntimeOpId(u16);
-
-/// Stable operation ID that is not defined by this ABI crate.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct UnknownRuntimeOpId(u16);
 
 impl RuntimeOp {
     /// Complete helper catalog for the current contract.
@@ -657,6 +614,28 @@ impl RuntimeOp {
         Self::PanicGoInterface,
         Self::GoPanicPayloadToInterface,
         Self::GoInterfaceIsRuntimeError,
+        Self::GoChannelGoStringNil,
+        Self::GoChannelGoStringMake,
+        Self::GoChannelGoStringLen,
+        Self::GoChannelGoStringCap,
+        Self::GoChannelGoStringSend,
+        Self::GoChannelGoStringReceiveValue,
+        Self::GoChannelGoStringReceive,
+        Self::GoChannelGoStringClose,
+        Self::GoChannelGoStringIsNil,
+        Self::GoChannelGoStringTrySend,
+        Self::GoChannelGoStringTryReceive,
+        Self::GoChannelGoChannelI64Nil,
+        Self::GoChannelGoChannelI64Make,
+        Self::GoChannelGoChannelI64Len,
+        Self::GoChannelGoChannelI64Cap,
+        Self::GoChannelGoChannelI64Send,
+        Self::GoChannelGoChannelI64ReceiveValue,
+        Self::GoChannelGoChannelI64Receive,
+        Self::GoChannelGoChannelI64Close,
+        Self::GoChannelGoChannelI64IsNil,
+        Self::GoChannelGoChannelI64TrySend,
+        Self::GoChannelGoChannelI64TryReceive,
     ];
 
     /// Exact typed call signature at the Rust runtime boundary.
@@ -800,6 +779,71 @@ impl RuntimeOp {
             Self::GoChannelI64TryReceive => {
                 RuntimeSignature::new(GO_CHANNEL_I64_PARAMETER, RuntimeType::I64I64Tuple)
             }
+            Self::GoChannelGoStringNil => {
+                RuntimeSignature::new(NO_PARAMETERS, RuntimeType::GoChannelGoString)
+            }
+            Self::GoChannelGoStringMake => {
+                RuntimeSignature::new(I64_PARAMETER, RuntimeType::GoChannelGoString)
+            }
+            Self::GoChannelGoStringLen | Self::GoChannelGoStringCap => {
+                RuntimeSignature::new(GO_CHANNEL_GO_STRING_PARAMETER, RuntimeType::I64)
+            }
+            Self::GoChannelGoStringSend => {
+                RuntimeSignature::new(GO_CHANNEL_GO_STRING_SEND, RuntimeType::Unit)
+            }
+            Self::GoChannelGoStringReceiveValue => {
+                RuntimeSignature::new(GO_CHANNEL_GO_STRING_PARAMETER, RuntimeType::GoString)
+            }
+            Self::GoChannelGoStringReceive => RuntimeSignature::new(
+                GO_CHANNEL_GO_STRING_PARAMETER,
+                RuntimeType::GoStringBoolTuple,
+            ),
+            Self::GoChannelGoStringClose => {
+                RuntimeSignature::new(GO_CHANNEL_GO_STRING_PARAMETER, RuntimeType::Unit)
+            }
+            Self::GoChannelGoStringIsNil => {
+                RuntimeSignature::new(GO_CHANNEL_GO_STRING_PARAMETER, RuntimeType::Bool)
+            }
+            Self::GoChannelGoStringTrySend => {
+                RuntimeSignature::new(GO_CHANNEL_GO_STRING_SEND, RuntimeType::Bool)
+            }
+            Self::GoChannelGoStringTryReceive => RuntimeSignature::new(
+                GO_CHANNEL_GO_STRING_PARAMETER,
+                RuntimeType::GoStringI64Tuple,
+            ),
+            Self::GoChannelGoChannelI64Nil => {
+                RuntimeSignature::new(NO_PARAMETERS, RuntimeType::GoChannelGoChannelI64)
+            }
+            Self::GoChannelGoChannelI64Make => {
+                RuntimeSignature::new(I64_PARAMETER, RuntimeType::GoChannelGoChannelI64)
+            }
+            Self::GoChannelGoChannelI64Len | Self::GoChannelGoChannelI64Cap => {
+                RuntimeSignature::new(GO_CHANNEL_GO_CHANNEL_I64_PARAMETER, RuntimeType::I64)
+            }
+            Self::GoChannelGoChannelI64Send => {
+                RuntimeSignature::new(GO_CHANNEL_GO_CHANNEL_I64_SEND, RuntimeType::Unit)
+            }
+            Self::GoChannelGoChannelI64ReceiveValue => RuntimeSignature::new(
+                GO_CHANNEL_GO_CHANNEL_I64_PARAMETER,
+                RuntimeType::GoChannelI64,
+            ),
+            Self::GoChannelGoChannelI64Receive => RuntimeSignature::new(
+                GO_CHANNEL_GO_CHANNEL_I64_PARAMETER,
+                RuntimeType::GoChannelI64BoolTuple,
+            ),
+            Self::GoChannelGoChannelI64Close => {
+                RuntimeSignature::new(GO_CHANNEL_GO_CHANNEL_I64_PARAMETER, RuntimeType::Unit)
+            }
+            Self::GoChannelGoChannelI64IsNil => {
+                RuntimeSignature::new(GO_CHANNEL_GO_CHANNEL_I64_PARAMETER, RuntimeType::Bool)
+            }
+            Self::GoChannelGoChannelI64TrySend => {
+                RuntimeSignature::new(GO_CHANNEL_GO_CHANNEL_I64_SEND, RuntimeType::Bool)
+            }
+            Self::GoChannelGoChannelI64TryReceive => RuntimeSignature::new(
+                GO_CHANNEL_GO_CHANNEL_I64_PARAMETER,
+                RuntimeType::GoChannelI64I64Tuple,
+            ),
             Self::GoPointerStructI64Nil => {
                 RuntimeSignature::new(NO_PARAMETERS, RuntimeType::GoPointerStructI64)
             }

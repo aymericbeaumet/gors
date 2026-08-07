@@ -116,6 +116,44 @@ fn exact_float_constant_arithmetic_folds_at_integer_sites() {
 }
 
 #[test]
+fn exact_float_constant_intermediates_need_not_fit_float64() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            func main() {
+                var result float64 = 1e300 * 1e300 / 1e300
+                println(result == 1e300)
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"true\n");
+}
+
+#[test]
+fn decimal_only_imaginary_literals_do_not_use_legacy_octal_values() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            func main() {
+                backwardCompatible := 0123i
+                separated := 0_123i
+                explicitOctal := 0o123i
+                println(
+                    backwardCompatible == 123i,
+                    separated == 123i,
+                    explicitOctal == 83i,
+                )
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"true true true\n");
+}
+
+#[test]
 fn non_integral_float_constants_are_rejected_at_integer_sites() {
     for source in [
         "package main\nconst bad int = 15 / 2.0\nfunc main() { println(bad) }\n",
@@ -129,6 +167,48 @@ fn non_integral_float_constants_are_rejected_at_integer_sites() {
                 .iter()
                 .any(|error| error.message.contains("not representable")),
             "{errors:?}"
+        );
+    }
+}
+
+#[test]
+fn narrow_and_unsigned_values_reject_unrepresented_domains() {
+    for (source, expected) in [
+        (
+            "package main\nfunc main() { _ = int8(128) }\n",
+            "not representable as Int(Int8)",
+        ),
+        (
+            "package main\nfunc main() { var value int = 127; _ = int8(value) }\n",
+            "requires a representation change",
+        ),
+        (
+            "package main\nfunc main() { var value int8 = 127; _ = value + 1 }\n",
+            "operator Add is invalid for Int(Int8)",
+        ),
+        (
+            "package main\nfunc main() { var value int8 = 127; value++ }\n",
+            "increment and decrement require an int operand",
+        ),
+        (
+            "package main\nfunc main() { _ = uint(-1) }\n",
+            "not representable as Uint(Uint)",
+        ),
+        (
+            "package main\nfunc main() { var value uint = 9223372036854775808; _ = value }\n",
+            "not representable as Uint(Uint)",
+        ),
+        (
+            "package main\nfunc main() { var value uint = 1; _ = value + 1 }\n",
+            "operator Add is invalid for Uint(Uint)",
+        ),
+    ] {
+        let errors = compile_file("main.go", source)
+            .err()
+            .expect("unsupported narrow or unsigned execution must be rejected");
+        assert!(
+            errors.iter().any(|error| error.message.contains(expected)),
+            "expected {expected:?} for {source:?}, found {errors:?}"
         );
     }
 }

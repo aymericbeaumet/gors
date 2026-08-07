@@ -271,6 +271,53 @@ fn runtime_int32_addition_and_negation_wrap_before_i64_storage() {
 }
 
 #[test]
+fn exact_i64_backed_scalar_types_preserve_values_and_interface_identities() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            func pick[T any](left, right T) T { return left }
+
+            func main() {
+                var zeroNarrow int8
+                var zeroUnsigned uint
+                var narrow int8 = pick(4, int8(5))
+                var unsigned uint = pick(6, uint(7))
+
+                var narrowInterface any = narrow
+                narrowValue, narrowOK := narrowInterface.(int8)
+                _, narrowIsInt32 := narrowInterface.(int32)
+
+                var unsignedInterface any = unsigned
+                unsignedValue, unsignedOK := unsignedInterface.(uint)
+                _, unsignedIsInt := unsignedInterface.(int)
+
+                if zeroNarrow != 0 || !narrowOK || narrowIsInt32 || narrowValue != 4 || narrow <= zeroNarrow {
+                    panic("int8 dynamic type identity changed")
+                }
+                if zeroUnsigned != 0 || !unsignedOK || unsignedIsInt || unsignedValue != 6 || unsigned <= zeroUnsigned {
+                    panic("uint dynamic type identity changed")
+                }
+                println("exact-i64-backed-scalars: ok")
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"exact-i64-backed-scalars: ok\n");
+    for identity in [
+        "builtin:int8",
+        "builtin:int32",
+        "builtin:uint",
+        "builtin:int",
+    ] {
+        assert!(
+            run.rust.contains(identity),
+            "missing interface identity {identity}"
+        );
+    }
+}
+
+#[test]
 fn runtime_int_negation_retains_i64_wrapping_semantics() {
     let run = compile_and_run(
         r#"

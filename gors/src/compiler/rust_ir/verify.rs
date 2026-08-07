@@ -625,6 +625,10 @@ fn rust_types_from_runtime_result(
         RuntimeType::Unit => Ok(Vec::new()),
         RuntimeType::I64BoolTuple => Ok(vec![RustType::I64, RustType::Bool]),
         RuntimeType::I64I64Tuple => Ok(vec![RustType::I64, RustType::I64]),
+        RuntimeType::GoStringBoolTuple => Ok(vec![RustType::GoString, RustType::Bool]),
+        RuntimeType::GoStringI64Tuple => Ok(vec![RustType::GoString, RustType::I64]),
+        RuntimeType::GoChannelI64BoolTuple => Ok(vec![RustType::GoChannelI64, RustType::Bool]),
+        RuntimeType::GoChannelI64I64Tuple => Ok(vec![RustType::GoChannelI64, RustType::I64]),
         ty => rust_type_from_runtime(ty, context).map(|ty| vec![ty]),
     }
 }
@@ -647,12 +651,18 @@ fn rust_type_from_runtime(ty: RuntimeType, context: &str) -> Result<RustType, Di
         RuntimeType::GoPointerStructI64 => Ok(RustType::GoPointerStructI64),
         RuntimeType::GoInterface => Ok(RustType::GoInterface),
         RuntimeType::GoChannelI64 => Ok(RustType::GoChannelI64),
+        RuntimeType::GoChannelGoString => Ok(RustType::GoChannelGoString),
+        RuntimeType::GoChannelGoChannelI64 => Ok(RustType::GoChannelGoChannelI64),
         RuntimeType::ByteSlice
         | RuntimeType::StaticByteSlice
         | RuntimeType::StaticI64Slice
         | RuntimeType::StaticBoolSlice
         | RuntimeType::I64BoolTuple
         | RuntimeType::I64I64Tuple
+        | RuntimeType::GoStringBoolTuple
+        | RuntimeType::GoStringI64Tuple
+        | RuntimeType::GoChannelI64BoolTuple
+        | RuntimeType::GoChannelI64I64Tuple
         | RuntimeType::GoPanicPayload => Err(Diagnostic::backend(format!(
             "Rust IR {context} requires ABI-only operand type {ty:?}"
         ))),

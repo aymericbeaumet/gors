@@ -1,7 +1,7 @@
 //! Typed lowering for Go pointers to executable integer values and structs.
 
 use super::FunctionLowerer;
-use super::channels::int_channel_parts;
+use super::channels::channel_parts;
 use super::expressions::coerce_expr;
 use super::maps::string_i64_map_ty;
 use crate::compiler::Diagnostic;
@@ -389,8 +389,8 @@ impl FunctionLowerer {
             Ty::Pointer(element) if element.uses_interface_aggregate_pointer_representation()
         ) {
             hir::Builtin::AggregatePointerIsNil
-        } else if int_channel_parts(&value.ty).is_some() {
-            hir::Builtin::ChannelI64IsNil
+        } else if let Some((_, _, representation)) = channel_parts(&value.ty) {
+            representation.builtins().is_nil
         } else {
             return Err(Diagnostic::semantic(
                 "nil comparison requires a nil-capable value",

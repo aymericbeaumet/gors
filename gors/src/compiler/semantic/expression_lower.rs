@@ -312,12 +312,25 @@ impl FunctionLowerer {
                 })?;
                 // A folded operation on two untyped operands stays an untyped
                 // constant of the merged kind, so a later conversion site can
-                // still adapt the exact value.
+                // still adapt the exact value. Fold before default-type
+                // materialization: an intermediate Go constant need not fit
+                // float64 when the final exact result does.
                 let untyped_operand_ty = exact_common_operand_type(&left.ty, &right.ty)
                     .filter(|ty| matches!(ty, Ty::Untyped(_)));
-                coerce_expr(&mut left, &operand_ty, source)?;
-                coerce_expr(&mut right, &operand_ty, source)?;
                 validate_binary_operator(op, &operand_ty, source)?;
+                let folded_untyped = if untyped_operand_ty.is_some() {
+                    expr_constant(&left)
+                        .zip(expr_constant(&right))
+                        .map(|(left, right)| fold_constant_binary(op, left, right, source))
+                        .transpose()?
+                        .flatten()
+                } else {
+                    None
+                };
+                if folded_untyped.is_none() {
+                    coerce_expr(&mut left, &operand_ty, source)?;
+                    coerce_expr(&mut right, &operand_ty, source)?;
+                }
                 let mut effects = left.effects.union(right.effects);
                 if matches!(
                     op,
@@ -336,11 +349,14 @@ impl FunctionLowerer {
                 } else {
                     operand_ty
                 };
-                let folded = expr_constant(&left)
-                    .zip(expr_constant(&right))
-                    .map(|(left, right)| fold_constant_binary(op, left, right, source))
-                    .transpose()?
-                    .flatten();
+                let folded = match folded_untyped {
+                    Some(value) => Some(value),
+                    None => expr_constant(&left)
+                        .zip(expr_constant(&right))
+                        .map(|(left, right)| fold_constant_binary(op, left, right, source))
+                        .transpose()?
+                        .flatten(),
+                };
                 if let Some(value) = folded {
                     let ty = if comparison || logical {
                         result_ty
@@ -514,7 +530,15 @@ impl FunctionLowerer {
                 if self.type_aliases.contains_key(name)
                     || matches!(
                         name,
-                        "bool" | "string" | "int" | "float32" | "float64" | "complex128" | "any"
+                        "bool"
+                            | "string"
+                            | "int"
+                            | "int8"
+                            | "uint"
+                            | "float32"
+                            | "float64"
+                            | "complex128"
+                            | "any"
                     )
                 {
                     return self

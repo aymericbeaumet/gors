@@ -24,10 +24,18 @@ pub use byte_ranges::{
 };
 pub use byte_slices::{go_slice_u8_copy, go_slice_u8_make, go_slice_u8_set};
 pub use channels::{
-    GoChannelI64, go_channel_i64_cap, go_channel_i64_close, go_channel_i64_is_nil,
-    go_channel_i64_len, go_channel_i64_make, go_channel_i64_nil, go_channel_i64_receive,
-    go_channel_i64_receive_value, go_channel_i64_send, go_channel_i64_try_receive,
-    go_channel_i64_try_send,
+    GoChannelGoChannelI64, GoChannelGoString, GoChannelI64, go_channel_go_channel_i64_cap,
+    go_channel_go_channel_i64_close, go_channel_go_channel_i64_is_nil,
+    go_channel_go_channel_i64_len, go_channel_go_channel_i64_make, go_channel_go_channel_i64_nil,
+    go_channel_go_channel_i64_receive, go_channel_go_channel_i64_receive_value,
+    go_channel_go_channel_i64_send, go_channel_go_channel_i64_try_receive,
+    go_channel_go_channel_i64_try_send, go_channel_go_string_cap, go_channel_go_string_close,
+    go_channel_go_string_is_nil, go_channel_go_string_len, go_channel_go_string_make,
+    go_channel_go_string_nil, go_channel_go_string_receive, go_channel_go_string_receive_value,
+    go_channel_go_string_send, go_channel_go_string_try_receive, go_channel_go_string_try_send,
+    go_channel_i64_cap, go_channel_i64_close, go_channel_i64_is_nil, go_channel_i64_len,
+    go_channel_i64_make, go_channel_i64_nil, go_channel_i64_receive, go_channel_i64_receive_value,
+    go_channel_i64_send, go_channel_i64_try_receive, go_channel_i64_try_send,
 };
 pub use interface_containers::{
     GoMapStringInterface, GoSliceInterface, go_map_string_interface_contains,

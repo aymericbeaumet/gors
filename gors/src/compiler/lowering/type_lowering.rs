@@ -9,9 +9,8 @@ pub(super) fn lower_type(ty: &Ty) -> Result<RustType, Diagnostic> {
     match ty.underlying() {
         Ty::Unit => Ok(RustType::Unit),
         Ty::Bool => Ok(RustType::Bool),
-        Ty::Int(IntTy::Int | IntTy::Int32) | Ty::Uint(UintTy::Uint8 | UintTy::Uintptr) => {
-            Ok(RustType::I64)
-        }
+        Ty::Int(IntTy::Int | IntTy::Int8 | IntTy::Int32)
+        | Ty::Uint(UintTy::Uint | UintTy::Uint8 | UintTy::Uintptr) => Ok(RustType::I64),
         Ty::Float(FloatTy::Float32 | FloatTy::Float64) => Ok(RustType::F64),
         Ty::Complex(ComplexTy::Complex128) => Ok(RustType::Complex128),
         Ty::String => Ok(RustType::GoString),
@@ -56,6 +55,17 @@ pub(super) fn lower_type(ty: &Ty) -> Result<RustType, Diagnostic> {
         }
         Ty::Channel(_, element) if element.underlying() == &Ty::Int(IntTy::Int) => {
             Ok(RustType::GoChannelI64)
+        }
+        Ty::Channel(_, element) if element.underlying() == &Ty::String => {
+            Ok(RustType::GoChannelGoString)
+        }
+        Ty::Channel(_, element)
+            if matches!(
+                element.underlying(),
+                Ty::Channel(_, nested) if nested.underlying() == &Ty::Int(IntTy::Int)
+            ) =>
+        {
+            Ok(RustType::GoChannelGoChannelI64)
         }
         Ty::Array(0, _) => Ok(RustType::ArrayI64(0)),
         Ty::Array(length, element) if element.underlying() == &Ty::Int(IntTy::Int) => {

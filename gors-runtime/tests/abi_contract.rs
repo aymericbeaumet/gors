@@ -1,23 +1,32 @@
 use gors_runtime::{
-    GoChannelI64, GoInt, GoInterface, GoMapStringI64, GoMapStringInterface, GoPanicPayload,
-    GoPointerI64, GoPointerStructI64, GoSliceBool, GoSliceI64, GoSliceInterface, GoSliceU8,
-    GoString, concat_go_strings, go_channel_i64_cap, go_channel_i64_close, go_channel_i64_is_nil,
-    go_channel_i64_len, go_channel_i64_make, go_channel_i64_nil, go_channel_i64_receive,
-    go_channel_i64_receive_value, go_channel_i64_send, go_channel_i64_try_receive,
-    go_channel_i64_try_send, go_interface_box_aggregate, go_interface_box_bool,
-    go_interface_box_comparable_aggregate, go_interface_box_f64, go_interface_box_go_string,
-    go_interface_box_i64, go_interface_box_pointer_struct_i64, go_interface_box_struct_i64,
-    go_interface_equal, go_interface_is_nil, go_interface_is_runtime_error, go_interface_is_type,
-    go_interface_nil, go_interface_struct_i64_get, go_interface_unbox_aggregate,
-    go_interface_unbox_bool, go_interface_unbox_f64, go_interface_unbox_go_string,
-    go_interface_unbox_i64, go_interface_unbox_pointer_struct_i64, go_map_string_i64_clear,
-    go_map_string_i64_contains, go_map_string_i64_delete, go_map_string_i64_get,
-    go_map_string_i64_is_nil, go_map_string_i64_key_at, go_map_string_i64_len,
-    go_map_string_i64_make, go_map_string_i64_nil, go_map_string_i64_set,
-    go_map_string_interface_contains, go_map_string_interface_get, go_map_string_interface_len,
-    go_map_string_interface_make, go_map_string_interface_set, go_panic_payload_to_interface,
-    go_pointer_i64_get, go_pointer_i64_is_nil, go_pointer_i64_new, go_pointer_i64_nil,
-    go_pointer_i64_set, go_pointer_struct_i64_equal, go_pointer_struct_i64_get,
+    GoChannelGoChannelI64, GoChannelGoString, GoChannelI64, GoInt, GoInterface, GoMapStringI64,
+    GoMapStringInterface, GoPanicPayload, GoPointerI64, GoPointerStructI64, GoSliceBool,
+    GoSliceI64, GoSliceInterface, GoSliceU8, GoString, concat_go_strings,
+    go_channel_go_channel_i64_cap, go_channel_go_channel_i64_close,
+    go_channel_go_channel_i64_is_nil, go_channel_go_channel_i64_len,
+    go_channel_go_channel_i64_make, go_channel_go_channel_i64_nil,
+    go_channel_go_channel_i64_receive, go_channel_go_channel_i64_receive_value,
+    go_channel_go_channel_i64_send, go_channel_go_channel_i64_try_receive,
+    go_channel_go_channel_i64_try_send, go_channel_go_string_cap, go_channel_go_string_close,
+    go_channel_go_string_is_nil, go_channel_go_string_len, go_channel_go_string_make,
+    go_channel_go_string_nil, go_channel_go_string_receive, go_channel_go_string_receive_value,
+    go_channel_go_string_send, go_channel_go_string_try_receive, go_channel_go_string_try_send,
+    go_channel_i64_cap, go_channel_i64_close, go_channel_i64_is_nil, go_channel_i64_len,
+    go_channel_i64_make, go_channel_i64_nil, go_channel_i64_receive, go_channel_i64_receive_value,
+    go_channel_i64_send, go_channel_i64_try_receive, go_channel_i64_try_send,
+    go_interface_box_aggregate, go_interface_box_bool, go_interface_box_comparable_aggregate,
+    go_interface_box_f64, go_interface_box_go_string, go_interface_box_i64,
+    go_interface_box_pointer_struct_i64, go_interface_box_struct_i64, go_interface_equal,
+    go_interface_is_nil, go_interface_is_runtime_error, go_interface_is_type, go_interface_nil,
+    go_interface_struct_i64_get, go_interface_unbox_aggregate, go_interface_unbox_bool,
+    go_interface_unbox_f64, go_interface_unbox_go_string, go_interface_unbox_i64,
+    go_interface_unbox_pointer_struct_i64, go_map_string_i64_clear, go_map_string_i64_contains,
+    go_map_string_i64_delete, go_map_string_i64_get, go_map_string_i64_is_nil,
+    go_map_string_i64_key_at, go_map_string_i64_len, go_map_string_i64_make, go_map_string_i64_nil,
+    go_map_string_i64_set, go_map_string_interface_contains, go_map_string_interface_get,
+    go_map_string_interface_len, go_map_string_interface_make, go_map_string_interface_set,
+    go_panic_payload_to_interface, go_pointer_i64_get, go_pointer_i64_is_nil, go_pointer_i64_new,
+    go_pointer_i64_nil, go_pointer_i64_set, go_pointer_struct_i64_equal, go_pointer_struct_i64_get,
     go_pointer_struct_i64_is_nil, go_pointer_struct_i64_new, go_pointer_struct_i64_nil,
     go_pointer_struct_i64_set, go_slice_bool_from_static, go_slice_bool_index,
     go_slice_bool_is_nil, go_slice_bool_nil, go_slice_bool_set, go_slice_i64_append,
@@ -500,6 +509,116 @@ fn implementation_surface(operation: RuntimeOp) -> RuntimeSurface {
             go_channel_i64_try_receive,
             fn(GoChannelI64) -> (GoInt, GoInt),
             [RuntimeType::GoChannelI64] -> RuntimeType::I64I64Tuple
+        ),
+        RuntimeOp::GoChannelGoStringNil => runtime_surface!(
+            go_channel_go_string_nil,
+            fn() -> GoChannelGoString,
+            [] -> RuntimeType::GoChannelGoString
+        ),
+        RuntimeOp::GoChannelGoStringMake => runtime_surface!(
+            go_channel_go_string_make,
+            fn(GoInt) -> GoChannelGoString,
+            [RuntimeType::I64] -> RuntimeType::GoChannelGoString
+        ),
+        RuntimeOp::GoChannelGoStringLen => runtime_surface!(
+            go_channel_go_string_len,
+            fn(GoChannelGoString) -> GoInt,
+            [RuntimeType::GoChannelGoString] -> RuntimeType::I64
+        ),
+        RuntimeOp::GoChannelGoStringCap => runtime_surface!(
+            go_channel_go_string_cap,
+            fn(GoChannelGoString) -> GoInt,
+            [RuntimeType::GoChannelGoString] -> RuntimeType::I64
+        ),
+        RuntimeOp::GoChannelGoStringSend => runtime_surface!(
+            go_channel_go_string_send,
+            fn(GoChannelGoString, GoString),
+            [RuntimeType::GoChannelGoString, RuntimeType::GoString] -> RuntimeType::Unit
+        ),
+        RuntimeOp::GoChannelGoStringReceiveValue => runtime_surface!(
+            go_channel_go_string_receive_value,
+            fn(GoChannelGoString) -> GoString,
+            [RuntimeType::GoChannelGoString] -> RuntimeType::GoString
+        ),
+        RuntimeOp::GoChannelGoStringReceive => runtime_surface!(
+            go_channel_go_string_receive,
+            fn(GoChannelGoString) -> (GoString, bool),
+            [RuntimeType::GoChannelGoString] -> RuntimeType::GoStringBoolTuple
+        ),
+        RuntimeOp::GoChannelGoStringClose => runtime_surface!(
+            go_channel_go_string_close,
+            fn(GoChannelGoString),
+            [RuntimeType::GoChannelGoString] -> RuntimeType::Unit
+        ),
+        RuntimeOp::GoChannelGoStringIsNil => runtime_surface!(
+            go_channel_go_string_is_nil,
+            fn(GoChannelGoString) -> bool,
+            [RuntimeType::GoChannelGoString] -> RuntimeType::Bool
+        ),
+        RuntimeOp::GoChannelGoStringTrySend => runtime_surface!(
+            go_channel_go_string_try_send,
+            fn(GoChannelGoString, GoString) -> bool,
+            [RuntimeType::GoChannelGoString, RuntimeType::GoString] -> RuntimeType::Bool
+        ),
+        RuntimeOp::GoChannelGoStringTryReceive => runtime_surface!(
+            go_channel_go_string_try_receive,
+            fn(GoChannelGoString) -> (GoString, GoInt),
+            [RuntimeType::GoChannelGoString] -> RuntimeType::GoStringI64Tuple
+        ),
+        RuntimeOp::GoChannelGoChannelI64Nil => runtime_surface!(
+            go_channel_go_channel_i64_nil,
+            fn() -> GoChannelGoChannelI64,
+            [] -> RuntimeType::GoChannelGoChannelI64
+        ),
+        RuntimeOp::GoChannelGoChannelI64Make => runtime_surface!(
+            go_channel_go_channel_i64_make,
+            fn(GoInt) -> GoChannelGoChannelI64,
+            [RuntimeType::I64] -> RuntimeType::GoChannelGoChannelI64
+        ),
+        RuntimeOp::GoChannelGoChannelI64Len => runtime_surface!(
+            go_channel_go_channel_i64_len,
+            fn(GoChannelGoChannelI64) -> GoInt,
+            [RuntimeType::GoChannelGoChannelI64] -> RuntimeType::I64
+        ),
+        RuntimeOp::GoChannelGoChannelI64Cap => runtime_surface!(
+            go_channel_go_channel_i64_cap,
+            fn(GoChannelGoChannelI64) -> GoInt,
+            [RuntimeType::GoChannelGoChannelI64] -> RuntimeType::I64
+        ),
+        RuntimeOp::GoChannelGoChannelI64Send => runtime_surface!(
+            go_channel_go_channel_i64_send,
+            fn(GoChannelGoChannelI64, GoChannelI64),
+            [RuntimeType::GoChannelGoChannelI64, RuntimeType::GoChannelI64] -> RuntimeType::Unit
+        ),
+        RuntimeOp::GoChannelGoChannelI64ReceiveValue => runtime_surface!(
+            go_channel_go_channel_i64_receive_value,
+            fn(GoChannelGoChannelI64) -> GoChannelI64,
+            [RuntimeType::GoChannelGoChannelI64] -> RuntimeType::GoChannelI64
+        ),
+        RuntimeOp::GoChannelGoChannelI64Receive => runtime_surface!(
+            go_channel_go_channel_i64_receive,
+            fn(GoChannelGoChannelI64) -> (GoChannelI64, bool),
+            [RuntimeType::GoChannelGoChannelI64] -> RuntimeType::GoChannelI64BoolTuple
+        ),
+        RuntimeOp::GoChannelGoChannelI64Close => runtime_surface!(
+            go_channel_go_channel_i64_close,
+            fn(GoChannelGoChannelI64),
+            [RuntimeType::GoChannelGoChannelI64] -> RuntimeType::Unit
+        ),
+        RuntimeOp::GoChannelGoChannelI64IsNil => runtime_surface!(
+            go_channel_go_channel_i64_is_nil,
+            fn(GoChannelGoChannelI64) -> bool,
+            [RuntimeType::GoChannelGoChannelI64] -> RuntimeType::Bool
+        ),
+        RuntimeOp::GoChannelGoChannelI64TrySend => runtime_surface!(
+            go_channel_go_channel_i64_try_send,
+            fn(GoChannelGoChannelI64, GoChannelI64) -> bool,
+            [RuntimeType::GoChannelGoChannelI64, RuntimeType::GoChannelI64] -> RuntimeType::Bool
+        ),
+        RuntimeOp::GoChannelGoChannelI64TryReceive => runtime_surface!(
+            go_channel_go_channel_i64_try_receive,
+            fn(GoChannelGoChannelI64) -> (GoChannelI64, GoInt),
+            [RuntimeType::GoChannelGoChannelI64] -> RuntimeType::GoChannelI64I64Tuple
         ),
         RuntimeOp::GoSliceU8Len => runtime_surface!(
             go_slice_u8_len,

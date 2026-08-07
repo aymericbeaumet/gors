@@ -127,10 +127,8 @@ impl FunctionLowerer {
             Ty::Pointer(element) if element.uses_interface_aggregate_pointer_representation()
         ) {
             Some(hir::Builtin::AggregatePointerNil)
-        } else if is_int_channel(&ty) {
-            Some(hir::Builtin::ChannelI64Nil)
         } else {
-            None
+            channel_nil_builtin(&ty)
         };
         if let Some(builtin) = zero_builtin {
             let provenance = match provenance {
@@ -430,7 +428,7 @@ pub(super) fn has_mir_zero_representation(ty: &Ty) -> bool {
             ty.underlying(),
             Ty::Pointer(element) if element.uses_interface_aggregate_pointer_representation()
         )
-        || is_int_channel(ty)
+        || channel_nil_builtin(ty).is_some()
 }
 
 fn is_int_pointer(ty: &Ty) -> bool {
@@ -450,10 +448,18 @@ fn is_string_i64_map(ty: &Ty) -> bool {
     )
 }
 
-fn is_int_channel(ty: &Ty) -> bool {
-    matches!(
-        ty.underlying(),
-        Ty::Channel(_, element)
-            if element.underlying() == &Ty::Int(crate::compiler::types::IntTy::Int)
-    )
+fn channel_nil_builtin(ty: &Ty) -> Option<hir::Builtin> {
+    let Ty::Channel(_, element) = ty.underlying() else {
+        return None;
+    };
+    match element.underlying() {
+        Ty::Int(crate::compiler::types::IntTy::Int) => Some(hir::Builtin::ChannelI64Nil),
+        Ty::String => Some(hir::Builtin::ChannelGoStringNil),
+        Ty::Channel(_, nested)
+            if nested.underlying() == &Ty::Int(crate::compiler::types::IntTy::Int) =>
+        {
+            Some(hir::Builtin::ChannelGoChannelI64Nil)
+        }
+        _ => None,
+    }
 }

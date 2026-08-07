@@ -304,6 +304,27 @@ fn function_fingerprints_ignore_unrelated_sibling_order() {
 }
 
 #[test]
+fn exact_integer_interface_types_change_every_stage_fingerprint() {
+    let narrow =
+        lower_stages("package main\nfunc box(value int8) any { return value }\nfunc main() {}\n");
+    let unsigned =
+        lower_stages("package main\nfunc box(value uint) any { return value }\nfunc main() {}\n");
+
+    assert_ne!(
+        hir_function(hir_named(&narrow.0, "box")),
+        hir_function(hir_named(&unsigned.0, "box"))
+    );
+    assert_ne!(
+        mir_function(mir_named(&narrow.1, "box")),
+        mir_function(mir_named(&unsigned.1, "box"))
+    );
+    assert_ne!(
+        rust_ir_function(rust_ir_named(&narrow.2, "box")),
+        rust_ir_function(rust_ir_named(&unsigned.2, "box"))
+    );
+}
+
+#[test]
 fn source_refs_keep_stage_fingerprints_stable_across_whitespace_relocation() {
     let first =
         lower_stages("package main\nfunc stable(x int) int {\nreturn x + 1\n}\nfunc main() {}\n");

@@ -363,6 +363,47 @@ fn channels_preserve_buffer_close_and_comma_ok_semantics() {
 }
 
 #[test]
+fn string_channels_preserve_fifo_close_and_zero_value_semantics() {
+    let channel = go_channel_go_string_make(3);
+    go_channel_go_string_send(channel.clone(), go_string_from_static(b"a"));
+    go_channel_go_string_send(channel.clone(), go_string_from_static(b"b"));
+    go_channel_go_string_send(channel.clone(), go_string_from_static(b"c"));
+    assert_eq!(go_channel_go_string_len(channel.clone()), 3);
+    assert_eq!(go_channel_go_string_cap(channel.clone()), 3);
+
+    go_channel_go_string_close(channel.clone());
+    assert_eq!(
+        go_channel_go_string_receive_value(channel.clone()).as_bytes(),
+        b"a"
+    );
+    let (second, second_ok) = go_channel_go_string_receive(channel.clone());
+    let (third, third_ok) = go_channel_go_string_receive(channel.clone());
+    let (zero, zero_ok) = go_channel_go_string_receive(channel);
+    assert_eq!(second.as_bytes(), b"b");
+    assert!(second_ok);
+    assert_eq!(third.as_bytes(), b"c");
+    assert!(third_ok);
+    assert!(zero.as_bytes().is_empty());
+    assert!(!zero_ok);
+}
+
+#[test]
+fn nested_channels_preserve_shared_inner_identity_and_nil_zero_value() {
+    let inner = go_channel_i64_make(1);
+    go_channel_i64_send(inner.clone(), 42);
+    let outer = go_channel_go_channel_i64_make(1);
+    go_channel_go_channel_i64_send(outer.clone(), inner);
+
+    let received = go_channel_go_channel_i64_receive_value(outer.clone());
+    assert_eq!(go_channel_i64_receive_value(received), 42);
+
+    go_channel_go_channel_i64_close(outer.clone());
+    let (zero, open) = go_channel_go_channel_i64_receive(outer);
+    assert!(!open);
+    assert!(go_channel_i64_is_nil(zero));
+}
+
+#[test]
 fn unbuffered_channels_rendezvous_between_threads() {
     let channel = go_channel_i64_make(0);
     let sender = channel.clone();
@@ -393,6 +434,8 @@ fn channels_are_send_and_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
 
     assert_send_sync::<GoChannelI64>();
+    assert_send_sync::<GoChannelGoString>();
+    assert_send_sync::<GoChannelGoChannelI64>();
 }
 
 #[test]

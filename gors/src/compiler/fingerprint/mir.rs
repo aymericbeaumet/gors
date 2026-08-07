@@ -455,6 +455,32 @@ fn encode_callee(encoder: &mut Encoder, callee: hir::Callee) {
                     hir::Builtin::ChannelI64IsNil => b"channel-i64-is-nil",
                     hir::Builtin::ChannelI64TrySend => b"channel-i64-try-send",
                     hir::Builtin::ChannelI64TryReceive => b"channel-i64-try-receive",
+                    hir::Builtin::ChannelGoStringNil => b"channel-go-string-nil",
+                    hir::Builtin::ChannelGoStringMake => b"channel-go-string-make",
+                    hir::Builtin::ChannelGoStringLen => b"channel-go-string-len",
+                    hir::Builtin::ChannelGoStringCap => b"channel-go-string-cap",
+                    hir::Builtin::ChannelGoStringSend => b"channel-go-string-send",
+                    hir::Builtin::ChannelGoStringReceiveValue => b"channel-go-string-receive-value",
+                    hir::Builtin::ChannelGoStringReceive => b"channel-go-string-receive",
+                    hir::Builtin::ChannelGoStringClose => b"channel-go-string-close",
+                    hir::Builtin::ChannelGoStringIsNil => b"channel-go-string-is-nil",
+                    hir::Builtin::ChannelGoStringTrySend => b"channel-go-string-try-send",
+                    hir::Builtin::ChannelGoStringTryReceive => b"channel-go-string-try-receive",
+                    hir::Builtin::ChannelGoChannelI64Nil => b"channel-go-channel-i64-nil",
+                    hir::Builtin::ChannelGoChannelI64Make => b"channel-go-channel-i64-make",
+                    hir::Builtin::ChannelGoChannelI64Len => b"channel-go-channel-i64-len",
+                    hir::Builtin::ChannelGoChannelI64Cap => b"channel-go-channel-i64-cap",
+                    hir::Builtin::ChannelGoChannelI64Send => b"channel-go-channel-i64-send",
+                    hir::Builtin::ChannelGoChannelI64ReceiveValue => {
+                        b"channel-go-channel-i64-receive-value"
+                    }
+                    hir::Builtin::ChannelGoChannelI64Receive => b"channel-go-channel-i64-receive",
+                    hir::Builtin::ChannelGoChannelI64Close => b"channel-go-channel-i64-close",
+                    hir::Builtin::ChannelGoChannelI64IsNil => b"channel-go-channel-i64-is-nil",
+                    hir::Builtin::ChannelGoChannelI64TrySend => b"channel-go-channel-i64-try-send",
+                    hir::Builtin::ChannelGoChannelI64TryReceive => {
+                        b"channel-go-channel-i64-try-receive"
+                    }
                 },
                 |_| {},
             );

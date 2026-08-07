@@ -211,12 +211,30 @@
           ]
         },
         {
+          "id": "spec-lexical-numeric-literal-edge-forms",
+          "section": "Floating-point literals",
+          "title": "Numeric literal edge forms preserve longest-match, separators, base prefixes, and elided parts",
+          "status": "passing",
+          "fixtures": [
+            "lexical_numeric_literal_edge_forms"
+          ]
+        },
+        {
           "id": "lexical-imaginary-literals",
           "section": "Imaginary literals",
           "title": "Imaginary literals lower to complex values",
           "status": "passing",
           "fixtures": [
             "lexical_elements"
+          ]
+        },
+        {
+          "id": "spec-lexical-imaginary-literal-bases",
+          "section": "Imaginary literals",
+          "title": "Imaginary literals preserve decimal leading-zero compatibility and base-prefixed or elided forms",
+          "status": "passing",
+          "fixtures": [
+            "lexical_imaginary_literal_bases"
           ]
         },
         {
@@ -371,6 +389,15 @@
           ]
         },
         {
+          "id": "spec-constant-division-kinds",
+          "section": "Constant expressions",
+          "title": "Constant division operand kinds determine integer or floating-point evaluation before target coercion",
+          "status": "passing",
+          "fixtures": [
+            "constant_division_kinds"
+          ]
+        },
+        {
           "id": "constants-shift-expressions",
           "section": "Constant expressions",
           "title": "Shift expressions produce integer constants",
@@ -435,6 +462,24 @@
             "_negative/constants_typed_shift_overflow"
           ],
           "expect": "compile_error"
+        },
+        {
+          "id": "constants-exact-evaluation",
+          "section": "Constant expressions",
+          "title": "Constant expressions evaluate exactly with arbitrary-precision intermediates",
+          "status": "passing",
+          "fixtures": [
+            "constant_exact_evaluation"
+          ]
+        },
+        {
+          "id": "constants-untyped-default-types",
+          "section": "Constants",
+          "title": "Untyped constant expressions retain their kinds and acquire the required default types",
+          "status": "passing",
+          "fixtures": [
+            "untyped_constant_default_types"
+          ]
         }
       ]
     },
@@ -611,6 +656,15 @@
             "_negative/negative_var_untyped_nil"
           ],
           "expect": "compile_error"
+        },
+        {
+          "id": "vars-default-types",
+          "section": "Variable declarations",
+          "title": "Untyped constant initializers in var and short declarations acquire their default types",
+          "status": "passing",
+          "fixtures": [
+            "var_decl_default_types"
+          ]
         }
       ]
     },
@@ -879,6 +933,33 @@
           "status": "passing",
           "fixtures": [
             "types"
+          ]
+        },
+        {
+          "id": "types-channel-direction-conversions",
+          "section": "Channel types",
+          "title": "Explicit and assignment conversions constrain channel direction while preserving shared storage",
+          "status": "passing",
+          "fixtures": [
+            "channel_direction_conversions"
+          ]
+        },
+        {
+          "id": "spec-channel-type-associativity",
+          "section": "Channel types",
+          "title": "Channel direction syntax associates with the leftmost chan and make accepts directional types",
+          "status": "passing",
+          "fixtures": [
+            "channel_type_associativity"
+          ]
+        },
+        {
+          "id": "spec-buffered-capacity-fifo-close",
+          "section": "Channel types",
+          "title": "Buffered string channels preserve capacity, FIFO drain order, close, and repeated zero receives",
+          "status": "passing",
+          "fixtures": [
+            "buffered_capacity_fifo_close"
           ]
         },
         {
@@ -2624,6 +2705,15 @@
           "status": "passing",
           "fixtures": [
             "generics_inference_from_constraint_term"
+          ]
+        },
+        {
+          "id": "generics-inference-constant-kinds",
+          "section": "Type inference",
+          "title": "Untyped constant-kind merging chooses the merged default type while typed operands take precedence",
+          "status": "passing",
+          "fixtures": [
+            "generics_inference_constant_kinds"
           ]
         }
       ]

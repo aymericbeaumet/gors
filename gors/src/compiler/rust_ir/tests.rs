@@ -165,6 +165,38 @@ fn verified_int32_primitives_preserve_go_width_before_i64_storage() {
 }
 
 #[test]
+fn verified_i64_interface_calls_retain_exact_int8_and_uint_types() {
+    let file = lower(
+        r#"
+            package main
+            func main() {
+                var narrow any = int8(4)
+                narrowValue, narrowOK := narrow.(int8)
+                var unsigned any = uint(6)
+                unsignedValue, unsignedOK := unsigned.(uint)
+                if !narrowOK || !unsignedOK || narrowValue != 4 || unsignedValue != 6 {
+                    panic("integer interface extraction changed")
+                }
+            }
+        "#,
+    );
+
+    let requirement = file
+        .verify()
+        .expect("int8 and uint interface calls must verify");
+    for operation in [
+        RuntimeOp::GoInterfaceBoxI64,
+        RuntimeOp::GoInterfaceIsType,
+        RuntimeOp::GoInterfaceUnboxI64,
+    ] {
+        assert!(
+            requirement.contains(operation),
+            "missing {operation:?} in {requirement:?}"
+        );
+    }
+}
+
+#[test]
 fn verifier_checks_runtime_calls_against_the_typed_abi() {
     let mut file = lower("package main\nfunc main() { print(1) }\n");
     *runtime_call_target_mut(&mut file, RuntimeOp::PrintI64) = RuntimeOp::PrintBool;

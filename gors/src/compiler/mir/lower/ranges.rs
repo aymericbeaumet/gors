@@ -383,6 +383,9 @@ impl FunctionLowerer {
                 "non-channel expression reached channel range lowering",
             ));
         };
+        let receive_builtin = channel_receive_builtin(element).ok_or_else(|| {
+            Diagnostic::backend("unsupported channel element reached range lowering")
+        })?;
         let provenance = Provenance::Source(source);
         let header = self.new_block(provenance.clone());
         let received = self.new_block(provenance.clone());
@@ -403,7 +406,7 @@ impl FunctionLowerer {
         };
         self.terminate(make_terminator(
             TerminatorKind::Call {
-                callee: hir::Callee::Builtin(hir::Builtin::ChannelI64Receive),
+                callee: hir::Callee::Builtin(receive_builtin),
                 args: vec![channel],
                 destinations: vec![value, open],
                 target: received,
@@ -458,5 +461,16 @@ impl FunctionLowerer {
             provenance.clone(),
         );
         self.push_statement(make_statement(destination, value, provenance))
+    }
+}
+
+fn channel_receive_builtin(element: &Ty) -> Option<hir::Builtin> {
+    match element.underlying() {
+        Ty::Int(IntTy::Int) => Some(hir::Builtin::ChannelI64Receive),
+        Ty::String => Some(hir::Builtin::ChannelGoStringReceive),
+        Ty::Channel(_, nested) if nested.underlying() == &Ty::Int(IntTy::Int) => {
+            Some(hir::Builtin::ChannelGoChannelI64Receive)
+        }
+        _ => None,
     }
 }

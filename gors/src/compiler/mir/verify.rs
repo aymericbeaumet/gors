@@ -778,7 +778,29 @@ impl Function {
                                 | hir::Builtin::ChannelI64Close
                                 | hir::Builtin::ChannelI64IsNil
                                 | hir::Builtin::ChannelI64TrySend
-                                | hir::Builtin::ChannelI64TryReceive => {
+                                | hir::Builtin::ChannelI64TryReceive
+                                | hir::Builtin::ChannelGoStringNil
+                                | hir::Builtin::ChannelGoStringMake
+                                | hir::Builtin::ChannelGoStringLen
+                                | hir::Builtin::ChannelGoStringCap
+                                | hir::Builtin::ChannelGoStringSend
+                                | hir::Builtin::ChannelGoStringReceiveValue
+                                | hir::Builtin::ChannelGoStringReceive
+                                | hir::Builtin::ChannelGoStringClose
+                                | hir::Builtin::ChannelGoStringIsNil
+                                | hir::Builtin::ChannelGoStringTrySend
+                                | hir::Builtin::ChannelGoStringTryReceive
+                                | hir::Builtin::ChannelGoChannelI64Nil
+                                | hir::Builtin::ChannelGoChannelI64Make
+                                | hir::Builtin::ChannelGoChannelI64Len
+                                | hir::Builtin::ChannelGoChannelI64Cap
+                                | hir::Builtin::ChannelGoChannelI64Send
+                                | hir::Builtin::ChannelGoChannelI64ReceiveValue
+                                | hir::Builtin::ChannelGoChannelI64Receive
+                                | hir::Builtin::ChannelGoChannelI64Close
+                                | hir::Builtin::ChannelGoChannelI64IsNil
+                                | hir::Builtin::ChannelGoChannelI64TrySend
+                                | hir::Builtin::ChannelGoChannelI64TryReceive => {
                                     return Err(Diagnostic::backend(
                                         "channel builtin bypassed dedicated MIR verification",
                                     ));

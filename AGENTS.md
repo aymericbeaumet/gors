@@ -773,9 +773,21 @@ are represented in HIR and MIR:
   and channels;
 - unsafe and host-resource integration.
 
-Narrow and unsigned integer execution remains explicit coverage work until its
-exact Go conversion, overflow, comparison, and representation rules are present
-throughout HIR, MIR, and Rust IR.
+The executable scalar frontier admits `int8` and `uint` only where the shared
+`i64` representation is exact: zero values, representable constants (`int8`
+from -128 through 127 and `uint` from zero through `i64::MAX`), typed value
+transport, equality/order, generic identity calls, and interface boxing with
+the exact Go dynamic type identity. Dynamic narrowing, narrow or unsigned
+arithmetic, shifts, increment/decrement, and `uint` values above `i64::MAX`
+remain diagnosed until width-specific lowering represents their Go semantics.
+
+Executable channels use one direction-neutral shared handle representation per
+element representation while retaining exact send/receive direction in HIR and
+Go MIR. The canonical runtime ABI currently provides complete operation
+families for channels carrying `int`, `string`, or another `chan int` value;
+direction-only assignment and explicit conversion are representation-preserving
+and must never become runtime calls. Other channel element representations stay
+diagnosed until they receive an equally complete typed ABI family.
 
 The existing Go-spec, stdlib, repository, and arbitrary-program fixtures are a
 prioritized coverage map and differential oracle. Only complete, unfiltered

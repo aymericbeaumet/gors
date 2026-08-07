@@ -127,3 +127,12 @@ pub(super) const GO_MAP_STRING_INTERFACE_SET: &[RuntimeType] = &[
 pub(super) const GO_CHANNEL_I64_PARAMETER: &[RuntimeType] = &[RuntimeType::GoChannelI64];
 pub(super) const GO_CHANNEL_I64_SEND: &[RuntimeType] =
     &[RuntimeType::GoChannelI64, RuntimeType::I64];
+pub(super) const GO_CHANNEL_GO_STRING_PARAMETER: &[RuntimeType] = &[RuntimeType::GoChannelGoString];
+pub(super) const GO_CHANNEL_GO_STRING_SEND: &[RuntimeType] =
+    &[RuntimeType::GoChannelGoString, RuntimeType::GoString];
+pub(super) const GO_CHANNEL_GO_CHANNEL_I64_PARAMETER: &[RuntimeType] =
+    &[RuntimeType::GoChannelGoChannelI64];
+pub(super) const GO_CHANNEL_GO_CHANNEL_I64_SEND: &[RuntimeType] = &[
+    RuntimeType::GoChannelGoChannelI64,
+    RuntimeType::GoChannelI64,
+];

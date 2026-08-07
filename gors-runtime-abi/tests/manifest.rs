@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::error::Error;
 
 use sha2::{Digest as _, Sha256};
@@ -13,6 +12,10 @@ use gors_runtime_abi::{
     TargetCapability, TargetModel, TargetModelError,
 };
 
+#[path = "manifest/catalog.rs"]
+mod catalog;
+#[path = "manifest/channel_effects.rs"]
+mod channel_effects;
 #[path = "manifest/link_identity.rs"]
 mod link_identity;
 #[path = "manifest/link_validation.rs"]
@@ -98,58 +101,13 @@ fn current_contract_identity_is_sha256_of_canonical_bytes() {
 
     assert_eq!(manifest.schema().get(), 2);
     assert_eq!(manifest.contract(), CURRENT_CONTRACT_VERSION);
-    assert_eq!(manifest.contract(), ContractVersion::new(2, 20, 0));
+    assert_eq!(manifest.contract(), ContractVersion::new(2, 21, 0));
     assert_eq!(manifest.identity().as_bytes(), &expected);
     assert_eq!(
         manifest.identity().to_string(),
-        "79c8edd1ec15e7da105b544b262f3d1825022737c255c5274713998cad4f2aca",
+        "26398ce41eb5d74575d7c8f58f5414ac775c051479d832c6ed7ddb42298427b7",
         "the canonical runtime contract changed; review the ABI diff and bump its semantic version before accepting a new identity",
     );
-}
-
-#[test]
-fn current_operation_catalogs_are_complete_and_collision_free() {
-    let current = RuntimeAbiManifest::current();
-    assert_eq!(current.primitive_ops(), PrimitiveOp::ALL);
-    assert_eq!(current.runtime_ops(), RuntimeOp::ALL);
-
-    let symbols = RuntimeOp::ALL
-        .iter()
-        .map(|operation| operation.symbol())
-        .collect::<BTreeSet<_>>();
-    assert_eq!(symbols.len(), RuntimeOp::ALL.len());
-
-    let primitive_ids = PrimitiveOp::ALL
-        .iter()
-        .map(|operation| operation.id())
-        .collect::<BTreeSet<_>>();
-    assert_eq!(primitive_ids.len(), PrimitiveOp::ALL.len());
-    assert_eq!(PrimitiveOp::Int32WrappingAdd.id().get(), 51);
-    assert_eq!(PrimitiveOp::Int32WrappingNeg.id().get(), 52);
-
-    let primitive_names = PrimitiveOp::ALL
-        .iter()
-        .map(|operation| operation.name())
-        .collect::<BTreeSet<_>>();
-    assert_eq!(primitive_names.len(), PrimitiveOp::ALL.len());
-
-    let runtime_ids = RuntimeOp::ALL
-        .iter()
-        .map(|operation| operation.id())
-        .collect::<BTreeSet<_>>();
-    assert_eq!(runtime_ids.len(), RuntimeOp::ALL.len());
-
-    let primitive_identities = PrimitiveOp::ALL
-        .iter()
-        .map(|operation| manifest([*operation], []).identity())
-        .collect::<BTreeSet<_>>();
-    assert_eq!(primitive_identities.len(), PrimitiveOp::ALL.len());
-
-    let operation_identities = RuntimeOp::ALL
-        .iter()
-        .map(|operation| manifest([], [*operation]).identity())
-        .collect::<BTreeSet<_>>();
-    assert_eq!(operation_identities.len(), RuntimeOp::ALL.len());
 }
 
 #[test]
@@ -276,6 +234,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoStringRangeRuneAt
             | RuntimeOp::GoChannelI64TrySend
             | RuntimeOp::GoChannelI64TryReceive => AllocationEffect::None,
+            operation => channel_effects::allocation(*operation),
         };
         let expected_argument_mutation = match operation {
             RuntimeOp::ConcatGoStrings
@@ -397,6 +356,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoStringRangeCount
             | RuntimeOp::GoStringRangeIndexAt
             | RuntimeOp::GoStringRangeRuneAt => ArgumentMutationEffect::None,
+            operation => channel_effects::argument_mutation(*operation),
         };
         let expected_blocking = match operation {
             RuntimeOp::PrintBool
@@ -408,6 +368,9 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoChannelI64Send
             | RuntimeOp::GoChannelI64ReceiveValue
             | RuntimeOp::GoChannelI64Receive => BlockingEffect::MayBlock,
+            operation if channel_effects::is_extended_channel_operation(*operation) => {
+                channel_effects::blocking(*operation)
+            }
             _ => BlockingEffect::None,
         };
         let expected_host_io = match operation {
@@ -530,6 +493,10 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoStringRangeRuneAt
             | RuntimeOp::GoChannelI64TrySend
             | RuntimeOp::GoChannelI64TryReceive => HostIoEffect::None,
+            operation if channel_effects::is_extended_channel_operation(*operation) => {
+                channel_effects::host_io(*operation)
+            }
+            _ => HostIoEffect::None,
         };
         let expected_panics: &[GoPanicCondition] = match operation {
             RuntimeOp::IntDiv | RuntimeOp::IntRem => &[GoPanicCondition::IntegerDivideByZero],
@@ -660,6 +627,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoStringRangeCount
             | RuntimeOp::GoSliceU8Len
             | RuntimeOp::GoChannelI64TryReceive => &[],
+            operation => channel_effects::panics(*operation),
         };
 
         assert_eq!(effects.allocation(), expected_allocation, "{operation:?}");

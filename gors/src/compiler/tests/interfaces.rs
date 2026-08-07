@@ -29,7 +29,7 @@ fn float_interfaces_preserve_ieee_equality_and_extract_float64() {
         "#,
     );
 
-    assert_eq!(run.stderr, b"false true\nfalse true\ntrue +3.500000e+000\n");
+    assert_eq!(run.stderr, b"false true\nfalse true\ntrue 3.5\n");
     assert!(run.rust.contains("go_interface_box_f64"), "{}", run.rust);
     assert!(run.rust.contains("go_interface_equal"), "{}", run.rust);
     assert!(run.rust.contains("go_interface_unbox_f64"), "{}", run.rust);
@@ -54,7 +54,7 @@ fn float32_conversions_round_before_interface_boxing() {
         "#,
     );
 
-    assert_eq!(run.stderr, b"true +1.677722e+007\n");
+    assert_eq!(run.stderr, b"true 1.6777216e+07\n");
     assert!(run.rust.contains("as f32"), "{}", run.rust);
     assert!(run.rust.contains("builtin:float32"), "{}", run.rust);
 }

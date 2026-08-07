@@ -9,7 +9,7 @@ use crate::compiler::syntax::{
     ChannelDirectionSyntax, ExprSyntax, ExprSyntaxKind, FieldListSyntax,
 };
 use crate::compiler::types::{
-    ChannelDir, ConstValue, FloatTy, IntTy, InterfaceMethod, Signature, StructField, Ty,
+    ChannelDir, ConstValue, FloatTy, IntTy, InterfaceMethod, Signature, StructField, Ty, UintTy,
 };
 
 pub(super) fn field_types(
@@ -308,21 +308,24 @@ pub(in crate::compiler) fn lower_type_with_constant_lookup(
         "bool" => Ok(Ty::Bool),
         "string" => Ok(Ty::String),
         "int" => Ok(Ty::Int(IntTy::Int)),
+        "int8" => Ok(Ty::Int(IntTy::Int8)),
         "int32" | "rune" => Ok(Ty::Int(IntTy::Int32)),
+        "uint" => Ok(Ty::Uint(UintTy::Uint)),
         "float32" => Ok(Ty::Float(FloatTy::Float32)),
         "float64" => Ok(Ty::Float(FloatTy::Float64)),
         "complex128" => Ok(Ty::Complex(crate::compiler::types::ComplexTy::Complex128)),
-        "uint8" | "byte" => Ok(Ty::Uint(crate::compiler::types::UintTy::Uint8)),
+        "uint8" | "byte" => Ok(Ty::Uint(UintTy::Uint8)),
         "any" => Ok(Ty::Interface(Vec::new())),
         "error" => Ok(interfaces::error_interface_ty()),
-        "int8" | "int16" | "int64" | "uint" | "uint16" | "uint32" | "uint64" | "uintptr"
-        | "complex64" => Err(Diagnostic::unsupported(
-            format!(
-                "executable support for type {} is not yet available",
-                ident.name
-            ),
-            source,
-        )),
+        "int16" | "int64" | "uint16" | "uint32" | "uint64" | "uintptr" | "complex64" => {
+            Err(Diagnostic::unsupported(
+                format!(
+                    "executable support for type {} is not yet available",
+                    ident.name
+                ),
+                source,
+            ))
+        }
         other => type_aliases.get(other).cloned().ok_or_else(|| {
             Diagnostic::unsupported(format!("type {other} is not yet supported"), source)
         }),

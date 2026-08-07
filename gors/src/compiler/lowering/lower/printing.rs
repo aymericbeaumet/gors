@@ -60,7 +60,9 @@ pub(super) fn lower_print_call(
             | out::RustType::GoPointerI64
             | out::RustType::GoPointerStructI64
             | out::RustType::GoInterface
-            | out::RustType::GoChannelI64 => {
+            | out::RustType::GoChannelI64
+            | out::RustType::GoChannelGoString
+            | out::RustType::GoChannelGoChannelI64 => {
                 return Err(Diagnostic::backend(
                     "numeric print operation reached lowering without a runtime ABI operation",
                 ));
