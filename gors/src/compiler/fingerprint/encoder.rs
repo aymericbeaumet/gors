@@ -14,7 +14,7 @@ use crate::compiler::types::{
 };
 
 const FORMAT_MAGIC: &[u8] = b"gors-stage-product";
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 3;
 
 /// An encoder for one root product or one length-delimited nested field.
 pub(super) struct Encoder {
@@ -319,16 +319,25 @@ pub(super) fn const_value(encoder: &mut Encoder, value: &ConstValue) {
             encoder.variant(b"exact-int", |encoder| encoder.string(value));
         }
         ConstValue::Float(value) => {
-            encoder.variant(b"exact-float", |encoder| encoder.string(value));
+            encoder.variant(b"exact-float", |encoder| exact_number(encoder, value));
         }
         ConstValue::Complex { real, imag } => encoder.variant(b"exact-complex", |encoder| {
-            encoder.field(b"real", |encoder| encoder.string(real));
-            encoder.field(b"imag", |encoder| encoder.string(imag));
+            encoder.field(b"real", |encoder| exact_number(encoder, real));
+            encoder.field(b"imag", |encoder| exact_number(encoder, imag));
         }),
         ConstValue::String(value) => {
             encoder.variant(b"go-string-bytes", |encoder| encoder.blob(value));
         }
     }
+}
+
+fn exact_number(encoder: &mut Encoder, value: &crate::compiler::types::ExactNumber) {
+    encoder.field(b"numerator", |encoder| {
+        encoder.string(&value.numerator_spelling())
+    });
+    encoder.field(b"denominator", |encoder| {
+        encoder.string(&value.denominator_spelling())
+    });
 }
 
 pub(super) fn hir_effects(encoder: &mut Encoder, effects: hir::Effects) {

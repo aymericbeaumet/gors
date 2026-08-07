@@ -1,6 +1,6 @@
 use super::*;
 use crate::compiler::ids::LocalId;
-use crate::compiler::types::{ConstValue, FloatTy, IntTy, Ty, UintTy};
+use crate::compiler::types::{ConstValue, ExactNumber, FloatTy, IntTy, Ty, UintTy};
 
 fn lower(source: &str) -> File {
     let hir = crate::compiler::lower_to_hir("verify.go", source).unwrap();
@@ -661,7 +661,10 @@ fn verifier_enforces_exact_width_division_and_independently_typed_shift_counts()
     else {
         panic!("expected shift")
     };
-    *right = Operand::Constant(ConstValue::Int("1".into()), Ty::Float(FloatTy::Float64));
+    *right = Operand::Constant(
+        ConstValue::Float(ExactNumber::from_spelling("1").unwrap()),
+        Ty::Float(FloatTy::Float64),
+    );
     assert!(
         bad_count
             .verify()

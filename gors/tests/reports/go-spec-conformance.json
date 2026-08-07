@@ -12,10 +12,10 @@
   "summary": {
     "groupCount": 15,
     "passingGroupCount": 15,
-    "caseCount": 329,
-    "passingCaseCount": 329,
+    "caseCount": 330,
+    "passingCaseCount": 330,
     "unsupportedCaseCount": 0,
-    "fixtureCount": 175
+    "fixtureCount": 176
   },
   "groups": [
     {
@@ -582,15 +582,16 @@
         "iota_parallel_and_skipped",
         "large_constant_precision",
         "representability_rounding",
-        "untyped_constant_default_types"
+        "untyped_constant_default_types",
+        "untyped_constant_propagation"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 18,
-        "passingCaseCount": 18,
+        "caseCount": 19,
+        "passingCaseCount": 19,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 11
+        "fixtureCount": 12
       },
       "cases": [
         {
@@ -702,6 +703,20 @@
           ],
           "freshFixtures": [
             "constant_division_kinds"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "untyped-constant-propagation",
+          "title": "Operations on untyped constants stay untyped and assign to defined types; typed constants keep their explicit type",
+          "subtitle": "Constant expressions",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "untyped_constant_propagation"
+          ],
+          "freshFixtures": [
+            "untyped_constant_propagation"
           ],
           "reason": ""
         },

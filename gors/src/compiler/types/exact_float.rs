@@ -54,24 +54,21 @@ struct RoundedFloat {
 
 impl ConstValue {
     pub(crate) fn ieee_bits_for(&self, ty: FloatTy) -> Option<u64> {
-        let spelling = match self {
-            Self::Int(spelling) | Self::Float(spelling) => spelling,
+        let value = match self {
+            Self::Int(spelling) => ExactNumber::from_integer_spelling(spelling)?,
+            Self::Float(value) => value.clone(),
             Self::Bool(_) | Self::Complex { .. } | Self::String(_) => return None,
         };
-        ExactNumber::from_spelling(spelling)
-            .and_then(|value| value.round_to_ieee(ty))
-            .map(|rounded| rounded.bits)
+        value.round_to_ieee(ty).map(|rounded| rounded.bits)
     }
 
-    pub(super) fn quantized_for_float(&self, ty: FloatTy) -> Option<Self> {
-        let spelling = match self {
-            Self::Int(spelling) | Self::Float(spelling) => spelling,
+    pub(super) fn quantized_for_float(&self, ty: FloatTy) -> Option<ExactNumber> {
+        let value = match self {
+            Self::Int(spelling) => ExactNumber::from_integer_spelling(spelling)?,
+            Self::Float(value) => value.clone(),
             Self::Bool(_) | Self::Complex { .. } | Self::String(_) => return None,
         };
-        ExactNumber::from_spelling(spelling)?
-            .round_to_ieee(ty)?
-            .value
-            .to_const_value()
+        Some(value.round_to_ieee(ty)?.value)
     }
 }
 

@@ -416,6 +416,15 @@
           ]
         },
         {
+          "id": "untyped-constant-propagation",
+          "section": "Constant expressions",
+          "title": "Operations on untyped constants stay untyped and assign to defined types; typed constants keep their explicit type",
+          "status": "passing",
+          "fixtures": [
+            "untyped_constant_propagation"
+          ]
+        },
+        {
           "id": "constants-shift-expressions",
           "section": "Constant expressions",
           "title": "Shift expressions produce integer constants",

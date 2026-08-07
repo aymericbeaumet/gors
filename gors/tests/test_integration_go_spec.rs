@@ -57,7 +57,7 @@ struct FixtureExecutionDirective {
     status: String,
 }
 
-const EXPECTED_SPEC_CASE_COUNT: usize = 329;
+const EXPECTED_SPEC_CASE_COUNT: usize = 330;
 
 const GO_1_26_SPEC_SECTIONS: &[&str] = &[
     "Language versions",

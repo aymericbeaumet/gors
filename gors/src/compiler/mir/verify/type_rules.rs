@@ -22,13 +22,10 @@ pub(super) fn verify_constant_type(value: &ConstValue, ty: &Ty) -> Result<(), Di
             | (ConstValue::Int(_), Ty::Int(_))
             | (ConstValue::Int(_), Ty::Uint(_))
             | (ConstValue::Float(_), Ty::Float(_))
-            | (ConstValue::Int(_), Ty::Float(_))
             | (
                 ConstValue::Complex { .. },
                 Ty::Complex(ComplexTy::Complex128)
             )
-            | (ConstValue::Int(_), Ty::Complex(ComplexTy::Complex128))
-            | (ConstValue::Float(_), Ty::Complex(ComplexTy::Complex128))
             | (ConstValue::String(_), Ty::String)
     );
     let canonical = value.normalized_for(ty) == *value;
@@ -179,7 +176,7 @@ pub(super) fn verify_binary_types(
 #[cfg(test)]
 mod tests {
     use super::verify_constant_type;
-    use crate::compiler::types::{ConstValue, FloatTy, IntTy, Ty, UintTy};
+    use crate::compiler::types::{ConstValue, ExactNumber, FloatTy, IntTy, Ty, UintTy};
 
     #[test]
     fn constant_verification_enforces_exact_integer_representation_bounds() {
@@ -214,26 +211,19 @@ mod tests {
 
     #[test]
     fn constant_verification_rejects_unquantized_typed_floats() {
-        assert!(
+        let exact = |spelling: &str| ExactNumber::from_spelling(spelling).map(ConstValue::Float);
+        assert!(exact("16777217").is_some_and(|value| {
+            verify_constant_type(&value, &Ty::Float(FloatTy::Float32)).is_err()
+        }));
+        assert!(exact("16777216").is_some_and(|value| {
             verify_constant_type(
-                &ConstValue::Int("16777217".into()),
-                &Ty::Float(FloatTy::Float32),
-            )
-            .is_err()
-        );
-        assert!(
-            verify_constant_type(
-                &ConstValue::Int("16777216".into()),
+                &value.normalized_for(&Ty::Float(FloatTy::Float32)),
                 &Ty::Float(FloatTy::Float32),
             )
             .is_ok()
-        );
-        assert!(
-            verify_constant_type(
-                &ConstValue::Int("9007199254740993".into()),
-                &Ty::Float(FloatTy::Float64),
-            )
-            .is_err()
-        );
+        }));
+        assert!(exact("9007199254740993").is_some_and(|value| {
+            verify_constant_type(&value, &Ty::Float(FloatTy::Float64)).is_err()
+        }));
     }
 }

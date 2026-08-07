@@ -10,7 +10,7 @@ use crate::compiler::hir;
 use crate::compiler::ids::NodeId;
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{ExprSyntax, ExprSyntaxKind, SyntaxSource};
-use crate::compiler::types::{ConstValue, FloatTy, IntTy, Ty, exact_integer_from_number_spelling};
+use crate::compiler::types::{ConstValue, FloatTy, IntTy, Ty};
 use crate::token::Token;
 
 const MAX_BOOTSTRAP_ARRAY_LENGTH: u64 = 1_048_576;
@@ -39,32 +39,9 @@ fn array_length(
             source,
         ));
     }
-    let value = match value {
-        ConstValue::Int(value) => ConstValue::Int(value),
-        ConstValue::Float(value) => {
-            exact_integer_from_number_spelling(&value).ok_or_else(|| {
-                Diagnostic::semantic("array length must be an integer constant", source)
-            })?
-        }
-        ConstValue::Complex { real, imag } => {
-            let imaginary = exact_integer_from_number_spelling(&imag);
-            if !matches!(imaginary, Some(ConstValue::Int(ref value)) if value == "0") {
-                return Err(Diagnostic::semantic(
-                    "array length must be an integer constant",
-                    source,
-                ));
-            }
-            exact_integer_from_number_spelling(&real).ok_or_else(|| {
-                Diagnostic::semantic("array length must be an integer constant", source)
-            })?
-        }
-        ConstValue::Bool(_) | ConstValue::String(_) => {
-            return Err(Diagnostic::semantic(
-                "array length must be an integer constant",
-                source,
-            ));
-        }
-    };
+    let value = value
+        .exact_integer()
+        .ok_or_else(|| Diagnostic::semantic("array length must be an integer constant", source))?;
     let ConstValue::Int(value) = value else {
         return Err(Diagnostic::backend(
             "integer array length normalization produced a non-integer constant",

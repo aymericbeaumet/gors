@@ -1,25 +1,48 @@
-use super::{ConstValue, FloatTy, IntTy, Ty, parse_go_float};
+use super::{ConstValue, ExactNumber, FloatTy, IntTy, Ty};
 use crate::compiler::ids::{DefinitionKey, DefinitionKind, IdentityInterner};
 use crate::compiler::input::{PackageKey, WorkspaceKey};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 #[test]
-fn parses_decimal_and_hexadecimal_go_float_literals() {
+fn parses_decimal_and_hexadecimal_go_float_literals_exactly() {
     for (spelling, expected) in [
-        ("1.25", 1.25),
-        ("1.5e1", 15.0),
-        ("0x1p-2", 0.25),
-        ("0x1.Fp+0", 1.9375),
-        ("0X.8P+0", 0.5),
-        ("-0x1p+2", -4.0),
+        ("1.25", "5/4"),
+        ("1.5e1", "15"),
+        ("0x1p-2", "1/4"),
+        ("0x1.Fp+0", "31/16"),
+        ("0X.8P+0", "1/2"),
+        ("-0x1p+2", "-4"),
     ] {
-        assert_eq!(parse_go_float(spelling), Some(expected), "{spelling}");
+        assert_eq!(
+            ExactNumber::from_spelling(spelling).map(|value| value.to_string()),
+            Some(expected.to_owned()),
+            "{spelling}"
+        );
     }
 }
 
 fn bits(spelling: &str, ty: FloatTy) -> Option<u64> {
-    ConstValue::Float(spelling.to_owned()).ieee_bits_for(ty)
+    ConstValue::Float(ExactNumber::from_spelling(spelling)?).ieee_bits_for(ty)
+}
+
+#[test]
+fn exact_rationals_are_reduced_and_do_not_require_finite_decimal_expansions() {
+    let twenty_two_sevenths = ExactNumber::from_spelling("22")
+        .and_then(|left| ExactNumber::from_spelling("7").and_then(|right| left.div(&right)));
+    assert_eq!(
+        twenty_two_sevenths
+            .map(|value| value.to_string())
+            .as_deref(),
+        Some("22/7")
+    );
+
+    let reduced = ExactNumber::from_spelling("1.5")
+        .and_then(|left| ExactNumber::from_spelling("2.5").and_then(|right| left.div(&right)));
+    assert_eq!(
+        reduced.map(|value| value.to_string()).as_deref(),
+        Some("3/5")
+    );
 }
 
 #[test]

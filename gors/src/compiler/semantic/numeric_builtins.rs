@@ -10,7 +10,7 @@ use crate::compiler::hir;
 use crate::compiler::ids::NodeId;
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::ExprSyntax;
-use crate::compiler::types::{ComplexTy, ConstValue, FloatTy, Ty, UntypedTy};
+use crate::compiler::types::{ComplexTy, ConstValue, ExactNumber, FloatTy, Ty, UntypedTy};
 
 impl FunctionLowerer {
     pub(super) fn lower_numeric_builtin_call(
@@ -267,16 +267,13 @@ impl FunctionLowerer {
             } else {
                 imag.clone()
             }),
-            Some(ConstValue::Int(value)) => Some(if name == "real" {
-                value.clone()
-            } else {
-                "0".into()
-            }),
-            Some(ConstValue::Float(value)) => Some(if name == "real" {
-                value.clone()
-            } else {
-                "0".into()
-            }),
+            Some(value @ (ConstValue::Int(_) | ConstValue::Float(_))) => {
+                if name == "real" {
+                    value.exact_number()
+                } else {
+                    Some(ExactNumber::zero())
+                }
+            }
             _ => None,
         };
         let mut result = if let Some(component) = constant {
@@ -317,9 +314,6 @@ impl FunctionLowerer {
     }
 }
 
-fn constant_component(expression: &hir::Expr) -> Option<String> {
-    match expr_constant(expression)? {
-        ConstValue::Int(value) | ConstValue::Float(value) => Some(value.clone()),
-        _ => None,
-    }
+fn constant_component(expression: &hir::Expr) -> Option<ExactNumber> {
+    expr_constant(expression)?.exact_number()
 }

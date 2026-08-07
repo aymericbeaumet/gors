@@ -307,7 +307,7 @@ impl Function {
                                     | Ty::Complex(ComplexTy::Complex128)
                             )
                     }
-                    hir::UnaryOp::Not => operand_ty == Ty::Bool && *ty == Ty::Bool,
+                    hir::UnaryOp::Not => operand_ty == *ty && operand_ty.underlying() == &Ty::Bool,
                     hir::UnaryOp::BitNot => {
                         matches!(operand_ty.underlying(), Ty::Int(_) | Ty::Uint(_))
                             && operand_ty == *ty

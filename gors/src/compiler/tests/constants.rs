@@ -132,6 +132,63 @@ fn exact_float_constant_intermediates_need_not_fit_float64() {
 }
 
 #[test]
+fn nonterminating_rational_constants_remain_exact_until_concrete_typing() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            const fraction = 22.0 / 7
+            const complexFraction = (1.0 + 2.0i) / 3
+
+            func main() {
+                var rounded float64 = fraction
+                if fraction != 22.0/7 || fraction*7 != 22 ||
+                    min(1e100+1, 1e100+2) != 1e100+1 ||
+                    real(complexFraction)*3 != 1 || imag(complexFraction)*3 != 2 ||
+                    5/2 != 2 {
+                    panic("exact rational constant algebra changed")
+                }
+                println(rounded == 22.0/7)
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"true\n");
+}
+
+#[test]
+fn equivalent_rational_constant_edits_backdate_dependent_function_stages() {
+    let before = r#"
+        package main
+        const ratio = 22.0 / 7
+        func value() float64 { return ratio }
+        func main() { println(value()) }
+    "#;
+    let after = r#"
+        package main
+        const ratio = 44.0 / 14
+        func value() float64 { return ratio }
+        func main() { println(value()) }
+    "#;
+    let mut session = CompilerSession::default();
+    session
+        .compile_program(raw_program("main.go", "main.go", before))
+        .unwrap();
+    session.database().reset_telemetry();
+
+    session
+        .compile_program(raw_program("main.go", "main.go", after))
+        .unwrap();
+
+    let telemetry = session.database().telemetry();
+    assert_eq!(telemetry.executions(QueryKind::TypedConstant), 1);
+    assert_eq!(telemetry.executions(QueryKind::TypedHir), 0);
+    assert_eq!(telemetry.executions(QueryKind::VerifiedGoMir), 0);
+    assert_eq!(telemetry.executions(QueryKind::NormalizedGoMir), 0);
+    assert_eq!(telemetry.executions(QueryKind::VerifiedRustIr), 0);
+}
+
+#[test]
 fn typed_float_constants_quantize_at_declarations_conversions_and_operations() {
     let run = compile_and_run(
         r#"
@@ -210,6 +267,24 @@ fn non_integral_float_constants_are_rejected_at_integer_sites() {
             errors
                 .iter()
                 .any(|error| error.message.contains("not representable")),
+            "{errors:?}"
+        );
+    }
+}
+
+#[test]
+fn exact_constants_that_round_to_infinity_are_rejected_at_the_typing_boundary() {
+    for source in [
+        "package main\nconst bad float32 = 0x1.ffffffp127\nfunc main() { println(bad) }\n",
+        "package main\nconst bad float64 = 0x1.fffffffffffff8p1023\nfunc main() { println(bad) }\n",
+    ] {
+        let errors = compile_file("main.go", source)
+            .err()
+            .expect("a constant that rounds to infinity must be rejected");
+        assert!(
+            errors.iter().any(|error| {
+                error.code == "GORS2002" && error.message.contains("not representable")
+            }),
             "{errors:?}"
         );
     }

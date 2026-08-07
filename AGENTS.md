@@ -839,6 +839,12 @@ rule. HIR and MIR retain that canonical rounded value, the MIR verifier rejects
 unquantized typed constants, and representation lowering consumes the exact
 verified bits rather than making the first rounding decision or routing a
 `float32` constant through host `float64`.
+Untyped floating-point and complex components are canonical reduced arbitrary-
+precision rationals with a positive denominator, including values such as
+`22/7` that have no finite decimal spelling. Semantic operations, comparisons,
+min/max, HIR/MIR products, and their fingerprints retain the structural
+numerator and denominator; IEEE rounding occurs only at a concrete float or
+complex typing boundary.
 
 Executable channels use one direction-neutral shared handle representation per
 element representation while retaining exact send/receive direction in HIR and

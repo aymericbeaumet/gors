@@ -3,7 +3,7 @@ use super::*;
 use crate::compiler::ids::{DefinitionKey, DefinitionKind, IdentityInterner, QualifiedDefId};
 use crate::compiler::input::{PackageKey, WorkspaceKey};
 use crate::compiler::provenance::SourceRef;
-use crate::compiler::types::{ConstValue, FloatTy, Ty};
+use crate::compiler::types::{ConstValue, ExactNumber, FloatTy, Ty};
 use crate::compiler::{self, hir, mir, rust_ir};
 use gors_runtime_abi::{
     IntegerKind, IntegerPrimitive, IntegerRuntimeOp, PrimitiveOp, RuntimeOp, RuntimeRequirement,
@@ -489,6 +489,34 @@ fn typed_float_constant_fingerprints_encode_the_quantized_value() {
     assert_eq!(rounded_down.value, exact.value);
     assert_eq!(hir_constant(&rounded_down), hir_constant(&exact));
     assert_ne!(hir_constant(&rounded_down), hir_constant(&rounded_up));
+}
+
+#[test]
+fn exact_rational_fingerprints_encode_reduced_numerator_and_denominator() {
+    let hir = lower_stages("package main\nfunc main() {}\n").0;
+    let id = DefinitionKey::package_named(hir.package_id, DefinitionKind::Constant, "Ratio").id();
+    let constant = |numerator: &str, denominator: &str| {
+        let numerator = ExactNumber::from_spelling(numerator).expect("exact numerator");
+        let denominator = ExactNumber::from_spelling(denominator).expect("exact denominator");
+        hir::Constant {
+            id,
+            name: "Ratio".to_owned(),
+            ty: Ty::Untyped(crate::compiler::types::UntypedTy::Float),
+            value: ConstValue::Float(
+                numerator
+                    .div(&denominator)
+                    .expect("nonzero exact denominator"),
+            ),
+            source: SourceRef::definition(id),
+        }
+    };
+    let reduced = constant("22", "7");
+    let equivalent = constant("44", "14");
+    let distinct = constant("23", "7");
+
+    assert_eq!(reduced.value, equivalent.value);
+    assert_eq!(hir_constant(&reduced), hir_constant(&equivalent));
+    assert_ne!(hir_constant(&reduced), hir_constant(&distinct));
 }
 
 #[test]
