@@ -1,9 +1,10 @@
 //! Explicit-order MIR construction for range loops.
 
 use super::super::construct::{
-    binary_effects, call_effects, make_rvalue, make_statement, make_terminator,
+    binary_effects, call_effects, make_rvalue, make_statement, make_terminator, operand_ty,
 };
 use super::super::{Operand, Place, Provenance, RvalueKind, TerminatorKind};
+use super::assignments::PreparedTarget;
 use super::{FunctionLowerer, LoopTargets};
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
@@ -34,6 +35,17 @@ enum IntegerRangeKind {
 enum MapRangeKind {
     StringI64,
     I64GoString,
+}
+
+enum PreparedRangeBindings {
+    Declared {
+        key: Option<hir::Place>,
+        value: Option<hir::Place>,
+    },
+    Assigned {
+        targets: Vec<PreparedTarget>,
+        coercions: Vec<hir::ValueCoercion>,
+    },
 }
 
 impl MapRangeKind {
@@ -78,6 +90,13 @@ impl MapRangeKind {
             Self::I64GoString => hir::Builtin::MapI64GoStringGet,
         }
     }
+
+    fn value_ty(self) -> Ty {
+        match self {
+            Self::StringI64 => Ty::Int(IntTy::Int),
+            Self::I64GoString => Ty::String,
+        }
+    }
 }
 
 impl IntegerRangeKind {
@@ -95,8 +114,7 @@ impl FunctionLowerer {
     pub(super) fn lower_range(
         &mut self,
         label: Option<&str>,
-        key: Option<hir::Place>,
-        value: Option<hir::Place>,
+        bindings: &hir::RangeBindings,
         expression: &hir::Expr,
         body: &hir::Block,
         source: SourceRef,
@@ -179,7 +197,7 @@ impl FunctionLowerer {
         };
 
         if matches!(range_kind, RangeKind::Channel) {
-            return self.lower_channel_range(label, key, expression, container, body, source);
+            return self.lower_channel_range(label, bindings, expression, container, body, source);
         }
 
         let counter_ty = match range_kind {
@@ -301,10 +319,11 @@ impl FunctionLowerer {
         self.current = body_target;
         match range_kind {
             RangeKind::Array(_) => {
-                if let Some(hir::Place::Local(local)) = key {
-                    self.assign_range_local(Place { local }, Operand::Read(index), source)?;
-                }
-                if let Some(hir::Place::Local(local)) = value {
+                let prepared = self.prepare_range_bindings(bindings)?;
+                let value = if range_wants_value(bindings) {
+                    let destination = Place {
+                        local: self.new_temp(range_element_ty(expression)?),
+                    };
                     let value = make_rvalue(
                         RvalueKind::ArrayIndexI64 {
                             array: container,
@@ -316,65 +335,75 @@ impl FunctionLowerer {
                         },
                         provenance.clone(),
                     );
-                    self.push_statement(make_statement(
-                        Place { local },
-                        value,
-                        provenance.clone(),
-                    ))?;
-                }
+                    self.push_statement(make_statement(destination, value, provenance.clone()))?;
+                    Some(Operand::Read(destination))
+                } else {
+                    None
+                };
+                self.write_range_bindings(prepared, Some(Operand::Read(index)), value, source)?;
             }
             RangeKind::Slice { index: builtin, .. } => {
-                if let Some(hir::Place::Local(local)) = key {
-                    self.assign_range_local(Place { local }, Operand::Read(index), source)?;
-                }
-                if let Some(hir::Place::Local(local)) = value {
+                let prepared = self.prepare_range_bindings(bindings)?;
+                let value = if range_wants_value(bindings) {
+                    let destination = Place {
+                        local: self.new_temp(range_element_ty(expression)?),
+                    };
                     let after_value = self.new_block(provenance.clone());
                     self.terminate(make_terminator(
                         TerminatorKind::Call {
                             callee: hir::Callee::Builtin(builtin),
                             args: vec![container, Operand::Read(index)],
-                            destinations: vec![Place { local }],
+                            destinations: vec![destination],
                             target: after_value,
                         },
                         call_effects(),
                         provenance.clone(),
                     ))?;
                     self.current = after_value;
-                }
+                    Some(Operand::Read(destination))
+                } else {
+                    None
+                };
+                self.write_range_bindings(prepared, Some(Operand::Read(index)), value, source)?;
             }
             RangeKind::String => {
-                if let Some(hir::Place::Local(local)) = key {
-                    let range_key = Place {
-                        local: self.new_temp(Ty::Int(IntTy::Int)),
+                let prepared = self.prepare_range_bindings(bindings)?;
+                let range_key = Place {
+                    local: self.new_temp(Ty::Int(IntTy::Int)),
+                };
+                let after_key = self.new_block(provenance.clone());
+                self.terminate(make_terminator(
+                    TerminatorKind::Call {
+                        callee: hir::Callee::Builtin(hir::Builtin::StringRangeIndexAt),
+                        args: vec![container.clone(), Operand::Read(index)],
+                        destinations: vec![range_key],
+                        target: after_key,
+                    },
+                    call_effects(),
+                    provenance.clone(),
+                ))?;
+                self.current = after_key;
+                let value = if range_wants_value(bindings) {
+                    let destination = Place {
+                        local: self.new_temp(Ty::Int(IntTy::Int32)),
                     };
-                    let after_key = self.new_block(provenance.clone());
-                    self.terminate(make_terminator(
-                        TerminatorKind::Call {
-                            callee: hir::Callee::Builtin(hir::Builtin::StringRangeIndexAt),
-                            args: vec![container.clone(), Operand::Read(index)],
-                            destinations: vec![range_key],
-                            target: after_key,
-                        },
-                        call_effects(),
-                        provenance.clone(),
-                    ))?;
-                    self.current = after_key;
-                    self.assign_range_local(Place { local }, Operand::Read(range_key), source)?;
-                }
-                if let Some(hir::Place::Local(local)) = value {
                     let after_value = self.new_block(provenance.clone());
                     self.terminate(make_terminator(
                         TerminatorKind::Call {
                             callee: hir::Callee::Builtin(hir::Builtin::StringRangeRuneAt),
                             args: vec![container, Operand::Read(index)],
-                            destinations: vec![Place { local }],
+                            destinations: vec![destination],
                             target: after_value,
                         },
                         call_effects(),
                         provenance.clone(),
                     ))?;
                     self.current = after_value;
-                }
+                    Some(Operand::Read(destination))
+                } else {
+                    None
+                };
+                self.write_range_bindings(prepared, Some(Operand::Read(range_key)), value, source)?;
             }
             RangeKind::Map(map_kind) => {
                 let map_key = Place {
@@ -419,28 +448,32 @@ impl FunctionLowerer {
                     provenance.clone(),
                 ))?;
                 self.current = present_target;
-                if let Some(hir::Place::Local(local)) = key {
-                    self.assign_range_local(Place { local }, Operand::Read(map_key), source)?;
-                }
-                if let Some(hir::Place::Local(local)) = value {
+                let prepared = self.prepare_range_bindings(bindings)?;
+                let value = if range_wants_value(bindings) {
+                    let destination = Place {
+                        local: self.new_temp(map_kind.value_ty()),
+                    };
                     let after_value = self.new_block(provenance.clone());
                     self.terminate(make_terminator(
                         TerminatorKind::Call {
                             callee: hir::Callee::Builtin(map_kind.get()),
                             args: vec![container, Operand::Read(map_key)],
-                            destinations: vec![Place { local }],
+                            destinations: vec![destination],
                             target: after_value,
                         },
                         call_effects(),
                         provenance.clone(),
                     ))?;
                     self.current = after_value;
-                }
+                    Some(Operand::Read(destination))
+                } else {
+                    None
+                };
+                self.write_range_bindings(prepared, Some(Operand::Read(map_key)), value, source)?;
             }
             RangeKind::Integer(_) => {
-                if let Some(hir::Place::Local(local)) = key {
-                    self.assign_range_local(Place { local }, Operand::Read(index), source)?;
-                }
+                let prepared = self.prepare_range_bindings(bindings)?;
+                self.write_range_bindings(prepared, Some(Operand::Read(index)), None, source)?;
             }
             RangeKind::Channel => {
                 return Err(Diagnostic::backend(
@@ -482,7 +515,7 @@ impl FunctionLowerer {
     fn lower_channel_range(
         &mut self,
         label: Option<&str>,
-        key: Option<hir::Place>,
+        bindings: &hir::RangeBindings,
         expression: &hir::Expr,
         channel: Operand,
         body: &hir::Block,
@@ -542,9 +575,8 @@ impl FunctionLowerer {
             break_used: false,
         });
         self.current = body_target;
-        if let Some(hir::Place::Local(local)) = key {
-            self.assign_range_local(Place { local }, Operand::Read(value), source)?;
-        }
+        let prepared = self.prepare_range_bindings(bindings)?;
+        self.write_range_bindings(prepared, Some(Operand::Read(value)), None, source)?;
         self.lower_block(body)?;
         if !self.is_terminated(self.current)? {
             self.terminate(make_terminator(
@@ -571,6 +603,92 @@ impl FunctionLowerer {
             provenance.clone(),
         );
         self.push_statement(make_statement(destination, value, provenance))
+    }
+
+    fn prepare_range_bindings(
+        &mut self,
+        bindings: &hir::RangeBindings,
+    ) -> Result<PreparedRangeBindings, Diagnostic> {
+        Ok(match bindings {
+            hir::RangeBindings::Declared { key, value } => PreparedRangeBindings::Declared {
+                key: *key,
+                value: *value,
+            },
+            hir::RangeBindings::Assigned { targets, coercions } => {
+                if targets.len() != coercions.len() {
+                    return Err(Diagnostic::backend(
+                        "range assignment target/coercion arity changed before MIR lowering",
+                    ));
+                }
+                PreparedRangeBindings::Assigned {
+                    targets: self.prepare_assignment_targets(targets)?,
+                    coercions: coercions.clone(),
+                }
+            }
+        })
+    }
+
+    fn write_range_bindings(
+        &mut self,
+        bindings: PreparedRangeBindings,
+        key: Option<Operand>,
+        value: Option<Operand>,
+        source: SourceRef,
+    ) -> Result<(), Diagnostic> {
+        match bindings {
+            PreparedRangeBindings::Declared {
+                key: key_place,
+                value: value_place,
+            } => {
+                if let (Some(hir::Place::Local(local)), Some(key)) = (key_place, key) {
+                    self.assign_range_local(Place { local }, key, source)?;
+                }
+                if let (Some(hir::Place::Local(local)), Some(value)) = (value_place, value) {
+                    self.assign_range_local(Place { local }, value, source)?;
+                }
+                Ok(())
+            }
+            PreparedRangeBindings::Assigned { targets, coercions } => {
+                let mut operands = Vec::with_capacity(targets.len());
+                if !targets.is_empty() {
+                    operands.push(key.ok_or_else(|| {
+                        Diagnostic::backend("range assignment omitted its key value")
+                    })?);
+                }
+                if targets.len() == 2 {
+                    operands.push(value.ok_or_else(|| {
+                        Diagnostic::backend("range assignment omitted its element value")
+                    })?);
+                }
+                if targets.len() > 2 {
+                    return Err(Diagnostic::backend(
+                        "range assignment has more than two targets",
+                    ));
+                }
+                let mut coerced = Vec::with_capacity(operands.len());
+                for (operand, coercion) in operands.into_iter().zip(&coercions) {
+                    let source_ty = operand_ty(&operand, &self.locals)?;
+                    coerced.push(self.lower_value_coercion(operand, &source_ty, coercion, source)?);
+                }
+                self.write_prepared_assignments(targets, coerced, source)
+            }
+        }
+    }
+}
+
+fn range_wants_value(bindings: &hir::RangeBindings) -> bool {
+    match bindings {
+        hir::RangeBindings::Declared { value, .. } => value.is_some(),
+        hir::RangeBindings::Assigned { targets, .. } => targets.len() == 2,
+    }
+}
+
+fn range_element_ty(expression: &hir::Expr) -> Result<Ty, Diagnostic> {
+    match expression.ty.underlying() {
+        Ty::Array(_, element) | Ty::Slice(element) => Ok(element.as_ref().clone()),
+        _ => Err(Diagnostic::backend(
+            "array or slice range lost its element type",
+        )),
     }
 }
 

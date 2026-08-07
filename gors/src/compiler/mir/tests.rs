@@ -132,6 +132,130 @@ fn verifier_rejects_a_corrupt_forwarded_variadic_argument() {
 }
 
 #[test]
+fn assignment_target_types_paths_and_struct_updates_are_verified() {
+    let source = r#"
+        package main
+        type leaf struct { value int; keep int }
+        type middle struct { leaf; sibling int }
+        type outer struct { middle; tail int }
+        func main() {
+            record := outer{middle: middle{leaf: leaf{value: 1, keep: 2}, sibling: 3}, tail: 4}
+            record.value = 8
+        }
+    "#;
+
+    let mut hir = crate::compiler::lower_to_hir("assignment-target.go", source).unwrap();
+    let main = hir
+        .functions
+        .iter_mut()
+        .find(|function| function.name == "main")
+        .unwrap();
+    let target = main
+        .body
+        .stmts
+        .iter_mut()
+        .find_map(|statement| match &mut statement.kind {
+            hir::StmtKind::Assign { destinations, .. } => destinations.first_mut(),
+            _ => None,
+        })
+        .expect("nested struct assignment target");
+    assert_eq!(target.ty, Some(Ty::Int(IntTy::Int)));
+    target.ty = Some(Ty::Bool);
+    let error = lower::lower_function(main).unwrap_err();
+    assert!(
+        error.message.contains("assignment target type changed"),
+        "{error:?}"
+    );
+
+    let file = lower(source);
+    let struct_updates = file
+        .functions
+        .iter()
+        .find(|function| function.name == "main")
+        .unwrap()
+        .blocks
+        .iter()
+        .flat_map(|block| &block.statements)
+        .filter(|statement| matches!(statement.value.kind, RvalueKind::StructSet { .. }))
+        .count();
+    assert_eq!(struct_updates, 3, "one explicit update per field-path step");
+
+    let mut bad_path = file.clone();
+    let update = bad_path
+        .functions
+        .iter_mut()
+        .find(|function| function.name == "main")
+        .into_iter()
+        .flat_map(|function| &mut function.blocks)
+        .flat_map(|block| &mut block.statements)
+        .find_map(|statement| match &mut statement.value.kind {
+            RvalueKind::StructSet { field, .. } => Some(field),
+            _ => None,
+        })
+        .expect("nested struct update");
+    *update = u32::MAX;
+    let error = bad_path.verify().unwrap_err();
+    assert!(error.message.contains("field") && error.message.contains("out of bounds"));
+
+    let mut bad_effect = file;
+    let update = bad_effect
+        .functions
+        .iter_mut()
+        .find(|function| function.name == "main")
+        .into_iter()
+        .flat_map(|function| &mut function.blocks)
+        .flat_map(|block| &mut block.statements)
+        .find(|statement| matches!(statement.value.kind, RvalueKind::StructSet { .. }))
+        .expect("nested struct update");
+    assert!(update.value.effects.may_read);
+    update.value.effects.may_read = false;
+    let error = bad_effect.verify().unwrap_err();
+    assert!(error.message.contains("effect mismatch"), "{error:?}");
+}
+
+#[test]
+fn range_assignment_coercion_arity_is_validated_before_mir() {
+    let mut hir = crate::compiler::lower_to_hir(
+        "range-coercion.go",
+        r#"
+            package main
+            func main() {
+                values := []int{1}
+                var key any
+                var value any
+                for key, value = range values { break }
+            }
+        "#,
+    )
+    .unwrap();
+    let main = hir
+        .functions
+        .iter_mut()
+        .find(|function| function.name == "main")
+        .unwrap();
+    let coercions = main
+        .body
+        .stmts
+        .iter_mut()
+        .find_map(|statement| match &mut statement.kind {
+            hir::StmtKind::Range {
+                bindings: hir::RangeBindings::Assigned { coercions, .. },
+                ..
+            } => Some(coercions),
+            _ => None,
+        })
+        .expect("assigned range coercions");
+    assert_eq!(coercions.len(), 2);
+    coercions.pop();
+
+    let error = lower::lower_function(main).unwrap_err();
+    assert!(
+        error.message.contains("target/coercion arity changed"),
+        "{error:?}"
+    );
+}
+
+#[test]
 fn verifier_rejects_uninitialized_reads() {
     let source = r#"
         package main

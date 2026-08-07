@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::FunctionLowerer;
-use super::expressions::{coerce_expr, expr_constant, validate_binary_operator};
+use super::expressions::{coerce_expr, expr_constant};
 use super::{eval_constant_with_lookup, lower_type_with_constant_lookup};
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
@@ -11,7 +11,6 @@ use crate::compiler::ids::NodeId;
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{ExprSyntax, ExprSyntaxKind, SyntaxSource};
 use crate::compiler::types::{ConstValue, FloatTy, IntTy, Ty};
-use crate::token::Token;
 
 const MAX_BOOTSTRAP_ARRAY_LENGTH: u64 = 1_048_576;
 
@@ -349,53 +348,6 @@ impl FunctionLowerer {
             coerce_expr(&mut result, expected, source)?;
         }
         Ok(result)
-    }
-
-    pub(super) fn lower_array_assignment(
-        &mut self,
-        container: hir::Expr,
-        index: &ExprSyntax,
-        token: Token,
-        value: &ExprSyntax,
-        source: SourceRef,
-    ) -> Result<hir::StmtKind, Diagnostic> {
-        let array = match &container.kind {
-            hir::ExprKind::Local(local) => *local,
-            _ => {
-                return Err(Diagnostic::unsupported(
-                    "array assignment currently requires a local array variable",
-                    source,
-                ));
-            }
-        };
-        let Ty::Array(_, element) = container.ty.underlying() else {
-            return Err(Diagnostic::backend(
-                "array assignment lowering received a non-array value",
-            ));
-        };
-        if !is_executable_array_element(element) {
-            return Err(Diagnostic::unsupported(
-                "array element type has no executable assignment representation",
-                source,
-            ));
-        }
-        let element_ty = element.as_ref().clone();
-        let index = self.lower_expr(index, Some(&Ty::Int(IntTy::Int)))?;
-        let op = super::assignments::assignment_op(token, source)?;
-        let value = self.lower_assignment_operand(value, &element_ty, op, source)?;
-        if op != hir::AssignOp::Set {
-            validate_binary_operator(
-                super::expressions::assignment_binary_op(op),
-                &element_ty,
-                source,
-            )?;
-        }
-        Ok(hir::StmtKind::ArrayAssign {
-            array,
-            index,
-            op,
-            value,
-        })
     }
 }
 

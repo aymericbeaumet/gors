@@ -258,20 +258,21 @@ impl FunctionLowerer {
                 self.apply_assignment_value_coercion(value, coercion, syntax_source)
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let kind = if declares {
+            hir::StmtKind::Let {
+                destinations,
+                values,
+            }
+        } else {
+            hir::StmtKind::Assign {
+                destinations: self.lower_assignment_targets(left, source)?,
+                op: hir::AssignOp::Set,
+                values,
+            }
+        };
         Ok(hir::Stmt {
             node,
-            kind: if declares {
-                hir::StmtKind::Let {
-                    destinations,
-                    values,
-                }
-            } else {
-                hir::StmtKind::Assign {
-                    destinations,
-                    op: hir::AssignOp::Set,
-                    values,
-                }
-            },
+            kind,
             source: SourceRef::node(node),
         })
     }

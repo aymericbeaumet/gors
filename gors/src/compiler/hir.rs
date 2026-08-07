@@ -98,27 +98,14 @@ pub enum StmtKind {
         coercions: Vec<ValueCoercion>,
     },
     Assign {
-        destinations: Vec<Place>,
+        destinations: Vec<AssignTarget>,
         op: AssignOp,
         values: Vec<Expr>,
     },
     AssignTuple {
-        destinations: Vec<Place>,
-        value: Expr,
-        coercions: Vec<ValueCoercion>,
-    },
-    /// Dynamic left-hand-side operands are evaluated before the tuple-valued
-    /// right-hand side, then all result coercions are applied before writes.
-    ParallelAssignTuple {
         destinations: Vec<AssignTarget>,
         value: Expr,
         coercions: Vec<ValueCoercion>,
-    },
-    /// Dynamic left-hand-side operands are evaluated before all right-hand
-    /// sides, then destinations are written from left to right.
-    ParallelAssign {
-        destinations: Vec<AssignTarget>,
-        values: Vec<Expr>,
     },
     Expr(Expr),
     ClosureBinding(ClosureId),
@@ -148,8 +135,7 @@ pub enum StmtKind {
     },
     Range {
         label: Option<String>,
-        key: Option<Place>,
-        value: Option<Place>,
+        bindings: RangeBindings,
         expression: Expr,
         body: Block,
     },
@@ -161,34 +147,6 @@ pub enum StmtKind {
     Goto(String),
     Break(Option<String>),
     Continue(Option<String>),
-    SliceAssign {
-        slice: Expr,
-        index: Expr,
-        set: Builtin,
-        op: AssignOp,
-        value: Expr,
-    },
-    ArrayAssign {
-        array: LocalId,
-        index: Expr,
-        op: AssignOp,
-        value: Expr,
-    },
-    StructFieldAssign {
-        structure: LocalId,
-        field: u32,
-        op: AssignOp,
-        value: Expr,
-    },
-    /// The map and key operands are evaluated exactly once; a compound
-    /// operation reads the current element (a missing key yields the zero
-    /// value) before the single write.
-    MapAssign {
-        map: Expr,
-        key: Expr,
-        op: AssignOp,
-        value: Expr,
-    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -199,7 +157,15 @@ pub enum ValueCoercion {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum AssignTarget {
+pub struct AssignTarget {
+    pub kind: AssignTargetKind,
+    /// `None` is reserved for the blank identifier, which discards any value.
+    pub ty: Option<Ty>,
+    pub source: SourceRef,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AssignTargetKind {
     Local(LocalId),
     Discard,
     SliceIndex {
@@ -211,18 +177,39 @@ pub enum AssignTarget {
         map: Expr,
         key: Expr,
     },
+    ArrayIndex {
+        array: LocalId,
+        index: Expr,
+    },
     Pointer {
         pointer: Expr,
         set: Builtin,
     },
-    StructField {
+    /// A root-local, root-to-leaf field path. MIR rebuilds nested value
+    /// structs from the innermost update outward with explicit `StructSet`
+    /// operations.
+    StructFieldPath {
         structure: LocalId,
-        field: u32,
+        fields: Vec<u32>,
     },
     PointerStructField {
         pointer: Expr,
         field: u32,
         set: Builtin,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RangeBindings {
+    Declared {
+        key: Option<Place>,
+        value: Option<Place>,
+    },
+    /// Existing assignment targets are prepared on every iteration before
+    /// either generated range value is written.
+    Assigned {
+        targets: Vec<AssignTarget>,
+        coercions: Vec<ValueCoercion>,
     },
 }
 

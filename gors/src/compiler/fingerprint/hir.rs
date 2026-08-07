@@ -184,7 +184,7 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
             values,
         } => encoder.variant(b"assign", |encoder| {
             encoder.field(b"destinations", |encoder| {
-                encoder.sequence(destinations, |encoder, place| encode_place(encoder, *place));
+                encoder.sequence(destinations, encode_assignment_target);
             });
             encoder.field(b"operation", |encoder| encode_assign_op(encoder, *op));
             encoder.field(b"values", |encoder| {
@@ -199,35 +199,11 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
             coercions,
         } => encoder.variant(b"assign-tuple", |encoder| {
             encoder.field(b"destinations", |encoder| {
-                encoder.sequence(destinations, |encoder, place| encode_place(encoder, *place));
-            });
-            encoder.field(b"value", |encoder| encode_expression(encoder, value));
-            encoder.field(b"coercions", |encoder| {
-                encoder.sequence(coercions, encode_value_coercion);
-            });
-        }),
-        hir::StmtKind::ParallelAssignTuple {
-            destinations,
-            value,
-            coercions,
-        } => encoder.variant(b"parallel-assign-tuple", |encoder| {
-            encoder.field(b"destinations", |encoder| {
                 encoder.sequence(destinations, encode_assignment_target);
             });
             encoder.field(b"value", |encoder| encode_expression(encoder, value));
             encoder.field(b"coercions", |encoder| {
                 encoder.sequence(coercions, encode_value_coercion);
-            });
-        }),
-        hir::StmtKind::ParallelAssign {
-            destinations,
-            values,
-        } => encoder.variant(b"parallel-assign", |encoder| {
-            encoder.field(b"destinations", |encoder| {
-                encoder.sequence(destinations, encode_assignment_target);
-            });
-            encoder.field(b"values", |encoder| {
-                encoder.sequence(values, encode_expression);
             });
         }),
         hir::StmtKind::Expr(expression) => {
@@ -331,21 +307,15 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
         }),
         hir::StmtKind::Range {
             label,
-            key,
-            value,
+            bindings,
             expression,
             body,
         } => encoder.variant(b"range", |encoder| {
             encoder.field(b"label", |encoder| {
                 encoder.option(label.as_ref(), |encoder, label| encoder.string(label));
             });
-            encoder.field(b"key", |encoder| {
-                encoder.option(key.as_ref(), |encoder, place| encode_place(encoder, *place));
-            });
-            encoder.field(b"value", |encoder| {
-                encoder.option(value.as_ref(), |encoder, place| {
-                    encode_place(encoder, *place)
-                });
+            encoder.field(b"bindings", |encoder| {
+                encode_range_bindings(encoder, bindings)
             });
             encoder.field(b"expression", |encoder| {
                 encode_expression(encoder, expression);
@@ -372,54 +342,6 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
         hir::StmtKind::Continue(label) => encoder.variant(b"continue", |encoder| {
             encoder.option(label.as_ref(), |encoder, label| encoder.string(label));
         }),
-        hir::StmtKind::SliceAssign {
-            slice,
-            index,
-            set,
-            op,
-            value,
-        } => encoder.variant(b"slice-assign", |encoder| {
-            encoder.field(b"slice", |encoder| encode_expression(encoder, slice));
-            encoder.field(b"index", |encoder| encode_expression(encoder, index));
-            encoder.field(b"set", |encoder| encode_builtin(encoder, *set));
-            encoder.field(b"operation", |encoder| encode_assign_op(encoder, *op));
-            encoder.field(b"value", |encoder| encode_expression(encoder, value));
-        }),
-        hir::StmtKind::ArrayAssign {
-            array,
-            index,
-            op,
-            value,
-        } => encoder.variant(b"array-assign", |encoder| {
-            encoder.field(b"array", |encoder| local_id(encoder, *array));
-            encoder.field(b"index", |encoder| encode_expression(encoder, index));
-            encoder.field(b"operation", |encoder| encode_assign_op(encoder, *op));
-            encoder.field(b"value", |encoder| encode_expression(encoder, value));
-        }),
-        hir::StmtKind::StructFieldAssign {
-            structure,
-            field,
-            op,
-            value,
-        } => encoder.variant(b"struct-field-assign", |encoder| {
-            encoder.field(b"structure", |encoder| local_id(encoder, *structure));
-            encoder.field(b"field", |encoder| encoder.u32(*field));
-            encoder.field(b"operation", |encoder| encode_assign_op(encoder, *op));
-            encoder.field(b"value", |encoder| encode_expression(encoder, value));
-        }),
-        hir::StmtKind::MapAssign {
-            map,
-            key,
-            op,
-            value,
-        } => {
-            encoder.variant(b"map-assign", |encoder| {
-                encoder.field(b"map", |encoder| encode_expression(encoder, map));
-                encoder.field(b"key", |encoder| encode_expression(encoder, key));
-                encoder.field(b"operation", |encoder| encode_assign_op(encoder, *op));
-                encoder.field(b"value", |encoder| encode_expression(encoder, value));
-            });
-        }
     }
 }
 
@@ -440,37 +362,49 @@ fn encode_value_coercion(encoder: &mut Encoder, coercion: &hir::ValueCoercion) {
 }
 
 fn encode_assignment_target(encoder: &mut Encoder, target: &hir::AssignTarget) {
-    match target {
-        hir::AssignTarget::Local(id) => {
+    encoder.field(b"source", |encoder| source_ref(encoder, target.source));
+    encoder.field(b"type", |encoder| {
+        encoder.option(target.ty.as_ref(), ty);
+    });
+    match &target.kind {
+        hir::AssignTargetKind::Local(id) => {
             encoder.variant(b"local", |encoder| local_id(encoder, *id));
         }
-        hir::AssignTarget::Discard => encoder.variant(b"discard", |_| {}),
-        hir::AssignTarget::SliceIndex { slice, index, set } => {
+        hir::AssignTargetKind::Discard => encoder.variant(b"discard", |_| {}),
+        hir::AssignTargetKind::SliceIndex { slice, index, set } => {
             encoder.variant(b"slice-index", |encoder| {
                 encoder.field(b"slice", |encoder| encode_expression(encoder, slice));
                 encoder.field(b"index", |encoder| encode_expression(encoder, index));
                 encoder.field(b"set", |encoder| encode_builtin(encoder, *set));
             });
         }
-        hir::AssignTarget::MapIndex { map, key } => {
+        hir::AssignTargetKind::MapIndex { map, key } => {
             encoder.variant(b"map-index", |encoder| {
                 encoder.field(b"map", |encoder| encode_expression(encoder, map));
                 encoder.field(b"key", |encoder| encode_expression(encoder, key));
             });
         }
-        hir::AssignTarget::Pointer { pointer, set } => {
+        hir::AssignTargetKind::ArrayIndex { array, index } => {
+            encoder.variant(b"array-index", |encoder| {
+                encoder.field(b"array", |encoder| local_id(encoder, *array));
+                encoder.field(b"index", |encoder| encode_expression(encoder, index));
+            });
+        }
+        hir::AssignTargetKind::Pointer { pointer, set } => {
             encoder.variant(b"pointer", |encoder| {
                 encoder.field(b"pointer", |encoder| encode_expression(encoder, pointer));
                 encoder.field(b"set", |encoder| encode_builtin(encoder, *set));
             });
         }
-        hir::AssignTarget::StructField { structure, field } => {
-            encoder.variant(b"struct-field", |encoder| {
+        hir::AssignTargetKind::StructFieldPath { structure, fields } => {
+            encoder.variant(b"struct-field-path", |encoder| {
                 encoder.field(b"structure", |encoder| local_id(encoder, *structure));
-                encoder.field(b"field", |encoder| encoder.u32(*field));
+                encoder.field(b"fields", |encoder| {
+                    encoder.sequence(fields, |encoder, field| encoder.u32(*field));
+                });
             });
         }
-        hir::AssignTarget::PointerStructField {
+        hir::AssignTargetKind::PointerStructField {
             pointer,
             field,
             set,
@@ -479,6 +413,33 @@ fn encode_assignment_target(encoder: &mut Encoder, target: &hir::AssignTarget) {
             encoder.field(b"field", |encoder| encoder.u32(*field));
             encoder.field(b"set", |encoder| encode_builtin(encoder, *set));
         }),
+    }
+}
+
+fn encode_range_bindings(encoder: &mut Encoder, bindings: &hir::RangeBindings) {
+    match bindings {
+        hir::RangeBindings::Declared { key, value } => {
+            encoder.variant(b"declared", |encoder| {
+                encoder.field(b"key", |encoder| {
+                    encoder.option(key.as_ref(), |encoder, place| encode_place(encoder, *place));
+                });
+                encoder.field(b"value", |encoder| {
+                    encoder.option(value.as_ref(), |encoder, place| {
+                        encode_place(encoder, *place)
+                    });
+                });
+            });
+        }
+        hir::RangeBindings::Assigned { targets, coercions } => {
+            encoder.variant(b"assigned", |encoder| {
+                encoder.field(b"targets", |encoder| {
+                    encoder.sequence(targets, encode_assignment_target);
+                });
+                encoder.field(b"coercions", |encoder| {
+                    encoder.sequence(coercions, encode_value_coercion);
+                });
+            });
+        }
     }
 }
 

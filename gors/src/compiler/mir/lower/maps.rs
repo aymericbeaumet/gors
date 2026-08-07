@@ -1,9 +1,6 @@
 //! Explicit-order lowering for concrete map operations.
 
-use super::super::construct::{
-    assignment_binary_op, binary_effects, call_effects, make_rvalue, make_statement,
-    make_terminator,
-};
+use super::super::construct::{call_effects, make_rvalue, make_statement, make_terminator};
 use super::super::{Operand, Place, Provenance, RvalueKind, TerminatorKind};
 use super::FunctionLowerer;
 use crate::compiler::Diagnostic;
@@ -315,86 +312,6 @@ impl FunctionLowerer {
         Ok(Operand::Read(result))
     }
 
-    /// Write a map element, evaluating the map and key operands exactly once.
-    ///
-    /// A compound operation first reads the current element through the same
-    /// operand temporaries (a missing key reads the zero value), applies the
-    /// binary operation, and then performs the single write; writing through a
-    /// nil map keeps the runtime's Go assignment panic.
-    pub(super) fn lower_map_assignment(
-        &mut self,
-        map: &hir::Expr,
-        key: &hir::Expr,
-        op: hir::AssignOp,
-        value: &hir::Expr,
-        source: SourceRef,
-    ) -> Result<(), Diagnostic> {
-        let (get, _) = map_get_contains_builtins(&map.ty).ok_or_else(|| {
-            Diagnostic::backend("map assignment has no concrete runtime representation")
-        })?;
-        let set = map_set_builtin(&map.ty)
-            .ok_or_else(|| Diagnostic::backend("map assignment has no concrete set operation"))?;
-        let Ty::Map(_, element_ty) = map.ty.underlying() else {
-            return Err(Diagnostic::backend(
-                "map assignment reached MIR with a non-map receiver",
-            ));
-        };
-        let element_ty = element_ty.as_ref().clone();
-        let map_operand = self.lower_expr(map)?;
-        let map_operand =
-            self.materialize(map_operand, map.ty.clone(), Provenance::Source(map.source))?;
-        let key_operand = self.lower_expr(key)?;
-        let key_operand =
-            self.materialize(key_operand, key.ty.clone(), Provenance::Source(key.source))?;
-        let assigned = if op == hir::AssignOp::Set {
-            let value_operand = self.lower_expr(value)?;
-            self.materialize(
-                value_operand,
-                value.ty.clone(),
-                Provenance::Source(value.source),
-            )?
-        } else {
-            let provenance = Provenance::Source(source);
-            let old = Place {
-                local: self.new_temp(element_ty.clone()),
-            };
-            self.emit_map_call(
-                get,
-                vec![map_operand.clone(), key_operand.clone()],
-                vec![old],
-                source,
-            )?;
-            let value_operand = self.lower_expr(value)?;
-            let value_operand = self.materialize(
-                value_operand,
-                value.ty.clone(),
-                Provenance::Source(value.source),
-            )?;
-            let result = Place {
-                local: self.new_temp(element_ty.clone()),
-            };
-            let binary_op = assignment_binary_op(op);
-            let binary = make_rvalue(
-                RvalueKind::Binary {
-                    op: binary_op,
-                    left: Operand::Read(old),
-                    right: value_operand,
-                    ty: element_ty.clone(),
-                },
-                binary_effects(binary_op, &element_ty, &value.ty),
-                provenance.clone(),
-            );
-            self.push_statement(make_statement(result, binary, provenance))?;
-            Operand::Read(result)
-        };
-        self.emit_map_call(
-            set,
-            vec![map_operand, key_operand, assigned],
-            Vec::new(),
-            source,
-        )
-    }
-
     pub(super) fn emit_map_call(
         &mut self,
         builtin: hir::Builtin,
@@ -504,10 +421,6 @@ fn map_make_set_builtins(ty: &Ty) -> Option<(hir::Builtin, hir::Builtin)> {
     } else {
         None
     }
-}
-
-pub(super) fn map_set_builtin(ty: &Ty) -> Option<hir::Builtin> {
-    map_make_set_builtins(ty).map(|(_, set)| set)
 }
 
 fn channel_nil_builtin(ty: &Ty) -> Option<hir::Builtin> {

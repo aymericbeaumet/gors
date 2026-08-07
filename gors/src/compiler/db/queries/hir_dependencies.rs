@@ -22,32 +22,31 @@ fn collect_block_callees(block: &hir::Block, callees: &mut BTreeSet<QualifiedDef
 
 fn collect_statement_callees(statement: &hir::Stmt, callees: &mut BTreeSet<QualifiedDefId>) {
     match &statement.kind {
-        hir::StmtKind::Let { values, .. }
-        | hir::StmtKind::Assign { values, .. }
-        | hir::StmtKind::Return(values) => {
+        hir::StmtKind::Let { values, .. } | hir::StmtKind::Return(values) => {
             for value in values {
                 collect_expression_callees(value, callees);
             }
         }
-        hir::StmtKind::LetTuple { value, .. } | hir::StmtKind::AssignTuple { value, .. } => {
+        hir::StmtKind::Assign {
+            destinations,
+            values,
+            ..
+        } => {
+            collect_assignment_target_callees(destinations, callees);
+            for value in values {
+                collect_expression_callees(value, callees);
+            }
+        }
+        hir::StmtKind::LetTuple { value, .. } => {
             collect_expression_callees(value, callees);
         }
-        hir::StmtKind::ParallelAssignTuple {
+        hir::StmtKind::AssignTuple {
             destinations,
             value,
             ..
         } => {
             collect_assignment_target_callees(destinations, callees);
             collect_expression_callees(value, callees);
-        }
-        hir::StmtKind::ParallelAssign {
-            destinations,
-            values,
-        } => {
-            collect_assignment_target_callees(destinations, callees);
-            for value in values {
-                collect_expression_callees(value, callees);
-            }
         }
         hir::StmtKind::Expr(expression) => collect_expression_callees(expression, callees),
         hir::StmtKind::Defer { values, body, .. } | hir::StmtKind::Go { values, body, .. } => {
@@ -55,30 +54,6 @@ fn collect_statement_callees(statement: &hir::Stmt, callees: &mut BTreeSet<Quali
                 collect_expression_callees(value, callees);
             }
             collect_block_callees(body, callees);
-        }
-        hir::StmtKind::SliceAssign {
-            slice,
-            index,
-            value,
-            ..
-        } => {
-            collect_expression_callees(slice, callees);
-            collect_expression_callees(index, callees);
-            collect_expression_callees(value, callees);
-        }
-        hir::StmtKind::ArrayAssign { index, value, .. } => {
-            collect_expression_callees(index, callees);
-            collect_expression_callees(value, callees);
-        }
-        hir::StmtKind::StructFieldAssign { value, .. } => {
-            collect_expression_callees(value, callees);
-        }
-        hir::StmtKind::MapAssign {
-            map, key, value, ..
-        } => {
-            collect_expression_callees(map, callees);
-            collect_expression_callees(key, callees);
-            collect_expression_callees(value, callees);
         }
         hir::StmtKind::If {
             init,
@@ -115,8 +90,14 @@ fn collect_statement_callees(statement: &hir::Stmt, callees: &mut BTreeSet<Quali
             collect_block_callees(body, callees);
         }
         hir::StmtKind::Range {
-            expression, body, ..
+            bindings,
+            expression,
+            body,
+            ..
         } => {
+            if let hir::RangeBindings::Assigned { targets, .. } = bindings {
+                collect_assignment_target_callees(targets, callees);
+            }
             collect_expression_callees(expression, callees);
             collect_block_callees(body, callees);
         }
@@ -138,22 +119,25 @@ fn collect_assignment_target_callees(
     callees: &mut BTreeSet<QualifiedDefId>,
 ) {
     for destination in destinations {
-        match destination {
-            hir::AssignTarget::SliceIndex { slice, index, .. } => {
+        match &destination.kind {
+            hir::AssignTargetKind::SliceIndex { slice, index, .. } => {
                 collect_expression_callees(slice, callees);
                 collect_expression_callees(index, callees);
             }
-            hir::AssignTarget::MapIndex { map, key } => {
+            hir::AssignTargetKind::MapIndex { map, key } => {
                 collect_expression_callees(map, callees);
                 collect_expression_callees(key, callees);
             }
-            hir::AssignTarget::Pointer { pointer, .. }
-            | hir::AssignTarget::PointerStructField { pointer, .. } => {
+            hir::AssignTargetKind::ArrayIndex { index, .. } => {
+                collect_expression_callees(index, callees);
+            }
+            hir::AssignTargetKind::Pointer { pointer, .. }
+            | hir::AssignTargetKind::PointerStructField { pointer, .. } => {
                 collect_expression_callees(pointer, callees);
             }
-            hir::AssignTarget::Local(_)
-            | hir::AssignTarget::Discard
-            | hir::AssignTarget::StructField { .. } => {}
+            hir::AssignTargetKind::Local(_)
+            | hir::AssignTargetKind::Discard
+            | hir::AssignTargetKind::StructFieldPath { .. } => {}
         }
     }
 }

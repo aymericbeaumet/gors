@@ -1,6 +1,7 @@
 //! Definition-demanded name resolution and type checking over owned syntax.
 
 mod arrays;
+mod assignment_targets;
 mod assignments;
 mod call_expressions;
 mod calls;
@@ -10,6 +11,7 @@ mod composites;
 mod constant_ops;
 mod constants;
 mod conversions;
+mod declarations;
 mod expression_lower;
 mod expressions;
 mod function;

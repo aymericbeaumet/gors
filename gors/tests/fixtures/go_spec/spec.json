@@ -890,6 +890,15 @@
           ]
         },
         {
+          "id": "spec-embedding-promotion-depth",
+          "section": "Struct types",
+          "title": "Promotion resolves to the shallowest field across multiple embedding levels for reads and writes",
+          "status": "passing",
+          "fixtures": [
+            "embedding_promotion_depth"
+          ]
+        },
+        {
           "id": "types-pointers",
           "section": "Pointer types",
           "title": "Pointers support nil checks, dereference, and assignment",
@@ -2058,6 +2067,15 @@
           ]
         },
         {
+          "id": "spec-incdec-operand-forms",
+          "section": "IncDec statements",
+          "title": "Increment and decrement support dynamic indexes, maps, pointer indirection, arrays, fields, and wrapping narrow integers",
+          "status": "passing",
+          "fixtures": [
+            "incdec_operand_forms"
+          ]
+        },
+        {
           "id": "stmt-assignments",
           "section": "Assignment statements",
           "title": "Simple, compound, and multi-value assignments execute",
@@ -2082,6 +2100,15 @@
           "status": "passing",
           "fixtures": [
             "assignment_evaluation_order"
+          ]
+        },
+        {
+          "id": "spec-range-clause-assignment-form",
+          "section": "Assignment statements",
+          "title": "Range assignment prepares non-identifier targets on every iteration before writing generated key and element values",
+          "status": "passing",
+          "fixtures": [
+            "range_clause_assignment_form"
           ]
         },
         {

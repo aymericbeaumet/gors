@@ -18,10 +18,7 @@ mod structs;
 #[cfg(test)]
 mod test_file;
 
-use super::construct::{
-    assignment_binary_op, binary_effects, call_effects, make_rvalue, make_statement,
-    make_terminator,
-};
+use super::construct::{make_rvalue, make_statement, make_terminator};
 use super::labels::{collect_labels, statement_declares_label};
 use super::{
     BasicBlock, Function, LocalDecl, Operand, Place, Provenance, RvalueKind, Statement,
@@ -356,170 +353,21 @@ impl FunctionLowerer {
                 destinations,
                 value,
                 coercions,
-            } => self.lower_tuple_assignment(destinations, value, coercions, false)?,
-            hir::StmtKind::ParallelAssignTuple {
-                destinations,
-                value,
-                coercions,
-            } => self.lower_parallel_tuple_assignment(
+            } => self.lower_target_tuple_assignment(
                 destinations,
                 value,
                 coercions,
                 statement.source,
             )?,
-            hir::StmtKind::ParallelAssign {
-                destinations,
-                values,
-            } => self.lower_parallel_assignment(destinations, values, statement.source)?,
             hir::StmtKind::Let {
                 destinations,
                 values,
             } => self.lower_local_assignments(destinations, values, statement.source, true)?,
             hir::StmtKind::Assign {
                 destinations,
-                op: hir::AssignOp::Set,
-                values,
-            } => self.lower_local_assignments(destinations, values, statement.source, false)?,
-            hir::StmtKind::Assign {
-                destinations,
                 op,
                 values,
-            } => {
-                let [hir::Place::Local(destination)] = destinations.as_slice() else {
-                    return Err(Diagnostic::backend(
-                        "compound assignment must have one local destination",
-                    ));
-                };
-                let [value] = values.as_slice() else {
-                    return Err(Diagnostic::backend(
-                        "compound assignment must have one operand",
-                    ));
-                };
-                self.lower_compound_local_assignment(*destination, *op, value, statement.source)?;
-            }
-            hir::StmtKind::SliceAssign {
-                slice,
-                index,
-                set,
-                op,
-                value,
-            } => {
-                let provenance = Provenance::Source(statement.source);
-                let element_ty = slices::element_type(&slice.ty)?;
-                let slice_operand = self.lower_expr(slice)?;
-                let slice_operand = self.materialize(
-                    slice_operand,
-                    slice.ty.clone(),
-                    Provenance::Source(slice.source),
-                )?;
-                let index_operand = self.lower_expr(index)?;
-                let index_operand = self.materialize(
-                    index_operand,
-                    index.ty.clone(),
-                    Provenance::Source(index.source),
-                )?;
-
-                let assigned = if *op == hir::AssignOp::Set {
-                    let value_operand = self.lower_expr(value)?;
-                    self.materialize(
-                        value_operand,
-                        value.ty.clone(),
-                        Provenance::Source(value.source),
-                    )?
-                } else {
-                    let get = match set {
-                        hir::Builtin::SliceI64Set => hir::Builtin::SliceI64Index,
-                        hir::Builtin::SliceU8Set => hir::Builtin::SliceU8Index,
-                        hir::Builtin::SliceBoolSet => hir::Builtin::SliceBoolIndex,
-                        hir::Builtin::SliceGoStringSet => hir::Builtin::SliceGoStringIndex,
-                        _ => {
-                            return Err(Diagnostic::backend(
-                                "slice assignment selected a non-slice runtime operation",
-                            ));
-                        }
-                    };
-                    let old = Place {
-                        local: self.new_temp(element_ty.clone()),
-                    };
-                    let after_index = self.new_block(provenance.clone());
-                    self.terminate(make_terminator(
-                        TerminatorKind::Call {
-                            callee: hir::Callee::Builtin(get),
-                            args: vec![slice_operand.clone(), index_operand.clone()],
-                            destinations: vec![old],
-                            target: after_index,
-                        },
-                        call_effects(),
-                        provenance.clone(),
-                    ))?;
-                    self.current = after_index;
-                    let value_operand = self.lower_expr(value)?;
-                    let value_operand = self.materialize(
-                        value_operand,
-                        value.ty.clone(),
-                        Provenance::Source(value.source),
-                    )?;
-                    let result = Place {
-                        local: self.new_temp(element_ty.clone()),
-                    };
-                    let binary_op = assignment_binary_op(*op);
-                    let binary = make_rvalue(
-                        RvalueKind::Binary {
-                            op: binary_op,
-                            left: Operand::Read(old),
-                            right: value_operand,
-                            ty: element_ty.clone(),
-                        },
-                        binary_effects(binary_op, &element_ty, &value.ty),
-                        provenance.clone(),
-                    );
-                    self.push_statement(make_statement(result, binary, provenance.clone()))?;
-                    Operand::Read(result)
-                };
-
-                let after_set = self.new_block(provenance.clone());
-                self.terminate(make_terminator(
-                    TerminatorKind::Call {
-                        callee: hir::Callee::Builtin(*set),
-                        args: vec![slice_operand, index_operand, assigned],
-                        destinations: Vec::new(),
-                        target: after_set,
-                    },
-                    call_effects(),
-                    provenance,
-                ))?;
-                self.current = after_set;
-            }
-            hir::StmtKind::ArrayAssign {
-                array,
-                index,
-                op,
-                value,
-            } => {
-                self.lower_array_assignment_stmt(*array, index, *op, value, statement.source)?;
-            }
-            hir::StmtKind::StructFieldAssign {
-                structure,
-                field,
-                op,
-                value,
-            } => {
-                self.lower_struct_field_assignment_stmt(
-                    *structure,
-                    *field,
-                    *op,
-                    value,
-                    statement.source,
-                )?;
-            }
-            hir::StmtKind::MapAssign {
-                map,
-                key,
-                op,
-                value,
-            } => {
-                self.lower_map_assignment(map, key, *op, value, statement.source)?;
-            }
+            } => self.lower_target_assignment(destinations, *op, values, statement.source)?,
             hir::StmtKind::Expr(expr) => {
                 let _ = self.lower_expr(expr)?;
             }
@@ -685,14 +533,12 @@ impl FunctionLowerer {
             }
             hir::StmtKind::Range {
                 label,
-                key,
-                value,
+                bindings,
                 expression,
                 body,
             } => self.lower_range(
                 label.as_deref(),
-                *key,
-                *value,
+                bindings,
                 expression,
                 body,
                 statement.source,

@@ -265,19 +265,27 @@ fn explicit_nil_conversion_rejects_non_nilable_types() {
 }
 
 #[test]
-fn byte_slice_compound_writes_remain_rejected_until_uint8_wrapping_is_explicit() {
-    let errors = compile_file(
-        "main.go",
-        "package main\nfunc main() { b := make([]byte, 1); b[0] += 1 }\n",
-    )
-    .err()
-    .expect("compound byte-slice writes must be rejected");
-    assert!(
-        errors.iter().any(|error| error
-            .message
-            .contains("compound []byte assignment requires uint8 wrapping semantics")),
-        "{errors:?}"
+fn byte_slice_compound_writes_use_explicit_uint8_wrapping() {
+    let run = compile_and_run(
+        r#"
+            package main
+            func main() {
+                bytes := []byte{255}
+                calls := 0
+                index := func() int { calls++; return 0 }
+                bytes[index()] += 2
+                bytes[0]--
+                if calls != 1 || bytes[0] != 0 {
+                    panic("byte-slice wrapping assignment changed")
+                }
+                println("byte-slice-compound: ok")
+            }
+        "#,
     );
+
+    assert_eq!(run.stderr, b"byte-slice-compound: ok\n");
+    assert!(run.rust.contains("go_slice_u8_index"), "{}", run.rust);
+    assert!(run.rust.contains("go_slice_u8_set"), "{}", run.rust);
 }
 
 #[test]

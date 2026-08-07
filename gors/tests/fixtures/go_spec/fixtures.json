@@ -1,5 +1,5 @@
 {
-  "expectedProgramCount": 171,
+  "expectedProgramCount": 174,
   "fixtures": {
     "_negative/composite_literal_duplicate_index": {
       "status": "compile_error",

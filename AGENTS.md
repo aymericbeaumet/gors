@@ -518,6 +518,16 @@ coercion in result order, and packs only the variadic remainder. A nonempty
 bound result count; an empty remainder is nil.
 Multi-valued package-variable initialization remains rejected until the
 package initializer model represents tuple-producing execution.
+Every assignment to existing storage, including compound assignment,
+increment/decrement, and range `=`, carries a typed, `SourceRef`-provenanced
+HIR `AssignTarget`. MIR uses one prepare/read/write lifecycle: all dynamic
+target operands are prepared exactly once in source order, compound targets
+are read before their RHS, and writes occur left to right. Range targets are
+prepared anew on every admitted iteration, and range `=` retains and applies
+one explicit `ValueCoercion` per generated iteration value before its write.
+Nested local struct paths rebuild the value from leaf to root with explicit
+`StructSet` operations; the emitter must never reconstruct or repair an
+assignment path.
 Address-taking of a non-nested integer local is explicit HIR intent. MIR plans
 one shared pointer-backed storage cell for each such local, initializes
 parameters and declarations at their Go sequence points, and routes subsequent

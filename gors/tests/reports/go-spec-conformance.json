@@ -12,10 +12,10 @@
   "summary": {
     "groupCount": 15,
     "passingGroupCount": 15,
-    "caseCount": 330,
-    "passingCaseCount": 330,
+    "caseCount": 333,
+    "passingCaseCount": 333,
     "unsupportedCaseCount": 0,
-    "fixtureCount": 176
+    "fixtureCount": 179
   },
   "groups": [
     {
@@ -1214,6 +1214,7 @@
         "channel_direction_conversions",
         "channel_type_associativity",
         "const_string_len_array",
+        "embedding_promotion_depth",
         "map_lookup_and_nil",
         "named_numeric_types",
         "nil_slice_semantics",
@@ -1228,10 +1229,10 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 50,
-        "passingCaseCount": 50,
+        "caseCount": 51,
+        "passingCaseCount": 51,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 29
+        "fixtureCount": 30
       },
       "cases": [
         {
@@ -1487,6 +1488,20 @@
           ],
           "freshFixtures": [
             "types"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-embedding-promotion-depth",
+          "title": "Promotion resolves to the shallowest field across multiple embedding levels for reads and writes",
+          "subtitle": "Struct types",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "embedding_promotion_depth"
+          ],
+          "freshFixtures": [
+            "embedding_promotion_depth"
           ],
           "reason": ""
         },
@@ -3264,9 +3279,11 @@
         "for_iteration_variables",
         "goto_backward_redeclare",
         "if_init_scope_and_else",
+        "incdec_operand_forms",
         "labeled_empty_statements",
         "map_delete_during_range",
         "op_assign_evaluate_once",
+        "range_clause_assignment_form",
         "range_statements",
         "return_statements",
         "select_statements",
@@ -3280,10 +3297,10 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 55,
-        "passingCaseCount": 55,
+        "caseCount": 57,
+        "passingCaseCount": 57,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 23
+        "fixtureCount": 25
       },
       "cases": [
         {
@@ -3393,6 +3410,20 @@
           "reason": ""
         },
         {
+          "id": "spec-incdec-operand-forms",
+          "title": "Increment and decrement support dynamic indexes, maps, pointer indirection, arrays, fields, and wrapping narrow integers",
+          "subtitle": "IncDec statements",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "incdec_operand_forms"
+          ],
+          "freshFixtures": [
+            "incdec_operand_forms"
+          ],
+          "reason": ""
+        },
+        {
           "id": "stmt-assignments",
           "title": "Simple, compound, and multi-value assignments execute",
           "subtitle": "Assignment statements",
@@ -3431,6 +3462,20 @@
           ],
           "freshFixtures": [
             "assignment_evaluation_order"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-range-clause-assignment-form",
+          "title": "Range assignment prepares non-identifier targets on every iteration before writing generated key and element values",
+          "subtitle": "Assignment statements",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "range_clause_assignment_form"
+          ],
+          "freshFixtures": [
+            "range_clause_assignment_form"
           ],
           "reason": ""
         },

@@ -10,7 +10,6 @@ use crate::compiler::ids::NodeId;
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{ExprSyntax, ExprSyntaxKind};
 use crate::compiler::types::{IntTy, Ty};
-use crate::token::Token;
 
 pub(super) fn int_pointer_ty() -> Ty {
     Ty::Pointer(Box::new(Ty::Int(IntTy::Int)))
@@ -287,65 +286,6 @@ impl FunctionLowerer {
             coerce_expr(&mut result, expected, source)?;
         }
         Ok(result)
-    }
-
-    pub(super) fn try_lower_pointer_assignment(
-        &mut self,
-        left: &[ExprSyntax],
-        token: Token,
-        right: &[ExprSyntax],
-        source: SourceRef,
-    ) -> Option<Result<hir::StmtKind, Diagnostic>> {
-        let (
-            [
-                ExprSyntax {
-                    kind:
-                        ExprSyntaxKind::Unary {
-                            token: Token::MUL,
-                            expression: pointer,
-                        },
-                    ..
-                },
-            ],
-            [value],
-        ) = (left, right)
-        else {
-            return None;
-        };
-        Some((|| {
-            if token != Token::ASSIGN {
-                return Err(Diagnostic::unsupported(
-                    "pointer assignment currently requires =",
-                    source,
-                ));
-            }
-            let pointer = self.lower_expr(pointer, None)?;
-            let Ty::Pointer(element) = pointer.ty.underlying() else {
-                return Err(Diagnostic::semantic(
-                    "indirect assignment requires a pointer",
-                    source,
-                ));
-            };
-            if element.underlying() != &Ty::Int(IntTy::Int) {
-                return Err(Diagnostic::unsupported(
-                    "pointer assignment currently supports *int",
-                    source,
-                ));
-            }
-            let value = self.lower_expr(value, Some(element))?;
-            let effects = pointer_effects(&[&pointer, &value], true, false, true);
-            Ok(hir::StmtKind::Expr(hir::Expr {
-                node: pointer.node,
-                kind: hir::ExprKind::Call {
-                    callee: hir::Callee::Builtin(hir::Builtin::PointerI64Set),
-                    args: vec![pointer, value],
-                },
-                ty: Ty::Unit,
-                category: hir::ValueCategory::Value,
-                effects,
-                source,
-            }))
-        })())
     }
 
     pub(super) fn lower_nil_comparison(

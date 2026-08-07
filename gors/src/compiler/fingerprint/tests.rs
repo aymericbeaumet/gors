@@ -178,6 +178,86 @@ fn forwarded_call_binding_fields_participate_in_hir_fingerprints() {
 }
 
 #[test]
+fn assignment_target_type_source_and_struct_path_participate_in_hir_fingerprints() {
+    let (original, _, _) = lower_stages(
+        "package main\ntype inner struct { value int }\ntype outer struct { inner }\nfunc main() { record := outer{}; record.value = 2 }\n",
+    );
+    let original_fingerprint = hir_function(hir_named(&original, "main"));
+    let mutate = |mut file: hir::File, mutation: fn(&mut hir::AssignTarget)| {
+        let function = file
+            .functions
+            .iter_mut()
+            .find(|function| function.name == "main")
+            .unwrap();
+        let target = function
+            .body
+            .stmts
+            .iter_mut()
+            .find_map(|statement| match &mut statement.kind {
+                hir::StmtKind::Assign { destinations, .. } => destinations.first_mut(),
+                _ => None,
+            })
+            .expect("assignment target");
+        mutation(target);
+        hir_function(function)
+    };
+
+    assert_ne!(
+        original_fingerprint,
+        mutate(original.clone(), |target| target.ty = Some(Ty::Bool))
+    );
+    assert_ne!(
+        original_fingerprint,
+        mutate(original.clone(), |target| {
+            target.source = SourceRef::definition(target.source.owner())
+        })
+    );
+    assert_ne!(
+        original_fingerprint,
+        mutate(original, |target| {
+            let hir::AssignTargetKind::StructFieldPath { fields, .. } = &mut target.kind else {
+                panic!("expected struct field target")
+            };
+            fields.reverse();
+            fields.push(7);
+        })
+    );
+}
+
+#[test]
+fn range_assignment_coercions_participate_in_hir_fingerprints() {
+    let (original, _, _) = lower_stages(
+        "package main\nfunc main() { values := []int{1}; var key any; var value any; for key, value = range values { break } }\n",
+    );
+    let original_fingerprint = hir_function(hir_named(&original, "main"));
+    let mut changed = original;
+    let function = changed
+        .functions
+        .iter_mut()
+        .find(|function| function.name == "main")
+        .unwrap();
+    let coercions = function
+        .body
+        .stmts
+        .iter_mut()
+        .find_map(|statement| match &mut statement.kind {
+            hir::StmtKind::Range {
+                bindings: hir::RangeBindings::Assigned { coercions, .. },
+                ..
+            } => Some(coercions),
+            _ => None,
+        })
+        .expect("assigned range coercions");
+    assert!(matches!(
+        coercions.first(),
+        Some(hir::ValueCoercion::Interface { .. })
+    ));
+    *coercions.first_mut().expect("range value coercion") = hir::ValueCoercion::Identity;
+
+    assert_ne!(original_fingerprint, hir_function(function));
+}
+
+#[test]
 fn rust_ir_fingerprints_distinguish_clone_and_move_read_plans() {
     let (_, _, rust_ir) =
         lower_stages("package main\nfunc twice(value string) { print(value); print(value) }\n");
