@@ -8,7 +8,7 @@ use crate::compiler::hir;
 use crate::compiler::ids::NodeId;
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{ExprSyntax, ExprSyntaxKind};
-use crate::compiler::types::{FloatTy, IntTy, Ty, UintTy, UntypedTy};
+use crate::compiler::types::{IntTy, Ty, UintTy, UntypedTy};
 
 pub(super) fn is_predeclared_conversion_name(name: &str) -> bool {
     matches!(
@@ -30,6 +30,7 @@ pub(super) fn is_predeclared_conversion_name(name: &str) -> bool {
             | "rune"
             | "float32"
             | "float64"
+            | "complex64"
             | "complex128"
             | "any"
     )
@@ -183,7 +184,7 @@ impl FunctionLowerer {
             argument
         } else if argument.ty.underlying() == target.underlying()
             || is_integer_conversion(&argument.ty, &target)
-            || is_float_conversion(&argument.ty, &target)
+            || is_numeric_conversion(&argument.ty, &target)
         {
             let effects = argument.effects;
             hir::Expr {
@@ -260,12 +261,12 @@ fn is_integer_conversion(from: &Ty, to: &Ty) -> bool {
     )
 }
 
-fn is_float_conversion(from: &Ty, to: &Ty) -> bool {
+fn is_numeric_conversion(from: &Ty, to: &Ty) -> bool {
     matches!(
         (from.underlying(), to.underlying()),
         (
-            Ty::Float(FloatTy::Float32 | FloatTy::Float64),
-            Ty::Float(FloatTy::Float32 | FloatTy::Float64)
-        )
+            Ty::Int(_) | Ty::Uint(_) | Ty::Float(_),
+            Ty::Int(_) | Ty::Uint(_) | Ty::Float(_)
+        ) | (Ty::Complex(_), Ty::Complex(_))
     )
 }

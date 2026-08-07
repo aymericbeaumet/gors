@@ -264,9 +264,12 @@ fn float_interface_and_print_builtins_select_exact_runtime_operations() {
             func main() {
                 var left any = 1.5
                 var right any = 2.5
+                var narrow any = float32(0.5)
                 _ = left == right
                 value, _ := left.(float64)
+                narrowValue, _ := narrow.(float32)
                 println(value)
+                println(narrowValue)
             }
         "#,
     );
@@ -284,9 +287,12 @@ fn float_interface_and_print_builtins_select_exact_runtime_operations() {
 
     for expected in [
         RuntimeOp::GoInterfaceBoxF64,
+        RuntimeOp::GoInterfaceBoxF32,
         RuntimeOp::GoInterfaceEqual,
         RuntimeOp::GoInterfaceUnboxF64,
+        RuntimeOp::GoInterfaceUnboxF32,
         RuntimeOp::PrintF64,
+        RuntimeOp::PrintF32,
     ] {
         assert!(operations.contains(&expected), "{operations:?}");
     }

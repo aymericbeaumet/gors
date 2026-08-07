@@ -71,7 +71,19 @@ fn current_operation_catalogs_are_complete_and_collision_free() {
     assert_eq!(RuntimeOp::PrintF32.id().get(), 222);
     assert_eq!(RuntimeOp::try_from(222), Ok(RuntimeOp::PrintF32));
     assert_eq!(RuntimeOp::PrintF32.symbol(), "print_f32");
-    assert_eq!(RuntimeOp::ALL.len(), 217);
+    assert_eq!(RuntimeOp::GoInterfaceBoxF32.id().get(), 223);
+    assert_eq!(RuntimeOp::try_from(223), Ok(RuntimeOp::GoInterfaceBoxF32));
+    assert_eq!(
+        RuntimeOp::GoInterfaceBoxF32.symbol(),
+        "go_interface_box_f32"
+    );
+    assert_eq!(RuntimeOp::GoInterfaceUnboxF32.id().get(), 224);
+    assert_eq!(RuntimeOp::try_from(224), Ok(RuntimeOp::GoInterfaceUnboxF32));
+    assert_eq!(
+        RuntimeOp::GoInterfaceUnboxF32.symbol(),
+        "go_interface_unbox_f32"
+    );
+    assert_eq!(RuntimeOp::ALL.len(), 219);
 
     let integer_ids = [
         [172, 173, 174, 8, 175, 176, 177, 178],

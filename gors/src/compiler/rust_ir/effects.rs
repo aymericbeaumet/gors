@@ -200,8 +200,8 @@ fn operand_effects(operand: &Operand) -> Effects {
         Operand::Constant(
             Constant::Bool(_)
             | Constant::Integer { .. }
-            | Constant::F64(_)
-            | Constant::Complex128 { .. }
+            | Constant::Float { .. }
+            | Constant::Complex { .. }
             | Constant::StaticIntegerArray { .. },
         )
         | Operand::Unit => Effects::default(),

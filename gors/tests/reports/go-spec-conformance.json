@@ -12,10 +12,10 @@
   "summary": {
     "groupCount": 15,
     "passingGroupCount": 15,
-    "caseCount": 343,
-    "passingCaseCount": 343,
+    "caseCount": 344,
+    "passingCaseCount": 344,
     "unsupportedCaseCount": 0,
-    "fixtureCount": 189
+    "fixtureCount": 191
   },
   "groups": [
     {
@@ -1230,6 +1230,7 @@
         "channel_type_associativity",
         "const_string_len_array",
         "embedding_promotion_depth",
+        "float32_precision",
         "map_lookup_and_nil",
         "named_numeric_types",
         "nil_slice_semantics",
@@ -1245,10 +1246,10 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 52,
-        "passingCaseCount": 52,
+        "caseCount": 53,
+        "passingCaseCount": 53,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 31
+        "fixtureCount": 32
       },
       "cases": [
         {
@@ -1304,6 +1305,20 @@
           ],
           "freshFixtures": [
             "types"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-float32-precision",
+          "title": "float32 operations round operands and results at binary32 precision while explicit widening preserves the rounded value",
+          "subtitle": "Numeric types",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "float32_precision"
+          ],
+          "freshFixtures": [
+            "float32_precision"
           ],
           "reason": ""
         },
@@ -2623,6 +2638,7 @@
         "map_reference_and_nil_write",
         "method_expressions",
         "method_value_receiver_capture",
+        "numeric_conversion_semantics",
         "operator_precedence_vs_c",
         "receive_expression_contexts",
         "shift_count_and_width_semantics",
@@ -2639,7 +2655,7 @@
         "caseCount": 47,
         "passingCaseCount": 47,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 31
+        "fixtureCount": 32
       },
       "cases": [
         {
@@ -3215,10 +3231,12 @@
           "kind": "spec-test",
           "status": "passing",
           "fixtures": [
-            "expressions"
+            "expressions",
+            "numeric_conversion_semantics"
           ],
           "freshFixtures": [
-            "expressions"
+            "expressions",
+            "numeric_conversion_semantics"
           ],
           "reason": ""
         },

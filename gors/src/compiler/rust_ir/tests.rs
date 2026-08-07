@@ -2,6 +2,7 @@ use super::effects::panic_edge;
 use super::*;
 
 mod append;
+mod float;
 mod integer;
 mod maps;
 mod pointers;

@@ -2,7 +2,7 @@
 
 use crate::compiler::ids::{BasicBlockId, DefId, LocalId, PackageId, QualifiedDefId};
 use crate::compiler::provenance::SourceRef;
-use gors_runtime_abi::{IntegerKind, PrimitiveOp, RuntimeOp};
+use gors_runtime_abi::{FloatKind, IntegerKind, PrimitiveOp, RuntimeOp};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct File {
@@ -291,14 +291,43 @@ pub enum ReadOp {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Constant {
     Bool(bool),
-    Integer { kind: IntegerKind, bits: i64 },
-    F64(u64),
-    Complex128 { real: u64, imag: u64 },
-    StaticIntegerArray { kind: IntegerKind, values: Vec<i64> },
-    RuntimeStaticBytes { op: RuntimeOp, bytes: Vec<u8> },
-    RuntimeStaticI64s { op: RuntimeOp, values: Vec<i64> },
-    RuntimeStaticBools { op: RuntimeOp, values: Vec<bool> },
-    RuntimeStaticU8s { op: RuntimeOp, values: Vec<u8> },
+    Integer {
+        kind: IntegerKind,
+        bits: i64,
+    },
+    /// One physical `f64` carrier with its exact Go floating-point width.
+    /// `F32` values contain the widened bits of an already-rounded `f32`.
+    Float {
+        kind: FloatKind,
+        bits: u64,
+    },
+    /// One physical `[f64; 2]` carrier with exact Go component width.
+    /// `F32` components contain widened already-rounded `f32` values.
+    Complex {
+        kind: FloatKind,
+        real: u64,
+        imag: u64,
+    },
+    StaticIntegerArray {
+        kind: IntegerKind,
+        values: Vec<i64>,
+    },
+    RuntimeStaticBytes {
+        op: RuntimeOp,
+        bytes: Vec<u8>,
+    },
+    RuntimeStaticI64s {
+        op: RuntimeOp,
+        values: Vec<i64>,
+    },
+    RuntimeStaticBools {
+        op: RuntimeOp,
+        values: Vec<bool>,
+    },
+    RuntimeStaticU8s {
+        op: RuntimeOp,
+        values: Vec<u8>,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -340,8 +369,10 @@ pub enum RustType {
     /// One `i64` Rust carrier with an explicit canonical Go integer
     /// interpretation selected during mandatory representation lowering.
     Integer(IntegerKind),
-    F64,
-    Complex128,
+    /// One physical `f64` carrier retaining the exact Go width.
+    Float(FloatKind),
+    /// One physical `[f64; 2]` carrier retaining the exact component width.
+    Complex(FloatKind),
     GoString,
     GoSliceI64,
     GoSliceU8,
@@ -362,7 +393,10 @@ pub enum RustType {
         element: IntegerKind,
     },
     ArrayBool(u64),
-    ArrayF64(u64),
+    ArrayFloat {
+        length: u64,
+        element: FloatKind,
+    },
     ArrayGoString(u64),
     ArrayGoPointerStructI64(u64),
     /// A zero-length Go array whose element needs no executable Rust
@@ -378,7 +412,7 @@ impl RustType {
         match self {
             Self::ArrayBool(length) => Some((*length, Self::Bool)),
             Self::ArrayInteger { length, element } => Some((*length, Self::Integer(*element))),
-            Self::ArrayF64(length) => Some((*length, Self::F64)),
+            Self::ArrayFloat { length, element } => Some((*length, Self::Float(*element))),
             Self::ArrayGoString(length) => Some((*length, Self::GoString)),
             Self::ArrayGoPointerStructI64(length) => Some((*length, Self::GoPointerStructI64)),
             _ => None,
@@ -394,10 +428,10 @@ impl RustType {
             Self::Struct(_) => Some(ReadOp::ProvenInitializedClone),
             Self::Bool
             | Self::Integer(_)
-            | Self::F64
-            | Self::Complex128
+            | Self::Float(_)
+            | Self::Complex(_)
             | Self::ArrayBool(_)
-            | Self::ArrayF64(_)
+            | Self::ArrayFloat { .. }
             | Self::ArrayInteger { .. }
             | Self::ZeroArray
             | Self::StructI64(_) => Some(ReadOp::ProvenInitializedCopy),
@@ -431,10 +465,10 @@ impl RustType {
             Self::Struct(_) => Some(ReadOp::ProvenLastUseMove),
             Self::Bool
             | Self::Integer(_)
-            | Self::F64
-            | Self::Complex128
+            | Self::Float(_)
+            | Self::Complex(_)
             | Self::ArrayBool(_)
-            | Self::ArrayF64(_)
+            | Self::ArrayFloat { .. }
             | Self::ArrayInteger { .. }
             | Self::ZeroArray
             | Self::StructI64(_) => Some(ReadOp::ProvenInitializedCopy),
@@ -491,10 +525,10 @@ impl RustType {
             ),
             Self::Bool
             | Self::Integer(_)
-            | Self::F64
-            | Self::Complex128
+            | Self::Float(_)
+            | Self::Complex(_)
             | Self::ArrayBool(_)
-            | Self::ArrayF64(_)
+            | Self::ArrayFloat { .. }
             | Self::ArrayInteger { .. }
             | Self::ZeroArray
             | Self::StructI64(_) => op == ReadOp::ProvenInitializedCopy,
@@ -530,10 +564,10 @@ impl RustType {
             self,
             Self::Bool
                 | Self::Integer(_)
-                | Self::F64
-                | Self::Complex128
+                | Self::Float(_)
+                | Self::Complex(_)
                 | Self::ArrayBool(_)
-                | Self::ArrayF64(_)
+                | Self::ArrayFloat { .. }
                 | Self::ArrayInteger { .. }
                 | Self::ZeroArray
                 | Self::StructI64(_)

@@ -28,6 +28,7 @@ pub(super) fn predeclared_constant_type(name: &str) -> Option<Ty> {
         "uintptr" => Ty::Uint(UintTy::Uintptr),
         "float32" => Ty::Float(FloatTy::Float32),
         "float64" => Ty::Float(FloatTy::Float64),
+        "complex64" => Ty::Complex(crate::compiler::types::ComplexTy::Complex64),
         "complex128" => Ty::Complex(crate::compiler::types::ComplexTy::Complex128),
         "uint8" | "byte" => Ty::Uint(UintTy::Uint8),
         _ => return None,
@@ -338,13 +339,6 @@ pub(in crate::compiler) fn lower_type_with_constant_lookup(
     match ident.name.as_ref() {
         "any" => Ok(Ty::Interface(Vec::new())),
         "error" => Ok(interfaces::error_interface_ty()),
-        "complex64" => Err(Diagnostic::unsupported(
-            format!(
-                "executable support for type {} is not yet available",
-                ident.name
-            ),
-            source,
-        )),
         other => Err(Diagnostic::unsupported(
             format!("type {other} is not yet supported"),
             source,

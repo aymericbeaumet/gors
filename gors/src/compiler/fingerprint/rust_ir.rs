@@ -420,11 +420,15 @@ fn encode_constant(encoder: &mut Encoder, constant: &rust_ir::Constant) {
                 encoder.field(b"bits", |encoder| encoder.i64(*bits));
             });
         }
-        rust_ir::Constant::F64(bits) => {
-            encoder.variant(b"f64-bits", |encoder| encoder.u64(*bits));
+        rust_ir::Constant::Float { kind, bits } => {
+            encoder.variant(b"float-bits", |encoder| {
+                encoder.field(b"kind", |encoder| encode_float_kind(encoder, *kind));
+                encoder.field(b"bits", |encoder| encoder.u64(*bits));
+            });
         }
-        rust_ir::Constant::Complex128 { real, imag } => {
-            encoder.variant(b"complex128-bits", |encoder| {
+        rust_ir::Constant::Complex { kind, real, imag } => {
+            encoder.variant(b"complex-bits", |encoder| {
+                encoder.field(b"kind", |encoder| encode_float_kind(encoder, *kind));
                 encoder.field(b"real", |encoder| encoder.u64(*real));
                 encoder.field(b"imag", |encoder| encoder.u64(*imag));
             });
@@ -567,6 +571,16 @@ fn encode_integer_kind(encoder: &mut Encoder, kind: gors_runtime_abi::IntegerKin
     );
 }
 
+fn encode_float_kind(encoder: &mut Encoder, kind: gors_runtime_abi::FloatKind) {
+    encoder.variant(
+        match kind {
+            gors_runtime_abi::FloatKind::F32 => b"f32",
+            gors_runtime_abi::FloatKind::F64 => b"f64",
+        },
+        |_| {},
+    );
+}
+
 fn encode_type(encoder: &mut Encoder, ty: &rust_ir::RustType) {
     match ty {
         rust_ir::RustType::Unit => encoder.variant(b"unit", |_| {}),
@@ -574,8 +588,12 @@ fn encode_type(encoder: &mut Encoder, ty: &rust_ir::RustType) {
         rust_ir::RustType::Integer(kind) => {
             encoder.variant(b"integer", |encoder| encode_integer_kind(encoder, *kind));
         }
-        rust_ir::RustType::F64 => encoder.variant(b"f64", |_| {}),
-        rust_ir::RustType::Complex128 => encoder.variant(b"complex128", |_| {}),
+        rust_ir::RustType::Float(kind) => {
+            encoder.variant(b"float", |encoder| encode_float_kind(encoder, *kind));
+        }
+        rust_ir::RustType::Complex(kind) => {
+            encoder.variant(b"complex", |encoder| encode_float_kind(encoder, *kind));
+        }
         rust_ir::RustType::GoString => encoder.variant(b"go-string", |_| {}),
         rust_ir::RustType::GoSliceI64 => encoder.variant(b"go-slice-i64", |_| {}),
         rust_ir::RustType::GoSliceU8 => encoder.variant(b"go-slice-u8", |_| {}),
@@ -610,8 +628,11 @@ fn encode_type(encoder: &mut Encoder, ty: &rust_ir::RustType) {
         rust_ir::RustType::ArrayBool(length) => {
             encoder.variant(b"array-bool", |encoder| encoder.u64(*length));
         }
-        rust_ir::RustType::ArrayF64(length) => {
-            encoder.variant(b"array-f64", |encoder| encoder.u64(*length));
+        rust_ir::RustType::ArrayFloat { length, element } => {
+            encoder.variant(b"array-float", |encoder| {
+                encoder.field(b"length", |encoder| encoder.u64(*length));
+                encoder.field(b"element", |encoder| encode_float_kind(encoder, *element));
+            });
         }
         rust_ir::RustType::ArrayGoString(length) => {
             encoder.variant(b"array-go-string", |encoder| encoder.u64(*length));

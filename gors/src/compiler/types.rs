@@ -418,7 +418,7 @@ impl Ty {
                 | Self::Int(_)
                 | Self::Uint(_)
                 | Self::Float(_)
-                | Self::Complex(ComplexTy::Complex128)
+                | Self::Complex(_)
                 | Self::String
         )
     }

@@ -153,6 +153,47 @@ fn runtime_int32_wrapping_lowering_is_incrementally_reused() {
 }
 
 #[test]
+fn float32_body_edits_invalidate_only_the_owning_numeric_root() {
+    let program = |increment: &str| {
+        raw_program(
+            "main.go",
+            "/checkout/main.go",
+            &format!(
+                "package main\nfunc changed(value float32) float32 {{ return value + {increment} }}\nfunc stable(value float64) float64 {{ return value + 1 }}\nfunc main() {{ println(changed(1), stable(1)) }}\n"
+            ),
+        )
+    };
+    let mut session = CompilerSession::default();
+    session
+        .compile_program(program("1"))
+        .expect("initial float-width program must compile");
+    let scheduled = session.scheduler_telemetry().scheduled_roots;
+    session.database().reset_telemetry();
+
+    let changed = program("2");
+    session
+        .compile_program(changed.clone())
+        .expect("edited float32 root must compile");
+
+    assert_eq!(session.scheduler_telemetry().scheduled_roots, scheduled + 1);
+    let telemetry = session.database().telemetry();
+    for kind in [
+        crate::compiler::db::QueryKind::TypedHir,
+        crate::compiler::db::QueryKind::VerifiedGoMir,
+        crate::compiler::db::QueryKind::NormalizedGoMir,
+        crate::compiler::db::QueryKind::VerifiedRustIr,
+    ] {
+        assert_eq!(telemetry.executions(kind), 1, "{kind:?}");
+    }
+
+    session.database().reset_telemetry();
+    session
+        .compile_program(changed)
+        .expect("unchanged float32 revision must remain green");
+    assert_eq!(session.database().telemetry().total_executions(), 0);
+}
+
+#[test]
 fn goto_scope_diagnostic_is_incrementally_reused() {
     let program = raw_program(
         "main.go",

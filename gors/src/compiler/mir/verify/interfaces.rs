@@ -2,13 +2,14 @@
 
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
-use crate::compiler::types::{IntTy, Ty};
+use crate::compiler::types::{FloatTy, IntTy, Ty};
 
 pub(super) fn is_interface_builtin(builtin: hir::Builtin) -> bool {
     matches!(
         builtin,
         hir::Builtin::InterfaceNil
             | hir::Builtin::InterfaceBoxBool
+            | hir::Builtin::InterfaceBoxF32
             | hir::Builtin::InterfaceBoxF64
             | hir::Builtin::InterfaceBoxI64
             | hir::Builtin::InterfaceBoxGoString
@@ -23,6 +24,7 @@ pub(super) fn is_interface_builtin(builtin: hir::Builtin) -> bool {
             | hir::Builtin::InterfaceIsType
             | hir::Builtin::InterfaceIsRuntimeError
             | hir::Builtin::InterfaceUnboxBool
+            | hir::Builtin::InterfaceUnboxF32
             | hir::Builtin::InterfaceUnboxF64
             | hir::Builtin::InterfaceUnboxI64
             | hir::Builtin::InterfaceUnboxGoString
@@ -52,8 +54,11 @@ pub(super) fn verify_interface_call(
         hir::Builtin::InterfaceBoxBool => {
             verify_box(arguments, destinations, |ty| ty.underlying() == &Ty::Bool)
         }
+        hir::Builtin::InterfaceBoxF32 => verify_box(arguments, destinations, |ty| {
+            ty.underlying() == &Ty::Float(FloatTy::Float32)
+        }),
         hir::Builtin::InterfaceBoxF64 => verify_box(arguments, destinations, |ty| {
-            matches!(ty.underlying(), Ty::Float(_))
+            ty.underlying() == &Ty::Float(FloatTy::Float64)
         }),
         hir::Builtin::InterfaceBoxI64 => {
             verify_box(arguments, destinations, is_i64_interface_scalar)
@@ -103,11 +108,17 @@ pub(super) fn verify_interface_call(
             |ty| ty.underlying() == &Ty::Bool,
             "interface bool extraction",
         ),
+        hir::Builtin::InterfaceUnboxF32 => verify_unbox(
+            arguments,
+            destinations,
+            |ty| ty.underlying() == &Ty::Float(FloatTy::Float32),
+            "interface float32 extraction",
+        ),
         hir::Builtin::InterfaceUnboxF64 => verify_unbox(
             arguments,
             destinations,
-            |ty| matches!(ty.underlying(), Ty::Float(_)),
-            "interface float extraction",
+            |ty| ty.underlying() == &Ty::Float(FloatTy::Float64),
+            "interface float64 extraction",
         ),
         hir::Builtin::InterfaceUnboxI64 => verify_unbox(
             arguments,

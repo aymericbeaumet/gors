@@ -2,7 +2,7 @@
 
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
-use crate::compiler::types::{FloatTy, IntTy, Ty, UintTy};
+use crate::compiler::types::{IntTy, Ty, UintTy};
 
 pub(super) fn verify_array_literal(values: &[i64]) -> Result<(Ty, hir::Effects), Diagnostic> {
     let length = u64::try_from(values.len())
@@ -68,11 +68,7 @@ pub(super) fn verify_array_set(
 fn is_scalar_element(ty: &Ty) -> bool {
     matches!(
         ty.underlying(),
-        Ty::Bool
-            | Ty::Int(IntTy::Int)
-            | Ty::Uint(UintTy::Uint8)
-            | Ty::Float(FloatTy::Float64)
-            | Ty::String
+        Ty::Bool | Ty::Int(IntTy::Int) | Ty::Uint(UintTy::Uint8) | Ty::Float(_) | Ty::String
     ) || ty.bootstrap_i64_struct_pointer_fields().is_some()
 }
 

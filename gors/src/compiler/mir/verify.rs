@@ -22,7 +22,7 @@ use super::{
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::{BasicBlockId, LocalId, QualifiedDefId};
-use crate::compiler::types::{ComplexTy, FloatTy, IntTy, Signature, Ty, UintTy};
+use crate::compiler::types::{ComplexTy, IntTy, Signature, Ty, UintTy};
 use arrays::{
     verify_array_index, verify_array_literal, verify_array_set, verify_scalar_array_literal,
 };
@@ -313,8 +313,7 @@ impl Function {
                             && operand_ty == *ty
                     }
                     hir::UnaryOp::Real | hir::UnaryOp::Imag => {
-                        operand_ty.underlying() == &Ty::Complex(ComplexTy::Complex128)
-                            && *ty == Ty::Float(FloatTy::Float64)
+                        matches!(operand_ty.underlying(), Ty::Complex(kind) if *ty == Ty::Float(kind.component_type()))
                     }
                 };
                 if !valid {
@@ -614,6 +613,7 @@ impl Function {
                                 }
                                 hir::Builtin::InterfaceNil
                                 | hir::Builtin::InterfaceBoxBool
+                                | hir::Builtin::InterfaceBoxF32
                                 | hir::Builtin::InterfaceBoxF64
                                 | hir::Builtin::InterfaceBoxI64
                                 | hir::Builtin::InterfaceBoxGoString
@@ -631,6 +631,7 @@ impl Function {
                                 | hir::Builtin::InterfaceSatisfiesRuntimeError
                                 | hir::Builtin::InterfaceSatisfiesNonNil
                                 | hir::Builtin::InterfaceUnboxBool
+                                | hir::Builtin::InterfaceUnboxF32
                                 | hir::Builtin::InterfaceUnboxF64
                                 | hir::Builtin::InterfaceUnboxI64
                                 | hir::Builtin::InterfaceUnboxGoString

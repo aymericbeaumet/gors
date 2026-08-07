@@ -179,4 +179,8 @@ pub enum RuntimeOp {
     GoInterfaceUnboxPointerI64,
     /// Print a canonical float32 carried physically as `f64`.
     PrintF32,
+    /// Box an exact Go float32 carried physically as `f64`.
+    GoInterfaceBoxF32,
+    /// Unbox an exact Go float32 into its physical `f64` carrier.
+    GoInterfaceUnboxF32,
 }

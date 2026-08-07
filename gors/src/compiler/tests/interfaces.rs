@@ -41,6 +41,7 @@ fn float32_conversions_round_before_interface_boxing() {
     let run = compile_and_run(
         r#"
             package main
+            type Narrow float32
             func main() {
                 wide := 16777217.0
                 narrow := float32(wide)
@@ -49,14 +50,18 @@ fn float32_conversions_round_before_interface_boxing() {
                 }
                 var boxed any = narrow
                 extracted, ok := boxed.(float32)
-                println(ok, float64(extracted))
+                var named any = Narrow(narrow)
+                namedExtracted, namedOK := named.(Narrow)
+                println(ok, float64(extracted), namedOK, float64(namedExtracted))
             }
         "#,
     );
 
-    assert_eq!(run.stderr, b"true 1.6777216e+07\n");
+    assert_eq!(run.stderr, b"true 1.6777216e+07 true 1.6777216e+07\n");
     assert!(run.rust.contains("as f32"), "{}", run.rust);
     assert!(run.rust.contains("builtin:float32"), "{}", run.rust);
+    assert!(run.rust.contains("go_interface_box_f32"), "{}", run.rust);
+    assert!(run.rust.contains("go_interface_unbox_f32"), "{}", run.rust);
 }
 
 #[test]

@@ -253,23 +253,17 @@ pub(super) fn validate_binary_operator(
             ty,
             Ty::Int(_)
                 | Ty::Uint(_)
-                | Ty::Float(FloatTy::Float64)
+                | Ty::Float(_)
                 | Ty::Complex(ComplexTy::Complex128)
                 | Ty::String
         ),
         hir::BinaryOp::Sub | hir::BinaryOp::Mul => matches!(
             ty,
-            Ty::Int(_)
-                | Ty::Uint(_)
-                | Ty::Float(FloatTy::Float64)
-                | Ty::Complex(ComplexTy::Complex128)
+            Ty::Int(_) | Ty::Uint(_) | Ty::Float(_) | Ty::Complex(ComplexTy::Complex128)
         ),
         hir::BinaryOp::Div => matches!(
             ty,
-            Ty::Int(_)
-                | Ty::Uint(_)
-                | Ty::Float(FloatTy::Float64)
-                | Ty::Complex(ComplexTy::Complex128)
+            Ty::Int(_) | Ty::Uint(_) | Ty::Float(_) | Ty::Complex(ComplexTy::Complex128)
         ),
         hir::BinaryOp::Min | hir::BinaryOp::Max => {
             matches!(ty, Ty::Int(_) | Ty::Uint(_) | Ty::Float(_))

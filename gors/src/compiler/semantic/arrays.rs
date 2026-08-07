@@ -10,7 +10,7 @@ use crate::compiler::hir;
 use crate::compiler::ids::NodeId;
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{ExprSyntax, ExprSyntaxKind, SyntaxSource};
-use crate::compiler::types::{ConstValue, FloatTy, IntTy, Ty};
+use crate::compiler::types::{ConstValue, IntTy, Ty};
 
 const MAX_BOOTSTRAP_ARRAY_LENGTH: u64 = 1_048_576;
 
@@ -357,7 +357,7 @@ pub(super) fn is_scalar_array_element(ty: &Ty) -> bool {
         Ty::Bool
             | Ty::Int(IntTy::Int)
             | Ty::Uint(crate::compiler::types::UintTy::Uint8)
-            | Ty::Float(FloatTy::Float64)
+            | Ty::Float(_)
             | Ty::String
     )
 }

@@ -177,6 +177,8 @@ impl RuntimeOp {
             Self::GoInterfaceBoxPointerI64 => "go_interface_box_pointer_i64",
             Self::GoInterfaceUnboxPointerI64 => "go_interface_unbox_pointer_i64",
             Self::PrintF32 => "print_f32",
+            Self::GoInterfaceBoxF32 => "go_interface_box_f32",
+            Self::GoInterfaceUnboxF32 => "go_interface_unbox_f32",
         }
     }
 }

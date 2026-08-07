@@ -211,7 +211,10 @@ with canonical `f32` components. Legacy float64 primitive IDs, names,
 signatures, and encodings are immutable, and new width-specific members are
 append-only. `PrintF32` accepts the physical `f64` carrier, narrows it, and then
 uses Go's float32 shortest-round-trip formatting; it must never reuse float64
-formatting directly.
+formatting directly. Float interface values use distinct append-only
+`GoInterfaceBoxF32` and `GoInterfaceUnboxF32` runtime operations (IDs 223 and
+224), never the legacy float64 members. Contract 2.31.0 has canonical identity
+`e885c47239d38dd2942e64f40df07e6a1d4bda18c5e57f7fd9740cd6b547e351`.
 
 Verification derives each function's canonical `RuntimeRequirement` from its
 explicit operations and constants. Verified function products retain that set,

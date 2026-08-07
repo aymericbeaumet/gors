@@ -515,7 +515,7 @@ fn verifier_rejects_invalid_float_interface_runtime_calls() {
         (hir::Builtin::InterfaceEqual, "interface equality"),
         (
             hir::Builtin::InterfaceUnboxF64,
-            "interface float extraction",
+            "interface float64 extraction",
         ),
     ] {
         let mut file = lower(source);

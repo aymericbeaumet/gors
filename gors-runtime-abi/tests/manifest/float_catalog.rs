@@ -1,9 +1,36 @@
 use gors_runtime_abi::{
     CURRENT_MANIFEST_SCHEMA, ContractVersion, DataWidth, FloatKind, FloatPrimitive,
-    GoSemanticModel, IntegerKind, IntegerPrimitive, PrimitiveOp, RuntimeAbiManifest, RuntimeType,
+    GoSemanticModel, IntegerKind, IntegerPrimitive, PrimitiveOp, RuntimeAbiManifest, RuntimeOp,
+    RuntimeType,
 };
 
 const LEGACY_PRIMITIVE_COUNT: usize = 233;
+
+#[test]
+fn float32_interface_operations_are_exact_append_only_members() {
+    for (operation, id, symbol, parameters, result) in [
+        (
+            RuntimeOp::GoInterfaceBoxF32,
+            223,
+            "go_interface_box_f32",
+            &[RuntimeType::GoString, RuntimeType::F64][..],
+            RuntimeType::GoInterface,
+        ),
+        (
+            RuntimeOp::GoInterfaceUnboxF32,
+            224,
+            "go_interface_unbox_f32",
+            &[RuntimeType::GoInterface, RuntimeType::GoString][..],
+            RuntimeType::F64,
+        ),
+    ] {
+        assert_eq!(operation.id().get(), id);
+        assert_eq!(operation.symbol(), symbol);
+        assert_eq!(operation.signature().parameters(), parameters);
+        assert_eq!(operation.signature().result(), result);
+        assert_eq!(RuntimeOp::try_from(id), Ok(operation));
+    }
+}
 
 #[test]
 fn legacy_primitive_catalog_keeps_its_exact_order_and_canonical_bytes() {

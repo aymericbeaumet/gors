@@ -22,10 +22,7 @@ pub(super) fn verify_constant_type(value: &ConstValue, ty: &Ty) -> Result<(), Di
             | (ConstValue::Int(_), Ty::Int(_))
             | (ConstValue::Int(_), Ty::Uint(_))
             | (ConstValue::Float(_), Ty::Float(_))
-            | (
-                ConstValue::Complex { .. },
-                Ty::Complex(ComplexTy::Complex128)
-            )
+            | (ConstValue::Complex { .. }, Ty::Complex(_))
             | (ConstValue::String(_), Ty::String)
     );
     let canonical = value.normalized_for(ty) == *value;
@@ -68,6 +65,12 @@ pub(super) fn same_mir_representation(left: &Ty, right: &Ty) -> bool {
             (left.underlying(), right.underlying()),
             (Ty::Float(_), Ty::Float(_))
         )
+        || matches!(
+            (left.underlying(), right.underlying()),
+            (Ty::Int(_) | Ty::Uint(_), Ty::Float(_))
+                | (Ty::Float(_), Ty::Int(_) | Ty::Uint(_))
+                | (Ty::Complex(_), Ty::Complex(_))
+        )
 }
 
 pub(super) fn verify_binary_types(
@@ -87,7 +90,7 @@ pub(super) fn verify_binary_types(
                     underlying,
                     Ty::Int(_)
                         | Ty::Uint(_)
-                        | Ty::Float(FloatTy::Float64)
+                        | Ty::Float(_)
                         | Ty::Complex(ComplexTy::Complex128)
                         | Ty::String
                 )
@@ -97,10 +100,7 @@ pub(super) fn verify_binary_types(
                 && same_result
                 && matches!(
                     underlying,
-                    Ty::Int(_)
-                        | Ty::Uint(_)
-                        | Ty::Float(FloatTy::Float64)
-                        | Ty::Complex(ComplexTy::Complex128)
+                    Ty::Int(_) | Ty::Uint(_) | Ty::Float(_) | Ty::Complex(ComplexTy::Complex128)
                 )
         }
         hir::BinaryOp::Div => {
@@ -108,10 +108,7 @@ pub(super) fn verify_binary_types(
                 && same_result
                 && matches!(
                     underlying,
-                    Ty::Int(_)
-                        | Ty::Uint(_)
-                        | Ty::Float(FloatTy::Float64)
-                        | Ty::Complex(ComplexTy::Complex128)
+                    Ty::Int(_) | Ty::Uint(_) | Ty::Float(_) | Ty::Complex(ComplexTy::Complex128)
                 )
         }
         hir::BinaryOp::Min | hir::BinaryOp::Max => {

@@ -185,6 +185,8 @@ impl RuntimeOp {
             Self::GoSliceI64AppendSlice => 220,
             Self::GoSliceInterfaceAppend => 221,
             Self::PrintF32 => 222,
+            Self::GoInterfaceBoxF32 => 223,
+            Self::GoInterfaceUnboxF32 => 224,
         })
     }
 }

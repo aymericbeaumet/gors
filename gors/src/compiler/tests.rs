@@ -15,6 +15,7 @@ mod integer_runtime;
 mod interfaces;
 mod local_types;
 mod maps;
+mod numeric;
 mod pipeline;
 mod pointer_interfaces;
 mod pointers;

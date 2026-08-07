@@ -771,6 +771,15 @@
           ]
         },
         {
+          "id": "spec-float32-precision",
+          "section": "Numeric types",
+          "title": "float32 operations round operands and results at binary32 precision while explicit widening preserves the rounded value",
+          "status": "passing",
+          "fixtures": [
+            "float32_precision"
+          ]
+        },
+        {
           "id": "types-named-numeric-operators",
           "section": "Numeric types",
           "title": "Named numeric types support arithmetic, comparisons, and conversions",
@@ -1964,7 +1973,8 @@
           "title": "Conversions handle numeric, string, byte-slice, and rune-slice cases",
           "status": "passing",
           "fixtures": [
-            "expressions"
+            "expressions",
+            "numeric_conversion_semantics"
           ]
         },
         {

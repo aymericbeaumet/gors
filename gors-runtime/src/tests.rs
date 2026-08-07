@@ -376,6 +376,33 @@ fn float_interfaces_preserve_ieee_equality_and_checked_extraction() {
         })
         .is_err()
     );
+
+    let float32_type = go_string_from_static(b"builtin:float32");
+    let rounded = f64::from(0.1_f32);
+    let boxed32 = go_interface_box_f32(float32_type.clone(), 0.1_f64);
+    assert_eq!(
+        go_interface_unbox_f32(boxed32.clone(), float32_type.clone()).to_bits(),
+        rounded.to_bits()
+    );
+    assert!(go_interface_equal(
+        boxed32.clone(),
+        go_interface_box_f32(float32_type.clone(), rounded)
+    ));
+    assert!(
+        std::panic::catch_unwind(|| {
+            let _ = go_interface_unbox_f64(boxed32, float32_type.clone());
+        })
+        .is_err()
+    );
+    assert!(
+        std::panic::catch_unwind(|| {
+            let _ = go_interface_unbox_f32(
+                go_interface_box_f64(float32_type.clone(), rounded),
+                float32_type,
+            );
+        })
+        .is_err()
+    );
 }
 
 #[test]

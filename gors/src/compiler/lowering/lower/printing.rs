@@ -6,7 +6,7 @@ use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::mir;
 use crate::compiler::rust_ir as out;
-use gors_runtime_abi::RuntimeOp;
+use gors_runtime_abi::{FloatKind, RuntimeOp};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn lower_print_call(
@@ -40,14 +40,15 @@ pub(super) fn lower_print_call(
     while let Some((argument, ty)) = arguments.next() {
         let operation = match ty {
             out::RustType::Bool => RuntimeOp::PrintBool,
-            out::RustType::F64 => RuntimeOp::PrintF64,
+            out::RustType::Float(FloatKind::F32) => RuntimeOp::PrintF32,
+            out::RustType::Float(FloatKind::F64) => RuntimeOp::PrintF64,
             out::RustType::Integer(kind) if kind.is_signed() => RuntimeOp::PrintI64,
             out::RustType::Integer(_) => RuntimeOp::PrintU64,
             out::RustType::GoString => RuntimeOp::PrintGoString,
-            out::RustType::Complex128
+            out::RustType::Complex(_)
             | out::RustType::ArrayInteger { .. }
             | out::RustType::ArrayBool(_)
-            | out::RustType::ArrayF64(_)
+            | out::RustType::ArrayFloat { .. }
             | out::RustType::ArrayGoString(_)
             | out::RustType::ArrayGoPointerStructI64(_)
             | out::RustType::ZeroArray

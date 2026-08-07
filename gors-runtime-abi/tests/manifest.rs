@@ -126,11 +126,11 @@ fn current_contract_identity_is_sha256_of_canonical_bytes() {
 
     assert_eq!(manifest.schema().get(), 2);
     assert_eq!(manifest.contract(), CURRENT_CONTRACT_VERSION);
-    assert_eq!(manifest.contract(), ContractVersion::new(2, 30, 0));
+    assert_eq!(manifest.contract(), ContractVersion::new(2, 31, 0));
     assert_eq!(manifest.identity().as_bytes(), &expected);
     assert_eq!(
         manifest.identity().to_string(),
-        "85424e7ac8e35369577757236ae84a43453773209ab51a076c1ff94122cddb2d",
+        "e885c47239d38dd2942e64f40df07e6a1d4bda18c5e57f7fd9740cd6b547e351",
         "the canonical runtime contract changed; review the ABI diff and bump its semantic version before accepting a new identity",
     );
 }
@@ -239,6 +239,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoInterfaceNil
             | RuntimeOp::GoInterfaceBoxBool
             | RuntimeOp::GoInterfaceBoxI64
+            | RuntimeOp::GoInterfaceBoxF32
             | RuntimeOp::GoInterfaceBoxF64
             | RuntimeOp::GoInterfaceBoxGoString
             | RuntimeOp::GoInterfaceBoxPointerI64
@@ -249,6 +250,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoInterfaceIsType
             | RuntimeOp::GoInterfaceUnboxBool
             | RuntimeOp::GoInterfaceUnboxI64
+            | RuntimeOp::GoInterfaceUnboxF32
             | RuntimeOp::GoInterfaceUnboxF64
             | RuntimeOp::GoInterfaceUnboxGoString
             | RuntimeOp::GoInterfaceStructI64Get
@@ -384,6 +386,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoInterfaceNil
             | RuntimeOp::GoInterfaceBoxBool
             | RuntimeOp::GoInterfaceBoxI64
+            | RuntimeOp::GoInterfaceBoxF32
             | RuntimeOp::GoInterfaceBoxF64
             | RuntimeOp::GoInterfaceBoxGoString
             | RuntimeOp::GoInterfaceBoxStructI64
@@ -395,6 +398,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoInterfaceIsType
             | RuntimeOp::GoInterfaceUnboxBool
             | RuntimeOp::GoInterfaceUnboxI64
+            | RuntimeOp::GoInterfaceUnboxF32
             | RuntimeOp::GoInterfaceUnboxF64
             | RuntimeOp::GoInterfaceUnboxGoString
             | RuntimeOp::GoInterfaceStructI64Get
@@ -525,6 +529,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoInterfaceNil
             | RuntimeOp::GoInterfaceBoxBool
             | RuntimeOp::GoInterfaceBoxI64
+            | RuntimeOp::GoInterfaceBoxF32
             | RuntimeOp::GoInterfaceBoxF64
             | RuntimeOp::GoInterfaceBoxGoString
             | RuntimeOp::GoInterfaceBoxStructI64
@@ -536,6 +541,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoInterfaceIsType
             | RuntimeOp::GoInterfaceUnboxBool
             | RuntimeOp::GoInterfaceUnboxI64
+            | RuntimeOp::GoInterfaceUnboxF32
             | RuntimeOp::GoInterfaceUnboxF64
             | RuntimeOp::GoInterfaceUnboxGoString
             | RuntimeOp::GoInterfaceStructI64Get
@@ -612,6 +618,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             ],
             RuntimeOp::GoInterfaceUnboxBool
             | RuntimeOp::GoInterfaceUnboxI64
+            | RuntimeOp::GoInterfaceUnboxF32
             | RuntimeOp::GoInterfaceUnboxF64
             | RuntimeOp::GoInterfaceUnboxGoString
             | RuntimeOp::GoInterfaceUnboxPointerI64
@@ -706,6 +713,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoInterfaceNil
             | RuntimeOp::GoInterfaceBoxBool
             | RuntimeOp::GoInterfaceBoxI64
+            | RuntimeOp::GoInterfaceBoxF32
             | RuntimeOp::GoInterfaceBoxF64
             | RuntimeOp::GoInterfaceBoxGoString
             | RuntimeOp::GoInterfaceBoxStructI64

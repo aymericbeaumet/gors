@@ -14,7 +14,7 @@ use crate::compiler::types::{
 };
 
 const FORMAT_MAGIC: &[u8] = b"gors-stage-product";
-const SCHEMA_VERSION: u32 = 6;
+const SCHEMA_VERSION: u32 = 7;
 
 /// An encoder for one root product or one length-delimited nested field.
 pub(super) struct Encoder {

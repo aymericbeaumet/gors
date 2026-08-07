@@ -3,7 +3,28 @@
 use crate::compiler::Diagnostic;
 use crate::compiler::rust_ir::RustType;
 use crate::compiler::types::{ComplexTy, FloatTy, IntTy, Ty, UintTy};
-use gors_runtime_abi::IntegerKind;
+use gors_runtime_abi::{FloatKind, IntegerKind};
+
+pub(super) const fn float_kind(ty: FloatTy) -> FloatKind {
+    match ty {
+        FloatTy::Float32 => FloatKind::F32,
+        FloatTy::Float64 => FloatKind::F64,
+    }
+}
+
+pub(super) const fn complex_kind(ty: ComplexTy) -> FloatKind {
+    match ty {
+        ComplexTy::Complex64 => FloatKind::F32,
+        ComplexTy::Complex128 => FloatKind::F64,
+    }
+}
+
+fn float_kind_for_ty(ty: &Ty) -> Option<FloatKind> {
+    match ty.underlying() {
+        Ty::Float(ty) => Some(float_kind(*ty)),
+        _ => None,
+    }
+}
 
 pub(super) fn integer_kind(ty: &Ty) -> Option<IntegerKind> {
     Some(match ty.underlying() {
@@ -27,8 +48,8 @@ pub(super) fn lower_type(ty: &Ty) -> Result<RustType, Diagnostic> {
         Ty::Int(_) | Ty::Uint(_) => integer_kind(&ty)
             .map(RustType::Integer)
             .ok_or_else(|| Diagnostic::backend(format!("unsupported Go integer type: {ty:?}"))),
-        Ty::Float(FloatTy::Float32 | FloatTy::Float64) => Ok(RustType::F64),
-        Ty::Complex(ComplexTy::Complex128) => Ok(RustType::Complex128),
+        Ty::Float(kind) => Ok(RustType::Float(float_kind(*kind))),
+        Ty::Complex(kind) => Ok(RustType::Complex(complex_kind(*kind))),
         Ty::String => Ok(RustType::GoString),
         Ty::Interface(_) => Ok(RustType::GoInterface),
         Ty::Function(_) => Ok(RustType::GoInterface),
@@ -100,8 +121,13 @@ pub(super) fn lower_type(ty: &Ty) -> Result<RustType, Diagnostic> {
         Ty::Array(length, element) if element.underlying() == &Ty::Bool => {
             Ok(RustType::ArrayBool(*length))
         }
-        Ty::Array(length, element) if element.underlying() == &Ty::Float(FloatTy::Float64) => {
-            Ok(RustType::ArrayF64(*length))
+        Ty::Array(length, element) if float_kind_for_ty(element).is_some() => {
+            Ok(RustType::ArrayFloat {
+                length: *length,
+                element: float_kind_for_ty(element).ok_or_else(|| {
+                    Diagnostic::backend("missing floating-point array element representation")
+                })?,
+            })
         }
         Ty::Array(length, element) if element.underlying() == &Ty::String => {
             Ok(RustType::ArrayGoString(*length))

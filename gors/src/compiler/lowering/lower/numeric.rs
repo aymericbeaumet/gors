@@ -1,9 +1,11 @@
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
-use crate::compiler::lowering::type_lowering::integer_kind;
+use crate::compiler::lowering::type_lowering::{complex_kind, float_kind, integer_kind};
 use crate::compiler::rust_ir as out;
 use crate::compiler::types::{ConstValue, FloatTy, Ty};
-use gors_runtime_abi::{IntegerPrimitive, IntegerRuntimeOp, PrimitiveOp, RuntimeOp};
+use gors_runtime_abi::{
+    FloatKind, FloatPrimitive, IntegerPrimitive, IntegerRuntimeOp, PrimitiveOp, RuntimeOp,
+};
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 
@@ -39,14 +41,18 @@ pub(super) fn lower_constant(value: ConstValue, ty: &Ty) -> Result<out::Constant
         (value @ (ConstValue::Float(_) | ConstValue::Int(_)), Ty::Float(float_ty)) => value
             .ieee_bits_for(*float_ty)
             .and_then(|bits| lower_float_bits(bits, *float_ty))
-            .map(out::Constant::F64)
+            .map(|bits| out::Constant::Float {
+                kind: float_kind(*float_ty),
+                bits,
+            })
             .ok_or_else(|| {
                 Diagnostic::backend(format!("invalid canonical Go float constant: {value:?}"))
             }),
         (value @ (ConstValue::Int(_) | ConstValue::Float(_)), Ty::Complex(complex_ty)) => value
             .ieee_bits_for(complex_ty.component_type())
             .and_then(|bits| lower_float_bits(bits, complex_ty.component_type()))
-            .map(|real| out::Constant::Complex128 {
+            .map(|real| out::Constant::Complex {
+                kind: complex_kind(*complex_ty),
                 real,
                 imag: 0.0_f64.to_bits(),
             })
@@ -63,7 +69,11 @@ pub(super) fn lower_constant(value: ConstValue, ty: &Ty) -> Result<out::Constant
                 .ieee_bits_for(component_ty)
                 .and_then(|bits| lower_float_bits(bits, component_ty))
                 .ok_or_else(|| Diagnostic::backend("invalid imaginary complex128 component"))?;
-            Ok(out::Constant::Complex128 { real, imag })
+            Ok(out::Constant::Complex {
+                kind: complex_kind(*complex_ty),
+                real,
+                imag,
+            })
         }
         (value, ty) => Err(Diagnostic::backend(format!(
             "invalid constant reached Rust lowering: {value:?} as {ty:?}"
@@ -94,8 +104,16 @@ pub(super) fn lower_unary_op(
             out::RustType::Integer(operand),
             out::RustType::Integer(result),
         ) if operand == result => None,
-        (hir::UnaryOp::Positive, out::RustType::F64, out::RustType::F64)
-        | (hir::UnaryOp::Positive, out::RustType::Complex128, out::RustType::Complex128) => None,
+        (hir::UnaryOp::Positive, out::RustType::Float(operand), out::RustType::Float(result))
+            if operand == result =>
+        {
+            None
+        }
+        (
+            hir::UnaryOp::Positive,
+            out::RustType::Complex(operand),
+            out::RustType::Complex(result),
+        ) if operand == result => None,
         (
             hir::UnaryOp::Negative,
             out::RustType::Integer(operand),
@@ -104,12 +122,19 @@ pub(super) fn lower_unary_op(
             op: IntegerPrimitive::WrappingNeg,
             kind: result,
         })),
-        (hir::UnaryOp::Negative, out::RustType::F64, out::RustType::F64) => {
-            Some(out::ValueOp::Primitive(PrimitiveOp::FloatNeg))
+        (hir::UnaryOp::Negative, out::RustType::Float(operand), out::RustType::Float(result))
+            if operand == result =>
+        {
+            Some(out::ValueOp::Primitive(PrimitiveOp::float(
+                FloatPrimitive::Neg,
+                result,
+            )))
         }
-        (hir::UnaryOp::Negative, out::RustType::Complex128, out::RustType::Complex128) => {
-            Some(out::ValueOp::Primitive(PrimitiveOp::ComplexNeg))
-        }
+        (
+            hir::UnaryOp::Negative,
+            out::RustType::Complex(FloatKind::F64),
+            out::RustType::Complex(FloatKind::F64),
+        ) => Some(out::ValueOp::Primitive(PrimitiveOp::ComplexNeg)),
         (hir::UnaryOp::Not, out::RustType::Bool, out::RustType::Bool) => {
             Some(out::ValueOp::Primitive(PrimitiveOp::BoolNot))
         }
@@ -121,11 +146,15 @@ pub(super) fn lower_unary_op(
                 kind: result,
             }))
         }
-        (hir::UnaryOp::Real, out::RustType::Complex128, out::RustType::F64) => {
-            Some(out::ValueOp::Primitive(PrimitiveOp::ComplexReal))
+        (hir::UnaryOp::Real, out::RustType::Complex(operand), out::RustType::Float(result))
+            if operand == result =>
+        {
+            Some(out::ValueOp::Primitive(PrimitiveOp::complex_real(result)))
         }
-        (hir::UnaryOp::Imag, out::RustType::Complex128, out::RustType::F64) => {
-            Some(out::ValueOp::Primitive(PrimitiveOp::ComplexImag))
+        (hir::UnaryOp::Imag, out::RustType::Complex(operand), out::RustType::Float(result))
+            if operand == result =>
+        {
+            Some(out::ValueOp::Primitive(PrimitiveOp::complex_imag(result)))
         }
         invalid => {
             return Err(Diagnostic::backend(format!(
@@ -144,7 +173,7 @@ pub(super) fn lower_binary_op(
     result: out::RustType,
 ) -> Result<out::ValueOp, Diagnostic> {
     use hir::BinaryOp as Go;
-    use out::RustType::{Bool, Complex128, F64, GoString, Integer};
+    use out::RustType::{Bool, Complex, Float, GoString, Integer};
     use out::ValueOp::{Primitive, Runtime};
     let integer_op = |op, kind| Primitive(PrimitiveOp::Integer { op, kind });
     let lowered = match (op, left, right, result) {
@@ -249,25 +278,63 @@ pub(super) fn lower_binary_op(
         {
             integer_op(IntegerPrimitive::Max, result)
         }
-        (Go::Add, F64, F64, F64) => Primitive(PrimitiveOp::FloatAdd),
-        (Go::Sub, F64, F64, F64) => Primitive(PrimitiveOp::FloatSub),
-        (Go::Mul, F64, F64, F64) => Primitive(PrimitiveOp::FloatMul),
-        (Go::Div, F64, F64, F64) => Primitive(PrimitiveOp::FloatDiv),
-        (Go::Equal, F64, F64, Bool) => Primitive(PrimitiveOp::FloatEqual),
-        (Go::NotEqual, F64, F64, Bool) => Primitive(PrimitiveOp::FloatNotEqual),
-        (Go::Less, F64, F64, Bool) => Primitive(PrimitiveOp::FloatLess),
-        (Go::LessEqual, F64, F64, Bool) => Primitive(PrimitiveOp::FloatLessEqual),
-        (Go::Greater, F64, F64, Bool) => Primitive(PrimitiveOp::FloatGreater),
-        (Go::GreaterEqual, F64, F64, Bool) => Primitive(PrimitiveOp::FloatGreaterEqual),
-        (Go::Min, F64, F64, F64) => Primitive(PrimitiveOp::FloatMin),
-        (Go::Max, F64, F64, F64) => Primitive(PrimitiveOp::FloatMax),
-        (Go::Complex, F64, F64, Complex128) => Primitive(PrimitiveOp::ComplexFromParts),
-        (Go::Add, Complex128, Complex128, Complex128) => Primitive(PrimitiveOp::ComplexAdd),
-        (Go::Sub, Complex128, Complex128, Complex128) => Primitive(PrimitiveOp::ComplexSub),
-        (Go::Mul, Complex128, Complex128, Complex128) => Primitive(PrimitiveOp::ComplexMul),
-        (Go::Div, Complex128, Complex128, Complex128) => Primitive(PrimitiveOp::ComplexDiv),
-        (Go::Equal, Complex128, Complex128, Bool) => Primitive(PrimitiveOp::ComplexEqual),
-        (Go::NotEqual, Complex128, Complex128, Bool) => Primitive(PrimitiveOp::ComplexNotEqual),
+        (Go::Add, Float(left), Float(right), Float(result)) if left == right && left == result => {
+            Primitive(PrimitiveOp::float(FloatPrimitive::Add, result))
+        }
+        (Go::Sub, Float(left), Float(right), Float(result)) if left == right && left == result => {
+            Primitive(PrimitiveOp::float(FloatPrimitive::Sub, result))
+        }
+        (Go::Mul, Float(left), Float(right), Float(result)) if left == right && left == result => {
+            Primitive(PrimitiveOp::float(FloatPrimitive::Mul, result))
+        }
+        (Go::Div, Float(left), Float(right), Float(result)) if left == right && left == result => {
+            Primitive(PrimitiveOp::float(FloatPrimitive::Div, result))
+        }
+        (Go::Equal, Float(left), Float(right), Bool) if left == right => {
+            Primitive(PrimitiveOp::float(FloatPrimitive::Equal, left))
+        }
+        (Go::NotEqual, Float(left), Float(right), Bool) if left == right => {
+            Primitive(PrimitiveOp::float(FloatPrimitive::NotEqual, left))
+        }
+        (Go::Less, Float(left), Float(right), Bool) if left == right => {
+            Primitive(PrimitiveOp::float(FloatPrimitive::Less, left))
+        }
+        (Go::LessEqual, Float(left), Float(right), Bool) if left == right => {
+            Primitive(PrimitiveOp::float(FloatPrimitive::LessEqual, left))
+        }
+        (Go::Greater, Float(left), Float(right), Bool) if left == right => {
+            Primitive(PrimitiveOp::float(FloatPrimitive::Greater, left))
+        }
+        (Go::GreaterEqual, Float(left), Float(right), Bool) if left == right => {
+            Primitive(PrimitiveOp::float(FloatPrimitive::GreaterEqual, left))
+        }
+        (Go::Min, Float(left), Float(right), Float(result)) if left == right && left == result => {
+            Primitive(PrimitiveOp::float(FloatPrimitive::Min, result))
+        }
+        (Go::Max, Float(left), Float(right), Float(result)) if left == right && left == result => {
+            Primitive(PrimitiveOp::float(FloatPrimitive::Max, result))
+        }
+        (Go::Complex, Float(FloatKind::F64), Float(FloatKind::F64), Complex(FloatKind::F64)) => {
+            Primitive(PrimitiveOp::ComplexFromParts)
+        }
+        (Go::Add, Complex(FloatKind::F64), Complex(FloatKind::F64), Complex(FloatKind::F64)) => {
+            Primitive(PrimitiveOp::ComplexAdd)
+        }
+        (Go::Sub, Complex(FloatKind::F64), Complex(FloatKind::F64), Complex(FloatKind::F64)) => {
+            Primitive(PrimitiveOp::ComplexSub)
+        }
+        (Go::Mul, Complex(FloatKind::F64), Complex(FloatKind::F64), Complex(FloatKind::F64)) => {
+            Primitive(PrimitiveOp::ComplexMul)
+        }
+        (Go::Div, Complex(FloatKind::F64), Complex(FloatKind::F64), Complex(FloatKind::F64)) => {
+            Primitive(PrimitiveOp::ComplexDiv)
+        }
+        (Go::Equal, Complex(FloatKind::F64), Complex(FloatKind::F64), Bool) => {
+            Primitive(PrimitiveOp::ComplexEqual)
+        }
+        (Go::NotEqual, Complex(FloatKind::F64), Complex(FloatKind::F64), Bool) => {
+            Primitive(PrimitiveOp::ComplexNotEqual)
+        }
         (Go::Add, GoString, GoString, GoString) => Runtime(RuntimeOp::ConcatGoStrings),
         (Go::Equal, GoString, GoString, Bool) => Primitive(PrimitiveOp::StringEqual),
         (Go::NotEqual, GoString, GoString, Bool) => Primitive(PrimitiveOp::StringNotEqual),

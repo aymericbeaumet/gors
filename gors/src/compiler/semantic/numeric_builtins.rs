@@ -255,12 +255,13 @@ impl FunctionLowerer {
             ));
         };
         let argument = self.lower_expr(argument, None)?;
-        if argument.ty.default_typed().underlying() != &Ty::Complex(ComplexTy::Complex128) {
+        let Ty::Complex(complex_ty) = argument.ty.default_typed().underlying().clone() else {
             return Err(Diagnostic::semantic(
                 format!("{name} requires a complex argument"),
                 source,
             ));
-        }
+        };
+        let component_ty = complex_ty.component_type();
         let constant = match expr_constant(&argument) {
             Some(ConstValue::Complex { real, imag }) => Some(if name == "real" {
                 real.clone()
@@ -283,7 +284,7 @@ impl FunctionLowerer {
                 ty: if matches!(argument.ty, Ty::Untyped(_)) {
                     Ty::Untyped(UntypedTy::Float)
                 } else {
-                    Ty::Float(FloatTy::Float64)
+                    Ty::Float(component_ty)
                 },
                 category: hir::ValueCategory::Constant,
                 effects: hir::Effects::default(),
@@ -301,7 +302,7 @@ impl FunctionLowerer {
                     },
                     operand: Box::new(argument),
                 },
-                ty: Ty::Float(FloatTy::Float64),
+                ty: Ty::Float(component_ty),
                 category: hir::ValueCategory::Value,
                 effects,
                 source,

@@ -5,6 +5,7 @@
 //! modes have already been selected and verified before this point.
 
 mod integer;
+mod numeric;
 mod recovery;
 
 use std::collections::BTreeMap;
@@ -14,11 +15,11 @@ use proc_macro2::Span;
 use super::Diagnostic;
 use super::ids::{PackageId, QualifiedDefId};
 use super::rust_ir::{
-    self, CallTarget, Constant, ControlFlowPlan, IntegerKind, LocalId, Operand, Place, PrimitiveOp,
-    ReadOp, RuntimeOp, RustLinkage, RustSymbol, RustType, Rvalue, RvalueKind, SlotInitialization,
+    self, CallTarget, Constant, ControlFlowPlan, IntegerKind, LocalId, Operand, Place, ReadOp,
+    RuntimeOp, RustLinkage, RustSymbol, RustType, Rvalue, RvalueKind, SlotInitialization,
     Statement, StorageClass, StoreOp, Terminator, TerminatorKind, ValueOp,
 };
-use integer::{emit_integer_canonicalization, emit_integer_primitive};
+use numeric::emit_primitive_op;
 
 pub(super) fn emit_program(
     entry: PackageId,
@@ -649,102 +650,6 @@ fn emit_value_op(operation: ValueOp, args: Vec<syn::Expr>) -> Result<syn::Expr, 
     }
 }
 
-fn emit_primitive_op(operation: PrimitiveOp, args: &[syn::Expr]) -> Result<syn::Expr, Diagnostic> {
-    use PrimitiveOp::*;
-    let expression = match (operation, args) {
-        (BoolNot, [value]) => syn::parse_quote! { !(#value) },
-        (Integer { op, kind }, arguments) => emit_integer_primitive(op, kind, arguments)?,
-        (IntegerConvert { to, .. }, [value]) => emit_integer_canonicalization(to, value.clone()),
-        (FloatNeg, [value]) => syn::parse_quote! { -(#value) },
-        (FloatRound32, [value]) => syn::parse_quote! { ((#value) as f32) as f64 },
-        (ComplexNeg, [value]) => syn::parse_quote! { [-(#value)[0], -(#value)[1]] },
-        (ComplexReal, [value]) => syn::parse_quote! { (#value)[0] },
-        (ComplexImag, [value]) => syn::parse_quote! { (#value)[1] },
-        (FloatAdd, [left, right]) => syn::parse_quote! { (#left) + (#right) },
-        (FloatSub, [left, right]) => syn::parse_quote! { (#left) - (#right) },
-        (FloatMul, [left, right]) => syn::parse_quote! { (#left) * (#right) },
-        (FloatDiv, [left, right]) => syn::parse_quote! { (#left) / (#right) },
-        (FloatMin, [left, right]) => syn::parse_quote! {
-            if (#left).is_nan() {
-                #left
-            } else if (#right).is_nan() {
-                #right
-            } else if (#left) == 0.0 && (#right) == 0.0 {
-                if (#left).is_sign_negative() { #left } else { #right }
-            } else if (#left) < (#right) {
-                #left
-            } else {
-                #right
-            }
-        },
-        (FloatMax, [left, right]) => syn::parse_quote! {
-            if (#left).is_nan() {
-                #left
-            } else if (#right).is_nan() {
-                #right
-            } else if (#left) == 0.0 && (#right) == 0.0 {
-                if (#left).is_sign_positive() { #left } else { #right }
-            } else if (#left) > (#right) {
-                #left
-            } else {
-                #right
-            }
-        },
-        (ComplexFromParts, [real, imag]) => syn::parse_quote! { [#real, #imag] },
-        (ComplexAdd, [left, right]) => {
-            syn::parse_quote! { [(#left)[0] + (#right)[0], (#left)[1] + (#right)[1]] }
-        }
-        (ComplexSub, [left, right]) => {
-            syn::parse_quote! { [(#left)[0] - (#right)[0], (#left)[1] - (#right)[1]] }
-        }
-        (ComplexMul, [left, right]) => syn::parse_quote! {
-            [
-                (#left)[0] * (#right)[0] - (#left)[1] * (#right)[1],
-                (#left)[0] * (#right)[1] + (#left)[1] * (#right)[0],
-            ]
-        },
-        (ComplexDiv, [left, right]) => syn::parse_quote! {
-            {
-                let __gors_denominator = (#right)[0] * (#right)[0] + (#right)[1] * (#right)[1];
-                [
-                    ((#left)[0] * (#right)[0] + (#left)[1] * (#right)[1]) / __gors_denominator,
-                    ((#left)[1] * (#right)[0] - (#left)[0] * (#right)[1]) / __gors_denominator,
-                ]
-            }
-        },
-        (BoolEqual | FloatEqual | StringEqual, [left, right]) => {
-            syn::parse_quote! { (#left) == (#right) }
-        }
-        (BoolNotEqual | FloatNotEqual | StringNotEqual, [left, right]) => {
-            syn::parse_quote! { (#left) != (#right) }
-        }
-        (ComplexEqual, [left, right]) => syn::parse_quote! {
-            (#left)[0] == (#right)[0] && (#left)[1] == (#right)[1]
-        },
-        (ComplexNotEqual, [left, right]) => syn::parse_quote! {
-            (#left)[0] != (#right)[0] || (#left)[1] != (#right)[1]
-        },
-        (FloatLess | StringLess, [left, right]) => {
-            syn::parse_quote! { (#left) < (#right) }
-        }
-        (FloatLessEqual | StringLessEqual, [left, right]) => {
-            syn::parse_quote! { (#left) <= (#right) }
-        }
-        (FloatGreater | StringGreater, [left, right]) => {
-            syn::parse_quote! { (#left) > (#right) }
-        }
-        (FloatGreaterEqual | StringGreaterEqual, [left, right]) => {
-            syn::parse_quote! { (#left) >= (#right) }
-        }
-        (operation, _) => {
-            return Err(Diagnostic::backend(format!(
-                "invalid verified primitive operation arity for {operation:?}"
-            )));
-        }
-    };
-    Ok(expression)
-}
-
 fn emit_runtime_call(operation: RuntimeOp, args: Vec<syn::Expr>) -> syn::Expr {
     let runtime_crate = syn::Ident::new(crate::artifact::RUNTIME_CRATE_NAME, Span::mixed_site());
     let symbol = syn::Ident::new(operation.symbol(), Span::mixed_site());
@@ -813,11 +718,11 @@ fn emit_constant(value: &Constant) -> Result<syn::Expr, Diagnostic> {
                 })
             }
         }
-        Constant::F64(bits) => {
+        Constant::Float { bits, .. } => {
             let bits = syn::LitInt::new(&format!("{bits}u64"), Span::mixed_site());
             Ok(syn::parse_quote! { ::std::primitive::f64::from_bits(#bits) })
         }
-        Constant::Complex128 { real, imag } => {
+        Constant::Complex { real, imag, .. } => {
             let real = syn::LitInt::new(&format!("{real}u64"), Span::mixed_site());
             let imag = syn::LitInt::new(&format!("{imag}u64"), Span::mixed_site());
             Ok(syn::parse_quote! {
@@ -894,8 +799,8 @@ fn emit_type(ty: &RustType) -> Result<syn::Type, Diagnostic> {
         RustType::Bool => syn::parse_quote! { bool },
         RustType::GoString => syn::parse_quote! { ::#runtime_crate::GoString },
         RustType::Integer(_) => syn::parse_quote! { i64 },
-        RustType::F64 => syn::parse_quote! { f64 },
-        RustType::Complex128 => syn::parse_quote! { [f64; 2] },
+        RustType::Float(_) => syn::parse_quote! { f64 },
+        RustType::Complex(_) => syn::parse_quote! { [f64; 2] },
         RustType::GoSliceI64 => syn::parse_quote! { ::#runtime_crate::GoSliceI64 },
         RustType::GoSliceU8 => syn::parse_quote! { ::#runtime_crate::GoSliceU8 },
         RustType::GoSliceBool => syn::parse_quote! { ::#runtime_crate::GoSliceBool },
@@ -926,7 +831,7 @@ fn emit_type(ty: &RustType) -> Result<syn::Type, Diagnostic> {
             let length = syn::LitInt::new(&length.to_string(), Span::mixed_site());
             syn::parse_quote! { [bool; #length] }
         }
-        RustType::ArrayF64(length) => {
+        RustType::ArrayFloat { length, .. } => {
             let length = syn::LitInt::new(&length.to_string(), Span::mixed_site());
             syn::parse_quote! { [f64; #length] }
         }

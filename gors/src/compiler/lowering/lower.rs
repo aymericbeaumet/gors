@@ -2,20 +2,22 @@
 
 mod aggregates;
 mod control;
+mod conversions;
 mod numeric;
 mod printing;
 mod provenance;
 mod recovery;
 
-use super::type_lowering::{integer_kind, lower_type};
+use super::type_lowering::lower_type;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::mir;
 use crate::compiler::rust_ir as out;
-use crate::compiler::types::{FloatTy, Signature as GoSignature, Ty};
-use gors_runtime_abi::{IntegerKind, PrimitiveOp, RuntimeOp};
+use crate::compiler::types::Signature as GoSignature;
+use gors_runtime_abi::{IntegerKind, RuntimeOp};
 
 use control::{finish_terminator, lower_panic_edge};
+use conversions::lower_conversion_operation;
 use numeric::{lower_binary_op, lower_constant, lower_unary_op};
 use printing::lower_print_call;
 use provenance::lower_provenance;
@@ -231,29 +233,7 @@ fn lower_rvalue(rvalue: mir::Rvalue, locals: &[out::LocalDecl]) -> Result<out::R
             }
         }
         mir::RvalueKind::Conversion { operand, from, ty } => {
-            let operation = match (from.underlying(), ty.underlying()) {
-                (Ty::Int(_) | Ty::Uint(_), Ty::Int(_) | Ty::Uint(_)) => {
-                    Some(out::ValueOp::Primitive(PrimitiveOp::IntegerConvert {
-                        from: integer_kind(&from).ok_or_else(|| {
-                            Diagnostic::backend("missing source integer representation")
-                        })?,
-                        to: integer_kind(&ty).ok_or_else(|| {
-                            Diagnostic::backend("missing destination integer representation")
-                        })?,
-                    }))
-                }
-                (Ty::Float(_), Ty::Float(FloatTy::Float32)) => {
-                    Some(out::ValueOp::Primitive(PrimitiveOp::FloatRound32))
-                }
-                _ => None,
-            };
-            let from_representation = lower_type(&from)?;
-            let to_representation = lower_type(&ty)?;
-            if from_representation != to_representation && operation.is_none() {
-                return Err(Diagnostic::backend(format!(
-                    "representation-preserving conversion changed Rust type from {from_representation:?} to {to_representation:?}"
-                )));
-            }
+            let operation = lower_conversion_operation(&from, &ty)?;
             let operand = lower_operand(operand, locals)?;
             if let Some(op) = operation {
                 out::RvalueKind::Unary { op, operand }
@@ -468,6 +448,7 @@ fn lower_terminator(
                 | hir::Builtin::AggregatePointerIsNil
                 | hir::Builtin::InterfaceNil
                 | hir::Builtin::InterfaceBoxBool
+                | hir::Builtin::InterfaceBoxF32
                 | hir::Builtin::InterfaceBoxF64
                 | hir::Builtin::InterfaceBoxI64
                 | hir::Builtin::InterfaceBoxGoString
@@ -486,6 +467,7 @@ fn lower_terminator(
                 | hir::Builtin::InterfaceSatisfiesRuntimeError
                 | hir::Builtin::InterfaceSatisfiesNonNil
                 | hir::Builtin::InterfaceUnboxBool
+                | hir::Builtin::InterfaceUnboxF32
                 | hir::Builtin::InterfaceUnboxF64
                 | hir::Builtin::InterfaceUnboxI64
                 | hir::Builtin::InterfaceUnboxGoString
@@ -632,6 +614,7 @@ fn lower_terminator(
                     hir::Builtin::AggregatePointerIsNil => RuntimeOp::GoInterfaceIsNil,
                     hir::Builtin::InterfaceNil => RuntimeOp::GoInterfaceNil,
                     hir::Builtin::InterfaceBoxBool => RuntimeOp::GoInterfaceBoxBool,
+                    hir::Builtin::InterfaceBoxF32 => RuntimeOp::GoInterfaceBoxF32,
                     hir::Builtin::InterfaceBoxF64 => RuntimeOp::GoInterfaceBoxF64,
                     hir::Builtin::InterfaceBoxI64 => RuntimeOp::GoInterfaceBoxI64,
                     hir::Builtin::InterfaceBoxGoString => RuntimeOp::GoInterfaceBoxGoString,
@@ -652,6 +635,7 @@ fn lower_terminator(
                     hir::Builtin::InterfaceIsType => RuntimeOp::GoInterfaceIsType,
                     hir::Builtin::InterfaceIsRuntimeError => RuntimeOp::GoInterfaceIsRuntimeError,
                     hir::Builtin::InterfaceUnboxBool => RuntimeOp::GoInterfaceUnboxBool,
+                    hir::Builtin::InterfaceUnboxF32 => RuntimeOp::GoInterfaceUnboxF32,
                     hir::Builtin::InterfaceUnboxF64 => RuntimeOp::GoInterfaceUnboxF64,
                     hir::Builtin::InterfaceUnboxI64 => RuntimeOp::GoInterfaceUnboxI64,
                     hir::Builtin::InterfaceUnboxGoString => RuntimeOp::GoInterfaceUnboxGoString,

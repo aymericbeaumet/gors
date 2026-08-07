@@ -1,5 +1,6 @@
 //! Verification for explicit Rust representation, ABI, storage, and control plans.
 
+mod constants;
 mod operations;
 mod recovery;
 mod structs;
@@ -10,6 +11,7 @@ use super::*;
 use crate::compiler::Diagnostic;
 use crate::compiler::ids::QualifiedDefId;
 use crate::compiler::provenance::SourceRef;
+use constants::constant_type;
 use gors_runtime_abi::{IntegerKind, RuntimeOp, RuntimeType};
 use operations::{
     runtime_result_parts, verify_runtime_arguments, verify_runtime_type, verify_value_operation,
@@ -598,8 +600,17 @@ impl Function {
             )));
         }
         for (position, (destination, result)) in destinations.iter().zip(results).enumerate() {
+            let destination_ty = self.place_ty(*destination)?;
+            if operation == RuntimeOp::GoInterfaceUnboxF32 {
+                verify_same(
+                    destination_ty,
+                    RustType::Float(gors_runtime_abi::FloatKind::F32),
+                    &format!("{context} destination {position}"),
+                )?;
+                continue;
+            }
             verify_runtime_type(
-                &self.place_ty(*destination)?,
+                &destination_ty,
                 result,
                 (result == RuntimeType::I64).then(|| operation.integer_result_constraint(position)),
                 &format!("{context} destination {position}"),
@@ -637,87 +648,6 @@ impl Function {
             }
             Operand::Constant(constant) => constant_type(constant),
             Operand::Unit => Ok(RustType::Unit),
-        }
-    }
-}
-
-fn constant_type(constant: &Constant) -> Result<RustType, Diagnostic> {
-    match constant {
-        Constant::Bool(_) => Ok(RustType::Bool),
-        Constant::Integer { kind, bits } => {
-            if !kind.is_canonical_carrier(*bits) {
-                return Err(Diagnostic::backend(format!(
-                    "Rust IR integer constant has a non-canonical {kind:?} carrier"
-                )));
-            }
-            Ok(RustType::Integer(*kind))
-        }
-        Constant::F64(_) => Ok(RustType::F64),
-        Constant::Complex128 { .. } => Ok(RustType::Complex128),
-        Constant::StaticIntegerArray { kind, values } => {
-            if values
-                .iter()
-                .any(|value| !kind.is_canonical_carrier(*value))
-            {
-                return Err(Diagnostic::backend(format!(
-                    "Rust IR static integer array has a non-canonical {kind:?} element"
-                )));
-            }
-            Ok(RustType::ArrayInteger {
-                length: u64::try_from(values.len())
-                    .map_err(|_| Diagnostic::backend("Rust IR array length does not fit u64"))?,
-                element: *kind,
-            })
-        }
-        Constant::RuntimeStaticBytes { op, .. } => {
-            let signature = op.signature();
-            if signature.parameters() == [RuntimeType::StaticByteSlice]
-                && signature.result() == RuntimeType::GoString
-            {
-                Ok(RustType::GoString)
-            } else {
-                Err(Diagnostic::backend(format!(
-                    "Rust IR static bytes use runtime operation {op:?} with incompatible signature {:?} -> {:?}",
-                    signature.parameters(),
-                    signature.result()
-                )))
-            }
-        }
-        Constant::RuntimeStaticI64s { op, .. } => {
-            let signature = op.signature();
-            if signature.parameters() == [RuntimeType::StaticI64Slice]
-                && signature.result() == RuntimeType::GoSliceI64
-            {
-                Ok(RustType::GoSliceI64)
-            } else {
-                Err(Diagnostic::backend(format!(
-                    "Rust IR static int slice uses runtime operation {op:?} with an incompatible signature"
-                )))
-            }
-        }
-        Constant::RuntimeStaticBools { op, .. } => {
-            let signature = op.signature();
-            if signature.parameters() == [RuntimeType::StaticBoolSlice]
-                && signature.result() == RuntimeType::GoSliceBool
-            {
-                Ok(RustType::GoSliceBool)
-            } else {
-                Err(Diagnostic::backend(format!(
-                    "Rust IR static bool slice uses runtime operation {op:?} with an incompatible signature"
-                )))
-            }
-        }
-        Constant::RuntimeStaticU8s { op, .. } => {
-            let signature = op.signature();
-            if signature.parameters() == [RuntimeType::StaticByteSlice]
-                && signature.result() == RuntimeType::GoSliceU8
-            {
-                Ok(RustType::GoSliceU8)
-            } else {
-                Err(Diagnostic::backend(format!(
-                    "Rust IR static byte slice uses runtime operation {op:?} with an incompatible signature"
-                )))
-            }
         }
     }
 }

@@ -31,6 +31,7 @@ struct DynamicValue {
 enum InterfacePayload {
     Bool(bool),
     I64(GoInt),
+    F32(f64),
     F64(f64),
     GoString(GoString),
     StructI64(Arc<[GoInt]>),
@@ -63,6 +64,15 @@ pub fn go_interface_box_i64(type_identity: GoString, value: GoInt) -> GoInterfac
 #[must_use]
 pub fn go_interface_box_f64(type_identity: GoString, value: f64) -> GoInterface {
     boxed(type_identity, InterfacePayload::F64(value))
+}
+
+/// Copy a canonical float32 carrier into an interface with its exact dynamic type.
+#[must_use]
+pub fn go_interface_box_f32(type_identity: GoString, value: f64) -> GoInterface {
+    boxed(
+        type_identity,
+        InterfacePayload::F32(f64::from(value as f32)),
+    )
 }
 
 /// Copy a string header into an interface with its exact dynamic type.
@@ -213,6 +223,7 @@ pub fn go_interface_equal(left: GoInterface, right: GoInterface) -> bool {
     match (&left.payload, &right.payload) {
         (InterfacePayload::Bool(left), InterfacePayload::Bool(right)) => left == right,
         (InterfacePayload::I64(left), InterfacePayload::I64(right)) => left == right,
+        (InterfacePayload::F32(left), InterfacePayload::F32(right)) => left == right,
         (InterfacePayload::F64(left), InterfacePayload::F64(right)) => left == right,
         (InterfacePayload::GoString(left), InterfacePayload::GoString(right)) => left == right,
         (InterfacePayload::StructI64(left), InterfacePayload::StructI64(right)) => left == right,
@@ -259,6 +270,15 @@ pub fn go_interface_unbox_i64(value: GoInterface, type_identity: GoString) -> Go
 pub fn go_interface_unbox_f64(value: GoInterface, type_identity: GoString) -> f64 {
     match checked_payload(value, type_identity) {
         InterfacePayload::F64(value) => value,
+        _ => type_assertion_failure(),
+    }
+}
+
+/// Extract a float32 after checking its exact dynamic type and widen its carrier.
+#[must_use]
+pub fn go_interface_unbox_f32(value: GoInterface, type_identity: GoString) -> f64 {
+    match checked_payload(value, type_identity) {
+        InterfacePayload::F32(value) => f64::from(value as f32),
         _ => type_assertion_failure(),
     }
 }

@@ -489,7 +489,14 @@ impl FunctionLowerer {
                 ty.clone(),
                 source,
             ),
-            Ty::Float(FloatTy::Float32 | FloatTy::Float64) => self.unbox_interface_scalar(
+            Ty::Float(FloatTy::Float32) => self.unbox_interface_scalar(
+                hir::Builtin::InterfaceUnboxF32,
+                interface,
+                identity,
+                ty.clone(),
+                source,
+            ),
+            Ty::Float(FloatTy::Float64) => self.unbox_interface_scalar(
                 hir::Builtin::InterfaceUnboxF64,
                 interface,
                 identity,
@@ -570,9 +577,8 @@ impl FunctionLowerer {
         let identity = Operand::Constant(ConstValue::String(type_identity.to_vec()), Ty::String);
         let (builtin, payload) = match value_ty.underlying() {
             Ty::Bool => (hir::Builtin::InterfaceBoxBool, value_operand),
-            Ty::Float(FloatTy::Float32 | FloatTy::Float64) => {
-                (hir::Builtin::InterfaceBoxF64, value_operand)
-            }
+            Ty::Float(FloatTy::Float32) => (hir::Builtin::InterfaceBoxF32, value_operand),
+            Ty::Float(FloatTy::Float64) => (hir::Builtin::InterfaceBoxF64, value_operand),
             Ty::Int(_) | Ty::Uint(_) => (hir::Builtin::InterfaceBoxI64, value_operand),
             Ty::String => (hir::Builtin::InterfaceBoxGoString, value_operand),
             Ty::Struct(_) if value_ty.bootstrap_i64_struct_fields().is_some() => (

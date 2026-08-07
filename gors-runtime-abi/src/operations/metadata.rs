@@ -89,6 +89,7 @@ impl RuntimeOp {
             | Self::GoInterfaceNil
             | Self::GoInterfaceBoxBool
             | Self::GoInterfaceBoxI64
+            | Self::GoInterfaceBoxF32
             | Self::GoInterfaceBoxF64
             | Self::GoInterfaceBoxGoString
             | Self::GoInterfaceBoxStructI64
@@ -98,6 +99,7 @@ impl RuntimeOp {
             | Self::GoInterfaceIsType
             | Self::GoInterfaceUnboxBool
             | Self::GoInterfaceUnboxI64
+            | Self::GoInterfaceUnboxF32
             | Self::GoInterfaceUnboxF64
             | Self::GoInterfaceUnboxGoString
             | Self::GoInterfaceStructI64Get
@@ -498,6 +500,7 @@ impl RuntimeOp {
             }
             Self::GoInterfaceBoxBool
             | Self::GoInterfaceBoxI64
+            | Self::GoInterfaceBoxF32
             | Self::GoInterfaceBoxF64
             | Self::GoInterfaceBoxGoString
             | Self::GoInterfaceBoxPointerI64
@@ -523,6 +526,7 @@ impl RuntimeOp {
             ),
             Self::GoInterfaceUnboxBool
             | Self::GoInterfaceUnboxI64
+            | Self::GoInterfaceUnboxF32
             | Self::GoInterfaceUnboxF64
             | Self::GoInterfaceUnboxGoString
             | Self::GoInterfaceUnboxPointerI64

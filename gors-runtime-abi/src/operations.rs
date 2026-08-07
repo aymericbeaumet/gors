@@ -382,7 +382,7 @@ impl RuntimeOp {
             Self::GoInterfaceBoxI64 => {
                 RuntimeSignature::new(GO_INTERFACE_BOX_I64, RuntimeType::GoInterface)
             }
-            Self::GoInterfaceBoxF64 => {
+            Self::GoInterfaceBoxF64 | Self::GoInterfaceBoxF32 => {
                 RuntimeSignature::new(GO_INTERFACE_BOX_F64, RuntimeType::GoInterface)
             }
             Self::GoInterfaceBoxGoString => {
@@ -410,7 +410,7 @@ impl RuntimeOp {
             Self::GoInterfaceUnboxI64 => {
                 RuntimeSignature::new(GO_INTERFACE_AND_TYPE, RuntimeType::I64)
             }
-            Self::GoInterfaceUnboxF64 => {
+            Self::GoInterfaceUnboxF64 | Self::GoInterfaceUnboxF32 => {
                 RuntimeSignature::new(GO_INTERFACE_AND_TYPE, RuntimeType::F64)
             }
             Self::GoInterfaceEqual => {

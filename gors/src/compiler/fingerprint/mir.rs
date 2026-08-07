@@ -474,6 +474,7 @@ fn encode_callee(encoder: &mut Encoder, callee: hir::Callee) {
                     hir::Builtin::InterfaceNil => b"interface-nil",
                     hir::Builtin::InterfaceBoxBool => b"interface-box-bool",
                     hir::Builtin::InterfaceBoxI64 => b"interface-box-i64",
+                    hir::Builtin::InterfaceBoxF32 => b"interface-box-f32",
                     hir::Builtin::InterfaceBoxF64 => b"interface-box-f64",
                     hir::Builtin::InterfaceBoxGoString => b"interface-box-go-string",
                     hir::Builtin::InterfaceBoxGoSliceGoString => {
@@ -500,6 +501,7 @@ fn encode_callee(encoder: &mut Encoder, callee: hir::Callee) {
                     hir::Builtin::InterfaceSatisfiesNonNil => b"interface-satisfies-non-nil",
                     hir::Builtin::InterfaceUnboxBool => b"interface-unbox-bool",
                     hir::Builtin::InterfaceUnboxI64 => b"interface-unbox-i64",
+                    hir::Builtin::InterfaceUnboxF32 => b"interface-unbox-f32",
                     hir::Builtin::InterfaceUnboxF64 => b"interface-unbox-f64",
                     hir::Builtin::InterfaceUnboxGoString => b"interface-unbox-go-string",
                     hir::Builtin::InterfaceUnboxGoSliceGoString => {
