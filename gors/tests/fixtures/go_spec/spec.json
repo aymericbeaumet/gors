@@ -2978,6 +2978,15 @@
           ]
         },
         {
+          "id": "spec-generics-comparable-satisfaction",
+          "section": "Satisfying a type constraint",
+          "title": "Ordinary interface types satisfy comparable constraints and compare dynamically comparable values",
+          "status": "passing",
+          "fixtures": [
+            "generics_comparable_satisfaction"
+          ]
+        },
+        {
           "id": "generics-type-inference",
           "section": "Instantiations",
           "title": "Type inference chooses type arguments for generic calls",

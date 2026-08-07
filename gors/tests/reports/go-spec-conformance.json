@@ -12,10 +12,10 @@
   "summary": {
     "groupCount": 15,
     "passingGroupCount": 15,
-    "caseCount": 333,
-    "passingCaseCount": 333,
+    "caseCount": 334,
+    "passingCaseCount": 334,
     "unsupportedCaseCount": 0,
-    "fixtureCount": 179
+    "fixtureCount": 180
   },
   "groups": [
     {
@@ -4734,6 +4734,7 @@
         "_negative/generics_constraints",
         "generics",
         "generics_channel_constraint_unification",
+        "generics_comparable_satisfaction",
         "generics_generic_alias",
         "generics_inference_constant_kinds",
         "generics_inference_defined_types",
@@ -4744,10 +4745,10 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 16,
-        "passingCaseCount": 16,
+        "caseCount": 17,
+        "passingCaseCount": 17,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 9
+        "fixtureCount": 10
       },
       "cases": [
         {
@@ -4873,6 +4874,20 @@
           ],
           "freshFixtures": [
             "generics_type_sets"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-generics-comparable-satisfaction",
+          "title": "Ordinary interface types satisfy comparable constraints and compare dynamically comparable values",
+          "subtitle": "Satisfying a type constraint",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "generics_comparable_satisfaction"
+          ],
+          "freshFixtures": [
+            "generics_comparable_satisfaction"
           ],
           "reason": ""
         },

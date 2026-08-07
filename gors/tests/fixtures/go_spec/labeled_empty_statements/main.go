@@ -1,5 +1,7 @@
 package main
 
+
+
 func double(v int) int {
 	result := 0
 	{
@@ -16,8 +18,7 @@ func bump(n *int) {
 	if *n > 10 {
 		goto Done
 	}
-	// `+=` through a pointer is unrelated to labeled/empty statements.
-	*n = *n + 5
+	*n += 5
 Done:
 }
 
