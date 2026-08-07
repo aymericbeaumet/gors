@@ -2489,6 +2489,15 @@
           ]
         },
         {
+          "id": "spec-nested-panic-during-defer",
+          "section": "Handling panics",
+          "title": "a panic in a deferred function replaces the active panic while earlier defers continue",
+          "status": "passing",
+          "fixtures": [
+            "nested_panic_during_defer"
+          ]
+        },
+        {
           "id": "builtin-print-println",
           "section": "Bootstrapping",
           "title": "print and println emit values",

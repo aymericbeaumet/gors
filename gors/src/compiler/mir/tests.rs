@@ -334,6 +334,85 @@ fn verifier_rejects_mutated_effects_panic_edges_and_provenance() {
     );
 }
 
+#[test]
+fn verifier_rejects_corrupt_deferred_action_boundaries() {
+    let source = r#"
+        package main
+        func guarded() (result string) {
+            defer func() { result, _ = recover().(string) }()
+            defer func() { panic("replacement") }()
+            panic("original")
+        }
+    "#;
+    let file = lower(source);
+    file.verify().unwrap();
+
+    let mut uncleared = file.clone();
+    let function = uncleared
+        .functions
+        .iter_mut()
+        .find(|function| function.name == "guarded")
+        .unwrap();
+    let entry = function.panic_cleanup.as_ref().unwrap().actions[0].entry;
+    function.blocks[entry.0 as usize].statements[0].value.kind =
+        RvalueKind::Use(Operand::Constant(ConstValue::Bool(true), Ty::Bool));
+    assert!(
+        uncleared
+            .verify()
+            .unwrap_err()
+            .message
+            .contains("begin by clearing its registration flag")
+    );
+
+    let mut bad_replacement = file.clone();
+    let function = bad_replacement
+        .functions
+        .iter_mut()
+        .find(|function| function.name == "guarded")
+        .unwrap();
+    let action = &mut function.panic_cleanup.as_mut().unwrap().actions[0];
+    action.replacement.target = action.entry;
+    assert!(
+        bad_replacement
+            .verify()
+            .unwrap_err()
+            .message
+            .contains("invalid continuation or state")
+    );
+
+    let mut bad_region = file.clone();
+    let function = bad_region
+        .functions
+        .iter_mut()
+        .find(|function| function.name == "guarded")
+        .unwrap();
+    let action = &mut function.panic_cleanup.as_mut().unwrap().actions[0];
+    action.blocks.push(action.dispatch);
+    assert!(
+        bad_region
+            .verify()
+            .unwrap_err()
+            .message
+            .contains("block set is not canonical")
+    );
+
+    let mut bad_order = file;
+    let function = bad_order
+        .functions
+        .iter_mut()
+        .find(|function| function.name == "guarded")
+        .unwrap();
+    let cleanup = function.panic_cleanup.as_mut().unwrap();
+    cleanup.actions[0].continuation = cleanup.completion;
+    assert!(
+        bad_order
+            .verify()
+            .unwrap_err()
+            .message
+            .contains("ordered cleanup chain")
+    );
+}
+
 fn string_concat(file: &File) -> &Rvalue {
     binary_rvalue(file, hir::BinaryOp::Add)
 }

@@ -757,6 +757,10 @@ The production pipeline currently executes this focused, fully verified subset:
 - print and println intrinsics through the versioned runtime ABI.
 
 Supported control flow and typed panic/recover behavior are executable today.
+Every deferred action is an explicit ordered Go-MIR and Rust-IR region. It
+clears its registration flag before invocation, owns an independent unwind
+boundary and newest-panic replacement transition, and continues at the next
+earlier action; terminal emission mechanically renders that verified plan.
 Dynamic division or remainder by zero and negative dynamic shifts still reach
 Rust `panic_any`; give those faults versioned Go panic/process semantics and
 process-level differential tests before counting their failure presentation as

@@ -139,3 +139,103 @@ fn recover_comment_edits_reuse_semantic_stages() {
     assert_eq!(telemetry.executions(QueryKind::NormalizedGoMir), 0);
     assert_eq!(telemetry.executions(QueryKind::VerifiedRustIr), 0);
 }
+
+#[test]
+fn a_panicking_defer_replaces_the_active_payload_and_earlier_defers_continue() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            func nested() (result string) {
+                defer func() {
+                    recovered := recover()
+                    text, ok := recovered.(string)
+                    if !ok {
+                        panic("replacement panic was not a string")
+                    }
+                    print("[outer-defer:" + text + "]")
+                    result = text
+                }()
+                defer func() {
+                    print("[inner-defer]")
+                    panic("second")
+                }()
+                panic("first")
+            }
+
+            func main() {
+                print("nested-panic-during-defer: ")
+                got := nested()
+                if got != "second" {
+                    panic("recover did not observe the replacement panic")
+                }
+                println(" ok")
+            }
+        "#,
+    );
+
+    assert_eq!(
+        run.stderr,
+        b"nested-panic-during-defer: [inner-defer][outer-defer:second] ok\n"
+    );
+}
+
+#[test]
+fn a_normal_return_clears_each_defer_flag_before_invocation() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            func normal() (result int) {
+                defer func() {
+                    recovered := recover()
+                    _, ok := recovered.(string)
+                    if !ok {
+                        panic("missing panic from the later defer")
+                    }
+                    result = result*10 + 1
+                }()
+                defer func() {
+                    result = result*10 + 2
+                    panic("normal-return panic")
+                }()
+                return 3
+            }
+
+            func main() { println(normal()) }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"321\n");
+}
+
+#[test]
+fn a_new_panic_after_recover_becomes_active_for_the_next_defer() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            func repanic() (result string) {
+                defer func() {
+                    recovered := recover()
+                    text, ok := recovered.(string)
+                    if !ok {
+                        panic("replacement panic was not recoverable")
+                    }
+                    result = text
+                }()
+                defer func() {
+                    if recover() == nil {
+                        panic("original panic was not active")
+                    }
+                    panic("replacement")
+                }()
+                panic("original")
+            }
+
+            func main() { println(repanic()) }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"replacement\n");
+}

@@ -78,11 +78,12 @@ impl FunctionLowerer {
 
     pub(super) fn lower_deferred(&mut self) -> Result<(), Diagnostic> {
         let deferred = self.deferred.clone();
-        for body in deferred.iter().rev() {
+        for action in deferred.iter().rev() {
             if self.is_terminated(self.current)? {
                 break;
             }
-            self.lower_block(body)?;
+            self.clear_defer_registration(action.registered, action.source)?;
+            self.lower_block(&action.body)?;
         }
         Ok(())
     }

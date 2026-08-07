@@ -4,6 +4,7 @@ mod aggregates;
 mod control;
 mod printing;
 mod provenance;
+mod recovery;
 
 use super::type_lowering::lower_type;
 use crate::compiler::Diagnostic;
@@ -41,21 +42,7 @@ pub(super) fn lower_function(
         out::FunctionArtifactPlan::public_definition(function.id)
     };
     let signature = lower_signature(&function.signature)?;
-    let panic_cleanup = function.panic_cleanup.map(|cleanup| out::PanicCleanup {
-        entry: cleanup.entry,
-        active: cleanup.active,
-        recovered: cleanup.recovered,
-        capture: out::PanicPayloadCapture {
-            operation: RuntimeOp::GoPanicPayloadToInterface,
-            effects: out::runtime_effects(RuntimeOp::GoPanicPayloadToInterface),
-            provenance: out::Provenance::Synthetic(out::SyntheticOrigin::PanicCleanupDispatch),
-        },
-        rethrow: out::PanicPayloadRethrow {
-            operation: RuntimeOp::PanicGoInterface,
-            effects: out::runtime_effects(RuntimeOp::PanicGoInterface),
-            provenance: out::Provenance::Synthetic(out::SyntheticOrigin::PanicCleanupDispatch),
-        },
-    });
+    let mut panic_cleanup = function.panic_cleanup.map(recovery::lower_panic_cleanup);
     let locals = function
         .locals
         .into_iter()
@@ -85,6 +72,7 @@ pub(super) fn lower_function(
         .map(|block| lower_block(block, &locals, original_block_count, &mut extra_blocks))
         .collect::<Result<Vec<_>, _>>()?;
     blocks.append(&mut extra_blocks);
+    recovery::complete_action_blocks(panic_cleanup.as_mut(), &blocks)?;
     let mut lowered = out::Function {
         id: function.id,
         name: function.name,

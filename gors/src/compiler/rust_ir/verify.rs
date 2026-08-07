@@ -734,9 +734,15 @@ fn constant_type(constant: &Constant) -> Result<RustType, Diagnostic> {
 
 fn runtime_requirement(function: &Function) -> RuntimeRequirement {
     let mut operations = Vec::new();
-    if let Some(cleanup) = function.panic_cleanup {
+    if let Some(cleanup) = &function.panic_cleanup {
         operations.push(cleanup.capture.operation);
         operations.push(cleanup.rethrow.operation);
+        operations.extend(
+            cleanup
+                .actions
+                .iter()
+                .map(|action| action.replacement.capture.operation),
+        );
     }
     for block in &function.blocks {
         for statement in &block.statements {

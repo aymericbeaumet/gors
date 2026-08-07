@@ -1,63 +1,41 @@
-//! Verification for panic cleanup actions, payload replacement, and `recover`.
+//! Verification for ordered, independently unwindable deferred actions.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use super::super::{
-    Constant, DeferredAction, Effects, Function, Operand, PanicEdge, PanicPayloadCapture, Place,
-    Provenance, RuntimeOp, RustType, RvalueKind, StoreOp, SyntheticOrigin, TerminatorKind,
+    DeferredAction, Function, Operand, PanicEdge, Place, Provenance, RvalueKind, SyntheticOrigin,
+    TerminatorKind,
 };
-use super::{verify_effects, verify_same, verify_source_provenance};
+use super::provenance::verify_source_provenance;
+use super::type_rules::verify_same_type;
 use crate::compiler::Diagnostic;
-use crate::compiler::ids::{BasicBlockId, LocalId};
-use gors_runtime_abi::RuntimeType;
+use crate::compiler::hir;
+use crate::compiler::ids::BasicBlockId;
+use crate::compiler::types::{ConstValue, Ty};
 
 pub(super) fn verify_panic_cleanup(function: &Function) -> Result<(), Diagnostic> {
     let Some(cleanup) = &function.panic_cleanup else {
         return verify_cleanup_edges(function, None, &BTreeSet::new());
     };
-    {
-        function.verify_target(cleanup.entry)?;
-        function.verify_target(cleanup.completion)?;
-        verify_same(
-            function.place_ty(Place {
-                local: cleanup.active,
-            })?,
-            RustType::Bool,
-            "panic cleanup state",
-        )?;
-        verify_same(
-            function.place_ty(Place {
-                local: cleanup.recovered,
-            })?,
-            RustType::GoInterface,
-            "panic cleanup recovered value",
-        )?;
-        verify_capture(function, cleanup.capture, "panic payload capture")?;
-        if cleanup.rethrow.operation != RuntimeOp::PanicGoInterface
-            || cleanup.rethrow.operation.signature().parameters() != [RuntimeType::GoInterface]
-            || cleanup.rethrow.operation.signature().result() != RuntimeType::Unit
-        {
-            return Err(Diagnostic::backend(
-                "Rust IR panic cleanup has an invalid payload rethrow operation",
-            ));
-        }
-        verify_effects(
-            cleanup.rethrow.effects,
-            super::super::runtime_effects(cleanup.rethrow.operation),
-            "panic payload rethrow",
-        )?;
-        verify_source_provenance(
-            &cleanup.rethrow.provenance,
-            function.id,
-            "panic payload rethrow",
-        )?;
-    }
 
+    verify_target(function, cleanup.entry, "panic cleanup entry")?;
+    verify_target(function, cleanup.completion, "panic cleanup completion")?;
+    verify_same_type(
+        place_ty(function, cleanup.active)?,
+        &Ty::Bool,
+        "panic cleanup state",
+    )?;
+    verify_same_type(
+        place_ty(function, cleanup.recovered)?,
+        &Ty::Interface(Vec::new()),
+        "panic cleanup recovered value",
+    )?;
     if cleanup.actions.is_empty() {
         return Err(Diagnostic::backend(
-            "Rust IR panic cleanup has no deferred actions",
+            "MIR panic cleanup has no deferred actions",
         ));
     }
+
     let dispatches = cleanup
         .actions
         .iter()
@@ -65,9 +43,10 @@ pub(super) fn verify_panic_cleanup(function: &Function) -> Result<(), Diagnostic
         .collect::<BTreeSet<_>>();
     if dispatches.len() != cleanup.actions.len() {
         return Err(Diagnostic::backend(
-            "Rust IR panic cleanup repeats a deferred-action dispatch",
+            "MIR panic cleanup repeats a deferred-action dispatch",
         ));
     }
+
     let predecessors = predecessors(function);
     let mut claimed = BTreeSet::new();
     let mut expected_dispatch = cleanup.entry;
@@ -78,21 +57,21 @@ pub(super) fn verify_panic_cleanup(function: &Function) -> Result<(), Diagnostic
             .map_or(cleanup.completion, |next| next.dispatch);
         if action.dispatch != expected_dispatch || action.continuation != expected_continuation {
             return Err(Diagnostic::backend(
-                "Rust IR deferred actions do not form one ordered cleanup chain",
+                "MIR deferred actions do not form one ordered cleanup chain",
             ));
         }
         verify_action(function, action, cleanup.active, cleanup.recovered)?;
         let region = action_region(function, action)?;
         if action.blocks != region.iter().copied().collect::<Vec<_>>() {
             return Err(Diagnostic::backend(
-                "Rust IR deferred-action block set is not canonical",
+                "MIR deferred-action block set is not canonical",
             ));
         }
         for block in &region {
             if dispatches.contains(block) || *block == cleanup.completion || !claimed.insert(*block)
             {
                 return Err(Diagnostic::backend(
-                    "Rust IR deferred-action control-flow regions overlap",
+                    "MIR deferred-action control-flow regions overlap",
                 ));
             }
         }
@@ -107,22 +86,23 @@ pub(super) fn verify_panic_cleanup(function: &Function) -> Result<(), Diagnostic
 fn verify_action(
     function: &Function,
     action: &DeferredAction,
-    active: LocalId,
-    recovered: LocalId,
+    active: crate::compiler::ids::LocalId,
+    recovered: crate::compiler::ids::LocalId,
 ) -> Result<(), Diagnostic> {
-    for target in [
-        action.dispatch,
-        action.entry,
-        action.continuation,
-        action.replacement.target,
+    for (target, context) in [
+        (action.dispatch, "deferred-action dispatch"),
+        (action.entry, "deferred-action entry"),
+        (action.continuation, "deferred-action continuation"),
+        (
+            action.replacement.target,
+            "deferred-action panic replacement",
+        ),
     ] {
-        function.verify_target(target)?;
+        verify_target(function, target, context)?;
     }
-    verify_same(
-        function.place_ty(Place {
-            local: action.registered,
-        })?,
-        RustType::Bool,
+    verify_same_type(
+        place_ty(function, action.registered)?,
+        &Ty::Bool,
         "defer registration flag",
     )?;
 
@@ -131,7 +111,7 @@ fn verify_action(
         || !matches!(
             dispatch.terminator.kind,
             TerminatorKind::SwitchBool {
-                condition: Operand::Read { place: Place { local }, .. },
+                condition: Operand::Read(Place { local }),
                 then_target,
                 else_target,
             } if local == action.registered
@@ -140,62 +120,51 @@ fn verify_action(
         )
     {
         return Err(Diagnostic::backend(
-            "Rust IR deferred-action dispatch does not test its registration flag",
+            "MIR deferred-action dispatch does not test its registration flag",
         ));
     }
 
     let entry = block(function, action.entry)?;
     let Some(clear) = entry.statements.first() else {
         return Err(Diagnostic::backend(
-            "Rust IR deferred action does not clear its registration flag",
+            "MIR deferred action does not clear its registration flag",
         ));
     };
-    let write_only = Effects {
+    let write_only = hir::Effects {
         may_write: true,
-        ..Effects::default()
+        ..hir::Effects::default()
     };
     if clear.destination.local != action.registered
-        || clear.store != StoreOp::SetSome
         || clear.effects != write_only
-        || clear.value.effects != Effects::default()
+        || clear.value.effects != hir::Effects::default()
         || clear.value.panic != PanicEdge::None
         || !matches!(
             clear.value.kind,
-            RvalueKind::Use(Operand::Constant(Constant::Bool(false)))
+            RvalueKind::Use(Operand::Constant(ConstValue::Bool(false), Ty::Bool))
         )
     {
         return Err(Diagnostic::backend(
-            "Rust IR deferred action must begin by clearing its registration flag",
+            "MIR deferred action must begin by clearing its registration flag",
         ));
     }
 
-    let replacement = action.replacement;
+    let replacement = &action.replacement;
     if replacement.target != action.continuation
         || replacement.active != active
         || replacement.recovered != recovered
     {
         return Err(Diagnostic::backend(
-            "Rust IR deferred-action panic replacement has an invalid continuation or state",
+            "MIR deferred-action panic replacement has an invalid continuation or state",
         ));
     }
-    verify_capture(
-        function,
-        replacement.capture,
-        "deferred-action panic replacement capture",
-    )?;
-    let capture = replacement.capture.effects;
-    let expected = Effects {
-        may_write: true,
-        ..capture
-    };
-    verify_effects(
-        replacement.effects,
-        expected,
-        "deferred-action panic replacement",
-    )?;
+    if replacement.effects != write_only {
+        return Err(Diagnostic::backend(
+            "MIR deferred-action panic replacement effect mismatch",
+        ));
+    }
     if replacement.provenance != Provenance::Synthetic(SyntheticOrigin::PanicCleanupDispatch) {
         return Err(Diagnostic::backend(
-            "Rust IR deferred-action panic replacement has invalid provenance",
+            "MIR deferred-action panic replacement has invalid provenance",
         ));
     }
     verify_source_provenance(
@@ -203,27 +172,6 @@ fn verify_action(
         function.id,
         "deferred-action panic replacement",
     )
-}
-
-fn verify_capture(
-    function: &Function,
-    capture: PanicPayloadCapture,
-    context: &str,
-) -> Result<(), Diagnostic> {
-    if capture.operation != RuntimeOp::GoPanicPayloadToInterface
-        || capture.operation.signature().parameters() != [RuntimeType::GoPanicPayload]
-        || capture.operation.signature().result() != RuntimeType::GoInterface
-    {
-        return Err(Diagnostic::backend(format!(
-            "Rust IR {context} has an invalid payload capture operation"
-        )));
-    }
-    verify_effects(
-        capture.effects,
-        super::super::runtime_effects(capture.operation),
-        context,
-    )?;
-    verify_source_provenance(&capture.provenance, function.id, context)
 }
 
 fn action_region(
@@ -242,7 +190,7 @@ fn action_region(
         let block = block(function, id)?;
         if matches!(block.terminator.kind, TerminatorKind::Return(_)) {
             return Err(Diagnostic::backend(
-                "Rust IR deferred-action region returns instead of reaching its continuation",
+                "MIR deferred-action region returns instead of reaching its continuation",
             ));
         }
         for edge in block
@@ -253,7 +201,7 @@ fn action_region(
         {
             if edge != PanicEdge::None && edge != PanicEdge::Propagate {
                 return Err(Diagnostic::backend(
-                    "Rust IR deferred-action panic bypasses its owned replacement boundary",
+                    "MIR deferred-action panic bypasses its owned replacement boundary",
                 ));
             }
         }
@@ -276,7 +224,7 @@ fn verify_region_predecessors(
             };
             if !valid {
                 return Err(Diagnostic::backend(
-                    "Rust IR deferred-action region has an external control-flow predecessor",
+                    "MIR deferred-action region has an external control-flow predecessor",
                 ));
             }
         }
@@ -299,7 +247,7 @@ fn verify_completion(
         }
         if dispatches.contains(&id) || actions.contains(&id) {
             return Err(Diagnostic::backend(
-                "Rust IR panic cleanup completion re-enters a deferred action",
+                "MIR panic cleanup completion re-enters a deferred action",
             ));
         }
         let block = block(function, id)?;
@@ -307,7 +255,7 @@ fn verify_completion(
             TerminatorKind::Return(_) => returns += 1,
             TerminatorKind::Unreachable => {
                 return Err(Diagnostic::backend(
-                    "Rust IR panic cleanup completion does not terminate with a return",
+                    "MIR panic cleanup completion does not terminate with a return",
                 ));
             }
             kind => pending.extend(successors(kind)),
@@ -315,7 +263,7 @@ fn verify_completion(
     }
     if returns == 0 {
         return Err(Diagnostic::backend(
-            "Rust IR panic cleanup completion has no terminal return",
+            "MIR panic cleanup completion has no terminal return",
         ));
     }
     Ok(())
@@ -336,12 +284,12 @@ fn verify_cleanup_edges(
             if let PanicEdge::Cleanup(target) = edge {
                 if action_blocks.contains(&block.id) {
                     return Err(Diagnostic::backend(
-                        "Rust IR deferred-action panic bypasses its owned replacement boundary",
+                        "MIR deferred-action panic bypasses its owned replacement boundary",
                     ));
                 }
                 if cleanup_entry != Some(target) {
                     return Err(Diagnostic::backend(
-                        "Rust IR panic edge does not target the function cleanup entry",
+                        "MIR panic edge does not target the function cleanup entry",
                     ));
                 }
             }
@@ -362,7 +310,9 @@ fn predecessors(function: &Function) -> BTreeMap<BasicBlockId, Vec<BasicBlockId>
 
 fn successors(terminator: &TerminatorKind) -> Vec<BasicBlockId> {
     match terminator {
-        TerminatorKind::Goto(target) | TerminatorKind::Call { next: target, .. } => vec![*target],
+        TerminatorKind::Goto(target)
+        | TerminatorKind::Call { target, .. }
+        | TerminatorKind::SpawnEmpty { target } => vec![*target],
         TerminatorKind::SwitchBool {
             then_target,
             else_target,
@@ -375,35 +325,31 @@ fn successors(terminator: &TerminatorKind) -> Vec<BasicBlockId> {
 fn block(function: &Function, id: BasicBlockId) -> Result<&super::super::BasicBlock, Diagnostic> {
     function.blocks.get(id.0 as usize).ok_or_else(|| {
         Diagnostic::backend(format!(
-            "Rust IR deferred action references invalid block {}",
+            "MIR deferred action references invalid block {}",
             id.0
         ))
     })
 }
 
-pub(super) fn verify_recover(
+fn place_ty(function: &Function, local: crate::compiler::ids::LocalId) -> Result<&Ty, Diagnostic> {
+    function
+        .locals
+        .get(local.0 as usize)
+        .map(|local| &local.ty)
+        .ok_or_else(|| {
+            Diagnostic::backend(format!(
+                "MIR deferred action references invalid local {}",
+                local.0
+            ))
+        })
+}
+
+fn verify_target(
     function: &Function,
-    state: Place,
-    value: &Operand,
-    nil: RuntimeOp,
-) -> Result<RustType, Diagnostic> {
-    verify_same(
-        function.place_ty(state)?,
-        RustType::Bool,
-        "panic recovery state",
-    )?;
-    verify_same(
-        function.operand_ty(value)?,
-        RustType::GoInterface,
-        "panic recovery value",
-    )?;
-    if nil != RuntimeOp::GoInterfaceNil
-        || !nil.signature().parameters().is_empty()
-        || nil.signature().result() != RuntimeType::GoInterface
-    {
-        return Err(Diagnostic::backend(
-            "Rust IR recover uses an invalid nil-interface operation",
-        ));
-    }
-    Ok(RustType::GoInterface)
+    target: BasicBlockId,
+    context: &str,
+) -> Result<(), Diagnostic> {
+    ((target.0 as usize) < function.blocks.len())
+        .then_some(())
+        .ok_or_else(|| Diagnostic::backend(format!("MIR {context} block does not exist")))
 }

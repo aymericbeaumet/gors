@@ -25,11 +25,34 @@ pub struct Function {
     pub source: SourceRef,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PanicCleanup {
     pub entry: BasicBlockId,
     pub active: LocalId,
     pub recovered: LocalId,
+    pub actions: Vec<DeferredAction>,
+    pub completion: BasicBlockId,
+}
+
+/// One statically registered deferred call in reverse execution order.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeferredAction {
+    pub dispatch: BasicBlockId,
+    pub registered: LocalId,
+    pub entry: BasicBlockId,
+    pub blocks: Vec<BasicBlockId>,
+    pub continuation: BasicBlockId,
+    pub replacement: PanicReplacement,
+}
+
+/// Replacement of the active Go panic after one deferred action panics.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PanicReplacement {
+    pub target: BasicBlockId,
+    pub active: LocalId,
+    pub recovered: LocalId,
+    pub effects: hir::Effects,
+    pub provenance: Provenance,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

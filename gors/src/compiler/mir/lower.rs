@@ -30,6 +30,7 @@ use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::{BasicBlockId, ClosureId, LocalId};
 use crate::compiler::types::{ConstValue, Ty};
+use panic_cleanup::DeferredCall;
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]
 pub(super) use test_file::lower_file;
@@ -50,20 +51,14 @@ struct FunctionLowerer {
     closures: Vec<hir::Closure>,
     closure_returns: Vec<ClosureReturn>,
     active_closures: Vec<ClosureId>,
-    deferred: Vec<hir::Block>,
-    all_deferred: Vec<DeferredAction>,
+    deferred: Vec<DeferredCall>,
+    all_deferred: Vec<DeferredCall>,
     defer_flags: Vec<LocalId>,
     next_defer: usize,
     recover_active: Option<LocalId>,
     recover_value: Option<LocalId>,
     addressed_locals: BTreeMap<LocalId, LocalId>,
     initialized_addressed_locals: BTreeSet<LocalId>,
-}
-
-#[derive(Clone)]
-struct DeferredAction {
-    registered: LocalId,
-    body: hir::Block,
 }
 
 #[derive(Clone)]
@@ -132,7 +127,7 @@ impl FunctionLowerer {
             .stmts
             .iter()
             .filter_map(|statement| match &statement.kind {
-                hir::StmtKind::Defer { body, .. } => Some(body.clone()),
+                hir::StmtKind::Defer { body, .. } => Some((body.clone(), statement.source)),
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -140,12 +135,14 @@ impl FunctionLowerer {
         let body_entry = if deferred_bodies.is_empty() {
             None
         } else {
-            for body in deferred_bodies {
+            for (body, source) in deferred_bodies {
                 let registered = lowerer.new_temp(Ty::Bool);
                 lowerer.defer_flags.push(registered);
-                lowerer
-                    .all_deferred
-                    .push(DeferredAction { registered, body });
+                lowerer.all_deferred.push(DeferredCall {
+                    registered,
+                    body,
+                    source,
+                });
             }
             let active = lowerer.new_temp(Ty::Bool);
             let recovered = lowerer.new_temp(Ty::Interface(Vec::new()));

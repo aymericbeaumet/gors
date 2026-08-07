@@ -54,9 +54,43 @@ fn encode_function(encoder: &mut Encoder, function: &mir::Function) {
             encoder.field(b"entry", |encoder| block_id(encoder, cleanup.entry));
             encoder.field(b"active", |encoder| local_id(encoder, cleanup.active));
             encoder.field(b"recovered", |encoder| local_id(encoder, cleanup.recovered));
+            encoder.field(b"actions", |encoder| {
+                encoder.sequence(&cleanup.actions, encode_deferred_action);
+            });
+            encoder.field(b"completion", |encoder| {
+                block_id(encoder, cleanup.completion);
+            });
         });
     });
     encoder.field(b"source", |encoder| source_ref(encoder, function.source));
+}
+
+fn encode_deferred_action(encoder: &mut Encoder, action: &mir::DeferredAction) {
+    encoder.field(b"dispatch", |encoder| block_id(encoder, action.dispatch));
+    encoder.field(b"registered", |encoder| {
+        local_id(encoder, action.registered);
+    });
+    encoder.field(b"entry", |encoder| block_id(encoder, action.entry));
+    encoder.field(b"blocks", |encoder| {
+        encoder.sequence(&action.blocks, |encoder, block| block_id(encoder, *block));
+    });
+    encoder.field(b"continuation", |encoder| {
+        block_id(encoder, action.continuation);
+    });
+    encoder.field(b"replacement", |encoder| {
+        let replacement = &action.replacement;
+        encoder.field(b"target", |encoder| block_id(encoder, replacement.target));
+        encoder.field(b"active", |encoder| local_id(encoder, replacement.active));
+        encoder.field(b"recovered", |encoder| {
+            local_id(encoder, replacement.recovered);
+        });
+        encoder.field(b"effects", |encoder| {
+            hir_effects(encoder, replacement.effects);
+        });
+        encoder.field(b"provenance", |encoder| {
+            encode_provenance(encoder, &replacement.provenance);
+        });
+    });
 }
 
 fn encode_local(encoder: &mut Encoder, local: &mir::LocalDecl) {

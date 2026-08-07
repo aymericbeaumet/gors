@@ -435,6 +435,16 @@ fn remove_unreachable_blocks(function: &mut mir::Function) -> Result<(), Diagnos
     function.entry = new_entry;
     if let Some(cleanup) = &mut function.panic_cleanup {
         cleanup.entry = remapped_block(cleanup.entry, &remap)?;
+        cleanup.completion = remapped_block(cleanup.completion, &remap)?;
+        for action in &mut cleanup.actions {
+            action.dispatch = remapped_block(action.dispatch, &remap)?;
+            action.entry = remapped_block(action.entry, &remap)?;
+            for block in &mut action.blocks {
+                *block = remapped_block(*block, &remap)?;
+            }
+            action.continuation = remapped_block(action.continuation, &remap)?;
+            action.replacement.target = remapped_block(action.replacement.target, &remap)?;
+        }
     }
     Ok(())
 }

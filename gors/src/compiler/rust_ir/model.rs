@@ -26,13 +26,37 @@ pub struct Function {
     pub source: SourceRef,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PanicCleanup {
     pub entry: BasicBlockId,
     pub active: LocalId,
     pub recovered: LocalId,
     pub capture: PanicPayloadCapture,
     pub rethrow: PanicPayloadRethrow,
+    pub actions: Vec<DeferredAction>,
+    pub completion: BasicBlockId,
+}
+
+/// One verified deferred action with its own unwind boundary.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeferredAction {
+    pub dispatch: BasicBlockId,
+    pub registered: LocalId,
+    pub entry: BasicBlockId,
+    pub blocks: Vec<BasicBlockId>,
+    pub continuation: BasicBlockId,
+    pub replacement: PanicReplacement,
+}
+
+/// Exact representation transition taken when one deferred action panics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PanicReplacement {
+    pub target: BasicBlockId,
+    pub active: LocalId,
+    pub recovered: LocalId,
+    pub capture: PanicPayloadCapture,
+    pub effects: Effects,
+    pub provenance: Provenance,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

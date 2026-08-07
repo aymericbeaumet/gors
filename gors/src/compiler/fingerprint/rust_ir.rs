@@ -91,12 +91,57 @@ fn encode_function(encoder: &mut Encoder, function: &rust_ir::Function) {
                     encode_provenance(encoder, &cleanup.rethrow.provenance);
                 });
             });
+            encoder.field(b"actions", |encoder| {
+                encoder.sequence(&cleanup.actions, encode_deferred_action);
+            });
+            encoder.field(b"completion", |encoder| {
+                block_id(encoder, cleanup.completion);
+            });
         });
     });
     encoder.field(b"control-flow", |encoder| {
         encode_control_flow(encoder, &function.control_flow);
     });
     encoder.field(b"source", |encoder| source_ref(encoder, function.source));
+}
+
+fn encode_deferred_action(encoder: &mut Encoder, action: &rust_ir::DeferredAction) {
+    encoder.field(b"dispatch", |encoder| block_id(encoder, action.dispatch));
+    encoder.field(b"registered", |encoder| {
+        local_id(encoder, action.registered);
+    });
+    encoder.field(b"entry", |encoder| block_id(encoder, action.entry));
+    encoder.field(b"blocks", |encoder| {
+        encoder.sequence(&action.blocks, |encoder, block| block_id(encoder, *block));
+    });
+    encoder.field(b"continuation", |encoder| {
+        block_id(encoder, action.continuation);
+    });
+    encoder.field(b"replacement", |encoder| {
+        let replacement = &action.replacement;
+        encoder.field(b"target", |encoder| block_id(encoder, replacement.target));
+        encoder.field(b"active", |encoder| local_id(encoder, replacement.active));
+        encoder.field(b"recovered", |encoder| {
+            local_id(encoder, replacement.recovered);
+        });
+        encoder.field(b"capture", |encoder| {
+            encoder.field(b"operation", |encoder| {
+                encode_runtime_op(encoder, replacement.capture.operation);
+            });
+            encoder.field(b"effects", |encoder| {
+                encode_effects(encoder, replacement.capture.effects);
+            });
+            encoder.field(b"provenance", |encoder| {
+                encode_provenance(encoder, &replacement.capture.provenance);
+            });
+        });
+        encoder.field(b"effects", |encoder| {
+            encode_effects(encoder, replacement.effects);
+        });
+        encoder.field(b"provenance", |encoder| {
+            encode_provenance(encoder, &replacement.provenance);
+        });
+    });
 }
 
 fn encode_artifact(encoder: &mut Encoder, artifact: &rust_ir::FunctionArtifactPlan) {

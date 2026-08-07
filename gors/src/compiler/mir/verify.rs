@@ -8,6 +8,7 @@ mod interfaces;
 mod pointers;
 mod printing;
 mod provenance;
+mod recovery;
 mod strings;
 mod structs;
 mod type_rules;
@@ -15,8 +16,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::construct::spawn_empty_effects;
 use super::{
-    File, Function, LocalDecl, Operand, PanicEdge, Place, Rvalue, RvalueKind, Statement,
-    Terminator, TerminatorKind,
+    File, Function, LocalDecl, Operand, Place, Rvalue, RvalueKind, Statement, Terminator,
+    TerminatorKind,
 };
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
@@ -192,49 +193,8 @@ impl Function {
             }
             self.verify_terminator(&block.terminator, signatures)?;
         }
-        self.verify_panic_cleanup()?;
+        recovery::verify_panic_cleanup(self)?;
         self.verify_definite_initialization()
-    }
-
-    fn verify_panic_cleanup(&self) -> Result<(), Diagnostic> {
-        if let Some(cleanup) = self.panic_cleanup {
-            if cleanup.entry.0 as usize >= self.blocks.len() {
-                return Err(Diagnostic::backend(
-                    "MIR panic cleanup block does not exist",
-                ));
-            }
-            verify_same_type(
-                self.place_ty(Place {
-                    local: cleanup.active,
-                })?,
-                &Ty::Bool,
-                "panic cleanup state",
-            )?;
-            verify_same_type(
-                self.place_ty(Place {
-                    local: cleanup.recovered,
-                })?,
-                &Ty::Interface(Vec::new()),
-                "panic cleanup recovered value",
-            )?;
-        }
-        for block in &self.blocks {
-            for edge in block
-                .statements
-                .iter()
-                .map(|statement| statement.value.panic)
-                .chain(std::iter::once(block.terminator.panic))
-            {
-                if let PanicEdge::Cleanup(target) = edge
-                    && self.panic_cleanup.map(|cleanup| cleanup.entry) != Some(target)
-                {
-                    return Err(Diagnostic::backend(
-                        "MIR panic edge does not target the function cleanup entry",
-                    ));
-                }
-            }
-        }
-        Ok(())
     }
 
     fn verify_statement(&self, statement: &Statement) -> Result<(), Diagnostic> {
