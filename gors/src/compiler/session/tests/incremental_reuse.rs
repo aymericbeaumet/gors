@@ -194,6 +194,47 @@ fn float32_body_edits_invalidate_only_the_owning_numeric_root() {
 }
 
 #[test]
+fn unrelated_method_body_edits_leave_promoted_receiver_callers_green() {
+    let program = |unrelated: &str| {
+        raw_program(
+            "main.go",
+            "/checkout/main.go",
+            &format!(
+                "package main\ntype Inner struct {{ value int }}\nfunc (inner Inner) Read() int {{ return inner.value }}\ntype Outer struct {{ Inner }}\nfunc (outer Outer) Unrelated() int {{ return {unrelated} }}\nfunc selected(outer Outer) int {{ return outer.Read() }}\nfunc main() {{ println(selected(Outer{{Inner: Inner{{value: 3}}}})) }}\n"
+            ),
+        )
+    };
+    let mut session = CompilerSession::default();
+    session
+        .compile_program(program("1"))
+        .expect("initial promoted receiver program must compile");
+    let scheduled = session.scheduler_telemetry().scheduled_roots;
+    session.database().reset_telemetry();
+
+    let changed = program("2");
+    session
+        .compile_program(changed.clone())
+        .expect("unrelated method body edit must compile");
+
+    assert_eq!(session.scheduler_telemetry().scheduled_roots, scheduled + 1);
+    let telemetry = session.database().telemetry();
+    for kind in [
+        crate::compiler::db::QueryKind::TypedHir,
+        crate::compiler::db::QueryKind::VerifiedGoMir,
+        crate::compiler::db::QueryKind::NormalizedGoMir,
+        crate::compiler::db::QueryKind::VerifiedRustIr,
+    ] {
+        assert_eq!(telemetry.executions(kind), 1, "{kind:?}");
+    }
+
+    session.database().reset_telemetry();
+    session
+        .compile_program(changed)
+        .expect("unchanged promoted receiver revision must remain green");
+    assert_eq!(session.database().telemetry().total_executions(), 0);
+}
+
+#[test]
 fn goto_scope_diagnostic_is_incrementally_reused() {
     let program = raw_program(
         "main.go",

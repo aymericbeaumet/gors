@@ -23,6 +23,7 @@ mod imports;
 mod interfaces;
 mod iteration;
 mod maps;
+mod member_resolution;
 mod numeric_builtins;
 mod pointers;
 mod ranges;

@@ -533,6 +533,14 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
                 encode_expression(encoder, pointer);
             });
         }
+        hir::ExprKind::MethodReceiver { receiver, plan } => {
+            encoder.variant(b"method-receiver", |encoder| {
+                encoder.field(b"receiver", |encoder| encode_expression(encoder, receiver));
+                encoder.field(b"plan", |encoder| {
+                    encode_method_receiver_plan(encoder, plan)
+                });
+            });
+        }
         hir::ExprKind::InterfaceValue {
             value,
             type_identity,
@@ -559,8 +567,8 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
                     encoder.field(b"dynamic-type", |encoder| {
                         ty(encoder, &candidate.dynamic_ty);
                     });
-                    encoder.field(b"receiver-type", |encoder| {
-                        ty(encoder, &candidate.receiver_ty);
+                    encoder.field(b"receiver-plan", |encoder| {
+                        encode_method_receiver_plan(encoder, &candidate.receiver_plan);
                     });
                     encoder.field(b"function", |encoder| {
                         qualified_def_id(encoder, candidate.function);
@@ -765,6 +773,26 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
             });
         }),
     }
+}
+
+fn encode_method_receiver_plan(encoder: &mut Encoder, plan: &hir::MethodReceiverPlan) {
+    encoder.field(b"root-type", |encoder| ty(encoder, &plan.root_ty));
+    encoder.field(b"path", |encoder| {
+        encoder.sequence(&plan.path, |encoder, step| {
+            encoder.field(b"owner-type", |encoder| ty(encoder, &step.owner_ty));
+            encoder.field(b"field", |encoder| encoder.u32(step.field));
+            encoder.field(b"field-type", |encoder| ty(encoder, &step.field_ty));
+        });
+    });
+    encoder.field(b"selected-type", |encoder| ty(encoder, &plan.selected_ty));
+    encoder.field(b"adjustment", |encoder| {
+        encoder.u8(match plan.adjustment {
+            hir::MethodReceiverAdjustment::Identity => 0,
+            hir::MethodReceiverAdjustment::AutoAddress => 1,
+            hir::MethodReceiverAdjustment::AutoIndirect => 2,
+        });
+    });
+    encoder.field(b"receiver-type", |encoder| ty(encoder, &plan.receiver_ty));
 }
 
 fn encode_expression_list(encoder: &mut Encoder, label: &'static [u8], values: &[hir::Expr]) {

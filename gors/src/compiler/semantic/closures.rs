@@ -285,24 +285,15 @@ impl FunctionLowerer {
                 source,
             ));
         }
-        let symbol = self.resolve_method_symbol(&expression_receiver_ty, &member.name, source)?;
-        if symbol.pointer_receiver && !matches!(expression_receiver_ty.underlying(), Ty::Pointer(_))
-        {
-            return Err(Diagnostic::semantic(
-                format!(
-                    "type {expression_receiver_ty:?} has no method expression {}",
-                    member.name
-                ),
-                source,
-            ));
-        }
+        let resolution = self.resolve_method_set(&expression_receiver_ty, &member.name, source)?;
+        let symbol = resolution.symbol;
         if symbol.signature.variadic {
             return Err(Diagnostic::unsupported(
                 "variadic method expressions are not yet implemented",
                 source,
             ));
         }
-        let Some((method_receiver_ty, params)) = symbol.signature.params.split_first() else {
+        let Some((_, params)) = symbol.signature.params.split_first() else {
             return Err(Diagnostic::backend("method signature omitted its receiver"));
         };
         let mut closure_types = Vec::with_capacity(params.len().saturating_add(1));
@@ -324,13 +315,7 @@ impl FunctionLowerer {
 
         let receiver_node = self.alloc_node(member.source)?;
         let receiver = self.local_expr(receiver_node, *receiver_parameter, expression_receiver_ty);
-        let receiver = self.adjust_method_receiver(
-            receiver,
-            method_receiver_ty,
-            symbol.pointer_receiver,
-            member.source,
-            source,
-        )?;
+        let receiver = self.build_method_receiver(receiver, resolution.plan, member.source)?;
         let mut arguments = Vec::with_capacity(closure_params.len());
         arguments.push(receiver);
         for (parameter, parameter_ty) in argument_parameters.iter().zip(params) {
@@ -417,17 +402,18 @@ impl FunctionLowerer {
                 source,
             );
         }
-        let symbol = self.resolve_method_symbol(&receiver.ty, &member.name, source)?;
+        let resolution = self.resolve_selector_method(
+            &receiver.ty,
+            &member.name,
+            receiver.category == hir::ValueCategory::Place
+                || matches!(receiver.ty.underlying(), Ty::Pointer(_)),
+            source,
+        )?;
+        let symbol = resolution.symbol;
         let Some((receiver_ty, params)) = symbol.signature.params.split_first() else {
             return Err(Diagnostic::backend("method signature omitted its receiver"));
         };
-        let receiver = self.adjust_method_receiver(
-            receiver,
-            receiver_ty,
-            symbol.pointer_receiver,
-            base.source,
-            source,
-        )?;
+        let receiver = self.build_method_receiver(receiver, resolution.plan, base.source)?;
         let capture = self.alloc_local(
             None,
             receiver_ty.clone(),

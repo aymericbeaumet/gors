@@ -12,10 +12,10 @@
   "summary": {
     "groupCount": 15,
     "passingGroupCount": 15,
-    "caseCount": 344,
-    "passingCaseCount": 344,
+    "caseCount": 346,
+    "passingCaseCount": 346,
     "unsupportedCaseCount": 0,
-    "fixtureCount": 191
+    "fixtureCount": 193
   },
   "groups": [
     {
@@ -1236,6 +1236,7 @@
         "nil_slice_semantics",
         "numeric_wraparound",
         "pointer_equality",
+        "selector_depth_promotion",
         "slice_capacity_and_append",
         "string_bytes_and_invalid_utf8",
         "string_conversion_copies",
@@ -1246,10 +1247,10 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 53,
-        "passingCaseCount": 53,
+        "caseCount": 54,
+        "passingCaseCount": 54,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 32
+        "fixtureCount": 33
       },
       "cases": [
         {
@@ -1533,6 +1534,20 @@
           ],
           "freshFixtures": [
             "embedding_promotion_depth"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-selector-depth-promotion",
+          "title": "Selectors resolve promoted fields and methods at the shallowest depth through value and pointer embeddings",
+          "subtitle": "Struct types",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "selector_depth_promotion"
+          ],
+          "freshFixtures": [
+            "selector_depth_promotion"
           ],
           "reason": ""
         },
@@ -2015,6 +2030,7 @@
         "method_expressions",
         "method_value_receiver_capture",
         "named_numeric_types",
+        "pointer_embedding_method_sets",
         "properties_assignability_channels",
         "properties_of_types_and_values",
         "properties_underlying_type_chains",
@@ -2023,10 +2039,10 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 15,
-        "passingCaseCount": 15,
+        "caseCount": 16,
+        "passingCaseCount": 16,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 14
+        "fixtureCount": 15
       },
       "cases": [
         {
@@ -2190,6 +2206,20 @@
             "properties_of_types_and_values",
             "method_expressions",
             "method_value_receiver_capture"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-pointer-embedding-method-sets",
+          "title": "Embedding a pointer promotes value and pointer receiver methods into both value and pointer method sets",
+          "subtitle": "Method sets",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "pointer_embedding_method_sets"
+          ],
+          "freshFixtures": [
+            "pointer_embedding_method_sets"
           ],
           "reason": ""
         },

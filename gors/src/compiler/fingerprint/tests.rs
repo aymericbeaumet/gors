@@ -230,6 +230,79 @@ fn assignment_target_type_source_and_struct_path_participate_in_hir_fingerprints
 }
 
 #[test]
+fn method_receiver_paths_and_interface_candidates_participate_in_hir_fingerprints() {
+    let (original, _, _) = lower_stages(
+        r#"
+            package main
+            type Inner struct { value int }
+            func (inner Inner) Read() int { return inner.value }
+            type Outer struct { Inner }
+            type Reader interface { Read() int }
+            func direct(outer Outer) int { return outer.Read() }
+            func dynamic(reader Reader) int { return reader.Read() }
+            func main() { println(direct(Outer{Inner: Inner{value: 3}})) }
+        "#,
+    );
+
+    let direct_fingerprint = hir_function(hir_named(&original, "direct"));
+    let mut changed_direct = original.clone();
+    let direct = changed_direct
+        .functions
+        .iter_mut()
+        .find(|function| function.name == "direct")
+        .unwrap();
+    let hir::StmtKind::Return(values) = &mut direct
+        .body
+        .stmts
+        .first_mut()
+        .expect("direct return statement")
+        .kind
+    else {
+        panic!("expected direct return");
+    };
+    let hir::ExprKind::Call { args, .. } =
+        &mut values.first_mut().expect("direct return value").kind
+    else {
+        panic!("expected direct method call");
+    };
+    let hir::ExprKind::MethodReceiver { plan, .. } =
+        &mut args.first_mut().expect("direct receiver argument").kind
+    else {
+        panic!("expected direct receiver plan");
+    };
+    plan.path.first_mut().expect("promoted direct path").field = u32::MAX;
+    assert_ne!(direct_fingerprint, hir_function(direct));
+
+    let dynamic_fingerprint = hir_function(hir_named(&original, "dynamic"));
+    let mut changed_dynamic = original;
+    let dynamic = changed_dynamic
+        .functions
+        .iter_mut()
+        .find(|function| function.name == "dynamic")
+        .unwrap();
+    let hir::StmtKind::Return(values) = &mut dynamic
+        .body
+        .stmts
+        .first_mut()
+        .expect("dynamic return statement")
+        .kind
+    else {
+        panic!("expected dynamic return");
+    };
+    let hir::ExprKind::InterfaceCall { candidates, .. } =
+        &mut values.first_mut().expect("dynamic return value").kind
+    else {
+        panic!("expected interface call");
+    };
+    let promoted = candidates
+        .iter_mut()
+        .find(|candidate| !candidate.receiver_plan.path.is_empty())
+        .expect("promoted interface candidate");
+    promoted.receiver_plan.adjustment = hir::MethodReceiverAdjustment::AutoAddress;
+    assert_ne!(dynamic_fingerprint, hir_function(dynamic));
+}
+
+#[test]
 fn range_assignment_coercions_participate_in_hir_fingerprints() {
     let (original, _, _) = lower_stages(
         "package main\nfunc main() { values := []int{1}; var key any; var value any; for key, value = range values { break } }\n",

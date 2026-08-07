@@ -190,6 +190,14 @@ fn collect_expr_addresses(expression: &hir::Expr, addressed: &mut BTreeSet<Local
         | hir::ExprKind::InterfaceValue { value, .. } => {
             collect_expr_addresses(value, addressed);
         }
+        hir::ExprKind::MethodReceiver { receiver, plan } => {
+            if plan.adjustment == hir::MethodReceiverAdjustment::AutoAddress
+                && let hir::ExprKind::Local(local) = receiver.kind
+            {
+                addressed.insert(local);
+            }
+            collect_expr_addresses(receiver, addressed);
+        }
         hir::ExprKind::InterfaceCall { receiver, args, .. } => {
             collect_expr_addresses(receiver, addressed);
             collect_expression_addresses(args, addressed);

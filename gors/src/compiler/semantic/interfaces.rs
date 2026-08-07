@@ -11,6 +11,7 @@ use super::FunctionLowerer;
 use super::expressions::{
     coerce_expr, default_expr_type, ensure_bootstrap_value_type, is_assignable,
 };
+use super::member_resolution::resolve_method_set_member;
 
 struct InterfaceCase {
     ty: Ty,
@@ -55,10 +56,10 @@ impl FunctionLowerer {
             {
                 left.ty.clone()
             }
-            (Ty::Interface(methods), _) if self.concrete_implements(&right.ty, methods) => {
+            (Ty::Interface(methods), _) if self.concrete_implements(&right.ty, methods, source) => {
                 left.ty.clone()
             }
-            (_, Ty::Interface(methods)) if self.concrete_implements(&left.ty, methods) => {
+            (_, Ty::Interface(methods)) if self.concrete_implements(&left.ty, methods, source) => {
                 right.ty.clone()
             }
             _ => {
@@ -277,8 +278,8 @@ impl FunctionLowerer {
                 };
                 for dynamic_ty in [ty.clone(), Ty::Pointer(Box::new(ty.clone()))] {
                     if supports_dynamic_interface_type(&dynamic_ty)
-                        && self.concrete_implements(&dynamic_ty, required_methods)
-                        && self.concrete_implements(&dynamic_ty, asserted_methods)
+                        && self.concrete_implements(&dynamic_ty, required_methods, source)
+                        && self.concrete_implements(&dynamic_ty, asserted_methods, source)
                         && let Some(identity) = dynamic_ty.dynamic_type_identity()
                     {
                         identities.insert(identity);
@@ -300,7 +301,7 @@ impl FunctionLowerer {
                 source,
             ));
         }
-        if !self.concrete_implements(&asserted_ty, required_methods) {
+        if !self.concrete_implements(&asserted_ty, required_methods, source) {
             return Err(Diagnostic::semantic(
                 format!(
                     "impossible type assertion: {asserted_ty:?} does not implement {:?}",
@@ -480,7 +481,7 @@ impl FunctionLowerer {
             value = default_expr_type(value, source)?;
         }
         ensure_bootstrap_value_type(&value.ty, source)?;
-        if !self.concrete_implements(&value.ty, expected_methods) {
+        if !self.concrete_implements(&value.ty, expected_methods, source) {
             return Err(Diagnostic::semantic(
                 format!("type {:?} does not implement {expected:?}", value.ty),
                 source,
@@ -546,7 +547,7 @@ impl FunctionLowerer {
             });
         }
         ensure_bootstrap_value_type(actual, source)?;
-        if !self.concrete_implements(actual, expected_methods) {
+        if !self.concrete_implements(actual, expected_methods, source) {
             return Err(Diagnostic::semantic(
                 format!("type {actual:?} does not implement {expected:?}"),
                 source,
@@ -583,22 +584,24 @@ impl FunctionLowerer {
         }
     }
 
-    pub(super) fn concrete_implements(&self, concrete: &Ty, required: &[InterfaceMethod]) -> bool {
+    pub(super) fn concrete_implements(
+        &self,
+        concrete: &Ty,
+        required: &[InterfaceMethod],
+        source: SourceRef,
+    ) -> bool {
         if required.is_empty() {
             return true;
         }
-        let Some((definition, pointer)) = receiver_definition(concrete) else {
-            return false;
-        };
         required.iter().all(|required| {
-            self.methods
-                .get(&(definition, required.name.clone()))
-                .is_some_and(|method| {
-                    (pointer || !method.pointer_receiver)
-                        && method.signature.variadic == required.signature.variadic
-                        && method.signature.params.get(1..) == Some(&required.signature.params)
-                        && method.signature.results == required.signature.results
-                })
+            resolve_method_set_member(concrete, &required.name, &self.methods, source).is_ok_and(
+                |method| {
+                    method.symbol.signature.variadic == required.signature.variadic
+                        && method.symbol.signature.params.get(1..)
+                            == Some(&required.signature.params)
+                        && method.symbol.signature.results == required.signature.results
+                },
+            )
         })
     }
 
@@ -615,24 +618,20 @@ impl FunctionLowerer {
         };
         let mut candidates = std::collections::BTreeMap::new();
         for ty in self.type_aliases.values() {
-            let Ty::Named { definition, .. } = ty else {
+            let Ty::Named { .. } = ty else {
                 continue;
             };
-            let Some(method) = self.methods.get(&(*definition, member.to_owned())) else {
-                continue;
-            };
-            let receiver_ty = method
-                .signature
-                .params
-                .first()
-                .cloned()
-                .ok_or_else(|| Diagnostic::backend("method signature omitted its receiver"))?;
             for dynamic_ty in [ty.clone(), Ty::Pointer(Box::new(ty.clone()))] {
                 if !supports_dynamic_interface_type(&dynamic_ty)
-                    || !self.concrete_implements(&dynamic_ty, required)
+                    || !self.concrete_implements(&dynamic_ty, required, source)
                 {
                     continue;
                 }
+                let Ok(method) =
+                    resolve_method_set_member(&dynamic_ty, member, &self.methods, source)
+                else {
+                    continue;
+                };
                 let Some(type_identity) = dynamic_ty.dynamic_type_identity() else {
                     continue;
                 };
@@ -641,8 +640,8 @@ impl FunctionLowerer {
                     hir::InterfaceCallCandidate {
                         type_identity,
                         dynamic_ty,
-                        receiver_ty: receiver_ty.clone(),
-                        function: method.id,
+                        receiver_plan: method.plan,
+                        function: method.symbol.id,
                     },
                 );
             }
@@ -696,17 +695,6 @@ fn interface_contains(actual: &[InterfaceMethod], required: &[InterfaceMethod]) 
             .iter()
             .any(|actual| actual.name == required.name && actual.signature == required.signature)
     })
-}
-
-fn receiver_definition(ty: &Ty) -> Option<(crate::compiler::ids::DefId, bool)> {
-    match ty {
-        Ty::Named { definition, .. } => Some((*definition, false)),
-        Ty::Pointer(element) => match element.as_ref() {
-            Ty::Named { definition, .. } => Some((*definition, true)),
-            _ => None,
-        },
-        _ => None,
-    }
 }
 
 fn supports_dynamic_interface_type(ty: &Ty) -> bool {

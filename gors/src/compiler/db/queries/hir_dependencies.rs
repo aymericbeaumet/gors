@@ -237,6 +237,9 @@ fn collect_expression_callees(expression: &hir::Expr, callees: &mut BTreeSet<Qua
         | hir::ExprKind::InterfaceValue { value, .. } => {
             collect_expression_callees(value, callees);
         }
+        hir::ExprKind::MethodReceiver { receiver, .. } => {
+            collect_expression_callees(receiver, callees);
+        }
         hir::ExprKind::InterfaceCall {
             receiver,
             args,

@@ -11,6 +11,7 @@ mod flow;
 mod goroutines;
 mod interfaces;
 mod maps;
+mod method_receivers;
 mod panic_cleanup;
 mod pointers;
 mod ranges;
@@ -636,6 +637,9 @@ impl FunctionLowerer {
             }
             hir::ExprKind::PointerStructValue(pointer) => {
                 self.lower_pointer_struct_value_expr(pointer, &expr.ty, expr.source)
+            }
+            hir::ExprKind::MethodReceiver { receiver, plan } => {
+                self.lower_method_receiver_expr(receiver, plan, &expr.ty, expr.source)
             }
             hir::ExprKind::InterfaceValue {
                 value,

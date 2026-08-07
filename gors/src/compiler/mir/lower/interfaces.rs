@@ -775,24 +775,13 @@ impl FunctionLowerer {
             &candidate.dynamic_ty,
             source,
         )?;
-        if candidate.dynamic_ty == candidate.receiver_ty {
-            return Ok(unboxed);
-        }
-        if candidate
-            .dynamic_ty
-            .bootstrap_i64_struct_pointer_fields()
-            .is_some()
-            && candidate
-                .receiver_ty
-                .bootstrap_i64_struct_fields()
-                .is_some()
-        {
-            return self.read_struct_pointer_value(unboxed, &candidate.receiver_ty, source);
-        }
-        Err(Diagnostic::backend(format!(
-            "cannot adapt interface dynamic receiver {:?} to method receiver {:?}",
-            candidate.dynamic_ty, candidate.receiver_ty
-        )))
+        self.lower_method_receiver_operand(
+            unboxed,
+            &candidate.dynamic_ty,
+            &candidate.receiver_plan,
+            &candidate.receiver_plan.receiver_ty,
+            source,
+        )
     }
 
     fn unbox_interface_scalar(

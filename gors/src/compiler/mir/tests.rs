@@ -4,6 +4,7 @@ use crate::compiler::types::{ConstValue, ExactNumber, FloatTy, IntTy, Ty, UintTy
 
 mod append;
 mod control_targets;
+mod method_receivers;
 mod pointers;
 
 fn lower(source: &str) -> File {

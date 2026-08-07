@@ -266,6 +266,13 @@ pub enum ExprKind {
     AddressOfLocal(LocalId),
     AddressOfValue(Box<Expr>),
     PointerStructValue(Box<Expr>),
+    /// A receiver selected through an exact, type-checked embedded-field path.
+    /// MIR validates the complete plan before expanding it into ordinary
+    /// aggregate and pointer operations.
+    MethodReceiver {
+        receiver: Box<Expr>,
+        plan: MethodReceiverPlan,
+    },
     InterfaceValue {
         value: Box<Expr>,
         type_identity: Vec<u8>,
@@ -362,8 +369,31 @@ pub enum ExprKind {
 pub struct InterfaceCallCandidate {
     pub type_identity: Vec<u8>,
     pub dynamic_ty: Ty,
-    pub receiver_ty: Ty,
+    pub receiver_plan: MethodReceiverPlan,
     pub function: QualifiedDefId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MethodReceiverPlan {
+    pub root_ty: Ty,
+    pub path: Vec<EmbeddedFieldStep>,
+    pub selected_ty: Ty,
+    pub adjustment: MethodReceiverAdjustment,
+    pub receiver_ty: Ty,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmbeddedFieldStep {
+    pub owner_ty: Ty,
+    pub field: u32,
+    pub field_ty: Ty,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MethodReceiverAdjustment {
+    Identity,
+    AutoAddress,
+    AutoIndirect,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

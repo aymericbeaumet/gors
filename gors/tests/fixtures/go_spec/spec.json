@@ -917,6 +917,15 @@
           ]
         },
         {
+          "id": "spec-selector-depth-promotion",
+          "section": "Struct types",
+          "title": "Selectors resolve promoted fields and methods at the shallowest depth through value and pointer embeddings",
+          "status": "passing",
+          "fixtures": [
+            "selector_depth_promotion"
+          ]
+        },
+        {
           "id": "types-pointers",
           "section": "Pointer types",
           "title": "Pointers support nil checks, dereference, and assignment",
@@ -1333,6 +1342,15 @@
             "properties_of_types_and_values",
             "method_expressions",
             "method_value_receiver_capture"
+          ]
+        },
+        {
+          "id": "spec-pointer-embedding-method-sets",
+          "section": "Method sets",
+          "title": "Embedding a pointer promotes value and pointer receiver methods into both value and pointer method sets",
+          "status": "passing",
+          "fixtures": [
+            "pointer_embedding_method_sets"
           ]
         },
         {

@@ -561,6 +561,18 @@ unsupported boundaries.
 Nested local struct paths rebuild the value from leaf to root with explicit
 `StructSet` operations; the emitter must never reconstruct or repair an
 assignment path.
+Field and method selectors share one shallowest-depth breadth-first resolver;
+fields and methods occupy the same selector namespace, and equal-depth paths
+are ambiguous. Formal `MethodSet(T)` lookup is distinct from addressable
+selector shorthand. In particular, a defined pointer type retains underlying
+field selection but never inherits the pointed-to type's methods. Every
+selected concrete receiver reaches MIR as a typed `MethodReceiverPlan` whose
+root type, embedded field owners/indexes/types, selected type, exact
+address/indirection adjustment, and declared receiver type are validated before
+MIR expands it into ordinary pointer and aggregate operations. Promoted
+auto-address through a value-embedded field remains diagnosed until nested
+pointer storage can preserve alias identity across calls, panic, and escape;
+copy-in/write-back and temporary pointers are not valid substitutes.
 Address-taking of a non-nested integer local is explicit HIR intent. MIR plans
 one shared pointer-backed storage cell for each such local, initializes
 parameters and declarations at their Go sequence points, and routes subsequent

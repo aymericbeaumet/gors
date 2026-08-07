@@ -284,7 +284,7 @@ impl FunctionLowerer {
         )
     }
 
-    fn read_aggregate_struct_pointer_value(
+    pub(super) fn read_aggregate_struct_pointer_value(
         &mut self,
         pointer: Operand,
         ty: &Ty,
