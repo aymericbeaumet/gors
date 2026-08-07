@@ -358,4 +358,6 @@ pub(super) const ALL: &[RuntimeOp] = &[
         kind: IntegerKind::U64,
     },
     RuntimeOp::GoStringToSliceRunes,
+    RuntimeOp::GoInterfaceBoxPointerI64,
+    RuntimeOp::GoInterfaceUnboxPointerI64,
 ];

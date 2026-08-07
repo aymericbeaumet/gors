@@ -171,6 +171,8 @@ impl RuntimeOp {
             Self::GoMapI64GoStringIsNil => "go_map_i64_go_string_is_nil",
             Self::GoMapI64GoStringRangeKeys => "go_map_i64_go_string_range_keys",
             Self::GoStringToSliceRunes => "go_string_to_slice_runes",
+            Self::GoInterfaceBoxPointerI64 => "go_interface_box_pointer_i64",
+            Self::GoInterfaceUnboxPointerI64 => "go_interface_unbox_pointer_i64",
         }
     }
 }

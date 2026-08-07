@@ -215,6 +215,7 @@ impl Ty {
             }
             Self::LocalNamed { identity, .. } => format!("local-named:{identity}"),
             Self::Pointer(element) => match element.as_ref() {
+                Self::Int(IntTy::Int) => "pointer:builtin:int".to_owned(),
                 Self::Named { definition, .. } => format!("pointer:named:{definition}"),
                 Self::LocalNamed { identity, .. } => format!("pointer:local-named:{identity}"),
                 _ => return None,
@@ -326,7 +327,10 @@ impl Ty {
                 element.underlying() == &Self::String
                     || element.uses_interface_aggregate_representation()
             }
-            Self::Pointer(_) => self.bootstrap_i64_struct_pointer_fields().is_some(),
+            Self::Pointer(element) => {
+                element.underlying() == &Self::Int(IntTy::Int)
+                    || self.bootstrap_i64_struct_pointer_fields().is_some()
+            }
             _ => false,
         }
     }

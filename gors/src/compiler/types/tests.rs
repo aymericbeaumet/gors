@@ -1,4 +1,8 @@
-use super::{ConstValue, FloatTy, parse_go_float};
+use super::{ConstValue, FloatTy, IntTy, Ty, parse_go_float};
+use crate::compiler::ids::{DefinitionKey, DefinitionKind, IdentityInterner};
+use crate::compiler::input::{PackageKey, WorkspaceKey};
+
+type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 #[test]
 fn parses_decimal_and_hexadecimal_go_float_literals() {
@@ -84,4 +88,37 @@ fn exact_float_quantization_rejects_rounding_to_infinity() {
         Some(0x7fef_ffff_ffff_ffff)
     );
     assert_eq!(bits("0x1.fffffffffffff8p1023", FloatTy::Float64), None);
+}
+
+#[test]
+fn integer_pointer_interface_payloads_preserve_declared_type_identity() -> TestResult {
+    let mut interner = IdentityInterner::default();
+    let workspace = interner.workspace(&WorkspaceKey::ad_hoc("pointer-interface-types")?)?;
+    let package = interner.package(workspace, &PackageKey::command_line())?;
+    let definition = interner.definition(DefinitionKey::package_named(
+        package,
+        DefinitionKind::Type,
+        "Counter",
+    ))?;
+    let builtin = Ty::Pointer(Box::new(Ty::Int(IntTy::Int)));
+    let named = Ty::Pointer(Box::new(Ty::Named {
+        definition,
+        underlying: Box::new(Ty::Int(IntTy::Int)),
+    }));
+
+    assert!(builtin.supports_interface_payload());
+    assert!(named.supports_interface_payload());
+    assert_eq!(
+        builtin.dynamic_type_identity().as_deref(),
+        Some(b"pointer:builtin:int".as_slice())
+    );
+    assert_eq!(
+        named.dynamic_type_identity(),
+        Some(format!("pointer:named:{definition}").into_bytes())
+    );
+    assert_ne!(
+        builtin.dynamic_type_identity(),
+        named.dynamic_type_identity()
+    );
+    Ok(())
 }

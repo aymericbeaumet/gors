@@ -3,9 +3,10 @@
 use std::sync::Arc;
 
 use crate::{
-    GoInt, GoPointerStructI64, GoSliceGoString, GoSliceI64, GoSliceInterface, GoString,
-    go_pointer_struct_i64_equal, go_slice_i64_index, go_slice_i64_len, go_slice_interface_index,
-    go_slice_interface_len, go_string_from_bytes, go_string_from_static,
+    GoInt, GoPointerI64, GoPointerStructI64, GoSliceGoString, GoSliceI64, GoSliceInterface,
+    GoString, go_pointer_i64_equal, go_pointer_struct_i64_equal, go_slice_i64_index,
+    go_slice_i64_len, go_slice_interface_index, go_slice_interface_len, go_string_from_bytes,
+    go_string_from_static,
 };
 
 const RUNTIME_ERROR_TYPE_IDENTITY: &[u8] = b"runtime:gors-error";
@@ -33,6 +34,7 @@ enum InterfacePayload {
     F64(f64),
     GoString(GoString),
     StructI64(Arc<[GoInt]>),
+    PointerI64(GoPointerI64),
     PointerStructI64(GoPointerStructI64),
     SliceGoString(GoSliceGoString),
     Aggregate(GoSliceInterface),
@@ -102,6 +104,12 @@ pub fn go_interface_box_pointer_struct_i64(
     value: GoPointerStructI64,
 ) -> GoInterface {
     boxed(type_identity, InterfacePayload::PointerStructI64(value))
+}
+
+/// Copy a pointer-to-integer header into an interface while preserving pointee identity.
+#[must_use]
+pub fn go_interface_box_pointer_i64(type_identity: GoString, value: GoPointerI64) -> GoInterface {
+    boxed(type_identity, InterfacePayload::PointerI64(value))
 }
 
 /// Copy an interface-backed aggregate header into an interface.
@@ -208,6 +216,9 @@ pub fn go_interface_equal(left: GoInterface, right: GoInterface) -> bool {
         (InterfacePayload::F64(left), InterfacePayload::F64(right)) => left == right,
         (InterfacePayload::GoString(left), InterfacePayload::GoString(right)) => left == right,
         (InterfacePayload::StructI64(left), InterfacePayload::StructI64(right)) => left == right,
+        (InterfacePayload::PointerI64(left), InterfacePayload::PointerI64(right)) => {
+            go_pointer_i64_equal(left.clone(), right.clone())
+        }
         (InterfacePayload::PointerStructI64(left), InterfacePayload::PointerStructI64(right)) => {
             go_pointer_struct_i64_equal(left.clone(), right.clone())
         }
@@ -297,6 +308,15 @@ pub fn go_interface_unbox_pointer_struct_i64(
 ) -> GoPointerStructI64 {
     match checked_payload(value, type_identity) {
         InterfacePayload::PointerStructI64(value) => value,
+        _ => type_assertion_failure(),
+    }
+}
+
+/// Extract a pointer-to-integer after checking its exact dynamic type.
+#[must_use]
+pub fn go_interface_unbox_pointer_i64(value: GoInterface, type_identity: GoString) -> GoPointerI64 {
+    match checked_payload(value, type_identity) {
+        InterfacePayload::PointerI64(value) => value,
         _ => type_assertion_failure(),
     }
 }

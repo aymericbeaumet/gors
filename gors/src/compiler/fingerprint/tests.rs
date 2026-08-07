@@ -364,6 +364,47 @@ fn rust_ir_fingerprints_encode_hidden_and_terminal_runtime_operations() {
 }
 
 #[test]
+fn pointer_interface_fingerprints_encode_dynamic_type_and_runtime_operations() {
+    let (builtin_hir, builtin_mir, builtin_rust_ir) = lower_stages(
+        "package main\nfunc roundtrip(value *int) *int { var boxed any = value; return boxed.(*int) }\nfunc main() {}\n",
+    );
+    let (named_hir, named_mir, named_rust_ir) = lower_stages(
+        "package main\ntype Counter int\nfunc roundtrip(value *Counter) *Counter { var boxed any = value; return boxed.(*Counter) }\nfunc main() {}\n",
+    );
+
+    assert_ne!(
+        hir_function(hir_named(&builtin_hir, "roundtrip")),
+        hir_function(hir_named(&named_hir, "roundtrip"))
+    );
+    assert_ne!(
+        mir_function(mir_named(&builtin_mir, "roundtrip")),
+        mir_function(mir_named(&named_mir, "roundtrip"))
+    );
+    assert_ne!(
+        rust_ir_function(rust_ir_named(&builtin_rust_ir, "roundtrip")),
+        rust_ir_function(rust_ir_named(&named_rust_ir, "roundtrip"))
+    );
+
+    for (expected, replacement) in [
+        (
+            RuntimeOp::GoInterfaceBoxPointerI64,
+            RuntimeOp::GoInterfaceBoxPointerStructI64,
+        ),
+        (
+            RuntimeOp::GoInterfaceUnboxPointerI64,
+            RuntimeOp::GoInterfaceUnboxPointerStructI64,
+        ),
+    ] {
+        let mut changed = builtin_rust_ir.clone();
+        *runtime_call_op_mut(&mut changed, "roundtrip", expected) = replacement;
+        assert_ne!(
+            rust_ir_function(rust_ir_named(&builtin_rust_ir, "roundtrip")),
+            rust_ir_function(rust_ir_named(&changed, "roundtrip"))
+        );
+    }
+}
+
+#[test]
 fn runtime_requirement_fingerprints_are_canonical_and_exact() {
     let left = RuntimeRequirement::new([RuntimeOp::PrintI64, INT_DIV, RuntimeOp::PrintI64]);
     let reordered = RuntimeRequirement::new([INT_DIV, RuntimeOp::PrintI64]);

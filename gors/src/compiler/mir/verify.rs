@@ -763,6 +763,7 @@ impl Function {
                                 | hir::Builtin::InterfaceBoxI64
                                 | hir::Builtin::InterfaceBoxGoString
                                 | hir::Builtin::InterfaceBoxStructI64
+                                | hir::Builtin::InterfaceBoxPointerI64
                                 | hir::Builtin::InterfaceBoxPointerStructI64
                                 | hir::Builtin::InterfaceBoxAggregate
                                 | hir::Builtin::InterfaceBoxComparableAggregate
@@ -781,6 +782,7 @@ impl Function {
                                 | hir::Builtin::InterfaceBoxGoSliceGoString
                                 | hir::Builtin::InterfaceUnboxGoSliceGoString
                                 | hir::Builtin::InterfaceStructI64Get
+                                | hir::Builtin::InterfaceUnboxPointerI64
                                 | hir::Builtin::InterfaceUnboxPointerStructI64
                                 | hir::Builtin::InterfaceUnboxAggregate
                                 | hir::Builtin::FunctionNil

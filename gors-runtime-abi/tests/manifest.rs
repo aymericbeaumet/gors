@@ -120,11 +120,11 @@ fn current_contract_identity_is_sha256_of_canonical_bytes() {
 
     assert_eq!(manifest.schema().get(), 2);
     assert_eq!(manifest.contract(), CURRENT_CONTRACT_VERSION);
-    assert_eq!(manifest.contract(), ContractVersion::new(2, 26, 0));
+    assert_eq!(manifest.contract(), ContractVersion::new(2, 27, 0));
     assert_eq!(manifest.identity().as_bytes(), &expected);
     assert_eq!(
         manifest.identity().to_string(),
-        "6d589747d0fe3db13b3cecb86ae9875270caaaf87fc5e496253cf32a572192c6",
+        "d4ebc27454bd1867920c59fc95c1e42d8d33eec22defeb5ea95a6eba19f8a146",
         "the canonical runtime contract changed; review the ABI diff and bump its semantic version before accepting a new identity",
     );
 }
@@ -231,6 +231,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoInterfaceBoxI64
             | RuntimeOp::GoInterfaceBoxF64
             | RuntimeOp::GoInterfaceBoxGoString
+            | RuntimeOp::GoInterfaceBoxPointerI64
             | RuntimeOp::GoInterfaceBoxPointerStructI64
             | RuntimeOp::GoInterfaceBoxAggregate
             | RuntimeOp::GoInterfaceBoxComparableAggregate
@@ -241,6 +242,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoInterfaceUnboxF64
             | RuntimeOp::GoInterfaceUnboxGoString
             | RuntimeOp::GoInterfaceStructI64Get
+            | RuntimeOp::GoInterfaceUnboxPointerI64
             | RuntimeOp::GoInterfaceUnboxPointerStructI64
             | RuntimeOp::GoInterfaceUnboxAggregate
             | RuntimeOp::GoInterfaceEqual
@@ -371,6 +373,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoInterfaceBoxF64
             | RuntimeOp::GoInterfaceBoxGoString
             | RuntimeOp::GoInterfaceBoxStructI64
+            | RuntimeOp::GoInterfaceBoxPointerI64
             | RuntimeOp::GoInterfaceBoxPointerStructI64
             | RuntimeOp::GoInterfaceBoxAggregate
             | RuntimeOp::GoInterfaceBoxComparableAggregate
@@ -381,6 +384,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoInterfaceUnboxF64
             | RuntimeOp::GoInterfaceUnboxGoString
             | RuntimeOp::GoInterfaceStructI64Get
+            | RuntimeOp::GoInterfaceUnboxPointerI64
             | RuntimeOp::GoInterfaceUnboxPointerStructI64
             | RuntimeOp::GoInterfaceUnboxAggregate
             | RuntimeOp::GoInterfaceEqual
@@ -505,6 +509,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoInterfaceBoxF64
             | RuntimeOp::GoInterfaceBoxGoString
             | RuntimeOp::GoInterfaceBoxStructI64
+            | RuntimeOp::GoInterfaceBoxPointerI64
             | RuntimeOp::GoInterfaceBoxPointerStructI64
             | RuntimeOp::GoInterfaceBoxAggregate
             | RuntimeOp::GoInterfaceBoxComparableAggregate
@@ -515,6 +520,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoInterfaceUnboxF64
             | RuntimeOp::GoInterfaceUnboxGoString
             | RuntimeOp::GoInterfaceStructI64Get
+            | RuntimeOp::GoInterfaceUnboxPointerI64
             | RuntimeOp::GoInterfaceUnboxPointerStructI64
             | RuntimeOp::GoInterfaceUnboxAggregate
             | RuntimeOp::GoInterfaceEqual
@@ -589,6 +595,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoInterfaceUnboxI64
             | RuntimeOp::GoInterfaceUnboxF64
             | RuntimeOp::GoInterfaceUnboxGoString
+            | RuntimeOp::GoInterfaceUnboxPointerI64
             | RuntimeOp::GoInterfaceUnboxPointerStructI64
             | RuntimeOp::GoInterfaceUnboxAggregate => &[GoPanicCondition::TypeAssertionFailure],
             RuntimeOp::GoInterfaceEqual => &[GoPanicCondition::UncomparableInterfaceComparison],
@@ -679,6 +686,7 @@ fn runtime_effect_metadata_is_complete_and_exact() {
             | RuntimeOp::GoInterfaceBoxF64
             | RuntimeOp::GoInterfaceBoxGoString
             | RuntimeOp::GoInterfaceBoxStructI64
+            | RuntimeOp::GoInterfaceBoxPointerI64
             | RuntimeOp::GoInterfaceBoxPointerStructI64
             | RuntimeOp::GoInterfaceBoxAggregate
             | RuntimeOp::GoInterfaceBoxComparableAggregate

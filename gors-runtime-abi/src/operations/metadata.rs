@@ -89,6 +89,7 @@ impl RuntimeOp {
             | Self::GoInterfaceBoxF64
             | Self::GoInterfaceBoxGoString
             | Self::GoInterfaceBoxStructI64
+            | Self::GoInterfaceBoxPointerI64
             | Self::GoInterfaceBoxPointerStructI64
             | Self::GoInterfaceIsNil
             | Self::GoInterfaceIsType
@@ -97,6 +98,7 @@ impl RuntimeOp {
             | Self::GoInterfaceUnboxF64
             | Self::GoInterfaceUnboxGoString
             | Self::GoInterfaceStructI64Get
+            | Self::GoInterfaceUnboxPointerI64
             | Self::GoInterfaceUnboxPointerStructI64
             | Self::GoSliceBoolFromStatic
             | Self::GoSliceBoolIndex
@@ -490,6 +492,7 @@ impl RuntimeOp {
             | Self::GoInterfaceBoxI64
             | Self::GoInterfaceBoxF64
             | Self::GoInterfaceBoxGoString
+            | Self::GoInterfaceBoxPointerI64
             | Self::GoInterfaceBoxPointerStructI64
             | Self::GoInterfaceBoxAggregate
             | Self::GoInterfaceBoxComparableAggregate => RuntimeEffects::new(
@@ -514,6 +517,7 @@ impl RuntimeOp {
             | Self::GoInterfaceUnboxI64
             | Self::GoInterfaceUnboxF64
             | Self::GoInterfaceUnboxGoString
+            | Self::GoInterfaceUnboxPointerI64
             | Self::GoInterfaceUnboxPointerStructI64
             | Self::GoInterfaceUnboxAggregate => RuntimeEffects::new(
                 AllocationEffect::None,

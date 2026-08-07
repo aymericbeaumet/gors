@@ -172,4 +172,6 @@ pub enum RuntimeOp {
     GoMapI64GoStringIsNil,
     GoMapI64GoStringRangeKeys,
     GoStringToSliceRunes,
+    GoInterfaceBoxPointerI64,
+    GoInterfaceUnboxPointerI64,
 }

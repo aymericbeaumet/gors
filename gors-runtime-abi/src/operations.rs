@@ -687,6 +687,9 @@ impl RuntimeOp {
                 GO_INTERFACE_BOX_POINTER_STRUCT_I64,
                 RuntimeType::GoInterface,
             ),
+            Self::GoInterfaceBoxPointerI64 => {
+                RuntimeSignature::new(GO_INTERFACE_BOX_POINTER_I64, RuntimeType::GoInterface)
+            }
             Self::GoInterfaceIsNil => {
                 RuntimeSignature::new(GO_INTERFACE_PARAMETER, RuntimeType::Bool)
             }
@@ -713,6 +716,9 @@ impl RuntimeOp {
             }
             Self::GoInterfaceUnboxPointerStructI64 => {
                 RuntimeSignature::new(GO_INTERFACE_AND_TYPE, RuntimeType::GoPointerStructI64)
+            }
+            Self::GoInterfaceUnboxPointerI64 => {
+                RuntimeSignature::new(GO_INTERFACE_AND_TYPE, RuntimeType::GoPointerI64)
             }
             Self::GoSliceBoolFromStatic => {
                 RuntimeSignature::new(STATIC_BOOL_SLICE_PARAMETER, RuntimeType::GoSliceBool)

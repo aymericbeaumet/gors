@@ -179,6 +179,8 @@ impl RuntimeOp {
             Self::GoMapI64GoStringIsNil => 170,
             Self::GoMapI64GoStringRangeKeys => 171,
             Self::GoStringToSliceRunes => 216,
+            Self::GoInterfaceBoxPointerI64 => 217,
+            Self::GoInterfaceUnboxPointerI64 => 218,
         })
     }
 }

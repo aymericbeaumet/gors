@@ -2,6 +2,7 @@ use super::*;
 
 mod integer;
 mod maps;
+mod pointer_interfaces;
 
 #[test]
 fn strings_preserve_arbitrary_bytes() {

@@ -412,6 +412,49 @@ fn verifier_rejects_invalid_float_interface_runtime_calls() {
 }
 
 #[test]
+fn verifier_rejects_invalid_integer_pointer_interface_calls() {
+    let source = r#"
+        package main
+        type Counter int
+        func main() {
+            value := 1
+            var boxed any = &value
+            _, _ = boxed.(*int)
+            named := Counter(2)
+            var namedBox any = &named
+            _, _ = namedBox.(*Counter)
+        }
+    "#;
+
+    for (builtin, expected) in [
+        (hir::Builtin::InterfaceBoxPointerI64, "interface boxing"),
+        (
+            hir::Builtin::InterfaceUnboxPointerI64,
+            "interface integer pointer extraction",
+        ),
+    ] {
+        let mut file = lower(source);
+        let arguments = file
+            .functions
+            .iter_mut()
+            .flat_map(|function| &mut function.blocks)
+            .find_map(|block| match &mut block.terminator.kind {
+                TerminatorKind::Call {
+                    callee: hir::Callee::Builtin(actual),
+                    args,
+                    ..
+                } if *actual == builtin => Some(args),
+                _ => None,
+            })
+            .expect("expected integer-pointer interface call");
+        arguments.clear();
+
+        let error = file.verify().unwrap_err();
+        assert!(error.message.contains(expected), "{builtin:?}: {error:?}");
+    }
+}
+
+#[test]
 fn map_verifier_accepts_named_maps_and_rejects_wrong_key_and_value_types() {
     let source = r#"
         package main

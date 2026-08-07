@@ -63,7 +63,9 @@ fn current_operation_catalogs_are_complete_and_collision_free() {
     assert_eq!(RuntimeOp::GoMapStringI64RangeKeys.id().get(), 161);
     assert_eq!(RuntimeOp::GoMapI64GoStringRangeKeys.id().get(), 171);
     assert_eq!(RuntimeOp::GoStringToSliceRunes.id().get(), 216);
-    assert_eq!(RuntimeOp::ALL.len(), 211);
+    assert_eq!(RuntimeOp::GoInterfaceBoxPointerI64.id().get(), 217);
+    assert_eq!(RuntimeOp::GoInterfaceUnboxPointerI64.id().get(), 218);
+    assert_eq!(RuntimeOp::ALL.len(), 213);
 
     let integer_ids = [
         [172, 173, 174, 8, 175, 176, 177, 178],

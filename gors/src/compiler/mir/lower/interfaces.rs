@@ -532,6 +532,14 @@ impl FunctionLowerer {
             Ty::Struct(_) if ty.interface_aggregate_struct_fields().is_some() => {
                 self.unbox_interface_aggregate_struct(interface, type_identity, ty, source)
             }
+            Ty::Pointer(element) if element.underlying() == &Ty::Int(IntTy::Int) => self
+                .unbox_interface_scalar(
+                    hir::Builtin::InterfaceUnboxPointerI64,
+                    interface,
+                    identity,
+                    ty.clone(),
+                    source,
+                ),
             Ty::Pointer(_) if ty.bootstrap_i64_struct_pointer_fields().is_some() => self
                 .unbox_interface_scalar(
                     hir::Builtin::InterfaceUnboxPointerStructI64,
@@ -587,6 +595,9 @@ impl FunctionLowerer {
                     builtin,
                     self.snapshot_interface_aggregate_struct(value_operand, value_ty, source)?,
                 )
+            }
+            Ty::Pointer(element) if element.underlying() == &Ty::Int(IntTy::Int) => {
+                (hir::Builtin::InterfaceBoxPointerI64, value_operand)
             }
             Ty::Pointer(_) if value_ty.bootstrap_i64_struct_pointer_fields().is_some() => {
                 (hir::Builtin::InterfaceBoxPointerStructI64, value_operand)

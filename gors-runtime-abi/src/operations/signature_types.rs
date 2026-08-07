@@ -105,6 +105,8 @@ pub(super) const GO_INTERFACE_BOX_STRUCT_I64: &[RuntimeType] =
     &[RuntimeType::GoString, RuntimeType::GoSliceI64];
 pub(super) const GO_INTERFACE_BOX_POINTER_STRUCT_I64: &[RuntimeType] =
     &[RuntimeType::GoString, RuntimeType::GoPointerStructI64];
+pub(super) const GO_INTERFACE_BOX_POINTER_I64: &[RuntimeType] =
+    &[RuntimeType::GoString, RuntimeType::GoPointerI64];
 pub(super) const GO_INTERFACE_BOX_AGGREGATE: &[RuntimeType] =
     &[RuntimeType::GoString, RuntimeType::GoSliceInterface];
 pub(super) const STATIC_BOOL_SLICE_PARAMETER: &[RuntimeType] = &[RuntimeType::StaticBoolSlice];

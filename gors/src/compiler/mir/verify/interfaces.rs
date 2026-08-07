@@ -14,6 +14,7 @@ pub(super) fn is_interface_builtin(builtin: hir::Builtin) -> bool {
             | hir::Builtin::InterfaceBoxGoString
             | hir::Builtin::InterfaceBoxGoSliceGoString
             | hir::Builtin::InterfaceBoxStructI64
+            | hir::Builtin::InterfaceBoxPointerI64
             | hir::Builtin::InterfaceBoxPointerStructI64
             | hir::Builtin::InterfaceBoxAggregate
             | hir::Builtin::InterfaceBoxComparableAggregate
@@ -27,6 +28,7 @@ pub(super) fn is_interface_builtin(builtin: hir::Builtin) -> bool {
             | hir::Builtin::InterfaceUnboxGoString
             | hir::Builtin::InterfaceUnboxGoSliceGoString
             | hir::Builtin::InterfaceStructI64Get
+            | hir::Builtin::InterfaceUnboxPointerI64
             | hir::Builtin::InterfaceUnboxPointerStructI64
             | hir::Builtin::InterfaceUnboxAggregate
             | hir::Builtin::FunctionNil
@@ -65,6 +67,7 @@ pub(super) fn verify_interface_call(
         hir::Builtin::InterfaceBoxStructI64 => verify_box(arguments, destinations, |ty| {
             ty.underlying() == &Ty::Slice(Box::new(Ty::Int(IntTy::Int)))
         }),
+        hir::Builtin::InterfaceBoxPointerI64 => verify_box(arguments, destinations, is_pointer_i64),
         hir::Builtin::InterfaceBoxPointerStructI64 => verify_box(arguments, destinations, |ty| {
             ty.bootstrap_i64_struct_pointer_fields().is_some()
         }),
@@ -144,6 +147,12 @@ pub(super) fn verify_interface_call(
             |ty| ty.bootstrap_i64_struct_pointer_fields().is_some(),
             "interface struct pointer extraction",
         ),
+        hir::Builtin::InterfaceUnboxPointerI64 => verify_unbox(
+            arguments,
+            destinations,
+            is_pointer_i64,
+            "interface integer pointer extraction",
+        ),
         hir::Builtin::InterfaceUnboxAggregate => verify_unbox(
             arguments,
             destinations,
@@ -183,6 +192,10 @@ pub(super) fn verify_interface_call(
 
 fn is_i64_interface_scalar(ty: &Ty) -> bool {
     matches!(ty.underlying(), Ty::Int(_) | Ty::Uint(_))
+}
+
+fn is_pointer_i64(ty: &Ty) -> bool {
+    matches!(ty.underlying(), Ty::Pointer(element) if element.underlying() == &Ty::Int(IntTy::Int))
 }
 
 fn verify_box(

@@ -800,12 +800,20 @@ reach the versioned integer runtime boundary and preserve Go's ordered
 evaluation and panic semantics. Unsigned shift counts are statically
 nonnegative and therefore carry no negative-shift panic effect.
 
+Interface payloads for `*int` and pointers to defined types whose underlying
+type is Go `int` use the canonical `GoPointerI64` representation. Boxing and
+unboxing are explicit versioned ABI operations: typed nil pointers remain
+non-nil interfaces, extraction clones the pointer header and preserves pointee
+alias identity, interface equality compares pointee identity, and exact dynamic
+type identities keep defined pointer types distinct while aliases retain their
+target identity.
+
 The remaining frontier receives precise source diagnostics until its semantics
 are represented in HIR and MIR:
 
 - broader Go stdlib coverage and package initialization;
 - mutable package variables, broader aggregate representations, struct
-  pointers, pointer-receiver methods, interfaces, and generics;
+  pointers, pointer-receiver methods, broader interfaces, and generics;
 - escaping function values and type switches;
 - string, integer, channel, and iterator-function ranges; select, goroutines,
   and channels;

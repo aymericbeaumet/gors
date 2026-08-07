@@ -64,12 +64,12 @@ pub use interfaces::{
     GoInterface, GoPanicPayload, go_interface_box_aggregate, go_interface_box_bool,
     go_interface_box_comparable_aggregate, go_interface_box_f64,
     go_interface_box_go_slice_go_string, go_interface_box_go_string, go_interface_box_i64,
-    go_interface_box_pointer_struct_i64, go_interface_box_struct_i64, go_interface_equal,
-    go_interface_is_nil, go_interface_is_runtime_error, go_interface_is_type, go_interface_nil,
-    go_interface_struct_i64_get, go_interface_unbox_aggregate, go_interface_unbox_bool,
-    go_interface_unbox_f64, go_interface_unbox_go_slice_go_string, go_interface_unbox_go_string,
-    go_interface_unbox_i64, go_interface_unbox_pointer_struct_i64, go_panic_payload_to_interface,
-    panic_go_interface,
+    go_interface_box_pointer_i64, go_interface_box_pointer_struct_i64, go_interface_box_struct_i64,
+    go_interface_equal, go_interface_is_nil, go_interface_is_runtime_error, go_interface_is_type,
+    go_interface_nil, go_interface_struct_i64_get, go_interface_unbox_aggregate,
+    go_interface_unbox_bool, go_interface_unbox_f64, go_interface_unbox_go_slice_go_string,
+    go_interface_unbox_go_string, go_interface_unbox_i64, go_interface_unbox_pointer_i64,
+    go_interface_unbox_pointer_struct_i64, go_panic_payload_to_interface, panic_go_interface,
 };
 pub use maps::{
     GoMapI64GoString, GoMapStringI64, go_map_i64_go_string_clear, go_map_i64_go_string_contains,
@@ -536,6 +536,16 @@ pub fn go_pointer_i64_set(pointer: GoPointerI64, value: GoInt) {
 #[must_use]
 pub fn go_pointer_i64_is_nil(pointer: GoPointerI64) -> bool {
     pointer.storage.is_none()
+}
+
+/// Compare two Go `*int` values by pointee identity.
+#[must_use]
+pub(crate) fn go_pointer_i64_equal(left: GoPointerI64, right: GoPointerI64) -> bool {
+    match (left.storage, right.storage) {
+        (None, None) => true,
+        (Some(left), Some(right)) => Arc::ptr_eq(&left, &right),
+        _ => false,
+    }
 }
 
 /// A nullable pointer to an integer-field Go struct.
