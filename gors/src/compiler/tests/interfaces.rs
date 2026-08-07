@@ -45,6 +45,48 @@ fn generated_interfaces_preserve_nil_dynamic_types_and_value_copies() {
 }
 
 #[test]
+fn any_conversions_box_values_like_interface_assignment() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            func main() {
+                x := 42
+                if _, ok := any(x).(int); !ok {
+                    panic("any conversion lost the dynamic type")
+                }
+                boxed := any("text")
+                if value, ok := boxed.(string); !ok || value != "text" {
+                    panic("any conversion changed the value")
+                }
+                var v any = any(true)
+                println(v != nil)
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"true\n");
+    assert!(run.rust.contains("go_interface_box_i64"), "{}", run.rust);
+}
+
+#[test]
+fn interface_conversions_require_implementing_operands() {
+    let error = compile_program(raw_program(
+        "interfaces.go",
+        "interfaces.go",
+        r#"
+            package main
+            type Reader interface { Read() int }
+            func main() { _ = Reader(1) }
+        "#,
+    ))
+    .err()
+    .expect("converting a non-implementing operand to an interface must fail");
+
+    assert!(error.to_string().contains("does not implement"), "{error}");
+}
+
+#[test]
 fn interface_assignment_checks_the_complete_method_set() {
     let error = compile_program(raw_program(
         "interfaces.go",

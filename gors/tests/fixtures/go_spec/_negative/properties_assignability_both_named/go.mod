@@ -1,0 +1,3 @@
+module go_spec_negative_properties_assignability_both_named
+
+go 1.26

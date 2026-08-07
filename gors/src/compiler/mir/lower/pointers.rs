@@ -811,7 +811,9 @@ fn collect_statement_addresses(statement: &hir::Stmt, addressed: &mut BTreeSet<L
         hir::StmtKind::StructFieldAssign { value, .. } => {
             collect_expr_addresses(value, addressed);
         }
-        hir::StmtKind::MapAssign { map, key, value } => {
+        hir::StmtKind::MapAssign {
+            map, key, value, ..
+        } => {
             collect_expression_addresses([map, key, value], addressed);
         }
         hir::StmtKind::Goto(_) | hir::StmtKind::Break(_) | hir::StmtKind::Continue(_) => {}

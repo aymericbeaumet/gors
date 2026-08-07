@@ -26,6 +26,17 @@ pub enum FileIssue {
 pub enum PackageIssue {
     /// One package input file currently has invalid Go syntax.
     FileParseFailure { file: FileId, failure: ParseFailure },
+    /// One resolved non-blank import binding is never referenced in its file.
+    UnusedImport {
+        file: FileId,
+        local_name: Arc<str>,
+        path: Arc<str>,
+        /// Whether the binding is an explicit source alias.
+        named: bool,
+        line: usize,
+        column: usize,
+        virtual_file: Option<Arc<str>>,
+    },
     /// One import literal cannot name a canonical Go package.
     InvalidImportPath {
         file: FileId,

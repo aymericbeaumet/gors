@@ -10,8 +10,15 @@ func main() {
 	mapping := map[string]int{"x": 1, "y": 2}
 	mapLen := len(mapping)
 	delete(mapping, "x")
+	deletedValue, deletedOK := mapping["x"]
+	lenAfterDelete := len(mapping)
 	clear(mapping)
+	clearedValue, clearedOK := mapping["y"]
+	lenAfterClear := len(mapping)
 	pointer := new(int)
+	if *pointer != 0 {
+		panic("new must zero the pointed-to value")
+	}
 	*pointer = max(3, min(4, 5))
 	complexValue := complex(1, 2)
 	array := [3]int{1, 2, 3}
@@ -38,5 +45,15 @@ func main() {
 	}
 	if channelLen != 1 || received != 3 || !ok || closedOk {
 		panic("channel builtins changed")
+	}
+	if deletedValue != 0 || deletedOK || lenAfterDelete != 1 {
+		panic("delete builtin effect changed")
+	}
+	if clearedValue != 0 || clearedOK || lenAfterClear != 0 {
+		panic("clear builtin effect changed")
+	}
+	low, high := 3, 9
+	if min(low, high) != 3 || max(low, high) != 9 || min(high, low, 5) != 3 || max(low, 5, high) != 9 {
+		panic("runtime min or max on variables changed")
 	}
 }

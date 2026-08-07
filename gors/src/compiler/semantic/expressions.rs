@@ -8,7 +8,10 @@ use crate::token::Token;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::provenance::SourceRef;
-use crate::compiler::types::{ComplexTy, ConstValue, FloatTy, IntTy, Ty, UntypedTy};
+use crate::compiler::types::{
+    ComplexTy, ConstValue, ExactNumber, FloatTy, IntTy, Ty, UntypedTy,
+    exact_integer_from_number_spelling,
+};
 
 pub(super) fn default_expr_type(
     mut expr: hir::Expr,
@@ -122,14 +125,17 @@ pub(super) fn fold_constant_binary(
             _ => return Ok(None),
         },
         (ConstValue::Float(left), ConstValue::Float(right)) => {
-            let Some(choose_left) = fold_float_min_max(op, left, right, source)? else {
-                return Ok(None);
-            };
-            ConstValue::Float(if choose_left {
-                left.clone()
+            if let Some(choose_left) = fold_float_min_max(op, left, right, source)? {
+                ConstValue::Float(if choose_left {
+                    left.clone()
+                } else {
+                    right.clone()
+                })
+            } else if let Some(value) = fold_exact_number_binary(op, left, right, source)? {
+                value
             } else {
-                right.clone()
-            })
+                return Ok(None);
+            }
         }
         (ConstValue::Int(left), ConstValue::Float(right))
         | (ConstValue::Float(left), ConstValue::Int(right))
@@ -140,6 +146,13 @@ pub(super) fn fold_constant_binary(
             })?;
             let chosen = if choose_left { left } else { right };
             ConstValue::Float(chosen.clone())
+        }
+        (ConstValue::Int(left), ConstValue::Float(right))
+        | (ConstValue::Float(left), ConstValue::Int(right)) => {
+            match fold_exact_number_binary(op, left, right, source)? {
+                Some(value) => value,
+                None => return Ok(None),
+            }
         }
         (ConstValue::String(left), ConstValue::String(right)) => match op {
             hir::BinaryOp::Add => {
@@ -174,6 +187,99 @@ pub(super) fn fold_constant_binary(
         _ => return Ok(None),
     };
     Ok(Some(folded))
+}
+
+/// Exact constant-shift folding for an untyped left operand.
+///
+/// The Go specification requires that if the left operand of a constant shift
+/// expression is an untyped constant, the result is an integer constant: an
+/// untyped float or complex operand representable as an integer is converted
+/// first, and any other operand is rejected. The shift count may likewise be
+/// any constant representable as an integer.
+pub(super) fn fold_untyped_constant_shift(
+    op: hir::BinaryOp,
+    left: &ConstValue,
+    right: &ConstValue,
+    source: SourceRef,
+) -> Result<ConstValue, Diagnostic> {
+    let left = constant_shift_integer_operand(left, "shifted operand", source)?;
+    let right = constant_shift_integer_operand(right, "shift count", source)?;
+    fold_constant_binary(op, &left, &right, source)?
+        .ok_or_else(|| Diagnostic::backend("integer constant shift did not fold"))
+}
+
+fn constant_shift_integer_operand(
+    value: &ConstValue,
+    role: &str,
+    source: SourceRef,
+) -> Result<ConstValue, Diagnostic> {
+    let converted = match value {
+        ConstValue::Int(_) => Some(value.clone()),
+        ConstValue::Float(spelling) => exact_integer_from_number_spelling(spelling),
+        ConstValue::Complex { real, imag } => exact_integer_from_number_spelling(imag)
+            .filter(|imag| matches!(imag, ConstValue::Int(digits) if digits == "0"))
+            .and_then(|_| exact_integer_from_number_spelling(real)),
+        ConstValue::Bool(_) | ConstValue::String(_) => None,
+    };
+    match converted {
+        Some(integer) => Ok(integer),
+        None => Err(Diagnostic::semantic(
+            format!(
+                "invalid operation: {role} {} must be an integer constant",
+                describe_constant(value)
+            ),
+            source,
+        )),
+    }
+}
+
+fn describe_constant(value: &ConstValue) -> String {
+    match value {
+        ConstValue::Bool(value) => value.to_string(),
+        ConstValue::Int(spelling) | ConstValue::Float(spelling) => spelling.clone(),
+        ConstValue::Complex { real, imag } => format!("({real} + {imag}i)"),
+        ConstValue::String(_) => "of string type".to_string(),
+    }
+}
+
+/// Exact arithmetic on numeric constant operands of float kind. A result
+/// integral in value folds to an integer constant; other results fold to an
+/// exact finite decimal spelling. `None` when the operator or the exact
+/// result spelling is outside the bounded exact algebra.
+fn fold_exact_number_binary(
+    op: hir::BinaryOp,
+    left: &str,
+    right: &str,
+    source: SourceRef,
+) -> Result<Option<ConstValue>, Diagnostic> {
+    if !matches!(
+        op,
+        hir::BinaryOp::Add | hir::BinaryOp::Sub | hir::BinaryOp::Mul | hir::BinaryOp::Div
+    ) {
+        return Ok(None);
+    }
+    let (Some(left), Some(right)) = (
+        ExactNumber::from_spelling(left),
+        ExactNumber::from_spelling(right),
+    ) else {
+        return Ok(None);
+    };
+    let result = match op {
+        hir::BinaryOp::Add => left.add(&right),
+        hir::BinaryOp::Sub => left.sub(&right),
+        hir::BinaryOp::Mul => left.mul(&right),
+        hir::BinaryOp::Div => {
+            if right.is_zero() {
+                return Err(Diagnostic::semantic("division by zero", source));
+            }
+            match left.div(&right) {
+                Some(result) => result,
+                None => return Ok(None),
+            }
+        }
+        _ => return Ok(None),
+    };
+    Ok(result.to_const_value())
 }
 
 fn fold_float_min_max(
@@ -260,13 +366,15 @@ pub(super) fn coerce_expr(
             source,
         ));
     }
-    if let hir::ExprKind::Constant(value) | hir::ExprKind::GlobalConstant(_, value) = &expr.kind
-        && !value.is_representable_as(expected)
+    if let hir::ExprKind::Constant(value) | hir::ExprKind::GlobalConstant(_, value) = &mut expr.kind
     {
-        return Err(Diagnostic::semantic(
-            format!("constant is not representable as {expected:?}"),
-            source,
-        ));
+        if !value.is_representable_as(expected) {
+            return Err(Diagnostic::semantic(
+                format!("constant is not representable as {expected:?}"),
+                source,
+            ));
+        }
+        *value = value.normalized_for(expected);
     }
     if expr.ty != *expected
         && matches!(
@@ -315,7 +423,11 @@ pub(super) fn is_assignable(actual: &Ty, expected: &Ty) -> bool {
             )
             | (
                 Ty::Untyped(UntypedTy::Float),
-                Ty::Untyped(UntypedTy::Complex) | Ty::Float(_) | Ty::Complex(_)
+                Ty::Untyped(UntypedTy::Complex)
+                    | Ty::Int(_)
+                    | Ty::Uint(_)
+                    | Ty::Float(_)
+                    | Ty::Complex(_)
             )
             | (Ty::Untyped(UntypedTy::Complex), Ty::Complex(_))
             | (Ty::Untyped(UntypedTy::String), Ty::String)

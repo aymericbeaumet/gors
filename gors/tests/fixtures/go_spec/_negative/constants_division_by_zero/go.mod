@@ -1,0 +1,3 @@
+module go_spec_negative_constant_division_by_zero
+
+go 1.26

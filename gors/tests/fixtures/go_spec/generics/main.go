@@ -24,6 +24,10 @@ func PickFirst[T int | string, U int | string](first T, second U) T {
 	return first
 }
 
+func pickSame[T any](a, b T) T {
+	return a
+}
+
 func main() {
 	holder := Holder[string]{Value: "value"}
 	if holder.Get() != "value" || Identity(42) != 42 || Identity("go") != "go" {
@@ -35,4 +39,11 @@ func main() {
 	if PickFirst("left", 12) != "left" || PickFirst(7, "right") != 7 {
 		panic("generic multi-parameter inference changed")
 	}
+	// Mixing a typed operand with an untyped constant for the same type
+	// parameter: T must be inferred as the typed operand's type (float64).
+	var v float64 = 7
+	if x := pickSame(1, v); x != 1 {
+		panic("typed-operand inference changed")
+	}
+	var _ float64 = pickSame(1, v)
 }

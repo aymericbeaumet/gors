@@ -13,7 +13,7 @@ use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{
     BlockSyntax, ExprSyntax, ExprSyntaxKind, FieldListSyntax, FunctionHeaderSyntax, SyntaxSource,
 };
-use crate::compiler::types::{Signature, Ty};
+use crate::compiler::types::{Signature, Ty, UntypedTy};
 use crate::token::Token;
 
 type LoweredGenericBody = (
@@ -477,7 +477,15 @@ fn infer_parameter_list(
             source,
         ));
     }
-    for (formal, actual) in formal.into_iter().zip(arguments) {
+    // Typed arguments determine type parameters first. Untyped constant
+    // arguments adapt to a parameter a typed argument already determined
+    // (argument coercion checks representability); only parameters no typed
+    // argument determined receive the merged default type of their untyped
+    // constant arguments.
+    for (formal, actual) in formal.iter().zip(arguments) {
+        if matches!(actual.ty, Ty::Untyped(_)) {
+            continue;
+        }
         infer_type_expression(
             formal,
             &actual.ty.default_typed(),
@@ -488,7 +496,82 @@ fn infer_parameter_list(
             source,
         )?;
     }
+    let mut constant_defaults = BTreeMap::<String, UntypedTy>::new();
+    for (formal, actual) in formal.iter().zip(arguments) {
+        let Ty::Untyped(kind) = actual.ty else {
+            continue;
+        };
+        let Some(parameter) = bare_type_parameter(formal, parameter_names) else {
+            infer_type_expression(
+                formal,
+                &actual.ty.default_typed(),
+                parameter_names,
+                substitutions,
+                aliases,
+                generic_types,
+                source,
+            )?;
+            continue;
+        };
+        if substitutions.contains_key(parameter) {
+            continue;
+        }
+        let merged = match constant_defaults.get(parameter) {
+            None => kind,
+            Some(previous) => merge_untyped_constant_kinds(*previous, kind).ok_or_else(|| {
+                Diagnostic::semantic(
+                    format!(
+                        "mismatched default types {:?} and {:?} for {parameter}",
+                        Ty::Untyped(*previous).default_typed(),
+                        Ty::Untyped(kind).default_typed()
+                    ),
+                    source,
+                )
+            })?,
+        };
+        constant_defaults.insert(parameter.to_string(), merged);
+    }
+    for (parameter, kind) in constant_defaults {
+        substitutions.insert(parameter, Ty::Untyped(kind).default_typed());
+    }
     Ok(())
+}
+
+/// The type-parameter name a formal parameter references directly, if any.
+fn bare_type_parameter<'syntax>(
+    formal: &'syntax ExprSyntax,
+    parameter_names: &BTreeSet<String>,
+) -> Option<&'syntax str> {
+    match &formal.kind {
+        ExprSyntaxKind::Paren(inner) => bare_type_parameter(inner, parameter_names),
+        ExprSyntaxKind::Ident(ident) if parameter_names.contains(ident.name.as_ref()) => {
+            Some(ident.name.as_ref())
+        }
+        _ => None,
+    }
+}
+
+/// Merged default-type kind of two untyped constants inferred for one type
+/// parameter. Numeric kinds merge to the kind appearing later in the
+/// specification order integer, floating-point, complex; other kinds only
+/// merge with themselves.
+fn merge_untyped_constant_kinds(previous: UntypedTy, next: UntypedTy) -> Option<UntypedTy> {
+    if previous == next {
+        return Some(previous);
+    }
+    let rank = |kind: UntypedTy| match kind {
+        UntypedTy::Int => Some(0_u8),
+        UntypedTy::Float => Some(1),
+        UntypedTy::Complex => Some(2),
+        UntypedTy::Bool | UntypedTy::String => None,
+    };
+    let previous_rank = rank(previous)?;
+    let next_rank = rank(next)?;
+    Some(if previous_rank >= next_rank {
+        previous
+    } else {
+        next
+    })
 }
 
 #[allow(clippy::too_many_arguments)]

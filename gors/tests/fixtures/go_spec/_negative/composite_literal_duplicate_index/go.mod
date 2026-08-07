@@ -1,0 +1,3 @@
+module go_spec_negative_composite_literal_duplicate_index
+
+go 1.26

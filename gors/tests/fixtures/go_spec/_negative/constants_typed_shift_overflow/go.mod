@@ -1,0 +1,3 @@
+module go_spec_negative_typed_constant_shift_overflow
+
+go 1.26

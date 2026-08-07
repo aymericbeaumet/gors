@@ -509,6 +509,30 @@ impl PackageAnalysis {
                     fingerprint.bytes(file.canonical_bytes());
                     failure.write_fingerprint(&mut fingerprint);
                 }
+                PackageIssue::UnusedImport {
+                    file,
+                    local_name,
+                    path,
+                    named,
+                    line,
+                    column,
+                    virtual_file,
+                } => {
+                    fingerprint.bytes(b"unused-import");
+                    fingerprint.bytes(file.canonical_bytes());
+                    fingerprint.bytes(local_name.as_bytes());
+                    fingerprint.bytes(path.as_bytes());
+                    fingerprint.bytes(if *named { b"named" } else { b"default" });
+                    fingerprint.usize(*line);
+                    fingerprint.usize(*column);
+                    match virtual_file {
+                        Some(file) => {
+                            fingerprint.bytes(b"virtual-file");
+                            fingerprint.bytes(file.as_bytes());
+                        }
+                        None => fingerprint.bytes(b"physical-file"),
+                    }
+                }
                 PackageIssue::InvalidImportPath {
                     file,
                     literal,
@@ -721,6 +745,15 @@ impl PackageAnalysis {
         let issues = self.issues.iter().fold(0_usize, |total, issue| {
             let retained = match issue {
                 PackageIssue::FileParseFailure { failure, .. } => failure.retained_bytes(),
+                PackageIssue::UnusedImport {
+                    local_name,
+                    path,
+                    virtual_file,
+                    ..
+                } => local_name
+                    .len()
+                    .saturating_add(path.len())
+                    .saturating_add(virtual_file.as_ref().map_or(0, |file| file.len())),
                 PackageIssue::InvalidImportPath {
                     literal,
                     virtual_file,

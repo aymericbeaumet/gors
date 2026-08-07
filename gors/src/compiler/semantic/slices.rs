@@ -1,7 +1,7 @@
 //! Built-in slice calls and proof-backed function capture representation.
 
 use super::FunctionLowerer;
-use super::expression_lower::slice_runtime_effects;
+use super::expression_lower::{constant_index_value, slice_runtime_effects};
 use super::expressions::coerce_expr;
 use super::lower_type;
 use crate::compiler::Diagnostic;
@@ -43,8 +43,36 @@ impl FunctionLowerer {
                     ));
                 }
                 let len = self.lower_expr(len_syntax, Some(&Ty::Int(IntTy::Int)))?;
+                let len_constant = constant_index_value(&len);
+                if let Some(len_value) = len_constant
+                    && len_value < 0
+                {
+                    return Err(Diagnostic::semantic(
+                        format!(
+                            "invalid argument: index {len_value} (constant of type int) must not be negative"
+                        ),
+                        source,
+                    ));
+                }
                 let cap = if let Some(cap) = cap_syntax {
-                    self.lower_expr(cap, Some(&Ty::Int(IntTy::Int)))?
+                    let cap = self.lower_expr(cap, Some(&Ty::Int(IntTy::Int)))?;
+                    if let Some(cap_value) = constant_index_value(&cap) {
+                        if cap_value < 0 {
+                            return Err(Diagnostic::semantic(
+                                format!(
+                                    "invalid argument: index {cap_value} (constant of type int) must not be negative"
+                                ),
+                                source,
+                            ));
+                        }
+                        if len_constant.is_some_and(|len_value| len_value > cap_value) {
+                            return Err(Diagnostic::semantic(
+                                "invalid argument: length and capacity swapped",
+                                source,
+                            ));
+                        }
+                    }
+                    cap
                 } else {
                     self.lower_optional_slice_bound(None, declared_syntax.source)?
                 };

@@ -1,0 +1,3 @@
+module go_spec_lexical_raw_string_carriage_returns
+
+go 1.26

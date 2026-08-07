@@ -1,0 +1,3 @@
+module go_spec_lexical_unicode_identifier_categories
+
+go 1.26

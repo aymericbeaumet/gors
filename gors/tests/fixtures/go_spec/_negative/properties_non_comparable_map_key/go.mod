@@ -1,0 +1,3 @@
+module go_spec_properties_non_comparable_map_key
+
+go 1.26

@@ -1,3 +1,3 @@
 module go_spec_constants
 
-go 1.22
+go 1.26

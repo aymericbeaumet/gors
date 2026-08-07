@@ -263,6 +263,26 @@ impl FunctionLowerer {
                         source,
                     )
                 })?;
+                if matches!(op, hir::BinaryOp::Shl | hir::BinaryOp::Shr)
+                    && matches!(left.ty, Ty::Untyped(_))
+                    && (right.ty.is_integer() || matches!(right.ty, Ty::Untyped(_)))
+                    && let (Some(left_value), Some(right_value)) =
+                        (expr_constant(&left), expr_constant(&right))
+                {
+                    let value = fold_untyped_constant_shift(op, left_value, right_value, source)?;
+                    let mut lowered = hir::Expr {
+                        node,
+                        kind: hir::ExprKind::Constant(value),
+                        ty: Ty::Untyped(UntypedTy::Int),
+                        category: hir::ValueCategory::Constant,
+                        effects: hir::Effects::default(),
+                        source,
+                    };
+                    if let Some(expected) = expected {
+                        coerce_expr(&mut lowered, expected, source)?;
+                    }
+                    return Ok(lowered);
+                }
                 let comparison = matches!(
                     op,
                     hir::BinaryOp::Equal
@@ -282,6 +302,11 @@ impl FunctionLowerer {
                         source,
                     )
                 })?;
+                // A folded operation on two untyped operands stays an untyped
+                // constant of the merged kind, so a later conversion site can
+                // still adapt the exact value.
+                let untyped_operand_ty = exact_common_operand_type(&left.ty, &right.ty)
+                    .filter(|ty| matches!(ty, Ty::Untyped(_)));
                 coerce_expr(&mut left, &operand_ty, source)?;
                 coerce_expr(&mut right, &operand_ty, source)?;
                 validate_binary_operator(op, &operand_ty, source)?;
@@ -309,10 +334,15 @@ impl FunctionLowerer {
                     .transpose()?
                     .flatten();
                 if let Some(value) = folded {
+                    let ty = if comparison || logical {
+                        result_ty
+                    } else {
+                        untyped_operand_ty.unwrap_or(result_ty)
+                    };
                     hir::Expr {
                         node,
                         kind: hir::ExprKind::Constant(value),
-                        ty: result_ty,
+                        ty,
                         category: hir::ValueCategory::Constant,
                         effects: hir::Effects::default(),
                         source,
@@ -429,7 +459,10 @@ impl FunctionLowerer {
                     );
                 }
                 if self.type_aliases.contains_key(name)
-                    || matches!(name, "bool" | "string" | "int" | "float64" | "complex128")
+                    || matches!(
+                        name,
+                        "bool" | "string" | "int" | "float64" | "complex128" | "any"
+                    )
                 {
                     return self
                         .lower_conversion_call(callee, arguments, *spread, node, source, expected);
@@ -604,7 +637,14 @@ impl FunctionLowerer {
                 expected,
             )?,
             ExprSyntaxKind::Index { base, index } => {
-                let base = self.lower_expr(base, None)?;
+                let mut base = self.lower_expr(base, None)?;
+                if base.ty == Ty::Untyped(UntypedTy::String) {
+                    // An untyped constant string operand of an index expression
+                    // assumes its default type; the element read stays a
+                    // non-constant byte.
+                    let base_source = base.source;
+                    coerce_expr(&mut base, &Ty::String, base_source)?;
+                }
                 if matches!(base.ty.underlying(), Ty::Map(_, _)) {
                     return self.lower_map_index(base, index, node, source, expected);
                 }
@@ -675,8 +715,25 @@ impl FunctionLowerer {
                 max,
             } => {
                 let base = self.lower_expr(base, None)?;
-                let low = self.lower_optional_slice_bound(low.as_deref(), expr.source)?;
-                let high = self.lower_optional_slice_bound(high.as_deref(), expr.source)?;
+                let low_bound = self.lower_optional_slice_bound(low.as_deref(), expr.source)?;
+                let high_bound = self.lower_optional_slice_bound(high.as_deref(), expr.source)?;
+                // A missing low bound is the constant zero. Missing high and
+                // max bounds depend on runtime length or capacity, so they
+                // stay unknown here and keep their runtime bounds checks.
+                let low_constant = low
+                    .as_deref()
+                    .map_or(Some(0), |_| constant_index_value(&low_bound));
+                let high_constant = high
+                    .as_deref()
+                    .and_then(|_| constant_index_value(&high_bound));
+                if let (Some(low_value), Some(high_value)) = (low_constant, high_constant)
+                    && low_value > high_value
+                {
+                    return Err(Diagnostic::semantic(
+                        format!("invalid slice indices: {high_value} < {low_value}"),
+                        source,
+                    ));
+                }
                 let (builtin, ty, args) = match base.ty.underlying() {
                     Ty::String => {
                         if max.is_some() {
@@ -685,7 +742,11 @@ impl FunctionLowerer {
                                 source,
                             ));
                         }
-                        (hir::Builtin::StringRange, Ty::String, vec![base, low, high])
+                        (
+                            hir::Builtin::StringRange,
+                            Ty::String,
+                            vec![base, low_bound, high_bound],
+                        )
                     }
                     Ty::Slice(element)
                         if matches!(
@@ -700,8 +761,30 @@ impl FunctionLowerer {
                                 hir::Builtin::SliceU8Range
                             };
                         let ty = Ty::Slice(element.clone());
-                        let max = self.lower_optional_slice_bound(max.as_deref(), expr.source)?;
-                        (builtin, ty, vec![base, low, high, max])
+                        let max_bound =
+                            self.lower_optional_slice_bound(max.as_deref(), expr.source)?;
+                        if let Some(max_value) = max
+                            .as_deref()
+                            .and_then(|_| constant_index_value(&max_bound))
+                        {
+                            if let Some(high_value) = high_constant
+                                && high_value > max_value
+                            {
+                                return Err(Diagnostic::semantic(
+                                    format!("invalid slice indices: {max_value} < {high_value}"),
+                                    source,
+                                ));
+                            }
+                            if let Some(low_value) = low_constant
+                                && low_value > max_value
+                            {
+                                return Err(Diagnostic::semantic(
+                                    format!("invalid slice indices: {max_value} < {low_value}"),
+                                    source,
+                                ));
+                            }
+                        }
+                        (builtin, ty, vec![base, low_bound, high_bound, max_bound])
                     }
                     ty => {
                         return Err(Diagnostic::unsupported(
@@ -772,6 +855,22 @@ impl FunctionLowerer {
             source: SourceRef::node(node),
         })
     }
+}
+
+/// Exact integer value of an already-lowered constant expression.
+///
+/// Returns `None` for runtime values, so callers only reject when the Go spec
+/// mandates a compile-time failure and keep runtime bounds panics otherwise.
+pub(super) fn constant_index_value(expression: &hir::Expr) -> Option<i64> {
+    let (hir::ExprKind::Constant(value) | hir::ExprKind::GlobalConstant(_, value)) =
+        &expression.kind
+    else {
+        return None;
+    };
+    let ConstValue::Int(text) = value else {
+        return None;
+    };
+    text.parse::<i64>().ok()
 }
 
 fn is_nil_identifier(expression: &ExprSyntax) -> bool {

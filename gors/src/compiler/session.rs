@@ -532,6 +532,27 @@ impl CompilerSession {
                 PackageIssue::FileParseFailure { file, failure } => {
                     self.parse_failure_diagnostic(*file, failure)
                 }
+                PackageIssue::UnusedImport {
+                    file,
+                    local_name,
+                    path,
+                    named,
+                    line,
+                    column,
+                    virtual_file,
+                } => CompilerDiagnostic {
+                    code: "GORS2002",
+                    message: if *named {
+                        format!("\"{path}\" imported as {local_name} and not used")
+                    } else {
+                        format!("\"{path}\" imported and not used")
+                    },
+                    file: virtual_file
+                        .as_deref()
+                        .map_or_else(|| self.source_path_or_empty(*file), str::to_string),
+                    line: *line,
+                    column: *column,
+                },
                 PackageIssue::InvalidImportPath {
                     file,
                     literal,
