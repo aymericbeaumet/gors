@@ -792,10 +792,13 @@ impl FunctionLowerer {
             .transpose()?;
         let raw_values = spec.values.as_deref().unwrap_or_default();
         if !raw_values.is_empty() && raw_values.len() != spec.names.len() {
-            return Err(Diagnostic::unsupported(
-                "multi-valued declarations are not implemented",
+            return self.lower_multi_value_spec(
+                spec,
+                explicit_ty,
+                raw_values,
+                declaration_syntax_source,
                 declaration_source,
-            ));
+            );
         }
         // Go evaluates every RHS in one ValueSpec before any of that
         // spec's names enter scope. A previous ValueSpec in the same
@@ -848,6 +851,96 @@ impl FunctionLowerer {
             kind: hir::StmtKind::Let {
                 destinations,
                 values,
+            },
+            source: SourceRef::node(node),
+        })
+    }
+
+    fn lower_multi_value_spec(
+        &mut self,
+        spec: &ValueSpecSyntax,
+        explicit_ty: Option<Ty>,
+        raw_values: &[ExprSyntax],
+        declaration_syntax_source: SyntaxSource,
+        declaration_source: SourceRef,
+    ) -> Result<hir::Stmt, Diagnostic> {
+        let [raw_value] = raw_values else {
+            return Err(Diagnostic::semantic(
+                format!(
+                    "variable declaration has {} names and {} values",
+                    spec.names.len(),
+                    raw_values.len()
+                ),
+                declaration_source,
+            ));
+        };
+        // The complete RHS is resolved before any name from this ValueSpec is
+        // installed in the lexical scope.
+        let value = self.lower_multi_result_expression(raw_value)?;
+        let Ty::Tuple(component_types) = &value.ty else {
+            return Err(Diagnostic::semantic(
+                format!(
+                    "variable declaration has {} names and {} values",
+                    spec.names.len(),
+                    raw_values.len()
+                ),
+                declaration_source,
+            ));
+        };
+        let component_types = component_types.clone();
+        if component_types.len() != spec.names.len() {
+            return Err(Diagnostic::semantic(
+                format!(
+                    "variable declaration has {} names and {} result values",
+                    spec.names.len(),
+                    component_types.len()
+                ),
+                declaration_source,
+            ));
+        }
+        if !matches!(value.kind, hir::ExprKind::Call { .. }) {
+            return Err(Diagnostic::backend(
+                "tuple-valued non-call reached multi-valued variable declaration",
+            ));
+        }
+
+        let mut destination_types = Vec::with_capacity(component_types.len());
+        let mut coercions = Vec::with_capacity(component_types.len());
+        for component_ty in &component_types {
+            let destination_ty = explicit_ty
+                .clone()
+                .unwrap_or_else(|| component_ty.default_typed());
+            ensure_bootstrap_value_type(&destination_ty, value.source)?;
+            coercions.push(self.assignment_value_coercion(
+                component_ty,
+                &destination_ty,
+                value.source,
+            )?);
+            destination_types.push(destination_ty);
+        }
+
+        let mut destinations = Vec::with_capacity(spec.names.len());
+        for (name, ty) in spec.names.iter().zip(destination_types) {
+            if name.name.as_ref() == "_" {
+                destinations.push(hir::Place::Discard);
+            } else {
+                let local = self.alloc_local(
+                    Some(name.name.to_string()),
+                    ty,
+                    hir::LocalKind::Variable,
+                    name.source,
+                )?;
+                destinations.push(hir::Place::Local(local));
+            }
+        }
+
+        let node = self.alloc_node(declaration_syntax_source)?;
+        Ok(hir::Stmt {
+            node,
+            kind: hir::StmtKind::LetTuple {
+                destinations,
+                value,
+                coercions,
             },
             source: SourceRef::node(node),
         })

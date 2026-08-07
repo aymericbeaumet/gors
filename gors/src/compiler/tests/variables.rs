@@ -23,6 +23,123 @@ fn package_variables_materialize_typed_initial_values() {
 }
 
 #[test]
+fn local_var_declarations_expand_one_multi_valued_rhs_exactly_once() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            func pair(calls *int) (int, string) {
+                *calls = *calls + 1
+                return 7, "seven"
+            }
+
+            func integers(calls *int) (int, int) {
+                *calls = *calls + 1
+                return 8, 9
+            }
+
+            func echo(value int) (int, int) { return value, value + 1 }
+
+            func main() {
+                calls := 0
+                var number, text = pair(&calls)
+                var first, second int = integers(&calls)
+                var boxedFirst, boxedSecond any = integers(&calls)
+                var _, _ = integers(&calls)
+
+                entries := map[string]int{"x": 1}
+                var _, found = entries["x"]
+                var _, missing = entries["missing"]
+
+                var dynamic any = "text"
+                var asserted, assertionOK = dynamic.(int)
+
+                channel := make(chan int, 1)
+                channel <- 12
+                var received, open = <-channel
+
+                outer := 20
+                {
+                    var outer, next = echo(outer)
+                    if outer != 20 || next != 21 {
+                        panic("the new bindings were visible while evaluating their RHS")
+                    }
+                }
+
+                if calls != 4 || number != 7 || text != "seven" {
+                    panic("multi-valued calls were not evaluated exactly once")
+                }
+                if first != 8 || second != 9 || boxedFirst.(int) != 8 || boxedSecond.(int) != 9 {
+                    panic("explicit tuple destination coercions changed")
+                }
+                if !found || missing || asserted != 0 || assertionOK {
+                    panic("comma-ok declaration results changed")
+                }
+                if received != 12 || !open {
+                    panic("channel comma-ok declaration changed")
+                }
+                println("multi-var: ok")
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"multi-var: ok\n");
+}
+
+#[test]
+fn multi_valued_var_declarations_reject_arity_and_type_mismatches() {
+    let arity = compile_program(raw_program(
+        "variables.go",
+        "/checkout/variables.go",
+        r#"
+            package main
+            func pair() (int, int) { return 1, 2 }
+            func main() { var first, second, third = pair() }
+        "#,
+    ))
+    .err()
+    .expect("tuple arity mismatches must be rejected");
+    assert!(
+        arity
+            .to_string()
+            .contains("variable declaration has 3 names and 2 result values"),
+        "{arity}"
+    );
+
+    let ty = compile_program(raw_program(
+        "variables.go",
+        "/checkout/variables.go",
+        r#"
+            package main
+            func pair() (int, string) { return 1, "text" }
+            func main() { var first, second int = pair() }
+        "#,
+    ))
+    .err()
+    .expect("tuple component type mismatches must be rejected");
+    assert!(ty.to_string().contains("not assignable"), "{ty}");
+
+    let package = compile_program(raw_program(
+        "variables.go",
+        "/checkout/variables.go",
+        r#"
+            package main
+            func pair() (int, int) { return 1, 2 }
+            var first, second = pair()
+            func main() {}
+        "#,
+    ))
+    .err()
+    .expect("package tuple initialization must remain explicit unsupported syntax");
+    assert!(
+        package
+            .to_string()
+            .contains("multi-valued package variable initializers are not yet represented"),
+        "{package}"
+    );
+}
+
+#[test]
 fn repeated_init_declarations_compose_as_ordered_package_fragments() {
     let run = compile_and_run(
         r#"

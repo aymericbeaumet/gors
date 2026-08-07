@@ -502,6 +502,12 @@ Function-local constant declarations are scoped semantic bindings. Their exact
 values, explicit types, repeated specification expressions, and `iota` values
 are resolved before HIR expression lowering; they never become storage places
 or MIR locals, and assignment to one is a source diagnostic.
+Function-local variable declarations may consume one multi-valued call,
+comma-ok map lookup, comma-ok interface assertion, or comma-ok channel receive.
+The RHS is lowered once before any name in that `ValueSpec` enters scope, and
+typed component coercions remain explicit in HIR `LetTuple` lowering.
+Multi-valued package-variable initialization remains rejected until the
+package initializer model represents tuple-producing execution.
 Address-taking of a non-nested integer local is explicit HIR intent. MIR plans
 one shared pointer-backed storage cell for each such local, initializes
 parameters and declarations at their Go sequence points, and routes subsequent

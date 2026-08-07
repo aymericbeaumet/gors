@@ -45,16 +45,7 @@ impl FunctionLowerer {
         }
         if left.len() != right.len() {
             if let [value] = right {
-                let value = match self.try_lower_channel_comma_ok(value) {
-                    Some(value) => value?,
-                    None => match self.try_lower_interface_comma_ok(value) {
-                        Some(value) => value?,
-                        None => match self.try_lower_map_comma_ok(value) {
-                            Some(value) => value?,
-                            None => self.lower_expr(value, None)?,
-                        },
-                    },
-                };
+                let value = self.lower_multi_result_expression(value)?;
                 let Ty::Tuple(component_types) = &value.ty else {
                     return Err(Diagnostic::semantic(
                         format!(
@@ -220,6 +211,26 @@ impl FunctionLowerer {
             op,
             values,
         })
+    }
+
+    /// Lower the expression forms that acquire multiple values specifically
+    /// in assignment and variable-declaration contexts. The resulting tuple
+    /// remains one HIR expression so MIR evaluates the call or lookup exactly
+    /// once before writing any destination.
+    pub(super) fn lower_multi_result_expression(
+        &mut self,
+        expression: &ExprSyntax,
+    ) -> Result<hir::Expr, Diagnostic> {
+        match self.try_lower_channel_comma_ok(expression) {
+            Some(value) => value,
+            None => match self.try_lower_interface_comma_ok(expression) {
+                Some(value) => value,
+                None => match self.try_lower_map_comma_ok(expression) {
+                    Some(value) => value,
+                    None => self.lower_expr(expression, None),
+                },
+            },
+        }
     }
 
     pub(super) fn lower_multi_result_destinations(

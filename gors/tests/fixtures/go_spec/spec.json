@@ -683,6 +683,15 @@
           "fixtures": [
             "var_decl_default_types"
           ]
+        },
+        {
+          "id": "spec-var-decl-multi-value-init",
+          "section": "Variable declarations",
+          "title": "Local var declarations initialize from one multi-valued expression using assignment rules",
+          "status": "passing",
+          "fixtures": [
+            "var_decl_multi_value_init"
+          ]
         }
       ]
     },
