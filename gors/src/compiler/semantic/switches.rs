@@ -13,7 +13,6 @@ impl FunctionLowerer {
     pub(super) fn lower_switch_case_bodies(
         &mut self,
         cases: &[SwitchCaseSyntax],
-        redundant_break_label: Option<&str>,
         source: SourceRef,
     ) -> Result<Vec<hir::Block>, Diagnostic> {
         let mut bodies = Vec::with_capacity(cases.len());
@@ -42,30 +41,12 @@ impl FunctionLowerer {
                 ));
             }
             let fallthrough = fallthrough.first().copied();
-            let redundant_break = last_statement.filter(|index| {
-                case.body.statements.get(*index).is_some_and(|statement| {
-                    matches!(
-                        &statement.kind,
-                        StmtSyntaxKind::Branch {
-                            token: Token::BREAK,
-                            label: Some(label),
-                        } if redundant_break_label == Some(label.name.as_ref())
-                    )
-                })
-            });
             let block = if let Some(removed) = fallthrough {
                 let mut statements = case.body.statements.to_vec();
                 let statement = statements.remove(removed);
                 if let Some(labels) = strip_switch_fallthrough(statement) {
                     statements.insert(removed, labels);
                 }
-                BlockSyntax {
-                    source: case.body.source,
-                    statements: Arc::from(statements),
-                }
-            } else if let Some(removed) = redundant_break {
-                let mut statements = case.body.statements.to_vec();
-                statements.remove(removed);
                 BlockSyntax {
                     source: case.body.source,
                     statements: Arc::from(statements),

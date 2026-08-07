@@ -3,13 +3,16 @@
 use crate::token::Token;
 
 use super::FunctionLowerer;
+use super::control_targets::ControlTargetKind;
 use super::expressions::*;
 use super::iteration::assigned_names_in_block;
 use super::parameter_types;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::provenance::SourceRef;
-use crate::compiler::syntax::{ExprSyntax, StmtSyntax, StmtSyntaxKind, SwitchCaseSyntax};
+use crate::compiler::syntax::{
+    ExprSyntax, StmtSyntax, StmtSyntaxKind, SwitchCaseSyntax, SyntaxSource,
+};
 use crate::compiler::types::{ConstValue, Ty};
 
 impl FunctionLowerer {
@@ -143,7 +146,7 @@ impl FunctionLowerer {
                 source,
             )?,
             StmtSyntaxKind::Return(results) => {
-                if self.range_yield_loop_depth.is_some() {
+                if self.range_yield_target.is_some() {
                     return Err(Diagnostic::unsupported(
                         "return from a range-over-function body is not yet represented",
                         source,
@@ -272,19 +275,20 @@ impl FunctionLowerer {
                     .as_ref()
                     .map(|expression| self.lower_expr(expression, Some(&Ty::Bool)))
                     .transpose()?;
-                self.loop_labels.push(label.clone());
+                let target = self.begin_control_target(ControlTargetKind::Loop, label.clone())?;
                 self.iteration_capture_scopes.push(iteration_captures);
                 let body = self.lower_block(body, true)?;
                 self.iteration_capture_scopes.pop();
+                self.end_control_target(target)?;
                 let post = post
                     .as_deref()
                     .map(|statement| self.lower_stmt(statement))
                     .transpose()?
                     .flatten()
                     .map(Box::new);
-                self.loop_labels.pop();
                 self.pop_scope();
                 hir::StmtKind::For {
+                    target,
                     label,
                     init,
                     condition,
@@ -309,7 +313,14 @@ impl FunctionLowerer {
                 source,
             )?,
             StmtSyntaxKind::Switch { init, tag, cases } => {
-                return self.lower_switch(stmt, init.as_deref(), tag.as_ref(), cases, None, source);
+                return self.lower_switch(
+                    node,
+                    stmt.source,
+                    init.as_deref(),
+                    tag.as_ref(),
+                    cases,
+                    None,
+                );
             }
             StmtSyntaxKind::TypeSwitch {
                 init,
@@ -324,11 +335,12 @@ impl FunctionLowerer {
                     expression,
                     cases,
                     stmt.source,
+                    None,
                     source,
                 );
             }
             StmtSyntaxKind::Select { cases } => {
-                return self.lower_select(node, cases, source);
+                return self.lower_select(node, cases, None, stmt.source, source);
             }
             StmtSyntaxKind::Labeled { label, statement } => {
                 if self.inside_deferred_closure || self.inside_local_closure {
@@ -344,15 +356,44 @@ impl FunctionLowerer {
                         source,
                     ));
                 }
-                if let StmtSyntaxKind::Switch { init, tag, cases } = &statement.kind {
-                    return self.lower_switch(
-                        statement,
-                        init.as_deref(),
-                        tag.as_ref(),
+                match &statement.kind {
+                    StmtSyntaxKind::Switch { init, tag, cases } => {
+                        return self.lower_switch(
+                            node,
+                            statement.source,
+                            init.as_deref(),
+                            tag.as_ref(),
+                            cases,
+                            Some(&label),
+                        );
+                    }
+                    StmtSyntaxKind::TypeSwitch {
+                        init,
+                        binding,
+                        expression,
                         cases,
-                        Some(&label),
-                        source,
-                    );
+                    } => {
+                        return self.lower_type_switch(
+                            node,
+                            init.as_deref(),
+                            binding.as_ref(),
+                            expression,
+                            cases,
+                            statement.source,
+                            Some(&label),
+                            source,
+                        );
+                    }
+                    StmtSyntaxKind::Select { cases } => {
+                        return self.lower_select(
+                            node,
+                            cases,
+                            Some(&label),
+                            statement.source,
+                            source,
+                        );
+                    }
+                    _ => {}
                 }
                 hir::StmtKind::Label {
                     name: label,
@@ -368,38 +409,8 @@ impl FunctionLowerer {
                         source,
                     ));
                 }
-                if label.is_none()
-                    && self.range_yield_loop_depth == Some(self.loop_labels.len())
-                    && matches!(token, Token::BREAK | Token::CONTINUE)
-                {
-                    let value_node = self.alloc_node(stmt.source)?;
-                    let value = hir::Expr {
-                        node: value_node,
-                        kind: hir::ExprKind::Constant(ConstValue::Bool(*token == Token::CONTINUE)),
-                        ty: Ty::Bool,
-                        category: hir::ValueCategory::Constant,
-                        effects: hir::Effects::default(),
-                        source: SourceRef::node(value_node),
-                    };
-                    return Ok(Some(hir::Stmt {
-                        node,
-                        kind: hir::StmtKind::Return(vec![value]),
-                        source,
-                    }));
-                }
                 let label = label.as_ref().map(|label| label.name.to_string());
-                let target_exists = label.as_ref().map_or_else(
-                    || !self.loop_labels.is_empty(),
-                    |label| {
-                        self.loop_labels
-                            .iter()
-                            .rev()
-                            .any(|candidate| candidate.as_deref() == Some(label))
-                    },
-                );
                 match token {
-                    Token::BREAK if target_exists => hir::StmtKind::Break(label),
-                    Token::CONTINUE if target_exists => hir::StmtKind::Continue(label),
                     Token::GOTO if label.is_some() => {
                         let Some(label) = label else {
                             return Err(Diagnostic::backend("goto label disappeared"));
@@ -407,9 +418,36 @@ impl FunctionLowerer {
                         self.referenced_gotos.entry(label.clone()).or_insert(source);
                         hir::StmtKind::Goto(label)
                     }
+                    Token::BREAK | Token::CONTINUE => {
+                        let target =
+                            self.resolve_control_target(*token, label.as_deref(), source)?;
+                        if self.range_yield_target == Some(target) {
+                            let value_node = self.alloc_node(stmt.source)?;
+                            let value = hir::Expr {
+                                node: value_node,
+                                kind: hir::ExprKind::Constant(ConstValue::Bool(
+                                    *token == Token::CONTINUE,
+                                )),
+                                ty: Ty::Bool,
+                                category: hir::ValueCategory::Constant,
+                                effects: hir::Effects::default(),
+                                source: SourceRef::node(value_node),
+                            };
+                            return Ok(Some(hir::Stmt {
+                                node,
+                                kind: hir::StmtKind::Return(vec![value]),
+                                source,
+                            }));
+                        }
+                        if *token == Token::BREAK {
+                            hir::StmtKind::Break(target)
+                        } else {
+                            hir::StmtKind::Continue(target)
+                        }
+                    }
                     _ => {
-                        return Err(Diagnostic::unsupported(
-                            "branch does not target a supported enclosing for loop",
+                        return Err(Diagnostic::semantic(
+                            "branch is not valid in this statement context",
                             source,
                         ));
                     }
@@ -427,13 +465,14 @@ impl FunctionLowerer {
 
     fn lower_switch(
         &mut self,
-        statement: &StmtSyntax,
+        node: crate::compiler::ids::NodeId,
+        syntax_source: SyntaxSource,
         init: Option<&StmtSyntax>,
         tag: Option<&ExprSyntax>,
         cases: &[SwitchCaseSyntax],
-        redundant_break_label: Option<&str>,
-        source: SourceRef,
+        label: Option<&str>,
     ) -> Result<Option<hir::Stmt>, Diagnostic> {
+        let source = SourceRef::node(node);
         self.push_scope();
         let mut statements = Vec::new();
         if let Some(init) = init
@@ -450,9 +489,9 @@ impl FunctionLowerer {
                 None,
                 tag.ty.clone(),
                 hir::LocalKind::Temporary,
-                statement.source,
+                syntax_source,
             )?;
-            let node = self.alloc_node(statement.source)?;
+            let node = self.alloc_node(syntax_source)?;
             statements.push(hir::Stmt {
                 node,
                 kind: hir::StmtKind::Let {
@@ -468,7 +507,11 @@ impl FunctionLowerer {
 
         let mut default = None;
         let mut branches = Vec::new();
-        let mut bodies = self.lower_switch_case_bodies(cases, redundant_break_label, source)?;
+        let target =
+            self.begin_control_target(ControlTargetKind::BreakOnly, label.map(str::to_owned))?;
+        let bodies = self.lower_switch_case_bodies(cases, source);
+        self.end_control_target(target)?;
+        let mut bodies = bodies?;
         for case in cases {
             let body = bodies.remove(0);
             if case.expressions.is_empty() {
@@ -590,15 +633,37 @@ impl FunctionLowerer {
             statements.push(*tail);
         }
         self.pop_scope();
-        let block_node = self.alloc_node(statement.source)?;
-        Ok(Some(hir::Stmt {
+        let block_node = self.alloc_node(syntax_source)?;
+        let block = hir::Block {
             node: block_node,
-            kind: hir::StmtKind::Block(hir::Block {
-                node: block_node,
-                stmts: statements,
-                source: SourceRef::node(block_node),
-            }),
+            stmts: statements,
             source: SourceRef::node(block_node),
+        };
+        let (breakable_node, breakable_source) = if label.is_some() {
+            let breakable_node = self.alloc_node(syntax_source)?;
+            (breakable_node, SourceRef::node(breakable_node))
+        } else {
+            (node, source)
+        };
+        let breakable = hir::Stmt {
+            node: breakable_node,
+            kind: hir::StmtKind::Breakable {
+                target,
+                body: block,
+            },
+            source: breakable_source,
+        };
+        Ok(Some(if let Some(label) = label {
+            hir::Stmt {
+                node,
+                kind: hir::StmtKind::Label {
+                    name: label.to_owned(),
+                    statement: Some(Box::new(breakable)),
+                },
+                source,
+            }
+        } else {
+            breakable
         }))
     }
 }

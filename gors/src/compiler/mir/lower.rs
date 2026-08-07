@@ -5,6 +5,7 @@ mod arrays;
 mod assignments;
 mod calls;
 mod closures;
+mod control_targets;
 mod expressions;
 mod flow;
 mod goroutines;
@@ -27,7 +28,7 @@ use super::{
 };
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
-use crate::compiler::ids::{BasicBlockId, ClosureId, LocalId};
+use crate::compiler::ids::{BasicBlockId, ClosureId, ControlTargetId, LocalId};
 use crate::compiler::types::{ConstValue, Ty};
 use panic_cleanup::DeferredCall;
 use std::collections::{BTreeMap, BTreeSet};
@@ -44,7 +45,7 @@ struct FunctionLowerer {
     locals: Vec<LocalDecl>,
     blocks: Vec<BlockBuilder>,
     current: BasicBlockId,
-    loops: Vec<LoopTargets>,
+    control_targets: Vec<(ControlTargetId, control_targets::ControlTargets)>,
     labels: BTreeMap<String, BasicBlockId>,
     named_results: Vec<Option<LocalId>>,
     closures: Vec<hir::Closure>,
@@ -65,14 +66,6 @@ struct ClosureReturn {
     destinations: Vec<Place>,
     target: BasicBlockId,
     named_results: Vec<Option<LocalId>>,
-}
-
-#[derive(Clone)]
-struct LoopTargets {
-    label: Option<String>,
-    break_target: BasicBlockId,
-    continue_target: BasicBlockId,
-    break_used: bool,
 }
 
 /// Lower one independently tracked HIR function into explicit-order Go MIR.
@@ -105,7 +98,7 @@ impl FunctionLowerer {
                 terminator: None,
             }],
             current: BasicBlockId(0),
-            loops: Vec::new(),
+            control_targets: Vec::new(),
             labels: BTreeMap::new(),
             named_results: hir.named_results.clone(),
             closures: hir.closures.clone(),
@@ -450,6 +443,7 @@ impl FunctionLowerer {
                 }
             }
             hir::StmtKind::For {
+                target,
                 label,
                 init,
                 condition,
@@ -495,12 +489,7 @@ impl FunctionLowerer {
                     ))?;
                 }
 
-                self.loops.push(LoopTargets {
-                    label: label.clone(),
-                    break_target: exit_target,
-                    continue_target: post_target,
-                    break_used: false,
-                });
+                self.enter_loop_target(*target, exit_target, post_target)?;
                 self.current = body_target;
                 self.lower_block(body)?;
                 if !self.is_terminated(self.current)? {
@@ -522,7 +511,7 @@ impl FunctionLowerer {
                         provenance.clone(),
                     ))?;
                 }
-                let break_used = self.loops.pop().is_some_and(|targets| targets.break_used);
+                let break_used = self.exit_control_target(*target)?.break_used;
                 self.current = exit_target;
                 if condition.is_none() && !break_used {
                     self.terminate(make_terminator(
@@ -533,17 +522,22 @@ impl FunctionLowerer {
                 }
             }
             hir::StmtKind::Range {
+                target,
                 label,
                 bindings,
                 expression,
                 body,
             } => self.lower_range(
+                *target,
                 label.as_deref(),
                 bindings,
                 expression,
                 body,
                 statement.source,
             )?,
+            hir::StmtKind::Breakable { target, body } => {
+                self.lower_breakable(*target, body, statement.source)?;
+            }
             hir::StmtKind::Label {
                 name,
                 statement: body,
@@ -561,35 +555,16 @@ impl FunctionLowerer {
                     Provenance::Source(statement.source),
                 ))?;
             }
-            hir::StmtKind::Break(label) => {
-                let targets = match label {
-                    Some(label) => self
-                        .loops
-                        .iter_mut()
-                        .rev()
-                        .find(|targets| targets.label.as_deref() == Some(label)),
-                    None => self.loops.last_mut(),
-                }
-                .ok_or_else(|| Diagnostic::backend("break outside MIR loop"))?;
-                targets.break_used = true;
-                let target = targets.break_target;
+            hir::StmtKind::Break(control_target) => {
+                let target = self.break_block(*control_target)?;
                 self.terminate(make_terminator(
                     TerminatorKind::Goto(target),
                     hir::Effects::default(),
                     Provenance::Source(statement.source),
                 ))?;
             }
-            hir::StmtKind::Continue(label) => {
-                let target = match label {
-                    Some(label) => self
-                        .loops
-                        .iter()
-                        .rev()
-                        .find(|targets| targets.label.as_deref() == Some(label)),
-                    None => self.loops.last(),
-                }
-                .ok_or_else(|| Diagnostic::backend("continue outside MIR loop"))?
-                .continue_target;
+            hir::StmtKind::Continue(control_target) => {
+                let target = self.continue_block(*control_target)?;
                 self.terminate(make_terminator(
                     TerminatorKind::Goto(target),
                     hir::Effects::default(),

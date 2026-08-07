@@ -533,6 +533,17 @@ target operands are prepared exactly once in source order, compound targets
 are read before their RHS, and writes occur left to right. Range targets are
 prepared anew on every admitted iteration, and range `=` retains and applies
 one explicit `ValueCoercion` per generated iteration value before its write.
+Break and continue resolve during semantic lowering to an exact owner-local
+dense `ControlTargetId`; branch HIR never retains a label string as executable
+target semantics. `For` and `Range` own loop targets, while switch, select, and
+type switch lower through syntax-independent `Breakable` regions. MIR maps only
+currently active exact IDs to CFG destinations, and range-over-function callback
+returns are selected only by equality with the resolved range-yield target.
+A select with exactly one communication case and no default uses the ordinary
+blocking channel send or receive operation after evaluating its operands once.
+The existing one-case-plus-default form remains a nonblocking try-select;
+multi-case arbitration and empty scheduler-blocking select remain explicit
+unsupported boundaries.
 Nested local struct paths rebuild the value from leaf to root with explicit
 `StructSet` operations; the emitter must never reconstruct or repair an
 assignment path.

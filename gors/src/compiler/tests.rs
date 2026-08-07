@@ -7,6 +7,7 @@ mod calls;
 mod channels;
 mod constants;
 mod control_flow;
+mod control_targets;
 mod generics;
 mod goroutines;
 mod imports;

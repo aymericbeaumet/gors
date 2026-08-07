@@ -131,7 +131,9 @@ fn collect_statement_addresses(statement: &hir::Stmt, addressed: &mut BTreeSet<L
             collect_expr_addresses(expression, addressed);
             collect_block_addresses(body, addressed);
         }
-        hir::StmtKind::Block(block) => collect_block_addresses(block, addressed),
+        hir::StmtKind::Block(block) | hir::StmtKind::Breakable { body: block, .. } => {
+            collect_block_addresses(block, addressed);
+        }
         hir::StmtKind::Label { statement, .. } => {
             if let Some(statement) = statement {
                 collect_statement_addresses(statement, addressed);

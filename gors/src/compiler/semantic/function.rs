@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::control_targets::ActiveControlTarget;
 use super::{
     ConstantSymbol, FunctionSymbol, GenericFunctionSymbol, GenericTypeSymbol, MethodSymbol,
     VariableSymbol,
@@ -23,6 +24,7 @@ pub(super) struct FunctionLowerer {
     pub(super) owner: DefId,
     pub(super) next_node: u32,
     pub(super) next_local_type: u32,
+    pub(super) next_control_target: u32,
     pub(super) functions: BTreeMap<String, FunctionSymbol>,
     pub(super) qualified_functions: BTreeMap<(String, String), FunctionSymbol>,
     pub(super) methods: BTreeMap<(DefId, String), MethodSymbol>,
@@ -44,11 +46,10 @@ pub(super) struct FunctionLowerer {
     pub(super) closures: Vec<hir::Closure>,
     pub(super) closure_scopes: Vec<BTreeMap<String, ClosureId>>,
     pub(super) named_results: Vec<Option<LocalId>>,
-    pub(super) loop_labels: Vec<Option<String>>,
-    /// Loop-stack depth of a specialized range-function yield body. An
-    /// unlabeled branch at exactly this depth controls the iterator callback;
-    /// deeper branches still target their ordinary nested loop.
-    pub(super) range_yield_loop_depth: Option<usize>,
+    pub(super) control_targets: Vec<ActiveControlTarget>,
+    /// Exact semantic target of a specialized range-function yield body.
+    /// Only branches resolved to this target become iterator callback returns.
+    pub(super) range_yield_target: Option<crate::compiler::ids::ControlTargetId>,
     pub(super) iteration_capture_scopes: Vec<BTreeSet<LocalId>>,
     pub(super) declared_labels: std::collections::BTreeSet<String>,
     pub(super) referenced_gotos: BTreeMap<String, SourceRef>,

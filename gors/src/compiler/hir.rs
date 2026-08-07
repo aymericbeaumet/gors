@@ -1,6 +1,6 @@
 //! Typed, source-shaped high-level IR.
 
-use super::ids::{ClosureId, DefId, LocalId, NodeId, PackageId, QualifiedDefId};
+use super::ids::{ClosureId, ControlTargetId, DefId, LocalId, NodeId, PackageId, QualifiedDefId};
 use super::provenance::SourceRef;
 use super::types::{ConstValue, Signature, StaticValue, Ty};
 
@@ -127,6 +127,7 @@ pub enum StmtKind {
         else_branch: Option<Box<Stmt>>,
     },
     For {
+        target: ControlTargetId,
         label: Option<String>,
         init: Option<Box<Stmt>>,
         condition: Option<Expr>,
@@ -134,19 +135,26 @@ pub enum StmtKind {
         body: Block,
     },
     Range {
+        target: ControlTargetId,
         label: Option<String>,
         bindings: RangeBindings,
         expression: Expr,
         body: Block,
     },
     Block(Block),
+    /// A syntax-independent break-only region produced by switch, select, or
+    /// type-switch semantic lowering.
+    Breakable {
+        target: ControlTargetId,
+        body: Block,
+    },
     Label {
         name: String,
         statement: Option<Box<Stmt>>,
     },
     Goto(String),
-    Break(Option<String>),
-    Continue(Option<String>),
+    Break(ControlTargetId),
+    Continue(ControlTargetId),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

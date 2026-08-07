@@ -4,10 +4,11 @@ use super::super::construct::{
     binary_effects, call_effects, make_rvalue, make_statement, make_terminator, operand_ty,
 };
 use super::super::{Operand, Place, Provenance, RvalueKind, TerminatorKind};
+use super::FunctionLowerer;
 use super::assignments::PreparedTarget;
-use super::{FunctionLowerer, LoopTargets};
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
+use crate::compiler::ids::ControlTargetId;
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::types::{ConstValue, IntTy, Ty};
 
@@ -113,6 +114,7 @@ impl FunctionLowerer {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn lower_range(
         &mut self,
+        target: ControlTargetId,
         label: Option<&str>,
         bindings: &hir::RangeBindings,
         expression: &hir::Expr,
@@ -197,7 +199,7 @@ impl FunctionLowerer {
         };
 
         if matches!(range_kind, RangeKind::Channel) {
-            return self.lower_channel_range(label, bindings, expression, container, body, source);
+            return self.lower_channel_range(target, bindings, expression, container, body, source);
         }
 
         let counter_ty = match range_kind {
@@ -310,12 +312,7 @@ impl FunctionLowerer {
             provenance.clone(),
         ))?;
 
-        self.loops.push(LoopTargets {
-            label: label.map(str::to_owned),
-            break_target: exit_target,
-            continue_target: post_target,
-            break_used: false,
-        });
+        self.enter_loop_target(target, exit_target, post_target)?;
         self.current = body_target;
         match range_kind {
             RangeKind::Array(_) => {
@@ -507,14 +504,14 @@ impl FunctionLowerer {
             hir::Effects::default(),
             provenance,
         ))?;
-        self.loops.pop();
+        self.exit_control_target(target)?;
         self.current = exit_target;
         Ok(())
     }
 
     fn lower_channel_range(
         &mut self,
-        label: Option<&str>,
+        target: ControlTargetId,
         bindings: &hir::RangeBindings,
         expression: &hir::Expr,
         channel: Operand,
@@ -568,12 +565,7 @@ impl FunctionLowerer {
             provenance.clone(),
         ))?;
 
-        self.loops.push(LoopTargets {
-            label: label.map(str::to_owned),
-            break_target: exit_target,
-            continue_target: header,
-            break_used: false,
-        });
+        self.enter_loop_target(target, exit_target, header)?;
         self.current = body_target;
         let prepared = self.prepare_range_bindings(bindings)?;
         self.write_range_bindings(prepared, Some(Operand::Read(value)), None, source)?;
@@ -585,7 +577,7 @@ impl FunctionLowerer {
                 provenance,
             ))?;
         }
-        self.loops.pop();
+        self.exit_control_target(target)?;
         self.current = exit_target;
         Ok(())
     }

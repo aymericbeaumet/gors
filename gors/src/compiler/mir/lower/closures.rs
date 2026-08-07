@@ -172,13 +172,21 @@ impl FunctionLowerer {
             named_results: closure.named_results.clone(),
         });
         self.active_closures.push(id);
+        let caller_control_targets = std::mem::take(&mut self.control_targets);
         let lowered = self.lower_block(&closure.body);
+        let closure_control_targets =
+            std::mem::replace(&mut self.control_targets, caller_control_targets);
         self.active_closures.pop();
         let context = self
             .closure_returns
             .pop()
             .ok_or_else(|| Diagnostic::backend("local function return context disappeared"))?;
         lowered?;
+        if !closure_control_targets.is_empty() {
+            return Err(Diagnostic::backend(
+                "local function left an active HIR control target",
+            ));
+        }
 
         if !self.is_terminated(self.current)? {
             if closure.signature.results.is_empty() {

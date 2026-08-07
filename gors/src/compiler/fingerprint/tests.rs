@@ -19,6 +19,7 @@ const INT_REM: RuntimeOp = RuntimeOp::Integer {
 };
 
 mod append;
+mod control_targets;
 mod pointers;
 
 fn lower_stages(source: &str) -> (hir::File, mir::File, rust_ir::File) {

@@ -277,12 +277,14 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
             });
         }),
         hir::StmtKind::For {
+            target,
             label,
             init,
             condition,
             post,
             body,
         } => encoder.variant(b"for", |encoder| {
+            encoder.field(b"target", |encoder| encoder.u32(target.index()));
             encoder.field(b"label", |encoder| {
                 encoder.option(label.as_ref(), |encoder, label| encoder.string(label));
             });
@@ -306,11 +308,13 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
             });
         }),
         hir::StmtKind::Range {
+            target,
             label,
             bindings,
             expression,
             body,
         } => encoder.variant(b"range", |encoder| {
+            encoder.field(b"target", |encoder| encoder.u32(target.index()));
             encoder.field(b"label", |encoder| {
                 encoder.option(label.as_ref(), |encoder, label| encoder.string(label));
             });
@@ -327,6 +331,12 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
                 encode_block(encoder, block);
             });
         }
+        hir::StmtKind::Breakable { target, body } => {
+            encoder.variant(b"breakable", |encoder| {
+                encoder.field(b"target", |encoder| encoder.u32(target.index()));
+                encoder.field(b"body", |encoder| encode_block(encoder, body));
+            });
+        }
         hir::StmtKind::Label { name, statement } => encoder.variant(b"label", |encoder| {
             encoder.field(b"name", |encoder| encoder.string(name));
             encoder.field(b"statement", |encoder| {
@@ -336,12 +346,12 @@ fn encode_statement_kind(encoder: &mut Encoder, kind: &hir::StmtKind) {
             });
         }),
         hir::StmtKind::Goto(label) => encoder.variant(b"goto", |encoder| encoder.string(label)),
-        hir::StmtKind::Break(label) => encoder.variant(b"break", |encoder| {
-            encoder.option(label.as_ref(), |encoder, label| encoder.string(label));
-        }),
-        hir::StmtKind::Continue(label) => encoder.variant(b"continue", |encoder| {
-            encoder.option(label.as_ref(), |encoder, label| encoder.string(label));
-        }),
+        hir::StmtKind::Break(target) => {
+            encoder.variant(b"break", |encoder| encoder.u32(target.index()));
+        }
+        hir::StmtKind::Continue(target) => {
+            encoder.variant(b"continue", |encoder| encoder.u32(target.index()));
+        }
     }
 }
 

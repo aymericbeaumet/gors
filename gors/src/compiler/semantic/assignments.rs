@@ -267,24 +267,7 @@ impl FunctionLowerer {
             ));
         }
         let destinations = self.lower_assignment_targets(left, source)?;
-        let coercions = destinations
-            .iter()
-            .zip(component_types)
-            .enumerate()
-            .map(|(index, (destination, result_ty))| match &destination.ty {
-                None => Ok(hir::ValueCoercion::Identity),
-                Some(destination_ty) => self
-                    .assignment_value_coercion(result_ty, destination_ty, source)
-                    .map_err(|_| {
-                        Diagnostic::semantic(
-                            format!(
-                                "result {index} of type {result_ty:?} is not assignable to {destination_ty:?}"
-                            ),
-                            source,
-                        )
-                    }),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let coercions = self.assignment_target_coercions(&destinations, component_types, source)?;
         Ok(hir::StmtKind::AssignTuple {
             destinations,
             value,
@@ -415,6 +398,42 @@ impl FunctionLowerer {
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok((destinations, coercions, false))
+    }
+
+    pub(super) fn assignment_target_coercions(
+        &self,
+        destinations: &[hir::AssignTarget],
+        component_types: &[Ty],
+        source: SourceRef,
+    ) -> Result<Vec<hir::ValueCoercion>, Diagnostic> {
+        if destinations.len() != component_types.len() {
+            return Err(Diagnostic::semantic(
+                format!(
+                    "assignment has {} destinations and {} result values",
+                    destinations.len(),
+                    component_types.len()
+                ),
+                source,
+            ));
+        }
+        destinations
+            .iter()
+            .zip(component_types)
+            .enumerate()
+            .map(|(index, (destination, result_ty))| match &destination.ty {
+                None => Ok(hir::ValueCoercion::Identity),
+                Some(destination_ty) => self
+                    .assignment_value_coercion(result_ty, destination_ty, source)
+                    .map_err(|_| {
+                        Diagnostic::semantic(
+                            format!(
+                                "result {index} of type {result_ty:?} is not assignable to {destination_ty:?}"
+                            ),
+                            source,
+                        )
+                    }),
+            })
+            .collect()
     }
 
     pub(super) fn lower_place(

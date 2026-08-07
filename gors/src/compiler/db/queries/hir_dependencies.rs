@@ -101,7 +101,9 @@ fn collect_statement_callees(statement: &hir::Stmt, callees: &mut BTreeSet<Quali
             collect_expression_callees(expression, callees);
             collect_block_callees(body, callees);
         }
-        hir::StmtKind::Block(block) => collect_block_callees(block, callees),
+        hir::StmtKind::Block(block) | hir::StmtKind::Breakable { body: block, .. } => {
+            collect_block_callees(block, callees);
+        }
         hir::StmtKind::Label { statement, .. } => {
             if let Some(statement) = statement {
                 collect_statement_callees(statement, callees);

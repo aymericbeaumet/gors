@@ -649,7 +649,8 @@ impl FunctionLowerer {
         self.push_scope();
         let previous_signature = std::mem::replace(&mut self.signature, signature.clone());
         let previous_named_results = std::mem::take(&mut self.named_results);
-        let previous_loops = std::mem::take(&mut self.loop_labels);
+        let previous_targets = std::mem::take(&mut self.control_targets);
+        let previous_range_yield_target = self.range_yield_target.take();
         let previous_labels = std::mem::take(&mut self.declared_labels);
         let previous_gotos = std::mem::take(&mut self.referenced_gotos);
         let previous_inside = self.inside_local_closure;
@@ -670,7 +671,8 @@ impl FunctionLowerer {
         self.inside_local_closure = previous_inside;
         self.signature = previous_signature;
         self.named_results = previous_named_results;
-        self.loop_labels = previous_loops;
+        self.control_targets = previous_targets;
+        self.range_yield_target = previous_range_yield_target;
         self.declared_labels = previous_labels;
         self.referenced_gotos = previous_gotos;
         self.pop_scope();

@@ -10,6 +10,7 @@ mod closures;
 mod composites;
 mod constant_ops;
 mod constants;
+mod control_targets;
 mod conversions;
 mod declarations;
 mod expression_lower;
@@ -386,6 +387,7 @@ pub(super) fn lower_function(
         owner: definition,
         next_node: 1,
         next_local_type: 0,
+        next_control_target: 0,
         functions: symbols.functions,
         qualified_functions: symbols.qualified_functions,
         methods: symbols.methods,
@@ -407,8 +409,8 @@ pub(super) fn lower_function(
         closures: Vec::new(),
         closure_scopes: vec![BTreeMap::new()],
         named_results: Vec::new(),
-        loop_labels: Vec::new(),
-        range_yield_loop_depth: None,
+        control_targets: Vec::new(),
+        range_yield_target: None,
         iteration_capture_scopes: Vec::new(),
         declared_labels: BTreeSet::new(),
         referenced_gotos: BTreeMap::new(),

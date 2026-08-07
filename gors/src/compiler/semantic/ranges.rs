@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 
 use super::FunctionLowerer;
+use super::control_targets::ControlTargetKind;
 use super::expressions::{coerce_expr, default_expr_type, is_assignable};
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
@@ -138,7 +139,7 @@ impl FunctionLowerer {
                     ));
                 }
             };
-            self.loop_labels.push(label.clone());
+            let target = self.begin_control_target(ControlTargetKind::Loop, label.clone())?;
             let assigned_in_body = super::iteration::assigned_names_in_block(body);
             let iteration_captures = match &bindings {
                 hir::RangeBindings::Declared { key, value } => [*key, *value]
@@ -160,12 +161,13 @@ impl FunctionLowerer {
             self.iteration_capture_scopes.push(iteration_captures);
             let body = self.lower_block(body, true);
             self.iteration_capture_scopes.pop();
-            self.loop_labels.pop();
-            Ok::<_, Diagnostic>((bindings, body?))
+            self.end_control_target(target)?;
+            Ok::<_, Diagnostic>((target, bindings, body?))
         })();
         self.pop_scope();
-        let (bindings, body) = lowered?;
+        let (target, bindings, body) = lowered?;
         Ok(hir::StmtKind::Range {
+            target,
             label,
             bindings,
             expression,
@@ -339,11 +341,11 @@ impl FunctionLowerer {
         self.push_scope();
         let previous_signature = std::mem::replace(&mut self.signature, signature.clone());
         let previous_named_results = std::mem::take(&mut self.named_results);
-        let previous_loops = std::mem::take(&mut self.loop_labels);
+        let previous_targets = std::mem::take(&mut self.control_targets);
         let previous_labels = std::mem::take(&mut self.declared_labels);
         let previous_gotos = std::mem::take(&mut self.referenced_gotos);
         let previous_inside = self.inside_local_closure;
-        let previous_boundary = self.range_yield_loop_depth;
+        let previous_boundary = self.range_yield_target;
         self.inside_local_closure = true;
 
         let lowered = (|| {
@@ -392,8 +394,8 @@ impl FunctionLowerer {
                 });
             }
 
-            self.loop_labels.push(None);
-            self.range_yield_loop_depth = Some(self.loop_labels.len());
+            let target = self.begin_control_target(ControlTargetKind::Loop, None)?;
+            self.range_yield_target = Some(target);
             let assigned_in_body = super::iteration::assigned_names_in_block(body);
             let captures = bindings
                 .into_iter()
@@ -412,8 +414,8 @@ impl FunctionLowerer {
             self.iteration_capture_scopes.push(captures);
             let lowered_body = self.lower_block(body, true);
             self.iteration_capture_scopes.pop();
-            self.range_yield_loop_depth = None;
-            self.loop_labels.pop();
+            self.range_yield_target = None;
+            self.end_control_target(target)?;
             let lowered_body = lowered_body?;
             statements.extend(lowered_body.stmts);
             statements.push(self.bool_return(true, syntax_source)?);
@@ -428,11 +430,11 @@ impl FunctionLowerer {
             ))
         })();
 
-        self.range_yield_loop_depth = previous_boundary;
+        self.range_yield_target = previous_boundary;
         self.inside_local_closure = previous_inside;
         self.signature = previous_signature;
         self.named_results = previous_named_results;
-        self.loop_labels = previous_loops;
+        self.control_targets = previous_targets;
         self.declared_labels = previous_labels;
         self.referenced_gotos = previous_gotos;
         self.pop_scope();
@@ -470,7 +472,8 @@ impl FunctionLowerer {
         self.push_scope();
         let previous_signature = std::mem::replace(&mut self.signature, signature.clone());
         let previous_named_results = std::mem::take(&mut self.named_results);
-        let previous_loops = std::mem::take(&mut self.loop_labels);
+        let previous_targets = std::mem::take(&mut self.control_targets);
+        let previous_boundary = self.range_yield_target.take();
         let previous_labels = std::mem::take(&mut self.declared_labels);
         let previous_gotos = std::mem::take(&mut self.referenced_gotos);
         let previous_inside = self.inside_local_closure;
@@ -484,7 +487,8 @@ impl FunctionLowerer {
         self.inside_local_closure = previous_inside;
         self.signature = previous_signature;
         self.named_results = previous_named_results;
-        self.loop_labels = previous_loops;
+        self.control_targets = previous_targets;
+        self.range_yield_target = previous_boundary;
         self.declared_labels = previous_labels;
         self.referenced_gotos = previous_gotos;
         self.pop_scope();

@@ -12,10 +12,10 @@
   "summary": {
     "groupCount": 15,
     "passingGroupCount": 15,
-    "caseCount": 336,
-    "passingCaseCount": 336,
+    "caseCount": 339,
+    "passingCaseCount": 339,
     "unsupportedCaseCount": 0,
-    "fixtureCount": 182
+    "fixtureCount": 185
   },
   "groups": [
     {
@@ -3286,7 +3286,9 @@
         "_negative/goto_jump_into_block",
         "_negative/goto_jump_over_declaration",
         "assignment_evaluation_order",
+        "assignment_partial_writes_on_panic",
         "assignment_two_phase",
+        "break_targets",
         "control_flow_evaluation",
         "declarations_and_scope_labels",
         "defer_lifo_and_arguments",
@@ -3307,15 +3309,16 @@
         "statements_forward_goto",
         "string_bytes_and_invalid_utf8",
         "switch_fallthrough_placement",
-        "switch_statements"
+        "switch_statements",
+        "terminating_statement_forms"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 57,
-        "passingCaseCount": 57,
+        "caseCount": 60,
+        "passingCaseCount": 60,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 25
+        "fixtureCount": 28
       },
       "cases": [
         {
@@ -3333,6 +3336,20 @@
             "statements",
             "return_statements",
             "spec_section_edgecases"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-terminating-statement-forms",
+          "title": "Value-returning functions may end in every terminating statement form, including a blocking single-case select",
+          "subtitle": "Terminating statements",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "terminating_statement_forms"
+          ],
+          "freshFixtures": [
+            "terminating_statement_forms"
           ],
           "reason": ""
         },
@@ -3477,6 +3494,20 @@
           ],
           "freshFixtures": [
             "assignment_evaluation_order"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-assignment-partial-writes-on-panic",
+          "title": "Tuple-assignment writes occur left to right and earlier writes remain visible when a later write panics",
+          "subtitle": "Assignment statements",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "assignment_partial_writes_on_panic"
+          ],
+          "freshFixtures": [
+            "assignment_partial_writes_on_panic"
           ],
           "reason": ""
         },
@@ -3995,6 +4026,20 @@
           ],
           "freshFixtures": [
             "statements"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-break-targets",
+          "title": "Break resolves to the innermost loop, switch, or select while labeled break reaches its exact enclosing target",
+          "subtitle": "Break statements",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "break_targets"
+          ],
+          "freshFixtures": [
+            "break_targets"
           ],
           "reason": ""
         },

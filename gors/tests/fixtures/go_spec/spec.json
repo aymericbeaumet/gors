@@ -2020,6 +2020,15 @@
           ]
         },
         {
+          "id": "spec-terminating-statement-forms",
+          "section": "Terminating statements",
+          "title": "Value-returning functions may end in every terminating statement form, including a blocking single-case select",
+          "status": "passing",
+          "fixtures": [
+            "terminating_statement_forms"
+          ]
+        },
+        {
           "id": "stmt-empty",
           "section": "Empty statements",
           "title": "Explicit empty statements compile without changing control flow",
@@ -2109,6 +2118,15 @@
           "status": "passing",
           "fixtures": [
             "assignment_evaluation_order"
+          ]
+        },
+        {
+          "id": "spec-assignment-partial-writes-on-panic",
+          "section": "Assignment statements",
+          "title": "Tuple-assignment writes occur left to right and earlier writes remain visible when a later write panics",
+          "status": "passing",
+          "fixtures": [
+            "assignment_partial_writes_on_panic"
           ]
         },
         {
@@ -2442,6 +2460,15 @@
           "status": "passing",
           "fixtures": [
             "statements"
+          ]
+        },
+        {
+          "id": "spec-break-targets",
+          "section": "Break statements",
+          "title": "Break resolves to the innermost loop, switch, or select while labeled break reaches its exact enclosing target",
+          "status": "passing",
+          "fixtures": [
+            "break_targets"
           ]
         },
         {
