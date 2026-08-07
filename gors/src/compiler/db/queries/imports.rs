@@ -65,6 +65,7 @@ pub(super) fn function_symbols(
         qualified_constants: BTreeMap::new(),
         variables: BTreeMap::new(),
         qualified_variables: BTreeMap::new(),
+        package_imports: BTreeSet::new(),
         intrinsic_packages: BTreeSet::new(),
     };
     let local_range_iterators = specialized_range_iterator_ids(db, input);
@@ -149,6 +150,7 @@ pub(super) fn function_symbols(
                         ),
                     ));
                 }
+                symbols.package_imports.insert(local_name.clone());
                 if import.canonical_path().as_str() == "unsafe" {
                     symbols.intrinsic_packages.insert(local_name);
                     continue;

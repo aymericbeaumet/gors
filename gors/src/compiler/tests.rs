@@ -1,5 +1,6 @@
 use super::*;
 
+mod append;
 mod arrays;
 mod assignments;
 mod calls;

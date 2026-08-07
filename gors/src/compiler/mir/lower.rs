@@ -1,5 +1,6 @@
 //! Evaluation-order-explicit lowering from typed HIR to MIR.
 
+mod append;
 mod arrays;
 mod assignments;
 mod calls;
@@ -648,6 +649,9 @@ impl FunctionLowerer {
                 key,
                 type_identity,
             } => self.lower_aggregate_map_index(map, key, type_identity, &expr.ty, expr.source),
+            hir::ExprKind::Append { slice, arguments } => {
+                self.lower_append_expr(slice, arguments, &expr.ty, expr.source)
+            }
             hir::ExprKind::Local(local) => self.read_semantic_local(*local, expr.source),
             hir::ExprKind::AddressOfLocal(local) => {
                 self.lower_address_of_local_expr(*local, &expr.ty)

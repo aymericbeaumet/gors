@@ -118,80 +118,7 @@ impl FunctionLowerer {
                 )
             }
             "append" => {
-                let [slice, value] = arguments else {
-                    return Err(Diagnostic::semantic(
-                        "append currently requires one slice and one element",
-                        source,
-                    ));
-                };
-                if spread {
-                    let slice = self.lower_expr(slice, Some(&byte_slice_ty))?;
-                    let mut value = self.lower_expr(value, None)?;
-                    if value.ty == Ty::Untyped(UntypedTy::String) {
-                        coerce_expr(&mut value, &Ty::String, source)?;
-                    }
-                    let builtin = match value.ty {
-                        Ty::String => hir::Builtin::SliceU8AppendString,
-                        ref ty if ty == &byte_slice_ty => hir::Builtin::SliceU8AppendSlice,
-                        _ => {
-                            return Err(Diagnostic::semantic(
-                                "[]byte append spread requires a string or []byte source",
-                                source,
-                            ));
-                        }
-                    };
-                    (
-                        builtin,
-                        vec![slice, value],
-                        byte_slice_ty,
-                        true,
-                        true,
-                        false,
-                    )
-                } else {
-                    let slice = self.lower_expr(slice, None)?;
-                    let Ty::Slice(element) = slice.ty.underlying() else {
-                        return Err(Diagnostic::semantic(
-                            "append requires a slice as its first argument",
-                            source,
-                        ));
-                    };
-                    if element.snapshot_function_result().is_some() {
-                        let element_ty = element.as_ref().clone();
-                        let result_ty = slice.ty.clone();
-                        let capture =
-                            self.lower_snapshot_function_capture(value, &element_ty, source)?;
-                        return self.finish_slice_builtin_call(
-                            hir::Builtin::SnapshotFunctionSliceAppend,
-                            vec![slice, capture],
-                            result_ty,
-                            true,
-                            true,
-                            false,
-                            node,
-                            source,
-                            expected,
-                        );
-                    }
-                    if !matches!(
-                        element.underlying(),
-                        Ty::Int(IntTy::Int | IntTy::Int32) | Ty::String
-                    ) {
-                        return Err(Diagnostic::unsupported(
-                            "non-spread append currently supports int, rune, string, and proven function slices",
-                            source,
-                        ));
-                    }
-                    let element_ty = element.as_ref().clone();
-                    let result_ty = slice.ty.clone();
-                    let value = self.lower_expr(value, Some(&element_ty))?;
-                    let builtin = if element.underlying() == &Ty::String {
-                        hir::Builtin::SliceGoStringAppend
-                    } else {
-                        hir::Builtin::SliceI64Append
-                    };
-                    (builtin, vec![slice, value], result_ty, true, true, false)
-                }
+                return self.lower_append_builtin_call(arguments, spread, node, source, expected);
             }
             "copy" => {
                 let [destination, source_value] = arguments else {
@@ -267,6 +194,153 @@ impl FunctionLowerer {
         self.finish_slice_builtin_call(
             builtin, args, ty, allocates, writes, panics, node, source, expected,
         )
+    }
+
+    fn lower_append_builtin_call(
+        &mut self,
+        arguments: &[ExprSyntax],
+        spread: bool,
+        node: NodeId,
+        source: SourceRef,
+        expected: Option<&Ty>,
+    ) -> Result<hir::Expr, Diagnostic> {
+        let Some((slice_syntax, argument_syntax)) = arguments.split_first() else {
+            return Err(Diagnostic::semantic(
+                "append requires a slice as its first argument",
+                source,
+            ));
+        };
+        let slice = self.lower_expr(slice_syntax, None)?;
+        let Ty::Slice(element) = slice.ty.underlying() else {
+            return Err(Diagnostic::semantic(
+                "append requires a slice as its first argument",
+                source,
+            ));
+        };
+        let element_ty = element.as_ref().clone();
+        let canonical_byte_slice = Ty::Slice(Box::new(Ty::Uint(UintTy::Uint8)));
+        let arguments = if spread {
+            let [value_syntax] = argument_syntax else {
+                return Err(Diagnostic::semantic(
+                    "append with ... requires exactly one source value",
+                    source,
+                ));
+            };
+            let mut value = if self.is_predeclared_nil_identifier(value_syntax) {
+                self.lower_expr(value_syntax, Some(&slice.ty))?
+            } else {
+                self.lower_expr(value_syntax, None)?
+            };
+            if element.underlying() == &Ty::Uint(UintTy::Uint8)
+                && value.ty == Ty::Untyped(UntypedTy::String)
+            {
+                coerce_expr(&mut value, &Ty::String, source)?;
+            }
+            let variadic_slice_ty = Ty::Slice(Box::new(element_ty.clone()));
+            let valid = if super::expressions::is_assignable(&slice.ty, &canonical_byte_slice)
+                && value.ty.underlying() == &Ty::String
+            {
+                true
+            } else {
+                super::expressions::is_assignable(&value.ty, &variadic_slice_ty)
+            };
+            if !valid {
+                return Err(Diagnostic::semantic(
+                    "append spread source does not match the destination element type",
+                    source,
+                ));
+            }
+            if value.ty.underlying() != &Ty::String {
+                coerce_expr(&mut value, &variadic_slice_ty, source)?;
+            }
+            if !matches!(
+                element.underlying(),
+                Ty::Int(IntTy::Int | IntTy::Int32) | Ty::Uint(UintTy::Uint8) | Ty::Interface(_)
+            ) {
+                return Err(Diagnostic::unsupported(
+                    "spread append currently supports integer, byte, and interface slices",
+                    source,
+                ));
+            }
+            hir::AppendArguments::Spread(Box::new(value))
+        } else {
+            if argument_syntax.is_empty() {
+                hir::AppendArguments::Elements(Vec::new())
+            } else {
+                if element.snapshot_function_result().is_some() && argument_syntax.len() > 1 {
+                    return Err(Diagnostic::unsupported(
+                        "function-slice append currently supports one element",
+                        source,
+                    ));
+                }
+                if element.underlying() == &Ty::String && argument_syntax.len() > 1 {
+                    return Err(Diagnostic::unsupported(
+                        "string-slice append currently supports one element",
+                        source,
+                    ));
+                }
+                if !matches!(
+                    element.underlying(),
+                    Ty::Int(IntTy::Int | IntTy::Int32)
+                        | Ty::Uint(UintTy::Uint8)
+                        | Ty::String
+                        | Ty::Interface(_)
+                ) && element.snapshot_function_result().is_none()
+                {
+                    return Err(Diagnostic::unsupported(
+                        "append element type has no executable representation",
+                        source,
+                    ));
+                }
+                let mut values = Vec::with_capacity(argument_syntax.len());
+                for value in argument_syntax {
+                    let lowered = if element.snapshot_function_result().is_some() {
+                        self.lower_snapshot_function_capture(value, &element_ty, source)?
+                    } else {
+                        self.lower_expr(value, Some(&element_ty))?
+                    };
+                    values.push(lowered);
+                }
+                hir::AppendArguments::Elements(values)
+            }
+        };
+        let has_runtime_append = match &arguments {
+            hir::AppendArguments::Elements(values) => !values.is_empty(),
+            hir::AppendArguments::Spread(_) => true,
+        };
+        let mut effects = slice.effects;
+        match &arguments {
+            hir::AppendArguments::Elements(values) => {
+                for value in values {
+                    effects = effects.union(value.effects);
+                }
+            }
+            hir::AppendArguments::Spread(value) => effects = effects.union(value.effects),
+        }
+        if has_runtime_append {
+            effects = effects.union(hir::Effects {
+                may_call: true,
+                may_allocate: true,
+                may_write: true,
+                ..hir::Effects::default()
+            });
+        }
+        let result_ty = slice.ty.clone();
+        let mut lowered = hir::Expr {
+            node,
+            kind: hir::ExprKind::Append {
+                slice: Box::new(slice),
+                arguments,
+            },
+            ty: result_ty,
+            category: hir::ValueCategory::Value,
+            effects,
+            source,
+        };
+        if let Some(expected) = expected {
+            coerce_expr(&mut lowered, expected, source)?;
+        }
+        Ok(lowered)
     }
 
     #[allow(clippy::too_many_arguments)]

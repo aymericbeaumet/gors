@@ -120,6 +120,7 @@ pub(super) struct FunctionSymbols {
     pub(super) qualified_constants: BTreeMap<(String, String), ConstantSymbol>,
     pub(super) variables: BTreeMap<String, VariableSymbol>,
     pub(super) qualified_variables: BTreeMap<(String, String), VariableSymbol>,
+    pub(super) package_imports: BTreeSet<String>,
     pub(super) intrinsic_packages: BTreeSet<String>,
 }
 
@@ -396,6 +397,7 @@ pub(super) fn lower_function(
         local_constant_scopes: vec![BTreeMap::new()],
         variables: symbols.variables,
         qualified_variables: symbols.qualified_variables,
+        package_imports: symbols.package_imports,
         intrinsic_packages: symbols.intrinsic_packages,
         type_aliases,
         type_scope_changes: vec![BTreeMap::new()],

@@ -2551,6 +2551,15 @@
           ]
         },
         {
+          "id": "spec-append-examples",
+          "section": "Appending to and copying slices",
+          "title": "The normative append examples preserve overlapping sources, nil growth, interface assignment, and empty expansions",
+          "status": "passing",
+          "fixtures": [
+            "append_spec_examples"
+          ]
+        },
+        {
           "id": "builtin-copy-string-source",
           "section": "Appending to and copying slices",
           "title": "copy copies bytes from string sources into byte slices",

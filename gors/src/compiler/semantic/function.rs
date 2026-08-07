@@ -34,6 +34,7 @@ pub(super) struct FunctionLowerer {
     pub(super) local_constant_scopes: Vec<BTreeMap<String, LocalConstantSymbol>>,
     pub(super) variables: BTreeMap<String, VariableSymbol>,
     pub(super) qualified_variables: BTreeMap<(String, String), VariableSymbol>,
+    pub(super) package_imports: BTreeSet<String>,
     pub(super) intrinsic_packages: BTreeSet<String>,
     pub(super) type_aliases: BTreeMap<String, Ty>,
     pub(super) type_scope_changes: Vec<BTreeMap<String, Option<Ty>>>,

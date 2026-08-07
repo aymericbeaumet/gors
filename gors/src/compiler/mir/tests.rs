@@ -2,6 +2,7 @@ use super::*;
 use crate::compiler::ids::LocalId;
 use crate::compiler::types::{ConstValue, ExactNumber, FloatTy, IntTy, Ty, UintTy};
 
+mod append;
 mod pointers;
 
 fn lower(source: &str) -> File {
@@ -304,11 +305,11 @@ fn verifier_rejects_invalid_byte_slice_runtime_calls() {
     for (builtin, expected) in [
         (
             hir::Builtin::SliceU8Make,
-            "invalid MIR byte slice make argument types",
+            "invalid MIR byte slice call SliceU8Make",
         ),
         (
             hir::Builtin::SliceU8Set,
-            "invalid MIR byte slice set argument types",
+            "invalid MIR byte slice call SliceU8Set",
         ),
         (
             hir::Builtin::SliceU8Copy,

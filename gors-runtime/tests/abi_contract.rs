@@ -39,19 +39,20 @@ use gors_runtime::{
     go_slice_go_string_cap, go_slice_go_string_clear, go_slice_go_string_copy,
     go_slice_go_string_index, go_slice_go_string_is_nil, go_slice_go_string_len,
     go_slice_go_string_make, go_slice_go_string_nil, go_slice_go_string_range,
-    go_slice_go_string_set, go_slice_i64_append, go_slice_i64_cap, go_slice_i64_clear,
-    go_slice_i64_copy, go_slice_i64_from_static, go_slice_i64_index, go_slice_i64_is_nil,
-    go_slice_i64_len, go_slice_i64_make, go_slice_i64_nil, go_slice_i64_range, go_slice_i64_set,
-    go_slice_interface_index, go_slice_interface_is_nil, go_slice_interface_len,
-    go_slice_interface_make, go_slice_interface_nil, go_slice_interface_set,
-    go_slice_u8_append_slice, go_slice_u8_append_string, go_slice_u8_copy, go_slice_u8_copy_string,
-    go_slice_u8_from_static, go_slice_u8_index, go_slice_u8_is_nil, go_slice_u8_len,
-    go_slice_u8_make, go_slice_u8_nil, go_slice_u8_range, go_slice_u8_set, go_string_from_bytes,
-    go_string_from_rune, go_string_from_slice_runes, go_string_from_slice_u8,
-    go_string_from_static, go_string_index, go_string_len, go_string_range, go_string_range_count,
-    go_string_range_index_at, go_string_range_rune_at, go_string_to_slice_runes, panic_bool,
-    panic_go_interface, panic_go_string, panic_i64, print_bool, print_f64, print_go_string,
-    print_i64, print_newline, print_space, print_u64,
+    go_slice_go_string_set, go_slice_i64_append, go_slice_i64_append_slice, go_slice_i64_cap,
+    go_slice_i64_clear, go_slice_i64_copy, go_slice_i64_from_static, go_slice_i64_index,
+    go_slice_i64_is_nil, go_slice_i64_len, go_slice_i64_make, go_slice_i64_nil, go_slice_i64_range,
+    go_slice_i64_set, go_slice_interface_append, go_slice_interface_index,
+    go_slice_interface_is_nil, go_slice_interface_len, go_slice_interface_make,
+    go_slice_interface_nil, go_slice_interface_set, go_slice_u8_append_slice,
+    go_slice_u8_append_string, go_slice_u8_copy, go_slice_u8_copy_string, go_slice_u8_from_static,
+    go_slice_u8_index, go_slice_u8_is_nil, go_slice_u8_len, go_slice_u8_make, go_slice_u8_nil,
+    go_slice_u8_range, go_slice_u8_set, go_string_from_bytes, go_string_from_rune,
+    go_string_from_slice_runes, go_string_from_slice_u8, go_string_from_static, go_string_index,
+    go_string_len, go_string_range, go_string_range_count, go_string_range_index_at,
+    go_string_range_rune_at, go_string_to_slice_runes, panic_bool, panic_go_interface,
+    panic_go_string, panic_i64, print_bool, print_f64, print_go_string, print_i64, print_newline,
+    print_space, print_u64,
 };
 use gors_runtime_abi::{RuntimeOp, RuntimeType};
 
@@ -214,10 +215,20 @@ fn implementation_surface(operation: RuntimeOp) -> RuntimeSurface {
             fn(GoSliceInterface, GoInt, GoInterface),
             [RuntimeType::GoSliceInterface, RuntimeType::I64, RuntimeType::GoInterface] -> RuntimeType::Unit
         ),
+        RuntimeOp::GoSliceInterfaceAppend => runtime_surface!(
+            go_slice_interface_append,
+            fn(GoSliceInterface, GoSliceInterface) -> GoSliceInterface,
+            [RuntimeType::GoSliceInterface, RuntimeType::GoSliceInterface] -> RuntimeType::GoSliceInterface
+        ),
         RuntimeOp::GoSliceI64Append => runtime_surface!(
             go_slice_i64_append,
             fn(GoSliceI64, GoInt) -> GoSliceI64,
             [RuntimeType::GoSliceI64, RuntimeType::I64] -> RuntimeType::GoSliceI64
+        ),
+        RuntimeOp::GoSliceI64AppendSlice => runtime_surface!(
+            go_slice_i64_append_slice,
+            fn(GoSliceI64, GoSliceI64) -> GoSliceI64,
+            [RuntimeType::GoSliceI64, RuntimeType::GoSliceI64] -> RuntimeType::GoSliceI64
         ),
         RuntimeOp::GoSliceU8FromStatic => runtime_surface!(
             go_slice_u8_from_static,

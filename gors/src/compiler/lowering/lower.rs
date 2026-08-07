@@ -374,6 +374,7 @@ fn lower_terminator(
                 | hir::Builtin::SliceI64Len
                 | hir::Builtin::SliceI64Cap
                 | hir::Builtin::SliceI64Append
+                | hir::Builtin::SliceI64AppendSlice
                 | hir::Builtin::SliceU8Make
                 | hir::Builtin::SliceU8Set
                 | hir::Builtin::SliceU8AppendSlice
@@ -408,6 +409,7 @@ fn lower_terminator(
                 | hir::Builtin::AggregateSliceLen
                 | hir::Builtin::AggregateSliceIndexTagged
                 | hir::Builtin::AggregateSliceSetTagged
+                | hir::Builtin::AggregateSliceAppendTagged
                 | hir::Builtin::SnapshotFunctionSliceAppend
                 | hir::Builtin::SnapshotFunctionSliceCall
                 | hir::Builtin::StringFromRune
@@ -538,6 +540,7 @@ fn lower_terminator(
                     hir::Builtin::SliceI64Len => RuntimeOp::GoSliceI64Len,
                     hir::Builtin::SliceI64Cap => RuntimeOp::GoSliceI64Cap,
                     hir::Builtin::SliceI64Append => RuntimeOp::GoSliceI64Append,
+                    hir::Builtin::SliceI64AppendSlice => RuntimeOp::GoSliceI64AppendSlice,
                     hir::Builtin::SliceU8Make => RuntimeOp::GoSliceU8Make,
                     hir::Builtin::SliceU8Set => RuntimeOp::GoSliceU8Set,
                     hir::Builtin::SliceU8AppendSlice => RuntimeOp::GoSliceU8AppendSlice,
@@ -572,6 +575,7 @@ fn lower_terminator(
                     hir::Builtin::AggregateSliceLen => RuntimeOp::GoSliceInterfaceLen,
                     hir::Builtin::AggregateSliceIndexTagged => RuntimeOp::GoSliceInterfaceIndex,
                     hir::Builtin::AggregateSliceSetTagged => RuntimeOp::GoSliceInterfaceSet,
+                    hir::Builtin::AggregateSliceAppendTagged => RuntimeOp::GoSliceInterfaceAppend,
                     hir::Builtin::SnapshotFunctionSliceAppend => RuntimeOp::GoSliceI64Append,
                     hir::Builtin::SnapshotFunctionSliceCall => RuntimeOp::GoSliceI64Index,
                     hir::Builtin::StringFromRune => RuntimeOp::GoStringFromRune,

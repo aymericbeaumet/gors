@@ -152,7 +152,10 @@ impl FunctionLowerer {
             Ty::Slice(element) if element.underlying() == &Ty::String => {
                 Some(hir::Builtin::SliceGoStringNil)
             }
-            Ty::Slice(element) if element.uses_interface_aggregate_representation() => {
+            Ty::Slice(element)
+                if matches!(element.underlying(), Ty::Interface(_))
+                    || element.uses_interface_aggregate_representation() =>
+            {
                 Some(hir::Builtin::AggregateSliceNil)
             }
             _ => None,
@@ -582,6 +585,9 @@ impl FunctionLowerer {
                 hir::Builtin::SliceU8Len
             }
             Ty::Slice(element) if element.bootstrap_i64_struct_fields().is_some() => {
+                hir::Builtin::AggregateSliceLen
+            }
+            Ty::Slice(element) if matches!(element.underlying(), Ty::Interface(_)) => {
                 hir::Builtin::AggregateSliceLen
             }
             Ty::Slice(element) if element.underlying() == &Ty::String => {

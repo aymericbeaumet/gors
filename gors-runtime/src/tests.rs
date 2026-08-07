@@ -3,6 +3,7 @@ use super::*;
 mod integer;
 mod maps;
 mod pointer_interfaces;
+mod slice_append;
 
 #[test]
 fn strings_preserve_arbitrary_bytes() {

@@ -516,6 +516,14 @@ executes the source call exactly once, applies each recorded assignment
 coercion in result order, and packs only the variadic remainder. A nonempty
 `...int` remainder receives a fresh slice whose length and capacity equal its
 bound result count; an empty remainder is nil.
+Append retains an explicit HIR elements-versus-spread plan. MIR evaluates and
+materializes the destination first, then every element or the spread source in
+source order, including interface boxing, before any backing-store mutation.
+It issues one typed append operation for the full appended count, so growth is
+decided once; runtime spread append snapshots the source's visible range before
+writes so overlapping aliases are memmove-safe. An append with no elements is
+operation-free and preserves the exact slice header, backing identity, and nil
+state.
 Multi-valued package-variable initialization remains rejected until the
 package initializer model represents tuple-producing execution.
 Every assignment to existing storage, including compound assignment,

@@ -430,6 +430,9 @@ impl RuntimeOp {
             Self::GoSliceI64Append => {
                 RuntimeSignature::new(GO_SLICE_I64_AND_INDEX, RuntimeType::GoSliceI64)
             }
+            Self::GoSliceI64AppendSlice => {
+                RuntimeSignature::new(TWO_GO_SLICE_I64_PARAMETERS, RuntimeType::GoSliceI64)
+            }
             Self::GoSliceU8FromStatic => {
                 RuntimeSignature::new(STATIC_BYTES_PARAMETER, RuntimeType::GoSliceU8)
             }
@@ -742,6 +745,10 @@ impl RuntimeOp {
             Self::GoSliceInterfaceSet => {
                 RuntimeSignature::new(GO_SLICE_INTERFACE_SET, RuntimeType::Unit)
             }
+            Self::GoSliceInterfaceAppend => RuntimeSignature::new(
+                TWO_GO_SLICE_INTERFACE_PARAMETERS,
+                RuntimeType::GoSliceInterface,
+            ),
             Self::GoMapStringInterfaceMake => {
                 RuntimeSignature::new(NO_PARAMETERS, RuntimeType::GoMapStringInterface)
             }

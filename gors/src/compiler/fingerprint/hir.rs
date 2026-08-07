@@ -617,6 +617,19 @@ fn encode_expression_kind(encoder: &mut Encoder, kind: &hir::ExprKind) {
             encoder.field(b"index", |encoder| encode_expression(encoder, index));
             encoder.field(b"type-identity", |encoder| encoder.blob(type_identity));
         }),
+        hir::ExprKind::Append { slice, arguments } => encoder.variant(b"append", |encoder| {
+            encoder.field(b"slice", |encoder| encode_expression(encoder, slice));
+            encoder.field(b"arguments", |encoder| match arguments {
+                hir::AppendArguments::Elements(elements) => {
+                    encoder.variant(b"elements", |encoder| {
+                        encoder.sequence(elements, encode_expression);
+                    });
+                }
+                hir::AppendArguments::Spread(value) => {
+                    encoder.variant(b"spread", |encoder| encode_expression(encoder, value));
+                }
+            });
+        }),
         hir::ExprKind::SliceLiteralU8(elements) => {
             encoder.variant(b"slice-literal-u8", |encoder| encoder.blob(elements));
         }

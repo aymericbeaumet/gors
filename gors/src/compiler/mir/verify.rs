@@ -28,11 +28,11 @@ use arrays::{
 };
 use channels::{is_channel_builtin, verify_channel_call};
 use containers::{
-    is_aggregate_container_builtin, is_go_string_slice_builtin, is_map_builtin,
-    is_representation_slice_builtin, verify_aggregate_container_call, verify_bool_slice_call,
-    verify_byte_slice_call_arguments, verify_byte_slice_integer_arguments,
-    verify_go_string_slice_call, verify_map_call, verify_representation_slice_call,
-    verify_slice_call_arguments, verify_slice_value_arguments,
+    is_aggregate_container_builtin, is_go_string_slice_builtin, is_i64_slice_builtin,
+    is_map_builtin, is_representation_slice_builtin, is_u8_slice_builtin,
+    verify_aggregate_container_call, verify_bool_slice_call, verify_byte_slice_call_arguments,
+    verify_go_string_slice_call, verify_i64_slice_call, verify_map_call,
+    verify_representation_slice_call, verify_u8_slice_call,
 };
 use effects::{
     binary_effects, call_effects, read_effects, rvalue_operands, terminator_operands,
@@ -426,66 +426,42 @@ impl Function {
                         )));
                     }
                     hir::Callee::Builtin(builtin) => {
+                        let destination_types = destinations
+                            .iter()
+                            .map(|destination| self.place_ty(*destination).cloned())
+                            .collect::<Result<Vec<_>, _>>()?;
                         let results = if is_channel_builtin(*builtin) {
-                            let destination_types = destinations
-                                .iter()
-                                .map(|destination| self.place_ty(*destination).cloned())
-                                .collect::<Result<Vec<_>, _>>()?;
                             verify_channel_call(*builtin, &argument_types, &destination_types)?
                         } else if is_pointer_builtin(*builtin) {
-                            let destination_types = destinations
-                                .iter()
-                                .map(|destination| self.place_ty(*destination).cloned())
-                                .collect::<Result<Vec<_>, _>>()?;
                             verify_pointer_call(*builtin, &argument_types, &destination_types)?
                         } else if is_interface_builtin(*builtin) {
-                            let destination_types = destinations
-                                .iter()
-                                .map(|destination| self.place_ty(*destination).cloned())
-                                .collect::<Result<Vec<_>, _>>()?;
                             verify_interface_call(*builtin, &argument_types, &destination_types)?
                         } else if is_representation_slice_builtin(*builtin) {
-                            let destination_types = destinations
-                                .iter()
-                                .map(|destination| self.place_ty(*destination).cloned())
-                                .collect::<Result<Vec<_>, _>>()?;
                             verify_representation_slice_call(
                                 *builtin,
                                 &argument_types,
                                 &destination_types,
                             )?
                         } else if is_map_builtin(*builtin) {
-                            let destination_types = destinations
-                                .iter()
-                                .map(|destination| self.place_ty(*destination).cloned())
-                                .collect::<Result<Vec<_>, _>>()?;
                             verify_map_call(*builtin, &argument_types, &destination_types)?
                         } else if is_go_string_slice_builtin(*builtin) {
-                            let destination_types = destinations
-                                .iter()
-                                .map(|destination| self.place_ty(*destination).cloned())
-                                .collect::<Result<Vec<_>, _>>()?;
                             verify_go_string_slice_call(
                                 *builtin,
                                 &argument_types,
                                 &destination_types,
                             )?
                         } else if is_string_builtin(*builtin) {
-                            let destination_types = destinations
-                                .iter()
-                                .map(|destination| self.place_ty(*destination).cloned())
-                                .collect::<Result<Vec<_>, _>>()?;
                             verify_string_call(*builtin, &argument_types, &destination_types)?
+                        } else if is_i64_slice_builtin(*builtin) {
+                            verify_i64_slice_call(*builtin, &argument_types, &destination_types)?
+                        } else if is_u8_slice_builtin(*builtin) {
+                            verify_u8_slice_call(*builtin, &argument_types, &destination_types)?
                         } else if matches!(
                             builtin,
                             hir::Builtin::SliceBoolIndex | hir::Builtin::SliceBoolSet
                         ) {
-                            verify_bool_slice_call(*builtin, &argument_types)?
+                            verify_bool_slice_call(*builtin, &argument_types, &destination_types)?
                         } else if is_aggregate_container_builtin(*builtin) {
-                            let destination_types = destinations
-                                .iter()
-                                .map(|destination| self.place_ty(*destination).cloned())
-                                .collect::<Result<Vec<_>, _>>()?;
                             verify_aggregate_container_call(
                                 *builtin,
                                 &argument_types,
@@ -513,111 +489,13 @@ impl Function {
                                     }
                                     Vec::new()
                                 }
-                                hir::Builtin::SliceI64Index => {
-                                    vec![verify_slice_call_arguments(
-                                        &argument_types,
-                                        2,
-                                        "slice index",
-                                    )?]
-                                }
-                                hir::Builtin::SliceI64Range => {
-                                    let element = verify_slice_call_arguments(
-                                        &argument_types,
-                                        4,
-                                        "slice expression",
-                                    )?;
-                                    vec![Ty::Slice(Box::new(element))]
-                                }
-                                hir::Builtin::SliceI64Set => {
-                                    verify_slice_value_arguments(
-                                        &argument_types,
-                                        true,
-                                        "slice assignment",
-                                    )?;
-                                    Vec::new()
-                                }
-                                hir::Builtin::SliceI64Make => {
-                                    if argument_types != [Ty::Int(IntTy::Int), Ty::Int(IntTy::Int)]
-                                    {
-                                        return Err(Diagnostic::backend(format!(
-                                            "invalid MIR slice make argument types: {argument_types:?}"
-                                        )));
-                                    }
-                                    vec![Ty::Slice(Box::new(Ty::Int(IntTy::Int)))]
-                                }
-                                hir::Builtin::SliceU8Make => {
-                                    if argument_types != [Ty::Int(IntTy::Int), Ty::Int(IntTy::Int)]
-                                    {
-                                        return Err(Diagnostic::backend(format!(
-                                            "invalid MIR byte slice make argument types: {argument_types:?}"
-                                        )));
-                                    }
-                                    vec![Ty::Slice(Box::new(Ty::Uint(UintTy::Uint8)))]
-                                }
-                                hir::Builtin::SliceI64Len | hir::Builtin::SliceI64Cap => {
-                                    let valid = matches!(
-                                        argument_types.as_slice(),
-                                        [slice]
-                                            if matches!(
-                                                slice.underlying(),
-                                                Ty::Slice(element)
-                                                    if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32))
-                                            )
-                                    );
-                                    if !valid {
-                                        return Err(Diagnostic::backend(format!(
-                                            "invalid MIR slice len/cap argument types: {argument_types:?}"
-                                        )));
-                                    }
-                                    vec![Ty::Int(IntTy::Int)]
-                                }
-                                hir::Builtin::SliceI64Append => {
-                                    let slice = verify_slice_value_arguments(
-                                        &argument_types,
-                                        false,
-                                        "slice append",
-                                    )?;
-                                    vec![slice]
-                                }
-                                hir::Builtin::SliceU8AppendSlice => {
-                                    verify_byte_slice_call_arguments(
-                                        &argument_types,
-                                        &Ty::Slice(Box::new(Ty::Uint(
-                                            crate::compiler::types::UintTy::Uint8,
-                                        ))),
-                                        "byte slice append",
-                                    )?;
-                                    vec![Ty::Slice(Box::new(Ty::Uint(
-                                        crate::compiler::types::UintTy::Uint8,
-                                    )))]
-                                }
-                                hir::Builtin::SliceU8AppendString
-                                | hir::Builtin::SliceU8CopyString => {
+                                hir::Builtin::SliceU8CopyString => {
                                     verify_byte_slice_call_arguments(
                                         &argument_types,
                                         &Ty::String,
                                         "string to byte slice operation",
                                     )?;
-                                    if *builtin == hir::Builtin::SliceU8CopyString {
-                                        vec![Ty::Int(IntTy::Int)]
-                                    } else {
-                                        vec![Ty::Slice(Box::new(Ty::Uint(
-                                            crate::compiler::types::UintTy::Uint8,
-                                        )))]
-                                    }
-                                }
-                                hir::Builtin::SliceU8Set => {
-                                    let expected = [
-                                        Ty::Slice(Box::new(Ty::Uint(UintTy::Uint8))),
-                                        Ty::Int(IntTy::Int),
-                                        Ty::Uint(UintTy::Uint8),
-                                    ];
-                                    if argument_types != expected {
-                                        return Err(Diagnostic::backend(format!(
-                                            "invalid MIR byte slice set argument types: {argument_types:?}"
-                                        )));
-                                    }
-                                    Vec::new()
+                                    vec![Ty::Int(IntTy::Int)]
                                 }
                                 hir::Builtin::SliceU8Copy => {
                                     let byte_slice = Ty::Slice(Box::new(Ty::Uint(UintTy::Uint8)));
@@ -627,30 +505,6 @@ impl Function {
                                         )));
                                     }
                                     vec![Ty::Int(IntTy::Int)]
-                                }
-                                hir::Builtin::SliceU8Len => {
-                                    verify_byte_slice_integer_arguments(
-                                        &argument_types,
-                                        1,
-                                        "byte slice len",
-                                    )?;
-                                    vec![Ty::Int(IntTy::Int)]
-                                }
-                                hir::Builtin::SliceU8Index => {
-                                    verify_byte_slice_integer_arguments(
-                                        &argument_types,
-                                        2,
-                                        "byte slice index",
-                                    )?;
-                                    vec![Ty::Uint(UintTy::Uint8)]
-                                }
-                                hir::Builtin::SliceU8Range => {
-                                    verify_byte_slice_integer_arguments(
-                                        &argument_types,
-                                        4,
-                                        "byte slice expression",
-                                    )?;
-                                    vec![Ty::Slice(Box::new(Ty::Uint(UintTy::Uint8)))]
                                 }
                                 hir::Builtin::SliceI64Copy => {
                                     if argument_types
@@ -828,8 +682,23 @@ impl Function {
                                 }
                                 hir::Builtin::SliceI64Nil
                                 | hir::Builtin::SliceI64IsNil
+                                | hir::Builtin::SliceI64Index
+                                | hir::Builtin::SliceI64Range
+                                | hir::Builtin::SliceI64Set
+                                | hir::Builtin::SliceI64Make
+                                | hir::Builtin::SliceI64Len
+                                | hir::Builtin::SliceI64Cap
+                                | hir::Builtin::SliceI64Append
+                                | hir::Builtin::SliceI64AppendSlice
                                 | hir::Builtin::SliceU8Nil
                                 | hir::Builtin::SliceU8IsNil
+                                | hir::Builtin::SliceU8Make
+                                | hir::Builtin::SliceU8Set
+                                | hir::Builtin::SliceU8Len
+                                | hir::Builtin::SliceU8Index
+                                | hir::Builtin::SliceU8Range
+                                | hir::Builtin::SliceU8AppendSlice
+                                | hir::Builtin::SliceU8AppendString
                                 | hir::Builtin::SliceBoolNil
                                 | hir::Builtin::SliceBoolIsNil
                                 | hir::Builtin::AggregateSliceNil
@@ -844,6 +713,7 @@ impl Function {
                                 | hir::Builtin::AggregateSliceLen
                                 | hir::Builtin::AggregateSliceIndexTagged
                                 | hir::Builtin::AggregateSliceSetTagged
+                                | hir::Builtin::AggregateSliceAppendTagged
                                 | hir::Builtin::AggregateMapMake
                                 | hir::Builtin::AggregateMapLen
                                 | hir::Builtin::AggregateMapGetTagged

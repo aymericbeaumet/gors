@@ -18,6 +18,7 @@ const INT_REM: RuntimeOp = RuntimeOp::Integer {
     kind: IntegerKind::I64,
 };
 
+mod append;
 mod pointers;
 
 fn lower_stages(source: &str) -> (hir::File, mir::File, rust_ir::File) {

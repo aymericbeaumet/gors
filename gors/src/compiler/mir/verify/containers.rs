@@ -133,37 +133,27 @@ pub(super) fn verify_representation_slice_call(
             Ok(vec![destination.clone()])
         }
         hir::Builtin::SliceI64IsNil => {
-            if !matches!(
-                arguments,
-                [Ty::Slice(element)]
-                    if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32))
-                        || element.snapshot_function_result().is_some()
-            ) {
+            if !matches!(arguments, [slice]
+            if is_i64_slice(slice)
+                || slice_element(slice).is_some_and(|element| {
+                    element.snapshot_function_result().is_some()
+                }))
+            {
                 return Err(Diagnostic::backend(format!(
                     "invalid MIR integer slice nil test: {arguments:?}"
                 )));
             }
             Ok(vec![Ty::Bool])
         }
-        hir::Builtin::SliceU8Nil => verify_fixed_slice_nil(
-            arguments,
-            destinations,
-            Ty::Slice(Box::new(Ty::Uint(UintTy::Uint8))),
-            "byte",
-        ),
-        hir::Builtin::SliceU8IsNil => verify_fixed_slice_nil_test(
-            arguments,
-            Ty::Slice(Box::new(Ty::Uint(UintTy::Uint8))),
-            "byte",
-        ),
-        hir::Builtin::SliceBoolNil => verify_fixed_slice_nil(
-            arguments,
-            destinations,
-            Ty::Slice(Box::new(Ty::Bool)),
-            "bool",
-        ),
+        hir::Builtin::SliceU8Nil => {
+            verify_fixed_slice_nil(arguments, destinations, is_u8_slice, "byte")
+        }
+        hir::Builtin::SliceU8IsNil => verify_fixed_slice_nil_test(arguments, is_u8_slice, "byte"),
+        hir::Builtin::SliceBoolNil => {
+            verify_fixed_slice_nil(arguments, destinations, is_bool_slice, "bool")
+        }
         hir::Builtin::SliceBoolIsNil => {
-            verify_fixed_slice_nil_test(arguments, Ty::Slice(Box::new(Ty::Bool)), "bool")
+            verify_fixed_slice_nil_test(arguments, is_bool_slice, "bool")
         }
         hir::Builtin::AggregateSliceNil => {
             let [destination] = destinations else {
@@ -171,7 +161,7 @@ pub(super) fn verify_representation_slice_call(
                     "aggregate slice nil operation requires one destination",
                 ));
             };
-            if !arguments.is_empty() || !matches!(destination.underlying(), Ty::Slice(_)) {
+            if !arguments.is_empty() || !is_aggregate_slice(destination) {
                 return Err(Diagnostic::backend(format!(
                     "invalid MIR aggregate slice nil operation: {arguments:?} -> {destinations:?}"
                 )));
@@ -179,7 +169,7 @@ pub(super) fn verify_representation_slice_call(
             Ok(vec![destination.clone()])
         }
         hir::Builtin::AggregateSliceIsNil => {
-            if !matches!(arguments, [Ty::Slice(_)]) {
+            if !matches!(arguments, [slice] if is_aggregate_slice(slice)) {
                 return Err(Diagnostic::backend(format!(
                     "invalid MIR aggregate slice nil test: {arguments:?}"
                 )));
@@ -233,23 +223,28 @@ pub(super) fn verify_representation_slice_call(
 fn verify_fixed_slice_nil(
     arguments: &[Ty],
     destinations: &[Ty],
-    slice: Ty,
+    is_slice: fn(&Ty) -> bool,
     name: &str,
 ) -> Result<Vec<Ty>, Diagnostic> {
-    if !arguments.is_empty() || destinations != [slice.clone()] {
+    let [slice] = destinations else {
+        return Err(Diagnostic::backend(format!(
+            "invalid MIR {name} slice nil operation: {arguments:?} -> {destinations:?}"
+        )));
+    };
+    if !arguments.is_empty() || !is_slice(slice) {
         return Err(Diagnostic::backend(format!(
             "invalid MIR {name} slice nil operation: {arguments:?} -> {destinations:?}"
         )));
     }
-    Ok(vec![slice])
+    Ok(vec![slice.clone()])
 }
 
 fn verify_fixed_slice_nil_test(
     arguments: &[Ty],
-    slice: Ty,
+    is_slice: fn(&Ty) -> bool,
     name: &str,
 ) -> Result<Vec<Ty>, Diagnostic> {
-    if arguments != [slice] {
+    if !matches!(arguments, [slice] if is_slice(slice)) {
         return Err(Diagnostic::backend(format!(
             "invalid MIR {name} slice nil test: {arguments:?}"
         )));
@@ -257,57 +252,228 @@ fn verify_fixed_slice_nil_test(
     Ok(vec![Ty::Bool])
 }
 
-pub(super) fn verify_slice_call_arguments(
-    arguments: &[Ty],
-    expected_len: usize,
-    context: &str,
-) -> Result<Ty, Diagnostic> {
-    let element = arguments.first().and_then(|ty| match ty.underlying() {
-        Ty::Slice(element)
-            if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) =>
-        {
-            Some(element.as_ref().clone())
-        }
+fn slice_element(ty: &Ty) -> Option<&Ty> {
+    match ty.underlying() {
+        Ty::Slice(element) => Some(element),
         _ => None,
-    });
-    if arguments.len() != expected_len
-        || element.is_none()
-        || arguments
-            .get(1..)
-            .unwrap_or_default()
-            .iter()
-            .any(|ty| ty != &Ty::Int(IntTy::Int))
-    {
-        return Err(Diagnostic::backend(format!(
-            "invalid MIR {context} argument types: {arguments:?}"
-        )));
     }
-    element.ok_or_else(|| Diagnostic::backend(format!("invalid MIR {context} slice type")))
 }
 
-pub(super) fn verify_slice_value_arguments(
+fn is_i64_slice(ty: &Ty) -> bool {
+    matches!(
+        slice_element(ty).map(Ty::underlying),
+        Some(Ty::Int(IntTy::Int | IntTy::Int32))
+    )
+}
+
+fn is_u8_slice(ty: &Ty) -> bool {
+    slice_element(ty).is_some_and(|element| element.underlying() == &Ty::Uint(UintTy::Uint8))
+}
+
+fn is_bool_slice(ty: &Ty) -> bool {
+    slice_element(ty).is_some_and(|element| element.underlying() == &Ty::Bool)
+}
+
+pub(super) fn is_i64_slice_builtin(builtin: hir::Builtin) -> bool {
+    matches!(
+        builtin,
+        hir::Builtin::SliceI64Index
+            | hir::Builtin::SliceI64Range
+            | hir::Builtin::SliceI64Set
+            | hir::Builtin::SliceI64Make
+            | hir::Builtin::SliceI64Len
+            | hir::Builtin::SliceI64Cap
+            | hir::Builtin::SliceI64Append
+            | hir::Builtin::SliceI64AppendSlice
+    )
+}
+
+pub(super) fn verify_i64_slice_call(
+    builtin: hir::Builtin,
     arguments: &[Ty],
-    indexed: bool,
-    context: &str,
-) -> Result<Ty, Diagnostic> {
-    let expected_len = if indexed { 3 } else { 2 };
-    let element = arguments.first().and_then(|ty| match ty.underlying() {
-        Ty::Slice(element)
-            if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) =>
-        {
-            Some(element.as_ref().clone())
+    destinations: &[Ty],
+) -> Result<Vec<Ty>, Diagnostic> {
+    let valid = match builtin {
+        hir::Builtin::SliceI64Make => {
+            arguments == [Ty::Int(IntTy::Int), Ty::Int(IntTy::Int)]
+                && matches!(destinations, [slice] if is_i64_slice(slice))
         }
-        _ => None,
-    });
-    let index_valid = !indexed || arguments.get(1) == Some(&Ty::Int(IntTy::Int));
-    if arguments.len() != expected_len || !index_valid || arguments.last() != element.as_ref() {
+        hir::Builtin::SliceI64Len | hir::Builtin::SliceI64Cap => {
+            matches!(arguments, [slice] if is_i64_slice(slice))
+                && destinations == [Ty::Int(IntTy::Int)]
+        }
+        hir::Builtin::SliceI64Index => {
+            matches!((arguments, destinations), ([slice, Ty::Int(IntTy::Int)], [value])
+                if is_i64_slice(slice) && slice_element(slice) == Some(value))
+        }
+        hir::Builtin::SliceI64Range => {
+            matches!(
+                (arguments, destinations),
+                (
+                    [slice, Ty::Int(IntTy::Int), Ty::Int(IntTy::Int), Ty::Int(IntTy::Int)],
+                    [result]
+                ) if is_i64_slice(slice) && result == slice
+            )
+        }
+        hir::Builtin::SliceI64Set => {
+            matches!(arguments, [slice, Ty::Int(IntTy::Int), value]
+                if is_i64_slice(slice) && slice_element(slice) == Some(value))
+                && destinations.is_empty()
+        }
+        hir::Builtin::SliceI64Append => {
+            matches!((arguments, destinations), ([slice, value], [result])
+                if is_i64_slice(slice)
+                    && slice_element(slice) == Some(value)
+                    && result == slice)
+        }
+        hir::Builtin::SliceI64AppendSlice => {
+            return verify_i64_append_slice_call(arguments, destinations);
+        }
+        _ => false,
+    };
+    valid.then(|| destinations.to_vec()).ok_or_else(|| {
+        Diagnostic::backend(format!(
+            "invalid MIR integer slice call {builtin:?}: {arguments:?} -> {destinations:?}"
+        ))
+    })
+}
+
+pub(super) fn is_u8_slice_builtin(builtin: hir::Builtin) -> bool {
+    matches!(
+        builtin,
+        hir::Builtin::SliceU8Make
+            | hir::Builtin::SliceU8Set
+            | hir::Builtin::SliceU8Len
+            | hir::Builtin::SliceU8Index
+            | hir::Builtin::SliceU8Range
+            | hir::Builtin::SliceU8AppendSlice
+            | hir::Builtin::SliceU8AppendString
+    )
+}
+
+pub(super) fn verify_u8_slice_call(
+    builtin: hir::Builtin,
+    arguments: &[Ty],
+    destinations: &[Ty],
+) -> Result<Vec<Ty>, Diagnostic> {
+    let valid = match builtin {
+        hir::Builtin::SliceU8Make => {
+            arguments == [Ty::Int(IntTy::Int), Ty::Int(IntTy::Int)]
+                && matches!(destinations, [slice] if is_u8_slice(slice))
+        }
+        hir::Builtin::SliceU8Len => {
+            matches!(arguments, [slice] if is_u8_slice(slice))
+                && destinations == [Ty::Int(IntTy::Int)]
+        }
+        hir::Builtin::SliceU8Index => {
+            matches!((arguments, destinations), ([slice, Ty::Int(IntTy::Int)], [value])
+                if is_u8_slice(slice) && slice_element(slice) == Some(value))
+        }
+        hir::Builtin::SliceU8Range => {
+            matches!(
+                (arguments, destinations),
+                (
+                    [slice, Ty::Int(IntTy::Int), Ty::Int(IntTy::Int), Ty::Int(IntTy::Int)],
+                    [result]
+                ) if is_u8_slice(slice) && result == slice
+            )
+        }
+        hir::Builtin::SliceU8Set => {
+            matches!(arguments, [slice, Ty::Int(IntTy::Int), value]
+                if is_u8_slice(slice) && slice_element(slice) == Some(value))
+                && destinations.is_empty()
+        }
+        hir::Builtin::SliceU8AppendSlice => {
+            return verify_u8_append_slice_call(arguments, destinations);
+        }
+        hir::Builtin::SliceU8AppendString => {
+            return verify_u8_append_string_call(arguments, destinations);
+        }
+        _ => false,
+    };
+    valid.then(|| destinations.to_vec()).ok_or_else(|| {
+        Diagnostic::backend(format!(
+            "invalid MIR byte slice call {builtin:?}: {arguments:?} -> {destinations:?}"
+        ))
+    })
+}
+
+pub(super) fn verify_i64_append_slice_call(
+    arguments: &[Ty],
+    destinations: &[Ty],
+) -> Result<Vec<Ty>, Diagnostic> {
+    let ([destination, source], [result]) = (arguments, destinations) else {
         return Err(Diagnostic::backend(format!(
-            "invalid MIR {context} argument types: {arguments:?}"
+            "invalid MIR integer slice append: {arguments:?} -> {destinations:?}"
+        )));
+    };
+    let (Ty::Slice(destination_element), Ty::Slice(source_element)) =
+        (destination.underlying(), source.underlying())
+    else {
+        return Err(Diagnostic::backend(format!(
+            "invalid MIR integer slice append: {arguments:?} -> {destinations:?}"
+        )));
+    };
+    if destination_element != source_element
+        || !matches!(
+            destination_element.underlying(),
+            Ty::Int(IntTy::Int | IntTy::Int32)
+        )
+        || result != destination
+    {
+        return Err(Diagnostic::backend(format!(
+            "invalid MIR integer slice append: {arguments:?} -> {destinations:?}"
         )));
     }
-    element
-        .map(|element| Ty::Slice(Box::new(element)))
-        .ok_or_else(|| Diagnostic::backend(format!("invalid MIR {context} slice type")))
+    Ok(vec![result.clone()])
+}
+
+pub(super) fn verify_u8_append_slice_call(
+    arguments: &[Ty],
+    destinations: &[Ty],
+) -> Result<Vec<Ty>, Diagnostic> {
+    let ([destination, source], [result]) = (arguments, destinations) else {
+        return Err(Diagnostic::backend(format!(
+            "invalid MIR byte slice append: {arguments:?} -> {destinations:?}"
+        )));
+    };
+    let (Ty::Slice(destination_element), Ty::Slice(source_element)) =
+        (destination.underlying(), source.underlying())
+    else {
+        return Err(Diagnostic::backend(format!(
+            "invalid MIR byte slice append: {arguments:?} -> {destinations:?}"
+        )));
+    };
+    if destination_element != source_element
+        || destination_element.underlying() != &Ty::Uint(UintTy::Uint8)
+        || result != destination
+    {
+        return Err(Diagnostic::backend(format!(
+            "invalid MIR byte slice append: {arguments:?} -> {destinations:?}"
+        )));
+    }
+    Ok(vec![result.clone()])
+}
+
+pub(super) fn verify_u8_append_string_call(
+    arguments: &[Ty],
+    destinations: &[Ty],
+) -> Result<Vec<Ty>, Diagnostic> {
+    let ([destination, value], [result]) = (arguments, destinations) else {
+        return Err(Diagnostic::backend(format!(
+            "invalid MIR string to byte slice append: {arguments:?} -> {destinations:?}"
+        )));
+    };
+    let valid_destination = matches!(
+        destination.underlying(),
+        Ty::Slice(element) if element.as_ref() == &Ty::Uint(UintTy::Uint8)
+    );
+    if !valid_destination || value.underlying() != &Ty::String || result != destination {
+        return Err(Diagnostic::backend(format!(
+            "invalid MIR string to byte slice append: {arguments:?} -> {destinations:?}"
+        )));
+    }
+    Ok(vec![result.clone()])
 }
 
 pub(super) fn verify_byte_slice_call_arguments(
@@ -324,47 +490,28 @@ pub(super) fn verify_byte_slice_call_arguments(
     Ok(())
 }
 
-pub(super) fn verify_byte_slice_integer_arguments(
-    arguments: &[Ty],
-    expected_len: usize,
-    context: &str,
-) -> Result<(), Diagnostic> {
-    let byte_slice = Ty::Slice(Box::new(Ty::Uint(UintTy::Uint8)));
-    if arguments.len() != expected_len
-        || arguments.first() != Some(&byte_slice)
-        || arguments
-            .get(1..)
-            .unwrap_or_default()
-            .iter()
-            .any(|ty| ty != &Ty::Int(IntTy::Int))
-    {
-        return Err(Diagnostic::backend(format!(
-            "invalid MIR {context} argument types: {arguments:?}"
-        )));
-    }
-    Ok(())
-}
-
 pub(super) fn verify_bool_slice_call(
     builtin: hir::Builtin,
     arguments: &[Ty],
+    destinations: &[Ty],
 ) -> Result<Vec<Ty>, Diagnostic> {
-    let slice = Ty::Slice(Box::new(Ty::Bool));
-    let (expected, results) = match builtin {
-        hir::Builtin::SliceBoolIndex => (vec![slice, Ty::Int(IntTy::Int)], vec![Ty::Bool]),
-        hir::Builtin::SliceBoolSet => (vec![slice, Ty::Int(IntTy::Int), Ty::Bool], Vec::new()),
-        _ => {
-            return Err(Diagnostic::backend(
-                "bool slice verifier received a non-bool-slice operation",
-            ));
+    let valid = match builtin {
+        hir::Builtin::SliceBoolIndex => {
+            matches!((arguments, destinations), ([slice, Ty::Int(IntTy::Int)], [value])
+                if is_bool_slice(slice) && slice_element(slice) == Some(value))
         }
+        hir::Builtin::SliceBoolSet => {
+            matches!(arguments, [slice, Ty::Int(IntTy::Int), value]
+                if is_bool_slice(slice) && slice_element(slice) == Some(value))
+                && destinations.is_empty()
+        }
+        _ => false,
     };
-    if arguments != expected {
-        return Err(Diagnostic::backend(format!(
-            "invalid MIR bool slice arguments: {arguments:?}"
-        )));
-    }
-    Ok(results)
+    valid.then(|| destinations.to_vec()).ok_or_else(|| {
+        Diagnostic::backend(format!(
+            "invalid MIR bool slice call {builtin:?}: {arguments:?} -> {destinations:?}"
+        ))
+    })
 }
 
 pub(super) fn is_aggregate_container_builtin(builtin: hir::Builtin) -> bool {
@@ -374,6 +521,7 @@ pub(super) fn is_aggregate_container_builtin(builtin: hir::Builtin) -> bool {
             | hir::Builtin::AggregateSliceLen
             | hir::Builtin::AggregateSliceIndexTagged
             | hir::Builtin::AggregateSliceSetTagged
+            | hir::Builtin::AggregateSliceAppendTagged
             | hir::Builtin::AggregateMapMake
             | hir::Builtin::AggregateMapLen
             | hir::Builtin::AggregateMapGetTagged
@@ -397,13 +545,26 @@ pub(super) fn verify_aggregate_container_call(
                 && destinations == [Ty::Int(IntTy::Int)]
         }
         hir::Builtin::AggregateSliceIndexTagged => {
-            matches!(arguments, [slice, Ty::Int(IntTy::Int)] if is_aggregate_slice(slice))
-                && matches!(destinations, [destination] if matches!(destination.underlying(), Ty::Interface(_)))
+            matches!(
+                (arguments, destinations),
+                ([slice, Ty::Int(IntTy::Int)], [destination])
+                    if aggregate_tagged_value_ty(slice).as_ref() == Some(destination)
+            )
         }
         hir::Builtin::AggregateSliceSetTagged => {
             matches!(arguments, [slice, Ty::Int(IntTy::Int), tagged]
-                if is_aggregate_slice(slice) && matches!(tagged.underlying(), Ty::Interface(_)))
+                if aggregate_tagged_value_ty(slice).as_ref() == Some(tagged))
                 && destinations.is_empty()
+        }
+        hir::Builtin::AggregateSliceAppendTagged => {
+            matches!(
+                (arguments, destinations),
+                ([destination, source], [result])
+                    if is_aggregate_slice(destination)
+                        && is_aggregate_slice(source)
+                        && destination.underlying() == source.underlying()
+                        && result == destination
+            )
         }
         hir::Builtin::AggregateMapMake => {
             arguments.is_empty()
@@ -444,6 +605,18 @@ fn is_aggregate_slice(ty: &Ty) -> bool {
                 || element.uses_interface_aggregate_representation()
                 )
     )
+}
+
+fn aggregate_tagged_value_ty(ty: &Ty) -> Option<Ty> {
+    let Ty::Slice(element) = ty.underlying() else {
+        return None;
+    };
+    if matches!(element.underlying(), Ty::Interface(_)) {
+        return Some(element.as_ref().clone());
+    }
+    element
+        .uses_interface_aggregate_representation()
+        .then(|| Ty::Interface(Vec::new()))
 }
 
 fn is_aggregate_map(ty: &Ty) -> bool {

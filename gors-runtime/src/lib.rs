@@ -56,9 +56,9 @@ pub use integer::{
 pub use interface_containers::{
     GoMapStringInterface, GoSliceInterface, go_map_string_interface_contains,
     go_map_string_interface_get, go_map_string_interface_len, go_map_string_interface_make,
-    go_map_string_interface_set, go_slice_interface_index, go_slice_interface_is_nil,
-    go_slice_interface_len, go_slice_interface_make, go_slice_interface_nil,
-    go_slice_interface_set,
+    go_map_string_interface_set, go_slice_interface_append, go_slice_interface_index,
+    go_slice_interface_is_nil, go_slice_interface_len, go_slice_interface_make,
+    go_slice_interface_nil, go_slice_interface_set,
 };
 pub use interfaces::{
     GoInterface, GoPanicPayload, go_interface_box_aggregate, go_interface_box_bool,
@@ -174,6 +174,12 @@ pub fn go_slice_i64_cap(slice: GoSliceI64) -> GoInt {
 #[must_use]
 pub fn go_slice_i64_append(slice: GoSliceI64, value: GoInt) -> GoSliceI64 {
     slice_values::append(slice, value)
+}
+
+/// Append one complete integer slice after snapshotting its visible elements.
+#[must_use]
+pub fn go_slice_i64_append_slice(slice: GoSliceI64, values: GoSliceI64) -> GoSliceI64 {
+    slice_values::append_slice(slice, &values)
 }
 
 /// Construct a `[]byte` value from compiler-emitted literal bytes.

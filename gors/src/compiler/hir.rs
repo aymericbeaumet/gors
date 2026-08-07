@@ -246,6 +246,12 @@ pub struct Expr {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AppendArguments {
+    Elements(Vec<Expr>),
+    Spread(Box<Expr>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExprKind {
     Constant(ConstValue),
     Local(LocalId),
@@ -287,6 +293,10 @@ pub enum ExprKind {
         slice: Box<Expr>,
         index: Box<Expr>,
         type_identity: Vec<u8>,
+    },
+    Append {
+        slice: Box<Expr>,
+        arguments: AppendArguments,
     },
     SliceLiteralU8(Vec<u8>),
     SliceLiteralBool(Vec<bool>),
@@ -369,6 +379,7 @@ pub enum Builtin {
     SliceI64Len,
     SliceI64Cap,
     SliceI64Append,
+    SliceI64AppendSlice,
     SliceU8Make,
     SliceU8Set,
     SliceU8AppendSlice,
@@ -403,6 +414,7 @@ pub enum Builtin {
     AggregateSliceLen,
     AggregateSliceIndexTagged,
     AggregateSliceSetTagged,
+    AggregateSliceAppendTagged,
     /// A function value proven to return one captured per-iteration integer.
     /// Rust representation lowering stores only that immutable payload.
     SnapshotFunctionSliceAppend,

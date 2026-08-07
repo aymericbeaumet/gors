@@ -33,7 +33,7 @@ impl FunctionLowerer {
         expected: Option<&Ty>,
     ) -> Result<hir::Expr, Diagnostic> {
         if let Some(expected) = expected
-            && is_nil_identifier(expr)
+            && self.is_predeclared_nil_identifier(expr)
         {
             let node = self.alloc_node(expr.source)?;
             return self.zero_value_expr(node, SourceRef::node(node), expected.clone());
@@ -45,6 +45,35 @@ impl FunctionLowerer {
             return self.coerce_interface_value(value, expected, expr.source);
         }
         self.lower_expr_inner(expr, expected, false)
+    }
+
+    pub(super) fn is_predeclared_nil_identifier(&self, expression: &ExprSyntax) -> bool {
+        if !is_nil_identifier(expression) {
+            return false;
+        }
+        self.lookup_local("nil").is_none()
+            && self.lookup_closure("nil").is_none()
+            && self.lookup_local_constant("nil").is_none()
+            && !self.constants.contains_key("nil")
+            && !self.variables.contains_key("nil")
+            && !self.functions.contains_key("nil")
+            && !self.generic_functions.contains_key("nil")
+            && !self.type_aliases.contains_key("nil")
+            && !self.generic_types.contains_key("nil")
+            && !self.package_imports.contains("nil")
+            && !self.intrinsic_packages.contains("nil")
+            && !self
+                .qualified_functions
+                .keys()
+                .any(|(package, _)| package == "nil")
+            && !self
+                .qualified_constants
+                .keys()
+                .any(|(package, _)| package == "nil")
+            && !self
+                .qualified_variables
+                .keys()
+                .any(|(package, _)| package == "nil")
     }
 
     pub(super) fn lower_expr_inner(
@@ -449,6 +478,24 @@ impl FunctionLowerer {
                     }
                     Ty::Slice(element) if element.underlying() == &Ty::String => {
                         (hir::Builtin::SliceGoStringIndex, element.as_ref().clone())
+                    }
+                    Ty::Slice(element) if matches!(element.underlying(), Ty::Interface(_)) => {
+                        let element_ty = element.as_ref().clone();
+                        let index = self.lower_expr(index, Some(&Ty::Int(IntTy::Int)))?;
+                        let effects = slice_runtime_effects(&[&base, &index], false, false, true);
+                        return Ok(hir::Expr {
+                            node,
+                            kind: hir::ExprKind::Call {
+                                callee: hir::Callee::Builtin(
+                                    hir::Builtin::AggregateSliceIndexTagged,
+                                ),
+                                args: vec![base, index],
+                            },
+                            ty: element_ty,
+                            category: hir::ValueCategory::Value,
+                            effects,
+                            source,
+                        });
                     }
                     Ty::Slice(element) if element.uses_interface_aggregate_representation() => {
                         let stored_ty = element.as_ref().clone();

@@ -98,6 +98,67 @@ pub fn append<T: Clone + Default>(mut slice: GoSlice<T>, value: T) -> GoSlice<T>
     }
 }
 
+pub fn append_slice<T: Clone + Default>(
+    mut destination: GoSlice<T>,
+    source: &GoSlice<T>,
+) -> GoSlice<T> {
+    let appended = {
+        let storage = source
+            .storage
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let end = source.start.saturating_add(source.len);
+        storage
+            .get(source.start..end)
+            .unwrap_or_else(|| slice_bounds_out_of_range())
+            .to_vec()
+    };
+    if appended.is_empty() {
+        return destination;
+    }
+
+    let required = destination.len.saturating_add(appended.len());
+    if required <= destination.capacity {
+        let start = destination.start.saturating_add(destination.len);
+        let end = start.saturating_add(appended.len());
+        let mut storage = destination
+            .storage
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let target = storage
+            .get_mut(start..end)
+            .unwrap_or_else(|| slice_bounds_out_of_range());
+        target.clone_from_slice(&appended);
+        drop(storage);
+        destination.len = required;
+        return destination;
+    }
+
+    let capacity = destination.capacity.saturating_mul(2).max(required).max(1);
+    let mut values = Vec::with_capacity(capacity);
+    {
+        let storage = destination
+            .storage
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let end = destination.start.saturating_add(destination.len);
+        values.extend_from_slice(
+            storage
+                .get(destination.start..end)
+                .unwrap_or_else(|| slice_bounds_out_of_range()),
+        );
+    }
+    values.extend(appended);
+    values.resize(capacity, T::default());
+    GoSlice {
+        storage: Arc::new(RwLock::new(values)),
+        start: 0,
+        len: required,
+        capacity,
+        nil: false,
+    }
+}
+
 pub fn copy<T: Clone>(destination: &GoSlice<T>, source: &GoSlice<T>) -> GoInt {
     let count = destination.len.min(source.len);
     let source_end = source.start.saturating_add(count);

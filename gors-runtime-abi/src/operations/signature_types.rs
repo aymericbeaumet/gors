@@ -120,6 +120,8 @@ pub(super) const GO_SLICE_BOOL_SET: &[RuntimeType] = &[
     RuntimeType::Bool,
 ];
 pub(super) const GO_SLICE_INTERFACE_PARAMETER: &[RuntimeType] = &[RuntimeType::GoSliceInterface];
+pub(super) const TWO_GO_SLICE_INTERFACE_PARAMETERS: &[RuntimeType] =
+    &[RuntimeType::GoSliceInterface, RuntimeType::GoSliceInterface];
 pub(super) const GO_SLICE_INTERFACE_AND_INDEX: &[RuntimeType] =
     &[RuntimeType::GoSliceInterface, RuntimeType::I64];
 pub(super) const GO_SLICE_INTERFACE_SET: &[RuntimeType] = &[

@@ -113,7 +113,9 @@ impl FunctionLowerer {
                 Some(hir::Builtin::SliceBoolNil)
             } else if element.underlying() == &Ty::String {
                 Some(hir::Builtin::SliceGoStringNil)
-            } else if element.uses_interface_aggregate_representation() {
+            } else if matches!(element.underlying(), Ty::Interface(_))
+                || element.uses_interface_aggregate_representation()
+            {
                 Some(hir::Builtin::AggregateSliceNil)
             } else {
                 None

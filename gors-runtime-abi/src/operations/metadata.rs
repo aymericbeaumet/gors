@@ -44,6 +44,7 @@ impl RuntimeOp {
             | Self::GoSliceI64Len
             | Self::GoSliceI64Cap
             | Self::GoSliceI64Append
+            | Self::GoSliceI64AppendSlice
             | Self::GoSliceU8FromStatic
             | Self::GoSliceU8AppendSlice
             | Self::GoSliceU8AppendString
@@ -108,6 +109,7 @@ impl RuntimeOp {
             | Self::GoSliceInterfaceLen
             | Self::GoSliceInterfaceIndex
             | Self::GoSliceInterfaceSet
+            | Self::GoSliceInterfaceAppend
             | Self::GoMapStringInterfaceMake
             | Self::GoMapStringInterfaceLen
             | Self::GoMapStringInterfaceGet
@@ -355,7 +357,10 @@ impl RuntimeOp {
                 HostIoEffect::None,
                 NO_GO_PANICS,
             ),
-            Self::GoSliceI64Append | Self::GoSliceGoStringAppend => RuntimeEffects::new(
+            Self::GoSliceI64Append
+            | Self::GoSliceI64AppendSlice
+            | Self::GoSliceInterfaceAppend
+            | Self::GoSliceGoStringAppend => RuntimeEffects::new(
                 AllocationEffect::MayAllocate,
                 ArgumentMutationEffect::MayMutateOwnedArgument,
                 HostIoEffect::None,

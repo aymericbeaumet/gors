@@ -361,4 +361,6 @@ pub(super) const ALL: &[RuntimeOp] = &[
     RuntimeOp::GoInterfaceBoxPointerI64,
     RuntimeOp::GoInterfaceUnboxPointerI64,
     RuntimeOp::GoPointerI64Equal,
+    RuntimeOp::GoSliceI64AppendSlice,
+    RuntimeOp::GoSliceInterfaceAppend,
 ];

@@ -192,6 +192,19 @@ fn collect_expression_callees(expression: &hir::Expr, callees: &mut BTreeSet<Qua
             collect_expression_callees(slice, callees);
             collect_expression_callees(index, callees);
         }
+        hir::ExprKind::Append { slice, arguments } => {
+            collect_expression_callees(slice, callees);
+            match arguments {
+                hir::AppendArguments::Elements(elements) => {
+                    for element in elements {
+                        collect_expression_callees(element, callees);
+                    }
+                }
+                hir::AppendArguments::Spread(value) => {
+                    collect_expression_callees(value, callees);
+                }
+            }
+        }
         hir::ExprKind::AggregateMapIndex { map, key, .. } => {
             collect_expression_callees(map, callees);
             collect_expression_callees(key, callees);

@@ -210,6 +210,17 @@ fn collect_expr_addresses(expression: &hir::Expr, addressed: &mut BTreeSet<Local
             collect_expr_addresses(slice, addressed);
             collect_expr_addresses(index, addressed);
         }
+        hir::ExprKind::Append { slice, arguments } => {
+            collect_expr_addresses(slice, addressed);
+            match arguments {
+                hir::AppendArguments::Elements(elements) => {
+                    collect_expression_addresses(elements, addressed);
+                }
+                hir::AppendArguments::Spread(value) => {
+                    collect_expr_addresses(value, addressed);
+                }
+            }
+        }
         hir::ExprKind::AggregateMapIndex { map, key, .. } => {
             collect_expr_addresses(map, addressed);
             collect_expr_addresses(key, addressed);

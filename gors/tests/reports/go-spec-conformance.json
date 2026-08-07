@@ -12,10 +12,10 @@
   "summary": {
     "groupCount": 15,
     "passingGroupCount": 15,
-    "caseCount": 335,
-    "passingCaseCount": 335,
+    "caseCount": 336,
+    "passingCaseCount": 336,
     "unsupportedCaseCount": 0,
-    "fixtureCount": 181
+    "fixtureCount": 182
   },
   "groups": [
     {
@@ -4134,6 +4134,7 @@
         "_negative/make_constant_len_exceeds_cap",
         "_negative/negative_close_receive_only",
         "append_copy_clear_builtins",
+        "append_spec_examples",
         "built_in_functions",
         "built_in_panic_nil_value",
         "built_in_panic_recover",
@@ -4150,10 +4151,10 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 27,
-        "passingCaseCount": 27,
+        "caseCount": 28,
+        "passingCaseCount": 28,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 15
+        "fixtureCount": 16
       },
       "cases": [
         {
@@ -4181,6 +4182,20 @@
           ],
           "freshFixtures": [
             "append_copy_clear_builtins"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-append-examples",
+          "title": "The normative append examples preserve overlapping sources, nil growth, interface assignment, and empty expansions",
+          "subtitle": "Appending to and copying slices",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "append_spec_examples"
+          ],
+          "freshFixtures": [
+            "append_spec_examples"
           ],
           "reason": ""
         },

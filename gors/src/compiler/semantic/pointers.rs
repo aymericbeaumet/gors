@@ -309,7 +309,9 @@ impl FunctionLowerer {
                 hir::Builtin::SliceBoolIsNil
             } else if element.underlying() == &Ty::String {
                 hir::Builtin::SliceGoStringIsNil
-            } else if element.uses_interface_aggregate_representation() {
+            } else if matches!(element.underlying(), Ty::Interface(_))
+                || element.uses_interface_aggregate_representation()
+            {
                 hir::Builtin::AggregateSliceIsNil
             } else {
                 return Err(Diagnostic::semantic(

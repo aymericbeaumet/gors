@@ -1,6 +1,7 @@
 use super::effects::panic_edge;
 use super::*;
 
+mod append;
 mod integer;
 mod maps;
 mod pointers;

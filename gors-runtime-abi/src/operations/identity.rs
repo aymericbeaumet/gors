@@ -182,6 +182,8 @@ impl RuntimeOp {
             Self::GoInterfaceBoxPointerI64 => 217,
             Self::GoInterfaceUnboxPointerI64 => 218,
             Self::GoPointerI64Equal => 219,
+            Self::GoSliceI64AppendSlice => 220,
+            Self::GoSliceInterfaceAppend => 221,
         })
     }
 }
