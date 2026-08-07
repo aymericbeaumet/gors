@@ -1116,6 +1116,24 @@
             "_negative/properties_non_comparable_map_key"
           ],
           "expect": "compile_error"
+        },
+        {
+          "id": "spec-array-value-semantics",
+          "section": "Array types",
+          "title": "One-dimensional array values copy on assignment and parameter passing and compare element-wise",
+          "status": "passing",
+          "fixtures": [
+            "array_value_semantics"
+          ]
+        },
+        {
+          "id": "spec-byte-rune-alias-identity",
+          "section": "Numeric types",
+          "title": "byte/uint8 and rune/int32 aliases share assignment, slice, and interface dynamic identity",
+          "status": "passing",
+          "fixtures": [
+            "byte_rune_alias_identity"
+          ]
         }
       ]
     },
@@ -1858,6 +1876,15 @@
           "fixtures": [
             "expressions"
           ]
+        },
+        {
+          "id": "spec-composite-literal-if-ambiguity",
+          "section": "Composite literals",
+          "title": "Parentheses and index brackets disambiguate composite literals in if, for, and switch headers",
+          "status": "passing",
+          "fixtures": [
+            "composite_literal_if_ambiguity"
+          ]
         }
       ]
     },
@@ -2337,6 +2364,15 @@
           "fixtures": [
             "op_assign_evaluate_once"
           ]
+        },
+        {
+          "id": "spec-labeled-empty-statements",
+          "section": "Labeled statements",
+          "title": "Labels may target implicit empty statements before closing braces, and explicit empty statements preserve control flow",
+          "status": "passing",
+          "fixtures": [
+            "labeled_empty_statements"
+          ]
         }
       ]
     },
@@ -2814,6 +2850,33 @@
           "fixtures": [
             "generics_inference_constant_kinds"
           ]
+        },
+        {
+          "id": "spec-generics-generic-alias",
+          "section": "Instantiations",
+          "title": "Generic alias instantiation preserves the substituted target type and mutual assignability",
+          "status": "passing",
+          "fixtures": [
+            "generics_generic_alias"
+          ]
+        },
+        {
+          "id": "generics-channel-constraint-unification",
+          "section": "Type unification rules",
+          "title": "Channel constraint unification infers element types across compatible directions",
+          "status": "passing",
+          "fixtures": [
+            "generics_channel_constraint_unification"
+          ]
+        },
+        {
+          "id": "generics-inference-defined-types",
+          "section": "Type inference",
+          "title": "Inference preserves defined types while unifying their underlying structure",
+          "status": "passing",
+          "fixtures": [
+            "generics_inference_defined_types"
+          ]
         }
       ]
     },
@@ -2827,6 +2890,15 @@
           "status": "passing",
           "fixtures": [
             "errors"
+          ]
+        },
+        {
+          "id": "spec-errors-typed-nil",
+          "section": "Errors",
+          "title": "An error interface holding a typed nil pointer is non-nil while the zero error interface is nil",
+          "status": "passing",
+          "fixtures": [
+            "errors_typed_nil"
           ]
         }
       ]
