@@ -1,0 +1,3 @@
+module go_spec_type_declarations_alias_vs_defined
+
+go 1.26

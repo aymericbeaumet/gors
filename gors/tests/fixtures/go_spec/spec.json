@@ -362,6 +362,15 @@
           ]
         },
         {
+          "id": "iota-parallel-and-skipped",
+          "section": "Iota",
+          "title": "Parallel and skipped const specifications share, advance, and reset iota with exact typed-constant behavior",
+          "status": "passing",
+          "fixtures": [
+            "iota_parallel_and_skipped"
+          ]
+        },
+        {
           "id": "constants-repeated-expressions",
           "section": "Constant declarations",
           "title": "Const declarations repeat omitted expressions from the previous specification",
@@ -494,6 +503,15 @@
           "fixtures": [
             "variables_and_zero_values",
             "spec_section_edgecases"
+          ]
+        },
+        {
+          "id": "vars-dynamic-type-nil-pointer",
+          "section": "Variables",
+          "title": "An interface holding a nil pointer retains its dynamic pointer type and is not a nil interface",
+          "status": "passing",
+          "fixtures": [
+            "variables_dynamic_type_nil_pointer"
           ]
         },
         {
@@ -1153,6 +1171,15 @@
           ]
         },
         {
+          "id": "properties-assignability-channels",
+          "section": "Assignability",
+          "title": "Named bidirectional channels assign to unnamed directional channels and accept the same function arguments",
+          "status": "passing",
+          "fixtures": [
+            "properties_assignability_channels"
+          ]
+        },
+        {
           "id": "properties-comparability",
           "section": "Comparison operators",
           "title": "Comparable values participate in equality and ordering",
@@ -1315,6 +1342,15 @@
           "status": "passing",
           "fixtures": [
             "declarations_and_scope"
+          ]
+        },
+        {
+          "id": "spec-type-declarations-alias-vs-defined",
+          "section": "Type declarations",
+          "title": "Aliases preserve type identity and method sets while type definitions create distinct types",
+          "status": "passing",
+          "fixtures": [
+            "type_declarations_alias_vs_defined"
           ]
         },
         {
@@ -1588,6 +1624,15 @@
           "fixtures": [
             "built_in_functions",
             "spec_section_edgecases"
+          ]
+        },
+        {
+          "id": "spec-receive-expression-contexts",
+          "section": "Receive operator",
+          "title": "Receive expressions preserve left-to-right evaluation in calls, operators, statements, and comma-ok assignment",
+          "status": "passing",
+          "fixtures": [
+            "receive_expression_contexts"
           ]
         },
         {
@@ -2423,6 +2468,24 @@
           "status": "passing",
           "fixtures": [
             "built_in_panic_nil_value"
+          ]
+        },
+        {
+          "id": "spec-built-in-recover-placement",
+          "section": "Handling panics",
+          "title": "recover returns nil outside a directly deferred panicking call and only direct deferred recover stops the panic",
+          "status": "passing",
+          "fixtures": [
+            "built_in_recover_placement"
+          ]
+        },
+        {
+          "id": "spec-built-in-panic-recover-sequence",
+          "section": "Handling panics",
+          "title": "panic unwinding runs nested defers in order and a recovering defer resumes the caller with its named result",
+          "status": "passing",
+          "fixtures": [
+            "built_in_panic_recover_sequence"
           ]
         },
         {
