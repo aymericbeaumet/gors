@@ -2,11 +2,12 @@
 
 mod calls;
 mod constraints;
+mod methods;
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::expressions::coerce_expr;
-use super::{FunctionLowerer, GenericFunctionSymbol, GenericTypeSymbol, lower_type};
+use super::{FunctionLowerer, GenericFunctionSymbol, GenericTypeSymbol, MethodSymbol, lower_type};
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::{ClosureId, NodeId};
@@ -15,7 +16,7 @@ use crate::compiler::syntax::{
     BlockSyntax, ExprSyntax, ExprSyntaxKind, FieldListSyntax, FunctionHeaderSyntax, IdentSyntax,
     SyntaxSource,
 };
-use crate::compiler::types::{ChannelDir, Signature, Ty, UntypedTy};
+use crate::compiler::types::{ChannelDir, Signature, StructField, Ty, UntypedTy};
 use crate::token::Token;
 
 type LoweredGenericBody = (
@@ -24,16 +25,73 @@ type LoweredGenericBody = (
     hir::Block,
 );
 use constraints::{
-    infer_from_instantiated_constraint, type_parameter_names, type_parameter_names_in_order,
+    infer_constraint_arguments, type_parameter_names, type_parameter_names_in_order,
     validate_constraints, validate_declared_constraints,
 };
+use methods::instantiate_generic_method_for_receiver;
+
+#[derive(Clone, Copy)]
+pub(super) struct MethodEnvironment<'a> {
+    concrete: &'a BTreeMap<(crate::compiler::ids::DefId, String), MethodSymbol>,
+    generic: &'a BTreeMap<(crate::compiler::ids::DefId, String), GenericFunctionSymbol>,
+}
+
+impl FunctionLowerer {
+    pub(in crate::compiler::semantic) fn generic_method_environment(
+        &self,
+    ) -> MethodEnvironment<'_> {
+        MethodEnvironment {
+            concrete: &self.methods,
+            generic: &self.generic_methods,
+        }
+    }
+}
 
 pub(super) fn lower_type_with_generics(
     expression: &ExprSyntax,
     aliases: &BTreeMap<String, Ty>,
     generic_types: &BTreeMap<String, GenericTypeSymbol>,
+    methods: MethodEnvironment<'_>,
     source: SourceRef,
 ) -> Result<Ty, Diagnostic> {
+    if let ExprSyntaxKind::Paren(inner) = &expression.kind {
+        return lower_type_with_generics(inner, aliases, generic_types, methods, source);
+    }
+    if let ExprSyntaxKind::StructType { fields } = &expression.kind {
+        let mut lowered = Vec::new();
+        for field in &*fields.fields {
+            if field.variadic {
+                return Err(Diagnostic::semantic(
+                    "struct fields cannot be variadic",
+                    source,
+                ));
+            }
+            let syntax = field
+                .ty
+                .as_ref()
+                .ok_or_else(|| Diagnostic::backend("struct field has no type"))?;
+            let ty = lower_type_with_generics(syntax, aliases, generic_types, methods, source)?;
+            let tag = field.tag.as_ref().map(ToString::to_string);
+            if let Some(names) = &field.names {
+                lowered.extend(names.iter().map(|name| StructField {
+                    name: name.name.to_string(),
+                    ty: ty.clone(),
+                    embedded: false,
+                    tag: tag.clone(),
+                }));
+            } else {
+                lowered.push(StructField {
+                    name: generic_embedded_field_name(syntax).ok_or_else(|| {
+                        Diagnostic::semantic("invalid embedded struct field type", source)
+                    })?,
+                    ty,
+                    embedded: true,
+                    tag,
+                });
+            }
+        }
+        return Ok(Ty::Struct(lowered));
+    }
     let (base, arguments) = match &expression.kind {
         ExprSyntaxKind::Index { base, index } => {
             (base.as_ref(), std::slice::from_ref(index.as_ref()))
@@ -66,7 +124,7 @@ pub(super) fn lower_type_with_generics(
         .into_iter()
         .zip(arguments)
         .map(|(parameter, argument)| {
-            lower_type_with_generics(argument, aliases, generic_types, source)
+            lower_type_with_generics(argument, aliases, generic_types, methods, source)
                 .map(|argument| (parameter, argument))
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
@@ -75,6 +133,7 @@ pub(super) fn lower_type_with_generics(
         &substitutions,
         aliases,
         generic_types,
+        methods,
         source,
     )?;
     let mut instantiated_aliases = aliases.clone();
@@ -83,6 +142,7 @@ pub(super) fn lower_type_with_generics(
         &generic.underlying,
         &instantiated_aliases,
         generic_types,
+        methods,
         source,
     )?;
     if generic.alias {
@@ -95,6 +155,22 @@ pub(super) fn lower_type_with_generics(
     }
 }
 
+fn generic_embedded_field_name(expression: &ExprSyntax) -> Option<String> {
+    match &expression.kind {
+        ExprSyntaxKind::Ident(ident) => Some(ident.name.to_string()),
+        ExprSyntaxKind::Paren(inner)
+        | ExprSyntaxKind::Unary {
+            token: Token::MUL,
+            expression: inner,
+        }
+        | ExprSyntaxKind::Index { base: inner, .. }
+        | ExprSyntaxKind::IndexList { base: inner, .. } => generic_embedded_field_name(inner),
+        ExprSyntaxKind::Selector { member, .. } => Some(member.name.to_string()),
+        _ => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn infer_function_arguments(
     header: &FunctionHeaderSyntax,
     type_arguments: &[ExprSyntax],
@@ -102,6 +178,7 @@ fn infer_function_arguments(
     spread: bool,
     aliases: &BTreeMap<String, Ty>,
     generic_types: &BTreeMap<String, GenericTypeSymbol>,
+    methods: MethodEnvironment<'_>,
     source: SourceRef,
 ) -> Result<BTreeMap<String, Ty>, Diagnostic> {
     let parameters = header
@@ -124,11 +201,11 @@ fn infer_function_arguments(
         .iter()
         .zip(type_arguments)
         .map(|(name, argument)| {
-            lower_type_with_generics(argument, aliases, generic_types, source)
+            lower_type_with_generics(argument, aliases, generic_types, methods, source)
                 .map(|argument| (name.clone(), argument))
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
-    infer_parameter_list(
+    let constant_defaults = infer_parameter_list(
         &header.params,
         arguments,
         spread,
@@ -136,6 +213,7 @@ fn infer_function_arguments(
         &mut substitutions,
         aliases,
         generic_types,
+        methods,
         source,
     )?;
     infer_constraint_arguments(
@@ -144,6 +222,17 @@ fn infer_function_arguments(
         &mut substitutions,
         aliases,
         generic_types,
+        methods,
+        source,
+    )?;
+    apply_untyped_constant_defaults(&mut substitutions, constant_defaults);
+    infer_constraint_arguments(
+        parameters,
+        &names,
+        &mut substitutions,
+        aliases,
+        generic_types,
+        methods,
         source,
     )?;
     let missing = names
@@ -169,8 +258,9 @@ fn infer_parameter_list(
     substitutions: &mut BTreeMap<String, Ty>,
     aliases: &BTreeMap<String, Ty>,
     generic_types: &BTreeMap<String, GenericTypeSymbol>,
+    methods: MethodEnvironment<'_>,
     source: SourceRef,
-) -> Result<(), Diagnostic> {
+) -> Result<BTreeMap<String, UntypedTy>, Diagnostic> {
     let formal = parameter_patterns_for_call(fields, arguments.len(), spread, source)?;
     if formal.len() != arguments.len() {
         return Err(Diagnostic::semantic(
@@ -182,11 +272,9 @@ fn infer_parameter_list(
             source,
         ));
     }
-    // Typed arguments determine type parameters first. Untyped constant
-    // arguments adapt to a parameter a typed argument already determined
-    // (argument coercion checks representability); only parameters no typed
-    // argument determined receive the merged default type of their untyped
-    // constant arguments.
+    // Typed arguments determine type parameters first. Bare untyped constant
+    // arguments remain pending until constraint equations reach a fixed point:
+    // a method signature may infer a defined type to which the constant adapts.
     for (formal, actual) in formal.iter().zip(arguments) {
         if matches!(actual, Ty::Untyped(_)) {
             continue;
@@ -198,6 +286,7 @@ fn infer_parameter_list(
             substitutions,
             aliases,
             generic_types,
+            methods,
             source,
         )?;
     }
@@ -214,6 +303,7 @@ fn infer_parameter_list(
                 substitutions,
                 aliases,
                 generic_types,
+                methods,
                 source,
             )?;
             continue;
@@ -236,10 +326,18 @@ fn infer_parameter_list(
         };
         constant_defaults.insert(parameter.to_string(), merged);
     }
-    for (parameter, kind) in constant_defaults {
-        substitutions.insert(parameter, Ty::Untyped(kind).default_typed());
+    Ok(constant_defaults)
+}
+
+fn apply_untyped_constant_defaults(
+    substitutions: &mut BTreeMap<String, Ty>,
+    defaults: BTreeMap<String, UntypedTy>,
+) {
+    for (parameter, kind) in defaults {
+        substitutions
+            .entry(parameter)
+            .or_insert_with(|| Ty::Untyped(kind).default_typed());
     }
-    Ok(())
 }
 
 /// The type-parameter name a formal parameter references directly, if any.
@@ -288,6 +386,7 @@ fn infer_type_expression(
     substitutions: &mut BTreeMap<String, Ty>,
     aliases: &BTreeMap<String, Ty>,
     generic_types: &BTreeMap<String, GenericTypeSymbol>,
+    methods: MethodEnvironment<'_>,
     source: SourceRef,
 ) -> Result<(), Diagnostic> {
     match &formal.kind {
@@ -298,6 +397,7 @@ fn infer_type_expression(
             substitutions,
             aliases,
             generic_types,
+            methods,
             source,
         ),
         ExprSyntaxKind::Ident(ident) if parameter_names.contains(ident.name.as_ref()) => {
@@ -334,6 +434,7 @@ fn infer_type_expression(
                 substitutions,
                 aliases,
                 generic_types,
+                methods,
                 source,
             )
         }
@@ -351,6 +452,7 @@ fn infer_type_expression(
                 substitutions,
                 aliases,
                 generic_types,
+                methods,
                 source,
             )
         }
@@ -378,6 +480,7 @@ fn infer_type_expression(
                 substitutions,
                 aliases,
                 generic_types,
+                methods,
                 source,
             )
         }
@@ -405,6 +508,7 @@ fn infer_type_expression(
                 substitutions,
                 aliases,
                 generic_types,
+                methods,
                 source,
             )
         }
@@ -427,16 +531,70 @@ fn infer_type_expression(
                     substitutions,
                     aliases,
                     generic_types,
+                    methods,
                     source,
                 )?;
             }
             Ok(())
         }
+        ExprSyntaxKind::FunctionType {
+            has_type_parameters,
+            params,
+            results,
+        } => {
+            if *has_type_parameters {
+                return Err(Diagnostic::unsupported(
+                    "generic function types are not yet implemented",
+                    source,
+                ));
+            }
+            let Ty::Function(actual) = actual.underlying() else {
+                return Err(type_inference_mismatch(formal, actual, source));
+            };
+            let formal_variadic = params.fields.last().is_some_and(|field| field.variadic);
+            if formal_variadic != actual.variadic {
+                return Err(type_inference_mismatch(
+                    formal,
+                    &Ty::Function(actual.clone()),
+                    source,
+                ));
+            }
+            infer_signature_fields(
+                params,
+                &actual.params,
+                formal_variadic,
+                parameter_names,
+                substitutions,
+                aliases,
+                generic_types,
+                methods,
+                source,
+            )?;
+            let empty = FieldListSyntax {
+                fields: Vec::new().into(),
+            };
+            infer_signature_fields(
+                results.as_ref().unwrap_or(&empty),
+                &actual.results,
+                false,
+                parameter_names,
+                substitutions,
+                aliases,
+                generic_types,
+                methods,
+                source,
+            )
+        }
         _ => {
             let mut instantiated_aliases = aliases.clone();
             instantiated_aliases.extend(substitutions.clone());
-            let expected =
-                lower_type_with_generics(formal, &instantiated_aliases, generic_types, source)?;
+            let expected = lower_type_with_generics(
+                formal,
+                &instantiated_aliases,
+                generic_types,
+                methods,
+                source,
+            )?;
             if expected == *actual {
                 Ok(())
             } else {
@@ -444,6 +602,66 @@ fn infer_type_expression(
             }
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn infer_signature_fields(
+    formal: &FieldListSyntax,
+    actual: &[Ty],
+    variadic: bool,
+    parameter_names: &BTreeSet<String>,
+    substitutions: &mut BTreeMap<String, Ty>,
+    aliases: &BTreeMap<String, Ty>,
+    generic_types: &BTreeMap<String, GenericTypeSymbol>,
+    methods: MethodEnvironment<'_>,
+    source: SourceRef,
+) -> Result<(), Diagnostic> {
+    let formal_count = formal
+        .fields
+        .iter()
+        .map(|field| field.names.as_ref().map_or(1, |names| names.len()))
+        .sum::<usize>();
+    if formal_count != actual.len() {
+        return Err(Diagnostic::semantic(
+            format!(
+                "function signature has {} values; type pattern requires {formal_count}",
+                actual.len()
+            ),
+            source,
+        ));
+    }
+    let mut actual = actual.iter();
+    for (field_index, field) in formal.fields.iter().enumerate() {
+        let pattern = field
+            .ty
+            .as_ref()
+            .ok_or_else(|| Diagnostic::backend("signature field has no type"))?;
+        let count = field.names.as_ref().map_or(1, |names| names.len());
+        for _ in 0..count {
+            let actual = actual
+                .next()
+                .ok_or_else(|| Diagnostic::backend("function signature arity changed"))?;
+            let actual = if variadic && field_index + 1 == formal.fields.len() {
+                let Ty::Slice(element) = actual.underlying() else {
+                    return Err(type_inference_mismatch(pattern, actual, source));
+                };
+                element.as_ref()
+            } else {
+                actual
+            };
+            infer_type_expression(
+                pattern,
+                actual,
+                parameter_names,
+                substitutions,
+                aliases,
+                generic_types,
+                methods,
+                source,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn prefer_defined_type(previous: &Ty, actual: &Ty) -> Option<Ty> {
@@ -462,228 +680,6 @@ fn type_inference_mismatch(_formal: &ExprSyntax, actual: &Ty, source: SourceRef)
         format!("argument type {actual:?} does not match the generic parameter pattern"),
         source,
     )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn infer_constraint_arguments(
-    fields: &FieldListSyntax,
-    parameter_names: &BTreeSet<String>,
-    substitutions: &mut BTreeMap<String, Ty>,
-    aliases: &BTreeMap<String, Ty>,
-    generic_types: &BTreeMap<String, GenericTypeSymbol>,
-    source: SourceRef,
-) -> Result<(), Diagnostic> {
-    loop {
-        if parameter_names
-            .iter()
-            .all(|name| substitutions.contains_key(name))
-        {
-            return Ok(());
-        }
-        let before = substitutions.len();
-        for field in &*fields.fields {
-            let constraint = field
-                .ty
-                .as_ref()
-                .ok_or_else(|| Diagnostic::backend("type parameter omitted its constraint"))?;
-            let names = field.names.as_ref().ok_or_else(|| {
-                Diagnostic::semantic("type parameter declaration requires a name", source)
-            })?;
-            for name in &**names {
-                if let Some(actual) = substitutions.get(name.name.as_ref()).cloned() {
-                    infer_from_constraint_pattern(
-                        constraint,
-                        &actual,
-                        parameter_names,
-                        substitutions,
-                        aliases,
-                        generic_types,
-                        source,
-                    )?;
-                } else if let Some(inferred) = exact_constraint_type(
-                    constraint,
-                    parameter_names,
-                    substitutions,
-                    aliases,
-                    generic_types,
-                    source,
-                )? {
-                    substitutions.insert(name.name.to_string(), inferred);
-                }
-            }
-        }
-        if substitutions.len() == before {
-            return Ok(());
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn infer_from_constraint_pattern(
-    constraint: &ExprSyntax,
-    actual: &Ty,
-    parameter_names: &BTreeSet<String>,
-    substitutions: &mut BTreeMap<String, Ty>,
-    aliases: &BTreeMap<String, Ty>,
-    generic_types: &BTreeMap<String, GenericTypeSymbol>,
-    source: SourceRef,
-) -> Result<(), Diagnostic> {
-    match &constraint.kind {
-        ExprSyntaxKind::Paren(inner) => infer_from_constraint_pattern(
-            inner,
-            actual,
-            parameter_names,
-            substitutions,
-            aliases,
-            generic_types,
-            source,
-        ),
-        ExprSyntaxKind::InterfaceType { methods } => {
-            for field in &*methods.fields {
-                if field.names.is_some() {
-                    continue;
-                }
-                let Some(term) = &field.ty else {
-                    continue;
-                };
-                infer_from_constraint_pattern(
-                    term,
-                    actual,
-                    parameter_names,
-                    substitutions,
-                    aliases,
-                    generic_types,
-                    source,
-                )?;
-            }
-            Ok(())
-        }
-        ExprSyntaxKind::Binary {
-            left,
-            token: Token::OR,
-            right,
-        } => {
-            for alternative in [left.as_ref(), right.as_ref()] {
-                let mut candidate = substitutions.clone();
-                if infer_from_constraint_pattern(
-                    alternative,
-                    actual,
-                    parameter_names,
-                    &mut candidate,
-                    aliases,
-                    generic_types,
-                    source,
-                )
-                .is_ok()
-                {
-                    *substitutions = candidate;
-                    return Ok(());
-                }
-            }
-            Ok(())
-        }
-        ExprSyntaxKind::Index { base, index } => infer_from_instantiated_constraint(
-            base,
-            std::slice::from_ref(index.as_ref()),
-            actual,
-            parameter_names,
-            substitutions,
-            aliases,
-            generic_types,
-            source,
-        ),
-        ExprSyntaxKind::IndexList { base, indices } => infer_from_instantiated_constraint(
-            base,
-            indices,
-            actual,
-            parameter_names,
-            substitutions,
-            aliases,
-            generic_types,
-            source,
-        ),
-        ExprSyntaxKind::Unary {
-            token: Token::TILDE,
-            expression,
-        } => infer_type_expression(
-            expression,
-            actual.underlying(),
-            parameter_names,
-            substitutions,
-            aliases,
-            generic_types,
-            source,
-        ),
-        ExprSyntaxKind::Ident(ident) if matches!(ident.name.as_ref(), "any" | "comparable") => {
-            Ok(())
-        }
-        _ => infer_type_expression(
-            constraint,
-            actual,
-            parameter_names,
-            substitutions,
-            aliases,
-            generic_types,
-            source,
-        ),
-    }
-}
-
-fn exact_constraint_type(
-    constraint: &ExprSyntax,
-    parameter_names: &BTreeSet<String>,
-    substitutions: &BTreeMap<String, Ty>,
-    aliases: &BTreeMap<String, Ty>,
-    generic_types: &BTreeMap<String, GenericTypeSymbol>,
-    source: SourceRef,
-) -> Result<Option<Ty>, Diagnostic> {
-    match &constraint.kind {
-        ExprSyntaxKind::Paren(inner) => exact_constraint_type(
-            inner,
-            parameter_names,
-            substitutions,
-            aliases,
-            generic_types,
-            source,
-        ),
-        ExprSyntaxKind::InterfaceType { methods } => {
-            let terms = methods
-                .fields
-                .iter()
-                .filter(|field| field.names.is_none())
-                .filter_map(|field| field.ty.as_ref())
-                .collect::<Vec<_>>();
-            let [term] = terms.as_slice() else {
-                return Ok(None);
-            };
-            exact_constraint_type(
-                term,
-                parameter_names,
-                substitutions,
-                aliases,
-                generic_types,
-                source,
-            )
-        }
-        ExprSyntaxKind::Unary {
-            token: Token::TILDE,
-            ..
-        }
-        | ExprSyntaxKind::Binary {
-            token: Token::OR, ..
-        } => Ok(None),
-        ExprSyntaxKind::Ident(ident)
-            if matches!(ident.name.as_ref(), "any" | "comparable")
-                || parameter_names.contains(ident.name.as_ref()) =>
-        {
-            Ok(None)
-        }
-        _ => {
-            let mut environment = aliases.clone();
-            environment.extend(substitutions.clone());
-            lower_type_with_generics(constraint, &environment, generic_types, source).map(Some)
-        }
-    }
 }
 
 fn infer_receiver_parameter_aliases(
@@ -752,6 +748,7 @@ fn instantiate_generic_receiver(
     pointer: bool,
     aliases: &BTreeMap<String, Ty>,
     generic_types: &BTreeMap<String, GenericTypeSymbol>,
+    methods: MethodEnvironment<'_>,
     source: SourceRef,
 ) -> Result<Ty, Diagnostic> {
     if generic.alias {
@@ -762,8 +759,13 @@ fn instantiate_generic_receiver(
     }
     let mut environment = aliases.clone();
     environment.extend(substitutions.clone());
-    let underlying =
-        lower_type_with_generics(&generic.underlying, &environment, generic_types, source)?;
+    let underlying = lower_type_with_generics(
+        &generic.underlying,
+        &environment,
+        generic_types,
+        methods,
+        source,
+    )?;
     let receiver = Ty::Named {
         definition: generic.id,
         underlying: Box::new(underlying.underlying().clone()),
@@ -781,6 +783,7 @@ fn instantiate_signature(
     receiver_override: Option<Ty>,
     aliases: &BTreeMap<String, Ty>,
     generic_types: &BTreeMap<String, GenericTypeSymbol>,
+    methods: MethodEnvironment<'_>,
     source: SourceRef,
 ) -> Result<Signature, Diagnostic> {
     let mut aliases = aliases.clone();
@@ -791,7 +794,7 @@ fn instantiate_signature(
             params.push(receiver);
         } else {
             let (receiver, variadic) =
-                parameter_types_with_generics(receiver, &aliases, generic_types, source)?;
+                parameter_types_with_generics(receiver, &aliases, generic_types, methods, source)?;
             if variadic || receiver.len() != 1 {
                 return Err(Diagnostic::semantic(
                     "a method must declare exactly one non-variadic receiver",
@@ -806,12 +809,12 @@ fn instantiate_signature(
         ));
     }
     let (ordinary, variadic) =
-        parameter_types_with_generics(&header.params, &aliases, generic_types, source)?;
+        parameter_types_with_generics(&header.params, &aliases, generic_types, methods, source)?;
     params.extend(ordinary);
     let results = header
         .results
         .as_ref()
-        .map(|results| field_types_with_generics(results, &aliases, generic_types, source))
+        .map(|results| field_types_with_generics(results, &aliases, generic_types, methods, source))
         .transpose()?
         .unwrap_or_default();
     Ok(Signature {
@@ -825,6 +828,7 @@ fn field_types_with_generics(
     fields: &FieldListSyntax,
     aliases: &BTreeMap<String, Ty>,
     generic_types: &BTreeMap<String, GenericTypeSymbol>,
+    methods: MethodEnvironment<'_>,
     source: SourceRef,
 ) -> Result<Vec<Ty>, Diagnostic> {
     let mut result = Vec::new();
@@ -839,7 +843,7 @@ fn field_types_with_generics(
             .ty
             .as_ref()
             .ok_or_else(|| Diagnostic::backend("signature field has no type"))?;
-        let ty = lower_type_with_generics(expression, aliases, generic_types, source)?;
+        let ty = lower_type_with_generics(expression, aliases, generic_types, methods, source)?;
         result.extend(std::iter::repeat_n(
             ty,
             field.names.as_ref().map_or(1, |names| names.len()),
@@ -852,6 +856,7 @@ fn parameter_types_with_generics(
     fields: &FieldListSyntax,
     aliases: &BTreeMap<String, Ty>,
     generic_types: &BTreeMap<String, GenericTypeSymbol>,
+    methods: MethodEnvironment<'_>,
     source: SourceRef,
 ) -> Result<(Vec<Ty>, bool), Diagnostic> {
     let mut result = Vec::new();
@@ -861,7 +866,7 @@ fn parameter_types_with_generics(
             .ty
             .as_ref()
             .ok_or_else(|| Diagnostic::backend("signature field has no type"))?;
-        let mut ty = lower_type_with_generics(expression, aliases, generic_types, source)?;
+        let mut ty = lower_type_with_generics(expression, aliases, generic_types, methods, source)?;
         let count = field.names.as_ref().map_or(1, |names| names.len());
         if field.variadic {
             if variadic || index + 1 != fields.fields.len() || count != 1 {

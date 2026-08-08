@@ -3123,6 +3123,15 @@
           ]
         },
         {
+          "id": "generics-inference-method-constraints",
+          "section": "Type unification rules",
+          "title": "Known type arguments infer remaining arguments by exact unification with resolved constraint method signatures",
+          "status": "passing",
+          "fixtures": [
+            "generics_inference_method_constraints"
+          ]
+        },
+        {
           "id": "generics-inference-constant-kinds",
           "section": "Type inference",
           "title": "Untyped constant-kind merging chooses the merged default type while typed operands take precedence",

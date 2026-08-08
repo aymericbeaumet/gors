@@ -499,7 +499,18 @@ composes those fragments in package filename and source declaration order.
 Identical initializer bodies therefore require no unstable declaration
 ordinal. Generic receiver and type syntax retains every explicit type argument
 rather than collapsing multi-argument instantiations back into parser-only
-syntax. Demand queries independently type function headers,
+syntax. Generic call inference iterates constraint equations until no new type
+argument is known. For a method-only interface constraint, it resolves the
+known argument's exact formal method set through the shared promoted-member
+resolver and structurally unifies each resolved method signature to infer
+remaining arguments; missing, ambiguous, wrong, or conflicting methods are
+source diagnostics. Constraint-method symbol dependencies use receiver
+definitions statically correlated with generic calls, explicit type arguments,
+generic type instantiations, typed or inferred bindings, package values,
+function results, and promoted embedded receivers. An unresolved receiver form
+conservatively admits all matching methods; correlated calls do not depend on
+an unrelated same-name method signature.
+Demand queries independently type function headers,
 package constants, package variables, and function bodies before reaching
 function-relative typed HIR, per-definition
 verified MIR, mandatory normalized/reverified MIR, configured verified Rust IR,

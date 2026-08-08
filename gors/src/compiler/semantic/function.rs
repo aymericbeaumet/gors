@@ -80,6 +80,7 @@ impl FunctionLowerer {
                 expression,
                 &self.type_aliases,
                 &self.generic_types,
+                self.generic_method_environment(),
                 source,
             );
         }

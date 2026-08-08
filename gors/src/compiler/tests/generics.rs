@@ -1,6 +1,8 @@
 use super::{compile_and_run, raw_program};
 use crate::compiler::{CompilerSession, compile_program, fingerprint, hir};
 
+mod method_constraints;
+
 #[test]
 fn generic_inference_lets_typed_arguments_determine_type_parameters() {
     let run = compile_and_run(

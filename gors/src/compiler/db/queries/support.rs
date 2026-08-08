@@ -149,7 +149,23 @@ pub(super) struct PackageReferences {
     pub(super) qualified: BTreeSet<(Arc<str>, Arc<str>)>,
     pub(super) method_names: BTreeSet<Arc<str>>,
     pub(super) range_functions: BTreeSet<Arc<str>>,
+    pub(super) generic_calls: Vec<GenericCallReference>,
+    pub(super) generic_instantiations: Vec<GenericInstantiationReference>,
 }
+
+pub(super) struct GenericCallReference {
+    pub(super) callee: Arc<str>,
+    pub(super) explicit_type_argument_names: Vec<Option<Arc<str>>>,
+    pub(super) argument_type_names: Vec<Option<Arc<str>>>,
+    pub(super) spread: bool,
+}
+
+pub(super) struct GenericInstantiationReference {
+    pub(super) base: Arc<str>,
+    pub(super) argument_type_names: Vec<Option<Arc<str>>>,
+}
+
+type GenericCalleeReference = (Arc<str>, Vec<Option<Arc<str>>>);
 
 /// Collect package-level names referenced by a body after lexical shadowing.
 pub(super) fn package_references_in_body(
@@ -157,12 +173,14 @@ pub(super) fn package_references_in_body(
     body: &FunctionBodySyntax,
 ) -> PackageReferences {
     let mut collector = PackageReferenceCollector {
-        scopes: vec![BTreeSet::new()],
+        scopes: vec![BTreeMap::new()],
         unqualified: BTreeSet::new(),
         ordinary_unqualified: BTreeSet::new(),
         qualified: BTreeSet::new(),
         method_names: BTreeSet::new(),
         range_functions: BTreeSet::new(),
+        generic_calls: Vec::new(),
+        generic_instantiations: Vec::new(),
     };
     if let Some(receiver) = &header.receiver {
         collector.field_type_expressions(receiver);
@@ -183,6 +201,8 @@ pub(super) fn package_references_in_body(
         qualified: collector.qualified,
         method_names: collector.method_names,
         range_functions: collector.range_functions,
+        generic_calls: collector.generic_calls,
+        generic_instantiations: collector.generic_instantiations,
     }
 }
 
@@ -226,44 +246,62 @@ fn is_exported_name(name: &str) -> bool {
 }
 
 struct PackageReferenceCollector {
-    scopes: Vec<BTreeSet<Arc<str>>>,
+    scopes: Vec<BTreeMap<Arc<str>, Option<Arc<str>>>>,
     unqualified: BTreeSet<Arc<str>>,
     ordinary_unqualified: BTreeSet<Arc<str>>,
     qualified: BTreeSet<(Arc<str>, Arc<str>)>,
     method_names: BTreeSet<Arc<str>>,
     range_functions: BTreeSet<Arc<str>>,
+    generic_calls: Vec<GenericCallReference>,
+    generic_instantiations: Vec<GenericInstantiationReference>,
 }
 
 impl PackageReferenceCollector {
     fn bind_fields(&mut self, fields: &crate::compiler::syntax::FieldListSyntax) {
         for field in &*fields.fields {
+            let ty = field.ty.as_ref().and_then(|ty| self.type_name(ty));
             if let Some(names) = &field.names {
                 for name in &**names {
-                    self.bind(Arc::clone(&name.name));
+                    self.bind_typed(Arc::clone(&name.name), ty.clone());
                 }
             }
         }
     }
 
     fn bind(&mut self, name: Arc<str>) {
+        self.bind_typed(name, None);
+    }
+
+    fn bind_typed(&mut self, name: Arc<str>, ty: Option<Arc<str>>) {
         if name.as_ref() != "_" {
             debug_assert!(
                 !self.scopes.is_empty(),
                 "reference collector always owns a function scope"
             );
             if let Some(scope) = self.scopes.last_mut() {
-                scope.insert(name);
+                scope.entry(name).or_insert(ty);
             }
         }
     }
 
     fn is_bound(&self, name: &str) -> bool {
-        self.scopes.iter().rev().any(|scope| scope.contains(name))
+        self.scopes
+            .iter()
+            .rev()
+            .any(|scope| scope.contains_key(name))
+    }
+
+    fn bound_type_name(&self, name: &str) -> Option<Arc<str>> {
+        self.scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name).cloned())
+            .flatten()
     }
 
     fn block(&mut self, block: &BlockSyntax, introduce_scope: bool) {
         if introduce_scope {
-            self.scopes.push(BTreeSet::new());
+            self.scopes.push(BTreeMap::new());
         }
         for statement in &*block.statements {
             self.statement(statement);
@@ -282,13 +320,26 @@ impl PackageReferenceCollector {
             StmtSyntaxKind::Expr(expression) => self.expression(expression),
             StmtSyntaxKind::Decl(declaration) => self.declaration(declaration),
             StmtSyntaxKind::Assign { left, token, right } => {
+                let inferred_types = (*token == Token::DEFINE).then(|| {
+                    right
+                        .iter()
+                        .map(|expression| self.receiver_type_name(expression))
+                        .collect::<Vec<_>>()
+                });
                 for expression in &**right {
                     self.expression(expression);
                 }
                 if *token == Token::DEFINE {
-                    for expression in &**left {
+                    for (index, expression) in left.iter().enumerate() {
                         if let ExprSyntaxKind::Ident(ident) = &expression.kind {
-                            self.bind(Arc::clone(&ident.name));
+                            self.bind_typed(
+                                Arc::clone(&ident.name),
+                                inferred_types
+                                    .as_ref()
+                                    .and_then(|types| types.get(index))
+                                    .cloned()
+                                    .flatten(),
+                            );
                         }
                     }
                 } else {
@@ -331,7 +382,7 @@ impl PackageReferenceCollector {
                         }
                     }
                 }
-                self.scopes.push(BTreeSet::new());
+                self.scopes.push(BTreeMap::new());
                 self.bind_fields(params);
                 if let Some(results) = results {
                     self.bind_fields(results);
@@ -350,7 +401,7 @@ impl PackageReferenceCollector {
                 then_block,
                 else_branch,
             } => {
-                self.scopes.push(BTreeSet::new());
+                self.scopes.push(BTreeMap::new());
                 if let Some(init) = init {
                     self.statement(init);
                 }
@@ -368,7 +419,7 @@ impl PackageReferenceCollector {
                 post,
                 body,
             } => {
-                self.scopes.push(BTreeSet::new());
+                self.scopes.push(BTreeMap::new());
                 if let Some(init) = init {
                     self.statement(init);
                 }
@@ -397,7 +448,7 @@ impl PackageReferenceCollector {
                 } else {
                     self.expression(expression);
                 }
-                self.scopes.push(BTreeSet::new());
+                self.scopes.push(BTreeMap::new());
                 if *token == Some(Token::DEFINE) {
                     for target in [key, value].into_iter().flatten() {
                         if let ExprSyntaxKind::Ident(ident) = &target.kind {
@@ -409,7 +460,7 @@ impl PackageReferenceCollector {
                 self.scopes.pop();
             }
             StmtSyntaxKind::Switch { init, tag, cases } => {
-                self.scopes.push(BTreeSet::new());
+                self.scopes.push(BTreeMap::new());
                 if let Some(init) = init {
                     self.statement(init);
                 }
@@ -430,7 +481,7 @@ impl PackageReferenceCollector {
                 expression,
                 cases,
             } => {
-                self.scopes.push(BTreeSet::new());
+                self.scopes.push(BTreeMap::new());
                 if let Some(init) = init {
                     self.statement(init);
                 }
@@ -439,7 +490,7 @@ impl PackageReferenceCollector {
                     for expression in &*case.expressions {
                         self.expression(expression);
                     }
-                    self.scopes.push(BTreeSet::new());
+                    self.scopes.push(BTreeMap::new());
                     if let Some(binding) = binding {
                         self.bind(Arc::clone(&binding.name));
                     }
@@ -450,7 +501,7 @@ impl PackageReferenceCollector {
             }
             StmtSyntaxKind::Select { cases } => {
                 for case in &**cases {
-                    self.scopes.push(BTreeSet::new());
+                    self.scopes.push(BTreeMap::new());
                     if let Some(communication) = &case.communication {
                         self.statement(communication);
                     }
@@ -477,8 +528,18 @@ impl PackageReferenceCollector {
                     self.expression(value);
                 }
             }
-            for name in &*spec.names {
-                self.bind(Arc::clone(&name.name));
+            let explicit_type = spec
+                .explicit_type
+                .as_ref()
+                .and_then(|ty| self.type_name(ty));
+            for (index, name) in spec.names.iter().enumerate() {
+                let inferred_type = explicit_type.clone().or_else(|| {
+                    spec.values
+                        .as_ref()
+                        .and_then(|values| values.get(index))
+                        .and_then(|value| self.receiver_type_name(value))
+                });
+                self.bind_typed(Arc::clone(&name.name), inferred_type);
             }
         }
     }
@@ -499,8 +560,24 @@ impl PackageReferenceCollector {
                 self.expression(right);
             }
             ExprSyntaxKind::Call {
-                callee, arguments, ..
+                callee,
+                arguments,
+                spread,
             } => {
+                if let Some((callee, explicit_type_argument_names)) =
+                    self.generic_callee_reference(callee)
+                {
+                    let argument_type_names = arguments
+                        .iter()
+                        .map(|argument| self.receiver_type_name(argument))
+                        .collect();
+                    self.generic_calls.push(GenericCallReference {
+                        callee,
+                        explicit_type_argument_names,
+                        argument_type_names,
+                        spread: *spread,
+                    });
+                }
                 self.expression(callee);
                 for argument in &**arguments {
                     self.expression(argument);
@@ -524,7 +601,7 @@ impl PackageReferenceCollector {
                         }
                     }
                 }
-                self.scopes.push(BTreeSet::new());
+                self.scopes.push(BTreeMap::new());
                 self.bind_fields(params);
                 if let Some(results) = results {
                     self.bind_fields(results);
@@ -581,10 +658,31 @@ impl PackageReferenceCollector {
                 }
             }
             ExprSyntaxKind::Index { base, index } => {
+                if let ExprSyntaxKind::Ident(base) = &base.kind
+                    && !self.is_bound(&base.name)
+                {
+                    self.generic_instantiations
+                        .push(GenericInstantiationReference {
+                            base: Arc::clone(&base.name),
+                            argument_type_names: vec![self.type_name(index)],
+                        });
+                }
                 self.expression(base);
                 self.expression(index);
             }
             ExprSyntaxKind::IndexList { base, indices } => {
+                if let ExprSyntaxKind::Ident(base) = &base.kind
+                    && !self.is_bound(&base.name)
+                {
+                    self.generic_instantiations
+                        .push(GenericInstantiationReference {
+                            base: Arc::clone(&base.name),
+                            argument_type_names: indices
+                                .iter()
+                                .map(|argument| self.type_name(argument))
+                                .collect(),
+                        });
+                }
                 self.expression(base);
                 for index in &**indices {
                     self.expression(index);
@@ -610,6 +708,75 @@ impl PackageReferenceCollector {
             if let Some(ty) = &field.ty {
                 self.expression(ty);
             }
+        }
+    }
+
+    fn generic_callee_name(&self, callee: &ExprSyntax) -> Option<Arc<str>> {
+        self.generic_callee_reference(callee).map(|(name, _)| name)
+    }
+
+    fn generic_callee_reference(&self, callee: &ExprSyntax) -> Option<GenericCalleeReference> {
+        match &callee.kind {
+            ExprSyntaxKind::Ident(ident) if !self.is_bound(&ident.name) => {
+                Some((Arc::clone(&ident.name), Vec::new()))
+            }
+            ExprSyntaxKind::Index { base, index } => {
+                let ExprSyntaxKind::Ident(ident) = &base.kind else {
+                    return None;
+                };
+                (!self.is_bound(&ident.name))
+                    .then(|| (Arc::clone(&ident.name), vec![self.type_name(index)]))
+            }
+            ExprSyntaxKind::IndexList { base, indices } => {
+                let ExprSyntaxKind::Ident(ident) = &base.kind else {
+                    return None;
+                };
+                (!self.is_bound(&ident.name)).then(|| {
+                    (
+                        Arc::clone(&ident.name),
+                        indices
+                            .iter()
+                            .map(|argument| self.type_name(argument))
+                            .collect(),
+                    )
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn receiver_type_name(&self, expression: &ExprSyntax) -> Option<Arc<str>> {
+        match &expression.kind {
+            ExprSyntaxKind::Ident(ident) => {
+                if self.is_bound(&ident.name) {
+                    self.bound_type_name(&ident.name)
+                } else {
+                    Some(Arc::clone(&ident.name))
+                }
+            }
+            ExprSyntaxKind::Paren(inner)
+            | ExprSyntaxKind::Unary {
+                expression: inner, ..
+            } => self.receiver_type_name(inner),
+            ExprSyntaxKind::CompositeLiteral { ty: Some(ty), .. } => self.type_name(ty),
+            ExprSyntaxKind::Call { callee, .. } => self.generic_callee_name(callee),
+            _ => None,
+        }
+    }
+
+    fn type_name(&self, expression: &ExprSyntax) -> Option<Arc<str>> {
+        match &expression.kind {
+            ExprSyntaxKind::Ident(ident) if !self.is_bound(&ident.name) => {
+                Some(Arc::clone(&ident.name))
+            }
+            ExprSyntaxKind::Paren(inner)
+            | ExprSyntaxKind::Unary {
+                expression: inner, ..
+            } => self.type_name(inner),
+            ExprSyntaxKind::Index { base, .. } | ExprSyntaxKind::IndexList { base, .. } => {
+                self.type_name(base)
+            }
+            _ => None,
         }
     }
 }

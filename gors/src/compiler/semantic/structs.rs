@@ -217,58 +217,6 @@ impl FunctionLowerer {
         })
     }
 
-    pub(super) fn adjust_method_receiver(
-        &mut self,
-        mut receiver: hir::Expr,
-        receiver_ty: &Ty,
-        pointer_receiver: bool,
-        syntax_source: SyntaxSource,
-        source: SourceRef,
-    ) -> Result<hir::Expr, Diagnostic> {
-        if receiver.ty == *receiver_ty {
-            coerce_expr(&mut receiver, receiver_ty, source)?;
-            return Ok(receiver);
-        }
-        if pointer_receiver
-            && let Ty::Pointer(element) = receiver_ty.underlying()
-            && receiver.ty == **element
-            && let hir::ExprKind::Local(local) = &receiver.kind
-        {
-            let node = self.alloc_node(syntax_source)?;
-            return Ok(hir::Expr {
-                node,
-                kind: hir::ExprKind::AddressOfLocal(*local),
-                ty: receiver_ty.clone(),
-                category: hir::ValueCategory::Value,
-                effects: hir::Effects {
-                    may_allocate: true,
-                    may_read: true,
-                    ..hir::Effects::default()
-                },
-                source: SourceRef::node(node),
-            });
-        }
-        if !pointer_receiver
-            && (receiver_ty.bootstrap_i64_struct_fields().is_some()
-                || receiver_ty.uses_interface_aggregate_pointer_representation())
-            && let Ty::Pointer(element) = receiver.ty.underlying()
-            && **element == *receiver_ty
-        {
-            let effects = pointer_effects(&[&receiver], false, false, true);
-            let node = self.alloc_node(syntax_source)?;
-            return Ok(hir::Expr {
-                node,
-                kind: hir::ExprKind::PointerStructValue(Box::new(receiver)),
-                ty: receiver_ty.clone(),
-                category: hir::ValueCategory::Value,
-                effects,
-                source: SourceRef::node(node),
-            });
-        }
-        coerce_expr(&mut receiver, receiver_ty, source)?;
-        Ok(receiver)
-    }
-
     pub(super) fn lower_selector(
         &mut self,
         base: &ExprSyntax,

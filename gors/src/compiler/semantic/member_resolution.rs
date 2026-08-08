@@ -59,6 +59,17 @@ pub(super) fn resolve_selector_member(
     lookup: MethodLookup,
     source: SourceRef,
 ) -> Result<ResolvedMember, Diagnostic> {
+    resolve_selector_member_with(root_ty, name, methods, lookup, source, &|_, _| Ok(None))
+}
+
+pub(super) fn resolve_selector_member_with(
+    root_ty: &Ty,
+    name: &str,
+    methods: &BTreeMap<(DefId, String), MethodSymbol>,
+    lookup: MethodLookup,
+    source: SourceRef,
+    additional_method: &impl Fn(&Ty, &str) -> Result<Option<MethodSymbol>, Diagnostic>,
+) -> Result<ResolvedMember, Diagnostic> {
     let root_indirect = matches!(root_ty.underlying(), Ty::Pointer(_));
     let methods_visible = !is_defined_pointer(root_ty);
     let mut seen = BTreeSet::new();
@@ -76,7 +87,7 @@ pub(super) fn resolve_selector_member(
     while !level.is_empty() {
         let mut matches = Vec::new();
         for node in &level {
-            collect_direct_matches(node, name, methods, lookup, &mut matches)?;
+            collect_direct_matches(node, name, methods, lookup, additional_method, &mut matches)?;
         }
         if matches.len() == 1 {
             return matches
@@ -150,11 +161,38 @@ pub(super) fn resolve_method_set_member(
     }
 }
 
+/// Resolve one formal method-set member while allowing a caller to instantiate
+/// methods whose signature depends on the selected receiver node. The same BFS
+/// still owns depth, field suppression, ambiguity, and pointer-method rules.
+pub(super) fn resolve_method_set_member_with(
+    root_ty: &Ty,
+    name: &str,
+    methods: &BTreeMap<(DefId, String), MethodSymbol>,
+    source: SourceRef,
+    additional_method: &impl Fn(&Ty, &str) -> Result<Option<MethodSymbol>, Diagnostic>,
+) -> Result<MethodResolution, Diagnostic> {
+    match resolve_selector_member_with(
+        root_ty,
+        name,
+        methods,
+        MethodLookup::MethodSet,
+        source,
+        additional_method,
+    )? {
+        ResolvedMember::Method(method) => Ok(method),
+        ResolvedMember::Field(_) => Err(Diagnostic::semantic(
+            format!("type {root_ty:?} has no method {name}"),
+            source,
+        )),
+    }
+}
+
 fn collect_direct_matches(
     node: &SearchNode,
     name: &str,
     methods: &BTreeMap<(DefId, String), MethodSymbol>,
     lookup: MethodLookup,
+    additional_method: &impl Fn(&Ty, &str) -> Result<Option<MethodSymbol>, Diagnostic>,
     matches: &mut Vec<ResolvedMember>,
 ) -> Result<(), Diagnostic> {
     if let Some(fields) = struct_fields(&node.ty) {
@@ -181,7 +219,12 @@ fn collect_direct_matches(
     let Some(definition) = receiver_definition(&node.ty) else {
         return Ok(());
     };
-    let Some(symbol) = methods.get(&(definition, name.to_owned())) else {
+    let symbol = if let Some(symbol) = methods.get(&(definition, name.to_owned())) {
+        Some(symbol.clone())
+    } else {
+        additional_method(&node.ty, name)?
+    };
+    let Some(symbol) = symbol else {
         return Ok(());
     };
     let pointer_allowed =
@@ -197,7 +240,7 @@ fn collect_direct_matches(
         .ok_or_else(|| Diagnostic::backend("method signature omitted its receiver"))?;
     let adjustment = receiver_adjustment(&node.ty, &receiver_ty)?;
     matches.push(ResolvedMember::Method(MethodResolution {
-        symbol: symbol.clone(),
+        symbol,
         plan: hir::MethodReceiverPlan {
             root_ty: node
                 .path

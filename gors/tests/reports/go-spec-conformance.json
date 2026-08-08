@@ -12,10 +12,10 @@
   "summary": {
     "groupCount": 15,
     "passingGroupCount": 15,
-    "caseCount": 346,
-    "passingCaseCount": 346,
+    "caseCount": 347,
+    "passingCaseCount": 347,
     "unsupportedCaseCount": 0,
-    "fixtureCount": 193
+    "fixtureCount": 194
   },
   "groups": [
     {
@@ -4922,16 +4922,17 @@
         "generics_inference_constant_kinds",
         "generics_inference_defined_types",
         "generics_inference_from_constraint_term",
+        "generics_inference_method_constraints",
         "generics_type_param_declarations",
         "generics_type_sets"
       ],
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 17,
-        "passingCaseCount": 17,
+        "caseCount": 18,
+        "passingCaseCount": 18,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 10
+        "fixtureCount": 11
       },
       "cases": [
         {
@@ -5113,6 +5114,20 @@
           ],
           "freshFixtures": [
             "generics_inference_from_constraint_term"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "generics-inference-method-constraints",
+          "title": "Known type arguments infer remaining arguments by exact unification with resolved constraint method signatures",
+          "subtitle": "Type unification rules",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "generics_inference_method_constraints"
+          ],
+          "freshFixtures": [
+            "generics_inference_method_constraints"
           ],
           "reason": ""
         },

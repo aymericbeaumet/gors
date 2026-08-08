@@ -2,6 +2,9 @@
 
 use super::*;
 use crate::compiler::semantic::calls::{LoweredCallArguments, forwarded_call_result_types};
+use crate::compiler::semantic::member_resolution::{
+    MethodLookup, ResolvedMember, resolve_selector_member_with,
+};
 
 fn flattened_call_argument_types(arguments: &[hir::Expr]) -> Vec<Ty> {
     if let [argument] = arguments
@@ -21,7 +24,13 @@ impl FunctionLowerer {
         expression: &ExprSyntax,
         source: SourceRef,
     ) -> Result<Ty, Diagnostic> {
-        lower_type_with_generics(expression, &self.type_aliases, &self.generic_types, source)
+        lower_type_with_generics(
+            expression,
+            &self.type_aliases,
+            &self.generic_types,
+            self.generic_method_environment(),
+            source,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -79,6 +88,7 @@ impl FunctionLowerer {
             spread,
             &self.type_aliases,
             &self.generic_types,
+            self.generic_method_environment(),
             source,
         )?;
         validate_declared_constraints(
@@ -86,6 +96,7 @@ impl FunctionLowerer {
             &substitutions,
             &self.type_aliases,
             &self.generic_types,
+            self.generic_method_environment(),
             source,
         )?;
         let signature = instantiate_signature(
@@ -94,6 +105,7 @@ impl FunctionLowerer {
             None,
             &self.type_aliases,
             &self.generic_types,
+            self.generic_method_environment(),
             source,
         )?;
         let args = self.coerce_lowered_generic_arguments(
@@ -312,8 +324,14 @@ impl FunctionLowerer {
             .iter()
             .zip(type_arguments)
             .map(|(parameter, argument)| {
-                lower_type_with_generics(argument, &self.type_aliases, &self.generic_types, source)
-                    .map(|argument| (parameter.clone(), argument))
+                lower_type_with_generics(
+                    argument,
+                    &self.type_aliases,
+                    &self.generic_types,
+                    self.generic_method_environment(),
+                    source,
+                )
+                .map(|argument| (parameter.clone(), argument))
             })
             .collect::<Result<BTreeMap<_, _>, _>>()?;
         infer_constraint_arguments(
@@ -322,6 +340,7 @@ impl FunctionLowerer {
             &mut substitutions,
             &self.type_aliases,
             &self.generic_types,
+            self.generic_method_environment(),
             source,
         )?;
         let missing = names
@@ -340,6 +359,7 @@ impl FunctionLowerer {
             &substitutions,
             &self.type_aliases,
             &self.generic_types,
+            self.generic_method_environment(),
             source,
         )?;
         let signature = instantiate_signature(
@@ -348,6 +368,7 @@ impl FunctionLowerer {
             None,
             &self.type_aliases,
             &self.generic_types,
+            self.generic_method_environment(),
             source,
         )?;
         let closure = self.lower_instantiated_generic_closure(
@@ -374,7 +395,29 @@ impl FunctionLowerer {
         expected: Option<&Ty>,
         allow_discarded_call_result: bool,
     ) -> Result<Option<hir::Expr>, Diagnostic> {
-        let Some(definition) = named_receiver_definition(&receiver.ty) else {
+        let addressable = receiver.category == hir::ValueCategory::Place
+            || matches!(receiver.ty.underlying(), Ty::Pointer(_));
+        let resolution = match resolve_selector_member_with(
+            &receiver.ty,
+            member,
+            &self.methods,
+            MethodLookup::Selector { addressable },
+            source,
+            &|selected_ty, selected_name| {
+                instantiate_generic_method_for_receiver(
+                    selected_ty,
+                    selected_name,
+                    &self.type_aliases,
+                    &self.generic_types,
+                    self.generic_method_environment(),
+                    source,
+                )
+            },
+        )? {
+            ResolvedMember::Method(resolution) => resolution,
+            ResolvedMember::Field(_) => return Ok(None),
+        };
+        let Some(definition) = named_receiver_definition(&resolution.plan.selected_ty) else {
             return Ok(None);
         };
         let Some(symbol) = self
@@ -384,6 +427,9 @@ impl FunctionLowerer {
         else {
             return Ok(None);
         };
+        if symbol.id != resolution.symbol.id {
+            return Ok(None);
+        }
         let receiver_syntax = single_receiver_type(&symbol.header, source)?;
         let generic_type = self
             .generic_types
@@ -393,13 +439,21 @@ impl FunctionLowerer {
             .ok_or_else(|| Diagnostic::backend("generic method receiver type disappeared"))?;
         let mut substitutions = BTreeMap::new();
         let receiver_parameters = type_parameter_names(&generic_type.type_parameters, source)?;
+        let selected_ty = &resolution.plan.selected_ty;
+        let inference_ty = match (symbol.pointer_receiver, selected_ty) {
+            (true, Ty::Pointer(_)) | (false, Ty::Named { .. }) => selected_ty.clone(),
+            (true, selected) => Ty::Pointer(Box::new(selected.clone())),
+            (false, Ty::Pointer(selected)) => selected.as_ref().clone(),
+            (false, selected) => selected.clone(),
+        };
         infer_type_expression(
             receiver_syntax,
-            &receiver.ty,
+            &inference_ty,
             &receiver_parameters,
             &mut substitutions,
             &self.type_aliases,
             &self.generic_types,
+            self.generic_method_environment(),
             source,
         )?;
         let receiver_aliases = infer_receiver_parameter_aliases(
@@ -416,7 +470,7 @@ impl FunctionLowerer {
             .map(|argument| self.lower_expr(argument, None))
             .collect::<Result<Vec<_>, _>>()?;
         let inference_types = flattened_call_argument_types(&ordinary_args);
-        infer_parameter_list(
+        let constant_defaults = infer_parameter_list(
             &symbol.header.params,
             &inference_types,
             spread,
@@ -424,13 +478,16 @@ impl FunctionLowerer {
             &mut body_substitutions,
             &self.type_aliases,
             &self.generic_types,
+            self.generic_method_environment(),
             source,
         )?;
+        apply_untyped_constant_defaults(&mut body_substitutions, constant_defaults);
         validate_constraints(
             &generic_type.type_parameters,
             &body_substitutions,
             &self.type_aliases,
             &self.generic_types,
+            self.generic_method_environment(),
             source,
         )?;
         let receiver_ty = instantiate_generic_receiver(
@@ -439,6 +496,7 @@ impl FunctionLowerer {
             symbol.pointer_receiver,
             &self.type_aliases,
             &self.generic_types,
+            self.generic_method_environment(),
             source,
         )?;
         let signature = instantiate_signature(
@@ -447,6 +505,7 @@ impl FunctionLowerer {
             Some(receiver_ty),
             &self.type_aliases,
             &self.generic_types,
+            self.generic_method_environment(),
             source,
         )?;
         let Some((receiver_ty, parameters)) = signature.params.split_first() else {
@@ -454,13 +513,8 @@ impl FunctionLowerer {
                 "generic method signature omitted its receiver",
             ));
         };
-        receiver = self.adjust_method_receiver(
-            receiver,
-            receiver_ty,
-            symbol.pointer_receiver,
-            syntax_source,
-            source,
-        )?;
+        debug_assert_eq!(&resolution.plan.receiver_ty, receiver_ty);
+        receiver = self.build_method_receiver(receiver, resolution.plan, syntax_source)?;
         let args = self.coerce_lowered_generic_arguments(
             ordinary_args,
             arguments,
