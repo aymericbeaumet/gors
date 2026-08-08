@@ -59,6 +59,44 @@ test("Linux VM reaches ready", async ({ page }) => {
 	await page.getByRole("button", { name: "Close" }).click();
 });
 
+test("compiles and runs a program end-to-end through the Linux VM", async ({
+	page,
+}) => {
+	test.skip(
+		process.env.GORS_RUN_V86_E2E !== "1",
+		"set GORS_RUN_V86_E2E=1 to exercise the heavyweight cold V86 boot",
+	);
+	test.setTimeout(12 * 60 * 1000);
+
+	await page.goto("/playground");
+	const consoleOutput = page.locator(".console-content");
+	await expect(consoleOutput).toContainText("gors transpiled", {
+		timeout: 3 * 60 * 1000,
+	});
+
+	// A clean compile writes a zero-byte .compile.err, and Go's println writes
+	// to stderr so stdout's .run.out stays zero-byte too; v86 reports both empty
+	// files as missing, so this guards against regressing the empty read.
+	await page.locator(".go .monaco-editor .view-lines").click();
+	await page.keyboard.press("ControlOrMeta+A");
+	await page.keyboard.type(
+		["package main", "", "func main() {", '\tprintln("gors-e2e-ok")', "}"].join(
+			"\n",
+		),
+	);
+	await expect(consoleOutput).toContainText("gors transpiled", {
+		timeout: 3 * 60 * 1000,
+	});
+
+	await page.locator(".run-button").click();
+	await expect(consoleOutput).toContainText("gors-e2e-ok", {
+		timeout: 10 * 60 * 1000,
+	});
+	await expect(consoleOutput).toContainText("run finished in");
+	await expect(consoleOutput).not.toContainText("Linux VM failed");
+	await expect(page.locator('.vm-status[data-state="ready"]')).toBeVisible();
+});
+
 test("conformance route exposes Go spec and standard library results", async ({
 	page,
 }) => {

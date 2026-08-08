@@ -512,9 +512,10 @@ export class V86JobCoordinator {
 		this.assertFlight(flight);
 	}
 
-	private async readRequiredText(
+	private async readPublishedText(
 		flight: ActiveFlight,
 		path: string,
+		optional: boolean,
 	): Promise<string> {
 		let bytes: Uint8Array;
 		flight.guestWorkStarted = true;
@@ -525,6 +526,12 @@ export class V86JobCoordinator {
 			);
 		} catch (error) {
 			throwIfAborted(flight.controller.signal);
+			// v86's 9p read_file rejects a zero-byte guest file as "not found", so
+			// a legitimately empty publication (a clean rustc stderr, a program
+			// that prints nothing) is indistinguishable from a missing one. The
+			// job's exit status is always a non-empty number read as a required
+			// file first, so an unreadable optional file here is simply empty.
+			if (optional) return "";
 			throw new RustRunnerProtocolError(
 				`guest did not publish required file ${path}: ${
 					error instanceof Error ? error.message : String(error)
@@ -597,11 +604,12 @@ export class V86JobCoordinator {
 		const statusPath = `${GUEST_PROTOCOL.jobDirectory}/${jobId}.compile.status`;
 		const compileStatus = parseExitStatus(
 			statusPath,
-			await this.readRequiredText(flight, statusPath),
+			await this.readPublishedText(flight, statusPath, false),
 		);
-		const compileStderr = await this.readRequiredText(
+		const compileStderr = await this.readPublishedText(
 			flight,
 			`${GUEST_PROTOCOL.jobDirectory}/${jobId}.compile.err`,
+			true,
 		);
 
 		return {
@@ -636,10 +644,18 @@ export class V86JobCoordinator {
 		const statusPath = `${outputPrefix}.status`;
 		const exitCode = parseExitStatus(
 			statusPath,
-			await this.readRequiredText(flight, statusPath),
+			await this.readPublishedText(flight, statusPath, false),
 		);
-		const stdout = await this.readRequiredText(flight, `${outputPrefix}.out`);
-		const stderr = await this.readRequiredText(flight, `${outputPrefix}.err`);
+		const stdout = await this.readPublishedText(
+			flight,
+			`${outputPrefix}.out`,
+			true,
+		);
+		const stderr = await this.readPublishedText(
+			flight,
+			`${outputPrefix}.err`,
+			true,
+		);
 
 		return {
 			cancelled: false,

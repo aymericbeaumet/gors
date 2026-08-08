@@ -26,7 +26,10 @@ class FakeEmulator implements V86GuestEmulator {
 
 	async read_file(path: string): Promise<Uint8Array> {
 		const data = this.files.get(path);
-		if (!data) throw new Error("ENOENT");
+		// Real v86 read_file rejects with FileNotFoundError both for absent files
+		// and for zero-byte guest files (a written-but-empty inode has no data),
+		// so model that here to exercise the coordinator's true contract.
+		if (!data || data.length === 0) throw new Error("File not found");
 		return data.slice();
 	}
 
@@ -120,6 +123,30 @@ describe("V86JobCoordinator", () => {
 			run: { exitCode: 0, stdout: "done\n", stderr: "" },
 		});
 		expect(phases).toEqual(["compiling", "running", null]);
+	});
+
+	it("accepts empty guest publications that v86 reports as missing", async () => {
+		const { coordinator, emulator } = createHarness();
+		// A clean rustc compile writes a zero-byte .compile.err and a silent
+		// program writes zero-byte .out/.err. v86's read_file reports every one
+		// of these as "File not found", yet the job completed successfully. Only
+		// the always-numeric exit status must be published.
+		const first = coordinator.run("fn main() {}", runtimeDependency);
+		const [, jobId] = await commandAt(emulator, 0);
+
+		emulator.publish(`tmp/${jobId}.compile.status`, "0");
+		emitLine(coordinator, `GORS_COMPILE_DONE:${jobId}`);
+
+		const [, runJobId, runNonce] = await commandAt(emulator, 1);
+		expect(runJobId).toBe(jobId);
+		emulator.publish(`tmp/${jobId}.${runNonce}.run.status`, "0");
+		emitLine(coordinator, `GORS_RUN_DONE:${runNonce}`);
+
+		await expect(first).resolves.toEqual({
+			cancelled: false,
+			compile: { success: true, stderr: "" },
+			run: { exitCode: 0, stdout: "", stderr: "" },
+		});
 	});
 
 	it("permanently poisons a generation when a live guest job is cancelled", async () => {
