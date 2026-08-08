@@ -465,7 +465,7 @@ fn invalid_constant_function_calls_are_rejected() {
     for (source, expected) in [
         (
             "package main\nconst bad = len(123)\nfunc main() { println(bad) }\n",
-            "constant len currently requires a constant string",
+            "invalid argument: len is not defined",
         ),
         (
             "package main\nconst bad = min()\nfunc main() { println(bad) }\n",
@@ -484,6 +484,123 @@ fn invalid_constant_function_calls_are_rejected() {
                 .iter()
                 .any(|error| error.code == "GORS2002" && error.message.contains(expected)),
             "expected {expected:?}, got {errors:?}"
+        );
+    }
+}
+
+#[test]
+fn len_cap_check_only_operands_use_exact_const_spec_iota() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            const (
+                _ = 0
+                packageSecond = len([iota + 1]int{})
+            )
+            const (
+                packageFirst = len([3]int{iota})
+                packageRepeated
+            )
+
+            func local() int {
+                const (
+                    _ = 0
+                    second = len([iota + 1]int{})
+                )
+                const (
+                    first = len([3]int{iota})
+                    repeated
+                )
+                return second*100 + first*10 + repeated
+            }
+
+            func main() {
+                println(packageSecond, packageFirst, packageRepeated, local())
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"2 3 3 233\n");
+}
+
+#[test]
+fn package_len_array_operand_uses_package_variable_type() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            var values [3]int
+            const count = len(values)
+
+            func main() { println(count) }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"3\n");
+}
+
+#[test]
+fn suppressed_array_elements_accept_typed_package_values_and_contextual_nil() {
+    for (source, expected) in [
+        (
+            "package main\nvar x int\nconst n = len([1]int{x + 1})\nfunc main() { println(n) }\n",
+            b"1\n".as_slice(),
+        ),
+        (
+            "package main\nvar p *int\nconst n = cap([1]int{*p})\nfunc main() { println(n) }\n",
+            b"1\n".as_slice(),
+        ),
+        (
+            "package main\nvar x int\nconst n = len([1]*int{&x})\nfunc main() { println(n) }\n",
+            b"1\n".as_slice(),
+        ),
+        (
+            "package main\nconst n = len([1]*int{nil})\nfunc main() { println(n) }\n",
+            b"1\n".as_slice(),
+        ),
+        (
+            "package main\nfunc main() { const n = len([1]*int{nil}); println(n) }\n",
+            b"1\n".as_slice(),
+        ),
+        (
+            "package main\nconst n = len([1]*[1]int{&[1]int{}})\nfunc main() { println(n) }\n",
+            b"1\n".as_slice(),
+        ),
+    ] {
+        let run = compile_and_run(source);
+        assert_eq!(run.stderr, expected, "{source}");
+    }
+}
+
+#[test]
+fn check_only_predeclared_values_require_resolved_identity_and_iota_context() {
+    let valid = compile_and_run(
+        r#"
+            package main
+            const packageBooleans = len([2]bool{true, false})
+            func main() {
+                const localBooleans = len([2]bool{true, false})
+                println(packageBooleans, localBooleans)
+            }
+        "#,
+    );
+    assert_eq!(valid.stderr, b"2 2\n");
+
+    for source in [
+        "package main\ntype true bool\nfunc main() { const n = len([1]bool{true}); println(n) }\n",
+        "package main\ntype false bool\nconst n = len([1]bool{false})\nfunc main() { println(n) }\n",
+        "package main\ntype nil int\nconst n = len((*[7]int)(nil))\nfunc main() { println(n) }\n",
+        "package main\nfunc uint8(value byte) byte { return value }\nconst n = len([1]byte{uint8(1)})\nfunc main() { println(n) }\n",
+        "package main\ntype A [iota]int\nfunc main() { println(len(A{})) }\n",
+        "package main\nfunc main() { println(len([1]int{min(iota, 0)})) }\n",
+    ] {
+        let errors = compile_file("main.go", source)
+            .err()
+            .expect("shadowed predeclared value or out-of-context iota must be rejected");
+        assert!(
+            errors.iter().any(|error| error.code == "GORS2002"),
+            "{errors:?}"
         );
     }
 }

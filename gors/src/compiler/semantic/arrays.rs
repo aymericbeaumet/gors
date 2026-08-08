@@ -31,7 +31,15 @@ fn array_length(
     constant_lookup: &impl Fn(&str) -> Option<(Ty, ConstValue)>,
     source: SourceRef,
 ) -> Result<u64, Diagnostic> {
-    let (ty, value) = eval_constant_with_lookup(expression, constant_lookup, source, 0)?;
+    let (ty, value) = eval_constant_with_lookup(expression, constant_lookup, source, None)?;
+    array_length_from_constant(&ty, &value, source)
+}
+
+pub(in crate::compiler) fn array_length_from_constant(
+    ty: &Ty,
+    value: &ConstValue,
+    source: SourceRef,
+) -> Result<u64, Diagnostic> {
     if !ty.is_integer() && !matches!(ty, Ty::Untyped(_)) {
         return Err(Diagnostic::semantic(
             "array length must be an integer constant",
@@ -39,6 +47,7 @@ fn array_length(
         ));
     }
     let value = value
+        .clone()
         .exact_integer()
         .ok_or_else(|| Diagnostic::semantic("array length must be an integer constant", source))?;
     let ConstValue::Int(value) = value else {
@@ -79,7 +88,7 @@ impl FunctionLowerer {
         for element in elements {
             let (index, value) = match &element.kind {
                 ExprSyntaxKind::KeyValue { key, value } => {
-                    let (_, key) = self.eval_constant_expression(key, source, 0)?;
+                    let (_, key) = self.eval_constant_expression(key, source, None)?;
                     let ConstValue::Int(key) = key else {
                         return Err(Diagnostic::semantic(
                             "composite literal index must be an integer constant",
@@ -125,7 +134,7 @@ impl FunctionLowerer {
         for element in elements {
             let index = match &element.kind {
                 ExprSyntaxKind::KeyValue { key, .. } => {
-                    let (_, key) = self.eval_constant_expression(key, source, 0)?;
+                    let (_, key) = self.eval_constant_expression(key, source, None)?;
                     let ConstValue::Int(key) = key else {
                         return Err(Diagnostic::semantic(
                             "array literal index must be an integer constant",
@@ -185,7 +194,7 @@ impl FunctionLowerer {
         for element in elements {
             let (index, value) = match &element.kind {
                 ExprSyntaxKind::KeyValue { key, value } => {
-                    let (_, key) = self.eval_constant_expression(key, source, 0)?;
+                    let (_, key) = self.eval_constant_expression(key, source, None)?;
                     let ConstValue::Int(key) = key else {
                         return Err(Diagnostic::semantic(
                             "array literal index must be an integer constant",

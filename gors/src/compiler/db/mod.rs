@@ -205,6 +205,7 @@ impl CompilerDatabase {
             .ingredient::<queries::typed_constant_product>()
             .ingredient::<queries::typed_variable_product>()
             .ingredient::<queries::package_type_aliases_product>()
+            .ingredient::<queries::package_type_named_product>()
             .ingredient::<queries::package_function_product>()
             .ingredient::<queries::package_function_named_product>()
             .ingredient::<queries::package_method_named_product>()

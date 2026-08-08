@@ -34,7 +34,8 @@ use support::{
 };
 pub(super) use type_aliases::{
     TypeAliasProjection, TypeDefinitionProjection, package_type_aliases_product,
-    type_alias_source_table_product, type_definition_source_table_product,
+    package_type_named_product, type_alias_source_table_product,
+    type_definition_source_table_product,
 };
 pub(super) use variable_eval::{typed_variable_product, variable_source_table_product};
 

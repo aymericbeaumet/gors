@@ -84,39 +84,6 @@ impl FunctionLowerer {
                 };
                 (builtin, vec![len, cap], declared, true, false, true)
             }
-            "cap" => {
-                let [value] = arguments else {
-                    return Err(Diagnostic::semantic(
-                        "cap requires exactly one argument",
-                        source,
-                    ));
-                };
-                let value = self.lower_expr(value, None)?;
-                let builtin = match value.ty.underlying() {
-                    Ty::Slice(element)
-                        if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) =>
-                    {
-                        hir::Builtin::SliceI64Cap
-                    }
-                    Ty::Slice(element) if element.underlying() == &Ty::String => {
-                        hir::Builtin::SliceGoStringCap
-                    }
-                    ty => {
-                        return Err(Diagnostic::unsupported(
-                            format!("cap is not yet implemented for {ty:?}"),
-                            source,
-                        ));
-                    }
-                };
-                (
-                    builtin,
-                    vec![value],
-                    Ty::Int(IntTy::Int),
-                    false,
-                    false,
-                    false,
-                )
-            }
             "append" => {
                 return self.lower_append_builtin_call(arguments, spread, node, source, expected);
             }

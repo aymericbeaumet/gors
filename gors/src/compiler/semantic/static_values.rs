@@ -44,6 +44,9 @@ fn evaluate_expression(
     {
         let ty = lower_type_with_constants(literal_type, types, constants, source)?;
         let value = match ty.underlying() {
+            Ty::Array(_, _) => {
+                evaluate_array(&ty, elements, constants, types, functions, source, depth)?
+            }
             Ty::Struct(_) => {
                 evaluate_struct(&ty, elements, constants, types, functions, source, depth)?
             }
@@ -83,8 +86,122 @@ fn evaluate_expression(
     {
         return evaluate_static_function(body, constants, types, functions, source, depth + 1);
     }
-    let (ty, value) = eval_constant(expression, constants, types, source, 0)?;
+    let shadowed_predeclared = constants
+        .keys()
+        .chain(types.keys())
+        .chain(functions.keys())
+        .cloned()
+        .collect();
+    let (ty, value) = eval_constant(
+        expression,
+        constants,
+        types,
+        &shadowed_predeclared,
+        source,
+        None,
+    )?;
     Ok((ty, StaticValue::Constant(value)))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn evaluate_array(
+    ty: &Ty,
+    elements: &[ExprSyntax],
+    constants: &BTreeMap<String, ConstantSymbol>,
+    types: &BTreeMap<String, Ty>,
+    functions: &BTreeMap<String, Arc<FunctionBodySyntax>>,
+    source: SourceRef,
+    depth: usize,
+) -> Result<StaticValue, Diagnostic> {
+    let Ty::Array(length, element) = ty.underlying() else {
+        return Err(Diagnostic::backend(
+            "package array initializer has a non-array type",
+        ));
+    };
+    let length = usize::try_from(*length)
+        .map_err(|_| Diagnostic::semantic("package array length is outside usize", source))?;
+    let mut initializers = vec![None; length];
+    let mut next_index = 0_usize;
+    for syntax in elements {
+        let (index, value) = match &syntax.kind {
+            ExprSyntaxKind::KeyValue { key, value } => (
+                evaluate_array_index(key, constants, types, functions, source)?,
+                value.as_ref(),
+            ),
+            _ => (next_index, syntax),
+        };
+        let destination = initializers.get_mut(index).ok_or_else(|| {
+            Diagnostic::semantic(
+                format!("array literal index {index} is outside length {length}"),
+                source,
+            )
+        })?;
+        if destination.replace(value).is_some() {
+            return Err(Diagnostic::semantic(
+                format!("array literal index {index} is initialized more than once"),
+                source,
+            ));
+        }
+        next_index = index
+            .checked_add(1)
+            .ok_or_else(|| Diagnostic::semantic("array literal index overflow", source))?;
+    }
+
+    initializers
+        .into_iter()
+        .map(|initializer| match initializer {
+            Some(initializer) => evaluate_typed_value(
+                initializer,
+                element,
+                constants,
+                types,
+                functions,
+                source,
+                depth,
+            ),
+            None => StaticValue::zero(element).ok_or_else(|| {
+                Diagnostic::unsupported(
+                    format!(
+                        "zero value for package array element type {element:?} is not implemented"
+                    ),
+                    source,
+                )
+            }),
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(StaticValue::Array)
+}
+
+fn evaluate_array_index(
+    expression: &ExprSyntax,
+    constants: &BTreeMap<String, ConstantSymbol>,
+    types: &BTreeMap<String, Ty>,
+    functions: &BTreeMap<String, Arc<FunctionBodySyntax>>,
+    source: SourceRef,
+) -> Result<usize, Diagnostic> {
+    let shadowed_predeclared = constants
+        .keys()
+        .chain(types.keys())
+        .chain(functions.keys())
+        .cloned()
+        .collect();
+    let (_, value) = eval_constant(
+        expression,
+        constants,
+        types,
+        &shadowed_predeclared,
+        source,
+        None,
+    )?;
+    let crate::compiler::types::ConstValue::Int(value) = value else {
+        return Err(Diagnostic::semantic(
+            "array literal index must be an integer constant",
+            source,
+        ));
+    };
+    value
+        .parse::<usize>()
+        .map_err(|_| Diagnostic::semantic("array literal index is outside usize", source))
 }
 
 fn evaluate_static_function(
@@ -255,6 +372,9 @@ fn evaluate_typed_value(
             ));
         }
         return match ty.underlying() {
+            Ty::Array(_, _) => {
+                evaluate_array(&ty, elements, constants, types, functions, source, depth)
+            }
             Ty::Struct(_) => {
                 evaluate_struct(&ty, elements, constants, types, functions, source, depth)
             }

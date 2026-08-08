@@ -3,7 +3,7 @@ use super::*;
 use crate::compiler::ids::{DefinitionKey, DefinitionKind, IdentityInterner, QualifiedDefId};
 use crate::compiler::input::{PackageKey, WorkspaceKey};
 use crate::compiler::provenance::SourceRef;
-use crate::compiler::types::{ConstValue, ExactNumber, FloatTy, Ty};
+use crate::compiler::types::{ConstValue, ExactNumber, FloatTy, IntTy, StaticValue, Ty};
 use crate::compiler::{self, hir, mir, rust_ir};
 use gors_runtime_abi::{
     IntegerKind, IntegerPrimitive, IntegerRuntimeOp, PrimitiveOp, RuntimeOp, RuntimeRequirement,
@@ -21,6 +21,7 @@ const INT_REM: RuntimeOp = RuntimeOp::Integer {
 mod append;
 mod control_targets;
 mod float;
+mod length_capacity;
 mod pointers;
 
 fn lower_stages(source: &str) -> (hir::File, mir::File, rust_ir::File) {
@@ -606,6 +607,24 @@ fn typed_float_constant_fingerprints_encode_the_quantized_value() {
     assert_eq!(rounded_down.value, exact.value);
     assert_eq!(hir_constant(&rounded_down), hir_constant(&exact));
     assert_ne!(hir_constant(&rounded_down), hir_constant(&rounded_up));
+}
+
+#[test]
+fn nil_package_variable_has_a_distinct_stage_fingerprint() {
+    let hir = lower_stages("package main\nfunc main() {}\n").0;
+    let id = DefinitionKey::package_named(hir.package_id, DefinitionKind::Variable, "Pointer").id();
+    let variable = hir::Variable {
+        id,
+        name: "Pointer".to_owned(),
+        ty: Ty::Pointer(Box::new(Ty::Int(IntTy::Int))),
+        value: StaticValue::Nil,
+        source: SourceRef::definition(id),
+    };
+    let mut changed = variable.clone();
+    changed.value = StaticValue::Array(Vec::new());
+
+    assert_eq!(hir_variable(&variable).as_bytes().len(), 32);
+    assert_ne!(hir_variable(&variable), hir_variable(&changed));
 }
 
 #[test]

@@ -8,6 +8,7 @@ pub(super) fn encode_static_value(encoder: &mut Encoder, value: &StaticValue) {
         StaticValue::Constant(value) => {
             encoder.variant(b"constant", |encoder| const_value(encoder, value));
         }
+        StaticValue::Nil => encoder.variant(b"nil", |_| {}),
         StaticValue::Struct(fields) => {
             encoder.variant(b"struct", |encoder| {
                 encoder.sequence(fields, encode_static_value);

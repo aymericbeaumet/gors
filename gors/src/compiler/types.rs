@@ -132,6 +132,9 @@ pub enum ConstValue {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StaticValue {
     Constant(ConstValue),
+    /// The zero value of a nil-capable package variable. Its exact runtime
+    /// operation remains a MIR representation decision keyed by the Go type.
+    Nil,
     Struct(Vec<StaticValue>),
     Array(Vec<StaticValue>),
     Slice(Vec<StaticValue>),
@@ -629,6 +632,7 @@ impl StaticValue {
     #[must_use]
     pub fn zero(ty: &Ty) -> Option<Self> {
         match ty.underlying() {
+            Ty::Pointer(_) => Some(Self::Nil),
             Ty::Struct(fields) => fields
                 .iter()
                 .map(|field| Self::zero(&field.ty))
@@ -650,6 +654,7 @@ impl StaticValue {
     pub fn is_representable_as(&self, ty: &Ty) -> bool {
         match (self, ty.underlying()) {
             (Self::Constant(value), ty) => value.is_representable_as(ty),
+            (Self::Nil, Ty::Pointer(_)) => true,
             (Self::Struct(values), Ty::Struct(fields)) => {
                 values.len() == fields.len()
                     && values
@@ -666,7 +671,7 @@ impl StaticValue {
             (Self::Slice(values), Ty::Slice(element)) => values
                 .iter()
                 .all(|value| value.is_representable_as(element)),
-            (Self::Struct(_) | Self::Array(_) | Self::Slice(_), _) => false,
+            (Self::Nil | Self::Struct(_) | Self::Array(_) | Self::Slice(_), _) => false,
         }
     }
 }

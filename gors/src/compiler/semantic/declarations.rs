@@ -92,7 +92,7 @@ impl FunctionLowerer {
                 .transpose()?;
             let evaluated = values
                 .iter()
-                .map(|value| self.eval_constant_expression(value, source, spec.iota))
+                .map(|value| self.eval_constant_expression(value, source, Some(spec.iota)))
                 .collect::<Result<Vec<_>, _>>()?;
             for (name, (raw_ty, mut value)) in spec.names.iter().zip(evaluated) {
                 let ty = declared_type.clone().unwrap_or_else(|| raw_ty.clone());

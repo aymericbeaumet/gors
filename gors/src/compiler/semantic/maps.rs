@@ -2,14 +2,14 @@
 
 use super::FunctionLowerer;
 use super::channels::{channel_effects, channel_parts};
-use super::expressions::{coerce_expr, expr_constant};
+use super::expressions::coerce_expr;
 use super::pointers::pointer_effects;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::NodeId;
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{ExprSyntax, ExprSyntaxKind};
-use crate::compiler::types::{ConstValue, IntTy, Ty, UintTy, UntypedTy};
+use crate::compiler::types::{IntTy, Ty, UintTy};
 
 pub(super) fn string_i64_map_ty() -> Ty {
     Ty::Map(Box::new(Ty::String), Box::new(Ty::Int(IntTy::Int)))
@@ -508,109 +508,6 @@ impl FunctionLowerer {
             ty: declared,
             category: hir::ValueCategory::Value,
             effects: map_effects(&[], false, true, false),
-            source,
-        };
-        if let Some(expected) = expected {
-            coerce_expr(&mut result, expected, source)?;
-        }
-        Ok(result)
-    }
-
-    pub(super) fn lower_len_builtin_call(
-        &mut self,
-        arguments: &[ExprSyntax],
-        spread: bool,
-        node: NodeId,
-        source: SourceRef,
-        expected: Option<&Ty>,
-    ) -> Result<hir::Expr, Diagnostic> {
-        let [value] = arguments else {
-            return Err(Diagnostic::semantic(
-                "len requires exactly one argument",
-                source,
-            ));
-        };
-        if spread {
-            return Err(Diagnostic::semantic("len does not accept ...", source));
-        }
-        let value = self.lower_expr(value, None)?;
-        if let Some(ConstValue::String(bytes)) = expr_constant(&value) {
-            let mut result = hir::Expr {
-                node,
-                kind: hir::ExprKind::Constant(ConstValue::Int(bytes.len().to_string())),
-                ty: Ty::Untyped(UntypedTy::Int),
-                category: hir::ValueCategory::Constant,
-                effects: hir::Effects::default(),
-                source,
-            };
-            if let Some(expected) = expected {
-                coerce_expr(&mut result, expected, source)?;
-            }
-            return Ok(result);
-        }
-        if channel_parts(&value.ty).is_some() {
-            return self.lower_channel_len(value, node, source, expected);
-        }
-        if let Ty::Array(length, element) = value.ty.underlying()
-            && super::arrays::is_executable_array(*length, element)
-        {
-            let length = *length;
-            return self.lower_array_len(value, length, node, source, expected);
-        }
-        let builtin = match value.ty.underlying() {
-            Ty::Map(key, element)
-                if key.underlying() == &Ty::String
-                    && element.underlying() == &Ty::Int(IntTy::Int) =>
-            {
-                hir::Builtin::MapStringI64Len
-            }
-            Ty::Map(key, element)
-                if key.underlying() == &Ty::Int(IntTy::Int)
-                    && element.underlying() == &Ty::String =>
-            {
-                hir::Builtin::MapI64GoStringLen
-            }
-            Ty::Map(key, element)
-                if key.underlying() == &Ty::String
-                    && element.bootstrap_i64_struct_fields().is_some() =>
-            {
-                hir::Builtin::AggregateMapLen
-            }
-            Ty::Slice(element)
-                if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) =>
-            {
-                hir::Builtin::SliceI64Len
-            }
-            Ty::Slice(element) if element.underlying() == &Ty::Uint(UintTy::Uint8) => {
-                hir::Builtin::SliceU8Len
-            }
-            Ty::Slice(element) if element.bootstrap_i64_struct_fields().is_some() => {
-                hir::Builtin::AggregateSliceLen
-            }
-            Ty::Slice(element) if matches!(element.underlying(), Ty::Interface(_)) => {
-                hir::Builtin::AggregateSliceLen
-            }
-            Ty::Slice(element) if element.underlying() == &Ty::String => {
-                hir::Builtin::SliceGoStringLen
-            }
-            Ty::String => hir::Builtin::StringLen,
-            ty => {
-                return Err(Diagnostic::unsupported(
-                    format!("len is not yet implemented for {ty:?}"),
-                    source,
-                ));
-            }
-        };
-        let effects = map_effects(&[&value], false, false, false);
-        let mut result = hir::Expr {
-            node,
-            kind: hir::ExprKind::Call {
-                callee: hir::Callee::Builtin(builtin),
-                args: vec![value],
-            },
-            ty: Ty::Int(IntTy::Int),
-            category: hir::ValueCategory::Value,
-            effects,
             source,
         };
         if let Some(expected) = expected {

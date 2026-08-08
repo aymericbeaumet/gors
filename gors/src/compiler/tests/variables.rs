@@ -23,6 +23,22 @@ fn package_variables_materialize_typed_initial_values() {
 }
 
 #[test]
+fn nil_pointer_package_variable_materializes_through_mir() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            var pointer *int
+
+            func consume(value *int) { println("ok") }
+            func main() { consume(pointer) }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"ok\n");
+}
+
+#[test]
 fn local_var_declarations_expand_one_multi_valued_rhs_exactly_once() {
     let run = compile_and_run(
         r#"

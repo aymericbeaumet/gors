@@ -1,11 +1,13 @@
 //! Evaluation of package and local Go constant expressions.
 
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 use num_bigint::BigInt;
 
 use super::ConstantSymbol;
 use super::expressions::*;
+use super::length_capacity::{LengthCapacityClass, LengthCapacityOp};
 use super::type_lowering;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
@@ -17,17 +19,35 @@ pub(in crate::compiler) fn eval_constant(
     expression: &ExprSyntax,
     constants: &BTreeMap<String, ConstantSymbol>,
     type_aliases: &BTreeMap<String, Ty>,
+    shadowed_predeclared: &BTreeSet<String>,
     source: SourceRef,
-    iota: u64,
+    iota: Option<u64>,
 ) -> Result<(Ty, ConstValue), Diagnostic> {
-    eval_constant_with_lookups(
+    super::length_capacity::eval_package_constant(
         expression,
-        &|name| {
-            constants
-                .get(name)
-                .map(|constant| (constant.ty.clone(), constant.value.clone()))
-        },
-        &|name| type_aliases.get(name).cloned(),
+        constants,
+        type_aliases,
+        shadowed_predeclared,
+        source,
+        iota,
+    )
+}
+
+pub(in crate::compiler) fn eval_constant_with_variables(
+    expression: &ExprSyntax,
+    constants: &BTreeMap<String, ConstantSymbol>,
+    variables: &BTreeMap<String, Ty>,
+    type_aliases: &BTreeMap<String, Ty>,
+    shadowed_predeclared: &BTreeSet<String>,
+    source: SourceRef,
+    iota: Option<u64>,
+) -> Result<(Ty, ConstValue), Diagnostic> {
+    super::length_capacity::eval_package_constant_with_variables(
+        expression,
+        constants,
+        variables,
+        type_aliases,
+        shadowed_predeclared,
         source,
         iota,
     )
@@ -37,7 +57,7 @@ pub(in crate::compiler) fn eval_constant_with_lookup(
     expression: &ExprSyntax,
     lookup: &impl Fn(&str) -> Option<(Ty, ConstValue)>,
     source: SourceRef,
-    iota: u64,
+    iota: Option<u64>,
 ) -> Result<(Ty, ConstValue), Diagnostic> {
     eval_constant_with_lookups(expression, lookup, &|_| None, source, iota)
 }
@@ -47,7 +67,45 @@ pub(in crate::compiler) fn eval_constant_with_lookups(
     constant_lookup: &impl Fn(&str) -> Option<(Ty, ConstValue)>,
     type_lookup: &impl Fn(&str) -> Option<Ty>,
     source: SourceRef,
-    iota: u64,
+    iota: Option<u64>,
+) -> Result<(Ty, ConstValue), Diagnostic> {
+    eval_constant_with_length_capacity(
+        expression,
+        constant_lookup,
+        type_lookup,
+        &|operation, operand, source| {
+            if operation == LengthCapacityOp::Len
+                && let Ok((_, ConstValue::String(bytes))) =
+                    eval_constant_with_lookups(operand, constant_lookup, type_lookup, source, iota)
+            {
+                return u64::try_from(bytes.len())
+                    .map(LengthCapacityClass::Constant)
+                    .map_err(|_| Diagnostic::backend("constant string length exceeds u64"));
+            }
+            Err(Diagnostic::semantic(
+                format!(
+                    "{} operand requires typed len/cap classification",
+                    operation.name()
+                ),
+                source,
+            ))
+        },
+        source,
+        iota,
+    )
+}
+
+pub(super) fn eval_constant_with_length_capacity(
+    expression: &ExprSyntax,
+    constant_lookup: &impl Fn(&str) -> Option<(Ty, ConstValue)>,
+    type_lookup: &impl Fn(&str) -> Option<Ty>,
+    length_capacity: &impl Fn(
+        LengthCapacityOp,
+        &ExprSyntax,
+        SourceRef,
+    ) -> Result<LengthCapacityClass, Diagnostic>,
+    source: SourceRef,
+    iota: Option<u64>,
 ) -> Result<(Ty, ConstValue), Diagnostic> {
     match &expression.kind {
         ExprSyntaxKind::Literal { token, spelling } => match *token {
@@ -100,6 +158,12 @@ pub(in crate::compiler) fn eval_constant_with_lookups(
                     ConstValue::Bool(ident.name.as_ref() == "true"),
                 ))
             } else if ident.name.as_ref() == "iota" {
+                let Some(iota) = iota else {
+                    return Err(Diagnostic::semantic(
+                        "iota is only defined in constant declarations",
+                        source,
+                    ));
+                };
                 Ok((
                     Ty::Untyped(UntypedTy::Int),
                     ConstValue::Int(iota.to_string()),
@@ -112,10 +176,22 @@ pub(in crate::compiler) fn eval_constant_with_lookups(
             }
         }
         ExprSyntaxKind::Binary { left, token, right } => {
-            let (left_ty, left) =
-                eval_constant_with_lookups(left, constant_lookup, type_lookup, source, iota)?;
-            let (right_ty, right) =
-                eval_constant_with_lookups(right, constant_lookup, type_lookup, source, iota)?;
+            let (left_ty, left) = eval_constant_with_length_capacity(
+                left,
+                constant_lookup,
+                type_lookup,
+                length_capacity,
+                source,
+                iota,
+            )?;
+            let (right_ty, right) = eval_constant_with_length_capacity(
+                right,
+                constant_lookup,
+                type_lookup,
+                length_capacity,
+                source,
+                iota,
+            )?;
             let op = lower_binary_op(*token).ok_or_else(|| {
                 Diagnostic::unsupported(
                     format!("constant operator {token:?} is not implemented"),
@@ -162,12 +238,23 @@ pub(in crate::compiler) fn eval_constant_with_lookups(
             let value = normalize_constant_for_type(value, &result_ty, source)?;
             Ok((result_ty, value))
         }
-        ExprSyntaxKind::Paren(expression) => {
-            eval_constant_with_lookups(expression, constant_lookup, type_lookup, source, iota)
-        }
+        ExprSyntaxKind::Paren(expression) => eval_constant_with_length_capacity(
+            expression,
+            constant_lookup,
+            type_lookup,
+            length_capacity,
+            source,
+            iota,
+        ),
         ExprSyntaxKind::Unary { token, expression } => {
-            let (ty, value) =
-                eval_constant_with_lookups(expression, constant_lookup, type_lookup, source, iota)?;
+            let (ty, value) = eval_constant_with_length_capacity(
+                expression,
+                constant_lookup,
+                type_lookup,
+                length_capacity,
+                source,
+                iota,
+            )?;
             let value = match (*token, value) {
                 (crate::token::Token::ADD, value) => value,
                 (crate::token::Token::SUB, ConstValue::Int(value)) => {
@@ -206,6 +293,7 @@ pub(in crate::compiler) fn eval_constant_with_lookups(
             *spread,
             constant_lookup,
             type_lookup,
+            length_capacity,
             source,
             iota,
         ),
@@ -277,8 +365,13 @@ fn eval_constant_call(
     spread: bool,
     constant_lookup: &impl Fn(&str) -> Option<(Ty, ConstValue)>,
     type_lookup: &impl Fn(&str) -> Option<Ty>,
+    length_capacity: &impl Fn(
+        LengthCapacityOp,
+        &ExprSyntax,
+        SourceRef,
+    ) -> Result<LengthCapacityClass, Diagnostic>,
     source: SourceRef,
-    iota: u64,
+    iota: Option<u64>,
 ) -> Result<(Ty, ConstValue), Diagnostic> {
     let ExprSyntaxKind::Ident(callee) = &callee.kind else {
         return Err(Diagnostic::semantic(
@@ -302,8 +395,14 @@ fn eval_constant_call(
                 source,
             ));
         };
-        let (actual, mut value) =
-            eval_constant_with_lookups(argument, constant_lookup, type_lookup, source, iota)?;
+        let (actual, mut value) = eval_constant_with_length_capacity(
+            argument,
+            constant_lookup,
+            type_lookup,
+            length_capacity,
+            source,
+            iota,
+        )?;
         if !is_assignable(&actual, &target) || !value.is_representable_as(&target) {
             return Err(Diagnostic::semantic(
                 format!("constant is not representable as {target:?}"),
@@ -314,35 +413,54 @@ fn eval_constant_call(
         return Ok((target, value));
     }
     match name {
-        "len" => {
+        "len" | "cap" => {
             let [argument] = arguments else {
                 return Err(Diagnostic::semantic(
-                    "constant len requires exactly one argument",
+                    format!("constant {name} requires exactly one argument"),
                     source,
                 ));
             };
-            let (_, value) =
-                eval_constant_with_lookups(argument, constant_lookup, type_lookup, source, iota)?;
-            let ConstValue::String(value) = value else {
+            let operation = if name == "len" {
+                LengthCapacityOp::Len
+            } else {
+                LengthCapacityOp::Cap
+            };
+            let LengthCapacityClass::Constant(value) =
+                length_capacity(operation, argument, source)?
+            else {
                 return Err(Diagnostic::semantic(
-                    "constant len currently requires a constant string",
+                    format!("{name} expression is not constant"),
                     source,
                 ));
             };
             Ok((
                 Ty::Untyped(UntypedTy::Int),
-                ConstValue::Int(value.len().to_string()),
+                ConstValue::Int(value.to_string()),
             ))
         }
-        "min" | "max" => {
-            eval_constant_min_max(name, arguments, constant_lookup, type_lookup, source, iota)
-        }
-        "complex" => eval_constant_complex(arguments, constant_lookup, type_lookup, source, iota),
+        "min" | "max" => eval_constant_min_max(
+            name,
+            arguments,
+            constant_lookup,
+            type_lookup,
+            length_capacity,
+            source,
+            iota,
+        ),
+        "complex" => eval_constant_complex(
+            arguments,
+            constant_lookup,
+            type_lookup,
+            length_capacity,
+            source,
+            iota,
+        ),
         "real" | "imag" => eval_constant_complex_component(
             name,
             arguments,
             constant_lookup,
             type_lookup,
+            length_capacity,
             source,
             iota,
         ),
@@ -359,8 +477,13 @@ fn eval_constant_min_max(
     arguments: &[ExprSyntax],
     constant_lookup: &impl Fn(&str) -> Option<(Ty, ConstValue)>,
     type_lookup: &impl Fn(&str) -> Option<Ty>,
+    length_capacity: &impl Fn(
+        LengthCapacityOp,
+        &ExprSyntax,
+        SourceRef,
+    ) -> Result<LengthCapacityClass, Diagnostic>,
     source: SourceRef,
-    iota: u64,
+    iota: Option<u64>,
 ) -> Result<(Ty, ConstValue), Diagnostic> {
     let mut arguments = arguments.iter();
     let first = arguments.next().ok_or_else(|| {
@@ -369,16 +492,28 @@ fn eval_constant_min_max(
             source,
         )
     })?;
-    let (mut ty, mut value) =
-        eval_constant_with_lookups(first, constant_lookup, type_lookup, source, iota)?;
+    let (mut ty, mut value) = eval_constant_with_length_capacity(
+        first,
+        constant_lookup,
+        type_lookup,
+        length_capacity,
+        source,
+        iota,
+    )?;
     let op = if name == "min" {
         hir::BinaryOp::Min
     } else {
         hir::BinaryOp::Max
     };
     for argument in arguments {
-        let (right_ty, right) =
-            eval_constant_with_lookups(argument, constant_lookup, type_lookup, source, iota)?;
+        let (right_ty, right) = eval_constant_with_length_capacity(
+            argument,
+            constant_lookup,
+            type_lookup,
+            length_capacity,
+            source,
+            iota,
+        )?;
         let common = exact_common_operand_type(&ty, &right_ty).ok_or_else(|| {
             Diagnostic::semantic(
                 format!("incompatible {name} operands {ty:?} and {right_ty:?}"),
@@ -411,8 +546,13 @@ fn eval_constant_complex(
     arguments: &[ExprSyntax],
     constant_lookup: &impl Fn(&str) -> Option<(Ty, ConstValue)>,
     type_lookup: &impl Fn(&str) -> Option<Ty>,
+    length_capacity: &impl Fn(
+        LengthCapacityOp,
+        &ExprSyntax,
+        SourceRef,
+    ) -> Result<LengthCapacityClass, Diagnostic>,
     source: SourceRef,
-    iota: u64,
+    iota: Option<u64>,
 ) -> Result<(Ty, ConstValue), Diagnostic> {
     let [real, imag] = arguments else {
         return Err(Diagnostic::semantic(
@@ -420,10 +560,22 @@ fn eval_constant_complex(
             source,
         ));
     };
-    let (real_ty, real) =
-        eval_constant_with_lookups(real, constant_lookup, type_lookup, source, iota)?;
-    let (imag_ty, imag) =
-        eval_constant_with_lookups(imag, constant_lookup, type_lookup, source, iota)?;
+    let (real_ty, real) = eval_constant_with_length_capacity(
+        real,
+        constant_lookup,
+        type_lookup,
+        length_capacity,
+        source,
+        iota,
+    )?;
+    let (imag_ty, imag) = eval_constant_with_length_capacity(
+        imag,
+        constant_lookup,
+        type_lookup,
+        length_capacity,
+        source,
+        iota,
+    )?;
     let component_ty = exact_common_operand_type(&real_ty, &imag_ty).ok_or_else(|| {
         Diagnostic::semantic(
             format!("incompatible complex components {real_ty:?} and {imag_ty:?}"),
@@ -465,8 +617,13 @@ fn eval_constant_complex_component(
     arguments: &[ExprSyntax],
     constant_lookup: &impl Fn(&str) -> Option<(Ty, ConstValue)>,
     type_lookup: &impl Fn(&str) -> Option<Ty>,
+    length_capacity: &impl Fn(
+        LengthCapacityOp,
+        &ExprSyntax,
+        SourceRef,
+    ) -> Result<LengthCapacityClass, Diagnostic>,
     source: SourceRef,
-    iota: u64,
+    iota: Option<u64>,
 ) -> Result<(Ty, ConstValue), Diagnostic> {
     let [argument] = arguments else {
         return Err(Diagnostic::semantic(
@@ -474,8 +631,14 @@ fn eval_constant_complex_component(
             source,
         ));
     };
-    let (argument_ty, argument) =
-        eval_constant_with_lookups(argument, constant_lookup, type_lookup, source, iota)?;
+    let (argument_ty, argument) = eval_constant_with_length_capacity(
+        argument,
+        constant_lookup,
+        type_lookup,
+        length_capacity,
+        source,
+        iota,
+    )?;
     let ConstValue::Complex { real, imag } = argument else {
         return Err(Diagnostic::semantic(
             format!("{name} requires a complex argument"),

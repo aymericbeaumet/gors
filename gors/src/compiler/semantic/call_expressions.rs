@@ -34,11 +34,25 @@ impl FunctionLowerer {
         if name == "recover" {
             return self.lower_recover_builtin_call(arguments, spread, node, source, expected);
         }
-        if name == "len" {
-            return self.lower_len_builtin_call(arguments, spread, node, source, expected);
+        if name == "len" && self.resolves_to_predeclared(name) {
+            return self.lower_length_capacity_builtin(
+                super::length_capacity::LengthCapacityOp::Len,
+                arguments,
+                spread,
+                node,
+                source,
+                expected,
+            );
         }
-        if name == "cap" {
-            return self.lower_channel_cap_builtin_call(arguments, spread, node, source, expected);
+        if name == "cap" && self.resolves_to_predeclared(name) {
+            return self.lower_length_capacity_builtin(
+                super::length_capacity::LengthCapacityOp::Cap,
+                arguments,
+                spread,
+                node,
+                source,
+                expected,
+            );
         }
         if name == "close" {
             return self
@@ -57,7 +71,9 @@ impl FunctionLowerer {
             return self
                 .lower_numeric_builtin_call(name, arguments, spread, node, source, expected);
         }
-        if self.type_aliases.contains_key(name) || is_predeclared_conversion_name(name) {
+        if self.type_aliases.contains_key(name)
+            || (is_predeclared_conversion_name(name) && self.resolves_to_predeclared(name))
+        {
             return self.lower_conversion_call(
                 callee_expression,
                 arguments,

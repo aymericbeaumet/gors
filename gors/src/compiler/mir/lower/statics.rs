@@ -17,6 +17,13 @@ impl FunctionLowerer {
     ) -> Result<Operand, Diagnostic> {
         match value {
             StaticValue::Constant(value) => Ok(Operand::Constant(value.clone(), ty.clone())),
+            StaticValue::Nil => {
+                let result = Place {
+                    local: self.new_temp(ty.clone()),
+                };
+                self.lower_zero_value(result, ty.clone(), Provenance::Source(source))?;
+                Ok(Operand::Read(result))
+            }
             StaticValue::Struct(values) => {
                 let Ty::Struct(fields) = ty.underlying() else {
                     return Err(Diagnostic::backend(

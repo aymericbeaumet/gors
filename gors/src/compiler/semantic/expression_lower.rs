@@ -48,32 +48,7 @@ impl FunctionLowerer {
     }
 
     pub(super) fn is_predeclared_nil_identifier(&self, expression: &ExprSyntax) -> bool {
-        if !is_nil_identifier(expression) {
-            return false;
-        }
-        self.lookup_local("nil").is_none()
-            && self.lookup_closure("nil").is_none()
-            && self.lookup_local_constant("nil").is_none()
-            && !self.constants.contains_key("nil")
-            && !self.variables.contains_key("nil")
-            && !self.functions.contains_key("nil")
-            && !self.generic_functions.contains_key("nil")
-            && !self.type_aliases.contains_key("nil")
-            && !self.generic_types.contains_key("nil")
-            && !self.package_imports.contains("nil")
-            && !self.intrinsic_packages.contains("nil")
-            && !self
-                .qualified_functions
-                .keys()
-                .any(|(package, _)| package == "nil")
-            && !self
-                .qualified_constants
-                .keys()
-                .any(|(package, _)| package == "nil")
-            && !self
-                .qualified_variables
-                .keys()
-                .any(|(package, _)| package == "nil")
+        is_nil_identifier(expression) && self.resolves_to_predeclared("nil")
     }
 
     pub(super) fn lower_expr_inner(
@@ -86,7 +61,7 @@ impl FunctionLowerer {
         let source = SourceRef::node(node);
         let mut lowered = match &expr.kind {
             ExprSyntaxKind::Literal { .. } => {
-                let (ty, value) = self.eval_constant_expression(expr, source, 0)?;
+                let (ty, value) = self.eval_constant_expression(expr, source, None)?;
                 hir::Expr {
                     node,
                     kind: hir::ExprKind::Constant(value),
@@ -145,7 +120,7 @@ impl FunctionLowerer {
                         format!("function values for {name} are not yet supported"),
                         source,
                     ));
-                } else if matches!(name, "true" | "false") {
+                } else if matches!(name, "true" | "false") && self.resolves_to_predeclared(name) {
                     hir::Expr {
                         node,
                         kind: hir::ExprKind::Constant(ConstValue::Bool(name == "true")),

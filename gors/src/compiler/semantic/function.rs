@@ -279,9 +279,9 @@ impl FunctionLowerer {
         &self,
         expression: &crate::compiler::syntax::ExprSyntax,
         source: SourceRef,
-        iota: u64,
+        iota: Option<u64>,
     ) -> Result<(Ty, ConstValue), Diagnostic> {
-        super::eval_constant_with_lookups(
+        super::constants::eval_constant_with_length_capacity(
             expression,
             &|name| {
                 self.lookup_local_constant(name)
@@ -293,6 +293,25 @@ impl FunctionLowerer {
                     })
             },
             &|name| self.type_aliases.get(name).cloned(),
+            &|operation, operand, source| {
+                if !self.resolves_to_predeclared(operation.name()) {
+                    return Err(Diagnostic::semantic(
+                        format!(
+                            "{} does not resolve to the predeclared builtin",
+                            operation.name()
+                        ),
+                        source,
+                    ));
+                }
+                let checked = self.check_length_capacity_operand(operand, source, iota)?;
+                super::length_capacity::classify(
+                    operation,
+                    &checked.ty,
+                    checked.constant.as_ref(),
+                    checked.contains_call_or_receive,
+                    source,
+                )
+            },
             source,
             iota,
         )

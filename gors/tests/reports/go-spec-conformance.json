@@ -12,10 +12,10 @@
   "summary": {
     "groupCount": 15,
     "passingGroupCount": 15,
-    "caseCount": 347,
-    "passingCaseCount": 347,
+    "caseCount": 348,
+    "passingCaseCount": 348,
     "unsupportedCaseCount": 0,
-    "fixtureCount": 194
+    "fixtureCount": 195
   },
   "groups": [
     {
@@ -4294,6 +4294,7 @@
         "built_in_panic_recover_sequence",
         "built_in_recover_placement",
         "copy_overlapping_and_counts",
+        "len_cap_constant_and_nil",
         "make_runtime_size_panics",
         "map_lookup_and_nil",
         "min_max_float_string",
@@ -4304,10 +4305,10 @@
       "summary": {
         "groupCount": 0,
         "passingGroupCount": 0,
-        "caseCount": 28,
-        "passingCaseCount": 28,
+        "caseCount": 29,
+        "passingCaseCount": 29,
         "unsupportedCaseCount": 0,
-        "fixtureCount": 16
+        "fixtureCount": 17
       },
       "cases": [
         {
@@ -4405,6 +4406,20 @@
           ],
           "freshFixtures": [
             "built_in_functions"
+          ],
+          "reason": ""
+        },
+        {
+          "id": "spec-len-cap-constant-and-nil",
+          "title": "len and cap suppress constant array operands, evaluate nonconstant array operands once, count string bytes, and report zero for nil containers",
+          "subtitle": "Length and capacity",
+          "kind": "spec-test",
+          "status": "passing",
+          "fixtures": [
+            "len_cap_constant_and_nil"
+          ],
+          "freshFixtures": [
+            "len_cap_constant_and_nil"
           ],
           "reason": ""
         },

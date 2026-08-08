@@ -531,6 +531,31 @@ Function-local constant declarations are scoped semantic bindings. Their exact
 values, explicit types, repeated specification expressions, and `iota` values
 are resolved before HIR expression lowering; they never become storage places
 or MIR locals, and assignment to one is a source diagnostic.
+`len` and `cap` share one typed operand classifier across package-constant and
+function lowering. Constant strings count bytes. Array and pointer-to-array
+operands are constant only when their source operand contains no nonconstant
+builtin or ordinary call and no channel receive; such operands are fully
+type-checked but publish only the integer constant, with no executable HIR
+child or effects. Runtime array operands publish `ArrayLen`, are evaluated
+exactly once, and MIR validates the recorded length against the operand type
+before lowering it. Suppression never licenses semantic dead-variable
+elision: a local declaration still requires an executable storage and
+zero-value plan, while explicit pointer-to-array conversions such as
+`(*[7]int)(nil)` need no storage representation when suppressed.
+Package type/constant strongly connected components are resolved inside one
+semantic projection rather than by recursively invoking tracked Salsa queries.
+While a named array declaration's length is evaluated, its resolver-local
+incomplete type exposes Go's specified length zero, including through
+transitive defined-type and alias references; that temporary state must never
+escape into a published type product. Ordinary constant cycles still produce a
+deterministic source diagnostic. The narrow named-type projection catalogs
+stable declaration handles and names package-wide but reads declaration bodies
+only along the requested transitive type/constant path; a dedicated stable
+package declaration-name index remains incremental-architecture debt. A
+package constant may inspect an explicitly declared package-variable type or a
+type syntactically carried by its composite-literal initializer for `len`/`cap`,
+including while resolving an array-length type SCC. Other inferred
+variable-type forms remain outside this narrow check-only path.
 Function-local variable declarations may consume one multi-valued call,
 comma-ok map lookup, comma-ok interface assertion, or comma-ok channel receive.
 The RHS is lowered once before any name in that `ValueSpec` enters scope, and

@@ -3,6 +3,7 @@ use crate::compiler::ids::LocalId;
 use crate::compiler::types::{ConstValue, ExactNumber, FloatTy, IntTy, Ty, UintTy};
 
 mod append;
+mod array_lengths;
 mod control_targets;
 mod method_receivers;
 mod pointers;

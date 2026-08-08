@@ -2687,6 +2687,15 @@
           ]
         },
         {
+          "id": "spec-len-cap-constant-and-nil",
+          "section": "Length and capacity",
+          "title": "len and cap suppress constant array operands, evaluate nonconstant array operands once, count string bytes, and report zero for nil containers",
+          "status": "passing",
+          "fixtures": [
+            "len_cap_constant_and_nil"
+          ]
+        },
+        {
           "id": "builtin-make-new",
           "section": "Making slices, maps and channels",
           "title": "make and new allocate slices, maps, channels, and pointer values",

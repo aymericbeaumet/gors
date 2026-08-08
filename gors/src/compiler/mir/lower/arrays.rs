@@ -163,6 +163,22 @@ impl FunctionLowerer {
         length: u64,
         _source: SourceRef,
     ) -> Result<Operand, Diagnostic> {
+        let actual_length = match array.ty.underlying() {
+            Ty::Array(actual, _) => Some(*actual),
+            Ty::Pointer(element) => match element.underlying() {
+                Ty::Array(actual, _) => Some(*actual),
+                _ => None,
+            },
+            _ => None,
+        }
+        .ok_or_else(|| {
+            Diagnostic::backend("HIR ArrayLen operand is not an array or pointer to array")
+        })?;
+        if actual_length != length {
+            return Err(Diagnostic::backend(format!(
+                "HIR ArrayLen records length {length}, but its operand has length {actual_length}"
+            )));
+        }
         let _ = self.lower_expr(array)?;
         let length = i64::try_from(length)
             .map_err(|_| Diagnostic::backend("verified array length does not fit Go int"))?;

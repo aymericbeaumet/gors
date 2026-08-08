@@ -22,6 +22,7 @@ mod goto_scopes;
 mod imports;
 mod interfaces;
 mod iteration;
+mod length_capacity;
 mod maps;
 mod member_resolution;
 mod numeric_builtins;
@@ -42,9 +43,9 @@ mod unsafe_intrinsics;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+pub(super) use arrays::array_length_from_constant;
 pub(super) use constants::{
-    eval_constant, eval_constant_with_lookup, eval_constant_with_lookups,
-    validate_constant_binary_operator,
+    eval_constant, eval_constant_with_lookup, validate_constant_binary_operator,
 };
 use expressions::*;
 use function::FunctionLowerer;
@@ -97,7 +98,7 @@ pub(super) struct GenericTypeSymbol {
     pub(super) alias: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct ConstantSymbol {
     pub(super) id: QualifiedDefId,
     pub(super) ty: Ty,
@@ -218,11 +219,13 @@ pub(super) fn lower_signature(
     })
 }
 
-pub(super) fn lower_constant(
+pub(super) fn lower_constant_with_variables(
     definition: DefId,
     syntax: &ConstantSyntax,
     constants: &BTreeMap<String, ConstantSymbol>,
+    variables: &BTreeMap<String, Ty>,
     type_aliases: &BTreeMap<String, Ty>,
+    shadowed_predeclared: &BTreeSet<String>,
 ) -> Result<TypedConstant, Diagnostic> {
     let source = SourceRef::definition(definition);
     let expression = match &syntax.value {
@@ -240,7 +243,15 @@ pub(super) fn lower_constant(
             ));
         }
     };
-    let (raw_ty, value) = eval_constant(expression, constants, type_aliases, source, syntax.iota)?;
+    let (raw_ty, value) = constants::eval_constant_with_variables(
+        expression,
+        constants,
+        variables,
+        type_aliases,
+        shadowed_predeclared,
+        source,
+        Some(syntax.iota),
+    )?;
     let ty = syntax
         .explicit_type
         .as_ref()

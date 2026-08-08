@@ -39,6 +39,8 @@ pub enum QueryKind {
     PackageConstantLookup,
     /// Resolve one stable package variable through the package index.
     PackageVariableLookup,
+    /// Resolve one package type and only its transitive semantic dependencies.
+    PackageTypeLookup,
     /// Build one function's self and direct-callee signature dependency set.
     SignatureDependencies,
     /// Classify one function's package as executable or library code.
@@ -74,6 +76,7 @@ impl QueryKind {
         Self::PackageFunctionLookup,
         Self::PackageConstantLookup,
         Self::PackageVariableLookup,
+        Self::PackageTypeLookup,
         Self::SignatureDependencies,
         Self::ExecutableRole,
         Self::RustIrRootInputs,
