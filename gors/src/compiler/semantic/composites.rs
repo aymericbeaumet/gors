@@ -36,6 +36,9 @@ impl FunctionLowerer {
                         Box::new(self.lower_semantic_type(element, source)?),
                     )
                 }
+                crate::compiler::syntax::ExprSyntaxKind::ArrayType {
+                    length: Some(_), ..
+                } => self.lower_scoped_type(ty, source)?,
                 _ => self.lower_semantic_type(ty, source)?,
             },
             None => expected.cloned().ok_or_else(|| {
@@ -92,18 +95,53 @@ impl FunctionLowerer {
             matches!(element_ty.underlying(), Ty::Int(IntTy::Int | IntTy::Int32));
         let byte_elements = element_ty.underlying() == &Ty::Uint(UintTy::Uint8);
         let boolean_elements = element_ty.underlying() == &Ty::Bool;
-        let aggregate_elements = element_ty.uses_interface_aggregate_representation();
-        if !integer_elements && !byte_elements && !boolean_elements && !aggregate_elements {
+        let string_elements = element_ty.underlying() == &Ty::String;
+        let aggregate_elements =
+            !string_elements && element_ty.uses_interface_aggregate_representation();
+        if !integer_elements
+            && !byte_elements
+            && !boolean_elements
+            && !string_elements
+            && !aggregate_elements
+        {
             return Err(Diagnostic::unsupported(
                 "slice literal element type has no executable representation",
                 source,
             ));
         }
-        if aggregate_elements {
-            let lowered_elements = elements
+        let indexed_elements = self.indexed_composite_elements(elements, source)?;
+        let keyed = indexed_elements.is_some();
+        let sequential_elements = indexed_elements.unwrap_or_else(|| {
+            elements
                 .iter()
-                .map(|element| self.lower_expr(element, Some(element_ty)))
-                .collect::<Result<Vec<_>, _>>()?;
+                .map(Some)
+                .collect::<Vec<Option<&ExprSyntax>>>()
+        });
+        let mut lowered_elements = Vec::with_capacity(sequential_elements.len());
+        for element in sequential_elements {
+            let lowered = if let Some(element) = element {
+                self.lower_expr(element, Some(element_ty))?
+            } else {
+                let zero_node = self.alloc_node(syntax_source)?;
+                self.zero_value_expr(
+                    zero_node,
+                    SourceRef::node(zero_node),
+                    element_ty.as_ref().clone(),
+                )?
+            };
+            lowered_elements.push(lowered);
+        }
+        if keyed
+            && lowered_elements
+                .iter()
+                .any(|element| expr_constant(element).is_none())
+        {
+            return Err(Diagnostic::unsupported(
+                "dynamic keyed slice literal elements are not yet implemented",
+                source,
+            ));
+        }
+        if aggregate_elements {
             let type_identity = element_ty.dynamic_type_identity().ok_or_else(|| {
                 Diagnostic::backend("aggregate slice element omitted its dynamic type identity")
             })?;
@@ -132,11 +170,10 @@ impl FunctionLowerer {
             });
         }
         if boolean_elements {
-            let values = elements
+            let values = lowered_elements
                 .iter()
                 .map(|element| {
-                    let element = self.lower_expr(element, Some(element_ty))?;
-                    let Some(ConstValue::Bool(value)) = expr_constant(&element) else {
+                    let Some(ConstValue::Bool(value)) = expr_constant(element) else {
                         return Err(Diagnostic::unsupported(
                             "dynamic slice literal elements are not yet implemented",
                             source,
@@ -157,12 +194,32 @@ impl FunctionLowerer {
                 source,
             });
         }
+        if string_elements {
+            let effects = lowered_elements
+                .iter()
+                .fold(hir::Effects::default(), |effects, element| {
+                    effects.union(element.effects)
+                })
+                .union(hir::Effects {
+                    may_call: true,
+                    may_allocate: true,
+                    may_write: true,
+                    may_panic: true,
+                    ..hir::Effects::default()
+                });
+            return Ok(hir::Expr {
+                node,
+                kind: hir::ExprKind::SliceLiteralGoString(lowered_elements),
+                ty: literal_ty,
+                category: hir::ValueCategory::Value,
+                effects,
+                source,
+            });
+        }
         let mut values = Vec::with_capacity(elements.len());
-        let mut lowered_elements = Vec::with_capacity(elements.len());
         let mut dynamic = false;
-        for element in elements {
-            let element = self.lower_expr(element, Some(element_ty))?;
-            if let Some(ConstValue::Int(value)) = expr_constant(&element) {
+        for element in &lowered_elements {
+            if let Some(ConstValue::Int(value)) = expr_constant(element) {
                 values.push(value.parse::<i64>().map_err(|_| {
                     Diagnostic::semantic("slice literal element is outside Go int", source)
                 })?);
@@ -174,7 +231,6 @@ impl FunctionLowerer {
             } else {
                 dynamic = true;
             }
-            lowered_elements.push(element);
         }
         let effects = lowered_elements
             .iter()

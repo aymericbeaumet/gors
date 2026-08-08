@@ -7,9 +7,10 @@ use crate::import_path::ImportPathIssue;
 use crate::source::{TextRange, TextSize};
 
 use super::{
-    InputError, LogicalPathIssue, PackageCatalogError, PackageInputManifest, PackageKey,
-    PackageManifestCatalog, ProgramInput, SourceContent, SourceFileInput, SourceSnapshot,
-    WorkspaceKey,
+    EmbeddedGoSdkPackageManifestCatalog, GoLanguageVersion, InputError,
+    LayeredPackageManifestCatalog, LogicalPathIssue, PackageCatalogError, PackageInputManifest,
+    PackageKey, PackageManifestCatalog, ProgramInput, SourceContent, SourceFileInput,
+    SourceSnapshot, WorkspaceKey,
 };
 
 fn workspace() -> WorkspaceKey {
@@ -40,6 +41,60 @@ impl PackageManifestCatalog for CountingCatalog {
     ) -> Result<Option<Arc<PackageInputManifest>>, PackageCatalogError> {
         self.requests.fetch_add(1, Ordering::Relaxed);
         Ok(None)
+    }
+}
+
+#[derive(Debug)]
+struct FixedCatalog {
+    requests: AtomicUsize,
+    manifest: Option<Arc<PackageInputManifest>>,
+}
+
+impl FixedCatalog {
+    fn owning(manifest: PackageInputManifest) -> Self {
+        Self {
+            requests: AtomicUsize::new(0),
+            manifest: Some(Arc::new(manifest)),
+        }
+    }
+
+    fn unowned() -> Self {
+        Self {
+            requests: AtomicUsize::new(0),
+            manifest: None,
+        }
+    }
+}
+
+impl PackageManifestCatalog for FixedCatalog {
+    fn materialize(
+        &self,
+        package: &PackageKey,
+    ) -> Result<Option<Arc<PackageInputManifest>>, PackageCatalogError> {
+        self.requests.fetch_add(1, Ordering::Relaxed);
+        Ok(self
+            .manifest
+            .as_ref()
+            .filter(|manifest| manifest.key() == package)
+            .cloned())
+    }
+}
+
+#[derive(Debug, Default)]
+struct FailingCatalog {
+    requests: AtomicUsize,
+}
+
+impl PackageManifestCatalog for FailingCatalog {
+    fn materialize(
+        &self,
+        package: &PackageKey,
+    ) -> Result<Option<Arc<PackageInputManifest>>, PackageCatalogError> {
+        self.requests.fetch_add(1, Ordering::Relaxed);
+        Err(PackageCatalogError::new(
+            package.clone(),
+            std::io::Error::other("owned package failed"),
+        ))
     }
 }
 
@@ -82,6 +137,148 @@ fn keeps_one_explicit_entry_and_does_not_eagerly_touch_its_catalog() {
             .is_none()
     );
     assert_eq!(catalog.requests.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn layered_catalog_stops_at_the_first_owner_without_eagerly_touching_later_layers() {
+    let requested = package("example.com/dependency");
+    let first = Arc::new(FixedCatalog::owning(manifest(
+        "example.com/dependency",
+        vec![source("dep.go", "first://dep.go", "package dependency")],
+    )));
+    let second = Arc::new(FixedCatalog::owning(manifest(
+        "example.com/dependency",
+        vec![source("dep.go", "second://dep.go", "package dependency")],
+    )));
+    let layers: [Arc<dyn PackageManifestCatalog>; 2] = [first.clone(), second.clone()];
+    let catalog = LayeredPackageManifestCatalog::new(layers);
+
+    let resolved = catalog.materialize(&requested).unwrap().unwrap();
+
+    assert_eq!(catalog.layer_count(), 2);
+    assert_eq!(
+        resolved
+            .files()
+            .first()
+            .unwrap()
+            .snapshot()
+            .diagnostic_path(),
+        "first://dep.go"
+    );
+    assert_eq!(first.requests.load(Ordering::Relaxed), 1);
+    assert_eq!(second.requests.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn layered_catalog_falls_through_only_when_a_namespace_is_unowned() {
+    let requested = package("example.com/dependency");
+    let first = Arc::new(FixedCatalog::unowned());
+    let second = Arc::new(FixedCatalog::owning(manifest(
+        "example.com/dependency",
+        vec![source("dep.go", "second://dep.go", "package dependency")],
+    )));
+    let layers: [Arc<dyn PackageManifestCatalog>; 2] = [first.clone(), second.clone()];
+    let catalog = LayeredPackageManifestCatalog::new(layers);
+
+    let resolved = catalog.materialize(&requested).unwrap().unwrap();
+
+    assert_eq!(
+        resolved
+            .files()
+            .first()
+            .unwrap()
+            .snapshot()
+            .diagnostic_path(),
+        "second://dep.go"
+    );
+    assert_eq!(first.requests.load(Ordering::Relaxed), 1);
+    assert_eq!(second.requests.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn layered_catalog_preserves_an_owner_error_without_falling_through() {
+    let requested = package("example.com/dependency");
+    let first = Arc::new(FailingCatalog::default());
+    let second = Arc::new(FixedCatalog::owning(manifest(
+        "example.com/dependency",
+        vec![source("dep.go", "second://dep.go", "package dependency")],
+    )));
+    let layers: [Arc<dyn PackageManifestCatalog>; 2] = [first.clone(), second.clone()];
+    let catalog = LayeredPackageManifestCatalog::new(layers);
+
+    let error = catalog.materialize(&requested).unwrap_err();
+
+    assert_eq!(error.package(), &requested);
+    assert_eq!(error.cause().to_string(), "owned package failed");
+    assert_eq!(first.requests.load(Ordering::Relaxed), 1);
+    assert_eq!(second.requests.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn embedded_sdk_catalog_is_lazy_source_only_and_memoized_per_package() {
+    let catalog = EmbeddedGoSdkPackageManifestCatalog::new();
+    let fmt = package("fmt");
+
+    assert_eq!(catalog.materialized_package_count(), 0);
+    assert!(
+        catalog
+            .materialize(&PackageKey::command_line())
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        catalog
+            .materialize(&package("example.com/not-the-sdk"))
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(catalog.materialized_package_count(), 0);
+
+    let first = catalog.materialize(&fmt).unwrap().unwrap();
+    let second = catalog.materialize(&fmt).unwrap().unwrap();
+
+    assert_eq!(first.key(), &fmt);
+    assert!(!first.files().is_empty());
+    assert!(first.files().iter().all(|file| {
+        file.snapshot()
+            .diagnostic_path()
+            .starts_with("gors://go-sdk/fmt/")
+    }));
+    assert!(Arc::ptr_eq(&first, &second));
+    assert_eq!(catalog.materialized_package_count(), 1);
+}
+
+#[test]
+fn language_versions_are_canonical_and_package_owned() {
+    assert_eq!(
+        GoLanguageVersion::parse("1.13.7").unwrap(),
+        GoLanguageVersion::new(1, 13)
+    );
+    assert_eq!(
+        GoLanguageVersion::parse("go1.21").unwrap().to_string(),
+        "go1.21"
+    );
+    for invalid in ["", "1", "1.", "go", "go1.021", "v1.21", "1.21.x"] {
+        assert!(GoLanguageVersion::parse(invalid).is_err(), "{invalid}");
+    }
+
+    let version = GoLanguageVersion::new(1, 12);
+    let manifest = PackageInputManifest::new_with_language_version(
+        package("example.com/old"),
+        version,
+        [source("old.go", "/old.go", "package old")],
+    )
+    .unwrap();
+    assert_eq!(manifest.language_version(), version);
+    assert_eq!(
+        PackageInputManifest::new(
+            package("example.com/current"),
+            [source("current.go", "/current.go", "package current")],
+        )
+        .unwrap()
+        .language_version(),
+        GoLanguageVersion::current().unwrap()
+    );
 }
 
 #[test]

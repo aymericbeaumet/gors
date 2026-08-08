@@ -1,5 +1,6 @@
 //! One-pass projection from parser observations into owned function syntax.
 
+mod error;
 mod go_statements;
 mod local_types;
 mod positions;
@@ -8,7 +9,6 @@ mod type_switches;
 
 pub use type_declarations::{project_type_alias, project_type_definition};
 
-use std::fmt;
 use std::sync::Arc;
 
 use crate::ast;
@@ -25,6 +25,7 @@ use super::{
     StmtSyntax, StmtSyntaxKind, SwitchCaseSyntax, SyntaxAnchor, SyntaxSource, SyntaxSourceRegion,
     ValueSpecSyntax, VariableLayout, VariableSyntax, VariableValueSyntax,
 };
+pub use error::ProjectionError;
 use positions::{expression_position, statement_position};
 
 struct FunctionProjectionParts {
@@ -36,63 +37,6 @@ struct FunctionProjectionParts {
     body_sources: Arc<[TextRange]>,
     structural_header: FunctionHeaderSyntax,
     structural_body: FunctionBodySyntax,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ProjectionError {
-    MissingFunctionToken,
-    MissingBodyBrace,
-    MissingBodylessTerminator,
-    InvalidSwitchBody,
-    InvalidTypeSwitchGuard,
-    InvalidChannelDirection,
-    InvalidSelectBody,
-    MissingTypeName,
-    InvalidMethodReceiver,
-    OffsetOutsideTextDomain { offset: usize },
-    ReversedRange { start: usize, end: usize },
-}
-
-impl fmt::Display for ProjectionError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MissingFunctionToken => {
-                formatter.write_str("parser observations omitted the function token")
-            }
-            Self::MissingBodyBrace => {
-                formatter.write_str("parser observations omitted a function body brace")
-            }
-            Self::MissingBodylessTerminator => {
-                formatter.write_str("parser observations omitted a bodyless declaration terminator")
-            }
-            Self::InvalidSwitchBody => {
-                formatter.write_str("parser produced a non-case statement in a switch body")
-            }
-            Self::InvalidTypeSwitchGuard => formatter.write_str("invalid parser type-switch guard"),
-            Self::InvalidChannelDirection => {
-                formatter.write_str("parser produced an invalid channel direction")
-            }
-            Self::InvalidSelectBody => {
-                formatter.write_str("parser produced a select body without communication clauses")
-            }
-            Self::MissingTypeName => formatter.write_str("parser produced a type without a name"),
-            Self::InvalidMethodReceiver => {
-                formatter.write_str("parser produced an invalid method receiver")
-            }
-            Self::OffsetOutsideTextDomain { offset } => {
-                write!(
-                    formatter,
-                    "function layout offset {offset} exceeds the text domain"
-                )
-            }
-            Self::ReversedRange { start, end } => {
-                write!(
-                    formatter,
-                    "function layout range {start}..{end} is reversed"
-                )
-            }
-        }
-    }
 }
 
 pub fn project_function(
@@ -758,9 +702,18 @@ impl StructuralProjector {
         let mut contains_import_spec = false;
         let mut specs = Vec::new();
         let mut type_specs = Vec::new();
-        for spec in &declaration.specs {
+        for (index, spec) in declaration.specs.iter().enumerate() {
             match spec {
-                ast::Spec::ValueSpec(spec) => specs.push(self.value_spec(spec)?),
+                ast::Spec::ValueSpec(spec) => {
+                    let iota = if declaration.tok == crate::token::Token::CONST {
+                        u64::try_from(index).map_err(|_| {
+                            ProjectionError::OffsetOutsideTextDomain { offset: index }
+                        })?
+                    } else {
+                        0
+                    };
+                    specs.push(self.value_spec(spec, iota)?);
+                }
                 ast::Spec::TypeSpec(spec) => type_specs.push(self.local_type_spec(spec)?),
                 ast::Spec::ImportSpec(_) => contains_import_spec = true,
             }
@@ -777,6 +730,7 @@ impl StructuralProjector {
     fn value_spec(
         &mut self,
         spec: &ast::ValueSpec<'_>,
+        iota: u64,
     ) -> Result<ValueSpecSyntax, ProjectionError> {
         Ok(ValueSpecSyntax {
             names: spec
@@ -801,6 +755,7 @@ impl StructuralProjector {
                         .map(Arc::from)
                 })
                 .transpose()?,
+            iota,
         })
     }
 
@@ -908,7 +863,15 @@ impl StructuralProjector {
                 base: Box::new(self.expression(&expression.x)?),
                 index: Box::new(self.expression(&expression.index)?),
             },
-            ast::Expr::IndexListExpr(_) => ExprSyntaxKind::Unsupported("generic index expression"),
+            ast::Expr::IndexListExpr(expression) => ExprSyntaxKind::IndexList {
+                base: Box::new(self.expression(&expression.x)?),
+                indices: expression
+                    .indices
+                    .iter()
+                    .map(|index| self.expression(index))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into(),
+            },
             ast::Expr::InterfaceType(interface) => ExprSyntaxKind::InterfaceType {
                 methods: interface
                     .methods

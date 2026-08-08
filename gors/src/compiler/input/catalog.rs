@@ -19,6 +19,47 @@ pub trait PackageManifestCatalog: fmt::Debug + Send + Sync {
     ) -> Result<Option<Arc<PackageInputManifest>>, PackageCatalogError>;
 }
 
+/// Ordered composition of independent package namespaces.
+///
+/// Each provider remains demand-driven: materializing one package asks layers
+/// in precedence order and stops at the first owner. A layer error is retained
+/// instead of being mistaken for an unowned namespace and falling through to
+/// another provider.
+#[derive(Debug)]
+pub struct LayeredPackageManifestCatalog {
+    layers: Arc<[Arc<dyn PackageManifestCatalog>]>,
+}
+
+impl LayeredPackageManifestCatalog {
+    /// Compose package providers in explicit precedence order.
+    #[must_use]
+    pub fn new(layers: impl IntoIterator<Item = Arc<dyn PackageManifestCatalog>>) -> Self {
+        Self {
+            layers: layers.into_iter().collect(),
+        }
+    }
+
+    /// Number of independently owned namespaces in this composition.
+    #[must_use]
+    pub fn layer_count(&self) -> usize {
+        self.layers.len()
+    }
+}
+
+impl PackageManifestCatalog for LayeredPackageManifestCatalog {
+    fn materialize(
+        &self,
+        package: &PackageKey,
+    ) -> Result<Option<Arc<PackageInputManifest>>, PackageCatalogError> {
+        for layer in self.layers.iter() {
+            if let Some(manifest) = layer.materialize(package)? {
+                return Ok(Some(manifest));
+            }
+        }
+        Ok(None)
+    }
+}
+
 /// Failure to materialize an owned package manifest.
 ///
 /// The concrete cause is retained as an error source so resolver, filesystem,

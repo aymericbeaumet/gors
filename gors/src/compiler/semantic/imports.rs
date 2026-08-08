@@ -151,23 +151,18 @@ impl FunctionLowerer {
                 source,
             ));
         }
-        let effects = args.iter().fold(
-            hir::Effects {
-                may_call: true,
-                may_allocate: true,
-                may_block: true,
-                may_panic: true,
-                may_write: true,
-                ..hir::Effects::default()
-            },
-            |effects, argument| effects.union(argument.effects),
-        );
+        let effects = hir::Effects {
+            may_call: true,
+            may_allocate: true,
+            may_block: true,
+            may_panic: true,
+            may_write: true,
+            ..hir::Effects::default()
+        }
+        .union(args.effects());
         let mut lowered = hir::Expr {
             node,
-            kind: hir::ExprKind::Call {
-                callee: hir::Callee::Function(symbol.id),
-                args,
-            },
+            kind: args.into_call_kind(hir::Callee::Function(symbol.id), Vec::new()),
             ty,
             category: hir::ValueCategory::Value,
             effects,

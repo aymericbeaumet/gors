@@ -1,0 +1,3 @@
+module go_spec_variables_dynamic_type_nil_pointer
+
+go 1.26

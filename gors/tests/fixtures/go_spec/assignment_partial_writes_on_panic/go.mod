@@ -1,0 +1,3 @@
+module go_spec_assignment_partial_writes_on_panic
+
+go 1.26

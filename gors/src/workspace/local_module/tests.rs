@@ -3,12 +3,12 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::compiler::input::{PackageKey, PackageManifestCatalog};
+use crate::compiler::input::{GoLanguageVersion, PackageKey, PackageManifestCatalog};
 use crate::import_path::{CanonicalImportPath, ImportPathIssue};
 
 use super::{
     LocalModuleCatalog, LocalModuleError, LocalModuleManifestCatalog, ModuleFileIssue,
-    parse_module_directive,
+    parse_language_version_directive, parse_module_directive,
 };
 
 fn write(path: &Path, contents: impl AsRef<[u8]>) {
@@ -41,6 +41,33 @@ fn module_reader_accepts_one_canonical_directive_and_ignores_dependencies() {
         parse_module_directive(source).unwrap(),
         import("example.com/team/project")
     );
+    assert_eq!(
+        parse_language_version_directive(source).unwrap(),
+        GoLanguageVersion::new(1, 24)
+    );
+}
+
+#[test]
+fn module_reader_applies_the_fixed_default_and_validates_go_directives() {
+    assert_eq!(
+        parse_language_version_directive("module example.com/old\n").unwrap(),
+        GoLanguageVersion::DEFAULT_MODULE
+    );
+    assert!(matches!(
+        parse_language_version_directive("module example.com/old\ngo 1.12\ngo 1.13\n"),
+        Err(ModuleFileIssue::DuplicateGoDirective {
+            first_line: 2,
+            duplicate_line: 3,
+        })
+    ));
+    assert!(matches!(
+        parse_language_version_directive("module example.com/old\ngo 1.12 extra\n"),
+        Err(ModuleFileIssue::MalformedGoDirective { line: 2 })
+    ));
+    assert!(matches!(
+        parse_language_version_directive("module example.com/old\ngo old\n"),
+        Err(ModuleFileIssue::InvalidGoVersion { line: 2, .. })
+    ));
 }
 
 #[test]
@@ -322,6 +349,7 @@ fn compiler_catalog_is_object_safe_lazy_and_memoizes_immutable_manifests() {
 
     assert!(Arc::ptr_eq(&first, &second));
     assert_eq!(first.key(), &requested);
+    assert_eq!(first.language_version(), GoLanguageVersion::new(1, 24));
     assert_eq!(first.files().first().unwrap().logical_path(), "value.go");
     assert_eq!(source_catalog.materialized_package_count(), 1);
     assert_eq!(catalog.materialized_manifest_count(), 1);

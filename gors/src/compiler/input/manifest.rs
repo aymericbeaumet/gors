@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use super::path::validate_logical_path;
 use super::{
-    EmptyPackageManifestCatalog, InputError, PackageKey, PackageManifestCatalog, SourceSnapshot,
-    WorkspaceKey,
+    EmptyPackageManifestCatalog, GoLanguageVersion, InputError, PackageKey, PackageManifestCatalog,
+    SourceSnapshot, WorkspaceKey,
 };
 use crate::source::TextSizeOverflow;
 
@@ -74,6 +74,7 @@ impl SourceFileInput {
 #[derive(Clone, Debug)]
 pub struct PackageInputManifest {
     key: PackageKey,
+    language_version: GoLanguageVersion,
     files: Arc<[SourceFileInput]>,
 }
 
@@ -81,6 +82,21 @@ impl PackageInputManifest {
     /// Validate duplicate logical paths and canonicalize file ordering.
     pub fn new(
         key: PackageKey,
+        files: impl IntoIterator<Item = SourceFileInput>,
+    ) -> Result<Self, InputError> {
+        let language_version =
+            GoLanguageVersion::current().map_err(|issue| InputError::InvalidLanguageVersion {
+                value: Arc::from(crate::GO_VERSION),
+                issue,
+            })?;
+        Self::new_with_language_version(key, language_version, files)
+    }
+
+    /// Validate and canonicalize one package at an explicit Go language
+    /// version, normally selected from its owning module's `go` directive.
+    pub fn new_with_language_version(
+        key: PackageKey,
+        language_version: GoLanguageVersion,
         files: impl IntoIterator<Item = SourceFileInput>,
     ) -> Result<Self, InputError> {
         let mut files = files.into_iter().collect::<Vec<_>>();
@@ -101,6 +117,7 @@ impl PackageInputManifest {
         }
         Ok(Self {
             key,
+            language_version,
             files: files.into(),
         })
     }
@@ -109,6 +126,13 @@ impl PackageInputManifest {
     #[must_use]
     pub const fn key(&self) -> &PackageKey {
         &self.key
+    }
+
+    /// Module-selected language version for every file in this package before
+    /// a file-specific `//go:build go1.N` adjustment.
+    #[must_use]
+    pub const fn language_version(&self) -> GoLanguageVersion {
+        self.language_version
     }
 
     /// Source inputs in canonical logical-path order.

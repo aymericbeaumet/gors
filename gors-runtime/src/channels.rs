@@ -1,243 +1,350 @@
-//! Go channel representation and synchronization operations.
+//! Go channel representations and synchronization operations.
 
 use std::collections::VecDeque;
+use std::fmt::Debug;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
-use crate::GoInt;
+use crate::{GoInt, GoString};
 
-/// A clonable Go `chan int` handle.
-///
-/// A missing inner allocation is Go's nil channel value. Non-nil clones share
-/// the same queue, close state, and synchronization points.
-#[derive(Clone, Debug, Default)]
-pub struct GoChannelI64 {
-    inner: Option<Arc<ChannelInner>>,
+#[derive(Debug)]
+struct GoChannel<T> {
+    inner: Option<Arc<ChannelInner<T>>>,
+}
+
+impl<T> Clone for GoChannel<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl<T> Default for GoChannel<T> {
+    fn default() -> Self {
+        Self { inner: None }
+    }
 }
 
 #[derive(Debug)]
-struct ChannelInner {
-    state: Mutex<ChannelState>,
+struct ChannelInner<T> {
+    state: Mutex<ChannelState<T>>,
     changed: Condvar,
 }
 
 #[derive(Debug)]
-struct ChannelState {
+struct ChannelState<T> {
     capacity: usize,
-    values: VecDeque<GoInt>,
-    rendezvous: Option<GoInt>,
+    values: VecDeque<T>,
+    rendezvous: Option<T>,
     waiting_receivers: usize,
     closed: bool,
 }
 
-/// Construct the nil `chan int` value.
-#[must_use]
-pub fn go_channel_i64_nil() -> GoChannelI64 {
-    GoChannelI64 { inner: None }
-}
-
-/// Construct a `chan int` with the requested buffer capacity.
-#[must_use]
-pub fn go_channel_i64_make(capacity: GoInt) -> GoChannelI64 {
-    let capacity = usize::try_from(capacity).unwrap_or_else(|_| negative_channel_capacity());
-    GoChannelI64 {
-        inner: Some(Arc::new(ChannelInner {
-            state: Mutex::new(ChannelState {
-                capacity,
-                values: VecDeque::with_capacity(capacity),
-                rendezvous: None,
-                waiting_receivers: 0,
-                closed: false,
-            }),
-            changed: Condvar::new(),
-        })),
+impl<T> GoChannel<T> {
+    fn make(capacity: GoInt) -> Self {
+        let capacity = usize::try_from(capacity).unwrap_or_else(|_| negative_channel_capacity());
+        Self {
+            inner: Some(Arc::new(ChannelInner {
+                state: Mutex::new(ChannelState {
+                    capacity,
+                    values: VecDeque::with_capacity(capacity),
+                    rendezvous: None,
+                    waiting_receivers: 0,
+                    closed: false,
+                }),
+                changed: Condvar::new(),
+            })),
+        }
     }
-}
 
-/// Return the number of currently queued values.
-#[must_use]
-pub fn go_channel_i64_len(channel: GoChannelI64) -> GoInt {
-    let Some(inner) = channel.inner else {
-        return 0;
-    };
-    let state = lock(&inner.state);
-    GoInt::try_from(state.values.len()).unwrap_or_else(|_| channel_size_overflow())
-}
+    fn len(self) -> GoInt {
+        let Some(inner) = self.inner else {
+            return 0;
+        };
+        let state = lock(&inner.state);
+        GoInt::try_from(state.values.len()).unwrap_or_else(|_| channel_size_overflow())
+    }
 
-/// Return the channel buffer capacity.
-#[must_use]
-pub fn go_channel_i64_cap(channel: GoChannelI64) -> GoInt {
-    let Some(inner) = channel.inner else {
-        return 0;
-    };
-    let state = lock(&inner.state);
-    GoInt::try_from(state.capacity).unwrap_or_else(|_| channel_size_overflow())
-}
+    fn cap(self) -> GoInt {
+        let Some(inner) = self.inner else {
+            return 0;
+        };
+        let state = lock(&inner.state);
+        GoInt::try_from(state.capacity).unwrap_or_else(|_| channel_size_overflow())
+    }
 
-/// Send one value, waiting until buffer space or a receiver is available.
-pub fn go_channel_i64_send(channel: GoChannelI64, value: GoInt) {
-    let Some(inner) = channel.inner else {
-        block_forever();
-    };
-    let mut state = lock(&inner.state);
-    if state.capacity == 0 {
-        loop {
+    fn send(self, value: T) {
+        let Some(inner) = self.inner else {
+            block_forever();
+        };
+        let mut state = lock(&inner.state);
+        if state.capacity == 0 {
+            loop {
+                if state.closed {
+                    send_on_closed_channel();
+                }
+                if state.waiting_receivers > 0 && state.rendezvous.is_none() {
+                    state.rendezvous = Some(value);
+                    inner.changed.notify_all();
+                    while state.rendezvous.is_some() {
+                        if state.closed {
+                            state.rendezvous = None;
+                            inner.changed.notify_all();
+                            send_on_closed_channel();
+                        }
+                        state = wait(&inner.changed, state);
+                    }
+                    return;
+                }
+                state = wait(&inner.changed, state);
+            }
+        }
+
+        while state.values.len() == state.capacity {
             if state.closed {
                 send_on_closed_channel();
             }
-            if state.waiting_receivers > 0 && state.rendezvous.is_none() {
-                state.rendezvous = Some(value);
-                inner.changed.notify_all();
-                while state.rendezvous.is_some() {
-                    if state.closed {
-                        state.rendezvous = None;
-                        inner.changed.notify_all();
-                        send_on_closed_channel();
-                    }
-                    state = wait(&inner.changed, state);
-                }
-                return;
-            }
             state = wait(&inner.changed, state);
         }
-    }
-
-    while state.values.len() == state.capacity {
         if state.closed {
             send_on_closed_channel();
         }
-        state = wait(&inner.changed, state);
-    }
-    if state.closed {
-        send_on_closed_channel();
-    }
-    state.values.push_back(value);
-    drop(state);
-    inner.changed.notify_all();
-}
-
-/// Receive one value, returning the element zero value after close and drain.
-#[must_use]
-pub fn go_channel_i64_receive_value(channel: GoChannelI64) -> GoInt {
-    go_channel_i64_receive(channel).0
-}
-
-/// Receive one value and report whether it arrived before close and drain.
-#[must_use]
-pub fn go_channel_i64_receive(channel: GoChannelI64) -> (GoInt, bool) {
-    let Some(inner) = channel.inner else {
-        block_forever();
-    };
-    let mut state = lock(&inner.state);
-    if state.capacity == 0 {
-        state.waiting_receivers = state.waiting_receivers.saturating_add(1);
+        state.values.push_back(value);
+        drop(state);
         inner.changed.notify_all();
+    }
+
+    fn receive(self) -> (T, bool)
+    where
+        T: Default,
+    {
+        let Some(inner) = self.inner else {
+            block_forever();
+        };
+        let mut state = lock(&inner.state);
+        if state.capacity == 0 {
+            state.waiting_receivers = state.waiting_receivers.saturating_add(1);
+            inner.changed.notify_all();
+            loop {
+                if let Some(value) = state.rendezvous.take() {
+                    state.waiting_receivers = state.waiting_receivers.saturating_sub(1);
+                    inner.changed.notify_all();
+                    return (value, true);
+                }
+                if state.closed {
+                    state.waiting_receivers = state.waiting_receivers.saturating_sub(1);
+                    return (T::default(), false);
+                }
+                state = wait(&inner.changed, state);
+            }
+        }
+
         loop {
-            if let Some(value) = state.rendezvous.take() {
-                state.waiting_receivers = state.waiting_receivers.saturating_sub(1);
+            if let Some(value) = state.values.pop_front() {
                 inner.changed.notify_all();
                 return (value, true);
             }
             if state.closed {
-                state.waiting_receivers = state.waiting_receivers.saturating_sub(1);
-                return (0, false);
+                return (T::default(), false);
             }
             state = wait(&inner.changed, state);
         }
     }
 
-    loop {
-        if let Some(value) = state.values.pop_front() {
-            inner.changed.notify_all();
-            return (value, true);
-        }
+    fn close(self) {
+        let Some(inner) = self.inner else {
+            close_of_nil_channel();
+        };
+        let mut state = lock(&inner.state);
         if state.closed {
-            return (0, false);
+            close_of_closed_channel();
         }
-        state = wait(&inner.changed, state);
+        state.closed = true;
+        drop(state);
+        inner.changed.notify_all();
     }
-}
 
-/// Close a channel and wake blocked senders and receivers.
-pub fn go_channel_i64_close(channel: GoChannelI64) {
-    let Some(inner) = channel.inner else {
-        close_of_nil_channel();
-    };
-    let mut state = lock(&inner.state);
-    if state.closed {
-        close_of_closed_channel();
+    fn is_nil(&self) -> bool {
+        self.inner.is_none()
     }
-    state.closed = true;
-    drop(state);
-    inner.changed.notify_all();
-}
 
-/// Report whether this handle is Go's nil channel value.
-#[must_use]
-pub fn go_channel_i64_is_nil(channel: GoChannelI64) -> bool {
-    channel.inner.is_none()
-}
-
-/// Attempt a send for a `select` case without waiting for readiness.
-///
-/// A closed channel remains a ready send case and therefore raises the normal
-/// Go panic. A nil or currently unavailable channel returns `false`.
-pub fn go_channel_i64_try_send(channel: GoChannelI64, value: GoInt) -> bool {
-    let Some(inner) = channel.inner else {
-        return false;
-    };
-    let mut state = lock(&inner.state);
-    if state.closed {
-        send_on_closed_channel();
-    }
-    if state.capacity == 0 {
-        if state.waiting_receivers == 0 || state.rendezvous.is_some() {
+    fn try_send(self, value: T) -> bool {
+        let Some(inner) = self.inner else {
+            return false;
+        };
+        let mut state = lock(&inner.state);
+        if state.closed {
+            send_on_closed_channel();
+        }
+        if state.capacity == 0 {
+            if state.waiting_receivers == 0 || state.rendezvous.is_some() {
+                return false;
+            }
+            state.rendezvous = Some(value);
+            drop(state);
+            inner.changed.notify_all();
+            return true;
+        }
+        if state.values.len() == state.capacity {
             return false;
         }
-        state.rendezvous = Some(value);
+        state.values.push_back(value);
         drop(state);
         inner.changed.notify_all();
-        return true;
+        true
     }
-    if state.values.len() == state.capacity {
-        return false;
+
+    fn try_receive(self) -> (T, GoInt)
+    where
+        T: Default,
+    {
+        let Some(inner) = self.inner else {
+            return (T::default(), 0);
+        };
+        let mut state = lock(&inner.state);
+        let value = if state.capacity == 0 {
+            state.rendezvous.take()
+        } else {
+            state.values.pop_front()
+        };
+        if let Some(value) = value {
+            drop(state);
+            inner.changed.notify_all();
+            return (value, 2);
+        }
+        (T::default(), i64::from(state.closed))
     }
-    state.values.push_back(value);
-    drop(state);
-    inner.changed.notify_all();
-    true
 }
 
-/// Attempt a receive for a `select` case without waiting for readiness.
-///
-/// The status is `0` when no communication is ready, `1` for a selected
-/// closed-and-drained receive, and `2` when a value was received.
-#[must_use]
-pub fn go_channel_i64_try_receive(channel: GoChannelI64) -> (GoInt, GoInt) {
-    let Some(inner) = channel.inner else {
-        return (0, 0);
+macro_rules! define_channel_family {
+    (
+        $channel:ident,
+        $value:ty,
+        $nil:ident,
+        $make:ident,
+        $len:ident,
+        $cap:ident,
+        $send:ident,
+        $receive_value:ident,
+        $receive:ident,
+        $close:ident,
+        $is_nil:ident,
+        $try_send:ident,
+        $try_receive:ident
+    ) => {
+        #[derive(Clone, Debug, Default)]
+        pub struct $channel(GoChannel<$value>);
+
+        #[must_use]
+        pub fn $nil() -> $channel {
+            $channel(GoChannel::default())
+        }
+
+        #[must_use]
+        pub fn $make(capacity: GoInt) -> $channel {
+            $channel(GoChannel::make(capacity))
+        }
+
+        #[must_use]
+        pub fn $len(channel: $channel) -> GoInt {
+            channel.0.len()
+        }
+
+        #[must_use]
+        pub fn $cap(channel: $channel) -> GoInt {
+            channel.0.cap()
+        }
+
+        pub fn $send(channel: $channel, value: $value) {
+            channel.0.send(value);
+        }
+
+        #[must_use]
+        pub fn $receive_value(channel: $channel) -> $value {
+            channel.0.receive().0
+        }
+
+        #[must_use]
+        pub fn $receive(channel: $channel) -> ($value, bool) {
+            channel.0.receive()
+        }
+
+        pub fn $close(channel: $channel) {
+            channel.0.close();
+        }
+
+        #[must_use]
+        pub fn $is_nil(channel: $channel) -> bool {
+            channel.0.is_nil()
+        }
+
+        pub fn $try_send(channel: $channel, value: $value) -> bool {
+            channel.0.try_send(value)
+        }
+
+        #[must_use]
+        pub fn $try_receive(channel: $channel) -> ($value, GoInt) {
+            channel.0.try_receive()
+        }
     };
-    let mut state = lock(&inner.state);
-    let value = if state.capacity == 0 {
-        state.rendezvous.take()
-    } else {
-        state.values.pop_front()
-    };
-    if let Some(value) = value {
-        drop(state);
-        inner.changed.notify_all();
-        return (value, 2);
-    }
-    if state.closed { (0, 1) } else { (0, 0) }
 }
+
+define_channel_family!(
+    GoChannelI64,
+    GoInt,
+    go_channel_i64_nil,
+    go_channel_i64_make,
+    go_channel_i64_len,
+    go_channel_i64_cap,
+    go_channel_i64_send,
+    go_channel_i64_receive_value,
+    go_channel_i64_receive,
+    go_channel_i64_close,
+    go_channel_i64_is_nil,
+    go_channel_i64_try_send,
+    go_channel_i64_try_receive
+);
+
+define_channel_family!(
+    GoChannelGoString,
+    GoString,
+    go_channel_go_string_nil,
+    go_channel_go_string_make,
+    go_channel_go_string_len,
+    go_channel_go_string_cap,
+    go_channel_go_string_send,
+    go_channel_go_string_receive_value,
+    go_channel_go_string_receive,
+    go_channel_go_string_close,
+    go_channel_go_string_is_nil,
+    go_channel_go_string_try_send,
+    go_channel_go_string_try_receive
+);
+
+define_channel_family!(
+    GoChannelGoChannelI64,
+    GoChannelI64,
+    go_channel_go_channel_i64_nil,
+    go_channel_go_channel_i64_make,
+    go_channel_go_channel_i64_len,
+    go_channel_go_channel_i64_cap,
+    go_channel_go_channel_i64_send,
+    go_channel_go_channel_i64_receive_value,
+    go_channel_go_channel_i64_receive,
+    go_channel_go_channel_i64_close,
+    go_channel_go_channel_i64_is_nil,
+    go_channel_go_channel_i64_try_send,
+    go_channel_go_channel_i64_try_receive
+);
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn wait<'a>(
+fn wait<'a, T>(
     changed: &Condvar,
-    state: MutexGuard<'a, ChannelState>,
-) -> MutexGuard<'a, ChannelState> {
+    state: MutexGuard<'a, ChannelState<T>>,
+) -> MutexGuard<'a, ChannelState<T>> {
     changed.wait(state).unwrap_or_else(PoisonError::into_inner)
 }
 

@@ -2,24 +2,35 @@
 
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
-use crate::compiler::types::{IntTy, Ty};
+use crate::compiler::types::{FloatTy, IntTy, Ty};
 
 pub(super) fn is_interface_builtin(builtin: hir::Builtin) -> bool {
     matches!(
         builtin,
         hir::Builtin::InterfaceNil
             | hir::Builtin::InterfaceBoxBool
+            | hir::Builtin::InterfaceBoxF32
+            | hir::Builtin::InterfaceBoxF64
             | hir::Builtin::InterfaceBoxI64
             | hir::Builtin::InterfaceBoxGoString
+            | hir::Builtin::InterfaceBoxGoSliceGoString
             | hir::Builtin::InterfaceBoxStructI64
+            | hir::Builtin::InterfaceBoxPointerI64
             | hir::Builtin::InterfaceBoxPointerStructI64
             | hir::Builtin::InterfaceBoxAggregate
+            | hir::Builtin::InterfaceBoxComparableAggregate
+            | hir::Builtin::InterfaceEqual
             | hir::Builtin::InterfaceIsNil
             | hir::Builtin::InterfaceIsType
+            | hir::Builtin::InterfaceIsRuntimeError
             | hir::Builtin::InterfaceUnboxBool
+            | hir::Builtin::InterfaceUnboxF32
+            | hir::Builtin::InterfaceUnboxF64
             | hir::Builtin::InterfaceUnboxI64
             | hir::Builtin::InterfaceUnboxGoString
+            | hir::Builtin::InterfaceUnboxGoSliceGoString
             | hir::Builtin::InterfaceStructI64Get
+            | hir::Builtin::InterfaceUnboxPointerI64
             | hir::Builtin::InterfaceUnboxPointerStructI64
             | hir::Builtin::InterfaceUnboxAggregate
             | hir::Builtin::FunctionNil
@@ -43,20 +54,41 @@ pub(super) fn verify_interface_call(
         hir::Builtin::InterfaceBoxBool => {
             verify_box(arguments, destinations, |ty| ty.underlying() == &Ty::Bool)
         }
-        hir::Builtin::InterfaceBoxI64 => verify_box(arguments, destinations, |ty| {
-            ty.underlying() == &Ty::Int(IntTy::Int)
+        hir::Builtin::InterfaceBoxF32 => verify_box(arguments, destinations, |ty| {
+            ty.underlying() == &Ty::Float(FloatTy::Float32)
         }),
+        hir::Builtin::InterfaceBoxF64 => verify_box(arguments, destinations, |ty| {
+            ty.underlying() == &Ty::Float(FloatTy::Float64)
+        }),
+        hir::Builtin::InterfaceBoxI64 => {
+            verify_box(arguments, destinations, is_i64_interface_scalar)
+        }
         hir::Builtin::InterfaceBoxGoString => {
             verify_box(arguments, destinations, |ty| ty.underlying() == &Ty::String)
+        }
+        hir::Builtin::InterfaceBoxGoSliceGoString => {
+            verify_box(arguments, destinations, is_go_string_slice)
         }
         hir::Builtin::InterfaceBoxStructI64 => verify_box(arguments, destinations, |ty| {
             ty.underlying() == &Ty::Slice(Box::new(Ty::Int(IntTy::Int)))
         }),
+        hir::Builtin::InterfaceBoxPointerI64 => verify_box(arguments, destinations, is_pointer_i64),
         hir::Builtin::InterfaceBoxPointerStructI64 => verify_box(arguments, destinations, |ty| {
             ty.bootstrap_i64_struct_pointer_fields().is_some()
         }),
-        hir::Builtin::InterfaceBoxAggregate => {
+        hir::Builtin::InterfaceBoxAggregate | hir::Builtin::InterfaceBoxComparableAggregate => {
             verify_box(arguments, destinations, is_aggregate_payload)
+        }
+        hir::Builtin::InterfaceEqual => {
+            let ([left, right], [result]) = (arguments, destinations) else {
+                return Err(shape_error("interface equality", arguments, destinations));
+            };
+            verify_interface(left, "interface equality left operand")?;
+            verify_interface(right, "interface equality right operand")?;
+            if result != &Ty::Bool {
+                return Err(shape_error("interface equality", arguments, destinations));
+            }
+            Ok(vec![Ty::Bool])
         }
         hir::Builtin::InterfaceIsNil => {
             verify_test(arguments, destinations, false, "interface nil test")
@@ -64,16 +96,34 @@ pub(super) fn verify_interface_call(
         hir::Builtin::InterfaceIsType => {
             verify_test(arguments, destinations, true, "interface dynamic type test")
         }
+        hir::Builtin::InterfaceIsRuntimeError => verify_test(
+            arguments,
+            destinations,
+            false,
+            "runtime error interface test",
+        ),
         hir::Builtin::InterfaceUnboxBool => verify_unbox(
             arguments,
             destinations,
             |ty| ty.underlying() == &Ty::Bool,
             "interface bool extraction",
         ),
+        hir::Builtin::InterfaceUnboxF32 => verify_unbox(
+            arguments,
+            destinations,
+            |ty| ty.underlying() == &Ty::Float(FloatTy::Float32),
+            "interface float32 extraction",
+        ),
+        hir::Builtin::InterfaceUnboxF64 => verify_unbox(
+            arguments,
+            destinations,
+            |ty| ty.underlying() == &Ty::Float(FloatTy::Float64),
+            "interface float64 extraction",
+        ),
         hir::Builtin::InterfaceUnboxI64 => verify_unbox(
             arguments,
             destinations,
-            |ty| ty.underlying() == &Ty::Int(IntTy::Int),
+            is_i64_interface_scalar,
             "interface integer extraction",
         ),
         hir::Builtin::InterfaceUnboxGoString => verify_unbox(
@@ -81,6 +131,12 @@ pub(super) fn verify_interface_call(
             destinations,
             |ty| ty.underlying() == &Ty::String,
             "interface string extraction",
+        ),
+        hir::Builtin::InterfaceUnboxGoSliceGoString => verify_unbox(
+            arguments,
+            destinations,
+            is_go_string_slice,
+            "interface string slice extraction",
         ),
         hir::Builtin::InterfaceStructI64Get => {
             let ([interface, identity, field], [result]) = (arguments, destinations) else {
@@ -101,6 +157,12 @@ pub(super) fn verify_interface_call(
             destinations,
             |ty| ty.bootstrap_i64_struct_pointer_fields().is_some(),
             "interface struct pointer extraction",
+        ),
+        hir::Builtin::InterfaceUnboxPointerI64 => verify_unbox(
+            arguments,
+            destinations,
+            is_pointer_i64,
+            "interface integer pointer extraction",
         ),
         hir::Builtin::InterfaceUnboxAggregate => verify_unbox(
             arguments,
@@ -137,6 +199,14 @@ pub(super) fn verify_interface_call(
             "non-interface builtin reached interface MIR verification",
         )),
     }
+}
+
+fn is_i64_interface_scalar(ty: &Ty) -> bool {
+    matches!(ty.underlying(), Ty::Int(_) | Ty::Uint(_))
+}
+
+fn is_pointer_i64(ty: &Ty) -> bool {
+    matches!(ty.underlying(), Ty::Pointer(element) if element.underlying() == &Ty::Int(IntTy::Int))
 }
 
 fn verify_box(
@@ -220,9 +290,15 @@ fn is_aggregate_payload(ty: &Ty) -> bool {
     matches!(
         ty.underlying(),
         Ty::Slice(element)
-            if matches!(element.underlying(), Ty::Interface(_))
+            if element.underlying() != &Ty::String
+                && (matches!(element.underlying(), Ty::Interface(_))
                 || element.uses_interface_aggregate_representation()
+                )
     )
+}
+
+fn is_go_string_slice(ty: &Ty) -> bool {
+    matches!(ty.underlying(), Ty::Slice(element) if element.underlying() == &Ty::String)
 }
 
 fn verify_string(ty: &Ty, context: &str) -> Result<(), Diagnostic> {

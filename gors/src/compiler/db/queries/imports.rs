@@ -1,5 +1,7 @@
 //! Typed function-scope symbols from resolver-owned import bindings.
 
+mod constraint_dependencies;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -65,6 +67,7 @@ pub(super) fn function_symbols(
         qualified_constants: BTreeMap::new(),
         variables: BTreeMap::new(),
         qualified_variables: BTreeMap::new(),
+        package_imports: BTreeSet::new(),
         intrinsic_packages: BTreeSet::new(),
     };
     let local_range_iterators = specialized_range_iterator_ids(db, input);
@@ -84,8 +87,16 @@ pub(super) fn function_symbols(
     for ty in signature.params.iter().chain(&signature.results) {
         collect_interface_method_names(ty, &mut method_names);
     }
-    for ty in types.values() {
-        collect_interface_method_names(ty, &mut method_names);
+    for function in symbols.functions.values() {
+        collect_interface_method_names_from_signature(&function.signature, &mut method_names);
+    }
+    for variable in symbols.variables.values() {
+        collect_interface_method_names(&variable.ty, &mut method_names);
+    }
+    for name in &references.unqualified {
+        if let Some(ty) = types.get(name.as_ref()) {
+            collect_interface_method_names(ty, &mut method_names);
+        }
     }
     for name in &references.unqualified {
         if name.as_ref() == "error" {
@@ -93,6 +104,29 @@ pub(super) fn function_symbols(
         }
     }
     add_method_symbols(db, input, &method_names, definition, &mut symbols)?;
+    let constraint_dependencies = constraint_dependencies::collect(references, &symbols, &types);
+    if !constraint_dependencies.fallback_methods.is_empty() {
+        add_method_symbols(
+            db,
+            input,
+            &constraint_dependencies.fallback_methods,
+            definition,
+            &mut symbols,
+        )?;
+    }
+    for (name, receivers) in &constraint_dependencies.receivers_by_method {
+        if constraint_dependencies.fallback_methods.contains(name) {
+            continue;
+        }
+        add_method_symbols_for_receivers(
+            db,
+            input,
+            &BTreeSet::from([Arc::clone(name)]),
+            receivers,
+            definition,
+            &mut symbols,
+        )?;
+    }
 
     let source = function_source(db, input, function)?;
     let resolved_input = source.resolved_imports(db);
@@ -149,6 +183,7 @@ pub(super) fn function_symbols(
                         ),
                     ));
                 }
+                symbols.package_imports.insert(local_name.clone());
                 if import.canonical_path().as_str() == "unsafe" {
                     symbols.intrinsic_packages.insert(local_name);
                     continue;
@@ -175,6 +210,356 @@ pub(super) fn function_symbols(
     Ok(symbols)
 }
 
+fn collect_receiver_name_definitions(
+    name: &str,
+    types: &BTreeMap<String, Ty>,
+    symbols: &FunctionSymbols,
+    definitions: &mut BTreeSet<DefId>,
+) {
+    if let Some(ty) = types.get(name) {
+        collect_receiver_type_definitions(ty, definitions);
+    }
+    if let Some(generic) = symbols.generic_types.get(name) {
+        collect_generic_receiver_definitions(
+            generic,
+            &symbols.generic_types,
+            types,
+            definitions,
+            &mut BTreeSet::new(),
+        );
+    }
+    if let Some(function) = symbols.functions.get(name) {
+        for result in &function.signature.results {
+            collect_receiver_type_definitions(result, definitions);
+        }
+    }
+    if let Some(variable) = symbols.variables.get(name) {
+        collect_receiver_type_definitions(&variable.ty, definitions);
+    }
+}
+
+fn collect_generic_receiver_definitions(
+    generic: &GenericTypeSymbol,
+    generic_types: &BTreeMap<String, GenericTypeSymbol>,
+    types: &BTreeMap<String, Ty>,
+    definitions: &mut BTreeSet<DefId>,
+    visiting: &mut BTreeSet<DefId>,
+) {
+    if generic.alias {
+        if !visiting.insert(generic.id) {
+            return;
+        }
+        collect_receiver_expression_definitions(
+            &generic.underlying,
+            generic_types,
+            types,
+            definitions,
+            visiting,
+        );
+        visiting.remove(&generic.id);
+        return;
+    }
+    definitions.insert(generic.id);
+    collect_generic_underlying_promoted_definitions(
+        generic,
+        generic_types,
+        types,
+        definitions,
+        visiting,
+    );
+}
+
+fn collect_generic_underlying_promoted_definitions(
+    generic: &GenericTypeSymbol,
+    generic_types: &BTreeMap<String, GenericTypeSymbol>,
+    types: &BTreeMap<String, Ty>,
+    definitions: &mut BTreeSet<DefId>,
+    visiting: &mut BTreeSet<DefId>,
+) {
+    if !visiting.insert(generic.id) {
+        return;
+    }
+    collect_underlying_promoted_expression_definitions(
+        &generic.underlying,
+        generic_types,
+        types,
+        definitions,
+        visiting,
+    );
+    visiting.remove(&generic.id);
+}
+
+fn collect_receiver_expression_definitions(
+    expression: &crate::compiler::syntax::ExprSyntax,
+    generic_types: &BTreeMap<String, GenericTypeSymbol>,
+    types: &BTreeMap<String, Ty>,
+    definitions: &mut BTreeSet<DefId>,
+    visiting: &mut BTreeSet<DefId>,
+) {
+    use crate::compiler::syntax::ExprSyntaxKind;
+
+    match &expression.kind {
+        ExprSyntaxKind::Paren(inner)
+        | ExprSyntaxKind::Unary {
+            token: crate::token::Token::MUL,
+            expression: inner,
+        } => {
+            collect_receiver_expression_definitions(
+                inner,
+                generic_types,
+                types,
+                definitions,
+                visiting,
+            );
+        }
+        ExprSyntaxKind::Index { base, .. } | ExprSyntaxKind::IndexList { base, .. } => {
+            collect_receiver_expression_definitions(
+                base,
+                generic_types,
+                types,
+                definitions,
+                visiting,
+            );
+        }
+        ExprSyntaxKind::Ident(name) => {
+            if let Some(generic) = generic_types.get(name.name.as_ref()) {
+                collect_generic_receiver_definitions(
+                    generic,
+                    generic_types,
+                    types,
+                    definitions,
+                    visiting,
+                );
+            } else if let Some(ty) = types.get(name.name.as_ref()) {
+                collect_receiver_type_definitions(ty, definitions);
+            }
+        }
+        ExprSyntaxKind::StructType { fields } => {
+            for field in fields.fields.iter().filter(|field| field.names.is_none()) {
+                if let Some(ty) = &field.ty {
+                    collect_receiver_expression_definitions(
+                        ty,
+                        generic_types,
+                        types,
+                        definitions,
+                        visiting,
+                    );
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_underlying_promoted_expression_definitions(
+    expression: &crate::compiler::syntax::ExprSyntax,
+    generic_types: &BTreeMap<String, GenericTypeSymbol>,
+    types: &BTreeMap<String, Ty>,
+    definitions: &mut BTreeSet<DefId>,
+    visiting: &mut BTreeSet<DefId>,
+) {
+    use crate::compiler::syntax::ExprSyntaxKind;
+
+    match &expression.kind {
+        ExprSyntaxKind::Paren(inner) => collect_underlying_promoted_expression_definitions(
+            inner,
+            generic_types,
+            types,
+            definitions,
+            visiting,
+        ),
+        ExprSyntaxKind::StructType { fields } => {
+            for field in fields.fields.iter().filter(|field| field.names.is_none()) {
+                if let Some(ty) = &field.ty {
+                    collect_receiver_expression_definitions(
+                        ty,
+                        generic_types,
+                        types,
+                        definitions,
+                        visiting,
+                    );
+                }
+            }
+        }
+        ExprSyntaxKind::Index { base, .. } | ExprSyntaxKind::IndexList { base, .. } => {
+            collect_underlying_promoted_expression_definitions(
+                base,
+                generic_types,
+                types,
+                definitions,
+                visiting,
+            );
+        }
+        ExprSyntaxKind::Ident(name) => {
+            if let Some(generic) = generic_types.get(name.name.as_ref()) {
+                collect_generic_underlying_promoted_definitions(
+                    generic,
+                    generic_types,
+                    types,
+                    definitions,
+                    visiting,
+                );
+            } else if let Some(ty) = types.get(name.name.as_ref()) {
+                collect_underlying_promoted_type_definitions(ty, definitions);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_receiver_type_definitions(ty: &Ty, definitions: &mut BTreeSet<DefId>) {
+    match ty {
+        Ty::Named {
+            definition,
+            underlying,
+        } => {
+            if definitions.insert(*definition) {
+                collect_underlying_promoted_type_definitions(underlying, definitions);
+            }
+        }
+        Ty::NamedRef { definition } => {
+            definitions.insert(*definition);
+        }
+        Ty::LocalNamed { underlying, .. } => {
+            collect_underlying_promoted_type_definitions(underlying, definitions);
+        }
+        Ty::Pointer(element) => {
+            collect_receiver_type_definitions(element, definitions);
+        }
+        Ty::Struct(fields) => {
+            for field in fields.iter().filter(|field| field.embedded) {
+                collect_receiver_type_definitions(&field.ty, definitions);
+            }
+        }
+        Ty::Unit
+        | Ty::Bool
+        | Ty::Int(_)
+        | Ty::Uint(_)
+        | Ty::Float(_)
+        | Ty::Complex(_)
+        | Ty::String
+        | Ty::Interface(_)
+        | Ty::Function(_)
+        | Ty::Array(_, _)
+        | Ty::Slice(_)
+        | Ty::Map(_, _)
+        | Ty::Channel(_, _)
+        | Ty::Tuple(_)
+        | Ty::Untyped(_) => {}
+    }
+}
+
+fn collect_underlying_promoted_type_definitions(ty: &Ty, definitions: &mut BTreeSet<DefId>) {
+    match ty {
+        Ty::Named { underlying, .. } | Ty::LocalNamed { underlying, .. } => {
+            collect_underlying_promoted_type_definitions(underlying, definitions);
+        }
+        Ty::Struct(fields) => {
+            for field in fields.iter().filter(|field| field.embedded) {
+                collect_receiver_type_definitions(&field.ty, definitions);
+            }
+        }
+        Ty::Unit
+        | Ty::Bool
+        | Ty::Int(_)
+        | Ty::Uint(_)
+        | Ty::Float(_)
+        | Ty::Complex(_)
+        | Ty::NamedRef { .. }
+        | Ty::String
+        | Ty::Interface(_)
+        | Ty::Function(_)
+        | Ty::Pointer(_)
+        | Ty::Array(_, _)
+        | Ty::Slice(_)
+        | Ty::Map(_, _)
+        | Ty::Channel(_, _)
+        | Ty::Tuple(_)
+        | Ty::Untyped(_) => {}
+    }
+}
+
+fn collect_constraint_expression_method_names(
+    constraint: &crate::compiler::syntax::ExprSyntax,
+    generic_types: &BTreeMap<String, GenericTypeSymbol>,
+    types: &BTreeMap<String, Ty>,
+    names: &mut BTreeSet<Arc<str>>,
+    visiting: &mut BTreeSet<DefId>,
+) {
+    use crate::compiler::syntax::ExprSyntaxKind;
+
+    match &constraint.kind {
+        ExprSyntaxKind::Paren(inner) => {
+            collect_constraint_expression_method_names(
+                inner,
+                generic_types,
+                types,
+                names,
+                visiting,
+            );
+        }
+        ExprSyntaxKind::InterfaceType { methods } => {
+            for field in &*methods.fields {
+                if let Some(method_names) = &field.names {
+                    names.extend(method_names.iter().map(|name| Arc::clone(&name.name)));
+                } else if let Some(embedded) = &field.ty {
+                    collect_constraint_expression_method_names(
+                        embedded,
+                        generic_types,
+                        types,
+                        names,
+                        visiting,
+                    );
+                }
+            }
+        }
+        ExprSyntaxKind::Ident(base) => {
+            if let Some(generic) = generic_types.get(base.name.as_ref()) {
+                if visiting.insert(generic.id) {
+                    collect_constraint_expression_method_names(
+                        &generic.underlying,
+                        generic_types,
+                        types,
+                        names,
+                        visiting,
+                    );
+                    visiting.remove(&generic.id);
+                }
+            } else if let Some(ty) = types.get(base.name.as_ref()) {
+                collect_interface_method_names(ty, names);
+            }
+        }
+        ExprSyntaxKind::Index { base, .. } | ExprSyntaxKind::IndexList { base, .. } => {
+            if let ExprSyntaxKind::Ident(base) = &base.kind {
+                let Some(generic) = generic_types.get(base.name.as_ref()) else {
+                    return;
+                };
+                if visiting.insert(generic.id) {
+                    collect_constraint_expression_method_names(
+                        &generic.underlying,
+                        generic_types,
+                        types,
+                        names,
+                        visiting,
+                    );
+                    visiting.remove(&generic.id);
+                }
+            }
+        }
+        ExprSyntaxKind::Binary { left, right, .. } => {
+            collect_constraint_expression_method_names(left, generic_types, types, names, visiting);
+            collect_constraint_expression_method_names(
+                right,
+                generic_types,
+                types,
+                names,
+                visiting,
+            );
+        }
+        _ => {}
+    }
+}
+
 fn collect_generic_type_symbols(
     db: &dyn Db,
     input: PackageInput,
@@ -183,6 +568,21 @@ fn collect_generic_type_symbols(
     let mut sources = input.sources(db).iter().copied().collect::<Vec<_>>();
     sources.sort_by_key(|source| source.file(db));
     for source in sources {
+        for alias in file_projection(db, source).type_aliases(db) {
+            let syntax = alias.syntax(db);
+            let Some(type_parameters) = &syntax.type_parameters else {
+                continue;
+            };
+            result.insert(
+                alias.name(db).to_string(),
+                GenericTypeSymbol {
+                    id: alias.id(db),
+                    type_parameters: Arc::new(type_parameters.clone()),
+                    underlying: syntax.target.clone(),
+                    alias: true,
+                },
+            );
+        }
         for definition in file_projection(db, source).type_definitions(db) {
             let syntax = definition.syntax(db);
             result.insert(
@@ -195,6 +595,7 @@ fn collect_generic_type_symbols(
                         },
                     )),
                     underlying: syntax.underlying.clone(),
+                    alias: false,
                 },
             );
         }
@@ -257,10 +658,41 @@ fn collect_interface_method_names(ty: &Ty, names: &mut BTreeSet<Arc<str>>) {
     }
 }
 
+fn collect_interface_method_names_from_signature(
+    signature: &Signature,
+    names: &mut BTreeSet<Arc<str>>,
+) {
+    for ty in signature.params.iter().chain(&signature.results) {
+        collect_interface_method_names(ty, names);
+    }
+}
+
 fn add_method_symbols(
     db: &dyn Db,
     input: PackageInput,
     names: &BTreeSet<Arc<str>>,
+    caller: crate::compiler::ids::DefId,
+    symbols: &mut FunctionSymbols,
+) -> Result<(), Arc<StageFailure>> {
+    add_method_symbols_filtered(db, input, names, None, caller, symbols)
+}
+
+fn add_method_symbols_for_receivers(
+    db: &dyn Db,
+    input: PackageInput,
+    names: &BTreeSet<Arc<str>>,
+    receivers: &BTreeSet<DefId>,
+    caller: crate::compiler::ids::DefId,
+    symbols: &mut FunctionSymbols,
+) -> Result<(), Arc<StageFailure>> {
+    add_method_symbols_filtered(db, input, names, Some(receivers), caller, symbols)
+}
+
+fn add_method_symbols_filtered(
+    db: &dyn Db,
+    input: PackageInput,
+    names: &BTreeSet<Arc<str>>,
+    receivers: Option<&BTreeSet<DefId>>,
     caller: crate::compiler::ids::DefId,
     symbols: &mut FunctionSymbols,
 ) -> Result<(), Arc<StageFailure>> {
@@ -297,6 +729,20 @@ fn add_method_symbols(
                                 ),
                             )
                         })?;
+                if generic_type.alias {
+                    return Err(semantic_failure(
+                        caller,
+                        Diagnostic::semantic(
+                            format!(
+                                "method receiver base {receiver} must be a defined type, not an alias"
+                            ),
+                            SourceRef::definition(caller),
+                        ),
+                    ));
+                }
+                if receivers.is_some_and(|receivers| !receivers.contains(&generic_type.id)) {
+                    continue;
+                }
                 symbols.generic_methods.insert(
                     (generic_type.id, name.to_string()),
                     GenericFunctionSymbol {
@@ -317,6 +763,9 @@ fn add_method_symbols(
                     ),
                 ));
             };
+            if receivers.is_some_and(|receivers| !receivers.contains(definition)) {
+                continue;
+            }
             let signature = typed_signature_product(db, input, method)?;
             let key = (*definition, name.to_string());
             let symbol = MethodSymbol {

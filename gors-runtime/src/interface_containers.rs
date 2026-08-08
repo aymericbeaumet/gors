@@ -85,6 +85,15 @@ pub fn go_slice_interface_set(slice: GoSliceInterface, index: GoInt, value: GoIn
         .unwrap_or_else(|| slice_bounds_out_of_range()) = value;
 }
 
+/// Append a snapshot of every tagged source element to the destination slice.
+#[must_use]
+pub fn go_slice_interface_append(
+    destination: GoSliceInterface,
+    source: GoSliceInterface,
+) -> GoSliceInterface {
+    crate::slice_values::append_slice(destination, &source)
+}
+
 /// Allocate an empty non-nil interface-backed map.
 #[must_use]
 pub fn go_map_string_interface_make() -> GoMapStringInterface {

@@ -2,7 +2,7 @@
 
 use crate::compiler::ids::{BasicBlockId, DefId, LocalId, PackageId, QualifiedDefId};
 use crate::compiler::provenance::SourceRef;
-use gors_runtime_abi::{PrimitiveOp, RuntimeOp};
+use gors_runtime_abi::{FloatKind, IntegerKind, PrimitiveOp, RuntimeOp};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct File {
@@ -26,10 +26,51 @@ pub struct Function {
     pub source: SourceRef,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PanicCleanup {
     pub entry: BasicBlockId,
     pub active: LocalId,
+    pub recovered: LocalId,
+    pub capture: PanicPayloadCapture,
+    pub rethrow: PanicPayloadRethrow,
+    pub actions: Vec<DeferredAction>,
+    pub completion: BasicBlockId,
+}
+
+/// One verified deferred action with its own unwind boundary.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeferredAction {
+    pub dispatch: BasicBlockId,
+    pub registered: LocalId,
+    pub entry: BasicBlockId,
+    pub blocks: Vec<BasicBlockId>,
+    pub continuation: BasicBlockId,
+    pub replacement: PanicReplacement,
+}
+
+/// Exact representation transition taken when one deferred action panics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PanicReplacement {
+    pub target: BasicBlockId,
+    pub active: LocalId,
+    pub recovered: LocalId,
+    pub capture: PanicPayloadCapture,
+    pub effects: Effects,
+    pub provenance: Provenance,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PanicPayloadCapture {
+    pub operation: RuntimeOp,
+    pub effects: Effects,
+    pub provenance: Provenance,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PanicPayloadRethrow {
+    pub operation: RuntimeOp,
+    pub effects: Effects,
+    pub provenance: Provenance,
 }
 
 /// Final Rust artifact decisions selected before terminal syntax emission.
@@ -162,9 +203,10 @@ pub enum RvalueKind {
         op: ValueOp,
         operand: Operand,
     },
-    RecoverCompareNil {
+    Recover {
         state: Place,
-        equal: bool,
+        value: Operand,
+        nil: RuntimeOp,
     },
     ArrayIndexI64 {
         array: Operand,
@@ -211,7 +253,7 @@ pub enum RvalueKind {
         field: u32,
         value: Operand,
     },
-    AggregateEqualI64 {
+    AggregateEqualInteger {
         left: Operand,
         right: Operand,
         equal: bool,
@@ -249,14 +291,43 @@ pub enum ReadOp {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Constant {
     Bool(bool),
-    I64(i64),
-    F64(u64),
-    Complex128 { real: u64, imag: u64 },
-    StaticI64Array(Vec<i64>),
-    RuntimeStaticBytes { op: RuntimeOp, bytes: Vec<u8> },
-    RuntimeStaticI64s { op: RuntimeOp, values: Vec<i64> },
-    RuntimeStaticBools { op: RuntimeOp, values: Vec<bool> },
-    RuntimeStaticU8s { op: RuntimeOp, values: Vec<u8> },
+    Integer {
+        kind: IntegerKind,
+        bits: i64,
+    },
+    /// One physical `f64` carrier with its exact Go floating-point width.
+    /// `F32` values contain the widened bits of an already-rounded `f32`.
+    Float {
+        kind: FloatKind,
+        bits: u64,
+    },
+    /// One physical `[f64; 2]` carrier with exact Go component width.
+    /// `F32` components contain widened already-rounded `f32` values.
+    Complex {
+        kind: FloatKind,
+        real: u64,
+        imag: u64,
+    },
+    StaticIntegerArray {
+        kind: IntegerKind,
+        values: Vec<i64>,
+    },
+    RuntimeStaticBytes {
+        op: RuntimeOp,
+        bytes: Vec<u8>,
+    },
+    RuntimeStaticI64s {
+        op: RuntimeOp,
+        values: Vec<i64>,
+    },
+    RuntimeStaticBools {
+        op: RuntimeOp,
+        values: Vec<bool>,
+    },
+    RuntimeStaticU8s {
+        op: RuntimeOp,
+        values: Vec<u8>,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -295,25 +366,42 @@ pub enum CallTarget {
 pub enum RustType {
     Unit,
     Bool,
-    I64,
-    F64,
-    Complex128,
+    /// One `i64` Rust carrier with an explicit canonical Go integer
+    /// interpretation selected during mandatory representation lowering.
+    Integer(IntegerKind),
+    /// One physical `f64` carrier retaining the exact Go width.
+    Float(FloatKind),
+    /// One physical `[f64; 2]` carrier retaining the exact component width.
+    Complex(FloatKind),
     GoString,
     GoSliceI64,
     GoSliceU8,
     GoSliceBool,
     GoSliceInterface,
+    GoSliceGoString,
     GoMapStringI64,
+    GoMapI64GoString,
     GoMapStringInterface,
     GoPointerI64,
     GoPointerStructI64,
     GoInterface,
     GoChannelI64,
-    ArrayI64(u64),
+    GoChannelGoString,
+    GoChannelGoChannelI64,
+    ArrayInteger {
+        length: u64,
+        element: IntegerKind,
+    },
     ArrayBool(u64),
-    ArrayF64(u64),
+    ArrayFloat {
+        length: u64,
+        element: FloatKind,
+    },
     ArrayGoString(u64),
     ArrayGoPointerStructI64(u64),
+    /// A zero-length Go array whose element needs no executable Rust
+    /// representation because no element operation can occur.
+    ZeroArray,
     Struct(Vec<RustType>),
     StructI64(u64),
 }
@@ -323,8 +411,8 @@ impl RustType {
     pub(in crate::compiler) fn scalar_array_parts(&self) -> Option<(u64, Self)> {
         match self {
             Self::ArrayBool(length) => Some((*length, Self::Bool)),
-            Self::ArrayI64(length) => Some((*length, Self::I64)),
-            Self::ArrayF64(length) => Some((*length, Self::F64)),
+            Self::ArrayInteger { length, element } => Some((*length, Self::Integer(*element))),
+            Self::ArrayFloat { length, element } => Some((*length, Self::Float(*element))),
             Self::ArrayGoString(length) => Some((*length, Self::GoString)),
             Self::ArrayGoPointerStructI64(length) => Some((*length, Self::GoPointerStructI64)),
             _ => None,
@@ -339,24 +427,29 @@ impl RustType {
             }
             Self::Struct(_) => Some(ReadOp::ProvenInitializedClone),
             Self::Bool
-            | Self::I64
-            | Self::F64
-            | Self::Complex128
+            | Self::Integer(_)
+            | Self::Float(_)
+            | Self::Complex(_)
             | Self::ArrayBool(_)
-            | Self::ArrayF64(_)
-            | Self::ArrayI64(_)
+            | Self::ArrayFloat { .. }
+            | Self::ArrayInteger { .. }
+            | Self::ZeroArray
             | Self::StructI64(_) => Some(ReadOp::ProvenInitializedCopy),
             Self::GoString
             | Self::GoSliceI64
             | Self::GoSliceU8
             | Self::GoSliceBool
             | Self::GoSliceInterface
+            | Self::GoSliceGoString
             | Self::GoMapStringI64
+            | Self::GoMapI64GoString
             | Self::GoMapStringInterface
             | Self::GoPointerI64
             | Self::GoPointerStructI64
             | Self::GoInterface
             | Self::GoChannelI64
+            | Self::GoChannelGoString
+            | Self::GoChannelGoChannelI64
             | Self::ArrayGoString(_) => Some(ReadOp::ProvenInitializedClone),
             Self::ArrayGoPointerStructI64(_) => Some(ReadOp::ProvenInitializedClone),
             Self::Unit => None,
@@ -371,24 +464,29 @@ impl RustType {
             Self::Struct(_) if live_after => Some(ReadOp::ProvenInitializedClone),
             Self::Struct(_) => Some(ReadOp::ProvenLastUseMove),
             Self::Bool
-            | Self::I64
-            | Self::F64
-            | Self::Complex128
+            | Self::Integer(_)
+            | Self::Float(_)
+            | Self::Complex(_)
             | Self::ArrayBool(_)
-            | Self::ArrayF64(_)
-            | Self::ArrayI64(_)
+            | Self::ArrayFloat { .. }
+            | Self::ArrayInteger { .. }
+            | Self::ZeroArray
             | Self::StructI64(_) => Some(ReadOp::ProvenInitializedCopy),
             Self::GoString
             | Self::GoSliceI64
             | Self::GoSliceU8
             | Self::GoSliceBool
             | Self::GoSliceInterface
+            | Self::GoSliceGoString
             | Self::GoMapStringI64
+            | Self::GoMapI64GoString
             | Self::GoMapStringInterface
             | Self::GoPointerI64
             | Self::GoPointerStructI64
             | Self::GoInterface
             | Self::GoChannelI64
+            | Self::GoChannelGoString
+            | Self::GoChannelGoChannelI64
             | Self::ArrayGoString(_)
             | Self::ArrayGoPointerStructI64(_)
                 if live_after =>
@@ -400,12 +498,16 @@ impl RustType {
             | Self::GoSliceU8
             | Self::GoSliceBool
             | Self::GoSliceInterface
+            | Self::GoSliceGoString
             | Self::GoMapStringI64
+            | Self::GoMapI64GoString
             | Self::GoMapStringInterface
             | Self::GoPointerI64
             | Self::GoPointerStructI64
             | Self::GoInterface
             | Self::GoChannelI64
+            | Self::GoChannelGoString
+            | Self::GoChannelGoChannelI64
             | Self::ArrayGoString(_) => Some(ReadOp::ProvenLastUseMove),
             Self::ArrayGoPointerStructI64(_) => Some(ReadOp::ProvenLastUseMove),
             Self::Unit => None,
@@ -422,24 +524,29 @@ impl RustType {
                 ReadOp::ProvenInitializedClone | ReadOp::ProvenLastUseMove
             ),
             Self::Bool
-            | Self::I64
-            | Self::F64
-            | Self::Complex128
+            | Self::Integer(_)
+            | Self::Float(_)
+            | Self::Complex(_)
             | Self::ArrayBool(_)
-            | Self::ArrayF64(_)
-            | Self::ArrayI64(_)
+            | Self::ArrayFloat { .. }
+            | Self::ArrayInteger { .. }
+            | Self::ZeroArray
             | Self::StructI64(_) => op == ReadOp::ProvenInitializedCopy,
             Self::GoString
             | Self::GoSliceI64
             | Self::GoSliceU8
             | Self::GoSliceBool
             | Self::GoSliceInterface
+            | Self::GoSliceGoString
             | Self::GoMapStringI64
+            | Self::GoMapI64GoString
             | Self::GoMapStringInterface
             | Self::GoPointerI64
             | Self::GoPointerStructI64
             | Self::GoInterface
             | Self::GoChannelI64
+            | Self::GoChannelGoString
+            | Self::GoChannelGoChannelI64
             | Self::ArrayGoString(_) => matches!(
                 op,
                 ReadOp::ProvenInitializedClone | ReadOp::ProvenLastUseMove
@@ -456,12 +563,13 @@ impl RustType {
         matches!(
             self,
             Self::Bool
-                | Self::I64
-                | Self::F64
-                | Self::Complex128
+                | Self::Integer(_)
+                | Self::Float(_)
+                | Self::Complex(_)
                 | Self::ArrayBool(_)
-                | Self::ArrayF64(_)
-                | Self::ArrayI64(_)
+                | Self::ArrayFloat { .. }
+                | Self::ArrayInteger { .. }
+                | Self::ZeroArray
                 | Self::StructI64(_)
         ) || matches!(self, Self::Struct(fields) if fields.iter().all(Self::is_copy))
     }
@@ -484,7 +592,7 @@ pub enum PanicEdge {
     Cleanup(BasicBlockId),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Provenance {
     Source(SourceRef),
     Synthetic(SyntheticOrigin),

@@ -52,15 +52,17 @@ impl FunctionLowerer {
                 source,
             ));
         }
-        let values = self.lower_call_arguments(
-            arguments,
-            &parameter_types,
-            false,
-            false,
-            body.source,
-            source,
-            "goroutine",
-        )?;
+        let values = self
+            .lower_call_arguments(
+                arguments,
+                &parameter_types,
+                false,
+                false,
+                body.source,
+                source,
+                "goroutine",
+            )?
+            .into_explicit(source)?;
 
         self.push_scope();
         let parameters =

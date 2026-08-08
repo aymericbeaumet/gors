@@ -1,17 +1,18 @@
 //! Exact constants, operator typing, coercion, and literal decoding.
 
 use num_bigint::BigInt;
-use num_traits::{ToPrimitive, Zero};
+
+pub(super) use super::constant_ops::{
+    constant_shift_integer_operand, fold_constant_binary, fold_constant_unary,
+    fold_untyped_constant_shift,
+};
 
 use crate::token::Token;
 
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::provenance::SourceRef;
-use crate::compiler::types::{
-    ComplexTy, ConstValue, ExactNumber, FloatTy, IntTy, Ty, UntypedTy,
-    exact_integer_from_number_spelling,
-};
+use crate::compiler::types::{ComplexTy, ConstValue, ExactNumber, FloatTy, Ty, UntypedTy};
 
 pub(super) fn default_expr_type(
     mut expr: hir::Expr,
@@ -30,329 +31,18 @@ pub(super) fn expr_constant(expr: &hir::Expr) -> Option<&ConstValue> {
     }
 }
 
-pub(super) fn fold_constant_unary(
-    op: hir::UnaryOp,
-    value: &ConstValue,
-    source: SourceRef,
-) -> Result<Option<ConstValue>, Diagnostic> {
-    let folded = match (op, value) {
-        (hir::UnaryOp::Positive, ConstValue::Int(_)) => value.clone(),
-        (hir::UnaryOp::Negative, ConstValue::Int(value)) => {
-            let value = BigInt::parse_bytes(value.as_bytes(), 10)
-                .ok_or_else(|| Diagnostic::semantic("invalid exact integer constant", source))?;
-            ConstValue::Int((-value).to_string())
-        }
-        (hir::UnaryOp::Not, ConstValue::Bool(value)) => ConstValue::Bool(!value),
-        (hir::UnaryOp::Positive, ConstValue::Float(_) | ConstValue::Complex { .. }) => {
-            value.clone()
-        }
-        (hir::UnaryOp::Negative, ConstValue::Float(value)) => {
-            ConstValue::Float(negate_number_spelling(value))
-        }
-        (hir::UnaryOp::Negative, ConstValue::Complex { real, imag }) => ConstValue::Complex {
-            real: negate_number_spelling(real),
-            imag: negate_number_spelling(imag),
-        },
-        (hir::UnaryOp::BitNot, ConstValue::Int(value)) => {
-            let value = BigInt::parse_bytes(value.as_bytes(), 10)
-                .ok_or_else(|| Diagnostic::semantic("invalid exact integer constant", source))?;
-            ConstValue::Int((!value).to_string())
-        }
-        _ => return Ok(None),
-    };
-    Ok(Some(folded))
-}
-
-pub(super) fn fold_constant_binary(
-    op: hir::BinaryOp,
-    left: &ConstValue,
-    right: &ConstValue,
-    source: SourceRef,
-) -> Result<Option<ConstValue>, Diagnostic> {
-    let folded = match (left, right) {
-        (ConstValue::Int(left), ConstValue::Int(right)) => {
-            let left = BigInt::parse_bytes(left.as_bytes(), 10)
-                .ok_or_else(|| Diagnostic::semantic("invalid exact integer constant", source))?;
-            let right = BigInt::parse_bytes(right.as_bytes(), 10)
-                .ok_or_else(|| Diagnostic::semantic("invalid exact integer constant", source))?;
-            match op {
-                hir::BinaryOp::Add => ConstValue::Int((left + right).to_string()),
-                hir::BinaryOp::Sub => ConstValue::Int((left - right).to_string()),
-                hir::BinaryOp::Mul => ConstValue::Int((left * right).to_string()),
-                hir::BinaryOp::Div | hir::BinaryOp::Rem if right.is_zero() => {
-                    return Err(Diagnostic::semantic("division by zero", source));
-                }
-                hir::BinaryOp::Div => ConstValue::Int((left / right).to_string()),
-                hir::BinaryOp::Rem => ConstValue::Int((left % right).to_string()),
-                hir::BinaryOp::BitAnd => ConstValue::Int((left & right).to_string()),
-                hir::BinaryOp::BitOr => ConstValue::Int((left | right).to_string()),
-                hir::BinaryOp::BitXor => ConstValue::Int((left ^ right).to_string()),
-                hir::BinaryOp::AndNot => ConstValue::Int((left & !right).to_string()),
-                hir::BinaryOp::Shl | hir::BinaryOp::Shr => {
-                    let shift = right.to_usize().ok_or_else(|| {
-                        Diagnostic::semantic("shift count must be a non-negative integer", source)
-                    })?;
-                    if shift > 4096 {
-                        return Err(Diagnostic::unsupported(
-                            "constant shifts larger than 4096 bits are not implemented",
-                            source,
-                        ));
-                    }
-                    let value = if op == hir::BinaryOp::Shl {
-                        left << shift
-                    } else {
-                        left >> shift
-                    };
-                    ConstValue::Int(value.to_string())
-                }
-                hir::BinaryOp::Equal => ConstValue::Bool(left == right),
-                hir::BinaryOp::NotEqual => ConstValue::Bool(left != right),
-                hir::BinaryOp::Less => ConstValue::Bool(left < right),
-                hir::BinaryOp::LessEqual => ConstValue::Bool(left <= right),
-                hir::BinaryOp::Greater => ConstValue::Bool(left > right),
-                hir::BinaryOp::GreaterEqual => ConstValue::Bool(left >= right),
-                hir::BinaryOp::Min => ConstValue::Int(left.min(right).to_string()),
-                hir::BinaryOp::Max => ConstValue::Int(left.max(right).to_string()),
-                hir::BinaryOp::LogicalAnd | hir::BinaryOp::LogicalOr => return Ok(None),
-                hir::BinaryOp::Complex => return Ok(None),
-            }
-        }
-        (ConstValue::Bool(left), ConstValue::Bool(right)) => match op {
-            hir::BinaryOp::Equal => ConstValue::Bool(left == right),
-            hir::BinaryOp::NotEqual => ConstValue::Bool(left != right),
-            hir::BinaryOp::LogicalAnd => ConstValue::Bool(*left && *right),
-            hir::BinaryOp::LogicalOr => ConstValue::Bool(*left || *right),
-            _ => return Ok(None),
-        },
-        (ConstValue::Float(left), ConstValue::Float(right)) => {
-            if let Some(choose_left) = fold_float_min_max(op, left, right, source)? {
-                ConstValue::Float(if choose_left {
-                    left.clone()
-                } else {
-                    right.clone()
-                })
-            } else if let Some(value) = fold_exact_number_binary(op, left, right, source)? {
-                value
-            } else {
-                return Ok(None);
-            }
-        }
-        (ConstValue::Int(left), ConstValue::Float(right))
-        | (ConstValue::Float(left), ConstValue::Int(right))
-            if matches!(op, hir::BinaryOp::Min | hir::BinaryOp::Max) =>
-        {
-            let choose_left = fold_float_min_max(op, left, right, source)?.ok_or_else(|| {
-                Diagnostic::backend("numeric min/max did not select an exact constant")
-            })?;
-            let chosen = if choose_left { left } else { right };
-            ConstValue::Float(chosen.clone())
-        }
-        (ConstValue::Int(left), ConstValue::Float(right))
-        | (ConstValue::Float(left), ConstValue::Int(right)) => {
-            match fold_exact_number_binary(op, left, right, source)? {
-                Some(value) => value,
-                None => return Ok(None),
-            }
-        }
-        (ConstValue::String(left), ConstValue::String(right)) => match op {
-            hir::BinaryOp::Add => {
-                let mut result = left.clone();
-                result.extend_from_slice(right);
-                ConstValue::String(result)
-            }
-            hir::BinaryOp::Equal => ConstValue::Bool(left == right),
-            hir::BinaryOp::NotEqual => ConstValue::Bool(left != right),
-            hir::BinaryOp::Less => ConstValue::Bool(left < right),
-            hir::BinaryOp::LessEqual => ConstValue::Bool(left <= right),
-            hir::BinaryOp::Greater => ConstValue::Bool(left > right),
-            hir::BinaryOp::GreaterEqual => ConstValue::Bool(left >= right),
-            _ => return Ok(None),
-        },
-        (ConstValue::Int(left), ConstValue::Complex { real, imag }) => {
-            fold_integer_complex(op, left, "0", real, imag, source)?
-        }
-        (ConstValue::Complex { real, imag }, ConstValue::Int(right)) => {
-            fold_integer_complex(op, real, imag, right, "0", source)?
-        }
-        (
-            ConstValue::Complex {
-                real: left_real,
-                imag: left_imag,
-            },
-            ConstValue::Complex {
-                real: right_real,
-                imag: right_imag,
-            },
-        ) => fold_integer_complex(op, left_real, left_imag, right_real, right_imag, source)?,
-        _ => return Ok(None),
-    };
-    Ok(Some(folded))
-}
-
-/// Exact constant-shift folding for an untyped left operand.
-///
-/// The Go specification requires that if the left operand of a constant shift
-/// expression is an untyped constant, the result is an integer constant: an
-/// untyped float or complex operand representable as an integer is converted
-/// first, and any other operand is rejected. The shift count may likewise be
-/// any constant representable as an integer.
-pub(super) fn fold_untyped_constant_shift(
-    op: hir::BinaryOp,
-    left: &ConstValue,
-    right: &ConstValue,
+pub(super) fn normalize_constant_for_type(
+    value: ConstValue,
+    ty: &Ty,
     source: SourceRef,
 ) -> Result<ConstValue, Diagnostic> {
-    let left = constant_shift_integer_operand(left, "shifted operand", source)?;
-    let right = constant_shift_integer_operand(right, "shift count", source)?;
-    fold_constant_binary(op, &left, &right, source)?
-        .ok_or_else(|| Diagnostic::backend("integer constant shift did not fold"))
-}
-
-fn constant_shift_integer_operand(
-    value: &ConstValue,
-    role: &str,
-    source: SourceRef,
-) -> Result<ConstValue, Diagnostic> {
-    let converted = match value {
-        ConstValue::Int(_) => Some(value.clone()),
-        ConstValue::Float(spelling) => exact_integer_from_number_spelling(spelling),
-        ConstValue::Complex { real, imag } => exact_integer_from_number_spelling(imag)
-            .filter(|imag| matches!(imag, ConstValue::Int(digits) if digits == "0"))
-            .and_then(|_| exact_integer_from_number_spelling(real)),
-        ConstValue::Bool(_) | ConstValue::String(_) => None,
-    };
-    match converted {
-        Some(integer) => Ok(integer),
-        None => Err(Diagnostic::semantic(
-            format!(
-                "invalid operation: {role} {} must be an integer constant",
-                describe_constant(value)
-            ),
+    if !value.is_representable_as(ty) {
+        return Err(Diagnostic::semantic(
+            format!("constant result is not representable as {ty:?}"),
             source,
-        )),
+        ));
     }
-}
-
-fn describe_constant(value: &ConstValue) -> String {
-    match value {
-        ConstValue::Bool(value) => value.to_string(),
-        ConstValue::Int(spelling) | ConstValue::Float(spelling) => spelling.clone(),
-        ConstValue::Complex { real, imag } => format!("({real} + {imag}i)"),
-        ConstValue::String(_) => "of string type".to_string(),
-    }
-}
-
-/// Exact arithmetic on numeric constant operands of float kind. A result
-/// integral in value folds to an integer constant; other results fold to an
-/// exact finite decimal spelling. `None` when the operator or the exact
-/// result spelling is outside the bounded exact algebra.
-fn fold_exact_number_binary(
-    op: hir::BinaryOp,
-    left: &str,
-    right: &str,
-    source: SourceRef,
-) -> Result<Option<ConstValue>, Diagnostic> {
-    if !matches!(
-        op,
-        hir::BinaryOp::Add | hir::BinaryOp::Sub | hir::BinaryOp::Mul | hir::BinaryOp::Div
-    ) {
-        return Ok(None);
-    }
-    let (Some(left), Some(right)) = (
-        ExactNumber::from_spelling(left),
-        ExactNumber::from_spelling(right),
-    ) else {
-        return Ok(None);
-    };
-    let result = match op {
-        hir::BinaryOp::Add => left.add(&right),
-        hir::BinaryOp::Sub => left.sub(&right),
-        hir::BinaryOp::Mul => left.mul(&right),
-        hir::BinaryOp::Div => {
-            if right.is_zero() {
-                return Err(Diagnostic::semantic("division by zero", source));
-            }
-            match left.div(&right) {
-                Some(result) => result,
-                None => return Ok(None),
-            }
-        }
-        _ => return Ok(None),
-    };
-    Ok(result.to_const_value())
-}
-
-fn fold_float_min_max(
-    op: hir::BinaryOp,
-    left: &str,
-    right: &str,
-    source: SourceRef,
-) -> Result<Option<bool>, Diagnostic> {
-    if !matches!(op, hir::BinaryOp::Min | hir::BinaryOp::Max) {
-        return Ok(None);
-    }
-    let left = crate::compiler::types::parse_go_float(left)
-        .ok_or_else(|| Diagnostic::semantic("invalid exact numeric constant", source))?;
-    let right = crate::compiler::types::parse_go_float(right)
-        .ok_or_else(|| Diagnostic::semantic("invalid exact numeric constant", source))?;
-    let choose_left = if left == 0.0 && right == 0.0 {
-        if op == hir::BinaryOp::Min {
-            left.is_sign_negative() || !right.is_sign_negative()
-        } else {
-            left.is_sign_positive() || !right.is_sign_positive()
-        }
-    } else if op == hir::BinaryOp::Min {
-        left <= right
-    } else {
-        left >= right
-    };
-    Ok(Some(choose_left))
-}
-
-fn fold_integer_complex(
-    op: hir::BinaryOp,
-    left_real: &str,
-    left_imag: &str,
-    right_real: &str,
-    right_imag: &str,
-    source: SourceRef,
-) -> Result<ConstValue, Diagnostic> {
-    let parse = |value: &str| {
-        BigInt::parse_bytes(value.as_bytes(), 10)
-            .ok_or_else(|| Diagnostic::unsupported("non-integer exact complex arithmetic", source))
-    };
-    let left_real = parse(left_real)?;
-    let left_imag = parse(left_imag)?;
-    let right_real = parse(right_real)?;
-    let right_imag = parse(right_imag)?;
-    let (real, imag) = match op {
-        hir::BinaryOp::Add => (left_real + right_real, left_imag + right_imag),
-        hir::BinaryOp::Sub => (left_real - right_real, left_imag - right_imag),
-        hir::BinaryOp::Mul => (
-            &left_real * &right_real - &left_imag * &right_imag,
-            left_real * right_imag + left_imag * right_real,
-        ),
-        hir::BinaryOp::Equal => {
-            return Ok(ConstValue::Bool(
-                left_real == right_real && left_imag == right_imag,
-            ));
-        }
-        hir::BinaryOp::NotEqual => {
-            return Ok(ConstValue::Bool(
-                left_real != right_real || left_imag != right_imag,
-            ));
-        }
-        _ => {
-            return Err(Diagnostic::unsupported(
-                "exact complex constant operation is not implemented",
-                source,
-            ));
-        }
-    };
-    Ok(ConstValue::Complex {
-        real: real.to_string(),
-        imag: imag.to_string(),
-    })
+    Ok(value.normalized_for(ty))
 }
 
 pub(super) fn coerce_expr(
@@ -368,18 +58,28 @@ pub(super) fn coerce_expr(
     }
     if let hir::ExprKind::Constant(value) | hir::ExprKind::GlobalConstant(_, value) = &mut expr.kind
     {
-        if !value.is_representable_as(expected) {
-            return Err(Diagnostic::semantic(
-                format!("constant is not representable as {expected:?}"),
-                source,
-            ));
-        }
-        *value = value.normalized_for(expected);
+        *value = normalize_constant_for_type(value.clone(), expected, source)?;
     }
-    if expr.ty != *expected
-        && matches!(
-            (expr.ty.underlying(), expected.underlying()),
-            (Ty::Channel(_, actual), Ty::Channel(_, expected)) if actual == expected
+    if matches!(expr.ty, Ty::Untyped(_))
+        && expected.is_integer()
+        && let hir::ExprKind::Binary {
+            op: hir::BinaryOp::Shl | hir::BinaryOp::Shr,
+            left,
+            ..
+        } = &mut expr.kind
+    {
+        coerce_expr(left, expected, source)?;
+    }
+    let representation_preserving_conversion = expr.ty != *expected
+        && (expr.ty.underlying() == expected.underlying()
+            || matches!(
+                (expr.ty.underlying(), expected.underlying()),
+                (Ty::Channel(_, actual), Ty::Channel(_, expected)) if actual == expected
+            ));
+    if representation_preserving_conversion
+        && !matches!(
+            expr.kind,
+            hir::ExprKind::Constant(_) | hir::ExprKind::GlobalConstant(_, _)
         )
     {
         let value = expr.clone();
@@ -393,6 +93,11 @@ pub(super) fn coerce_expr(
 
 pub(super) fn is_assignable(actual: &Ty, expected: &Ty) -> bool {
     if same_semantic_type(actual, expected) {
+        return true;
+    }
+    if actual.underlying() == expected.underlying()
+        && (!is_defined_type(actual) || !is_defined_type(expected))
+    {
         return true;
     }
     if let Ty::Named { underlying, .. } | Ty::LocalNamed { underlying, .. } = expected
@@ -414,8 +119,17 @@ pub(super) fn is_assignable(actual: &Ty, expected: &Ty) -> bool {
         (Ty::Untyped(UntypedTy::Bool), Ty::Bool)
             | (
                 Ty::Untyped(UntypedTy::Int),
-                Ty::Untyped(UntypedTy::Float)
+                Ty::Untyped(UntypedTy::Rune)
+                    | Ty::Untyped(UntypedTy::Float)
                     | Ty::Untyped(UntypedTy::Complex)
+                    | Ty::Int(_)
+                    | Ty::Uint(_)
+                    | Ty::Float(_)
+                    | Ty::Complex(_)
+            )
+            | (
+                Ty::Untyped(UntypedTy::Rune),
+                Ty::Untyped(UntypedTy::Float | UntypedTy::Complex)
                     | Ty::Int(_)
                     | Ty::Uint(_)
                     | Ty::Float(_)
@@ -432,6 +146,10 @@ pub(super) fn is_assignable(actual: &Ty, expected: &Ty) -> bool {
             | (Ty::Untyped(UntypedTy::Complex), Ty::Complex(_))
             | (Ty::Untyped(UntypedTy::String), Ty::String)
     )
+}
+
+fn is_defined_type(ty: &Ty) -> bool {
+    matches!(ty, Ty::Named { .. } | Ty::LocalNamed { .. })
 }
 
 fn same_semantic_type(left: &Ty, right: &Ty) -> bool {
@@ -492,7 +210,7 @@ pub(super) fn exact_common_operand_type(left: &Ty, right: &Ty) -> Option<Ty> {
 }
 
 pub(super) fn is_bool(ty: &Ty) -> bool {
-    matches!(ty, Ty::Bool | Ty::Untyped(UntypedTy::Bool))
+    matches!(ty.underlying(), Ty::Bool | Ty::Untyped(UntypedTy::Bool))
 }
 
 pub(super) fn ensure_bootstrap_value_type(ty: &Ty, source: SourceRef) -> Result<(), Diagnostic> {
@@ -518,13 +236,9 @@ pub(super) fn validate_binary_operator(
             matches!(
                 ty,
                 Ty::Bool
-                    | Ty::Int(IntTy::Int)
-                    | Ty::Int(IntTy::Int32)
-                    | Ty::Uint(
-                        crate::compiler::types::UintTy::Uint8
-                            | crate::compiler::types::UintTy::Uintptr
-                    )
-                    | Ty::Float(FloatTy::Float64)
+                    | Ty::Int(_)
+                    | Ty::Uint(_)
+                    | Ty::Float(_)
                     | Ty::Complex(ComplexTy::Complex128)
                     | Ty::String
             ) || ty.is_bootstrap_comparable_aggregate()
@@ -532,38 +246,36 @@ pub(super) fn validate_binary_operator(
         hir::BinaryOp::Less
         | hir::BinaryOp::LessEqual
         | hir::BinaryOp::Greater
-        | hir::BinaryOp::GreaterEqual => matches!(
-            ty,
-            Ty::Int(IntTy::Int)
-                | Ty::Int(IntTy::Int32)
-                | Ty::Uint(
-                    crate::compiler::types::UintTy::Uint8 | crate::compiler::types::UintTy::Uintptr
-                )
-                | Ty::Float(FloatTy::Float64)
-                | Ty::String
-        ),
+        | hir::BinaryOp::GreaterEqual => {
+            matches!(ty, Ty::Int(_) | Ty::Uint(_) | Ty::Float(_) | Ty::String)
+        }
         hir::BinaryOp::Add => matches!(
             ty,
-            Ty::Int(IntTy::Int)
-                | Ty::Float(FloatTy::Float64)
+            Ty::Int(_)
+                | Ty::Uint(_)
+                | Ty::Float(_)
                 | Ty::Complex(ComplexTy::Complex128)
                 | Ty::String
         ),
-        hir::BinaryOp::Sub | hir::BinaryOp::Mul | hir::BinaryOp::Div => matches!(
+        hir::BinaryOp::Sub | hir::BinaryOp::Mul => matches!(
             ty,
-            Ty::Int(IntTy::Int) | Ty::Float(FloatTy::Float64) | Ty::Complex(ComplexTy::Complex128)
+            Ty::Int(_) | Ty::Uint(_) | Ty::Float(_) | Ty::Complex(ComplexTy::Complex128)
+        ),
+        hir::BinaryOp::Div => matches!(
+            ty,
+            Ty::Int(_) | Ty::Uint(_) | Ty::Float(_) | Ty::Complex(ComplexTy::Complex128)
         ),
         hir::BinaryOp::Min | hir::BinaryOp::Max => {
-            matches!(ty, Ty::Int(IntTy::Int) | Ty::Float(FloatTy::Float64))
+            matches!(ty, Ty::Int(_) | Ty::Uint(_) | Ty::Float(_))
         }
         hir::BinaryOp::Complex => *ty == Ty::Float(FloatTy::Float64),
-        hir::BinaryOp::Rem
-        | hir::BinaryOp::BitAnd
+        hir::BinaryOp::BitAnd
         | hir::BinaryOp::BitOr
         | hir::BinaryOp::BitXor
-        | hir::BinaryOp::Shl
-        | hir::BinaryOp::Shr
-        | hir::BinaryOp::AndNot => *ty == Ty::Int(IntTy::Int),
+        | hir::BinaryOp::AndNot => matches!(ty, Ty::Int(_) | Ty::Uint(_)),
+        hir::BinaryOp::Rem | hir::BinaryOp::Shl | hir::BinaryOp::Shr => {
+            matches!(ty, Ty::Int(_) | Ty::Uint(_))
+        }
     };
     if valid {
         Ok(())
@@ -573,12 +285,6 @@ pub(super) fn validate_binary_operator(
             source,
         ))
     }
-}
-
-fn negate_number_spelling(value: &str) -> String {
-    value
-        .strip_prefix('-')
-        .map_or_else(|| format!("-{value}"), str::to_string)
 }
 
 pub(super) fn assignment_binary_op(op: hir::AssignOp) -> hir::BinaryOp {
@@ -655,6 +361,22 @@ pub(super) fn parse_go_integer(value: &str) -> Option<String> {
     .map(|value| value.to_string())
 }
 
+/// Exact imaginary component under Go's leading-zero compatibility rule.
+pub(super) fn parse_go_imaginary(value: &str) -> Option<ExactNumber> {
+    let component = value.strip_suffix('i')?;
+    let cleaned = component.replace('_', "");
+    if component
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || byte == b'_')
+    {
+        return BigInt::parse_bytes(cleaned.as_bytes(), 10)
+            .and_then(|value| ExactNumber::from_integer_spelling(&value.to_string()));
+    }
+    parse_go_integer(component)
+        .and_then(|value| ExactNumber::from_integer_spelling(&value))
+        .or_else(|| ExactNumber::from_spelling(&cleaned))
+}
+
 pub(super) fn parse_go_string(value: &str) -> Option<Vec<u8>> {
     if value.len() < 2 {
         return None;
@@ -676,11 +398,42 @@ pub(super) fn parse_go_rune(value: &str) -> Option<u32> {
     if value.len() < 2 || !value.starts_with('\'') || !value.ends_with('\'') {
         return None;
     }
-    let bytes = parse_interpreted_bytes(&value[1..value.len() - 1])?;
-    let text = std::str::from_utf8(&bytes).ok()?;
-    let mut chars = text.chars();
+    let inner = &value[1..value.len() - 1];
+    if let Some(escaped) = inner.strip_prefix('\\') {
+        return match escaped {
+            "a" => Some(0x07),
+            "b" => Some(0x08),
+            "f" => Some(0x0c),
+            "n" => Some(u32::from(b'\n')),
+            "r" => Some(u32::from(b'\r')),
+            "t" => Some(u32::from(b'\t')),
+            "v" => Some(0x0b),
+            "\\" => Some(u32::from(b'\\')),
+            "'" => Some(u32::from(b'\'')),
+            "\"" => Some(u32::from(b'"')),
+            _ if escaped.len() == 3 && escaped.starts_with('x') => {
+                u32::from_str_radix(&escaped[1..], 16).ok()
+            }
+            _ if escaped.len() == 5 && escaped.starts_with('u') => {
+                parse_unicode_rune_escape(&escaped[1..])
+            }
+            _ if escaped.len() == 9 && escaped.starts_with('U') => {
+                parse_unicode_rune_escape(&escaped[1..])
+            }
+            _ if escaped.len() == 3 && escaped.bytes().all(|byte| matches!(byte, b'0'..=b'7')) => {
+                u32::from_str_radix(escaped, 8).ok()
+            }
+            _ => None,
+        };
+    }
+    let mut chars = inner.chars();
     let value = chars.next()? as u32;
     chars.next().is_none().then_some(value)
+}
+
+fn parse_unicode_rune_escape(digits: &str) -> Option<u32> {
+    let value = u32::from_str_radix(digits, 16).ok()?;
+    char::from_u32(value).map(u32::from)
 }
 
 fn parse_interpreted_bytes(value: &str) -> Option<Vec<u8>> {
@@ -736,4 +489,67 @@ fn push_rune_bytes(result: &mut Vec<u8>, value: u32) -> Option<()> {
     let mut bytes = [0; 4];
     result.extend_from_slice(value.encode_utf8(&mut bytes).as_bytes());
     Some(())
+}
+
+#[cfg(test)]
+mod rune_literal_tests {
+    use super::parse_go_rune;
+
+    #[test]
+    fn rune_escapes_decode_to_code_points_instead_of_utf8_bytes() {
+        assert_eq!(parse_go_rune(r"'\a'"), Some(7));
+        assert_eq!(parse_go_rune(r"'\377'"), Some(255));
+        assert_eq!(parse_go_rune(r"'\xff'"), Some(255));
+        assert_eq!(parse_go_rune(r#"'\"'"#), Some(u32::from(b'"')));
+        assert_eq!(parse_go_rune(r"'\u12e4'"), Some(0x12e4));
+        assert_eq!(parse_go_rune(r"'\U00101234'"), Some(0x10_1234));
+        assert_eq!(parse_go_rune("'ä'"), Some(0xe4));
+        assert_eq!(parse_go_rune("'本'"), Some(0x672c));
+    }
+
+    #[test]
+    fn rune_decoder_rejects_multiple_values_and_invalid_unicode() {
+        assert_eq!(parse_go_rune("'ab'"), None);
+        assert_eq!(parse_go_rune(r"'\uD800'"), None);
+        assert_eq!(parse_go_rune(r"'\U00110000'"), None);
+    }
+}
+
+#[cfg(test)]
+mod imaginary_literal_tests {
+    use super::parse_go_imaginary;
+
+    #[test]
+    fn decimal_only_imaginary_components_ignore_legacy_octal_rules() {
+        assert_eq!(
+            parse_go_imaginary("0123i")
+                .map(|v| v.to_string())
+                .as_deref(),
+            Some("123")
+        );
+        assert_eq!(
+            parse_go_imaginary("0_123i")
+                .map(|v| v.to_string())
+                .as_deref(),
+            Some("123")
+        );
+        assert_eq!(
+            parse_go_imaginary("0o123i")
+                .map(|v| v.to_string())
+                .as_deref(),
+            Some("83")
+        );
+        assert_eq!(
+            parse_go_imaginary("0xabci")
+                .map(|v| v.to_string())
+                .as_deref(),
+            Some("2748")
+        );
+        assert_eq!(
+            parse_go_imaginary("0x1p-2i")
+                .map(|v| v.to_string())
+                .as_deref(),
+            Some("1/4")
+        );
+    }
 }

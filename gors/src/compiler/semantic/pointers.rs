@@ -1,24 +1,18 @@
 //! Typed lowering for Go pointers to executable integer values and structs.
 
 use super::FunctionLowerer;
-use super::channels::int_channel_parts;
-use super::expressions::coerce_expr;
-use super::lower_type;
-use super::maps::string_i64_map_ty;
+use super::channels::channel_parts;
+use super::expressions::{coerce_expr, common_operand_type};
+use super::maps::{i64_go_string_map_ty, string_i64_map_ty};
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::NodeId;
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{ExprSyntax, ExprSyntaxKind};
 use crate::compiler::types::{IntTy, Ty};
-use crate::token::Token;
-
-pub(super) fn int_pointer_ty() -> Ty {
-    Ty::Pointer(Box::new(Ty::Int(IntTy::Int)))
-}
 
 impl FunctionLowerer {
-    pub(super) fn lower_struct_pointer_comparison(
+    pub(super) fn lower_pointer_comparison(
         &mut self,
         mut left: hir::Expr,
         mut right: hir::Expr,
@@ -27,10 +21,7 @@ impl FunctionLowerer {
         source: SourceRef,
         expected: Option<&Ty>,
     ) -> Result<hir::Expr, Diagnostic> {
-        if left.ty.bootstrap_i64_struct_pointer_fields().is_none()
-            || right.ty.bootstrap_i64_struct_pointer_fields().is_none()
-            || left.ty != right.ty
-        {
+        let Some(pointer_ty) = common_operand_type(&left.ty, &right.ty) else {
             return Err(Diagnostic::semantic(
                 format!(
                     "incompatible pointer comparison operands {:?} and {:?}",
@@ -38,15 +29,23 @@ impl FunctionLowerer {
                 ),
                 source,
             ));
-        }
-        let pointer_ty = left.ty.clone();
+        };
+        let Some(builtin) = pointer_comparison_builtin(&pointer_ty) else {
+            return Err(Diagnostic::semantic(
+                format!(
+                    "incompatible pointer comparison operands {:?} and {:?}",
+                    left.ty, right.ty
+                ),
+                source,
+            ));
+        };
         coerce_expr(&mut left, &pointer_ty, source)?;
         coerce_expr(&mut right, &pointer_ty, source)?;
         let effects = pointer_effects(&[&left, &right], false, false, false);
         let call = hir::Expr {
             node,
             kind: hir::ExprKind::Call {
-                callee: hir::Callee::Builtin(hir::Builtin::PointerStructI64Equal),
+                callee: hir::Callee::Builtin(builtin),
                 args: vec![left, right],
             },
             ty: Ty::Bool,
@@ -187,7 +186,7 @@ impl FunctionLowerer {
             ));
         };
         let element_source = element.source;
-        let element = lower_type(element, &self.type_aliases, source)?;
+        let element = self.lower_scoped_type(element, source)?;
         let (builtin, args) = if element.underlying() == &Ty::Int(IntTy::Int) {
             (hir::Builtin::PointerI64New, Vec::new())
         } else if let Some(fields) = element.bootstrap_i64_struct_fields() {
@@ -290,65 +289,6 @@ impl FunctionLowerer {
         Ok(result)
     }
 
-    pub(super) fn try_lower_pointer_assignment(
-        &mut self,
-        left: &[ExprSyntax],
-        token: Token,
-        right: &[ExprSyntax],
-        source: SourceRef,
-    ) -> Option<Result<hir::StmtKind, Diagnostic>> {
-        let (
-            [
-                ExprSyntax {
-                    kind:
-                        ExprSyntaxKind::Unary {
-                            token: Token::MUL,
-                            expression: pointer,
-                        },
-                    ..
-                },
-            ],
-            [value],
-        ) = (left, right)
-        else {
-            return None;
-        };
-        Some((|| {
-            if token != Token::ASSIGN {
-                return Err(Diagnostic::unsupported(
-                    "pointer assignment currently requires =",
-                    source,
-                ));
-            }
-            let pointer = self.lower_expr(pointer, None)?;
-            let Ty::Pointer(element) = pointer.ty.underlying() else {
-                return Err(Diagnostic::semantic(
-                    "indirect assignment requires a pointer",
-                    source,
-                ));
-            };
-            if element.underlying() != &Ty::Int(IntTy::Int) {
-                return Err(Diagnostic::unsupported(
-                    "pointer assignment currently supports *int",
-                    source,
-                ));
-            }
-            let value = self.lower_expr(value, Some(element))?;
-            let effects = pointer_effects(&[&pointer, &value], true, false, true);
-            Ok(hir::StmtKind::Expr(hir::Expr {
-                node: pointer.node,
-                kind: hir::ExprKind::Call {
-                    callee: hir::Callee::Builtin(hir::Builtin::PointerI64Set),
-                    args: vec![pointer, value],
-                },
-                ty: Ty::Unit,
-                category: hir::ValueCategory::Value,
-                effects,
-                source,
-            }))
-        })())
-    }
-
     pub(super) fn lower_nil_comparison(
         &mut self,
         expression: &ExprSyntax,
@@ -367,7 +307,11 @@ impl FunctionLowerer {
                 hir::Builtin::SliceU8IsNil
             } else if element.underlying() == &Ty::Bool {
                 hir::Builtin::SliceBoolIsNil
-            } else if element.uses_interface_aggregate_representation() {
+            } else if element.underlying() == &Ty::String {
+                hir::Builtin::SliceGoStringIsNil
+            } else if matches!(element.underlying(), Ty::Interface(_))
+                || element.uses_interface_aggregate_representation()
+            {
                 hir::Builtin::AggregateSliceIsNil
             } else {
                 return Err(Diagnostic::semantic(
@@ -377,11 +321,16 @@ impl FunctionLowerer {
             }
         } else if value.ty.underlying() == string_i64_map_ty().underlying() {
             hir::Builtin::MapStringI64IsNil
+        } else if value.ty.underlying() == i64_go_string_map_ty().underlying() {
+            hir::Builtin::MapI64GoStringIsNil
         } else if matches!(value.ty.underlying(), Ty::Interface(_)) {
             hir::Builtin::InterfaceIsNil
         } else if matches!(value.ty.underlying(), Ty::Function(_)) {
             hir::Builtin::FunctionIsNil
-        } else if value.ty.underlying() == int_pointer_ty().underlying() {
+        } else if matches!(
+            value.ty.underlying(),
+            Ty::Pointer(element) if element.underlying() == &Ty::Int(IntTy::Int)
+        ) {
             hir::Builtin::PointerI64IsNil
         } else if value.ty.bootstrap_i64_struct_pointer_fields().is_some() {
             hir::Builtin::PointerStructI64IsNil
@@ -390,8 +339,8 @@ impl FunctionLowerer {
             Ty::Pointer(element) if element.uses_interface_aggregate_pointer_representation()
         ) {
             hir::Builtin::AggregatePointerIsNil
-        } else if int_channel_parts(&value.ty).is_some() {
-            hir::Builtin::ChannelI64IsNil
+        } else if let Some((_, _, representation)) = channel_parts(&value.ty) {
+            representation.builtins().is_nil
         } else {
             return Err(Diagnostic::semantic(
                 "nil comparison requires a nil-capable value",
@@ -429,6 +378,18 @@ impl FunctionLowerer {
             coerce_expr(&mut result, expected, source)?;
         }
         Ok(result)
+    }
+}
+
+pub(super) fn pointer_comparison_builtin(ty: &Ty) -> Option<hir::Builtin> {
+    match ty.underlying() {
+        Ty::Pointer(element) if element.underlying() == &Ty::Int(IntTy::Int) => {
+            Some(hir::Builtin::PointerI64Equal)
+        }
+        _ if ty.bootstrap_i64_struct_pointer_fields().is_some() => {
+            Some(hir::Builtin::PointerStructI64Equal)
+        }
+        _ => None,
     }
 }
 

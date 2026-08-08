@@ -10,7 +10,7 @@ use crate::compiler::hir;
 use crate::compiler::ids::NodeId;
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::ExprSyntax;
-use crate::compiler::types::{ComplexTy, ConstValue, FloatTy, IntTy, Ty, UntypedTy};
+use crate::compiler::types::{ComplexTy, ConstValue, ExactNumber, FloatTy, Ty, UntypedTy};
 
 impl FunctionLowerer {
     pub(super) fn lower_numeric_builtin_call(
@@ -76,7 +76,7 @@ impl FunctionLowerer {
         ensure_bootstrap_value_type(&executable_ty, source)?;
         if !matches!(
             executable_ty.underlying(),
-            Ty::Int(IntTy::Int) | Ty::Float(FloatTy::Float64)
+            Ty::Int(_) | Ty::Uint(_) | Ty::Float(_) | Ty::String
         ) {
             return Err(Diagnostic::semantic(
                 format!("{name} requires ordered numeric arguments"),
@@ -116,6 +116,12 @@ impl FunctionLowerer {
                 coerce_expr(&mut result, expected, source)?;
             }
             return Ok(result);
+        }
+        if executable_ty == Ty::String {
+            return Err(Diagnostic::unsupported(
+                "runtime string min/max is not yet supported",
+                source,
+            ));
         }
         for value in &mut values {
             coerce_expr(value, &executable_ty, source)?;
@@ -185,7 +191,8 @@ impl FunctionLowerer {
         })?;
         let valid_component = matches!(
             component_ty.underlying(),
-            Ty::Float(FloatTy::Float64) | Ty::Untyped(UntypedTy::Int | UntypedTy::Float)
+            Ty::Float(FloatTy::Float64)
+                | Ty::Untyped(UntypedTy::Int | UntypedTy::Rune | UntypedTy::Float)
         );
         if !valid_component {
             return Err(Diagnostic::semantic(
@@ -248,28 +255,26 @@ impl FunctionLowerer {
             ));
         };
         let argument = self.lower_expr(argument, None)?;
-        if argument.ty.default_typed().underlying() != &Ty::Complex(ComplexTy::Complex128) {
+        let Ty::Complex(complex_ty) = argument.ty.default_typed().underlying().clone() else {
             return Err(Diagnostic::semantic(
                 format!("{name} requires a complex argument"),
                 source,
             ));
-        }
+        };
+        let component_ty = complex_ty.component_type();
         let constant = match expr_constant(&argument) {
             Some(ConstValue::Complex { real, imag }) => Some(if name == "real" {
                 real.clone()
             } else {
                 imag.clone()
             }),
-            Some(ConstValue::Int(value)) => Some(if name == "real" {
-                value.clone()
-            } else {
-                "0".into()
-            }),
-            Some(ConstValue::Float(value)) => Some(if name == "real" {
-                value.clone()
-            } else {
-                "0".into()
-            }),
+            Some(value @ (ConstValue::Int(_) | ConstValue::Float(_))) => {
+                if name == "real" {
+                    value.exact_number()
+                } else {
+                    Some(ExactNumber::zero())
+                }
+            }
             _ => None,
         };
         let mut result = if let Some(component) = constant {
@@ -279,7 +284,7 @@ impl FunctionLowerer {
                 ty: if matches!(argument.ty, Ty::Untyped(_)) {
                     Ty::Untyped(UntypedTy::Float)
                 } else {
-                    Ty::Float(FloatTy::Float64)
+                    Ty::Float(component_ty)
                 },
                 category: hir::ValueCategory::Constant,
                 effects: hir::Effects::default(),
@@ -297,7 +302,7 @@ impl FunctionLowerer {
                     },
                     operand: Box::new(argument),
                 },
-                ty: Ty::Float(FloatTy::Float64),
+                ty: Ty::Float(component_ty),
                 category: hir::ValueCategory::Value,
                 effects,
                 source,
@@ -310,9 +315,6 @@ impl FunctionLowerer {
     }
 }
 
-fn constant_component(expression: &hir::Expr) -> Option<String> {
-    match expr_constant(expression)? {
-        ConstValue::Int(value) | ConstValue::Float(value) => Some(value.clone()),
-        _ => None,
-    }
+fn constant_component(expression: &hir::Expr) -> Option<ExactNumber> {
+    expr_constant(expression)?.exact_number()
 }

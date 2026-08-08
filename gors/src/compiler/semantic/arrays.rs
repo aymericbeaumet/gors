@@ -3,15 +3,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::FunctionLowerer;
-use super::expressions::{coerce_expr, expr_constant, parse_go_integer, validate_binary_operator};
-use super::lower_type;
+use super::expressions::{coerce_expr, expr_constant};
+use super::{eval_constant_with_lookup, lower_type_with_constant_lookup};
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::NodeId;
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{ExprSyntax, ExprSyntaxKind, SyntaxSource};
-use crate::compiler::types::{ConstValue, FloatTy, IntTy, Ty};
-use crate::token::Token;
+use crate::compiler::types::{ConstValue, IntTy, Ty};
 
 const MAX_BOOTSTRAP_ARRAY_LENGTH: u64 = 1_048_576;
 
@@ -19,32 +18,48 @@ pub(super) fn lower_array_type(
     length: &ExprSyntax,
     element: &ExprSyntax,
     type_aliases: &BTreeMap<String, Ty>,
+    constant_lookup: &impl Fn(&str) -> Option<(Ty, ConstValue)>,
     source: SourceRef,
 ) -> Result<Ty, Diagnostic> {
-    let length = array_length(length, source)?;
-    let element = lower_type(element, type_aliases, source)?;
+    let length = array_length(length, constant_lookup, source)?;
+    let element = lower_type_with_constant_lookup(element, type_aliases, constant_lookup, source)?;
     Ok(Ty::Array(length, Box::new(element)))
 }
 
-fn array_length(expression: &ExprSyntax, source: SourceRef) -> Result<u64, Diagnostic> {
-    let spelling = match &expression.kind {
-        ExprSyntaxKind::Literal {
-            token: Token::INT,
-            spelling,
-        } => spelling.as_ref(),
-        ExprSyntaxKind::Paren(expression) => return array_length(expression, source),
-        _ => {
-            return Err(Diagnostic::unsupported(
-                "array lengths currently require an integer literal",
-                source,
-            ));
-        }
+fn array_length(
+    expression: &ExprSyntax,
+    constant_lookup: &impl Fn(&str) -> Option<(Ty, ConstValue)>,
+    source: SourceRef,
+) -> Result<u64, Diagnostic> {
+    let (ty, value) = eval_constant_with_lookup(expression, constant_lookup, source, None)?;
+    array_length_from_constant(&ty, &value, source)
+}
+
+pub(in crate::compiler) fn array_length_from_constant(
+    ty: &Ty,
+    value: &ConstValue,
+    source: SourceRef,
+) -> Result<u64, Diagnostic> {
+    if !ty.is_integer() && !matches!(ty, Ty::Untyped(_)) {
+        return Err(Diagnostic::semantic(
+            "array length must be an integer constant",
+            source,
+        ));
+    }
+    let value = value
+        .clone()
+        .exact_integer()
+        .ok_or_else(|| Diagnostic::semantic("array length must be an integer constant", source))?;
+    let ConstValue::Int(value) = value else {
+        return Err(Diagnostic::backend(
+            "integer array length normalization produced a non-integer constant",
+        ));
     };
-    let length = parse_go_integer(spelling)
-        .and_then(|value| value.parse::<u64>().ok())
-        .ok_or_else(|| {
-            Diagnostic::semantic("array length must be a non-negative integer", source)
-        })?;
+    let signed = value
+        .parse::<i64>()
+        .map_err(|_| Diagnostic::semantic("array length is not representable by Go int", source))?;
+    let length = u64::try_from(signed)
+        .map_err(|_| Diagnostic::semantic("array length must be non-negative", source))?;
     if length > MAX_BOOTSTRAP_ARRAY_LENGTH {
         return Err(Diagnostic::unsupported(
             format!(
@@ -57,6 +72,58 @@ fn array_length(expression: &ExprSyntax, source: SourceRef) -> Result<u64, Diagn
 }
 
 impl FunctionLowerer {
+    pub(super) fn indexed_composite_elements<'syntax>(
+        &self,
+        elements: &'syntax [ExprSyntax],
+        source: SourceRef,
+    ) -> Result<Option<Vec<Option<&'syntax ExprSyntax>>>, Diagnostic> {
+        if !elements
+            .iter()
+            .any(|element| matches!(element.kind, ExprSyntaxKind::KeyValue { .. }))
+        {
+            return Ok(None);
+        }
+        let mut slots = Vec::new();
+        let mut next_index = 0_usize;
+        for element in elements {
+            let (index, value) = match &element.kind {
+                ExprSyntaxKind::KeyValue { key, value } => {
+                    let (_, key) = self.eval_constant_expression(key, source, None)?;
+                    let ConstValue::Int(key) = key else {
+                        return Err(Diagnostic::semantic(
+                            "composite literal index must be an integer constant",
+                            source,
+                        ));
+                    };
+                    let index = key.parse::<usize>().map_err(|_| {
+                        Diagnostic::semantic(
+                            "composite literal index must be a non-negative Go int",
+                            source,
+                        )
+                    })?;
+                    (index, value.as_ref())
+                }
+                _ => (next_index, element),
+            };
+            next_index = index.checked_add(1).ok_or_else(|| {
+                Diagnostic::semantic("composite literal index exceeds the type domain", source)
+            })?;
+            if slots.len() <= index {
+                slots.resize(index.saturating_add(1), None);
+            }
+            let slot = slots.get_mut(index).ok_or_else(|| {
+                Diagnostic::backend("expanded composite literal index disappeared")
+            })?;
+            if slot.replace(value).is_some() {
+                return Err(Diagnostic::semantic(
+                    format!("composite literal index {index} is initialized more than once"),
+                    source,
+                ));
+            }
+        }
+        Ok(Some(slots))
+    }
+
     pub(super) fn infer_array_literal_length(
         &self,
         elements: &[ExprSyntax],
@@ -67,7 +134,7 @@ impl FunctionLowerer {
         for element in elements {
             let index = match &element.kind {
                 ExprSyntaxKind::KeyValue { key, .. } => {
-                    let (_, key) = super::eval_constant(key, &self.constants, source, 0)?;
+                    let (_, key) = self.eval_constant_expression(key, source, None)?;
                     let ConstValue::Int(key) = key else {
                         return Err(Diagnostic::semantic(
                             "array literal index must be an integer constant",
@@ -113,7 +180,7 @@ impl FunctionLowerer {
                 ));
             }
         };
-        if !is_executable_array_element(&element_ty) {
+        if !is_executable_array(length, &element_ty) {
             return Err(Diagnostic::unsupported(
                 "array literal element type has no executable representation",
                 source,
@@ -127,7 +194,7 @@ impl FunctionLowerer {
         for element in elements {
             let (index, value) = match &element.kind {
                 ExprSyntaxKind::KeyValue { key, value } => {
-                    let (_, key) = super::eval_constant(key, &self.constants, source, 0)?;
+                    let (_, key) = self.eval_constant_expression(key, source, None)?;
                     let ConstValue::Int(key) = key else {
                         return Err(Diagnostic::semantic(
                             "array literal index must be an integer constant",
@@ -175,7 +242,9 @@ impl FunctionLowerer {
             .fold(hir::Effects::default(), |effects, (_, value)| {
                 effects.union(value.effects)
             });
-        let integer_constants = if element_ty.underlying() == &Ty::Int(IntTy::Int) {
+        let integer_constants = if matches!(literal_ty, Ty::Array(_, _))
+            && element_ty.underlying() == &Ty::Int(IntTy::Int)
+        {
             let mut constants = vec![0_i64; length];
             for (index, value) in &values {
                 let Some(ConstValue::Int(value)) = expr_constant(value) else {
@@ -289,62 +358,23 @@ impl FunctionLowerer {
         }
         Ok(result)
     }
-
-    pub(super) fn lower_array_assignment(
-        &mut self,
-        container: hir::Expr,
-        index: &ExprSyntax,
-        token: Token,
-        value: &ExprSyntax,
-        source: SourceRef,
-    ) -> Result<hir::StmtKind, Diagnostic> {
-        let array = match &container.kind {
-            hir::ExprKind::Local(local) => *local,
-            _ => {
-                return Err(Diagnostic::unsupported(
-                    "array assignment currently requires a local array variable",
-                    source,
-                ));
-            }
-        };
-        let Ty::Array(_, element) = container.ty.underlying() else {
-            return Err(Diagnostic::backend(
-                "array assignment lowering received a non-array value",
-            ));
-        };
-        if !is_executable_array_element(element) {
-            return Err(Diagnostic::unsupported(
-                "array element type has no executable assignment representation",
-                source,
-            ));
-        }
-        let element_ty = element.as_ref().clone();
-        let index = self.lower_expr(index, Some(&Ty::Int(IntTy::Int)))?;
-        let value = self.lower_expr(value, Some(&element_ty))?;
-        let op = super::assignments::assignment_op(token, source)?;
-        if op != hir::AssignOp::Set {
-            validate_binary_operator(
-                super::expressions::assignment_binary_op(op),
-                &element_ty,
-                source,
-            )?;
-        }
-        Ok(hir::StmtKind::ArrayAssign {
-            array,
-            index,
-            op,
-            value,
-        })
-    }
 }
 
 pub(super) fn is_scalar_array_element(ty: &Ty) -> bool {
     matches!(
         ty.underlying(),
-        Ty::Bool | Ty::Int(IntTy::Int) | Ty::Float(FloatTy::Float64) | Ty::String
+        Ty::Bool
+            | Ty::Int(IntTy::Int)
+            | Ty::Uint(crate::compiler::types::UintTy::Uint8)
+            | Ty::Float(_)
+            | Ty::String
     )
 }
 
 pub(super) fn is_executable_array_element(ty: &Ty) -> bool {
     is_scalar_array_element(ty) || ty.bootstrap_i64_struct_pointer_fields().is_some()
+}
+
+pub(super) fn is_executable_array(length: u64, element: &Ty) -> bool {
+    length == 0 || is_executable_array_element(element)
 }

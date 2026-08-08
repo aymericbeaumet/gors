@@ -4,6 +4,10 @@
 //! it does not run corrective `syn` passes. Rust representations and local-use
 //! modes have already been selected and verified before this point.
 
+mod integer;
+mod numeric;
+mod recovery;
+
 use std::collections::BTreeMap;
 
 use proc_macro2::Span;
@@ -11,10 +15,11 @@ use proc_macro2::Span;
 use super::Diagnostic;
 use super::ids::{PackageId, QualifiedDefId};
 use super::rust_ir::{
-    self, CallTarget, Constant, ControlFlowPlan, LocalId, Operand, Place, PrimitiveOp, ReadOp,
+    self, CallTarget, Constant, ControlFlowPlan, IntegerKind, LocalId, Operand, Place, ReadOp,
     RuntimeOp, RustLinkage, RustSymbol, RustType, Rvalue, RvalueKind, SlotInitialization,
     Statement, StorageClass, StoreOp, Terminator, TerminatorKind, ValueOp,
 };
+use numeric::emit_primitive_op;
 
 pub(super) fn emit_program(
     entry: PackageId,
@@ -173,42 +178,8 @@ fn emit_function(
         ControlFlowPlan::PcDispatchU32 => emit_pc_dispatch(function, function_paths)?,
     };
 
-    let body: syn::Block = if let Some(cleanup) = function.panic_cleanup {
-        let cleanup_flow = emit_pc_dispatch_from(function, function_paths, cleanup.entry.0)?;
-        let active = slot_ident(cleanup.active);
-        syn::parse_quote! {{
-            #(#initializers)*
-            let __gors_execution = ::std::panic::catch_unwind(
-                ::std::panic::AssertUnwindSafe(|| {
-                    #(#control_flow)*
-                })
-            );
-            match __gors_execution {
-                ::std::result::Result::Ok(value) => value,
-                ::std::result::Result::Err(__gors_panic_payload) => {
-                    #active = ::std::option::Option::Some(true);
-                    let __gors_cleanup = ::std::panic::catch_unwind(
-                        ::std::panic::AssertUnwindSafe(|| {
-                            #(#cleanup_flow)*
-                        })
-                    );
-                    match __gors_cleanup {
-                        ::std::result::Result::Err(payload) => {
-                            ::std::panic::resume_unwind(payload)
-                        }
-                        ::std::result::Result::Ok(value) => {
-                            if *#active.as_ref().expect(
-                                "compiler read of uninitialized panic recovery state"
-                            ) {
-                                ::std::panic::resume_unwind(__gors_panic_payload)
-                            } else {
-                                value
-                            }
-                        }
-                    }
-                }
-            }
-        }}
+    let body: syn::Block = if function.panic_cleanup.is_some() {
+        recovery::emit_body(function, function_paths, &initializers, &control_flow)?
     } else {
         syn::parse_quote! {{
             #(#initializers)*
@@ -476,25 +447,17 @@ fn emit_rvalue(rvalue: &Rvalue, function: &rust_ir::Function) -> Result<syn::Exp
             let operand = emit_operand(operand, function)?;
             emit_value_op(*op, vec![operand])
         }
-        RvalueKind::RecoverCompareNil { state, equal } => {
+        RvalueKind::Recover { state, value, nil } => {
             let state = checked_slot(*state, function)?;
-            if *equal {
-                Ok(syn::parse_quote! {{
-                    let __gors_recover_was_active = *#state.as_ref().expect(
-                        "compiler read of uninitialized panic recovery state"
-                    );
-                    #state = ::std::option::Option::Some(false);
-                    !__gors_recover_was_active
-                }})
-            } else {
-                Ok(syn::parse_quote! {{
-                    let __gors_recover_was_active = *#state.as_ref().expect(
-                        "compiler read of uninitialized panic recovery state"
-                    );
-                    #state = ::std::option::Option::Some(false);
-                    __gors_recover_was_active
-                }})
-            }
+            let value = emit_operand(value, function)?;
+            let nil = emit_runtime_call(*nil, Vec::new());
+            Ok(syn::parse_quote! {{
+                let __gors_recover_was_active = *#state.as_ref().expect(
+                    "compiler read of uninitialized panic recovery state"
+                );
+                #state = ::std::option::Option::Some(false);
+                if __gors_recover_was_active { #value } else { #nil }
+            }})
         }
         RvalueKind::Binary { op, left, right } => {
             let left = emit_operand(left, function)?;
@@ -668,7 +631,7 @@ fn emit_rvalue(rvalue: &Rvalue, function: &rust_ir::Function) -> Result<syn::Exp
                 __gors_structure
             }})
         }
-        RvalueKind::AggregateEqualI64 { left, right, equal } => {
+        RvalueKind::AggregateEqualInteger { left, right, equal } => {
             let left = emit_operand(left, function)?;
             let right = emit_operand(right, function)?;
             if *equal {
@@ -685,119 +648,6 @@ fn emit_value_op(operation: ValueOp, args: Vec<syn::Expr>) -> Result<syn::Expr, 
         ValueOp::Primitive(operation) => emit_primitive_op(operation, &args),
         ValueOp::Runtime(operation) => Ok(emit_runtime_call(operation, args)),
     }
-}
-
-fn emit_primitive_op(operation: PrimitiveOp, args: &[syn::Expr]) -> Result<syn::Expr, Diagnostic> {
-    use PrimitiveOp::*;
-    let expression = match (operation, args) {
-        (BoolNot | IntBitNot, [value]) => syn::parse_quote! { !(#value) },
-        (IntWrappingNeg, [value]) => syn::parse_quote! { (#value).wrapping_neg() },
-        (FloatNeg, [value]) => syn::parse_quote! { -(#value) },
-        (ComplexNeg, [value]) => syn::parse_quote! { [-(#value)[0], -(#value)[1]] },
-        (ComplexReal, [value]) => syn::parse_quote! { (#value)[0] },
-        (ComplexImag, [value]) => syn::parse_quote! { (#value)[1] },
-        (IntBitAnd, [left, right]) => syn::parse_quote! { (#left) & (#right) },
-        (IntBitOr, [left, right]) => syn::parse_quote! { (#left) | (#right) },
-        (IntBitXor, [left, right]) => syn::parse_quote! { (#left) ^ (#right) },
-        (IntAndNot, [left, right]) => syn::parse_quote! { (#left) & !(#right) },
-        (IntWrappingAdd, [left, right]) => {
-            syn::parse_quote! { (#left).wrapping_add(#right) }
-        }
-        (IntWrappingSub, [left, right]) => {
-            syn::parse_quote! { (#left).wrapping_sub(#right) }
-        }
-        (IntWrappingMul, [left, right]) => {
-            syn::parse_quote! { (#left).wrapping_mul(#right) }
-        }
-        (IntMin, [left, right]) => syn::parse_quote! {
-            if (#left) < (#right) { #left } else { #right }
-        },
-        (IntMax, [left, right]) => syn::parse_quote! {
-            if (#left) > (#right) { #left } else { #right }
-        },
-        (FloatAdd, [left, right]) => syn::parse_quote! { (#left) + (#right) },
-        (FloatSub, [left, right]) => syn::parse_quote! { (#left) - (#right) },
-        (FloatMul, [left, right]) => syn::parse_quote! { (#left) * (#right) },
-        (FloatDiv, [left, right]) => syn::parse_quote! { (#left) / (#right) },
-        (FloatMin, [left, right]) => syn::parse_quote! {
-            if (#left).is_nan() {
-                #left
-            } else if (#right).is_nan() {
-                #right
-            } else if (#left) == 0.0 && (#right) == 0.0 {
-                if (#left).is_sign_negative() { #left } else { #right }
-            } else if (#left) < (#right) {
-                #left
-            } else {
-                #right
-            }
-        },
-        (FloatMax, [left, right]) => syn::parse_quote! {
-            if (#left).is_nan() {
-                #left
-            } else if (#right).is_nan() {
-                #right
-            } else if (#left) == 0.0 && (#right) == 0.0 {
-                if (#left).is_sign_positive() { #left } else { #right }
-            } else if (#left) > (#right) {
-                #left
-            } else {
-                #right
-            }
-        },
-        (ComplexFromParts, [real, imag]) => syn::parse_quote! { [#real, #imag] },
-        (ComplexAdd, [left, right]) => {
-            syn::parse_quote! { [(#left)[0] + (#right)[0], (#left)[1] + (#right)[1]] }
-        }
-        (ComplexSub, [left, right]) => {
-            syn::parse_quote! { [(#left)[0] - (#right)[0], (#left)[1] - (#right)[1]] }
-        }
-        (ComplexMul, [left, right]) => syn::parse_quote! {
-            [
-                (#left)[0] * (#right)[0] - (#left)[1] * (#right)[1],
-                (#left)[0] * (#right)[1] + (#left)[1] * (#right)[0],
-            ]
-        },
-        (ComplexDiv, [left, right]) => syn::parse_quote! {
-            {
-                let __gors_denominator = (#right)[0] * (#right)[0] + (#right)[1] * (#right)[1];
-                [
-                    ((#left)[0] * (#right)[0] + (#left)[1] * (#right)[1]) / __gors_denominator,
-                    ((#left)[1] * (#right)[0] - (#left)[0] * (#right)[1]) / __gors_denominator,
-                ]
-            }
-        },
-        (BoolEqual | IntEqual | FloatEqual | StringEqual, [left, right]) => {
-            syn::parse_quote! { (#left) == (#right) }
-        }
-        (BoolNotEqual | IntNotEqual | FloatNotEqual | StringNotEqual, [left, right]) => {
-            syn::parse_quote! { (#left) != (#right) }
-        }
-        (ComplexEqual, [left, right]) => syn::parse_quote! {
-            (#left)[0] == (#right)[0] && (#left)[1] == (#right)[1]
-        },
-        (ComplexNotEqual, [left, right]) => syn::parse_quote! {
-            (#left)[0] != (#right)[0] || (#left)[1] != (#right)[1]
-        },
-        (IntLess | FloatLess | StringLess, [left, right]) => {
-            syn::parse_quote! { (#left) < (#right) }
-        }
-        (IntLessEqual | FloatLessEqual | StringLessEqual, [left, right]) => {
-            syn::parse_quote! { (#left) <= (#right) }
-        }
-        (IntGreater | FloatGreater | StringGreater, [left, right]) => {
-            syn::parse_quote! { (#left) > (#right) }
-        }
-        (IntGreaterEqual | FloatGreaterEqual | StringGreaterEqual, [left, right]) => {
-            syn::parse_quote! { (#left) >= (#right) }
-        }
-        (operation, _) => {
-            return Err(Diagnostic::backend(format!(
-                "invalid verified primitive operation arity for {operation:?}"
-            )));
-        }
-    };
-    Ok(expression)
 }
 
 fn emit_runtime_call(operation: RuntimeOp, args: Vec<syn::Expr>) -> syn::Expr {
@@ -855,24 +705,24 @@ fn emit_constant(value: &Constant) -> Result<syn::Expr, Diagnostic> {
         } else {
             syn::parse_quote! { false }
         }),
-        Constant::I64(value) => {
-            if *value == i64::MIN {
+        Constant::Integer { bits, .. } => {
+            if *bits == i64::MIN {
                 Ok(syn::parse_quote! { ::std::primitive::i64::MIN })
             } else {
-                let magnitude = value.unsigned_abs();
+                let magnitude = bits.unsigned_abs();
                 let literal = syn::LitInt::new(&format!("{magnitude}i64"), Span::mixed_site());
-                Ok(if *value < 0 {
+                Ok(if *bits < 0 {
                     syn::parse_quote! { -(#literal) }
                 } else {
                     syn::parse_quote! { #literal }
                 })
             }
         }
-        Constant::F64(bits) => {
+        Constant::Float { bits, .. } => {
             let bits = syn::LitInt::new(&format!("{bits}u64"), Span::mixed_site());
             Ok(syn::parse_quote! { ::std::primitive::f64::from_bits(#bits) })
         }
-        Constant::Complex128 { real, imag } => {
+        Constant::Complex { real, imag, .. } => {
             let real = syn::LitInt::new(&format!("{real}u64"), Span::mixed_site());
             let imag = syn::LitInt::new(&format!("{imag}u64"), Span::mixed_site());
             Ok(syn::parse_quote! {
@@ -882,10 +732,15 @@ fn emit_constant(value: &Constant) -> Result<syn::Expr, Diagnostic> {
                 ]
             })
         }
-        Constant::StaticI64Array(values) => {
+        Constant::StaticIntegerArray { kind, values } => {
             let values = values
                 .iter()
-                .map(|value| emit_constant(&Constant::I64(*value)))
+                .map(|value| {
+                    emit_constant(&Constant::Integer {
+                        kind: *kind,
+                        bits: *value,
+                    })
+                })
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(syn::parse_quote! { [#(#values),*] })
         }
@@ -896,7 +751,12 @@ fn emit_constant(value: &Constant) -> Result<syn::Expr, Diagnostic> {
         Constant::RuntimeStaticI64s { op, values } => {
             let values = values
                 .iter()
-                .map(|value| emit_constant(&Constant::I64(*value)))
+                .map(|value| {
+                    emit_constant(&Constant::Integer {
+                        kind: IntegerKind::I64,
+                        bits: *value,
+                    })
+                })
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(emit_runtime_call(
                 *op,
@@ -938,14 +798,16 @@ fn emit_type(ty: &RustType) -> Result<syn::Type, Diagnostic> {
         RustType::Unit => syn::parse_quote! { () },
         RustType::Bool => syn::parse_quote! { bool },
         RustType::GoString => syn::parse_quote! { ::#runtime_crate::GoString },
-        RustType::I64 => syn::parse_quote! { i64 },
-        RustType::F64 => syn::parse_quote! { f64 },
-        RustType::Complex128 => syn::parse_quote! { [f64; 2] },
+        RustType::Integer(_) => syn::parse_quote! { i64 },
+        RustType::Float(_) => syn::parse_quote! { f64 },
+        RustType::Complex(_) => syn::parse_quote! { [f64; 2] },
         RustType::GoSliceI64 => syn::parse_quote! { ::#runtime_crate::GoSliceI64 },
         RustType::GoSliceU8 => syn::parse_quote! { ::#runtime_crate::GoSliceU8 },
         RustType::GoSliceBool => syn::parse_quote! { ::#runtime_crate::GoSliceBool },
         RustType::GoSliceInterface => syn::parse_quote! { ::#runtime_crate::GoSliceInterface },
+        RustType::GoSliceGoString => syn::parse_quote! { ::#runtime_crate::GoSliceGoString },
         RustType::GoMapStringI64 => syn::parse_quote! { ::#runtime_crate::GoMapStringI64 },
+        RustType::GoMapI64GoString => syn::parse_quote! { ::#runtime_crate::GoMapI64GoString },
         RustType::GoMapStringInterface => {
             syn::parse_quote! { ::#runtime_crate::GoMapStringInterface }
         }
@@ -955,7 +817,13 @@ fn emit_type(ty: &RustType) -> Result<syn::Type, Diagnostic> {
         }
         RustType::GoInterface => syn::parse_quote! { ::#runtime_crate::GoInterface },
         RustType::GoChannelI64 => syn::parse_quote! { ::#runtime_crate::GoChannelI64 },
-        RustType::ArrayI64(length) => {
+        RustType::GoChannelGoString => {
+            syn::parse_quote! { ::#runtime_crate::GoChannelGoString }
+        }
+        RustType::GoChannelGoChannelI64 => {
+            syn::parse_quote! { ::#runtime_crate::GoChannelGoChannelI64 }
+        }
+        RustType::ArrayInteger { length, .. } => {
             let length = syn::LitInt::new(&length.to_string(), Span::mixed_site());
             syn::parse_quote! { [i64; #length] }
         }
@@ -963,7 +831,7 @@ fn emit_type(ty: &RustType) -> Result<syn::Type, Diagnostic> {
             let length = syn::LitInt::new(&length.to_string(), Span::mixed_site());
             syn::parse_quote! { [bool; #length] }
         }
-        RustType::ArrayF64(length) => {
+        RustType::ArrayFloat { length, .. } => {
             let length = syn::LitInt::new(&length.to_string(), Span::mixed_site());
             syn::parse_quote! { [f64; #length] }
         }
@@ -975,6 +843,7 @@ fn emit_type(ty: &RustType) -> Result<syn::Type, Diagnostic> {
             let length = syn::LitInt::new(&length.to_string(), Span::mixed_site());
             syn::parse_quote! { [::#runtime_crate::GoPointerStructI64; #length] }
         }
+        RustType::ZeroArray => syn::parse_quote! { [(); 0] },
         RustType::Struct(fields) => {
             let fields = fields
                 .iter()

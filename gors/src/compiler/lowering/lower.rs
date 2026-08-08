@@ -2,19 +2,24 @@
 
 mod aggregates;
 mod control;
+mod conversions;
+mod numeric;
+mod printing;
 mod provenance;
+mod recovery;
 
 use super::type_lowering::lower_type;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::mir;
 use crate::compiler::rust_ir as out;
-use crate::compiler::types::{
-    ComplexTy, ConstValue, FloatTy, IntTy, Signature as GoSignature, Ty, UintTy, parse_go_float,
-};
-use gors_runtime_abi::{PrimitiveOp, RuntimeOp};
+use crate::compiler::types::Signature as GoSignature;
+use gors_runtime_abi::{IntegerKind, RuntimeOp};
 
 use control::{finish_terminator, lower_panic_edge};
+use conversions::lower_conversion_operation;
+use numeric::{lower_binary_op, lower_constant, lower_unary_op};
+use printing::lower_print_call;
 use provenance::lower_provenance;
 
 #[cfg(test)]
@@ -41,10 +46,7 @@ pub(super) fn lower_function(
         out::FunctionArtifactPlan::public_definition(function.id)
     };
     let signature = lower_signature(&function.signature)?;
-    let panic_cleanup = function.panic_cleanup.map(|cleanup| out::PanicCleanup {
-        entry: cleanup.entry,
-        active: cleanup.active,
-    });
+    let mut panic_cleanup = function.panic_cleanup.map(recovery::lower_panic_cleanup);
     let locals = function
         .locals
         .into_iter()
@@ -74,6 +76,7 @@ pub(super) fn lower_function(
         .map(|block| lower_block(block, &locals, original_block_count, &mut extra_blocks))
         .collect::<Result<Vec<_>, _>>()?;
     blocks.append(&mut extra_blocks);
+    recovery::complete_action_blocks(panic_cleanup.as_mut(), &blocks)?;
     let mut lowered = out::Function {
         id: function.id,
         name: function.name,
@@ -161,12 +164,17 @@ fn lower_rvalue(rvalue: mir::Rvalue, locals: &[out::LocalDecl]) -> Result<out::R
                 values: elements,
             }))
         }
-        mir::RvalueKind::ArrayLiteralI64(elements) => out::RvalueKind::Use(out::Operand::Constant(
-            out::Constant::StaticI64Array(elements),
-        )),
+        mir::RvalueKind::ArrayLiteralI64(elements) => {
+            out::RvalueKind::Use(out::Operand::Constant(out::Constant::StaticIntegerArray {
+                kind: IntegerKind::I64,
+                values: elements,
+            }))
+        }
         mir::RvalueKind::ArrayLiteral { elements, ty } => {
             let ty = lower_type(&ty)?;
-            if ty.scalar_array_parts().is_none() {
+            if ty.scalar_array_parts().is_none()
+                && !(ty == out::RustType::ZeroArray && elements.is_empty())
+            {
                 return Err(Diagnostic::backend(
                     "non-scalar array reached scalar array representation lowering",
                 ));
@@ -219,24 +227,24 @@ fn lower_rvalue(rvalue: mir::Rvalue, locals: &[out::LocalDecl]) -> Result<out::R
         mir::RvalueKind::Unary { op, operand, ty } => {
             let operand_ty = mir_operand_type(&operand, locals)?;
             let operand = lower_operand(operand, locals)?;
-            match lower_unary_op(op, operand_ty, lower_type(&ty)?)? {
+            match lower_unary_op(op, &ty, operand_ty, lower_type(&ty)?)? {
                 Some(op) => out::RvalueKind::Unary { op, operand },
                 None => out::RvalueKind::Use(operand),
             }
         }
         mir::RvalueKind::Conversion { operand, from, ty } => {
-            let from = lower_type(&from)?;
-            let to = lower_type(&ty)?;
-            if from != to {
-                return Err(Diagnostic::backend(format!(
-                    "representation-preserving conversion changed Rust type from {from:?} to {to:?}"
-                )));
+            let operation = lower_conversion_operation(&from, &ty)?;
+            let operand = lower_operand(operand, locals)?;
+            if let Some(op) = operation {
+                out::RvalueKind::Unary { op, operand }
+            } else {
+                out::RvalueKind::Use(operand)
             }
-            out::RvalueKind::Use(lower_operand(operand, locals)?)
         }
-        mir::RvalueKind::RecoverCompareNil { state, equal } => out::RvalueKind::RecoverCompareNil {
+        mir::RvalueKind::Recover { state, value } => out::RvalueKind::Recover {
             state: lower_place(state),
-            equal,
+            value: lower_operand(value, locals)?,
+            nil: RuntimeOp::GoInterfaceNil,
         },
         mir::RvalueKind::Binary {
             op,
@@ -251,18 +259,20 @@ fn lower_rvalue(rvalue: mir::Rvalue, locals: &[out::LocalDecl]) -> Result<out::R
                 && left_ty == right_ty
                 && matches!(
                     left_ty,
-                    out::RustType::ArrayI64(_) | out::RustType::StructI64(_)
+                    out::RustType::ArrayInteger { .. }
+                        | out::RustType::ZeroArray
+                        | out::RustType::StructI64(_)
                 )
                 && result_ty == out::RustType::Bool
             {
-                out::RvalueKind::AggregateEqualI64 {
+                out::RvalueKind::AggregateEqualInteger {
                     left: lower_operand(left, locals)?,
                     right: lower_operand(right, locals)?,
                     equal: op == hir::BinaryOp::Equal,
                 }
             } else {
                 out::RvalueKind::Binary {
-                    op: lower_binary_op(op, left_ty, right_ty, result_ty)?,
+                    op: lower_binary_op(op, &ty, left_ty, right_ty, result_ty)?,
                     left: lower_operand(left, locals)?,
                     right: lower_operand(right, locals)?,
                 }
@@ -344,8 +354,12 @@ fn lower_terminator(
                 | hir::Builtin::SliceI64Len
                 | hir::Builtin::SliceI64Cap
                 | hir::Builtin::SliceI64Append
+                | hir::Builtin::SliceI64AppendSlice
+                | hir::Builtin::SliceU8Make
+                | hir::Builtin::SliceU8Set
                 | hir::Builtin::SliceU8AppendSlice
                 | hir::Builtin::SliceU8AppendString
+                | hir::Builtin::SliceU8Copy
                 | hir::Builtin::SliceU8CopyString
                 | hir::Builtin::SliceU8Len
                 | hir::Builtin::SliceU8Index
@@ -358,16 +372,30 @@ fn lower_terminator(
                 | hir::Builtin::SliceBoolSet
                 | hir::Builtin::SliceBoolNil
                 | hir::Builtin::SliceBoolIsNil
+                | hir::Builtin::SliceGoStringIndex
+                | hir::Builtin::SliceGoStringRange
+                | hir::Builtin::SliceGoStringSet
+                | hir::Builtin::SliceGoStringMake
+                | hir::Builtin::SliceGoStringNil
+                | hir::Builtin::SliceGoStringIsNil
+                | hir::Builtin::SliceGoStringLen
+                | hir::Builtin::SliceGoStringCap
+                | hir::Builtin::SliceGoStringAppend
+                | hir::Builtin::SliceGoStringCopy
+                | hir::Builtin::SliceGoStringClear
                 | hir::Builtin::AggregateSliceMake
                 | hir::Builtin::AggregateSliceNil
                 | hir::Builtin::AggregateSliceIsNil
                 | hir::Builtin::AggregateSliceLen
                 | hir::Builtin::AggregateSliceIndexTagged
                 | hir::Builtin::AggregateSliceSetTagged
+                | hir::Builtin::AggregateSliceAppendTagged
                 | hir::Builtin::SnapshotFunctionSliceAppend
                 | hir::Builtin::SnapshotFunctionSliceCall
+                | hir::Builtin::StringFromRune
                 | hir::Builtin::StringFromSliceU8
                 | hir::Builtin::StringFromSliceRunes
+                | hir::Builtin::StringToSliceRunes
                 | hir::Builtin::StringLen
                 | hir::Builtin::StringIndex
                 | hir::Builtin::StringRange
@@ -385,6 +413,18 @@ fn lower_terminator(
                 | hir::Builtin::MapStringI64Clear
                 | hir::Builtin::MapStringI64IsNil
                 | hir::Builtin::MapStringI64KeyAt
+                | hir::Builtin::MapStringI64RangeKeys
+                | hir::Builtin::MapI64GoStringNil
+                | hir::Builtin::MapI64GoStringMake
+                | hir::Builtin::MapI64GoStringLen
+                | hir::Builtin::MapI64GoStringGet
+                | hir::Builtin::MapI64GoStringLookup
+                | hir::Builtin::MapI64GoStringContains
+                | hir::Builtin::MapI64GoStringSet
+                | hir::Builtin::MapI64GoStringDelete
+                | hir::Builtin::MapI64GoStringClear
+                | hir::Builtin::MapI64GoStringIsNil
+                | hir::Builtin::MapI64GoStringRangeKeys
                 | hir::Builtin::AggregateMapMake
                 | hir::Builtin::AggregateMapLen
                 | hir::Builtin::AggregateMapGetTagged
@@ -395,6 +435,7 @@ fn lower_terminator(
                 | hir::Builtin::PointerI64Get
                 | hir::Builtin::PointerI64Set
                 | hir::Builtin::PointerI64IsNil
+                | hir::Builtin::PointerI64Equal
                 | hir::Builtin::PointerStructI64Nil
                 | hir::Builtin::PointerStructI64New
                 | hir::Builtin::PointerStructI64Get
@@ -407,20 +448,32 @@ fn lower_terminator(
                 | hir::Builtin::AggregatePointerIsNil
                 | hir::Builtin::InterfaceNil
                 | hir::Builtin::InterfaceBoxBool
+                | hir::Builtin::InterfaceBoxF32
+                | hir::Builtin::InterfaceBoxF64
                 | hir::Builtin::InterfaceBoxI64
                 | hir::Builtin::InterfaceBoxGoString
+                | hir::Builtin::InterfaceBoxGoSliceGoString
                 | hir::Builtin::InterfaceBoxStructI64
+                | hir::Builtin::InterfaceBoxPointerI64
                 | hir::Builtin::InterfaceBoxPointerStructI64
                 | hir::Builtin::InterfaceBoxAggregate
+                | hir::Builtin::InterfaceBoxComparableAggregate
+                | hir::Builtin::InterfaceEqual
                 | hir::Builtin::InterfaceIsNil
                 | hir::Builtin::InterfaceIsType
+                | hir::Builtin::InterfaceIsRuntimeError
                 | hir::Builtin::InterfaceAssert
                 | hir::Builtin::InterfaceSatisfies
+                | hir::Builtin::InterfaceSatisfiesRuntimeError
                 | hir::Builtin::InterfaceSatisfiesNonNil
                 | hir::Builtin::InterfaceUnboxBool
+                | hir::Builtin::InterfaceUnboxF32
+                | hir::Builtin::InterfaceUnboxF64
                 | hir::Builtin::InterfaceUnboxI64
                 | hir::Builtin::InterfaceUnboxGoString
+                | hir::Builtin::InterfaceUnboxGoSliceGoString
                 | hir::Builtin::InterfaceStructI64Get
+                | hir::Builtin::InterfaceUnboxPointerI64
                 | hir::Builtin::InterfaceUnboxPointerStructI64
                 | hir::Builtin::InterfaceUnboxAggregate
                 | hir::Builtin::FunctionNil
@@ -435,7 +488,29 @@ fn lower_terminator(
                 | hir::Builtin::ChannelI64Close
                 | hir::Builtin::ChannelI64IsNil
                 | hir::Builtin::ChannelI64TrySend
-                | hir::Builtin::ChannelI64TryReceive),
+                | hir::Builtin::ChannelI64TryReceive
+                | hir::Builtin::ChannelGoStringNil
+                | hir::Builtin::ChannelGoStringMake
+                | hir::Builtin::ChannelGoStringLen
+                | hir::Builtin::ChannelGoStringCap
+                | hir::Builtin::ChannelGoStringSend
+                | hir::Builtin::ChannelGoStringReceiveValue
+                | hir::Builtin::ChannelGoStringReceive
+                | hir::Builtin::ChannelGoStringClose
+                | hir::Builtin::ChannelGoStringIsNil
+                | hir::Builtin::ChannelGoStringTrySend
+                | hir::Builtin::ChannelGoStringTryReceive
+                | hir::Builtin::ChannelGoChannelI64Nil
+                | hir::Builtin::ChannelGoChannelI64Make
+                | hir::Builtin::ChannelGoChannelI64Len
+                | hir::Builtin::ChannelGoChannelI64Cap
+                | hir::Builtin::ChannelGoChannelI64Send
+                | hir::Builtin::ChannelGoChannelI64ReceiveValue
+                | hir::Builtin::ChannelGoChannelI64Receive
+                | hir::Builtin::ChannelGoChannelI64Close
+                | hir::Builtin::ChannelGoChannelI64IsNil
+                | hir::Builtin::ChannelGoChannelI64TrySend
+                | hir::Builtin::ChannelGoChannelI64TryReceive),
             ) => out::TerminatorKind::Call {
                 target: out::CallTarget::Runtime(match builtin {
                     hir::Builtin::SliceI64Index => RuntimeOp::GoSliceI64Index,
@@ -447,8 +522,12 @@ fn lower_terminator(
                     hir::Builtin::SliceI64Len => RuntimeOp::GoSliceI64Len,
                     hir::Builtin::SliceI64Cap => RuntimeOp::GoSliceI64Cap,
                     hir::Builtin::SliceI64Append => RuntimeOp::GoSliceI64Append,
+                    hir::Builtin::SliceI64AppendSlice => RuntimeOp::GoSliceI64AppendSlice,
+                    hir::Builtin::SliceU8Make => RuntimeOp::GoSliceU8Make,
+                    hir::Builtin::SliceU8Set => RuntimeOp::GoSliceU8Set,
                     hir::Builtin::SliceU8AppendSlice => RuntimeOp::GoSliceU8AppendSlice,
                     hir::Builtin::SliceU8AppendString => RuntimeOp::GoSliceU8AppendString,
+                    hir::Builtin::SliceU8Copy => RuntimeOp::GoSliceU8Copy,
                     hir::Builtin::SliceU8CopyString => RuntimeOp::GoSliceU8CopyString,
                     hir::Builtin::SliceU8Len => RuntimeOp::GoSliceU8Len,
                     hir::Builtin::SliceU8Index => RuntimeOp::GoSliceU8Index,
@@ -461,16 +540,30 @@ fn lower_terminator(
                     hir::Builtin::SliceBoolSet => RuntimeOp::GoSliceBoolSet,
                     hir::Builtin::SliceBoolNil => RuntimeOp::GoSliceBoolNil,
                     hir::Builtin::SliceBoolIsNil => RuntimeOp::GoSliceBoolIsNil,
+                    hir::Builtin::SliceGoStringIndex => RuntimeOp::GoSliceGoStringIndex,
+                    hir::Builtin::SliceGoStringRange => RuntimeOp::GoSliceGoStringRange,
+                    hir::Builtin::SliceGoStringSet => RuntimeOp::GoSliceGoStringSet,
+                    hir::Builtin::SliceGoStringMake => RuntimeOp::GoSliceGoStringMake,
+                    hir::Builtin::SliceGoStringNil => RuntimeOp::GoSliceGoStringNil,
+                    hir::Builtin::SliceGoStringIsNil => RuntimeOp::GoSliceGoStringIsNil,
+                    hir::Builtin::SliceGoStringLen => RuntimeOp::GoSliceGoStringLen,
+                    hir::Builtin::SliceGoStringCap => RuntimeOp::GoSliceGoStringCap,
+                    hir::Builtin::SliceGoStringAppend => RuntimeOp::GoSliceGoStringAppend,
+                    hir::Builtin::SliceGoStringCopy => RuntimeOp::GoSliceGoStringCopy,
+                    hir::Builtin::SliceGoStringClear => RuntimeOp::GoSliceGoStringClear,
                     hir::Builtin::AggregateSliceMake => RuntimeOp::GoSliceInterfaceMake,
                     hir::Builtin::AggregateSliceNil => RuntimeOp::GoSliceInterfaceNil,
                     hir::Builtin::AggregateSliceIsNil => RuntimeOp::GoSliceInterfaceIsNil,
                     hir::Builtin::AggregateSliceLen => RuntimeOp::GoSliceInterfaceLen,
                     hir::Builtin::AggregateSliceIndexTagged => RuntimeOp::GoSliceInterfaceIndex,
                     hir::Builtin::AggregateSliceSetTagged => RuntimeOp::GoSliceInterfaceSet,
+                    hir::Builtin::AggregateSliceAppendTagged => RuntimeOp::GoSliceInterfaceAppend,
                     hir::Builtin::SnapshotFunctionSliceAppend => RuntimeOp::GoSliceI64Append,
                     hir::Builtin::SnapshotFunctionSliceCall => RuntimeOp::GoSliceI64Index,
+                    hir::Builtin::StringFromRune => RuntimeOp::GoStringFromRune,
                     hir::Builtin::StringFromSliceU8 => RuntimeOp::GoStringFromSliceU8,
                     hir::Builtin::StringFromSliceRunes => RuntimeOp::GoStringFromSliceRunes,
+                    hir::Builtin::StringToSliceRunes => RuntimeOp::GoStringToSliceRunes,
                     hir::Builtin::StringLen => RuntimeOp::GoStringLen,
                     hir::Builtin::StringIndex => RuntimeOp::GoStringIndex,
                     hir::Builtin::StringRange => RuntimeOp::GoStringRange,
@@ -487,6 +580,17 @@ fn lower_terminator(
                     hir::Builtin::MapStringI64Clear => RuntimeOp::GoMapStringI64Clear,
                     hir::Builtin::MapStringI64IsNil => RuntimeOp::GoMapStringI64IsNil,
                     hir::Builtin::MapStringI64KeyAt => RuntimeOp::GoMapStringI64KeyAt,
+                    hir::Builtin::MapStringI64RangeKeys => RuntimeOp::GoMapStringI64RangeKeys,
+                    hir::Builtin::MapI64GoStringNil => RuntimeOp::GoMapI64GoStringNil,
+                    hir::Builtin::MapI64GoStringMake => RuntimeOp::GoMapI64GoStringMake,
+                    hir::Builtin::MapI64GoStringLen => RuntimeOp::GoMapI64GoStringLen,
+                    hir::Builtin::MapI64GoStringGet => RuntimeOp::GoMapI64GoStringGet,
+                    hir::Builtin::MapI64GoStringContains => RuntimeOp::GoMapI64GoStringContains,
+                    hir::Builtin::MapI64GoStringSet => RuntimeOp::GoMapI64GoStringSet,
+                    hir::Builtin::MapI64GoStringDelete => RuntimeOp::GoMapI64GoStringDelete,
+                    hir::Builtin::MapI64GoStringClear => RuntimeOp::GoMapI64GoStringClear,
+                    hir::Builtin::MapI64GoStringIsNil => RuntimeOp::GoMapI64GoStringIsNil,
+                    hir::Builtin::MapI64GoStringRangeKeys => RuntimeOp::GoMapI64GoStringRangeKeys,
                     hir::Builtin::AggregateMapMake => RuntimeOp::GoMapStringInterfaceMake,
                     hir::Builtin::AggregateMapLen => RuntimeOp::GoMapStringInterfaceLen,
                     hir::Builtin::AggregateMapGetTagged => RuntimeOp::GoMapStringInterfaceGet,
@@ -497,6 +601,7 @@ fn lower_terminator(
                     hir::Builtin::PointerI64Get => RuntimeOp::GoPointerI64Get,
                     hir::Builtin::PointerI64Set => RuntimeOp::GoPointerI64Set,
                     hir::Builtin::PointerI64IsNil => RuntimeOp::GoPointerI64IsNil,
+                    hir::Builtin::PointerI64Equal => RuntimeOp::GoPointerI64Equal,
                     hir::Builtin::PointerStructI64Nil => RuntimeOp::GoPointerStructI64Nil,
                     hir::Builtin::PointerStructI64New => RuntimeOp::GoPointerStructI64New,
                     hir::Builtin::PointerStructI64Get => RuntimeOp::GoPointerStructI64Get,
@@ -509,19 +614,36 @@ fn lower_terminator(
                     hir::Builtin::AggregatePointerIsNil => RuntimeOp::GoInterfaceIsNil,
                     hir::Builtin::InterfaceNil => RuntimeOp::GoInterfaceNil,
                     hir::Builtin::InterfaceBoxBool => RuntimeOp::GoInterfaceBoxBool,
+                    hir::Builtin::InterfaceBoxF32 => RuntimeOp::GoInterfaceBoxF32,
+                    hir::Builtin::InterfaceBoxF64 => RuntimeOp::GoInterfaceBoxF64,
                     hir::Builtin::InterfaceBoxI64 => RuntimeOp::GoInterfaceBoxI64,
                     hir::Builtin::InterfaceBoxGoString => RuntimeOp::GoInterfaceBoxGoString,
+                    hir::Builtin::InterfaceBoxGoSliceGoString => {
+                        RuntimeOp::GoInterfaceBoxGoSliceGoString
+                    }
                     hir::Builtin::InterfaceBoxStructI64 => RuntimeOp::GoInterfaceBoxStructI64,
+                    hir::Builtin::InterfaceBoxPointerI64 => RuntimeOp::GoInterfaceBoxPointerI64,
                     hir::Builtin::InterfaceBoxPointerStructI64 => {
                         RuntimeOp::GoInterfaceBoxPointerStructI64
                     }
                     hir::Builtin::InterfaceBoxAggregate => RuntimeOp::GoInterfaceBoxAggregate,
+                    hir::Builtin::InterfaceBoxComparableAggregate => {
+                        RuntimeOp::GoInterfaceBoxComparableAggregate
+                    }
+                    hir::Builtin::InterfaceEqual => RuntimeOp::GoInterfaceEqual,
                     hir::Builtin::InterfaceIsNil => RuntimeOp::GoInterfaceIsNil,
                     hir::Builtin::InterfaceIsType => RuntimeOp::GoInterfaceIsType,
+                    hir::Builtin::InterfaceIsRuntimeError => RuntimeOp::GoInterfaceIsRuntimeError,
                     hir::Builtin::InterfaceUnboxBool => RuntimeOp::GoInterfaceUnboxBool,
+                    hir::Builtin::InterfaceUnboxF32 => RuntimeOp::GoInterfaceUnboxF32,
+                    hir::Builtin::InterfaceUnboxF64 => RuntimeOp::GoInterfaceUnboxF64,
                     hir::Builtin::InterfaceUnboxI64 => RuntimeOp::GoInterfaceUnboxI64,
                     hir::Builtin::InterfaceUnboxGoString => RuntimeOp::GoInterfaceUnboxGoString,
+                    hir::Builtin::InterfaceUnboxGoSliceGoString => {
+                        RuntimeOp::GoInterfaceUnboxGoSliceGoString
+                    }
                     hir::Builtin::InterfaceStructI64Get => RuntimeOp::GoInterfaceStructI64Get,
+                    hir::Builtin::InterfaceUnboxPointerI64 => RuntimeOp::GoInterfaceUnboxPointerI64,
                     hir::Builtin::InterfaceUnboxPointerStructI64 => {
                         RuntimeOp::GoInterfaceUnboxPointerStructI64
                     }
@@ -539,7 +661,41 @@ fn lower_terminator(
                     hir::Builtin::ChannelI64IsNil => RuntimeOp::GoChannelI64IsNil,
                     hir::Builtin::ChannelI64TrySend => RuntimeOp::GoChannelI64TrySend,
                     hir::Builtin::ChannelI64TryReceive => RuntimeOp::GoChannelI64TryReceive,
-                    hir::Builtin::MapStringI64Lookup => {
+                    hir::Builtin::ChannelGoStringNil => RuntimeOp::GoChannelGoStringNil,
+                    hir::Builtin::ChannelGoStringMake => RuntimeOp::GoChannelGoStringMake,
+                    hir::Builtin::ChannelGoStringLen => RuntimeOp::GoChannelGoStringLen,
+                    hir::Builtin::ChannelGoStringCap => RuntimeOp::GoChannelGoStringCap,
+                    hir::Builtin::ChannelGoStringSend => RuntimeOp::GoChannelGoStringSend,
+                    hir::Builtin::ChannelGoStringReceiveValue => {
+                        RuntimeOp::GoChannelGoStringReceiveValue
+                    }
+                    hir::Builtin::ChannelGoStringReceive => RuntimeOp::GoChannelGoStringReceive,
+                    hir::Builtin::ChannelGoStringClose => RuntimeOp::GoChannelGoStringClose,
+                    hir::Builtin::ChannelGoStringIsNil => RuntimeOp::GoChannelGoStringIsNil,
+                    hir::Builtin::ChannelGoStringTrySend => RuntimeOp::GoChannelGoStringTrySend,
+                    hir::Builtin::ChannelGoStringTryReceive => {
+                        RuntimeOp::GoChannelGoStringTryReceive
+                    }
+                    hir::Builtin::ChannelGoChannelI64Nil => RuntimeOp::GoChannelGoChannelI64Nil,
+                    hir::Builtin::ChannelGoChannelI64Make => RuntimeOp::GoChannelGoChannelI64Make,
+                    hir::Builtin::ChannelGoChannelI64Len => RuntimeOp::GoChannelGoChannelI64Len,
+                    hir::Builtin::ChannelGoChannelI64Cap => RuntimeOp::GoChannelGoChannelI64Cap,
+                    hir::Builtin::ChannelGoChannelI64Send => RuntimeOp::GoChannelGoChannelI64Send,
+                    hir::Builtin::ChannelGoChannelI64ReceiveValue => {
+                        RuntimeOp::GoChannelGoChannelI64ReceiveValue
+                    }
+                    hir::Builtin::ChannelGoChannelI64Receive => {
+                        RuntimeOp::GoChannelGoChannelI64Receive
+                    }
+                    hir::Builtin::ChannelGoChannelI64Close => RuntimeOp::GoChannelGoChannelI64Close,
+                    hir::Builtin::ChannelGoChannelI64IsNil => RuntimeOp::GoChannelGoChannelI64IsNil,
+                    hir::Builtin::ChannelGoChannelI64TrySend => {
+                        RuntimeOp::GoChannelGoChannelI64TrySend
+                    }
+                    hir::Builtin::ChannelGoChannelI64TryReceive => {
+                        RuntimeOp::GoChannelGoChannelI64TryReceive
+                    }
+                    hir::Builtin::MapStringI64Lookup | hir::Builtin::MapI64GoStringLookup => {
                         return Err(Diagnostic::backend(
                             "map comma-ok lookup survived MIR expansion",
                         ));
@@ -552,6 +708,11 @@ fn lower_terminator(
                     hir::Builtin::InterfaceSatisfies => {
                         return Err(Diagnostic::backend(
                             "interface satisfaction assertion survived MIR expansion",
+                        ));
+                    }
+                    hir::Builtin::InterfaceSatisfiesRuntimeError => {
+                        return Err(Diagnostic::backend(
+                            "runtime-error interface satisfaction survived MIR expansion",
                         ));
                     }
                     hir::Builtin::InterfaceSatisfiesNonNil => {
@@ -604,175 +765,18 @@ fn lower_panic_call(
             args.len()
         ))
     })?;
-    let operation = match mir_operand_type(&argument, locals)? {
-        out::RustType::Bool => RuntimeOp::PanicBool,
-        out::RustType::I64 => RuntimeOp::PanicI64,
-        out::RustType::GoString => RuntimeOp::PanicGoString,
-        out::RustType::F64
-        | out::RustType::Complex128
-        | out::RustType::ArrayI64(_)
-        | out::RustType::ArrayBool(_)
-        | out::RustType::ArrayF64(_)
-        | out::RustType::ArrayGoString(_)
-        | out::RustType::ArrayGoPointerStructI64(_)
-        | out::RustType::Struct(_)
-        | out::RustType::StructI64(_)
-        | out::RustType::GoSliceI64
-        | out::RustType::GoSliceU8
-        | out::RustType::GoSliceBool
-        | out::RustType::GoSliceInterface
-        | out::RustType::GoMapStringI64
-        | out::RustType::GoMapStringInterface
-        | out::RustType::GoPointerI64
-        | out::RustType::GoPointerStructI64
-        | out::RustType::GoInterface
-        | out::RustType::GoChannelI64 => {
-            return Err(Diagnostic::backend(
-                "unsupported numeric panic payload reached Rust lowering",
-            ));
-        }
-        out::RustType::Unit => {
-            return Err(Diagnostic::backend(
-                "unit value reached Rust panic representation lowering",
-            ));
-        }
-    };
+    let argument_ty = mir_operand_type(&argument, locals)?;
+    if argument_ty != out::RustType::GoInterface {
+        return Err(Diagnostic::backend(format!(
+            "verified Go panic payload is not an empty interface: {argument_ty:?}"
+        )));
+    }
     Ok(finish_terminator(
         out::TerminatorKind::Call {
-            target: out::CallTarget::Runtime(operation),
+            target: out::CallTarget::Runtime(RuntimeOp::PanicGoInterface),
             args: vec![lower_operand(argument, locals)?],
             destinations: Vec::new(),
             next,
-        },
-        provenance,
-        panic,
-    ))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn lower_print_call(
-    builtin: hir::Builtin,
-    args: Vec<mir::Operand>,
-    destinations: Vec<mir::Place>,
-    next: out::BasicBlockId,
-    provenance: out::Provenance,
-    locals: &[out::LocalDecl],
-    original_block_count: usize,
-    extra_blocks: &mut Vec<out::BasicBlock>,
-    panic: mir::PanicEdge,
-) -> Result<out::Terminator, Diagnostic> {
-    if !destinations.is_empty() {
-        return Err(Diagnostic::backend(
-            "Go print builtin unexpectedly has a result destination",
-        ));
-    }
-
-    let argument_types = args
-        .iter()
-        .map(|argument| mir_operand_type(argument, locals))
-        .collect::<Result<Vec<_>, _>>()?;
-    let newline = builtin == hir::Builtin::Println;
-    let mut calls = Vec::with_capacity(
-        args.len()
-            .saturating_mul(usize::from(newline).saturating_add(1))
-            .saturating_add(usize::from(newline)),
-    );
-    let mut arguments = args.into_iter().zip(argument_types).peekable();
-    while let Some((argument, ty)) = arguments.next() {
-        let operation = match ty {
-            out::RustType::Bool => RuntimeOp::PrintBool,
-            out::RustType::I64 => RuntimeOp::PrintI64,
-            out::RustType::GoString => RuntimeOp::PrintGoString,
-            out::RustType::F64
-            | out::RustType::Complex128
-            | out::RustType::ArrayI64(_)
-            | out::RustType::ArrayBool(_)
-            | out::RustType::ArrayF64(_)
-            | out::RustType::ArrayGoString(_)
-            | out::RustType::ArrayGoPointerStructI64(_)
-            | out::RustType::Struct(_)
-            | out::RustType::StructI64(_)
-            | out::RustType::GoSliceI64
-            | out::RustType::GoSliceU8
-            | out::RustType::GoSliceBool
-            | out::RustType::GoSliceInterface
-            | out::RustType::GoMapStringI64
-            | out::RustType::GoMapStringInterface
-            | out::RustType::GoPointerI64
-            | out::RustType::GoPointerStructI64
-            | out::RustType::GoInterface
-            | out::RustType::GoChannelI64 => {
-                return Err(Diagnostic::backend(
-                    "numeric print operation reached lowering without a runtime ABI operation",
-                ));
-            }
-            out::RustType::Unit => {
-                return Err(Diagnostic::backend(
-                    "unit value reached Rust print representation lowering",
-                ));
-            }
-        };
-        calls.push((operation, vec![lower_operand(argument, locals)?]));
-        if newline && arguments.peek().is_some() {
-            calls.push((RuntimeOp::PrintSpace, Vec::new()));
-        }
-    }
-    if newline {
-        calls.push((RuntimeOp::PrintNewline, Vec::new()));
-    }
-    if calls.is_empty() {
-        return Ok(finish_terminator(
-            out::TerminatorKind::Goto(next),
-            provenance,
-            panic,
-        ));
-    }
-
-    let tail_count = calls.len().saturating_sub(1);
-    let mut tail_ids = Vec::with_capacity(tail_count);
-    for offset in 0..tail_count {
-        let index = original_block_count
-            .checked_add(extra_blocks.len())
-            .and_then(|index| index.checked_add(offset))
-            .ok_or_else(|| Diagnostic::backend("Rust IR block count overflow"))?;
-        let index = u32::try_from(index)
-            .map_err(|_| Diagnostic::backend("Rust IR block count exceeds u32"))?;
-        tail_ids.push(out::BasicBlockId(index));
-    }
-
-    let mut calls = calls.into_iter();
-    let (first_operation, first_args) = calls
-        .next()
-        .ok_or_else(|| Diagnostic::backend("missing lowered Rust runtime call"))?;
-    let first_next = tail_ids.first().copied().unwrap_or(next);
-    for (index, ((operation, args), id)) in calls.zip(tail_ids.iter().copied()).enumerate() {
-        let call_next = tail_ids
-            .get(index.saturating_add(1))
-            .copied()
-            .unwrap_or(next);
-        extra_blocks.push(out::BasicBlock {
-            id,
-            provenance: provenance.clone(),
-            statements: Vec::new(),
-            terminator: finish_terminator(
-                out::TerminatorKind::Call {
-                    target: out::CallTarget::Runtime(operation),
-                    args,
-                    destinations: Vec::new(),
-                    next: call_next,
-                },
-                provenance.clone(),
-                panic,
-            ),
-        });
-    }
-
-    Ok(finish_terminator(
-        out::TerminatorKind::Call {
-            target: out::CallTarget::Runtime(first_operation),
-            args: first_args,
-            destinations: Vec::new(),
-            next: first_next,
         },
         provenance,
         panic,
@@ -800,174 +804,6 @@ pub(super) fn lower_operand(
         }
         mir::Operand::Unit => Ok(out::Operand::Unit),
     }
-}
-
-fn lower_constant(value: ConstValue, ty: &Ty) -> Result<out::Constant, Diagnostic> {
-    match (value, ty.underlying()) {
-        (ConstValue::Bool(value), Ty::Bool) => Ok(out::Constant::Bool(value)),
-        (
-            ConstValue::Int(value),
-            Ty::Int(IntTy::Int | IntTy::Int32) | Ty::Uint(UintTy::Uint8 | UintTy::Uintptr),
-        ) => value
-            .parse::<i64>()
-            .map(out::Constant::I64)
-            .map_err(|_| Diagnostic::backend(format!("Go int is outside Rust IR i64: {value}"))),
-        (ConstValue::String(bytes), Ty::String) => Ok(out::Constant::RuntimeStaticBytes {
-            op: RuntimeOp::GoStringFromStatic,
-            bytes,
-        }),
-        (ConstValue::Float(value), Ty::Float(FloatTy::Float64)) => parse_go_float(&value)
-            .map(f64::to_bits)
-            .map(out::Constant::F64)
-            .ok_or_else(|| Diagnostic::backend(format!("invalid Go float64 constant: {value}"))),
-        (ConstValue::Int(value), Ty::Float(FloatTy::Float64)) => value
-            .parse::<f64>()
-            .ok()
-            .filter(|value| value.is_finite())
-            .map(f64::to_bits)
-            .map(out::Constant::F64)
-            .ok_or_else(|| {
-                Diagnostic::backend(format!("invalid Go integer-to-float constant: {value}"))
-            }),
-        (ConstValue::Int(value), Ty::Complex(ComplexTy::Complex128)) => value
-            .parse::<f64>()
-            .ok()
-            .filter(|value| value.is_finite())
-            .map(|real| out::Constant::Complex128 {
-                real: real.to_bits(),
-                imag: 0.0_f64.to_bits(),
-            })
-            .ok_or_else(|| {
-                Diagnostic::backend(format!("invalid Go integer-to-complex constant: {value}"))
-            }),
-        (ConstValue::Float(value), Ty::Complex(ComplexTy::Complex128)) => parse_go_float(&value)
-            .filter(|value| value.is_finite())
-            .map(|real| out::Constant::Complex128 {
-                real: real.to_bits(),
-                imag: 0.0_f64.to_bits(),
-            })
-            .ok_or_else(|| {
-                Diagnostic::backend(format!("invalid Go float-to-complex constant: {value}"))
-            }),
-        (ConstValue::Complex { real, imag }, Ty::Complex(ComplexTy::Complex128)) => {
-            let real = parse_go_float(&real)
-                .ok_or_else(|| Diagnostic::backend("invalid real complex128 component"))?;
-            let imag = parse_go_float(&imag)
-                .ok_or_else(|| Diagnostic::backend("invalid imaginary complex128 component"))?;
-            Ok(out::Constant::Complex128 {
-                real: real.to_bits(),
-                imag: imag.to_bits(),
-            })
-        }
-        (value, ty) => Err(Diagnostic::backend(format!(
-            "invalid constant reached Rust lowering: {value:?} as {ty:?}"
-        ))),
-    }
-}
-
-fn lower_unary_op(
-    op: hir::UnaryOp,
-    operand: out::RustType,
-    result: out::RustType,
-) -> Result<Option<out::ValueOp>, Diagnostic> {
-    let lowered = match (op, operand, result) {
-        (hir::UnaryOp::Positive, out::RustType::I64, out::RustType::I64) => None,
-        (hir::UnaryOp::Positive, out::RustType::F64, out::RustType::F64)
-        | (hir::UnaryOp::Positive, out::RustType::Complex128, out::RustType::Complex128) => None,
-        (hir::UnaryOp::Negative, out::RustType::I64, out::RustType::I64) => {
-            Some(out::ValueOp::Primitive(PrimitiveOp::IntWrappingNeg))
-        }
-        (hir::UnaryOp::Negative, out::RustType::F64, out::RustType::F64) => {
-            Some(out::ValueOp::Primitive(PrimitiveOp::FloatNeg))
-        }
-        (hir::UnaryOp::Negative, out::RustType::Complex128, out::RustType::Complex128) => {
-            Some(out::ValueOp::Primitive(PrimitiveOp::ComplexNeg))
-        }
-        (hir::UnaryOp::Not, out::RustType::Bool, out::RustType::Bool) => {
-            Some(out::ValueOp::Primitive(PrimitiveOp::BoolNot))
-        }
-        (hir::UnaryOp::BitNot, out::RustType::I64, out::RustType::I64) => {
-            Some(out::ValueOp::Primitive(PrimitiveOp::IntBitNot))
-        }
-        (hir::UnaryOp::Real, out::RustType::Complex128, out::RustType::F64) => {
-            Some(out::ValueOp::Primitive(PrimitiveOp::ComplexReal))
-        }
-        (hir::UnaryOp::Imag, out::RustType::Complex128, out::RustType::F64) => {
-            Some(out::ValueOp::Primitive(PrimitiveOp::ComplexImag))
-        }
-        invalid => {
-            return Err(Diagnostic::backend(format!(
-                "invalid unary representation lowering: {invalid:?}"
-            )));
-        }
-    };
-    Ok(lowered)
-}
-
-fn lower_binary_op(
-    op: hir::BinaryOp,
-    left: out::RustType,
-    right: out::RustType,
-    result: out::RustType,
-) -> Result<out::ValueOp, Diagnostic> {
-    use hir::BinaryOp as Go;
-    use out::RustType::{Bool, Complex128, F64, GoString, I64};
-    use out::ValueOp::{Primitive, Runtime};
-    let lowered = match (op, left, right, result) {
-        (Go::Add, I64, I64, I64) => Primitive(PrimitiveOp::IntWrappingAdd),
-        (Go::Sub, I64, I64, I64) => Primitive(PrimitiveOp::IntWrappingSub),
-        (Go::Mul, I64, I64, I64) => Primitive(PrimitiveOp::IntWrappingMul),
-        (Go::Div, I64, I64, I64) => Runtime(RuntimeOp::IntDiv),
-        (Go::Rem, I64, I64, I64) => Runtime(RuntimeOp::IntRem),
-        (Go::BitAnd, I64, I64, I64) => Primitive(PrimitiveOp::IntBitAnd),
-        (Go::BitOr, I64, I64, I64) => Primitive(PrimitiveOp::IntBitOr),
-        (Go::BitXor, I64, I64, I64) => Primitive(PrimitiveOp::IntBitXor),
-        (Go::Shl, I64, I64, I64) => Runtime(RuntimeOp::IntShl),
-        (Go::Shr, I64, I64, I64) => Runtime(RuntimeOp::IntShr),
-        (Go::AndNot, I64, I64, I64) => Primitive(PrimitiveOp::IntAndNot),
-        (Go::Equal, Bool, Bool, Bool) => Primitive(PrimitiveOp::BoolEqual),
-        (Go::NotEqual, Bool, Bool, Bool) => Primitive(PrimitiveOp::BoolNotEqual),
-        (Go::Equal, I64, I64, Bool) => Primitive(PrimitiveOp::IntEqual),
-        (Go::NotEqual, I64, I64, Bool) => Primitive(PrimitiveOp::IntNotEqual),
-        (Go::Less, I64, I64, Bool) => Primitive(PrimitiveOp::IntLess),
-        (Go::LessEqual, I64, I64, Bool) => Primitive(PrimitiveOp::IntLessEqual),
-        (Go::Greater, I64, I64, Bool) => Primitive(PrimitiveOp::IntGreater),
-        (Go::GreaterEqual, I64, I64, Bool) => Primitive(PrimitiveOp::IntGreaterEqual),
-        (Go::Min, I64, I64, I64) => Primitive(PrimitiveOp::IntMin),
-        (Go::Max, I64, I64, I64) => Primitive(PrimitiveOp::IntMax),
-        (Go::Add, F64, F64, F64) => Primitive(PrimitiveOp::FloatAdd),
-        (Go::Sub, F64, F64, F64) => Primitive(PrimitiveOp::FloatSub),
-        (Go::Mul, F64, F64, F64) => Primitive(PrimitiveOp::FloatMul),
-        (Go::Div, F64, F64, F64) => Primitive(PrimitiveOp::FloatDiv),
-        (Go::Equal, F64, F64, Bool) => Primitive(PrimitiveOp::FloatEqual),
-        (Go::NotEqual, F64, F64, Bool) => Primitive(PrimitiveOp::FloatNotEqual),
-        (Go::Less, F64, F64, Bool) => Primitive(PrimitiveOp::FloatLess),
-        (Go::LessEqual, F64, F64, Bool) => Primitive(PrimitiveOp::FloatLessEqual),
-        (Go::Greater, F64, F64, Bool) => Primitive(PrimitiveOp::FloatGreater),
-        (Go::GreaterEqual, F64, F64, Bool) => Primitive(PrimitiveOp::FloatGreaterEqual),
-        (Go::Min, F64, F64, F64) => Primitive(PrimitiveOp::FloatMin),
-        (Go::Max, F64, F64, F64) => Primitive(PrimitiveOp::FloatMax),
-        (Go::Complex, F64, F64, Complex128) => Primitive(PrimitiveOp::ComplexFromParts),
-        (Go::Add, Complex128, Complex128, Complex128) => Primitive(PrimitiveOp::ComplexAdd),
-        (Go::Sub, Complex128, Complex128, Complex128) => Primitive(PrimitiveOp::ComplexSub),
-        (Go::Mul, Complex128, Complex128, Complex128) => Primitive(PrimitiveOp::ComplexMul),
-        (Go::Div, Complex128, Complex128, Complex128) => Primitive(PrimitiveOp::ComplexDiv),
-        (Go::Equal, Complex128, Complex128, Bool) => Primitive(PrimitiveOp::ComplexEqual),
-        (Go::NotEqual, Complex128, Complex128, Bool) => Primitive(PrimitiveOp::ComplexNotEqual),
-        (Go::Add, GoString, GoString, GoString) => Runtime(RuntimeOp::ConcatGoStrings),
-        (Go::Equal, GoString, GoString, Bool) => Primitive(PrimitiveOp::StringEqual),
-        (Go::NotEqual, GoString, GoString, Bool) => Primitive(PrimitiveOp::StringNotEqual),
-        (Go::Less, GoString, GoString, Bool) => Primitive(PrimitiveOp::StringLess),
-        (Go::LessEqual, GoString, GoString, Bool) => Primitive(PrimitiveOp::StringLessEqual),
-        (Go::Greater, GoString, GoString, Bool) => Primitive(PrimitiveOp::StringGreater),
-        (Go::GreaterEqual, GoString, GoString, Bool) => Primitive(PrimitiveOp::StringGreaterEqual),
-        invalid => {
-            return Err(Diagnostic::backend(format!(
-                "invalid binary representation lowering: {invalid:?}"
-            )));
-        }
-    };
-    Ok(lowered)
 }
 
 pub(super) fn mir_operand_type(

@@ -1,10 +1,12 @@
+mod incremental_reuse;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::compiler::input::{
-    PackageCatalogError, PackageInputManifest, PackageKey, PackageManifestCatalog, SourceSnapshot,
-    WorkspaceKey,
+    GoLanguageVersion, PackageCatalogError, PackageInputManifest, PackageKey,
+    PackageManifestCatalog, SourceSnapshot, WorkspaceKey,
 };
 use crate::compiler::provenance::SourceRef;
 
@@ -75,12 +77,26 @@ fn raw_program(logical_path: &str, diagnostic_path: &str, source: &str) -> Progr
     ProgramInput::standalone(test_workspace(), manifest).unwrap()
 }
 
+fn raw_program_at_version(
+    logical_path: &str,
+    diagnostic_path: &str,
+    source: &str,
+    language_version: GoLanguageVersion,
+) -> ProgramInput {
+    let package = super::super::input::PackageKey::command_line();
+    let file =
+        super::super::input::SourceFileInput::from_source(logical_path, diagnostic_path, source)
+            .unwrap();
+    let manifest =
+        PackageInputManifest::new_with_language_version(package, language_version, [file]).unwrap();
+    ProgramInput::standalone(test_workspace(), manifest).unwrap()
+}
+
 #[test]
 fn unsupported_aggregate_payloads_fail_at_their_source_boundary() {
     for source in [
         "package main\nfunc main() { value := \"x\"; _ = &value }\n",
         "package main\ntype Value struct { Items []int }\nfunc main() { value := Value{}; _ = &value }\n",
-        "package main\ntype Value struct { Items []string }\nfunc main() { value := Value{}; _ = &value }\n",
         "package main\ntype Node struct { Next *Node }\nfunc main() { value := Node{}; _ = &value }\n",
         "package main\ntype Node struct { Next *Node }\nfunc use(value *Node) {}\nfunc main() {}\n",
         "package main\nfunc main() { value := &struct { Name string }{}; _ = value }\n",
@@ -90,7 +106,7 @@ fn unsupported_aggregate_payloads_fail_at_their_source_boundary() {
         let error = CompilerSession::default()
             .compile_program(raw_program("main.go", "/checkout/project/main.go", source))
             .err()
-            .expect("an unsupported pointer payload must be rejected before MIR");
+            .expect("an unsupported aggregate payload must be rejected before MIR");
         let diagnostic = error.diagnostics().first().unwrap();
         assert_eq!(diagnostic.code, "GORS2001");
         assert_eq!(diagnostic.file, "/checkout/project/main.go");
@@ -358,32 +374,36 @@ fn definition_source_table_rebinds_stable_reference_to_current_anchor() {
 }
 
 #[test]
-fn syntax_invalid_input_is_query_owned_and_repeated_revision_is_green() {
-    let program = raw_program(
-        "main.go",
-        "/checkout/main.go",
-        "package main\nfunc main( {\n",
-    );
+fn type_declaration_source_tables_project_current_alias_and_definition_anchors() {
+    let source = "package main\n\ntype Alias = int\ntype Defined int\n\nfunc main() {}\n";
     let mut session = CompilerSession::default();
+    session
+        .compile_program(raw_program("main.go", "main.go", source))
+        .unwrap();
+    let file = session.database.active_files().first().copied().unwrap();
+    let analysis = session.database.analyze_file(file).unwrap();
+    let declarations = analysis
+        .type_aliases()
+        .iter()
+        .map(|declaration| (declaration.id(), declaration.name()))
+        .chain(
+            analysis
+                .type_definitions()
+                .iter()
+                .map(|declaration| (declaration.id(), declaration.name())),
+        )
+        .collect::<Vec<_>>();
 
-    let first = session
-        .compile_program(program.clone())
-        .err()
-        .expect("syntax-invalid raw source must fail in the parse query");
-    assert_eq!(first.diagnostics().first().unwrap().code, "GORS2002");
-    assert_eq!(
-        first.diagnostics().first().unwrap().file,
-        "/checkout/main.go"
-    );
-    assert_eq!(session.database().active_files().len(), 1);
-
-    session.database().reset_telemetry();
-    let second = session
-        .compile_program(program)
-        .err()
-        .expect("the unchanged invalid revision must remain invalid");
-    assert_eq!(second, first);
-    assert_eq!(session.database().telemetry().total_executions(), 0);
+    for (definition, name) in declarations {
+        let range = session
+            .database
+            .definition_source_table(file, definition)
+            .unwrap()
+            .resolve(SourceRef::definition(definition))
+            .unwrap();
+        assert_eq!(range.file(), file);
+        assert_eq!(range.range().start().to_usize(), source.find(name).unwrap());
+    }
 }
 
 #[test]

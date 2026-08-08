@@ -158,6 +158,10 @@ dynamic byte buffer, when capacity permits, only after representation lowering
 proves a last-use move. Remaining allocation or growth must stay explicit. The
 verifier derives or checks effects from explicit operations; lowering must not
 blindly copy the Go-MIR summary.
+String conversions to byte or rune slices always allocate fresh, non-nil slice
+backing. String-to-rune decoding emits U+FFFD and advances one byte for invalid
+UTF-8, and named string/rune-slice types retain their exact semantic type while
+using the canonical runtime representation.
 
 ### Terminal syn emitter
 
@@ -165,6 +169,9 @@ blindly copy the Go-MIR summary.
 - The emitter renders verified Rust IR as Rust syntax. It must not discover Go
   types, repair evaluation order, perform reachability, infer ownership or
   representation, or recognize stdlib functions by generated Rust shape.
+- Terminal emission may be split between `compiler/emit.rs` and focused modules
+  under `compiler/emit/`; every such module remains Rust-IR-only and is covered
+  by the same architecture checks.
 - Do not add semantic post-syn passes. Formatting is the only normal operation
   after emission.
 - Keep syn and quote usage confined to the emitter and the narrow public output
@@ -194,6 +201,20 @@ or runtime-symbol matches. Print intrinsics expand into ordered single-operation
 runtime-call blocks during representation lowering. Wrapping integer arithmetic
 is a typed primitive emitted directly as Rust wrapping operations, while only
 operations that need a versioned runtime symbol remain `RuntimeOp` values.
+
+`gors-runtime-abi` owns `FloatKind` and every width-specific numeric operation.
+The Rust boundary uses `f64` as the physical carrier for both Go `float32` and
+`float64`, but every `F32` primitive must narrow its operands before evaluation
+and widen only the already rounded `f32` result; comparisons observe those
+narrowed operands. Complex64 similarly uses the physical `Complex128` carrier
+with canonical `f32` components. Legacy float64 primitive IDs, names,
+signatures, and encodings are immutable, and new width-specific members are
+append-only. `PrintF32` accepts the physical `f64` carrier, narrows it, and then
+uses Go's float32 shortest-round-trip formatting; it must never reuse float64
+formatting directly. Float interface values use distinct append-only
+`GoInterfaceBoxF32` and `GoInterfaceUnboxF32` runtime operations (IDs 223 and
+224), never the legacy float64 members. Contract 2.31.0 has canonical identity
+`e885c47239d38dd2942e64f40df07e6a1d4bda18c5e57f7fd9740cd6b547e351`.
 
 Verification derives each function's canonical `RuntimeRequirement` from its
 explicit operations and constants. Verified function products retain that set,
@@ -465,13 +486,31 @@ source, package, and build inputs. Its tracked path parses each file projection
 once and projects that temporary AST exactly once into owned, trivia-insensitive
 structural function and constant syntax plus canonical header/body token
 streams. Semantic queries never retain or revisit the AST or raw source.
-Revision-local physical ranges live only in `FunctionLayout` and
-`ConstantLayout`; successful semantic lowering publishes a physical-free source
-plan which the presentation query joins to the current layout. Package-function
+Revision-local physical ranges live only in `FunctionLayout`, `ConstantLayout`,
+`VariableLayout`, and `TypeDeclarationLayout`; successful semantic lowering
+publishes a physical-free source plan which the presentation query joins to the
+current layout. Package-function
 `SyntaxAnchor`s use the package-level name, while method anchors use the named
 receiver and method name. Neither form contains an offset, traversal ordinal,
-or token index, and repeated `init` remains rejected until a structural
-disambiguator exists. Demand queries independently type function headers,
+or token index. Repeated `init` declarations are not independently nameable Go
+definitions: file projection retains each body as an ordered fragment under
+one stable package-owned `init` identity, and package-variable initialization
+composes those fragments in package filename and source declaration order.
+Identical initializer bodies therefore require no unstable declaration
+ordinal. Generic receiver and type syntax retains every explicit type argument
+rather than collapsing multi-argument instantiations back into parser-only
+syntax. Generic call inference iterates constraint equations until no new type
+argument is known. For a method-only interface constraint, it resolves the
+known argument's exact formal method set through the shared promoted-member
+resolver and structurally unifies each resolved method signature to infer
+remaining arguments; missing, ambiguous, wrong, or conflicting methods are
+source diagnostics. Constraint-method symbol dependencies use receiver
+definitions statically correlated with generic calls, explicit type arguments,
+generic type instantiations, typed or inferred bindings, package values,
+function results, and promoted embedded receivers. An unresolved receiver form
+conservatively admits all matching methods; correlated calls do not depend on
+an unrelated same-name method signature.
+Demand queries independently type function headers,
 package constants, package variables, and function bodies before reaching
 function-relative typed HIR, per-definition
 verified MIR, mandatory normalized/reverified MIR, configured verified Rust IR,
@@ -488,6 +527,88 @@ reads materialize exact constant or zero initial values, while mutation and
 address-taking remain rejected until global storage lowering exists. Exported
 constant and variable type/value semantics participate in the package
 public-API fingerprint.
+Function-local constant declarations are scoped semantic bindings. Their exact
+values, explicit types, repeated specification expressions, and `iota` values
+are resolved before HIR expression lowering; they never become storage places
+or MIR locals, and assignment to one is a source diagnostic.
+`len` and `cap` share one typed operand classifier across package-constant and
+function lowering. Constant strings count bytes. Array and pointer-to-array
+operands are constant only when their source operand contains no nonconstant
+builtin or ordinary call and no channel receive; such operands are fully
+type-checked but publish only the integer constant, with no executable HIR
+child or effects. Runtime array operands publish `ArrayLen`, are evaluated
+exactly once, and MIR validates the recorded length against the operand type
+before lowering it. Suppression never licenses semantic dead-variable
+elision: a local declaration still requires an executable storage and
+zero-value plan, while explicit pointer-to-array conversions such as
+`(*[7]int)(nil)` need no storage representation when suppressed.
+Package type/constant strongly connected components are resolved inside one
+semantic projection rather than by recursively invoking tracked Salsa queries.
+While a named array declaration's length is evaluated, its resolver-local
+incomplete type exposes Go's specified length zero, including through
+transitive defined-type and alias references; that temporary state must never
+escape into a published type product. Ordinary constant cycles still produce a
+deterministic source diagnostic. The narrow named-type projection catalogs
+stable declaration handles and names package-wide but reads declaration bodies
+only along the requested transitive type/constant path; a dedicated stable
+package declaration-name index remains incremental-architecture debt. A
+package constant may inspect an explicitly declared package-variable type or a
+type syntactically carried by its composite-literal initializer for `len`/`cap`,
+including while resolving an array-length type SCC. Other inferred
+variable-type forms remain outside this narrow check-only path.
+Function-local variable declarations may consume one multi-valued call,
+comma-ok map lookup, comma-ok interface assertion, or comma-ok channel receive.
+The RHS is lowered once before any name in that `ValueSpec` enters scope, and
+typed component coercions remain explicit in HIR `LetTuple` lowering.
+One sole multi-valued function call used as another call's argument remains an
+explicit HIR binding. MIR evaluates and freezes any method receiver first,
+executes the source call exactly once, applies each recorded assignment
+coercion in result order, and packs only the variadic remainder. A nonempty
+`...int` remainder receives a fresh slice whose length and capacity equal its
+bound result count; an empty remainder is nil.
+Append retains an explicit HIR elements-versus-spread plan. MIR evaluates and
+materializes the destination first, then every element or the spread source in
+source order, including interface boxing, before any backing-store mutation.
+It issues one typed append operation for the full appended count, so growth is
+decided once; runtime spread append snapshots the source's visible range before
+writes so overlapping aliases are memmove-safe. An append with no elements is
+operation-free and preserves the exact slice header, backing identity, and nil
+state.
+Multi-valued package-variable initialization remains rejected until the
+package initializer model represents tuple-producing execution.
+Every assignment to existing storage, including compound assignment,
+increment/decrement, and range `=`, carries a typed, `SourceRef`-provenanced
+HIR `AssignTarget`. MIR uses one prepare/read/write lifecycle: all dynamic
+target operands are prepared exactly once in source order, compound targets
+are read before their RHS, and writes occur left to right. Range targets are
+prepared anew on every admitted iteration, and range `=` retains and applies
+one explicit `ValueCoercion` per generated iteration value before its write.
+Break and continue resolve during semantic lowering to an exact owner-local
+dense `ControlTargetId`; branch HIR never retains a label string as executable
+target semantics. `For` and `Range` own loop targets, while switch, select, and
+type switch lower through syntax-independent `Breakable` regions. MIR maps only
+currently active exact IDs to CFG destinations, and range-over-function callback
+returns are selected only by equality with the resolved range-yield target.
+A select with exactly one communication case and no default uses the ordinary
+blocking channel send or receive operation after evaluating its operands once.
+The existing one-case-plus-default form remains a nonblocking try-select;
+multi-case arbitration and empty scheduler-blocking select remain explicit
+unsupported boundaries.
+Nested local struct paths rebuild the value from leaf to root with explicit
+`StructSet` operations; the emitter must never reconstruct or repair an
+assignment path.
+Field and method selectors share one shallowest-depth breadth-first resolver;
+fields and methods occupy the same selector namespace, and equal-depth paths
+are ambiguous. Formal `MethodSet(T)` lookup is distinct from addressable
+selector shorthand. In particular, a defined pointer type retains underlying
+field selection but never inherits the pointed-to type's methods. Every
+selected concrete receiver reaches MIR as a typed `MethodReceiverPlan` whose
+root type, embedded field owners/indexes/types, selected type, exact
+address/indirection adjustment, and declared receiver type are validated before
+MIR expands it into ordinary pointer and aggregate operations. Promoted
+auto-address through a value-embedded field remains diagnosed until nested
+pointer storage can preserve alias identity across calls, panic, and escape;
+copy-in/write-back and temporary pointers are not valid substitutes.
 Address-taking of a non-nested integer local is explicit HIR intent. MIR plans
 one shared pointer-backed storage cell for each such local, initializes
 parameters and declarations at their Go sequence points, and routes subsequent
@@ -656,6 +777,14 @@ fallback ad-hoc key only with the validated module identity read from the
 nearest containing `go.mod`. Directory entry packages receive their canonical
 module import path; explicit file lists remain `PackageKey::CommandLine` while
 sharing the local-module dependency catalog.
+Every `PackageInputManifest` also owns its canonical Go language version.
+Local-module manifests use the `go` directive, or Go's fixed `go1.16` default
+when it is absent; synthetic and embedded-SDK manifests default to the pinned
+compiler version. File projection records exact language-gated token evidence
+and any `//go:build go1.N` file version during its one parser pass. A separate
+tracked compatibility query combines those facts with manifest metadata, so a
+go.mod-only version change cannot reparse source or invalidate unchanged HIR,
+MIR, or Rust IR.
 
 The raw workspace loader deliberately performs no recursive module or import
 discovery. Module resolution is query-owned manifest expansion from decoded
@@ -667,17 +796,24 @@ Canonical decoded package identities live in the frontend-neutral
 consume that type's shared decoded-path validator instead of maintaining a
 parser-local validator. `workspace::local_module::LocalModuleCatalog` is the
 filesystem-only first boundary for local module discovery. Opening it
-canonicalizes one explicit module root and reads only its strict `module`
-directive. It materializes and memoizes one explicitly requested local package
-at a time, verifies lexical and canonical containment, reads only immediate
-eligible non-test Go files in canonical order, and never parses source or
-follows imports. `LocalModuleManifestCatalog` is its compiler adapter: it lazily
+canonicalizes one explicit module root and reads only its strict `module` and
+optional `go` directives. It materializes and memoizes one explicitly requested
+local package at a time, verifies lexical and canonical containment, reads only
+immediate eligible non-test Go files in canonical order, and never parses
+source or follows imports. `LocalModuleManifestCatalog` is its compiler adapter: it lazily
 converts and memoizes immutable `PackageInputManifest` values, reports external
 imports as unowned, and preserves concrete local loading failures through the
 catalog error chain. `ProgramInput` owns that adapter and the session admits its
 reachable closure from query-owned direct-import occurrences without another
-parse. Module discovery is `go.mod` based; GORSPATH is unsupported. Until the
-compiler publishes a closed reachable-input snapshot for the CLI manifest,
+parse. The production auto-loader composes the embedded Go SDK source catalog
+ahead of the local-module catalog, so standard-library identity wins while
+unknown canonical paths fall through to local module ownership; ad-hoc
+filesystem workspaces still own an embedded-SDK catalog when no local module
+exists. Each SDK request materializes and memoizes only that immutable
+package's raw build-selected Go files and never parses or follows imports.
+Module discovery is `go.mod` based; GORSPATH is unsupported.
+Until the compiler publishes a closed reachable-input snapshot for the CLI
+manifest,
 module-catalog builds must conservatively bypass cross-invocation
 generated-artifact cache admission;
 an entry-only snapshot is not sufficient evidence for a cache hit.
@@ -716,8 +852,10 @@ The production pipeline currently executes this focused, fully verified subset:
 
 - source packages and resolved Go-source imports within the executable type
   subset;
-- `bool`, 64-bit `int`, `float64`, `complex128`, byte-string values, named
-  numeric types, aliases, `[]int`, `[]byte`, `map[string]int`, `*int`,
+- `bool`, every scalar signed and unsigned integer type in the 64-bit Go data
+  model, `float64`, `complex128`, byte-string values, named numeric types,
+  aliases, `[]int`, `[]byte`, `[]string` and named slices whose element's
+  underlying type is `string`, `map[string]int`, `map[int]string`, `*int`,
   `chan int`, scalar fixed arrays, and integer-field structs;
 - exact typed and untyped constants, including `iota` and complex constants;
 - free functions, value methods and method values, direct non-escaping
@@ -727,26 +865,93 @@ The production pipeline currently executes this focused, fully verified subset:
   switches, labels, goto, range over slices and maps, and structured loops;
 - print and println intrinsics through the versioned runtime ABI.
 
+String-element slices use one typed `GoSlice<GoString>` runtime
+representation. Nil, make, len, cap, index, range, set, append, copy, clear,
+nil testing, and interface box/unbox are explicit HIR/MIR operations and stable
+runtime ABI operations; the MIR verifier preserves the source slice and element
+types even when distinct named slice types share an identical named string
+element type. Runtime copying is overlap-safe and allocation-free so its
+representation-effect summary remains exact.
+
+Concrete map range lowering snapshots the initial candidate keys exactly once,
+then checks live membership immediately before each body entry and reads the
+live value only after that check. Deleting an unreached candidate suppresses
+its iteration, updating an unreached value is observable when reached, and new
+keys are not added to the active range. Both `map[string]int` and
+`map[int]string` use typed ABI operations; the legacy indexed-key operation
+remains only for compatibility with older generated artifacts.
+
 Supported control flow and typed panic/recover behavior are executable today.
-Dynamic division or remainder by zero and negative dynamic shifts still reach
-Rust `panic_any`; give those faults versioned Go panic/process semantics and
-process-level differential tests before counting their failure presentation as
-compliant.
+Every deferred action is an explicit ordered Go-MIR and Rust-IR region. It
+clears its registration flag before invocation, owns an independent unwind
+boundary and newest-panic replacement transition, and continues at the next
+earlier action; terminal emission mechanically renders that verified plan.
+Dynamic division or remainder by zero and negative dynamic signed shift counts
+reach the versioned integer runtime boundary and preserve Go's ordered
+evaluation and panic semantics. Unsigned shift counts are statically
+nonnegative and therefore carry no negative-shift panic effect.
+
+Interface payloads for `*int` and pointers to defined types whose underlying
+type is Go `int` use the canonical `GoPointerI64` representation. Boxing and
+unboxing are explicit versioned ABI operations: typed nil pointers remain
+non-nil interfaces, extraction clones the pointer header and preserves pointee
+alias identity, interface equality compares pointee identity, and exact dynamic
+type identities keep defined pointer types distinct while aliases retain their
+target identity. Direct equality between executable integer pointers resolves
+Go comparison compatibility while their exact semantic types are still
+present, then selects the ABI-owned identity operation; representation lowering
+must never compare pointee values or erase distinct defined pointer types before
+that check. When either operand is an interface, interface coercion and equality
+take precedence over direct pointer comparison. Expression-switch case equality
+uses this same interface-first, exact-pointer path and the ordinary typed
+comparison path for all other values; only untyped and `nil` case expressions
+are implicitly converted to the switch tag type.
 
 The remaining frontier receives precise source diagnostics until its semantics
 are represented in HIR and MIR:
 
 - broader Go stdlib coverage and package initialization;
 - mutable package variables, broader aggregate representations, struct
-  pointers, pointer-receiver methods, interfaces, and generics;
+  pointers, pointer-receiver methods, broader interfaces, and generics;
 - escaping function values and type switches;
 - string, integer, channel, and iterator-function ranges; select, goroutines,
   and channels;
 - unsafe and host-resource integration.
 
-Narrow and unsigned integer execution remains explicit coverage work until its
-exact Go conversion, overflow, comparison, and representation rules are present
-throughout HIR, MIR, and Rust IR.
+Every predeclared signed and unsigned scalar integer type has an exact
+ABI-owned `IntegerKind` over one canonical `i64` carrier. Mandatory Rust
+representation lowering selects width-specific wrapping arithmetic, negation,
+bit operations, comparisons, min/max, and conversions; the verifier rejects
+noncanonical carriers and mismatched kinds before emission. Signed and unsigned
+printing select distinct runtime operations, so high-bit `uint64` values retain
+their Go rendering. Dynamic division and remainder select exact-width signed or
+unsigned runtime members for all eight scalar integer kinds, including Go's
+`MIN / -1` and `MIN % -1` rules. Shifts preserve the exact left-hand kind while
+retaining an independently typed integer count; signed and unsigned count
+members keep their distinct panic contracts. Broader integer slice, map,
+pointer, and channel families remain outside this scalar checkpoint.
+
+Typed floating-point and complex constants are quantized from the exact
+rational constant algebra at every declaration, conversion, and typed
+operation using the destination IEEE format's round-to-nearest, ties-to-even
+rule. HIR and MIR retain that canonical rounded value, the MIR verifier rejects
+unquantized typed constants, and representation lowering consumes the exact
+verified bits rather than making the first rounding decision or routing a
+`float32` constant through host `float64`.
+Untyped floating-point and complex components are canonical reduced arbitrary-
+precision rationals with a positive denominator, including values such as
+`22/7` that have no finite decimal spelling. Semantic operations, comparisons,
+min/max, HIR/MIR products, and their fingerprints retain the structural
+numerator and denominator; IEEE rounding occurs only at a concrete float or
+complex typing boundary.
+
+Executable channels use one direction-neutral shared handle representation per
+element representation while retaining exact send/receive direction in HIR and
+Go MIR. The canonical runtime ABI currently provides complete operation
+families for channels carrying `int`, `string`, or another `chan int` value;
+direction-only assignment and explicit conversion are representation-preserving
+and must never become runtime calls. Other channel element representations stay
+diagnosed until they receive an equally complete typed ABI family.
 
 The existing Go-spec, stdlib, repository, and arbitrary-program fixtures are a
 prioritized coverage map and differential oracle. Only complete, unfiltered

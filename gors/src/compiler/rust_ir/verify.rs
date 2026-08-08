@@ -1,5 +1,8 @@
 //! Verification for explicit Rust representation, ABI, storage, and control plans.
 
+mod constants;
+mod operations;
+mod recovery;
 mod structs;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -8,7 +11,11 @@ use super::*;
 use crate::compiler::Diagnostic;
 use crate::compiler::ids::QualifiedDefId;
 use crate::compiler::provenance::SourceRef;
-use gors_runtime_abi::{RuntimeSignature, RuntimeType};
+use constants::constant_type;
+use gors_runtime_abi::{IntegerKind, RuntimeOp, RuntimeType};
+use operations::{
+    runtime_result_parts, verify_runtime_arguments, verify_runtime_type, verify_value_operation,
+};
 
 impl File {
     #[cfg(test)]
@@ -186,40 +193,10 @@ impl Function {
             }
             self.verify_terminator(&block.terminator, signatures)?;
         }
-        self.verify_panic_cleanup()?;
+        recovery::verify_panic_cleanup(self)?;
         self.verify_control_flow_plan()?;
         self.verify_storage_dataflow()?;
         Ok(runtime_requirement(self))
-    }
-
-    fn verify_panic_cleanup(&self) -> Result<(), Diagnostic> {
-        if let Some(cleanup) = self.panic_cleanup {
-            self.verify_target(cleanup.entry)?;
-            verify_same(
-                self.place_ty(Place {
-                    local: cleanup.active,
-                })?,
-                RustType::Bool,
-                "panic cleanup state",
-            )?;
-        }
-        for block in &self.blocks {
-            for edge in block
-                .statements
-                .iter()
-                .map(|statement| statement.value.panic)
-                .chain(std::iter::once(block.terminator.panic))
-            {
-                if let PanicEdge::Cleanup(target) = edge
-                    && self.panic_cleanup.map(|cleanup| cleanup.entry) != Some(target)
-                {
-                    return Err(Diagnostic::backend(
-                        "Rust IR panic edge does not target the function cleanup entry",
-                    ));
-                }
-            }
-        }
-        Ok(())
     }
 
     fn verify_control_flow_plan(&self) -> Result<(), Diagnostic> {
@@ -303,13 +280,8 @@ impl Function {
                 let operand = self.operand_ty(operand)?;
                 verify_value_operation(*op, &[operand], "unary operation")?
             }
-            RvalueKind::RecoverCompareNil { state, .. } => {
-                verify_same(
-                    self.place_ty(*state)?,
-                    RustType::Bool,
-                    "panic recovery state",
-                )?;
-                RustType::Bool
+            RvalueKind::Recover { state, value, nil } => {
+                recovery::verify_recover(self, *state, value, *nil)?
             }
             RvalueKind::Binary { op, left, right } => {
                 let left = self.operand_ty(left)?;
@@ -319,12 +291,19 @@ impl Function {
             RvalueKind::ArrayIndexI64 { array, index } => {
                 let array = self.operand_ty(array)?;
                 let index = self.operand_ty(index)?;
-                if !matches!(array, RustType::ArrayI64(_)) || index != RustType::I64 {
+                if !matches!(
+                    array,
+                    RustType::ArrayInteger {
+                        element: IntegerKind::I64,
+                        ..
+                    }
+                ) || index != RustType::Integer(IntegerKind::I64)
+                {
                     return Err(Diagnostic::backend(format!(
                         "invalid Rust IR array index types: {array:?}[{index:?}]"
                     )));
                 }
-                RustType::I64
+                RustType::Integer(IntegerKind::I64)
             }
             RvalueKind::ArrayIndex { array, index } => {
                 let array = self.operand_ty(array)?;
@@ -334,7 +313,11 @@ impl Function {
                         "Rust IR scalar array index has a non-array operand: {array:?}"
                     )));
                 };
-                verify_same(index, RustType::I64, "scalar array index")?;
+                if index != RustType::Integer(IntegerKind::I64) {
+                    return Err(Diagnostic::backend(format!(
+                        "Rust IR scalar array index does not use Go int: {index:?}"
+                    )));
+                }
                 element
             }
             RvalueKind::ArraySetI64 {
@@ -345,9 +328,14 @@ impl Function {
                 let array = self.operand_ty(array)?;
                 let index = self.operand_ty(index)?;
                 let value = self.operand_ty(value)?;
-                if !matches!(array, RustType::ArrayI64(_))
-                    || index != RustType::I64
-                    || value != RustType::I64
+                if !matches!(
+                    array,
+                    RustType::ArrayInteger {
+                        element: IntegerKind::I64,
+                        ..
+                    }
+                ) || index != RustType::Integer(IntegerKind::I64)
+                    || value != RustType::Integer(IntegerKind::I64)
                 {
                     return Err(Diagnostic::backend(format!(
                         "invalid Rust IR array update types: {array:?}[{index:?}] = {value:?}"
@@ -368,32 +356,45 @@ impl Function {
                         "Rust IR scalar array update has a non-array operand: {array:?}"
                     )));
                 };
-                verify_same(index, RustType::I64, "scalar array update index")?;
+                if index != RustType::Integer(IntegerKind::I64) {
+                    return Err(Diagnostic::backend(format!(
+                        "Rust IR scalar array update index does not use Go int: {index:?}"
+                    )));
+                }
                 verify_same(value, element, "scalar array update value")?;
                 array
             }
             RvalueKind::ArrayLiteral { elements, ty } => {
-                let Some((length, element_ty)) = ty.scalar_array_parts() else {
-                    return Err(Diagnostic::backend(format!(
-                        "Rust IR scalar array literal has a non-array type: {ty:?}"
-                    )));
-                };
-                let actual_length = u64::try_from(elements.len()).map_err(|_| {
-                    Diagnostic::backend("Rust IR scalar array literal length does not fit u64")
-                })?;
-                if actual_length != length {
-                    return Err(Diagnostic::backend(format!(
-                        "Rust IR scalar array literal has {actual_length} elements for length {length}"
-                    )));
+                if *ty == RustType::ZeroArray {
+                    if !elements.is_empty() {
+                        return Err(Diagnostic::backend(
+                            "Rust IR zero array literal contains an element",
+                        ));
+                    }
+                    RustType::ZeroArray
+                } else {
+                    let Some((length, element_ty)) = ty.scalar_array_parts() else {
+                        return Err(Diagnostic::backend(format!(
+                            "Rust IR scalar array literal has a non-array type: {ty:?}"
+                        )));
+                    };
+                    let actual_length = u64::try_from(elements.len()).map_err(|_| {
+                        Diagnostic::backend("Rust IR scalar array literal length does not fit u64")
+                    })?;
+                    if actual_length != length {
+                        return Err(Diagnostic::backend(format!(
+                            "Rust IR scalar array literal has {actual_length} elements for length {length}"
+                        )));
+                    }
+                    for element in elements {
+                        verify_same(
+                            self.operand_ty(element)?,
+                            element_ty.clone(),
+                            "scalar array literal element",
+                        )?;
+                    }
+                    ty.clone()
                 }
-                for element in elements {
-                    verify_same(
-                        self.operand_ty(element)?,
-                        element_ty.clone(),
-                        "scalar array literal element",
-                    )?;
-                }
-                ty.clone()
             }
             RvalueKind::StructLiteral { fields, ty } => {
                 let fields = fields
@@ -414,7 +415,7 @@ impl Function {
                 for field in fields {
                     verify_same(
                         self.operand_ty(field)?,
-                        RustType::I64,
+                        RustType::Integer(IntegerKind::I64),
                         "struct literal field",
                     )?;
                 }
@@ -434,7 +435,7 @@ impl Function {
                         "Rust IR struct field index {field} is outside {length} fields"
                     )));
                 }
-                RustType::I64
+                RustType::Integer(IntegerKind::I64)
             }
             RvalueKind::StructSetI64 {
                 structure,
@@ -454,15 +455,21 @@ impl Function {
                 }
                 verify_same(
                     self.operand_ty(value)?,
-                    RustType::I64,
+                    RustType::Integer(IntegerKind::I64),
                     "struct field update",
                 )?;
                 structure
             }
-            RvalueKind::AggregateEqualI64 { left, right, .. } => {
+            RvalueKind::AggregateEqualInteger { left, right, .. } => {
                 let left = self.operand_ty(left)?;
                 let right = self.operand_ty(right)?;
-                if left != right || !matches!(left, RustType::ArrayI64(_) | RustType::StructI64(_))
+                if left != right
+                    || !matches!(
+                        left,
+                        RustType::ArrayInteger { .. }
+                            | RustType::ZeroArray
+                            | RustType::StructI64(_)
+                    )
                 {
                     return Err(Diagnostic::backend(format!(
                         "invalid Rust IR aggregate equality types: {left:?}, {right:?}"
@@ -525,10 +532,13 @@ impl Function {
                     }
                     CallTarget::Runtime(operation) => {
                         let signature = operation.signature();
-                        verify_operation_arguments(signature, &argument_types, "runtime call")?;
-                        let results =
-                            rust_types_from_runtime_result(signature.result(), "runtime call")?;
-                        self.verify_call_destinations(destinations, &results)?;
+                        verify_runtime_arguments(*operation, &argument_types, "runtime call")?;
+                        self.verify_runtime_call_destinations(
+                            destinations,
+                            *operation,
+                            signature.result(),
+                            "runtime call",
+                        )?;
                     }
                 }
             }
@@ -574,6 +584,41 @@ impl Function {
         Ok(())
     }
 
+    fn verify_runtime_call_destinations(
+        &self,
+        destinations: &[Place],
+        operation: RuntimeOp,
+        result: RuntimeType,
+        context: &str,
+    ) -> Result<(), Diagnostic> {
+        let results = runtime_result_parts(result, context)?;
+        if destinations.len() != results.len() {
+            return Err(Diagnostic::backend(format!(
+                "Rust IR call has {} destinations for {} result values",
+                destinations.len(),
+                results.len()
+            )));
+        }
+        for (position, (destination, result)) in destinations.iter().zip(results).enumerate() {
+            let destination_ty = self.place_ty(*destination)?;
+            if operation == RuntimeOp::GoInterfaceUnboxF32 {
+                verify_same(
+                    destination_ty,
+                    RustType::Float(gors_runtime_abi::FloatKind::F32),
+                    &format!("{context} destination {position}"),
+                )?;
+                continue;
+            }
+            verify_runtime_type(
+                &destination_ty,
+                result,
+                (result == RuntimeType::I64).then(|| operation.integer_result_constraint(position)),
+                &format!("{context} destination {position}"),
+            )?;
+        }
+        Ok(())
+    }
+
     fn verify_target(&self, target: BasicBlockId) -> Result<(), Diagnostic> {
         ((target.0 as usize) < self.blocks.len())
             .then_some(())
@@ -607,156 +652,18 @@ impl Function {
     }
 }
 
-fn verify_value_operation(
-    operation: ValueOp,
-    arguments: &[RustType],
-    context: &str,
-) -> Result<RustType, Diagnostic> {
-    let signature = match operation {
-        ValueOp::Primitive(operation) => operation.signature(),
-        ValueOp::Runtime(operation) => operation.signature(),
-    };
-    verify_operation_signature(signature, arguments, context)
-}
-
-fn verify_operation_signature(
-    signature: RuntimeSignature,
-    arguments: &[RustType],
-    context: &str,
-) -> Result<RustType, Diagnostic> {
-    verify_operation_arguments(signature, arguments, context)?;
-    rust_type_from_runtime(signature.result(), context)
-}
-
-fn verify_operation_arguments(
-    signature: RuntimeSignature,
-    arguments: &[RustType],
-    context: &str,
-) -> Result<(), Diagnostic> {
-    if arguments.len() != signature.parameters().len() {
-        return Err(Diagnostic::backend(format!(
-            "Rust IR {context} has {} arguments but its ABI signature requires {}",
-            arguments.len(),
-            signature.parameters().len()
-        )));
-    }
-    for (position, (actual, expected)) in arguments.iter().zip(signature.parameters()).enumerate() {
-        let expected = rust_type_from_runtime(*expected, context)?;
-        verify_same(
-            actual.clone(),
-            expected,
-            &format!("{context} argument {position}"),
-        )?;
-    }
-    Ok(())
-}
-
-fn rust_types_from_runtime_result(
-    ty: RuntimeType,
-    context: &str,
-) -> Result<Vec<RustType>, Diagnostic> {
-    match ty {
-        RuntimeType::Unit => Ok(Vec::new()),
-        RuntimeType::I64BoolTuple => Ok(vec![RustType::I64, RustType::Bool]),
-        RuntimeType::I64I64Tuple => Ok(vec![RustType::I64, RustType::I64]),
-        ty => rust_type_from_runtime(ty, context).map(|ty| vec![ty]),
-    }
-}
-
-fn rust_type_from_runtime(ty: RuntimeType, context: &str) -> Result<RustType, Diagnostic> {
-    match ty {
-        RuntimeType::Unit => Ok(RustType::Unit),
-        RuntimeType::Bool => Ok(RustType::Bool),
-        RuntimeType::I64 => Ok(RustType::I64),
-        RuntimeType::F64 => Ok(RustType::F64),
-        RuntimeType::Complex128 => Ok(RustType::Complex128),
-        RuntimeType::GoString => Ok(RustType::GoString),
-        RuntimeType::GoSliceI64 => Ok(RustType::GoSliceI64),
-        RuntimeType::GoSliceU8 => Ok(RustType::GoSliceU8),
-        RuntimeType::GoSliceBool => Ok(RustType::GoSliceBool),
-        RuntimeType::GoSliceInterface => Ok(RustType::GoSliceInterface),
-        RuntimeType::GoMapStringI64 => Ok(RustType::GoMapStringI64),
-        RuntimeType::GoMapStringInterface => Ok(RustType::GoMapStringInterface),
-        RuntimeType::GoPointerI64 => Ok(RustType::GoPointerI64),
-        RuntimeType::GoPointerStructI64 => Ok(RustType::GoPointerStructI64),
-        RuntimeType::GoInterface => Ok(RustType::GoInterface),
-        RuntimeType::GoChannelI64 => Ok(RustType::GoChannelI64),
-        RuntimeType::ByteSlice
-        | RuntimeType::StaticByteSlice
-        | RuntimeType::StaticI64Slice
-        | RuntimeType::StaticBoolSlice
-        | RuntimeType::I64BoolTuple
-        | RuntimeType::I64I64Tuple => Err(Diagnostic::backend(format!(
-            "Rust IR {context} requires ABI-only operand type {ty:?}"
-        ))),
-    }
-}
-
-fn constant_type(constant: &Constant) -> Result<RustType, Diagnostic> {
-    match constant {
-        Constant::Bool(_) => Ok(RustType::Bool),
-        Constant::I64(_) => Ok(RustType::I64),
-        Constant::F64(_) => Ok(RustType::F64),
-        Constant::Complex128 { .. } => Ok(RustType::Complex128),
-        Constant::StaticI64Array(values) => Ok(RustType::ArrayI64(
-            u64::try_from(values.len())
-                .map_err(|_| Diagnostic::backend("Rust IR array length does not fit u64"))?,
-        )),
-        Constant::RuntimeStaticBytes { op, .. } => {
-            let signature = op.signature();
-            if signature.parameters() == [RuntimeType::StaticByteSlice]
-                && signature.result() == RuntimeType::GoString
-            {
-                Ok(RustType::GoString)
-            } else {
-                Err(Diagnostic::backend(format!(
-                    "Rust IR static bytes use runtime operation {op:?} with incompatible signature {:?} -> {:?}",
-                    signature.parameters(),
-                    signature.result()
-                )))
-            }
-        }
-        Constant::RuntimeStaticI64s { op, .. } => {
-            let signature = op.signature();
-            if signature.parameters() == [RuntimeType::StaticI64Slice]
-                && signature.result() == RuntimeType::GoSliceI64
-            {
-                Ok(RustType::GoSliceI64)
-            } else {
-                Err(Diagnostic::backend(format!(
-                    "Rust IR static int slice uses runtime operation {op:?} with an incompatible signature"
-                )))
-            }
-        }
-        Constant::RuntimeStaticBools { op, .. } => {
-            let signature = op.signature();
-            if signature.parameters() == [RuntimeType::StaticBoolSlice]
-                && signature.result() == RuntimeType::GoSliceBool
-            {
-                Ok(RustType::GoSliceBool)
-            } else {
-                Err(Diagnostic::backend(format!(
-                    "Rust IR static bool slice uses runtime operation {op:?} with an incompatible signature"
-                )))
-            }
-        }
-        Constant::RuntimeStaticU8s { op, .. } => {
-            let signature = op.signature();
-            if signature.parameters() == [RuntimeType::StaticByteSlice]
-                && signature.result() == RuntimeType::GoSliceU8
-            {
-                Ok(RustType::GoSliceU8)
-            } else {
-                Err(Diagnostic::backend(format!(
-                    "Rust IR static byte slice uses runtime operation {op:?} with an incompatible signature"
-                )))
-            }
-        }
-    }
-}
-
 fn runtime_requirement(function: &Function) -> RuntimeRequirement {
     let mut operations = Vec::new();
+    if let Some(cleanup) = &function.panic_cleanup {
+        operations.push(cleanup.capture.operation);
+        operations.push(cleanup.rethrow.operation);
+        operations.extend(
+            cleanup
+                .actions
+                .iter()
+                .map(|action| action.replacement.capture.operation),
+        );
+    }
     for block in &function.blocks {
         for statement in &block.statements {
             collect_rvalue_runtime_operations(&statement.value, &mut operations);
@@ -822,11 +729,14 @@ fn collect_rvalue_runtime_operations(rvalue: &Rvalue, operations: &mut Vec<Runti
             collect_operand_runtime_operations(structure, operations);
             collect_operand_runtime_operations(value, operations);
         }
-        RvalueKind::AggregateEqualI64 { left, right, .. } => {
+        RvalueKind::AggregateEqualInteger { left, right, .. } => {
             collect_operand_runtime_operations(left, operations);
             collect_operand_runtime_operations(right, operations);
         }
-        RvalueKind::RecoverCompareNil { .. } => {}
+        RvalueKind::Recover { value, nil, .. } => {
+            operations.push(*nil);
+            collect_operand_runtime_operations(value, operations);
+        }
     }
 }
 

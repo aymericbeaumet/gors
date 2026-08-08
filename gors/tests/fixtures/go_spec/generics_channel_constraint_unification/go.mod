@@ -1,0 +1,3 @@
+module go_spec_generics_channel_constraint_unification
+
+go 1.26

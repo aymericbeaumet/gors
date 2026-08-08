@@ -224,6 +224,7 @@ impl CompilerSession {
                     workspace,
                     package.key(),
                     &logical_path,
+                    package.language_version(),
                     Arc::clone(&snapshot),
                 )
                 .map_err(|error| self.query_error(error))?;

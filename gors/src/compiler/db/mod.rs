@@ -67,6 +67,8 @@ pub enum QueryError {
     IdentityCollision(Arc<str>),
     /// The database was observed before its required config input was installed.
     MissingBuildConfig,
+    /// The explicit compiler Go version is not a valid language version.
+    InvalidBuildConfig(Arc<str>),
     /// A tracked compiler stage rejected its immutable input.
     StageFailure(Arc<StageFailure>),
     /// Package indexing found deterministic cross-file or syntax issues.
@@ -97,6 +99,7 @@ impl fmt::Display for QueryError {
             }
             Self::IdentityCollision(message) => formatter.write_str(message),
             Self::MissingBuildConfig => formatter.write_str("compiler build config is missing"),
+            Self::InvalidBuildConfig(message) => formatter.write_str(message),
             Self::StageFailure(failure) => {
                 write!(formatter, "{:?} query failed", failure.stage())
             }
@@ -129,7 +132,7 @@ impl SourceUpdate {
         self.file
     }
 
-    /// Whether source bytes or logical membership changed.
+    /// Whether source bytes, language metadata, or logical membership changed.
     #[must_use]
     pub const fn semantic_changed(self) -> bool {
         self.semantic_changed
@@ -187,6 +190,7 @@ impl CompilerDatabase {
                 event_telemetry.record_event(&event.kind);
             }))
             .ingredient::<queries::file_projection>()
+            .ingredient::<queries::language_version_issues>()
             .ingredient::<queries::file_analysis_product>()
             .ingredient::<queries::signature_product>()
             .ingredient::<queries::body_product>()
@@ -201,12 +205,15 @@ impl CompilerDatabase {
             .ingredient::<queries::typed_constant_product>()
             .ingredient::<queries::typed_variable_product>()
             .ingredient::<queries::package_type_aliases_product>()
+            .ingredient::<queries::package_type_named_product>()
             .ingredient::<queries::package_function_product>()
             .ingredient::<queries::package_function_named_product>()
             .ingredient::<queries::package_method_named_product>()
             .ingredient::<queries::package_constant_named_product>()
             .ingredient::<queries::package_variable_named_product>()
             .ingredient::<queries::variable_source_table_product>()
+            .ingredient::<queries::type_alias_source_table_product>()
+            .ingredient::<queries::type_definition_source_table_product>()
             .ingredient::<queries::mir_signature_dependencies_product>()
             .ingredient::<queries::verified_mir_product>()
             .ingredient::<queries::normalized_mir_product>()
@@ -257,8 +264,20 @@ impl CompilerDatabase {
         logical_path: &str,
         snapshot: Arc<SourceSnapshot>,
     ) -> Result<SourceUpdate, QueryError> {
-        let (update, mutation) =
-            self.set_source_transactional(workspace, package, logical_path, snapshot)?;
+        let build_config = self.build_config()?;
+        let language_version = super::input::GoLanguageVersion::parse(build_config.go_version())
+            .map_err(|error| {
+                QueryError::InvalidBuildConfig(Arc::from(format!(
+                    "compiler has an invalid configured Go version: {error}"
+                )))
+            })?;
+        let (update, mutation) = self.set_source_transactional(
+            workspace,
+            package,
+            logical_path,
+            language_version,
+            snapshot,
+        )?;
         self.commit_source_mutations(mutation);
         Ok(update)
     }
@@ -434,8 +453,16 @@ impl CompilerDatabase {
             return queries::constant_source_table_product(self, file, constant)
                 .map_err(QueryError::StageFailure);
         }
-        let variable = self.variable_projection(file, function)?;
-        queries::variable_source_table_product(self, file, variable)
+        if let Ok(variable) = self.variable_projection(file, function) {
+            return queries::variable_source_table_product(self, file, variable)
+                .map_err(QueryError::StageFailure);
+        }
+        if let Ok(alias) = self.type_alias_projection(file, function) {
+            return queries::type_alias_source_table_product(self, file, alias)
+                .map_err(QueryError::StageFailure);
+        }
+        let definition = self.type_definition_projection(file, function)?;
+        queries::type_definition_source_table_product(self, file, definition)
             .map_err(QueryError::StageFailure)
     }
 
@@ -617,6 +644,38 @@ impl CompilerDatabase {
         let facts = self.file_facts(file)?;
         facts
             .variables(self)
+            .into_iter()
+            .find(|candidate| candidate.id(self) == definition)
+            .ok_or(QueryError::UnknownFunction {
+                file,
+                function: definition,
+            })
+    }
+
+    fn type_alias_projection(
+        &self,
+        file: FileId,
+        definition: DefId,
+    ) -> Result<TypeAliasProjection<'_>, QueryError> {
+        let facts = self.file_facts(file)?;
+        facts
+            .type_aliases(self)
+            .into_iter()
+            .find(|candidate| candidate.id(self) == definition)
+            .ok_or(QueryError::UnknownFunction {
+                file,
+                function: definition,
+            })
+    }
+
+    fn type_definition_projection(
+        &self,
+        file: FileId,
+        definition: DefId,
+    ) -> Result<TypeDefinitionProjection<'_>, QueryError> {
+        let facts = self.file_facts(file)?;
+        facts
+            .type_definitions(self)
             .into_iter()
             .find(|candidate| candidate.id(self) == definition)
             .ok_or(QueryError::UnknownFunction {

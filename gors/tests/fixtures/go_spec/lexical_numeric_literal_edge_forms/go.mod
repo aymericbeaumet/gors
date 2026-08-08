@@ -1,0 +1,3 @@
+module go_spec_lexical_numeric_literal_edge_forms
+
+go 1.26

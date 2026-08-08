@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub enum QueryKind {
     /// Parse one immutable source snapshot and project its declarations.
     FileProjection,
+    /// Check projected syntax against its effective package/file Go version.
+    LanguageVersionCheck,
     /// Materialize the body-independent file index.
     FileAnalysis,
     /// Merge sorted file projections into a body-independent package index.
@@ -37,6 +39,8 @@ pub enum QueryKind {
     PackageConstantLookup,
     /// Resolve one stable package variable through the package index.
     PackageVariableLookup,
+    /// Resolve one package type and only its transitive semantic dependencies.
+    PackageTypeLookup,
     /// Build one function's self and direct-callee signature dependency set.
     SignatureDependencies,
     /// Classify one function's package as executable or library code.
@@ -57,6 +61,7 @@ impl QueryKind {
     const COUNT: usize = Self::RustIrPackage as usize + 1;
     const ALL: [Self; Self::COUNT] = [
         Self::FileProjection,
+        Self::LanguageVersionCheck,
         Self::FileAnalysis,
         Self::PackageAnalysis,
         Self::PublicApi,
@@ -71,6 +76,7 @@ impl QueryKind {
         Self::PackageFunctionLookup,
         Self::PackageConstantLookup,
         Self::PackageVariableLookup,
+        Self::PackageTypeLookup,
         Self::SignatureDependencies,
         Self::ExecutableRole,
         Self::RustIrRootInputs,

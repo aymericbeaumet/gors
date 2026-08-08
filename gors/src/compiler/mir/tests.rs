@@ -1,6 +1,12 @@
 use super::*;
 use crate::compiler::ids::LocalId;
-use crate::compiler::types::{ConstValue, IntTy, Ty};
+use crate::compiler::types::{ConstValue, ExactNumber, FloatTy, IntTy, Ty, UintTy};
+
+mod append;
+mod array_lengths;
+mod control_targets;
+mod method_receivers;
+mod pointers;
 
 fn lower(source: &str) -> File {
     let hir = crate::compiler::lower_to_hir("verify.go", source).unwrap();
@@ -86,6 +92,176 @@ fn verifier_rejects_mutated_ids_types_and_call_abis() {
 }
 
 #[test]
+fn verifier_rejects_a_corrupt_forwarded_variadic_argument() {
+    let source = r#"
+        package main
+        func pair() (int, int) { return 1, 2 }
+        func consume(head int, rest ...int) int { return head + len(rest) }
+        func main() { println(consume(pair())) }
+    "#;
+    let mut file = lower(source);
+    file.verify().expect("forwarded variadic call must verify");
+
+    let consume = file
+        .functions
+        .iter()
+        .find(|function| function.name == "consume")
+        .expect("consume function")
+        .id;
+    let consume = crate::compiler::ids::QualifiedDefId::new(file.package_id, consume);
+    let arguments = file
+        .functions
+        .iter_mut()
+        .find(|function| function.name == "main")
+        .into_iter()
+        .flat_map(|function| &mut function.blocks)
+        .find_map(|block| match &mut block.terminator.kind {
+            TerminatorKind::Call {
+                callee: hir::Callee::Function(actual),
+                args,
+                ..
+            } if *actual == consume => Some(args),
+            _ => None,
+        })
+        .expect("forwarded consume call");
+    assert_eq!(arguments.len(), 2);
+    *arguments
+        .get_mut(1)
+        .expect("forwarded variadic slice argument") =
+        Operand::Constant(ConstValue::Int("0".into()), Ty::Int(IntTy::Int));
+
+    let error = file.verify().unwrap_err();
+    assert!(
+        error.message.contains("call argument type mismatch"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn assignment_target_types_paths_and_struct_updates_are_verified() {
+    let source = r#"
+        package main
+        type leaf struct { value int; keep int }
+        type middle struct { leaf; sibling int }
+        type outer struct { middle; tail int }
+        func main() {
+            record := outer{middle: middle{leaf: leaf{value: 1, keep: 2}, sibling: 3}, tail: 4}
+            record.value = 8
+        }
+    "#;
+
+    let mut hir = crate::compiler::lower_to_hir("assignment-target.go", source).unwrap();
+    let main = hir
+        .functions
+        .iter_mut()
+        .find(|function| function.name == "main")
+        .unwrap();
+    let target = main
+        .body
+        .stmts
+        .iter_mut()
+        .find_map(|statement| match &mut statement.kind {
+            hir::StmtKind::Assign { destinations, .. } => destinations.first_mut(),
+            _ => None,
+        })
+        .expect("nested struct assignment target");
+    assert_eq!(target.ty, Some(Ty::Int(IntTy::Int)));
+    target.ty = Some(Ty::Bool);
+    let error = lower::lower_function(main).unwrap_err();
+    assert!(
+        error.message.contains("assignment target type changed"),
+        "{error:?}"
+    );
+
+    let file = lower(source);
+    let struct_updates = file
+        .functions
+        .iter()
+        .find(|function| function.name == "main")
+        .unwrap()
+        .blocks
+        .iter()
+        .flat_map(|block| &block.statements)
+        .filter(|statement| matches!(statement.value.kind, RvalueKind::StructSet { .. }))
+        .count();
+    assert_eq!(struct_updates, 3, "one explicit update per field-path step");
+
+    let mut bad_path = file.clone();
+    let update = bad_path
+        .functions
+        .iter_mut()
+        .find(|function| function.name == "main")
+        .into_iter()
+        .flat_map(|function| &mut function.blocks)
+        .flat_map(|block| &mut block.statements)
+        .find_map(|statement| match &mut statement.value.kind {
+            RvalueKind::StructSet { field, .. } => Some(field),
+            _ => None,
+        })
+        .expect("nested struct update");
+    *update = u32::MAX;
+    let error = bad_path.verify().unwrap_err();
+    assert!(error.message.contains("field") && error.message.contains("out of bounds"));
+
+    let mut bad_effect = file;
+    let update = bad_effect
+        .functions
+        .iter_mut()
+        .find(|function| function.name == "main")
+        .into_iter()
+        .flat_map(|function| &mut function.blocks)
+        .flat_map(|block| &mut block.statements)
+        .find(|statement| matches!(statement.value.kind, RvalueKind::StructSet { .. }))
+        .expect("nested struct update");
+    assert!(update.value.effects.may_read);
+    update.value.effects.may_read = false;
+    let error = bad_effect.verify().unwrap_err();
+    assert!(error.message.contains("effect mismatch"), "{error:?}");
+}
+
+#[test]
+fn range_assignment_coercion_arity_is_validated_before_mir() {
+    let mut hir = crate::compiler::lower_to_hir(
+        "range-coercion.go",
+        r#"
+            package main
+            func main() {
+                values := []int{1}
+                var key any
+                var value any
+                for key, value = range values { break }
+            }
+        "#,
+    )
+    .unwrap();
+    let main = hir
+        .functions
+        .iter_mut()
+        .find(|function| function.name == "main")
+        .unwrap();
+    let coercions = main
+        .body
+        .stmts
+        .iter_mut()
+        .find_map(|statement| match &mut statement.kind {
+            hir::StmtKind::Range {
+                bindings: hir::RangeBindings::Assigned { coercions, .. },
+                ..
+            } => Some(coercions),
+            _ => None,
+        })
+        .expect("assigned range coercions");
+    assert_eq!(coercions.len(), 2);
+    coercions.pop();
+
+    let error = lower::lower_function(main).unwrap_err();
+    assert!(
+        error.message.contains("target/coercion arity changed"),
+        "{error:?}"
+    );
+}
+
+#[test]
 fn verifier_rejects_uninitialized_reads() {
     let source = r#"
         package main
@@ -115,6 +291,307 @@ fn verifier_rejects_uninitialized_reads() {
     }
     let error = uninitialized.verify().unwrap_err();
     assert!(error.message.contains("before initialization"));
+}
+
+#[test]
+fn verifier_rejects_invalid_byte_slice_runtime_calls() {
+    let source = r#"
+        package main
+        func main() {
+            destination := make([]byte, 2)
+            source := make([]byte, 2)
+            destination[0] = 'x'
+            _ = copy(destination, source)
+        }
+    "#;
+
+    for (builtin, expected) in [
+        (
+            hir::Builtin::SliceU8Make,
+            "invalid MIR byte slice call SliceU8Make",
+        ),
+        (
+            hir::Builtin::SliceU8Set,
+            "invalid MIR byte slice call SliceU8Set",
+        ),
+        (
+            hir::Builtin::SliceU8Copy,
+            "invalid MIR byte slice copy arguments",
+        ),
+    ] {
+        let mut file = lower(source);
+        let arguments = file
+            .functions
+            .iter_mut()
+            .flat_map(|function| &mut function.blocks)
+            .find_map(|block| match &mut block.terminator.kind {
+                TerminatorKind::Call {
+                    callee: hir::Callee::Builtin(actual),
+                    args,
+                    ..
+                } if *actual == builtin => Some(args),
+                _ => None,
+            })
+            .expect("expected byte-slice runtime call");
+        arguments.clear();
+
+        let error = file.verify().unwrap_err();
+        assert!(error.message.contains(expected), "{error:?}");
+    }
+}
+
+#[test]
+fn string_conversion_verifier_preserves_named_destinations_and_rejects_corruption() {
+    let source = r#"
+        package main
+        type Text string
+        type Rune rune
+        type Runes []Rune
+        func main() {
+            dynamic := rune(65)
+            _ = Text(dynamic)
+            bytes := []byte{'x'}
+            _ = Text(bytes)
+            runes := Runes{'x'}
+            text := Text(runes)
+            _ = Runes(text)
+        }
+    "#;
+
+    let file = lower(source);
+    file.verify()
+        .expect("named string and rune-slice conversions must verify");
+
+    for builtin in [
+        hir::Builtin::StringFromRune,
+        hir::Builtin::StringFromSliceU8,
+        hir::Builtin::StringFromSliceRunes,
+        hir::Builtin::StringToSliceRunes,
+    ] {
+        let mut corrupt = file.clone();
+        let arguments = corrupt
+            .functions
+            .iter_mut()
+            .flat_map(|function| &mut function.blocks)
+            .find_map(|block| match &mut block.terminator.kind {
+                TerminatorKind::Call {
+                    callee: hir::Callee::Builtin(actual),
+                    args,
+                    ..
+                } if *actual == builtin => Some(args),
+                _ => None,
+            })
+            .expect("expected string conversion runtime call");
+        arguments.clear();
+
+        let error = corrupt.verify().unwrap_err();
+        assert!(error.message.contains("conversion arguments"), "{error:?}");
+    }
+
+    let mut corrupt_destination = file;
+    let function = corrupt_destination
+        .functions
+        .iter_mut()
+        .find(|function| {
+            function.blocks.iter().any(|block| {
+                matches!(
+                    block.terminator.kind,
+                    TerminatorKind::Call {
+                        callee: hir::Callee::Builtin(hir::Builtin::StringToSliceRunes),
+                        ..
+                    }
+                )
+            })
+        })
+        .expect("expected string-to-rune conversion owner");
+    let destination = function
+        .blocks
+        .iter()
+        .find_map(|block| match &block.terminator.kind {
+            TerminatorKind::Call {
+                callee: hir::Callee::Builtin(hir::Builtin::StringToSliceRunes),
+                destinations,
+                ..
+            } => destinations.first().copied(),
+            _ => None,
+        })
+        .expect("expected string-to-rune conversion destination");
+    function
+        .locals
+        .get_mut(destination.local.0 as usize)
+        .expect("string conversion destination local")
+        .ty = Ty::String;
+
+    let error = corrupt_destination.verify().unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("string to rune slice conversion destination"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn verifier_rejects_every_malformed_string_slice_runtime_call() {
+    let source = r#"
+        package main
+        type Word string
+        type Words []Word
+        func main() {
+            var values Words
+            _ = values == nil
+            values = make(Words, 1, 2)
+            values[0] = "a"
+            _ = len(values)
+            _ = cap(values)
+            _ = values[0]
+            _ = values[:]
+            values = append(values, "b")
+            _ = copy(values, Words{"c"})
+            clear(values)
+            var boxed any = values
+            _, _ = boxed.(Words)
+        }
+    "#;
+
+    for builtin in [
+        hir::Builtin::SliceGoStringNil,
+        hir::Builtin::SliceGoStringIsNil,
+        hir::Builtin::SliceGoStringMake,
+        hir::Builtin::SliceGoStringSet,
+        hir::Builtin::SliceGoStringLen,
+        hir::Builtin::SliceGoStringCap,
+        hir::Builtin::SliceGoStringIndex,
+        hir::Builtin::SliceGoStringRange,
+        hir::Builtin::SliceGoStringAppend,
+        hir::Builtin::SliceGoStringCopy,
+        hir::Builtin::SliceGoStringClear,
+        hir::Builtin::InterfaceBoxGoSliceGoString,
+        hir::Builtin::InterfaceUnboxGoSliceGoString,
+    ] {
+        let mut file = lower(source);
+        let (arguments, destinations) = file
+            .functions
+            .iter_mut()
+            .flat_map(|function| &mut function.blocks)
+            .find_map(|block| match &mut block.terminator.kind {
+                TerminatorKind::Call {
+                    callee: hir::Callee::Builtin(actual),
+                    args,
+                    destinations,
+                    ..
+                } if *actual == builtin => Some((args, destinations)),
+                _ => None,
+            })
+            .expect("expected string-slice runtime call");
+        if arguments.is_empty() {
+            destinations.clear();
+        } else {
+            arguments.clear();
+        }
+
+        let error = file.verify().unwrap_err();
+        assert!(
+            error.message.contains("string slice")
+                || error.message.contains("interface boxing")
+                || error.message.contains("interface extraction"),
+            "{builtin:?}: {error:?}"
+        );
+    }
+}
+
+#[test]
+fn verifier_rejects_invalid_float_interface_runtime_calls() {
+    let source = r#"
+        package main
+        func main() {
+            var left any = 1.5
+            var right any = 2.5
+            _ = left == right
+            _, _ = left.(float64)
+        }
+    "#;
+
+    for (builtin, expected) in [
+        (hir::Builtin::InterfaceBoxF64, "interface boxing"),
+        (hir::Builtin::InterfaceEqual, "interface equality"),
+        (
+            hir::Builtin::InterfaceUnboxF64,
+            "interface float64 extraction",
+        ),
+    ] {
+        let mut file = lower(source);
+        let arguments = file
+            .functions
+            .iter_mut()
+            .flat_map(|function| &mut function.blocks)
+            .find_map(|block| match &mut block.terminator.kind {
+                TerminatorKind::Call {
+                    callee: hir::Callee::Builtin(actual),
+                    args,
+                    ..
+                } if *actual == builtin => Some(args),
+                _ => None,
+            })
+            .expect("expected float-interface runtime call");
+        arguments.clear();
+
+        let error = file.verify().unwrap_err();
+        assert!(error.message.contains(expected), "{error:?}");
+    }
+}
+
+#[test]
+fn map_verifier_accepts_named_maps_and_rejects_wrong_key_and_value_types() {
+    let source = r#"
+        package main
+        type Words map[int]string
+        type Counts map[string]int
+        func main() {
+            words := Words{1: "one"}
+            counts := Counts{"one": 1}
+            _ = words[1]
+            counts["two"] = 2
+        }
+    "#;
+    let file = lower(source);
+    file.verify().expect("named concrete maps must verify");
+
+    let mut wrong_key = file.clone();
+    let arguments = wrong_key
+        .functions
+        .iter_mut()
+        .flat_map(|function| &mut function.blocks)
+        .find_map(|block| match &mut block.terminator.kind {
+            TerminatorKind::Call {
+                callee: hir::Callee::Builtin(hir::Builtin::MapI64GoStringGet),
+                args,
+                ..
+            } => Some(args),
+            _ => None,
+        })
+        .expect("expected named map lookup");
+    arguments[1] = Operand::Constant(ConstValue::String(b"bad".to_vec()), Ty::String);
+    let error = wrong_key.verify().unwrap_err();
+    assert!(error.message.contains("invalid MIR map call"), "{error:?}");
+
+    let mut wrong_value = file;
+    let arguments = wrong_value
+        .functions
+        .iter_mut()
+        .flat_map(|function| &mut function.blocks)
+        .find_map(|block| match &mut block.terminator.kind {
+            TerminatorKind::Call {
+                callee: hir::Callee::Builtin(hir::Builtin::MapStringI64Set),
+                args,
+                ..
+            } => Some(args),
+            _ => None,
+        })
+        .expect("expected named map assignment");
+    arguments[2] = Operand::Constant(ConstValue::String(b"bad".to_vec()), Ty::String);
+    let error = wrong_value.verify().unwrap_err();
+    assert!(error.message.contains("invalid MIR map call"), "{error:?}");
 }
 
 #[test]
@@ -243,6 +720,150 @@ fn verifier_rejects_mutated_effects_panic_edges_and_provenance() {
             .unwrap_err()
             .message
             .contains("function source reference is owned by")
+    );
+}
+
+#[test]
+fn verifier_enforces_exact_width_division_and_independently_typed_shift_counts() {
+    let source = r#"
+        package main
+        func signed(value int8, count int16) int8 { return value << count }
+        func unsigned(value uint8, count uint64) uint8 { return value >> count }
+        func divide(value uint32, divisor uint32) uint32 { return value / divisor }
+    "#;
+    let file = lower(source);
+
+    let signed = binary_rvalue(&file, hir::BinaryOp::Shl);
+    assert!(signed.effects.may_panic);
+    assert_eq!(signed.panic, PanicEdge::Propagate);
+    let unsigned = binary_rvalue(&file, hir::BinaryOp::Shr);
+    assert!(!unsigned.effects.may_panic);
+    assert_eq!(unsigned.panic, PanicEdge::None);
+    let division = binary_rvalue(&file, hir::BinaryOp::Div);
+    assert!(division.effects.may_panic);
+
+    let mut bad_count = file.clone();
+    let RvalueKind::Binary { right, .. } =
+        &mut binary_rvalue_mut(&mut bad_count, hir::BinaryOp::Shr).kind
+    else {
+        panic!("expected shift")
+    };
+    *right = Operand::Constant(
+        ConstValue::Float(ExactNumber::from_spelling("1").unwrap()),
+        Ty::Float(FloatTy::Float64),
+    );
+    assert!(
+        bad_count
+            .verify()
+            .unwrap_err()
+            .message
+            .contains("invalid MIR binary operation")
+    );
+
+    let mut bad_unsigned_effect = file.clone();
+    binary_rvalue_mut(&mut bad_unsigned_effect, hir::BinaryOp::Shr)
+        .effects
+        .may_panic = true;
+    assert!(
+        bad_unsigned_effect
+            .verify()
+            .unwrap_err()
+            .message
+            .contains("effect mismatch")
+    );
+
+    let mut bad_divisor = file;
+    let RvalueKind::Binary { right, .. } =
+        &mut binary_rvalue_mut(&mut bad_divisor, hir::BinaryOp::Div).kind
+    else {
+        panic!("expected division")
+    };
+    *right = Operand::Constant(ConstValue::Int("1".into()), Ty::Uint(UintTy::Uint64));
+    assert!(
+        bad_divisor
+            .verify()
+            .unwrap_err()
+            .message
+            .contains("invalid MIR binary operation")
+    );
+}
+
+#[test]
+fn verifier_rejects_corrupt_deferred_action_boundaries() {
+    let source = r#"
+        package main
+        func guarded() (result string) {
+            defer func() { result, _ = recover().(string) }()
+            defer func() { panic("replacement") }()
+            panic("original")
+        }
+    "#;
+    let file = lower(source);
+    file.verify().unwrap();
+
+    let mut uncleared = file.clone();
+    let function = uncleared
+        .functions
+        .iter_mut()
+        .find(|function| function.name == "guarded")
+        .unwrap();
+    let entry = function.panic_cleanup.as_ref().unwrap().actions[0].entry;
+    function.blocks[entry.0 as usize].statements[0].value.kind =
+        RvalueKind::Use(Operand::Constant(ConstValue::Bool(true), Ty::Bool));
+    assert!(
+        uncleared
+            .verify()
+            .unwrap_err()
+            .message
+            .contains("begin by clearing its registration flag")
+    );
+
+    let mut bad_replacement = file.clone();
+    let function = bad_replacement
+        .functions
+        .iter_mut()
+        .find(|function| function.name == "guarded")
+        .unwrap();
+    let action = &mut function.panic_cleanup.as_mut().unwrap().actions[0];
+    action.replacement.target = action.entry;
+    assert!(
+        bad_replacement
+            .verify()
+            .unwrap_err()
+            .message
+            .contains("invalid continuation or state")
+    );
+
+    let mut bad_region = file.clone();
+    let function = bad_region
+        .functions
+        .iter_mut()
+        .find(|function| function.name == "guarded")
+        .unwrap();
+    let action = &mut function.panic_cleanup.as_mut().unwrap().actions[0];
+    action.blocks.push(action.dispatch);
+    assert!(
+        bad_region
+            .verify()
+            .unwrap_err()
+            .message
+            .contains("block set is not canonical")
+    );
+
+    let mut bad_order = file;
+    let function = bad_order
+        .functions
+        .iter_mut()
+        .find(|function| function.name == "guarded")
+        .unwrap();
+    let cleanup = function.panic_cleanup.as_mut().unwrap();
+    cleanup.actions[0].continuation = cleanup.completion;
+    assert!(
+        bad_order
+            .verify()
+            .unwrap_err()
+            .message
+            .contains("ordered cleanup chain")
     );
 }
 

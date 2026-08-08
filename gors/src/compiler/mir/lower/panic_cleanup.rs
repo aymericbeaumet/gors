@@ -1,15 +1,25 @@
 //! Panic cleanup construction for statically registered deferred closures.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 
 use super::super::construct::{make_rvalue, make_statement, make_terminator, operand_ty};
-use super::super::{Operand, PanicCleanup, PanicEdge, Place, Provenance, RvalueKind};
+use super::super::{
+    DeferredAction, Operand, PanicCleanup, PanicEdge, PanicReplacement, Place, Provenance,
+    RvalueKind,
+};
 use super::{FunctionLowerer, SyntheticOrigin, TerminatorKind};
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::{BasicBlockId, LocalId};
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::types::{ConstValue, Ty};
+
+#[derive(Clone)]
+pub(super) struct DeferredCall {
+    pub(super) registered: LocalId,
+    pub(super) body: hir::Block,
+    pub(super) source: SourceRef,
+}
 
 impl FunctionLowerer {
     pub(super) fn register_defer(
@@ -71,8 +81,30 @@ impl FunctionLowerer {
             value,
             provenance,
         ))?;
-        self.deferred.push(body.clone());
+        self.deferred.push(DeferredCall {
+            registered,
+            body: body.clone(),
+            source,
+        });
         Ok(())
+    }
+
+    pub(super) fn clear_defer_registration(
+        &mut self,
+        registered: LocalId,
+        source: SourceRef,
+    ) -> Result<(), Diagnostic> {
+        let provenance = Provenance::Source(source);
+        let value = make_rvalue(
+            RvalueKind::Use(Operand::Constant(ConstValue::Bool(false), Ty::Bool)),
+            hir::Effects::default(),
+            provenance.clone(),
+        );
+        self.push_statement(make_statement(
+            Place { local: registered },
+            value,
+            provenance,
+        ))
     }
 
     pub(super) fn initialize_panic_cleanup_locals(
@@ -112,12 +144,15 @@ impl FunctionLowerer {
         &mut self,
         function: &hir::Function,
         active: LocalId,
+        recovered: LocalId,
     ) -> Result<PanicCleanup, Diagnostic> {
         let provenance = Provenance::Synthetic(SyntheticOrigin::PanicCleanupDispatch);
         let entry = self.new_block(provenance.clone());
         self.current = entry;
         let deferred = self.all_deferred.clone();
+        let mut actions = Vec::with_capacity(deferred.len());
         for action in deferred.iter().rev() {
+            let dispatch = self.current;
             let body = self.new_block(provenance.clone());
             let next = self.new_block(provenance.clone());
             self.terminate(make_terminator(
@@ -132,6 +167,7 @@ impl FunctionLowerer {
                 provenance.clone(),
             ))?;
             self.current = body;
+            self.clear_defer_registration(action.registered, action.source)?;
             self.lower_block(&action.body)?;
             if !self.is_terminated(self.current)? {
                 self.terminate(make_terminator(
@@ -140,8 +176,28 @@ impl FunctionLowerer {
                     provenance.clone(),
                 ))?;
             }
+            let blocks = self.deferred_action_blocks(body, next)?;
+            actions.push(DeferredAction {
+                dispatch,
+                registered: action.registered,
+                entry: body,
+                blocks,
+                continuation: next,
+                replacement: PanicReplacement {
+                    target: next,
+                    active,
+                    recovered,
+                    effects: hir::Effects {
+                        may_write: true,
+                        ..hir::Effects::default()
+                    },
+                    provenance: provenance.clone(),
+                },
+            });
             self.current = next;
         }
+
+        let completion = self.current;
 
         let mut returned = Vec::with_capacity(function.signature.results.len());
         for (index, ty) in function.signature.results.iter().enumerate() {
@@ -160,7 +216,13 @@ impl FunctionLowerer {
             hir::Effects::default(),
             provenance,
         ))?;
-        Ok(PanicCleanup { entry, active })
+        Ok(PanicCleanup {
+            entry,
+            active,
+            recovered,
+            actions,
+            completion,
+        })
     }
 
     pub(super) fn retarget_body_panics(&mut self, cleanup: BasicBlockId) {
@@ -176,5 +238,49 @@ impl FunctionLowerer {
                 terminator.panic = PanicEdge::Cleanup(cleanup);
             }
         }
+    }
+
+    fn deferred_action_blocks(
+        &self,
+        entry: BasicBlockId,
+        continuation: BasicBlockId,
+    ) -> Result<Vec<BasicBlockId>, Diagnostic> {
+        let mut blocks = BTreeSet::new();
+        let mut pending = VecDeque::from([entry]);
+        while let Some(id) = pending.pop_front() {
+            if id == continuation {
+                continue;
+            }
+            if !blocks.insert(id) {
+                continue;
+            }
+            let block = self.blocks.get(id.0 as usize).ok_or_else(|| {
+                Diagnostic::backend(format!(
+                    "deferred action references invalid MIR block {}",
+                    id.0
+                ))
+            })?;
+            let terminator = block.terminator.as_ref().ok_or_else(|| {
+                Diagnostic::backend(format!(
+                    "deferred action contains unterminated MIR block {}",
+                    id.0
+                ))
+            })?;
+            match &terminator.kind {
+                TerminatorKind::Goto(target)
+                | TerminatorKind::Call { target, .. }
+                | TerminatorKind::SpawnEmpty { target } => pending.push_back(*target),
+                TerminatorKind::SwitchBool {
+                    then_target,
+                    else_target,
+                    ..
+                } => {
+                    pending.push_back(*then_target);
+                    pending.push_back(*else_target);
+                }
+                TerminatorKind::Return(_) | TerminatorKind::Unreachable => {}
+            }
+        }
+        Ok(blocks.into_iter().collect())
     }
 }

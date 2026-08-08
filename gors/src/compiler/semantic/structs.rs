@@ -1,8 +1,10 @@
-//! Exact struct literal and direct-field expression lowering.
-
-use std::collections::HashSet;
+//! Exact struct literal and field or method selector lowering.
 
 use super::expressions::{coerce_expr, ensure_bootstrap_value_type};
+use super::member_resolution::{
+    MethodLookup, MethodResolution, ResolvedMember, resolve_method_set_member,
+    resolve_selector_member, struct_fields,
+};
 use super::pointers::pointer_effects;
 use super::{FunctionLowerer, MethodSymbol};
 use crate::compiler::Diagnostic;
@@ -10,7 +12,7 @@ use crate::compiler::hir;
 use crate::compiler::ids::NodeId;
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{ExprSyntax, ExprSyntaxKind, IdentSyntax, SyntaxSource};
-use crate::compiler::types::{StructField, Ty};
+use crate::compiler::types::Ty;
 
 impl FunctionLowerer {
     #[allow(clippy::too_many_arguments)]
@@ -67,17 +69,18 @@ impl FunctionLowerer {
         )? {
             return Ok(lowered);
         }
-        let symbol = self.resolve_method_symbol(&receiver.ty, &member.name, source)?;
-        let Some((receiver_ty, params)) = symbol.signature.params.split_first() else {
-            return Err(Diagnostic::backend("method signature omitted its receiver"));
-        };
-        let receiver = self.adjust_method_receiver(
-            receiver,
-            receiver_ty,
-            symbol.pointer_receiver,
-            base.source,
+        let resolution = self.resolve_selector_method(
+            &receiver.ty,
+            &member.name,
+            receiver.category == hir::ValueCategory::Place
+                || matches!(receiver.ty.underlying(), Ty::Pointer(_)),
             source,
         )?;
+        let symbol = resolution.symbol;
+        let Some((_, params)) = symbol.signature.params.split_first() else {
+            return Err(Diagnostic::backend("method signature omitted its receiver"));
+        };
+        let receiver = self.build_method_receiver(receiver, resolution.plan, base.source)?;
         let lowered_arguments = self.lower_call_arguments(
             arguments,
             params,
@@ -87,9 +90,6 @@ impl FunctionLowerer {
             source,
             "method",
         )?;
-        let mut args = Vec::with_capacity(lowered_arguments.len().saturating_add(1));
-        args.push(receiver);
-        args.extend(lowered_arguments);
         let ty = match symbol.signature.results.as_slice() {
             [] => Ty::Unit,
             [single] => single.clone(),
@@ -101,23 +101,20 @@ impl FunctionLowerer {
                 source,
             ));
         }
-        let effects = args.iter().fold(
-            hir::Effects {
-                may_call: true,
-                may_allocate: true,
-                may_block: true,
-                may_panic: true,
-                may_write: true,
-                ..hir::Effects::default()
-            },
-            |effects, argument| effects.union(argument.effects),
-        );
+        let effects = hir::Effects {
+            may_call: true,
+            may_allocate: true,
+            may_block: true,
+            may_panic: true,
+            may_write: true,
+            ..hir::Effects::default()
+        }
+        .union(receiver.effects)
+        .union(lowered_arguments.effects());
         let mut lowered = hir::Expr {
             node,
-            kind: hir::ExprKind::Call {
-                callee: hir::Callee::Function(symbol.id),
-                args,
-            },
+            kind: lowered_arguments
+                .into_call_kind(hir::Callee::Function(symbol.id), vec![receiver]),
             ty,
             category: hir::ValueCategory::Value,
             effects,
@@ -135,67 +132,89 @@ impl FunctionLowerer {
         name: &str,
         source: SourceRef,
     ) -> Result<MethodSymbol, Diagnostic> {
-        let definition = named_receiver_definition(receiver).ok_or_else(|| {
-            Diagnostic::semantic(format!("type {receiver:?} has no method {name}"), source)
-        })?;
-        self.methods
-            .get(&(definition, name.to_owned()))
-            .cloned()
-            .ok_or_else(|| {
-                Diagnostic::semantic(format!("type {receiver:?} has no method {name}"), source)
-            })
+        resolve_method_set_member(receiver, name, &self.methods, source)
+            .map(|resolution| resolution.symbol)
     }
 
-    pub(super) fn adjust_method_receiver(
-        &mut self,
-        mut receiver: hir::Expr,
-        receiver_ty: &Ty,
-        pointer_receiver: bool,
-        syntax_source: SyntaxSource,
+    pub(super) fn resolve_method_set(
+        &self,
+        receiver: &Ty,
+        name: &str,
         source: SourceRef,
+    ) -> Result<MethodResolution, Diagnostic> {
+        resolve_method_set_member(receiver, name, &self.methods, source)
+    }
+
+    pub(super) fn resolve_selector_method(
+        &self,
+        receiver: &Ty,
+        name: &str,
+        addressable: bool,
+        source: SourceRef,
+    ) -> Result<MethodResolution, Diagnostic> {
+        match resolve_selector_member(
+            receiver,
+            name,
+            &self.methods,
+            MethodLookup::Selector { addressable },
+            source,
+        )? {
+            ResolvedMember::Method(method) => Ok(method),
+            ResolvedMember::Field(_) => Err(Diagnostic::semantic(
+                format!("field {name} of type {receiver:?} is not callable"),
+                source,
+            )),
+        }
+    }
+
+    pub(super) fn build_method_receiver(
+        &mut self,
+        receiver: hir::Expr,
+        plan: hir::MethodReceiverPlan,
+        syntax_source: SyntaxSource,
     ) -> Result<hir::Expr, Diagnostic> {
-        if receiver.ty == *receiver_ty {
-            coerce_expr(&mut receiver, receiver_ty, source)?;
-            return Ok(receiver);
-        }
-        if pointer_receiver
-            && let Ty::Pointer(element) = receiver_ty.underlying()
-            && receiver.ty == **element
-            && let hir::ExprKind::Local(local) = &receiver.kind
-        {
-            let node = self.alloc_node(syntax_source)?;
-            return Ok(hir::Expr {
-                node,
-                kind: hir::ExprKind::AddressOfLocal(*local),
-                ty: receiver_ty.clone(),
-                category: hir::ValueCategory::Value,
-                effects: hir::Effects {
-                    may_allocate: true,
-                    may_read: true,
-                    ..hir::Effects::default()
-                },
-                source: SourceRef::node(node),
+        let mut effects = receiver.effects;
+        if !plan.path.is_empty() {
+            effects = effects.union(hir::Effects {
+                may_read: true,
+                may_call: plan
+                    .path
+                    .iter()
+                    .any(|step| matches!(step.owner_ty.underlying(), Ty::Pointer(_))),
+                may_panic: plan
+                    .path
+                    .iter()
+                    .any(|step| matches!(step.owner_ty.underlying(), Ty::Pointer(_))),
+                ..hir::Effects::default()
             });
         }
-        if !pointer_receiver
-            && (receiver_ty.bootstrap_i64_struct_fields().is_some()
-                || receiver_ty.uses_interface_aggregate_pointer_representation())
-            && let Ty::Pointer(element) = receiver.ty.underlying()
-            && **element == *receiver_ty
-        {
-            let effects = pointer_effects(&[&receiver], false, false, true);
-            let node = self.alloc_node(syntax_source)?;
-            return Ok(hir::Expr {
-                node,
-                kind: hir::ExprKind::PointerStructValue(Box::new(receiver)),
-                ty: receiver_ty.clone(),
-                category: hir::ValueCategory::Value,
-                effects,
-                source: SourceRef::node(node),
+        if plan.adjustment == hir::MethodReceiverAdjustment::AutoAddress {
+            effects = effects.union(hir::Effects {
+                may_allocate: true,
+                may_read: true,
+                ..hir::Effects::default()
+            });
+        } else if plan.adjustment == hir::MethodReceiverAdjustment::AutoIndirect {
+            effects = effects.union(hir::Effects {
+                may_read: true,
+                may_call: true,
+                may_panic: true,
+                ..hir::Effects::default()
             });
         }
-        coerce_expr(&mut receiver, receiver_ty, source)?;
-        Ok(receiver)
+        let ty = plan.receiver_ty.clone();
+        let node = self.alloc_node(syntax_source)?;
+        Ok(hir::Expr {
+            node,
+            kind: hir::ExprKind::MethodReceiver {
+                receiver: Box::new(receiver),
+                plan,
+            },
+            ty,
+            category: hir::ValueCategory::Value,
+            effects,
+            source: SourceRef::node(node),
+        })
     }
 
     pub(super) fn lower_selector(
@@ -213,36 +232,26 @@ impl FunctionLowerer {
         }
         let mut structure = self.lower_expr(base, None)?;
         ensure_bootstrap_value_type(&structure.ty, source)?;
-        let paths = promoted_field_paths(&structure.ty, member.name.as_ref(), &mut HashSet::new());
-        let Some(minimum_depth) = paths.iter().map(|(path, _)| path.len()).min() else {
-            return Err(Diagnostic::semantic(
-                format!("type {:?} has no field {}", structure.ty, member.name),
-                source,
-            ));
+        let resolution = match resolve_selector_member(
+            &structure.ty,
+            member.name.as_ref(),
+            &self.methods,
+            MethodLookup::Selector {
+                addressable: structure.category == hir::ValueCategory::Place
+                    || matches!(structure.ty.underlying(), Ty::Pointer(_)),
+            },
+            source,
+        )? {
+            ResolvedMember::Field(field) => field,
+            ResolvedMember::Method(_) => {
+                return Err(Diagnostic::unsupported(
+                    "method values require an explicit non-escaping binding",
+                    source,
+                ));
+            }
         };
-        let mut nearest = paths
-            .into_iter()
-            .filter(|(path, _)| path.len() == minimum_depth);
-        let (path, _) = nearest.next().ok_or_else(|| {
-            Diagnostic::backend("promoted struct field search lost its nearest result")
-        })?;
-        if nearest.next().is_some() {
-            return Err(Diagnostic::semantic(
-                format!("selector {} is ambiguous", member.name),
-                source,
-            ));
-        }
-        for (position, field) in path.iter().copied().enumerate() {
-            let fields = struct_fields(&structure.ty).ok_or_else(|| {
-                Diagnostic::backend("promoted struct field path crossed a non-struct type")
-            })?;
-            let field_ty = fields
-                .get(field)
-                .map(|definition| definition.ty.clone())
-                .ok_or_else(|| {
-                    Diagnostic::backend("promoted struct field path is out of bounds")
-                })?;
-            let last = position + 1 == path.len();
+        for (position, step) in resolution.path.iter().enumerate() {
+            let last = position + 1 == resolution.path.len();
             let step_node = if last {
                 node
             } else {
@@ -255,9 +264,8 @@ impl FunctionLowerer {
             };
             structure = self.lower_struct_field_step(
                 structure,
-                u32::try_from(field)
-                    .map_err(|_| Diagnostic::backend("struct exceeds the field index domain"))?,
-                field_ty,
+                step.field,
+                step.field_ty.clone(),
                 step_node,
                 step_source,
                 member.source,
@@ -288,6 +296,13 @@ impl FunctionLowerer {
                 may_read: true,
                 ..hir::Effects::default()
             })
+        };
+        let category = if structure.category == hir::ValueCategory::Place
+            || matches!(structure.ty.underlying(), Ty::Pointer(_))
+        {
+            hir::ValueCategory::Place
+        } else {
+            hir::ValueCategory::Value
         };
         let kind = if pointer_structure {
             let index_node = self.alloc_node(syntax_source)?;
@@ -337,7 +352,7 @@ impl FunctionLowerer {
             node,
             kind,
             ty: field_ty,
-            category: hir::ValueCategory::Value,
+            category,
             effects,
             source,
         })
@@ -436,84 +451,5 @@ impl FunctionLowerer {
     ) -> Result<hir::Expr, Diagnostic> {
         let node = self.alloc_node(syntax_source)?;
         self.zero_value_expr(node, SourceRef::node(node), ty.clone())
-    }
-}
-
-fn promoted_field_paths(
-    ty: &Ty,
-    name: &str,
-    seen: &mut HashSet<crate::compiler::ids::DefId>,
-) -> Vec<(Vec<usize>, Ty)> {
-    let owner = field_owner_definition(ty);
-    if owner.is_some_and(|owner| !seen.insert(owner)) {
-        return Vec::new();
-    }
-    let Some(fields) = struct_fields(ty) else {
-        if let Some(owner) = owner {
-            seen.remove(&owner);
-        }
-        return Vec::new();
-    };
-    let direct = fields
-        .iter()
-        .enumerate()
-        .filter(|(_, field)| field.name == name)
-        .map(|(index, field)| (vec![index], field.ty.clone()))
-        .collect::<Vec<_>>();
-    if !direct.is_empty() {
-        if let Some(owner) = owner {
-            seen.remove(&owner);
-        }
-        return direct;
-    }
-    let mut promoted = Vec::new();
-    for (index, field) in fields
-        .iter()
-        .enumerate()
-        .filter(|(_, field)| field.embedded)
-    {
-        for (path, field_ty) in promoted_field_paths(&field.ty, name, seen) {
-            let mut candidate = Vec::with_capacity(path.len().saturating_add(1));
-            candidate.push(index);
-            candidate.extend(path);
-            promoted.push((candidate, field_ty));
-        }
-    }
-    if let Some(owner) = owner {
-        seen.remove(&owner);
-    }
-    promoted
-}
-
-fn field_owner_definition(ty: &Ty) -> Option<crate::compiler::ids::DefId> {
-    match ty {
-        Ty::Named { definition, .. } => Some(*definition),
-        Ty::Pointer(element) => match element.as_ref() {
-            Ty::Named { definition, .. } => Some(*definition),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn struct_fields(ty: &Ty) -> Option<&[StructField]> {
-    match ty.underlying() {
-        Ty::Struct(fields) => Some(fields),
-        Ty::Pointer(element) => match element.underlying() {
-            Ty::Struct(fields) => Some(fields),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn named_receiver_definition(ty: &Ty) -> Option<crate::compiler::ids::DefId> {
-    match ty {
-        Ty::Named { definition, .. } => Some(*definition),
-        Ty::Pointer(element) => match element.as_ref() {
-            Ty::Named { definition, .. } => Some(*definition),
-            _ => None,
-        },
-        _ => None,
     }
 }

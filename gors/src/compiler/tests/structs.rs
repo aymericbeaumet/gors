@@ -238,3 +238,163 @@ fn generated_pointer_method_values_capture_explicit_and_implicit_addresses() {
 
     assert_eq!(run.stderr, b"pointer-method-values: ok\n");
 }
+
+#[test]
+fn promoted_methods_follow_shallowest_value_and_pointer_embedding_paths() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            type Value struct { n int }
+            func (value Value) Read() int { return value.n }
+
+            type Pointer struct { n int }
+            func (pointer *Pointer) Add(delta int) int {
+                pointer.n += delta
+                return pointer.n
+            }
+
+            type Outer struct {
+                Value
+                *Pointer
+            }
+
+            type Counter interface {
+                Add(int) int
+            }
+
+            func temporary() Outer {
+                return Outer{Value: Value{n: 3}, Pointer: &Pointer{n: 4}}
+            }
+
+            func main() {
+                outer := temporary()
+                var counter Counter = outer
+                if outer.Read() != 3 || temporary().Add(2) != 6 {
+                    panic("promoted direct receiver path changed")
+                }
+                if counter.Add(3) != 7 || outer.Pointer.n != 7 {
+                    panic("promoted interface receiver path lost pointer identity")
+                }
+                println("promoted-methods: ok")
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"promoted-methods: ok\n");
+}
+
+#[test]
+fn promoted_value_method_dereferences_an_embedded_pointer_and_panics_when_nil() {
+    let run = compile_and_run(
+        r#"
+            package main
+            type Inner struct { value int }
+            func (inner Inner) Read() int { return inner.value }
+            type Outer struct { *Inner }
+            func check() {
+                defer func() {
+                    if recover() == nil {
+                        panic("nil embedded pointer did not panic")
+                    }
+                }()
+                var outer Outer
+                _ = outer.Read()
+            }
+            func main() {
+                check()
+                println("nil-promoted-receiver: ok")
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"nil-promoted-receiver: ok\n");
+}
+
+#[test]
+fn equal_depth_promoted_methods_are_ambiguous() {
+    let errors = crate::compiler::lower_to_hir(
+        "ambiguous-method.go",
+        r#"
+            package main
+            type Left struct{}
+            func (Left) Read() int { return 1 }
+            type Right struct{}
+            func (Right) Read() int { return 2 }
+            type Both struct { Left; Right }
+            func main() { both := Both{}; println(both.Read()) }
+        "#,
+    )
+    .unwrap_err();
+
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("selector Read is ambiguous")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn defined_pointer_keeps_field_shorthand_but_has_no_inherited_method_set() {
+    let run = compile_and_run(
+        r#"
+            package main
+            type Base struct { value int }
+            func (base *Base) Read() int { return base.value }
+            type DefinedPointer *Base
+            func main() {
+                base := Base{value: 7}
+                var pointer DefinedPointer = &base
+                println(pointer.value)
+            }
+        "#,
+    );
+    assert_eq!(run.stderr, b"7\n");
+
+    let errors = crate::compiler::lower_to_hir(
+        "defined-pointer-method-set.go",
+        r#"
+            package main
+            type Base struct { value int }
+            func (base *Base) Read() int { return base.value }
+            type DefinedPointer *Base
+            type Reader interface { Read() int }
+            func main() {
+                base := Base{value: 7}
+                var pointer DefinedPointer = &base
+                var reader Reader = pointer
+                println(reader.Read())
+            }
+        "#,
+    )
+    .unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("does not implement")),
+        "{errors:?}"
+    );
+
+    let errors = crate::compiler::lower_to_hir(
+        "defined-pointer-selector.go",
+        r#"
+            package main
+            type Base struct { value int }
+            func (base *Base) Read() int { return base.value }
+            type DefinedPointer *Base
+            func main() {
+                base := Base{value: 7}
+                var pointer DefinedPointer = &base
+                println(pointer.Read())
+            }
+        "#,
+    )
+    .unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("has no field or method Read")),
+        "{errors:?}"
+    );
+}

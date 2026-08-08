@@ -112,20 +112,20 @@ fn method_receiver_identity_is_part_of_the_definition_key() -> TestResult {
 }
 
 #[test]
-fn repeated_init_definitions_require_stable_semantic_disambiguators() -> TestResult {
+fn explicit_semantic_disambiguators_distinguish_otherwise_equal_definition_keys() -> TestResult {
     let mut interner = IdentityInterner::default();
     let package = package(&mut interner, "example/project")?;
     let first = interner.definition(DefinitionKey::disambiguated_package_definition(
         package,
         DefinitionKind::Function,
-        "init",
-        "syntax-node:first",
+        "synthetic",
+        "semantic-owner:first",
     ))?;
     let second = interner.definition(DefinitionKey::disambiguated_package_definition(
         package,
         DefinitionKind::Function,
-        "init",
-        "syntax-node:second",
+        "synthetic",
+        "semantic-owner:second",
     ))?;
     assert_ne!(first, second);
     Ok(())

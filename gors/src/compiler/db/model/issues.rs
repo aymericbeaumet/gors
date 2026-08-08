@@ -4,7 +4,49 @@ use std::sync::Arc;
 
 use super::ParseFailure;
 use crate::compiler::ids::{DefId, FileId};
+use crate::compiler::input::GoLanguageVersion;
 use crate::import_path::ImportPathIssue;
+use crate::source::TextRange;
+
+/// Go syntax whose availability begins at a specific language version.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum LanguageFeature {
+    BinaryLiteral,
+    OctalLiteral,
+    HexadecimalFloatingPointLiteral,
+    NumericLiteralSeparator,
+}
+
+impl LanguageFeature {
+    /// First Go language version accepting this syntax.
+    #[must_use]
+    pub const fn required_version(self) -> GoLanguageVersion {
+        match self {
+            Self::BinaryLiteral
+            | Self::OctalLiteral
+            | Self::HexadecimalFloatingPointLiteral
+            | Self::NumericLiteralSeparator => GoLanguageVersion::new(1, 13),
+        }
+    }
+
+    /// Go-compatible name used in source diagnostics.
+    #[must_use]
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::BinaryLiteral => "binary literal",
+            Self::OctalLiteral => "0o/0O-style octal literal",
+            Self::HexadecimalFloatingPointLiteral => "hexadecimal floating-point literal",
+            Self::NumericLiteralSeparator => "underscore in numeric literal",
+        }
+    }
+}
+
+/// Compact source evidence projected during the parser's single scan.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(in crate::compiler) struct LanguageFeatureUse {
+    pub(in crate::compiler) feature: LanguageFeature,
+    pub(in crate::compiler) range: TextRange,
+}
 
 /// Non-syntax issue discovered while indexing declarations.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -26,6 +68,13 @@ pub enum FileIssue {
 pub enum PackageIssue {
     /// One package input file currently has invalid Go syntax.
     FileParseFailure { file: FileId, failure: ParseFailure },
+    /// Source syntax requires a newer effective Go language version.
+    LanguageVersion {
+        file: FileId,
+        feature: LanguageFeature,
+        selected: GoLanguageVersion,
+        range: TextRange,
+    },
     /// One resolved non-blank import binding is never referenced in its file.
     UnusedImport {
         file: FileId,

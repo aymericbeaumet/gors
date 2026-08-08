@@ -16,15 +16,42 @@ impl FunctionLowerer {
         expression: &hir::Expr,
         destinations: Vec<Place>,
     ) -> Result<(), Diagnostic> {
-        let hir::ExprKind::Call { callee, args } = &expression.kind else {
-            return Err(Diagnostic::backend(
-                "tuple-valued non-call reached MIR call lowering",
-            ));
+        let (callee, args) = match &expression.kind {
+            hir::ExprKind::Call { callee, args } => (callee, args),
+            hir::ExprKind::ForwardedCall {
+                callee,
+                prefix,
+                source_call,
+                coercions,
+                fixed_results,
+                variadic_slice,
+            } => {
+                return self.lower_forwarded_call_into(
+                    *callee,
+                    prefix,
+                    source_call,
+                    coercions,
+                    *fixed_results,
+                    variadic_slice.as_ref(),
+                    destinations,
+                    expression.source,
+                );
+            }
+            _ => {
+                return Err(Diagnostic::backend(
+                    "tuple-valued non-call reached MIR call lowering",
+                ));
+            }
         };
         if let hir::Callee::Closure(id) = callee {
             return self.lower_closure_call(*id, args, destinations, expression.source);
         }
-        if *callee == hir::Callee::Builtin(hir::Builtin::MapStringI64Lookup) {
+        if matches!(
+            callee,
+            hir::Callee::Builtin(
+                hir::Builtin::MapStringI64Lookup | hir::Builtin::MapI64GoStringLookup
+            )
+        ) {
             return self.lower_map_lookup_into(args, destinations, expression.source);
         }
         if *callee == hir::Callee::Builtin(hir::Builtin::InterfaceAssert) {
@@ -33,13 +60,16 @@ impl FunctionLowerer {
         if matches!(
             callee,
             hir::Callee::Builtin(
-                hir::Builtin::InterfaceSatisfies | hir::Builtin::InterfaceSatisfiesNonNil
+                hir::Builtin::InterfaceSatisfies
+                    | hir::Builtin::InterfaceSatisfiesRuntimeError
+                    | hir::Builtin::InterfaceSatisfiesNonNil
             )
         ) {
             return self.lower_interface_satisfaction_into(
                 args,
                 destinations,
                 *callee == hir::Callee::Builtin(hir::Builtin::InterfaceSatisfiesNonNil),
+                *callee == hir::Callee::Builtin(hir::Builtin::InterfaceSatisfiesRuntimeError),
                 expression.source,
             );
         }
@@ -75,6 +105,25 @@ impl FunctionLowerer {
         destinations: Vec<Place>,
         source: SourceRef,
     ) -> Result<(), Diagnostic> {
+        let mut operands = Vec::with_capacity(arguments.len());
+        for argument in arguments {
+            let operand = self.lower_expr(argument)?;
+            operands.push(self.materialize(
+                operand,
+                argument.ty.clone(),
+                Provenance::Source(argument.source),
+            )?);
+        }
+        self.lower_closure_call_operands(id, operands, destinations, source)
+    }
+
+    pub(super) fn lower_closure_call_operands(
+        &mut self,
+        id: ClosureId,
+        operands: Vec<Operand>,
+        destinations: Vec<Place>,
+        source: SourceRef,
+    ) -> Result<(), Diagnostic> {
         let closure = self
             .closures
             .get(id.index() as usize)
@@ -87,7 +136,7 @@ impl FunctionLowerer {
                 source,
             ));
         }
-        if arguments.len() != closure.params.len() {
+        if operands.len() != closure.params.len() {
             return Err(Diagnostic::backend(
                 "local function argument arity changed before MIR lowering",
             ));
@@ -96,16 +145,6 @@ impl FunctionLowerer {
             return Err(Diagnostic::backend(
                 "local function result arity changed before MIR lowering",
             ));
-        }
-
-        let mut operands = Vec::with_capacity(arguments.len());
-        for argument in arguments {
-            let operand = self.lower_expr(argument)?;
-            operands.push(self.materialize(
-                operand,
-                argument.ty.clone(),
-                Provenance::Source(argument.source),
-            )?);
         }
         for (parameter, operand) in closure.params.iter().zip(operands) {
             let parameter_ty = self.local_ty(*parameter)?.clone();
@@ -133,13 +172,21 @@ impl FunctionLowerer {
             named_results: closure.named_results.clone(),
         });
         self.active_closures.push(id);
+        let caller_control_targets = std::mem::take(&mut self.control_targets);
         let lowered = self.lower_block(&closure.body);
+        let closure_control_targets =
+            std::mem::replace(&mut self.control_targets, caller_control_targets);
         self.active_closures.pop();
         let context = self
             .closure_returns
             .pop()
             .ok_or_else(|| Diagnostic::backend("local function return context disappeared"))?;
         lowered?;
+        if !closure_control_targets.is_empty() {
+            return Err(Diagnostic::backend(
+                "local function left an active HIR control target",
+            ));
+        }
 
         if !self.is_terminated(self.current)? {
             if closure.signature.results.is_empty() {

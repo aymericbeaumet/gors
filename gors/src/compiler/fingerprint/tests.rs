@@ -2,8 +2,27 @@ use super::rust_ir::runtime_requirement as runtime_requirement_fingerprint;
 use super::*;
 use crate::compiler::ids::{DefinitionKey, DefinitionKind, IdentityInterner, QualifiedDefId};
 use crate::compiler::input::{PackageKey, WorkspaceKey};
+use crate::compiler::provenance::SourceRef;
+use crate::compiler::types::{ConstValue, ExactNumber, FloatTy, IntTy, StaticValue, Ty};
 use crate::compiler::{self, hir, mir, rust_ir};
-use gors_runtime_abi::{PrimitiveOp, RuntimeOp, RuntimeRequirement};
+use gors_runtime_abi::{
+    IntegerKind, IntegerPrimitive, IntegerRuntimeOp, PrimitiveOp, RuntimeOp, RuntimeRequirement,
+};
+
+const INT_DIV: RuntimeOp = RuntimeOp::Integer {
+    op: IntegerRuntimeOp::Div,
+    kind: IntegerKind::I64,
+};
+const INT_REM: RuntimeOp = RuntimeOp::Integer {
+    op: IntegerRuntimeOp::Rem,
+    kind: IntegerKind::I64,
+};
+
+mod append;
+mod control_targets;
+mod float;
+mod length_capacity;
+mod pointers;
 
 fn lower_stages(source: &str) -> (hir::File, mir::File, rust_ir::File) {
     lower_stages_at("fingerprint.go", source)
@@ -106,6 +125,218 @@ fn semantic_field_mutations_change_each_stage_fingerprint() {
 }
 
 #[test]
+fn forwarded_call_binding_fields_participate_in_hir_fingerprints() {
+    let (original, _, _) = lower_stages(
+        "package main\nfunc pair() (int, int) { return 1, 2 }\nfunc add(left, right int) int { return left + right }\nfunc value() int { return add(pair()) }\n",
+    );
+    let original_fingerprint = hir_function(hir_named(&original, "value"));
+
+    let mutate = |mut file: hir::File, mutation: fn(&mut hir::ExprKind)| {
+        let function = file
+            .functions
+            .iter_mut()
+            .find(|function| function.name == "value")
+            .expect("value HIR function");
+        let hir::StmtKind::Return(values) = &mut function
+            .body
+            .stmts
+            .first_mut()
+            .expect("value return statement")
+            .kind
+        else {
+            panic!("expected value return");
+        };
+        mutation(&mut values.first_mut().expect("value return expression").kind);
+        hir_function(
+            file.functions
+                .iter()
+                .find(|function| function.name == "value")
+                .expect("mutated value HIR function"),
+        )
+    };
+
+    let changed_fixed = mutate(original.clone(), |kind| {
+        let hir::ExprKind::ForwardedCall { fixed_results, .. } = kind else {
+            panic!("expected forwarded call");
+        };
+        *fixed_results = 1;
+    });
+    assert_ne!(original_fingerprint, changed_fixed);
+
+    let changed_coercion = mutate(original.clone(), |kind| {
+        let hir::ExprKind::ForwardedCall { coercions, .. } = kind else {
+            panic!("expected forwarded call");
+        };
+        *coercions.first_mut().expect("forwarded coercion") =
+            hir::ValueCoercion::Representation { target: Ty::Bool };
+    });
+    assert_ne!(original_fingerprint, changed_coercion);
+
+    let changed_variadic = mutate(original, |kind| {
+        let hir::ExprKind::ForwardedCall { variadic_slice, .. } = kind else {
+            panic!("expected forwarded call");
+        };
+        *variadic_slice = Some(Ty::Slice(Box::new(Ty::Int(
+            crate::compiler::types::IntTy::Int,
+        ))));
+    });
+    assert_ne!(original_fingerprint, changed_variadic);
+}
+
+#[test]
+fn assignment_target_type_source_and_struct_path_participate_in_hir_fingerprints() {
+    let (original, _, _) = lower_stages(
+        "package main\ntype inner struct { value int }\ntype outer struct { inner }\nfunc main() { record := outer{}; record.value = 2 }\n",
+    );
+    let original_fingerprint = hir_function(hir_named(&original, "main"));
+    let mutate = |mut file: hir::File, mutation: fn(&mut hir::AssignTarget)| {
+        let function = file
+            .functions
+            .iter_mut()
+            .find(|function| function.name == "main")
+            .unwrap();
+        let target = function
+            .body
+            .stmts
+            .iter_mut()
+            .find_map(|statement| match &mut statement.kind {
+                hir::StmtKind::Assign { destinations, .. } => destinations.first_mut(),
+                _ => None,
+            })
+            .expect("assignment target");
+        mutation(target);
+        hir_function(function)
+    };
+
+    assert_ne!(
+        original_fingerprint,
+        mutate(original.clone(), |target| target.ty = Some(Ty::Bool))
+    );
+    assert_ne!(
+        original_fingerprint,
+        mutate(original.clone(), |target| {
+            target.source = SourceRef::definition(target.source.owner())
+        })
+    );
+    assert_ne!(
+        original_fingerprint,
+        mutate(original, |target| {
+            let hir::AssignTargetKind::StructFieldPath { fields, .. } = &mut target.kind else {
+                panic!("expected struct field target")
+            };
+            fields.reverse();
+            fields.push(7);
+        })
+    );
+}
+
+#[test]
+fn method_receiver_paths_and_interface_candidates_participate_in_hir_fingerprints() {
+    let (original, _, _) = lower_stages(
+        r#"
+            package main
+            type Inner struct { value int }
+            func (inner Inner) Read() int { return inner.value }
+            type Outer struct { Inner }
+            type Reader interface { Read() int }
+            func direct(outer Outer) int { return outer.Read() }
+            func dynamic(reader Reader) int { return reader.Read() }
+            func main() { println(direct(Outer{Inner: Inner{value: 3}})) }
+        "#,
+    );
+
+    let direct_fingerprint = hir_function(hir_named(&original, "direct"));
+    let mut changed_direct = original.clone();
+    let direct = changed_direct
+        .functions
+        .iter_mut()
+        .find(|function| function.name == "direct")
+        .unwrap();
+    let hir::StmtKind::Return(values) = &mut direct
+        .body
+        .stmts
+        .first_mut()
+        .expect("direct return statement")
+        .kind
+    else {
+        panic!("expected direct return");
+    };
+    let hir::ExprKind::Call { args, .. } =
+        &mut values.first_mut().expect("direct return value").kind
+    else {
+        panic!("expected direct method call");
+    };
+    let hir::ExprKind::MethodReceiver { plan, .. } =
+        &mut args.first_mut().expect("direct receiver argument").kind
+    else {
+        panic!("expected direct receiver plan");
+    };
+    plan.path.first_mut().expect("promoted direct path").field = u32::MAX;
+    assert_ne!(direct_fingerprint, hir_function(direct));
+
+    let dynamic_fingerprint = hir_function(hir_named(&original, "dynamic"));
+    let mut changed_dynamic = original;
+    let dynamic = changed_dynamic
+        .functions
+        .iter_mut()
+        .find(|function| function.name == "dynamic")
+        .unwrap();
+    let hir::StmtKind::Return(values) = &mut dynamic
+        .body
+        .stmts
+        .first_mut()
+        .expect("dynamic return statement")
+        .kind
+    else {
+        panic!("expected dynamic return");
+    };
+    let hir::ExprKind::InterfaceCall { candidates, .. } =
+        &mut values.first_mut().expect("dynamic return value").kind
+    else {
+        panic!("expected interface call");
+    };
+    let promoted = candidates
+        .iter_mut()
+        .find(|candidate| !candidate.receiver_plan.path.is_empty())
+        .expect("promoted interface candidate");
+    promoted.receiver_plan.adjustment = hir::MethodReceiverAdjustment::AutoAddress;
+    assert_ne!(dynamic_fingerprint, hir_function(dynamic));
+}
+
+#[test]
+fn range_assignment_coercions_participate_in_hir_fingerprints() {
+    let (original, _, _) = lower_stages(
+        "package main\nfunc main() { values := []int{1}; var key any; var value any; for key, value = range values { break } }\n",
+    );
+    let original_fingerprint = hir_function(hir_named(&original, "main"));
+    let mut changed = original;
+    let function = changed
+        .functions
+        .iter_mut()
+        .find(|function| function.name == "main")
+        .unwrap();
+    let coercions = function
+        .body
+        .stmts
+        .iter_mut()
+        .find_map(|statement| match &mut statement.kind {
+            hir::StmtKind::Range {
+                bindings: hir::RangeBindings::Assigned { coercions, .. },
+                ..
+            } => Some(coercions),
+            _ => None,
+        })
+        .expect("assigned range coercions");
+    assert!(matches!(
+        coercions.first(),
+        Some(hir::ValueCoercion::Interface { .. })
+    ));
+    *coercions.first_mut().expect("range value coercion") = hir::ValueCoercion::Identity;
+
+    assert_ne!(original_fingerprint, hir_function(function));
+}
+
+#[test]
 fn rust_ir_fingerprints_distinguish_clone_and_move_read_plans() {
     let (_, _, rust_ir) =
         lower_stages("package main\nfunc twice(value string) { print(value); print(value) }\n");
@@ -140,6 +371,8 @@ func primitive(left int, right int) int { return left + right }
 func runtime(left int, right int) int { return left / right }
 func collision(left int, right int) int { return left &^ right }
 func stable(left int, right int) int { return left | right }
+func narrowAdd(left int32, right int32) int32 { return left + right }
+func narrowNeg(value rune) rune { return -value }
 "#,
     );
     let stable = rust_ir_function(rust_ir_named(&original, "stable"));
@@ -148,8 +381,14 @@ func stable(left int, right int) int { return left | right }
     *value_op_mut(
         &mut changed_primitive,
         "primitive",
-        rust_ir::ValueOp::Primitive(PrimitiveOp::IntWrappingAdd),
-    ) = rust_ir::ValueOp::Primitive(PrimitiveOp::IntWrappingSub);
+        rust_ir::ValueOp::Primitive(PrimitiveOp::Integer {
+            op: IntegerPrimitive::WrappingAdd,
+            kind: IntegerKind::I64,
+        }),
+    ) = rust_ir::ValueOp::Primitive(PrimitiveOp::Integer {
+        op: IntegerPrimitive::WrappingSub,
+        kind: IntegerKind::I64,
+    });
     assert_ne!(
         rust_ir_function(rust_ir_named(&original, "primitive")),
         rust_ir_function(rust_ir_named(&changed_primitive, "primitive"))
@@ -160,12 +399,54 @@ func stable(left int, right int) int { return left | right }
         rust_ir_function(rust_ir_named(&changed_primitive, "stable"))
     );
 
+    let mut changed_int32_add = original.clone();
+    *value_op_mut(
+        &mut changed_int32_add,
+        "narrowAdd",
+        rust_ir::ValueOp::Primitive(PrimitiveOp::Integer {
+            op: IntegerPrimitive::WrappingAdd,
+            kind: IntegerKind::I32,
+        }),
+    ) = rust_ir::ValueOp::Primitive(PrimitiveOp::Integer {
+        op: IntegerPrimitive::WrappingAdd,
+        kind: IntegerKind::I64,
+    });
+    assert_ne!(
+        rust_ir_function(rust_ir_named(&original, "narrowAdd")),
+        rust_ir_function(rust_ir_named(&changed_int32_add, "narrowAdd"))
+    );
+    assert_eq!(
+        stable,
+        rust_ir_function(rust_ir_named(&changed_int32_add, "stable"))
+    );
+
+    let mut changed_int32_neg = original.clone();
+    *value_op_mut(
+        &mut changed_int32_neg,
+        "narrowNeg",
+        rust_ir::ValueOp::Primitive(PrimitiveOp::Integer {
+            op: IntegerPrimitive::WrappingNeg,
+            kind: IntegerKind::I32,
+        }),
+    ) = rust_ir::ValueOp::Primitive(PrimitiveOp::Integer {
+        op: IntegerPrimitive::WrappingNeg,
+        kind: IntegerKind::I64,
+    });
+    assert_ne!(
+        rust_ir_function(rust_ir_named(&original, "narrowNeg")),
+        rust_ir_function(rust_ir_named(&changed_int32_neg, "narrowNeg"))
+    );
+    assert_eq!(
+        stable,
+        rust_ir_function(rust_ir_named(&changed_int32_neg, "stable"))
+    );
+
     let mut changed_runtime = original.clone();
     *value_op_mut(
         &mut changed_runtime,
         "runtime",
-        rust_ir::ValueOp::Runtime(RuntimeOp::IntDiv),
-    ) = rust_ir::ValueOp::Runtime(RuntimeOp::IntRem);
+        rust_ir::ValueOp::Runtime(INT_DIV),
+    ) = rust_ir::ValueOp::Runtime(INT_REM);
     assert_ne!(
         rust_ir_function(rust_ir_named(&original, "runtime")),
         rust_ir_function(rust_ir_named(&changed_runtime, "runtime"))
@@ -177,16 +458,24 @@ func stable(left int, right int) int { return left | right }
     );
 
     assert_eq!(
-        PrimitiveOp::IntAndNot.id().get(),
-        RuntimeOp::IntDiv.id().get(),
+        PrimitiveOp::Integer {
+            op: IntegerPrimitive::AndNot,
+            kind: IntegerKind::I64,
+        }
+        .id()
+        .get(),
+        RuntimeOp::GoSliceInterfaceSet.id().get(),
         "the adversarial pair must collide numerically across operation domains"
     );
     let mut changed_domain = original.clone();
     *value_op_mut(
         &mut changed_domain,
         "collision",
-        rust_ir::ValueOp::Primitive(PrimitiveOp::IntAndNot),
-    ) = rust_ir::ValueOp::Runtime(RuntimeOp::IntDiv);
+        rust_ir::ValueOp::Primitive(PrimitiveOp::Integer {
+            op: IntegerPrimitive::AndNot,
+            kind: IntegerKind::I64,
+        }),
+    ) = rust_ir::ValueOp::Runtime(RuntimeOp::GoSliceInterfaceSet);
     assert_ne!(
         rust_ir_function(rust_ir_named(&original, "collision")),
         rust_ir_function(rust_ir_named(&changed_domain, "collision"))
@@ -200,7 +489,7 @@ func stable(left int, right int) int { return left | right }
 #[test]
 fn rust_ir_fingerprints_encode_hidden_and_terminal_runtime_operations() {
     let (_, _, original) = lower_stages(
-        "package main\nfunc literal() string { return \"value\" }\nfunc main() { println(1) }\n",
+        "package main\nfunc literal() string { return \"value\" }\nfunc runes(value string) []rune { return []rune(value) }\nfunc main() { println(1) }\n",
     );
 
     let mut changed_constant = original.clone();
@@ -223,15 +512,22 @@ fn rust_ir_fingerprints_encode_hidden_and_terminal_runtime_operations() {
         rust_ir_function(rust_ir_named(&changed_call, "main"))
     );
     assert_ne!(rust_ir_file(&original), rust_ir_file(&changed_call));
+
+    let mut changed_runes = original.clone();
+    *runtime_call_op_mut(&mut changed_runes, "runes", RuntimeOp::GoStringToSliceRunes) =
+        RuntimeOp::GoStringFromSliceRunes;
+    assert_ne!(
+        rust_ir_function(rust_ir_named(&original, "runes")),
+        rust_ir_function(rust_ir_named(&changed_runes, "runes"))
+    );
 }
 
 #[test]
 fn runtime_requirement_fingerprints_are_canonical_and_exact() {
-    let left =
-        RuntimeRequirement::new([RuntimeOp::PrintI64, RuntimeOp::IntDiv, RuntimeOp::PrintI64]);
-    let reordered = RuntimeRequirement::new([RuntimeOp::IntDiv, RuntimeOp::PrintI64]);
-    let changed = RuntimeRequirement::new([RuntimeOp::IntRem, RuntimeOp::PrintI64]);
-    let missing = RuntimeRequirement::new([RuntimeOp::IntDiv]);
+    let left = RuntimeRequirement::new([RuntimeOp::PrintI64, INT_DIV, RuntimeOp::PrintI64]);
+    let reordered = RuntimeRequirement::new([INT_DIV, RuntimeOp::PrintI64]);
+    let changed = RuntimeRequirement::new([INT_REM, RuntimeOp::PrintI64]);
+    let missing = RuntimeRequirement::new([INT_DIV]);
 
     assert_eq!(left, reordered);
     assert_eq!(
@@ -269,6 +565,94 @@ fn function_fingerprints_ignore_unrelated_sibling_order() {
         rust_ir_function(rust_ir_named(&first.2, "stable")),
         rust_ir_function(rust_ir_named(&reordered.2, "stable"))
     );
+}
+
+#[test]
+fn exact_integer_interface_types_change_every_stage_fingerprint() {
+    let narrow =
+        lower_stages("package main\nfunc box(value int8) any { return value }\nfunc main() {}\n");
+    let unsigned =
+        lower_stages("package main\nfunc box(value uint) any { return value }\nfunc main() {}\n");
+
+    assert_ne!(
+        hir_function(hir_named(&narrow.0, "box")),
+        hir_function(hir_named(&unsigned.0, "box"))
+    );
+    assert_ne!(
+        mir_function(mir_named(&narrow.1, "box")),
+        mir_function(mir_named(&unsigned.1, "box"))
+    );
+    assert_ne!(
+        rust_ir_function(rust_ir_named(&narrow.2, "box")),
+        rust_ir_function(rust_ir_named(&unsigned.2, "box"))
+    );
+}
+
+#[test]
+fn typed_float_constant_fingerprints_encode_the_quantized_value() {
+    let hir = lower_stages("package main\nfunc main() {}\n").0;
+    let id = DefinitionKey::package_named(hir.package_id, DefinitionKind::Constant, "Rounded").id();
+    let ty = Ty::Float(FloatTy::Float32);
+    let constant = |spelling: &str| hir::Constant {
+        id,
+        name: "Rounded".to_owned(),
+        ty: ty.clone(),
+        value: ConstValue::Int(spelling.to_owned()).normalized_for(&ty),
+        source: SourceRef::definition(id),
+    };
+    let rounded_down = constant("16777217");
+    let exact = constant("16777216");
+    let rounded_up = constant("16777219");
+
+    assert_eq!(rounded_down.value, exact.value);
+    assert_eq!(hir_constant(&rounded_down), hir_constant(&exact));
+    assert_ne!(hir_constant(&rounded_down), hir_constant(&rounded_up));
+}
+
+#[test]
+fn nil_package_variable_has_a_distinct_stage_fingerprint() {
+    let hir = lower_stages("package main\nfunc main() {}\n").0;
+    let id = DefinitionKey::package_named(hir.package_id, DefinitionKind::Variable, "Pointer").id();
+    let variable = hir::Variable {
+        id,
+        name: "Pointer".to_owned(),
+        ty: Ty::Pointer(Box::new(Ty::Int(IntTy::Int))),
+        value: StaticValue::Nil,
+        source: SourceRef::definition(id),
+    };
+    let mut changed = variable.clone();
+    changed.value = StaticValue::Array(Vec::new());
+
+    assert_eq!(hir_variable(&variable).as_bytes().len(), 32);
+    assert_ne!(hir_variable(&variable), hir_variable(&changed));
+}
+
+#[test]
+fn exact_rational_fingerprints_encode_reduced_numerator_and_denominator() {
+    let hir = lower_stages("package main\nfunc main() {}\n").0;
+    let id = DefinitionKey::package_named(hir.package_id, DefinitionKind::Constant, "Ratio").id();
+    let constant = |numerator: &str, denominator: &str| {
+        let numerator = ExactNumber::from_spelling(numerator).expect("exact numerator");
+        let denominator = ExactNumber::from_spelling(denominator).expect("exact denominator");
+        hir::Constant {
+            id,
+            name: "Ratio".to_owned(),
+            ty: Ty::Untyped(crate::compiler::types::UntypedTy::Float),
+            value: ConstValue::Float(
+                numerator
+                    .div(&denominator)
+                    .expect("nonzero exact denominator"),
+            ),
+            source: SourceRef::definition(id),
+        }
+    };
+    let reduced = constant("22", "7");
+    let equivalent = constant("44", "14");
+    let distinct = constant("23", "7");
+
+    assert_eq!(reduced.value, equivalent.value);
+    assert_eq!(hir_constant(&reduced), hir_constant(&equivalent));
+    assert_ne!(hir_constant(&reduced), hir_constant(&distinct));
 }
 
 #[test]
@@ -392,7 +776,7 @@ fn value_op_mut<'a>(
                 }
                 rust_ir::RvalueKind::Use(_)
                 | rust_ir::RvalueKind::Unary { .. }
-                | rust_ir::RvalueKind::RecoverCompareNil { .. }
+                | rust_ir::RvalueKind::Recover { .. }
                 | rust_ir::RvalueKind::ArrayIndexI64 { .. }
                 | rust_ir::RvalueKind::ArrayIndex { .. }
                 | rust_ir::RvalueKind::ArraySetI64 { .. }
@@ -404,7 +788,7 @@ fn value_op_mut<'a>(
                 | rust_ir::RvalueKind::StructLiteralI64(_)
                 | rust_ir::RvalueKind::StructFieldI64 { .. }
                 | rust_ir::RvalueKind::StructSetI64 { .. }
-                | rust_ir::RvalueKind::AggregateEqualI64 { .. }
+                | rust_ir::RvalueKind::AggregateEqualInteger { .. }
                 | rust_ir::RvalueKind::Binary { .. } => {}
             }
         }
@@ -444,7 +828,7 @@ fn rvalue_runtime_static_op_mut(
             operand_runtime_static_op_mut(operand, expected)
         }
         rust_ir::RvalueKind::Binary { left, right, .. }
-        | rust_ir::RvalueKind::AggregateEqualI64 { left, right, .. } => {
+        | rust_ir::RvalueKind::AggregateEqualInteger { left, right, .. } => {
             if let Some(operation) = operand_runtime_static_op_mut(left, expected) {
                 Some(operation)
             } else {
@@ -486,7 +870,7 @@ fn rvalue_runtime_static_op_mut(
             structure, value, ..
         } => operand_runtime_static_op_mut(structure, expected)
             .or_else(|| operand_runtime_static_op_mut(value, expected)),
-        rust_ir::RvalueKind::RecoverCompareNil { .. } => None,
+        rust_ir::RvalueKind::Recover { .. } => None,
     }
 }
 

@@ -1,19 +1,89 @@
-//! Typed lowering for the `map[string]int` runtime representation.
+//! Typed lowering for concrete map runtime representations.
 
 use super::FunctionLowerer;
-use super::channels::{channel_effects, int_channel_parts};
-use super::expressions::{coerce_expr, expr_constant};
-use super::lower_type;
-use super::pointers::{int_pointer_ty, pointer_effects};
+use super::channels::{channel_effects, channel_parts};
+use super::expressions::coerce_expr;
+use super::pointers::pointer_effects;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::NodeId;
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{ExprSyntax, ExprSyntaxKind};
-use crate::compiler::types::{ConstValue, IntTy, Ty, UintTy, UntypedTy};
+use crate::compiler::types::{IntTy, Ty, UintTy};
 
 pub(super) fn string_i64_map_ty() -> Ty {
     Ty::Map(Box::new(Ty::String), Box::new(Ty::Int(IntTy::Int)))
+}
+
+pub(super) fn i64_go_string_map_ty() -> Ty {
+    Ty::Map(Box::new(Ty::Int(IntTy::Int)), Box::new(Ty::String))
+}
+
+#[derive(Clone, Copy)]
+enum ConcreteMapRepresentation {
+    StringI64,
+    I64GoString,
+}
+
+impl ConcreteMapRepresentation {
+    fn for_ty(ty: &Ty) -> Option<Self> {
+        if ty.underlying() == string_i64_map_ty().underlying() {
+            Some(Self::StringI64)
+        } else if ty.underlying() == i64_go_string_map_ty().underlying() {
+            Some(Self::I64GoString)
+        } else {
+            None
+        }
+    }
+
+    fn key_ty(self) -> Ty {
+        match self {
+            Self::StringI64 => Ty::String,
+            Self::I64GoString => Ty::Int(IntTy::Int),
+        }
+    }
+
+    fn value_ty(self) -> Ty {
+        match self {
+            Self::StringI64 => Ty::Int(IntTy::Int),
+            Self::I64GoString => Ty::String,
+        }
+    }
+
+    fn nil(self) -> hir::Builtin {
+        match self {
+            Self::StringI64 => hir::Builtin::MapStringI64Nil,
+            Self::I64GoString => hir::Builtin::MapI64GoStringNil,
+        }
+    }
+
+    fn make(self) -> hir::Builtin {
+        match self {
+            Self::StringI64 => hir::Builtin::MapStringI64Make,
+            Self::I64GoString => hir::Builtin::MapI64GoStringMake,
+        }
+    }
+
+    fn get(self) -> hir::Builtin {
+        match self {
+            Self::StringI64 => hir::Builtin::MapStringI64Get,
+            Self::I64GoString => hir::Builtin::MapI64GoStringGet,
+        }
+    }
+
+    fn lookup(self) -> hir::Builtin {
+        match self {
+            Self::StringI64 => hir::Builtin::MapStringI64Lookup,
+            Self::I64GoString => hir::Builtin::MapI64GoStringLookup,
+        }
+    }
+
+    fn delete(self) -> hir::Builtin {
+        match self {
+            Self::StringI64 => hir::Builtin::MapStringI64Delete,
+            Self::I64GoString => hir::Builtin::MapI64GoStringDelete,
+        }
+    }
 }
 
 fn string_aggregate_map_value_ty(ty: &Ty) -> Option<&Ty> {
@@ -38,21 +108,21 @@ impl FunctionLowerer {
             let node = self.alloc_node(expression.source)?;
             let source = SourceRef::node(node);
             let map = self.lower_expr(base, None)?;
-            if map.ty.underlying() != string_i64_map_ty().underlying() {
+            let Some(representation) = ConcreteMapRepresentation::for_ty(&map.ty) else {
                 return Err(Diagnostic::semantic(
                     "comma-ok assignment requires a map lookup",
                     source,
                 ));
-            }
-            let key = self.lower_expr(index, Some(&Ty::String))?;
+            };
+            let key = self.lower_expr(index, Some(&representation.key_ty()))?;
             let effects = map_effects(&[&map, &key], false, false, false);
             Ok(hir::Expr {
                 node,
                 kind: hir::ExprKind::Call {
-                    callee: hir::Callee::Builtin(hir::Builtin::MapStringI64Lookup),
+                    callee: hir::Callee::Builtin(representation.lookup()),
                     args: vec![map, key],
                 },
-                ty: Ty::Tuple(vec![Ty::Int(IntTy::Int), Ty::Bool]),
+                ty: Ty::Tuple(vec![representation.value_ty(), Ty::Bool]),
                 category: hir::ValueCategory::Value,
                 effects,
                 source,
@@ -79,7 +149,13 @@ impl FunctionLowerer {
             Ty::Slice(element) if element.underlying() == &Ty::Bool => {
                 Some(hir::Builtin::SliceBoolNil)
             }
-            Ty::Slice(element) if element.uses_interface_aggregate_representation() => {
+            Ty::Slice(element) if element.underlying() == &Ty::String => {
+                Some(hir::Builtin::SliceGoStringNil)
+            }
+            Ty::Slice(element)
+                if matches!(element.underlying(), Ty::Interface(_))
+                    || element.uses_interface_aggregate_representation() =>
+            {
                 Some(hir::Builtin::AggregateSliceNil)
             }
             _ => None,
@@ -123,7 +199,10 @@ impl FunctionLowerer {
                 source,
             });
         }
-        if ty.underlying() == int_pointer_ty().underlying() {
+        if matches!(
+            ty.underlying(),
+            Ty::Pointer(element) if element.underlying() == &Ty::Int(IntTy::Int)
+        ) {
             return Ok(hir::Expr {
                 node,
                 kind: hir::ExprKind::Call {
@@ -165,11 +244,11 @@ impl FunctionLowerer {
                 source,
             });
         }
-        if ty.underlying() == string_i64_map_ty().underlying() {
+        if let Some(representation) = ConcreteMapRepresentation::for_ty(&ty) {
             return Ok(hir::Expr {
                 node,
                 kind: hir::ExprKind::Call {
-                    callee: hir::Callee::Builtin(hir::Builtin::MapStringI64Nil),
+                    callee: hir::Callee::Builtin(representation.nil()),
                     args: Vec::new(),
                 },
                 ty,
@@ -178,16 +257,50 @@ impl FunctionLowerer {
                 source,
             });
         }
-        if int_channel_parts(&ty).is_some() {
+        if let Some((_, _, representation)) = channel_parts(&ty) {
             return Ok(hir::Expr {
                 node,
                 kind: hir::ExprKind::Call {
-                    callee: hir::Callee::Builtin(hir::Builtin::ChannelI64Nil),
+                    callee: hir::Callee::Builtin(representation.builtins().nil),
                     args: Vec::new(),
                 },
                 ty,
                 category: hir::ValueCategory::Value,
                 effects: channel_effects(&[], false, false, false, false),
+                source,
+            });
+        }
+        if let Ty::Array(length, element) = ty.underlying()
+            && super::arrays::is_executable_array(*length, element)
+        {
+            let length = usize::try_from(*length).map_err(|_| {
+                Diagnostic::unsupported("array length does not fit this host", source)
+            })?;
+            if matches!(ty, Ty::Array(_, _)) && element.underlying() == &Ty::Int(IntTy::Int) {
+                return Ok(hir::Expr {
+                    node,
+                    kind: hir::ExprKind::ArrayLiteralI64(vec![0; length]),
+                    ty,
+                    category: hir::ValueCategory::Value,
+                    effects: hir::Effects::default(),
+                    source,
+                });
+            }
+            let mut values = Vec::with_capacity(length);
+            for index in 0..length {
+                let value = self.zero_value_expr(node, source, element.as_ref().clone())?;
+                values.push((
+                    u64::try_from(index)
+                        .map_err(|_| Diagnostic::backend("array index does not fit u64"))?,
+                    value,
+                ));
+            }
+            return Ok(hir::Expr {
+                node,
+                kind: hir::ExprKind::ArrayLiteral(values),
+                ty,
+                category: hir::ValueCategory::Value,
+                effects: hir::Effects::default(),
                 source,
             });
         }
@@ -226,13 +339,20 @@ impl FunctionLowerer {
         source: SourceRef,
     ) -> Result<hir::Expr, Diagnostic> {
         let aggregate_value = string_aggregate_map_value_ty(&literal_ty).cloned();
-        if literal_ty.underlying() != string_i64_map_ty().underlying() && aggregate_value.is_none()
-        {
+        let concrete = ConcreteMapRepresentation::for_ty(&literal_ty);
+        if concrete.is_none() && aggregate_value.is_none() {
             return Err(Diagnostic::unsupported(
                 "map literal key/value types have no executable representation",
                 source,
             ));
         }
+        let key_ty = concrete
+            .map(ConcreteMapRepresentation::key_ty)
+            .unwrap_or(Ty::String);
+        let value_ty = concrete
+            .map(ConcreteMapRepresentation::value_ty)
+            .or_else(|| aggregate_value.clone())
+            .ok_or_else(|| Diagnostic::backend("represented map omitted its value type"))?;
         let mut entries = Vec::with_capacity(elements.len());
         let mut effects = map_effects(&[], true, true, false);
         for element in elements {
@@ -242,11 +362,8 @@ impl FunctionLowerer {
                     source,
                 ));
             };
-            let key = self.lower_expr(key, Some(&Ty::String))?;
-            let value = self.lower_expr(
-                value,
-                Some(aggregate_value.as_ref().unwrap_or(&Ty::Int(IntTy::Int))),
-            )?;
+            let key = self.lower_expr(key, Some(&key_ty))?;
+            let value = self.lower_expr(value, Some(&value_ty))?;
             effects = effects.union(key.effects).union(value.effects);
             entries.push((key, value));
         }
@@ -259,7 +376,15 @@ impl FunctionLowerer {
                 type_identity,
             }
         } else {
-            hir::ExprKind::MapLiteralStringI64(entries)
+            match concrete {
+                Some(ConcreteMapRepresentation::StringI64) => {
+                    hir::ExprKind::MapLiteralStringI64(entries)
+                }
+                Some(ConcreteMapRepresentation::I64GoString) => {
+                    hir::ExprKind::MapLiteralI64GoString(entries)
+                }
+                None => return Err(Diagnostic::backend("represented map omitted its lowering")),
+            }
         };
         Ok(hir::Expr {
             node,
@@ -279,24 +404,35 @@ impl FunctionLowerer {
         source: SourceRef,
         expected: Option<&Ty>,
     ) -> Result<hir::Expr, Diagnostic> {
-        let result_ty = match map.ty.underlying() {
-            Ty::Map(key, value) if key.underlying() == &Ty::String => value.as_ref().clone(),
-            _ => {
-                return Err(Diagnostic::backend(
-                    "map index lowering received a non-string-keyed map",
-                ));
-            }
-        };
+        let (key_ty, result_ty, get) =
+            if let Some(representation) = ConcreteMapRepresentation::for_ty(&map.ty) {
+                (
+                    representation.key_ty(),
+                    representation.value_ty(),
+                    Some(representation.get()),
+                )
+            } else {
+                match map.ty.underlying() {
+                    Ty::Map(key, value) if key.underlying() == &Ty::String => {
+                        (Ty::String, value.as_ref().clone(), None)
+                    }
+                    _ => {
+                        return Err(Diagnostic::backend(
+                            "map index lowering received an unrepresented map",
+                        ));
+                    }
+                }
+            };
         let aggregate_identity = (result_ty.bootstrap_i64_struct_fields().is_some())
             .then(|| result_ty.dynamic_type_identity())
             .flatten();
-        if result_ty.underlying() != &Ty::Int(IntTy::Int) && aggregate_identity.is_none() {
+        if get.is_none() && aggregate_identity.is_none() {
             return Err(Diagnostic::unsupported(
                 "map value type has no executable lookup representation",
                 source,
             ));
         }
-        let key = self.lower_expr(index, Some(&Ty::String))?;
+        let key = self.lower_expr(index, Some(&key_ty))?;
         let effects = map_effects(&[&map, &key], false, false, false);
         let mut result = hir::Expr {
             node,
@@ -306,11 +442,15 @@ impl FunctionLowerer {
                     key: Box::new(key),
                     type_identity,
                 }
-            } else {
+            } else if let Some(get) = get {
                 hir::ExprKind::Call {
-                    callee: hir::Callee::Builtin(hir::Builtin::MapStringI64Get),
+                    callee: hir::Callee::Builtin(get),
                     args: vec![map, key],
                 }
+            } else {
+                return Err(Diagnostic::backend(
+                    "represented map lookup omitted its runtime operation",
+                ));
             },
             ty: result_ty,
             category: hir::ValueCategory::Value,
@@ -337,12 +477,13 @@ impl FunctionLowerer {
                 source,
             ));
         };
-        let declared = lower_type(declared_syntax, &self.type_aliases, source)?;
-        if int_channel_parts(&declared).is_some() {
+        let declared = self.lower_scoped_type(declared_syntax, source)?;
+        if channel_parts(&declared).is_some() {
             return self.lower_channel_make(declared, arguments, spread, node, source, expected);
         }
         let aggregate_map = string_aggregate_map_value_ty(&declared).is_some();
-        if declared.underlying() != string_i64_map_ty().underlying() && !aggregate_map {
+        let concrete = ConcreteMapRepresentation::for_ty(&declared);
+        if concrete.is_none() && !aggregate_map {
             return self
                 .lower_slice_builtin_call("make", arguments, spread, node, source, expected);
         }
@@ -358,107 +499,15 @@ impl FunctionLowerer {
                 callee: hir::Callee::Builtin(if aggregate_map {
                     hir::Builtin::AggregateMapMake
                 } else {
-                    hir::Builtin::MapStringI64Make
+                    concrete
+                        .ok_or_else(|| Diagnostic::backend("represented map omitted its make"))?
+                        .make()
                 }),
                 args: Vec::new(),
             },
             ty: declared,
             category: hir::ValueCategory::Value,
             effects: map_effects(&[], false, true, false),
-            source,
-        };
-        if let Some(expected) = expected {
-            coerce_expr(&mut result, expected, source)?;
-        }
-        Ok(result)
-    }
-
-    pub(super) fn lower_len_builtin_call(
-        &mut self,
-        arguments: &[ExprSyntax],
-        spread: bool,
-        node: NodeId,
-        source: SourceRef,
-        expected: Option<&Ty>,
-    ) -> Result<hir::Expr, Diagnostic> {
-        let [value] = arguments else {
-            return Err(Diagnostic::semantic(
-                "len requires exactly one argument",
-                source,
-            ));
-        };
-        if spread {
-            return Err(Diagnostic::semantic("len does not accept ...", source));
-        }
-        let value = self.lower_expr(value, None)?;
-        if let Some(ConstValue::String(bytes)) = expr_constant(&value) {
-            let mut result = hir::Expr {
-                node,
-                kind: hir::ExprKind::Constant(ConstValue::Int(bytes.len().to_string())),
-                ty: Ty::Untyped(UntypedTy::Int),
-                category: hir::ValueCategory::Constant,
-                effects: hir::Effects::default(),
-                source,
-            };
-            if let Some(expected) = expected {
-                coerce_expr(&mut result, expected, source)?;
-            }
-            return Ok(result);
-        }
-        if int_channel_parts(&value.ty).is_some() {
-            return self.lower_channel_len(value, node, source, expected);
-        }
-        if let Ty::Array(length, element) = value.ty.underlying()
-            && super::arrays::is_executable_array_element(element)
-        {
-            let length = *length;
-            return self.lower_array_len(value, length, node, source, expected);
-        }
-        let builtin = match value.ty.underlying() {
-            Ty::Map(key, element)
-                if key.underlying() == &Ty::String
-                    && element.underlying() == &Ty::Int(IntTy::Int) =>
-            {
-                hir::Builtin::MapStringI64Len
-            }
-            Ty::Map(key, element)
-                if key.underlying() == &Ty::String
-                    && element.bootstrap_i64_struct_fields().is_some() =>
-            {
-                hir::Builtin::AggregateMapLen
-            }
-            Ty::Slice(element)
-                if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) =>
-            {
-                hir::Builtin::SliceI64Len
-            }
-            Ty::Slice(element) if element.underlying() == &Ty::Uint(UintTy::Uint8) => {
-                hir::Builtin::SliceU8Len
-            }
-            Ty::Slice(element)
-                if matches!(element.underlying(), Ty::String)
-                    || element.bootstrap_i64_struct_fields().is_some() =>
-            {
-                hir::Builtin::AggregateSliceLen
-            }
-            Ty::String => hir::Builtin::StringLen,
-            ty => {
-                return Err(Diagnostic::unsupported(
-                    format!("len is not yet implemented for {ty:?}"),
-                    source,
-                ));
-            }
-        };
-        let effects = map_effects(&[&value], false, false, false);
-        let mut result = hir::Expr {
-            node,
-            kind: hir::ExprKind::Call {
-                callee: hir::Callee::Builtin(builtin),
-                args: vec![value],
-            },
-            ty: Ty::Int(IntTy::Int),
-            category: hir::ValueCategory::Value,
-            effects,
             source,
         };
         if let Some(expected) = expected {
@@ -492,8 +541,17 @@ impl FunctionLowerer {
             {
                 hir::Builtin::MapStringI64Clear
             }
+            Ty::Map(key, element)
+                if key.underlying() == &Ty::Int(IntTy::Int)
+                    && element.underlying() == &Ty::String =>
+            {
+                hir::Builtin::MapI64GoStringClear
+            }
             Ty::Slice(element) if element.underlying() == &Ty::Int(IntTy::Int) => {
                 hir::Builtin::SliceI64Clear
+            }
+            Ty::Slice(element) if element.underlying() == &Ty::String => {
+                hir::Builtin::SliceGoStringClear
             }
             ty => {
                 return Err(Diagnostic::unsupported(
@@ -537,13 +595,19 @@ impl FunctionLowerer {
         if spread {
             return Err(Diagnostic::semantic("delete does not accept ...", source));
         }
-        let map = self.lower_expr(map, Some(&string_i64_map_ty()))?;
-        let key = self.lower_expr(key, Some(&Ty::String))?;
+        let map = self.lower_expr(map, None)?;
+        let representation = ConcreteMapRepresentation::for_ty(&map.ty).ok_or_else(|| {
+            Diagnostic::unsupported(
+                "delete requires a map with an executable key/value representation",
+                source,
+            )
+        })?;
+        let key = self.lower_expr(key, Some(&representation.key_ty()))?;
         let effects = map_effects(&[&map, &key], true, false, false);
         let mut result = hir::Expr {
             node,
             kind: hir::ExprKind::Call {
-                callee: hir::Callee::Builtin(hir::Builtin::MapStringI64Delete),
+                callee: hir::Callee::Builtin(representation.delete()),
                 args: vec![map, key],
             },
             ty: Ty::Unit,

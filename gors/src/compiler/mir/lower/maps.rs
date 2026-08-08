@@ -1,9 +1,6 @@
-//! Explicit-order lowering for `map[string]int` operations.
+//! Explicit-order lowering for concrete map operations.
 
-use super::super::construct::{
-    assignment_binary_op, binary_effects, call_effects, make_rvalue, make_statement,
-    make_terminator,
-};
+use super::super::construct::{call_effects, make_rvalue, make_statement, make_terminator};
 use super::super::{Operand, Place, Provenance, RvalueKind, TerminatorKind};
 use super::FunctionLowerer;
 use crate::compiler::Diagnostic;
@@ -28,6 +25,9 @@ impl FunctionLowerer {
                 "map comma-ok lookup result arity changed before MIR lowering",
             ));
         };
+        let (get, contains) = map_get_contains_builtins(&map.ty).ok_or_else(|| {
+            Diagnostic::backend("map comma-ok lookup has no concrete runtime representation")
+        })?;
         let map_operand = self.lower_expr(map)?;
         let map_operand =
             self.materialize(map_operand, map.ty.clone(), Provenance::Source(map.source))?;
@@ -35,13 +35,13 @@ impl FunctionLowerer {
         let key_operand =
             self.materialize(key_operand, key.ty.clone(), Provenance::Source(key.source))?;
         self.emit_map_call(
-            hir::Builtin::MapStringI64Get,
+            get,
             vec![map_operand.clone(), key_operand.clone()],
             vec![*value_destination],
             source,
         )?;
         self.emit_map_call(
-            hir::Builtin::MapStringI64Contains,
+            contains,
             vec![map_operand, key_operand],
             vec![*present_destination],
             source,
@@ -98,6 +98,8 @@ impl FunctionLowerer {
         }
         let zero_builtin = if is_string_i64_map(&ty) {
             Some(hir::Builtin::MapStringI64Nil)
+        } else if is_i64_go_string_map(&ty) {
+            Some(hir::Builtin::MapI64GoStringNil)
         } else if let Ty::Slice(element) = ty.underlying() {
             if matches!(
                 element.underlying(),
@@ -109,7 +111,11 @@ impl FunctionLowerer {
                 Some(hir::Builtin::SliceU8Nil)
             } else if element.underlying() == &Ty::Bool {
                 Some(hir::Builtin::SliceBoolNil)
-            } else if element.uses_interface_aggregate_representation() {
+            } else if element.underlying() == &Ty::String {
+                Some(hir::Builtin::SliceGoStringNil)
+            } else if matches!(element.underlying(), Ty::Interface(_))
+                || element.uses_interface_aggregate_representation()
+            {
                 Some(hir::Builtin::AggregateSliceNil)
             } else {
                 None
@@ -127,10 +133,8 @@ impl FunctionLowerer {
             Ty::Pointer(element) if element.uses_interface_aggregate_pointer_representation()
         ) {
             Some(hir::Builtin::AggregatePointerNil)
-        } else if is_int_channel(&ty) {
-            Some(hir::Builtin::ChannelI64Nil)
         } else {
-            None
+            channel_nil_builtin(&ty)
         };
         if let Some(builtin) = zero_builtin {
             let provenance = match provenance {
@@ -161,12 +165,10 @@ impl FunctionLowerer {
         let result = Place {
             local: self.new_temp(ty.clone()),
         };
-        self.emit_map_call(
-            hir::Builtin::MapStringI64Make,
-            Vec::new(),
-            vec![result],
-            source,
-        )?;
+        let (make, set) = map_make_set_builtins(ty).ok_or_else(|| {
+            Diagnostic::backend("map literal has no concrete runtime representation")
+        })?;
+        self.emit_map_call(make, Vec::new(), vec![result], source)?;
         for (key, value) in entries {
             let key_operand = self.lower_expr(key)?;
             let key_operand =
@@ -178,7 +180,7 @@ impl FunctionLowerer {
                 Provenance::Source(value.source),
             )?;
             self.emit_map_call(
-                hir::Builtin::MapStringI64Set,
+                set,
                 vec![Operand::Read(result), key_operand, value_operand],
                 Vec::new(),
                 source,
@@ -312,75 +314,6 @@ impl FunctionLowerer {
         Ok(Operand::Read(result))
     }
 
-    /// Write a map element, evaluating the map and key operands exactly once.
-    ///
-    /// A compound operation first reads the current element through the same
-    /// operand temporaries (a missing key reads the zero value), applies the
-    /// binary operation, and then performs the single write; writing through a
-    /// nil map keeps the runtime's Go assignment panic.
-    pub(super) fn lower_map_assignment(
-        &mut self,
-        map: &hir::Expr,
-        key: &hir::Expr,
-        op: hir::AssignOp,
-        value: &hir::Expr,
-        source: SourceRef,
-    ) -> Result<(), Diagnostic> {
-        let map_operand = self.lower_expr(map)?;
-        let map_operand =
-            self.materialize(map_operand, map.ty.clone(), Provenance::Source(map.source))?;
-        let key_operand = self.lower_expr(key)?;
-        let key_operand =
-            self.materialize(key_operand, key.ty.clone(), Provenance::Source(key.source))?;
-        let assigned = if op == hir::AssignOp::Set {
-            let value_operand = self.lower_expr(value)?;
-            self.materialize(
-                value_operand,
-                value.ty.clone(),
-                Provenance::Source(value.source),
-            )?
-        } else {
-            let provenance = Provenance::Source(source);
-            let old = Place {
-                local: self.new_temp(value.ty.clone()),
-            };
-            self.emit_map_call(
-                hir::Builtin::MapStringI64Get,
-                vec![map_operand.clone(), key_operand.clone()],
-                vec![old],
-                source,
-            )?;
-            let value_operand = self.lower_expr(value)?;
-            let value_operand = self.materialize(
-                value_operand,
-                value.ty.clone(),
-                Provenance::Source(value.source),
-            )?;
-            let result = Place {
-                local: self.new_temp(value.ty.clone()),
-            };
-            let binary_op = assignment_binary_op(op);
-            let binary = make_rvalue(
-                RvalueKind::Binary {
-                    op: binary_op,
-                    left: Operand::Read(old),
-                    right: value_operand,
-                    ty: value.ty.clone(),
-                },
-                binary_effects(binary_op, &value.ty),
-                provenance.clone(),
-            );
-            self.push_statement(make_statement(result, binary, provenance))?;
-            Operand::Read(result)
-        };
-        self.emit_map_call(
-            hir::Builtin::MapStringI64Set,
-            vec![map_operand, key_operand, assigned],
-            Vec::new(),
-            source,
-        )
-    }
-
     pub(super) fn emit_map_call(
         &mut self,
         builtin: hir::Builtin,
@@ -423,6 +356,7 @@ pub(super) fn has_mir_zero_representation(ty: &Ty) -> bool {
                     == &Ty::Int(crate::compiler::types::IntTy::Int)
         )
         || is_string_i64_map(ty)
+        || is_i64_go_string_map(ty)
         || matches!(ty.underlying(), Ty::Interface(_))
         || is_int_pointer(ty)
         || ty.bootstrap_i64_struct_pointer_fields().is_some()
@@ -430,7 +364,7 @@ pub(super) fn has_mir_zero_representation(ty: &Ty) -> bool {
             ty.underlying(),
             Ty::Pointer(element) if element.uses_interface_aggregate_pointer_representation()
         )
-        || is_int_channel(ty)
+        || channel_nil_builtin(ty).is_some()
 }
 
 fn is_int_pointer(ty: &Ty) -> bool {
@@ -450,10 +384,59 @@ fn is_string_i64_map(ty: &Ty) -> bool {
     )
 }
 
-fn is_int_channel(ty: &Ty) -> bool {
+fn is_i64_go_string_map(ty: &Ty) -> bool {
     matches!(
         ty.underlying(),
-        Ty::Channel(_, element)
-            if element.underlying() == &Ty::Int(crate::compiler::types::IntTy::Int)
+        Ty::Map(key, value)
+            if key.underlying() == &Ty::Int(crate::compiler::types::IntTy::Int)
+                && value.underlying() == &Ty::String
     )
+}
+
+fn map_get_contains_builtins(ty: &Ty) -> Option<(hir::Builtin, hir::Builtin)> {
+    if is_string_i64_map(ty) {
+        Some((
+            hir::Builtin::MapStringI64Get,
+            hir::Builtin::MapStringI64Contains,
+        ))
+    } else if is_i64_go_string_map(ty) {
+        Some((
+            hir::Builtin::MapI64GoStringGet,
+            hir::Builtin::MapI64GoStringContains,
+        ))
+    } else {
+        None
+    }
+}
+
+fn map_make_set_builtins(ty: &Ty) -> Option<(hir::Builtin, hir::Builtin)> {
+    if is_string_i64_map(ty) {
+        Some((
+            hir::Builtin::MapStringI64Make,
+            hir::Builtin::MapStringI64Set,
+        ))
+    } else if is_i64_go_string_map(ty) {
+        Some((
+            hir::Builtin::MapI64GoStringMake,
+            hir::Builtin::MapI64GoStringSet,
+        ))
+    } else {
+        None
+    }
+}
+
+fn channel_nil_builtin(ty: &Ty) -> Option<hir::Builtin> {
+    let Ty::Channel(_, element) = ty.underlying() else {
+        return None;
+    };
+    match element.underlying() {
+        Ty::Int(crate::compiler::types::IntTy::Int) => Some(hir::Builtin::ChannelI64Nil),
+        Ty::String => Some(hir::Builtin::ChannelGoStringNil),
+        Ty::Channel(_, nested)
+            if nested.underlying() == &Ty::Int(crate::compiler::types::IntTy::Int) =>
+        {
+            Some(hir::Builtin::ChannelGoChannelI64Nil)
+        }
+        _ => None,
+    }
 }

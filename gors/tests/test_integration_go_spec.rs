@@ -57,9 +57,10 @@ struct FixtureExecutionDirective {
     status: String,
 }
 
-const EXPECTED_SPEC_CASE_COUNT: usize = 270;
+const EXPECTED_SPEC_CASE_COUNT: usize = 348;
 
 const GO_1_26_SPEC_SECTIONS: &[&str] = &[
+    "Language versions",
     "Source code representation",
     "Characters",
     "Letters and digits",
@@ -503,7 +504,7 @@ fn assert_compile_error_fixture(dir: &Path, case_id: &str) {
 
     let workspace = gors::compiler::input::WorkspaceKey::ad_hoc("gors-go-spec-negative-fixtures")
         .expect("negative fixture workspace identity is valid");
-    let rejected = match gors::workspace::load_program(workspace, dir) {
+    let rejected = match gors::workspace::load_program_files_auto(workspace, &[dir]) {
         Ok(program) => gors::compiler::compile_program(program.into_input()).is_err(),
         Err(_) => true,
     };

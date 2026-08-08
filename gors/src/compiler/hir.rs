@@ -1,6 +1,6 @@
 //! Typed, source-shaped high-level IR.
 
-use super::ids::{ClosureId, DefId, LocalId, NodeId, PackageId, QualifiedDefId};
+use super::ids::{ClosureId, ControlTargetId, DefId, LocalId, NodeId, PackageId, QualifiedDefId};
 use super::provenance::SourceRef;
 use super::types::{ConstValue, Signature, StaticValue, Ty};
 
@@ -98,27 +98,14 @@ pub enum StmtKind {
         coercions: Vec<ValueCoercion>,
     },
     Assign {
-        destinations: Vec<Place>,
+        destinations: Vec<AssignTarget>,
         op: AssignOp,
         values: Vec<Expr>,
     },
     AssignTuple {
-        destinations: Vec<Place>,
-        value: Expr,
-        coercions: Vec<ValueCoercion>,
-    },
-    /// Dynamic left-hand-side operands are evaluated before the tuple-valued
-    /// right-hand side, then all result coercions are applied before writes.
-    ParallelAssignTuple {
         destinations: Vec<AssignTarget>,
         value: Expr,
         coercions: Vec<ValueCoercion>,
-    },
-    /// Dynamic left-hand-side operands are evaluated before all right-hand
-    /// sides, then destinations are written from left to right.
-    ParallelAssign {
-        destinations: Vec<AssignTarget>,
-        values: Vec<Expr>,
     },
     Expr(Expr),
     ClosureBinding(ClosureId),
@@ -140,6 +127,7 @@ pub enum StmtKind {
         else_branch: Option<Box<Stmt>>,
     },
     For {
+        target: ControlTargetId,
         label: Option<String>,
         init: Option<Box<Stmt>>,
         condition: Option<Expr>,
@@ -147,48 +135,26 @@ pub enum StmtKind {
         body: Block,
     },
     Range {
+        target: ControlTargetId,
         label: Option<String>,
-        key: Option<Place>,
-        value: Option<Place>,
+        bindings: RangeBindings,
         expression: Expr,
         body: Block,
     },
     Block(Block),
+    /// A syntax-independent break-only region produced by switch, select, or
+    /// type-switch semantic lowering.
+    Breakable {
+        target: ControlTargetId,
+        body: Block,
+    },
     Label {
         name: String,
         statement: Option<Box<Stmt>>,
     },
     Goto(String),
-    Break(Option<String>),
-    Continue(Option<String>),
-    SliceAssign {
-        slice: Expr,
-        index: Expr,
-        set: Builtin,
-        op: AssignOp,
-        value: Expr,
-    },
-    ArrayAssign {
-        array: LocalId,
-        index: Expr,
-        op: AssignOp,
-        value: Expr,
-    },
-    StructFieldAssign {
-        structure: LocalId,
-        field: u32,
-        op: AssignOp,
-        value: Expr,
-    },
-    /// The map and key operands are evaluated exactly once; a compound
-    /// operation reads the current element (a missing key yields the zero
-    /// value) before the single write.
-    MapAssign {
-        map: Expr,
-        key: Expr,
-        op: AssignOp,
-        value: Expr,
-    },
+    Break(ControlTargetId),
+    Continue(ControlTargetId),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -199,7 +165,15 @@ pub enum ValueCoercion {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum AssignTarget {
+pub struct AssignTarget {
+    pub kind: AssignTargetKind,
+    /// `None` is reserved for the blank identifier, which discards any value.
+    pub ty: Option<Ty>,
+    pub source: SourceRef,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AssignTargetKind {
     Local(LocalId),
     Discard,
     SliceIndex {
@@ -211,18 +185,39 @@ pub enum AssignTarget {
         map: Expr,
         key: Expr,
     },
+    ArrayIndex {
+        array: LocalId,
+        index: Expr,
+    },
     Pointer {
         pointer: Expr,
         set: Builtin,
     },
-    StructField {
+    /// A root-local, root-to-leaf field path. MIR rebuilds nested value
+    /// structs from the innermost update outward with explicit `StructSet`
+    /// operations.
+    StructFieldPath {
         structure: LocalId,
-        field: u32,
+        fields: Vec<u32>,
     },
     PointerStructField {
         pointer: Expr,
         field: u32,
         set: Builtin,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RangeBindings {
+    Declared {
+        key: Option<Place>,
+        value: Option<Place>,
+    },
+    /// Existing assignment targets are prepared on every iteration before
+    /// either generated range value is written.
+    Assigned {
+        targets: Vec<AssignTarget>,
+        coercions: Vec<ValueCoercion>,
     },
 }
 
@@ -259,12 +254,25 @@ pub struct Expr {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AppendArguments {
+    Elements(Vec<Expr>),
+    Spread(Box<Expr>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExprKind {
     Constant(ConstValue),
     Local(LocalId),
     AddressOfLocal(LocalId),
     AddressOfValue(Box<Expr>),
     PointerStructValue(Box<Expr>),
+    /// A receiver selected through an exact, type-checked embedded-field path.
+    /// MIR validates the complete plan before expanding it into ordinary
+    /// aggregate and pointer operations.
+    MethodReceiver {
+        receiver: Box<Expr>,
+        plan: MethodReceiverPlan,
+    },
     InterfaceValue {
         value: Box<Expr>,
         type_identity: Vec<u8>,
@@ -288,11 +296,8 @@ pub enum ExprKind {
     Conversion {
         value: Box<Expr>,
     },
-    /// Compare the result of a direct `recover()` call with `nil` while
-    /// consuming the active panic when one exists.
-    RecoverCompareNil {
-        equal: bool,
-    },
+    /// Return and consume the active panic value for a directly deferred call.
+    Recover,
     SliceLiteralI64(Vec<i64>),
     DynamicSliceLiteralI64(Vec<Expr>),
     AggregateSliceLiteral {
@@ -304,8 +309,13 @@ pub enum ExprKind {
         index: Box<Expr>,
         type_identity: Vec<u8>,
     },
+    Append {
+        slice: Box<Expr>,
+        arguments: AppendArguments,
+    },
     SliceLiteralU8(Vec<u8>),
     SliceLiteralBool(Vec<bool>),
+    SliceLiteralGoString(Vec<Expr>),
     ArrayLiteralI64(Vec<i64>),
     ArrayLiteral(Vec<(u64, Expr)>),
     ArrayIndexI64 {
@@ -326,6 +336,7 @@ pub enum ExprKind {
         field: u32,
     },
     MapLiteralStringI64(Vec<(Expr, Expr)>),
+    MapLiteralI64GoString(Vec<(Expr, Expr)>),
     AggregateMapLiteral {
         entries: Vec<(Expr, Expr)>,
         type_identity: Vec<u8>,
@@ -339,14 +350,50 @@ pub enum ExprKind {
         callee: Callee,
         args: Vec<Expr>,
     },
+    /// Bind every result of one sole function call to the outer call's
+    /// parameters. `prefix` contains only implicit operands such as a method
+    /// receiver; the source call remains one tuple-valued expression so MIR
+    /// can evaluate it exactly once before applying the recorded assignment
+    /// coercions.
+    ForwardedCall {
+        callee: Callee,
+        prefix: Vec<Expr>,
+        source_call: Box<Expr>,
+        coercions: Vec<ValueCoercion>,
+        fixed_results: u32,
+        variadic_slice: Option<Ty>,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InterfaceCallCandidate {
     pub type_identity: Vec<u8>,
     pub dynamic_ty: Ty,
-    pub receiver_ty: Ty,
+    pub receiver_plan: MethodReceiverPlan,
     pub function: QualifiedDefId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MethodReceiverPlan {
+    pub root_ty: Ty,
+    pub path: Vec<EmbeddedFieldStep>,
+    pub selected_ty: Ty,
+    pub adjustment: MethodReceiverAdjustment,
+    pub receiver_ty: Ty,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmbeddedFieldStep {
+    pub owner_ty: Ty,
+    pub field: u32,
+    pub field_ty: Ty,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MethodReceiverAdjustment {
+    Identity,
+    AutoAddress,
+    AutoIndirect,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -370,8 +417,12 @@ pub enum Builtin {
     SliceI64Len,
     SliceI64Cap,
     SliceI64Append,
+    SliceI64AppendSlice,
+    SliceU8Make,
+    SliceU8Set,
     SliceU8AppendSlice,
     SliceU8AppendString,
+    SliceU8Copy,
     SliceU8CopyString,
     SliceU8Len,
     SliceU8Index,
@@ -384,19 +435,33 @@ pub enum Builtin {
     SliceBoolSet,
     SliceBoolNil,
     SliceBoolIsNil,
+    SliceGoStringIndex,
+    SliceGoStringRange,
+    SliceGoStringSet,
+    SliceGoStringMake,
+    SliceGoStringNil,
+    SliceGoStringIsNil,
+    SliceGoStringLen,
+    SliceGoStringCap,
+    SliceGoStringAppend,
+    SliceGoStringCopy,
+    SliceGoStringClear,
     AggregateSliceMake,
     AggregateSliceNil,
     AggregateSliceIsNil,
     AggregateSliceLen,
     AggregateSliceIndexTagged,
     AggregateSliceSetTagged,
+    AggregateSliceAppendTagged,
     /// A function value proven to return one captured per-iteration integer.
     /// Rust representation lowering stores only that immutable payload.
     SnapshotFunctionSliceAppend,
     /// Invoke one proven capture-only function directly from its slice.
     SnapshotFunctionSliceCall,
+    StringFromRune,
     StringFromSliceU8,
     StringFromSliceRunes,
+    StringToSliceRunes,
     StringLen,
     StringIndex,
     StringRange,
@@ -416,6 +481,19 @@ pub enum Builtin {
     MapStringI64Clear,
     MapStringI64IsNil,
     MapStringI64KeyAt,
+    MapStringI64RangeKeys,
+    MapI64GoStringNil,
+    MapI64GoStringMake,
+    MapI64GoStringLen,
+    MapI64GoStringGet,
+    /// HIR-only comma-ok lookup expanded during MIR construction.
+    MapI64GoStringLookup,
+    MapI64GoStringContains,
+    MapI64GoStringSet,
+    MapI64GoStringDelete,
+    MapI64GoStringClear,
+    MapI64GoStringIsNil,
+    MapI64GoStringRangeKeys,
     AggregateMapMake,
     AggregateMapLen,
     AggregateMapGetTagged,
@@ -426,6 +504,7 @@ pub enum Builtin {
     PointerI64Get,
     PointerI64Set,
     PointerI64IsNil,
+    PointerI64Equal,
     PointerStructI64Nil,
     PointerStructI64New,
     PointerStructI64Get,
@@ -439,26 +518,40 @@ pub enum Builtin {
     InterfaceNil,
     InterfaceBoxBool,
     InterfaceBoxI64,
+    InterfaceBoxF32,
+    InterfaceBoxF64,
     InterfaceBoxGoString,
+    InterfaceBoxGoSliceGoString,
     InterfaceBoxStructI64,
+    InterfaceBoxPointerI64,
     InterfaceBoxPointerStructI64,
     InterfaceBoxAggregate,
+    InterfaceBoxComparableAggregate,
     InterfaceIsNil,
     InterfaceIsType,
+    InterfaceIsRuntimeError,
+    InterfaceEqual,
     /// HIR-only type assertion expanded into explicit interface tests and
     /// extraction calls during MIR construction.
     InterfaceAssert,
     /// HIR-only interface-satisfaction assertion expanded against the
     /// package's executable dynamic-type set during MIR construction.
     InterfaceSatisfies,
+    /// HIR-only interface-satisfaction assertion that also admits the
+    /// implementation-provided dynamic type used for runtime panics.
+    InterfaceSatisfiesRuntimeError,
     /// HIR-only interface conversion whose source method set statically
     /// implies the target method set. It succeeds for every non-nil dynamic
     /// value and is expanded into an explicit nil test during MIR construction.
     InterfaceSatisfiesNonNil,
     InterfaceUnboxBool,
     InterfaceUnboxI64,
+    InterfaceUnboxF32,
+    InterfaceUnboxF64,
     InterfaceUnboxGoString,
+    InterfaceUnboxGoSliceGoString,
     InterfaceStructI64Get,
+    InterfaceUnboxPointerI64,
     InterfaceUnboxPointerStructI64,
     InterfaceUnboxAggregate,
     FunctionNil,
@@ -474,6 +567,28 @@ pub enum Builtin {
     ChannelI64IsNil,
     ChannelI64TrySend,
     ChannelI64TryReceive,
+    ChannelGoStringNil,
+    ChannelGoStringMake,
+    ChannelGoStringLen,
+    ChannelGoStringCap,
+    ChannelGoStringSend,
+    ChannelGoStringReceiveValue,
+    ChannelGoStringReceive,
+    ChannelGoStringClose,
+    ChannelGoStringIsNil,
+    ChannelGoStringTrySend,
+    ChannelGoStringTryReceive,
+    ChannelGoChannelI64Nil,
+    ChannelGoChannelI64Make,
+    ChannelGoChannelI64Len,
+    ChannelGoChannelI64Cap,
+    ChannelGoChannelI64Send,
+    ChannelGoChannelI64ReceiveValue,
+    ChannelGoChannelI64Receive,
+    ChannelGoChannelI64Close,
+    ChannelGoChannelI64IsNil,
+    ChannelGoChannelI64TrySend,
+    ChannelGoChannelI64TryReceive,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

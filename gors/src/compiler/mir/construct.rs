@@ -80,7 +80,7 @@ pub(super) fn make_rvalue(
         RvalueKind::StructSet {
             structure, value, ..
         } => operand_reads(structure) || operand_reads(value),
-        RvalueKind::RecoverCompareNil { .. } => true,
+        RvalueKind::Recover { .. } => true,
         RvalueKind::SliceLiteralI64 { .. }
         | RvalueKind::SliceLiteralU8(_)
         | RvalueKind::SliceLiteralBool(_)
@@ -124,13 +124,12 @@ pub(super) fn make_terminator(
     }
 }
 
-pub(super) fn binary_effects(op: hir::BinaryOp, result: &Ty) -> hir::Effects {
+pub(super) fn binary_effects(op: hir::BinaryOp, result: &Ty, right: &Ty) -> hir::Effects {
     hir::Effects {
         may_allocate: op == hir::BinaryOp::Add && result == &Ty::String,
-        may_panic: matches!(
-            op,
-            hir::BinaryOp::Div | hir::BinaryOp::Rem | hir::BinaryOp::Shl | hir::BinaryOp::Shr
-        ),
+        may_panic: matches!(op, hir::BinaryOp::Div | hir::BinaryOp::Rem)
+            || (matches!(op, hir::BinaryOp::Shl | hir::BinaryOp::Shr)
+                && matches!(right.underlying(), Ty::Int(_))),
         ..hir::Effects::default()
     }
 }

@@ -77,7 +77,9 @@ impl FunctionLayout {
         let ranges = match source.region() {
             SyntaxSourceRegion::Header => &self.header_sources,
             SyntaxSourceRegion::Body => &self.body_sources,
-            SyntaxSourceRegion::Constant | SyntaxSourceRegion::Variable => {
+            SyntaxSourceRegion::Constant
+            | SyntaxSourceRegion::Variable
+            | SyntaxSourceRegion::TypeDeclaration => {
                 return Err(SyntaxLayoutError::WrongRegion {
                     expected: "function header or body",
                     actual: source.region(),
@@ -89,6 +91,44 @@ impl FunctionLayout {
             .and_then(|index| ranges.get(index))
             .copied()
             .ok_or(SyntaxLayoutError::MissingSource(source))
+    }
+}
+
+/// Revision-local physical source layout for one package type declaration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TypeDeclarationLayout {
+    declaration: TextRange,
+    source_len: TextSize,
+    sources: Arc<[TextRange]>,
+}
+
+impl TypeDeclarationLayout {
+    pub(super) fn new(
+        declaration: TextRange,
+        source_len: TextSize,
+        sources: Arc<[TextRange]>,
+    ) -> Self {
+        Self {
+            declaration,
+            source_len,
+            sources,
+        }
+    }
+
+    #[must_use]
+    pub const fn declaration(&self) -> TextRange {
+        self.declaration
+    }
+
+    #[must_use]
+    pub const fn source_len(&self) -> TextSize {
+        self.source_len
+    }
+
+    /// Dense structural source ranges in this revision.
+    #[must_use]
+    pub(crate) fn sources(&self) -> &[TextRange] {
+        &self.sources
     }
 }
 

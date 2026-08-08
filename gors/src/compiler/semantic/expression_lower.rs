@@ -3,14 +3,14 @@
 use crate::token::Token;
 
 use super::FunctionLowerer;
-use super::eval_constant;
 use super::expressions::*;
+use super::shifts::lower_shift_expression;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::{LocalId, NodeId};
 use crate::compiler::provenance::SourceRef;
 use crate::compiler::syntax::{ExprSyntax, ExprSyntaxKind};
-use crate::compiler::types::{ComplexTy, ConstValue, FloatTy, IntTy, Ty, UintTy, UntypedTy};
+use crate::compiler::types::{ComplexTy, ConstValue, IntTy, Ty, UintTy, UntypedTy};
 
 impl FunctionLowerer {
     pub(super) fn local_expr(&self, node: NodeId, local: LocalId, ty: Ty) -> hir::Expr {
@@ -33,7 +33,7 @@ impl FunctionLowerer {
         expected: Option<&Ty>,
     ) -> Result<hir::Expr, Diagnostic> {
         if let Some(expected) = expected
-            && is_nil_identifier(expr)
+            && self.is_predeclared_nil_identifier(expr)
         {
             let node = self.alloc_node(expr.source)?;
             return self.zero_value_expr(node, SourceRef::node(node), expected.clone());
@@ -47,6 +47,10 @@ impl FunctionLowerer {
         self.lower_expr_inner(expr, expected, false)
     }
 
+    pub(super) fn is_predeclared_nil_identifier(&self, expression: &ExprSyntax) -> bool {
+        is_nil_identifier(expression) && self.resolves_to_predeclared("nil")
+    }
+
     pub(super) fn lower_expr_inner(
         &mut self,
         expr: &ExprSyntax,
@@ -57,7 +61,7 @@ impl FunctionLowerer {
         let source = SourceRef::node(node);
         let mut lowered = match &expr.kind {
             ExprSyntaxKind::Literal { .. } => {
-                let (ty, value) = eval_constant(expr, &self.constants, source, 0)?;
+                let (ty, value) = self.eval_constant_expression(expr, source, None)?;
                 hir::Expr {
                     node,
                     kind: hir::ExprKind::Constant(value),
@@ -79,6 +83,15 @@ impl FunctionLowerer {
                 } else if let Some(local) = self.lookup_local(name) {
                     let ty = self.place_ty(hir::Place::Local(local))?.clone();
                     self.local_expr(node, local, ty)
+                } else if let Some(constant) = self.lookup_local_constant(name).cloned() {
+                    hir::Expr {
+                        node,
+                        kind: hir::ExprKind::Constant(constant.value),
+                        ty: constant.ty,
+                        category: hir::ValueCategory::Constant,
+                        effects: hir::Effects::default(),
+                        source,
+                    }
                 } else if let Some(constant) = self.constants.get(name).cloned() {
                     hir::Expr {
                         node,
@@ -107,7 +120,7 @@ impl FunctionLowerer {
                         format!("function values for {name} are not yet supported"),
                         source,
                     ));
-                } else if matches!(name, "true" | "false") {
+                } else if matches!(name, "true" | "false") && self.resolves_to_predeclared(name) {
                     hir::Expr {
                         node,
                         kind: hir::ExprKind::Constant(ConstValue::Bool(name == "true")),
@@ -141,35 +154,41 @@ impl FunctionLowerer {
                 if *token == Token::MUL {
                     return self.lower_pointer_deref(expression, node, source, expected);
                 }
-                let mut operand = self.lower_expr(expression, expected)?;
+                // Unary operators apply to the exact operand before the
+                // surrounding context is considered. In particular, -128 is
+                // representable as int8 even though the intermediate literal
+                // 128 is not.
+                let mut operand = self.lower_expr(expression, None)?;
                 let operand_ty = operand.ty.default_typed();
                 ensure_bootstrap_value_type(&operand_ty, source)?;
                 let operator_ty = operand_ty.underlying();
                 let op = match *token {
-                    Token::ADD if matches!(operator_ty, Ty::Int(IntTy::Int | IntTy::Int32)) => {
+                    Token::ADD if matches!(operator_ty, Ty::Int(_) | Ty::Uint(_)) => {
                         hir::UnaryOp::Positive
                     }
                     Token::ADD
                         if matches!(
                             operator_ty,
-                            Ty::Float(FloatTy::Float64) | Ty::Complex(ComplexTy::Complex128)
+                            Ty::Float(_) | Ty::Complex(ComplexTy::Complex128)
                         ) =>
                     {
                         hir::UnaryOp::Positive
                     }
-                    Token::SUB if matches!(operator_ty, Ty::Int(IntTy::Int | IntTy::Int32)) => {
+                    Token::SUB if matches!(operator_ty, Ty::Int(_) | Ty::Uint(_)) => {
                         hir::UnaryOp::Negative
                     }
                     Token::SUB
                         if matches!(
                             operator_ty,
-                            Ty::Float(FloatTy::Float64) | Ty::Complex(ComplexTy::Complex128)
+                            Ty::Float(_) | Ty::Complex(ComplexTy::Complex128)
                         ) =>
                     {
                         hir::UnaryOp::Negative
                     }
                     Token::NOT if is_bool(&operand_ty) => hir::UnaryOp::Not,
-                    Token::XOR if *operator_ty == Ty::Int(IntTy::Int) => hir::UnaryOp::BitNot,
+                    Token::XOR if matches!(operator_ty, Ty::Int(_) | Ty::Uint(_)) => {
+                        hir::UnaryOp::BitNot
+                    }
                     _ => {
                         return Err(Diagnostic::semantic(
                             format!("invalid unary {token:?} operand {:?}", operand.ty),
@@ -178,10 +197,11 @@ impl FunctionLowerer {
                     }
                 };
                 if let Some(value) = expr_constant(&operand)
-                    .map(|value| fold_constant_unary(op, value, source))
+                    .map(|value| fold_constant_unary(op, value, &operand.ty, source))
                     .transpose()?
                     .flatten()
                 {
+                    let value = normalize_constant_for_type(value, &operand.ty, source)?;
                     hir::Expr {
                         node,
                         kind: hir::ExprKind::Constant(value),
@@ -207,23 +227,6 @@ impl FunctionLowerer {
                 }
             }
             ExprSyntaxKind::Binary { left, token, right } => {
-                if matches!(token, Token::EQL | Token::NEQ)
-                    && let Some((arguments, spread)) =
-                        super::recovery::recover_nil_comparison(left, right)
-                {
-                    if spread || !arguments.is_empty() {
-                        return Err(Diagnostic::semantic(
-                            "recover requires no arguments",
-                            source,
-                        ));
-                    }
-                    return self.lower_recover_nil_comparison(
-                        node,
-                        source,
-                        *token == Token::EQL,
-                        expected,
-                    );
-                }
                 if matches!(token, Token::EQL | Token::NEQ) {
                     let map = if is_nil_identifier(left) {
                         Some(right.as_ref())
@@ -242,13 +245,30 @@ impl FunctionLowerer {
                         );
                     }
                 }
-                let mut left = self.lower_expr(left, None)?;
-                let mut right = self.lower_expr(right, None)?;
+                let left_syntax_source = left.source;
+                let right_syntax_source = right.source;
+                let left = self.lower_expr(left, None)?;
+                let right = self.lower_expr(right, None)?;
                 if matches!(token, Token::EQL | Token::NEQ)
-                    && (left.ty.bootstrap_i64_struct_pointer_fields().is_some()
-                        || right.ty.bootstrap_i64_struct_pointer_fields().is_some())
+                    && (matches!(left.ty.underlying(), Ty::Interface(_))
+                        || matches!(right.ty.underlying(), Ty::Interface(_)))
                 {
-                    return self.lower_struct_pointer_comparison(
+                    return self.lower_interface_comparison(
+                        left,
+                        left_syntax_source,
+                        right,
+                        right_syntax_source,
+                        *token == Token::EQL,
+                        node,
+                        source,
+                        expected,
+                    );
+                }
+                if matches!(token, Token::EQL | Token::NEQ)
+                    && (super::pointers::pointer_comparison_builtin(&left.ty).is_some()
+                        || super::pointers::pointer_comparison_builtin(&right.ty).is_some())
+                {
+                    return self.lower_pointer_comparison(
                         left,
                         right,
                         *token == Token::EQL,
@@ -263,104 +283,10 @@ impl FunctionLowerer {
                         source,
                     )
                 })?;
-                if matches!(op, hir::BinaryOp::Shl | hir::BinaryOp::Shr)
-                    && matches!(left.ty, Ty::Untyped(_))
-                    && (right.ty.is_integer() || matches!(right.ty, Ty::Untyped(_)))
-                    && let (Some(left_value), Some(right_value)) =
-                        (expr_constant(&left), expr_constant(&right))
-                {
-                    let value = fold_untyped_constant_shift(op, left_value, right_value, source)?;
-                    let mut lowered = hir::Expr {
-                        node,
-                        kind: hir::ExprKind::Constant(value),
-                        ty: Ty::Untyped(UntypedTy::Int),
-                        category: hir::ValueCategory::Constant,
-                        effects: hir::Effects::default(),
-                        source,
-                    };
-                    if let Some(expected) = expected {
-                        coerce_expr(&mut lowered, expected, source)?;
-                    }
-                    return Ok(lowered);
+                if matches!(op, hir::BinaryOp::Shl | hir::BinaryOp::Shr) {
+                    return lower_shift_expression(op, left, right, node, source, expected);
                 }
-                let comparison = matches!(
-                    op,
-                    hir::BinaryOp::Equal
-                        | hir::BinaryOp::NotEqual
-                        | hir::BinaryOp::Less
-                        | hir::BinaryOp::LessEqual
-                        | hir::BinaryOp::Greater
-                        | hir::BinaryOp::GreaterEqual
-                );
-                let logical = matches!(op, hir::BinaryOp::LogicalAnd | hir::BinaryOp::LogicalOr);
-                let operand_ty = common_operand_type(&left.ty, &right.ty).ok_or_else(|| {
-                    Diagnostic::semantic(
-                        format!(
-                            "incompatible binary operands {:?} and {:?}",
-                            left.ty, right.ty
-                        ),
-                        source,
-                    )
-                })?;
-                // A folded operation on two untyped operands stays an untyped
-                // constant of the merged kind, so a later conversion site can
-                // still adapt the exact value.
-                let untyped_operand_ty = exact_common_operand_type(&left.ty, &right.ty)
-                    .filter(|ty| matches!(ty, Ty::Untyped(_)));
-                coerce_expr(&mut left, &operand_ty, source)?;
-                coerce_expr(&mut right, &operand_ty, source)?;
-                validate_binary_operator(op, &operand_ty, source)?;
-                let mut effects = left.effects.union(right.effects);
-                if matches!(
-                    op,
-                    hir::BinaryOp::Div
-                        | hir::BinaryOp::Rem
-                        | hir::BinaryOp::Shl
-                        | hir::BinaryOp::Shr
-                ) {
-                    effects.may_panic = true;
-                }
-                if op == hir::BinaryOp::Add && operand_ty == Ty::String {
-                    effects.may_allocate = true;
-                }
-                let result_ty = if comparison || logical {
-                    Ty::Bool
-                } else {
-                    operand_ty
-                };
-                let folded = expr_constant(&left)
-                    .zip(expr_constant(&right))
-                    .map(|(left, right)| fold_constant_binary(op, left, right, source))
-                    .transpose()?
-                    .flatten();
-                if let Some(value) = folded {
-                    let ty = if comparison || logical {
-                        result_ty
-                    } else {
-                        untyped_operand_ty.unwrap_or(result_ty)
-                    };
-                    hir::Expr {
-                        node,
-                        kind: hir::ExprKind::Constant(value),
-                        ty,
-                        category: hir::ValueCategory::Constant,
-                        effects: hir::Effects::default(),
-                        source,
-                    }
-                } else {
-                    hir::Expr {
-                        node,
-                        kind: hir::ExprKind::Binary {
-                            op,
-                            left: Box::new(left),
-                            right: Box::new(right),
-                        },
-                        ty: result_ty,
-                        category: hir::ValueCategory::Value,
-                        effects,
-                        source,
-                    }
-                }
+                lower_regular_binary_expression(op, left, right, node, source)?
             }
             ExprSyntaxKind::Call {
                 callee,
@@ -370,6 +296,11 @@ impl FunctionLowerer {
                 if let ExprSyntaxKind::Index { base, index } = &callee.kind
                     && arguments.is_empty()
                     && !spread
+                    && !matches!(
+                        &base.kind,
+                        ExprSyntaxKind::Ident(name)
+                            if self.generic_functions.contains_key(name.name.as_ref())
+                    )
                 {
                     let slice = self.lower_expr(base, None)?;
                     if let Some(function) = slice.ty.snapshot_function_slice_element() {
@@ -403,6 +334,42 @@ impl FunctionLowerer {
                         return Ok(call);
                     }
                 }
+                let explicit_generic = match &callee.kind {
+                    ExprSyntaxKind::Index { base, index } => {
+                        let ExprSyntaxKind::Ident(name) = &base.kind else {
+                            return self.lower_conversion_call(
+                                callee, arguments, *spread, node, source, expected,
+                            );
+                        };
+                        self.generic_functions
+                            .contains_key(name.name.as_ref())
+                            .then_some((name.name.as_ref(), std::slice::from_ref(index.as_ref())))
+                    }
+                    ExprSyntaxKind::IndexList { base, indices } => {
+                        let ExprSyntaxKind::Ident(name) = &base.kind else {
+                            return self.lower_conversion_call(
+                                callee, arguments, *spread, node, source, expected,
+                            );
+                        };
+                        self.generic_functions
+                            .contains_key(name.name.as_ref())
+                            .then_some((name.name.as_ref(), indices.as_ref()))
+                    }
+                    _ => None,
+                };
+                if let Some((name, type_arguments)) = explicit_generic {
+                    return self.lower_explicit_generic_function_call(
+                        name,
+                        type_arguments,
+                        arguments,
+                        *spread,
+                        node,
+                        expr.source,
+                        source,
+                        expected,
+                        allow_discarded_call_result,
+                    );
+                }
                 if let ExprSyntaxKind::Selector { base, member } = &callee.kind {
                     return self.lower_selector_call(
                         base,
@@ -420,197 +387,17 @@ impl FunctionLowerer {
                         .lower_conversion_call(callee, arguments, *spread, node, source, expected);
                 };
                 let name = callee_ident.name.as_ref();
-                if name == "make" {
-                    return self
-                        .lower_make_builtin_call(arguments, *spread, node, source, expected);
-                }
-                if name == "new" {
-                    return self.lower_new_builtin_call(arguments, *spread, node, source, expected);
-                }
-                if name == "len" {
-                    return self.lower_len_builtin_call(arguments, *spread, node, source, expected);
-                }
-                if name == "cap" {
-                    return self.lower_channel_cap_builtin_call(
-                        arguments, *spread, node, source, expected,
-                    );
-                }
-                if name == "close" {
-                    return self.lower_channel_close_builtin_call(
-                        arguments, *spread, node, source, expected,
-                    );
-                }
-                if name == "clear" {
-                    return self
-                        .lower_clear_builtin_call(arguments, *spread, node, source, expected);
-                }
-                if name == "delete" {
-                    return self
-                        .lower_delete_builtin_call(arguments, *spread, node, source, expected);
-                }
-                if matches!(name, "append" | "copy") {
-                    return self.lower_slice_builtin_call(
-                        name, arguments, *spread, node, source, expected,
-                    );
-                }
-                if matches!(name, "min" | "max" | "complex" | "real" | "imag") {
-                    return self.lower_numeric_builtin_call(
-                        name, arguments, *spread, node, source, expected,
-                    );
-                }
-                if self.type_aliases.contains_key(name)
-                    || matches!(
-                        name,
-                        "bool" | "string" | "int" | "float64" | "complex128" | "any"
-                    )
-                {
-                    return self
-                        .lower_conversion_call(callee, arguments, *spread, node, source, expected);
-                }
-                if self.generic_functions.contains_key(name) {
-                    return self.lower_generic_function_call(
-                        name,
-                        arguments,
-                        *spread,
-                        node,
-                        expr.source,
-                        source,
-                        expected,
-                        allow_discarded_call_result,
-                    );
-                }
-                let (callee, params, results, variadic) = if let Some(id) =
-                    self.lookup_closure(name)
-                {
-                    let closure = self.closures.get(id.index() as usize).ok_or_else(|| {
-                        Diagnostic::backend(format!("unknown local function {name}"))
-                    })?;
-                    (
-                        hir::Callee::Closure(id),
-                        closure.signature.params.clone(),
-                        closure.signature.results.clone(),
-                        closure.signature.variadic,
-                    )
-                } else if self.lookup_local(name).is_some() {
-                    return Err(Diagnostic::unsupported(
-                        format!("calling the function value {name} is not yet supported"),
-                        source,
-                    ));
-                } else if let Some(symbol) = self.functions.get(name).cloned() {
-                    (
-                        hir::Callee::Function(symbol.id),
-                        symbol.signature.params,
-                        symbol.signature.results,
-                        symbol.signature.variadic,
-                    )
-                } else if self.constants.contains_key(name) {
-                    return Err(Diagnostic::semantic(
-                        format!("constant {name} is not callable"),
-                        source,
-                    ));
-                } else {
-                    match name {
-                        "print" => (
-                            hir::Callee::Builtin(hir::Builtin::Print),
-                            vec![],
-                            vec![],
-                            false,
-                        ),
-                        "println" => (
-                            hir::Callee::Builtin(hir::Builtin::Println),
-                            vec![],
-                            vec![],
-                            false,
-                        ),
-                        "panic" => (
-                            hir::Callee::Builtin(hir::Builtin::Panic),
-                            vec![],
-                            vec![],
-                            false,
-                        ),
-                        "recover" => {
-                            return Err(Diagnostic::unsupported(
-                                "recover results are currently supported in direct nil comparisons",
-                                source,
-                            ));
-                        }
-                        name => {
-                            return Err(Diagnostic::semantic(
-                                format!("undefined function {name}"),
-                                source,
-                            ));
-                        }
-                    }
-                };
-                match callee {
-                    hir::Callee::Builtin(hir::Builtin::Panic) if arguments.len() != 1 => {
-                        return Err(Diagnostic::semantic(
-                            format!(
-                                "call to panic has {} arguments; expected 1",
-                                arguments.len()
-                            ),
-                            source,
-                        ));
-                    }
-                    hir::Callee::Builtin(_) if *spread => {
-                        return Err(Diagnostic::semantic(
-                            "... is not valid for this built-in call",
-                            source,
-                        ));
-                    }
-                    _ => {}
-                }
-                let args = if matches!(callee, hir::Callee::Function(_) | hir::Callee::Closure(_)) {
-                    self.lower_call_arguments(
-                        arguments,
-                        &params,
-                        variadic,
-                        *spread,
-                        expr.source,
-                        source,
-                        "function",
-                    )?
-                } else {
-                    arguments
-                        .iter()
-                        .map(|argument| {
-                            self.lower_expr(argument, None).and_then(|expression| {
-                                let expression_source = expression.source;
-                                default_expr_type(expression, expression_source)
-                            })
-                        })
-                        .collect::<Result<Vec<_>, _>>()?
-                };
-                let ty = match results.as_slice() {
-                    [] => Ty::Unit,
-                    [single] => single.clone(),
-                    many => Ty::Tuple(many.to_vec()),
-                };
-                if ty == Ty::Unit && !allow_discarded_call_result {
-                    return Err(Diagnostic::unsupported(
-                        "a no-result call cannot be used as a value",
-                        source,
-                    ));
-                }
-                let effects = args.iter().fold(
-                    hir::Effects {
-                        may_read: false,
-                        may_call: true,
-                        may_allocate: true,
-                        may_block: true,
-                        may_panic: true,
-                        may_write: true,
-                    },
-                    |effects, argument| effects.union(argument.effects),
-                );
-                hir::Expr {
+                return self.lower_named_call_expression(
+                    name,
+                    callee,
+                    arguments,
+                    *spread,
                     node,
-                    kind: hir::ExprKind::Call { callee, args },
-                    ty,
-                    category: hir::ValueCategory::Value,
-                    effects,
+                    expr.source,
                     source,
-                }
+                    expected,
+                    allow_discarded_call_result,
+                );
             }
             ExprSyntaxKind::FunctionLiteral { .. } => {
                 return Err(Diagnostic::unsupported(
@@ -664,6 +451,27 @@ impl FunctionLowerer {
                     Ty::Slice(element) if element.underlying() == &Ty::Bool => {
                         (hir::Builtin::SliceBoolIndex, element.as_ref().clone())
                     }
+                    Ty::Slice(element) if element.underlying() == &Ty::String => {
+                        (hir::Builtin::SliceGoStringIndex, element.as_ref().clone())
+                    }
+                    Ty::Slice(element) if matches!(element.underlying(), Ty::Interface(_)) => {
+                        let element_ty = element.as_ref().clone();
+                        let index = self.lower_expr(index, Some(&Ty::Int(IntTy::Int)))?;
+                        let effects = slice_runtime_effects(&[&base, &index], false, false, true);
+                        return Ok(hir::Expr {
+                            node,
+                            kind: hir::ExprKind::Call {
+                                callee: hir::Callee::Builtin(
+                                    hir::Builtin::AggregateSliceIndexTagged,
+                                ),
+                                args: vec![base, index],
+                            },
+                            ty: element_ty,
+                            category: hir::ValueCategory::Value,
+                            effects,
+                            source,
+                        });
+                    }
                     Ty::Slice(element) if element.uses_interface_aggregate_representation() => {
                         let stored_ty = element.as_ref().clone();
                         let element_ty = self.expand_named_ref(&stored_ty)?;
@@ -708,6 +516,12 @@ impl FunctionLowerer {
                     source,
                 }
             }
+            ExprSyntaxKind::IndexList { .. } => {
+                return Err(Diagnostic::unsupported(
+                    "generic instantiation expressions with multiple type arguments are not yet executable",
+                    source,
+                ));
+            }
             ExprSyntaxKind::Slice {
                 base,
                 low,
@@ -715,6 +529,7 @@ impl FunctionLowerer {
                 max,
             } => {
                 let base = self.lower_expr(base, None)?;
+                let base_ty = base.ty.clone();
                 let low_bound = self.lower_optional_slice_bound(low.as_deref(), expr.source)?;
                 let high_bound = self.lower_optional_slice_bound(high.as_deref(), expr.source)?;
                 // A missing low bound is the constant zero. Missing high and
@@ -751,16 +566,19 @@ impl FunctionLowerer {
                     Ty::Slice(element)
                         if matches!(
                             element.underlying(),
-                            Ty::Int(IntTy::Int | IntTy::Int32) | Ty::Uint(UintTy::Uint8)
+                            Ty::Int(IntTy::Int | IntTy::Int32)
+                                | Ty::Uint(UintTy::Uint8)
+                                | Ty::String
                         ) =>
                     {
                         let builtin =
                             if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) {
                                 hir::Builtin::SliceI64Range
-                            } else {
+                            } else if element.underlying() == &Ty::Uint(UintTy::Uint8) {
                                 hir::Builtin::SliceU8Range
+                            } else {
+                                hir::Builtin::SliceGoStringRange
                             };
-                        let ty = Ty::Slice(element.clone());
                         let max_bound =
                             self.lower_optional_slice_bound(max.as_deref(), expr.source)?;
                         if let Some(max_value) = max
@@ -784,7 +602,11 @@ impl FunctionLowerer {
                                 ));
                             }
                         }
-                        (builtin, ty, vec![base, low_bound, high_bound, max_bound])
+                        (
+                            builtin,
+                            base_ty,
+                            vec![base, low_bound, high_bound, max_bound],
+                        )
                     }
                     ty => {
                         return Err(Diagnostic::unsupported(
@@ -857,6 +679,111 @@ impl FunctionLowerer {
     }
 }
 
+pub(super) fn lower_regular_binary_expression(
+    op: hir::BinaryOp,
+    mut left: hir::Expr,
+    mut right: hir::Expr,
+    node: NodeId,
+    source: SourceRef,
+) -> Result<hir::Expr, Diagnostic> {
+    let comparison = matches!(
+        op,
+        hir::BinaryOp::Equal
+            | hir::BinaryOp::NotEqual
+            | hir::BinaryOp::Less
+            | hir::BinaryOp::LessEqual
+            | hir::BinaryOp::Greater
+            | hir::BinaryOp::GreaterEqual
+    );
+    let logical = matches!(op, hir::BinaryOp::LogicalAnd | hir::BinaryOp::LogicalOr);
+    let operand_ty = common_operand_type(&left.ty, &right.ty).ok_or_else(|| {
+        Diagnostic::semantic(
+            format!(
+                "incompatible binary operands {:?} and {:?}",
+                left.ty, right.ty
+            ),
+            source,
+        )
+    })?;
+    // A folded operation on two untyped operands stays an untyped
+    // constant of the merged kind, so a later conversion site can
+    // still adapt the exact value. Fold before default-type
+    // materialization: an intermediate Go constant need not fit
+    // float64 when the final exact result does.
+    let untyped_operand_ty =
+        exact_common_operand_type(&left.ty, &right.ty).filter(|ty| matches!(ty, Ty::Untyped(_)));
+    if expr_constant(&left).is_some() && expr_constant(&right).is_some() {
+        super::validate_constant_binary_operator(op, &operand_ty, source)?;
+    } else {
+        validate_binary_operator(op, &operand_ty, source)?;
+    }
+    let folded_untyped = if untyped_operand_ty.is_some() {
+        expr_constant(&left)
+            .zip(expr_constant(&right))
+            .map(|(left, right)| fold_constant_binary(op, left, right, source))
+            .transpose()?
+            .flatten()
+    } else {
+        None
+    };
+    if folded_untyped.is_none() {
+        coerce_expr(&mut left, &operand_ty, source)?;
+        coerce_expr(&mut right, &operand_ty, source)?;
+    }
+    let mut effects = left.effects.union(right.effects);
+    if matches!(
+        op,
+        hir::BinaryOp::Div | hir::BinaryOp::Rem | hir::BinaryOp::Shl | hir::BinaryOp::Shr
+    ) {
+        effects.may_panic = true;
+    }
+    if op == hir::BinaryOp::Add && operand_ty == Ty::String {
+        effects.may_allocate = true;
+    }
+    let result_ty = if comparison || logical {
+        Ty::Bool
+    } else {
+        operand_ty
+    };
+    let folded = match folded_untyped {
+        Some(value) => Some(value),
+        None => expr_constant(&left)
+            .zip(expr_constant(&right))
+            .map(|(left, right)| fold_constant_binary(op, left, right, source))
+            .transpose()?
+            .flatten(),
+    };
+    if let Some(value) = folded {
+        let ty = if comparison || logical {
+            result_ty
+        } else {
+            untyped_operand_ty.unwrap_or(result_ty)
+        };
+        let value = normalize_constant_for_type(value, &ty, source)?;
+        Ok(hir::Expr {
+            node,
+            kind: hir::ExprKind::Constant(value),
+            ty,
+            category: hir::ValueCategory::Constant,
+            effects: hir::Effects::default(),
+            source,
+        })
+    } else {
+        Ok(hir::Expr {
+            node,
+            kind: hir::ExprKind::Binary {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            ty: result_ty,
+            category: hir::ValueCategory::Value,
+            effects,
+            source,
+        })
+    }
+}
+
 /// Exact integer value of an already-lowered constant expression.
 ///
 /// Returns `None` for runtime values, so callers only reject when the Go spec
@@ -873,7 +800,7 @@ pub(super) fn constant_index_value(expression: &hir::Expr) -> Option<i64> {
     text.parse::<i64>().ok()
 }
 
-fn is_nil_identifier(expression: &ExprSyntax) -> bool {
+pub(super) fn is_nil_identifier(expression: &ExprSyntax) -> bool {
     matches!(
         &expression.kind,
         ExprSyntaxKind::Ident(identifier) if identifier.name.as_ref() == "nil"

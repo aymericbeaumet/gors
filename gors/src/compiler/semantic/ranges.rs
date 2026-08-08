@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 
 use super::FunctionLowerer;
+use super::control_targets::ControlTargetKind;
 use super::expressions::{coerce_expr, default_expr_type, is_assignable};
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
@@ -57,14 +58,19 @@ impl FunctionLowerer {
                 (Ty::Int(IntTy::Int), element.as_ref().clone(), 2)
             }
             Ty::Slice(element)
-                if matches!(element.underlying(), Ty::Int(IntTy::Int | IntTy::Int32)) =>
+                if matches!(
+                    element.underlying(),
+                    Ty::Int(IntTy::Int | IntTy::Int32) | Ty::String
+                ) =>
             {
                 (Ty::Int(IntTy::Int), element.as_ref().clone(), 2)
             }
             Ty::String => (Ty::Int(IntTy::Int), Ty::Int(IntTy::Int32), 2),
             Ty::Map(key, value)
-                if key.underlying() == &Ty::String
-                    && value.underlying() == &Ty::Int(IntTy::Int) =>
+                if (key.underlying() == &Ty::String
+                    && value.underlying() == &Ty::Int(IntTy::Int))
+                    || (key.underlying() == &Ty::Int(IntTy::Int)
+                        && value.underlying() == &Ty::String) =>
             {
                 (key.as_ref().clone(), value.as_ref().clone(), 2)
             }
@@ -111,13 +117,20 @@ impl FunctionLowerer {
 
         self.push_scope();
         let lowered = (|| {
-            let (key, value) = match token {
-                None if key.is_none() && value.is_none() => (None, None),
+            let bindings = match token {
+                None if key.is_none() && value.is_none() => hir::RangeBindings::Declared {
+                    key: None,
+                    value: None,
+                },
                 Some(Token::DEFINE) => {
-                    self.declare_range_bindings(key, value, &key_ty, &value_ty, source)?
+                    let (key, value) =
+                        self.declare_range_bindings(key, value, &key_ty, &value_ty, source)?;
+                    hir::RangeBindings::Declared { key, value }
                 }
                 Some(Token::ASSIGN) => {
-                    self.resolve_range_bindings(key, value, &key_ty, &value_ty, source)?
+                    let (targets, coercions) =
+                        self.resolve_range_bindings(key, value, &key_ty, &value_ty, source)?;
+                    hir::RangeBindings::Assigned { targets, coercions }
                 }
                 _ => {
                     return Err(Diagnostic::semantic(
@@ -126,34 +139,37 @@ impl FunctionLowerer {
                     ));
                 }
             };
-            self.loop_labels.push(label.clone());
+            let target = self.begin_control_target(ControlTargetKind::Loop, label.clone())?;
             let assigned_in_body = super::iteration::assigned_names_in_block(body);
-            let iteration_captures = [key, value]
-                .into_iter()
-                .flatten()
-                .filter_map(|place| match place {
-                    hir::Place::Local(local) => Some(local),
-                    hir::Place::Discard => None,
-                })
-                .filter(|local| {
-                    self.locals
-                        .get(local.0 as usize)
-                        .and_then(|local| local.name.as_ref())
-                        .is_some_and(|name| !assigned_in_body.contains(name))
-                })
-                .collect();
+            let iteration_captures = match &bindings {
+                hir::RangeBindings::Declared { key, value } => [*key, *value]
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|place| match place {
+                        hir::Place::Local(local) => Some(local),
+                        hir::Place::Discard => None,
+                    })
+                    .filter(|local| {
+                        self.locals
+                            .get(local.0 as usize)
+                            .and_then(|local| local.name.as_ref())
+                            .is_some_and(|name| !assigned_in_body.contains(name))
+                    })
+                    .collect(),
+                hir::RangeBindings::Assigned { .. } => BTreeSet::new(),
+            };
             self.iteration_capture_scopes.push(iteration_captures);
             let body = self.lower_block(body, true);
             self.iteration_capture_scopes.pop();
-            self.loop_labels.pop();
-            Ok::<_, Diagnostic>((key, value, body?))
+            self.end_control_target(target)?;
+            Ok::<_, Diagnostic>((target, bindings, body?))
         })();
         self.pop_scope();
-        let (key, value, body) = lowered?;
+        let (target, bindings, body) = lowered?;
         Ok(hir::StmtKind::Range {
+            target,
             label,
-            key,
-            value,
+            bindings,
             expression,
             body,
         })
@@ -258,7 +274,7 @@ impl FunctionLowerer {
                     self.declare_range_bindings(key, value, &key_ty, &value_ty, source)?
                 }
                 Some(Token::ASSIGN) => {
-                    self.resolve_range_bindings(key, value, &key_ty, &value_ty, source)?
+                    self.resolve_function_range_bindings(key, value, &key_ty, &value_ty, source)?
                 }
                 _ => {
                     return Err(Diagnostic::semantic(
@@ -325,11 +341,11 @@ impl FunctionLowerer {
         self.push_scope();
         let previous_signature = std::mem::replace(&mut self.signature, signature.clone());
         let previous_named_results = std::mem::take(&mut self.named_results);
-        let previous_loops = std::mem::take(&mut self.loop_labels);
+        let previous_targets = std::mem::take(&mut self.control_targets);
         let previous_labels = std::mem::take(&mut self.declared_labels);
         let previous_gotos = std::mem::take(&mut self.referenced_gotos);
         let previous_inside = self.inside_local_closure;
-        let previous_boundary = self.range_yield_loop_depth;
+        let previous_boundary = self.range_yield_target;
         self.inside_local_closure = true;
 
         let lowered = (|| {
@@ -349,7 +365,19 @@ impl FunctionLowerer {
                 let Some(binding) = binding else {
                     continue;
                 };
-                destinations.push(binding);
+                let target_node = self.alloc_node(syntax_source)?;
+                destinations.push(match binding {
+                    hir::Place::Local(local) => hir::AssignTarget {
+                        kind: hir::AssignTargetKind::Local(local),
+                        ty: Some(self.place_ty(binding)?.clone()),
+                        source: SourceRef::node(target_node),
+                    },
+                    hir::Place::Discard => hir::AssignTarget {
+                        kind: hir::AssignTargetKind::Discard,
+                        ty: None,
+                        source: SourceRef::node(target_node),
+                    },
+                });
                 let node = self.alloc_node(syntax_source)?;
                 values.push(self.local_expr(node, *parameter, ty.clone()));
             }
@@ -366,8 +394,8 @@ impl FunctionLowerer {
                 });
             }
 
-            self.loop_labels.push(None);
-            self.range_yield_loop_depth = Some(self.loop_labels.len());
+            let target = self.begin_control_target(ControlTargetKind::Loop, None)?;
+            self.range_yield_target = Some(target);
             let assigned_in_body = super::iteration::assigned_names_in_block(body);
             let captures = bindings
                 .into_iter()
@@ -386,8 +414,8 @@ impl FunctionLowerer {
             self.iteration_capture_scopes.push(captures);
             let lowered_body = self.lower_block(body, true);
             self.iteration_capture_scopes.pop();
-            self.range_yield_loop_depth = None;
-            self.loop_labels.pop();
+            self.range_yield_target = None;
+            self.end_control_target(target)?;
             let lowered_body = lowered_body?;
             statements.extend(lowered_body.stmts);
             statements.push(self.bool_return(true, syntax_source)?);
@@ -402,11 +430,11 @@ impl FunctionLowerer {
             ))
         })();
 
-        self.range_yield_loop_depth = previous_boundary;
+        self.range_yield_target = previous_boundary;
         self.inside_local_closure = previous_inside;
         self.signature = previous_signature;
         self.named_results = previous_named_results;
-        self.loop_labels = previous_loops;
+        self.control_targets = previous_targets;
         self.declared_labels = previous_labels;
         self.referenced_gotos = previous_gotos;
         self.pop_scope();
@@ -444,7 +472,8 @@ impl FunctionLowerer {
         self.push_scope();
         let previous_signature = std::mem::replace(&mut self.signature, signature.clone());
         let previous_named_results = std::mem::take(&mut self.named_results);
-        let previous_loops = std::mem::take(&mut self.loop_labels);
+        let previous_targets = std::mem::take(&mut self.control_targets);
+        let previous_boundary = self.range_yield_target.take();
         let previous_labels = std::mem::take(&mut self.declared_labels);
         let previous_gotos = std::mem::take(&mut self.referenced_gotos);
         let previous_inside = self.inside_local_closure;
@@ -458,7 +487,8 @@ impl FunctionLowerer {
         self.inside_local_closure = previous_inside;
         self.signature = previous_signature;
         self.named_results = previous_named_results;
-        self.loop_labels = previous_loops;
+        self.control_targets = previous_targets;
+        self.range_yield_target = previous_boundary;
         self.declared_labels = previous_labels;
         self.referenced_gotos = previous_gotos;
         self.pop_scope();
@@ -636,6 +666,30 @@ impl FunctionLowerer {
     }
 
     fn resolve_range_bindings(
+        &mut self,
+        key: Option<&ExprSyntax>,
+        value: Option<&ExprSyntax>,
+        key_ty: &Ty,
+        value_ty: &Ty,
+        source: SourceRef,
+    ) -> Result<(Vec<hir::AssignTarget>, Vec<hir::ValueCoercion>), Diagnostic> {
+        let mut targets =
+            Vec::with_capacity(usize::from(key.is_some()) + usize::from(value.is_some()));
+        let mut coercions = Vec::with_capacity(targets.capacity());
+        if let Some(key) = key {
+            let (target, coercion) = self.resolve_range_binding(key, key_ty, source)?;
+            targets.push(target);
+            coercions.push(coercion);
+        }
+        if let Some(value) = value {
+            let (target, coercion) = self.resolve_range_binding(value, value_ty, source)?;
+            targets.push(target);
+            coercions.push(coercion);
+        }
+        Ok((targets, coercions))
+    }
+
+    fn resolve_function_range_bindings(
         &self,
         key: Option<&ExprSyntax>,
         value: Option<&ExprSyntax>,
@@ -644,15 +698,15 @@ impl FunctionLowerer {
         source: SourceRef,
     ) -> Result<(Option<hir::Place>, Option<hir::Place>), Diagnostic> {
         let key = key
-            .map(|target| self.resolve_range_binding(target, key_ty, source))
+            .map(|target| self.resolve_function_range_binding(target, key_ty, source))
             .transpose()?;
         let value = value
-            .map(|target| self.resolve_range_binding(target, value_ty, source))
+            .map(|target| self.resolve_function_range_binding(target, value_ty, source))
             .transpose()?;
         Ok((key, value))
     }
 
-    fn resolve_range_binding(
+    fn resolve_function_range_binding(
         &self,
         target: &ExprSyntax,
         expected: &Ty,
@@ -669,6 +723,28 @@ impl FunctionLowerer {
             }
         }
         Ok(place)
+    }
+
+    fn resolve_range_binding(
+        &mut self,
+        target: &ExprSyntax,
+        expected: &Ty,
+        source: SourceRef,
+    ) -> Result<(hir::AssignTarget, hir::ValueCoercion), Diagnostic> {
+        let target = self.lower_assignment_target(target, source)?;
+        let coercion = target.ty.as_ref().map_or_else(
+            || Ok(hir::ValueCoercion::Identity),
+            |actual| {
+                self.assignment_value_coercion(expected, actual, source)
+                    .map_err(|_| {
+                        Diagnostic::semantic(
+                            format!("range value {expected:?} is not assignable to {actual:?}"),
+                            source,
+                        )
+                    })
+            },
+        )?;
+        Ok((target, coercion))
     }
 }
 

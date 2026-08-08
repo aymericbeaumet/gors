@@ -77,7 +77,8 @@ pub(super) fn lower_struct_set(
     let value = lower_operand(value, locals)?;
     match structure_ty {
         out::RustType::StructI64(length)
-            if u64::from(field) < length && value_ty == out::RustType::I64 =>
+            if u64::from(field) < length
+                && value_ty == out::RustType::Integer(gors_runtime_abi::IntegerKind::I64) =>
         {
             Ok(out::RvalueKind::StructSetI64 {
                 structure,

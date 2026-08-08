@@ -68,12 +68,80 @@ fn encode_function(encoder: &mut Encoder, function: &rust_ir::Function) {
         encoder.option(function.panic_cleanup.as_ref(), |encoder, cleanup| {
             encoder.field(b"entry", |encoder| block_id(encoder, cleanup.entry));
             encoder.field(b"active", |encoder| local_id(encoder, cleanup.active));
+            encoder.field(b"recovered", |encoder| local_id(encoder, cleanup.recovered));
+            encoder.field(b"capture", |encoder| {
+                encoder.field(b"operation", |encoder| {
+                    encode_runtime_op(encoder, cleanup.capture.operation);
+                });
+                encoder.field(b"effects", |encoder| {
+                    encode_effects(encoder, cleanup.capture.effects);
+                });
+                encoder.field(b"provenance", |encoder| {
+                    encode_provenance(encoder, &cleanup.capture.provenance);
+                });
+            });
+            encoder.field(b"rethrow", |encoder| {
+                encoder.field(b"operation", |encoder| {
+                    encode_runtime_op(encoder, cleanup.rethrow.operation);
+                });
+                encoder.field(b"effects", |encoder| {
+                    encode_effects(encoder, cleanup.rethrow.effects);
+                });
+                encoder.field(b"provenance", |encoder| {
+                    encode_provenance(encoder, &cleanup.rethrow.provenance);
+                });
+            });
+            encoder.field(b"actions", |encoder| {
+                encoder.sequence(&cleanup.actions, encode_deferred_action);
+            });
+            encoder.field(b"completion", |encoder| {
+                block_id(encoder, cleanup.completion);
+            });
         });
     });
     encoder.field(b"control-flow", |encoder| {
         encode_control_flow(encoder, &function.control_flow);
     });
     encoder.field(b"source", |encoder| source_ref(encoder, function.source));
+}
+
+fn encode_deferred_action(encoder: &mut Encoder, action: &rust_ir::DeferredAction) {
+    encoder.field(b"dispatch", |encoder| block_id(encoder, action.dispatch));
+    encoder.field(b"registered", |encoder| {
+        local_id(encoder, action.registered);
+    });
+    encoder.field(b"entry", |encoder| block_id(encoder, action.entry));
+    encoder.field(b"blocks", |encoder| {
+        encoder.sequence(&action.blocks, |encoder, block| block_id(encoder, *block));
+    });
+    encoder.field(b"continuation", |encoder| {
+        block_id(encoder, action.continuation);
+    });
+    encoder.field(b"replacement", |encoder| {
+        let replacement = &action.replacement;
+        encoder.field(b"target", |encoder| block_id(encoder, replacement.target));
+        encoder.field(b"active", |encoder| local_id(encoder, replacement.active));
+        encoder.field(b"recovered", |encoder| {
+            local_id(encoder, replacement.recovered);
+        });
+        encoder.field(b"capture", |encoder| {
+            encoder.field(b"operation", |encoder| {
+                encode_runtime_op(encoder, replacement.capture.operation);
+            });
+            encoder.field(b"effects", |encoder| {
+                encode_effects(encoder, replacement.capture.effects);
+            });
+            encoder.field(b"provenance", |encoder| {
+                encode_provenance(encoder, &replacement.capture.provenance);
+            });
+        });
+        encoder.field(b"effects", |encoder| {
+            encode_effects(encoder, replacement.effects);
+        });
+        encoder.field(b"provenance", |encoder| {
+            encode_provenance(encoder, &replacement.provenance);
+        });
+    });
 }
 
 fn encode_artifact(encoder: &mut Encoder, artifact: &rust_ir::FunctionArtifactPlan) {
@@ -212,10 +280,11 @@ fn encode_rvalue_kind(encoder: &mut Encoder, kind: &rust_ir::RvalueKind) {
                 encoder.field(b"operand", |encoder| encode_operand(encoder, operand));
             });
         }
-        rust_ir::RvalueKind::RecoverCompareNil { state, equal } => {
-            encoder.variant(b"recover-compare-nil", |encoder| {
+        rust_ir::RvalueKind::Recover { state, value, nil } => {
+            encoder.variant(b"recover", |encoder| {
                 encoder.field(b"state", |encoder| encode_place(encoder, *state));
-                encoder.field(b"equal", |encoder| encoder.bool(*equal));
+                encoder.field(b"value", |encoder| encode_operand(encoder, value));
+                encoder.field(b"nil", |encoder| encode_runtime_op(encoder, *nil));
             });
         }
         rust_ir::RvalueKind::Binary { op, left, right } => {
@@ -306,8 +375,8 @@ fn encode_rvalue_kind(encoder: &mut Encoder, kind: &rust_ir::RvalueKind) {
             encoder.field(b"field", |encoder| encoder.u32(*field));
             encoder.field(b"value", |encoder| encode_operand(encoder, value));
         }),
-        rust_ir::RvalueKind::AggregateEqualI64 { left, right, equal } => {
-            encoder.variant(b"aggregate-equal-i64", |encoder| {
+        rust_ir::RvalueKind::AggregateEqualInteger { left, right, equal } => {
+            encoder.variant(b"aggregate-equal-integer", |encoder| {
                 encoder.field(b"left", |encoder| encode_operand(encoder, left));
                 encoder.field(b"right", |encoder| encode_operand(encoder, right));
                 encoder.field(b"equal", |encoder| encoder.bool(*equal));
@@ -345,21 +414,31 @@ fn encode_constant(encoder: &mut Encoder, constant: &rust_ir::Constant) {
         rust_ir::Constant::Bool(value) => {
             encoder.variant(b"bool", |encoder| encoder.bool(*value));
         }
-        rust_ir::Constant::I64(value) => {
-            encoder.variant(b"i64", |encoder| encoder.i64(*value));
+        rust_ir::Constant::Integer { kind, bits } => {
+            encoder.variant(b"integer", |encoder| {
+                encoder.field(b"kind", |encoder| encode_integer_kind(encoder, *kind));
+                encoder.field(b"bits", |encoder| encoder.i64(*bits));
+            });
         }
-        rust_ir::Constant::F64(bits) => {
-            encoder.variant(b"f64-bits", |encoder| encoder.u64(*bits));
+        rust_ir::Constant::Float { kind, bits } => {
+            encoder.variant(b"float-bits", |encoder| {
+                encoder.field(b"kind", |encoder| encode_float_kind(encoder, *kind));
+                encoder.field(b"bits", |encoder| encoder.u64(*bits));
+            });
         }
-        rust_ir::Constant::Complex128 { real, imag } => {
-            encoder.variant(b"complex128-bits", |encoder| {
+        rust_ir::Constant::Complex { kind, real, imag } => {
+            encoder.variant(b"complex-bits", |encoder| {
+                encoder.field(b"kind", |encoder| encode_float_kind(encoder, *kind));
                 encoder.field(b"real", |encoder| encoder.u64(*real));
                 encoder.field(b"imag", |encoder| encoder.u64(*imag));
             });
         }
-        rust_ir::Constant::StaticI64Array(values) => {
-            encoder.variant(b"static-i64-array", |encoder| {
-                encoder.sequence(values, |encoder, value| encoder.i64(*value));
+        rust_ir::Constant::StaticIntegerArray { kind, values } => {
+            encoder.variant(b"static-integer-array", |encoder| {
+                encoder.field(b"kind", |encoder| encode_integer_kind(encoder, *kind));
+                encoder.field(b"values", |encoder| {
+                    encoder.sequence(values, |encoder, value| encoder.i64(*value));
+                });
             });
         }
         rust_ir::Constant::RuntimeStaticBytes { op, bytes } => {
@@ -476,19 +555,55 @@ fn encode_runtime_op(encoder: &mut Encoder, operation: RuntimeOp) {
     encoder.u32(u32::from(operation.id().get()));
 }
 
+fn encode_integer_kind(encoder: &mut Encoder, kind: gors_runtime_abi::IntegerKind) {
+    encoder.variant(
+        match kind {
+            gors_runtime_abi::IntegerKind::I8 => b"i8",
+            gors_runtime_abi::IntegerKind::I16 => b"i16",
+            gors_runtime_abi::IntegerKind::I32 => b"i32",
+            gors_runtime_abi::IntegerKind::I64 => b"i64",
+            gors_runtime_abi::IntegerKind::U8 => b"u8",
+            gors_runtime_abi::IntegerKind::U16 => b"u16",
+            gors_runtime_abi::IntegerKind::U32 => b"u32",
+            gors_runtime_abi::IntegerKind::U64 => b"u64",
+        },
+        |_| {},
+    );
+}
+
+fn encode_float_kind(encoder: &mut Encoder, kind: gors_runtime_abi::FloatKind) {
+    encoder.variant(
+        match kind {
+            gors_runtime_abi::FloatKind::F32 => b"f32",
+            gors_runtime_abi::FloatKind::F64 => b"f64",
+        },
+        |_| {},
+    );
+}
+
 fn encode_type(encoder: &mut Encoder, ty: &rust_ir::RustType) {
     match ty {
         rust_ir::RustType::Unit => encoder.variant(b"unit", |_| {}),
         rust_ir::RustType::Bool => encoder.variant(b"bool", |_| {}),
-        rust_ir::RustType::I64 => encoder.variant(b"i64", |_| {}),
-        rust_ir::RustType::F64 => encoder.variant(b"f64", |_| {}),
-        rust_ir::RustType::Complex128 => encoder.variant(b"complex128", |_| {}),
+        rust_ir::RustType::Integer(kind) => {
+            encoder.variant(b"integer", |encoder| encode_integer_kind(encoder, *kind));
+        }
+        rust_ir::RustType::Float(kind) => {
+            encoder.variant(b"float", |encoder| encode_float_kind(encoder, *kind));
+        }
+        rust_ir::RustType::Complex(kind) => {
+            encoder.variant(b"complex", |encoder| encode_float_kind(encoder, *kind));
+        }
         rust_ir::RustType::GoString => encoder.variant(b"go-string", |_| {}),
         rust_ir::RustType::GoSliceI64 => encoder.variant(b"go-slice-i64", |_| {}),
         rust_ir::RustType::GoSliceU8 => encoder.variant(b"go-slice-u8", |_| {}),
         rust_ir::RustType::GoSliceBool => encoder.variant(b"go-slice-bool", |_| {}),
         rust_ir::RustType::GoSliceInterface => encoder.variant(b"go-slice-interface", |_| {}),
+        rust_ir::RustType::GoSliceGoString => encoder.variant(b"go-slice-go-string", |_| {}),
         rust_ir::RustType::GoMapStringI64 => encoder.variant(b"go-map-string-i64", |_| {}),
+        rust_ir::RustType::GoMapI64GoString => {
+            encoder.variant(b"go-map-i64-go-string", |_| {});
+        }
         rust_ir::RustType::GoMapStringInterface => {
             encoder.variant(b"go-map-string-interface", |_| {});
         }
@@ -498,14 +613,26 @@ fn encode_type(encoder: &mut Encoder, ty: &rust_ir::RustType) {
         }
         rust_ir::RustType::GoInterface => encoder.variant(b"go-interface", |_| {}),
         rust_ir::RustType::GoChannelI64 => encoder.variant(b"go-channel-i64", |_| {}),
-        rust_ir::RustType::ArrayI64(length) => {
-            encoder.variant(b"array-i64", |encoder| encoder.u64(*length));
+        rust_ir::RustType::GoChannelGoString => {
+            encoder.variant(b"go-channel-go-string", |_| {});
+        }
+        rust_ir::RustType::GoChannelGoChannelI64 => {
+            encoder.variant(b"go-channel-go-channel-i64", |_| {});
+        }
+        rust_ir::RustType::ArrayInteger { length, element } => {
+            encoder.variant(b"array-integer", |encoder| {
+                encoder.field(b"length", |encoder| encoder.u64(*length));
+                encoder.field(b"element", |encoder| encode_integer_kind(encoder, *element));
+            });
         }
         rust_ir::RustType::ArrayBool(length) => {
             encoder.variant(b"array-bool", |encoder| encoder.u64(*length));
         }
-        rust_ir::RustType::ArrayF64(length) => {
-            encoder.variant(b"array-f64", |encoder| encoder.u64(*length));
+        rust_ir::RustType::ArrayFloat { length, element } => {
+            encoder.variant(b"array-float", |encoder| {
+                encoder.field(b"length", |encoder| encoder.u64(*length));
+                encoder.field(b"element", |encoder| encode_float_kind(encoder, *element));
+            });
         }
         rust_ir::RustType::ArrayGoString(length) => {
             encoder.variant(b"array-go-string", |encoder| encoder.u64(*length));
@@ -515,6 +642,7 @@ fn encode_type(encoder: &mut Encoder, ty: &rust_ir::RustType) {
                 encoder.u64(*length);
             });
         }
+        rust_ir::RustType::ZeroArray => encoder.variant(b"zero-array", |_| {}),
         rust_ir::RustType::Struct(fields) => {
             encoder.variant(b"struct", |encoder| {
                 encoder.sequence(fields, encode_type);

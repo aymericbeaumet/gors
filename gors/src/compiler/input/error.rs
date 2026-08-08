@@ -1,7 +1,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use super::{LogicalPathIssue, PackageKey};
+use super::{GoLanguageVersionParseError, LogicalPathIssue, PackageKey};
 use crate::import_path::ImportPathIssue;
 
 /// Structural failure while constructing compiler-owned raw inputs.
@@ -23,6 +23,10 @@ pub enum InputError {
     SourceTooLarge {
         path: Arc<str>,
         byte_len: usize,
+    },
+    InvalidLanguageVersion {
+        value: Arc<str>,
+        issue: GoLanguageVersionParseError,
     },
     DuplicateLogicalPath {
         package: PackageKey,
@@ -53,6 +57,12 @@ impl fmt::Display for InputError {
                 "logical source {path:?} contains {byte_len} bytes; the compiler limit is {}",
                 u32::MAX
             ),
+            Self::InvalidLanguageVersion { value, issue } => {
+                write!(
+                    formatter,
+                    "invalid compiler language version {value:?}: {issue}"
+                )
+            }
             Self::DuplicateLogicalPath { package, path } => write!(
                 formatter,
                 "{package} contains duplicate logical source path {path:?}"
@@ -64,4 +74,11 @@ impl fmt::Display for InputError {
     }
 }
 
-impl std::error::Error for InputError {}
+impl std::error::Error for InputError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidLanguageVersion { issue, .. } => Some(issue),
+            _ => None,
+        }
+    }
+}

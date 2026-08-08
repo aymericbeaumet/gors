@@ -1,5 +1,122 @@
 use super::{compile_and_run, raw_program};
-use crate::compiler::compile_program;
+use crate::compiler::db::QueryKind;
+use crate::compiler::{CompilerSession, compile_program};
+
+#[test]
+fn float_interfaces_preserve_ieee_equality_and_extract_float64() {
+    let run = compile_and_run(
+        r#"
+            package main
+
+            func main() {
+                huge := 1e308
+                infinity := huge + huge
+                nan := infinity + -infinity
+                zero := 0.0
+                negativeZero := -zero
+
+                var nanLeft any = nan
+                var nanRight any = nan
+                var zeroLeft any = zero
+                var zeroRight any = negativeZero
+                println(nan == nan, negativeZero == zero)
+                println(nanLeft == nanRight, zeroLeft == zeroRight)
+
+                var value any = 3.5
+                extracted, ok := value.(float64)
+                println(ok, extracted)
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"false true\nfalse true\ntrue 3.5\n");
+    assert!(run.rust.contains("go_interface_box_f64"), "{}", run.rust);
+    assert!(run.rust.contains("go_interface_equal"), "{}", run.rust);
+    assert!(run.rust.contains("go_interface_unbox_f64"), "{}", run.rust);
+    assert!(run.rust.contains("print_f64"), "{}", run.rust);
+}
+
+#[test]
+fn float32_conversions_round_before_interface_boxing() {
+    let run = compile_and_run(
+        r#"
+            package main
+            type Narrow float32
+            func main() {
+                wide := 16777217.0
+                narrow := float32(wide)
+                if float64(narrow) != 16777216.0 {
+                    panic("float32 conversion did not round")
+                }
+                var boxed any = narrow
+                extracted, ok := boxed.(float32)
+                var named any = Narrow(narrow)
+                namedExtracted, namedOK := named.(Narrow)
+                println(ok, float64(extracted), namedOK, float64(namedExtracted))
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"true 1.6777216e+07 true 1.6777216e+07\n");
+    assert!(run.rust.contains("as f32"), "{}", run.rust);
+    assert!(run.rust.contains("builtin:float32"), "{}", run.rust);
+    assert!(run.rust.contains("go_interface_box_f32"), "{}", run.rust);
+    assert!(run.rust.contains("go_interface_unbox_f32"), "{}", run.rust);
+}
+
+#[test]
+fn float_interface_comment_edits_reuse_semantic_stages() {
+    let before = r#"
+        package main
+        func compare(value float64) bool {
+            var boxed any = value
+            return boxed == any(value)
+        }
+        func main() { println(compare(1.5)) }
+    "#;
+    let after = r#"
+        package main
+        func compare(value float64) bool {
+            // Float boxing and interface equality are unchanged.
+            var boxed any = value
+            return boxed == any(value)
+        }
+        func main() { println(compare(1.5)) }
+    "#;
+    let mut session = CompilerSession::default();
+    session
+        .compile_program(raw_program("main.go", "main.go", before))
+        .unwrap();
+    session.database().reset_telemetry();
+
+    session
+        .compile_program(raw_program("main.go", "main.go", after))
+        .unwrap();
+
+    let telemetry = session.database().telemetry();
+    assert_eq!(telemetry.executions(QueryKind::TypedHir), 0);
+    assert_eq!(telemetry.executions(QueryKind::VerifiedGoMir), 0);
+    assert_eq!(telemetry.executions(QueryKind::NormalizedGoMir), 0);
+    assert_eq!(telemetry.executions(QueryKind::VerifiedRustIr), 0);
+}
+
+#[test]
+fn interfaces_remain_invalid_ordered_comparison_operands() {
+    let error = compile_program(raw_program(
+        "interfaces.go",
+        "interfaces.go",
+        "package main\nfunc main() { var left any = 1.0; var right any = 2.0; _ = left < right }\n",
+    ))
+    .err()
+    .expect("ordered interface comparison must fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("operator Less is invalid for Interface"),
+        "{error}"
+    );
+}
 
 #[test]
 fn generated_interfaces_preserve_nil_dynamic_types_and_value_copies() {

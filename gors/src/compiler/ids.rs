@@ -168,6 +168,20 @@ impl LocalId {
     }
 }
 
+/// Dense identity of one breakable control-flow target within a function.
+///
+/// This identity is allocated while rebuilding typed HIR and is meaningful
+/// only inside that owner. It is never a persistent query or cache key.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ControlTargetId(pub u32);
+
+impl ControlTargetId {
+    /// Canonical owner-local index for compiler-owned encodings.
+    pub(in crate::compiler) const fn index(self) -> u32 {
+        self.0
+    }
+}
+
 /// Dense identity of a named type declared inside one function.
 ///
 /// This identity is deliberately revision-local and may only travel inside

@@ -69,7 +69,9 @@ fn collect_statement_labels(statement: &hir::Stmt, labels: &mut Vec<(String, Sou
             collect_labels(body, labels);
         }
         hir::StmtKind::Range { body, .. } => collect_labels(body, labels),
-        hir::StmtKind::Block(block) => collect_labels(block, labels),
+        hir::StmtKind::Block(block) | hir::StmtKind::Breakable { body: block, .. } => {
+            collect_labels(block, labels);
+        }
         hir::StmtKind::Label {
             name,
             statement: body,
@@ -83,15 +85,9 @@ fn collect_statement_labels(statement: &hir::Stmt, labels: &mut Vec<(String, Sou
         | hir::StmtKind::LetTuple { .. }
         | hir::StmtKind::Assign { .. }
         | hir::StmtKind::AssignTuple { .. }
-        | hir::StmtKind::ParallelAssignTuple { .. }
-        | hir::StmtKind::ParallelAssign { .. }
         | hir::StmtKind::ClosureBinding(_)
         | hir::StmtKind::Defer { .. }
         | hir::StmtKind::Go { .. }
-        | hir::StmtKind::SliceAssign { .. }
-        | hir::StmtKind::ArrayAssign { .. }
-        | hir::StmtKind::StructFieldAssign { .. }
-        | hir::StmtKind::MapAssign { .. }
         | hir::StmtKind::Expr(_)
         | hir::StmtKind::Return(_)
         | hir::StmtKind::Goto(_)

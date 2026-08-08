@@ -9,8 +9,9 @@ mod normalize;
 mod verify;
 
 pub use model::{
-    BasicBlock, File, Function, LocalDecl, Operand, PanicCleanup, PanicEdge, Place, Provenance,
-    Rvalue, RvalueKind, Statement, SyntheticOrigin, Terminator, TerminatorKind,
+    BasicBlock, DeferredAction, File, Function, LocalDecl, Operand, PanicCleanup, PanicEdge,
+    PanicReplacement, Place, Provenance, Rvalue, RvalueKind, Statement, SyntheticOrigin,
+    Terminator, TerminatorKind,
 };
 
 use std::collections::BTreeMap;

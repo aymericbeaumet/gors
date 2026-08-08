@@ -92,6 +92,7 @@ pub enum GoPanicCondition {
     CloseOfNilChannel,
     CloseOfClosedChannel,
     TypeAssertionFailure,
+    UncomparableInterfaceComparison,
 }
 
 impl GoPanicCondition {
@@ -109,6 +110,7 @@ impl GoPanicCondition {
             Self::CloseOfNilChannel => 10,
             Self::CloseOfClosedChannel => 11,
             Self::TypeAssertionFailure => 12,
+            Self::UncomparableInterfaceComparison => 13,
         }
     }
 }

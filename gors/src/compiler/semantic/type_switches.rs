@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 
 use super::FunctionLowerer;
+use super::control_targets::ControlTargetKind;
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
 use crate::compiler::ids::{LocalId, NodeId};
@@ -31,9 +32,12 @@ impl FunctionLowerer {
         expression: &ExprSyntax,
         cases: &[SwitchCaseSyntax],
         syntax_source: SyntaxSource,
+        label: Option<&str>,
         source: SourceRef,
     ) -> Result<Option<hir::Stmt>, Diagnostic> {
         self.push_scope();
+        let target =
+            self.begin_control_target(ControlTargetKind::BreakOnly, label.map(str::to_owned))?;
         let lowered = self.lower_type_switch_in_scope(
             init,
             binding,
@@ -42,16 +46,40 @@ impl FunctionLowerer {
             syntax_source,
             source,
         );
+        self.end_control_target(target)?;
         self.pop_scope();
         let statements = lowered?;
-        Ok(Some(hir::Stmt {
-            node,
-            kind: hir::StmtKind::Block(hir::Block {
+        let block_node = self.alloc_node(syntax_source)?;
+        let block = hir::Block {
+            node: block_node,
+            stmts: statements,
+            source: SourceRef::node(block_node),
+        };
+        let (breakable_node, breakable_source) = if label.is_some() {
+            let breakable_node = self.alloc_node(syntax_source)?;
+            (breakable_node, SourceRef::node(breakable_node))
+        } else {
+            (node, source)
+        };
+        let breakable = hir::Stmt {
+            node: breakable_node,
+            kind: hir::StmtKind::Breakable {
+                target,
+                body: block,
+            },
+            source: breakable_source,
+        };
+        Ok(Some(if let Some(label) = label {
+            hir::Stmt {
                 node,
-                stmts: statements,
+                kind: hir::StmtKind::Label {
+                    name: label.to_owned(),
+                    statement: Some(Box::new(breakable)),
+                },
                 source,
-            }),
-            source,
+            }
+        } else {
+            breakable
         }))
     }
 

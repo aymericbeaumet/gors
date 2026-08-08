@@ -19,6 +19,8 @@ use crate::compiler::mir::{
 };
 use crate::compiler::types::{ConstValue, Ty};
 
+use super::construct::{binary_effects, operand_ty};
+
 #[cfg(test)]
 pub(super) fn normalize(input: VerifiedMir) -> Result<VerifiedMir, Vec<Diagnostic>> {
     let boolean_control_flow = BooleanControlFlow;
@@ -124,13 +126,14 @@ impl MirPass for BooleanControlFlow {
 
     fn run(&self, file: &mut mir::File) -> Result<(), Diagnostic> {
         for function in &mut file.functions {
-            propagate_block_booleans(function);
+            propagate_block_booleans(function)?;
         }
         Ok(())
     }
 }
 
-fn propagate_block_booleans(function: &mut mir::Function) {
+fn propagate_block_booleans(function: &mut mir::Function) -> Result<(), Diagnostic> {
+    let locals = &function.locals;
     for block in &mut function.blocks {
         let mut constants = BTreeMap::<LocalId, bool>::new();
         for statement in &mut block.statements {
@@ -142,7 +145,7 @@ fn propagate_block_booleans(function: &mut mir::Function) {
                 statement.value.panic = PanicEdge::None;
                 constants.insert(statement.destination.local, value);
             } else {
-                refresh_rvalue_effects(&mut statement.value);
+                refresh_rvalue_effects(&mut statement.value, locals)?;
                 constants.remove(&statement.destination.local);
             }
             statement.effects = statement.value.effects.union(hir::Effects {
@@ -166,6 +169,7 @@ fn propagate_block_booleans(function: &mut mir::Function) {
             block.terminator.panic = PanicEdge::None;
         }
     }
+    Ok(())
 }
 
 fn rewrite_rvalue_boolean_reads(rvalue: &mut Rvalue, constants: &BTreeMap<LocalId, bool>) {
@@ -222,7 +226,7 @@ fn rewrite_rvalue_boolean_reads(rvalue: &mut Rvalue, constants: &BTreeMap<LocalI
             rewrite_boolean_read(structure, constants);
             rewrite_boolean_read(value, constants);
         }
-        RvalueKind::RecoverCompareNil { .. } => {}
+        RvalueKind::Recover { value, .. } => rewrite_boolean_read(value, constants),
         RvalueKind::SliceLiteralI64 { .. }
         | RvalueKind::SliceLiteralU8(_)
         | RvalueKind::SliceLiteralBool(_)
@@ -281,7 +285,10 @@ fn fold_boolean_rvalue(rvalue: &Rvalue) -> Option<bool> {
     }
 }
 
-fn refresh_rvalue_effects(rvalue: &mut Rvalue) {
+fn refresh_rvalue_effects(
+    rvalue: &mut Rvalue,
+    locals: &[mir::LocalDecl],
+) -> Result<(), Diagnostic> {
     let may_read = match &rvalue.kind {
         RvalueKind::Use(operand)
         | RvalueKind::Unary { operand, .. }
@@ -305,33 +312,33 @@ fn refresh_rvalue_effects(rvalue: &mut Rvalue) {
         RvalueKind::StructSet {
             structure, value, ..
         } => operand_reads(structure) || operand_reads(value),
-        RvalueKind::RecoverCompareNil { .. } => true,
+        RvalueKind::Recover { value, .. } => operand_reads(value),
         RvalueKind::SliceLiteralI64 { .. }
         | RvalueKind::SliceLiteralU8(_)
         | RvalueKind::SliceLiteralBool(_)
         | RvalueKind::ArrayLiteralI64(_) => false,
     };
-    let may_panic = matches!(
-        &rvalue.kind,
-        RvalueKind::Binary {
-            op: hir::BinaryOp::Div | hir::BinaryOp::Rem | hir::BinaryOp::Shl | hir::BinaryOp::Shr,
-            ..
-        } | RvalueKind::ArrayIndexI64 { .. }
-            | RvalueKind::ArrayIndex { .. }
-            | RvalueKind::ArraySetI64 { .. }
-            | RvalueKind::ArraySet { .. }
-    );
-    let may_allocate = matches!(
-        &rvalue.kind,
-        RvalueKind::Binary {
-            op: hir::BinaryOp::Add,
-            ty: Ty::String,
-            ..
-        } | RvalueKind::SliceLiteralI64 { .. }
-            | RvalueKind::SliceLiteralU8(_)
-            | RvalueKind::SliceLiteralBool(_)
-    );
-    let recover = matches!(rvalue.kind, RvalueKind::RecoverCompareNil { .. });
+    let binary = if let RvalueKind::Binary { op, right, ty, .. } = &rvalue.kind {
+        Some(binary_effects(*op, ty, &operand_ty(right, locals)?))
+    } else {
+        None
+    };
+    let may_panic = binary.is_some_and(|effects| effects.may_panic)
+        || matches!(
+            &rvalue.kind,
+            RvalueKind::ArrayIndexI64 { .. }
+                | RvalueKind::ArrayIndex { .. }
+                | RvalueKind::ArraySetI64 { .. }
+                | RvalueKind::ArraySet { .. }
+        );
+    let may_allocate = binary.is_some_and(|effects| effects.may_allocate)
+        || matches!(
+            &rvalue.kind,
+            RvalueKind::SliceLiteralI64 { .. }
+                | RvalueKind::SliceLiteralU8(_)
+                | RvalueKind::SliceLiteralBool(_)
+        );
+    let recover = matches!(rvalue.kind, RvalueKind::Recover { .. });
     rvalue.effects = hir::Effects {
         may_read,
         may_write: recover,
@@ -347,6 +354,7 @@ fn refresh_rvalue_effects(rvalue: &mut Rvalue) {
     } else {
         PanicEdge::None
     };
+    Ok(())
 }
 
 fn refresh_terminator_read_effect(terminator: &mut Terminator) {
@@ -435,6 +443,16 @@ fn remove_unreachable_blocks(function: &mut mir::Function) -> Result<(), Diagnos
     function.entry = new_entry;
     if let Some(cleanup) = &mut function.panic_cleanup {
         cleanup.entry = remapped_block(cleanup.entry, &remap)?;
+        cleanup.completion = remapped_block(cleanup.completion, &remap)?;
+        for action in &mut cleanup.actions {
+            action.dispatch = remapped_block(action.dispatch, &remap)?;
+            action.entry = remapped_block(action.entry, &remap)?;
+            for block in &mut action.blocks {
+                *block = remapped_block(*block, &remap)?;
+            }
+            action.continuation = remapped_block(action.continuation, &remap)?;
+            action.replacement.target = remapped_block(action.replacement.target, &remap)?;
+        }
     }
     Ok(())
 }

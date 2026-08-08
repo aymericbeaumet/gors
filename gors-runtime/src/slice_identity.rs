@@ -2,9 +2,20 @@
 
 use std::sync::{Arc, RwLock};
 
-use crate::{GoSlice, GoSliceBool, GoSliceI64, GoSliceU8};
+use crate::{GoSlice, GoSliceBool, GoSliceGoString, GoSliceI64, GoSliceU8};
 
 impl<T> GoSlice<T> {
+    pub(crate) fn from_values(values: Vec<T>) -> Self {
+        let len = values.len();
+        Self {
+            storage: Arc::new(RwLock::new(values)),
+            start: 0,
+            len,
+            capacity: len,
+            nil: false,
+        }
+    }
+
     pub(crate) fn nil() -> Self {
         Self {
             storage: Arc::new(RwLock::new(Vec::new())),
@@ -49,5 +60,17 @@ pub fn go_slice_bool_nil() -> GoSliceBool {
 /// Report whether a boolean slice is nil.
 #[must_use]
 pub fn go_slice_bool_is_nil(slice: GoSliceBool) -> bool {
+    slice.nil
+}
+
+/// Construct the nil `[]string` value.
+#[must_use]
+pub fn go_slice_go_string_nil() -> GoSliceGoString {
+    GoSliceGoString::nil()
+}
+
+/// Report whether a string slice is nil.
+#[must_use]
+pub fn go_slice_go_string_is_nil(slice: GoSliceGoString) -> bool {
     slice.nil
 }

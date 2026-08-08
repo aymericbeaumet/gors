@@ -53,9 +53,44 @@ fn encode_function(encoder: &mut Encoder, function: &mir::Function) {
         encoder.option(function.panic_cleanup.as_ref(), |encoder, cleanup| {
             encoder.field(b"entry", |encoder| block_id(encoder, cleanup.entry));
             encoder.field(b"active", |encoder| local_id(encoder, cleanup.active));
+            encoder.field(b"recovered", |encoder| local_id(encoder, cleanup.recovered));
+            encoder.field(b"actions", |encoder| {
+                encoder.sequence(&cleanup.actions, encode_deferred_action);
+            });
+            encoder.field(b"completion", |encoder| {
+                block_id(encoder, cleanup.completion);
+            });
         });
     });
     encoder.field(b"source", |encoder| source_ref(encoder, function.source));
+}
+
+fn encode_deferred_action(encoder: &mut Encoder, action: &mir::DeferredAction) {
+    encoder.field(b"dispatch", |encoder| block_id(encoder, action.dispatch));
+    encoder.field(b"registered", |encoder| {
+        local_id(encoder, action.registered);
+    });
+    encoder.field(b"entry", |encoder| block_id(encoder, action.entry));
+    encoder.field(b"blocks", |encoder| {
+        encoder.sequence(&action.blocks, |encoder, block| block_id(encoder, *block));
+    });
+    encoder.field(b"continuation", |encoder| {
+        block_id(encoder, action.continuation);
+    });
+    encoder.field(b"replacement", |encoder| {
+        let replacement = &action.replacement;
+        encoder.field(b"target", |encoder| block_id(encoder, replacement.target));
+        encoder.field(b"active", |encoder| local_id(encoder, replacement.active));
+        encoder.field(b"recovered", |encoder| {
+            local_id(encoder, replacement.recovered);
+        });
+        encoder.field(b"effects", |encoder| {
+            hir_effects(encoder, replacement.effects);
+        });
+        encoder.field(b"provenance", |encoder| {
+            encode_provenance(encoder, &replacement.provenance);
+        });
+    });
 }
 
 fn encode_local(encoder: &mut Encoder, local: &mir::LocalDecl) {
@@ -232,10 +267,10 @@ fn encode_rvalue_kind(encoder: &mut Encoder, kind: &mir::RvalueKind) {
                 encoder.field(b"to", |encoder| ty(encoder, to));
             });
         }
-        mir::RvalueKind::RecoverCompareNil { state, equal } => {
-            encoder.variant(b"recover-compare-nil", |encoder| {
+        mir::RvalueKind::Recover { state, value } => {
+            encoder.variant(b"recover", |encoder| {
                 encoder.field(b"state", |encoder| encode_place(encoder, *state));
-                encoder.field(b"equal", |encoder| encoder.bool(*equal));
+                encoder.field(b"value", |encoder| encode_operand(encoder, value));
             });
         }
         mir::RvalueKind::Binary {
@@ -342,10 +377,14 @@ fn encode_callee(encoder: &mut Encoder, callee: hir::Callee) {
                     hir::Builtin::SliceI64Len => b"slice-i64-len",
                     hir::Builtin::SliceI64Cap => b"slice-i64-cap",
                     hir::Builtin::SliceI64Append => b"slice-i64-append",
+                    hir::Builtin::SliceI64AppendSlice => b"slice-i64-append-slice",
                     hir::Builtin::SliceI64Nil => b"slice-i64-nil",
                     hir::Builtin::SliceI64IsNil => b"slice-i64-is-nil",
+                    hir::Builtin::SliceU8Make => b"slice-u8-make",
+                    hir::Builtin::SliceU8Set => b"slice-u8-set",
                     hir::Builtin::SliceU8AppendSlice => b"slice-u8-append-slice",
                     hir::Builtin::SliceU8AppendString => b"slice-u8-append-string",
+                    hir::Builtin::SliceU8Copy => b"slice-u8-copy",
                     hir::Builtin::SliceU8CopyString => b"slice-u8-copy-string",
                     hir::Builtin::SliceU8Len => b"slice-u8-len",
                     hir::Builtin::SliceU8Index => b"slice-u8-index",
@@ -358,16 +397,30 @@ fn encode_callee(encoder: &mut Encoder, callee: hir::Callee) {
                     hir::Builtin::SliceBoolSet => b"slice-bool-set",
                     hir::Builtin::SliceBoolNil => b"slice-bool-nil",
                     hir::Builtin::SliceBoolIsNil => b"slice-bool-is-nil",
+                    hir::Builtin::SliceGoStringIndex => b"slice-go-string-index",
+                    hir::Builtin::SliceGoStringRange => b"slice-go-string-range",
+                    hir::Builtin::SliceGoStringSet => b"slice-go-string-set",
+                    hir::Builtin::SliceGoStringMake => b"slice-go-string-make",
+                    hir::Builtin::SliceGoStringNil => b"slice-go-string-nil",
+                    hir::Builtin::SliceGoStringIsNil => b"slice-go-string-is-nil",
+                    hir::Builtin::SliceGoStringLen => b"slice-go-string-len",
+                    hir::Builtin::SliceGoStringCap => b"slice-go-string-cap",
+                    hir::Builtin::SliceGoStringAppend => b"slice-go-string-append",
+                    hir::Builtin::SliceGoStringCopy => b"slice-go-string-copy",
+                    hir::Builtin::SliceGoStringClear => b"slice-go-string-clear",
                     hir::Builtin::AggregateSliceMake => b"aggregate-slice-make",
                     hir::Builtin::AggregateSliceNil => b"aggregate-slice-nil",
                     hir::Builtin::AggregateSliceIsNil => b"aggregate-slice-is-nil",
                     hir::Builtin::AggregateSliceLen => b"aggregate-slice-len",
                     hir::Builtin::AggregateSliceIndexTagged => b"aggregate-slice-index-tagged",
                     hir::Builtin::AggregateSliceSetTagged => b"aggregate-slice-set-tagged",
+                    hir::Builtin::AggregateSliceAppendTagged => b"aggregate-slice-append-tagged",
                     hir::Builtin::SnapshotFunctionSliceAppend => b"snapshot-function-slice-append",
                     hir::Builtin::SnapshotFunctionSliceCall => b"snapshot-function-slice-call",
+                    hir::Builtin::StringFromRune => b"string-from-rune",
                     hir::Builtin::StringFromSliceU8 => b"string-from-slice-u8",
                     hir::Builtin::StringFromSliceRunes => b"string-from-slice-runes",
+                    hir::Builtin::StringToSliceRunes => b"string-to-slice-runes",
                     hir::Builtin::StringLen => b"string-len",
                     hir::Builtin::StringIndex => b"string-index",
                     hir::Builtin::StringRange => b"string-range",
@@ -385,6 +438,18 @@ fn encode_callee(encoder: &mut Encoder, callee: hir::Callee) {
                     hir::Builtin::MapStringI64Clear => b"map-string-i64-clear",
                     hir::Builtin::MapStringI64IsNil => b"map-string-i64-is-nil",
                     hir::Builtin::MapStringI64KeyAt => b"map-string-i64-key-at",
+                    hir::Builtin::MapStringI64RangeKeys => b"map-string-i64-range-keys",
+                    hir::Builtin::MapI64GoStringNil => b"map-i64-go-string-nil",
+                    hir::Builtin::MapI64GoStringMake => b"map-i64-go-string-make",
+                    hir::Builtin::MapI64GoStringLen => b"map-i64-go-string-len",
+                    hir::Builtin::MapI64GoStringGet => b"map-i64-go-string-get",
+                    hir::Builtin::MapI64GoStringLookup => b"map-i64-go-string-lookup",
+                    hir::Builtin::MapI64GoStringContains => b"map-i64-go-string-contains",
+                    hir::Builtin::MapI64GoStringSet => b"map-i64-go-string-set",
+                    hir::Builtin::MapI64GoStringDelete => b"map-i64-go-string-delete",
+                    hir::Builtin::MapI64GoStringClear => b"map-i64-go-string-clear",
+                    hir::Builtin::MapI64GoStringIsNil => b"map-i64-go-string-is-nil",
+                    hir::Builtin::MapI64GoStringRangeKeys => b"map-i64-go-string-range-keys",
                     hir::Builtin::AggregateMapMake => b"aggregate-map-make",
                     hir::Builtin::AggregateMapLen => b"aggregate-map-len",
                     hir::Builtin::AggregateMapGetTagged => b"aggregate-map-get-tagged",
@@ -395,6 +460,7 @@ fn encode_callee(encoder: &mut Encoder, callee: hir::Callee) {
                     hir::Builtin::PointerI64Get => b"pointer-i64-get",
                     hir::Builtin::PointerI64Set => b"pointer-i64-set",
                     hir::Builtin::PointerI64IsNil => b"pointer-i64-is-nil",
+                    hir::Builtin::PointerI64Equal => b"pointer-i64-equal",
                     hir::Builtin::PointerStructI64Nil => b"pointer-struct-i64-nil",
                     hir::Builtin::PointerStructI64New => b"pointer-struct-i64-new",
                     hir::Builtin::PointerStructI64Get => b"pointer-struct-i64-get",
@@ -408,21 +474,41 @@ fn encode_callee(encoder: &mut Encoder, callee: hir::Callee) {
                     hir::Builtin::InterfaceNil => b"interface-nil",
                     hir::Builtin::InterfaceBoxBool => b"interface-box-bool",
                     hir::Builtin::InterfaceBoxI64 => b"interface-box-i64",
+                    hir::Builtin::InterfaceBoxF32 => b"interface-box-f32",
+                    hir::Builtin::InterfaceBoxF64 => b"interface-box-f64",
                     hir::Builtin::InterfaceBoxGoString => b"interface-box-go-string",
+                    hir::Builtin::InterfaceBoxGoSliceGoString => {
+                        b"interface-box-go-slice-go-string"
+                    }
                     hir::Builtin::InterfaceBoxStructI64 => b"interface-box-struct-i64",
+                    hir::Builtin::InterfaceBoxPointerI64 => b"interface-box-pointer-i64",
                     hir::Builtin::InterfaceBoxPointerStructI64 => {
                         b"interface-box-pointer-struct-i64"
                     }
                     hir::Builtin::InterfaceBoxAggregate => b"interface-box-aggregate",
+                    hir::Builtin::InterfaceBoxComparableAggregate => {
+                        b"interface-box-comparable-aggregate"
+                    }
                     hir::Builtin::InterfaceIsNil => b"interface-is-nil",
                     hir::Builtin::InterfaceIsType => b"interface-is-type",
+                    hir::Builtin::InterfaceIsRuntimeError => b"interface-is-runtime-error",
+                    hir::Builtin::InterfaceEqual => b"interface-equal",
                     hir::Builtin::InterfaceAssert => b"interface-assert",
                     hir::Builtin::InterfaceSatisfies => b"interface-satisfies",
+                    hir::Builtin::InterfaceSatisfiesRuntimeError => {
+                        b"interface-satisfies-runtime-error"
+                    }
                     hir::Builtin::InterfaceSatisfiesNonNil => b"interface-satisfies-non-nil",
                     hir::Builtin::InterfaceUnboxBool => b"interface-unbox-bool",
                     hir::Builtin::InterfaceUnboxI64 => b"interface-unbox-i64",
+                    hir::Builtin::InterfaceUnboxF32 => b"interface-unbox-f32",
+                    hir::Builtin::InterfaceUnboxF64 => b"interface-unbox-f64",
                     hir::Builtin::InterfaceUnboxGoString => b"interface-unbox-go-string",
+                    hir::Builtin::InterfaceUnboxGoSliceGoString => {
+                        b"interface-unbox-go-slice-go-string"
+                    }
                     hir::Builtin::InterfaceStructI64Get => b"interface-struct-i64-get",
+                    hir::Builtin::InterfaceUnboxPointerI64 => b"interface-unbox-pointer-i64",
                     hir::Builtin::InterfaceUnboxPointerStructI64 => {
                         b"interface-unbox-pointer-struct-i64"
                     }
@@ -440,6 +526,32 @@ fn encode_callee(encoder: &mut Encoder, callee: hir::Callee) {
                     hir::Builtin::ChannelI64IsNil => b"channel-i64-is-nil",
                     hir::Builtin::ChannelI64TrySend => b"channel-i64-try-send",
                     hir::Builtin::ChannelI64TryReceive => b"channel-i64-try-receive",
+                    hir::Builtin::ChannelGoStringNil => b"channel-go-string-nil",
+                    hir::Builtin::ChannelGoStringMake => b"channel-go-string-make",
+                    hir::Builtin::ChannelGoStringLen => b"channel-go-string-len",
+                    hir::Builtin::ChannelGoStringCap => b"channel-go-string-cap",
+                    hir::Builtin::ChannelGoStringSend => b"channel-go-string-send",
+                    hir::Builtin::ChannelGoStringReceiveValue => b"channel-go-string-receive-value",
+                    hir::Builtin::ChannelGoStringReceive => b"channel-go-string-receive",
+                    hir::Builtin::ChannelGoStringClose => b"channel-go-string-close",
+                    hir::Builtin::ChannelGoStringIsNil => b"channel-go-string-is-nil",
+                    hir::Builtin::ChannelGoStringTrySend => b"channel-go-string-try-send",
+                    hir::Builtin::ChannelGoStringTryReceive => b"channel-go-string-try-receive",
+                    hir::Builtin::ChannelGoChannelI64Nil => b"channel-go-channel-i64-nil",
+                    hir::Builtin::ChannelGoChannelI64Make => b"channel-go-channel-i64-make",
+                    hir::Builtin::ChannelGoChannelI64Len => b"channel-go-channel-i64-len",
+                    hir::Builtin::ChannelGoChannelI64Cap => b"channel-go-channel-i64-cap",
+                    hir::Builtin::ChannelGoChannelI64Send => b"channel-go-channel-i64-send",
+                    hir::Builtin::ChannelGoChannelI64ReceiveValue => {
+                        b"channel-go-channel-i64-receive-value"
+                    }
+                    hir::Builtin::ChannelGoChannelI64Receive => b"channel-go-channel-i64-receive",
+                    hir::Builtin::ChannelGoChannelI64Close => b"channel-go-channel-i64-close",
+                    hir::Builtin::ChannelGoChannelI64IsNil => b"channel-go-channel-i64-is-nil",
+                    hir::Builtin::ChannelGoChannelI64TrySend => b"channel-go-channel-i64-try-send",
+                    hir::Builtin::ChannelGoChannelI64TryReceive => {
+                        b"channel-go-channel-i64-try-receive"
+                    }
                 },
                 |_| {},
             );

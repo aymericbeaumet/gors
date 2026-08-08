@@ -1,0 +1,3 @@
+module go_spec_generics_inference_method_constraints
+
+go 1.26

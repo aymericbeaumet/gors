@@ -22,17 +22,20 @@ pub(in crate::compiler) fn rvalue_effects(kind: &RvalueKind) -> Effects {
         | RvalueKind::StructField { .. }
         | RvalueKind::StructLiteralI64(_)
         | RvalueKind::StructFieldI64 { .. }
-        | RvalueKind::AggregateEqualI64 { .. } => Effects::default(),
+        | RvalueKind::AggregateEqualInteger { .. } => Effects::default(),
         RvalueKind::StructSet { .. } | RvalueKind::StructSetI64 { .. } => Effects {
             may_write: true,
             ..Effects::default()
         },
         RvalueKind::Unary { op, .. } | RvalueKind::Binary { op, .. } => value_op_effects(*op),
-        RvalueKind::RecoverCompareNil { .. } => Effects {
-            may_read: true,
-            may_write: true,
-            ..Effects::default()
-        },
+        RvalueKind::Recover { nil, .. } => union(
+            Effects {
+                may_read: true,
+                may_write: true,
+                ..Effects::default()
+            },
+            runtime_effects(*nil),
+        ),
         RvalueKind::ArrayIndexI64 { .. } | RvalueKind::ArrayIndex { .. } => Effects {
             may_call: true,
             may_panic: true,
@@ -84,10 +87,10 @@ pub(in crate::compiler) fn rvalue_effects(kind: &RvalueKind) -> Effects {
         | RvalueKind::StructSetI64 {
             structure, value, ..
         } => union(operand_effects(structure), operand_effects(value)),
-        RvalueKind::AggregateEqualI64 { left, right, .. } => {
+        RvalueKind::AggregateEqualInteger { left, right, .. } => {
             union(operand_effects(left), operand_effects(right))
         }
-        RvalueKind::RecoverCompareNil { .. } => Effects::default(),
+        RvalueKind::Recover { value, .. } => operand_effects(value),
     };
     union(intrinsic, operands)
 }
@@ -149,7 +152,7 @@ fn primitive_effects(operation: PrimitiveOp) -> Effects {
     }
 }
 
-fn runtime_effects(operation: RuntimeOp) -> Effects {
+pub(in crate::compiler) fn runtime_effects(operation: RuntimeOp) -> Effects {
     let effects = operation.effects();
     let host_io = effects.host_io() != HostIoEffect::None;
     Effects {
@@ -196,10 +199,10 @@ fn operand_effects(operand: &Operand) -> Effects {
         ) => runtime_effects(*op),
         Operand::Constant(
             Constant::Bool(_)
-            | Constant::I64(_)
-            | Constant::F64(_)
-            | Constant::Complex128 { .. }
-            | Constant::StaticI64Array(_),
+            | Constant::Integer { .. }
+            | Constant::Float { .. }
+            | Constant::Complex { .. }
+            | Constant::StaticIntegerArray { .. },
         )
         | Operand::Unit => Effects::default(),
     }

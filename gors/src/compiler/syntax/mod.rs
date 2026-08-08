@@ -12,7 +12,7 @@ mod tests;
 mod token;
 
 pub use anchor::{SyntaxAnchor, SyntaxAnchorKind};
-pub use layout::{ConstantLayout, FunctionLayout, VariableLayout};
+pub use layout::{ConstantLayout, FunctionLayout, TypeDeclarationLayout, VariableLayout};
 pub use stream::SemanticTokenStream;
 pub use structural::{
     BlockSyntax, ChannelDirectionSyntax, ConstantSyntax, ConstantValueSyntax, DeclSyntax,
@@ -24,7 +24,8 @@ pub use structural::{
 pub use token::SemanticToken;
 
 pub(crate) use projected::{
-    ProjectedConstantSyntax, ProjectedFunctionSyntax, ProjectedVariableSyntax,
+    ProjectedConstantSyntax, ProjectedFunctionSyntax, ProjectedTypeAliasSyntax,
+    ProjectedTypeDefinitionSyntax, ProjectedVariableSyntax,
 };
 pub(crate) use projection::{
     project_constant, project_function, project_type_alias, project_type_definition,

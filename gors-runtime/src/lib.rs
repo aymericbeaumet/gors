@@ -11,46 +11,96 @@
 #![allow(dead_code)]
 
 mod byte_ranges;
+mod byte_slices;
 mod channels;
+mod integer;
 mod interface_containers;
 mod interfaces;
+mod maps;
+mod printing;
 mod slice_identity;
+mod slice_values;
 mod string_runes;
+mod string_slices;
 
 pub use byte_ranges::{
     go_slice_u8_index, go_slice_u8_len, go_slice_u8_range, go_string_index, go_string_range,
 };
+pub use byte_slices::{go_slice_u8_copy, go_slice_u8_make, go_slice_u8_set};
 pub use channels::{
-    GoChannelI64, go_channel_i64_cap, go_channel_i64_close, go_channel_i64_is_nil,
-    go_channel_i64_len, go_channel_i64_make, go_channel_i64_nil, go_channel_i64_receive,
-    go_channel_i64_receive_value, go_channel_i64_send, go_channel_i64_try_receive,
-    go_channel_i64_try_send,
+    GoChannelGoChannelI64, GoChannelGoString, GoChannelI64, go_channel_go_channel_i64_cap,
+    go_channel_go_channel_i64_close, go_channel_go_channel_i64_is_nil,
+    go_channel_go_channel_i64_len, go_channel_go_channel_i64_make, go_channel_go_channel_i64_nil,
+    go_channel_go_channel_i64_receive, go_channel_go_channel_i64_receive_value,
+    go_channel_go_channel_i64_send, go_channel_go_channel_i64_try_receive,
+    go_channel_go_channel_i64_try_send, go_channel_go_string_cap, go_channel_go_string_close,
+    go_channel_go_string_is_nil, go_channel_go_string_len, go_channel_go_string_make,
+    go_channel_go_string_nil, go_channel_go_string_receive, go_channel_go_string_receive_value,
+    go_channel_go_string_send, go_channel_go_string_try_receive, go_channel_go_string_try_send,
+    go_channel_i64_cap, go_channel_i64_close, go_channel_i64_is_nil, go_channel_i64_len,
+    go_channel_i64_make, go_channel_i64_nil, go_channel_i64_receive, go_channel_i64_receive_value,
+    go_channel_i64_send, go_channel_i64_try_receive, go_channel_i64_try_send,
+};
+pub use integer::{
+    int_div, int_div_i8, int_div_i16, int_div_i32, int_div_u8, int_div_u16, int_div_u32,
+    int_div_u64, int_rem, int_rem_i8, int_rem_i16, int_rem_i32, int_rem_u8, int_rem_u16,
+    int_rem_u32, int_rem_u64, int_shl, int_shl_signed_i8, int_shl_signed_i16, int_shl_signed_i32,
+    int_shl_signed_u8, int_shl_signed_u16, int_shl_signed_u32, int_shl_signed_u64,
+    int_shl_unsigned_i8, int_shl_unsigned_i16, int_shl_unsigned_i32, int_shl_unsigned_i64,
+    int_shl_unsigned_u8, int_shl_unsigned_u16, int_shl_unsigned_u32, int_shl_unsigned_u64, int_shr,
+    int_shr_signed_i8, int_shr_signed_i16, int_shr_signed_i32, int_shr_signed_u8,
+    int_shr_signed_u16, int_shr_signed_u32, int_shr_signed_u64, int_shr_unsigned_i8,
+    int_shr_unsigned_i16, int_shr_unsigned_i32, int_shr_unsigned_i64, int_shr_unsigned_u8,
+    int_shr_unsigned_u16, int_shr_unsigned_u32, int_shr_unsigned_u64,
 };
 pub use interface_containers::{
     GoMapStringInterface, GoSliceInterface, go_map_string_interface_contains,
     go_map_string_interface_get, go_map_string_interface_len, go_map_string_interface_make,
-    go_map_string_interface_set, go_slice_interface_index, go_slice_interface_is_nil,
-    go_slice_interface_len, go_slice_interface_make, go_slice_interface_nil,
-    go_slice_interface_set,
+    go_map_string_interface_set, go_slice_interface_append, go_slice_interface_index,
+    go_slice_interface_is_nil, go_slice_interface_len, go_slice_interface_make,
+    go_slice_interface_nil, go_slice_interface_set,
 };
 pub use interfaces::{
-    GoInterface, go_interface_box_aggregate, go_interface_box_bool, go_interface_box_go_string,
-    go_interface_box_i64, go_interface_box_pointer_struct_i64, go_interface_box_struct_i64,
-    go_interface_is_nil, go_interface_is_type, go_interface_nil, go_interface_struct_i64_get,
-    go_interface_unbox_aggregate, go_interface_unbox_bool, go_interface_unbox_go_string,
-    go_interface_unbox_i64, go_interface_unbox_pointer_struct_i64,
+    GoInterface, GoPanicPayload, go_interface_box_aggregate, go_interface_box_bool,
+    go_interface_box_comparable_aggregate, go_interface_box_f32, go_interface_box_f64,
+    go_interface_box_go_slice_go_string, go_interface_box_go_string, go_interface_box_i64,
+    go_interface_box_pointer_i64, go_interface_box_pointer_struct_i64, go_interface_box_struct_i64,
+    go_interface_equal, go_interface_is_nil, go_interface_is_runtime_error, go_interface_is_type,
+    go_interface_nil, go_interface_struct_i64_get, go_interface_unbox_aggregate,
+    go_interface_unbox_bool, go_interface_unbox_f32, go_interface_unbox_f64,
+    go_interface_unbox_go_slice_go_string, go_interface_unbox_go_string, go_interface_unbox_i64,
+    go_interface_unbox_pointer_i64, go_interface_unbox_pointer_struct_i64,
+    go_panic_payload_to_interface, panic_go_interface,
+};
+pub use maps::{
+    GoMapI64GoString, GoMapStringI64, go_map_i64_go_string_clear, go_map_i64_go_string_contains,
+    go_map_i64_go_string_delete, go_map_i64_go_string_get, go_map_i64_go_string_is_nil,
+    go_map_i64_go_string_len, go_map_i64_go_string_make, go_map_i64_go_string_nil,
+    go_map_i64_go_string_range_keys, go_map_i64_go_string_set, go_map_string_i64_clear,
+    go_map_string_i64_contains, go_map_string_i64_delete, go_map_string_i64_get,
+    go_map_string_i64_is_nil, go_map_string_i64_key_at, go_map_string_i64_len,
+    go_map_string_i64_make, go_map_string_i64_nil, go_map_string_i64_range_keys,
+    go_map_string_i64_set,
+};
+pub use printing::{
+    print_bool, print_f32, print_f64, print_go_string, print_i64, print_newline, print_space,
+    print_u64,
 };
 pub use slice_identity::{
-    go_slice_bool_is_nil, go_slice_bool_nil, go_slice_i64_is_nil, go_slice_i64_nil,
-    go_slice_u8_is_nil, go_slice_u8_nil,
+    go_slice_bool_is_nil, go_slice_bool_nil, go_slice_go_string_is_nil, go_slice_go_string_nil,
+    go_slice_i64_is_nil, go_slice_i64_nil, go_slice_u8_is_nil, go_slice_u8_nil,
 };
 pub use string_runes::{
-    go_string_from_slice_runes, go_string_range_count, go_string_range_index_at,
-    go_string_range_rune_at,
+    go_string_from_rune, go_string_from_slice_runes, go_string_range_count,
+    go_string_range_index_at, go_string_range_rune_at, go_string_to_slice_runes,
+};
+pub use string_slices::{
+    GoSliceGoString, go_slice_go_string_append, go_slice_go_string_cap, go_slice_go_string_clear,
+    go_slice_go_string_copy, go_slice_go_string_index, go_slice_go_string_len,
+    go_slice_go_string_make, go_slice_go_string_range, go_slice_go_string_set,
 };
 
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 use std::io::Write as _;
 use std::sync::{Arc, RwLock};
@@ -107,74 +157,31 @@ pub fn go_slice_i64_from_static(values: &'static [GoInt]) -> GoSliceI64 {
 /// `make([]int, len)`.
 #[must_use]
 pub fn go_slice_i64_make(len: GoInt, capacity: GoInt) -> GoSliceI64 {
-    let Ok(len) = usize::try_from(len) else {
-        slice_bounds_out_of_range();
-    };
-    let capacity = if capacity == -1 {
-        len
-    } else {
-        usize::try_from(capacity).unwrap_or_else(|_| slice_bounds_out_of_range())
-    };
-    if len > capacity {
-        slice_bounds_out_of_range();
-    }
-    GoSliceI64 {
-        storage: Arc::new(RwLock::new(vec![0; capacity])),
-        start: 0,
-        len,
-        capacity,
-        nil: false,
-    }
+    slice_values::make(len, capacity)
 }
 
 /// Return a `[]int` length as the compiler's fixed-width Go `int`.
 #[must_use]
 pub fn go_slice_i64_len(slice: GoSliceI64) -> GoInt {
-    GoInt::try_from(slice.len).unwrap_or_else(|_| slice_bounds_out_of_range())
+    slice_values::len(&slice)
 }
 
 /// Return a `[]int` capacity as the compiler's fixed-width Go `int`.
 #[must_use]
 pub fn go_slice_i64_cap(slice: GoSliceI64) -> GoInt {
-    GoInt::try_from(slice.capacity).unwrap_or_else(|_| slice_bounds_out_of_range())
+    slice_values::cap(&slice)
 }
 
 /// Append one element, reusing the backing array exactly when capacity permits.
 #[must_use]
-#[allow(clippy::indexing_slicing)] // The slice header invariants validate the write position.
-pub fn go_slice_i64_append(mut slice: GoSliceI64, value: GoInt) -> GoSliceI64 {
-    if slice.len < slice.capacity {
-        let absolute = slice.start.saturating_add(slice.len);
-        let mut storage = slice
-            .storage
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        storage[absolute] = value;
-        drop(storage);
-        slice.len = slice.len.saturating_add(1);
-        return slice;
-    }
+pub fn go_slice_i64_append(slice: GoSliceI64, value: GoInt) -> GoSliceI64 {
+    slice_values::append(slice, value)
+}
 
-    let required = slice.len.saturating_add(1);
-    let capacity = slice.capacity.saturating_mul(2).max(required).max(1);
-    let mut values = Vec::with_capacity(capacity);
-    {
-        let storage = slice
-            .storage
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let end = slice.start.saturating_add(slice.len);
-        values.extend_from_slice(&storage[slice.start..end]);
-    }
-    values.push(value);
-    values.resize(capacity, 0);
-    GoSliceI64 {
-        storage: Arc::new(RwLock::new(values)),
-        start: 0,
-        len: required,
-        capacity,
-        nil: false,
-    }
+/// Append one complete integer slice after snapshotting its visible elements.
+#[must_use]
+pub fn go_slice_i64_append_slice(slice: GoSliceI64, values: GoSliceI64) -> GoSliceI64 {
+    slice_values::append_slice(slice, &values)
 }
 
 /// Construct a `[]byte` value from compiler-emitted literal bytes.
@@ -235,43 +242,12 @@ pub fn go_slice_u8_copy_string(destination: GoSliceU8, source: GoString) -> GoIn
 
 /// Copy integer elements between slices with Go's overlap-safe semantics.
 pub fn go_slice_i64_copy(destination: GoSliceI64, source: GoSliceI64) -> GoInt {
-    let count = destination.len.min(source.len);
-    let source_values = {
-        let storage = source
-            .storage
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let end = source.start.saturating_add(count);
-        storage
-            .get(source.start..end)
-            .unwrap_or_else(|| slice_bounds_out_of_range())
-            .to_vec()
-    };
-    let mut storage = destination
-        .storage
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let end = destination.start.saturating_add(count);
-    let target = storage
-        .get_mut(destination.start..end)
-        .unwrap_or_else(|| slice_bounds_out_of_range());
-    target.copy_from_slice(&source_values);
-    drop(storage);
-    GoInt::try_from(count).unwrap_or_else(|_| slice_bounds_out_of_range())
+    slice_values::copy(&destination, &source)
 }
 
 /// Assign the element zero value throughout an integer slice.
 pub fn go_slice_i64_clear(slice: GoSliceI64) {
-    let mut storage = slice
-        .storage
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let end = slice.start.saturating_add(slice.len);
-    let Some(values) = storage.get_mut(slice.start..end) else {
-        slice_bounds_out_of_range();
-    };
-    values.fill(0);
-    drop(storage);
+    slice_values::clear(&slice);
 }
 
 /// Convert the visible bytes of a byte slice into an immutable Go string.
@@ -336,13 +312,7 @@ fn append_u8_values(mut slice: GoSliceU8, values: &[u8]) -> GoSliceU8 {
 #[must_use]
 #[allow(clippy::indexing_slicing)] // The explicit Go bounds check validates this index.
 pub fn go_slice_i64_index(slice: GoSliceI64, index: GoInt) -> GoInt {
-    let index = slice_index(index, slice.len);
-    let absolute = slice.start.saturating_add(index);
-    let storage = slice
-        .storage
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    storage[absolute]
+    slice_values::index(&slice, index)
 }
 
 /// Produce a two- or three-index subslice while retaining the backing array.
@@ -373,13 +343,7 @@ fn go_slice_range<T>(slice: GoSlice<T>, low: GoInt, high: GoInt, max: GoInt) -> 
 /// Assign one `[]int` element through its shared backing array.
 #[allow(clippy::indexing_slicing)] // The explicit Go bounds check validates this index.
 pub fn go_slice_i64_set(slice: GoSliceI64, index: GoInt, value: GoInt) {
-    let index = slice_index(index, slice.len);
-    let absolute = slice.start.saturating_add(index);
-    let mut storage = slice
-        .storage
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    storage[absolute] = value;
+    slice_values::set(&slice, index, value);
 }
 
 /// Read one `[]bool` element with Go bounds checking.
@@ -524,139 +488,11 @@ impl Hash for GoString {
     }
 }
 
-/// A nullable Go `map[string]int` header with shared mutable identity.
-///
-/// Cloning the header preserves the identity of a non-nil map. The absent
-/// storage variant is the Go nil-map value: reads are zero-valued, deletes and
-/// clears are no-ops, and writes panic.
-#[derive(Clone, Debug, Default)]
-pub struct GoMapStringI64 {
-    storage: Option<Arc<RwLock<BTreeMap<GoString, GoInt>>>>,
-}
-
-/// Construct the nil `map[string]int` value.
-#[must_use]
-pub fn go_map_string_i64_nil() -> GoMapStringI64 {
-    GoMapStringI64::default()
-}
-
-/// Allocate an empty non-nil `map[string]int` value.
-#[must_use]
-pub fn go_map_string_i64_make() -> GoMapStringI64 {
-    GoMapStringI64 {
-        storage: Some(Arc::new(RwLock::new(BTreeMap::new()))),
-    }
-}
-
-/// Return the number of entries in a map. A nil map has length zero.
-#[must_use]
-pub fn go_map_string_i64_len(map: GoMapStringI64) -> GoInt {
-    let Some(storage) = map.storage else {
-        return 0;
-    };
-    let entries = storage
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    GoInt::try_from(entries.len()).unwrap_or_else(|_| map_index_out_of_range())
-}
-
-/// Read a map entry, returning the element zero value when the key is absent.
-#[must_use]
-pub fn go_map_string_i64_get(map: GoMapStringI64, key: GoString) -> GoInt {
-    let Some(storage) = map.storage else {
-        return 0;
-    };
-    let entries = storage
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    entries.get(&key).copied().unwrap_or_default()
-}
-
-/// Report whether a map contains a key. Nil maps contain no keys.
-#[must_use]
-pub fn go_map_string_i64_contains(map: GoMapStringI64, key: GoString) -> bool {
-    let Some(storage) = map.storage else {
-        return false;
-    };
-    let entries = storage
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    entries.contains_key(&key)
-}
-
-/// Assign a map entry while preserving shared map identity.
-pub fn go_map_string_i64_set(map: GoMapStringI64, key: GoString, value: GoInt) {
-    let Some(storage) = map.storage else {
-        nil_map_assignment();
-    };
-    let mut entries = storage
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    entries.insert(key, value);
-}
-
-/// Delete a map entry. Deleting from a nil map is a no-op.
-pub fn go_map_string_i64_delete(map: GoMapStringI64, key: GoString) {
-    let Some(storage) = map.storage else {
-        return;
-    };
-    let mut entries = storage
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    entries.remove(&key);
-}
-
-/// Delete every map entry. Clearing a nil map is a no-op.
-pub fn go_map_string_i64_clear(map: GoMapStringI64) {
-    let Some(storage) = map.storage else {
-        return;
-    };
-    let mut entries = storage
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    entries.clear();
-}
-
-/// Report whether a map header is nil.
-#[must_use]
-pub fn go_map_string_i64_is_nil(map: GoMapStringI64) -> bool {
-    map.storage.is_none()
-}
-
-/// Return the key at one deterministic iteration index.
-///
-/// Map iteration order is intentionally unspecified by Go. The runtime uses
-/// byte ordering to keep compiler tests and generated artifacts deterministic.
-#[must_use]
-pub fn go_map_string_i64_key_at(map: GoMapStringI64, index: GoInt) -> GoString {
-    let Some(storage) = map.storage else {
-        map_index_out_of_range();
-    };
-    let Ok(index) = usize::try_from(index) else {
-        map_index_out_of_range();
-    };
-    let entries = storage
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    entries
-        .keys()
-        .nth(index)
-        .cloned()
-        .unwrap_or_else(|| map_index_out_of_range())
-}
-
 #[cold]
 #[inline(never)]
 #[allow(clippy::panic)] // This is the Go language panic boundary, not an invariant failure.
 fn nil_map_assignment() -> ! {
     std::panic::resume_unwind(Box::new("assignment to entry in nil map"))
-}
-
-#[cold]
-#[inline(never)]
-#[allow(clippy::panic)] // This is a checked runtime iteration boundary.
-fn map_index_out_of_range() -> ! {
-    std::panic::resume_unwind(Box::new("runtime error: map iteration index out of range"))
 }
 
 /// A nullable Go `*int` value with shared mutable pointee identity.
@@ -708,6 +544,16 @@ pub fn go_pointer_i64_set(pointer: GoPointerI64, value: GoInt) {
 #[must_use]
 pub fn go_pointer_i64_is_nil(pointer: GoPointerI64) -> bool {
     pointer.storage.is_none()
+}
+
+/// Compare two Go `*int` values by pointee identity.
+#[must_use]
+pub fn go_pointer_i64_equal(left: GoPointerI64, right: GoPointerI64) -> bool {
+    match (left.storage, right.storage) {
+        (None, None) => true,
+        (Some(left), Some(right)) => Arc::ptr_eq(&left, &right),
+        _ => false,
+    }
 }
 
 /// A nullable pointer to an integer-field Go struct.
@@ -853,115 +699,6 @@ fn concat_growth_capacity(required: usize) -> usize {
     required
         .saturating_add(required / 2)
         .saturating_add(usize::from(required != 0))
-}
-
-/// Go signed division, including the specified `MIN / -1 == MIN` case.
-///
-/// Division by zero is a language-level runtime panic.
-#[must_use]
-pub fn int_div(left: GoInt, right: GoInt) -> GoInt {
-    if right == 0 {
-        integer_divide_by_zero();
-    }
-    if left == GoInt::MIN && right == -1 {
-        GoInt::MIN
-    } else {
-        left / right
-    }
-}
-
-/// Go signed remainder, including the specified `MIN % -1 == 0` case.
-///
-/// Division by zero is a language-level runtime panic.
-#[must_use]
-pub fn int_rem(left: GoInt, right: GoInt) -> GoInt {
-    if right == 0 {
-        integer_divide_by_zero();
-    }
-    if left == GoInt::MIN && right == -1 {
-        0
-    } else {
-        left % right
-    }
-}
-
-/// Go left shift for a signed 64-bit `int` value.
-///
-/// Shift counts are not masked. Counts of 64 or more discard every bit and a
-/// negative dynamic count panics.
-#[must_use]
-pub fn int_shl(value: GoInt, shift: GoInt) -> GoInt {
-    if shift < 0 {
-        negative_shift_amount();
-    }
-    if shift >= GoInt::from(GoInt::BITS) {
-        return 0;
-    }
-    let Ok(shift) = u32::try_from(shift) else {
-        return 0;
-    };
-    value.wrapping_shl(shift)
-}
-
-/// Go arithmetic right shift for a signed 64-bit `int` value.
-///
-/// Counts of 64 or more retain only the sign extension and a negative dynamic
-/// count panics.
-#[must_use]
-pub fn int_shr(value: GoInt, shift: GoInt) -> GoInt {
-    if shift < 0 {
-        negative_shift_amount();
-    }
-    if shift >= GoInt::from(GoInt::BITS) {
-        return if value < 0 { -1 } else { 0 };
-    }
-    let Ok(shift) = u32::try_from(shift) else {
-        return if value < 0 { -1 } else { 0 };
-    };
-    value >> shift
-}
-
-#[cold]
-#[inline(never)]
-#[allow(clippy::panic)] // This is the Go language panic boundary, not an invariant failure.
-fn integer_divide_by_zero() -> ! {
-    std::panic::resume_unwind(Box::new("runtime error: integer divide by zero"))
-}
-
-#[cold]
-#[inline(never)]
-#[allow(clippy::panic)] // This is the Go language panic boundary, not an invariant failure.
-fn negative_shift_amount() -> ! {
-    std::panic::resume_unwind(Box::new("runtime error: negative shift amount"))
-}
-
-/// Print an exact Go boolean representation.
-pub fn print_bool(value: bool) {
-    write_stderr_bytes(if value { b"true" } else { b"false" });
-}
-
-/// Print an exact 64-bit Go `int` representation.
-pub fn print_i64(value: GoInt) {
-    let stderr = std::io::stderr();
-    let mut output = stderr.lock();
-    drop(write!(output, "{value}"));
-}
-
-/// Emit the separator used between arguments to Go `println`.
-pub fn print_space() {
-    write_stderr_bytes(b" ");
-}
-
-/// Emit the line terminator used by Go `println`.
-pub fn print_newline() {
-    write_stderr_bytes(b"\n");
-}
-
-/// Print the exact bytes of a Go string.
-pub fn print_go_string(value: GoString) {
-    let stderr = std::io::stderr();
-    let mut output = stderr.lock();
-    drop(write_go_string_to(&mut output, &value));
 }
 
 /// Raise an explicit Go panic carrying a boolean value.

@@ -26,3 +26,32 @@ fn pass_manager_rejects_a_pass_that_breaks_mir() {
     assert!(error[0].message.contains("after pass `corrupt-block-id`"));
     assert!(error[0].message.contains("block IDs are not dense"));
 }
+
+#[test]
+fn normalization_rederives_unsigned_shift_effects_from_the_typed_count() {
+    let source =
+        "package main\nfunc shift(value uint8, count uint64) uint8 { return value << count }\n";
+    let hir = crate::compiler::lower_to_hir("shift.go", source).unwrap();
+    let raw = mir::lower_file(&hir).unwrap();
+    let normalized = normalize(VerifiedMir::verify(raw).unwrap()).unwrap();
+    let shift = normalized
+        .as_file()
+        .functions
+        .iter()
+        .flat_map(|function| &function.blocks)
+        .flat_map(|block| &block.statements)
+        .map(|statement| &statement.value)
+        .find(|rvalue| {
+            matches!(
+                rvalue.kind,
+                RvalueKind::Binary {
+                    op: hir::BinaryOp::Shl,
+                    ..
+                }
+            )
+        })
+        .expect("unsigned shift rvalue");
+
+    assert!(!shift.effects.may_panic);
+    assert_eq!(shift.panic, PanicEdge::None);
+}

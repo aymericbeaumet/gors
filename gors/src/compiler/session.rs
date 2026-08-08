@@ -518,6 +518,14 @@ impl CompilerSession {
                     .variables()
                     .iter()
                     .any(|variable| variable.id() == definition)
+                || analysis
+                    .type_aliases()
+                    .iter()
+                    .any(|alias| alias.id() == definition)
+                || analysis
+                    .type_definitions()
+                    .iter()
+                    .any(|declared| declared.id() == definition)
             {
                 return self.database.definition_source_table(file, definition).ok();
             }
@@ -532,6 +540,22 @@ impl CompilerSession {
                 PackageIssue::FileParseFailure { file, failure } => {
                     self.parse_failure_diagnostic(*file, failure)
                 }
+                PackageIssue::LanguageVersion {
+                    file,
+                    feature,
+                    selected,
+                    range,
+                } => self.project_stage_diagnostic(
+                    &super::Diagnostic::semantic(
+                        format!(
+                            "{} requires {} or later (-lang was set to {selected}; check go.mod)",
+                            feature.description(),
+                            feature.required_version(),
+                        ),
+                        FileRange::new(*file, *range),
+                    ),
+                    FileRange::new(*file, *range),
+                ),
                 PackageIssue::UnusedImport {
                     file,
                     local_name,

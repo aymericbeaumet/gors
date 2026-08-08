@@ -1,4 +1,4 @@
-use super::compile_and_run;
+use super::{compile_and_run, compile_file};
 
 #[test]
 fn generated_integer_pointers_preserve_nil_and_shared_pointee_semantics() {
@@ -29,6 +29,123 @@ fn generated_integer_pointers_preserve_nil_and_shared_pointee_semantics() {
     assert_eq!(run.stderr, b"pointers: ok\n");
     assert!(run.rust.contains("GoPointerI64"), "{}", run.rust);
     assert!(run.rust.contains("go_pointer_i64_set"), "{}", run.rust);
+}
+
+#[test]
+fn generated_integer_pointer_comparisons_preserve_exact_type_and_pointee_identity() {
+    let run = compile_and_run(
+        r#"
+            package main
+            type Counter int
+            type IntPointer *int
+            func main() {
+                leftValue := 7
+                rightValue := 7
+                left := &leftValue
+                alias := &leftValue
+                right := &rightValue
+                var firstNil, secondNil *int
+                if left != alias || left == right || firstNil != secondNil {
+                    panic("integer pointer identity changed")
+                }
+                *alias = 9
+                if leftValue != 9 || *left != 9 {
+                    panic("integer pointer alias changed")
+                }
+                firstNew := new(int)
+                secondNew := new(int)
+                if firstNew == secondNew {
+                    panic("distinct allocations compared equal")
+                }
+
+                var defined IntPointer = left
+                var unnamed *int = defined
+                if defined != unnamed || unnamed != defined {
+                    panic("defined and unnamed assignable pointers compared unequal")
+                }
+
+                namedValue := Counter(3)
+                named := &namedValue
+                namedAlias := named
+                var namedNil *Counter
+                if named != namedAlias || named == nil || namedNil != nil {
+                    panic("named integer pointer comparison changed")
+                }
+                println("pointer-equality: ok")
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"pointer-equality: ok\n");
+    assert!(run.rust.contains("go_pointer_i64_equal"), "{}", run.rust);
+}
+
+#[test]
+fn integer_pointer_expression_switches_preserve_pointee_identity_and_nil() {
+    let run = compile_and_run(
+        r#"
+            package main
+            func matches(tag, candidate *int) bool {
+                switch tag {
+                case candidate:
+                    return true
+                }
+                return false
+            }
+            func main() {
+                leftValue := 7
+                rightValue := 7
+                left := &leftValue
+                alias := &leftValue
+                right := &rightValue
+                var firstNil, secondNil *int
+                if !matches(left, alias) || matches(left, right) || !matches(firstNil, secondNil) {
+                    panic("pointer switch identity changed")
+                }
+                println("pointer-switch: ok")
+            }
+        "#,
+    );
+
+    assert_eq!(run.stderr, b"pointer-switch: ok\n");
+    assert!(run.rust.contains("go_pointer_i64_equal"), "{}", run.rust);
+}
+
+#[test]
+fn integer_pointer_comparisons_reject_representation_compatible_distinct_types() {
+    for source in [
+        r#"package main
+type Counter int
+func main() {
+    var plain *int
+    var named *Counter
+    _ = plain == named
+}
+"#,
+        r#"package main
+type P *int
+type Q *int
+func main() {
+    var left P
+    var right Q
+    _ = left == right
+}
+"#,
+    ] {
+        let errors = compile_file("pointer-types.go", source)
+            .err()
+            .expect("distinct pointer types must not compare through their shared representation");
+
+        assert!(
+            errors.iter().any(|error| {
+                error.code == "GORS2002"
+                    && error
+                        .message
+                        .contains("incompatible pointer comparison operands")
+            }),
+            "{errors:?}"
+        );
+    }
 }
 
 #[test]

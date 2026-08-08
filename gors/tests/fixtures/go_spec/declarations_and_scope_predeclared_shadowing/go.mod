@@ -1,0 +1,3 @@
+module go_spec_declarations_and_scope_predeclared_shadowing
+
+go 1.26

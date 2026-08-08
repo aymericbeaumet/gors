@@ -1,5 +1,10 @@
 use super::*;
 
+mod integer;
+mod maps;
+mod pointer_interfaces;
+mod slice_append;
+
 #[test]
 fn strings_preserve_arbitrary_bytes() {
     let bytes = [b'a', 0, 0xff, 0x80, b'z'];
@@ -61,6 +66,42 @@ fn rune_slices_encode_and_string_ranges_decode_go_utf8() {
 }
 
 #[test]
+fn strings_decode_to_fresh_non_nil_rune_slices() {
+    let source = go_string_from_static(&[b'h', 0xff, 0xc3, 0xa9]);
+    let first = go_string_to_slice_runes(source.clone());
+    let second = go_string_to_slice_runes(source.clone());
+
+    assert_eq!(go_slice_i64_len(first.clone()), 3);
+    assert_eq!(go_slice_i64_index(first.clone(), 0), GoInt::from(b'h'));
+    assert_eq!(go_slice_i64_index(first.clone(), 1), 0xfffd);
+    assert_eq!(go_slice_i64_index(first.clone(), 2), 0xe9);
+    assert_eq!(
+        go_string_from_slice_runes(first.clone()).as_bytes(),
+        "h�é".as_bytes()
+    );
+
+    go_slice_i64_set(first, 0, GoInt::from(b'X'));
+    assert_eq!(source.as_bytes(), &[b'h', 0xff, 0xc3, 0xa9]);
+    assert_eq!(go_slice_i64_index(second, 0), GoInt::from(b'h'));
+
+    let empty = go_string_to_slice_runes(go_string_from_static(b""));
+    assert_eq!(go_slice_i64_len(empty.clone()), 0);
+    assert!(!go_slice_i64_is_nil(empty));
+}
+
+#[test]
+fn individual_runes_encode_as_go_strings() {
+    assert_eq!(go_string_from_rune(255).as_bytes(), "ÿ".as_bytes());
+    assert_eq!(go_string_from_rune(-1).as_bytes(), "�".as_bytes());
+    assert_eq!(go_string_from_rune(0xd800).as_bytes(), "�".as_bytes());
+    assert_eq!(
+        go_string_from_rune(0x10_ffff).as_bytes(),
+        "\u{10ffff}".as_bytes()
+    );
+    assert_eq!(go_string_from_rune(0x11_0000).as_bytes(), "�".as_bytes());
+}
+
+#[test]
 fn string_range_access_rejects_invalid_ordinals() {
     let value = go_string_from_static(b"x");
     assert!(std::panic::catch_unwind(|| go_string_range_index_at(value.clone(), -1)).is_err());
@@ -106,6 +147,75 @@ fn strings_are_send_and_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
 
     assert_send_sync::<GoString>();
+    assert_send_sync::<GoSliceGoString>();
+}
+
+#[test]
+fn string_slices_preserve_zero_values_aliasing_ranges_and_overlap() {
+    let slice = go_slice_go_string_make(2, 4);
+    assert_eq!(go_slice_go_string_len(slice.clone()), 2);
+    assert_eq!(go_slice_go_string_cap(slice.clone()), 4);
+    assert_eq!(go_slice_go_string_index(slice.clone(), 0).as_bytes(), b"");
+
+    let alias = slice.clone();
+    go_slice_go_string_set(slice.clone(), 0, go_string_from_static(b"a"));
+    assert_eq!(go_slice_go_string_index(alias, 0).as_bytes(), b"a");
+
+    let appended = go_slice_go_string_append(slice.clone(), go_string_from_static(b"b"));
+    assert_eq!(go_slice_go_string_len(appended.clone()), 3);
+    assert_eq!(
+        go_slice_go_string_index(appended.clone(), 2).as_bytes(),
+        b"b"
+    );
+
+    let tail = go_slice_go_string_range(appended.clone(), 1, 3, -1);
+    go_slice_go_string_set(tail, 0, go_string_from_static(b"c"));
+    assert_eq!(
+        go_slice_go_string_index(appended.clone(), 1).as_bytes(),
+        b"c"
+    );
+
+    assert_eq!(
+        go_slice_go_string_copy(appended.clone(), appended.clone()),
+        3
+    );
+    let shifted = go_slice_go_string_range(appended.clone(), 1, 3, -1);
+    assert_eq!(go_slice_go_string_copy(shifted, appended.clone()), 2);
+    assert_eq!(
+        go_slice_go_string_index(appended.clone(), 1).as_bytes(),
+        b"a"
+    );
+    assert_eq!(
+        go_slice_go_string_index(appended.clone(), 2).as_bytes(),
+        b"c"
+    );
+
+    go_slice_go_string_clear(appended.clone());
+    for index in 0..go_slice_go_string_len(appended.clone()) {
+        assert_eq!(
+            go_slice_go_string_index(appended.clone(), index).as_bytes(),
+            b""
+        );
+    }
+    assert!(go_slice_go_string_is_nil(go_slice_go_string_nil()));
+    assert!(!go_slice_go_string_is_nil(slice));
+}
+
+#[test]
+fn string_slice_interfaces_preserve_headers_and_reject_comparison() {
+    let identity = go_string_from_static(b"slice:builtin:string");
+    let slice = go_slice_go_string_make(1, 1);
+    go_slice_go_string_set(slice.clone(), 0, go_string_from_static(b"value"));
+    let boxed = go_interface_box_go_slice_go_string(identity.clone(), slice.clone());
+    let unboxed = go_interface_unbox_go_slice_go_string(boxed.clone(), identity);
+    go_slice_go_string_set(unboxed, 0, go_string_from_static(b"updated"));
+    assert_eq!(go_slice_go_string_index(slice, 0).as_bytes(), b"updated");
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = go_interface_equal(boxed.clone(), boxed);
+        }))
+        .is_err()
+    );
 }
 
 #[test]
@@ -166,14 +276,21 @@ fn maps_are_send_and_sync() {
 #[test]
 fn pointers_preserve_nil_and_shared_pointee_semantics() {
     let nil_pointer = go_pointer_i64_nil();
+    let other_nil = go_pointer_i64_nil();
     assert!(go_pointer_i64_is_nil(nil_pointer.clone()));
+    assert!(go_pointer_i64_equal(nil_pointer.clone(), other_nil));
     assert!(std::panic::catch_unwind(|| go_pointer_i64_get(nil_pointer.clone())).is_err());
-    assert!(std::panic::catch_unwind(|| go_pointer_i64_set(nil_pointer, 1)).is_err());
+    assert!(std::panic::catch_unwind(|| go_pointer_i64_set(nil_pointer.clone(), 1)).is_err());
 
     let pointer = go_pointer_i64_new();
     let alias = pointer.clone();
+    let distinct = go_pointer_i64_new();
     assert!(!go_pointer_i64_is_nil(pointer.clone()));
+    assert!(!go_pointer_i64_equal(nil_pointer, pointer.clone()));
+    assert!(go_pointer_i64_equal(pointer.clone(), alias.clone()));
+    assert!(!go_pointer_i64_equal(pointer.clone(), distinct.clone()));
     assert_eq!(go_pointer_i64_get(pointer.clone()), 0);
+    go_pointer_i64_set(distinct, 42);
     go_pointer_i64_set(alias, 42);
     assert_eq!(go_pointer_i64_get(pointer), 42);
 }
@@ -229,6 +346,63 @@ fn interfaces_preserve_dynamic_types_and_value_copying() {
         nil,
         go_string_from_static(b"builtin:int")
     ));
+}
+
+#[test]
+fn float_interfaces_preserve_ieee_equality_and_checked_extraction() {
+    let float_type = go_string_from_static(b"builtin:float64");
+    let nan = go_interface_box_f64(float_type.clone(), f64::NAN);
+    assert!(!go_interface_equal(nan.clone(), nan));
+
+    let positive_zero = go_interface_box_f64(float_type.clone(), 0.0);
+    let negative_zero = go_interface_box_f64(float_type.clone(), -0.0);
+    assert!(go_interface_equal(
+        positive_zero.clone(),
+        negative_zero.clone()
+    ));
+    assert_eq!(
+        go_interface_unbox_f64(negative_zero, float_type.clone()).to_bits(),
+        (-0.0_f64).to_bits()
+    );
+
+    let integer = go_interface_box_i64(go_string_from_static(b"builtin:int"), 0);
+    assert!(!go_interface_equal(positive_zero, integer));
+    assert!(
+        std::panic::catch_unwind(|| {
+            let _ = go_interface_unbox_f64(
+                go_interface_box_i64(go_string_from_static(b"builtin:int"), 1),
+                float_type,
+            );
+        })
+        .is_err()
+    );
+
+    let float32_type = go_string_from_static(b"builtin:float32");
+    let rounded = f64::from(0.1_f32);
+    let boxed32 = go_interface_box_f32(float32_type.clone(), 0.1_f64);
+    assert_eq!(
+        go_interface_unbox_f32(boxed32.clone(), float32_type.clone()).to_bits(),
+        rounded.to_bits()
+    );
+    assert!(go_interface_equal(
+        boxed32.clone(),
+        go_interface_box_f32(float32_type.clone(), rounded)
+    ));
+    assert!(
+        std::panic::catch_unwind(|| {
+            let _ = go_interface_unbox_f64(boxed32, float32_type.clone());
+        })
+        .is_err()
+    );
+    assert!(
+        std::panic::catch_unwind(|| {
+            let _ = go_interface_unbox_f32(
+                go_interface_box_f64(float32_type.clone(), rounded),
+                float32_type,
+            );
+        })
+        .is_err()
+    );
 }
 
 #[test]
@@ -321,6 +495,47 @@ fn channels_preserve_buffer_close_and_comma_ok_semantics() {
 }
 
 #[test]
+fn string_channels_preserve_fifo_close_and_zero_value_semantics() {
+    let channel = go_channel_go_string_make(3);
+    go_channel_go_string_send(channel.clone(), go_string_from_static(b"a"));
+    go_channel_go_string_send(channel.clone(), go_string_from_static(b"b"));
+    go_channel_go_string_send(channel.clone(), go_string_from_static(b"c"));
+    assert_eq!(go_channel_go_string_len(channel.clone()), 3);
+    assert_eq!(go_channel_go_string_cap(channel.clone()), 3);
+
+    go_channel_go_string_close(channel.clone());
+    assert_eq!(
+        go_channel_go_string_receive_value(channel.clone()).as_bytes(),
+        b"a"
+    );
+    let (second, second_ok) = go_channel_go_string_receive(channel.clone());
+    let (third, third_ok) = go_channel_go_string_receive(channel.clone());
+    let (zero, zero_ok) = go_channel_go_string_receive(channel);
+    assert_eq!(second.as_bytes(), b"b");
+    assert!(second_ok);
+    assert_eq!(third.as_bytes(), b"c");
+    assert!(third_ok);
+    assert!(zero.as_bytes().is_empty());
+    assert!(!zero_ok);
+}
+
+#[test]
+fn nested_channels_preserve_shared_inner_identity_and_nil_zero_value() {
+    let inner = go_channel_i64_make(1);
+    go_channel_i64_send(inner.clone(), 42);
+    let outer = go_channel_go_channel_i64_make(1);
+    go_channel_go_channel_i64_send(outer.clone(), inner);
+
+    let received = go_channel_go_channel_i64_receive_value(outer.clone());
+    assert_eq!(go_channel_i64_receive_value(received), 42);
+
+    go_channel_go_channel_i64_close(outer.clone());
+    let (zero, open) = go_channel_go_channel_i64_receive(outer);
+    assert!(!open);
+    assert!(go_channel_i64_is_nil(zero));
+}
+
+#[test]
 fn unbuffered_channels_rendezvous_between_threads() {
     let channel = go_channel_i64_make(0);
     let sender = channel.clone();
@@ -351,6 +566,8 @@ fn channels_are_send_and_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
 
     assert_send_sync::<GoChannelI64>();
+    assert_send_sync::<GoChannelGoString>();
+    assert_send_sync::<GoChannelGoChannelI64>();
 }
 
 #[test]
@@ -489,6 +706,25 @@ fn byte_slice_copy_uses_the_shorter_visible_length() {
 }
 
 #[test]
+fn byte_slice_make_set_and_copy_preserve_capacity_aliasing_and_overlap() {
+    let values = go_slice_u8_make(4, 6);
+    assert_eq!(go_slice_u8_len(values.clone()), 4);
+    go_slice_u8_set(values.clone(), 0, GoInt::from(b'a'));
+    go_slice_u8_set(values.clone(), 1, GoInt::from(b'b'));
+    go_slice_u8_set(values.clone(), 2, GoInt::from(b'c'));
+    go_slice_u8_set(values.clone(), 3, GoInt::from(b'd'));
+
+    let destination = go_slice_u8_range(values.clone(), 1, 4, -1);
+    let source = go_slice_u8_range(values.clone(), 0, 3, -1);
+    assert_eq!(go_slice_u8_copy(destination, source), 3);
+    assert_eq!(go_string_from_slice_u8(values.clone()).as_bytes(), b"aabc");
+
+    assert_eq!(go_slice_u8_copy(go_slice_u8_nil(), values.clone()), 0);
+    assert_eq!(go_slice_u8_copy(values, go_slice_u8_nil()), 0);
+    assert!(!go_slice_u8_is_nil(go_slice_u8_make(0, 0)));
+}
+
+#[test]
 fn integer_slice_copy_is_overlap_safe() {
     let values = go_slice_i64_from_static(&[1, 2, 3, 4]);
     let destination = go_slice_i64_range(values.clone(), 1, 4, -1);
@@ -573,30 +809,6 @@ fn raw_output_does_not_require_utf8() {
 }
 
 #[test]
-fn runtime_integer_operations_match_go_edge_rules() {
-    assert_eq!(int_div(GoInt::MIN, -1), GoInt::MIN);
-    assert_eq!(int_rem(GoInt::MIN, -1), 0);
-}
-
-#[test]
-fn int_shifts_do_not_use_rusts_masked_shift_count() {
-    assert_eq!(int_shl(1, 63), GoInt::MIN);
-    assert_eq!(int_shl(1, 64), 0);
-    assert_eq!(int_shl(1, 10_000), 0);
-    assert_eq!(int_shr(-2, 1), -1);
-    assert_eq!(int_shr(-2, 64), -1);
-    assert_eq!(int_shr(2, 64), 0);
-}
-
-#[test]
-fn invalid_integer_operations_panic() {
-    assert!(std::panic::catch_unwind(|| int_div(1, 0)).is_err());
-    assert!(std::panic::catch_unwind(|| int_rem(1, 0)).is_err());
-    assert!(std::panic::catch_unwind(|| int_shl(1, -1)).is_err());
-    assert!(std::panic::catch_unwind(|| int_shr(1, -1)).is_err());
-}
-
-#[test]
 fn explicit_panics_preserve_supported_payload_types() {
     let boolean = std::panic::catch_unwind(|| panic_bool(true));
     assert!(boolean.is_err());
@@ -627,4 +839,82 @@ fn explicit_panics_preserve_supported_payload_types() {
         payload.as_deref().map(GoString::as_bytes),
         Some(b"boom".as_slice())
     );
+}
+
+#[test]
+fn interface_panics_round_trip_through_the_recovery_payload_boundary() {
+    let identity = go_string_from_static(b"builtin:int");
+    let value = go_interface_box_i64(identity.clone(), 42);
+    let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        panic_go_interface(value);
+    }))
+    .err();
+    assert!(payload.is_some(), "an explicit interface panic must unwind");
+    let Some(payload) = payload else {
+        return;
+    };
+    let recovered = go_panic_payload_to_interface(payload);
+
+    assert!(!go_interface_is_nil(recovered.clone()));
+    assert_eq!(go_interface_unbox_i64(recovered, identity), 42);
+}
+
+#[test]
+fn scalar_panics_become_exact_recoverable_interface_values() {
+    let boolean = std::panic::catch_unwind(|| panic_bool(true)).err();
+    assert!(boolean.is_some(), "an explicit bool panic must unwind");
+    if let Some(boolean) = boolean {
+        assert!(go_interface_unbox_bool(
+            go_panic_payload_to_interface(boolean),
+            go_string_from_static(b"builtin:bool"),
+        ));
+    }
+
+    let integer = std::panic::catch_unwind(|| panic_i64(42)).err();
+    assert!(integer.is_some(), "an explicit int panic must unwind");
+    if let Some(integer) = integer {
+        assert_eq!(
+            go_interface_unbox_i64(
+                go_panic_payload_to_interface(integer),
+                go_string_from_static(b"builtin:int"),
+            ),
+            42,
+        );
+    }
+
+    let string = std::panic::catch_unwind(|| panic_go_string(go_string_from_static(b"boom"))).err();
+    assert!(string.is_some(), "an explicit string panic must unwind");
+    if let Some(string) = string {
+        assert_eq!(
+            go_interface_unbox_go_string(
+                go_panic_payload_to_interface(string),
+                go_string_from_static(b"builtin:string"),
+            )
+            .as_bytes(),
+            b"boom",
+        );
+    }
+}
+
+#[test]
+fn nil_and_implicit_panics_become_non_nil_runtime_errors() {
+    let nil_payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        panic_go_interface(go_interface_nil());
+    }))
+    .err();
+    assert!(
+        nil_payload.is_some(),
+        "panic(nil) must unwind with a replacement value"
+    );
+    let Some(nil_payload) = nil_payload else {
+        return;
+    };
+    let recovered_nil = go_panic_payload_to_interface(nil_payload);
+    assert!(!go_interface_is_nil(recovered_nil.clone()));
+    assert!(go_interface_is_runtime_error(recovered_nil));
+
+    let implicit =
+        go_panic_payload_to_interface(Box::new("implicit runtime panic") as GoPanicPayload);
+    assert!(!go_interface_is_nil(implicit.clone()));
+    assert!(go_interface_is_runtime_error(implicit));
 }

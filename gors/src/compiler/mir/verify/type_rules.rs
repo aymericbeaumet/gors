@@ -2,7 +2,7 @@
 
 use crate::compiler::Diagnostic;
 use crate::compiler::hir;
-use crate::compiler::types::{ComplexTy, ConstValue, FloatTy, IntTy, Ty};
+use crate::compiler::types::{ComplexTy, ConstValue, FloatTy, Ty};
 
 pub(super) fn verify_bootstrap_type(ty: &Ty, context: &str) -> Result<(), Diagnostic> {
     if *ty == Ty::Unit || ty.is_bootstrap_value() {
@@ -16,35 +16,23 @@ pub(super) fn verify_bootstrap_type(ty: &Ty, context: &str) -> Result<(), Diagno
 
 pub(super) fn verify_constant_type(value: &ConstValue, ty: &Ty) -> Result<(), Diagnostic> {
     let underlying = ty.underlying();
-    matches!(
+    let shape_matches = matches!(
         (value, underlying),
         (ConstValue::Bool(_), Ty::Bool)
-            | (ConstValue::Int(_), Ty::Int(IntTy::Int))
-            | (ConstValue::Int(_), Ty::Int(IntTy::Int32))
-            | (
-                ConstValue::Int(_),
-                Ty::Uint(crate::compiler::types::UintTy::Uint8)
-            )
-            | (
-                ConstValue::Int(_),
-                Ty::Uint(crate::compiler::types::UintTy::Uintptr)
-            )
-            | (ConstValue::Float(_), Ty::Float(FloatTy::Float64))
-            | (ConstValue::Int(_), Ty::Float(FloatTy::Float64))
-            | (
-                ConstValue::Complex { .. },
-                Ty::Complex(ComplexTy::Complex128)
-            )
-            | (ConstValue::Int(_), Ty::Complex(ComplexTy::Complex128))
-            | (ConstValue::Float(_), Ty::Complex(ComplexTy::Complex128))
+            | (ConstValue::Int(_), Ty::Int(_))
+            | (ConstValue::Int(_), Ty::Uint(_))
+            | (ConstValue::Float(_), Ty::Float(_))
+            | (ConstValue::Complex { .. }, Ty::Complex(_))
             | (ConstValue::String(_), Ty::String)
-    )
-    .then_some(())
-    .ok_or_else(|| {
-        Diagnostic::backend(format!(
-            "MIR constant {value:?} does not have declared type {ty:?}"
-        ))
-    })
+    );
+    let canonical = value.normalized_for(ty) == *value;
+    (shape_matches && value.is_representable_as(ty) && canonical)
+        .then_some(())
+        .ok_or_else(|| {
+            Diagnostic::backend(format!(
+                "MIR constant {value:?} is not representable as declared type {ty:?}"
+            ))
+        })
 }
 
 pub(super) fn verify_same_type(
@@ -67,14 +55,21 @@ pub(super) fn same_mir_representation(left: &Ty, right: &Ty) -> bool {
         )
         || matches!(
             (left.underlying(), right.underlying()),
-            (
-                Ty::Int(IntTy::Int32) | Ty::Uint(crate::compiler::types::UintTy::Uint8),
-                Ty::Int(IntTy::Int)
-            )
+            (Ty::Int(_) | Ty::Uint(_), Ty::Int(_) | Ty::Uint(_))
         )
         || matches!(
             (left.underlying(), right.underlying()),
             (Ty::Interface(_), Ty::Interface(_))
+        )
+        || matches!(
+            (left.underlying(), right.underlying()),
+            (Ty::Float(_), Ty::Float(_))
+        )
+        || matches!(
+            (left.underlying(), right.underlying()),
+            (Ty::Int(_) | Ty::Uint(_), Ty::Float(_))
+                | (Ty::Float(_), Ty::Int(_) | Ty::Uint(_))
+                | (Ty::Complex(_), Ty::Complex(_))
         )
 }
 
@@ -93,56 +88,61 @@ pub(super) fn verify_binary_types(
                 && same_result
                 && matches!(
                     underlying,
-                    Ty::Int(IntTy::Int)
-                        | Ty::Int(IntTy::Int32)
-                        | Ty::Uint(crate::compiler::types::UintTy::Uint8)
-                        | Ty::Float(FloatTy::Float64)
+                    Ty::Int(_)
+                        | Ty::Uint(_)
+                        | Ty::Float(_)
                         | Ty::Complex(ComplexTy::Complex128)
                         | Ty::String
                 )
         }
-        hir::BinaryOp::Sub | hir::BinaryOp::Mul | hir::BinaryOp::Div => {
+        hir::BinaryOp::Sub | hir::BinaryOp::Mul => {
             same_operands
                 && same_result
                 && matches!(
                     underlying,
-                    Ty::Int(IntTy::Int)
-                        | Ty::Float(FloatTy::Float64)
-                        | Ty::Complex(ComplexTy::Complex128)
+                    Ty::Int(_) | Ty::Uint(_) | Ty::Float(_) | Ty::Complex(ComplexTy::Complex128)
+                )
+        }
+        hir::BinaryOp::Div => {
+            same_operands
+                && same_result
+                && matches!(
+                    underlying,
+                    Ty::Int(_) | Ty::Uint(_) | Ty::Float(_) | Ty::Complex(ComplexTy::Complex128)
                 )
         }
         hir::BinaryOp::Min | hir::BinaryOp::Max => {
             same_operands
                 && same_result
-                && matches!(
-                    underlying,
-                    Ty::Int(IntTy::Int) | Ty::Float(FloatTy::Float64)
-                )
+                && matches!(underlying, Ty::Int(_) | Ty::Uint(_) | Ty::Float(_))
         }
         hir::BinaryOp::Complex => {
             same_operands
                 && *underlying == Ty::Float(FloatTy::Float64)
                 && result == &Ty::Complex(ComplexTy::Complex128)
         }
-        hir::BinaryOp::Rem
-        | hir::BinaryOp::BitAnd
+        hir::BinaryOp::BitAnd
         | hir::BinaryOp::BitOr
         | hir::BinaryOp::BitXor
-        | hir::BinaryOp::Shl
-        | hir::BinaryOp::Shr
         | hir::BinaryOp::AndNot => {
-            same_operands && same_result && *underlying == Ty::Int(IntTy::Int)
+            same_operands && same_result && matches!(underlying, Ty::Int(_) | Ty::Uint(_))
+        }
+        hir::BinaryOp::Rem => {
+            same_operands && same_result && matches!(underlying, Ty::Int(_) | Ty::Uint(_))
+        }
+        hir::BinaryOp::Shl | hir::BinaryOp::Shr => {
+            same_result
+                && matches!(underlying, Ty::Int(_) | Ty::Uint(_))
+                && matches!(right.underlying(), Ty::Int(_) | Ty::Uint(_))
         }
         hir::BinaryOp::Equal | hir::BinaryOp::NotEqual => {
             same_operands
                 && (matches!(
                     underlying,
                     Ty::Bool
-                        | Ty::Int(IntTy::Int)
-                        | Ty::Int(IntTy::Int32)
-                        | Ty::Uint(crate::compiler::types::UintTy::Uint8)
-                        | Ty::Uint(crate::compiler::types::UintTy::Uintptr)
-                        | Ty::Float(FloatTy::Float64)
+                        | Ty::Int(_)
+                        | Ty::Uint(_)
+                        | Ty::Float(_)
                         | Ty::Complex(ComplexTy::Complex128)
                         | Ty::String
                 ) || underlying.is_bootstrap_comparable_aggregate())
@@ -155,12 +155,7 @@ pub(super) fn verify_binary_types(
             same_operands
                 && matches!(
                     underlying,
-                    Ty::Int(IntTy::Int)
-                        | Ty::Int(IntTy::Int32)
-                        | Ty::Uint(crate::compiler::types::UintTy::Uint8)
-                        | Ty::Uint(crate::compiler::types::UintTy::Uintptr)
-                        | Ty::Float(FloatTy::Float64)
-                        | Ty::String
+                    Ty::Int(_) | Ty::Uint(_) | Ty::Float(_) | Ty::String
                 )
                 && result == &Ty::Bool
         }
@@ -173,4 +168,59 @@ pub(super) fn verify_binary_types(
             "invalid MIR binary operation {op:?}: {left:?}, {right:?} -> {result:?}"
         ))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::verify_constant_type;
+    use crate::compiler::types::{ConstValue, ExactNumber, FloatTy, IntTy, Ty, UintTy};
+
+    #[test]
+    fn constant_verification_enforces_exact_integer_representation_bounds() {
+        assert!(
+            verify_constant_type(&ConstValue::Int("127".into()), &Ty::Int(IntTy::Int8)).is_ok()
+        );
+        assert!(
+            verify_constant_type(&ConstValue::Int("128".into()), &Ty::Int(IntTy::Int8)).is_err()
+        );
+        assert!(
+            verify_constant_type(
+                &ConstValue::Int(i64::MAX.to_string()),
+                &Ty::Uint(UintTy::Uint),
+            )
+            .is_ok()
+        );
+        assert!(
+            verify_constant_type(
+                &ConstValue::Int(u64::MAX.to_string()),
+                &Ty::Uint(UintTy::Uint),
+            )
+            .is_ok()
+        );
+        assert!(
+            verify_constant_type(
+                &ConstValue::Int("18446744073709551616".into()),
+                &Ty::Uint(UintTy::Uint64),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn constant_verification_rejects_unquantized_typed_floats() {
+        let exact = |spelling: &str| ExactNumber::from_spelling(spelling).map(ConstValue::Float);
+        assert!(exact("16777217").is_some_and(|value| {
+            verify_constant_type(&value, &Ty::Float(FloatTy::Float32)).is_err()
+        }));
+        assert!(exact("16777216").is_some_and(|value| {
+            verify_constant_type(
+                &value.normalized_for(&Ty::Float(FloatTy::Float32)),
+                &Ty::Float(FloatTy::Float32),
+            )
+            .is_ok()
+        }));
+        assert!(exact("9007199254740993").is_some_and(|value| {
+            verify_constant_type(&value, &Ty::Float(FloatTy::Float64)).is_err()
+        }));
+    }
 }

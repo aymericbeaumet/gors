@@ -4,6 +4,17 @@ use super::{GoInt, GoSliceI64, GoString, go_string_from_bytes, index_out_of_rang
 
 const REPLACEMENT_RUNE: GoInt = 0xfffd;
 
+/// Convert one rune to its Go UTF-8 string representation.
+#[must_use]
+pub fn go_string_from_rune(rune: GoInt) -> GoString {
+    let scalar = u32::try_from(rune)
+        .ok()
+        .and_then(char::from_u32)
+        .unwrap_or(char::REPLACEMENT_CHARACTER);
+    let mut encoded = [0_u8; 4];
+    go_string_from_bytes(scalar.encode_utf8(&mut encoded).as_bytes())
+}
+
 /// Convert a rune slice to its Go UTF-8 string representation.
 #[must_use]
 pub fn go_string_from_slice_runes(runes: GoSliceI64) -> GoString {
@@ -26,6 +37,20 @@ pub fn go_string_from_slice_runes(runes: GoSliceI64) -> GoString {
     }
     drop(storage);
     go_string_from_bytes(&bytes)
+}
+
+/// Decode a Go string into a fresh, non-nil rune slice.
+#[must_use]
+pub fn go_string_to_slice_runes(value: GoString) -> GoSliceI64 {
+    let bytes = value.as_bytes();
+    let mut runes = Vec::with_capacity(bytes.len());
+    let mut byte_index = 0;
+    while byte_index < bytes.len() {
+        let (rune, width) = decode_rune(bytes, byte_index);
+        runes.push(rune);
+        byte_index = byte_index.saturating_add(width);
+    }
+    GoSliceI64::from_values(runes)
 }
 
 /// Count the UTF-8 decoding steps performed by a Go string range loop.

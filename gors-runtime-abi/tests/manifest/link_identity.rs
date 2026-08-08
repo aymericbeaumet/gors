@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn artifact_and_link_plan_identities_cover_every_selection_dimension() -> Result<(), Box<dyn Error>>
 {
-    let contract = manifest([], [RuntimeOp::IntDiv, RuntimeOp::PrintI64]);
+    let contract = manifest([], [INT_DIV, RuntimeOp::PrintI64]);
     let target = target_model("x86_64-unknown-linux-gnu")?;
     let toolchain = compatibility_identity(b"rustc");
     let baseline = artifact(
@@ -32,15 +32,10 @@ fn artifact_and_link_plan_identities_cover_every_selection_dimension() -> Result
     assert_ne!(baseline.identity(), changed_toolchain.identity());
     assert_ne!(baseline.identity(), changed_implementation.identity());
 
-    let div = baseline.select(request(
-        &contract,
-        [RuntimeOp::IntDiv],
-        target.clone(),
-        toolchain,
-    )?)?;
+    let div = baseline.select(request(&contract, [INT_DIV], target.clone(), toolchain)?)?;
     let reordered = baseline.select(request(
         &contract,
-        [RuntimeOp::IntDiv, RuntimeOp::IntDiv],
+        [INT_DIV, INT_DIV],
         target.clone(),
         toolchain,
     )?)?;

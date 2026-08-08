@@ -1,6 +1,21 @@
 use super::effects::panic_edge;
 use super::*;
 
+mod append;
+mod float;
+mod integer;
+mod maps;
+mod pointers;
+mod recovery;
+mod representation_effects;
+mod runes;
+mod string_slices;
+
+const INT_DIV: RuntimeOp = RuntimeOp::Integer {
+    op: IntegerRuntimeOp::Div,
+    kind: IntegerKind::I64,
+};
+
 fn lower(source: &str) -> File {
     lower_at("rust-ir.go", source)
 }
@@ -31,104 +46,78 @@ fn generated_symbols_do_not_embed_checkout_paths() {
 }
 
 #[test]
-fn representation_effects_cover_runtime_calls_clones_and_string_allocation() {
+fn verified_int32_primitives_preserve_go_width_before_i64_storage() {
+    let file = lower(
+        "package main\nfunc next(value int32) int32 { return value + 1 }\nfunc negate(value rune) rune { return -value }\nfunc main() {}\n",
+    );
+    let operations = all_rvalues(&file)
+        .filter_map(|rvalue| match &rvalue.kind {
+            RvalueKind::Unary { op, .. } | RvalueKind::Binary { op, .. } => Some(*op),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        operations.contains(&ValueOp::Primitive(PrimitiveOp::Integer {
+            op: IntegerPrimitive::WrappingAdd,
+            kind: IntegerKind::I32,
+        })),
+        "{operations:?}"
+    );
+    assert!(
+        operations.contains(&ValueOp::Primitive(PrimitiveOp::Integer {
+            op: IntegerPrimitive::WrappingNeg,
+            kind: IntegerKind::I32,
+        })),
+        "{operations:?}"
+    );
+    assert!(
+        !operations.contains(&ValueOp::Primitive(PrimitiveOp::Integer {
+            op: IntegerPrimitive::WrappingAdd,
+            kind: IntegerKind::I64,
+        })),
+        "int32 addition must not use 64-bit wrapping: {operations:?}"
+    );
+    assert!(
+        !operations.contains(&ValueOp::Primitive(PrimitiveOp::Integer {
+            op: IntegerPrimitive::WrappingNeg,
+            kind: IntegerKind::I64,
+        })),
+        "rune negation must not use 64-bit wrapping: {operations:?}"
+    );
+    assert!(file.verify().is_ok(), "int32 primitives must verify");
+}
+
+#[test]
+fn verified_i64_interface_calls_retain_exact_int8_and_uint_types() {
     let file = lower(
         r#"
             package main
-            func join(left string, right string) string { return left + right }
-            func identity(value string) string { saved := value; return saved }
-            func add(left int, right int) int { return left + right }
-            func equal(left string, right string) bool { return left == right }
-            func notEqual(left string, right string) bool { return left != right }
-            func less(left string, right string) bool { return left < right }
-            func lessEqual(left string, right string) bool { return left <= right }
-            func greater(left string, right string) bool { return left > right }
-            func greaterEqual(left string, right string) bool { return left >= right }
             func main() {
-                value := "x"
-                saved := value
-                println(join(value, "y"), add(1, 2))
-                println(saved)
+                var narrow any = int8(4)
+                narrowValue, narrowOK := narrow.(int8)
+                var unsigned any = uint(6)
+                unsignedValue, unsignedOK := unsigned.(uint)
+                if !narrowOK || !unsignedOK || narrowValue != 4 || unsignedValue != 6 {
+                    panic("integer interface extraction changed")
+                }
             }
         "#,
     );
 
-    let concat = binary_rvalue(&file, ValueOp::Runtime(RuntimeOp::ConcatGoStrings));
-    assert!(concat.effects.may_read);
-    assert!(concat.effects.may_call);
-    assert!(concat.effects.may_allocate);
-    assert!(concat.effects.may_write);
-    assert!(!concat.effects.may_panic);
-    assert_eq!(concat.panic, PanicEdge::None);
-
-    let add = binary_rvalue(&file, ValueOp::Primitive(PrimitiveOp::IntWrappingAdd));
-    assert!(add.effects.may_read);
-    assert!(!add.effects.may_call);
-    assert!(!add.effects.may_allocate);
-    assert!(!add.effects.may_panic);
-
+    let requirement = file
+        .verify()
+        .expect("int8 and uint interface calls must verify");
     for operation in [
-        PrimitiveOp::StringEqual,
-        PrimitiveOp::StringNotEqual,
-        PrimitiveOp::StringLess,
-        PrimitiveOp::StringLessEqual,
-        PrimitiveOp::StringGreater,
-        PrimitiveOp::StringGreaterEqual,
+        RuntimeOp::GoInterfaceBoxI64,
+        RuntimeOp::GoInterfaceIsType,
+        RuntimeOp::GoInterfaceUnboxI64,
     ] {
-        let comparison = binary_rvalue(&file, ValueOp::Primitive(operation));
-        assert!(comparison.effects.may_read);
-        assert!(comparison.effects.may_call);
-        assert!(!comparison.effects.may_allocate);
-        assert!(!comparison.effects.may_panic);
+        assert!(
+            requirement.contains(operation),
+            "missing {operation:?} in {requirement:?}"
+        );
     }
-
-    let string_literal = all_rvalues(&file)
-        .find(|rvalue| {
-            matches!(
-                rvalue.kind,
-                RvalueKind::Use(Operand::Constant(Constant::RuntimeStaticBytes {
-                    op: RuntimeOp::GoStringFromStatic,
-                    ..
-                }))
-            )
-        })
-        .unwrap();
-    assert!(string_literal.effects.may_call);
-    assert!(!string_literal.effects.may_allocate);
-
-    let clone_read = all_rvalues(&file)
-        .find(|rvalue| {
-            matches!(
-                rvalue.kind,
-                RvalueKind::Use(Operand::Read {
-                    op: ReadOp::ProvenInitializedClone,
-                    ..
-                })
-            )
-        })
-        .unwrap();
-    assert!(clone_read.effects.may_read);
-    assert!(clone_read.effects.may_call);
-    assert!(!clone_read.effects.may_allocate);
-    assert!(!clone_read.effects.may_panic);
-
-    let move_read = all_rvalues(&file)
-        .find(|rvalue| {
-            matches!(
-                rvalue.kind,
-                RvalueKind::Use(Operand::Read {
-                    op: ReadOp::ProvenLastUseMove,
-                    ..
-                })
-            )
-        })
-        .unwrap();
-    assert!(move_read.effects.may_read);
-    assert!(move_read.effects.may_write);
-    assert!(!move_read.effects.may_call);
-    assert!(!move_read.effects.may_allocate);
-    assert!(!move_read.effects.may_panic);
-    assert_eq!(move_read.panic, PanicEdge::None);
 }
 
 #[test]
@@ -147,6 +136,80 @@ fn verifier_checks_runtime_calls_against_the_typed_abi() {
 }
 
 #[test]
+fn verifier_checks_float_interface_and_print_runtime_signatures() {
+    let source = r#"
+        package main
+        func main() {
+            var left any = 1.5
+            var right any = 2.5
+            _ = left == right
+            value, _ := left.(float64)
+            print(value)
+        }
+    "#;
+
+    for (expected, replacement) in [
+        (RuntimeOp::GoInterfaceBoxF64, RuntimeOp::GoInterfaceBoxBool),
+        (RuntimeOp::GoInterfaceEqual, RuntimeOp::GoInterfaceIsNil),
+        (
+            RuntimeOp::GoInterfaceUnboxF64,
+            RuntimeOp::GoInterfaceUnboxI64,
+        ),
+        (RuntimeOp::PrintF64, RuntimeOp::PrintI64),
+    ] {
+        let mut file = lower(source);
+        *runtime_call_target_mut(&mut file, expected) = replacement;
+        refresh_test_effects(&mut file);
+
+        let error = file.verify().unwrap_err();
+        assert!(
+            error.message.contains("runtime call")
+                || error.message.contains("call destination type mismatch"),
+            "{expected:?} mutation produced {error:?}"
+        );
+    }
+}
+
+#[test]
+fn verifier_rejects_malformed_byte_slice_runtime_calls() {
+    let source = r#"
+        package main
+        func main() {
+            destination := make([]byte, 2)
+            source := make([]byte, 2)
+            destination[0] = 'x'
+            _ = copy(destination, source)
+        }
+    "#;
+
+    for operation in [
+        RuntimeOp::GoSliceU8Make,
+        RuntimeOp::GoSliceU8Set,
+        RuntimeOp::GoSliceU8Copy,
+    ] {
+        let mut file = lower(source);
+        let args = match &mut runtime_call_terminator_mut(&mut file, operation).kind {
+            TerminatorKind::Call { args, .. } => Some(args),
+            _ => None,
+        };
+        assert!(
+            args.is_some(),
+            "runtime call lookup must return a call terminator"
+        );
+        let Some(args) = args else {
+            return;
+        };
+        args.clear();
+
+        let error = file.verify().unwrap_err();
+        assert!(
+            error.message.contains("ABI signature requires"),
+            "{operation:?}: {error:?}"
+        );
+    }
+}
+
+#[test]
 fn runtime_call_destination_writes_are_explicit_and_verified() {
     let mut file = lower(
         r#"
@@ -157,18 +220,18 @@ fn runtime_call_destination_writes_are_explicit_and_verified() {
     );
     let terminator = first_function_call_terminator_mut(&mut file);
     if let TerminatorKind::Call { target, .. } = &mut terminator.kind {
-        *target = CallTarget::Runtime(RuntimeOp::IntDiv);
+        *target = CallTarget::Runtime(INT_DIV);
     }
     refresh_test_effects(&mut file);
 
     assert!(
-        runtime_call_terminator_mut(&mut file, RuntimeOp::IntDiv)
+        runtime_call_terminator_mut(&mut file, INT_DIV)
             .effects
             .may_write
     );
     file.verify().unwrap();
 
-    runtime_call_terminator_mut(&mut file, RuntimeOp::IntDiv)
+    runtime_call_terminator_mut(&mut file, INT_DIV)
         .effects
         .may_write = false;
     let error = file.verify().unwrap_err();
@@ -183,8 +246,13 @@ fn verifier_checks_value_operations_against_the_typed_abi() {
     let mut file = lower(
         "package main\nfunc add(left int, right int) int { return left + right }\nfunc main() {}\n",
     );
-    *binary_value_op_mut(&mut file, ValueOp::Primitive(PrimitiveOp::IntWrappingAdd)) =
-        ValueOp::Primitive(PrimitiveOp::BoolEqual);
+    *binary_value_op_mut(
+        &mut file,
+        ValueOp::Primitive(PrimitiveOp::Integer {
+            op: IntegerPrimitive::WrappingAdd,
+            kind: IntegerKind::I64,
+        }),
+    ) = ValueOp::Primitive(PrimitiveOp::BoolEqual);
     refresh_test_effects(&mut file);
 
     let error = file.verify().unwrap_err();
@@ -199,7 +267,7 @@ fn verifier_checks_value_operations_against_the_typed_abi() {
 #[test]
 fn verifier_rejects_static_bytes_with_an_incompatible_runtime_constructor() {
     let mut file = lower("package main\nfunc main() { print(\"value\") }\n");
-    *static_bytes_runtime_op_mut(&mut file) = RuntimeOp::IntDiv;
+    *static_bytes_runtime_op_mut(&mut file) = INT_DIV;
 
     let error = file.verify().unwrap_err();
     assert!(
@@ -371,8 +439,7 @@ fn verifier_rejects_mutated_representation_effects_and_panic_edges() {
     );
 
     let mut bad_panic_edge = file.clone();
-    binary_rvalue_mut(&mut bad_panic_edge, ValueOp::Runtime(RuntimeOp::IntDiv)).panic =
-        PanicEdge::None;
+    binary_rvalue_mut(&mut bad_panic_edge, ValueOp::Runtime(INT_DIV)).panic = PanicEdge::None;
     assert!(
         bad_panic_edge
             .verify()
@@ -388,7 +455,7 @@ fn verifier_rejects_mutated_representation_effects_and_panic_edges() {
         .unwrap()
         .source;
     let mut bad_provenance = file.clone();
-    binary_rvalue_mut(&mut bad_provenance, ValueOp::Runtime(RuntimeOp::IntDiv)).provenance =
+    binary_rvalue_mut(&mut bad_provenance, ValueOp::Runtime(INT_DIV)).provenance =
         Provenance::Source(unrelated_source);
     assert!(
         bad_provenance
@@ -466,7 +533,7 @@ fn verifier_rejects_mutated_function_artifact_plans() {
     entrypoint_with_parameters.functions[main_index]
         .signature
         .params
-        .push(RustType::I64);
+        .push(RustType::Integer(IntegerKind::I64));
     assert!(
         entrypoint_with_parameters
             .verify()
@@ -755,7 +822,7 @@ fn rvalue_read_op_mut(rvalue: &mut Rvalue, expected: ReadOp) -> Option<&mut Read
             operand_read_op_mut(operand, expected)
         }
         RvalueKind::Binary { left, right, .. }
-        | RvalueKind::AggregateEqualI64 { left, right, .. } => {
+        | RvalueKind::AggregateEqualInteger { left, right, .. } => {
             operand_read_op_mut(left, expected).or_else(|| operand_read_op_mut(right, expected))
         }
         RvalueKind::ArrayIndexI64 { array, index } | RvalueKind::ArrayIndex { array, index } => {
@@ -789,7 +856,7 @@ fn rvalue_read_op_mut(rvalue: &mut Rvalue, expected: ReadOp) -> Option<&mut Read
             structure, value, ..
         } => operand_read_op_mut(structure, expected)
             .or_else(|| operand_read_op_mut(value, expected)),
-        RvalueKind::RecoverCompareNil { .. } => None,
+        RvalueKind::Recover { .. } => None,
     }
 }
 

@@ -1,0 +1,3 @@
+module go_spec_run_time_panics_nil_struct_interface
+
+go 1.26

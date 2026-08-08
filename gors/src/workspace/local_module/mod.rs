@@ -9,7 +9,7 @@ mod model;
 pub use catalog::LocalModuleCatalog;
 pub use compiler_catalog::LocalModuleManifestCatalog;
 pub use error::{LocalModuleError, ModuleFileIssue};
-pub use go_mod::parse_module_directive;
+pub use go_mod::{parse_language_version_directive, parse_module_directive};
 pub use model::{MaterializedPackage, MaterializedSourceFile};
 
 #[cfg(test)]

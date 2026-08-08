@@ -3,9 +3,14 @@
 //! Adding a supported Go construct extends this type algebra directly; it must
 //! never be represented by an unknown sentinel plus a compensating side table.
 
+mod exact_float;
+mod exact_number;
+
 use num_bigint::BigInt;
 
 use super::ids::{DefId, LocalTypeId};
+
+pub use exact_number::ExactNumber;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum Ty {
@@ -95,6 +100,7 @@ impl ChannelDir {
 pub enum UntypedTy {
     Bool,
     Int,
+    Rune,
     Float,
     Complex,
     String,
@@ -106,13 +112,13 @@ pub enum ConstValue {
     /// Canonical base-ten representation.  Constants remain exact until the
     /// semantic layer assigns a concrete destination type.
     Int(String),
-    /// The original exact Go spelling; parsing to `f64` is an emitter concern
-    /// only after the semantic layer has selected float32/float64.
-    Float(String),
-    /// Exact real and imaginary component spellings.
+    /// A canonical reduced rational. IEEE rounding happens only once the
+    /// semantic layer selects a concrete floating-point type.
+    Float(ExactNumber),
+    /// Exact canonical real and imaginary rational components.
     Complex {
-        real: String,
-        imag: String,
+        real: ExactNumber,
+        imag: ExactNumber,
     },
     /// Go strings are bytes, not Rust UTF-8 strings.
     String(Vec<u8>),
@@ -126,7 +132,11 @@ pub enum ConstValue {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StaticValue {
     Constant(ConstValue),
+    /// The zero value of a nil-capable package variable. Its exact runtime
+    /// operation remains a MIR representation decision keyed by the Go type.
+    Nil,
     Struct(Vec<StaticValue>),
+    Array(Vec<StaticValue>),
     Slice(Vec<StaticValue>),
 }
 
@@ -193,17 +203,31 @@ impl Ty {
         let identity = match self {
             Self::Bool => "builtin:bool".to_owned(),
             Self::Int(IntTy::Int) => "builtin:int".to_owned(),
+            Self::Int(IntTy::Int8) => "builtin:int8".to_owned(),
+            Self::Int(IntTy::Int16) => "builtin:int16".to_owned(),
+            Self::Int(IntTy::Int32) => "builtin:int32".to_owned(),
+            Self::Int(IntTy::Int64) => "builtin:int64".to_owned(),
+            Self::Uint(UintTy::Uint) => "builtin:uint".to_owned(),
+            Self::Uint(UintTy::Uint8) => "builtin:uint8".to_owned(),
+            Self::Uint(UintTy::Uint16) => "builtin:uint16".to_owned(),
+            Self::Uint(UintTy::Uint32) => "builtin:uint32".to_owned(),
+            Self::Uint(UintTy::Uint64) => "builtin:uint64".to_owned(),
+            Self::Uint(UintTy::Uintptr) => "builtin:uintptr".to_owned(),
+            Self::Float(FloatTy::Float32) => "builtin:float32".to_owned(),
+            Self::Float(FloatTy::Float64) => "builtin:float64".to_owned(),
             Self::String => "builtin:string".to_owned(),
             Self::Named { definition, .. } | Self::NamedRef { definition } => {
                 format!("named:{definition}")
             }
             Self::LocalNamed { identity, .. } => format!("local-named:{identity}"),
             Self::Pointer(element) => match element.as_ref() {
+                Self::Int(IntTy::Int) => "pointer:builtin:int".to_owned(),
                 Self::Named { definition, .. } => format!("pointer:named:{definition}"),
                 Self::LocalNamed { identity, .. } => format!("pointer:local-named:{identity}"),
                 _ => return None,
             },
             Self::Slice(element) => match element.as_ref() {
+                Self::String => "slice:builtin:string".to_owned(),
                 Self::Named { definition, .. } | Self::NamedRef { definition } => {
                     format!("slice:named:{definition}")
                 }
@@ -219,6 +243,7 @@ impl Ty {
         match self {
             Self::Untyped(UntypedTy::Bool) => Self::Bool,
             Self::Untyped(UntypedTy::Int) => Self::Int(IntTy::Int),
+            Self::Untyped(UntypedTy::Rune) => Self::Int(IntTy::Int32),
             Self::Untyped(UntypedTy::Float) => Self::Float(FloatTy::Float64),
             Self::Untyped(UntypedTy::Complex) => Self::Complex(ComplexTy::Complex128),
             Self::Untyped(UntypedTy::String) => Self::String,
@@ -236,7 +261,9 @@ impl Ty {
                 | Self::Uint(_)
                 | Self::Float(_)
                 | Self::Complex(_)
-                | Self::Untyped(UntypedTy::Int | UntypedTy::Float | UntypedTy::Complex)
+                | Self::Untyped(
+                    UntypedTy::Int | UntypedTy::Rune | UntypedTy::Float | UntypedTy::Complex
+                )
         )
     }
 
@@ -246,7 +273,7 @@ impl Ty {
         }
         matches!(
             self,
-            Self::Int(_) | Self::Uint(_) | Self::Untyped(UntypedTy::Int)
+            Self::Int(_) | Self::Uint(_) | Self::Untyped(UntypedTy::Int | UntypedTy::Rune)
         )
     }
 
@@ -300,10 +327,16 @@ impl Ty {
     #[must_use]
     pub fn supports_interface_payload(&self) -> bool {
         match self.underlying() {
-            Self::Bool | Self::Int(IntTy::Int) | Self::String => true,
+            Self::Bool | Self::Int(_) | Self::Uint(_) | Self::Float(_) | Self::String => true,
             Self::Struct(_) => self.interface_aggregate_struct_fields().is_some(),
-            Self::Slice(element) => element.uses_interface_aggregate_representation(),
-            Self::Pointer(_) => self.bootstrap_i64_struct_pointer_fields().is_some(),
+            Self::Slice(element) => {
+                element.underlying() == &Self::String
+                    || element.uses_interface_aggregate_representation()
+            }
+            Self::Pointer(element) => {
+                element.underlying() == &Self::Int(IntTy::Int)
+                    || self.bootstrap_i64_struct_pointer_fields().is_some()
+            }
             _ => false,
         }
     }
@@ -340,19 +373,32 @@ impl Ty {
                 || element.bootstrap_i64_struct_fields().is_some()
                 || element.uses_interface_aggregate_pointer_representation();
         }
-        if let Self::Array(_, element) = self {
+        if let Self::Array(length, element) = self {
+            if *length == 0 {
+                return true;
+            }
             return matches!(
                 element.underlying(),
-                Self::Bool | Self::Int(IntTy::Int) | Self::Float(FloatTy::Float64) | Self::String
+                Self::Bool
+                    | Self::Int(IntTy::Int)
+                    | Self::Uint(UintTy::Uint8)
+                    | Self::Float(_)
+                    | Self::String
             ) || element.bootstrap_i64_struct_pointer_fields().is_some();
         }
         if let Self::Map(key, value) = self {
-            return key.underlying() == &Self::String
+            return (key.underlying() == &Self::String
                 && (value.underlying() == &Self::Int(IntTy::Int)
-                    || value.bootstrap_i64_struct_fields().is_some());
+                    || value.bootstrap_i64_struct_fields().is_some()))
+                || (key.underlying() == &Self::Int(IntTy::Int)
+                    && value.underlying() == &Self::String);
         }
         if let Self::Channel(_, element) = self {
-            return element.underlying() == &Self::Int(IntTy::Int);
+            return matches!(element.underlying(), Self::Int(IntTy::Int) | Self::String)
+                || matches!(
+                    element.underlying(),
+                    Self::Channel(_, nested) if nested.underlying() == &Self::Int(IntTy::Int)
+                );
         }
         if let Self::Tuple(elements) = self {
             return elements.iter().all(Self::is_bootstrap_value);
@@ -372,11 +418,10 @@ impl Ty {
         matches!(
             self,
             Self::Bool
-                | Self::Int(IntTy::Int)
-                | Self::Int(IntTy::Int32)
-                | Self::Uint(UintTy::Uint8 | UintTy::Uintptr)
-                | Self::Float(FloatTy::Float64)
-                | Self::Complex(ComplexTy::Complex128)
+                | Self::Int(_)
+                | Self::Uint(_)
+                | Self::Float(_)
+                | Self::Complex(_)
                 | Self::String
         )
     }
@@ -385,11 +430,42 @@ impl Ty {
     /// comparability through Rust's fixed-array equality.
     pub fn is_bootstrap_comparable_aggregate(&self) -> bool {
         match self.underlying() {
-            Self::Array(_, element) => element.underlying() == &Self::Int(IntTy::Int),
+            Self::Array(_, element) => matches!(
+                element.underlying(),
+                Self::Int(IntTy::Int) | Self::Uint(UintTy::Uint8)
+            ),
             Self::Struct(fields) => fields
                 .iter()
                 .all(|field| field.ty.underlying() == &Self::Int(IntTy::Int)),
             _ => false,
+        }
+    }
+
+    /// Whether Go permits equality on values of this type.
+    #[must_use]
+    pub fn is_go_comparable(&self) -> bool {
+        match self.underlying() {
+            Self::Unit
+            | Self::NamedRef { .. }
+            | Self::Slice(_)
+            | Self::Map(_, _)
+            | Self::Function(_)
+            | Self::Tuple(_) => false,
+            Self::Array(_, element) => element.is_go_comparable(),
+            Self::Struct(fields) => fields.iter().all(|field| field.ty.is_go_comparable()),
+            Self::Bool
+            | Self::Int(_)
+            | Self::Uint(_)
+            | Self::Float(_)
+            | Self::Complex(_)
+            | Self::String
+            | Self::Pointer(_)
+            | Self::Channel(_, _)
+            | Self::Interface(_)
+            | Self::Untyped(_) => true,
+            Self::Named { underlying, .. } | Self::LocalNamed { underlying, .. } => {
+                underlying.is_go_comparable()
+            }
         }
     }
 
@@ -400,10 +476,10 @@ impl Ty {
         match self.default_typed() {
             Self::Bool => Some(ConstValue::Bool(false)),
             Self::Int(_) | Self::Uint(_) => Some(ConstValue::Int("0".into())),
-            Self::Float(_) => Some(ConstValue::Float("0.0".into())),
+            Self::Float(_) => Some(ConstValue::Float(ExactNumber::zero())),
             Self::Complex(_) => Some(ConstValue::Complex {
-                real: "0.0".into(),
-                imag: "0.0".into(),
+                real: ExactNumber::zero(),
+                imag: ExactNumber::zero(),
             }),
             Self::String => Some(ConstValue::String(Vec::new())),
             Self::Struct(_) | Self::Interface(_) | Self::Function(_) => None,
@@ -424,18 +500,62 @@ impl Ty {
 }
 
 impl ConstValue {
-    /// Exact value rewritten to the representation kind of `ty`. An exactly
-    /// integral float-kind constant becomes an integer constant at integer
-    /// sites; every other combination is returned unchanged.
+    /// Exact value converted to the canonical constant representation of `ty`.
+    /// Typed floating-point and complex constants are rounded exactly once at
+    /// every typing boundary, as required by Go's constant rules.
     #[must_use]
     pub fn normalized_for(&self, ty: &Ty) -> Self {
-        if let (Self::Float(spelling), Ty::Int(_) | Ty::Uint(_) | Ty::Untyped(UntypedTy::Int)) =
-            (self, ty.underlying())
-            && let Some(integer) = exact_integer_from_number_spelling(spelling)
-        {
-            return integer;
+        match (self, ty.underlying()) {
+            (
+                Self::Float(_),
+                Ty::Int(_) | Ty::Uint(_) | Ty::Untyped(UntypedTy::Int | UntypedTy::Rune),
+            ) => self.exact_integer().unwrap_or_else(|| self.clone()),
+            (Self::Int(_) | Self::Float(_), Ty::Float(float_ty)) => self
+                .quantized_for_float(*float_ty)
+                .map(Self::Float)
+                .unwrap_or_else(|| self.clone()),
+            (Self::Int(_) | Self::Float(_), Ty::Complex(complex_ty)) => self
+                .quantized_for_float(complex_ty.component_type())
+                .map(|real| Self::Complex {
+                    real,
+                    imag: ExactNumber::zero(),
+                })
+                .unwrap_or_else(|| self.clone()),
+            (Self::Complex { real, imag }, Ty::Complex(complex_ty)) => {
+                let component_ty = complex_ty.component_type();
+                let quantize = |value: &ExactNumber| {
+                    Self::Float(value.clone()).quantized_for_float(component_ty)
+                };
+                match (quantize(real), quantize(imag)) {
+                    (Some(real), Some(imag)) => Self::Complex { real, imag },
+                    _ => self.clone(),
+                }
+            }
+            _ => self.clone(),
         }
-        self.clone()
+    }
+
+    /// The exact real value of an integer or floating-point constant.
+    #[must_use]
+    pub(crate) fn exact_number(&self) -> Option<ExactNumber> {
+        match self {
+            Self::Int(spelling) => ExactNumber::from_integer_spelling(spelling),
+            Self::Float(value) => Some(value.clone()),
+            Self::Bool(_) | Self::Complex { .. } | Self::String(_) => None,
+        }
+    }
+
+    /// Convert a real-valued constant to the canonical exact integer payload.
+    /// A complex value is accepted only when its imaginary component is zero.
+    #[must_use]
+    pub(crate) fn exact_integer(&self) -> Option<Self> {
+        let value = match self {
+            Self::Int(_) => return Some(self.clone()),
+            Self::Float(value) => value,
+            Self::Complex { real, imag } if imag.is_zero() => real,
+            Self::Bool(_) | Self::Complex { .. } | Self::String(_) => return None,
+        };
+        value.integer_spelling().map(Self::Int)
     }
 
     /// Whether this exact Go constant can be materialized as `ty` by the
@@ -449,57 +569,60 @@ impl ConstValue {
             (Self::String(_), Ty::String | Ty::Untyped(UntypedTy::String)) => true,
             (
                 Self::Int(value),
-                Ty::Untyped(UntypedTy::Int | UntypedTy::Float | UntypedTy::Complex),
+                Ty::Untyped(
+                    UntypedTy::Int | UntypedTy::Rune | UntypedTy::Float | UntypedTy::Complex,
+                ),
             ) => BigInt::parse_bytes(value.as_bytes(), 10).is_some(),
-            (Self::Int(value), Ty::Int(IntTy::Int)) => {
+            (Self::Int(value), Ty::Int(kind)) => {
                 let Some(value) = BigInt::parse_bytes(value.as_bytes(), 10) else {
                     return false;
                 };
-                value >= BigInt::from(i64::MIN) && value <= BigInt::from(i64::MAX)
+                let (minimum, maximum) = match kind {
+                    IntTy::Int | IntTy::Int64 => (BigInt::from(i64::MIN), BigInt::from(i64::MAX)),
+                    IntTy::Int8 => (BigInt::from(i8::MIN), BigInt::from(i8::MAX)),
+                    IntTy::Int16 => (BigInt::from(i16::MIN), BigInt::from(i16::MAX)),
+                    IntTy::Int32 => (BigInt::from(i32::MIN), BigInt::from(i32::MAX)),
+                };
+                value >= minimum && value <= maximum
             }
-            (Self::Int(value), Ty::Int(IntTy::Int32)) => {
+            (Self::Int(value), Ty::Uint(kind)) => {
                 let Some(value) = BigInt::parse_bytes(value.as_bytes(), 10) else {
                     return false;
                 };
-                value >= BigInt::from(i32::MIN) && value <= BigInt::from(i32::MAX)
-            }
-            (Self::Int(value), Ty::Uint(UintTy::Uint8 | UintTy::Uintptr)) => {
-                let Some(value) = BigInt::parse_bytes(value.as_bytes(), 10) else {
-                    return false;
-                };
-                let maximum = if ty == &Ty::Uint(UintTy::Uint8) {
-                    BigInt::from(u8::MAX)
-                } else {
-                    BigInt::from(i64::MAX)
+                let maximum = match kind {
+                    UintTy::Uint | UintTy::Uint64 | UintTy::Uintptr => BigInt::from(u64::MAX),
+                    UintTy::Uint8 => BigInt::from(u8::MAX),
+                    UintTy::Uint16 => BigInt::from(u16::MAX),
+                    UintTy::Uint32 => BigInt::from(u32::MAX),
                 };
                 value >= BigInt::from(0_u8) && value <= maximum
             }
-            (Self::Int(value), Ty::Float(FloatTy::Float64)) => {
-                BigInt::parse_bytes(value.as_bytes(), 10)
-                    .and_then(|value| value.to_string().parse::<f64>().ok())
-                    .is_some_and(f64::is_finite)
+            (Self::Int(_), Ty::Float(float_ty)) => self.ieee_bits_for(*float_ty).is_some(),
+            (Self::Int(_), Ty::Complex(complex_ty)) => {
+                self.ieee_bits_for(complex_ty.component_type()).is_some()
             }
-            (Self::Int(value), Ty::Complex(ComplexTy::Complex128)) => {
-                BigInt::parse_bytes(value.as_bytes(), 10).is_some()
-            }
-            (Self::Float(value), Ty::Untyped(UntypedTy::Float | UntypedTy::Complex)) => {
-                parse_go_float(value).is_some()
-            }
-            (Self::Float(value), Ty::Int(_) | Ty::Uint(_)) => {
-                exact_integer_from_number_spelling(value)
-                    .is_some_and(|integer| integer.is_representable_as(ty))
-            }
-            (Self::Float(value), Ty::Float(FloatTy::Float64)) => parse_go_float(value).is_some(),
-            (Self::Float(value), Ty::Complex(ComplexTy::Complex128)) => {
-                parse_go_float(value).is_some()
-            }
+            (Self::Float(_), Ty::Untyped(UntypedTy::Float | UntypedTy::Complex)) => true,
             (
-                Self::Complex { real, imag },
-                Ty::Untyped(UntypedTy::Complex) | Ty::Complex(ComplexTy::Complex128),
-            ) => parse_go_float(real).is_some() && parse_go_float(imag).is_some(),
-            // Narrow integers, unsigned integers, and floating-point values
-            // remain in the semantic algebra for the next frontier, but are
-            // deliberately not executable yet.
+                Self::Float(_),
+                Ty::Int(_) | Ty::Uint(_) | Ty::Untyped(UntypedTy::Int | UntypedTy::Rune),
+            ) => self
+                .exact_integer()
+                .is_some_and(|integer| integer.is_representable_as(ty)),
+            (Self::Float(_), Ty::Float(float_ty)) => self.ieee_bits_for(*float_ty).is_some(),
+            (Self::Float(_), Ty::Complex(complex_ty)) => {
+                self.ieee_bits_for(complex_ty.component_type()).is_some()
+            }
+            (Self::Complex { .. }, Ty::Untyped(UntypedTy::Complex)) => true,
+            (Self::Complex { real, imag }, Ty::Complex(complex_ty)) => {
+                let component_ty = complex_ty.component_type();
+                Self::Float(real.clone())
+                    .ieee_bits_for(component_ty)
+                    .is_some()
+                    && Self::Float(imag.clone())
+                        .ieee_bits_for(component_ty)
+                        .is_some()
+            }
+            // Remaining source/target combinations are not representable.
             _ => false,
         }
     }
@@ -509,11 +632,20 @@ impl StaticValue {
     #[must_use]
     pub fn zero(ty: &Ty) -> Option<Self> {
         match ty.underlying() {
+            Ty::Pointer(_) => Some(Self::Nil),
             Ty::Struct(fields) => fields
                 .iter()
                 .map(|field| Self::zero(&field.ty))
                 .collect::<Option<Vec<_>>>()
                 .map(Self::Struct),
+            Ty::Array(length, element) => usize::try_from(*length)
+                .ok()
+                .and_then(|length| {
+                    std::iter::repeat_with(|| Self::zero(element))
+                        .take(length)
+                        .collect::<Option<Vec<_>>>()
+                })
+                .map(Self::Array),
             underlying => underlying.zero().map(Self::Constant),
         }
     }
@@ -522,6 +654,7 @@ impl StaticValue {
     pub fn is_representable_as(&self, ty: &Ty) -> bool {
         match (self, ty.underlying()) {
             (Self::Constant(value), ty) => value.is_representable_as(ty),
+            (Self::Nil, Ty::Pointer(_)) => true,
             (Self::Struct(values), Ty::Struct(fields)) => {
                 values.len() == fields.len()
                     && values
@@ -529,225 +662,17 @@ impl StaticValue {
                         .zip(fields)
                         .all(|(value, field)| value.is_representable_as(&field.ty))
             }
+            (Self::Array(values), Ty::Array(length, element)) => {
+                u64::try_from(values.len()).ok() == Some(*length)
+                    && values
+                        .iter()
+                        .all(|value| value.is_representable_as(element))
+            }
             (Self::Slice(values), Ty::Slice(element)) => values
                 .iter()
                 .all(|value| value.is_representable_as(element)),
-            (Self::Struct(_) | Self::Slice(_), _) => false,
+            (Self::Nil | Self::Struct(_) | Self::Array(_) | Self::Slice(_), _) => false,
         }
-    }
-}
-
-/// Exact rational value of a Go numeric constant spelling.
-///
-/// The exact constant algebra keeps big-number precision through folding; the
-/// denominator is always positive and the fraction is kept reduced.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ExactNumber {
-    numerator: BigInt,
-    denominator: BigInt,
-}
-
-impl ExactNumber {
-    /// Bounded exact decoding of a Go integer or floating-point constant
-    /// spelling. `None` when the spelling is not an exact bounded number.
-    pub(crate) fn from_spelling(spelling: &str) -> Option<Self> {
-        const EXACT_CONSTANT_SCALE_LIMIT: i64 = 16 * 1024;
-        let cleaned = spelling.replace('_', "");
-        let (negative, unsigned) = match cleaned.strip_prefix('-') {
-            Some(rest) => (true, rest),
-            None => (false, cleaned.strip_prefix('+').unwrap_or(cleaned.as_str())),
-        };
-        let (value, power, base) = if let Some(hexadecimal) = unsigned
-            .strip_prefix("0x")
-            .or_else(|| unsigned.strip_prefix("0X"))
-        {
-            let (significand, exponent) = hexadecimal.split_once(['p', 'P'])?;
-            let exponent = exponent.parse::<i64>().ok()?;
-            let (integer, fraction) = significand.split_once('.').unwrap_or((significand, ""));
-            if integer.is_empty() && fraction.is_empty() {
-                return None;
-            }
-            let digits = format!("{integer}{fraction}");
-            let value = BigInt::parse_bytes(digits.as_bytes(), 16)?;
-            let power = exponent.checked_sub(4 * i64::try_from(fraction.len()).ok()?)?;
-            (value, power, 2_u8)
-        } else {
-            let (significand, exponent) = match unsigned.split_once(['e', 'E']) {
-                Some((significand, exponent)) => (significand, exponent.parse::<i64>().ok()?),
-                None => (unsigned, 0),
-            };
-            let (integer, fraction) = significand.split_once('.').unwrap_or((significand, ""));
-            if integer.is_empty() && fraction.is_empty() {
-                return None;
-            }
-            let digits = format!("{integer}{fraction}");
-            let value = BigInt::parse_bytes(digits.as_bytes(), 10)?;
-            let power = exponent.checked_sub(i64::try_from(fraction.len()).ok()?)?;
-            (value, power, 10)
-        };
-        if power.abs() > EXACT_CONSTANT_SCALE_LIMIT {
-            return None;
-        }
-        let factor = BigInt::from(base).pow(u32::try_from(power.unsigned_abs()).ok()?);
-        let (numerator, denominator) = if power >= 0 {
-            (value * factor, BigInt::from(1_u8))
-        } else {
-            (value, factor)
-        };
-        let numerator = if negative { -numerator } else { numerator };
-        Some(Self::reduced(numerator, denominator))
-    }
-
-    pub(crate) fn is_zero(&self) -> bool {
-        use num_traits::Zero;
-        self.numerator.is_zero()
-    }
-
-    pub(crate) fn add(&self, other: &Self) -> Self {
-        Self::reduced(
-            &self.numerator * &other.denominator + &other.numerator * &self.denominator,
-            &self.denominator * &other.denominator,
-        )
-    }
-
-    pub(crate) fn sub(&self, other: &Self) -> Self {
-        Self::reduced(
-            &self.numerator * &other.denominator - &other.numerator * &self.denominator,
-            &self.denominator * &other.denominator,
-        )
-    }
-
-    pub(crate) fn mul(&self, other: &Self) -> Self {
-        Self::reduced(
-            &self.numerator * &other.numerator,
-            &self.denominator * &other.denominator,
-        )
-    }
-
-    /// Exact division. `None` when `other` is zero.
-    pub(crate) fn div(&self, other: &Self) -> Option<Self> {
-        use num_traits::Signed;
-        if other.is_zero() {
-            return None;
-        }
-        let mut numerator = &self.numerator * &other.denominator;
-        let mut denominator = &self.denominator * &other.numerator;
-        if denominator.is_negative() {
-            numerator = -numerator;
-            denominator = -denominator;
-        }
-        Some(Self::reduced(numerator, denominator))
-    }
-
-    /// The exact constant value: an integer constant when the value is
-    /// integral, otherwise the exact finite decimal spelling. `None` when the
-    /// value has no bounded finite decimal representation.
-    pub(crate) fn to_const_value(&self) -> Option<ConstValue> {
-        use num_traits::{Signed, Zero};
-        const EXACT_DECIMAL_DIGIT_LIMIT: u32 = 64 * 1024;
-        let one = BigInt::from(1_u8);
-        if self.denominator == one {
-            return Some(ConstValue::Int(self.numerator.to_string()));
-        }
-        let two = BigInt::from(2_u8);
-        let five = BigInt::from(5_u8);
-        let mut remaining = self.denominator.clone();
-        let mut twos = 0_u32;
-        let mut fives = 0_u32;
-        while (&remaining % &two).is_zero() && twos < EXACT_DECIMAL_DIGIT_LIMIT {
-            remaining /= &two;
-            twos += 1;
-        }
-        while (&remaining % &five).is_zero() && fives < EXACT_DECIMAL_DIGIT_LIMIT {
-            remaining /= &five;
-            fives += 1;
-        }
-        if remaining != one {
-            return None;
-        }
-        let fraction_digits = twos.max(fives);
-        let scaled = &self.numerator * BigInt::from(10_u8).pow(fraction_digits) / &self.denominator;
-        let sign = if scaled.is_negative() { "-" } else { "" };
-        let magnitude = scaled.abs().to_string();
-        let fraction_digits = fraction_digits as usize;
-        let padded = format!("{magnitude:0>width$}", width = fraction_digits + 1);
-        let split = padded.len() - fraction_digits;
-        Some(ConstValue::Float(format!(
-            "{sign}{}.{}",
-            &padded[..split],
-            &padded[split..]
-        )))
-    }
-
-    fn reduced(numerator: BigInt, denominator: BigInt) -> Self {
-        use num_traits::Zero;
-        debug_assert!(!denominator.is_zero());
-        let divisor = big_gcd(&numerator, &denominator);
-        if divisor > BigInt::from(1_u8) {
-            Self {
-                numerator: numerator / &divisor,
-                denominator: denominator / &divisor,
-            }
-        } else {
-            Self {
-                numerator,
-                denominator,
-            }
-        }
-    }
-}
-
-fn big_gcd(left: &BigInt, right: &BigInt) -> BigInt {
-    use num_traits::{Signed, Zero};
-    let mut a = left.abs();
-    let mut b = right.abs();
-    while !b.is_zero() {
-        let remainder = &a % &b;
-        a = b;
-        b = remainder;
-    }
-    a
-}
-
-/// Exact integer value of a Go numeric constant spelling, or `None` when the
-/// spelling does not represent an integer.
-pub(crate) fn exact_integer_from_number_spelling(spelling: &str) -> Option<ConstValue> {
-    let number = ExactNumber::from_spelling(spelling)?;
-    (number.denominator == BigInt::from(1_u8))
-        .then(|| ConstValue::Int(number.numerator.to_string()))
-}
-
-pub(crate) fn parse_go_float(spelling: &str) -> Option<f64> {
-    let spelling = spelling.replace('_', "");
-    let unsigned = spelling
-        .strip_prefix('+')
-        .or_else(|| spelling.strip_prefix('-'))
-        .unwrap_or(&spelling);
-    let sign = if spelling.starts_with('-') { -1.0 } else { 1.0 };
-    if let Some(hexadecimal) = unsigned
-        .strip_prefix("0x")
-        .or_else(|| unsigned.strip_prefix("0X"))
-    {
-        let (significand, exponent) = hexadecimal.split_once(['p', 'P'])?;
-        let exponent = exponent.parse::<i32>().ok()?;
-        let (integer, fraction) = significand.split_once('.').unwrap_or((significand, ""));
-        if integer.is_empty() && fraction.is_empty() {
-            return None;
-        }
-        let mut value = 0.0;
-        for digit in integer.chars() {
-            value = value * 16.0 + f64::from(digit.to_digit(16)?);
-        }
-        let mut place = 1.0 / 16.0;
-        for digit in fraction.chars() {
-            value += f64::from(digit.to_digit(16)?) * place;
-            place /= 16.0;
-        }
-        let value = sign * value * 2.0_f64.powi(exponent);
-        value.is_finite().then_some(value)
-    } else {
-        let value = spelling.parse::<f64>().ok()?;
-        value.is_finite().then_some(value)
     }
 }
 

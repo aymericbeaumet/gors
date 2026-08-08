@@ -1,6 +1,14 @@
 //! Stable identities for runtime operations.
 
-use super::{RuntimeOp, RuntimeOpId};
+use super::RuntimeOp;
+
+/// Stable compact identity of one runtime ABI operation.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct RuntimeOpId(pub(super) u16);
+
+/// Stable operation ID that is not defined by this ABI crate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UnknownRuntimeOpId(pub(super) u16);
 
 impl RuntimeOp {
     /// Stable compact identity for canonical encodings and fingerprints.
@@ -10,10 +18,7 @@ impl RuntimeOp {
             Self::GoStringFromBytes => 1,
             Self::GoStringFromStatic => 2,
             Self::ConcatGoStrings => 3,
-            Self::IntDiv => 8,
-            Self::IntRem => 9,
-            Self::IntShl => 10,
-            Self::IntShr => 11,
+            Self::Integer { op, kind } => op.runtime_id(kind),
             Self::PrintBool => 13,
             Self::PrintI64 => 14,
             Self::PrintSpace => 15,
@@ -114,6 +119,74 @@ impl RuntimeOp {
             Self::GoSliceInterfaceIsNil => 110,
             Self::GoInterfaceBoxAggregate => 111,
             Self::GoInterfaceUnboxAggregate => 112,
+            Self::GoSliceU8Make => 113,
+            Self::GoSliceU8Set => 114,
+            Self::GoSliceU8Copy => 115,
+            Self::PrintF64 => 116,
+            Self::GoInterfaceBoxF64 => 117,
+            Self::GoInterfaceUnboxF64 => 118,
+            Self::GoInterfaceEqual => 119,
+            Self::GoInterfaceBoxComparableAggregate => 120,
+            Self::GoStringFromRune => 121,
+            Self::PanicGoInterface => 122,
+            Self::GoPanicPayloadToInterface => 123,
+            Self::GoInterfaceIsRuntimeError => 124,
+            Self::GoChannelGoStringNil => 125,
+            Self::GoChannelGoStringMake => 126,
+            Self::GoChannelGoStringLen => 127,
+            Self::GoChannelGoStringCap => 128,
+            Self::GoChannelGoStringSend => 129,
+            Self::GoChannelGoStringReceiveValue => 130,
+            Self::GoChannelGoStringReceive => 131,
+            Self::GoChannelGoStringClose => 132,
+            Self::GoChannelGoStringIsNil => 133,
+            Self::GoChannelGoStringTrySend => 134,
+            Self::GoChannelGoStringTryReceive => 135,
+            Self::GoChannelGoChannelI64Nil => 136,
+            Self::GoChannelGoChannelI64Make => 137,
+            Self::GoChannelGoChannelI64Len => 138,
+            Self::GoChannelGoChannelI64Cap => 139,
+            Self::GoChannelGoChannelI64Send => 140,
+            Self::GoChannelGoChannelI64ReceiveValue => 141,
+            Self::GoChannelGoChannelI64Receive => 142,
+            Self::GoChannelGoChannelI64Close => 143,
+            Self::GoChannelGoChannelI64IsNil => 144,
+            Self::GoChannelGoChannelI64TrySend => 145,
+            Self::GoChannelGoChannelI64TryReceive => 146,
+            Self::GoSliceGoStringNil => 147,
+            Self::GoSliceGoStringMake => 148,
+            Self::GoSliceGoStringLen => 149,
+            Self::GoSliceGoStringCap => 150,
+            Self::GoSliceGoStringIndex => 151,
+            Self::GoSliceGoStringRange => 152,
+            Self::GoSliceGoStringSet => 153,
+            Self::GoSliceGoStringAppend => 154,
+            Self::GoSliceGoStringCopy => 155,
+            Self::GoSliceGoStringClear => 156,
+            Self::GoSliceGoStringIsNil => 157,
+            Self::GoInterfaceBoxGoSliceGoString => 158,
+            Self::GoInterfaceUnboxGoSliceGoString => 159,
+            Self::PrintU64 => 160,
+            Self::GoMapStringI64RangeKeys => 161,
+            Self::GoMapI64GoStringNil => 162,
+            Self::GoMapI64GoStringMake => 163,
+            Self::GoMapI64GoStringLen => 164,
+            Self::GoMapI64GoStringGet => 165,
+            Self::GoMapI64GoStringContains => 166,
+            Self::GoMapI64GoStringSet => 167,
+            Self::GoMapI64GoStringDelete => 168,
+            Self::GoMapI64GoStringClear => 169,
+            Self::GoMapI64GoStringIsNil => 170,
+            Self::GoMapI64GoStringRangeKeys => 171,
+            Self::GoStringToSliceRunes => 216,
+            Self::GoInterfaceBoxPointerI64 => 217,
+            Self::GoInterfaceUnboxPointerI64 => 218,
+            Self::GoPointerI64Equal => 219,
+            Self::GoSliceI64AppendSlice => 220,
+            Self::GoSliceInterfaceAppend => 221,
+            Self::PrintF32 => 222,
+            Self::GoInterfaceBoxF32 => 223,
+            Self::GoInterfaceUnboxF32 => 224,
         })
     }
 }

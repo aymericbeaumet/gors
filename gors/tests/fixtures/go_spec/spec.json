@@ -69,6 +69,16 @@
           "expect": "source_bytes"
         },
         {
+          "id": "spec-negative-language-version-binary-literal",
+          "section": "Language versions",
+          "title": "A module targeting Go 1.12 rejects the Go 1.13 binary integer literal syntax",
+          "status": "passing",
+          "fixtures": [
+            "_negative/negative_language_version_binary_literal"
+          ],
+          "expect": "compile_error"
+        },
+        {
           "id": "spec-lexical-unicode-identifier-categories",
           "section": "Letters and digits",
           "title": "Identifiers exercising every letter category the corpus lacks: Lm (U+02B0) and Lt (U+01C5) letters STARTING identifiers, an Nd...",
@@ -201,12 +211,30 @@
           ]
         },
         {
+          "id": "spec-lexical-numeric-literal-edge-forms",
+          "section": "Floating-point literals",
+          "title": "Numeric literal edge forms preserve longest-match, separators, base prefixes, and elided parts",
+          "status": "passing",
+          "fixtures": [
+            "lexical_numeric_literal_edge_forms"
+          ]
+        },
+        {
           "id": "lexical-imaginary-literals",
           "section": "Imaginary literals",
           "title": "Imaginary literals lower to complex values",
           "status": "passing",
           "fixtures": [
             "lexical_elements"
+          ]
+        },
+        {
+          "id": "spec-lexical-imaginary-literal-bases",
+          "section": "Imaginary literals",
+          "title": "Imaginary literals preserve decimal leading-zero compatibility and base-prefixed or elided forms",
+          "status": "passing",
+          "fixtures": [
+            "lexical_imaginary_literal_bases"
           ]
         },
         {
@@ -225,6 +253,15 @@
           "status": "passing",
           "fixtures": [
             "lexical_elements"
+          ]
+        },
+        {
+          "id": "spec-lexical-rune-escape-values",
+          "section": "Rune literals",
+          "title": "The full escaped_char set (\\a \\b \\f \\n \\r \\t \\v \\\\ \\'), octal rune escapes (\\000 \\007 \\377), and multi-byte source characters a...",
+          "status": "passing",
+          "fixtures": [
+            "lexical_rune_escape_values"
           ]
         },
         {
@@ -316,12 +353,30 @@
           ]
         },
         {
+          "id": "constant-builtins-kinds-and-constness",
+          "section": "Constants",
+          "title": "Built-in functions min, max, len, real, imag, and complex applied to constants yield constants with spec-defined kinds and default types",
+          "status": "passing",
+          "fixtures": [
+            "constant_builtins"
+          ]
+        },
+        {
           "id": "constants-iota",
           "section": "Iota",
           "title": "iota increments across const specifications",
           "status": "passing",
           "fixtures": [
             "constants"
+          ]
+        },
+        {
+          "id": "iota-parallel-and-skipped",
+          "section": "Iota",
+          "title": "Parallel and skipped const specifications share, advance, and reset iota with exact typed-constant behavior",
+          "status": "passing",
+          "fixtures": [
+            "iota_parallel_and_skipped"
           ]
         },
         {
@@ -352,6 +407,24 @@
           ]
         },
         {
+          "id": "spec-constant-division-kinds",
+          "section": "Constant expressions",
+          "title": "Constant division operand kinds determine integer or floating-point evaluation before target coercion",
+          "status": "passing",
+          "fixtures": [
+            "constant_division_kinds"
+          ]
+        },
+        {
+          "id": "untyped-constant-propagation",
+          "section": "Constant expressions",
+          "title": "Operations on untyped constants stay untyped and assign to defined types; typed constants keep their explicit type",
+          "status": "passing",
+          "fixtures": [
+            "untyped_constant_propagation"
+          ]
+        },
+        {
           "id": "constants-shift-expressions",
           "section": "Constant expressions",
           "title": "Shift expressions produce integer constants",
@@ -378,6 +451,24 @@
             "_negative/constants_representability"
           ],
           "expect": "compile_error"
+        },
+        {
+          "id": "spec-representability-rounding",
+          "section": "Representability",
+          "title": "Representable float constants round to target precision using IEEE 754 round-to-even, and integral float constants convert to integer types",
+          "status": "passing",
+          "fixtures": [
+            "representability_rounding"
+          ]
+        },
+        {
+          "id": "spec-constant-negative-zero-simplified",
+          "section": "Representability",
+          "title": "Constant -1e-1000 and -0.0 simplify to unsigned zero; run-time negation of +0.0 yields IEEE -0.0",
+          "status": "passing",
+          "fixtures": [
+            "constant_negative_zero_simplified"
+          ]
         },
         {
           "id": "constants-complex",
@@ -416,6 +507,24 @@
             "_negative/constants_typed_shift_overflow"
           ],
           "expect": "compile_error"
+        },
+        {
+          "id": "constants-exact-evaluation",
+          "section": "Constant expressions",
+          "title": "Constant expressions evaluate exactly with arbitrary-precision intermediates",
+          "status": "passing",
+          "fixtures": [
+            "constant_exact_evaluation"
+          ]
+        },
+        {
+          "id": "constants-untyped-default-types",
+          "section": "Constants",
+          "title": "Untyped constant expressions retain their kinds and acquire the required default types",
+          "status": "passing",
+          "fixtures": [
+            "untyped_constant_default_types"
+          ]
         }
       ]
     },
@@ -430,6 +539,15 @@
           "fixtures": [
             "variables_and_zero_values",
             "spec_section_edgecases"
+          ]
+        },
+        {
+          "id": "vars-dynamic-type-nil-pointer",
+          "section": "Variables",
+          "title": "An interface holding a nil pointer retains its dynamic pointer type and is not a nil interface",
+          "status": "passing",
+          "fixtures": [
+            "variables_dynamic_type_nil_pointer"
           ]
         },
         {
@@ -592,6 +710,24 @@
             "_negative/negative_var_untyped_nil"
           ],
           "expect": "compile_error"
+        },
+        {
+          "id": "vars-default-types",
+          "section": "Variable declarations",
+          "title": "Untyped constant initializers in var and short declarations acquire their default types",
+          "status": "passing",
+          "fixtures": [
+            "var_decl_default_types"
+          ]
+        },
+        {
+          "id": "spec-var-decl-multi-value-init",
+          "section": "Variable declarations",
+          "title": "Local var declarations initialize from one multi-valued expression using assignment rules",
+          "status": "passing",
+          "fixtures": [
+            "var_decl_multi_value_init"
+          ]
         }
       ]
     },
@@ -617,12 +753,30 @@
           ]
         },
         {
+          "id": "spec-numeric-wraparound",
+          "section": "Numeric types",
+          "title": "Fixed-width signed and unsigned integers preserve two's-complement wraparound and conversion semantics",
+          "status": "passing",
+          "fixtures": [
+            "numeric_wraparound"
+          ]
+        },
+        {
           "id": "types-floats",
           "section": "Numeric types",
           "title": "Floating-point operations execute",
           "status": "passing",
           "fixtures": [
             "types"
+          ]
+        },
+        {
+          "id": "spec-float32-precision",
+          "section": "Numeric types",
+          "title": "float32 operations round operands and results at binary32 precision while explicit widening preserves the rounded value",
+          "status": "passing",
+          "fixtures": [
+            "float32_precision"
           ]
         },
         {
@@ -659,6 +813,24 @@
           "status": "passing",
           "fixtures": [
             "string_bytes_and_invalid_utf8"
+          ]
+        },
+        {
+          "id": "spec-string-conversion-copies",
+          "section": "String types",
+          "title": "String conversions to byte and rune slices allocate fresh backing, while string slicing shares immutable bytes",
+          "status": "passing",
+          "fixtures": [
+            "string_conversion_copies"
+          ]
+        },
+        {
+          "id": "spec-const-string-len-array",
+          "section": "String types",
+          "title": "len of a constant string is a byte-count constant usable in array types and arithmetic",
+          "status": "passing",
+          "fixtures": [
+            "const_string_len_array"
           ]
         },
         {
@@ -736,12 +908,39 @@
           ]
         },
         {
+          "id": "spec-embedding-promotion-depth",
+          "section": "Struct types",
+          "title": "Promotion resolves to the shallowest field across multiple embedding levels for reads and writes",
+          "status": "passing",
+          "fixtures": [
+            "embedding_promotion_depth"
+          ]
+        },
+        {
+          "id": "spec-selector-depth-promotion",
+          "section": "Struct types",
+          "title": "Selectors resolve promoted fields and methods at the shallowest depth through value and pointer embeddings",
+          "status": "passing",
+          "fixtures": [
+            "selector_depth_promotion"
+          ]
+        },
+        {
           "id": "types-pointers",
           "section": "Pointer types",
           "title": "Pointers support nil checks, dereference, and assignment",
           "status": "passing",
           "fixtures": [
             "types"
+          ]
+        },
+        {
+          "id": "spec-pointer-equality",
+          "section": "Pointer types",
+          "title": "Pointer equality uses pointee identity for aliases, distinct variables, nil values, and fresh allocations",
+          "status": "passing",
+          "fixtures": [
+            "pointer_equality"
           ]
         },
         {
@@ -851,6 +1050,33 @@
           "status": "passing",
           "fixtures": [
             "types"
+          ]
+        },
+        {
+          "id": "types-channel-direction-conversions",
+          "section": "Channel types",
+          "title": "Explicit and assignment conversions constrain channel direction while preserving shared storage",
+          "status": "passing",
+          "fixtures": [
+            "channel_direction_conversions"
+          ]
+        },
+        {
+          "id": "spec-channel-type-associativity",
+          "section": "Channel types",
+          "title": "Channel direction syntax associates with the leftmost chan and make accepts directional types",
+          "status": "passing",
+          "fixtures": [
+            "channel_type_associativity"
+          ]
+        },
+        {
+          "id": "spec-buffered-capacity-fifo-close",
+          "section": "Channel types",
+          "title": "Buffered string channels preserve capacity, FIFO drain order, close, and repeated zero receives",
+          "status": "passing",
+          "fixtures": [
+            "buffered_capacity_fifo_close"
           ]
         },
         {
@@ -989,6 +1215,24 @@
             "_negative/properties_non_comparable_map_key"
           ],
           "expect": "compile_error"
+        },
+        {
+          "id": "spec-array-value-semantics",
+          "section": "Array types",
+          "title": "One-dimensional array values copy on assignment and parameter passing and compare element-wise",
+          "status": "passing",
+          "fixtures": [
+            "array_value_semantics"
+          ]
+        },
+        {
+          "id": "spec-byte-rune-alias-identity",
+          "section": "Numeric types",
+          "title": "byte/uint8 and rune/int32 aliases share assignment, slice, and interface dynamic identity",
+          "status": "passing",
+          "fixtures": [
+            "byte_rune_alias_identity"
+          ]
         }
       ]
     },
@@ -1025,6 +1269,15 @@
           ]
         },
         {
+          "id": "spec-properties-underlying-type-chains",
+          "section": "Underlying types",
+          "title": "Transitive underlying-type chains through defined types and aliases drive conversion and assignability",
+          "status": "passing",
+          "fixtures": [
+            "properties_underlying_type_chains"
+          ]
+        },
+        {
           "id": "properties-type-identity",
           "section": "Type identity",
           "title": "Distinct defined types preserve identity while allowing explicit conversions",
@@ -1044,12 +1297,30 @@
           ]
         },
         {
+          "id": "properties-assignability-channels",
+          "section": "Assignability",
+          "title": "Named bidirectional channels assign to unnamed directional channels and accept the same function arguments",
+          "status": "passing",
+          "fixtures": [
+            "properties_assignability_channels"
+          ]
+        },
+        {
           "id": "properties-comparability",
           "section": "Comparison operators",
           "title": "Comparable values participate in equality and ordering",
           "status": "passing",
           "fixtures": [
             "properties_of_types_and_values"
+          ]
+        },
+        {
+          "id": "spec-float-nan-negzero-comparisons",
+          "section": "Comparison operators",
+          "title": "IEEE 754 comparisons preserve NaN, signed zero, infinity, float32 conversion, and interface equality semantics",
+          "status": "passing",
+          "fixtures": [
+            "float_nan_negzero_comparisons"
           ]
         },
         {
@@ -1071,6 +1342,15 @@
             "properties_of_types_and_values",
             "method_expressions",
             "method_value_receiver_capture"
+          ]
+        },
+        {
+          "id": "spec-pointer-embedding-method-sets",
+          "section": "Method sets",
+          "title": "Embedding a pointer promotes value and pointer receiver methods into both value and pointer method sets",
+          "status": "passing",
+          "fixtures": [
+            "pointer_embedding_method_sets"
           ]
         },
         {
@@ -1146,6 +1426,15 @@
           ]
         },
         {
+          "id": "spec-declarations-and-scope-predeclared-shadowing",
+          "section": "Predeclared identifiers",
+          "title": "Package and local declarations shadow predeclared identifiers only after their declaration scope begins",
+          "status": "passing",
+          "fixtures": [
+            "declarations_and_scope_predeclared_shadowing"
+          ]
+        },
+        {
           "id": "decl-exported-identifiers",
           "section": "Exported identifiers",
           "title": "Identifiers starting with a capital letter are exported",
@@ -1200,6 +1489,15 @@
           ]
         },
         {
+          "id": "spec-type-declarations-alias-vs-defined",
+          "section": "Type declarations",
+          "title": "Aliases preserve type identity and method sets while type definitions create distinct types",
+          "status": "passing",
+          "fixtures": [
+            "type_declarations_alias_vs_defined"
+          ]
+        },
+        {
           "id": "decl-type-parameter-declarations",
           "section": "Type parameter declarations",
           "title": "Type parameter lists declare generic function and type parameters",
@@ -1235,6 +1533,15 @@
           "status": "passing",
           "fixtures": [
             "declarations_and_scope"
+          ]
+        },
+        {
+          "id": "spec-method-declarations-receiver-forms",
+          "section": "Method declarations",
+          "title": "Methods support omitted and blank receiver names, non-struct defined receiver types, pointer receivers, and renamed or blank generic receiver parameters",
+          "status": "passing",
+          "fixtures": [
+            "method_declarations_receiver_forms"
           ]
         },
         {
@@ -1409,6 +1716,15 @@
           ]
         },
         {
+          "id": "expr-composite-literal-sparse-indices",
+          "section": "Composite literals",
+          "title": "Array and slice literal lengths derive from the largest keyed element index",
+          "status": "passing",
+          "fixtures": [
+            "composite_literal_sparse_indices"
+          ]
+        },
+        {
           "id": "expr-composite-literal-elision",
           "section": "Composite literals",
           "title": "Nested composite literals elide repeated element and pointer types",
@@ -1436,6 +1752,24 @@
           ]
         },
         {
+          "id": "spec-arithmetic-overflow-and-division",
+          "section": "Arithmetic operators",
+          "title": "Exact-width integer arithmetic wraps, signed division truncates toward zero, and MIN / -1 preserves the dividend",
+          "status": "passing",
+          "fixtures": [
+            "arithmetic_overflow_and_division"
+          ]
+        },
+        {
+          "id": "spec-shift-count-and-width-semantics",
+          "section": "Arithmetic operators",
+          "title": "Shift counts retain their independent integer type, wide shifts use the left width, and negative dynamic signed counts panic (non-IIFE recover rewrite)",
+          "status": "passing",
+          "fixtures": [
+            "shift_count_and_width_semantics"
+          ]
+        },
+        {
           "id": "expr-string-concat-interface-methods",
           "section": "Operators",
           "title": "String concatenation accepts method-call operands",
@@ -1454,6 +1788,15 @@
           ]
         },
         {
+          "id": "spec-logical-short-circuit",
+          "section": "Logical operators",
+          "title": "Logical operators short-circuit side effects in lexical left-to-right order",
+          "status": "passing",
+          "fixtures": [
+            "logical_short_circuit"
+          ]
+        },
+        {
           "id": "expr-receive-operator",
           "section": "Receive operator",
           "title": "Receive expressions read channel values in expression contexts",
@@ -1461,6 +1804,15 @@
           "fixtures": [
             "built_in_functions",
             "spec_section_edgecases"
+          ]
+        },
+        {
+          "id": "spec-receive-expression-contexts",
+          "section": "Receive operator",
+          "title": "Receive expressions preserve left-to-right evaluation in calls, operators, statements, and comma-ok assignment",
+          "status": "passing",
+          "fixtures": [
+            "receive_expression_contexts"
           ]
         },
         {
@@ -1625,12 +1977,31 @@
           ]
         },
         {
+          "id": "spec-calls-multi-value-forwarding",
+          "section": "Calls",
+          "title": "f(g()) forwards g's multiple return values to f's parameters, including a variadic tail with len and cap equal to the bound values",
+          "status": "passing",
+          "fixtures": [
+            "calls_multi_value_forwarding"
+          ]
+        },
+        {
           "id": "expr-conversions",
           "section": "Conversions",
           "title": "Conversions handle numeric, string, byte-slice, and rune-slice cases",
           "status": "passing",
           "fixtures": [
-            "expressions"
+            "expressions",
+            "numeric_conversion_semantics"
+          ]
+        },
+        {
+          "id": "spec-string-rune-conversions",
+          "section": "Conversions",
+          "title": "Integer-to-string and string-to-rune-slice conversions preserve replacement, UTF-8, and named-type semantics",
+          "status": "passing",
+          "fixtures": [
+            "string_rune_conversions"
           ]
         },
         {
@@ -1668,6 +2039,15 @@
           "fixtures": [
             "expressions"
           ]
+        },
+        {
+          "id": "spec-composite-literal-if-ambiguity",
+          "section": "Composite literals",
+          "title": "Parentheses and index brackets disambiguate composite literals in if, for, and switch headers",
+          "status": "passing",
+          "fixtures": [
+            "composite_literal_if_ambiguity"
+          ]
         }
       ]
     },
@@ -1683,6 +2063,15 @@
             "statements",
             "return_statements",
             "spec_section_edgecases"
+          ]
+        },
+        {
+          "id": "spec-terminating-statement-forms",
+          "section": "Terminating statements",
+          "title": "Value-returning functions may end in every terminating statement form, including a blocking single-case select",
+          "status": "passing",
+          "fixtures": [
+            "terminating_statement_forms"
           ]
         },
         {
@@ -1742,6 +2131,15 @@
           ]
         },
         {
+          "id": "spec-incdec-operand-forms",
+          "section": "IncDec statements",
+          "title": "Increment and decrement support dynamic indexes, maps, pointer indirection, arrays, fields, and wrapping narrow integers",
+          "status": "passing",
+          "fixtures": [
+            "incdec_operand_forms"
+          ]
+        },
+        {
           "id": "stmt-assignments",
           "section": "Assignment statements",
           "title": "Simple, compound, and multi-value assignments execute",
@@ -1769,12 +2167,39 @@
           ]
         },
         {
+          "id": "spec-assignment-partial-writes-on-panic",
+          "section": "Assignment statements",
+          "title": "Tuple-assignment writes occur left to right and earlier writes remain visible when a later write panics",
+          "status": "passing",
+          "fixtures": [
+            "assignment_partial_writes_on_panic"
+          ]
+        },
+        {
+          "id": "spec-range-clause-assignment-form",
+          "section": "Assignment statements",
+          "title": "Range assignment prepares non-identifier targets on every iteration before writing generated key and element values",
+          "status": "passing",
+          "fixtures": [
+            "range_clause_assignment_form"
+          ]
+        },
+        {
           "id": "stmt-if",
           "section": "If statements",
           "title": "if statements support init clauses and nested branches",
           "status": "passing",
           "fixtures": [
             "statements"
+          ]
+        },
+        {
+          "id": "spec-if-init-scope-and-else",
+          "section": "If statements",
+          "title": "If initializers have implicit scope and else-if branches execute only when reached",
+          "status": "passing",
+          "fixtures": [
+            "if_init_scope_and_else"
           ]
         },
         {
@@ -1814,12 +2239,30 @@
           ]
         },
         {
+          "id": "spec-switch-interface-case-conversion",
+          "section": "Switch statements",
+          "title": "Untyped switch case constants convert to the switch expression type, preserving interface dynamic types and nil distinctions",
+          "status": "passing",
+          "fixtures": [
+            "switch_interface_case_conversion"
+          ]
+        },
+        {
           "id": "stmt-fallthrough",
           "section": "Fallthrough statements",
           "title": "fallthrough transfers control to the next expression switch case",
           "status": "passing",
           "fixtures": [
             "statements"
+          ]
+        },
+        {
+          "id": "spec-switch-fallthrough-placement",
+          "section": "Fallthrough statements",
+          "title": "Fallthrough follows source-order clauses and may be the final non-empty statement beneath a label",
+          "status": "passing",
+          "fixtures": [
+            "switch_fallthrough_placement"
           ]
         },
         {
@@ -1847,6 +2290,15 @@
           "status": "passing",
           "fixtures": [
             "statements"
+          ]
+        },
+        {
+          "id": "spec-type-switch-clause-typing",
+          "section": "Type switch statements",
+          "title": "Type-switch clause variables use the single case type only in one-type clauses and retain the guard interface type otherwise",
+          "status": "passing",
+          "fixtures": [
+            "type_switch_clause_typing"
           ]
         },
         {
@@ -1985,6 +2437,15 @@
           ]
         },
         {
+          "id": "spec-map-delete-during-range",
+          "section": "For statements with range clause",
+          "title": "Deleting reached map entries preserves remaining candidates while deleting unreached entries suppresses them",
+          "status": "passing",
+          "fixtures": [
+            "map_delete_during_range"
+          ]
+        },
+        {
           "id": "stmt-range-invalid-utf8-string",
           "section": "For statements with range clause",
           "title": "Ranging over invalid UTF-8 bytes yields replacement runes and advances one byte",
@@ -2066,6 +2527,15 @@
           ]
         },
         {
+          "id": "spec-break-targets",
+          "section": "Break statements",
+          "title": "Break resolves to the innermost loop, switch, or select while labeled break reaches its exact enclosing target",
+          "status": "passing",
+          "fixtures": [
+            "break_targets"
+          ]
+        },
+        {
           "id": "stmt-labeled-continue",
           "section": "Continue statements",
           "title": "continue may target an enclosing labeled for statement",
@@ -2121,12 +2591,31 @@
           "expect": "compile_error"
         },
         {
+          "id": "spec-goto-jump-into-block",
+          "section": "Goto statements",
+          "title": "A goto outside a block cannot jump to a label inside that block",
+          "status": "passing",
+          "fixtures": [
+            "_negative/goto_jump_into_block"
+          ],
+          "expect": "compile_error"
+        },
+        {
           "id": "spec-op-assign-evaluate-once",
           "section": "Assignment statements",
           "title": "No fixture verifies that x op= y evaluates x only once (side-effecting index/key expressions must run exactly once, including o...",
           "status": "passing",
           "fixtures": [
             "op_assign_evaluate_once"
+          ]
+        },
+        {
+          "id": "spec-labeled-empty-statements",
+          "section": "Labeled statements",
+          "title": "Labels may target implicit empty statements before closing braces, and explicit empty statements preserve control flow",
+          "status": "passing",
+          "fixtures": [
+            "labeled_empty_statements"
           ]
         }
       ]
@@ -2153,12 +2642,30 @@
           ]
         },
         {
+          "id": "spec-append-examples",
+          "section": "Appending to and copying slices",
+          "title": "The normative append examples preserve overlapping sources, nil growth, interface assignment, and empty expansions",
+          "status": "passing",
+          "fixtures": [
+            "append_spec_examples"
+          ]
+        },
+        {
           "id": "builtin-copy-string-source",
           "section": "Appending to and copying slices",
           "title": "copy copies bytes from string sources into byte slices",
           "status": "passing",
           "fixtures": [
             "append_copy_clear_builtins"
+          ]
+        },
+        {
+          "id": "spec-copy-overlapping-and-counts",
+          "section": "Appending to and copying slices",
+          "title": "Overlapping copy is uncovered in both directions",
+          "status": "passing",
+          "fixtures": [
+            "copy_overlapping_and_counts"
           ]
         },
         {
@@ -2180,12 +2687,30 @@
           ]
         },
         {
+          "id": "spec-len-cap-constant-and-nil",
+          "section": "Length and capacity",
+          "title": "len and cap suppress constant array operands, evaluate nonconstant array operands once, count string bytes, and report zero for nil containers",
+          "status": "passing",
+          "fixtures": [
+            "len_cap_constant_and_nil"
+          ]
+        },
+        {
           "id": "builtin-make-new",
           "section": "Making slices, maps and channels",
           "title": "make and new allocate slices, maps, channels, and pointer values",
           "status": "passing",
           "fixtures": [
             "built_in_functions"
+          ]
+        },
+        {
+          "id": "spec-make-runtime-size-panics",
+          "section": "Making slices, maps and channels",
+          "title": "Dynamic make sizes are checked at run time for slices and channels",
+          "status": "passing",
+          "fixtures": [
+            "make_runtime_size_panics"
           ]
         },
         {
@@ -2253,12 +2778,66 @@
           ]
         },
         {
+          "id": "spec-min-max-float-string",
+          "section": "Min and max",
+          "title": "min and max preserve floating-point special values, lexical string order, mixed constants, and float32 result typing",
+          "status": "passing",
+          "fixtures": [
+            "min_max_float_string"
+          ]
+        },
+        {
           "id": "builtin-panic-recover",
           "section": "Handling panics",
           "title": "panic and recover follow deferred recovery semantics",
           "status": "passing",
           "fixtures": [
             "built_in_panic_recover"
+          ]
+        },
+        {
+          "id": "spec-built-in-panic-nil-value",
+          "section": "Handling panics",
+          "title": "panic of nil and nil interface values produces a non-nil recoverable run-time error",
+          "status": "passing",
+          "fixtures": [
+            "built_in_panic_nil_value"
+          ]
+        },
+        {
+          "id": "spec-panic-nil-runtime-panic",
+          "section": "Handling panics",
+          "title": "panic(nil) produces a non-nil runtime error while a typed nil pointer remains its typed nil value",
+          "status": "passing",
+          "fixtures": [
+            "panic_nil_runtime_panic"
+          ]
+        },
+        {
+          "id": "spec-built-in-recover-placement",
+          "section": "Handling panics",
+          "title": "recover returns nil outside a directly deferred panicking call and only direct deferred recover stops the panic",
+          "status": "passing",
+          "fixtures": [
+            "built_in_recover_placement"
+          ]
+        },
+        {
+          "id": "spec-built-in-panic-recover-sequence",
+          "section": "Handling panics",
+          "title": "panic unwinding runs nested defers in order and a recovering defer resumes the caller with its named result",
+          "status": "passing",
+          "fixtures": [
+            "built_in_panic_recover_sequence"
+          ]
+        },
+        {
+          "id": "spec-nested-panic-during-defer",
+          "section": "Handling panics",
+          "title": "a panic in a deferred function replaces the active panic while earlier defers continue",
+          "status": "passing",
+          "fixtures": [
+            "nested_panic_during_defer"
           ]
         },
         {
@@ -2462,6 +3041,15 @@
           ]
         },
         {
+          "id": "generics-type-param-parsing-ambiguity",
+          "section": "Type parameter declarations",
+          "title": "Trailing commas and embedded constraints disambiguate type parameter lists from array declarations",
+          "status": "passing",
+          "fixtures": [
+            "generics_type_param_declarations"
+          ]
+        },
+        {
           "id": "generics-receiver-methods",
           "section": "Method declarations",
           "title": "Generic receiver methods keep receiver type parameters",
@@ -2508,6 +3096,15 @@
           ]
         },
         {
+          "id": "spec-generics-comparable-satisfaction",
+          "section": "Satisfying a type constraint",
+          "title": "Ordinary interface types satisfy comparable constraints and compare dynamically comparable values",
+          "status": "passing",
+          "fixtures": [
+            "generics_comparable_satisfaction"
+          ]
+        },
+        {
           "id": "generics-type-inference",
           "section": "Instantiations",
           "title": "Type inference chooses type arguments for generic calls",
@@ -2524,6 +3121,60 @@
           "fixtures": [
             "generics_type_sets"
           ]
+        },
+        {
+          "id": "generics-inference-from-constraint-term",
+          "section": "Type unification rules",
+          "title": "A single non-tilde constraint term supplies an otherwise unknown type argument",
+          "status": "passing",
+          "fixtures": [
+            "generics_inference_from_constraint_term"
+          ]
+        },
+        {
+          "id": "generics-inference-method-constraints",
+          "section": "Type unification rules",
+          "title": "Known type arguments infer remaining arguments by exact unification with resolved constraint method signatures",
+          "status": "passing",
+          "fixtures": [
+            "generics_inference_method_constraints"
+          ]
+        },
+        {
+          "id": "generics-inference-constant-kinds",
+          "section": "Type inference",
+          "title": "Untyped constant-kind merging chooses the merged default type while typed operands take precedence",
+          "status": "passing",
+          "fixtures": [
+            "generics_inference_constant_kinds"
+          ]
+        },
+        {
+          "id": "spec-generics-generic-alias",
+          "section": "Instantiations",
+          "title": "Generic alias instantiation preserves the substituted target type and mutual assignability",
+          "status": "passing",
+          "fixtures": [
+            "generics_generic_alias"
+          ]
+        },
+        {
+          "id": "generics-channel-constraint-unification",
+          "section": "Type unification rules",
+          "title": "Channel constraint unification infers element types across compatible directions",
+          "status": "passing",
+          "fixtures": [
+            "generics_channel_constraint_unification"
+          ]
+        },
+        {
+          "id": "generics-inference-defined-types",
+          "section": "Type inference",
+          "title": "Inference preserves defined types while unifying their underlying structure",
+          "status": "passing",
+          "fixtures": [
+            "generics_inference_defined_types"
+          ]
         }
       ]
     },
@@ -2538,6 +3189,15 @@
           "fixtures": [
             "errors"
           ]
+        },
+        {
+          "id": "spec-errors-typed-nil",
+          "section": "Errors",
+          "title": "An error interface holding a typed nil pointer is non-nil while the zero error interface is nil",
+          "status": "passing",
+          "fixtures": [
+            "errors_typed_nil"
+          ]
         }
       ]
     },
@@ -2551,6 +3211,51 @@
           "status": "passing",
           "fixtures": [
             "run_time_panics"
+          ]
+        },
+        {
+          "id": "spec-run-time-panics-channels",
+          "section": "Run-time panics",
+          "title": "Invalid sends and closes on closed or nil channels cause recoverable run-time panics",
+          "status": "passing",
+          "fixtures": [
+            "run_time_panics_channels"
+          ]
+        },
+        {
+          "id": "spec-run-time-panics-make-and-full-slice",
+          "section": "Run-time panics",
+          "title": "Invalid dynamic make sizes and full-slice bounds cause recoverable run-time panics",
+          "status": "passing",
+          "fixtures": [
+            "run_time_panics_make_and_full_slice"
+          ]
+        },
+        {
+          "id": "spec-run-time-panics-negative-shift",
+          "section": "Run-time panics",
+          "title": "Negative dynamic `int` and `int64` shift counts panic; large counts remain valid and yield zero",
+          "status": "passing",
+          "fixtures": [
+            "run_time_panics_negative_shift"
+          ]
+        },
+        {
+          "id": "spec-run-time-panics-nil-struct-interface",
+          "section": "Run-time panics",
+          "title": "Nil struct-pointer field reads/writes and nil-interface method calls panic",
+          "status": "passing",
+          "fixtures": [
+            "run_time_panics_nil_struct_interface"
+          ]
+        },
+        {
+          "id": "spec-run-time-panics-type-assertion-concrete",
+          "section": "Run-time panics",
+          "title": "A failed concrete single-result assertion panics, while comma-ok returns zero,false",
+          "status": "passing",
+          "fixtures": [
+            "run_time_panics_type_assertion_concrete"
           ]
         }
       ]
